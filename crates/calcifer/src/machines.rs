@@ -426,7 +426,7 @@ impl Machines {
             return Err(Error::new(
                 Kind::Conflict,
                 "machine_name_taken",
-                format!("{name} already names a machine"),
+                format!("There's already a machine named {name}."),
             )
             .next(format!("cozy machine show {name}")));
         }
@@ -434,9 +434,10 @@ impl Machines {
             Error::new(
                 Kind::Unavailable,
                 "machine_unreachable",
-                format!("{address}: {e}"),
+                format!("Cozy couldn't reach {address}: {e}."),
             )
-            .remedy("on that computer, `cozy machine show local` says the address it listens on")
+            .remedy("Check the address that computer shows for itself, then try again.")
+            .next("cozy machine show local")
         };
         let leaf: [u8; 32] =
             Sha256::digest(link::presented_leaf(address).await.map_err(unreachable)?).into();
@@ -445,7 +446,7 @@ impl Machines {
             return Err(Error::new(
                 Kind::Conflict,
                 "machine_is_local",
-                format!("{address} is this computer's own machine, `local`"),
+                format!("{address} is this computer, which Cozy already uses."),
             )
             .next("cozy machine show local"));
         }
@@ -454,11 +455,11 @@ impl Machines {
                 Kind::Credential,
                 "fingerprint_mismatch",
                 format!(
-                    "{address} presents the TLS leaf {}, not {fingerprint}",
+                    "{address} has a different fingerprint than the one you gave: it presents {}, not {fingerprint}.",
                     Digest::from_bytes(leaf)
                 ),
             )
-            .remedy("ask the machine's owner for its fingerprint again"));
+            .remedy("Ask the machine's owner for its fingerprint again."));
         }
         let identity = Link::identity(address, leaf).await.map_err(unreachable)?;
         let key = self.owner_key()?;
@@ -484,9 +485,10 @@ impl Machines {
                 Ok(public) => Error::new(
                     Kind::Credential,
                     "machine_unauthorized",
-                    format!("{address} does not admit this controller's key"),
+                    format!("{address} doesn't accept this computer's key."),
                 )
-                .remedy(format!("on that computer: cozy machine authorize {public}")),
+                .remedy("Authorize this computer's key on that computer, then try again.")
+                .next(format!("cozy machine authorize {public}")),
                 Err(e) => e,
             },
             e => unreachable(e),
@@ -737,13 +739,13 @@ impl Machines {
                     return Err(Error::new(
                         Kind::NotFound,
                         "machine_log_not_kept",
-                        format!("{} can't answer, and Calcifer keeps only its own lines of its TensorD log", row.name),
+                        format!("{} isn't answering, and Cozy keeps a copy of its TensorD log only.", row.name),
                     )
                     .next(format!("cozy machine logs {}", row.name)));
                 }
                 self.kept_log(&row.name, lines)
                     .map(String::into_bytes)
-                    .ok_or_else(|| error.remedy("Calcifer kept none of its lines"))
+                    .ok_or_else(|| error.remedy("Cozy didn't keep any of its log."))
             }
             read => read,
         }
@@ -760,7 +762,7 @@ impl Machines {
     ) -> Result<crate::link::Live<v1::LogLines>, Error> {
         let (row, link) = self.linked(text).map_err(|error| match self.kept_named(text) {
             Ok(Some(row)) if log == MachineLog::Tensord && self.kept_log(&row.name, 1).is_some() => error
-                .remedy("without --follow, it prints its own lines Calcifer kept"),
+                .remedy("Without --follow, it prints the copy of its log Cozy kept."),
             _ => error,
         })?;
         let lines = link.follow_log(log_name(log), lines, after).await;
@@ -797,7 +799,7 @@ impl Machines {
             return Err(Error::new(
                 Kind::Conflict,
                 "machine_ended",
-                format!("{} has ended", row.name),
+                format!("{} has ended.", row.name),
             )
             .next("cozy machine ls"));
         }
@@ -806,7 +808,7 @@ impl Machines {
             Ok(None) => Err(Error::new(
                 Kind::Unavailable,
                 "machine_booting",
-                format!("{} has no address yet: it is still starting", row.name),
+                format!("{} is still starting up.", row.name),
             )
             .next(format!("cozy machine show {}", row.name))),
             Err(e) => Err(Error::new(Kind::Unavailable, "machine_unreachable", e)),
@@ -1137,7 +1139,7 @@ impl Machines {
     /// rental's Hub is told so (`vouch`) at each frame and, with none coming, every `VOUCH_EVERY`.
     async fn status_frames(self: &Arc<Self>, name: &str, pause: &mut Duration) -> Result<(), LinkError> {
         let link = (self.calcifer.link(name).map_err(LinkError::Unreachable)?)
-            .ok_or_else(|| LinkError::Unreachable("it has no address".into()))?;
+            .ok_or_else(|| LinkError::Unreachable("it has no address yet".into()))?;
         let mut frames = link.watch().await?;
         let mut busy = false;
         loop {
@@ -1160,7 +1162,7 @@ impl Machines {
                     }
                 }
                 None => {
-                    let closed = "the machine closed its Status stream";
+                    let closed = "the machine closed its connection";
                     return Err(LinkError::Unanswered(closed.into()));
                 }
                 Some(Err(e)) => return Err(e),
@@ -1280,7 +1282,7 @@ impl Machines {
         let seen = lock(&self.seen);
         let seen = seen.get(name)?;
         let unanswered = seen.unanswered?;
-        Some((seen.unreachable.clone().unwrap_or_else(|| "it isn't answering".into()), unanswered.dropped))
+        Some((seen.unreachable.clone().unwrap_or_else(|| "not answering".into()), unanswered.dropped))
     }
 
     /// `name` answered: a candidate again, on what it says.
@@ -1318,7 +1320,7 @@ impl Machines {
             return;
         }
         warn!(machine = name, "it doesn't answer: {error} (attempt 1 of {STATUS_ATTEMPTS})");
-        self.unreachable(name, format!("it doesn't answer: {error} (attempt 1 of {STATUS_ATTEMPTS})"));
+        self.unreachable(name, format!("{error}, attempt 1 of {STATUS_ATTEMPTS}"));
         let me = self.clone();
         let name = name.to_owned();
         self.spawn(async move {
@@ -1347,11 +1349,11 @@ impl Machines {
                     let mut seen = lock(&me.seen);
                     let Some(held) = seen.get_mut(&name).and_then(|seen| seen.unanswered.as_mut()) else { return };
                     match held.dropped {
-                        true => format!("it hasn't answered after {STATUS_ATTEMPTS} attempts: {error}; asked again every {} s", STATUS_AGAIN.as_secs()),
+                        true => format!("{error}, after {STATUS_ATTEMPTS} attempts; trying again every {}s", STATUS_AGAIN.as_secs()),
                         false => {
                             held.attempt += 1;
                             held.dropped = held.attempt >= STATUS_ATTEMPTS;
-                            format!("it doesn't answer: {error} (attempt {} of {STATUS_ATTEMPTS})", held.attempt)
+                            format!("{error}, attempt {} of {STATUS_ATTEMPTS}", held.attempt)
                         }
                     }
                 };
@@ -1447,10 +1449,10 @@ impl Machines {
     pub(crate) fn unanswered(&self, name: &str, error: &str) -> String {
         match lock(&self.seen).get(name).and_then(|s| s.since) {
             Some(at) => format!(
-                "{name} is unreachable (for {}): {error}",
+                "{name} hasn't answered for {}: {error}",
                 wire::clock(crate::store::now_ms() - at)
             ),
-            None => format!("{name} is unreachable: {error}"),
+            None => format!("{name} isn't answering: {error}"),
         }
     }
 
@@ -1481,12 +1483,12 @@ impl Machines {
     async fn reachable(self: &Arc<Self>, row: &MachineRow) -> Result<(), Error> {
         let name = row.name.clone();
         if row.state == MachineState::Ended {
-            let reason = row.reason.as_deref().unwrap_or("no reason was given");
+            let reason = row.reason.as_deref().unwrap_or("no reason given");
             return Err(ended_refusal(&name, reason));
         }
         // Its end waits only for what its runs owe here: it takes no new run.
         if self.pending_end(&name)?.is_some() {
-            let message = format!("{name} is ending: it takes no new runs");
+            let message = format!("{name} is ending, so it can't take new runs.");
             return Err(Error::new(Kind::Conflict, "machine_ending", message).next("cozy machine ls"));
         }
         if row.endpoint.is_none() {
@@ -1527,10 +1529,10 @@ impl Machines {
             .unwrap_or_default();
         let mut message = self.unanswered(&name, &error);
         if let Some(Word::Up) = word {
-            message += "; its Hub says its provider has not stopped it";
+            message += ". The Hub says its provider hasn't stopped it";
         }
-        Err(Error::new(Kind::Unavailable, "machine_unreachable", message)
-            .remedy("`--on new` rents a machine, or name another")
+        Err(Error::new(Kind::Unavailable, "machine_unreachable", format!("{message}."))
+            .remedy("Run it on another machine, or rent a new one.")
             .next(format!("cozy machine show {name}")))
     }
 
@@ -1619,7 +1621,7 @@ impl Machines {
                 Ok(None) => Err(Error::new(
                     Kind::Usage,
                     "quote_unagreed",
-                    "a run that rents names the quote its renter agreed to (POST /v1/run-quotes)",
+                    "A run that rents a machine needs the price you agreed to (POST /v1/run-quotes).",
                 )),
                 agreed => agreed.map(|_| None),
             },
@@ -1631,16 +1633,13 @@ impl Machines {
     fn unfitted(&self, run: &RunRow) -> String {
         let asks = self.store().pending_asks().unwrap_or_default();
         if asks.iter().any(|ask| ask.kind == AskKind::Rent) {
-            return "waiting for the rental on order".into();
+            return "waiting for the rental Cozy ordered".into();
         }
         let none = match run.spec.gpus {
-            0 => "no rental is up or on its way".to_owned(),
-            gpus => format!("no rental up or on its way has {gpus} GPUs"),
+            0 => "no rental is running or starting".to_owned(),
+            gpus => format!("no rental with {gpus} GPUs is running or starting"),
         };
-        format!(
-            "{none}: `--on new` rents one; this run waits for one (`cozy run cancel {}`)",
-            run.number
-        )
+        format!("{none}, so this run waits for one; rent a machine, or cancel the run")
     }
 
     /// The least busy rental of this controller that fits a run of `gpus` GPUs (0: any), a
@@ -1683,19 +1682,19 @@ impl Machines {
         }
         let row = match self.store().machine(name) {
             Ok(Some(row)) => row,
-            Ok(None) => return Some(format!("{name} is no machine here")),
+            Ok(None) => return Some(format!("there's no machine named {name}")),
             Err(_) => return None,
         };
         if row.state == MachineState::Ended {
-            return Some(format!("{name} ended"));
+            return Some(format!("{name} has ended"));
         }
         if self.pending_end(name).ok().flatten().is_some() {
             return Some(format!("{name} is ending"));
         }
         if let Some(broken) = self.broken(name) {
-            return Some(format!("{name} is broken: {}", broken.message));
+            return Some(format!("{name} isn't working ({})", broken.message));
         }
-        self.offline(name).map(|why| format!("{name} is offline: {why}"))
+        self.offline(name).map(|why| format!("{name} is offline ({why})"))
     }
 
     /// Whether `name` ended or is no machine here: it leaves every project's chosen machines (cl-920).
@@ -1854,7 +1853,7 @@ pub(crate) async fn remove_model(
 pub(crate) async fn fresh(machines: &Arc<Machines>, text: &str) -> Result<Machine, Error> {
     let row = machines.named_now(text).await?;
     let unavailable = |why: String| {
-        let message = format!("{} cannot answer now: {why}", row.name);
+        let message = format!("{} can't answer right now: {why}.", row.name);
         Error::new(Kind::Unavailable, "machine_unavailable", message).next("cozy machine ls")
     };
     if row.state == MachineState::Ended {
@@ -1899,7 +1898,7 @@ pub(crate) async fn quote(
         return Err(Refusal(Error::new(
             Kind::Usage,
             "quote_needs_rent",
-            "only a rent has a price",
+            "Only a rental has a price.",
         )));
     };
     let hub = crate::hub::origin(&api, Some(&hub))?.to_string();
@@ -1976,9 +1975,9 @@ pub(crate) async fn create(
                         Error::new(
                             Kind::Usage,
                             "idempotency_key_required",
-                            "a rental is a paid ask: it needs an Idempotency-Key header",
+                            "Renting costs money, so the request needs an Idempotency-Key header.",
                         )
-                        .remedy("one key names one rental forever; retrying under it is safe"),
+                        .remedy("One key always names the same rental, so retrying with it is safe."),
                     )
                 })?;
             let hub = crate::hub::origin(&api, Some(&hub))?.to_string();
@@ -2055,7 +2054,7 @@ pub(crate) struct LogQuery {
 /// Calcifer's own log, `calcifer` on `local`, as a machine's: its whole lines, or followed as it is written, across a rotation.
 async fn calcifer_log(api: &Arc<Api>, name: &str, query: LogQuery, headers: &HeaderMap) -> Result<Response, Refusal> {
     if !name.eq_ignore_ascii_case("local") {
-        let said = format!("{name} keeps no Calcifer log: Calcifer is this computer's");
+        let said = format!("{name} has no Cozy log. Only this computer has one.");
         return Err(Refusal(Error::new(Kind::Usage, "log_not_kept", said).next("cozy machine logs local calcifer")));
     }
     let home = api.machines.hubs.home();
@@ -2119,7 +2118,7 @@ pub(crate) async fn logs(
             return Err(Refusal(Error::new(
                 Kind::NotFound,
                 "machine_log_unknown",
-                format!("machines keep no log {other:?}: tensord, tensorfs or memory, and local calcifer"),
+                format!("Machines have no {other:?} log. Ask for tensord, tensorfs or memory, or calcifer on local."),
             )));
         }
     };
@@ -2382,8 +2381,8 @@ pub(crate) fn valid_name(name: &str) -> Result<(), Error> {
             Kind::Usage,
             "machine_name_invalid",
             format!(
-                "{name:?} is not a machine name: 1-32 lowercase letters, digits and hyphens, a \
-                 letter first, and not local, any or new"
+                "{name:?} can't be a machine name. Use 1-32 lowercase letters, digits and hyphens, \
+                 starting with a letter, and not local, any or new."
             ),
         ))
     }
@@ -2419,7 +2418,7 @@ pub(crate) fn signer(path: &Path) -> Result<SigningKey, Error> {
             Error::new(
                 Kind::Credential,
                 "key_unreadable",
-                format!("cannot read the signing key {}", path.display()),
+                format!("Cozy can't read the signing key {}.", path.display()),
             )
         })
 }
@@ -2438,9 +2437,9 @@ fn log_refusal(name: &str, log: MachineLog, e: LinkError) -> Error {
         LinkError::NotFound if log == MachineLog::Tensord => Error::new(
             Kind::NotFound,
             "machine_log_unsupported",
-            format!("{name}'s TensorD keeps no log of its own"),
+            format!("{name}'s TensorD doesn't keep a log of its own."),
         )
-        .remedy("its tensorfs and memory logs read")
+        .remedy("Its tensorfs and memory logs are there.")
         .next(format!("cozy machine logs {name} tensorfs")),
         e => refusal(name, e),
     }
@@ -2464,7 +2463,7 @@ pub(crate) fn refusal(name: &str, e: LinkError) -> Error {
             "machine_unauthorized",
             format!("{name}: {message}"),
         )
-        .remedy("on that computer: cozy machine authorize <the `controller key` here>")
+        .remedy("Authorize this computer's key on that computer, then try again.")
         .next("cozy machine show local"),
         LinkError::Released(message) => Error::new(
             Kind::Unavailable,
@@ -2475,7 +2474,7 @@ pub(crate) fn refusal(name: &str, e: LinkError) -> Error {
         LinkError::NoRun | LinkError::NotFound => Error::new(
             Kind::NotFound,
             "not_found",
-            format!("{name} has no such thing"),
+            format!("{name} doesn't have that."),
         )
         .next(format!("cozy machine show {name}")),
         LinkError::Unreachable(message) => Error::new(
@@ -2490,15 +2489,15 @@ pub(crate) fn refusal(name: &str, e: LinkError) -> Error {
         LinkError::Unanswered(message) => Error::new(
             Kind::Unavailable,
             "machine_unanswered",
-            format!("{name} has not answered: {message}"),
+            format!("{name} hasn't answered: {message}"),
         )
         .next(format!("cozy machine show {name}")),
     }
 }
 
 fn ended_refusal(name: &str, reason: &str) -> Error {
-    Error::new(Kind::Conflict, "machine_ended", format!("{name} has ended: {reason}"))
-        .remedy("`--on new` rents a machine, or name another")
+    Error::new(Kind::Conflict, "machine_ended", format!("{name} has ended ({reason})."))
+        .remedy("Run it on another machine, or rent a new one.")
         .next("cozy machine ls")
 }
 
@@ -2510,14 +2509,14 @@ fn broken_in(name: &str, seen: &Seen) -> Option<v1::Broken> {
 }
 
 pub(crate) fn broken_refusal(name: &str, reason: &str) -> Error {
-    Error::new(Kind::Unavailable, "machine_broken", format!("{name} is broken: {reason}"))
-        .remedy("it takes no work and a rental is released; `--on new` rents a machine, or name another")
+    Error::new(Kind::Unavailable, "machine_broken", format!("{name} isn't working ({reason})."))
+        .remedy("It won't take work, and a rental ends. Run it on another machine, or rent a new one.")
         .next(format!("cozy machine show {name}"))
 }
 
 fn offline_refusal(name: &str, reason: &str) -> Error {
-    Error::new(Kind::Unavailable, "machine_offline", format!("{name} is offline: {reason}"))
-        .remedy("it returns if its provider resumes it; `--on new` rents a machine, or name another")
+    Error::new(Kind::Unavailable, "machine_offline", format!("{name} is offline ({reason})."))
+        .remedy("It comes back if its provider resumes it. Until then, run it on another machine, or rent a new one.")
         .next(format!("cozy machine show {name}"))
 }
 
@@ -2526,7 +2525,7 @@ fn local_refusal() -> Error {
     Error::new(
         Kind::Validation,
         "machine_local",
-        "`local` is this computer's machine: it starts when used and stops after 15 minutes idle",
+        "This computer's machine starts when a run needs it and stops after 15 minutes idle, so there's nothing to end.",
     )
     .next("cozy machine show local")
 }
@@ -2538,9 +2537,9 @@ fn ended_by_name(text: &str, ended: &[MachineRow]) -> Error {
     let mut error = Error::new(
         Kind::NotFound,
         "machine_name_ended",
-        format!("no live machine is named {text:?}; the one that was has ended"),
+        format!("The machine named {text:?} has ended."),
     )
-    .remedy("name an ended machine by its rental id");
+    .remedy("Use its rental id to look at an ended machine.");
     for id in ids {
         error = error.next(format!("cozy machine show {id}"));
     }
@@ -2555,9 +2554,9 @@ fn ambiguous(text: &str, found: &[MachineRow]) -> Error {
     let mut error = Error::new(
         Kind::Conflict,
         "machine_name_ambiguous",
-        format!("{} live machines are named {text:?}: {}", named.len(), named.join(", ")),
+        format!("{} machines are named {text:?}: {}.", named.len(), named.join(", ")),
     )
-    .remedy("name one by its rental id");
+    .remedy("Use a rental id to pick one.");
     for id in named.iter().filter(|id| !id.contains(' ')) {
         error = error.next(format!("cozy machine show {id}"));
     }
@@ -2568,7 +2567,7 @@ pub(crate) fn not_found(text: &str) -> Error {
     Error::new(
         Kind::NotFound,
         "machine_not_found",
-        format!("no machine is named {text:?}"),
+        format!("There's no machine named {text:?}."),
     )
     .next("cozy machine ls")
 }
@@ -2577,11 +2576,11 @@ pub(crate) fn not_found(text: &str) -> Error {
 fn exporting(owed: &[crate::outputs::Owed]) -> String {
     let (moved, length) = (owed.iter()).fold((0, 0), |(m, l), o| (m + o.moved, l + o.length));
     let outputs = match owed.len() {
-        1 => "1 output".to_owned(),
-        n => format!("{n} outputs"),
+        1 => "1 result".to_owned(),
+        n => format!("{n} results"),
     };
     format!(
-        "{outputs} of its runs have not landed on this computer yet: {} of {} in place",
+        "{outputs} from its runs still downloading to this computer, {} of {}",
         crate::bytes(moved as f64),
         crate::bytes(length as f64)
     )

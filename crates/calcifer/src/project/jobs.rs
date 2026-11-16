@@ -233,7 +233,7 @@ impl Jobs {
                 match (unchanged, retimed.as_slice()) {
                     (true, _) => why.push("(unchanged)".to_owned()),
                     (false, []) => {}
-                    (false, takes) => why.push(format!("it retimes {} to {fps} fps", takes.join(", "))),
+                    (false, takes) => why.push(format!("{} retimed to {fps} fps", takes.join(", "))),
                 }
                 if !without.is_empty() {
                     why.push(format!("(without {})", without.join("; ")));
@@ -519,7 +519,7 @@ impl Live {
             job.state = if run.started_at_ms.is_some() { JobState::Running } else { JobState::Waiting };
             job.took_ms = Some(self.earlier_ms + run.execution_ms.unwrap_or(0));
             job.why = (run.status == Status::Canceled).then(|| CANCELED.to_owned());
-            (job.fraction, job.detail, job.stage) = (None, None, Some("saving its file here".to_owned()));
+            (job.fraction, job.detail, job.stage) = (None, None, Some("saving the result".to_owned()));
             (self.landed, job.preview) = (None, None);
             return;
         }

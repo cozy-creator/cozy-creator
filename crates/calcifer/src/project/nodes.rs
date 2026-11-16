@@ -247,8 +247,8 @@ fn named(written: &Written, asked: &str) -> Result<(String, Option<u32>), Error>
     let base = asked.rsplit_once('.').filter(|(_, number)| number.parse::<u32>().is_ok()).map_or(asked, |(name, _)| name);
     let near = node::near(base, written.boxes.iter().map(|held| held.name.as_str()));
     let said = match near {
-        Some(near) => format!("the project has no node {base}: did you mean {near}?"),
-        None => format!("the project has no node {base}"),
+        Some(near) => format!("There's no box called {base} in this project. Did you mean {near}?"),
+        None => format!("There's no box called {base} in this project."),
     };
     Err(Error::new(Kind::NotFound, "node_unknown", said).next("cozy get"))
 }

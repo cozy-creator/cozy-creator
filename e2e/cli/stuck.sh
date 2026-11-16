@@ -221,7 +221,7 @@ t0=$SECONDS code=0
 timeout 420 cozy --json machine show local > "$OUT/stuck-silent.json" 2>&1 || code=$?
 took=$((SECONDS - t0))
 grep -q '"machine_not_answering"' "$OUT/stuck-silent.json" || check "stuck: a hung start (exit $code, ${took} s) isn't refused machine_not_answering: $(tail -c 400 "$OUT/stuck-silent.json")"
-grep -q "local's TensorD isn't answering" "$OUT/stuck-silent.json" || check "stuck: the refusal doesn't say local's TensorD isn't answering"
+grep -q "This computer's TensorD isn't answering" "$OUT/stuck-silent.json" || check "stuck: the refusal doesn't say this computer's TensorD isn't answering"
 grep -q 'cozy machine logs local' "$OUT/stuck-silent.json" || check "stuck: the refusal names no next command: $(tail -c 300 "$OUT/stuck-silent.json")"
 [ "$took" -ge 290 ] && [ "$took" -le 350 ] || check "stuck: the hung start was refused after ${took} s (the deadline: 300 s)"
 t0=$SECONDS

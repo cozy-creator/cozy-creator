@@ -1295,13 +1295,15 @@ fn yes() -> bool {
     true
 }
 
-/// A duration as a clock reads: `41s`, `14m`, `1h12m`.
+/// A duration as Paul writes it: `41s`, `3m 12s`, `2h 5m`.
 pub fn clock(ms: i64) -> String {
     let s = (ms / 1000).max(0);
-    match s {
-        0..60 => format!("{s}s"),
-        60..3600 => format!("{}m", s / 60),
-        _ => format!("{}h{:02}m", s / 3600, s % 3600 / 60),
+    match (s / 3600, s % 3600 / 60, s % 60) {
+        (0, 0, s) => format!("{s}s"),
+        (0, m, 0) => format!("{m}m"),
+        (0, m, s) => format!("{m}m {s}s"),
+        (h, 0, _) => format!("{h}h"),
+        (h, m, _) => format!("{h}h {m}m"),
     }
 }
 
@@ -1468,7 +1470,7 @@ impl MachineStatus {
         let heat = self.heat.iter().map(|hot| {
             let replayed = if hot.replayed { " (replayed readings)" } else { "" };
             format!(
-                "GPU {} ran throttled for heat {:.0}% of its last run ({} °C, {} of {} MHz){replayed}",
+                "GPU {} slowed down from heat for {:.0}% of its last run ({} °C, {} of {} MHz){replayed}",
                 hot.gpu,
                 hot.share * 100.0,
                 hot.temperature_max_c,
@@ -1476,7 +1478,7 @@ impl MachineStatus {
                 hot.sm_mhz_limit
             )
         });
-        let kernels = (!self.runtime_kernels.is_empty()).then(|| format!("its Runtime {} serves no native kernels: {}", self.runtime, self.runtime_kernels));
+        let kernels = (!self.runtime_kernels.is_empty()).then(|| format!("Its Runtime {} has no native kernels: {}", self.runtime, self.runtime_kernels));
         heat.chain(kernels).collect()
     }
 
@@ -1495,8 +1497,8 @@ pub fn kernel_less_runtime(machine: &str, what: &str, commit: Option<&str>) -> c
         crate::error::Kind::Validation,
         "runtime_without_kernels",
         format!(
-            "{what} carries none of the Runtime's kernels: {machine}'s GPUs would run slower GEMMs and no FlashAttention-3. \
-             The dev-build of {commit} makes its wheel with them (artifact cozy-runtime-<sha>, the manylinux wheel)"
+            "{what} doesn't include the Runtime's kernels, so {machine}'s GPUs would run slower GEMMs and no FlashAttention-3. \
+             The dev-build of {commit} makes a wheel that has them (artifact cozy-runtime-<sha>, the manylinux wheel)."
         ),
     )
     .next(format!("gh workflow run dev-build.yaml -R cozy-creator/cozy-runtime -f ref={commit}"))
@@ -2406,9 +2408,10 @@ pub fn local_usable(machine: &str) -> Result<(), crate::error::Error> {
     if !machine.eq_ignore_ascii_case("local") || os.local_inference() {
         return Ok(());
     }
-    let message = format!("local runs aren't available on {os} yet");
+    let message = format!("This computer can't run models on {os} yet.");
     Err(crate::error::Error::new(crate::error::Kind::Unavailable, "local_unavailable", message)
-        .remedy("add `--on new` to rent a Linux GPU, or `--on <machine>` for one you have")
+        .remedy("Rent a Linux GPU, or run it on a machine you already have.")
+        .next("cozy run … --on new")
         .next("cozy machine rent"))
 }
 
@@ -2430,7 +2433,7 @@ pub fn machine_set(set: &[On]) -> Result<(), crate::error::Error> {
     if set.len() < 2 || set.iter().all(|on| matches!(on, On::Machine(_))) {
         return Ok(());
     }
-    let said = format!("{} names machines: `any` and `new` stand alone", set.iter().map(On::to_string).collect::<Vec<_>>().join(","));
+    let said = format!("`{}` mixes machine names with `any` or `new`. List machines by name, or use `any` or `new` on its own.", set.iter().map(On::to_string).collect::<Vec<_>>().join(","));
     Err(crate::error::Error::new(crate::error::Kind::Usage, "on_set", said).next("cozy machine ls"))
 }
 
@@ -2482,7 +2485,7 @@ pub fn gpu_count(text: &str) -> Result<u32, String> {
                 .into(),
         ),
         Ok(n) => Ok(n),
-        Err(_) => Err(format!("{text:?} is not a number of GPUs")),
+        Err(_) => Err(format!("{text:?} isn't a number of GPUs")),
     }
 }
 

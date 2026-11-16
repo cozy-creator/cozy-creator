@@ -32,7 +32,7 @@ in_project "$P" --json run ls --limit 0 > "$OUT/fallback-rendered.json"
 J '[.runs[] | select(.kind == "call")] | length == 1 and .[0].machine == "local" and .[0].status == "completed"' "$OUT/fallback-rendered.json" \
   || check "fall back: the render sent to stand-e didn't run on local: $(jq -c '[.runs[] | {number, kind, machine, status}]' "$OUT/fallback-rendered.json")"
 said=$(status "$P" | jq -c '[.board.said[]? | .message]')
-J 'any(.[]; test("stand-e ended") and test("finishes soonest"))' <<< "$said" || check "fall back: the render didn't say stand-e ended: $said"
+J 'any(.[]; test("stand-e has ended") and test("finishes soonest"))' <<< "$said" || check "fall back: the render didn't say stand-e ended: $said"
 
 # A `cozy run` naming none in it goes there too.
 in_project "$P" --json run minimax-h3-tools/echo text=fallback > "$OUT/fallback-run.ndjson" 2> "$OUT/fallback-run.err" \

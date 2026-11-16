@@ -126,7 +126,7 @@ pub(super) async fn thumb(
         let lock = folder.lock().map_err(Refusal)?;
         let file = lock.files.get(&format!("sha256:{hex}")).filter(|file| folder.path(&file.path).is_file());
         let Some(file) = file else {
-            return Err(Refusal(Error::new(Kind::NotFound, "file_missing", format!("the project has no file {named}"))));
+            return Err(Refusal(Error::new(Kind::NotFound, "file_missing", format!("This project has no file {named}."))));
         };
         (file.field(), file.lasts_ms() as f64 / 1000.0, folder.path(&file.path))
     };
@@ -142,16 +142,16 @@ pub(super) async fn thumb(
         // Drawn next: `202 thumb_pending` now, which is no picture and no error, and the page hears `thumb` when it's there.
         let mut response = match ask(drawing, true) {
             true => {
-                let mut pending = Refusal(Error::new(Kind::NotFound, "thumb_pending", "this thumbnail is being made; the thumb event says when it's there")).into_response();
+                let mut pending = Refusal(Error::new(Kind::NotFound, "thumb_pending", "Cozy is still making this thumbnail. The thumb event says when it's ready.")).into_response();
                 *pending.status_mut() = StatusCode::ACCEPTED;
                 pending
             }
-            false => Refusal(Error::new(Kind::Validation, "thumb_failed", "ffmpeg can't draw this file")).into_response(),
+            false => Refusal(Error::new(Kind::Validation, "thumb_failed", "ffmpeg can't make a thumbnail of this file.")).into_response(),
         };
         response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
         return Ok(response);
     };
-    let unreadable = |e: std::io::Error| Refusal(Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", at.display())));
+    let unreadable = |e: std::io::Error| Refusal(Error::new(Kind::Unavailable, "project_io", format!("Cozy couldn't read {}: {e}.", at.display())));
     let opened = std::fs::File::open(&at).map_err(unreadable)?;
     let len = opened.metadata().map_err(unreadable)?.len();
     let mut response = crate::files::send(opened, len, media_type(&at), &format!("\"{name}\""), &headers).map_err(unreadable)?;
@@ -326,7 +326,7 @@ async fn make(host: Host, mut drawing: Drawing) -> Result<Option<PathBuf>, Error
         let _permit = permit;
         // The source path can disappear while waiting for FFmpeg. Only a successful draw is kept; a failed one is said by its drawer.
         crate::tools::quietly(|| draw(&ffmpeg, &ffprobe, &drawing, &dir, &name))
-            .map_err(|why| Error::new(Kind::Validation, "thumb_failed", format!("ffmpeg can't draw this file: {why}")))
+            .map_err(|why| Error::new(Kind::Validation, "thumb_failed", format!("ffmpeg can't make a thumbnail of this file: {why}.")))
     })
     .await
     .map_err(|e| Error::new(Kind::Internal, "thumb_failed", e.to_string()))?

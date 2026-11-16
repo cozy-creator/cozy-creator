@@ -38,7 +38,7 @@ fn tool_name(tool: &str) -> Option<String> {
 
 /// No box by that name: another writer may have renamed or deleted it, which a client hears of on its stream.
 fn own_lines(name: &str) -> Error {
-    Error::new(Kind::NotFound, "asset_unknown", format!("the project has no box {name}")).next("cozy status")
+    Error::new(Kind::NotFound, "asset_unknown", format!("There's no box called {name} in this project.")).next("cozy status")
 }
 
 /// What `tool` makes, as the project last read it, else as reading it now says: none when it can't be read, which refuses nothing.
@@ -86,7 +86,7 @@ pub(super) struct NewReady {
 pub(super) async fn ready_new(api: &Arc<Api>, folder: &folder::Folder, asked: &mut NewAsset) -> Result<NewReady, Error> {
     let hint = format::node_kind(asked.fields.get(format::NODE_KIND))?.map(str::to_owned);
     if asked.kind.as_deref().is_some_and(|kind| !format::KINDS.contains(&kind) && kind != format::TEXT) {
-        return Err(Error::new(Kind::Validation, "asset_kind", "kind must be text, image, video or audio"));
+        return Err(Error::new(Kind::Validation, "asset_kind", "A box's kind must be text, image, video or audio."));
     }
     if let Some(name) = asked.name.as_deref().filter(|_| asked.exact) {
         format::new_name(name)?;
@@ -95,7 +95,7 @@ pub(super) async fn ready_new(api: &Arc<Api>, folder: &folder::Folder, asked: &m
     let declared = asked.kind.clone().or_else(|| hint.as_deref().map(format::node_media).map(str::to_owned));
     let text_asset = no_tool && declared.as_deref().is_none_or(|kind| kind == format::TEXT);
     if text_asset && !asked.fields.contains_key(format::TEXT) {
-        return Err(Error::new(Kind::Validation, "asset_says_nothing", "an asset needs a tool, text, or a media kind").remedy("name a tool, set `fields.text`, or choose kind image, video or audio"));
+        return Err(Error::new(Kind::Validation, "asset_says_nothing", "A box needs a tool, some text, or a kind of media.").remedy("Pick a tool, write some text, or make it an image, video or audio box."));
     }
     let plain = (!no_tool).then(|| format::plain_tool(&asked.tool, folder));
     let intrinsic_edit = plain.as_deref() == Some(tool::EDIT);
@@ -162,7 +162,7 @@ pub(super) async fn copy(
 ) -> Result<(StatusCode, Json<Copied>), Refusal> {
     let asked: Copies = parse(&body?)?;
     if asked.boxes.is_empty() {
-        return Err(Refusal(Error::new(Kind::Validation, "copies_none", "name a box to copy")));
+        return Err(Refusal(Error::new(Kind::Validation, "copies_none", "Name a box to copy.")));
     }
     let project = api.projects.get(&api, &id)?;
     let id = project.id.clone();
@@ -248,7 +248,7 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
                 let on = [crate::runs::default_on(&api)];
                 let package = Host::new(&api).package(&hub, &doc.target(i), &project.folder.dir, &on, super::host::Wait::Plain).await?;
                 let function = package.maker()?.map(|maker| maker.function).unwrap_or_default();
-                let callable = package.callable(&function).ok_or_else(|| Error::new(Kind::NotFound, "callable_unknown", format!("{} has no function {function}", package.name)))?;
+                let callable = package.callable(&function).ok_or_else(|| Error::new(Kind::NotFound, "callable_unknown", format!("{} has no function called {function}.", package.name)))?;
                 let (fields, reserved, stand) = (doc.inputs_of(i), package.reserved(), &model.stand);
                 // A mention of nothing is said, as a render would refuse it, and the rest of the call stands.
                 let missing = doc.missing_inputs(i, &reserved, lock);
@@ -275,7 +275,7 @@ const READ_MOST: usize = 256;
 pub(super) async fn read_many(State(api): State<Arc<Api>>, Path(id): Path<String>, body: Result<Bytes, BytesRejection>) -> Result<Json<AssetsRead>, Refusal> {
     let asked: ReadAssets = parse(&body?)?;
     if asked.names.len() > READ_MOST {
-        return Err(Refusal(Error::new(Kind::Validation, "read_too_many", format!("{} boxes named, over {READ_MOST}", asked.names.len())).remedy("read the project whole")));
+        return Err(Refusal(Error::new(Kind::Validation, "read_too_many", format!("You named {} boxes, more than the {READ_MOST} Cozy reads at once.", asked.names.len())).remedy("Read the whole project instead.")));
     }
     let project = api.projects.get(&api, &id)?;
     let model = model::of(&api, &project).await.map_err(Refusal)?;
@@ -388,13 +388,13 @@ pub(super) fn patched(folder: &folder::Folder, name: &str, asked: &AssetPatch, r
         };
         let written = folder.written()?;
         if asked.tool.is_none() && validated_tool.as_ref().is_some_and(|target| written.get(&name).and_then(|held| held.get("tool")).and_then(Value::as_str) != Some(target.as_str())) {
-            return Err(Error::new(Kind::Conflict, "asset_changed", format!("{name}'s tool changed while its model choices were checked")).remedy("read the node again before choosing its models"));
+            return Err(Error::new(Kind::Conflict, "asset_changed", format!("{name}'s tool changed while Cozy was checking its models.")).remedy("Reload the box, then choose its models again."));
         }
         let was = written.get(&name).ok_or_else(|| own_lines(&name))?.etag();
         let mut fields = asked.fields.clone();
         // Words typed on an older project merge with what's been written since, by character (cl-904): each in its field as it is now.
         if let Some(typed) = &asked.typed {
-            let document = folder.document()?.ok_or_else(|| Error::new(Kind::Validation, "project_crdt", "the canonical project document is missing"))?;
+            let document = folder.document()?.ok_or_else(|| Error::new(Kind::Validation, "project_crdt", "This project's document is missing."))?;
             let held = written.get(&name).ok_or_else(|| own_lines(&name))?;
             for (path, splices) in &typed.fields {
                 let (field, within) = path.split_once('.').map_or((path.as_str(), None), |(field, within)| (field, Some(within)));
@@ -416,7 +416,7 @@ pub(super) fn patched(folder: &folder::Folder, name: &str, asked: &AssetPatch, r
                             _ => None,
                         });
                         let Some(leaf) = leaf else {
-                            return Err(Error::new(Kind::Conflict, "words_moved", format!("{name} no longer has {path}")).remedy("read it again"));
+                            return Err(Error::new(Kind::Conflict, "words_moved", format!("{name} no longer has {path}.")).remedy("Reload the box and try again."));
                         };
                         *leaf = words;
                         fields.insert(field.to_owned(), value);
@@ -439,8 +439,8 @@ pub(super) fn patched(folder: &folder::Folder, name: &str, asked: &AssetPatch, r
             let next = format::node_kind(asked.fields.get(format::NODE_KIND))?.unwrap_or(&current);
             let plain = format::plain_tool(tool, folder);
             if let Some(makes) = incoming.as_deref().filter(|kind| *kind != format::node_media(next)) {
-                let mut refused = Error::new(Kind::Validation, "asset_tool_kind", format!("this {next} node cannot use a model that produces {makes}"))
-                    .remedy(format!("Choose a model that matches the node's media type, or put {tool} on a new {makes} node that mentions <{name}>"));
+                let mut refused = Error::new(Kind::Validation, "asset_tool_kind", format!("This {next} box can't use a model that makes {makes}."))
+                    .remedy(format!("Choose a model that makes {next}, or put {tool} on a new {makes} box that mentions <{name}>."));
                 refused.metadata = Some(serde_json::json!({ "makes": makes, "node": next }));
                 return Err(refused);
             }
@@ -548,7 +548,7 @@ pub(super) async fn delete(State(api): State<Arc<Api>>, Path((id, name)): Path<(
 /// Asset `name` and its row gone, as `DELETE` has it, in one transaction.
 pub(super) fn deleted(api: &Arc<Api>, project: &Arc<Project>, id: &str, name: &str) -> Result<AssetDeleted, Refusal> {
     let folder = &project.folder;
-    let unknown = || Error::new(Kind::NotFound, "asset_unknown", format!("the project has nothing named {name}")).next("cozy status");
+    let unknown = || Error::new(Kind::NotFound, "asset_unknown", format!("There's no box called {name} in this project.")).next("cozy status");
     stop_at_machines(api, project, name);
     let gone = folder.act(|| {
         // Its name and what it holds approved, from its box alone: a Doc of the whole project took a delete of one of 5,000 boxes 287 ms.
@@ -663,8 +663,8 @@ pub(super) async fn patch_version(State(api): State<Arc<Api>>, Path((id, name, n
     let asked: VersionPatch = parse(&body?)?;
     let length = serde_json::to_vec(&asked.metadata).map_or(usize::MAX, |bytes| bytes.len());
     if length > super::METADATA_MAX {
-        let said = format!("metadata is {length} bytes, over {}", super::METADATA_MAX);
-        return Err(Refusal(Error::new(Kind::Validation, "metadata_too_large", said).remedy("keep it to a few small keys")));
+        let said = format!("The metadata is {length} bytes, more than the {} allowed.", super::METADATA_MAX);
+        return Err(Refusal(Error::new(Kind::Validation, "metadata_too_large", said).remedy("Keep it to a few small keys.")));
     }
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
@@ -683,7 +683,7 @@ pub(super) async fn patch_version(State(api): State<Arc<Api>>, Path((id, name, n
             let lock = folder.lock()?;
             let noun = noun(&doc, &lock, i);
             let version = lock.asset(&name).and_then(|held| held.version(number)).ok_or_else(|| no_version(&lock, &name, noun, number))?;
-            let output = version.main_output().cloned().ok_or_else(|| Error::new(Kind::NotFound, "version_unknown", format!("{name}'s {noun} {number} has no file")).next("cozy status --full"))?;
+            let output = version.main_output().cloned().ok_or_else(|| Error::new(Kind::NotFound, "version_unknown", format!("{name}'s {noun} {number} has no file.")).next("cozy status --full"))?;
             let before = version.metadata.get(&output).cloned().unwrap_or_default();
             if before != after {
                 folder.update_lock(|lock| set_metadata(lock, &name, number, &output, after.clone()))?;
@@ -711,18 +711,18 @@ pub(super) fn set_metadata(lock: &mut folder::Lock, name: &str, number: u32, out
 fn no_version(lock: &folder::Lock, name: &str, noun: &str, number: u32) -> Error {
     let key = name_key(name);
     if lock.pending.values().any(|pending| name_key(&pending.asset) == key && pending.version.number == number) {
-        let said = format!("{name}'s {noun} {number} is still being made: canceling stops what it would spend");
+        let said = format!("{name}'s {noun} {number} is still being made. Cancel it to stop it costing anything more.");
         return Error::new(Kind::Conflict, "version_running", said).next("cozy open");
     }
     let held = lock.asset(name);
     if held.is_some_and(|held| held.discarded.iter().any(|version| version.number == number)) {
-        let said = format!("{name}'s {noun} {number} is already discarded");
+        let said = format!("{name}'s {noun} {number} was already discarded.");
         return Error::new(Kind::NotFound, "version_unknown", said).next("cozy open");
     }
     let numbers: Vec<String> = held.into_iter().flat_map(|held| &held.versions).map(|version| version.number.to_string()).collect();
     let said = match numbers.as_slice() {
-        [] => format!("{name} has no {noun} yet"),
-        numbers => format!("{name} has no {noun} {number}: it has {}", numbers.join(", ")),
+        [] => format!("{name} has no {noun} yet."),
+        numbers => format!("{name} has no {noun} {number}. It has {}.", numbers.join(", ")),
     };
     Error::new(Kind::NotFound, "version_unknown", said).next("cozy status --full")
 }
@@ -755,7 +755,7 @@ async fn moved(api: &Arc<Api>, project: &Arc<Project>, name: String, number: u32
 }
 
 fn taken(name: &str) -> Error {
-    Error::new(Kind::Conflict, "asset_exists", format!("the project has a {name} again, so this one stays deleted")).remedy("rename that one, then undo again").next("cozy open")
+    Error::new(Kind::Conflict, "asset_exists", format!("There's a new {name} in the project now, so this one stays deleted.")).remedy("Rename the new one, then undo again.").next("cozy open")
 }
 
 /// A box back as `removed` took it, its versions with it, and with `at` its row, in one transaction: its new ETag.

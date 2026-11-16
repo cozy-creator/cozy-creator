@@ -31,7 +31,7 @@ pub(crate) struct Wanted {
 impl Wanted {
     /// What a quote or an estimate says of it.
     pub(crate) fn said(&self) -> String {
-        format!("{} needs cozy {}: a run of it updates this cozy ({}) first", self.needed_by, self.to, crate::update::this_release())
+        format!("{} needs cozy {}, so running it updates this cozy ({}) first.", self.needed_by, self.to, crate::update::this_release())
     }
 }
 
@@ -43,7 +43,7 @@ pub(crate) async fn update(api: &Arc<Api>, wanted: &Wanted) -> Result<(Run, Note
     let own = crate::update::this_release();
     let download = api.machines.download_url.as_deref();
     let latest = api::update::release(&api::update::dir(download, None)?, None).await.map_err(|e| {
-        let said = format!("{} needs cozy {}, and the Latest cozy release couldn't be read: {}", wanted.needed_by, wanted.to, e.message);
+        let said = format!("{} needs cozy {}, and Cozy couldn't check the latest release: {}", wanted.needed_by, wanted.to, e.message);
         Error::new(Kind::Unavailable, "cozy_unreachable", said).next("cozy update")
     })?;
     let to = latest.version;
@@ -51,10 +51,10 @@ pub(crate) async fn update(api: &Arc<Api>, wanted: &Wanted) -> Result<(Run, Note
         return Err(major_refusal(&wanted.needed_by, &to));
     }
     if newer(&wanted.to, &to) || !newer(&to, own) {
-        let said = format!("{} needs cozy {}, and the Latest release is {to}", wanted.needed_by, wanted.to);
+        let said = format!("{} needs cozy {}, but the latest release is {to}.", wanted.needed_by, wanted.to);
         return Err(Error::new(Kind::Conflict, "cozy_not_released", said).next("cozy update"));
     }
-    let note = Note { level: NoteLevel::Info, message: format!("updating cozy {own} → {to} for {}", wanted.needed_by) };
+    let note = Note { level: NoteLevel::Info, message: format!("Updating cozy from {own} to {to} for {}.", wanted.needed_by) };
     let calcifer = &api.calcifer;
     let key = format!("cozy-update-{to}-{}", api.started_ms);
     let store = |e: crate::store::StoreError| Error::internal("calcifer_store", e.to_string());
@@ -63,8 +63,8 @@ pub(crate) async fn update(api: &Arc<Api>, wanted: &Wanted) -> Result<(Run, Note
         return match run.status {
             Status::Failed | Status::Canceled => Err(failure(&run)),
             // Installed, this Calcifer restarts on it once nothing else is going: asked again of the next.
-            Status::Completed => Err(Error::new(Kind::Unavailable, api::error::STOPPING, format!("cozy {to} is installed: Calcifer restarts on it once nothing else is going"))
-                .remedy("ask again once it is back; nothing was carried out")),
+            Status::Completed => Err(Error::new(Kind::Unavailable, api::error::STOPPING, format!("cozy {to} is installed. Cozy restarts on it once nothing else is running."))
+                .remedy("Try again once it's back.")),
             _ => Ok((run, note)),
         };
     }
@@ -84,7 +84,7 @@ fn failure(run: &Run) -> Error {
     let kept = run.result.as_ref().and_then(|result| serde_json::from_value::<Error>(result["error"].clone()).ok());
     kept.unwrap_or_else(|| {
         let reason = run.reason.clone().unwrap_or_default();
-        let error = Error::new(Kind::Unavailable, "cozy_update_failed", format!("cozy's update didn't finish: {}", reason.message));
+        let error = Error::new(Kind::Unavailable, "cozy_update_failed", format!("Cozy's update didn't finish: {}", reason.message));
         reason.next.into_iter().fold(error, |error, next| error.next(next))
     })
 }
@@ -104,7 +104,7 @@ pub(crate) async fn run(api: &Arc<Api>, ask: CozyUpdate, here: &Here) -> Result<
     let download = api.machines.download_url.as_deref();
     let dir = api::update::dir(download, Some(&ask.to))?;
     let latest = api::update::release(&dir, Some(&ask.to)).await.map_err(|e| {
-        Error::new(Kind::Unavailable, "cozy_unreachable", format!("cozy {} for {} couldn't be read: {}", ask.to, ask.needed_by, e.message)).next("cozy update")
+        Error::new(Kind::Unavailable, "cozy_unreachable", format!("Cozy couldn't download cozy {} for {}: {}", ask.to, ask.needed_by, e.message)).next("cozy update")
     })?;
     let binary = installed(&api.machines.home)?;
     let installed = api::update::install(&dir, download.is_some(), &latest, &binary, &mut |_| {}).await.map_err(by_hand)?;
@@ -136,7 +136,7 @@ pub(crate) async fn run(api: &Arc<Api>, ask: CozyUpdate, here: &Here) -> Result<
 /// Only a cozy of a new major runs `needed_by`: cozy doesn't update itself across one (Paul, 11-13).
 pub(crate) fn major_refusal(needed_by: &str, cozy: &str) -> Error {
     let own = crate::update::this_release();
-    let said = format!("{needed_by} needs cozy {cozy}, a new major: cozy {own} doesn't update itself across one");
+    let said = format!("{needed_by} needs cozy {cozy}, a new major version, and cozy {own} doesn't update itself across major versions. Install it yourself.");
     Error::new(Kind::Conflict, "cozy_major_needed", said).next("cozy update")
 }
 
@@ -155,6 +155,6 @@ pub(crate) fn installed(home: &Home) -> Result<PathBuf, Error> {
 pub(crate) fn updated(e: platform::Error) -> Error {
     match e {
         platform::Error::Updated { .. } => Error::new(Kind::Unavailable, "cozy_updated", e.to_string()).next("cozy restart"),
-        other => Error::new(Kind::Unavailable, "cozy_unreadable", format!("this cozy's binary: {other}")),
+        other => Error::new(Kind::Unavailable, "cozy_unreadable", format!("Cozy couldn't read its own program file: {other}.")),
     }
 }

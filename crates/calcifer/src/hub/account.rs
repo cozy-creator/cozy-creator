@@ -178,7 +178,7 @@ pub(super) async fn send_code(
     let email = match (&session, email) {
         (Some(session), _) => session.key().email.clone(),
         (None, Some(email)) => email.to_owned(),
-        (None, None) => return Err(refuse(Kind::Usage, "email_required", "a code is sent to the account's email: name it")),
+        (None, None) => return Err(refuse(Kind::Usage, "email_required", "Enter your account's email so Cozy can send you a code.")),
     };
     let label = if ask.purpose == Purpose::Export { EXPORT_LABEL } else { LABEL };
     let enrollment = match Enrollment::begin(&anonymous, &email, label, session.as_ref().map(UserSession::key)).await {
@@ -212,7 +212,7 @@ pub(super) async fn prove(
 ) -> Result<Json<Proven>, Refusal> {
     let CodeAnswer { code } = parse(&body?)?;
     let waiting = api.codes.answers(&id).ok_or_else(|| {
-        Refusal(Error::not_found("code_not_found", format!("no code {id} is waiting")).remedy("ask for another"))
+        Refusal(Error::not_found("code_not_found", "Cozy isn't waiting for that code anymore.").remedy("Ask for a new code."))
     })?;
     let (hub, purpose) = (waiting[0].hub.clone(), waiting[0].purpose);
     let anonymous = reader(&api, &hub)?.anonymous();
@@ -227,7 +227,7 @@ pub(super) async fn prove(
         }
     }
     Err(Refusal(
-        Error::new(Kind::Validation, "code_wrong", "that code isn't right").remedy("use the code from your latest email, or ask for another"),
+        Error::new(Kind::Validation, "code_wrong", "That code isn't right.").remedy("Use the code from your latest email, or ask for another."),
     ))
 }
 
@@ -241,10 +241,10 @@ pub(super) async fn step(
     let CodeStep { path, body } = parse(&body?)?;
     let plain = |segment: &str| !segment.is_empty() && segment.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
     if !path.split('/').all(plain) {
-        return Err(refuse(Kind::Validation, "step_path_invalid", format!("{path:?} isn't a path under AuthKit's mount")));
+        return Err(refuse(Kind::Validation, "step_path_invalid", format!("{path:?} isn't a sign-in step Cozy can send.")));
     }
     let (pending, code) = api.codes.stepping(&id).ok_or_else(|| {
-        Refusal(Error::not_found("code_not_found", format!("no code {id} waits on a step")).remedy("ask for another"))
+        Refusal(Error::not_found("code_not_found", "Cozy isn't waiting on a sign-in step for that code.").remedy("Ask for a new code."))
     })?;
     let anonymous = reader(&api, &pending.hub)?.anonymous();
     anonymous.authkit_step(&path, &body).await.map_err(|e| refusal(&pending.hub, e))?;
@@ -313,7 +313,7 @@ pub(super) async fn install(
     let mut key = DeviceKey::read(key.as_bytes(), "the key").map_err(|e| refusal(&hub, e))?;
     key.installed = true;
     if key.hub.trim_end_matches('/') != hub.as_str().trim_end_matches('/') {
-        return Err(refuse(Kind::Usage, "key_other_hub", format!("the key is for {}, not {hub}", key.hub)));
+        return Err(refuse(Kind::Usage, "key_other_hub", format!("That key is for {}, not {hub}.", key.hub)));
     }
     keep(&api, &hub, &key, None)?;
     Ok(Json(enrolled(&api, &hub).await?))
@@ -355,17 +355,17 @@ async fn erase(api: &Api, hub: &Origin, everywhere: bool) -> Result<SignedOut, R
         if let Err(e) = std::fs::remove_file(&path)
             && e.kind() != std::io::ErrorKind::NotFound
         {
-            return Err(refuse(Kind::Internal, "key_unremovable", format!("{}: {e}", path.display())));
+            return Err(refuse(Kind::Internal, "key_unremovable", format!("Cozy couldn't delete this computer's key at {}: {e}.", path.display())));
         }
     }
     match revoked {
         Some(Err(e)) => {
             let code = refusal(hub, e).0.code;
-            out.notes.push(format!("{hub} did not confirm revoking this computer's key ({code}); it is erased here"));
+            out.notes.push(format!("The Hub at {hub} didn't confirm it revoked this computer's key ({code}), but Cozy deleted the key here."));
         }
         None => out.notes.push(
-            "this computer's key came from `cozy login --key`, so it is forgotten here but not revoked: \
-             another computer may sign in with it. `cozy logout --everywhere` revokes every key"
+            "This computer's key was added by hand, so Cozy forgot it here but didn't revoke it, and another computer \
+             can still sign in with it. Sign out everywhere to revoke every key."
                 .into(),
         ),
         Some(Ok(())) => {}

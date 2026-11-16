@@ -56,7 +56,7 @@ restart hot
 run_cell "$OUT" slow-hot "$TOOL/slow" --on "$M" 'seconds:=45' 'instructions=hot' > /dev/null 2>&1 || bad+=("the hot run did not complete")
 c=$(codes slow-hot) said=$(jq -r '.warnings[]? | select(.code == "slow_run") | .message' "$OUT/slow-hot.json" 2>/dev/null)
 [[ ,$c, == *,gpu_throttled,* && ,$c, == *,slow_run,* ]] || bad+=("warned [$c]")
-grep -q 'throttled for heat' <<< "$said" || bad+=("slow_run names no heat: $said")
+grep -q 'slowed down from heat' <<< "$said" || bad+=("slow_run names no heat: $said")
 heat=$("$CLI" --json machine show "$M" 2>/dev/null | jq -c '[.status.heat[]? | {gpu, share}]')
 [[ $heat == *'"gpu":0'* ]] || bad+=("machine show marks no hot GPU: $heat")
 "$CLI" machine ssh "$M" -- "sed -i '/gpu_samples = /d' ~/.cozy/config.toml" < /dev/null > /dev/null 2>&1

@@ -171,7 +171,7 @@ pub(crate) struct Keyed {
 }
 
 fn err(at: &Path, e: impl std::fmt::Display) -> Error {
-    Error::new(Kind::Unavailable, "project_db", format!("{}: {e}", at.display()))
+    Error::new(Kind::Unavailable, "project_db", format!("Cozy couldn't use {}: {e}.", at.display()))
 }
 
 /// A SQLite error at `at`. Its write lock held past the busy timeout is another program's open transaction: `file_held`, which the page says
@@ -186,7 +186,7 @@ fn sql(at: &Path, e: rusqlite::Error) -> Error {
 /// `at` held by another program: its write lock past the busy timeout.
 pub(crate) fn held(at: &Path) -> Error {
     let name = at.file_name().map_or_else(|| at.display().to_string(), |name| name.to_string_lossy().into_owned());
-    Error::new(Kind::Unavailable, "file_held", format!("{name} is open in another program")).remedy("close it, and save again")
+    Error::new(Kind::Unavailable, "file_held", format!("{name} is open in another program.")).remedy("Close it, then save again.")
 }
 
 fn json<T: serde::Serialize>(value: &T) -> String {
@@ -300,8 +300,8 @@ fn structure(path: &Path) -> Result<(), Error> {
     }
     // A 4 with the journal is a candidate's of 5, never released: refused as it is rather than read as #3198's 4.
     if user_version(&checked).map_err(e)? == 4 && has_table(&checked, "runs").map_err(e)? {
-        return Err(Error::new(Kind::Validation, "project_db_version", format!("{} has an unreleased schema 4 with a run journal; only current CRDT schema {VERSION} is supported", path.display()))
-            .remedy("Preserve this database. Create a new current-format project in a separate empty directory"));
+        return Err(Error::new(Kind::Validation, "project_db_version", format!("{} uses an unreleased format (schema 4 with a run journal), and Cozy only opens schema {VERSION}.", path.display()))
+            .remedy("Keep this database safe, and make a new project in a separate empty folder."));
     }
     keep_copy(path, &checked)?;
     drop(checked);
@@ -448,12 +448,12 @@ fn read_lock(conn: &Connection, at: &Path) -> Result<Lock, Error> {
 fn require_current(conn: &Connection, path: &Path) -> Result<(), Error> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).map_err(|error| sql(path, error))?;
     if !(UNNUMBERED..=VERSION).contains(&version) {
-        return Err(Error::new(Kind::Validation, "project_db_version", format!("{} has schema {version}; only current CRDT schema {VERSION} is supported", path.display()))
-            .remedy("Preserve this database. Create a new current-format project in a separate empty directory"));
+        return Err(Error::new(Kind::Validation, "project_db_version", format!("{} uses schema {version}, which this Cozy can't open (it opens up to schema {VERSION}).", path.display()))
+            .remedy("Keep this database safe, and make a new project in a separate empty folder."));
     }
     let format: i64 = conn.query_row("SELECT format FROM crdt_document WHERE id = 1", [], |row| row.get(0)).map_err(|error| sql(path, error))?;
     if format != crdt::FORMAT {
-        return Err(Error::new(Kind::Validation, "project_db_version", format!("{} has CRDT format {format}; only format {} is supported", path.display(), crdt::FORMAT)));
+        return Err(Error::new(Kind::Validation, "project_db_version", format!("{} uses format {format}, and Cozy only opens format {}.", path.display(), crdt::FORMAT)));
     }
     Ok(())
 }
@@ -759,7 +759,7 @@ fn read_rows(conn: &Connection, at: &Path) -> Result<(Stored, Digest), Error> {
     let mut digest = Digest::default();
     let text = |value: &Sql| match value {
         Sql::Text(text) => Ok(text.clone()),
-        other => Err(err(at, format!("a row holds {other:?} where it holds text"))),
+        other => Err(err(at, format!("a row has {other:?} where text belongs"))),
     };
     let mut read = |table: &str, query: &str| -> Result<Vec<Vec<Sql>>, Error> {
         let mut statement = conn.prepare(query).map_err(e)?;
@@ -792,7 +792,7 @@ fn read_rows(conn: &Connection, at: &Path) -> Result<(Stored, Digest), Error> {
     let mut canvas = BTreeMap::new();
     let number = |value: &Sql| match value {
         Sql::Real(x) => Ok(*x),
-        other => Err(err(at, format!("a canvas row holds {other:?} where it holds a number"))),
+        other => Err(err(at, format!("a canvas row has {other:?} where a number belongs"))),
     };
     for row in read(CANVAS, "SELECT key, name, x, y, w, seq, by FROM canvas")? {
         let w = match &row[4] { Sql::Null => None, w => Some(number(w)?) };
@@ -879,7 +879,7 @@ fn rows_differ(rows: &Stored, document: &Stored) -> Vec<String> {
 fn read_document(conn: &Connection, at: &Path) -> Result<crdt::Document, Error> {
     let (format, bytes, heads): (i64, Vec<u8>, String) = conn.query_row("SELECT format, snapshot, heads FROM crdt_document WHERE id = 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).map_err(|e| sql(at, e))?;
     if format != crdt::FORMAT {
-        return Err(err(at, format!("unknown CRDT storage format {format}; update cozy")));
+        return Err(err(at, format!("it uses storage format {format}, which this version of Cozy doesn't know. Update Cozy")));
     }
     crdt::Document::load(&bytes, &heads, at)
 }
@@ -895,7 +895,7 @@ fn save_document(tx: &Transaction<'_>, at: &Path, doc: &mut crdt::Document, seq:
             tx.execute("INSERT OR REPLACE INTO crdt_document (id, format, snapshot, heads) VALUES (1, ?1, ?2, ?3)", params![crdt::FORMAT, bytes, json(&heads)]).map_err(|e| sql(at, e))?;
         }
         Some(base) => {
-            let changed = || Error::new(Kind::Conflict, "project_changed", "the project changed while this edit was being committed; read it again and retry");
+            let changed = || Error::new(Kind::Conflict, "project_changed", "The project changed while this edit was being committed. Reload it and try again.");
             let token: String = tx.query_row("SELECT heads FROM crdt_document WHERE id = 1", [], |row| row.get(0)).map_err(|e| sql(at, e))?;
             if crdt::head_set(&token)? != base.iter().copied().collect() { return Err(changed()); }
             // Explicit heads avoid AutoCommit::load's empty save cursor. The result is
@@ -986,7 +986,7 @@ pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &
             let doc = read_document(&tx, at)?;
             let stands: std::collections::BTreeSet<String> = doc.heads().into_iter().collect();
             if !before.heads.is_empty() && stands != before.heads.iter().cloned().collect::<std::collections::BTreeSet<_>>() {
-                return Err(Error::new(Kind::Conflict, "project_changed", "the project changed while this edit was being committed; read it again and retry"));
+                return Err(Error::new(Kind::Conflict, "project_changed", "The project changed while this edit was being committed. Reload it and try again."));
             }
             doc
         }
@@ -1252,7 +1252,7 @@ pub(crate) fn create(path: &Path, stored: &Stored, ops: &[OpRow], asked: &[(Stri
 pub(super) fn create_with_key(path:&Path,stored:&Stored,ops:&[OpRow],asked:&[(String,String)],key:Option<&(String,String)>)->Result<(),Error> {
     OpenOptions::new().write(true).create_new(true).open(path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::AlreadyExists {
-            Error::new(Kind::Conflict, "project_db_exists", format!("{} already exists; preserve it and choose a fresh database path", path.display()))
+            Error::new(Kind::Conflict, "project_db_exists", format!("{} already exists. Keep it, and choose a new path for the database.", path.display()))
         } else { err(path, error) }
     })?;
     let mut conn = connect(path, false)?;

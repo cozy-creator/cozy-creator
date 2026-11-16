@@ -46,7 +46,7 @@ pub(crate) fn rc_version() -> bool {
 /// This very `cozy`, held as a file an update stages (`--tensord <path>`): what a machine of this computer's platform runs to be on
 /// this build when it has no release to fetch.
 async fn this_build() -> Result<DevBuild, Error> {
-    let unreadable = |e: std::io::Error| Error::new(Kind::Unavailable, "cozy_unreadable", format!("this cozy's binary: {e}"));
+    let unreadable = |e: std::io::Error| Error::new(Kind::Unavailable, "cozy_unreadable", format!("Cozy couldn't read its own program file: {e}."));
     let exe = platform::exe::running().map_err(crate::cozy::updated)?;
     let digest = tokio::task::spawn_blocking(move || crate::runs::files::hold(&std::fs::read(&exe).map_err(unreadable)?))
         .await
@@ -89,7 +89,7 @@ impl Machines {
             Some(frame) => frame,
             None => {
                 let (_, link) = self.linked(name)?;
-                link.status().await.map_err(|e| Error::new(Kind::Unavailable, "machine_unreachable", format!("{name}: {e}")))?
+                link.status().await.map_err(|e| Error::new(Kind::Unavailable, "machine_unreachable", format!("Cozy couldn't reach {name}: {e}.")))?
             }
         };
         let own = this_release();
@@ -194,7 +194,7 @@ impl Machines {
         }
         if flagless {
             let Some(status) = &m.status else {
-                return Err(Error::new(Kind::Unavailable, "machine_unanswered", format!("{} has not reported the software it runs", m.name))
+                return Err(Error::new(Kind::Unavailable, "machine_unanswered", format!("{} hasn't reported what software it runs yet.", m.name))
                     .next(format!("cozy machine show {}", m.name)));
             };
             let local = m.kind == MachineKind::Local;
@@ -248,8 +248,9 @@ impl Machines {
                     let same = |build: &api::prerelease::Build| build.version == version || build.version.split_once('+').is_some_and(|(public, _)| public == version);
                     let Some((build, url)) = sums.build(member, &platform).filter(|(build, _)| same(build)) else {
                         let has = sums.build(member, &platform).map_or_else(|| format!("no build of it for {platform}"), |(build, _)| build.version);
-                        return Err(Error::new(Kind::NotFound, "rc_build_absent", format!("{member} {version} is not the open RC's build: rc-{} holds {has}", sums.rc))
-                            .remedy(format!("with no version named, `cozy machine update {}` moves it to the open RC's builds", m.name)));
+                        return Err(Error::new(Kind::NotFound, "rc_build_absent", format!("{member} {version} isn't the open RC's build. rc-{} has {has}.", sums.rc))
+                            .remedy("Leave out the version to move it to the open RC's builds.")
+                            .next(format!("cozy machine update {}", m.name)));
                     };
                     named.push(format!("{member} {version} (RC)"));
                     if member != "tensord" {
@@ -366,7 +367,7 @@ impl Machines {
     async fn torch(&self, m: &Machine, hub: &str, asked: bool, named: Option<Option<String>>) -> Result<Option<String>, Error> {
         let Some(status) = m.status.as_ref().filter(|_| asked && m.kind != MachineKind::Rental) else {
             return match asked && m.kind != MachineKind::Rental {
-                true => Err(Error::new(Kind::Unavailable, "machine_unanswered", format!("{} has not reported the software it runs", m.name))
+                true => Err(Error::new(Kind::Unavailable, "machine_unanswered", format!("{} hasn't reported what software it runs yet.", m.name))
                     .next(format!("cozy machine show {}", m.name))),
                 false => Ok(None),
             };
@@ -422,7 +423,7 @@ impl Machines {
                 outcome.status = "failed".into();
                 outcome.reason = Some(v1::Reason {
                     code: "update_unapplied".into(),
-                    message: format!("{name}'s update could not verify the requested mode: {error}"),
+                    message: format!("{name} updated, but Cozy couldn't check its mode: {error}"),
                     origin: "machine".into(), detail: String::new(), next: Vec::new(),
                 });
                 return outcome;
@@ -502,7 +503,7 @@ fn rc_pairing(m: &Machine, asked: &[(&str, &str, Component)], placed: Option<&st
     Err(Error::new(
         Kind::Conflict,
         "rc_runtime_needs_rc_cozy",
-        format!("{} would run the open RC's Runtime {} under cozy {cozy}, a release: only the RC's cozy runs released packages on it", m.name, api::prerelease::shown(&runtime)),
+        format!("{} would run the open RC's Runtime {} under cozy {cozy}, which is a release. Only the RC's cozy can run released packages with it.", m.name, api::prerelease::shown(&runtime)),
     )
     .next(format!("cozy machine update {}", m.name)))
 }
@@ -560,7 +561,7 @@ fn release(text: &str) -> Result<String, Error> {
     let version = text.trim_start_matches('v');
     match !version.is_empty() && version.bytes().all(|c| c.is_ascii_alphanumeric() || b".-+".contains(&c)) {
         true => Ok(version.to_owned()),
-        false => Err(Error::new(Kind::Validation, "component_refused", format!("{text:?} is not a release version"))),
+        false => Err(Error::new(Kind::Validation, "component_refused", format!("{text:?} isn't a release version."))),
     }
 }
 
@@ -577,8 +578,9 @@ async fn prerelease(distribution: &str, version: &str, platform: &str, taken: bo
         return Ok(None);
     }
     if !taken {
-        return Err(Error::new(Kind::Conflict, "prerelease_refused", format!("the Hub's target {project} {version} isn't on PyPI, and this computer takes no prerelease unless its config says `dev = true`"))
-            .remedy("name a released version: `cozy machine update <machine> --runtime <version> --tensorfs <version>`"));
+        return Err(Error::new(Kind::Conflict, "prerelease_refused", format!("The Hub's target {project} {version} isn't on PyPI, and this computer only installs prereleases when its config has `dev = true`."))
+            .remedy("Name a released version.")
+            .next("cozy machine update <machine> --runtime <version> --tensorfs <version>"));
     }
     let base = api::prerelease::base(distribution, version);
     let sums = http.get(format!("{base}/SHA256SUMS")).send().await.map_err(failed)?;
@@ -586,9 +588,10 @@ async fn prerelease(distribution: &str, version: &str, platform: &str, taken: bo
         return Err(Error::new(
             Kind::NotFound,
             "release_not_found",
-            format!("{project} {version} is neither on PyPI nor a GitHub prerelease ({base}/SHA256SUMS: HTTP {})", sums.status()),
+            format!("{project} {version} isn't on PyPI or a GitHub prerelease ({base}/SHA256SUMS answered HTTP {}).", sums.status()),
         )
-        .remedy("with no version named, `cozy machine update <machine>` moves it to its Hub's target"));
+        .remedy("Leave out the version to move it to the Hub's target.")
+        .next("cozy machine update <machine>"));
     }
     let sums = sums.text().await.map_err(failed)?;
     let bundles = format!("{base}/SHA256SUMS.sigstore.jsonl");
@@ -600,7 +603,7 @@ async fn prerelease(distribution: &str, version: &str, platform: &str, taken: bo
     platform::release::prerelease_sums(distribution, version, &sums, &bundles, &lines)
         .map_err(|e| Error::new(Kind::Validation, e.code, format!("{project} {version}'s prerelease isn't signed by its publish workflow: {}", e.message)))?;
     let (file, sha256) = api::prerelease::wheel(&sums, distribution, version, platform).ok_or_else(|| {
-        Error::new(Kind::NotFound, "release_wheel_absent", format!("{project} {version}'s prerelease holds no wheel for {platform}"))
+        Error::new(Kind::NotFound, "release_wheel_absent", format!("{project} {version}'s prerelease has no wheel for {platform}."))
     })?;
     Ok(Some((format!("{base}/{file}"), sha256.to_owned())))
 }
@@ -612,10 +615,10 @@ fn measured(build: DevBuild, distribution: &str) -> Result<(String, StagedInput,
     let DevBuild { sha256, name, version } = build;
     let named = name.starts_with(&format!("{distribution}-")) && name.ends_with(".whl") && !name.contains(['/', '\\']);
     if !distribution.is_empty() && !named {
-        return Err(refused(format!("{name} is not a {distribution} wheel file ({distribution}-<version>-….whl)")));
+        return Err(refused(format!("{name} isn't a {distribution} wheel file ({distribution}-<version>-….whl).")));
     }
     let Some(path) = crate::runs::files::held(&sha256) else {
-        return Err(Error::new(Kind::NotFound, "file_not_held", format!("Calcifer holds no file {sha256} ({name})")).remedy(format!("PUT its bytes to /v1/files/{sha256} first")));
+        return Err(Error::new(Kind::NotFound, "file_not_held", format!("Cozy doesn't have the file {name} ({sha256}).")).remedy(format!("Upload it first (PUT /v1/files/{sha256}).")));
     };
     let length = std::fs::metadata(&path).map_err(|e| refused(format!("{name}: {e}")))?.len();
     let version = version.filter(|_| distribution.is_empty());
@@ -667,7 +670,7 @@ fn unapplied(m: &Machine, s: &MachineStatus, want: &[(&str, Value)], line: Optio
         .collect();
     let build = if s.dev { "dev build" } else { "release" };
     let message = format!(
-        "{}'s update succeeded but it runs cozy {} ({build} {}), cozy-runtime {}, tensorfs {}, mode {}, not the requested {}",
+        "{}'s update finished, but it still runs cozy {} ({build} {}), cozy-runtime {}, tensorfs {} and mode {}, not the requested {}",
         m.name, s.version, s.commit.get(..12).unwrap_or(&s.commit), s.runtime, s.tensorfs,
         if s.mode.is_empty() { "unknown" } else { &s.mode }, asked.join(", ")
     );

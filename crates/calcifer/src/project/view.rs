@@ -35,7 +35,7 @@ pub(super) async fn patch(
     if let Some(viewport) = patch.viewport
         && (!viewport.x.is_finite() || !viewport.y.is_finite() || !viewport.zoom.is_finite() || viewport.zoom <= 0.0)
     {
-        return Err(Refusal(Error::new(Kind::Validation, "project_view", "Canvas coordinates must be finite and zoom must be positive")));
+        return Err(Refusal(Error::new(Kind::Validation, "project_view", "The canvas position must be a real number, and the zoom must be above 0.")));
     }
     let store = api.projects.store(&api, &id).await.map_err(Refusal)?;
     Ok(Json(store.write(|transaction| {

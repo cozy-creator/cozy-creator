@@ -46,7 +46,7 @@ pub(crate) fn routes() -> Router<Arc<Api>> {
 }
 
 fn not_built() -> Refusal {
-    let error = Error::new(Kind::Unavailable, "page_not_built", "this cozy was built without its page")
+    let error = Error::new(Kind::Unavailable, "page_not_built", "This cozy was built without its web page.")
         .remedy("cd web/app && pnpm install --frozen-lockfile && pnpm build, then build cozy again");
     Refusal(error)
 }
@@ -89,7 +89,7 @@ async fn asset(State(api): State<Arc<Api>>, Path(file): Path<String>, request: R
     if FILES.is_empty() {
         return Err(not_built());
     }
-    let (_, body, media_type) = found.ok_or_else(|| refuse(Kind::NotFound, "asset_not_found", format!("the page has no {name}")))?;
+    let (_, body, media_type) = found.ok_or_else(|| refuse(Kind::NotFound, "asset_not_found", format!("The page has no {name}.")))?;
     let mut response = answer(body, media_type);
     response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static(IMMUTABLE));
     Ok(response)
