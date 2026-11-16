@@ -1,0 +1,26 @@
+/* A theme and its options, each a row of choices (cl-1097). */
+.appearance {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+.row.choices {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.row.choices .tab {
+  min-height: 30px;
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+  font-size: var(--body);
+}
+.row.choices .tab.on {
+  border-color: var(--line2);
+}
+.choices-label {
+  min-width: 7em;
+  color: var(--mute);
+}

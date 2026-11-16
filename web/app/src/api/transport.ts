@@ -37,14 +37,16 @@ export function sameOrigin(): Transport {
     return url.pathname + url.search
   }
   const projects = new Map<string, { epoch: number; blocked: boolean; active: AbortController }>()
-  const scope = (path: string) => {
+  const scope = (path: string, method = "GET") => {
     const url = resolve(path), segments = url.pathname.split("/")
-    // Vault control and reference lookup remain available while the project's content is closed.
-    if (segments[2] === "projects" && !["vault", "address"].includes(segments[4])) return decodeURIComponent(segments[3] ?? "") || null
+    // Vault control, reference lookup, a rename and a delete (cl-1097: neither reads its content) remain available while the project's
+    // content is closed.
+    const closed = ["vault", "address", "name"].includes(segments[4]) || (method === "DELETE" && segments.length === 4)
+    if (segments[2] === "projects" && !closed) return decodeURIComponent(segments[3] ?? "") || null
     return url.searchParams.get("project")
   }
-  const guard = (path: string) => {
-    const id = scope(path)
+  const guard = (path: string, method?: string) => {
+    const id = scope(path, method)
     if (!id) return null
     let state = projects.get(id)
     if (!state) projects.set(id, state = { epoch: 0, blocked: false, active: new AbortController() })
@@ -75,7 +77,7 @@ export function sameOrigin(): Transport {
       if (state?.blocked) { state.blocked = false; state.active = new AbortController() }
     },
     async fetch(path, init = {}) {
-      const project = guard(path)
+      const project = guard(path, init.method)
       const signal = project ? (init.signal ? AbortSignal.any([init.signal, project.signal]) : project.signal) : init.signal
       if (secret(init.body)) {
         const now = await account(signal)

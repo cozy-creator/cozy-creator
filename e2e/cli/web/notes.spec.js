@@ -9,7 +9,7 @@
 // 1920×1080, on paper and dark, kept for a person to look at: the stack, the note opened, the history.
 const { mkdirSync } = require('fs');
 const { join } = require('path');
-const { test, expect, canvasIdle, openPoint } = require('./fixtures');
+const { test, expect, themed, canvasIdle, openPoint } = require('./fixtures');
 const { dropFiles } = require('./hands');
 
 const LONG = 'storyboard-for-the-harbour-sequence-third-act-night-exteriors-with-the-lighthouse-keeper-final-v7.txt';
@@ -22,7 +22,7 @@ const LOOKS = [
   { width: 1920, height: 1080, theme: 'dark' },
 ];
 
-test('notes', async ({ page, guards }) => {
+test('notes', async ({ page, project, guards }) => {
   test.setTimeout(300_000);
   // The text files' imports, refused on purpose.
   guards.allow(/status of 400\b.*\/v1\/projects\/[^/ ]+\/imports$/);
@@ -41,9 +41,10 @@ test('notes', async ({ page, guards }) => {
     const tag = `${width}x${height}-${theme}`;
     const first = at === 0;
     await page.setViewportSize({ width, height });
-    await page.evaluate((one) => localStorage.setItem('cozy.theme', one), theme);
+    await project.look(theme);
     await page.reload();
     await expect(page.locator('.stage')).toBeVisible();
+    await themed(page, theme);
     await canvasIdle(page);
     const away = await openPoint(page);
 

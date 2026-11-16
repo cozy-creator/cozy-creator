@@ -246,6 +246,7 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .route("/v1/status", get(status))
         .route("/v1/cut", get(cut))
         .route("/v1/settings", get(crate::reports::show).put(crate::reports::change))
+        .route("/v1/appearance", get(appearance).put(set_appearance))
         .route("/v1/activity", get(activity))
         .route("/v1/machines", get(machines::list).post(machines::create))
         .route(
@@ -705,6 +706,20 @@ pub(crate) async fn cancel(
     let run =
         run.ok_or_else(|| refuse(Kind::NotFound, "run_not_found", format!("There's no run {key}.")))?;
     Ok((StatusCode::ACCEPTED, Json(run)))
+}
+
+/// `GET /v1/appearance` (cl-1097): how the page looks everywhere, for every page of this Calcifer; null until it's set.
+async fn appearance(State(api): State<Arc<Api>>) -> Result<Json<Option<api::calcifer::Appearance>>, Refusal> {
+    api.calcifer.store().appearance().map(Json).map_err(|e| Refusal(Error::internal("calcifer_store", e.to_string())))
+}
+
+/// `PUT /v1/appearance` (cl-1097): every page hears it; a project with its own keeps that.
+async fn set_appearance(State(api): State<Arc<Api>>, body: Result<axum::body::Bytes, BytesRejection>) -> Result<Json<api::calcifer::Appearance>, Refusal> {
+    let asked: api::calcifer::Appearance = parse(&body?)?;
+    asked.check().map_err(|why| Refusal(Error::new(Kind::Usage, "appearance_invalid", why)))?;
+    api.calcifer.store().set_appearance(&asked).map_err(|e| Refusal(Error::internal("calcifer_store", e.to_string())))?;
+    crate::events::appearance(&asked);
+    Ok(Json(asked))
 }
 
 /// Stops Calcifer after its encrypted mounts close. Busy views refuse without losing custody.

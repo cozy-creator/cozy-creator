@@ -26,6 +26,7 @@ crates/platform/src/process/unix.rs
 crates/platform/src/process/windows.rs
 crates/platform/src/service/windows.rs
 crates/platform/src/signal/windows.rs
+crates/platform/src/trash.rs
 crates/platform/src/watch/macos.rs
 crates/platform/src/watch/windows.rs
 crates/tensorfs-py/src/cleanup.rs

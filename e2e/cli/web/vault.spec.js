@@ -355,7 +355,7 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
 
     await rememberPrivate(page, made, picture);
     await page.getByLabel('Menu', { exact: true }).click();
-    await page.getByRole('link', { name: 'Project encryption', exact: true }).click();
+    await page.getByRole('link', { name: 'Project settings', exact: true }).click();
     const drawer = page.locator('.drawer');
     await expect(drawer.locator('[data-vault-state="unlocked"]')).toBeVisible();
     const lock = drawer.getByRole('button', { name: 'Lock project', exact: true });

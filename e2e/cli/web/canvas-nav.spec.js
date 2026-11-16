@@ -5,7 +5,7 @@
 // the layout keeps them, zoomed by − from 100% to the farthest and back by +, then by the wheel: each box where it was, each name one line,
 // cut with an ellipsis where its box ends and whole under the pointer, on no box, no other name and not its own picture; so too at 100%,
 // 45%, 25% and the farthest, at 1440×900 and 1920×1080, paper and dark.
-const { test, expect, canvasNames, canvasIdle, hoverBox, middle: middleOf, nameUnderPointer, openPoint, png, screenshotPixels } = require('./fixtures');
+const { test, expect, themed, canvasNames, canvasIdle, hoverBox, middle: middleOf, nameUnderPointer, openPoint, png, screenshotPixels } = require('./fixtures');
 const { camera, colours, sameCamera } = require('./geometry');
 
 const COUNT = 300;
@@ -453,7 +453,8 @@ test('canvas-nav', async ({ context, project, api, signIn }) => {
     for (const each of [size, { width: 1920, height: 1080 }]) {
       await page.setViewportSize(each);
       for (const theme of ['paper', 'dark']) {
-        await page.evaluate((theme) => localStorage.setItem('cozy.theme', theme), theme);
+        await project.look(theme);
+        await themed(page, theme);
         for (const zoom of [1, 0.45, 0.25, ZOOMS[0]]) {
           await viewAt(zoom, middle);
           const now = await page.evaluate(audit, NAMED);

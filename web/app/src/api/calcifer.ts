@@ -98,6 +98,12 @@ held_back?: string | null, };
 export type Alternative = { sku: string, gpus: number, label?: string, time: number, usd_micros_per_hour: number, };
 
 /**
+ * How the page looks (cl-1097): a theme, and that theme's own options by name (Paper's `landscape`: `shown` or `hidden`). `GET` and
+ * `PUT /v1/appearance` keep it for every page of this Calcifer; a project's own (`ProjectAppearance`) is over it.
+ */
+export type Appearance = { theme: string, options?: { [key in string]: string }, };
+
+/**
  * `POST /v1/projects/{id}/approve`: `name` approved at `version`: a short run of digits is its version (1 first),
  * anything else a hash prefix of any file in the project's `files/`.
  */
@@ -2325,6 +2331,12 @@ key: string,
 gone?: string | null, };
 
 /**
+ * `PUT /v1/projects/{id}/appearance` (cl-1097): how the page looks with this project open; none: as everywhere. Kept in its
+ * `project.db`, no history step and no export, as its machines are.
+ */
+export type ProjectAppearance = { appearance: Appearance | null, };
+
+/**
  * A project event's position in one controller process. Generations never compare across
  * restarts; a full snapshot covers only positions captured before its read began.
  */
@@ -2359,6 +2371,24 @@ export type ProjectKey = { key: string, former?: Array<string>, };
  * it soonest, unless a run names its own; none: any machine. Answered as kept: each by its name, once.
  */
 export type ProjectMachines = { machines: Array<string>, };
+
+/**
+ * A project renamed, or moved to the trash: where it is now.
+ */
+export type ProjectMoved = { id: string, name: string,
+/**
+ * Its folder: renamed, or where it was before the trash.
+ */
+path: string,
+/**
+ * Where the trash keeps it, when the OS says (not the Windows Recycle Bin).
+ */
+trashed?: string | null, };
+
+/**
+ * `PUT /v1/projects/{id}/name` (cl-1097): the project called `name`. Its folder is its name, so the folder is renamed beside where it is.
+ */
+export type ProjectName = { name: string, };
 
 /**
  * One requested project's refusal, independent of the other projects on the same stream.
@@ -2440,7 +2470,11 @@ unsent?: Array<ErrorBody>,
 /**
  * The machines its runs go to, each to the one of them that finishes it soonest; none: any machine (`ProjectMachines`).
  */
-machines?: Array<string>, covered?: ProjectEventCursor | null, };
+machines?: Array<string>,
+/**
+ * How the page looks with it open, over `GET /v1/appearance`; none: as everywhere (`ProjectAppearance`, cl-1097).
+ */
+appearance?: Appearance | null, covered?: ProjectEventCursor | null, };
 
 /**
  * The canvas view, saved inside its project's database.
@@ -3253,7 +3287,7 @@ gone?: Array<string>,
 /**
  * What's said of the project besides its assets changed: `GET /v1/projects/{id}?assets=false`.
  */
-head?: boolean, cursor?: ProjectEventCursor | null, } | { "type": "project.vault", id: string, state: string, } | { "type": "project.saving", id: string, } | { "type": "project.gone", id: string, path: string, } | { "type": "canvas", id: string, seq: number, cards: { [key in string]: Card | null }, } | { "type": "board.updated", project: string, board: Board, } | { "type": "job.updated", project: string, job: Job, seq: number, } | { "type": "ahead.updated", project: string, ahead: Ahead, } | { "type": "history", id: string, undo?: HistoryEntry | null, redo?: HistoryEntry | null, } | { "type": "thumb", project: string, sha256: string, } | { "type": "resync" };
+head?: boolean, cursor?: ProjectEventCursor | null, } | { "type": "project.vault", id: string, state: string, } | { "type": "project.saving", id: string, } | { "type": "project.gone", id: string, path: string, } | { "type": "projects.changed" } | { "type": "appearance", appearance: Appearance, } | { "type": "canvas", id: string, seq: number, cards: { [key in string]: Card | null }, } | { "type": "board.updated", project: string, board: Board, } | { "type": "job.updated", project: string, job: Job, seq: number, } | { "type": "ahead.updated", project: string, ahead: Ahead, } | { "type": "history", id: string, undo?: HistoryEntry | null, redo?: HistoryEntry | null, } | { "type": "thumb", project: string, sha256: string, } | { "type": "resync" };
 
 /**
  * A killed process in uninterruptible sleep (`D`: a driver after an Xid, a hung network

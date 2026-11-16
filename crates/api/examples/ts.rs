@@ -43,6 +43,7 @@ fn main() {
     v.visit::<interface::Snap>();
     v.visit::<calcifer::CalciferStatus>();
     v.visit::<calcifer::Settings>();
+    v.visit::<calcifer::Appearance>();
     v.visit::<calcifer::RemoveModel>();
     v.visit::<calcifer::RemovedModel>();
     v.visit::<calcifer::ProjectShowReply>();
@@ -73,6 +74,9 @@ fn main() {
     v.visit::<project::Open>();
     v.visit::<project::Opened>();
     v.visit::<project::Address>();
+    v.visit::<project::AppearanceKept>();
+    v.visit::<project::Name>();
+    v.visit::<project::Moved>();
     v.visit::<project::Key>();
     v.visit::<project::ProjectView>();
     v.visit::<project::ProjectViewPatch>();

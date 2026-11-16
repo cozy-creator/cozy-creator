@@ -140,7 +140,9 @@ private, max-age=31536000, immutable`; everything else, `outputs/{name}` include
 - `run.updated {run}`: a run's change, as `GET /v1/runs/{id}` answers it.
 - `machine.updated {machine}`: a machine as `GET /v1/machines` lists it, each time it changes. `machine.removed {name}`: it left the list.
 - `project.changed {id, rev, assets?, gone?, head?}`: `assets` names those whose row is another now, all of them read at once by `POST /v1/projects/{id}/read`, and `gone` those no longer there; `head` says something else `GET /v1/projects/{id}?assets=false` holds changed. No `assets`: read the whole project, as a client does at the start and after `resync`. What it costs a client is what changed, whatever the project holds. `rev` is opaque, and changes with each transaction its `project.db` commits, when a file comes to or goes from `files/`. Nothing outside Calcifer writes a project.
-- `project.gone {id, path}`: its folder is gone (deleted, moved, on a drive that's away), told in place of `project.changed` to a stream holding it: `path` is where it was. Nothing of it reads now, so a client asks it nothing more (cl-980).
+- `project.gone {id, path}`: its folder is gone (deleted, moved, on a drive that's away), told in place of `project.changed` to a stream holding it: `path` is where it was. Nothing of it reads now, so a client asks it nothing more (cl-980). Deleted here (`DELETE /v1/projects/{id}`), every stream hears it.
+- `projects.changed`: the index changed, a project renamed or deleted (cl-1097): `GET /v1/projects` again.
+- `appearance {appearance}`: how the page looks everywhere changed (`PUT /v1/appearance`, cl-1097).
 - `canvas {id, seq, cards: {name: {x, y, w?} | null}}`: the rows of a project's canvas that changed, in the transaction of revision `seq`. A row written with its asset goes with it, so a client that reads the name has its place.
 - `board.updated {project, board}`: a project's render, whole (`GET /v1/projects/{id}`'s `board`, below), when more than one job changed: it began or ended, said something, failed of no asset, or a machine or a shot joined it. A client keeps the board with the highest `seq`.
 - `job.updated {project, job, seq}`: one job of a project's render, whole, each time it changes; `id` names it for as long as the render goes, and the board has them all. A client reads the board, then keeps what's newer than its `seq`.
@@ -743,6 +745,19 @@ read settles and on `approve`, reading each asset's state, else its newest versi
 - `POST /v1/projects/{id}/unpin` `{name}`: `{name, version?, stale, warnings?}`. Takes its `approved` away. A constant, nothing but its file, keeps it (`400 project_edit`).
 - `GET /v1/projects/{id}/legacy`: `{imported, pending}`, the project's old runs imported into its journal and those Calcifer's store still holds for it, after importing what it can as any read does. `cozy status` says it (cl-984).
 - `POST /v1/projects/{id}/rename` `{from, to}`: `{from, to, versions}`, in one transaction. With `from` a box and `to` free, its name and every `<from>` and `<from.N>` change. What the project keeps of `from` is kept as `to`, a box it names now with no versions (`409 rename_taken`), and its canvas row moves. `400 project_name` when `to` can't be a name: it holds what a name can't, ends in `.` and digits, or is `self`. It happens at once, whatever is going, and changes nothing else: a render going says `to` from then on, what lands is `to`'s, and what reads it reads on. Nothing on disk moves. A name is no input: what read it stands as it did, each key written anew.
+- `PUT /v1/projects/{id}/appearance` `{appearance: {theme, options?} | null}` (cl-1097): how the page looks with it open, over `GET
+  /v1/appearance`; `null`: as everywhere. Kept in `project.db`'s `meta`, no history step and no export; `GET /v1/projects/{id}` says it
+  as `appearance`, and every reader hears `project.changed` with `head`. `400 appearance_invalid`.
+- `PUT /v1/projects/{id}/name` `{name}` (cl-1097): `{id, name, path}`. A project's name is its folder's (the index lists each by its
+  folder; a locked one has no other), so its folder is renamed where it is, and its `project.db` takes the name as it next opens. Nothing
+  of it may be open: an unlocked encrypted project locks first (no secret), and one rendering or saving a run's results is `409
+  project_busy`. A folder of that name beside it: `409 project_name_taken`; `400 project_name`. Every stream hears `projects.changed`,
+  and those showing it go on showing it.
+- `DELETE /v1/projects/{id}` (cl-1097): `{id, name, path, trashed?}`. Its folder moved, whole, to the OS trash (freedesktop Trash,
+  `~/.Trash`, the Recycle Bin; never deleted), `trashed` where it is now when the OS says. Its runs are canceled and an unlocked encrypted
+  one locks first; a locked one needs no secret, as nothing of it is read. It leaves the index as a folder found gone does (cl-1031), and
+  every stream hears `project.gone` and `projects.changed`. `503 project_trash` where no trash can take it (a Windows drive with no
+  Recycle Bin).
 - `PUT /v1/projects/{id}/machines` `{machines}` (cl-873): the machines its runs and renders go to, each to whichever of them finishes first, unless a run names its own `on`; `[]`: any machine. Each is `local` or a machine `GET /v1/machines` lists, by name or rental id (`404 machine_not_found`, `409 machine_ended`), kept by name once, an offline one too; `any` and `new` are `400 project_machines`. Kept in `project.db`'s `meta`, no history step and no export; `GET /v1/projects/{id}` says it as `machines`, and every reader hears `project.changed` with `head`. Answers `{machines}` as kept.
   A machine that ended leaves it at its next read (cl-920). With every one gone (ended, ending, offline), a run or render naming none goes
   to this computer and this account's rentals (`render_set` without added machines, which may be other people's; cl-1066), and a
@@ -761,6 +776,9 @@ read settles and on `approve`, reading each asset's state, else its newest versi
 Calcifer fetches the tools it runs on first need, pinned builds held to their sha256, into `~/.cozy/tools`:
 ffmpeg (cuts, frames, clips) and uv (local code). No route asks for them.
 
+- `GET|PUT /v1/appearance` `{theme, options?}` (cl-1097): how the page looks everywhere, in `state.db`, for every page of this Calcifer: a
+  theme and that theme's own options by name (Paper's `landscape`: `shown` or `hidden`); a project's own (`PUT
+  /v1/projects/{id}/appearance`) is over it. `null` until it's set. Every stream hears `appearance`. `400 appearance_invalid`.
 - `POST /v1/down`: `{stopping: true, owed}`. Admission closes, mutations in flight finish, every stream ends,
   then the server. Machines keep what they accepted; the next Calcifer resumes `owed`. Never refused.
 
