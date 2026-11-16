@@ -191,7 +191,12 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
     if (plate) {
       expect.soft([...(under[plate.id] ?? [])], `${plate.id}, under Video`).toEqual(['video']);
       await openOperation('video');
-      await expect.soft(implementations('video').and(palette.locator('[data-tool="minimax-h3/edit"]')), 'called what it does').toHaveText(new RegExp(` ${plate.label}$`));
+      const row = implementations('video').and(palette.locator('[data-tool="minimax-h3/edit"]'));
+      // Its label names its model already (packages#940: "MiniMax H3 Edit"): said once, its package on hover.
+      const once = plate.label.toLowerCase().includes(plate.package_title.toLowerCase());
+      await expect.soft(row, 'called what it does, its model said once').toHaveText(once ? plate.label : new RegExp(` ${plate.label}$`));
+      await expect.soft(row, 'its package on hover').toHaveAttribute('title', new RegExp(`^${plate.package_title} · `));
+      await look('tools-video', async () => { await expect(palette.locator('.tool-groups.stale')).toHaveCount(0); await openOperation('video'); }, () => palette);
     }
   });
 

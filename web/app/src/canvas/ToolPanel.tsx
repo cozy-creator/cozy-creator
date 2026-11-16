@@ -8,17 +8,18 @@ import type { Load } from "./carry"
 import { useCanvasStore } from "./context"
 import { modelLabel, paletteEntries, withBuiltIns, type Operation, type PaletteEntry } from "./palette"
 import { useDragScroll } from "./dragScroll"
+import { toolName } from "./shown"
 import { carryingTool } from "./toolchange"
 import "./ToolPanel.css"
 
 /** A tool is created or attached only when its implementation is dragged. */
 const toolLoad = (tool: Tool): Load => ({ tool, box: carryingTool(tool) })
 
-/** A tool to drag out, called `label`. */
+/** A tool to drag out, called `label`; its package, what it does and where it's from on hover. */
 function ToolRow({ entry, tool, label, top }: { entry: PaletteEntry; tool: Tool; label: string; top?: boolean }) {
-  const said = tool.package === "cozy" ? entry.label : modelLabel(tool)
+  const said = tool.package === "cozy" ? [entry.label] : [toolName(tool), tool.description]
   return (
-    <li className="tool tool-implementation" data-entry={top ? entry.key : undefined} data-implementation="" data-tool={tool.id} data-tool-operation={entry.key} data-kind={tool.makes} title={[tool.description || said, tool.source && `From source: ${tool.source}`].filter(Boolean).join("\n")}>
+    <li className="tool tool-implementation" data-entry={top ? entry.key : undefined} data-implementation="" data-tool={tool.id} data-tool-operation={entry.key} data-kind={tool.makes} title={[...said, tool.source && `From source: ${tool.source}`].filter(Boolean).join("\n")}>
       <b>{label}</b>
     </li>
   )

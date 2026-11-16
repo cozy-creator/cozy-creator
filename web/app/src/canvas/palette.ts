@@ -56,8 +56,9 @@ export const modelLabel = (tool: Tool) => {
   if (model === "p-h3-image") return "P-H3 Image"
   const version = model?.match(/(\d+(?:\.\d+)+)$/)?.[1]
   const named = version && /\d+(?:\.\d+)*$/.test(title) ? title.replace(/\d+(?:\.\d+)*$/, version) : title
-  const edit = operationOf(tool) === "video" && editsVideo(tool) && tool.label && !named.toLowerCase().endsWith(tool.label.toLowerCase())
-  return edit ? `${named} ${tool.label}` : named
+  if (operationOf(tool) !== "video" || !editsVideo(tool) || !tool.label || named.toLowerCase().endsWith(tool.label.toLowerCase())) return named
+  // A label that names its model already is said alone (MiniMax H3 Edit), never twice.
+  return tool.label.toLowerCase().includes(title.toLowerCase()) ? tool.label : `${named} ${tool.label}`
 }
 
 /** Stable operation rows; executable choices live in the node's model control. */
