@@ -550,3 +550,23 @@ impl Drop for Tree {
 pub fn private_browser_pipe(command: &mut Command) -> Result<(std::fs::File, std::fs::File)> {
     unix::private_browser_pipe(command).map_err(Error::os("open a private browser pipe"))
 }
+
+/// [`spawn`] from one thread that lives as long as this process. Linux sends a child its parent-death signal (the browser
+/// pipe's SIGKILL) when the thread that forked it ends, not the process (prctl(2)): a tokio thread that `block_in_place`
+/// handed on idles out of the blocking pool, and a child forked from it would die with it.
+#[cfg(target_os = "linux")]
+pub fn spawn_lasting(command: Command) -> Result<Tree> {
+    use std::sync::{OnceLock, mpsc};
+    type Ask = (Command, mpsc::SyncSender<Result<Tree>>);
+    static SPAWNER: OnceLock<Option<mpsc::Sender<Ask>>> = OnceLock::new();
+    let lost = || Error::os("spawn")(io::Error::other("Cozy's spawning thread is gone"));
+    let spawner = SPAWNER.get_or_init(|| {
+        let (send, asks) = mpsc::channel::<Ask>();
+        let thread = std::thread::Builder::new().name("cozy-spawner".into())
+            .spawn(move || for (command, answer) in asks { let _ = answer.send(spawn(command)); });
+        thread.ok().map(|_| send)
+    }).as_ref().ok_or_else(lost)?;
+    let (answer, answered) = mpsc::sync_channel(1);
+    spawner.send((command, answer)).map_err(|_| lost())?;
+    answered.recv().map_err(|_| lost())?
+}

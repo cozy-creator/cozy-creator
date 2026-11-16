@@ -31,7 +31,14 @@ pub(crate) async fn project_storage(principal: Option<axum::Extension<Principal>
     Ok(Json(json!({ "version": 3, "daemon_birth": daemon_birth()?, "principal": principal.to_string() })))
 }
 
-fn unavailable() -> Refusal { api::refuse(Kind::Unavailable, "private_browser_unavailable", "Cozy could not establish its owned private browser; no default browser was opened") }
+const UNAVAILABLE: &str = "Cozy could not establish its owned private browser; no default browser was opened";
+fn unavailable() -> Refusal { api::refuse(Kind::Unavailable, "private_browser_unavailable", UNAVAILABLE) }
+/// Cozy's Chrome was found but didn't start or open the page; the message says why.
+const FAILED: &str = "private_browser_failed";
+/// How long a starting Chrome, alive with its pipe open, has to answer before it is ended. A cold start took 10.4 s on a
+/// CI runner; one that exits fails at once, however soon.
+#[cfg(target_os = "linux")]
+const STARTUP_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 fn busy() -> Refusal { api::refuse(Kind::Conflict, "project_busy", "The Cozy browser has not confirmed that all edits are saved; keep it open and finish saving before locking") }
 
 #[derive(Clone, Copy)]
@@ -46,7 +53,23 @@ impl Step {
             Self::Navigate => "browser_navigate", Self::Activate => "browser_activate",
         }
     }
-    fn failed(self, mut error: Refusal) -> Refusal { error.0.cause = Some(self.code().into()); error }
+    /// What `cozy open` says when this step fails.
+    fn says(self) -> &'static str {
+        match self {
+            Self::Executable => "no Chrome or Chromium on PATH", Self::Home => "no home directory",
+            Self::ProfileSetup => "its private profile couldn't be made",
+            Self::Capture | Self::Pipe | Self::Spawn | Self::Birth => "Chrome couldn't be started",
+            Self::Ownership => "Chrome's process couldn't be confirmed as Cozy's", Self::Context => "Chrome didn't open a private session",
+            Self::Target | Self::Attach | Self::Seal | Self::Navigate | Self::Activate => "Chrome didn't open the project's page",
+        }
+    }
+    fn failed(self, mut error: Refusal) -> Refusal {
+        error.0.cause = Some(self.code().into());
+        if error.0.message == UNAVAILABLE { error.0.message = self.says().into(); }
+        // Only a missing Chrome leaves `cozy open` to print a link instead: once Chrome is found, its failure is one.
+        if error.0.code == "private_browser_unavailable" && !matches!(self, Self::Executable) { error.0.code = FAILED.into(); }
+        error
+    }
     fn unavailable(self) -> Refusal { self.failed(unavailable()) }
 }
 
@@ -197,16 +220,22 @@ impl OwnedBrowser {
         let capture = startup::Capture::create().map_err(|_| Step::Capture.unavailable())?;
         command.stderr(capture.stdio().map_err(|_| Step::Capture.unavailable())?);
         let (send, receive) = platform::process::private_browser_pipe(&mut command).map_err(|_| Step::Pipe.unavailable())?;
-        let tree = platform::process::spawn(command).map_err(|_| Step::Spawn.unavailable())?;
+        let tree = platform::process::spawn_lasting(command).map_err(|_| Step::Spawn.unavailable())?;
         let birth = platform::process::Birth::of(tree.pid()).map_err(|_| Step::Birth.unavailable())?;
         let id = profile.nonce().to_owned();
         let mut live = Live { tree, birth: birth.clone(), profile, id, address,
             pipe: Pipe { birth, send: tokio::fs::File::from_std(send), receive: BufReader::new(tokio::fs::File::from_std(receive)), next: 0 },
             context: String::new(), targets: HashMap::new(), startup: Some(capture) };
         if let Err(error) = live.profile.observe(&live.birth) { return Err(Self::launch_failed(live, error, Step::Ownership).await); }
-        let context = match live.pipe.call("Target.createBrowserContext", json!({ "disposeOnDetach": true }), None).await {
-            Ok(context) => context,
-            Err(error) => return Err(Self::launch_failed(live, error, Step::Context).await),
+        // A Chrome that never answers is ended, not waited on forever.
+        let context = match tokio::time::timeout(STARTUP_WAIT, live.pipe.call("Target.createBrowserContext", json!({ "disposeOnDetach": true }), None)).await {
+            Ok(Ok(context)) => context,
+            Ok(Err(error)) => return Err(Self::launch_failed(live, error, Step::Context).await),
+            Err(_) => {
+                let mut error = unavailable();
+                error.0.message = format!("Chrome didn't answer in {} s", STARTUP_WAIT.as_secs());
+                return Err(Self::launch_failed(live, error, Step::Context).await);
+            }
         };
         let Some(context) = context["browserContextId"].as_str() else { return Err(Self::launch_failed(live, unavailable(), Step::Context).await) };
         live.context = context.into();
@@ -227,7 +256,18 @@ impl OwnedBrowser {
             let status = killed.then(|| live.tree.wait().ok()).flatten();
             let ended = killed && platform::process::end_tree(&processes).is_ok()
                 && platform::process::group_members(&live.birth).is_empty();
+            // Chrome's own exit and telling line: why it didn't start, as `cozy open` says it.
+            let line = live.startup.as_ref().and_then(|capture| capture.line(live.profile.path())).map(|line| format!(": {line}")).unwrap_or_default();
+            // Its own exit: one seen before the kill, or any but the SIGKILL this sent (an exit can close the pipe a moment
+            // before the process reads as ended).
+            error.0.message = match status.filter(|status| already_exited || status.signal() != Some(9)) {
+                Some(status) => format!("Chrome {} as it started{line}", platform::process::ended(&status).0),
+                None => format!("{}{line}", error.0.message),
+            };
             let mut facts = error.0.metadata.take().and_then(|value| value.as_object().cloned()).unwrap_or_default();
+            if let Some(capture) = &live.startup { facts.extend(capture.facts()); }
+            // A Chrome with no display to show on is a computer without one: `cozy open` gives the page's address instead.
+            if facts.get("browser_startup_no_display") == Some(&json!(true)) { error.0.code = "private_browser_unavailable".into(); }
             facts.insert("browser_exit_before_retirement".into(), json!(already_exited));
             if let Some(status) = status {
                 facts.insert("browser_exit_code".into(), json!(status.code()));
