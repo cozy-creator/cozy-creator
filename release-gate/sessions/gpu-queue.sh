@@ -8,8 +8,6 @@
 . "$(dirname "$0")/lib.sh"
 RED_RUN=$(param red)
 [[ $RED_RUN =~ ^[0-9]+$ ]] || fail "red is not a dev-build run id: '$RED_RUN'"
-W=${RUNTIME_WHEEL:-}
-[ -n "$W" ] || fail "no Runtime wheel: dispatch with runtime_ref"
 mkdir -p "$OUT/red-cozy"
 gh run download "$RED_RUN" -R cozy-creator/cozy-creator -p 'cozy-*' -D "$OUT/red-cozy" > /dev/null 2>&1 || fail "red's cozy (dev-build $RED_RUN) wasn't fetched"
 RED=$(find "$OUT/red-cozy" -type f -name 'cozy-linux-x86_64' | head -1)
@@ -34,8 +32,8 @@ taken() {
 declare -A FIRST
 arm() {
   local a=$1 bin=$2 v n name e l
-  # The RC's Runtime runs only under the RC's cozy (rc_runtime_needs_rc_cozy): both in one update.
-  step "$a-tensord" machine update "$NAME" --tensord "$bin" --runtime "$W" -y || fail "$a: the pod refused its TensorD and the Runtime"
+  # The pod keeps its image's released Runtime (as prepare-ahead's): the RC's pure wheel carries no kernels (runtime_without_kernels).
+  step "$a-tensord" machine update "$NAME" --tensord "$bin" -y || fail "$a: the pod refused its TensorD"
   v=$(cozy machine show "$NAME" --json | jq -r .status.version)
   [ "$v" = "$("$bin" --version | awk '{print $2}')" ] || fail "$a: the pod runs TensorD $v, not $("$bin" --version)"
   say "$a: TensorD $v"
