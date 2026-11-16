@@ -93,7 +93,11 @@ ready?: boolean,
 /**
  * Why it stopped short: the disk has no room, or it was canceled.
  */
-held_back?: string | null, };
+held_back?: string | null,
+/**
+ * A guess's, with no job yet: ready, its boxes say so beside Render.
+ */
+guess?: boolean, };
 
 /**
  * Another machine a run could rent, against the pick: its time as a multiple of the pick's, and

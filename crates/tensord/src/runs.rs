@@ -400,7 +400,13 @@ impl Runs {
     }
 
     fn asker(&self, id: &str, spec: &Spec) -> Asker {
-        Asker { owner: spec.owner.clone(), providers: spec.providers.clone(), gpus: spec.gpus, order: self.order(id, spec, 0) }
+        // A caller's guess resolves ahead of every guess's weights, still behind every run (cl-1104): what a changed guess reads is
+        // known at once, never once the guess before it has fetched all it wanted, and what that one wanted alone ends (`ahead::put`).
+        let order = match fetches_ahead(spec) && crate::ahead::guess(&self.service.engine.caller_id(id)) {
+            true => crate::origin::priority::prepare(0, 0),
+            false => self.order(id, spec, 0),
+        };
+        Asker { owner: spec.owner.clone(), providers: spec.providers.clone(), gpus: spec.gpus, order }
     }
 
     /// What run `id` reads of `installation`, whose environment need not be built yet (cl-966): what its function reads up
@@ -1470,6 +1476,11 @@ impl Runs {
     /// as any run's need does (a fetch ahead's only where they fit); its guesses come while they fit beside
     /// what comes first.
     fn want_reads(&self, id: &str, ahead: bool, fetch: &Arc<crate::access::Fetch>, reads: &crate::access::Reads) -> Result<(), Refused> {
+        // A caller's guess: what nothing of is here yet is its own to bring, the first to go on a short disk (`ahead::brought`).
+        if crate::ahead::guess(&self.service.engine.caller_id(id)) {
+            let all: Vec<_> = reads.sure.iter().chain(reads.guesses.iter().flat_map(|(_, set)| set)).cloned().collect();
+            crate::ahead::brought(self.publisher.store(), &all, true);
+        }
         let sure = fetch.absent(&reads.sure)?;
         let free = || crate::reclaim::Disk::measure(self.publisher.store().root()).map(|disk| disk.free());
         match ahead {

@@ -192,13 +192,14 @@ echo "$P" > "$OUT/pre-switch.at"
 
 # prefetch_ready: a project of this computer's machine and stand-p, which holds nothing. Its box, of e2e/pre-b's transformer, is
 # guessed onto this computer, where the last cell left its package and weights, though with all else equal a render goes to another
-# machine before this computer: what a machine has counts. Its box says it's ready here; Render (naming no machine) goes here as
-# guessed, quoted nothing to download, and this machine fetches nothing and builds no environment for it.
+# machine before this computer: what a machine has counts. Its box says it's ready here, on its board and in the page beside its
+# Render ("Ready on this computer", web/ready.js, which looks at it and presses Render); the render, naming no machine, goes here
+# as guessed, quoted nothing to download, and this machine fetches nothing and builds no environment for it.
 prefetch_ready() {
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || return 0
 step "prefetch (cl-1104): a box says its machine is ready, and Render goes there and downloads and installs nothing"
 [ -n "${PRE_PAGE:-}" ] || { check "prefetch ready: the cell before it left no page"; return 0; }
-local P=$OUT/pre-ready tool=e2e-prefetched/still began job run row
+local P=$OUT/pre-ready tool=e2e-prefetched/still pw=$OUT/playwright chrome code=0 began job run row
 cozy --json machine show local > "$OUT/set-local.json" || { check "prefetch ready: machine show local"; return 0; }
 stand_in stand-p || { pre_end; return 0; }
 pre_project "$P" local,stand-p || { pre_end; return 0; }
@@ -207,7 +208,17 @@ jq -n --arg t "$tool" '[{name: "made", tool: $t, kind: "image", fields: {instruc
 pre_ready "$P" made local 180 || { pre_machine stand-p "$OUT/pre-ready-stand.json"; echo "prefetch ready: stand-p's activity: $(jq -c '.status.activity' "$OUT/pre-ready-stand.json" 2> /dev/null | head -c 400)"; pre_end; return 0; }
 row=$(pre_row "$P" made)
 began=$(date -u +%s%3N)
-coming_go made '[]'
+# The page, open on the project: its box says so beside Render, which it presses.
+chrome=$(web_chrome)
+if [ -n "$chrome" ] && [ -x "$chrome" ] && npm install -s --prefix "$pw" playwright-core@1.55.0 > "$OUT/pre-npm.log" 2>&1; then
+  HOLDER=$HOME/.cozy/calcifer/calcifer.lock.holder CHROME=$chrome PLAYWRIGHT=$pw/node_modules/playwright-core SHOT=$OUT/pre-ready-page LAST_LOOK=$OUT/pre-ready-page \
+    node "$here/web/ready.js" "$P" made 'this computer' > "$OUT/pre-ready-page.json" 2> "$OUT/pre-ready-page.err" || code=$?
+  [ "$code" = 0 ] || check "prefetch ready: the page: $(jq -c '{failures, seen}' "$OUT/pre-ready-page.json" 2> /dev/null | head -c 1500) $(tail -c 400 "$OUT/pre-ready-page.err")"
+else
+  check "prefetch ready: no Google Chrome or playwright-core on this runner (${chrome:-no chrome}): $(tail -c 300 "$OUT/pre-npm.log" 2> /dev/null)"
+fi
+# Not pressed in the page, it is asked as the page asks it.
+J '.seen.render_pressed == true' "$OUT/pre-ready-page.json" 2> /dev/null || coming_go made '[]'
 coming_done made 600
 job=$(status "$P" | jq -c '[.board.jobs[]? | select(.asset == "made")] | last // empty')
 run=$(jq -r '.run // empty' <<< "${job:-null}")

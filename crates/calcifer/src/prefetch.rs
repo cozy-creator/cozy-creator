@@ -276,6 +276,7 @@ impl Lists {
                 }),
                 done: downloads.iter().map(|op| op.bytes_done).sum(),
                 total: downloads.iter().map(|op| op.bytes_total).sum(),
+                guess: false,
             })
         };
         {
@@ -295,7 +296,7 @@ impl Lists {
         for (folder, project) in guessing {
             for (id, _, function, names) in self.rows(&folder).into_iter().filter(|(_, on, ..)| on == machine) {
                 if let Some(row) = row_of(&id, &function, names) {
-                    project.jobs.guessed(&id, row);
+                    project.jobs.guessed(&id, Row { guess: true, ..row });
                 }
             }
         }

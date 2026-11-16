@@ -394,7 +394,8 @@ body:has(.focus-viewport) .zoom {
 .focus-actions .render-at {
   gap: 12px;
 }
-.focus-actions .render-time {
+.focus-actions .render-time,
+.focus-actions .ready-on {
   color: var(--ink);
   font-size: 17px;
 }
@@ -439,6 +440,19 @@ body:has(.focus-viewport) .zoom {
 }
 .focus-viewport:has(.focus-actions .render-time):has(.focus-actions .slow-here) .focus-title {
   padding-right: 640px;
+}
+/* "Ready on kamitsure" beside them takes it as well (cl-1104). */
+.focus-viewport:has(.focus-actions .ready-on) .focus-title {
+  padding-right: 600px;
+}
+.focus-viewport:has(.focus-actions .ready-on):has(.focus-actions .render-time) .focus-title {
+  padding-right: 720px;
+}
+.focus-viewport:has(.focus-actions .ready-on):has(.focus-actions .slow-here) .focus-title {
+  padding-right: 760px;
+}
+.focus-viewport:has(.focus-actions .ready-on):has(.focus-actions .render-time):has(.focus-actions .slow-here) .focus-title {
+  padding-right: 880px;
 }
 @media (max-width: 760px) {
   .focus-card > .focus-actions { right: calc(min(25vw, 150px) + 8px); }

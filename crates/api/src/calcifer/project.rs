@@ -1434,6 +1434,9 @@ pub struct Ahead {
     /// Why it stopped short: the disk has no room, or it was canceled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_back: Option<String>,
+    /// A guess's, with no job yet: ready, its boxes say so beside Render.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub guess: bool,
 }
 
 /// How a job stands.

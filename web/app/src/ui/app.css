@@ -1977,7 +1977,8 @@ video.preview.on {
   align-items: center;
   gap: 10px;
 }
-.render-time {
+.render-time,
+.ready-on {
   color: var(--mute);
   font-size: var(--body);
   white-space: nowrap;

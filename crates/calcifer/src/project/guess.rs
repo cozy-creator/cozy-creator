@@ -8,9 +8,13 @@
 //! A box's machine is the one placement would send its render to (`placement::soonest`, by what each machine has of it), of the
 //! machines that serve now: nothing is started, rented or waited for to hold a guess. It stays where it is guessed unless another
 //! would finish it clearly sooner (`plan::clearly_sooner`), and its render stays there by the same rule (`Walk::plan`), so the
-//! machine made ready is the one Render picks. What it reads is its function's model slots with the box's choices, whose components
-//! the machine reads from its package (`tensord::Runs::reads`): a call's needs less what the machine has, as cl-1102 counts them,
-//! until the package states them for the draft request itself (cl-1103).
+//! machine made ready is the one Render picks.
+//!
+//! What a guess needs (`item`) is read here from the function's published interface and the box's draft request, with nothing
+//! installed and no package code run (`Host::foreseen`): today its model slots with the box's choices, whose static `components=`
+//! and `on_demand` declarations its machine reads from the release's card before it installs anything (`tensord::Runs::early`).
+//! This is the one place that changes when the interface carries needs rules evaluated against the request (cl-1103) and a call's
+//! needs less what its machine has are one computation (cl-1102): `item` then sends that result.
 use std::{
     sync::{Arc, LazyLock, atomic::Ordering},
     time::Duration,
