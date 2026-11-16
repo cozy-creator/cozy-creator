@@ -116,6 +116,8 @@ pub(crate) fn starter() -> Written {
 /// One asset as its box says it, after defaults.
 pub(crate) struct Asset {
     pub name: String,
+    /// Its box's stable identity (`Boxed::id`), when the document stores one: what finds the row a delete of it set aside.
+    pub id: String,
     /// What its file is: what it holds or last made, else what its tool's interface last said, else a picture. No more than what to call it.
     pub kind: String,
     /// Explicit container identity, preserved independently of its selected tool.
@@ -257,6 +259,7 @@ impl Doc {
     /// The project `written` says, of the files and tags `lock` holds.
     pub(super) fn of(folder: &Folder, written: &Written, lock: &Lock) -> Result<Self, Error> {
         let (top, listed) = written.reading();
+        let written_boxes = &written.boxes;
         let mut warnings = vec![];
         let empty = Map::new();
         let mut defaults = Map::new();
@@ -297,6 +300,12 @@ impl Doc {
                 doc.warn(&shown, format!("{name}: names can't contain `.`, so Cozy reads it as {shown}. Rename it {shown}."));
             }
             doc.declare(&shown, written, &defaults, folder, lock);
+        }
+        let ids: HashMap<String, &str> = written_boxes.iter().map(|held| (name_key(&read_as(&held.name)), held.id.as_str())).collect();
+        for asset in &mut doc.assets {
+            if let Some(id) = ids.get(&name_key(&asset.name)) {
+                (*id).clone_into(&mut asset.id);
+            }
         }
         for i in 0..doc.assets.len() {
             if doc.assets[i].hollow && doc.assets[i].pin.is_none() && doc.assets[i].description.is_empty() && doc.assets[i].text.is_none() && lock.asset(&doc.assets[i].name).is_none_or(|held| held.versions.is_empty()) {
@@ -382,7 +391,7 @@ impl Doc {
         let hollow = body.is_empty() || tool.as_deref().is_none_or(|tool| made_here(tool) && kind_made_here(tool).is_none());
         self.index.insert(key, self.assets.len());
         let starred = body.get(STARRED).and_then(Value::as_bool).unwrap_or(false);
-        self.assets.push(Asset { name: name.to_owned(), kind, node_kind, selected_version, tool_makes: tool.as_ref().is_some_and(|tool| lock.makes.contains_key(tool)), tool, target, made, inputs, written: None, inlined: vec![], text, own, description, pin, starred, hollow, reads: vec![] });
+        self.assets.push(Asset { name: name.to_owned(), id: String::new(), kind, node_kind, selected_version, tool_makes: tool.as_ref().is_some_and(|tool| lock.makes.contains_key(tool)), tool, target, made, inputs, written: None, inlined: vec![], text, own, description, pin, starred, hollow, reads: vec![] });
     }
 
     /// Each mention of a text asset in what a tool is given replaced by its words, and theirs in turn. Only here: what's read, what's sent and
@@ -667,7 +676,7 @@ impl Doc {
         for read in &self.assets[i].reads {
             let Some(number) = read.number else { continue };
             let of = &self.assets[read.asset];
-            let held = lock.asset(&of.name);
+            let held = self.held(read.asset, lock);
             let deleted = held.is_some_and(|held| held.discarded.iter().any(|version| version.number == number));
             if !deleted && self.version_files(read.asset, number, lock).is_some() {
                 continue;
@@ -767,7 +776,7 @@ impl Doc {
     /// the version's whole file set; one that is none's is just that file.
     pub(crate) fn standing(&self, i: usize, lock: &Lock, done: &[Standing]) -> Standing {
         let asset = &self.assets[i];
-        let held = lock.asset(&asset.name);
+        let held = self.held(i, lock);
         let reads = self.reading(i, lock, done);
         let inputs = reads.as_ref().map(|reads| self.key(i, reads));
         let reads = reads.unwrap_or_default();
@@ -843,7 +852,7 @@ impl Doc {
             match &done[j].files {
                 Some(files) => reads.push(ReadNow { name, asset: j, files: files.clone(), newest: None, number: None }),
                 None if tool => {
-                    let newest = lock.asset(&self.assets[j].name).and_then(|held| held.versions.last());
+                    let newest = self.held(j, lock).and_then(|held| held.versions.last());
                     reads.extend(newest.map(|newest| ReadNow { name, asset: j, files: newest.files.clone(), newest: Some(newest.number), number: None }));
                 }
                 None => return None,
@@ -853,9 +862,16 @@ impl Doc {
     }
 
     /// Version `number` of asset `j`, on record though deleted. A file it holds with no version of any yet is its first.
+    /// Box `j`'s row in `lock`: under its name, else the row a delete of it set aside, while that keeps it. A render asked before the
+    /// delete reads it as it was asked (a pickup from a take deleted since, a mention of a box deleted since), as long as it waits.
+    pub(super) fn held<'a>(&self, j: usize, lock: &'a Lock) -> Option<&'a folder::Asset> {
+        let asset = &self.assets[j];
+        lock.asset(&asset.name).or_else(|| lock.set_aside_of(&asset.name, &asset.id))
+    }
+
     pub(super) fn version_files(&self, j: usize, number: u32, lock: &Lock) -> Option<Files> {
         let asset = &self.assets[j];
-        let held = lock.asset(&asset.name);
+        let held = self.held(j, lock);
         if let Some(version) = held.and_then(|held| held.on_record().find(|version| version.number == number)) {
             return Some(version.files.clone());
         }

@@ -4138,6 +4138,8 @@ impl Walk {
             warn!("keeping a render's board: {}", error.message);
         }
         *walking = false;
+        // What a delete set aside waited for its renders to read it: looked at now.
+        purge::opened(&self.project.id, &self.project.folder);
     }
 
     /// A render has nothing more that can go: each cut it ends on is said, and it is done.
