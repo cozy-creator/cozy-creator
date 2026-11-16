@@ -20,6 +20,8 @@
 #               default); the output's edges held against the clip's (ffmpeg edgedetect, SSIM) beside text's, which had none
 #   video-edges the same by the clip's edges
 #   motion      motion transfer (Paul 11-16): first_frame=<pearl>, "moves the way <clip> does", control=pose
+#   motion-text motion transfer from the instruction alone, no picture: an astronaut on Mars "moving the way <clip> does",
+#               control=pose
 #   keys        now: first_frame=<lighthouse>, a keyframe <lantern> at 2.5 s (frame 60): it lands on frame 60
 #   t2a         now's `sound` (Lightricks' audio-only text-to-audio): 5 s of a line of speech and a door; its FLAC, its
 #               length and level, and a spectrogram ($OUT/sheets/t2a.png)
@@ -44,7 +46,7 @@ RAM=$(param ram_gb 96) NEED=$(param need_s 5400)
 WAS=$PACKAGES/was/ltx-2.5 NOW=$PACKAGES/now/ltx-2.5 FIX=$(cd "$(dirname "$0")" && pwd)/fixtures/ltx-images
 for t in "$WAS" "$NOW"; do [ -f "$t/pyproject.toml" ] || fail "no packages_refs checkout ${t#"$PACKAGES"/}"; done
 grep -q 'last_frame' "$NOW/ltx_2_5/__init__.py" || fail "now's ltx-2.5 takes no last_frame"
-for c in ref ref-up ref-first sound pickup text-up first-up video video-edges motion keys; do
+for c in ref ref-up ref-first sound pickup text-up first-up video video-edges motion motion-text keys; do
   [[ ",$CELLS," != *",$c,"* ]] || grep -q 'prompt: Prompt\[Image' "$NOW/ltx_2_5/__init__.py" || fail "now's ltx-2.5 is older than references (cell $c)"
 done
 for c in ref ref-up ref-first voice ref-sheet ref-sheet-up; do
@@ -225,19 +227,20 @@ edge_ssim() {
   ffmpeg -v error -i "$OUT/edges-$(basename "$1")" -i "$OUT/edges-$(basename "$2")" -lavfi "[0:v]setpts=N/FRAME_RATE/TB[a];[1:v]setpts=N/FRAME_RATE/TB,scale=640:-2[b];[a][b]ssim=stats_file=$OUT/ssim-edges.txt" -f null - &&
     awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^All:/) { s += substr($i, 5); n++ } } END { printf "%.4f", s / n }' "$OUT/ssim-edges.txt"
 }
-if has video || has video-edges || has motion; then
+if has video || has video-edges || has motion || has motion-text; then
   src=$OUT/videos/was-text.mp4; [ -s "$src" ] || src=$OUT/videos/text.mp4
   if [ -s "$src" ]; then
     cp "$src" "$OUT/clip.mp4"
     run_page import "$OUT/clip.mp4" --name clip > "$OUT/import-clip.txt" 2>&1 || fail "import clip: $(cat "$OUT/import-clip.txt")"
     edged "$OUT/clip.mp4" 121; [ -s "$OUT/videos/text.mp4" ] && edged "$OUT/videos/text.mp4" 121
     FOX="A watercolor painting comes to life: a fox in a red scarf walks through an autumn forest the way <clip> moves, turns its head toward the camera. Rustling leaves."
-    for c in video video-edges motion; do
+    for c in video video-edges motion motion-text; do
       has "$c" || continue
       case $c in
         video) cell "$c" "$NOW" "$(now "$FOX")" ;;
         video-edges) cell "$c" "$NOW" "$(now "$FOX" | jq -c '. + {control: "edges"}')" ;;
         motion) cell "$c" "$NOW" "$(now "The girl in the painting walks slowly through a sunlit outdoor market and turns her head toward the camera, moving the way <clip> does. Market chatter." | jq -c '. + {control: "pose", first_frame: "<pearl>"}')" "$OUT/pearl.jpg" ;;
+        motion-text) cell "$c" "$NOW" "$(now "An astronaut in a white spacesuit walks slowly across a red Martian plain and turns his helmet toward the camera, moving the way <clip> does. Wind and the crunch of boots on gravel." | jq -c '. + {control: "pose"}')" ;;
       esac
       [ -s "$OUT/videos/$c.mp4" ] || continue
       edged "$OUT/videos/$c.mp4" 121
