@@ -59,7 +59,7 @@ test('secret-account', { tag: '@solo' }, async ({ page, project, guards, calcife
   try {
     await expect.poll(async () => (await answering(address))?.os_user, { message: `${OTHER} answers at ${address}`, timeout: 30_000 }).toBe(other);
     await create.click();
-    await expect(page.getByText(/runs as another account on this computer, so nothing secret was sent/), 'said in one line').toBeVisible({ timeout: 30_000 });
+    await expect.soft(page.getByText(/runs as another account on this computer, so nothing secret was sent/), 'said in one line').toBeVisible({ timeout: 30_000 });
     const seen = asked(log);
     expect(seen.filter((one) => one.passphrase), `what reached ${OTHER}'s process: ${JSON.stringify(seen)}`).toHaveLength(0);
     expect(seen.some((one) => one.method === 'GET' && one.path === '/v1/status'), `the page asked who answers: ${JSON.stringify(seen)}`).toBe(true);
