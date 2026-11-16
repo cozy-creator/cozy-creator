@@ -2393,10 +2393,11 @@ impl Calcifer {
                         (Some(machines), Some(row)) => machines.verified(&row, outcome).await,
                         _ => outcome,
                     };
-                    // Refused for its machine's Runtime: the machine moves, and the run goes again instead of failing (cl-1069).
+                    // Refused for its machine's Runtime: the machine moves, and the run goes again instead of failing (cl-1069). Boxed:
+                    // inline, its update's future grew every driver's past a dev build's 16 MiB stack.
                     if let Some(machines) = self.machines()
                         && let Ok(Some(row)) = self.with_run_store(id.as_str(), |store| store.run(id.as_str()))
-                        && let Some(refloor) = machines.refloored(&row, &outcome).await
+                        && let Some(refloor) = Box::pin(machines.refloored(&row, &outcome)).await
                     {
                         let on = row.machine.as_deref().unwrap_or_default();
                         let (elsewhere, said) = match refloor {

@@ -215,8 +215,8 @@ pub(super) async fn install(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option
         crate::maintenance_source::keep_derived(api,code,&source).map_err(Refusal)?;
         // Its machine's Runtime moves first to one its requirement admits, as a release's below (cl-1069).
         let mut notes = vec![];
-        if let Some(upgrade) = crate::runs::target::local_upgrade(api, hub.as_str(), &on, &source.package, source.needs.clone()).await.map_err(Refusal)?
-            && api.machines.upgrade(&upgrade).await.map_err(Refusal)?.is_some()
+        if let Some(upgrade) = Box::pin(crate::runs::target::local_upgrade(api, hub.as_str(), &on, &source.package, source.needs.clone())).await.map_err(Refusal)?
+            && Box::pin(api.machines.upgrade(&upgrade)).await.map_err(Refusal)?.is_some()
         {
             notes.push(upgrade.note().message);
         }

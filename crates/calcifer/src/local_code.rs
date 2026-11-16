@@ -1003,10 +1003,10 @@ pub(crate) async fn prepare(
     let submit = || SubmitRun { agreed: agreed.clone(), ..install_run(&home, origin.as_str(), on.clone(), &code) };
     let after = crate::private_io::current().is_none().then(|| crate::hub::after::After::Keep(code.filed()));
     // Its machine's Runtime moves first to one its requirement admits, as a published release's does (cl-952, cl-1069): the install
-    // waits behind that update.
+    // waits behind that update. Boxed, as their futures are large.
     if fresh
-        && let Some(upgrade) = crate::runs::target::local_upgrade(api, origin.as_str(), on, &code.package, code.needs.clone()).await?
-        && api.machines.upgrade(&upgrade).await?.is_some()
+        && let Some(upgrade) = Box::pin(crate::runs::target::local_upgrade(api, origin.as_str(), on, &code.package, code.needs.clone())).await?
+        && Box::pin(api.machines.upgrade(&upgrade)).await?.is_some()
         && crate::private_io::current().is_none()
     {
         // A project's own code stays out of Calcifer's log (cl-984).
