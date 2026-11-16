@@ -306,9 +306,7 @@ impl Runs {
                     sha256: artifact.sha256.clone(),
                     length: artifact.length,
                 };
-                let owner = identity(
-                    &json!({"workspace":self.workspace_id(),"actor":context.actor,"request":context.request_id,"asset":binding.asset_ref}),
-                )?;
+                let owner = retention_owner(&self.workspace_id(), &context.actor, &context.request_id, &binding.asset_ref)?;
                 let mut source = self
                     .service
                     .engine
@@ -854,6 +852,10 @@ fn reader(actor: VerifiedActor) -> Option<String> {
 fn canonical(value: &Value) -> Result<Vec<u8>, Error> {
     serde_json_canonicalizer::to_vec(value)
         .map_err(|_| Error::validation("invalid_request", "JSON value is outside canonical profile"))
+}
+/// What a run's retained asset is kept by (`products::retain`): its `native_outputs` row's owner.
+pub(crate) fn retention_owner(workspace: &str, actor: &str, request: &str, asset: &str) -> Result<String, Error> {
+    identity(&json!({"workspace":workspace,"actor":actor,"request":request,"asset":asset}))
 }
 fn identity(value: &Value) -> Result<String, Error> {
     Ok(format!(

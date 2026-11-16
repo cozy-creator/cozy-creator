@@ -404,6 +404,71 @@ impl Engine {
     pub(crate) fn installations(&self, actor: &str) -> io::Result<Vec<crate::journal::Installation>> {
         self.journal.lock().unwrap().installations(actor)
     }
+    /// The legacy hard cut on this machine (cl-1003, cl-1035), once, on a journal an earlier version kept (`Journal::legacy_runs`):
+    /// on this computer's (`local`), each ended run no project owns that retains nothing goes, with its result copies, spools, own logs
+    /// and triage bundles; each that retains an output stays without its words (`Journal::scrub_legacy`: its spools, logs and triage
+    /// go, its result copies stay); then the rows and what only the gone ones named go, and the journal is rewritten; the machine's diagnostics from before
+    /// (the daily logs in `logs`, `store_logs`, start.log, each ended executor's output), which may quote them, are emptied. Learned
+    /// memory peaks stay (anonymous). A rental's journal only takes the format: what it keeps is its projects'. The journal's copies an
+    /// earlier format kept beside it go. The format is written last: a stop anywhere before finds the cut due again at the next start,
+    /// files first, so none outlives its rows.
+    pub(crate) fn cut_legacy(&self, local: bool, logs: &Path, store_logs: &Path) {
+        match self.journal.lock().unwrap().legacy_cut_due() {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(error) => return tracing::warn!("the machine journal's format couldn't be read; its legacy cut waits for the next start: {error}"),
+        }
+        let cut = (|| -> io::Result<(usize, usize)> {
+            let mut cut = (0, 0);
+            if local {
+                let runs = self.journal.lock().unwrap().legacy_runs()?;
+                // Files first: a stop before the rows go leaves them for the next start to find again.
+                for id in runs.gone.iter().chain(&runs.kept) {
+                    let dirs: &[&str] = if runs.gone.contains(id) { &["results", "staging"] } else { &["staging"] };
+                    for dir in dirs { let _ = fs::remove_dir_all(self.root.join(dir).join(id.to_string())); }
+                }
+                for entry in fs::read_dir(self.root.join("logs")).into_iter().flatten().flatten() {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    let id = name.split('.').next().and_then(|id| id.parse::<i64>().ok());
+                    if id.is_some_and(|id| runs.gone.contains(&id) || runs.kept.contains(&id)) { let _ = fs::remove_file(entry.path()); }
+                }
+                for subject in runs.subjects.iter().filter(|subject| subject.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')) {
+                    let _ = fs::remove_file(self.root.join("triage").join(format!("{subject}.json")));
+                }
+                self.journal.lock().unwrap().delete_legacy(&runs.gone)?;
+                self.journal.lock().unwrap().scrub_legacy(&runs.kept)?;
+                self.journal.lock().unwrap().rewrite()?;
+                let empty = |path: &Path| {
+                    if fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_file()) {
+                        let _ = fs::OpenOptions::new().write(true).open(path).and_then(|file| file.set_len(0));
+                    }
+                };
+                for entry in fs::read_dir(logs).into_iter().flatten().flatten() {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if name == "tensord.log" || (name.starts_with("tensord.") && name.ends_with(".log")) { empty(&entry.path()); }
+                }
+                if let Some(state) = logs.parent() { empty(&state.join("start.log")); }
+                for name in ["memory.log", "memory.log.1", "transport.log", "transport.log.1"] { empty(&store_logs.join(name)); }
+                let engine = self.root.parent().unwrap_or(&self.root);
+                for entry in fs::read_dir(engine.join("gpu")).into_iter().flatten().flatten() {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if name.len() == 32 && name.bytes().all(|b| b.is_ascii_hexdigit()) {
+                        for log in ["stdout.log", "stderr.log", "codec.stderr.log"] { empty(&entry.path().join(log)); }
+                    }
+                }
+                cut = (runs.gone.len(), runs.kept.len());
+            }
+            for entry in fs::read_dir(&self.root).into_iter().flatten().flatten() {
+                if entry.file_name().to_string_lossy().starts_with("executions.format-") { fs::remove_file(entry.path())?; }
+            }
+            self.journal.lock().unwrap().legacy_cut_done()?;
+            Ok(cut)
+        })();
+        match cut {
+            Ok((gone, kept)) => tracing::info!(gone, kept, "the legacy cut left this machine's runs from before projects kept their own that retain nothing behind, and kept the others without their words"),
+            Err(error) => tracing::warn!("the machine journal's legacy cut stopped; the next start finishes it: {error}"),
+        }
+    }
     /// Short journal reads and writes that need no execution state transition.
     pub(crate) fn with_journal<T>(&self, f: impl FnOnce(&mut Journal) -> io::Result<T>) -> io::Result<T> {
         f(&mut self.journal.lock().unwrap())

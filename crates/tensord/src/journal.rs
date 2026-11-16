@@ -579,8 +579,9 @@ pub(crate) struct Journal {
 }
 
 /// The record layout this machine writes. A newer journal still opens: unknown fields are
-/// ignored and rows it cannot read are skipped, never a refusal of the whole journal.
-pub(crate) const JOURNAL_FORMAT: u32 = 2;
+/// ignored and rows it cannot read are skipped, never a refusal of the whole journal. 3: no run
+/// that ended here before projects kept their own is left (`cut_legacy`).
+pub(crate) const JOURNAL_FORMAT: u32 = 3;
 const FILE: &str = "executions.sqlite3";
 /// One unreadable row (written by a newer machine, or damaged) must not hide every other run.
 fn readable(rows: Vec<String>) -> Vec<Execution> {
@@ -844,6 +845,118 @@ impl Journal {
         tx.commit().map_err(db_error)?;
         let secure: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM machine_metadata WHERE key='secure_delete')", [], |row| row.get(0)).map_err(db_error)?;
         if secure { self.truncate_wal() } else { self.compact() }
+        Ok(())
+    }
+
+    /// Whether this journal is an earlier version's (format below 3), whose legacy cut (`Engine::cut_legacy`) is still due.
+    pub(crate) fn legacy_cut_due(&self) -> io::Result<bool> {
+        let format: Option<u32> = self.connection.query_row("SELECT value FROM machine_metadata WHERE key='journal_format'", [], |row| row.get::<_, String>(0))
+            .optional().map_err(db_error)?.and_then(|format| format.parse().ok());
+        Ok(format.is_none_or(|format| format < 3))
+    }
+
+    /// The legacy cut's runs (cl-1003, cl-1035), each of a family (a root and its children) that ended and no project owns: `gone`, a
+    /// family that retains nothing (no asset of theirs has a `native_outputs` row); `kept`, one with an output retained, which its client
+    /// never released, so the run stays, wordless (`scrub_legacy`). A project's runs and a family still going are neither. With their
+    /// triage subjects.
+    pub(crate) fn legacy_runs(&self) -> io::Result<LegacyRuns> {
+        let rows: Vec<(i64, String, bool, String)> = {
+            let mut statement = self.connection.prepare("SELECT id, COALESCE(NULLIF(json_extract(invocation,'$.root'),''), CAST(id AS TEXT)),
+                json_extract(invocation,'$.local_private.project_id') IS NULL AND state IN ('completed','failed','canceled'), record FROM executions").map_err(db_error)?;
+            let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).map_err(db_error)?;
+            rows.collect::<Result<_, _>>().map_err(db_error)?
+        };
+        let (mut live, mut retained) = (std::collections::HashSet::new(), std::collections::HashSet::new());
+        for (_, family, ended, record) in &rows {
+            if !ended { live.insert(family.clone()); } else if self.retains(record)? { retained.insert(family.clone()); }
+        }
+        let mut runs = LegacyRuns::default();
+        for (id, family, _, _) in rows.into_iter().filter(|(_, family, _, _)| !live.contains(family)) {
+            let triage: Option<String> = self.connection.query_row("SELECT record FROM triage WHERE execution=?1", [id], |row| row.get(0)).optional().map_err(db_error)?;
+            runs.subjects.extend(triage.and_then(|record| serde_json::from_str::<Value>(&record).ok()?.get("subject_id")?.as_str().map(String::from)));
+            match retained.contains(&family) { true => runs.kept.push(id), false => runs.gone.push(id) }
+        }
+        Ok(runs)
+    }
+
+    /// Whether a run's record names an asset still retained here (`native_outputs`). One that can't be read is kept.
+    fn retains(&self, record: &str) -> io::Result<bool> {
+        let Ok(record) = decoded_execution(record) else { return Ok(true) };
+        let (Some(context), Some(result)) = (&record.submission, &record.result) else { return Ok(false) };
+        for binding in &result.asset_bindings {
+            let owner = crate::runs::retention_owner(&self.workspace_id, &context.actor, &context.request_id, &binding.asset_ref)
+                .map_err(|error| db_error(error.message))?;
+            let held: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM native_outputs WHERE owner=?1)", [metadata_actor(&owner)], |row| row.get(0))
+                .map_err(db_error)?;
+            if held { return Ok(true); }
+        }
+        Ok(false)
+    }
+
+    /// `ids` deleted with every row of theirs, and the memos, uploads bound to no project and uses only they named; every
+    /// `native_outputs` row stays.
+    pub(crate) fn delete_legacy(&mut self, ids: &[i64]) -> io::Result<()> {
+        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
+        let mut digests = std::collections::BTreeSet::new();
+        for id in ids {
+            let (invocation, record): (String, String) = tx.query_row("SELECT invocation,record FROM executions WHERE id=?1", [id], |row| Ok((row.get(0)?, row.get(1)?))).map_err(db_error)?;
+            for text in [invocation, record] {
+                if let Ok(value) = serde_json::from_str::<Value>(&text) { named_digests(&value, &mut digests); }
+            }
+            {
+                let mut statement = tx.prepare("SELECT sha256 FROM run_objects WHERE execution=?1").map_err(db_error)?;
+                for row in statement.query_map([id], |row| row.get::<_, String>(0)).map_err(db_error)? { digests.insert(row.map_err(db_error)?); }
+            }
+            delete_execution(&tx, *id)?;
+        }
+        for sha256 in &digests {
+            let named: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM run_objects WHERE sha256=?1)", [sha256], |row| row.get(0)).map_err(db_error)?;
+            if named { continue; }
+            crate::project_objects::drop_naming(&tx, sha256)?;
+            tx.execute("DELETE FROM objects WHERE sha256=?1 AND substr(actor,1,14)<>'local-private:'", [sha256]).map_err(db_error)?;
+            tx.execute("DELETE FROM object_uses WHERE sha256=?1 AND NOT EXISTS(SELECT 1 FROM objects WHERE sha256=?1)
+                AND NOT EXISTS(SELECT 1 FROM held_memo_objects WHERE sha256=?1)", [sha256]).map_err(db_error)?;
+        }
+        tx.commit().map_err(db_error)
+    }
+
+    /// Each of `ids` (a kept legacy run, `legacy_runs`) without its words (Paul 11-15: an encrypted project made from a plain one leaves
+    /// no plaintext): its record and index as `wordless` makes them; its spec, log lines, calls, products, made outcome and triage
+    /// rows deleted, and the memos of what it computed. Its identity, family, scope, objects, artifacts and asset bindings stay: what
+    /// its retained outputs are kept, read and released by. A reader of it after this (a client collecting it) gets its outcome made
+    /// again from that record (`Runs::terminal`): its files as before, its words blank.
+    pub(crate) fn scrub_legacy(&mut self, ids: &[i64]) -> io::Result<()> {
+        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
+        for id in ids {
+            let record: String = tx.query_row("SELECT record FROM executions WHERE id=?1", [id], |row| row.get(0)).map_err(db_error)?;
+            // One that can't be read is kept as it is.
+            let Ok(record) = decoded_execution(&record) else { continue };
+            if !record.memo.computation.is_empty() {
+                for table in ["held_memo_objects", "held_memos"] {
+                    tx.execute(&format!("DELETE FROM {table} WHERE computation=?1"), [&record.memo.computation]).map_err(db_error)?;
+                }
+            }
+            let record = wordless(record);
+            tx.execute("UPDATE executions SET invocation=?2, record=?3 WHERE id=?1", params![id, invocation_index(&record.invocation)?, encoded_execution(&record)?])
+                .map_err(db_error)?;
+            for table in ["run_specs", "run_logs", "run_log_lengths", "package_log_dropped", "run_calls", "run_products", "public_terminals", "triage"] {
+                tx.execute(&format!("DELETE FROM {table} WHERE execution=?1"), [id]).map_err(db_error)?;
+            }
+        }
+        tx.commit().map_err(db_error)
+    }
+
+    /// The journal rewritten when its free space may hold older copies of its rows (born before `secure_delete`), else its WAL emptied.
+    pub(crate) fn rewrite(&self) -> io::Result<()> {
+        let secure: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM machine_metadata WHERE key='secure_delete')", [], |row| row.get(0)).map_err(db_error)?;
+        if secure { self.truncate_wal() } else { self.compact() }
+        Ok(())
+    }
+
+    /// The legacy cut done: the format, written last, so a stop before it finds the cut due again.
+    pub(crate) fn legacy_cut_done(&mut self) -> io::Result<()> {
+        self.connection.execute("INSERT OR REPLACE INTO machine_metadata(key,value) VALUES('journal_format',?1)", [JOURNAL_FORMAT.to_string()]).map_err(db_error)?;
+        self.truncate_wal();
         Ok(())
     }
 
@@ -1532,6 +1645,39 @@ fn named_digests(value: &Value, found: &mut std::collections::BTreeSet<String>) 
         Value::Object(fields) => fields.values().for_each(|item| named_digests(item, found)),
         _ => {}
     }
+}
+
+/// The legacy cut's runs (`Journal::legacy_runs`).
+#[derive(Default)]
+pub(crate) struct LegacyRuns {
+    pub gone: Vec<i64>,
+    pub kept: Vec<i64>,
+    pub subjects: Vec<String>,
+}
+
+/// A kept legacy run's record without the words its client sent or it said: its input and its inputs' field names, every string of
+/// its result's value but its assets' references and digests, its adjustments, and its waiting, progress and failure words.
+fn wordless(mut record: Execution) -> Execution {
+    fn blank(value: &mut Value, keep: &std::collections::HashSet<String>) {
+        match value {
+            Value::String(text) if !keep.contains(text.as_str()) && !text.starts_with("sha256:") => text.clear(),
+            Value::Array(items) => items.iter_mut().for_each(|item| blank(item, keep)),
+            Value::Object(fields) => fields.values_mut().for_each(|item| blank(item, keep)),
+            _ => {}
+        }
+    }
+    record.invocation.input = Value::Object(Default::default());
+    for input in &mut record.invocation.inputs { input.input_id.clear(); }
+    record.waiting = None;
+    record.progress = None;
+    if let Some(failure) = &mut record.failure { failure.clear(); }
+    record.memo.unmemoized.clear();
+    if let Some(result) = &mut record.result {
+        let references = result.asset_bindings.iter().map(|binding| binding.asset_ref.clone()).collect();
+        blank(&mut result.value, &references);
+        result.adjustments.clear();
+    }
+    record
 }
 
 fn delete_execution(tx: &rusqlite::Transaction<'_>, id: i64) -> io::Result<()> {
