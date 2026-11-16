@@ -4,8 +4,9 @@ async function containmentProof(input) {
   const card = () => document.querySelector(`.card.here[data-asset="${CSS.escape(input.asset)}"]`) ?? document.querySelector(`.react-flow__node .card[data-asset="${CSS.escape(input.asset)}"]`);
   switch (input.kind) {
     case 'ready':
-      // Nothing is injected into the owned page: it works with no credential of its own.
-      return { page_ready: typeof globalThis.__cozyFreeze === 'function' && typeof globalThis.__cozyPrepareClose === 'function', cards: document.querySelectorAll('.card[data-asset]').length, owned_injected: '__cozyOwned' in globalThis };
+      // Nothing is injected into the owned page: it works with no credential of its own. Its boxes: the canvas's list of them (cl-991's
+      // Pixi canvas draws no DOM card at rest), else what the canvas names.
+      return { page_ready: typeof globalThis.__cozyFreeze === 'function' && typeof globalThis.__cozyPrepareClose === 'function', cards: document.querySelectorAll('.canvas-cards [data-asset]').length || (document.querySelector('.canvas-root')?.canvasInspection?.names().length ?? 0), owned_injected: '__cozyOwned' in globalThis };
     case 'diagnose': {
       // Closed booleans and counts only: no URL, resource name or page text leaves the page.
       const gate = document.querySelector('main.gate')?.textContent ?? '';
