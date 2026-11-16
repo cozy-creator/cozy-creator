@@ -845,9 +845,14 @@ case $SHARD in
   typed-calls) parts="typed_calls logs" ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
   coming) parts="coming_machine logs" ;;
-  # `cozy update`, its own runner, as it replaces this computer's cozy: the Latest updating to the candidate, then cozy updating
-  # itself for a package that needs a newer cozy (cl-978).
-  selfupdate) parts="self_forward self_update logs" ;;
+  # `cozy update`, its own runner, as it replaces this computer's cozy: a newer release offered at a terminal (cl-1069), the Latest
+  # updating to the candidate, then cozy updating itself for a package that needs a newer cozy (cl-978).
+  selfupdate) parts="
+    update_offer
+    self_forward
+    self_update
+    logs
+  " ;;
   # By hand: the control-plane audit's cells alone (control.sh).
   control) parts="
     machine_show_runs
