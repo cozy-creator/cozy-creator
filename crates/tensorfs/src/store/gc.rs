@@ -429,6 +429,10 @@ impl Store {
     /// As `collect_locked`, of the checkpoints only a guess brought (`Store::guess`) alone, least recently used first, as far
     /// as `need` asks: they go whether or not they free it all.
     pub(super) fn collect_guessed(&self, need: u64) -> Result<Collected> {
+        // With none, as on any store no guess has reached, there is nothing to walk for.
+        if self.guesses().is_empty() {
+            return Ok(Collected::default());
+        }
         self.collect(need, Duration::ZERO, true)
     }
 
