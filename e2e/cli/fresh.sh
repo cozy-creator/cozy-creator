@@ -103,7 +103,7 @@ fresh_torch() {
   COZY_DOWNLOAD_URL="$FRESH_URL" sh "$OUT/fresh-release/cozy-installer.sh" < /dev/null > "$OUT/fresh-torch.txt" 2>&1 \
     || check "fresh: PyTorch: the installer failed: $(tail -c 400 "$OUT/fresh-torch.txt")"
   grep PyTorch "$OUT/fresh-torch.txt" || true
-  base=$(ls -d "$engine"/torch-*/pyvenv.cfg 2> /dev/null | head -1)
+  base=$(ls -d "$engine"/torch-*/pyvenv.cfg 2> /dev/null | head -1 || true)
   base=${base%/pyvenv.cfg}
   [ -n "$base" ] || check "fresh: PyTorch: no torch-<version> after the install: $(grep PyTorch "$OUT/fresh-torch.txt" | tail -1)"
   cozy --json machine show local > "$OUT/fresh-torch-machine.json" 2>&1 || true

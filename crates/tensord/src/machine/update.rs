@@ -109,6 +109,7 @@ impl Status {
             ("waiting_activation", 1) => "waiting for a run in flight to end".into(),
             ("waiting_activation", n) => format!("waiting for {n} runs in flight to end"),
             ("queued", _) => "waiting for the machine's start or the update in progress to end".into(),
+            ("installing_torch", _) if self.bytes == 0 => "installing this machine's PyTorch".into(),
             ("installing_torch", _) => format!("installing this machine's PyTorch, {} so far", crate::reclaim::size(self.bytes)),
             _ => String::new(),
         }
