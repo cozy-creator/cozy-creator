@@ -446,6 +446,8 @@ WEB_1=(
   timeline
   open
   gone
+  references
+  previews
 )
 WEB_2=(
   fields
@@ -455,6 +457,9 @@ WEB_2=(
   delete-undo
   canvas-nav
   resize
+  isolation
+  input
+  hover
 )
 WEB_3=(
   focus
@@ -465,6 +470,12 @@ WEB_3=(
   select
   move
   svg
+  density
+  keyboard
+  steady
+  rendering
+  glloss
+  nogpu
 )
 # The `@engines` cells in Firefox, and the vault (`@vault`), which needs the filesystem driver.
 WEB_ENGINES=(
@@ -474,6 +485,9 @@ WEB_ENGINES=(
   move
   open
   vault
+  glloss
+  keyboard
+  input
 )
 # What stops, restarts or re-points Calcifer, or needs the job to itself (`@solo`), one at a time, with the filesystem driver.
 WEB_SOLO=(
