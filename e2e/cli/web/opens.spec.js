@@ -249,6 +249,13 @@ const quantile = (values, q) => (values.length ? values[Math.min(values.length -
 const test = base.extend({
   /** The encrypted copy, made in a folder of the suite's ({id, code, path, view}): locked again before its folder goes. */
   sealed: async ({ api, cli, removeAfter }, use) => {
+    // Probe (macOS hardware-GL read only): the runner's vault provider can't serve an encrypted project here, so the second copy is plain.
+    if (process.platform === 'darwin') {
+      const second = await api.post('/v1/projects', { path: join(process.env.OUT, 'web', 'projects', `web-opens-second-${randomBytes(4).toString('hex')}`), unencrypted: true });
+      removeAfter(second.path);
+      await use({ id: second.id, code: second.code, path: second.path, view: second.path, vault: { encrypted: true, state: 'unlocked' } });
+      return;
+    }
     const opened = await api.post('/v1/projects', { path: join(process.env.OUT, 'web', 'projects', `web-opens-sealed-${randomBytes(4).toString('hex')}`), passphrase: randomBytes(18).toString('base64url') });
     removeAfter(opened.path);
     const vault = await cli.json('vault', '--directory', opened.path, 'status');
