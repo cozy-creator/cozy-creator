@@ -243,15 +243,35 @@ fn held_header(ranges: &[(u64, u64)]) -> (axum::http::HeaderName, HeaderValue) {
 /// The write that completes it answers `201` once its bytes hash to its name, and one that finds it held `200`.
 pub(crate) async fn project_put(State(api): State<Arc<Api>>, Query(scope): Query<UploadScope>, UrlPath(name): UrlPath<String>, headers: HeaderMap, body: Body) -> Result<Response, Refusal> {
     if scope.project.is_none() { return Err(Refusal(Error::new(Kind::Usage, "project_upload_scope", "a project upload must name its project"))); }
-    let _admission = crate::project::vault::admit_project(&api, scope.project.as_deref().expect("checked scope")).await.map_err(Refusal)?;
-    put_in(scoped(&api, &scope)?, name, headers, body).await
+    let (root, held) = crate::project::vault::admit_project_root(&api, scope.project.as_deref().expect("checked scope")).await.map_err(Refusal)?;
+    put_in(scoped(&api, &scope)?, name, headers, body, Some(Gate { root, held })).await
 }
 
 pub(crate) async fn put(UrlPath(name): UrlPath<String>, headers: HeaderMap, body: Body) -> Result<Response, Refusal> {
-    put_in(store().map_err(Refusal)?.clone(), name, headers, body).await
+    put_in(store().map_err(Refusal)?.clone(), name, headers, body, None).await
 }
 
-async fn put_in(storage: Arc<Store>, name: String, headers: HeaderMap, body: Body) -> Result<Response, Refusal> {
+/// A project upload's hold on its project's gate: let go while a lock waits for the project, and asked for again, so a long body never
+/// holds the lock up (cl-1025). The lock has the project first; locked, the upload ends, and resumes from what's held once it's unlocked.
+struct Gate {
+    root: PathBuf,
+    held: tokio::sync::OwnedRwLockReadGuard<()>,
+}
+
+impl Gate {
+    /// Still held, or held again after a lock that waited let go: Err, it locked.
+    fn kept(self) -> Result<Self, Refusal> {
+        if !crate::project::vault::lock_waiting(&self.root) {
+            return Ok(self);
+        }
+        let Gate { root, held } = self;
+        drop(held);
+        let held = tokio::runtime::Handle::current().block_on(crate::project::vault::admit_root(&root)).map_err(Refusal)?;
+        Ok(Gate { root, held })
+    }
+}
+
+async fn put_in(storage: Arc<Store>, name: String, headers: HeaderMap, body: Body, gate: Option<Gate>) -> Result<Response, Refusal> {
     let digest = named(&name)?;
     let (start, end, length) = span(&headers)?;
     let answer = |status: StatusCode, path: &Path| -> Result<Response, Refusal> {
@@ -263,6 +283,9 @@ async fn put_in(storage: Arc<Store>, name: String, headers: HeaderMap, body: Bod
         if held.length != length {
             return Err(Refusal(Error::new(Kind::Conflict, "file_length_conflict", format!("{digest} is held as {} bytes, not {length}", held.length))));
         }
+        let answered = answer(StatusCode::OK, &path);
+        // Nothing of the project is written: the rest of the body is read with no hold on it.
+        drop(gate);
         // An already-held object needs no write, but the caller still sends this body. Leaving
         // it unread makes HTTP/1 close the connection when the remainder is not buffered yet.
         let mut stream = body.into_data_stream();
@@ -277,18 +300,26 @@ async fn put_in(storage: Arc<Store>, name: String, headers: HeaderMap, body: Bod
         if at != end {
             return Err(Refusal(Error::new(Kind::Usage, "invalid_range", "the body is shorter than its Content-Range")));
         }
-        return answer(StatusCode::OK, &path);
+        return answered;
     }
     let upload = opened(storage.clone(), digest, length).await?;
     let (sender, mut receiver) = tokio::sync::mpsc::channel::<Bytes>(8);
     let landing = upload.clone();
-    let writer = tokio::task::spawn_blocking(move || -> Result<Settled, Refusal> {
-        let (mut at, mut wrote) = (start, Ok(()));
-        let mut writer = landing.partial.lock().expect("partial lock").as_ref().map(Partial::writer).transpose().map_err(refused)?;
+    let writer = tokio::task::spawn_blocking(move || -> Result<(Settled, Option<Gate>), Refusal> {
+        let (mut at, mut wrote, mut gate) = (start, Ok(()), gate);
+        let open = || landing.partial.lock().expect("partial lock").as_ref().map(Partial::writer).transpose().map_err(refused);
+        let mut writer = open()?;
         while let Some(data) = receiver.blocking_recv() {
             if at + data.len() as u64 > end {
                 wrote = Err(Refusal(Error::new(Kind::Usage, "invalid_range", "the body is longer than its Content-Range")));
                 break;
+            }
+            // A lock waits for the project: what this holds of it is let go, its file closed, until the lock has had its turn.
+            if gate.as_ref().is_some_and(|gate| crate::project::vault::lock_waiting(&gate.root)) {
+                drop(writer.take());
+                // Locked meanwhile: what's written stays held, and the upload goes on from it once the project is unlocked.
+                gate = Some(gate.take().expect("a gate").kept()?);
+                writer = open()?;
             }
             // An upload that ended meanwhile takes no more.
             let live = writer.as_mut().filter(|_| !landing.ended.load(Ordering::Acquire));
@@ -299,8 +330,12 @@ async fn put_in(storage: Arc<Store>, name: String, headers: HeaderMap, body: Bod
             at += data.len() as u64;
         }
         drop(receiver);
+        let gate = match (gate, &wrote) {
+            (Some(gate), Ok(())) => Some(gate.kept()?),
+            (gate, _) => gate,
+        };
         let settled = landing.settle()?;
-        wrote.map(|()| settled)
+        wrote.map(|()| (settled, gate))
     });
     let (mut stream, mut unread) = (body.into_data_stream(), None);
     while let Some(frame) = stream.next().await {
@@ -318,7 +353,7 @@ async fn put_in(storage: Arc<Store>, name: String, headers: HeaderMap, body: Bod
         }
     }
     drop(sender);
-    let settled = writer.await.map_err(|e| Refusal(Error::new(Kind::Internal, "file_unwritable", e.to_string())))??;
+    let (settled, _gate) = writer.await.map_err(|e| Refusal(Error::new(Kind::Internal, "file_unwritable", e.to_string())))??;
     if let Some(refusal) = unread {
         return Err(refusal);
     }

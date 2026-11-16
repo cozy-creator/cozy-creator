@@ -106,7 +106,12 @@ impl fmt::Display for Cut {
 impl Clips {
     /// `range` of `source`, whose rate is `fps`, as a clip or a picture: the one cut before for this version of the file, else
     /// cut now. What it did is said in `notes`.
-    pub(crate) async fn cut(&self, field: &str, source: &Path, range: Range, fps: f64, notes: &mut Vec<Note>, access: OwnedRwLockReadGuard<()>) -> Result<Cut, Error> {
+    /// ffmpeg, found or fetched: before the project's gate is taken for a cut, so a lock queued on it never waits for a download (cl-1025).
+    pub(crate) async fn ffmpeg(&self) -> Result<crate::tools::Ffmpeg, Error> {
+        crate::tools::ffmpeg(&self.home, &|line| tracing::info!("{line}")).await
+    }
+
+    pub(crate) async fn cut(&self, field: &str, source: &Path, range: Range, fps: f64, notes: &mut Vec<Note>, ffmpeg: crate::tools::Ffmpeg, access: OwnedRwLockReadGuard<()>) -> Result<Cut, Error> {
         fn say(notes: &mut Vec<Note>, message: String) {
             notes.push(Note { level: NoteLevel::Info, message });
         }
@@ -133,7 +138,6 @@ impl Clips {
             say(notes, format!("{field}: {} of {}, cut before: {}", range.timed(fps), source.display(), clip.display()));
             return Ok(cut);
         }
-        let ffmpeg = crate::tools::ffmpeg(&self.home, &|line| tracing::info!("{line}")).await?;
         let past = within(&ffmpeg, field, source, range, fps)?;
         if let Some(end) = past {
             notes.push(Note { level: NoteLevel::Warning, message: format!("{field}: {} runs past the end of {}: cut to its end, {}", range.timed(fps), source.display(), clock(end)) });

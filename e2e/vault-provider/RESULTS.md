@@ -42,6 +42,7 @@ Rerun (no account, rental, daemon, model or user project):
 
 ```sh
 python3 e2e/vault-provider/run.py --probe <built-vault-provider> --securefs <prepared-provider> --artifacts <new-output-directory>
+<built-vault-provider> throughput <securefs> <new-output-directory> <bytes>   # {write_MBps, read_MBps}
 ```
 
-The existing manual `dev-build` workflow provides `build=vault-provider` for each standard runner. Release preparation verifies helper archive hashes at download and build, embeds them in the single self-updating Cozy executable, and retains license notices. Linux optional encryption requires glibc2.34+ and FUSE2; ordinary projects retain the CLI's existing platform floor. macOS needs no extra filesystem driver; Windows requires WinFsp and the x64 VC runtime.
+The existing manual `dev-build` workflow provides `build=vault-provider` for each standard runner. Release preparation verifies helper archive hashes at download and build, embeds them in the single self-updating Cozy executable, and retains license notices. Linux optional encryption requires FUSE (`/dev/fuse` and `fusermount3` or `fusermount`; the static provider links musl and libfuse in); ordinary projects retain the CLI's existing platform floor. macOS needs no extra filesystem driver; Windows requires WinFsp and the x64 VC runtime.

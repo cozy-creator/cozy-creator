@@ -207,6 +207,10 @@
   font-size: 18px;
 }
 /* Models & LoRAs in Focus opens in front of the picture, rising from its button, so the picture keeps its size (Paul, 11-15). */
+/* Open, the tool line and its picker lie over the frame's own corner controls (zoom, shape: z-index 8-10), so every row takes its click. */
+.focus-card > .image-controls:has(> .model-picker) {
+  z-index: 12;
+}
 .focus-card > .image-controls > .model-picker {
   position: absolute;
   bottom: calc(100% + 8px);

@@ -47,6 +47,7 @@ parse "$@"
 . "$(dirname "$0")/rentalself.sh"
 . "$(dirname "$0")/reports.sh"
 . "$(dirname "$0")/endedlogs.sh"
+. "$(dirname "$0")/fresh.sh"
 . "$(dirname "$0")/typedcalls.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
@@ -81,7 +82,7 @@ step candidates; candidates
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
 # web_serves reads what the gate costs from Calcifer's Server-Timing, which it sends only with its diagnostics on (cl-985); coming keeps
 # its project's walk log (.vault-calcifer/diagnostics/walk.log) with them on.
-case $SHARD in projectvault | plan | stuck | coming) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* ]] || calcifer_diagnostics ;; esac
+case $SHARD in projectvault | projectvault-static | plan | stuck | coming) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* ]] || calcifer_diagnostics ;; esac
 }
 
 # A vault failure names its reason, and web_serves reads the gate's Server-Timing: Calcifer started again with config.toml's
@@ -683,6 +684,8 @@ case $SHARD in
   " ;;
   # Calcifer restarted on a large store, its disk slow (cl-1010).
   restart) parts="state_restart logs" ;;
+  # What cozy needs is on the computer once its installer is done (cl-1030): Linux, macOS and Windows.
+  fresh) parts="fresh_install logs" ;;
   web-1) web_cells=(${WEB_1[@]+"${WEB_1[@]}"}); parts="web_lane logs" ;;
   web-2) web_cells=(${WEB_2[@]+"${WEB_2[@]}"}); parts="web_lane logs" ;;
   web-3) web_cells=(${WEB_3[@]+"${WEB_3[@]}"}); parts="web_lane logs" ;;
@@ -741,9 +744,15 @@ case $SHARD in
   projectdb-closes) parts="db_closes logs" ;;
   # cl-1000: a runner with no FUSE (e2e.yaml installs no vault driver for it).
   projectvault-nofuse) parts="vault_no_fuse logs" ;;
+  # cl-1000: the static provider timed beside the glibc build, then on FUSE 3 alone through cozy, then on fresh Ubuntu and Fedora
+  # (e2e.yaml builds the probe and installs fuse3 and libfuse2t64 for it).
+  projectvault-static) parts="vault_throughput vault_fuse3 vault_distros logs" ;;
+  # Its containers alone (dispatch only).
+  projectvault-static-distros) parts="vault_distros logs" ;;
   projectvault) parts="
     idle_vault
     vault_times
+    vault_queue
     shared_scratch
     open_unlocks
     projectvault
@@ -841,7 +850,7 @@ esac
 # is the same lane there.
 if [ -z "$LOCAL" ] && [ "$parts" != "web_lane logs" ]; then
   case $SHARD in
-    entrypoints | projectvault | web-serves | notraces | typed-calls) ;;
+    entrypoints | projectvault | web-serves | notraces | fresh | typed-calls) ;;
     web-*) parts="web_alone logs" ;;
     *) parts="
       entrypoints

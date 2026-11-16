@@ -6,15 +6,13 @@
 const { defineConfig } = require('@playwright/test');
 const { tmpdir } = require('os');
 const { join } = require('path');
+const { chromeArgs } = require('./chrome');
 
 const out = join(process.env.OUT || tmpdir(), 'web');
-// A runner has no GPU, so each browser draws WebGL in software. The canvas asks for a context without a major performance caveat
-// (CanvasSurface.tsx); Chrome's SwiftShader is named so it never rests on Chrome's deprecated automatic fallback, and Firefox is told to
-// give its software context without the caveat, as Chrome's does. The browser's setting, not the page's: each cell's bars stand.
-// A runner has no GPU but a Mac's. Linux's Chrome draws WebGL on SwiftShader with no major performance caveat; Windows' Chrome flags it,
-// so there ANGLE takes SwiftShader as its device (as layout.spec.js does everywhere).
-const SOFTWARE = { linux: ['--enable-unsafe-swiftshader'], win32: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] };
-const chrome = { browserName: 'chromium', launchOptions: { executablePath: process.env.CHROME, args: SOFTWARE[process.platform] ?? [] } };
+// A runner has no GPU, so each browser draws WebGL in software (chrome.js). The canvas asks for a context without a major performance
+// caveat (CanvasSurface.tsx); Firefox is told to give its software context without the caveat, as Chrome's does. The browser's setting,
+// not the page's: each cell's bars stand.
+const chrome = { browserName: 'chromium', launchOptions: { executablePath: process.env.CHROME, args: chromeArgs() } };
 // Headless Firefox makes no WebGL context on Linux; web.sh gives it a virtual display (FIREFOX_DISPLAY) and Mesa's software GL there.
 const firefox = {
   browserName: 'firefox',

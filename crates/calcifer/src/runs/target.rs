@@ -210,7 +210,7 @@ fn parse(document: &serde_json::Value) -> Result<Interface, Error> {
 pub(crate) async fn published(api: &Arc<Api>, hub: &str, text: &str, on: Option<&On>, wake: bool) -> Result<Resolved, Error> {
     let Published { package, function, release, owned } = Published::parse(text.trim())?;
     let held = match on {
-        Some(on) => Some(Held::read(api, hub, on, wake).await),
+        Some(on) => Some(crate::stages::stage("machine", Held::read(api, hub, on, wake)).await),
         None => None,
     };
     let holds = |package: &str| held.as_ref().is_some_and(|held| !held.releases(package).is_empty());
@@ -218,7 +218,7 @@ pub(crate) async fn published(api: &Arc<Api>, hub: &str, text: &str, on: Option<
         let Found { card, from, moved, upgrade, cozy } = release_of(api, hub, owned, None, held.as_ref()).await?;
         return Ok(Resolved::Release { package: owned.clone(), function: None, card, release, from, moved, upgrade, cozy });
     }
-    let root = release_of(api, hub, &package, release.as_deref(), held.as_ref()).await;
+    let root = crate::stages::stage("release card", release_of(api, hub, &package, release.as_deref(), held.as_ref())).await;
     let (package, function, Found { card, from, moved, upgrade, cozy }) = match (root, owned) {
         (Ok(found), _) => (package, function, found),
         (Err(e), Some(owned)) if matches!(e.kind, Kind::NotFound | Kind::Usage) => {
@@ -261,7 +261,7 @@ impl Held {
     /// The machine `on` names, or the rental `any` would take now, as it answers now (`wake`: `local` starts for it);
     /// nothing for a machine still to come.
     async fn read(api: &Arc<Api>, hub: &str, on: &On, wake: bool) -> Self {
-        let (machine, environments) = api.machines.holds(on, wake).await.unwrap_or_default();
+        let (machine, environments) = crate::stages::stage("machine status", api.machines.holds(on, wake)).await.unwrap_or_default();
         let environments = match crate::private_io::current().filter(|_| machine == "local") {
             Some(scope) => api.machines.project_holds(scope).await,
             None => environments,
@@ -269,7 +269,7 @@ impl Held {
         let rc = api.machines.takes_rc(&machine, on);
         let (runtime, runtimes, moves, newer) = match api.machines.frame(&machine).filter(|frame| !frame.runtime.is_empty()) {
             Some(frame) => {
-                let (runtimes, moves, newer) = api.machines.runtimes(&machine, &frame, rc).await;
+                let (runtimes, moves, newer) = crate::stages::stage("runtimes", api.machines.runtimes(&machine, &frame, rc)).await;
                 (frame.runtime, runtimes, moves, newer)
             }
             None => (String::new(), vec![], api::release::Moves::No, None),

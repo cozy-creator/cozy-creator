@@ -18,6 +18,10 @@ Windows (PowerShell):
 irm https://tensorhub.com/install.ps1 | iex
 ```
 
+The installer then runs `cozy doctor --fix`, which installs what cozy needs on the computer: FUSE on Linux and WinFsp on Windows
+(encrypted projects), git, and a C compiler where there's an NVIDIA GPU. It asks once before using sudo; with no terminal it prints the
+command instead. It also fetches ffmpeg and uv, so first use downloads nothing.
+
 Both put `cozy` in `~/.cozy/bin` and on your PATH for new terminals: open a new one, or run the line
 the installer prints. `cozy update` moves to the newest release (`cozy update 0.12.0` to a given one): it checks the
 release's signature, restarts Calcifer on it, and the local machine follows once idle. Homebrew's cozy updates with
@@ -102,7 +106,7 @@ rent a Linux GPU, or `--on <machine>` for one you have. Run project commands fro
 Project synchronization is planned as an optional per-project Calcifer setting.
 
 `cozy doctor` diagnoses this computer's cozy (Calcifer, its service, the machine, tools, GPUs) and
-restarts a Calcifer that is stuck or runs an older cozy.
+restarts a Calcifer that is stuck or runs an older cozy. `cozy doctor --fix` also installs what it finds missing.
 
 ## Projects
 
