@@ -47,6 +47,7 @@ export function inspection(o: Sources) {
       chips: card.drawn.chips.map((chip) => ({ text: chip.text, missing: chip.struck, struck: chip.struck, ...screen(chip.box, origin, scale)! })),
       controls: card.drawn.controls.map((control) => ({ part: control.part, ...screen(control.box, origin, scale)! })),
       stateDot: screen(card.drawn.dot, origin, scale), meter: screen(card.drawn.meter, origin, scale),
+      parts: Object.fromEntries([...card.drawn.parts].map(([part, box]) => [part, screen(box, origin, scale)])), preview: card.previewing,
       glide: held.glide ? { active: true } : null, landing: held.landing !== undefined ? { active: true } : null,
       loadingPulse: main && !texture && main.next && !main.next.failed && !main.local ? { active: true } : null,
       media: { ready: Boolean(texture), failed: Boolean(main?.handle?.failed ?? main?.next?.failed), local: Boolean(main?.local), width: texture?.width ?? 0, height: texture?.height ?? 0,
@@ -98,7 +99,7 @@ export function inspection(o: Sources) {
     }),
     pointFor: (name: string, part: Part) => {
       const held = o.scene()?.viewOf(name)
-      const box = part === "body" ? card(name)?.body : held?.view.drawn.controls.find((control) => control.part === part)?.box
+      const box = part === "body" ? card(name)?.body : held?.view.drawn.parts.get(part)
       if (!box) return null
       const shown = "width" in box ? box : screen(box, { x: held!.view.root.x, y: held!.view.root.y }, held!.view.root.scale.x)!
       return { x: shown.x + shown.width / 2, y: shown.y + shown.height / 2 }
