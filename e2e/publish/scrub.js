@@ -22,9 +22,19 @@ const RULES = [
 const scrubbed = (text) => RULES.reduce((said, [rule, instead]) => said.replace(rule, instead), text);
 
 const MOST = 64 << 20;
+// A file a running program removes while this walks (a SQLite -shm as its database closes) is gone, not a failure.
+const gone = (error) => error.code === 'ENOENT';
+
 function file(path) {
-  if (lstatSync(path).size > MOST) return;
-  const bytes = readFileSync(path);
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (!stat || stat.size > MOST) return;
+  let bytes;
+  try {
+    bytes = readFileSync(path);
+  } catch (error) {
+    if (gone(error)) return;
+    throw error;
+  }
   // Text only: a binary's own strings aren't anyone's, and rewriting a binary breaks it.
   if (bytes.subarray(0, 8192).includes(0)) return;
   const text = bytes.toString('latin1');
@@ -33,7 +43,14 @@ function file(path) {
 }
 
 function walk(dir) {
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch (error) {
+    if (gone(error)) return;
+    throw error;
+  }
+  for (const entry of entries) {
     const path = join(dir, entry.name);
     if (entry.isDirectory()) walk(path);
     else if (entry.isFile()) file(path);

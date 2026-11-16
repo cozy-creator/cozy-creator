@@ -823,6 +823,7 @@ impl Calcifer {
         for (id,wake) in lock(&self.drivers).iter() { if ids.contains(id.as_str()) { wake.notify_waiters(); } }
         lock(&self.warm).clear();
         for behind in lock(&self.behind).values_mut() { behind.retain(|id,_|!ids.contains(id)); }
+        crate::project::purge::forget(&self.store, project);
     }
 
     /// Existing accepted work can settle after viewing closes. This never
