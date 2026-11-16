@@ -51,6 +51,25 @@ fn newest_where<'a>(releases: impl IntoIterator<Item = &'a str>, keep: impl Fn(&
 
 /// What `requires` (a wheel's `Requires-Dist`) asks of `distribution` outside any extra (`cozy-runtime[media]<0.46,>=0.45.0`):
 /// the versions it admits. None: it names none with a version, or one that doesn't parse.
+/// The Runtime minor this cozy's line runs, as a floor (cl-1055): machines run on Calcifer's minor, with no capability fallbacks, and
+/// every build of it keeps a project's call in its project (per-call scratch). A project's run on an older Runtime moves its machine up
+/// first; held by hand, it is refused. A candidate or source build (`0.47.0.dev0+dev.g…`) meets it. Bump it with the Runtime's minor
+/// when a cozy minor is released (the RC's cozy-runtime pyproject, `0.<n>.0.dev0`).
+pub const RUNTIME_MINOR: &str = ">=0.47.0.dev0";
+
+/// `needs` with this cozy's Runtime minor (`RUNTIME_MINOR`) added: what a project's run needs of its Runtime.
+pub fn for_project(needs: Option<VersionSpecifiers>) -> VersionSpecifiers {
+    let floor = VersionSpecifiers::from_str(RUNTIME_MINOR).expect("RUNTIME_MINOR is a specifier");
+    needs.iter().flat_map(|needs| needs.iter().cloned()).chain(floor.iter().cloned()).collect()
+}
+
+/// Whether a Runtime `version` is on this cozy's minor (`RUNTIME_MINOR`), so it keeps a project's call in its project. A version
+/// that doesn't read isn't.
+pub fn on_runtime_minor(version: &str) -> bool {
+    let floor = VersionSpecifiers::from_str(RUNTIME_MINOR).expect("RUNTIME_MINOR is a specifier");
+    Version::from_str(version).is_ok() && runs(&floor, version)
+}
+
 pub fn required<'a>(requires: impl IntoIterator<Item = &'a str>, distribution: &str) -> Option<VersionSpecifiers> {
     let wanted = normalized(distribution);
     let mut found: Vec<VersionSpecifier> = vec![];
