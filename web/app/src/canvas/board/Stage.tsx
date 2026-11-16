@@ -1,7 +1,6 @@
-// CSP-safe shader uniforms (no eval), and Pixi's optional math methods, which its typings declare whether or not they're installed.
-import "pixi.js/unsafe-eval"
+// Pixi's optional math methods, which its typings declare whether or not they're installed.
 import "pixi.js/math-extras"
-import { autoDetectRenderer, Container, Graphics, Rectangle, type Renderer, Sprite, Text, Texture, Ticker } from "pixi.js"
+import { Container, Rectangle, type Renderer, Ticker } from "pixi.js"
 import { Viewport as PixiViewport } from "pixi-viewport"
 import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
@@ -24,41 +23,12 @@ import { inspection } from "./inspect"
 import { createInteraction } from "./Interaction"
 import { Media } from "./Media"
 import { pictureBox, type RunContext } from "./presentation"
+import { type Chosen, takeRenderer } from "./renderer"
 import { Scene } from "./Scene"
 import { forgetMeasurements, onFontsLoaded } from "./text"
 
 type Pointer = MouseEvent | PointerEvent
 
-/** Drawn on the CPU: WebGL in software (SwiftShader, llvmpipe), or Pixi's canvas renderer. */
-function softwareOf(renderer: Renderer): boolean {
-  if (!("gl" in renderer)) return true
-  const gl = (renderer as unknown as { gl: WebGLRenderingContext }).gl
-  const info = gl.getExtension("WEBGL_debug_renderer_info")
-  return /swiftshader|llvmpipe|lavapipe|softpipe|swrast|software/i.test(String(info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)))
-}
-
-async function startRenderer(width: number, height: number): Promise<Renderer> {
-  const make = (antialias: boolean) => {
-    const options = { width: Math.max(1, width), height: Math.max(1, height), resolution: devicePixelRatio || 1, autoDensity: true, backgroundAlpha: 0, antialias, failIfMajorPerformanceCaveat: false }
-    return autoDetectRenderer({ ...options, preference: ["webgl", "canvas"] }).catch(() => autoDetectRenderer({ ...options, preference: ["canvas"] }))
-  }
-  let made = await make(true)
-  // A CPU rasterizes every sample of a multisampled frame (cl-1018: a third of each frame's time in CI's SwiftShader).
-  if ("gl" in made && softwareOf(made)) { made.destroy({ removeView: true }); made = await make(false) }
-  // Its shaders compiled now, while nothing waits on it: the first frame with cards stalled ~150 ms on them in software (cl-1018).
-  const warm = new Container()
-  warm.addChild(new Graphics().rect(0, 0, 2, 2).fill(0x808080), new Sprite(Texture.WHITE), new Text({ text: "a" }))
-  made.render(warm)
-  warm.destroy({ children: true })
-  // ...and waited for here: left queued, the GPU was still compiling them when the canvas mounted, and the first call that waits on it
-  // (its resize) held the page 180 ms then (e2e 43784566887).
-  if ("gl" in made) (made as unknown as { gl: WebGLRenderingContext }).gl.getError()
-  return made
-}
-/** A renderer begun as the page loads, before any project is read (cl-1018: one begun as the canvas mounts held the open's first frame
- *  60–90 ms past its state): the first canvas takes it. It holds nothing of any project until then. */
-let early: Promise<Renderer> | null = startRenderer(innerWidth, innerHeight)
-early.catch(() => {})
 export interface StageProps {
   store: CanvasStore
   active: boolean
@@ -128,7 +98,8 @@ export function Stage(props: StageProps) {
       if (!on) interaction?.cancel()
     }
     live.current = { invalidate, enable }
-    const software = { value: false }
+    /** The renderer chosen and why, or why none started: what inspection reports. */
+    let graphics: Omit<Chosen, "renderer"> | null = null, refused = ""
 
     // Run context for a card's progress line: its machine, what it waits on, an install for its tool (RunFace's inputs).
     const asked = new Set<number>()
@@ -209,13 +180,11 @@ export function Stage(props: StageProps) {
     ticker.add(tick)
 
     const ready = async () => {
-      const taken = early
-      early = null
-      const made = await (taken ?? startRenderer(width, height)).catch((error) => { if (!taken) throw error; return startRenderer(width, height) })
+      const chosen = await takeRenderer(width, height)
+      const made = chosen.renderer
       if (stopped) { made.destroy({ removeView: true }); return }
-      if (taken) made.resize(Math.max(1, width), Math.max(1, height), devicePixelRatio || 1)
       renderer = made
-      software.value = softwareOf(made)
+      graphics = { backend: chosen.backend, why: chosen.why, gpu: chosen.gpu }
       // No global move walks every card on every pointer move: Interaction listens to the window while it holds a press.
       made.events.features.globalMove = false
       made.canvas.className = "canvas-pixels canvas-pane"
@@ -235,7 +204,7 @@ export function Stage(props: StageProps) {
       stage.addChild(viewport)
       const layer = new Container({ eventMode: "passive" })
       viewport.addChild(layer)
-      scene = new Scene({ world: layer, board, store, client, media, software: software.value, invalidate, contextOf })
+      scene = new Scene({ world: layer, board, store, client, media, software: chosen.backend === "canvas", invalidate, contextOf })
       board.camera.wake = invalidate
       stops.push(board.camera.bind(element, viewport), () => { board.camera.wake = () => {} })
       interaction = createInteraction({
@@ -274,7 +243,7 @@ export function Stage(props: StageProps) {
       setFailed(null)
       invalidate()
     }
-    void ready().catch((error) => { if (!stopped) setFailed(error instanceof Error ? error.message : String(error)) })
+    void ready().catch((error) => { refused = error instanceof Error ? error.message : String(error); if (!stopped) setFailed(refused) })
 
     // What the page shows outside the GPU: the name field and Asking over their boxes, and the accessible list of every card.
     let listKey = ""
@@ -352,7 +321,7 @@ export function Stage(props: StageProps) {
     stops.push(() => { store.canvasAt = () => null })
     Object.defineProperty(element, "canvasInspection", {
       configurable: true,
-      value: inspection({ board, store, scene: () => scene, interaction: () => interaction, media, frames: () => frames, open: () => open, ticking: () => ticker.started, renderer: () => renderer, software: () => software.value, retired: () => stopped }),
+      value: inspection({ board, store, scene: () => scene, interaction: () => interaction, media, frames: () => frames, open: () => open, ticking: () => ticker.started, renderer: () => renderer, graphics: () => graphics ? { ...graphics, state: "ready" as const } : { backend: "none" as const, state: refused ? "failed" as const : "starting" as const, refused }, retired: () => stopped }),
     })
     return () => {
       stopped = true
