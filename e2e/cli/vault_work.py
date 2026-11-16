@@ -64,8 +64,8 @@ OUTLIVES = 50
 MAXIMUM = 15
 # The maximum's run's file, in MB: a save into the project that takes a while after its call ends (cl-1060).
 VIDEO_MB = 128
-# Step 4's file, in MB: a save a lock lands in or just after (cl-1060).
-SAVE_MB = 512
+# Step 4's file, in MB: big enough that its save into the project takes seconds, so a lock lands in it (cl-1060).
+SAVE_MB = 2048
 
 
 def cli(args: argparse.Namespace, name: str, *words: str, fails: bool = False) -> object:
@@ -153,18 +153,23 @@ def settled(args: argparse.Namespace, number: object, seconds: float) -> tuple[s
 
 
 def whole(args: argparse.Namespace, number: object, mark: str, name: str) -> tuple[int, str]:
-    """Run `number`'s file as a person fetches it from the project: its size and digest, the mark at its start; the copy not kept."""
+    """Run `number`'s file as a person fetches it from the project: its size and digest, the mark at its start, read as a stream;
+    (0, "") when it doesn't come back. The copy isn't kept."""
     fetched = args.out / name
-    done = subprocess.run([str(args.cli), "run", "watch", str(number), "--once", "-o", str(fetched)], cwd=args.project, capture_output=True)
-    kept = [path for path in fetched.rglob("*") if path.is_file() and mark.encode() in path.read_bytes()[:200]]
-    size = max((path.stat().st_size for path in kept), default=0)
-    digest = "sha256:" + hashlib.sha256(kept[0].read_bytes()).hexdigest() if kept else ""
+    subprocess.run([str(args.cli), "run", "watch", str(number), "--once", "-o", str(fetched)], cwd=args.project, capture_output=True)
+    size, digest = 0, ""
     for path in fetched.rglob("*"):
-        if path.is_file():
-            path.unlink()
-    assert kept, f"run {number}'s file did not come back from the project: exit {done.returncode} {done.stderr[-400:]!r}"
+        if not path.is_file():
+            continue
+        with path.open("rb") as file:
+            head = file.read(200)
+            if mark.encode() in head and not digest:
+                hasher = hashlib.sha256(head)
+                for chunk in iter(lambda: file.read(1 << 20), b""):
+                    hasher.update(chunk)
+                size, digest = path.stat().st_size, "sha256:" + hasher.hexdigest()
+        path.unlink()
     return size, digest
-
 
 def after_failure(args: argparse.Namespace, number: object, mark: str) -> str:
     """What a save cut off by the lock left (cl-1060): the vault locked, unlocked again, and the run watched until it settles."""
@@ -257,7 +262,10 @@ class Answer(msgspec.Struct):
 def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
     time.sleep(payload.seconds)
     target = out.temporary_file(".txt")
-    target.write_bytes(f"{payload.mark} slept {payload.seconds}\\n".encode() + os.urandom(payload.size << 20))
+    with open(target, "wb") as file:
+        file.write(f"{payload.mark} slept {payload.seconds}\\n".encode())
+        for _ in range(payload.size):
+            file.write(os.urandom(1 << 20))
     return Answer(payload.seconds, out.save_file(target, media_type="text/plain"))
 ''')
     # Its environment installed first, so the timed run below is the sleep, not an install.
@@ -348,34 +356,54 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
         assert not found, f"Calcifer's own logs name the encrypted project's runs or its code: {found[:5]}"
     receipt["no_traces"] = {"runs": sorted(set(names)), "logs_scanned": True}
 
-    # 4. An explicit lock as a run's output starts coming into the project goes through at once; once the next unlock has saved
-    #    it, the file is whole, the bytes its run made, and nothing half-written is left (cl-1060).
+    # 4. An explicit lock lands in a save by its size: a 2 GB file whose save into the project takes seconds, locked as it starts
+    #    coming (cl-1060). What happens is recorded and printed whatever it is (the lock's time and exit, views left, half-written
+    #    files, whether the next unlock saves the file whole); then the fix's behaviour is asserted.
     script = unlock(args, "unlock-for-save-lock", 0) / "vault-work-proof" / "sleeper.py"
     mark = f"cl1060-lock-{time.time_ns()}"
     process, stdout = start(args, "save-lock", script, 2, mark, SAVE_MB)
     assert exporting(stdout, process), f"the run's output never started coming: {run_of(stdout)}"
     began = time.monotonic()
-    locked = cast(Changed, cli(args, "lock-while-saving", "vault", "lock"))
-    save_lock_s = locked_within(args, 30) + (time.monotonic() - began)
-    assert save_lock_s < 15, f"a lock during a save took {save_lock_s:.0f} s"
+    asked = subprocess.run([str(args.cli), "--json", "vault", "lock"], cwd=args.project, capture_output=True)
+    lock_s = round(time.monotonic() - began, 1)
+    (args.out / "lock-while-saving.json").write_bytes(asked.stdout + b"\n" + asked.stderr)
+    lines = [line for line in asked.stdout.splitlines() if line.strip()]
+    try:
+        answer: object = json.loads(lines[-1]) if lines else {}
+    except ValueError:
+        answer = {}
+    answer = answer if isinstance(answer, dict) else {}
+    error = answer.get("error")
+    try:
+        locked_s: float | None = round(locked_within(args, 60) + lock_s, 1)
+    except AssertionError:
+        locked_s = None
     left = [line for line in Path("/proc/self/mountinfo").read_text().splitlines() if f"{args.project}/.vault-runtime/" in line]
-    assert not left, f"the lock left a view mounted: {left}"
-    process.wait(timeout=120)
+    done_before = any(b'"output_item.done"' in line for line in stdout.read_bytes().splitlines())
+    process.wait(timeout=600)
     saved = run_of(stdout).get("number")
+    resumed = time.monotonic()
     view = unlock(args, "unlock-after-save-lock", 0)
-    status, record = settled(args, saved, 180)
-    assert status == "completed", f"run {saved}, its save stopped by a lock, is {status or 'unread'} after the next unlock"
+    status, record = settled(args, saved, 600)
+    save_s = round(time.monotonic() - resumed, 1)
     partial = [str(path) for path in view.rglob("*") if path.name.endswith((".part", ".part.held", ".manifest.part"))]
-    assert not partial, f"after run {saved}'s save, the project holds half-written files: {partial}"
     size, digest = whole(args, saved, mark, "save-lock.out")
     made = [item.get("sha256") for item in record.get("output", [])]
-    assert size >= SAVE_MB << 20 and digest in made, f"run {saved}'s file came back {size} bytes, {digest}, not its own {made}"
-    receipt["lock_while_saving"] = {"run": saved, "locked_s": round(save_lock_s, 1), "unsaved": locked.get("unsaved", []),
-                                    "next_unlock": status, "file_mb": SAVE_MB}
+    observed = {"run": saved, "file_mb": SAVE_MB, "lock_exit": asked.returncode,
+                "lock_error": error.get("code") if isinstance(error, dict) else None, "unsaved": answer.get("unsaved", []),
+                "lock_answered_s": lock_s, "locked_s": locked_s, "views_left": len(left), "saved_before_lock": done_before,
+                "next_unlock": status, "save_after_unlock_s": save_s, "half_written": partial, "file_bytes": size,
+                "digest_is_runs": digest in made}
+    print(f"vault work: lock while saving: {json.dumps(observed)}", flush=True)
+    receipt["lock_while_saving"] = observed
     # Its large files aren't artifacts.
     for path in view.rglob("*"):
         if path.is_file() and path.stat().st_size > 32 << 20:
             path.unlink()
+    assert asked.returncode == 0 and locked_s is not None and locked_s < 15, f"a lock during a save: {observed}"
+    assert not left, f"the lock left a view mounted: {observed}"
+    assert status == "completed" and not partial, f"after a lock stopped run {saved}'s save, the next unlock: {observed}"
+    assert size >= SAVE_MB << 20 and digest in made, f"run {saved}'s file after the next unlock: {observed}"
     cli(args, "lock-after-save", "vault", "lock")
 
     receipt["synthetic_only"] = True
