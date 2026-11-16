@@ -2338,6 +2338,18 @@ pub struct CalciferActivity {
     /// The newest request of anyone but the asking process (`PROCESS_HEADER`): a page, another `cozy`, one that sends no pid.
     pub others_request_ms: Option<i64>,
     pub now_ms: i64,
+    /// Each unlocked encrypted project, by its folder alone, and what holds its lock now (cl-1059): a restart locks it, so an
+    /// idle restart waits while one is busy.
+    #[serde(default)]
+    pub unlocked: Vec<UnlockedFolder>,
+}
+
+/// An unlocked encrypted project in [`CalciferActivity`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnlockedFolder {
+    pub folder: String,
+    /// What holds its lock now (a run going, a render, a request); none when it's idle.
+    pub busy: Option<String>,
 }
 
 // Credentials are never printed.

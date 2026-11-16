@@ -795,6 +795,9 @@ async fn activity(State(api): State<Arc<Api>>, headers: axum::http::HeaderMap) -
         requests: api.activity.requests.load(Ordering::Relaxed),
         others_request_ms: api.activity.others(asker),
         now_ms: crate::store::now_ms(),
+        unlocked: crate::project::vault::unlocked(&api).into_iter()
+            .map(|(folder, busy)| ::api::calcifer::UnlockedFolder { folder: folder.display().to_string(), busy })
+            .collect(),
     }))
 }
 

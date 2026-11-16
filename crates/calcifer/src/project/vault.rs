@@ -624,26 +624,74 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     Ok(())
 }
 
+/// What holds a project's lock now (cl-1059): the one test a lock refuses on, and so SIGTERM's close, which retries it, and that
+/// `/v1/activity` reports for each unlocked encrypted project.
+#[derive(Clone, Copy)]
+pub(crate) enum Holding { Requests, Runs, Work }
+
+impl Holding {
+    /// Why, as a restart's wait says it.
+    pub(crate) fn reason(self) -> &'static str {
+        match self {
+            Holding::Requests => "a project request or tool is still finishing",
+            Holding::Runs => "a run is going",
+            Holding::Work => "it is rendering, cutting or transferring files",
+        }
+    }
+
+    fn refusal(self) -> Error {
+        match self {
+            Holding::Requests => Error::new(Kind::Conflict, "project_busy", "a project request or tool is still finishing; retry after it stops"),
+            Holding::Runs => Error::new(Kind::Conflict, "project_busy", "the project's work is still stopping; retry after it settles"),
+            Holding::Work => Error::new(Kind::Conflict, "project_busy", "The project is rendering, cutting or transferring files.").remedy("Wait for project work to finish, then retry.").next("cozy open"),
+        }
+    }
+}
+
+/// What holds `root`'s lock now, if anything. `unsettled`: whether an open view of it has runs not yet settled, read the caller's
+/// way (a lock through its transition).
+fn holding(api: &Api, root: &FsPath, mut unsettled: impl FnMut(&Arc<super::Project>) -> Result<bool, Error>) -> Result<Option<Holding>, Error> {
+    if api.projects.active_requests(root) || crate::local_code::private_process_active(root) { return Ok(Some(Holding::Requests)); }
+    for project in api.projects.now_open().iter().filter(|project| project.root == root) {
+        if unsettled(project)? { return Ok(Some(Holding::Runs)); }
+        if *project.walking.lock().expect("walking lock") || project.moving.try_lock().is_err() || project.cutting.try_lock().is_err() {
+            return Ok(Some(Holding::Work));
+        }
+    }
+    Ok(None)
+}
+
+/// Each unlocked encrypted project's folder, and what holds its lock now (`/v1/activity`, cl-1059). Only its folder: it's all
+/// Calcifer keeps of a locked project, and a restart's log, outside the project, says it.
+pub(crate) fn unlocked(api: &Arc<Api>) -> Vec<(PathBuf, Option<String>)> {
+    let roots: Vec<_> = SESSIONS.lock().expect("vault sessions").keys().cloned().collect();
+    roots.into_iter().map(|root| {
+        let journal = |e: crate::store::StoreError| match e {
+            crate::store::StoreError::Locked(_) => Error::new(Kind::Conflict, "project_busy", "a lock is under way"),
+            _ => error("project_journal", "its journal could not be checked"),
+        };
+        let held = holding(api, &root, |project| {
+            let store = super::RunOwner::of(project, &api.calcifer).store().map_err(journal)?;
+            Ok(!store.unsettled().map_err(journal)?.is_empty() || !store.unsettled_here().map_err(journal)?.is_empty())
+        });
+        let busy = match held { Ok(held) => held.map(|held| held.reason().to_owned()), Err(e) => Some(e.message) };
+        (root, busy)
+    }).collect()
+}
+
 fn forget(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Result<(), Error> {
     let available = !encrypted(root) || held(root).is_some_and(|session| session.lock().expect("vault session").mount.is_mounted().unwrap_or(false));
-    if api.projects.active_requests(root) || crate::local_code::private_process_active(root) {
-        return Err(Error::new(Kind::Conflict, "project_busy", "a project request or tool is still finishing; retry after it stops"));
-    }
-    for project in api.projects.now_open().iter().filter(|project| project.root == root) {
+    let checked = |_: crate::store::StoreError| error("project_journal", "the project journal could not be checked");
+    if let Some(held) = holding(api, root, |project| {
         let store = api.projects.transition_store(api, &project.id, transition)?;
-        if !store.unsettled().map_err(|_| error("project_journal", "the project journal could not be checked"))?.is_empty()
-            || !store.unsettled_here().map_err(|_| error("project_journal", "the project journal could not be checked"))?.is_empty()
-        {
-            return Err(Error::new(Kind::Conflict, "project_busy", "the project's work is still stopping; retry after it settles"));
-        }
+        Ok(!store.unsettled().map_err(checked)?.is_empty() || !store.unsettled_here().map_err(checked)?.is_empty())
+    })? {
+        return Err(held.refusal());
     }
     if available { crate::local_code::retire_private_processes(root)?; }
     let projects = api.projects.now_open();
     for project in projects {
         if project.root != root { continue; }
-        if *project.walking.lock().expect("walking lock") || project.moving.try_lock().is_err() || project.cutting.try_lock().is_err() {
-            return Err(Error::new(Kind::Conflict, "project_busy", "The project is rendering, cutting or transferring files.").remedy("Wait for project work to finish, then retry.").next("cozy open"));
-        }
         if let Ok(mut model) = project.model.try_lock() { *model = None; }
         *project.told.lock().expect("project told") = None;
         crate::events::release_project_readers(&project.id);
@@ -745,8 +793,10 @@ pub(crate) fn close_all_prepared(api: &Arc<Api>, browser: &mut Option<crate::bro
         let op = operation(&root);
         let _operation = op.lock().expect("vault operation");
         if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
-        let transition = exclusive(&root)?;
-        close(api, &root, &transition, browser)?;
+        // The folder that holds it, for whoever waits (SIGTERM's journal line, `cozy down`).
+        let named = |mut e: Error| { e.message = format!("{}: {}", root.display(), e.message); e };
+        let transition = exclusive(&root).map_err(named)?;
+        close(api, &root, &transition, browser).map_err(named)?;
     }
     retire_browser(api, browser)?;
     Ok(())
