@@ -83,7 +83,8 @@ export class Board {
       if (previous && same(previous, node)) continue
       if (!previous) this.nodes = [...this.nodes, node]
       else this.nodes = this.nodes.map((held) => (held.id === node.id ? node : held))
-      if (previous && previous.data.name !== node.data.name) this.names.delete(previous.data.name)
+      // A rename frees its old name only if that name still points here: another card may already hold it.
+      if (previous && previous.data.name !== node.data.name && this.names.get(previous.data.name) === node.id) this.names.delete(previous.data.name)
       this.byId.set(node.id, node)
       this.names.set(node.data.name, node.id)
       this.index(node.id)
