@@ -53,6 +53,7 @@ export class CardView {
   private latent?: { run: number; handle: LatentHandle; sprite: Sprite }
   private video?: { sha: string; handle: VideoHandle; sprite: Sprite }
   private signature = ""
+  private inputs: unknown[] = []
   private name = ""
   private input?: { node: SceneNode; show: Presentation; state: CardState; env: CardEnv }
   private began = performance.now()
@@ -81,10 +82,14 @@ export class CardView {
   update(node: SceneNode, show: Presentation, state: CardState, env: CardEnv) {
     this.input = { node, show, state, env }
     if (node.name !== this.name) { this.name = node.name; for (const [part, area] of this.parts) hits.set(area, { name: node.name, part }) }
-    const signature = [node.box.w, node.box.h, node.selected, node.view.draft !== undefined, state.hover, state.resizing, state.dropTarget, state.broken, env.theme, env.band,
-      env.titleSize, env.ring, env.resolution, env.epoch].join("|")
-    if (signature === this.signature && this.shown === show) return
-    this.signature = signature
+    // Compared in place, not joined into a string: a frame of a pan allocates nothing per card.
+    const inputs = this.inputs
+    const next = [node.box.w, node.box.h, node.selected, node.view.draft !== undefined, state.hover, state.resizing, state.dropTarget, state.broken,
+      env.theme, env.band, env.titleSize, env.ring, env.resolution, env.epoch] as const
+    let same = this.shown === show && this.signature !== "" && inputs.length === next.length
+    for (let i = 0; i < next.length; i++) if (inputs[i] !== next[i]) { inputs[i] = next[i]; same = false }
+    if (same) return
+    this.signature = "drawn"
     this.shown = show
     this.draw()
   }

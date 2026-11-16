@@ -17,7 +17,6 @@ interface Held { view: CardView; node?: SceneNode; show?: Presentation; key?: un
 
 const MARGIN = 160
 const ease = (t: number) => 1 - (1 - t) ** 3
-const changed = (a: unknown[] | undefined, b: unknown[]) => !a || a.length !== b.length || a.some((value, i) => value !== b[i])
 
 /** The cards in view, each with its own CardView; virtualization over the board's grid. Every card's work is isolated. */
 export class Scene {
@@ -113,11 +112,18 @@ export class Scene {
     const name = node.data.name
     const dragging = store.isDragging(name)
     const runContext = this.o.contextOf(view)
-    const scene: SceneNode = { id: node.id, name, box: node.bounds, view, selected: Boolean(node.selected), gliding: node.gliding, dragging, offering: dragging && frame.offering, runContext }
-    const second = held.show?.progress?.time ? Math.floor(Date.now() / 1000) : 0
-    const key = [view, tools, runContext?.run, runContext?.machine, runContext?.on, runContext?.installing, second, store.names.get()]
-    if (changed(held.key, key)) { held.key = key; held.show = present(store, scene) }
     const previous = held.node
+    const offering = dragging && frame.offering
+    // A pan touches no card's objects: the same inputs keep the same node, and no per-card allocation happens.
+    const scene: SceneNode = previous && previous.box === node.bounds && previous.view === view && previous.selected === Boolean(node.selected) && previous.gliding === node.gliding
+      && previous.dragging === dragging && previous.offering === offering && previous.runContext === runContext
+      ? previous : { id: node.id, name, box: node.bounds, view, selected: Boolean(node.selected), gliding: node.gliding, dragging, offering, runContext }
+    const second = held.show?.progress?.time ? Math.floor(Date.now() / 1000) : 0
+    const key = held.key ?? (held.key = [])
+    const inputs = [view, tools, runContext?.run, runContext?.machine, runContext?.on, runContext?.installing, second, store.names.get()] as const
+    let stale = key.length !== inputs.length
+    for (let i = 0; i < inputs.length; i++) if (key[i] !== inputs[i]) { key[i] = inputs[i]; stale = true }
+    if (stale || !held.show) held.show = present(store, scene)
     held.node = scene
     const card = held.view
     const state: CardState = {

@@ -128,7 +128,18 @@ export function Stage(props: StageProps) {
     // Run context for a card's progress line: its machine, what it waits on, an install for its tool (RunFace's inputs).
     const asked = new Set<number>()
     const merged = new WeakMap<object, { full: object; run: NonNullable<ReturnType<CanvasStore["get"]>>["run"] }>()
+    // Memoized by its inputs' identities: a frame recomputes no card's context unless its view, the machines or its run's read changed.
+    const contexts = new WeakMap<object, { machines: unknown; full: unknown; tools: unknown; value: RunContext | undefined }>()
     const contextOf = (view: NonNullable<ReturnType<CanvasStore["get"]>>): RunContext | undefined => {
+      const machinesData = queries.getQueryData(machinesQuery(client).queryKey)
+      const fullData = view.run && store.projectId ? queries.getQueryData(runFullQuery(client, store.projectId, view.run.number, 0).queryKey) : undefined
+      const held = contexts.get(view)
+      if (held && held.machines === machinesData && held.full === fullData && held.tools === store.tools.get()) return held.value
+      const value = contextFresh(view)
+      contexts.set(view, { machines: machinesData, full: fullData, tools: store.tools.get(), value })
+      return value
+    }
+    const contextFresh = (view: NonNullable<ReturnType<CanvasStore["get"]>>): RunContext | undefined => {
       const machines = queries.getQueryData(machinesQuery(client).queryKey)?.machines ?? []
       let run = view.run
       const rendering = view.asset?.standing === "making" || view.queued || view.asked !== undefined || Boolean(view.glimpse)
