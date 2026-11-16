@@ -3213,6 +3213,17 @@ export class CanvasStore {
     this.unsettle(key, "grown")
   }
 
+  /** A pull let go of with Escape: its width and shape as they were, what it pushed aside back where it is, and nothing kept. */
+  cancelPull(name: string, width: number) {
+    const key = this.resolveName(name)
+    this.patch(key, { shape: undefined })
+    const before = this.position(key)
+    if (before) { this.rememberPose(key, { ...before, w: width }); this.paintPose(key) }
+    this.letBack(new Map())
+    if (this.pulling?.name === key) this.pulling = null
+    this.reshape(key)
+  }
+
   /** What the pull pushed aside and no longer does goes back where it is. */
   private letBack(pushed: Map<string, Box>) {
     for (const other of this.pulling?.shown ?? []) {
