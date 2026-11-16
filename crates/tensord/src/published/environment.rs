@@ -114,8 +114,9 @@ impl Publisher {
     /// `build`, its turn in the install line held.
     fn build_in_turn(&self, env: &Path, project: &Project, job: &Job) -> Result<Built, Failure> {
         // uv's downloads come from their own index, outside the downloader, and a full link of weights starved them (run
-        // 43316018343: 1080 s at 100-450 KiB/s): while they move, the weights leave them the link but a share (cl-1007).
-        let _installing = tensorfs::fetch::installing();
+        // 43316018343: 1080 s at 100-450 KiB/s): while they move, the weights leave them the link but a share (cl-1007). Never for
+        // a caller's guess, whose build no run's weights give way to (cl-1104).
+        let _installing = (!crate::origin::priority::prefetch(job.order)).then(tensorfs::fetch::installing);
         let layer = self.layer(job, None)?;
         let missed = match self.build_on(env, project, job, layer.as_deref(), &[]) {
             Err((TORCH_MISSED, missed)) => missed,
