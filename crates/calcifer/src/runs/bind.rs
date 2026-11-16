@@ -208,7 +208,8 @@ pub(crate) async fn warm_choices(
             if !binder.files.is_empty() || !binder.named_files.is_empty() || !terms.assets.is_empty() || !terms.fidelities.is_empty() {
                 return Err(usage("warm_inputs", "GPU program warming takes scalar inputs, not media files"));
             }
-            let bound = bind(target, release, interface, callable, terms).await?;
+            // Warming names no box: nothing it says spells its package.
+            let bound = bind(target, release, "", interface, callable, terms).await?;
             if !bound.files.is_empty() || !bound.tree_files.is_empty() || bound.destination.is_some() {
                 return Err(usage("warm_inputs", "GPU program warming takes scalar inputs, not files, trees or output destinations"));
             }
