@@ -711,7 +711,7 @@ step "local code calling a published cozy package, locked at its run (cl-871)"
 [ -n "$LOCAL" ] || return 0
 local dir=$OUT/hub-dependency
 rm -rf "$dir"
-package_at "$dir" e2e_local_relay '"cozy-runtime>=0.48.0.dev0,<0.49", "msgspec>=0.19"' \
+package_at "$dir" e2e_local_relay '"cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19"' \
   "$(printf '\n[project.optional-dependencies]\ncozy-calls = ["minimax-h3-tools[cozy-calls]>=0.1.0"]\n[tool.uv.sources]\nminimax-h3-tools = { index = "tensorhub" }')" <<'PY'
 import msgspec
 from e2e_local_relay_calls import Text, echo
@@ -770,7 +770,7 @@ echo "hub published: $E2E_RELAY's environment names its callee ${callee:-nothing
 [ "$callee" = _/minimax-h3-tools ] || check "hub published: $E2E_RELAY's environment names its callee ${callee:-nothing}, not _/minimax-h3-tools"
 }
 
-# xs-194: a package whose floor only the open RC meets (cozy-runtime>=0.48.0.dev0,<0.49) names no Runtime wheel, and runs from
+# xs-194: a package whose floor only the open RC meets (cozy-runtime>=0.47.0.dev0,<0.48) names no Runtime wheel, and runs from
 # its source and from the Hub as it was published: each lock takes the RC's newest build, so a Runtime merge between two
 # runs of this cell (each Runtime merge replaces the RC's wheels) needs no relock. isolated.sh published e2e-rcfloor 0.1.0.
 rc_floor() {
@@ -946,7 +946,7 @@ step "a child result holding Latents, in another package's caller (cr-276)"
 [ -n "$LOCAL" ] || return 0
 local dir=$OUT/child-latents
 rm -rf "$dir"
-package_at "$dir/maker" e2e_latents_maker '"cozy-runtime>=0.48.0.dev0,<0.49", "msgspec>=0.19"' <<'PY'
+package_at "$dir/maker" e2e_latents_maker '"cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19"' <<'PY'
 import hashlib
 from typing import cast
 
@@ -975,7 +975,7 @@ def shot(payload: Ask, out: Outputs) -> Shot:
     kept = out.save_bytes(data, media_type="application/octet-stream")  # a saved file fills a Latents field
     return Shot(clip=clip, latents=cast(Latents, kept), sha256=f"sha256:{hashlib.sha256(data).hexdigest()}")
 PY
-package_at "$dir/caller" e2e_latents_caller '"cozy-runtime>=0.48.0.dev0,<0.49", "msgspec>=0.19"' \
+package_at "$dir/caller" e2e_latents_caller '"cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19"' \
   "$(printf '\n[project.optional-dependencies]\ncozy-calls = ["e2e-latents-maker[cozy-calls]>=0.0.0"]\n[tool.uv.sources]\ne2e-latents-maker = { path = "../maker" }')" <<'PY'
 import hashlib
 from importlib.metadata import version

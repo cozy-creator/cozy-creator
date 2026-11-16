@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.48.0.dev0,<0.49", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.47.0.dev0,<0.48", "msgspec>=0.19"]
 # ///
 """The cli suite's composition script (xs-190): `model` reads the `transformer` of e2e/parts, a pipeline of a transformer and
 a VAE, and `vae` reads a `vae` from whatever checkpoint names one: the pipeline's own by default, or a model of that component

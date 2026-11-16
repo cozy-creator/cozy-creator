@@ -80,7 +80,7 @@ relay() {
 }
 
 # Historical release selection needs code the old Runtime can execute. The existing weightless echo has that contract;
-# the positive managed relay imports Operation and belongs to Runtime 0.48.
+# the positive managed relay uses the hard-cut call API, which only the RC's Runtime has.
 historical_relay() {
   local copy=$1 fixture=$here/../release-gate/suites/hub/pkg
   mkdir -p "$copy"
@@ -124,7 +124,7 @@ held() {
 }
 
 # rc_floor (rc_floor, xs-194): e2e-relay's code as `e2e-rcfloor` 0.1.0, whose floor only the open RC meets
-# (cozy-runtime>=0.48.0.dev0,<0.49) and which names no Runtime wheel: publishing it locks the RC's newest build. What it said
+# (cozy-runtime>=0.47.0.dev0,<0.48) and which names no Runtime wheel: publishing it locks the RC's newest build. What it said
 # is exported, a refusal too, for the cell to judge.
 rc_floor() {
   local copy=$seed/packages/e2e-rcfloor account
@@ -132,7 +132,7 @@ rc_floor() {
   rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$here/cli/relay" "$copy"
   sed -i 's/^name = "e2e-relay"$/name = "e2e-rcfloor"/' "$copy/pyproject.toml"
   export E2E_RCFLOOR_PUBLISHED=$seed/publish-e2e-rcfloor.json E2E_RCFLOOR=$account/e2e-rcfloor
-  if (cd "$copy" && cozy --json package publish -y) > "$E2E_RCFLOOR_PUBLISHED" 2>&1; then log "published $E2E_RCFLOOR 0.1.0 (cozy-runtime>=0.48.0.dev0)"
+  if (cd "$copy" && cozy --json package publish -y) > "$E2E_RCFLOOR_PUBLISHED" 2>&1; then log "published $E2E_RCFLOOR 0.1.0 (cozy-runtime>=0.47.0.dev0)"
   else log "publishing e2e-rcfloor was refused: $(tail -c 300 "$E2E_RCFLOOR_PUBLISHED" | tr '\n' ' ')"; fi
 }
 

@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.48.0.dev0,<0.49", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.47.0.dev0,<0.48", "msgspec>=0.19"]
 # ///
 """The `When` cell's fixture (cl-948, the web suite's fields cell): fields that apply only while another has a value, as qwen-image-2's
 creativity with its prompt upsampling and SeedVR2's overlap with a batch size. `image` makes a picture of one colour and says

@@ -19,7 +19,7 @@ const WARNED = 'a handled fallback, as the render cell asks';
 // A run whose result warns, as a handled fallback does: no fixture tool's does. Its dependencies are tool.py's.
 const WARNS = `# /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.48.0.dev0,<0.49", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.47.0.dev0,<0.48", "msgspec>=0.19"]
 # ///
 """The render cell's tool: a still of one colour whose result warns."""
 
@@ -53,7 +53,7 @@ def warned(payload: Drawing) -> Warned:
 // A tool of an environment of its own (tool.py's and tomli-w): its first render installs it.
 const INSTALLS = `# /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.48.0.dev0,<0.49", "msgspec>=0.19", "tomli-w>=1"]
+# dependencies = ["cozy-runtime[media]>=0.47.0.dev0,<0.48", "msgspec>=0.19", "tomli-w>=1"]
 # ///
 """The render cell's tool that needs an install: a still of one colour."""
 

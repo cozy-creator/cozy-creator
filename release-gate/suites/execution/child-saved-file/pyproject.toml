@@ -7,7 +7,7 @@ name = "ci-child-saved-file"
 version = "0.1.0"
 description = "A parent's saved file passed to its child (cr-251)"
 requires-python = ">=3.12"
-dependencies = ["cozy-runtime[media]>=0.48.0.dev0,<0.49", "msgspec>=0.19", "pillow>=10"]
+dependencies = ["cozy-runtime[media]>=0.47.0.dev0,<0.48", "msgspec>=0.19", "pillow>=10"]
 
 [project.entry-points."cozy.application"]
 default = "ci_child_saved_file:app"

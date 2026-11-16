@@ -7,7 +7,7 @@ name = "ci-hub-outage"
 version = "0.1.0"
 description = "A deviceless root calling one child per model with a pause between, for a Hub outage mid-run (cl-708)"
 requires-python = ">=3.12"
-dependencies = ["cozy-runtime>=0.48.0.dev0,<0.49", "msgspec>=0.19"]
+dependencies = ["cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19"]
 
 [project.entry-points."cozy.application"]
 default = "ci_hub_outage:app"
