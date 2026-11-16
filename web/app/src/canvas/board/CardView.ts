@@ -508,7 +508,12 @@ export class CardView {
   /** The X beside the tool, kept its size on screen as the canvas zooms: a scale and a place, no redraw of the card. */
   pin(zoom: number) {
     const area = this.parts.get("untool")!, at = this.untool.at
-    if (!at || !this.input?.node.view.asset?.tool) { area.visible = false; this.drawn.parts.delete("untool"); return }
+    if (!at || !this.root.visible || !this.input?.node.view.asset?.tool) {
+      area.visible = false
+      this.drawn.parts.delete("untool")
+      this.drawn.controls = this.drawn.controls.filter((one) => one.part !== "untool")
+      return
+    }
     const unit = 1 / Math.max(zoom * this.root.scale.x, 0.0001)
     if (this.untool.inked !== this.untool.color) {
       this.untool.inked = this.untool.color

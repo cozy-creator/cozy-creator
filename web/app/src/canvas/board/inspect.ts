@@ -56,7 +56,8 @@ export function inspection(o: Sources) {
       references: card.referencesShown.map((reference) => ({ key: reference.key, ready: reference.ready, ...screen(reference.box, origin, scale)!, ...(reference.sha ? { sha: reference.sha } : {}) })),
       glide: held.glide ? { active: true } : null, landing: held.landing !== undefined ? { active: true } : null,
       loadingPulse: main && !texture && main.next && !main.next.failed && !main.local ? { active: true } : null,
-      media: { ready: Boolean(texture), failed: Boolean(main?.handle?.failed ?? main?.next?.failed), local: Boolean(main?.local), width: texture?.width ?? 0, height: texture?.height ?? 0,
+      // Ready: its own picture is on screen, not the one before it while it decodes.
+      media: { ready: Boolean(texture) && !(main?.next && !main.next.failed), failed: Boolean(main?.handle?.failed ?? main?.next?.failed), local: Boolean(main?.local), width: texture?.width ?? 0, height: texture?.height ?? 0,
         requestedWidth: width, resolution: main?.local ? "local" : source.kind === "thumb" ? String(width) : source.kind ? "original" : "", sha: source.sha256, key: source.kind },
       broken: false,
     }
