@@ -88,8 +88,12 @@ export const SUB_ROW = 136
 /** What a tool makes, once it's run, as anything on the canvas is. */
 export const makes = (view: ElementView | undefined) => Boolean(view?.asset?.tool) && (!madeHere(view?.asset?.tool) || Boolean(view?.asset?.timeline))
 
-/** A tool named away from its package's heading: `Qwen Image 2 · Image`. */
-export const toolName = (tool: Tool) => (tool.package_title && tool.package_title !== tool.label ? `${tool.package_title} · ${tool.label}` : tool.label)
+/** A label that says its package's name already (packages#940: MiniMax H3 Edit), which is then said once. */
+export const namesItsPackage = (tool: Tool) => Boolean(tool.package_title) && tool.label.toLowerCase().includes(tool.package_title.toLowerCase())
+
+/** A tool named away from its package's heading: `Qwen-Image-2.1 · Image`, and its label alone where that names its package already,
+ *  `MiniMax H3 Edit`, never `MiniMax H3 · MiniMax H3 Edit`. */
+export const toolName = (tool: Tool) => (namesItsPackage(tool) || !tool.package_title ? tool.label : `${tool.package_title} · ${tool.label}`)
 
 /** What Calcifer makes itself, free, with no machine. */
 export const madeHere = (tool?: string | null) => tool === "cozy" || Boolean(tool?.startsWith("cozy/"))

@@ -208,7 +208,8 @@ pub(crate) async fn warm_choices(
             if !binder.files.is_empty() || !binder.named_files.is_empty() || !terms.assets.is_empty() || !terms.fidelities.is_empty() {
                 return Err(usage("warm_inputs", "GPU program warming takes scalar inputs, not media files"));
             }
-            let bound = bind(target, release, interface, callable, terms).await?;
+            // Warming names no box: nothing it says spells its package.
+            let bound = bind(target, release, "", interface, callable, terms).await?;
             if !bound.files.is_empty() || !bound.tree_files.is_empty() || bound.destination.is_some() {
                 return Err(usage("warm_inputs", "GPU program warming takes scalar inputs, not files, trees or output destinations"));
             }
@@ -223,11 +224,12 @@ pub(crate) async fn warm_choices(
     Ok((binder.choices.into_choices(), None))
 }
 
-/// Binds `terms` for `callable`; `target` names it in messages (`org/pkg/fn`) and `release` the
-/// one its interface is (none for local code).
+/// Binds `terms` for `callable`; `target` names it in messages (`org/pkg/fn`), `release` the
+/// one its interface is (none for local code), and `summary` (its package's description) spells its package's name.
 pub(crate) async fn bind(
     target: &str,
     release: Option<&str>,
+    summary: &str,
     interface: &Interface,
     callable: &Callable,
     terms: &Terms,
@@ -263,7 +265,8 @@ pub(crate) async fn bind(
     if let Some(project) = &terms.project {
         let package = target.rsplit_once('/').map_or(target, |(package, _)| package);
         let inline = binder.inline_references().await?;
-        let (payload, named, said, left) = project.bound(target, package, callable, std::mem::take(&mut binder.document), &terms.clips, &inline).await?;
+        let title = api::calcifer::tool::title(package, summary);
+        let (payload, named, said, left) = project.bound(target, package, &title, callable, std::mem::take(&mut binder.document), &terms.clips, &inline).await?;
         binder.document = payload;
         files.retain(|file| !named.iter().any(|held| held.field == file.field));
         files.extend(named);

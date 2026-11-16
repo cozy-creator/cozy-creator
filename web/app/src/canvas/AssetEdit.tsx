@@ -100,6 +100,7 @@ function TextField({ name, field, bound, view, place, label, focus, named, block
     <MentionText
       asset={name}
       place={place}
+      field={field}
       value={said(bound.value)}
       label={label}
       placeholder={field.placeholder ?? undefined}

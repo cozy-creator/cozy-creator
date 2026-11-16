@@ -45,6 +45,8 @@ pub(crate) struct Package {
     pub named: Option<String>,
     /// A published release's digest, as its card says (xs-196); empty: local code, or a Hub before it.
     pub digest: String,
+    /// What it does in a line, its pyproject's description as its card or its checkout says: what spells its name (`title`).
+    pub summary: String,
     document: Value,
 }
 
@@ -52,6 +54,11 @@ impl Package {
     /// Its interface, as its card or its source says.
     pub(crate) fn document(&self) -> &Value {
         &self.document
+    }
+
+    /// It in words, as what's said of it names it: MiniMax H3 (`tool::title`).
+    pub(crate) fn title(&self) -> String {
+        tool::title(&self.name, &self.summary)
     }
 
     /// `function` of it as a machine's estimate names it: `org/pkg/fn@release`, local code by its manifest.
@@ -296,7 +303,8 @@ impl Host {
                 return Err(Error::new(Kind::Unavailable, "renderer_not_described", said));
             };
             let release = prepared.source.manifest.trim_start_matches("sha256:").chars().take(12).collect();
-            return Ok(Package { name: prepared.package, release, local: Some(path), manifest: prepared.source.manifest, moved: None, named, digest: String::new(), document });
+            let summary = prepared.from.map(|from| from.summary).unwrap_or_default();
+            return Ok(Package { name: prepared.package, release, local: Some(path), manifest: prepared.source.manifest, moved: None, named, digest: String::new(), summary, document });
         }
         let first = on.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
         self.published(hub, with, Some(&first)).await
@@ -319,7 +327,8 @@ impl Host {
             let manifest = local_code::source(hubs.home(), &code, hubs, &Origin::parse(&hub)?).await?.source.manifest;
             let (name, document) = local_code::describe(&self.api, &code, &first, &hub).await?;
             let release = manifest.trim_start_matches("sha256:").chars().take(12).collect();
-            Ok(Package { name, release, local: Some(path), manifest, moved: None, named, digest: String::new(), document })
+            let summary = crate::checkout::of(&code).map(|from| from.summary).unwrap_or_default();
+            Ok(Package { name, release, local: Some(path), manifest, moved: None, named, digest: String::new(), summary, document })
         }).await
     }
 
@@ -327,7 +336,7 @@ impl Host {
     pub(crate) async fn described(&self, with: &str, folder: &Path) -> Result<Package, Error> {
         let hub = self.api.machines.hubs.default_origin();
         let found = crate::runs::target::describe(&self.api, &hub, with, None, Some(folder), &crate::runs::default_on(&self.api)).await?;
-        Ok(Package { name: found.package, release: found.release, local: None, manifest: String::new(), moved: None, named: found.function, digest: String::new(), document: found.interface })
+        Ok(Package { name: found.package, release: found.release, local: None, manifest: String::new(), moved: None, named: found.function, digest: String::new(), summary: found.summary, document: found.interface })
     }
 
     /// A published package, by `[org/]package[@release]`, for a run `on` its machine (of several, the
@@ -365,7 +374,7 @@ impl Host {
         {
             moved = Some(upgrade.note());
         }
-        let found = Package { name: package, release: card.release.clone(), local: None, manifest: String::new(), moved: None, named: function, digest: card.digest().unwrap_or_default().to_owned(), document: card.interface_document().clone() };
+        let found = Package { name: package, release: card.release.clone(), local: None, manifest: String::new(), moved: None, named: function, digest: card.digest().unwrap_or_default().to_owned(), summary: card.summary().to_owned(), document: card.interface_document().clone() };
         self.packages.lock().expect("packages lock").insert(at, found.clone());
         Ok(Package { moved, ..found })
     }

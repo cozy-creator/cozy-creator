@@ -1,6 +1,6 @@
 import { type ClipboardEvent, type KeyboardEvent, type MouseEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
-import type { Unused } from "../api/calcifer"
+import type { ToolField, Unused } from "../api/calcifer"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
 import type { CanvasStore } from "./CanvasStore"
@@ -11,7 +11,7 @@ import { Thumb } from "./Media"
 import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, retext, timecode } from "./ranges"
 import { chipWords, mentionsIn, withMentions } from "./text"
 import { paintTriggers, takesWords, typedIn, unpaint, useTriggers } from "./triggers"
-import { UNSUPPORTED, UnsupportedNote } from "./Unsupported"
+import { UNSUPPORTED, UnsupportedNote, usable } from "./Unsupported"
 import { isSelf, mentionFrom, NO_BARE_SELF } from "./versions"
 
 /** What a chip says: its name in its brackets, a range of a video as timecode, and an orbit's angle in degrees. */
@@ -170,6 +170,7 @@ interface Menu {
 export function MentionText({
   asset,
   place,
+  field,
   value,
   label,
   placeholder,
@@ -182,6 +183,8 @@ export function MentionText({
 }: {
   asset: string
   place: string
+  /** The tool's field it is: `<` offers only what that can use. None: a Text box's words, which take anything. */
+  field?: ToolField
   value: string
   label: string
   /** What it reads when it's empty, its label if nothing else. */
@@ -401,7 +404,7 @@ export function MentionText({
       return put(closed[1], range)
     }
     const open = before.match(/<([^<>\s]*)$/)
-    const options = open ? store.namesLike(open[1], asset).slice(0, 8) : []
+    const options = open ? store.namesLike(open[1], asset).filter((name) => usable(field, store.kindOf(name, asset))).slice(0, 8) : []
     if (!open || !options.length) return setMenu(null)
     const range = document.createRange()
     range.setStart(at, selection.anchorOffset - open[0].length)

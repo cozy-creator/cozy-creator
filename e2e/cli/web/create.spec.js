@@ -8,6 +8,10 @@
 // 11-16): SDXL, which reads none, goes on a picture with no tool and offers no reference, and the picture its words start from is struck
 // through in red, its reason on hover and in one line under them; Qwen Image 2, which reads pictures, goes on in its place and uses it. The X
 // on the tool line takes the tool off, Undo puts it back. The sidebar and SDXL's struck picture are kept at 1440×900, on paper and dark.
+// cl-1084's Tools follow-ups (Paul, 11-16: "reference inputs are offered only by tools that can use them (a text-to-image-only tool like SDXL
+// shows none)"; "One name per model, cased right"): `<` offers only what the box's tool can use, so SDXL's list has no pictures and Qwen Image
+// 2's has; each tool is named once, as its package writes its model (MiniMax H3 Edit beside MiniMax H3, never "Minimax H3 · MiniMax H3
+// Edit"), in the Video group and on a box's tool line, kept on paper and dark; a group lists what makes something new before what edits.
 const { mkdirSync, readFileSync } = require('fs');
 const { join } = require('path');
 const { test, expect, observeStill, canvasCard, canvasIdle, canvasNames, canvasPoint, canvasVisible, focus, png, MP4, wav } = require('./fixtures');
@@ -20,8 +24,10 @@ const FILES = { image: { name: 'Coast.png', type: 'image/png', bytes: png(150) }
 const POINTS = [{ x: 480, y: 170 }, { x: 840, y: 170 }, { x: 1280, y: 170 }, { x: 480, y: 590 }, { x: 860, y: 590 }];
 /** Where Placer puts a box let go at a point of the canvas: its middle under it, its head 16 above (place.ts addTool, lay). */
 const placedAt = (flow) => ({ x: Math.round(flow.x - 120), y: Math.round(flow.y - 16) });
-/** A tool as the page names it (shown.ts toolName). */
-const named = (tool) => (tool.package_title && tool.package_title !== tool.label ? `${tool.package_title} · ${tool.label}` : tool.label);
+/** A tool as the page names it (shown.ts toolName): its label alone where that says its package's name already. */
+const named = (tool) => (!tool.package_title || tool.label.toLowerCase().includes(tool.package_title.toLowerCase()) ? tool.label : `${tool.package_title} · ${tool.label}`);
+/** Each seeded package's name as it writes it, in its description (cl-1084: "their brands as they write them"). */
+const WRITTEN = { 'qwen-image-2': 'Qwen-Image-2.1', 'minimax-h3': 'MiniMax H3', sdxl: 'SDXL', birefnet: 'BiRefNet', 'moss-image': 'MOSS-Image' };
 /** Whether a tool reads a picture: a slot of one, or a prompt that takes one. */
 const reads = (fields) => fields.some((field) => (field.type === 'slot' && field.accept === 'image') ||
   (field.type === 'prompt' && (!field.takes || field.takes.includes('image'))) || (field.type === 'group' && reads(field.members ?? [])));
@@ -192,12 +198,26 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
       expect.soft([...(under[plate.id] ?? [])], `${plate.id}, under Video`).toEqual(['video']);
       await openOperation('video');
       const row = implementations('video').and(palette.locator('[data-tool="minimax-h3/edit"]'));
-      // Its label names its model already (packages#940: "MiniMax H3 Edit"): said once, its package on hover.
-      const once = plate.label.toLowerCase().includes(plate.package_title.toLowerCase());
-      await expect.soft(row, 'called what it does, its model said once').toHaveText(once ? plate.label : new RegExp(` ${plate.label}$`));
-      await expect.soft(row, 'its package on hover').toHaveAttribute('title', new RegExp(`^${plate.package_title} · `));
+      // Its label names its model already (packages#940: "MiniMax H3 Edit"): said once, there and on hover (cl-1084).
+      await expect.soft(row, 'called what it does, its model said once').toHaveText('MiniMax H3 Edit');
+      await expect.soft(row, 'and so on hover').toHaveAttribute('title', /^MiniMax H3 Edit(\n|$)/);
+      const shot = implementations('video').and(palette.locator('[data-tool="minimax-h3/generate"]'));
+      await expect.soft(shot, 'beside MiniMax H3, cased as its package writes it').toHaveText('MiniMax H3');
+      const video = await implementations('video').allTextContents();
+      expect.soft(video.indexOf('MiniMax H3') < video.indexOf('MiniMax H3 Edit'), `what makes video before what edits it: ${video.join(', ')}`).toBe(true);
       await look('tools-video', async () => { await expect(palette.locator('.tool-groups.stale')).toHaveCount(0); await openOperation('video'); }, () => palette);
     }
+    // One name per model, as its package writes it (cl-1084): each seeded package's title, and its row in Image; there what makes a picture
+    // comes first, by name, then what edits one (BiRefNet's).
+    for (const [name, ids] of Object.entries(seeded)) {
+      for (const tool of tools.filter((tool) => ids.includes(tool.id))) expect.soft(tool.package_title, `${tool.id}: its package's name as it writes it`).toBe(WRITTEN[name]);
+    }
+    await openOperation('image');
+    const image = await implementations('image').evaluateAll((all) => all.map((one) => ({ id: one.dataset.tool, label: one.textContent })));
+    const at = (name) => image.findIndex((one) => one.id.startsWith(`${name}/`));
+    for (const name of ['moss-image', 'qwen-image-2', 'sdxl', 'birefnet']) expect.soft(image[at(name)]?.label, `${name}'s row in Image`).toBe(WRITTEN[name]);
+    const order = ['moss-image', 'qwen-image-2', 'sdxl', 'birefnet'].map(at);
+    expect.soft(order.every((i, n) => i >= 0 && (n === 0 || i > order[n - 1])), `MOSS-Image, Qwen-Image-2.1, SDXL, then BiRefNet: ${image.map((one) => one.label).join(', ')}`).toBe(true);
   });
 
   await test.step('drop a video tool, then an image tool, onto the dropped picture', async () => {
@@ -261,6 +281,23 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
 
   // A picture with no tool, right of the rest (cl-1068).
   const PHOTO = 'photo';
+  /** What `<` typed at the end of `region`'s words offers, each name with what its box is, and the `<` taken back. */
+  const offered = async (region) => {
+    const words = region.locator('.in-frame .mention-text').first();
+    if (!(await words.evaluate((el) => el === document.activeElement))) await words.click();
+    await page.keyboard.press('ControlOrMeta+End');
+    await page.keyboard.type(' <');
+    const list = page.locator('.name-menu[role="listbox"]');
+    await list.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+    const shown = await list.getByRole('option').allTextContents();
+    await page.keyboard.press('Backspace');
+    await page.keyboard.press('Backspace');
+    await expect(list, 'the list goes with the `<`').toHaveCount(0);
+    await expect.poll(async () => (await project.asset(PHOTO)).fields?.instructions ?? '', { message: 'the words as they were' }).not.toMatch(/<\s*$/);
+    const kinds = {};
+    for (const name of shown) kinds[name] = (await project.asset(/^self\.\d+$/.test(name) ? PHOTO : name))?.kind ?? 'none';
+    return kinds;
+  };
   let reader;
   await test.step("any image tool goes on a picture: SDXL, which reads none, offers no reference and strikes the picture through in red, saying why; Qwen Image 2 uses it", async () => {
     // Paul, 11-16: "you can attach an image tool to any image. However, it won't be able to use references to images if it's not capable of
@@ -327,6 +364,10 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
     await expect.soft(region.locator('.in-frame .unsupported-note'), 'and in one line under the words').toHaveText(self.why);
     await expect.soft(region.locator('.slot-control[data-accept="image"]'), 'SDXL offers no reference').toHaveCount(0);
     await expect.soft(region.locator('.in-frame .backdrop'), 'and the picture it can\'t use is no reference behind its words').toHaveCount(0);
+    // Nor does `<` offer one: SDXL's words take a Text box's words, and no picture, video or sound (cl-1084).
+    const sdxlOffers = await offered(region);
+    expect.soft(Object.entries(sdxlOffers).filter(([, kind]) => kind !== 'text'), `SDXL's \`<\` offers no picture: ${JSON.stringify(sdxlOffers)}`).toEqual([]);
+    expect.soft(Object.keys(sdxlOffers), 'and does offer the Text box').toContain(names.text);
     await look('sdxl-unsupported', writing, () => page.getByRole('region', { name: 'Focused asset' }).locator('.in-frame'));
     await leave(page);
 
@@ -346,6 +387,8 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
     await expect.soft(region.locator('.in-frame .chip[data-mention^="self."]').first(), 'the picture, used').not.toHaveClass(/\bunsupported\b/);
     await expect.soft(region.locator('.in-frame .unsupported-note'), 'with nothing to say').toHaveCount(0);
     await expect.soft(region.locator('.in-frame .backdrop'), 'the picture its reference, behind its words').toHaveCount(1);
+    const qwenOffers = await offered(region);
+    expect.soft(Object.values(qwenOffers), `Qwen Image 2's \`<\` offers pictures: ${JSON.stringify(qwenOffers)}`).toContain('image');
     await leave(page);
   });
 
@@ -364,6 +407,28 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
     expect.soft((await project.asset(PHOTO)).versions, 'its picture stays').toBe(versions);
     await note.getByRole('button', { name: 'Undo', exact: true }).click();
     await expect.poll(async () => (await project.asset(PHOTO)).tool, { message: 'Undo puts it back' }).toBe(reader.id);
+    await leave(page);
+  });
+
+  await test.step('MiniMax H3 Edit on the dropped video: its tool line says it once, as the package writes it, on paper and dark', async () => {
+    // cl-1084: the tool line said "Minimax H3 · MiniMax H3 Edit".
+    const target = names.video;
+    await fit(page);
+    await openOperation('video');
+    const edit = implementations('video').and(palette.locator('[data-tool="minimax-h3/edit"]'));
+    await edit.scrollIntoViewIfNeeded();
+    await carry(page, edit, await canvasPoint(page, target));
+    await expect.poll(async () => (await project.asset(target)).tool, { message: 'MiniMax H3 Edit goes on the video' }).toBe('minimax-h3/edit');
+    await expect.configure({ soft: true }).poll(async () => (await canvasCard(page, target))?.rendered?.labels.tool?.fullText, { message: 'its tool line on the canvas' }).toBe('MiniMax H3 Edit');
+    const line = () => page.getByRole('region', { name: 'Focused asset' }).locator('.tool-line').first();
+    const focused = async () => {
+      await focus(page, target);
+      await expect(line()).toBeVisible();
+    };
+    await focused();
+    await expect.soft(line().locator('.image-tool-name'), 'and in Focus').toHaveText('MiniMax H3 Edit');
+    expect.soft(await page.locator('body').innerText(), 'no tool named twice, or cased other than as its package writes it').not.toMatch(/Minimax H3|MiniMax H3 · MiniMax H3/);
+    await look('tool-line', focused, line);
     await leave(page);
   });
 });

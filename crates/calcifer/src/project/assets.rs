@@ -249,10 +249,10 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
                 let package = Host::new(&api).package(&hub, &doc.target(i), &project.folder.dir, &on, super::host::Wait::Plain).await?;
                 let function = package.maker()?.map(|maker| maker.function).unwrap_or_default();
                 let callable = package.callable(&function).ok_or_else(|| Error::new(Kind::NotFound, "callable_unknown", format!("{} has no function called {function}.", package.name)))?;
-                let (fields, reserved, stand) = (doc.inputs_of(i), package.reserved(), &model.stand);
+                let (fields, reserved, stand, title) = (doc.inputs_of(i), package.reserved(), &model.stand, package.title());
                 // A mention of nothing is said, as a render would refuse it, and the rest of the call stands.
                 let missing = doc.missing_inputs(i, &reserved, lock);
-                let call = binder::Call { name: &asset.name, tool: &doc.target(i), package: &package.name, callable: &callable, fields: &fields, reserved: &reserved, doc, own: Some(i), lock, stand, gone: &Default::default(), pickup: None, inline: &[] };
+                let call = binder::Call { name: &asset.name, tool: &doc.target(i), package: &package.name, title: &title, callable: &callable, fields: &fields, reserved: &reserved, doc, own: Some(i), lock, stand, gone: &Default::default(), pickup: None, inline: &[] };
                 let bound = binder::bind(&call)?;
                 let unused = bound.unused.iter().map(|unused| unused.line(&asset.name));
                 Ok::<_, Error>((bound.payload, missing.into_iter().chain(bound.warnings).chain(unused).collect::<Vec<String>>()))

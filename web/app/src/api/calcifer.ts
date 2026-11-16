@@ -3350,7 +3350,7 @@ name: string,
  */
 label: string,
 /**
- * Its package in words, as the tool list heads its tools: `Qwen Image 2`, `SDXL`.
+ * Its package in words, as its description writes its name (`MiniMax H3`, `Qwen-Image-2.1`), else as `title` spells it (`SDXL`).
  */
 package_title: string,
 /**
@@ -3621,7 +3621,7 @@ mention: string,
  */
 at: string,
 /**
- * For people: `Moss Image doesn't support reference images`.
+ * For people: `MOSS-Image doesn't support reference images`.
  */
 why: string, };
 

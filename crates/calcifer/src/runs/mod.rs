@@ -524,6 +524,7 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
             let code = Code {
                 package,
                 interface: &card.interface,
+                summary: card.summary(),
                 release: Some(&card.release),
                 source: spec::Source::Release(Some(&card.release), card.digest().unwrap_or_default()),
                 files: &[],
@@ -539,6 +540,7 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
             let code = Code {
                 package: &local.package,
                 interface,
+                summary: local.from.as_ref().map_or("", |from| from.summary.as_str()),
                 release: None,
                 source: spec::Source::Local { source: &local.source, installation: local.installation.as_deref() },
                 files: &local.files,
@@ -564,7 +566,7 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     }
     let (gpu, needs_gpu) = (code.interface.gpu(callable), code.interface.needs_gpu(callable));
     let named = format!("{package}/{}", callable.name);
-    let (interface, release) = (code.interface, code.release);
+    let (interface, release, summary) = (code.interface, code.release, code.summary);
     let (mut submit, mut notes) = Box::pin(call(api, code, callable, ask, key, &hub)).await?;
     if let Resolved::Local { local, .. } = &resolved
         && let Some(from) = &local.from
@@ -631,7 +633,7 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     // A GPU this computer would run it poorly on, said as a render's box says it, never asked (cl-897).
     if submit.on.is_local() && gpu && ask.warm.is_none() {
         let input: serde_json::Map<String, serde_json::Value> = submit.spec.payload.as_ref().and_then(|payload| serde_json::from_str(payload.get()).ok()).unwrap_or_default();
-        if let Some(line) = crate::project::fit::here_now(api, &hub, package, release, &callable.name, interface, &input) {
+        if let Some(line) = crate::project::fit::here_now(api, &hub, package, release, &callable.name, interface, summary, &input) {
             notes.push(Note { level: NoteLevel::Warning, message: format!("{line} Rent a GPU to run it faster.") });
         }
     }
@@ -747,6 +749,8 @@ pub(crate) fn hub(api: &Api, asked: &str) -> String {
 struct Code<'a> {
     package: &'a str,
     interface: &'a Interface,
+    /// What its package does in a line (its card's, or its checkout's), which spells its name (`tool::title`).
+    summary: &'a str,
     /// The release its inputs bind against; none for local code.
     release: Option<&'a str>,
     source: spec::Source<'a>,
@@ -828,7 +832,7 @@ async fn call(
             (call.warm(level, &models, payload)?, None, None)
         }
         None => {
-            let mut bound = bind::bind(&target, code.release, code.interface, callable, &terms).await?;
+            let mut bound = bind::bind(&target, code.release, code.summary, code.interface, callable, &terms).await?;
             notes.append(&mut bound.notes);
             notes.extend(bound.cut.iter().map(|cut| Note { level: NoteLevel::Warning, message: cut.clone() }));
             if let Some(warning) = bound.warning(&target) {

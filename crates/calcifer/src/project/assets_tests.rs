@@ -282,7 +282,7 @@ async fn typed_nodes_fixture() {
         "name":"image", "request":{"fields":[{"name":"summary","type":{"prompt":["image"]}}]}
     })).unwrap();
     let bound = super::super::binder::bind(&super::super::binder::Call {
-        name: &original.name, tool: "fixture/image", package: "fixture", callable: &callable,
+        name: &original.name, tool: "fixture/image", package: "fixture", title: "Fixture", callable: &callable,
         fields: &authored, reserved: &[], doc: &doc, own: Some(source_at), lock: &lock,
         stand: &doc.stand(&lock), gone: &BTreeSet::new(), pickup: None, inline: &[],
     }).unwrap();
