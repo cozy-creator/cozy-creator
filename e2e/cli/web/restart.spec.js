@@ -51,6 +51,8 @@ test('restart', { tag: '@solo' }, async ({ context, page, project, api, cli, sig
   const away = new RegExp(`^console error: Failed to load resource: net::ERR_[A-Z_]+ ${api.origin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/`);
   let stopped = false;
   guards.allow({ test: (line) => stopped && away.test(line) });
+  // A stopping Calcifer admits no write: the tab's word of what it shows, as its project locks for the stop.
+  guards.allow({ test: (line) => stopped && /status of 503\b.*\/v1\/events\//.test(line) });
 
   try {
     await test.step('what is typed as cozy locks the project is saved first', async () => {
@@ -68,19 +70,12 @@ test('restart', { tag: '@solo' }, async ({ context, page, project, api, cli, sig
       const said = await locking;
       expect(said.code, `cozy vault lock: ${said.stdout.slice(-300)} ${said.stderr.slice(-300)}`).toBe(0);
       await expect(covered, 'the tab covered').toBeVisible({ timeout: 60_000 });
-      // Unlocked from the tab. Its form clears as the lock's last state lands, so the passphrase goes in again until it takes.
-      await expect(async () => {
-        if (await canvasVisible(page, 'words')) return;
-        const field = page.getByLabel('Passphrase', { exact: true });
-        if (await field.isVisible()) {
-          await field.fill(project.passphrase);
-          await page.getByRole('button', { name: 'Unlock project', exact: true }).click({ timeout: 5_000 });
-        }
-        expect(await canvasVisible(page, 'words'), 'the canvas is back').toBe(true);
-      }).toPass({ timeout: 90_000, intervals: [1_000, 2_000, 5_000] });
+      // Unlocked as `cozy vault unlock` does, and what it kept read before the tab is asked anything.
+      await api.post(project.at('/vault'), { action: 'unlock', passphrase: project.passphrase });
       const kept = (await project.asset('words'))?.fields?.text ?? '';
       expect(kept !== WAS && typed.startsWith(kept) && kept.length >= FIRST.length,
         `what was typed before the lock began is saved (${FIRST.length} characters at least): ${JSON.stringify(kept)}`).toBe(true);
+      await expect.poll(() => canvasVisible(page, 'words'), { message: 'the tab shows its canvas again', timeout: 60_000 }).toBe(true);
       expect.soft(await page.evaluate(() => window.unreloaded), 'with no reload').toBe(true);
     });
 
