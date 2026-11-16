@@ -232,7 +232,7 @@ drop_folder "$P"
 db_purged_late() {
 step "a deleted box's file a late-landed run row names goes with its version (cl-1093)"
 local P=$OUT/purged-late pic aged rows
-run_project "$P" > "$OUT/purged-late-new.log" 2>&1 || { check "purged late: no project: $(tail -c 300 "$OUT/purged-late-new.log")"; return; }
+cozy --json new --unencrypted "$P" > "$OUT/purged-late-new.log" 2>&1 || { check "purged late: no project: $(tail -c 300 "$OUT/purged-late-new.log")"; return; }
 ffmpeg -v error -y -f lavfi -i 'color=c=orange:size=64x48' -frames:v 1 "$OUT/purged-late.png"
 project_import "$P" "$OUT/purged-late.png" pic > /dev/null || { check "purged late: the box wasn't made"; return; }
 pic=$(asset_of "$P" pic | jq -r '.sha256 // empty')
