@@ -221,6 +221,30 @@ was=$(output parts-default png) is=$(output parts-composed png)
 { [ -n "$was" ] && [ -n "$is" ] && ! cmp -s "$was" "$is"; } || check "parts: the composed run's stored picture is not another than the default's (${was:-none}, ${is:-none})"
 }
 
+# tfs-300, LAB2-47829 (Paul 11-16: "we don't need all components of a model to be on the critical path; that's just creating
+# unnecessary latency for the end-user who is waiting on models to download"; "I think this is a failure in terms of our download
+# planner"): a LoRA on qwen-image-2's `model`, which reads Noct Q's transformer alone, pulled all of Noct Q, its 9.9 GiB text
+# encoder too, before the call could start. script/lora.py's `model` reads e2e/lora-base's 256 KiB transformer beside its 16 MiB
+# text encoder: cold, with e2e/lora-proj on it, the call completes, the LoRA changes what the transformer makes, and the machine
+# holds the transformer alone.
+lora_reads() {
+step "a LoRA'd slot downloads only the components it reads of its model (tfs-300)"
+[ -n "$LOCAL" ] || return 0
+local script=$here/script/lora.py held stage
+cell lora-adapted "$script" --lora model=e2e/lora-proj || return 0
+stage=$(grep '^{' "$OUT/lora-adapted.ndjson" | jq -s '[.[] | select(.type == "run.progress") | .progress | select(.stage | startswith("preparing model adapters")) | .bytes_total] | max // 0')
+cozy --json model ls --on local > "$OUT/lora-held.json" || { check "lora reads: model ls --on local failed"; return; }
+held=$(jq -c '[.models[]? | select(.model == "e2e/lora-base") | {complete, bytes}]' "$OUT/lora-held.json")
+J '[.models[] | select(.model == "e2e/lora-base")] | length == 1 and .[0].complete == false and .[0].bytes >= 262144 and .[0].bytes < 4194304' "$OUT/lora-held.json" \
+  || check "lora reads: the LoRA'd call left more of e2e/lora-base here than its 256 KiB transformer (its text encoder is 16 MiB): $held"
+J '[.measurements.models[] | select(.slot == "model") | .adapters | length] == [1]' "$OUT/lora-adapted.json" \
+  || check "lora reads: its record names no LoRA on model: $(jq -c '.measurements.models' "$OUT/lora-adapted.json")"
+cell lora-plain "$script" || return 0
+J --slurpfile plain "$OUT/lora-plain.json" '.result.sum != $plain[0].result.sum' "$OUT/lora-adapted.json" \
+  || check "lora reads: the LoRA changed nothing: $(jq -c .result "$OUT/lora-adapted.json") as without it"
+echo "lora reads: e2e/lora-base here after the LoRA'd call $held; its adapter stage moved ${stage} bytes; sums $(jq .result.sum "$OUT/lora-adapted.json") with, $(jq .result.sum "$OUT/lora-plain.json") without"
+}
+
 # Paul's rule (11-13, cl-984): "1. project data is private 2. models / packages installed are machine-specific (not project
 # specific)". After component_models ran parts.py (a script package on e2e/parts, ~4 MiB) in the suite's project, a second
 # project's first run of it downloads nothing, builds no environment and adds no weights anywhere, and the first project's
