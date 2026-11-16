@@ -87,7 +87,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         None => match api::calcifer::local_usable("local") {
             Ok(()) => Some("local".to_owned()),
             Err(off) => {
-                checks.push(Check::ok("machine", format!("{}; {}", off.message, off.remedy.unwrap_or_default())));
+                checks.push(Check::ok("machine", [off.message, off.remedy.unwrap_or_default()].join(" ").trim_end().to_owned()));
                 None
             }
         },
