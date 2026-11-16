@@ -45,11 +45,11 @@ function Sku({ sku, disabled, chosen, onPick }: { sku: RentalSku; disabled: bool
     <li ref={row} className={`sku ${chosen !== undefined ? "chosen" : ""}`} aria-current={chosen !== undefined || undefined}>
       <b>{sku.name}</b>
       <small>
-        {cpu ? `${width.vcpu_count ?? "?"} vCPU, no GPU` : `${sku.accelerator_model} · ${sku.vram_gb} GB`}
+        {cpu ? `${width.vcpu_count ?? "?"} vCPU, no GPU` : `${sku.accelerator_model} · ${sku.vram_gb}GB`}
       </small>
       <span className="sp" />
       {sku.widths.length > 1 && (
-        <select className="field" aria-label={`${sku.name}: GPUs`} value={gpus} onChange={(event) => setGpus(Number(event.target.value))}>
+        <select className="field" aria-label={`GPUs for ${sku.name}`} value={gpus} onChange={(event) => setGpus(Number(event.target.value))}>
           {sku.widths.map((choice) => (
             <option key={choice.accelerator_count} value={choice.accelerator_count}>
               {choice.accelerator_count}×
@@ -81,7 +81,7 @@ function Order() {
   const go = async () => {
     const rented = await place(client)
     if (!rented) return
-    if (rented.replay) say("This order was placed already: following it.")
+    if (rented.replay) say("You already placed this order. Showing it now.")
     void queries.invalidateQueries({ queryKey: ["machines"] })
     navigate(to(`machines/${encodeURIComponent(stableName(rented.machine))}`))
   }
@@ -90,7 +90,7 @@ function Order() {
   const line = (held: { sku: string; gpus?: number | null }, price: number) => `${held.gpus ?? 1}× ${held.sku.toUpperCase()} at ${usd(price)}/h`
   return (
     <div className="order" aria-live="polite" ref={here}>
-      {now.state === "quoting" && <p className="muted">Asking the Hub its price for {now.order.gpus ?? 1}× {now.order.sku}…</p>}
+      {now.state === "quoting" && <p className="muted">Getting the price for {now.order.gpus ?? 1}× {now.order.sku}…</p>}
       {now.state === "quoted" && (
         <>
           {now.quote.warnings?.map((warning) => (
@@ -98,8 +98,8 @@ function Order() {
               {warning}
             </p>
           ))}
-          <p>It bills until you end it, or after 15 minutes idle.</p>
-          {!now.quote.agreed && <p className="warn">This Calcifer didn't say what's agreed at this price, so it can't be ordered from here.</p>}
+          <p>You pay for it until you end it. It also ends by itself after 15 minutes idle.</p>
+          {!now.quote.agreed && <p className="warn">Cozy didn't confirm this price, so you can't rent it from here.</p>}
           <div className="row">
             <button type="button" className="tb primary" disabled={!now.quote.agreed} onClick={() => void go()}>
               Rent {line(now.order, now.quote.usd_micros_per_hour)}
@@ -110,27 +110,27 @@ function Order() {
           </div>
         </>
       )}
-      {now.state === "placing" && <p>Ordering {line(now.order, now.quote.usd_micros_per_hour)}…</p>}
+      {now.state === "placing" && <p>Renting {line(now.order, now.quote.usd_micros_per_hour)}…</p>}
       {now.state === "uncertain" && (
         <>
-          <Failure error={now.error} lead="The order may stand, since no answer came" />
-          <p>If it does, it's in the list above. Asking again is the same order, and can't place a second.</p>
+          <Failure error={now.error} lead="No answer came back, so the order may have gone through" />
+          <p>If it did, it's in the list above. Trying again won't rent a second one.</p>
           <div className="row">
             <button type="button" className="tb" onClick={() => void go()}>
-              Ask again, the same order
+              Try again
             </button>
             <button type="button" className="tb" onClick={dismiss}>
-              Stop asking
+              Not now
             </button>
           </div>
         </>
       )}
       {now.state === "refused" && (
         <>
-          <Failure error={now.error} lead={now.rose ? "It costs more than the price you agreed to" : "Nothing was rented"} />
+          <Failure error={now.error} lead={now.rose ? "The price went up, so nothing was rented" : "Nothing was rented"} />
           <div className="row">
             <button type="button" className="tb" onClick={() => void quote(client, now.order)}>
-              {now.rose ? "See the new price" : "Quote again"}
+              {now.rose ? "See the new price" : "Get a new price"}
             </button>
             <button type="button" className="tb" onClick={dismiss}>
               Not now
@@ -178,7 +178,7 @@ export function Rent({ signedIn }: { signedIn: boolean }) {
           to rent.
         </p>
       )}
-      <Failure error={error} lead="The Hub didn't list its machines" />
+      <Failure error={error} lead="Couldn't get the machines for rent from the Hub" />
       <ul className="rows">
         {skus?.map((sku) => (
           <Fragment key={sku.name}>
@@ -191,18 +191,18 @@ export function Rent({ signedIn }: { signedIn: boolean }) {
           </Fragment>
         ))}
       </ul>
-      {skus && !skus.length && <p className="muted">No machine is for rent on this Hub right now.</p>}
+      {skus && !skus.length && <p className="muted">The Hub has no machines for rent right now.</p>}
       <details className="sect">
-        <summary>Log in over SSH</summary>
+        <summary>SSH access</summary>
         <input
           className="field wide"
-          aria-label="An OpenSSH public key"
-          placeholder="ssh-ed25519 AAAA… (the .pub file's one line)"
+          aria-label="SSH public key"
+          placeholder="ssh-ed25519 AAAA… (the line in your .pub file)"
           spellCheck={false}
           value={sshKey}
           onChange={(event) => setSshKey(event.target.value)}
         />
-        {badKey && <p className="warn">That isn't one public key line, so it won't be sent.</p>}
+        {badKey && <p className="warn">That isn't a single public key line, so it won't be sent.</p>}
       </details>
     </Section>
   )

@@ -313,7 +313,7 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
 
     await page.locator('summary[aria-label="Menu"]').click();
     await page.getByRole('link', { name: 'Machines', exact: true }).click();
-    await expect.soft(page.getByRole('alert').filter({ hasText: "The Hub didn't list its machines" }), 'Rent says the Hub listed none').toBeVisible({ timeout: 30_000 });
+    await expect.soft(page.getByRole('alert').filter({ hasText: "Couldn't get the machines for rent from the Hub" }), 'Rent says the Hub listed none').toBeVisible({ timeout: 30_000 });
 
     away = true;
     await calciferControl.hub();

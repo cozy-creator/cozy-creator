@@ -23,7 +23,7 @@ function KeepRunning({ machine }: { machine: Machine }) {
   if (machine.kind !== "rental" || machine.state !== "ready" || machine.ordered === false) return null
   return (
     <>
-      <button type="button" className="tb" title="Starts its 15 idle minutes again" disabled={ask.busy} onClick={() => void ask.run(() => client.keepAlive(machine.name))}>
+      <button type="button" className="tb" title="Restart its 15-minute idle timer" disabled={ask.busy} onClick={() => void ask.run(() => client.keepAlive(machine.name))}>
         Keep running
       </button>
       <Failure error={ask.error} lead="Couldn't keep it running" />
@@ -56,7 +56,7 @@ function Update({ machine }: { machine: Machine }) {
       const updating = await client.updateMachine(machine.name, body, key)
       asked.current = null
       if (updating.run) navigate(to(`runs/${updating.run.number}`))
-      else setSaid(`It runs ${updating.target}: nothing to update.`)
+      else setSaid(`Already up to date (${updating.target}).`)
     })
   }
 
@@ -67,37 +67,38 @@ function Update({ machine }: { machine: Machine }) {
       <form className="stack" onSubmit={update}>
         <label>
           Runtime
-          <input className="field" spellCheck={false} placeholder={status?.runtime || "the Hub's target"} value={runtime} onChange={(event) => setRuntime(event.target.value)} />
+          <input className="field" spellCheck={false} placeholder={status?.runtime || "The Hub's recommended version"} value={runtime} onChange={(event) => setRuntime(event.target.value)} />
         </label>
         <label>
           TensorFS
-          <input className="field" spellCheck={false} placeholder={status?.tensorfs || "the Hub's target"} value={tensorfs} onChange={(event) => setTensorfs(event.target.value)} />
+          <input className="field" spellCheck={false} placeholder={status?.tensorfs || "The Hub's recommended version"} value={tensorfs} onChange={(event) => setTensorfs(event.target.value)} />
         </label>
         <label>
-          cozy
-          <input className="field" spellCheck={false} placeholder={status?.version || "the Hub's target"} value={tensord} onChange={(event) => setTensord(event.target.value)} />
+          Cozy
+          <input className="field" spellCheck={false} placeholder={status?.version || "The Hub's recommended version"} value={tensord} onChange={(event) => setTensord(event.target.value)} />
         </label>
         <div className="row end">
           <button type="submit" className="tb" disabled={ask.busy}>
-            {runtime || tensorfs || tensord ? "Update" : "Update to the Hub's target"}
+            {runtime || tensorfs || tensord ? "Update" : "Update to the recommended versions"}
           </button>
         </div>
       </form>
-      {machine.kind === "local" && tensord.trim() && <p className="muted">Calcifer itself moves to that cozy at the next `cozy` command in a terminal.</p>}
+      {machine.kind === "local" && tensord.trim() && <p className="muted">Cozy switches to that version the next time you run a `cozy` command in a terminal.</p>}
       {said && <p className="muted">{said}</p>}
-      <Failure error={ask.error} lead="Couldn't update it" />
+      <Failure error={ask.error} lead="Couldn't update this machine" />
     </details>
   )
 }
 
-/** Under a tenth of its disk free, said before a render finds out: what a render does about it, and what holds more. */
+/** Under a tenth of its disk free, said before a render finds out: what Cozy does about it, and what holds more. */
 function DiskShort({ machine }: { machine: Machine }) {
   const status = machine.status
   if (machine.state === "ended" || !status?.disk_total_bytes || (status.disk_free_bytes ?? 0) >= status.disk_total_bytes / 10) return null
-  const models = status.disk_models_bytes ? `, models take ${bytes(status.disk_models_bytes)}` : ""
+  const models = status.disk_models_bytes ? `; models use ${bytes(status.disk_models_bytes)}` : ""
   return (
     <p className="warn">
-      Short of disk: {bytes(status.disk_free_bytes ?? 0)} free of {bytes(status.disk_total_bytes)}{models}. A render evicts the models no queued or running job is using; one that still doesn't fit is refused before it starts. For more, rent a machine with a larger disk.
+      This machine is almost out of disk space ({bytes(status.disk_free_bytes ?? 0)} free of {bytes(status.disk_total_bytes)}{models}). Before a render, Cozy clears out models
+      nothing is using. If a render still won't fit, it won't start: rent a machine with a bigger disk.
     </p>
   )
 }
@@ -109,15 +110,15 @@ function Details({ machine, now }: { machine: Machine; now: number }) {
   const ended = machine.state === "ended"
   const status = machine.status
   const rental = machine.rental
-  const disk = status?.disk_total_bytes ? `${bytes(status.disk_free_bytes ?? 0)} free of ${bytes(status.disk_total_bytes)}` : rental?.disk_gb ? `${rental.disk_gb} GB` : ""
+  const disk = status?.disk_total_bytes ? `${bytes(status.disk_free_bytes ?? 0)} free of ${bytes(status.disk_total_bytes)}` : rental?.disk_gb ? `${rental.disk_gb}GB` : ""
   return (
     <div className="sect machine-details">
       <KV
       rows={[
-        ["Kind", kindWords(machine)],
+        ["Type", kindWords(machine)],
         ...(status?.gpus ?? []).map((gpu): [string, string] => [`GPU ${gpu.index}`, `${gpu.name} · ${bytes(gpu.memory_bytes)}${gpu.driver ? ` · driver ${gpu.driver}` : ""}`]),
-        ["Up", rental ? span((now - rental.rented_at_ms) / 1000) : status && span((now - status.started_at_ms) / 1000)],
-        ["cozy", status && `${status.version}${status.dev ? " (dev)" : ""}`],
+        ["Running for", rental ? span((now - rental.rented_at_ms) / 1000) : status && span((now - status.started_at_ms) / 1000)],
+        ["Cozy", status && `${status.version}${status.dev ? " (dev)" : ""}`],
         ["Runtime", status?.runtime],
         ["TensorFS", status?.tensorfs],
         ["RC", machine.rc && `${machine.rc.rc} ${machine.rc.state}: ${machine.rc.detail}`],
@@ -126,21 +127,21 @@ function Details({ machine, now }: { machine: Machine; now: number }) {
         ["Disk", disk],
         ["Address", machine.address],
         ["Fingerprint", machine.fingerprint],
-        ["Controller key", machine.controller_key],
-        ["Add it at", machine.reach],
-        ["Placed", rental?.placement_note],
-        ["Failure", rental?.failure],
-        ["Reason", machine.reason],
-        ["End failed", machine.end_failed],
+        ["Public key", machine.controller_key],
+        ["Address for other computers", machine.reach],
+        ["Location", rental?.placement_note],
+        ["Why it failed", rental?.failure],
+        ["Why it ended", machine.reason],
+        ["Couldn't end", machine.end_failed],
       ]}
       />
       {machine.ssh && (
-        <Section title="Log in">
+        <Section title="SSH">
           <Copyable text={machine.ssh.line} />
         </Section>
       )}
       {Boolean(machine.status?.runs?.length) && (
-        <Section title="Its runs now">
+        <Section title="Running now">
           <ul className="rows">
             {machine.status?.runs?.map((held) => (
               <li className="heldrow" key={held.id}>
@@ -149,7 +150,7 @@ function Details({ machine, now }: { machine: Machine; now: number }) {
                     {runName(held.run)} {shown(held.run.target)}
                   </Link>
                 ) : (
-                  <span className="nm">No record of it here</span>
+                  <span className="nm">A run this computer has no record of</span>
                 )}
                 <small>{[held.state, held.waiting].filter(Boolean).join(" · ")}</small>
               </li>
@@ -160,7 +161,7 @@ function Details({ machine, now }: { machine: Machine; now: number }) {
       {!ended && (
         <p>
           <Link className="more" to={`${to("runs")}?all&machine=${encodeURIComponent(machine.name)}`}>
-            Its runs
+            All runs on this machine
           </Link>
         </p>
       )}
@@ -173,13 +174,13 @@ function Details({ machine, now }: { machine: Machine; now: number }) {
 
 /** What it's doing, in jobs, its GPUs' work (cl-889), what it's cost so far, and when it ends. */
 function Doing({ machine, now }: { machine: Machine; now: number }) {
-  const jobs = machine.running || machine.queued ? `${machine.running} running, ${machine.queued} queued` : "No jobs"
+  const jobs = machine.running || machine.queued ? `${machine.running} running, ${machine.queued} queued` : "Nothing running"
   const ends = endsWords(machine, now)
   const spent = spentWords(machine)
   return (
     <p className="doing-now">
       <span>{jobs}</span>
-      {spent && <span className="muted">{spent} so far</span>}
+      {spent && <span className="muted">{spent}</span>}
       {ends && <span className={machine.status?.idle_deadline_ms ? "warn" : "muted"}>{ends}</span>}
     </p>
   )
@@ -219,16 +220,16 @@ export function MachineDrawer() {
           </button>
         </div>
       </div>
-      {ended && <p className="muted">Ended. Nothing of it bills now, and what landed here stays.</p>}
+      {ended && <p className="muted">Ended. It costs nothing more, and results already downloaded stay on this computer.</p>}
       {machine.state === "booting" && (
         <p className="muted">
-          Still trying{machine.attempt ? `, attempt ${machine.attempt.number}` : ""}. It bills once it's ready, and goes on with this page closed.
-          {machine.attempt?.replaced && ` The last attempt ended: ${machine.attempt.replaced.failure}.`}
+          Starting up{machine.attempt ? ` (attempt ${machine.attempt.number})` : ""}. You pay only once it's ready, and it keeps going if you close this page.
+          {machine.attempt?.replaced && ` The last attempt failed: ${machine.attempt.replaced.failure}.`}
         </p>
       )}
-      {machine.offline && <p className="warn">It's offline and refuses runs. It returns if its provider resumes it, and ends after 15 minutes idle.</p>}
+      {machine.offline && <p className="warn">It's offline, so it can't take runs. It comes back if its provider resumes it, and ends after 15 minutes idle.</p>}
       {brokenWords(machine) && <p className="warn">{brokenWords(machine)}</p>}
-      {machine.unreachable && !ended && <p className="muted">It didn't answer just now ({machine.unreachable}). This is from its last report.</p>}
+      {machine.unreachable && !ended && <p className="muted">It didn't respond just now ({machine.unreachable}), so this is from its last report.</p>}
       {!ended && <Doing machine={machine} now={now} />}
       <div className="machine-actions">
         <KeepRunning machine={machine} />
@@ -249,12 +250,12 @@ export function MachineDrawer() {
         .filter((gpu) => gpu.out_of_service)
         .map((gpu) => (
           <p className="warn" key={`out-${gpu.index}`}>
-            GPU {gpu.index} is out of service: {gpu.out_of_service}. Runs go to its other GPUs or machines.
+            GPU {gpu.index} isn't working ({gpu.out_of_service}). Runs go to its other GPUs or to other machines.
           </p>
         ))}
       {machine.status?.stuck?.map((stuck) => (
         <p className="warn" key={stuck.pid}>
-          Pid {stuck.pid} ({stuck.command}) was killed and is stuck in the kernel{stuck.wchan ? ` (${stuck.wchan})` : ""}: what it holds stays held until it exits.
+          Process {stuck.pid} ({stuck.command}) was stopped but is stuck in the kernel{stuck.wchan ? ` (${stuck.wchan})` : ""}. What it's using stays in use until it exits.
         </p>
       ))}
       {details && <Details machine={machine} now={now} />}

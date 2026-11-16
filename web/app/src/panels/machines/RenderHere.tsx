@@ -35,7 +35,7 @@ export function useRenderMachines() {
       ({ machines }) => mine === asked && keep(machines),
       (error) => {
         if (mine === asked) void queries.invalidateQueries({ queryKey: ["project", id] })
-        say("Couldn't choose where this project renders", error)
+        say("Couldn't save where this project renders", error)
       },
     )
     return true
@@ -53,7 +53,7 @@ export function RenderCheck({ name, called = name }: { name: string; called?: st
   if (press && press.from !== on) setPress(null)
   if (!project) return null
   return (
-    <label className="render-prefer" title="This project renders here (any checked machine, whichever finishes first)">
+    <label className="render-prefer" title="Render this project here. With several preferred machines, each render goes to whichever finishes first.">
       <input
         type="checkbox"
         className="render-check"
