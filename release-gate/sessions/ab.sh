@@ -236,7 +236,8 @@ ballast() {
   if [ "$2" = off ]; then
     script='pkill -f /var/tmp/ab-ballast.py; rm -f /var/tmp/ab-ballast.ready; sleep 2'
   else
-    script="pkill -f /var/tmp/ab-ballast.py; rm -f /var/tmp/ab-ballast.ready; echo $(base64 -w0 <<< "$BALLAST") | base64 -d > /var/tmp/ab-ballast.py
+    # The old holder gone, its memory freed, before the new one reads what is available (43972965202: h1, r2 held nothing).
+    script="pkill -f /var/tmp/ab-ballast.py; i=0; while pgrep -f /var/tmp/ab-ballast.py > /dev/null && [ \$i -lt 60 ]; do sleep 1; i=\$((i + 1)); done; sleep 3; rm -f /var/tmp/ab-ballast.ready; echo $(base64 -w0 <<< "$BALLAST") | base64 -d > /var/tmp/ab-ballast.py
 setsid nohup python3 /var/tmp/ab-ballast.py $2 /var/tmp/ab-ballast.ready > /var/tmp/ab-ballast.out 2>&1 < /dev/null &
 i=0; while [ \$i -lt 600 ]; do sleep 1; i=\$((i + 1)); [ -s /var/tmp/ab-ballast.ready ] && break; done; sleep 5; cat /var/tmp/ab-ballast.ready 2>/dev/null || tail -c 300 /var/tmp/ab-ballast.out"
   fi
