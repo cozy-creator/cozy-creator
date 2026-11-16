@@ -173,9 +173,10 @@ while read -r why; do check "ondemand-order: $why"; done < "$OUT/ondemand-order.
 # nothing more. We can download extras (Z) in the background, in anticipation of maybe needing them, but they aren't in the critical
 # path of inference (user request) so they shouldn't be waited on." calls.py's `needs` loads e2e/calls-needed (192 MiB) and has
 # e2e/calls-extra (256 MiB) on demand, never read, on this cold machine over the 30 MB/s link. Its record says what the machine had
-# and downloaded for it (`measurements.weights`), and what came at its run's order is that and no more; while it waits and while it
-# runs, the machine lists e2e/calls-needed as its download and never e2e/calls-extra, which comes behind it; what it waits on says
-# how much it downloads; and a second call finds it all on the machine.
+# and downloaded for it (`measurements.weights`), and what came at its run's order is that and no more; its progress names
+# e2e/calls-needed and its bytes alone, while e2e/calls-extra comes behind it at an extra's order; what it waits on says how much it
+# downloads (`cozy machine show`, its run); and a second call finds it all on the machine. `cozy machine show` lists a download only
+# for this computer's own runs (a project's are its page's to list), so its list is checked where it has one.
 ondemand_needs() {
 [ "$RUNNER_OS" = Linux ] || return 0
 step "a call downloads what it needs and no more; extras come in the background, never waited on (cl-1102)"
@@ -184,7 +185,7 @@ local began
 slow_store ondemand-needs || return 0
 began=$(date -u +%s%3N)
 run_submit "$OUT" ondemand-needs run "$here/script/calls.py/needs" seconds:=12 --on local > /dev/null
-# The machine as `cozy machine show` says it, while the call waits on its download and once it runs.
+# The machine as `cozy machine show` says it, while the call waits on its download (what it waits on) and once it runs.
 for _ in $(seq 900); do grep -Eq 'downloading [^"]*weights|"holding"' "$OUT/ondemand-needs.ndjson" 2> /dev/null && break; sleep 0.2; done
 (cd "${RUN_PROJECT:-.}" && cozy --json machine show local) > "$OUT/ondemand-needs.waiting.json" 2> /dev/null || check "ondemand-needs: machine show local failed"
 for _ in $(seq 900); do grep -q '"holding"' "$OUT/ondemand-needs.ndjson" 2> /dev/null && break; sleep 0.2; done

@@ -393,8 +393,9 @@ impl Runs {
     /// What run `id` needs of `installation` (`access::Needs`, cl-1102), whose environment need not be built yet (cl-966): what
     /// its function's plan says (`Plan::needs`); for one that loads no model itself (an orchestrator), what the internal functions
     /// it calls that construct one (`internal_models`) all need (needed), then each one's own (extras), in its package's order,
-    /// each resolved at once. One that doesn't resolve is left out. Which of them a request calls only its function knows, until
-    /// its plan is made from the request: its calls and hints say it then (`prefetch`).
+    /// each resolved at once. One that doesn't resolve is left out. Which of them a request calls, its interface's rules will say
+    /// (cl-1103: those are needed then, in call order, and the rest nothing); without rules only its run does, by its calls and
+    /// hints (`prefetch`).
     #[allow(clippy::too_many_arguments)]
     fn needs(
         &self, id: &str, installation: &Installation, hub: Option<hub::Source>, asker: &Asker, entrypoint: &str,

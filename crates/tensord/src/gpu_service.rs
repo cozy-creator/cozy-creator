@@ -327,9 +327,10 @@ impl Plan {
     pub(crate) fn possible(&self) -> Vec<(String, Vec<String>)> {
         merged(self.slots.iter().filter(|slot| slot.on_demand)).into_iter().map(|s| (s.manifest, s.components)).collect()
     }
-    /// What a call of it loads (`access::Needs`, cl-1102), as its function declares it. Needed: every slot's components but an
-    /// on-demand one's, and its raw weights' (its function read those through its own executor's fetch, inside its run, outside
-    /// the download line). Extras: its on-demand slots', which a stage may read.
+    /// What a call of it loads (`access::Needs`, cl-1102), as its function declares it: the fallback where its interface has no
+    /// rules for the request (cl-1103), whose answer, slot by slot, takes the place of `on_demand` here. Needed: every slot's
+    /// components but an on-demand one's, and its raw weights' (its function read those through its own executor's fetch, inside
+    /// its run, outside the download line). Extras: its on-demand slots', which a stage may read.
     pub(crate) fn needs(&self) -> crate::access::Needs {
         let mut needed = self.upfront();
         for source in &self.sources {
