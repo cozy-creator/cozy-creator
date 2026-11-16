@@ -1255,6 +1255,21 @@ in_cozy "$now" || check "remote custody: this cozy back on its own store"
 # (5 runs on `local` alone): its burst asks the worker once. The candidate is a release build (e2e/candidates/build.sh) unless a
 # proof branch builds it with the dev profile, as the laptop's is.
 # What Calcifer said as it died, from its unit's journal: a stack overflow or an allocation failure aborts with one line.
+# burst <project> <name>: 20 of the project's run lists at once, each bounded, waiting only for them.
+burst() {
+  local i pids=()
+  for i in $(seq 20); do
+    ( cd "$1" && timeout 300 "$COZY" --json run list > "$OUT/$2-$i.json" 2> "$OUT/$2-$i.err"; echo $? > "$OUT/$2-$i.code" ) &
+    pids+=($!)
+  done
+  wait "${pids[@]}"
+}
+# burst_same <name> <n>: every list of the burst answered the same n runs; otherwise prints how many each answered.
+burst_same() {
+  local i counts=()
+  for i in $(seq 20); do counts+=("$(jq -r '.runs | length' "$OUT/$1-$i.json" 2> /dev/null || echo unread)"); done
+  [ "$(printf '%s\n' "${counts[@]}" | sort -u)" = "$2" ] || { printf '%s\n' "${counts[@]}" | sort | uniq -c; return 1; }
+}
 burst_died() {
   XDG_RUNTIME_DIR=/run/user/$(id -u) timeout 30 journalctl --user -u cozy-calcifer.service --no-pager 2> /dev/null \
     | grep -a -m 3 "overflowed its stack\|fatal runtime error\|memory allocation" || echo "no abort line in its journal"
@@ -1303,16 +1318,14 @@ PY2
 cp "$now" "$COZY.new" && chmod +x "$COZY.new" && mv -f "$COZY.new" "$COZY" && cozy --json machine ls > /dev/null && db_calcifer \
   || { check "legacy burst: this cozy on 0.24.0's store"; in_cozy "$now"; return; }
 pid=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder")
-# `local` running first, by a run outside any project, as on the laptop: the worker's custody can be asked for.
-(cd "$D" && cozy --json run minimax-h3-tools/echo "text=local up" --on local > "$OUT/legacy-burst-up.ndjson" 2> "$OUT/legacy-burst-up.err") \
-  || check "legacy burst: a run to start local: $(tail -c 300 "$OUT/legacy-burst-up.err")"
+# `local` running first, by a run in a project of its own, as on the laptop: the worker's custody can be asked for.
+cozy --json new --unencrypted "$D/up" > "$OUT/legacy-burst-up.ndjson" 2> "$OUT/legacy-burst-up.err" \
+  && in_project "$D/up" --json run minimax-h3-tools/echo "text=local up" --on local >> "$OUT/legacy-burst-up.ndjson" 2>> "$OUT/legacy-burst-up.err" \
+  || check "legacy burst: a run to start local: $(tail -c 300 "$OUT/legacy-burst-up.ndjson") $(tail -c 300 "$OUT/legacy-burst-up.err")"
 before=$(grep -ac "legacy history was not imported" "$HOME/.cozy/calcifer/health.log" 2> /dev/null) || before=0
 asked=$(grep -ac "old runs on local keep their custody pending" "$HOME/.cozy/calcifer/health.log" 2> /dev/null) || asked=0
-# A page's open: 20 of the project's requests at once.
-for i in $(seq 20); do
-  ( in_project "$P" --json run list > "$OUT/legacy-burst-$i.json" 2> "$OUT/legacy-burst-$i.err"; echo $? > "$OUT/legacy-burst-$i.code" ) &
-done
-wait
+# A page's open: 20 of the project's requests at once. Only their own jobs are waited for: the shell also runs hubcheck.
+burst "$P" legacy-burst
 peak=$(awk '/^VmHWM/ {print $2 " " $3}' "/proc/$pid/status" 2> /dev/null) || peak=
 after=$(grep -ac "legacy history was not imported" "$HOME/.cozy/calcifer/health.log" 2> /dev/null) || after=0
 tried=$((after - before))
@@ -1328,15 +1341,13 @@ grep -a "legacy history was not imported" "$HOME/.cozy/calcifer/health.log" | ta
   || check "legacy burst: the import failed otherwise: $(grep -a 'legacy history was not imported' "$HOME/.cozy/calcifer/health.log" | tail -1)"
 for i in $(seq 20); do [ "$(cat "$OUT/legacy-burst-$i.code" 2> /dev/null)" = 0 ] || failed=$((failed + 1)); done
 [ "$failed" = 0 ] || check "legacy burst: $failed of 20 run lists failed: $(tail -c 300 "$OUT/legacy-burst-1.err")"
+burst_same legacy-burst 5 || check "legacy burst: the 20 run lists didn't all answer the project's 5 imported runs: $(burst_same legacy-burst 5 | tr '\n' ' ')"
 # The project opens and takes new work, its old history left for the hard cut.
 in_project "$P" --json run minimax-h3-tools/echo "text=after the burst" > "$OUT/legacy-burst-run.ndjson" 2> "$OUT/legacy-burst-run.err" \
   || check "legacy burst: a new run refused: $(tail -c 300 "$OUT/legacy-burst-run.ndjson") $(tail -c 300 "$OUT/legacy-burst-run.err")"
 # lab2's other shape, with `local` running: its old runs on local import pending custody, and a burst asks the worker once.
 before=$(grep -ac "old runs on local keep their custody pending" "$HOME/.cozy/calcifer/health.log" 2> /dev/null) || before=0
-for i in $(seq 20); do
-  ( in_project "$Q" --json run list > "$OUT/legacy-burst-local-$i.json" 2> "$OUT/legacy-burst-local-$i.err"; echo $? > "$OUT/legacy-burst-local-$i.code" ) &
-done
-wait
+burst "$Q" legacy-burst-local
 asked=$(( $(grep -ac "old runs on local keep their custody pending" "$HOME/.cozy/calcifer/health.log" 2> /dev/null || echo 0) - before ))
 peak=$(awk '/^VmHWM/ {print $2 " " $3}' "/proc/$pid/status" 2> /dev/null) || peak=
 echo "legacy burst (local): the worker was asked $asked time(s) for 20 requests; Calcifer's peak resident ${peak:-unread}"
@@ -1348,6 +1359,7 @@ kill -0 "$pid" 2> /dev/null && [ "$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.
 failed=0
 for i in $(seq 20); do [ "$(cat "$OUT/legacy-burst-local-$i.code" 2> /dev/null)" = 0 ] || failed=$((failed + 1)); done
 [ "$failed" = 0 ] || check "legacy burst (local): $failed of 20 run lists failed: $(tail -c 300 "$OUT/legacy-burst-local-1.err")"
+burst_same legacy-burst-local 5 || check "legacy burst (local): the 20 run lists didn't all answer the project's 5 imported runs: $(burst_same legacy-burst-local 5 | tr '\n' ' ')"
 in_project "$Q" --json run minimax-h3-tools/echo "text=after the local burst" > "$OUT/legacy-burst-local-run.ndjson" 2> "$OUT/legacy-burst-local-run.err" \
   || check "legacy burst (local): a new run refused: $(tail -c 300 "$OUT/legacy-burst-local-run.ndjson") $(tail -c 300 "$OUT/legacy-burst-local-run.err")"
 in_cozy "$now" || check "legacy burst: this cozy back on its own store"
