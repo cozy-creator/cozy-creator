@@ -1,6 +1,6 @@
-//! Which release a name resolves to: one rule for Calcifer and TensorD, for packages and models (xs-183, cl-952, se-128).
-//! A prerelease (`0.10.0rc1`) is built for the open RC's Runtime (cl-922), so it counts only on a machine on the RC (`rc`), or
-//! after a prerelease named (a model's `1.0.0-rc.8`); on the RC the newest by PEP 440 alone, elsewhere finals only.
+//! Which release a name resolves to: one rule for Calcifer and TensorD, for packages and models (xs-183, cl-952, se-128, cl-1109).
+//! A package asked with no release takes its newest final, as pip does (`tensorfs::format::newest_by`), on every machine: a pre-
+//! or dev release (`0.13.0rc2`) only when it is named exactly, or when the package has no final at all.
 //!
 //! A package release runs only on a Runtime its `cozy-runtime` requirement admits (`runs`). The open RC's Runtime is a dev
 //! release of the minor it makes (`0.47.0.dev2260+g1a2b3c4d`), so a floor can name it. `choose` decides a run's release with its machine:
@@ -11,42 +11,36 @@
 use std::{future::Future, str::FromStr};
 
 use pep440_rs::{Operator, Version, VersionSpecifier, VersionSpecifiers};
+use tensorfs::format::{newest_by, newest_first};
 
 /// A PEP 440 pre- or dev release. An unparsable one is no prerelease.
 pub fn prerelease(release: &str) -> bool {
     Version::from_str(release).is_ok_and(|version| version.any_prerelease())
 }
 
-/// The newest of `releases` a machine runs: on the RC (`rc`) by PEP 440 alone, elsewhere finals only. Unparsable ones don't count.
-pub fn newest<'a>(releases: impl IntoIterator<Item = &'a str>, rc: bool) -> Option<&'a str> {
-    newest_where(releases, |_| true, rc)
+/// The newest of `releases` a package asked with no release takes (`newest_by`). Unparsable ones don't count.
+pub fn newest<'a>(releases: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    newest_by(releases, |release| release)
 }
 
 /// The release `release` resolves to forward (xs-183): the newest of `releases` in its series and after it, when one is. A
-/// named prerelease moves on to a newer one; a named final to finals, or prereleases too on the RC (`rc`).
-pub fn newest_fix<'a>(release: &str, releases: impl IntoIterator<Item = &'a str>, rc: bool) -> Option<&'a str> {
+/// named prerelease moves on to a newer one; a named final to finals only.
+pub fn newest_fix<'a>(release: &str, releases: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
     let named = Version::from_str(release).ok()?;
     let series = &named.release()[..named.release().len().saturating_sub(1).max(1)];
-    newest_where(releases, |version| version.release().starts_with(series) && *version > named, rc || named.any_prerelease())
-}
-
-/// The releases a machine takes, newest first: on the RC (`rc`) every one, elsewhere finals. Unparsable ones don't count.
-pub fn candidates<'a>(releases: impl IntoIterator<Item = &'a str>, rc: bool) -> Vec<&'a str> {
-    let mut kept: Vec<(Version, &str)> = (releases.into_iter())
+    (releases.into_iter())
         .filter_map(|text| Some((Version::from_str(text).ok()?, text)))
-        .filter(|(version, _)| rc || !version.any_prerelease())
-        .collect();
-    kept.sort_by(|(a, _), (b, _)| b.cmp(a));
-    kept.into_iter().map(|(_, text)| text).collect()
-}
-
-fn newest_where<'a>(releases: impl IntoIterator<Item = &'a str>, keep: impl Fn(&Version) -> bool, pre: bool) -> Option<&'a str> {
-    releases
-        .into_iter()
-        .filter_map(|text| Some((Version::from_str(text).ok()?, text)))
-        .filter(|(version, _)| keep(version) && (pre || !version.any_prerelease()))
+        .filter(|(version, _)| version.release().starts_with(series) && *version > named && (named.any_prerelease() || !version.any_prerelease()))
         .max_by(|(a, _), (b, _)| a.cmp(b))
         .map(|(_, text)| text)
+}
+
+/// The releases a package asked with no release may take, newest first (`choose` walks them): its finals, or with none, its
+/// prereleases. Unparsable ones don't count.
+pub fn candidates<'a>(releases: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
+    let read: Vec<&str> = newest_first(releases, |release| release).into_iter().filter(|release| Version::from_str(release).is_ok()).collect();
+    let finals = read.iter().any(|release| !prerelease(release));
+    read.into_iter().filter(|release| !finals || !prerelease(release)).collect()
 }
 
 /// What `requires` (a wheel's `Requires-Dist`) asks of `distribution` outside any extra (`cozy-runtime[media]<0.46,>=0.45.0`):

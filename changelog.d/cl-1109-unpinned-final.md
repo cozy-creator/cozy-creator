@@ -1,0 +1,1 @@
+A package or model asked for with no release takes its newest final, as pip does, on every machine, the RC's too: a prerelease (`minimax-h3 0.13.0rc2`) runs only when named exactly (`minimax-h3/generate@0.13.0rc2`), or when there is no final at all. The page's tools, an install and a run now agree on the release (cl-1109).
