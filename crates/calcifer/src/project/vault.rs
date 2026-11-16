@@ -712,16 +712,23 @@ fn drain_saves(api: &Arc<Api>, root: &FsPath, mut saving: impl FnMut()) -> Resul
     let projects = api.projects.now_open();
     let Some(project) = projects.iter().find(|project| project.root == root).cloned() else { return Ok((vec![], vec![])) };
     let owner = super::RunOwner::of(&project, &api.calcifer);
-    let mut said = false;
+    let (mut said, mut busy) = (false, None::<Instant>);
     loop {
         let owed = match owner.store() {
-            Ok(store) => store.exports_owed().map_err(journal)?,
-            // A request a moment ahead of it on the project: looked at again shortly.
-            Err(crate::store::StoreError::Locked(code)) if code == "project_busy" => { std::thread::sleep(Duration::from_millis(200)); continue; }
+            Ok(store) => { busy = None; store.exports_owed().map_err(journal)? }
+            // Another lock's turn ahead of it on the project: looked at again shortly, no longer than a save may go silent.
+            Err(crate::store::StoreError::Locked(code)) if code == "project_busy" => {
+                if busy.get_or_insert_with(Instant::now).elapsed() >= crate::outputs::EXPORT_SILENCE {
+                    return Err(Error::new(Kind::Conflict, "project_busy", "the project stayed busy; lock again in a moment"));
+                }
+                std::thread::sleep(Duration::from_millis(200));
+                continue;
+            }
             Err(e) => return Err(journal(e)),
         };
         if owed.is_empty() { return Ok((vec![], vec![])); }
-        for (id, _) in &owed { api.calcifer.export(id); }
+        // An exporter missing is started; one going is left alone: waking it is no progress, and cuts its pause.
+        for (id, _) in &owed { if !api.calcifer.exporting(id) { api.calcifer.export(id); } }
         if !said { saving(); said = true; }
         if owed.iter().any(|(id, _)| api.calcifer.export_moving(id)) {
             std::thread::sleep(Duration::from_millis(250));
@@ -1024,6 +1031,12 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
     // open when it's asked.
     if ask.action == "decrypt" && held(root).is_some() { view(root)?; }
     let settling = !ended.is_empty();
+    // A storage change closes the machine's side as a lock does: what the project's runs still owe lands first (cl-1060).
+    if matches!(ask.action.as_str(), "encrypt" | "decrypt" | "rotate") {
+        let (more_cut, more_deferred) = drain_saves(api, root, || progress.phase("saving its outputs first"))?;
+        cut.extend(more_cut);
+        deferred.extend(more_deferred);
+    }
     let gate = if settling || matches!(ask.action.as_str(), "lock" | "decrypt") { exclusive_within(api, &root, LOCK_DRAIN) } else { exclusive(&root) };
     let mut transition = match gate {
         Ok(transition) => transition,
