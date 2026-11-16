@@ -1,0 +1,9 @@
+{
+  "about": "What user-flow judges each H3 15 s Turbo clip against (8 steps: 4 dense, then 4 sparse), per SKU x GPUs: a run more than 5% slower fails (Paul 11-15: within 5% is a tie). The 0.25.0 gates, cozy 0.25.0, Runtime 0.46.0, minimax-h3@0.12.0 on its int8 lane: rtx-4090 from release-gate 43217306537 (shirayuki, TensorFS 0.25.0; runs 9-12 one GPU, 13-16 two), rtx-5090 from 43233812383 (roxas, TensorFS 0.25.1; cold runs 9, 13, 15, 17, warm 10). Dense is steps 2-4, sparse steps 5-8, medians. h100x1 is Paul's word (11-16): a 15 s H3 Turbo clip in about 6 min on one H100. A function or SKU with no entry is recorded, not judged: its first green run's numbers go here.",
+  "minimax-h3/generate": {
+    "rtx-4090x1": { "cold_exec_s": 331.4, "warm_exec_s": 320.9, "dense_step_s": 48.0, "sparse_step_s": 24.8 },
+    "rtx-4090x2": { "cold_exec_s": 225.1, "warm_exec_s": 190.4, "dense_step_s": 25.6, "sparse_step_s": 16.0 },
+    "rtx-5090x1": { "cold_exec_s": 240.3, "warm_exec_s": 241.3, "dense_step_s": 35.5, "sparse_step_s": 18.1 },
+    "h100x1": { "cold_exec_s": 360, "warm_exec_s": 360 }
+  }
+}
