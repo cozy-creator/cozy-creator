@@ -53,6 +53,19 @@ projectvault() (
   in_project "$work/born" --json vault status > "$work/born-status.json"
   jq -e '.encrypted == true and .state == "unlocked"' "$work/born-status.json" > /dev/null || fail "new --passphrase-file made no unlocked encrypted project: $(cat "$work/born-status.json")"
   [ -s "$secrets/born-recovery" ] || fail "new --recovery-out saved no recovery secret"
+  if [ "$(uname)" = Linux ]; then
+    step "its vault supervisor is the same user's to diagnose: its descriptors, read without root, name it holding the view"
+    local sup='' p fd held=''
+    for p in $(pgrep -f __cozy_vault_provider || true); do
+      tr '\0' '\n' < "/proc/$p/cmdline" 2> /dev/null | grep -qF "$work/born/" && sup=$p
+    done
+    [ -n "$sup" ] || fail "no vault supervisor of $work/born"
+    view=$(tr '\0' '\n' < "/proc/$sup/cmdline" | sed -n 5p)
+    ls "/proc/$sup/fd" > "$work/born-supervisor-fd.txt" 2>&1 \
+      || fail "the vault supervisor ($sup) hides its descriptors from its own user (non-dumpable): $(tail -c 200 "$work/born-supervisor-fd.txt")"
+    for fd in "/proc/$sup/fd/"*; do [ "$(readlink "$fd")" = "$view" ] && held=$fd; done
+    [ -n "$held" ] || fail "the vault supervisor ($sup) holds no descriptor of its view $view"
+  fi
   in_project "$work/born" --json vault lock > "$work/born-lock.json" || fail "the new encrypted project doesn't lock: $(jq -c '.error | {code, message}' "$work/born-lock.json" 2> /dev/null)"
   cozy --json new --unencrypted "$P" > "$work/created.json"
   boxes_of "$P" > "$work/before.json"

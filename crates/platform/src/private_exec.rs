@@ -13,16 +13,6 @@ pub enum PrivateDescriptor {
     KernelIpc(File),
 }
 
-/// Set a trusted parent's core limit to zero before it handles secrets (Windows: no fault dialog, no heap in its error
-/// reports). The compiled parent never restores it. This does not constrain an external host administrator or OS snapshots.
-pub fn disable_project_parent_dumps() -> Result<()> {
-    imp::parent_cores()
-}
-/// Basic child/parent defense only; intentionally no piped-handler or filesystem ABI gate.
-pub fn disable_private_core_dumps() -> Result<()> {
-    disable_project_parent_dumps()
-}
-
 /// Prepare an ordinary managed process. No sandbox claim: only explicitly listed native
 /// descriptors survive exec, and Cozy does not request process cores. Working directory and
 /// project HOME/cache/temp/stdio are set by the caller's owned-storage adapter.
@@ -33,7 +23,9 @@ pub fn prepare_managed_child(
     imp::prepare(command, inherited)
 }
 
-/// This process writes no core, and stays dumpable (cl-984): its /proc and descriptors open to the same user.
+/// This process writes no core file (Windows: no fault dialog, no heap in its error reports), and stays dumpable: its /proc,
+/// descriptors and ptrace stay open to the same user (cl-984; Paul 11-13: Cozy's own processes are never non-dumpable; 11-15: a
+/// zero core limit is as far as dump protection goes).
 pub fn limit_own_cores() -> Result<()> {
     imp::own_cores()
 }
@@ -70,26 +62,6 @@ mod imp {
     };
     fn denied(message: &'static str) -> crate::Error {
         io::Error::new(io::ErrorKind::PermissionDenied, message).into()
-    }
-    pub(super) fn parent_cores() -> Result<()> {
-        // SAFETY: native resource structure and scalar arguments are valid for these syscalls.
-        unsafe {
-            if libc::setrlimit(
-                libc::RLIMIT_CORE,
-                &libc::rlimit {
-                    rlim_cur: 0,
-                    rlim_max: 0,
-                },
-            ) < 0
-            {
-                return Err(io::Error::last_os_error().into());
-            }
-            #[cfg(target_os = "linux")]
-            if libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) < 0 {
-                return Err(io::Error::last_os_error().into());
-            }
-        }
-        Ok(())
     }
     fn mode(file: &File) -> Result<i32> {
         // SAFETY: F_GETFL reads flags of this live owned descriptor.
@@ -257,10 +229,6 @@ mod imp {
                 {
                     return Err(io::Error::last_os_error());
                 }
-                #[cfg(target_os = "linux")]
-                if libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) < 0 {
-                    return Err(io::Error::last_os_error());
-                }
                 for file in &files {
                     if libc::fcntl(file.as_raw_fd(), libc::F_SETFD, 0) < 0 {
                         return Err(io::Error::last_os_error());
@@ -324,11 +292,18 @@ mod imp {
             os: crate::Os::CURRENT,
         }
     }
-    /// Windows writes a process's memory out only through Windows Error Reporting: this process (and the provider it starts,
+    pub(super) fn validate(_: &File, _: &File) -> Result<()> {
+        Err(unsupported())
+    }
+    pub(super) fn prepare(_: &mut Command, inherited: Vec<PrivateDescriptor>) -> Result<()> {
+        // A child gets only its stdio handles from std here, and Windows writes no core of it.
+        if inherited.is_empty() { Ok(()) } else { Err(unsupported()) }
+    }
+    /// Windows writes a process's memory out only through Windows Error Reporting: this process (and a provider it starts,
     /// which inherits its error mode) shows no fault dialog holding it, and its reports carry no heap (cl-1049). Process-local:
     /// no registry, no other process.
     #[cfg(windows)]
-    pub(super) fn parent_cores() -> Result<()> {
+    pub(super) fn own_cores() -> Result<()> {
         use windows_sys::Win32::System::{
             Diagnostics::Debug::{GetErrorMode, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SetErrorMode},
             ErrorReporting::{WER_FAULT_REPORTING_FLAG_NOHEAP, WerSetFlags},
@@ -344,16 +319,6 @@ mod imp {
         Ok(())
     }
     #[cfg(not(windows))]
-    pub(super) fn parent_cores() -> Result<()> {
-        Err(unsupported())
-    }
-    pub(super) fn validate(_: &File, _: &File) -> Result<()> {
-        Err(unsupported())
-    }
-    pub(super) fn prepare(_: &mut Command, inherited: Vec<PrivateDescriptor>) -> Result<()> {
-        // A child gets only its stdio handles from std here, and Windows writes no core of it.
-        if inherited.is_empty() { Ok(()) } else { Err(unsupported()) }
-    }
     pub(super) fn own_cores() -> Result<()> {
         Err(unsupported())
     }

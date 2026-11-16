@@ -37,6 +37,20 @@ def main() -> None:
         (args.artifacts / 'results.json').write_text(json.dumps({'controls': {'result': 'failed', 'exit_code': controls.returncode}}, indent=2) + '\n')
         raise SystemExit(controls.returncode)
     controlled = json.loads(controls.stdout.strip().splitlines()[-1])
+    if sys.platform == 'linux':
+        # A dropped session with a second writer on the supervisor's stdin still ends, view unmounted. A hang is the failure.
+        try:
+            dropped = subprocess.run([str(args.probe), 'dropped', str(args.securefs), str(args.artifacts / 'dropped')], capture_output=True, text=True, env=environment, timeout=120)
+        except subprocess.TimeoutExpired:
+            print('dropped: the probe hung past 120 s: the dropped session never ended', file=sys.stderr)
+            (args.artifacts / 'results.json').write_text(json.dumps({'dropped': {'result': 'hung'}}, indent=2) + '\n')
+            raise SystemExit(1)
+        (args.artifacts / 'dropped.log').write_text(dropped.stdout + dropped.stderr)
+        if dropped.returncode:
+            print((dropped.stdout + dropped.stderr)[-65536:], file=sys.stderr)
+            (args.artifacts / 'results.json').write_text(json.dumps({'dropped': {'result': 'failed', 'exit_code': dropped.returncode}}, indent=2) + '\n')
+            raise SystemExit(dropped.returncode)
+        controlled['dropped'] = json.loads(dropped.stdout.strip().splitlines()[-1])
     normal = subprocess.run([str(args.probe), 'normal', str(args.securefs), str(args.artifacts / 'normal')], capture_output=True, text=True, env=environment)
     (args.artifacts / 'normal.log').write_text(normal.stdout + normal.stderr)
     if normal.returncode:
