@@ -25,8 +25,8 @@ import time
 from typing import cast
 from urllib.parse import quote, urlsplit
 
-from common import Failure, require, sha
-from scan import Scanner
+from common import Failure, sha
+from scan import Scanner, places
 
 PROGRAM = '''# /// script
 # requires-python = ">=3.12"
@@ -51,6 +51,15 @@ def echo(payload: Request, out: Outputs) -> Answer:
 Json = dict[str, object]
 
 
+class Stop(Exception):
+    """Why the cell stopped: a fixed step code, and a CLI's typed error codes; never a body."""
+
+
+def require(ok: object, code: str) -> None:
+    if not ok:
+        raise Stop(code)
+
+
 def documents(body: bytes) -> list[Json]:
     found: list[Json] = []
     for line in body.splitlines():
@@ -68,7 +77,7 @@ def cozy(cli: Path, *args: str, cwd: Path | None = None, stdin: bytes | None = N
     answered = documents(done.stdout)
     if done.returncode != 0:
         codes = [error.get("code") for document in answered for error in [document.get("error")] if isinstance(error, dict)]
-        raise Failure(f"cozy {args[0]} exited {done.returncode}: {codes}")
+        raise Stop(f"cozy {args[0]} exited {done.returncode}: {codes}")
     return answered
 
 
@@ -128,7 +137,7 @@ def main() -> int:
     prompt, box = "PROMPT_" + secrets.token_hex(24), "box_" + secrets.token_hex(8)
     scanner.add(prompt); scanner.add(box)
     status, _ = calcifer("POST", base + "/assets", {"name": box, "exact": True, "fields": {"text": prompt}, "at": {"x": 0, "y": 0, "w": 320}})
-    require(status == 200, "notraces_box")
+    require(status == 200, f"notraces_box: HTTP {status}")
     # An import, and its thumbnail drawn, as the page asks one.
     marker, imported = "IMPORT_" + secrets.token_hex(24), "pic_" + secrets.token_hex(8)
     scanner.add(marker); scanner.add(imported)
@@ -136,15 +145,15 @@ def main() -> int:
     digest = "sha256:" + sha(image)
     scanner.add(digest); scanner.add(digest.removeprefix("sha256:"))
     status, _ = calcifer("PUT", "/v1/project-files/" + digest + "?project=" + quote(project, safe=""), image)
-    require(status in {200, 201, 204}, "notraces_upload")
+    require(status in {200, 201, 204}, f"notraces_upload: HTTP {status}")
     status, _ = calcifer("POST", base + "/imports", {"source": digest, "name": imported, "exact": True, "at": {"x": 400, "y": 0, "w": 320}})
-    require(status == 200, "notraces_import")
+    require(status == 200, f"notraces_import: HTTP {status}")
     for _ in range(120):
         status, _ = calcifer("GET", base + "/thumbs/" + digest.removeprefix("sha256:") + "?w=128")
         if status != 202:
             break
         time.sleep(0.5)
-    require(status == 200, "notraces_thumbnail")
+    require(status == 200, f"notraces_thumbnail: HTTP {status}")
     # Where this computer runs tools, a run of the prompt too, from the project's own input file (never argv or environment).
     status, said = calcifer("GET", "/v1/status")
     require(status == 200, "notraces_status")
@@ -169,11 +178,12 @@ def main() -> int:
     roots = {home / ".cozy", home / ".cache", home / "Library" / "Caches", home / "AppData" / "Local", temporary,
              temporary.parent if sys.platform == "darwin" else temporary,
              Path("/tmp"), Path("/var/tmp"), Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir())), args.root}
-    result = scanner.scan(sorted({root.resolve() for root in roots if root.exists()}), [], args.out.resolve() / "notraces.json")
+    located = places(home, Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir())), projects=args.root.resolve(), temporary=temporary.resolve())
+    result = scanner.scan(sorted({root.resolve() for root in roots if root.exists()}), [], args.out.resolve() / "notraces.json", located)
     counts = {key: value for key, value in result.items() if type(value) is int}
     (args.out / "notraces.json").write_text(json.dumps({"os": sys.platform, "ran": local, **counts}, indent=2))
     require(counts.get("files", 0) > 0, "notraces_scanned_nothing")
-    require(counts.get("matches", 0) == 0, "outside_project_canary")
+    require(counts.get("matches", 0) == 0, "outside_project_canary: " + json.dumps({key: value for key, value in counts.items() if key.startswith("match")}))
     print(json.dumps({"no_traces": True, "os": sys.platform, "ran": local, "files": counts.get("files"), "matches": 0}))
     return 0
 
@@ -181,6 +191,6 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except Failure as failure:
+    except (Stop, Failure) as failure:
         print(json.dumps({"no_traces": False, "failure": str(failure)}))
         sys.exit(1)
