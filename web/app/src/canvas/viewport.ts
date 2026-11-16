@@ -283,9 +283,12 @@ export class CanvasController {
       this.publish(view)
     }
     const end = () => { read(); this.end() }
+    // pixi-viewport ends a move only on a frame after one that changed. A gesture whose events net to nothing within a frame (a wheel at a
+    // zoom limit, which clamps back) changes no frame, so a still frame ends it too.
+    const frame = () => { read(); if (!viewport.moving && !viewport.zooming) this.end() }
     const interrupt = () => { if (this.enabled) this.cancelMove() }
     const binding = { element, viewport, stop: () => {
-      viewport.off("moved", read).off("zoomed", read).off("frame-end", read)
+      viewport.off("moved", read).off("frame-end", frame)
       viewport.off("moved-end", end).off("zoomed-end", end)
       element.removeEventListener("pointerdown", interrupt)
       element.removeEventListener("wheel", interrupt)
@@ -295,7 +298,8 @@ export class CanvasController {
       this.setDrawn(false)
     } }
     this.binding = binding
-    viewport.on("moved", read).on("zoomed", read).on("frame-end", read)
+    // Not on `zoomed`: a wheel or pinch emits it before clamp-zoom clamps, with a zoom past the limits. `moved` follows the clamp.
+    viewport.on("moved", read).on("frame-end", frame)
     viewport.on("moved-end", end).on("zoomed-end", end)
     element.addEventListener("pointerdown", interrupt, { passive: true })
     element.addEventListener("wheel", interrupt, { passive: true })

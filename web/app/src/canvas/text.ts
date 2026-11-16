@@ -24,11 +24,22 @@ export function piecesOf(text?: Record<string, unknown>): string[] {
 /** The words a card shows when it has nothing else to show: its first prompt's, at the top or in its rows. Never its description, which is off
  *  for now (cl-900). */
 export function lineOf(text: Record<string, unknown> | undefined, fields: ToolField[]): string | null {
+  return lineAt(text, fields)?.words ?? null
+}
+
+/** `lineOf`'s words and where they are, as Calcifer names a place (`instructions`, `beats.0.description`). */
+export function lineAt(text: Record<string, unknown> | undefined, fields: ToolField[]): { words: string; at: string } | null {
   const isText = (field: ToolField) => field.type === "prompt" || field.type === "words"
   const said = fields.flatMap((field) =>
-    field.type === "group" ? rowsIn(text?.[field.field]).flatMap((row) => (field.members ?? []).filter(isText).map((member) => row[member.field])) : isText(field) ? [text?.[field.field]] : [],
+    field.type === "group"
+      ? rowsIn(text?.[field.field]).flatMap((row, index) => (field.members ?? []).filter(isText).map((member) => ({ value: row[member.field], at: `${field.field}.${index}.${member.field}` })))
+      : isText(field) ? [{ value: text?.[field.field], at: field.field }] : [],
   )
-  return said.map(string).find((words) => words !== null) ?? null
+  for (const { value, at } of said) {
+    const words = string(value)
+    if (words !== null) return { words, at }
+  }
+  return null
 }
 
 /** Text with its mentions told apart, for showing, never as HTML. */

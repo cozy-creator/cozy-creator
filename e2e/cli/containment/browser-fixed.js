@@ -31,17 +31,27 @@ async function containmentProof(input) {
       // In Focus the box is a DOM card; on the canvas it's drawn, and the canvas says where it is and what a point hits (cl-991).
       const here = document.querySelector(`.card.here[data-asset="${CSS.escape(input.asset)}"]`);
       const root = document.querySelector('.canvas-root'), inspection = root?.canvasInspection;
-      const at = here ? here.getBoundingClientRect() : inspection?.card(input.asset)?.body;
-      if (!at) return { found: false };
-      const rect = { x: at.x, y: at.y, width: at.width, height: at.height, left: at.x, top: at.y, right: at.x + at.width, bottom: at.y + at.height };
       const hits = (px, py) => here ? here.contains(document.elementFromPoint(px, py)) : Boolean(root.contains(document.elementFromPoint(px, py)) && inspection.hitTest({ x: px, y: py })?.name === input.asset);
+      let rect = null, x = null, y = null;
       // Press where the box itself is on top, as a person would: its centre can be off-screen or under the palette.
-      const left = Math.max(rect.left, 0), right = Math.min(rect.right, innerWidth), top = Math.max(rect.top, 0), bottom = Math.min(rect.bottom, innerHeight);
-      let x = null, y = null;
-      for (const fy of [0.5, 0.3, 0.7, 0.15, 0.85]) for (const fx of [0.5, 0.3, 0.7, 0.15, 0.85]) {
-        const px = left + (right - left) * fx, py = top + (bottom - top) * fy;
-        if (x === null && right > left && bottom > top && hits(px, py)) { x = px; y = py; }
+      const find = () => {
+        const at = here ? here.getBoundingClientRect() : inspection?.card(input.asset)?.body;
+        if (!at) return;
+        rect = { x: at.x, y: at.y, width: at.width, height: at.height, left: at.x, top: at.y, right: at.x + at.width, bottom: at.y + at.height };
+        const left = Math.max(rect.left, 0), right = Math.min(rect.right, innerWidth), top = Math.max(rect.top, 0), bottom = Math.min(rect.bottom, innerHeight);
+        for (const fy of [0.5, 0.3, 0.7, 0.15, 0.85]) for (const fx of [0.5, 0.3, 0.7, 0.15, 0.85]) {
+          const px = left + (right - left) * fx, py = top + (bottom - top) * fy;
+          if (x === null && right > left && bottom > top && hits(px, py)) { x = px; y = py; }
+        }
+      };
+      find();
+      if (x === null && !here && inspection) {
+        // Out of reach (off-screen, or under the palette): every box brought into view, as a person's Shift+1 does, then looked for again.
+        dispatchEvent(new KeyboardEvent('keydown', { key: '!', code: 'Digit1', shiftKey: true, bubbles: true }));
+        await new Promise((done) => setTimeout(done, 900));
+        find();
       }
+      if (!rect) return { found: false };
       // Closed facts for an edit that never opens: the centre's place and cover, and which events reach the box.
       const cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2, centre = document.elementFromPoint(cx, cy);
       const centreHit = !here && centre && root?.contains(centre) ? inspection.hitTest({ x: cx, y: cy }) : null;

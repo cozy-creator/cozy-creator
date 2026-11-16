@@ -1,0 +1,1 @@
+A project's runs going when Calcifer restarts are taken up at its start (cl-1028): each plaintext project's project.db is read, and one with runs not settled, outputs not saved or a render owing opens and goes on. Before, they stayed in progress until something opened the project. An encrypted project's go on as it unlocks; nothing of them is kept outside the project.

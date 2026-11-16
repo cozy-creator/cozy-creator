@@ -4,7 +4,10 @@
 #                  browser session (cl-985)
 #   state_import   OLD=<dir>, an earlier Calcifer's files as its build wrote them: imported at the next start, then gone; its sessions
 #                  deleted unread
-# Uses project.sh's `api` and projectdb.sh's `kill9` and `db_calcifer`.
+#   state_restart  Calcifer restarted on 40,000 runs and 3,000 ended rentals, the first read of each page of state.db slow as on a busy
+#                  disk's cold cache (busy-disk.c): every route a client asks answers in 200 ms while it takes up what it left, and
+#                  none is said slow in health.log (cl-1010)
+# Uses project.sh's `api` and projectdb.sh's `kill9`, `db_calcifer` and `calcifer_halt`.
 
 # state <query>: what state.db holds, read only, one JSON row a line.
 state() {
@@ -163,4 +166,34 @@ if [ -d "$OLD/after" ]; then
   echo "state import: steps in after/ ${want:-none}; in state.db now ${got:-none}"
 fi
 state_files
+}
+
+state_restart() {
+[ "$RUNNER_OS" = Linux ] && [ -n "$LOCAL" ] || return 0
+step "state.db: a restart on 40,000 runs, each page's first read slow: every route answers in 200 ms (cl-1010)"
+local S=$OUT/state-restart db=$HOME/.cozy/calcifer/state.db holder=$HOME/.cozy/calcifer/calcifer.lock.holder
+local dropin=$HOME/.config/systemd/user/cozy-calcifer.service.d/cl1010-busy-disk.conf id pid
+mkdir -p "$S"
+cc -std=c11 -O2 -Wall -Wextra -Werror -shared -fPIC -o "$S/busy-disk.so" "$here/busy-disk.c" -ldl || { check "restart: busy-disk.c didn't build"; return; }
+cozy --json machine ls > /dev/null && db_calcifer && id=$(id_of "$RUN_PROJECT") && [ -n "$id" ] || { check "restart: no project to ask about"; return; }
+# Its tools listed once, as a computer's page has: the list a restart answers from is kept.
+api -fsS -o /dev/null "http://$ADDR/v1/tools" || check "restart: GET /v1/tools before the restart failed"
+pid=$(jq -r .pid "$holder")
+calcifer_halt || return
+python3 "$here/restart_store.py" fill "$db" "$HOME/.cozy/outputs/e2e-restart" --runs 40000 --machines 3000 > "$S/fill.json" 2>&1 \
+  || { check "restart: the store wasn't filled: $(tail -c 300 "$S/fill.json")"; systemctl --user start cozy-calcifer; return; }
+echo "restart: store $(cat "$S/fill.json")"
+mkdir -p "${dropin%/*}" && printf '[Service]\nEnvironment=LD_PRELOAD=%s\nEnvironment=BUSY_DISK_LOG=%s\n' "$S/busy-disk.so" "$S/busy-disk.log" > "$dropin"
+systemctl --user daemon-reload && systemctl --user start cozy-calcifer || check "restart: systemctl --user start cozy-calcifer failed"
+python3 "$here/restart_store.py" measure --holder "$holder" --old-pid "$pid" --project "$id" --log "$HOME/.cozy/calcifer/health.log" \
+  --timed "$S/timed.json" --seconds 6 --budget-ms 200 > "$S/latency.ndjson" 2>&1 \
+  || check "restart: routes over 200 ms, or said slow, as Calcifer restarted on 40,000 runs: $(tail -n 1 "$S/latency.ndjson" | jq -c '{over, slow: (.slow_requests // [] | .[:3]), steps}' 2> /dev/null || tail -c 600 "$S/latency.ndjson")"
+cat "$S/latency.ndjson"
+[ -s "$S/busy-disk.log" ] || check "restart: no read of state.db was slowed: the cell proves nothing"
+echo "restart: reads slowed $(tail -1 "$S/busy-disk.log" 2> /dev/null)"
+# The store as it was for what follows: its rows out, and Calcifer on its own disk again.
+rm -f "$dropin" && systemctl --user daemon-reload
+calcifer_halt || return
+python3 "$here/restart_store.py" empty "$db" || check "restart: the store's rows weren't taken out"
+cozy --json machine ls > /dev/null || check "restart: Calcifer didn't start again"
 }

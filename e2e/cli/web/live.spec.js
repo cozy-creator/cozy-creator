@@ -70,13 +70,13 @@ async function timed(page, label, spec, act) {
 }
 
 /** Each `method` call to `path` waits here, unsent, until `release`: as a slow network holds it. */
-async function hold(page, method, path) {
+async function hold(page, method, path, which = () => true) {
   const calls = [];
   let open;
   const held = new Promise((done) => (open = done));
   const matches = (url) => url.pathname === path;
   const handler = async (route) => {
-    if (route.request().method() !== method) return route.fallback();
+    if (route.request().method() !== method || !which(route.request())) return route.fallback();
     calls.push(route.request());
     await held;
     await route.fallback();
@@ -158,19 +158,23 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
     await timed(page, 'API: a move', { name: 'api_b', at: to }, () => api.patch(project.at('/canvas'), { cards: { api_b: to } }));
 
     // Words being typed in cli_a meanwhile, at a person's pace: the CLI sets its description, and the API renames the box while the page's
-    // read of that is still on its way, so the read finds nothing by the old name (the 404 is this cell's doing). The page follows the
-    // rename: Focus stays on the box under its new name, and every typed character stays and is saved there beside the CLI's description.
-    guards.allow(/status of 404\b.*\/v1\/projects\/[^/ ]+\/assets\/cli_a$/);
+    // read of that is still on its way, so the read finds nothing by the old name (this cell's doing): it's said gone, an answer, never a
+    // 404. The page follows the rename: Focus stays on the box under its new name, and every typed character stays and is saved there beside
+    // the CLI's description.
+    const asksOld = (request) => (request.postDataJSON()?.names ?? []).includes('cli_a');
     const notFound = [];
-    page.on('response', (answer) => {
-      if (answer.status() === 404 && new URL(answer.url()).pathname === project.at('/assets/cli_a')) notFound.push(answer.request().method());
+    const goneByOld = [];
+    page.on('response', async (answer) => {
+      const at = new URL(answer.url()).pathname;
+      if (answer.status() === 404 && at === project.at('/assets/cli_a')) notFound.push(answer.request().method());
+      if (at === project.at('/read') && answer.request().method() === 'POST' && asksOld(answer.request()) && (await answer.json().catch(() => null))?.gone?.includes('cli_a')) goneByOld.push(answer.url());
     });
     const region = await focus(page, 'cli_a');
     const words = region.getByRole('textbox', { name: 'Text', exact: true });
     await words.click();
     await page.keyboard.press(TEXT_END);
     const typing = page.keyboard.type(' TYPED-MEANWHILE', { delay: 150 });
-    const reads = await hold(page, 'GET', project.at('/assets/cli_a'));
+    const reads = await hold(page, 'POST', project.at('/read'), asksOld);
     rev = await revOf(cli, 'cli_a');
     await apply(cli, nodes, { cli_a: { rev, description: 'Said by the CLI meanwhile' } });
     await softly.poll(() => reads.calls.length, { message: "the page reads the CLI's description" }).toBeGreaterThan(0);
@@ -186,15 +190,15 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
     await canvasIdle(page);
     await softly.poll(async () => (await project.asset('cli_typed'))?.fields, { message: "the typed words saved beside the CLI's description" })
       .toMatchObject({ text: 'Second CLI words TYPED-MEANWHILE', description: 'Said by the CLI meanwhile' });
-    expect.soft(notFound.filter((method) => method === 'GET').length, 'the reads held past its rename found nothing by its old name').toBeGreaterThanOrEqual(reads.calls.length);
-    expect.soft(notFound.filter((method) => method !== 'GET'), 'no write went under its old name').toEqual([]);
+    expect.soft(goneByOld.length, 'the reads held past its rename found nothing by its old name').toBeGreaterThanOrEqual(reads.calls.length);
+    expect.soft(notFound, 'nothing went under its old name').toEqual([]);
     expect.soft(await page.evaluate(() => window.notReloaded), 'the canvas was never reloaded').toBe(true);
   });
 
   await test.step('a typed save on its way as the API renames its box: it goes again under the new name, and nothing is refused', async () => {
     // More typed in cli_typed, its save held, as a slow network holds it, until the page has heard the API's rename: it reaches Calcifer under
-    // the old name, which 404s (this cell's doing, as is the page's read of that name after it). The page, which already knows the new name,
-    // sends the same words under it, in their turn, with nothing more typed and nothing said to have failed (B5: this order lost them).
+    // the old name, which 404s (this cell's doing). The page, which already knows the new name, sends the same words under it, in their turn,
+    // with nothing more typed and nothing said to have failed (B5: this order lost them).
     guards.allow(/status of 404\b.*\/v1\/projects\/[^/ ]+\/assets\/cli_typed$/);
     await page.evaluate(recordNotes);
     const saved = [];
