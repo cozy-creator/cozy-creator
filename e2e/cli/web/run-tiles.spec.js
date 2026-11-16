@@ -103,11 +103,12 @@ test('run-tiles', async ({ page, project, api }) => {
   const region = await focus(page, 'a');
   const column = region.locator('.here-side .take.making');
   const render = region.getByRole('button', { name: 'Render', exact: true });
+  // Each a take of its own: its tool draws a new seed each render (tool.py's `fetching`).
   for (let n = 1; n <= 3; n++) {
     await render.click();
     await expect(column, `take ${n} on its way`).toHaveCount(n);
+    await expect.poll(async () => (await takes()).length, { message: `take ${n} listed` }).toBe(n);
   }
-  await expect.poll(async () => (await takes()).length, { message: 'three takes listed' }).toBe(3);
 
   let first;
   await test.step('one take downloading, two queued: each says so, its machine and its download share; each has its cancel', async () => {
