@@ -11,14 +11,14 @@ export interface Hit { name: string; part: Part }
 
 /** Every colour comes from the page's tokens (tokens.css), read once per theme. */
 export interface Palette {
-  card: number; well: number; line: number; ink: number; mute: number; select: number; gap: number; glow: number; glowAlpha: number
+  card: number; well: number; line: number; ink: number; mute: number; select: number
   queued: number; running: number; unseen: number; failed: number; ember: number; ember2: number; check: string; check2: string
   box: number; edge: number; edgeAlpha: number; shade: number; shadeAlpha: number
   line2: number; mark: number; markAlpha: number; mark2: number; mark2Alpha: number
 }
 export interface CardState { hover: Part | null; dragging: boolean; offering: boolean; resizing: string | null; dropTarget: boolean; broken: boolean }
 export interface CardEnv {
-  palette: Palette; theme: string; zoom: number; band: 0 | 1 | 2; titleSize: number; ring: number; resolution: number; epoch: number; moving: boolean
+  palette: Palette; theme: string; zoom: number; band: 0 | 1 | 2; titleSize: number; resolution: number; epoch: number; moving: boolean
   media: Media; reduced: boolean; software: boolean; invalidate(): void
   request(picture: ScenePicture, width: number): { source: MediaSource; width: number; local: boolean } | null
   onRevealed(name: string, aspect: number | undefined, local: boolean): void
@@ -88,7 +88,7 @@ export class CardView {
     // Compared in place, not joined into a string: a frame of a pan allocates nothing per card.
     const inputs = this.inputs
     const next = [node.box.w, node.box.h, node.selected, node.view.draft !== undefined, state.hover, state.resizing, state.dropTarget, state.broken,
-      env.theme, env.band, env.titleSize, env.ring, env.resolution, env.epoch] as const
+      env.theme, env.band, env.titleSize, env.resolution, env.epoch] as const
     let same = this.shown === show && this.signature !== "" && inputs.length === next.length
     for (let i = 0; i < next.length; i++) if (inputs[i] !== next[i]) { inputs[i] = next[i]; same = false }
     if (same) return
@@ -166,15 +166,14 @@ export class CardView {
         if (!far) label("progress", show.progress.state, body.x + 12, body.y + body.h / 2 - BODY / 2, body.w - 24, { size: BODY, color: colors.ink, bold: true })
       }
       this.header(show, node, state, w, far, colors, label, env)
-      // Clear of a selected box's ring, which sits outside the picture.
-      if (!far) this.under(show, body, w, colors, label, node.selected ? 6 + 12 / env.ring : 6)
+      if (!far) this.under(show, body, w, colors, label, 6)
     }
     if (show.progress?.fraction !== undefined && !node.view.canceling) {
       const meter = { x: body.x, y: body.y, w: body.w * Math.min(0.99, show.progress.fraction), h: Math.min(body.h, 3 / env.zoom) }
       this.ink.rect(meter.x, meter.y, meter.w, meter.h).fill(colors.running)
       this.drawn.meter = meter
     }
-    this.ring(node, state, show, body, far, colors, env)
+    this.hot(node, body, colors)
     if (state.dropTarget) this.dashed(this.ink, { x: body.x - 4, y: body.y - 4, w: body.w + 8, h: body.h + 8 }, colors.ember, 2 / Math.min(1, env.zoom))
     this.area("body", body)
     const canResize = Boolean(node.view.asset) && !node.view.placing && !far && !show.entity
@@ -488,26 +487,13 @@ export class CardView {
     sprite.position.set(body.x + (body.w - sprite.width) / 2, body.y + (body.h - sprite.height) / 2)
   }
 
-  private ring(node: SceneNode, state: CardState, show: Presentation, body: Box, far: boolean, colors: Palette, env: CardEnv) {
-    if (node.selected) {
-      const scale = env.ring
-      const thick = 6 / scale
-      const inset = far ? Math.min(thick, Math.min(body.w, body.h) / 4) : -6 / scale
-      const box = { x: body.x + inset, y: body.y + inset, w: Math.max(1, body.w - inset * 2), h: Math.max(1, body.h - inset * 2) }
-      for (const [w, a] of [[48, 0.08], [32, 0.18], [20, 0.32]]) this.ink.rect(body.x, body.y, body.w, body.h).stroke({ width: w / scale, color: colors.glow, alpha: colors.glowAlpha * a, alignment: 0.5 })
-      this.ink.rect(box.x, box.y, box.w, box.h).stroke({ width: thick + 2 / scale, color: colors.gap, alignment: 0.5 })
-      this.ink.rect(box.x, box.y, box.w, box.h).stroke({ width: thick, color: colors.select, alignment: 0.5 })
-    } else if (node.view.hot) {
-      // What's held over a box that takes it (app.css .card.hot): an ember outline 2px off it, in a soft 6px ember halo.
-      const edge = node.view.refused ? colors.failed : colors.ember
-      this.ink.rect(body.x - 4, body.y - 4, body.w + 8, body.h + 8).stroke({ width: 8, color: colors.ember, alpha: 0.22, alignment: 0.5 })
-      this.ink.rect(body.x - 3, body.y - 3, body.w + 6, body.h + 6).stroke({ width: 2, color: edge, alignment: 0.5 })
-    } else if (state.hover && (show.picture || show.note || show.error || show.references.length)) {
-      // The page's hover: a 1px --line2 outline 2px off the picture (app.css .card:hover > .media).
-      const px = 1 / Math.max(env.zoom, 0.25)
-      // 1.5 screen pixels: a 1px line off the pixel grid (any fractional camera offset) washes out to a faint smear.
-      this.ink.rect(body.x - 2 - px * 0.75, body.y - 2 - px * 0.75, body.w + 4 + px * 1.5, body.h + 4 + px * 1.5).stroke({ width: px * 1.5, color: colors.line2, alignment: 0.5 })
-    }
+  /** What's held over a box that takes it (app.css .card.hot): an ember outline 2px off it, in a soft 6px ember halo. The selection and the
+   *  hover are the scene's (Scene.rings), in screen pixels over every card. */
+  private hot(node: SceneNode, body: Box, colors: Palette) {
+    if (node.selected || !node.view.hot) return
+    const edge = node.view.refused ? colors.failed : colors.ember
+    this.ink.rect(body.x - 4, body.y - 4, body.w + 8, body.h + 8).stroke({ width: 8, color: colors.ember, alpha: 0.22, alignment: 0.5 })
+    this.ink.rect(body.x - 3, body.y - 3, body.w + 6, body.h + 6).stroke({ width: 2, color: edge, alignment: 0.5 })
   }
 
   /** Animations a card runs while in view; returns whether it needs another frame. */

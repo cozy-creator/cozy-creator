@@ -9,13 +9,15 @@ import type { Board, CanvasNode } from "./Board"
 import type { Viewport } from "./Camera"
 import { BODY, CardView, type CardEnv, type CardState, type Hit, type Palette, TITLE } from "./CardView"
 import type { Media } from "./Media"
-import { present, type Presentation, type RunContext, type SceneNode, type ScenePicture } from "./presentation"
+import { pictureBox, present, type Presentation, type RunContext, type SceneNode, type ScenePicture } from "./presentation"
 import { fontEpoch } from "./text"
 
 export interface Frame { moving: boolean; camera: Viewport; width: number; height: number; dpr: number; settled: boolean; theme: string; now: number; hidden: ReadonlySet<string>; offering: boolean }
 interface Held { view: CardView; node?: SceneNode; show?: Presentation; key?: unknown[]; glide?: { from: { x: number; y: number }; began: number }; landing?: number; seen?: number }
 
 const MARGIN = 160
+/** A box's name sits this far over it (app.css): a ring that would reach it is drawn inside the box's edge. */
+const NAME_FOOT = 12
 const ease = (t: number) => 1 - (1 - t) ** 3
 
 /** The cards in view, each with its own CardView; virtualization over the board's grid. Every card's work is isolated. */
@@ -26,6 +28,9 @@ export class Scene {
   private hover: Hit | null = null
   private resize: { name: string; label: string } | null = null
   private marquee = new Graphics()
+  private rings = new Graphics()
+  private ringed = new Map<string, { kind: "selected" | "hovered"; px: number; inside: boolean }>()
+  private zoom = 1
   private palette?: { theme: string; colors: Palette }
   private faults = new Set<string>()
   private resolution = 1
@@ -35,16 +40,18 @@ export class Scene {
   coverage = { inView: 0, built: 0, wanting: 0, pictured: 0 }
   env?: CardEnv
 
-  constructor(private o: { world: Container; board: Board; store: CanvasStore; client: Client; media: Media; software: boolean; invalidate(): void; contextOf(view: SceneNode["view"]): RunContext | undefined }) {
+  constructor(private o: { world: Container; overlay: Container; board: Board; store: CanvasStore; client: Client; media: Media; software: boolean; invalidate(): void; contextOf(view: SceneNode["view"]): RunContext | undefined }) {
     this.marquee.eventMode = "none"
+    this.rings.eventMode = "none"
     o.world.addChild(this.layer, this.marquee)
+    o.overlay.addChild(this.rings)
   }
 
   setHover(hit: Hit | null) { if (hit?.name !== this.hover?.name || hit?.part !== this.hover?.part) { this.hover = hit; this.o.invalidate() } }
   setResize(name: string | null, label?: string) { this.resize = name ? { name, label: label ?? "" } : null; this.o.invalidate() }
   setMarquee(box: Box | null) {
     this.marquee.clear()
-    if (box && this.palette) this.marquee.rect(box.x, box.y, box.w, box.h).fill({ color: this.palette.colors.select, alpha: 0.08 }).stroke({ width: 1 / this.settledZoom, color: this.palette.colors.select, alpha: 0.8 })
+    if (box && this.palette) this.marquee.rect(box.x, box.y, box.w, box.h).fill({ color: this.palette.colors.select, alpha: 0.1 }).stroke({ width: 1 / this.zoom, color: this.palette.colors.select })
     this.o.invalidate()
   }
   get hovered() { return this.hover }
@@ -53,7 +60,7 @@ export class Scene {
   /** One frame's scene work. Returns whether a card animates (another frame) and when a clock next needs a repaint. */
   update(frame: Frame): { animating: boolean; wake: number | null } {
     const { camera, now } = frame
-    const zoom = Math.max(0.0001, camera.zoom)
+    const zoom = this.zoom = Math.max(0.0001, camera.zoom)
     if (frame.settled || !this.env) { this.settledZoom = zoom; this.resolution = Math.max(1, Math.min(4, 2 ** Math.ceil(Math.log2(Math.max(0.001, zoom * frame.dpr))))) }
     if (this.palette?.theme !== frame.theme) this.palette = { theme: frame.theme, colors: paletteOf() }
     const env = this.env = this.environment(frame, zoom)
@@ -104,13 +111,43 @@ export class Scene {
       if (handle?.texture || handle?.failed) pictured++
     }
     this.coverage = { inView: live.size, built: this.held.size, wanting, pictured }
+    this.drawRings(frame, zoom)
     return { animating, wake }
   }
+
+  /** The selection and the hover as Figma draws them (Paul, 11-16): one line in --select on the box's edge, 2 px selected and 1 px under
+   *  the pointer, in screen pixels at every zoom and on device pixels. Where it would reach the name over the box, just inside its edge.
+   *  One Graphics in screen space holds every ring, redrawn with the frame: a zoom re-inks no card. */
+  private drawRings(frame: Frame, zoom: number) {
+    const rings = this.rings, colors = this.palette?.colors
+    rings.clear()
+    this.ringed.clear()
+    if (!colors) return
+    const { camera, dpr } = frame
+    const snap = (value: number) => Math.round(value * dpr) / dpr
+    for (const held of this.held.values()) {
+      const node = held.node, root = held.view.root
+      if (!node || !root.visible) continue
+      const hovered = !node.selected && this.hover?.name === node.name && !node.view.hot
+      if (!node.selected && !hovered) continue
+      const px = node.selected ? 2 : 1, inside = NAME_FOOT * zoom < px + 1
+      const body = pictureBox(node), scale = root.scale.x
+      const x = (root.x + (body.x - node.box.x) * scale) * zoom + camera.x, y = (root.y + (body.y - node.box.y) * scale) * zoom + camera.y
+      const l = snap(x), t = snap(y), r = snap(x + body.w * scale * zoom), b = snap(y + body.h * scale * zoom)
+      if (inside) rings.rect(l, t, r - l, px).rect(l, b - px, r - l, px).rect(l, t + px, px, b - t - 2 * px).rect(r - px, t + px, px, b - t - 2 * px)
+      else rings.rect(l - px, t - px, r - l + 2 * px, px).rect(l - px, b, r - l + 2 * px, px).rect(l - px, t, px, b - t).rect(r, t, px, b - t)
+      this.ringed.set(node.name, { kind: node.selected ? "selected" : "hovered", px, inside })
+    }
+    if (this.ringed.size) rings.fill(colors.select)
+  }
+
+  /** The ring drawn on a box in the last frame, if any. */
+  ringOf(name: string) { return this.ringed.get(name) ?? null }
 
   private environment(frame: Frame, zoom: number): CardEnv {
     const band = bandOf(zoom)
     return {
-      palette: this.palette!.colors, theme: frame.theme, zoom, band, titleSize: Math.max(TITLE, BODY * nameZoomOf(zoom)), ring: 2 ** Math.ceil(Math.log2(zoom)),
+      palette: this.palette!.colors, theme: frame.theme, zoom, band, titleSize: Math.max(TITLE, BODY * nameZoomOf(zoom)),
       resolution: this.resolution, epoch: fontEpoch(), moving: frame.moving, media: this.o.media, reduced: matchMedia("(prefers-reduced-motion: reduce)").matches, software: this.o.software,
       invalidate: this.o.invalidate,
       request: (picture, width) => this.request(picture, width, frame.dpr),
@@ -219,6 +256,7 @@ export class Scene {
     this.spare = []
     this.layer.destroy({ children: true })
     this.marquee.destroy()
+    this.rings.destroy()
   }
 }
 
@@ -227,11 +265,11 @@ function paletteOf(): Palette {
   const css = getComputedStyle(document.documentElement)
   const read = (name: string, fallback: string) => new Color(css.getPropertyValue(name).trim() || fallback)
   const num = (name: string, fallback: string) => read(name, fallback).toNumber()
-  const glow = read("--select-glow", "#3d8bff66"), edge = read("--box-edge", "#ffffff40"), shade = read("--box-shade", "#0000008c")
+  const edge = read("--box-edge", "#ffffff40"), shade = read("--box-shade", "#0000008c")
   const mark = read("--mark", "#ffffff38"), mark2 = read("--mark2", "#ffffff70")
   return {
     card: num("--card", "#17181b"), well: num("--well", "#0a0a0b"), line: num("--line", "#2b2d32"), ink: num("--ink", "#e8e6e1"), mute: num("--mute", "#a3a5ac"),
-    select: num("--select", "#3d8bff"), gap: num("--select-gap", "#0b0b0c"), glow: glow.toNumber(), glowAlpha: glow.alpha,
+    select: num("--select", "#0d99ff"),
     queued: num("--state-queued", "#9a9ca3"), running: num("--state-running", "#5aa9ff"), unseen: num("--state-unseen", "#4ade80"), failed: num("--state-failed", "#f0625d"),
     ember: num("--ember", "#ff8a3d"), ember2: num("--ember2", "#ffb37d"),
     line2: num("--line2", "#3a3d44"), mark: mark.toNumber(), markAlpha: mark.alpha, mark2: mark2.toNumber(), mark2Alpha: mark2.alpha,

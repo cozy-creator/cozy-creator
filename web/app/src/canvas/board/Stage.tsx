@@ -216,10 +216,12 @@ export function Stage(props: StageProps) {
       // A gesture moves the viewport between ticks; it starts one.
       viewport.on("moved", invalidate).on("zoomed", invalidate)
       stage.hitArea = new Rectangle(0, 0, width, height)
-      stage.addChild(viewport)
+      // Over the world, in screen pixels: the selection's and the hover's rings.
+      const overlay = new Container({ eventMode: "none" })
+      stage.addChild(viewport, overlay)
       const layer = new Container({ eventMode: "passive" })
       viewport.addChild(layer)
-      scene = new Scene({ world: layer, board, store, client, media, software: taken.backend === "canvas", invalidate, contextOf })
+      scene = new Scene({ world: layer, overlay, board, store, client, media, software: taken.backend === "canvas", invalidate, contextOf })
       board.camera.wake = invalidate
       stops.push(board.camera.bind(element, viewport), () => { board.camera.wake = () => {} })
       interaction = createInteraction({
