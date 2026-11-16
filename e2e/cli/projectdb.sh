@@ -1203,7 +1203,8 @@ python3 "$here/numbered.py" moved "$N/project.db" > "$OUT/numbered-moved.json" \
   || check "numbered: its numbers didn't move as made: $(head -c 800 "$OUT/numbered-moved.json")"
 [ -f "$N/project.db.pre-schema$SCHEMA" ] || check "numbered: no copy of it as it was beside it"
 key=$(jq -r '.project.key // empty' "$OUT/numbered-status.json")
-for p in 1 2 3 4; do
+# Run 4, of no project's, is history copied in: it reads as no one's (project_locked), and its number is checked above.
+for p in 1 2 3; do
   (cd "$D" && cozy --json run watch "$key-$p" --once) > "$OUT/numbered-$p.json" 2>&1 || true
   J --arg id "run-numbered$(printf %018d "$p")" --arg name "$key-$p" '.id == $id and .name == $name' "$OUT/numbered-$p.json" \
     || check "numbered: $key-$p isn't run $p made: $(tail -c 300 "$OUT/numbered-$p.json")"
