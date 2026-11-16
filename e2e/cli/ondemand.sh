@@ -96,9 +96,11 @@ cozy machine logs local tensorfs --lines 0 --since 1h > "$OUT/ondemand-adapted.t
 local pulled together
 # The base's chunks pulled on their own: a pull of e2e/calls-base of more than its header.
 pulled=$(awk -v t="$began" '$1 >= t && $2 == "pull" && $3 ~ /^e2e\/calls-base@/' "$OUT/ondemand-adapted.tensorfs.log" | grep -v ' objects=1 ' | head -2 || true)
-# What the call waited on, as its root's progress says: "downloading <models> weights".
-together=$(grep -o 'downloading [^"]*weights' "$OUT/ondemand-adapted.ndjson" | sort -u | grep 'e2e/calls-base' | grep 'e2e/calls-other' | head -1 || true)
-grep -o 'downloading [^"]*weights' "$OUT/ondemand-adapted.ndjson" | sort -u | sed 's/^/ondemand-adapted: /' || true
+# What the call waited on, in order, as its root's progress says: "downloading <models> weights". The root's own prefetch may land
+# the base first (it reads only what `adapted` does); while the base still arrives, the call waits on both at once.
+grep -o 'downloading [^"]*weights' "$OUT/ondemand-adapted.ndjson" | uniq | sed 's/^/ondemand-adapted: /' || true
+together=$(grep -o 'downloading [^"]*weights' "$OUT/ondemand-adapted.ndjson" | grep -E 'e2e/calls-(base|other)' | head -1 || true)
+[[ "$together" != *e2e/calls-base* || "$together" == *e2e/calls-other* ]] || check "ondemand-adapted: the call waited on e2e/calls-base alone first: $together"
 [ -z "$pulled" ] || check "ondemand-adapted: the LoRA'd base was pulled before the call's other weights were wanted: $pulled"
 local held
 cozy --json model ls --on local > "$OUT/ondemand-adapted.models.json" 2>&1 || check "ondemand-adapted: model ls --on local failed"
@@ -106,7 +108,6 @@ held=$(jq -c '[.models[]? | select(.model == "e2e/calls-base") | {complete, byte
 echo "ondemand-adapted: e2e/calls-base here: $held"
 jq -e '[.models[] | select(.model == "e2e/calls-base")] | length == 1 and .[0].complete == false and .[0].bytes >= 268435456 and .[0].bytes < 276824064' "$OUT/ondemand-adapted.models.json" > /dev/null \
   || check "ondemand-adapted: e2e/calls-base here isn't its 256 MiB transformer alone (the call doesn't load its 16 MiB text encoder): $held"
-[ -n "$together" ] || check "ondemand-adapted: e2e/calls-base and e2e/calls-other never downloaded together for the call"
 }
 
 # cl-1077 (Paul, 11-16, chartreux): LTX 2.5 (LAB2-47841), accepted at 07:49:30, waited while LAB2-47843, an H3 `edit` accepted at
