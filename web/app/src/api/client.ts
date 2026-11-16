@@ -110,7 +110,7 @@ const failureStatus: Record<ErrorBody["kind"], number> = {
 }
 
 const unreachable = () =>
-  new ApiError(0, { kind: "unavailable", code: "calcifer_unreachable", message: "Calcifer isn't answering", next: ["cozy open"] })
+  new ApiError(0, { kind: "unavailable", code: "calcifer_unreachable", message: "Calcifer isn't answering" })
 
 /** Calcifer won't answer this page: it isn't Calcifer's own page, or not its account's (design/calcifer-access.md). Any other 401
  *  or 403 is a Hub's word on a code or a key, which belongs where it happened. */

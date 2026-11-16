@@ -9,7 +9,7 @@
 // Prints what it saw as JSON, exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
-const { calcifer, holderToken, lastLook, launch, lookAt, noStall, openCanvas, projectUrl, settled, signIn, until } = require('./page');
+const { calcifer, holderToken, lastLook, launch, lookAt, noStall, projectUrl, settled, signIn, until } = require('./page');
 
 const [folder, stand, pagedRun, cutRun] = process.argv.slice(2);
 const failures = [];
