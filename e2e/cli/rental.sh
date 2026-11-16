@@ -248,7 +248,7 @@ else
     check "rental_rename: its Hub never named $rental's host in 2 min"
   else
     for _ in $(seq 60); do
-      (cd "$RUN_PROJECT" && cozy --json run watch "$number" --once) > "$w" 2>&1
+      (cd "$RUN_PROJECT" && cozy --json run watch "$number" --once) > "$w" 2>&1 || true
       jq -e --arg n "$name" '.machine == $n' "$w" > /dev/null 2>&1 && break
       sleep 2
     done
@@ -261,7 +261,7 @@ fi
 cozy --json machine end "$rental" -y > "$OUT/rename-end.json" 2>&1 || check "rental_rename: machine end $rental: $(tail -c 300 "$OUT/rename-end.json")"
 if [ -n "$number" ]; then
   for _ in $(seq 90); do
-    (cd "$RUN_PROJECT" && cozy --json run watch "$number" --once) > "$w" 2>&1
+    (cd "$RUN_PROJECT" && cozy --json run watch "$number" --once) > "$w" 2>&1 || true
     jq -e '.status == "failed" or .status == "canceled"' "$w" > /dev/null 2>&1 && break
     sleep 2
   done
