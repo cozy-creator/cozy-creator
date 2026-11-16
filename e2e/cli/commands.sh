@@ -1554,6 +1554,58 @@ else
 fi
 }
 
+# cl-1083, from #3423's review: "`cozy model quantize` outside a project is now allowed but no cell runs it to completion". Signed in to
+# the suite's Hub: the tensorfs gate's two-stack model (release-gate/suites/tensorfs/multi-conversion, CPU only) made by its `source`
+# in a project and uploaded as bf16, then quantized to int8 from outside any project, as one of Calcifer's jobs on `local` (job type
+# `quantize`, no project's run). The lane's commit is read back from the Hub by `inspect`, in the project: every weight encoded
+# int8.convrot and near the source, every bias the source's bytes.
+quantize_outside() {
+[ -n "$LOCAL" ] || return 0
+step "cozy model quantize outside a project, carried out to the end (cl-1083)"
+local root=$OUT/quantize-outside seed=$((RANDOM % 9000 + 1000)) code=0 account model made bf16 int8 job
+local pkg=$root/ci-multi-conversion project=$root/project outside=$root/outside
+rm -rf "$root" && mkdir -p "$outside" && cp -r "$here/../../release-gate/suites/tensorfs/multi-conversion" "$pkg" \
+  || { check "quantize outside: no copy of the multi-conversion package"; return 0; }
+[ -n "${E2E_HUB_LOG:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] || { check "quantize outside: e2e/isolated.sh named no Hub log or email to sign in with"; return 0; }
+signin "$E2E_HUB_EMAIL" > "$root/login.json" || { check "quantize outside: cozy login failed: $(tail -c 300 "$root/login.json")"; return 0; }
+account=$(cozy --json whoami | jq -r '.account // empty' || true)
+model=${account:-e2e}/cl1083-two-stacks-$seed
+cozy --json new --unencrypted "$project" > "$root/new.json" 2>&1 || { check "quantize outside: cozy new: $(tail -c 300 "$root/new.json")"; cozy --json logout > /dev/null 2>&1; return 0; }
+# The bf16 source, made in the project and uploaded from its run.
+in_project "$project" --json run "$pkg/source" "seed:=$seed" --on local > "$root/source.ndjson" 2> "$root/source.err" \
+  || { check "quantize outside: the source run failed: $(tail -c 300 "$root/source.ndjson") $(tail -c 200 "$root/source.err")"; cozy --json logout > /dev/null 2>&1; return 0; }
+made=$(grep '^{' "$root/source.ndjson" | jq -rs '[.. | objects | select(.name? and (.name | test("^[A-Z0-9]+-[0-9]+$")) and .status? == "completed") | .name] | last // empty' || true)
+in_project "$project" --json model upload "run:$made#model" "$model" --lane bf16 --on local -y > "$root/upload.ndjson" 2> "$root/upload.err" \
+  || { check "quantize outside: uploading run $made's model as $model failed: $(tail -c 300 "$root/upload.ndjson") $(tail -c 200 "$root/upload.err")"; cozy --json logout > /dev/null 2>&1; return 0; }
+bf16=$(grep '^{' "$root/upload.ndjson" | jq -rs --arg m "$model" '[.. | objects | select(.published?.destination? == $m) | .published.commit] | last // empty' || true)
+[ -n "$bf16" ] || { check "quantize outside: the upload named no commit of $model: $(tail -c 400 "$root/upload.ndjson")"; cozy --json logout > /dev/null 2>&1; return 0; }
+# The quantize, from a folder in no project.
+(cd "$outside" && cozy --json model quantize "$model@$bf16" --lane int8 --package "$pkg" --on local -y) > "$root/quantize.ndjson" 2> "$root/quantize.err" || code=$?
+int8_of() { { grep '^{' "$1" 2> /dev/null | jq -rs '[.. | objects | select(.name? == "int8" and (.checkpoint?.revision? | type == "string")) | .checkpoint.revision] | last // empty'; } || true; }
+int8=$(int8_of "$root/quantize.ndjson")
+if [ -z "$int8" ]; then  # its whole record, by the job's id
+  job=$(grep '^{' "$root/quantize.ndjson" | jq -rs '[.. | objects | select(.id? and .kind? == "call") | .id] | last // empty' || true)
+  [ -z "$job" ] || (cd "$outside" && cozy --json --full run watch "$job" --once) > "$root/quantize-record.json" 2> /dev/null || true
+  int8=$(int8_of "$root/quantize-record.json")
+fi
+[ "$code" = 0 ] && [ -n "$int8" ] \
+  || { check "quantize outside: cozy model quantize $model@${bf16:-?} --lane int8 outside a project: exit $code, no int8 checkpoint: $(tail -c 400 "$root/quantize.ndjson") $(tail -c 200 "$root/quantize.err")"; cozy --json logout > /dev/null 2>&1; return 0; }
+echo "quantize outside: $model@$bf16 (bf16) → int8 $int8"
+# One of Calcifer's jobs on `local`, of type quantize, that completed; in state.db, which holds no project's run.
+job=$(python3 - "$HOME/.cozy/calcifer/state.db" <<'PY'
+import json, sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True, timeout=10)
+print(json.dumps([list(r) for r in c.execute("SELECT machine, kind, status FROM runs WHERE task = 'quantize' AND state = 'settled' ORDER BY number DESC LIMIT 1")]))
+PY
+) || job=
+[ "$job" = '[["local", "call", "completed"]]' ] || check "quantize outside: no completed quantize job of Calcifer's on local (machine, kind, status): ${job:-none}"
+# The lane, read back from the Hub in the project.
+in_project "$project" --json run "$pkg/inspect" "seed:=$seed" "model.model=$model@$int8" --on local > "$root/inspect.ndjson" 2> "$root/inspect.err" \
+  && grep -q '"scheme": *"int8.convrot"' "$root/inspect.ndjson" \
+  || check "quantize outside: the int8 lane $model@$int8 didn't read back as int8.convrot near its source: $(tail -c 400 "$root/inspect.ndjson") $(tail -c 200 "$root/inspect.err")"
+cozy --json logout > "$root/logout.json" 2>&1 || check "quantize outside: logout: $(tail -c 300 "$root/logout.json")"
+}
+
 # cl-987: a project's key names its runs, `KEY-N`, from any folder: proposed from its name, kept in its project.db (so it goes
 # with its folder), changed with `cozy key` while the key it had names them still. Calcifer's jobs are no project's runs (cl-1028): none
 # is listed with them, and none has a name.
