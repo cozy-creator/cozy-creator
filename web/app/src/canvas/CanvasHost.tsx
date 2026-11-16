@@ -527,8 +527,17 @@ function Canvas({
   }, [store, flow, saved, openedOn, bridge, navigate, to, keepView, keepViewport])
 
   /** Where the last zoom of the buttons or keys is going, so a second press steps on from there, not from part of the way. */
-  const aim = useRef<{ view: Viewport; until: number } | null>(null)
-  const aimed = useCallback(() => (aim.current && performance.now() < aim.current.until ? aim.current.view : flow.getViewport()), [flow])
+  const aim = useRef<Viewport | null>(null)
+  const aimed = useCallback(() => aim.current ?? flow.getViewport(), [flow])
+  // A hand's pan or zoom moves the camera out from under an aim.
+  useEffect(() => {
+    const element = stage.current
+    if (!element) return
+    const drop = () => { aim.current = null }
+    element.addEventListener("wheel", drop, { passive: true, capture: true })
+    element.addEventListener("pointerdown", drop, { passive: true, capture: true })
+    return () => { element.removeEventListener("wheel", drop, { capture: true }); element.removeEventListener("pointerdown", drop, { capture: true }) }
+  }, [])
   /** Zoom to `zoom` about the middle of what's visible, as a fit moves. Worked on where it stands, a box then stays where this puts it. */
   const zoomTo = useCallback(
     (zoom: number) => {
@@ -544,9 +553,12 @@ function Canvas({
       const right = document.querySelector(".drawer")?.getBoundingClientRect().left ?? pane.right
       const [x, y] = [(left + right) / 2 - pane.left, pane.height / 2]
       const view = { x: x - ((x - from.x) * to) / from.zoom, y: y - ((y - from.y) * to) / from.zoom, zoom: to }
-      aim.current = { view, until: performance.now() + HERE_MS }
+      // The aim lasts until its glide lands, however late its frames come (cl-1027), not for a fixed time.
+      aim.current = view
       if (store.inPlace) store.inPlace.moved = true
-      glide(flow.setViewport(view, { duration: HERE_MS }))
+      const move = flow.setViewport(view, { duration: HERE_MS })
+      glide(move)
+      void move.then(() => { if (aim.current === view) aim.current = null })
     },
     [flow, store, aimed, glide],
   )
