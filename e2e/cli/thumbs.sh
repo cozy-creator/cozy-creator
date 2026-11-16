@@ -1,9 +1,11 @@
 # cl-1054: pictures imported into plain projects get their thumbnails stored in them as they land (cl-982: "all thumbnails should be
 # generated ahead of time, and stored in the project", Paul 11-13). On macOS the canvas's opens cell, two projects of the same 50
 # pictures (1200x1200 PNGs of ~4 MB), found none stored in 60 s (e2e 43791131996): every import's measuring took the thumbnails'
-# ffmpeg turns, so none was drawn until the imports ended. As it set up: the first project's thumbnails all stored by the time the
-# second's imports end, and each project's within 60 s of the last; else what Calcifer, its ffmpeg and the thumbnail route said, in
-# $OUT/thumbs/. Meanwhile, each second: how many are stored, and which ffmpeg and ffprobe run (thumbs/progress.txt).
+# ffmpeg turns, so none was drawn until the imports ended; and finding ffmpeg, which runs it, on the threads that answer, so the page
+# itself went unanswered for 30 s (43800786375). As it set up: Calcifer's page answers within a second throughout the imports, the
+# first project's thumbnails are all stored by the time the second's imports end, and each project's within 60 s of the last; else what
+# Calcifer, its ffmpeg and the thumbnail route said, in $OUT/thumbs/. Meanwhile, each second: how many are stored, which ffmpeg and
+# ffprobe run (thumbs/progress.txt), and how long the page took (thumbs/page.txt).
 thumbs_stored() {
 step "pictures imported into two plain projects get their thumbnails stored (cl-1054)"
 local out=$OUT/thumbs n=${THUMBS_PICTURES:-50} i p made began short= watcher
@@ -26,13 +28,22 @@ stored() { find "$out/$1/.thumbs" -type f ! -name '.making*' 2> /dev/null | wc -
     echo "$(date -u +%T) one:$(stored one) two:$(stored two) $(ps -axo pid=,etime=,command= 2> /dev/null | grep -E '[f]fmpeg|[f]fprobe' | awk '{print $1"/"$2"/"$3}' | tr '\n' ' ')"
     sleep 1
   done ) > "$out/progress.txt" 2>&1 & watcher=$!
+local holder=$HOME/.cozy/calcifer/calcifer.lock.holder pager slow
+( while :; do
+    echo "$(date -u +%T) $(curl -sS -o /dev/null -m 5 -w '%{http_code} %{time_total}' "http://$(jq -r .address "$holder")/" 2>&1)"
+    sleep 1
+  done ) > "$out/page.txt" 2>&1 & pager=$!
 for p in one two; do
-  cozy --json new --unencrypted "$out/$p" > "$out/new-$p.json" 2>&1 || { check "thumbs: cozy new $p: $(tail -c 300 "$out/new-$p.json")"; kill "$watcher"; return; }
+  cozy --json new --unencrypted "$out/$p" > "$out/new-$p.json" 2>&1 || { check "thumbs: cozy new $p: $(tail -c 300 "$out/new-$p.json")"; kill "$watcher" "$pager"; return; }
   for i in $(seq 0 $((n - 1))); do
     project_import "$out/$p" "$out/pictures/pic_$i.png" "pic_$i" > "$out/import-$p-$i.json" 2>&1 \
-      || { check "thumbs: import pic_$i into $p: $(tail -c 300 "$out/import-$p-$i.json")"; kill "$watcher"; return; }
+      || { check "thumbs: import pic_$i into $p: $(tail -c 300 "$out/import-$p-$i.json")"; kill "$watcher" "$pager"; return; }
   done
 done
+kill "$pager" 2> /dev/null || true
+slow=$(awk '$2 !~ /^2/ || $3 > 1.0' "$out/page.txt" | wc -l | tr -d ' ')
+echo "thumbs: the page during the imports: $(wc -l < "$out/page.txt" | tr -d ' ') asks, $slow over a second or not answered$( [ "$slow" = 0 ] || echo ": $(awk '$2 !~ /^2/ || $3 > 1.0' "$out/page.txt" | head -5 | tr '\n' '|')")"
+[ "$slow" = 0 ] || check "thumbs: Calcifer's page took over a second, or didn't answer, $slow times during the imports"
 made=$(stored one)
 echo "thumbs: the first project's when the second's imports ended: ${made:-0} of $n"
 [ "${made:-0}" -ge "$n" ] || check "thumbs: the first project's thumbnails when the second's imports ended: ${made:-0} of $n (they wait behind the imports' measuring)"
