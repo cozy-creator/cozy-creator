@@ -454,7 +454,10 @@ export class CardView {
       latent.handle = env.media.latent(wanted, () => { this.fitOver(latent.sprite, latent.handle.texture); env.invalidate() })
       this.latent = latent
     }
-    if (this.latent) this.fitOver(this.latent.sprite, this.latent.handle.texture)
+    if (this.latent) {
+      this.latent.handle.newest(run?.progress?.preview ?? 0)
+      this.fitOver(this.latent.sprite, this.latent.handle.texture)
+    }
   }
 
   /** A video's preview plays over its poster on hover; the poster stays until its first frame. */

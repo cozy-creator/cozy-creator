@@ -10,7 +10,12 @@ export type MediaSource =
 /** `width`: the texture width wanted (a power of two, at least 256; a thumbnail's source is at most 512). */
 export interface MediaRequest { source: MediaSource; width: number }
 export interface MediaHandle { readonly texture?: Texture; readonly failed: boolean; readonly aspect?: number; release(): void }
-export interface LatentHandle { readonly texture?: Texture; release(): void }
+export interface LatentHandle {
+  readonly texture?: Texture
+  /** The run says its newest preview is `number`: a newer one than shown is asked for now, not at the next poll. */
+  newest(number: number): void
+  release(): void
+}
 export interface VideoHandle { readonly texture?: Texture; release(): void }
 
 /** Every picture in view is asked for at once (cl-982, cl-1018): the browser queues them on its own connections. The bound only keeps a
@@ -37,7 +42,7 @@ interface Entry {
   loading?: AbortController
   waiting?: () => void
 }
-interface Latent { run: number; pins: number; listeners: Set<() => void>; texture?: Texture; tag?: string; timer?: ReturnType<typeof setTimeout>; loading?: AbortController }
+interface Latent { run: number; pins: number; listeners: Set<() => void>; texture?: Texture; tag?: string; timer?: ReturnType<typeof setTimeout>; loading?: AbortController; newest?: number }
 
 /** A texture and the ImageBitmap it was made from: Pixi forgets a bitmap on destroy without closing it. */
 function drop(texture: Texture | undefined) {
@@ -136,6 +141,12 @@ export class Media {
     let released = false
     return {
       get texture() { return held.texture },
+      newest: (number: number) => {
+        if (released || !number || number === held.newest) return
+        held.newest = number
+        // Each preview is said as it's made: a short render showed none, polled every LATENT_MS (render: "a passive latent preview").
+        if (!held.loading) void this.askLatent(held)
+      },
       release: () => {
         if (released) return
         released = true
