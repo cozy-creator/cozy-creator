@@ -438,6 +438,12 @@ if [ -n "$needs" ]; then
     random_weights "$seed/disk.safetensors" 2048 disk-big
     mirror "$seed/disk.safetensors" e2e/disk-big bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is
     rm -f "$seed/disk.safetensors"
+    # And disk_run_object's (cl-1076): its asset is a file the package that runs it carries too (cli/tokenizer), as H3 holds
+    # the Qwen3-VL processor files minimax-h3 carries.
+    random_weights "$seed/disk.safetensors" 384 disk-tokenizer
+    mirror "$seed/disk.safetensors" e2e/disk-tokenizer bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is \
+      --add "processor/vocab.json=$here/cli/tokenizer/e2e_tokenizer/processor/vocab.json"
+    rm -f "$seed/disk.safetensors"
   fi
   if [[ " $needs " == *" calls "* ]]; then
     # ondemand_calls' orchestrator (cl-1077): the model of the function it calls and of one it never calls, 32 MiB each; and
