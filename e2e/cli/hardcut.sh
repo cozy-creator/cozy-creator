@@ -217,7 +217,7 @@ WRAP
 writing the new store|$calc/state.db.cut|pwrite64,write|1|old
 the new store synced, before the swap|$calc/state.db.cut|chmod,fchmodat,fchmodat2|1|old
 the swap|$calc/state.db.cut|rename,renameat,renameat2|1|old
-a project's copy|$P/files/$latents.part|write,pwrite64,copy_file_range,sendfile,splice|1|old
+a project's copy|$P/files/.$latents.part|write,pwrite64,copy_file_range,sendfile,splice|1|old
 copies verified, before letting go|$calc/kept/$key.cozytensors|unlink,unlinkat|1|old
 deleting the backups|$calc/state.db.pre-hand-copy|unlink,unlinkat|1|new
 WINDOWS

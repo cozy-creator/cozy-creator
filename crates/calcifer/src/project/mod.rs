@@ -790,10 +790,11 @@ pub(crate) fn copy_left_on_local(root: &FsPath, calcifer: &FsPath) -> Result<Opt
     for file in lock.files.values().filter(|file| file.machine == "local") {
         let at = folder.path(&file.path);
         let Some(hex) = file.sha256.strip_prefix("sha256:") else { continue };
-        if at.is_file() { continue; }
+        // Hidden while it's written: a name that starts with its hash would be taken for the file itself (`Folder::lock`).
+        let part = at.with_file_name(format!(".{}.part", at.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()));
+        if at.is_file() { let _ = std::fs::remove_file(&part); continue; }
         let object = tensorfs::format::ObjectRef { sha256: hex.to_owned(), length: file.length };
-        let Some(from) = store.path(&object).ok().filter(|from| from.is_file()) else { gone += 1; continue };
-        let part = folder.path(&format!("{}.part", file.path));
+        let Some(from) = store.path(&object).ok().filter(|from| from.is_file()) else { let _ = std::fs::remove_file(&part); gone += 1; continue };
         let done = (|| -> std::io::Result<bool> {
             if let Some(dir) = part.parent() { std::fs::create_dir_all(dir)?; }
             // A file of its own (the store's are read-only), synced, then read back and checked against its hash.
