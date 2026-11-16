@@ -229,13 +229,29 @@ jobs:
           [ -n "$REPO" ] || { REPO=cozy-creator REF=$HEAD_SHA BASE=$BASE_SHA CREATOR=$HEAD_SHA; }
           # A cut across repos lands as `rc/<x>` in each: a change on or into one, or a dispatch from one, runs against its
           # siblings' `rc/<x>` where they have one, else master. A merge group's head names the PR, not the PR's branch.
-          rc=
-          for b in "${BASE_REF#refs/heads/}" "${HEAD_REF#refs/heads/}" "$DISPATCHED"; do [[ $b == rc/* ]] && { rc=$b; break; }; done
+          rc= from_rc=
+          for b in "${BASE_REF#refs/heads/}" "${HEAD_REF#refs/heads/}" "$DISPATCHED"; do [[ $b == rc/* ]] && { rc=$b from_rc="the run's branch"; break; }; done
           if [ -z "$rc" ] && [[ ${HEAD_REF#refs/heads/} =~ ^gh-readonly-queue/.+/pr-([0-9]+)- ]]; then
             b=$(gh api "repos/cozy-creator/${REPO/#tensorhub/tensorhub-v2}/pulls/${BASH_REMATCH[1]}" -q .head.ref 2>/dev/null) || b=
-            [[ $b != rc/* ]] || rc=$b
+            [[ $b != rc/* ]] || { rc=$b from_rc="its PR's branch"; }
+          fi
+          # A dispatch from a task branch runs against the RC it works toward, never master by default (two runs on 11-15 met
+          # master's Runtime and packages and looked like product bugs): its open PR's base, else the line its own Cargo.toml says
+          # (`X.Y.Z-dev` works toward rc/X.Y.Z, a release `X.Y.Z` toward the next minor's, as Calcifer's rc::open reads it).
+          # Only a dispatch on master runs against master.
+          if [ -z "$rc" ] && [ -n "$DISPATCHED" ] && [ "$DISPATCHED" != master ]; then
+            b=$(gh api "repos/$GITHUB_REPOSITORY/pulls?head=${GITHUB_REPOSITORY%%/*}:$DISPATCHED&state=open" -q '.[0].base.ref // empty' 2>/dev/null) || b=
+            if [[ $b == rc/* ]]; then
+              rc=$b from_rc="its PR's base"
+            elif [ "$GITHUB_REPOSITORY" = cozy-creator/cozy-creator ]; then
+              v=$(gh api "repos/cozy-creator/cozy-creator/contents/Cargo.toml?ref=$DISPATCHED" -H 'Accept: application/vnd.github.raw' 2>/dev/null | sed -n 's/^version = "\([0-9]*\)\.\([0-9]*\)\.[0-9]*\(-[^"]*\)\{0,1\}"$/\1 \2 \3/p' | head -1) || v=
+              read -r major minor dev <<< "$v"
+              bump=1; [ -z "$dev" ] || bump=0
+              [ -z "$minor" ] || { rc=rc/$major.$((minor + bump)).0 from_rc="its Cargo.toml's line"; }
+            fi
           fi
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "from_rc=$from_rc" >> "$GITHUB_OUTPUT"
           if [ -n "$rc" ] && [ "$STACK" = master ] && gh api "repos/cozy-creator/cozy-creator/branches/$rc" -q .name >/dev/null 2>&1; then
             STACK=$rc
           fi
@@ -313,18 +329,38 @@ jobs:
           RUNTIME: ${{ inputs.runtime_ref || 'master' }}
           PACKAGES: ${{ inputs.packages_ref || 'master' }}
           RC: ${{ steps.what.outputs.rc }}
+          FROM_RC: ${{ steps.what.outputs.from_rc }}
         run: |
           commit() { gh api "repos/$1/commits/$2" -q .sha; }
-          # The sibling's `rc/<x>` (the `what` step's) when it has one, else what was asked.
-          sibling() { if [ -n "$RC" ] && [ "$2" = master ] && gh api "repos/$1/branches/$RC" -q .name >/dev/null 2>&1; then echo "$RC"; else echo "$2"; fi; }
+          # The sibling's `rc/<x>` (the `what` step's) when it has one, else its newest `rc/*`, else what was asked.
+          sibling() {
+            local newest
+            if [ -z "$RC" ] || [ "$2" != master ]; then echo "$2"; return; fi
+            if gh api "repos/$1/branches/$RC" -q .name >/dev/null 2>&1; then echo "$RC"; return; fi
+            newest=$(gh api "repos/$1/branches?per_page=100" -q '.[].name' 2>/dev/null | grep '^rc/[0-9]' | sort -V | tail -1) || newest=
+            echo "${newest:-$2}"
+          }
           ref=$(commit "$GITHUB_REPO" "$REF")
           creator=$(git -C .creator rev-parse HEAD)
-          stack=$creator; [ -n "$FROM_STACK" ] || stack=$(commit cozy-creator/cozy-creator "$(sibling cozy-creator/cozy-creator "$STACK")")
-          runtime=$(commit cozy-creator/cozy-runtime "$(sibling cozy-creator/cozy-runtime "$RUNTIME")")
+          stack_at=$STACK; [ -n "$FROM_STACK" ] || stack_at=$(sibling cozy-creator/cozy-creator "$STACK")
+          stack_said=$stack_at; [ -z "$FROM_STACK" ] || stack_said="the harness commit"
+          runtime_at=$(sibling cozy-creator/cozy-runtime "$RUNTIME")
+          packages_at=$PACKAGES; [ "$GITHUB_REPO" = cozy-creator/packages ] || packages_at=$(sibling cozy-creator/packages "$PACKAGES")
+          stack=$creator; [ -n "$FROM_STACK" ] || stack=$(commit cozy-creator/cozy-creator "$stack_at")
+          runtime=$(commit cozy-creator/cozy-runtime "$runtime_at")
           packages=$ref
-          [ "$GITHUB_REPO" = cozy-creator/packages ] || packages=$(commit cozy-creator/packages "$(sibling cozy-creator/packages "$PACKAGES")")
+          [ "$GITHUB_REPO" = cozy-creator/packages ] || packages=$(commit cozy-creator/packages "$packages_at")
           for c in "$ref" "$creator" "$stack" "$runtime" "$packages"; do [[ $c =~ ^[0-9a-f]{40}$ ]] || { echo "::error::unresolved ref: '$c'"; exit 1; }; done
           printf 'ref=%s\ncreator=%s\nstack=%s\nruntime=%s\npackages=%s\n' "$ref" "$creator" "$stack" "$runtime" "$packages" | tee -a "$GITHUB_OUTPUT"
+          # What this run runs against, at the top of its summary: no one guesses which Runtime or packages it met.
+          { echo "### Refs: ${RC:-master}${FROM_RC:+ ($FROM_RC)}"
+            echo
+            echo "| | ref | commit |"
+            echo "|---|---|---|"
+            echo "| creator (harness) | ${GITHUB_REPO#cozy-creator/} $REF | ${creator:0:12} |"
+            echo "| stack | $stack_said | ${stack:0:12} |"
+            echo "| runtime | $runtime_at | ${runtime:0:12} |"
+            echo "| packages | ${packages_at:-the change} | ${packages:0:12} |"; } | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@v5
         if: inputs.select == '' || inputs.select == 'affected'
         with:
