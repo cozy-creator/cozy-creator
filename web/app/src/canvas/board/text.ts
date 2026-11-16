@@ -16,7 +16,7 @@ const family = (mono: boolean) => {
 }
 export const fontEpoch = () => epoch
 export function onFontsLoaded(listener: () => void): () => void {
-  const loaded = () => { epoch++; families = null; listener() }
+  const loaded = () => { epoch++; families = null; widths.clear(); cuts.clear(); listener() }
   document.fonts.addEventListener("loadingdone", loaded)
   return () => document.fonts.removeEventListener("loadingdone", loaded)
 }
@@ -25,15 +25,32 @@ const measurer = document.createElement("canvas").getContext("2d")!
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" })
 const font = (size: number, mono: boolean, bold: boolean) => `${bold ? 700 : 400} ${size}px ${family(mono)}`
 
+/** Each string measured once per font (cl-1018: measureText, its font set again each call, was most of an open's first frame on a Mac). */
+const widths = new Map<string, number>()
+/** What `ellipsis` cut each string to, per font and room. */
+const cuts = new Map<string, string>()
+const MEASURED_MOST = 20_000
+let measuring = ""
+
 export function width(text: string, size: number, mono = false, bold = false): number {
-  measurer.font = font(size, mono, bold)
-  return Math.ceil(measurer.measureText(text).width)
+  const style = font(size, mono, bold), key = `${style}\u0000${text}`
+  let measured = widths.get(key)
+  if (measured === undefined) {
+    if (measuring !== style) { measurer.font = style; measuring = style }
+    measured = Math.ceil(measurer.measureText(text).width)
+    if (widths.size >= MEASURED_MOST) widths.clear()
+    widths.set(key, measured)
+  }
+  return measured
 }
 
 /** One line, cut to `room` with an ellipsis at a grapheme boundary. */
 export function ellipsis(text: string, room: number, size: number, mono = false, bold = false): string {
   if (room <= 0) return ""
   if (width(text, size, mono, bold) <= room) return text
+  const key = `${font(size, mono, bold)}\u0000${room}\u0000${text}`
+  const held = cuts.get(key)
+  if (held !== undefined) return held
   const parts = [...segmenter.segment(text)].map((part) => part.segment)
   let low = 0, high = parts.length
   while (low < high) {
@@ -41,7 +58,10 @@ export function ellipsis(text: string, room: number, size: number, mono = false,
     if (width(parts.slice(0, mid).join("") + "…", size, mono, bold) <= room) low = mid
     else high = mid - 1
   }
-  return low ? parts.slice(0, low).join("") + "…" : ""
+  const cut = low ? parts.slice(0, low).join("") + "…" : ""
+  if (cuts.size >= MEASURED_MOST) cuts.clear()
+  cuts.set(key, cut)
+  return cut
 }
 
 /** Up to `lines` wrapped lines, the last cut with an ellipsis. */
@@ -100,5 +120,8 @@ export class Label {
 
 /** Measured strings are private to a project: a vault lock retires Pixi's own measurement cache too. */
 export function forgetMeasurements() {
+  widths.clear()
+  cuts.clear()
+  measuring = ""
   ;(CanvasTextMetrics as unknown as { _measurementCache?: { clear(): void } })._measurementCache?.clear()
 }
