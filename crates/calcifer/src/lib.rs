@@ -1525,71 +1525,22 @@ impl Calcifer {
         eta::Prior::of(&self.history(target), machine, &self.gpu_of(machine), megapixels(&input)).map(|prior| prior.with_steps(steps))
     }
 
-    /// What a run of `target` of `size` takes on one GPU of `machine`'s kind where that machine ran none of it: a machine's estimate's
-    /// `prior_ms`. This computer's runs of it on that GPU; else our measurement of it on that card, which for a release the estimator
-    /// reads itself (`estimate::reference`) but local code it knows only by its manifest; else `scaled_ms` (cl-1004). 0: none. And how
-    /// many of that machine's own runs it is (cl-1047): a project's, which the machine doesn't time itself.
+    /// What a run of `target` of `size` takes on one GPU of `machine`'s kind where that machine ran none of it, by this computer's runs
+    /// of it on that GPU: a machine's estimate's `prior_ms`. Its release's benchmarks the estimator reads after it (cl-1024). 0: none. And
+    /// how many of that machine's own runs it is (cl-1047): a project's, which the machine doesn't time itself.
     pub(crate) fn prior_ms(&self, target: &str, machine: &str, size: &v1::JobSize) -> (u64, u32) {
-        let (history, gpu) = (self.history(target), self.gpu_of(machine));
-        if let Some((ms, here)) = eta::one_gpu(&history, machine, &gpu, size) {
-            return (ms as u64, here);
-        }
-        let ms = ((!target.contains('@')).then(|| ::api::estimate::reference(target, &gpu, size)).flatten())
-            .or_else(|| self.scaled_ms(target, &gpu, size, &history).map(|(ms, _)| ms));
-        (ms.map_or(0, |ms| ms as u64), 0)
+        eta::one_gpu(&self.history(target), machine, &self.gpu_of(machine), size).map_or((0, 0), |(ms, here)| (ms as u64, here))
     }
 
     /// What a run of `target` of `size` takes on one GPU of `gpu` (as its driver or a Hub names it), by what's known here without asking
-    /// anyone (cl-1004): this computer's runs of it on that card, else our measurement of it there (`estimate::reference`), else
-    /// `scaled_ms`; and what that stands on. None: nothing.
+    /// anyone: this computer's runs of it on that card, else its release's benchmarks (cl-1024: of that card, else another's scaled by
+    /// the Hub's speeds); and what that stands on. None: nothing.
     pub(crate) fn typical_ms(&self, target: &str, gpu: &str, size: &v1::JobSize) -> Option<(f64, v1::Basis)> {
-        let history = self.history(target);
-        if let Some(ms) = self.card_ran_ms(&history, gpu, size) {
+        if let Some(ms) = self.card_ms(target, gpu, size) {
             return Some((ms, v1::Basis::Prior));
         }
-        if let Some(ms) = ::api::estimate::reference(target, gpu, size) {
-            return Some((ms, v1::Basis::Reference));
-        }
-        self.scaled_ms(target, gpu, size, &history)
-    }
-
-    /// What `history`'s runs on `gpu`, whichever machine, say a run of `size` takes on one of it.
-    fn card_ran_ms(&self, history: &[eta::Took], gpu: &str, size: &v1::JobSize) -> Option<f64> {
-        let ran = history.iter().map(|took| took.gpu.as_str()).find(|ran| !ran.is_empty() && ::api::estimate::is_card(ran, gpu))?;
-        eta::one_gpu_ms(history, "", ran, size)
-    }
-
-    /// What a run of `target` of `size` takes on one GPU of `gpu` where nothing of it ran on that card here and we measured none of it
-    /// there (cl-1004): our measurement on another card, else this computer's runs on one, times that card's Hub speed over this one's
-    /// (cl-897's speeds, the Hub's last word on its release), from the card nearest it in speed. None: no speed for this card, or
-    /// nothing of it on any card with one.
-    fn scaled_ms(&self, target: &str, gpu: &str, size: &v1::JobSize, history: &[eta::Took]) -> Option<(f64, v1::Basis)> {
-        if gpu.is_empty() || ::api::estimate::reference(target, gpu, size).is_some() {
-            return None;
-        }
-        let hub = self.machines()?.hubs.default_origin();
-        let speeds = project::fit::speeds_now(&hub, target)?;
-        let speed = |card: &str| speeds.iter().find(|(sold, _)| ::api::estimate::is_card(card, sold)).map(|(_, speed)| *speed).filter(|speed| *speed > 0.0);
-        let to = speed(gpu)?;
-        let mut cards: Vec<(String, v1::Basis)> = (::api::estimate::references(target)).map(|row| (row.card.clone(), v1::Basis::Reference)).collect();
-        cards.extend(history.iter().filter(|took| took.width <= 1 && !took.gpu.is_empty()).map(|took| (took.gpu.clone(), v1::Basis::Prior)));
-        let mut seen: Vec<(String, v1::Basis)> = vec![];
-        cards.retain(|card| !seen.contains(card) && {
-            seen.push(card.clone());
-            true
-        });
-        (cards.into_iter())
-            .filter_map(|(card, basis)| {
-                let from = speed(&card)?;
-                let ms = match basis {
-                    v1::Basis::Reference => ::api::estimate::nearest(::api::estimate::references(target).filter(|row| row.card == card), size)?.1,
-                    _ => eta::one_gpu_ms(history, "", &card, size)?,
-                };
-                // This computer's runs before ours, at one distance.
-                Some(((from / to).ln().abs(), basis == v1::Basis::Reference, ms * from / to, basis))
-            })
-            .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
-            .map(|(_, _, ms, basis)| (ms, basis))
+        let machines = self.machines()?;
+        crate::placement::references(&machines.hubs, &[target.to_owned()]).time(target, gpu, size).map(|ms| (ms, v1::Basis::Reference))
     }
 
     /// What a run of `target` like `input` takes on one GPU of each card it ran on away from this computer, by those runs: each card's
@@ -1640,12 +1591,9 @@ impl Calcifer {
     /// What a run of `target` of `size` takes on one GPU of `card` (a rental's, as its Hub sells it: `RTX 4090`), by this computer's
     /// runs on that card: for a machine on its way, which has run nothing yet (cl-915).
     pub(crate) fn card_ms(&self, target: &str, card: &str, size: &v1::JobSize) -> Option<f64> {
-        self.card_ran_ms(&self.history(target), card, size)
-    }
-
-    /// `scaled_ms` of `target` on `card`, for a machine on its way.
-    pub(crate) fn card_scaled_ms(&self, target: &str, card: &str, size: &v1::JobSize) -> Option<f64> {
-        self.scaled_ms(target, card, size, &self.history(target)).map(|(ms, _)| ms)
+        let history = self.history(target);
+        let ran = history.iter().map(|took| took.gpu.as_str()).find(|ran| !ran.is_empty() && ::api::estimate::is_card(ran, card))?;
+        eta::one_gpu_ms(&history, "", ran, size)
     }
 
     /// Its machine's GPU from the moment it has one, not only once it ran (cl-921): on its record and every lifecycle event, as it goes.

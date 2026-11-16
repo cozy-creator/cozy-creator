@@ -198,8 +198,7 @@ fn report(row: &RunRow, outcome: &v1::Outcome, frame: Option<&v1::StatusFrame>) 
     let gib = |bytes: u64| (bytes > 0).then(|| (bytes as f64 / GIB).round() as u32);
     let software = &measured["software"];
     let construction = &measured["execution"]["construction"];
-    let prepared = construction["prepared_unix_ms"].as_f64().filter(|at| *at > 0.0);
-    let warm = prepared.zip(row.started_at_ms).map(|(at, started)| at <= started as f64);
+    let warm = warm(row, &measured);
     let took = row.started_at_ms.and_then(|started| Took::of("", "", started, outcome.execution_ms, outcome.measurements.as_ref()?.get(), None));
     let steps = took.as_ref().and_then(|took| {
         let main = took.stages.iter().filter_map(|stage| stage.steps.map(|steps| (stage.ms, steps))).max_by(|a, b| a.0.total_cmp(&b.0));
@@ -373,4 +372,10 @@ pub(crate) async fn change(
         .await
         .map_err(|e| crate::api::Refusal(Error::new(ErrorKind::Internal, "settings_write", e.to_string())))?;
     changed.map(axum::Json).map_err(crate::api::Refusal)
+}
+
+/// Whether a settled run was warm, by its measurements (`measured`): its executor was prepared before it started. None: they don't say.
+pub(crate) fn warm(row: &RunRow, measured: &Value) -> Option<bool> {
+    let prepared = measured["execution"]["construction"]["prepared_unix_ms"].as_f64().filter(|at| *at > 0.0);
+    prepared.zip(row.started_at_ms).map(|(at, started)| at <= started as f64)
 }

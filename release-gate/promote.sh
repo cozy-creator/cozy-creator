@@ -8,7 +8,9 @@
 #   images    tensorhub worker-images-publish.yaml promote: the digests staged from those wheels (--images) become the tags;
 #   cozy      cozy-promote.yaml: the v<V> prerelease becomes Latest (`cozy update`, the installer) and Homebrew's;
 #   packages  `task publish -- --gated <packages_ref>` in the packages checkout (--packages, on master with the RC merged):
-#             the gated source's finals, only the version changed (Paul 11-13: software before the packages that need it);
+#             the gated source's finals, only the version changed (Paul 11-13: software before the packages that need it), each
+#             with its benchmarks (cl-1024): `bench.py references` of the newest stored baseline (`bench.py baseline` after the
+#             gate), else benchmarks-seed.json, into each package's benchmarks.json, which its publish attaches;
 #   models    each held private release the set uses (candidate.json `models`) published again with its checkpoints: public.
 # The Hub pin (/v1/software) stays the release owner's, after this.
 set -euo pipefail
@@ -87,6 +89,8 @@ if [ -n "$(field cozy_sha256)" ] && [ "$(gh release view "v$c" -R cozy-creator/c
   go cozy-creator/cozy-creator cozy-promote.yaml -f tag="v$c" -f gate="$gate"
 fi
 if [ -n "$ref" ]; then
+  base=$(ls "$HERE"/baselines/*.json 2> /dev/null | sort -V | tail -1)
+  run uv run -q --no-project --with numpy python -I "$HERE/bench.py" references "${base:-$HERE/benchmarks-seed.json}" --packages "$PKGS"
   if [ -n "$DRY" ]; then (cd "$PKGS" && run task publish -- --dry-run --gated "$ref")
   else (cd "$PKGS" && run task publish -- --gated "$ref"); fi
 fi

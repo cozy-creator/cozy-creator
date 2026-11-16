@@ -640,6 +640,8 @@ AFTER='grep -c "name = \"e2e-weightless\"" uv.lock' DIR=weightless LOCK_FIXTURE=
 ls -d "$seen"/project/.vault-calcifer/code/*/tree/e2e_weightless > /dev/null 2>&1 || check "unseen lock: Calcifer holds no copy of the package in the project: $(ls "$seen/project/.vault-calcifer/code" 2> /dev/null | head -3)"
 # Publishing a project's package is an explicit export: it gets as far as the sign-in it needs.
 DIR=weightless refused_inside publish not_logged_in package publish
+# Its benchmarks come from this project's warm runs of it on a GPU (cl-1024): this CPU runner made none, so there's nothing to write.
+DIR=weightless refused_inside benchmarks no_benchmarks package benchmarks
 # A model installed from a project's file is an explicit export: it is the machine's.
 inside model --json model install ./tiny.safetensors local/e2e-unseen --source-format as-is --on local \
   && cozy --json model ls --on local | grep -q e2e-unseen || check "unseen model: local/e2e-unseen is not on local"
