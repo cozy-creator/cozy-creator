@@ -427,6 +427,13 @@ pub struct Placed {
     /// Its weights' bytes it downloads there first.
     #[serde(default)]
     pub fetch_bytes: u64,
+    /// Of its weights fetched only when the function first reads them, the most it may download there besides: in no time (cl-1071).
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub on_demand_bytes: u64,
+}
+
+fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
 }
 
 /// One run as Calcifer holds it.

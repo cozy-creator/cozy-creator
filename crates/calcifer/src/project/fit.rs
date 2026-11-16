@@ -664,19 +664,21 @@ fn waited(slots: &[Slot]) -> impl Iterator<Item = &Slot> {
 }
 
 /// What `function` of `package` fetches before it starts, as TensorD fetches it (cl-1071): each slot it waits for (`waited`), by its Hub
-/// card's lane checkpoint, and the bytes of the chunks its components read that no slot
-/// before it reads, each object once across checkpoints (a fine-tune composed of a base's parts shares them). A header that can't be read
-/// counts its checkpoint whole. What a machine's estimate counts the fetch of (cl-816, cl-1047); what the Hub doesn't say in time is left
-/// out.
-pub(super) async fn checkpoints(api: &Api, hub: &str, package: &super::Package, function: &str, made: &Map<String, Value>) -> Vec<api::machine::ModelRef> {
-    let Some(weights) = Interface::parse(package.document()).ok().and_then(|interface| Weights::read(&interface, function, made)) else { return vec![] };
+/// card's lane checkpoint, and the bytes of the chunks its components read that no slot before it reads, each object once across
+/// checkpoints (a fine-tune composed of a base's parts shares them); and, of its on-demand slots, those it may fetch besides, which a
+/// quote can't know it reads. A header that can't be read counts its checkpoint whole. What a machine's estimate counts the fetch of
+/// (cl-816, cl-1047); what the Hub doesn't say in time is left out.
+pub(super) async fn checkpoints(api: &Api, hub: &str, package: &super::Package, function: &str, made: &Map<String, Value>) -> Fetched {
+    let Some(weights) = Interface::parse(package.document()).ok().and_then(|interface| Weights::read(&interface, function, made)) else { return Fetched::default() };
     let placed = match package.local {
         None => placed(api, hub, &package.name, &package.release, function).await,
         Some(_) => None,
     };
     let mut counted: HashSet<String> = HashSet::new();
-    let mut found = vec![];
-    for slot in waited(&weights.slots) {
+    let mut fetched = Fetched::default();
+    let waited: Vec<&Slot> = waited(&weights.slots).collect();
+    let on_demand = weights.slots.iter().filter(|slot| !waited.iter().any(|held| std::ptr::eq(*held, *slot)));
+    for (slot, ahead) in waited.iter().map(|slot| (*slot, true)).chain(on_demand.map(|slot| (slot, false))) {
         let param = Weights::param(slot);
         let Some(written) = weights.on_box.get(param).or(slot.default.as_ref()) else { continue };
         let placed = placed.as_ref().and_then(|placed| placed.slots.iter().find(|(held, ..)| held == param));
@@ -690,7 +692,17 @@ pub(super) async fn checkpoints(api: &Api, hub: &str, package: &super::Package, 
             Some(chunks) => chunks.iter().filter(|chunk| counted.insert(chunk.sha256.clone())).map(|chunk| chunk.length).sum(),
             None => held.bytes,
         };
-        found.push(api::machine::ModelRef { checkpoint: held.checkpoint, bytes, model: repository(written), reads: 0 });
+        match ahead {
+            true => fetched.models.push(api::machine::ModelRef { checkpoint: held.checkpoint, bytes, model: repository(written), reads: 0 }),
+            false => fetched.on_demand_bytes += bytes,
+        }
     }
-    found
+    fetched
+}
+
+/// What a function fetches (`checkpoints`): what it waits for before it starts, and the most it may fetch on demand besides.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Fetched {
+    pub models: Vec<api::machine::ModelRef>,
+    pub on_demand_bytes: u64,
 }

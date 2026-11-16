@@ -136,10 +136,12 @@ done
 }
 
 # plan_fetch (cl-1071; Paul 11-16, a 65 GiB quote where 22 landed: "why would it take 15 mins to download?"): a run's quoted download is
-# what it then fetches. composed.py reads a transformer and a VAE as raw weights, and has a slot it fetches only on demand and never
-# reads; its box takes e2e/composed-tune (its own transformer on e2e/composed-base's VAE) for the transformer. On stand-c, which holds
-# none of them, the run is quoted the tune's transformer and the base's VAE once (64 MiB), not each named checkpoint whole and the
-# unread on-demand one (160 MiB); and what lands in stand-c's store is that, within 5%.
+# what it then fetches. composed.py reads a transformer and a VAE as raw weights, and has a slot it fetches only on demand; its boxes take
+# e2e/composed-tune (its own transformer on e2e/composed-base's VAE) for the transformer. On stand-c, which holds none of them, a run
+# that never reads the on-demand slot is quoted the tune's transformer and the base's VAE once (64 MiB), not each named checkpoint whole
+# and the on-demand one (160 MiB), and that is what lands in stand-c's store, within 5%. Then one that reads it: a quote can't know which
+# on-demand slot a run reads, so it is quoted besides, "plus up to" its 32 MiB (`on_demand_bytes`), and what lands is that, within 5%:
+# the gap measured, never silent.
 plan_fetch() {
 step "plan (cl-1071): a run's quoted download is what it fetches"
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "plan: its stand-in is another user of a fresh GitHub runner"; return; }
@@ -165,6 +167,24 @@ echo "plan fetch: run $run on stand-c quoted $((quoted >> 20)) MiB to fetch ($pl
 [ "$quoted" -gt 0 ] && [ "$landed" -gt 0 ] || { check "plan fetch: nothing quoted ($quoted) or landed ($landed)"; return; }
 [ $(( (quoted > landed ? quoted - landed : landed - quoted) * 20 )) -le "$landed" ] \
   || check "plan fetch: quoted $((quoted >> 20)) MiB to fetch, but $((landed >> 20)) MiB landed"
+
+# The same, reading its on-demand slot: what the run waits for is held now, and the on-demand slot lands inside the run.
+jq -n --arg t "$tool" --arg r "$r" '[{name: "fetched_read", tool: $t, kind: "image",
+  fields: {instructions: "A tune that reads its extra, \($r).", read_extra: true, models: {model: {ref: "e2e/composed-tune@0.1.0"}}}}]' | boxes_in "$P" || return
+before=$(sudo du -sb "$store" 2> /dev/null | cut -f1)
+coming_go fetched_read '["stand-c"]'
+coming_done fetched_read 900
+after=$(sudo du -sb "$store" 2> /dev/null | cut -f1)
+job=$(status "$P" | jq -c '[.board.jobs[]? | select(.asset == "fetched_read")] | last // empty')
+run=$(jq -r '.run // empty' <<< "${job:-null}")
+[ -n "$run" ] && J '.state == "done"' <<< "$job" || { check "plan fetch: the run reading its on-demand slot didn't end done: ${job:-no job}"; return; }
+run_show "$OUT" plan-fetch-read "$run"
+placed=$(jq -c '.placed // empty' "$OUT/plan-fetch-read.json" 2> /dev/null)
+quoted=$(jq -r '(.fetch_bytes // 0) + (.on_demand_bytes // 0)' <<< "${placed:-null}")
+landed=$(( ${after:-0} - ${before:-0} ))
+echo "plan fetch: run $run reading its on-demand slot was quoted $(jq -r '(.fetch_bytes // 0) / 1048576 | floor' <<< "${placed:-null}") MiB to fetch, plus up to $(jq -r '(.on_demand_bytes // 0) / 1048576 | floor' <<< "${placed:-null}") MiB on demand; $((landed >> 20)) MiB landed"
+[ "$landed" -gt 0 ] && [ $(( (quoted > landed ? quoted - landed : landed - quoted) * 20 )) -le "$landed" ] \
+  || check "plan fetch: reading its on-demand slot, quoted $((quoted >> 20)) MiB with it, but $((landed >> 20)) MiB landed"
 }
 
 # prepare_ahead (phase c): BiRefNet, as its Hub publishes it, on a still that takes 4 min, can't start before it: unstarted work,
