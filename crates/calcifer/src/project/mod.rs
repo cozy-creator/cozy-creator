@@ -1137,7 +1137,11 @@ struct Walker {
     quoting: HashSet<String>,
     /// Jobs whose quote couldn't be had, by key: why, and whether its reads gave up (the job fails at its turn) or it goes unplanned
     /// to the first of its machines that takes it, as one its package can't say.
-    unquoted: HashMap<String, (String, bool)>,
+    unquoted: HashMap<String, Unquoted>,
+    /// Ready jobs every machine of which doesn't answer its frame while each is asked again, by key: they wait for one to.
+    waiting: HashSet<String>,
+    /// What the walk log last said of each machine not answering, by name: said again only when it changes.
+    silent: HashMap<String, String>,
     /// The runs whose version's files were on their way that have arrived, by number: each arrives once, by whichever looks first.
     arrived: HashSet<u64>,
     /// Jobs waiting for another's output whose quote reads their package statically, off the plan (`Done::Foreseen`), by key: asked
@@ -3392,9 +3396,12 @@ const QUOTE_ATTEMPTS: u32 = 5;
 const LONG_QUOTE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Why a job has no quote; `gave_up`: its reads didn't answer after every attempt, so the job fails at its turn, never waits on.
+/// `silent`: the machines of its that didn't answer, which its failure names.
+#[derive(Clone)]
 struct Unquoted {
     why: String,
     gave_up: bool,
+    silent: Vec<String>,
 }
 
 /// Something a walker started came to its end.
@@ -3449,7 +3456,7 @@ enum Act {
     /// Its package is being installed: it has its turn once its quote is in (`Done::Quoted`).
     Installing { id: usize },
     /// Its quote's reads didn't answer after every attempt: it fails, in one line, and never waits on them (xs-199).
-    Unquoted { id: usize, ask: String, on: Vec<On>, key: String, asset: String, kind: String, inputs: Option<String>, message: String },
+    Unquoted { id: usize, ask: String, on: Vec<On>, key: String, asset: String, kind: String, inputs: Option<String>, message: String, silent: Vec<String> },
     Tool { id: usize, ask: Arc<Ask>, doc: Arc<Doc>, stand: Arc<Vec<Standing>>, lock: Arc<Lock>, i: usize },
 }
 
@@ -4023,8 +4030,8 @@ impl Walk {
                         attempt += 1;
                         tokio::time::sleep(wait).await;
                     }
-                    Err(Unquotable::Again(why)) => break Err(Unquoted { why: format!("no quote after {QUOTE_ATTEMPTS} attempts: {why}"), gave_up: true }),
-                    Err(Unquotable::Not(why)) => break Err(Unquoted { why, gave_up: false }),
+                    Err(Unquotable::Again(why)) => break Err(Unquoted { why: format!("no quote after {QUOTE_ATTEMPTS} attempts: {why}"), gave_up: true, silent: vec![] }),
+                    Err(Unquotable::Not(why)) => break Err(Unquoted { why, gave_up: false, silent: vec![] }),
                     Ok(job) => break Ok(job),
                 }
             }
@@ -4145,7 +4152,15 @@ impl Walk {
         for (on, pictured) in machines.iter().zip(placement::pictures(&api, &machines, update, now).await) {
             match pictured {
                 Ok(picture) => pictures.push(picture),
-                Err(why) => warn!("{dir}: {on} isn't planned on: {why}"),
+                Err(why) => {
+                    warn!("{dir}: {on} isn't planned on: {why}");
+                    let name = on.to_string();
+                    let mut walker = self.project.walker.lock().expect("walker lock");
+                    if walker.silent.get(&name) != Some(&why) {
+                        crate::private_io::diagnose(&self.folder().dir, || format!("{name} isn't planned on: {why}"));
+                        walker.silent.insert(name, why);
+                    }
+                }
             }
         }
         for (on, job) in &ahead {
@@ -4199,6 +4214,28 @@ impl Walk {
                     None => drop(walker.foreseen.remove(&unsent.key)),
                 }
                 if unsent.ready {
+                    // Every one of its machines connected and not answering its frame: it waits while they're asked again, placed once one
+                    // answers, and fails, naming them, once none has after every attempt (xs-199). Never sent to one that doesn't answer.
+                    let silent: Vec<(String, String, bool)> = (job.on.iter())
+                        .filter_map(|on| match on {
+                            On::Machine(name) => api.machines.not_answering(name).map(|(why, dropped)| (name.clone(), why, dropped)),
+                            _ => None,
+                        })
+                        .collect();
+                    if !silent.is_empty() && silent.len() == job.on.len() {
+                        let said = silent.iter().map(|(name, why, _)| format!("{name}: {why}")).collect::<Vec<_>>().join("; ");
+                        match silent.iter().all(|(_, _, dropped)| *dropped) {
+                            true => {
+                                walker.waiting.remove(&unsent.key);
+                                let silent = silent.into_iter().map(|(name, ..)| name).collect();
+                                walker.unquoted.insert(unsent.key.clone(), Unquoted { why: format!("none of its machines answers ({said})"), gave_up: true, silent });
+                            }
+                            false => drop(walker.waiting.insert(unsent.key.clone())),
+                        }
+                        unplanned(&mut walker, &dir, &unsent.key, format!("none of its machines answers: {said}"));
+                        continue;
+                    }
+                    walker.waiting.remove(&unsent.key);
                     let why = match placement.offers.is_empty() {
                         true => "none of its machines answered".to_owned(),
                         false => said(&placement.offers),
@@ -4207,6 +4244,7 @@ impl Walk {
                 }
                 continue;
             };
+            walker.waiting.remove(&unsent.key);
             let fits = placement.offers.iter().filter(|offer| offer.fits).map(|offer| offer.machine.to_string()).collect();
             walker.starts.insert(unsent.key.clone(), (chosen.start_at_ms, fits));
             if !unsent.ready {
@@ -4223,7 +4261,7 @@ impl Walk {
             walker.placed.insert(unsent.key.clone(), Placed { offers: placement.offers, soonest: chosen });
         }
         for unsent in unsent.iter().filter(|unsent| unsent.ready) {
-            if let Some((why, false)) = walker.unquoted.get(&unsent.key).cloned() {
+            if let Some(Unquoted { why, gave_up: false, .. }) = walker.unquoted.get(&unsent.key).cloned() {
                 walker.placed.remove(&unsent.key);
                 unplanned(&mut walker, &dir, &unsent.key, why);
             }
@@ -4235,6 +4273,7 @@ impl Walk {
         walker.items.retain(|(_, key), _| unsent.iter().any(|unsent| unsent.key == *key));
         walker.foreseeing.retain(|key| unsent.iter().any(|unsent| unsent.key == *key));
         walker.unquoted.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
+        walker.waiting.retain(|key| unsent.iter().any(|unsent| unsent.key == *key));
         drop(walker);
         unsent.into_iter().filter(|unsent| if unsent.ready { quoting.contains(&unsent.key) } else { foresee.contains(&unsent.key) }).collect()
     }
@@ -4513,8 +4552,13 @@ impl Walk {
                 {
                     let id = *id;
                     *act = Act::Installing { id };
+                } else if let Act::Send { id, key, .. } = act
+                    && walker.waiting.contains(key.as_str())
+                {
+                    let id = *id;
+                    *act = Act::Held { id };
                 } else if let Act::Send { id, key, ask, doc, stand, next, .. } = act
-                    && let Some((why, true)) = walker.unquoted.get(key.as_str())
+                    && let Some(Unquoted { why, gave_up: true, silent }) = walker.unquoted.get(key.as_str())
                 {
                     let asset = doc.assets[next.i].name.clone();
                     let message = format!("{asset} cannot render: {why}");
@@ -4527,6 +4571,7 @@ impl Walk {
                         inputs: stand[next.i].inputs.clone(),
                         asset,
                         message,
+                        silent: silent.clone(),
                     };
                 }
             }
@@ -4579,11 +4624,15 @@ impl Walk {
                 }
                 end(id, End::Failed);
             }
-            Act::Unquoted { id, ask, on, key, asset, kind, inputs, message } => {
+            Act::Unquoted { id, ask, on, key, asset, kind, inputs, message, silent } => {
                 self.settled(&ask, &asset, &key)?;
+                let mut error = Error::new(Kind::Unavailable, "quote_unavailable", message);
+                if let Some(first) = silent.first() {
+                    error = error.remedy("see what it's doing, end it and rent another, or name other machines with --on").next(format!("cozy machine show {first}"));
+                }
                 match self.sending(&ask, &on).is_empty() {
                     true => self.not_sent(&asset),
-                    false => self.failed_of(&asset, &kind, inputs, None, None, Error::new(Kind::Unavailable, "quote_unavailable", message), first),
+                    false => self.failed_of(&asset, &kind, inputs, None, None, error, first),
                 }
                 end(id, End::Failed);
             }
@@ -4630,7 +4679,7 @@ impl Walk {
                 match quotable {
                     Ok(Some(job)) => drop(walker.quotables.insert(key, job)),
                     Ok(None) => {}
-                    Err(Unquoted { why, gave_up }) => drop(walker.unquoted.insert(key, (why, gave_up))),
+                    Err(unquoted) => drop(walker.unquoted.insert(key, unquoted)),
                 }
             }
             // Read: the next plan places it, and its machine fetches ahead; one its turn read already stands. Not: it isn't asked again
