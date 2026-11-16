@@ -7,7 +7,7 @@ certifi==2026.10.23
 cffi==2.1.1
 charset-normalizer==3.5.2
 click==8.5.1
-cozy-runtime @ https://github.com/cozy-creator/cozy-runtime/archive/42f79757162c6f6757d4408085ad8ace9c27f776.tar.gz
+cozy-runtime @ https://github.com/cozy-creator/cozy-runtime/archive/11a6ec533f8dd1cf9687016f533f9ee6d26b0a73.tar.gz
 cryptography==50.0.2
 cuda-bindings==13.5.0
 cuda-core==1.2.2
