@@ -3392,7 +3392,8 @@ async fn job_read(host: &Host, dir: &FsPath, key: String, on: Vec<On>, hub: &str
         interface.callables.iter().find(|callable| callable.name == renderer.function).is_some_and(|callable| interface.needs_gpu(callable))
     });
     let scope = crate::private_io::of_path(dir).ok().flatten();
-    Ok(Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on, scope }))
+    let source = package.local.clone().filter(|dir| dir.is_dir());
+    Ok(Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on, scope, source }))
 }
 
 /// Why the plan placed no machine for ready job `key`, said when that changes: it goes to the first of its machines that takes it.
@@ -4186,8 +4187,7 @@ impl Walk {
             }
         }
         // What each function never ran on a machine is timed by its release's benchmarks there (cl-1024).
-        let targets: Vec<String> = jobs.iter().map(|(_, job)| job.target.clone()).chain(ahead.iter().map(|(_, job)| job.target.clone())).collect();
-        placement::benched(&api, targets.iter().map(String::as_str), pictures.iter_mut());
+        placement::benched(&api, jobs.iter().map(|(_, job)| job).chain(ahead.iter().map(|(_, job)| job)), pictures.iter_mut());
         let position: HashMap<usize, usize> = jobs.iter().enumerate().map(|(at, (unsent_at, _))| (unsent[*unsent_at].id, at)).collect();
         let mut planned = vec![];
         for (at, job) in &jobs {
@@ -6210,7 +6210,7 @@ pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str,
     };
     let named = format!("{package}/{function}@{release}");
     let jobs: Vec<placement::Job> = (0..count.max(1))
-        .map(|copy| placement::Job { key: copy.to_string(), target: named.clone(), function: named.clone(), models: models.clone(), size, gpus, gpu, on: set.to_vec(), scope: None })
+        .map(|copy| placement::Job { key: copy.to_string(), target: named.clone(), function: named.clone(), models: models.clone(), size, gpus, gpu, on: set.to_vec(), scope: None, source: None })
         .collect();
     let (offers, said) = placement::offers(api, &jobs, update).await;
     let chosen = pick(api, set, offers.first().map_or(&[][..], Vec::as_slice), None, hub, read.as_ref(), function, &Map::new()).await;

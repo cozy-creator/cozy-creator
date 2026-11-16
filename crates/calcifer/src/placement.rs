@@ -44,6 +44,8 @@ pub(crate) struct Job {
     /// Its project's scope: its history (`prior`) and what `local` holds of it (`scoped_picture`) are read in its project alone. None:
     /// no project, or a locked one, read machine-wide only.
     pub scope: Option<crate::private_io::Scope>,
+    /// Local code's folder (a packages checkout's, or a project's `./dir`): its `benchmarks.json` is its benchmarks until it's published.
+    pub source: Option<std::path::PathBuf>,
 }
 
 /// When one machine would run one job, on this computer's clock.
@@ -152,18 +154,47 @@ pub(crate) fn references(hubs: &crate::rentals::Hubs, named: &[String]) -> Refer
     references
 }
 
-/// Each of `pictures` with the benchmarks its quotes stand on (`references`): those of `targets` and of each function queued or ahead
+/// The benchmarks a package's source holds, its `benchmarks.json` (what `cozy package publish` attaches): a release's rows before it is
+/// one. None there, or one that doesn't read (said): none.
+pub(crate) fn source_benchmarks(dir: &std::path::Path) -> Vec<api::estimate::Benchmark> {
+    let Ok(text) = std::fs::read(dir.join(crate::hub::author::BENCHMARKS)) else { return vec![] };
+    serde_json::from_slice(&text)
+        .inspect_err(|e| tracing::warn!("{}: its {} doesn't read, so its source has no benchmarks: {e}", dir.display(), crate::hub::author::BENCHMARKS))
+        .unwrap_or_default()
+}
+
+/// The benchmarks `jobs` are timed by where no run of theirs is (cl-1024): a published release's from the Hub (`references`), local code's
+/// from its source (`source_benchmarks`), by the function a machine's estimate names (`sha256:<manifest>/fn`): rows travel with the
+/// package, in its source before it is published, on the Hub after. And those of `named`, functions queued or ahead elsewhere.
+pub(crate) fn references_for<'j>(api: &Api, jobs: impl IntoIterator<Item = &'j Job>, mut named: Vec<String>) -> References {
+    let mut sourced = vec![];
+    for job in jobs {
+        named.push(job.target.clone());
+        if let Some(dir) = &job.source {
+            sourced.push((job.function.clone(), source_benchmarks(dir)));
+        }
+    }
+    named.sort();
+    named.dedup();
+    let mut references = references(&api.machines.hubs, &named);
+    for (function, rows) in sourced {
+        if let Some((code, _)) = function.split('@').next().and_then(|path| path.rsplit_once('/')) {
+            references.add(code, &rows);
+        }
+    }
+    references
+}
+
+/// Each of `pictures` with the benchmarks its quotes stand on (`references_for`): those of `jobs` and of each function queued or ahead
 /// on any of them.
-pub(crate) fn benched<'t, 'p>(api: &Api, targets: impl IntoIterator<Item = &'t str>, pictures: impl IntoIterator<Item = &'p mut Picture>) {
+pub(crate) fn benched<'j, 'p>(api: &Api, jobs: impl IntoIterator<Item = &'j Job>, pictures: impl IntoIterator<Item = &'p mut Picture>) {
     let mut pictures: Vec<&mut Picture> = pictures.into_iter().collect();
-    let mut named: Vec<String> = targets.into_iter().map(str::to_owned).collect();
+    let mut named: Vec<String> = vec![];
     for picture in &pictures {
         named.extend(picture.frame.queue.iter().flatten().map(|root| root.function.clone()));
         named.extend(picture.ahead.iter().map(|job| job.function.clone()));
     }
-    named.sort();
-    named.dedup();
-    let references = Arc::new(references(&api.machines.hubs, &named));
+    let references = Arc::new(references_for(api, jobs, named));
     pictures.iter_mut().for_each(|picture| picture.references = references.clone());
 }
 
@@ -284,7 +315,7 @@ pub(crate) async fn offers(api: &Arc<Api>, jobs: &[Job], update: bool) -> (Vec<V
     let now = now_ms();
     let machines = machines_of(jobs);
     let mut pictured = pictures(api, &machines, update, now).await;
-    benched(api, jobs.iter().map(|job| job.target.as_str()), pictured.iter_mut().flatten());
+    benched(api, jobs, pictured.iter_mut().flatten());
     offered(api, jobs, &machines, &pictured, now).await
 }
 
@@ -308,7 +339,7 @@ pub(crate) async fn offers_now(api: &Arc<Api>, jobs: &[Job]) -> (Vec<Vec<Offer>>
             _ => Err("it isn't rented yet".into()),
         });
     }
-    benched(api, jobs.iter().map(|job| job.target.as_str()), pictured.iter_mut().flatten());
+    benched(api, jobs, pictured.iter_mut().flatten());
     let (offers, _) = offered(api, jobs, &machines, &pictured, now).await;
     (offers, pictured)
 }

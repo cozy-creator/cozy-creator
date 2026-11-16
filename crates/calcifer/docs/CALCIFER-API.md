@@ -322,7 +322,8 @@ The machine owns its GPU width (cl-816): a lone job runs wide, several queued jo
   GPU of that kind, from this computer's runs at one width on it; `prior_runs`, how many of that machine's own runs it is: a project's,
   read in its scope, which the machine never times itself, so its quote is `measured`, cl-1047). A machine that ran none of it and has
   no prior is timed by its release's benchmarks (`api::estimate::References`, cl-1024: of its card, else another card's times its Hub
-  speed over this one's, the card nearest in speed), else a minute; a machine packing its own queue knows no benchmarks. A render's jobs not sent are planned together (`plan.rs`): each, in dependency order, where it
+  speed over this one's, the card nearest in speed; local code from source, a packages checkout's or a project's `./dir`, by its own
+  `benchmarks.json`: rows travel with the package, in its source before it is published, on the Hub after), else a minute; a machine packing its own queue knows no benchmarks. A render's jobs not sent are planned together (`plan.rs`): each, in dependency order, where it
   finishes soonest after those placed before it, then single moves while the whole ends sooner. A ready job goes when its planned machine
   has a GPU for it (one machine: at once); each machine is told its upcoming jobs (`PUT /v1/upcoming`) and, idle with nothing planned
   while others hold unstarted work it can run, what to prepare (`PUT /v1/prepare`).
@@ -700,7 +701,8 @@ read settles and on `approve`, reading each asset's state, else its newest versi
   empty for none) and the run alone there (`run_ms`: its quote's finish less its start, no queue, install, download or load; 0 when
   nothing says, `basis` `none`). `faster` is the card to rent instead, when the machine runs it more than 3× slower and a minute
   longer than one would, or has no GPU for a function that loads a model on one (cl-1024): of the cards the Hub rents that hold it on
-  one GPU, only those its release's benchmarks measured, never a speed-scaled guess, the cheapest a render (price × time), the faster
+  one GPU (a checkout's package from source: its newest release's), only those its benchmarks (its release's, or its source's)
+  measured, never a speed-scaled guess, the cheapest a render (price × time), the faster
   of those as cheap; its time there, both times and its cost a render in a `line`, and the `rent`. A time where nothing of it ran
   (here and in `tools`) is what's typical on that card: this computer's runs on it, else its release's benchmarks (of that card, else
   another's scaled by the Hub's per-SKU speeds, the card nearest in speed). A run's media seconds (every `duration` in its input),

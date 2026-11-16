@@ -8,10 +8,11 @@
 // waits on its fresh install, that install ends with it, and the next Render installs again), and Rent opens Machines with the card chosen,
 // rendering nothing. Then the docker provider's cpu, rented from Machines at its quoted price, listed as the CLI lists it, made the
 // project's machine and ended: nothing of it left running. Never paid: that provider starts a container here that never gets ready
-// (e2e/cli/rental.sh).
+// (e2e/cli/rental.sh). In a dev home whose packages checkout holds H3 (an RC build), the checkout's H3 is timed by its source's
+// benchmarks.json before any run (cl-1024).
 // $E2E_HUB_EMAIL and $E2E_HUB_LOG (e2e/isolated.sh): the suite's account, and the isolated Hub's log of the codes it would mail.
 const { execFile, spawn } = require('child_process');
-const { appendFileSync, mkdirSync, readFileSync, readdirSync } = require('fs');
+const { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } = require('fs');
 const http = require('http');
 const { dirname, join } = require('path');
 const { promisify } = require('util');
@@ -357,6 +358,55 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await notice.getByRole('button', { name: 'Rent an RTX 4090', exact: true }).click();
       await expect(page, 'Machines, the card asked for').toHaveURL(`${project.url('machines')}?rent=${CARD.name}&gpus=1`);
       expect.soft(asked.filter((one) => one.names?.includes('shot')), 'Rent renders nothing').toEqual([]);
+    });
+
+    await test.step("Render time from source: a packages checkout's H3 is timed by its own benchmarks.json before any run", async () => {
+      // A dev home (`dev = true`, an RC build) runs first-party packages from its checkout (`[calcifer] packages`, xs-195); unpublished,
+      // their benchmarks are their source's `benchmarks.json`, the file `cozy package publish` attaches (cl-1024). Its RTX 4090 row here
+      // (300 s) isn't the release's (335.1 s): the estimate stands on the source's.
+      const version = (await run(need('COZY'), ['--version'])).stdout;
+      if (!/-dev\+g/.test(version) || !process.env.E2E_PACKAGES) {
+        testInfo.annotations.push({ type: 'skipped', description: `from source: ${version.trim()} ${process.env.E2E_PACKAGES ? 'is no RC build' : 'and no $E2E_PACKAGES'}` });
+        return;
+      }
+      const co = join(need('OUT'), 'web', 'packages-rc');
+      await run('rm', ['-rf', co]);
+      mkdirSync(co, { recursive: true });
+      await run('cp', ['-r', join(process.env.E2E_PACKAGES, 'minimax-h3'), join(co, 'minimax-h3')]);
+      const row = { function: 'generate', gpu: 'NVIDIA GeForce RTX 4090', gpus: 1, request: { refs: 0, seconds: 15 }, warm_ms: 300_000, note: 'account-rent: the source' };
+      writeFileSync(join(co, 'minimax-h3', 'benchmarks.json'), JSON.stringify([row], null, 2));
+      await run('git', ['-C', co, 'init', '-q', '-b', 'rc/e2e']);
+      await run('git', ['-C', co, 'add', '-A']);
+      await run('git', ['-C', co, '-c', 'user.name=e2e', '-c', 'user.email=e2e@localhost', 'commit', '-qm', 'checkout']);
+      // local held on its software by hand, as e2e/cli/source.sh holds it: a dev home's local would follow the RC's builds at rest.
+      const held = (await cli.json('machine', 'show', 'local')).status ?? {};
+      const hold = ['machine', 'update', 'local', '--runtime', process.env.CAND_RT || held.runtime, ...(process.env.CAND_TFS ? ['--tensorfs', process.env.CAND_TFS] : []), '-y'];
+      expect((await cli(...hold)).code, 'local held on its software').toBe(0);
+      const config = calciferControl.config;
+      const before = readFileSync(config, 'utf8');
+      const lines = before.split('\n').filter((line) => !/^dev\s*=/.test(line));
+      const table = lines.findIndex((line) => /^\[calcifer\]\s*$/.test(line));
+      if (table < 0) lines.push('', '[calcifer]', `packages = "${co}"`);
+      else lines.splice(table + 1, 0, `packages = "${co}"`);
+      writeFileSync(config, ['dev = true', ...lines].join('\n'));
+      try {
+        await page.goto('about:blank');
+        await calciferControl.stop();
+        await calciferControl.start();
+        await project.add({ name: 'source_shot', tool: 'minimax-h3/generate', kind: 'video', fields: { beats: [{ description: 'Waves roll onto a beach at dusk.', duration: 15 }], turbo: true }, at: { x: 840, y: 460 } });
+        let sourced = null;
+        await expect.poll(async () => {
+          sourced = (await api.post(project.at('/fit'), { names: ['source_shot'] })).estimates?.[0] ?? null;
+          return sourced?.faster?.run_ms ?? 0;
+        }, { message: "the checkout's H3 on a rented RTX 4090, by its source's benchmark", timeout: 240_000, intervals: [5_000] }).toBe(300_000);
+        expect.soft(sourced, 'H3 from source on this computer, which has no GPU').toMatchObject({ machine: 'local', card: '', faster: { rent: { sku: CARD.name, card: 'RTX 4090' } } });
+        expect.soft(sourced?.faster?.line).toBe('This computer has no GPU, so this would run on its CPU, slowly. On a rented RTX 4090, about 5 min and about $0.06 a render.');
+      } finally {
+        await api.delete(project.at('/assets/source_shot')).catch(() => {});
+        writeFileSync(config, before);
+        await calciferControl.stop();
+        await calciferControl.start();
+      }
     });
 
     await test.step('A heavy box asks first; Run here anyway renders here, then Cancel; Render again, and again after a reload', async () => {

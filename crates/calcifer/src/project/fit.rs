@@ -22,6 +22,7 @@ use axum::{
 use ::api::hub::types::RentalPlacementRequest;
 use api::{
     calcifer::On,
+    estimate::References,
     error::{Error, Kind},
     interface::{Interface, Slot},
     machine::{Basis, JobSize},
@@ -212,7 +213,12 @@ async fn estimate(api: &Arc<Api>, dir: &FsPath, hub: &str, asked: Boxed, on: Vec
 /// one would (`recommended`), or has no GPU for a job that loads a model on one: its time there, both times and its cost a render in a
 /// line, and the rent. None: local code, which the Hub places on nothing, or no measured card qualifies.
 async fn faster(api: &Arc<Api>, hub: &str, job: &placement::Job, machine: &On, gpu: &str, run_ms: u64) -> Option<Faster> {
-    let (path, release) = job.target.split_once('@')?;
+    // A packages checkout's first-party package from source (`_/pkg/fn`) is placed as its newest release, and timed by its source's
+    // benchmarks; a project's own code (`local/pkg/fn`), which the Hub doesn't have, by nothing.
+    let (path, release) = job.target.split_once('@').unwrap_or((&job.target, ""));
+    if release.is_empty() && (job.source.is_none() || path.starts_with("local/")) {
+        return None;
+    }
     let (package, function) = path.rsplit_once('/')?;
     let cpu = gpu.is_empty() && job.gpu;
     if !cpu && run_ms == 0 {
@@ -220,7 +226,8 @@ async fn faster(api: &Arc<Api>, hub: &str, job: &placement::Job, machine: &On, g
     }
     let placed = placed(api, hub, package, release, function).await?;
     let here = run_ms as f64;
-    let (rent, away) = recommended(api, &job.target, &job.size, &placed.offers, (!cpu).then_some(here))?;
+    let references = crate::placement::references_for(api, [job], vec![]);
+    let (rent, away) = recommended(&references, &job.function, &job.size, &placed.offers, (!cpu).then_some(here))?;
     let there = format!("a rented {}, {} and {} a render", rent.card, about(away / 1e3), per_render(rent.usd_micros_per_hour, away));
     let line = match (cpu, machine.is_local()) {
         (true, true) => format!("This computer has no GPU, so this would run on its CPU, slowly. On {there}."),
@@ -311,7 +318,8 @@ fn away(api: &Api, target: &str, made: &Map<String, Value>, placed: Option<&Plac
         let ran = api.calcifer.away_ms(base, made).into_iter().map(|(gpu, ms)| (card(&gpu), ms / 1e3));
         return ran.min_by(|a, b| a.1.total_cmp(&b.1));
     };
-    let (rent, ms) = recommended(api, target, &size_of(made), &placed.offers, took_s.map(|s| s * 1e3))?;
+    let references = crate::placement::references(&api.machines.hubs, &[target.to_owned()]);
+    let (rent, ms) = recommended(&references, target, &size_of(made), &placed.offers, took_s.map(|s| s * 1e3))?;
     Some((rent.card, ms / 1e3))
 }
 
@@ -526,7 +534,8 @@ async fn placed_by(hubs: &crate::rentals::Hubs, hub: &str, package: &str, releas
     if let Some((_, held)) = PLACED.lock().expect("placed lock").get(&key).filter(|(at, _)| at.elapsed() < KEPT) {
         return held.clone();
     }
-    let request = RentalPlacementRequest { package: package.into(), release: Some(release.into()), function: function.into(), lane: None, gpus: None, sku: None };
+    let release = (!release.is_empty()).then(|| release.into());
+    let request = RentalPlacementRequest { package: package.into(), release, function: function.into(), lane: None, gpus: None, sku: None };
     let reader = hubs.reader(hub).ok()?;
     let answer = tokio::time::timeout(HUB_LATE, reader.place_rental(&request)).await.ok()?;
     let placed = answer.ok().map(|placement| Placed {
@@ -558,15 +567,15 @@ fn rent_for(machine: &::api::hub::types::RentalPlacementMachine) -> RentFor {
     }
 }
 
-/// The card to rent for `target` instead (cl-1024, Paul 11-15: "the cheapest card whose benchmark is meaningfully faster"): of `offers`,
-/// the cards the Hub rents that hold it on one GPU, those its release measured (`References::measured`, never a speed-scaled guess)
-/// that run it in under a third of `here_ms` and a minute sooner (with no GPU here, `None`: any), the cheapest a render (its price
-/// times its time there); of those as cheap, the faster. And its time there, ms.
-fn recommended(api: &Api, target: &str, size: &JobSize, offers: &[RentFor], here_ms: Option<f64>) -> Option<(RentFor, f64)> {
-    let references = crate::placement::references(&api.machines.hubs, &[target.to_owned()]);
+/// The card to rent for `function` (as a machine's estimate names it) instead (cl-1024, Paul 11-15: "the cheapest card whose benchmark
+/// is meaningfully faster"): of `offers`, the cards the Hub rents that hold it on one GPU, those its benchmarks (its release's, or its
+/// source's) measured (`References::measured`, never a speed-scaled guess) that run it in under a third of `here_ms` and a minute sooner
+/// (with no GPU here, `None`: any), the cheapest a render (its price times its time there); of those as cheap, the faster. And its time
+/// there, ms.
+fn recommended(references: &References, function: &str, size: &JobSize, offers: &[RentFor], here_ms: Option<f64>) -> Option<(RentFor, f64)> {
     let cost = |(offer, ms): &(&RentFor, f64)| offer.usd_micros_per_hour as f64 * ms;
     (offers.iter())
-        .filter_map(|offer| Some((offer, references.measured(target, &offer.card, size)?.0)))
+        .filter_map(|offer| Some((offer, references.measured(function, &offer.card, size)?.0)))
         .filter(|(_, ms)| here_ms.is_none_or(|here| here > SLOWER * ms && here - ms > LONGER_S * 1e3))
         .min_by(|a, b| cost(a).total_cmp(&cost(b)).then(a.1.total_cmp(&b.1)))
         .map(|(offer, ms)| (offer.clone(), ms))
