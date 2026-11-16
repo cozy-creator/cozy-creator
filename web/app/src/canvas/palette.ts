@@ -13,7 +13,6 @@ export const BASIC_NODES: ReadonlyArray<{ kind: BasicNodeKind; label: string }> 
 
 export const OPERATIONS = [
   { key: "image", label: "Image", makes: "image" },
-  { key: "edit_image", label: "Edit Image", makes: "image" },
   { key: "upscale_image", label: "Upscale Image", makes: "image" },
   { key: "video", label: "Video", makes: "video" },
   { key: "edit_video", label: "Edit Video", makes: "video" },
@@ -35,7 +34,8 @@ const hasSource = (fields: ToolField[], kind: string): boolean => fields.some((f
   (field.type === "slot" && field.required && field.accept === kind) ||
   (field.type === "group" && field.required && hasSource(field.members ?? [], kind)))
 
-/** Operations describe the result. Image input on a VLM never makes it an image tool. */
+/** Operations describe the result. Image input on a VLM never makes it an image tool. What makes pictures is one group, whether or not it
+ *  can edit one (Paul, 11-16: two groups of the same models was "confusing af"); dropped on a picture, one that can't says so (`wontGoOn`). */
 export function operationOf(tool: Tool): Operation | null {
   if (tool.id === VIDEO_EDIT_TOOL.id) return "timeline"
   if (madeHere(tool.id) || tool.id === "text") return null
@@ -43,7 +43,7 @@ export function operationOf(tool: Tool): Operation | null {
   if (tool.makes !== "image" && tool.makes !== "video") return null
   const name = `${tool.function} ${tool.label}`.toLowerCase()
   if (/upscale|super.?resolution/.test(name)) return tool.makes === "image" ? "upscale_image" : "upscale_video"
-  if (/edit|inpaint|outpaint|img2img|vid2vid/.test(name) || hasSource(tool.fields, tool.makes)) return tool.makes === "image" ? "edit_image" : "edit_video"
+  if (tool.makes === "video" && (/edit|inpaint|outpaint|vid2vid/.test(name) || hasSource(tool.fields, "video"))) return "edit_video"
   return tool.makes
 }
 
@@ -61,12 +61,14 @@ const takesImage = (fields: ToolField[]): boolean => fields.some((field) =>
   (field.type === "slot" && field.accept === "image") ||
   (field.type === "group" && takesImage(field.members ?? [])))
 
+/** Whether a tool can read a picture: in a slot, or mentioned in its prompt. */
+export const readsPictures = (tool: Tool) => takesImage(tool.fields)
+
 /** Stable operation rows; executable choices live in the node's model control. */
 export function paletteEntries(tools: Tool[]): PaletteEntry[] {
   const available = [...tools.filter((tool) => tool.id !== VIDEO_EDIT_TOOL.id), VIDEO_EDIT_TOOL]
   return OPERATIONS.map((operation) => {
-    const variants = available.filter((tool) => operationOf(tool) === operation.key ||
-      (operation.key === "edit_image" && operationOf(tool) === "image" && takesImage(tool.fields)))
+    const variants = available.filter((tool) => operationOf(tool) === operation.key)
       .sort((a, b) => Number(Boolean(a.local)) - Number(Boolean(b.local)) || a.id.localeCompare(b.id))
     return { ...operation, tool: variants[0], variants }
   })

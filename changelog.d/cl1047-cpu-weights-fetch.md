@@ -1,0 +1,1 @@
+- A job whose function reads raw weights on a CPU is quoted their download on a machine that lacks them, as one on a GPU is: Runtime 0.47 runs such functions on the CPU (cl-1047).

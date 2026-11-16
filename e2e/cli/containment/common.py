@@ -188,7 +188,7 @@ _FAILURE_CODES = frozenset({
     'owned_hmr_reloaded_document', 'owned_hmr_update', 'owned_host_core_control_required',
     'owned_host_core_control_unavailable', 'owned_no_store_200', 'owned_no_store_206',
     'owned_no_store_conditional', 'owned_page_ready', 'owned_profile_volatile',
-    'piped_core_not_refused', 'piped_core_refusal_not_specific', 'private_browser_argv_canary',
+    'piped_core_not_refused', 'piped_core_refusal_not_specific', 'private_browser_argv_canary', 'private_browser_failed', 'private_browser_unavailable',
     'proof_action', 'proof_fd5_in_use', 'proof_frame',
     'proof_handshake', 'proof_process_birth', 'real_browser_edit',
     'receipt_schema', 'regular_core_native_execution_failed', 'reopened_page_ready',
@@ -350,7 +350,7 @@ class Native:
             return facts
         allowed = {
             "code": {"project_busy", "project_locked", "project_storage_update_required", "project_storage_migration_pending",
-                     "private_browser_unavailable", "private_browser_profile", "private_browser_recovery_pending",
+                     "private_browser_unavailable", "private_browser_failed", "private_browser_profile", "private_browser_recovery_pending",
                      "private_browser_retirement_incomplete", "browser_open_needs_bearer", "project_not_found",
                      "project_required", "project_storage_unsupported", "calcifer_unreachable", "unauthenticated"},
             "cause": {"browser_executable", "browser_home", "browser_profile_setup", "browser_capture", "browser_seal", "browser_pipe", "browser_spawn",
@@ -415,10 +415,21 @@ class Native:
             if completed.returncode and re.search(rb"^error\[project_busy\]", completed.stderr, re.M) and time.monotonic() < deadline:
                 time.sleep(0.1)
                 continue
+            # The one text this cell prints: why Cozy's Chrome didn't start (its exit and startup line, from before any page
+            # or project reached it), or that there is none.
+            failed = re.search(rb"^error\[private_browser_failed\]: (.*)$", completed.stderr, re.M)
+            missing = re.search(rb"Cozy's private browser couldn't start \((.*)\): open .*, which isn't private$", completed.stderr, re.M)
+            cause = re.search(rb"^cause: (browser_[a-z_]+)$", completed.stderr, re.M)
+            if said := failed or missing:
+                print("Cozy's private browser didn't start:", said[1].decode(errors="replace")[:600], (cause[1].decode() if cause else ""), flush=True)
             if completed.returncode:
                 if self.failure is None:
                     self.failure = self.failure_facts(completed, ("open",))
-                raise Failure("cli_exit")
+                    if cause:
+                        self.failure["cause_" + cause[1].decode()] = True
+                raise Failure("private_browser_failed" if failed else "cli_exit")
+            if missing:
+                raise Failure("private_browser_unavailable")
             return
 
     def document(self, *words: str, cwd: Path | None = None, stdin: bytes | None = None) -> dict[str, object]:

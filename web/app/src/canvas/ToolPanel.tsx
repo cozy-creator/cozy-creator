@@ -13,10 +13,7 @@ import { carryingTool } from "./toolchange"
 import "./ToolPanel.css"
 
 /** A tool is created or attached only when its implementation is dragged. */
-const toolLoad = (tool: Tool, operation: Operation): Load => ({ tool, operation, box: {
-  ...carryingTool(tool),
-  put: (store, name) => store.putTool(name, tool, operation),
-} })
+const toolLoad = (tool: Tool): Load => ({ tool, box: carryingTool(tool) })
 
 function ToolGroup({ entry, open, toggle }: { entry: PaletteEntry; open: boolean; toggle(): void }) {
   return (
@@ -52,7 +49,7 @@ export function ToolPanel({ project, machine, waiting, shut, setShut }: { projec
       if (node) return { load: { node: node.kind }, from }
       const entry = entries.find((entry) => entry.key === from.dataset.toolOperation)
       const tool = entry?.variants.find((tool) => tool.id === from.dataset.tool)
-      return tool && entry ? { load: toolLoad(tool, entry.key), from } : null
+      return tool && entry ? { load: toolLoad(tool), from } : null
     },
   })
   if (shut) {

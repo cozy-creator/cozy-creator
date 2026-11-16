@@ -405,6 +405,22 @@ mod tests {
     }
 }
 
+/// The child `command` starts is SIGKILLed when the thread that forks it ends, and refuses to start when this process is
+/// already gone. Only [`super::spawn_lasting`] arms it, from its thread that lasts as long as this process.
+#[cfg(target_os = "linux")]
+pub(super) fn die_with_spawner(command: &mut Command) {
+    let parent = std::process::id();
+    // SAFETY: prctl and getppid are async-signal-safe and touch no memory.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 || libc::getppid() as u32 != parent {
+                return Err(io::Error::from_raw_os_error(libc::EINTR));
+            }
+            Ok(())
+        });
+    }
+}
+
 /// Two private inherited descriptors for Chromium's debugging protocol. Both child endpoints
 /// are first moved above fd 4, so installing 3/4 cannot clobber either source.
 #[cfg(target_os = "linux")]
@@ -432,15 +448,10 @@ pub(super) fn private_browser_pipe(command: &mut Command) -> io::Result<(File, F
     let (parent_read, child_write) = pipe()?;
     let (child_read, child_write) = (above(child_read)?, above(child_write)?);
     inherit_nothing(command);
-    let parent = std::process::id();
-    // SAFETY: only async-signal-safe descriptor/process syscalls runs in the child. Captured File owners keep the exact
+    // SAFETY: only async-signal-safe descriptor syscalls run in the child. Captured File owners keep the exact
     // endpoints alive until spawn; dup2 clears CLOEXEC on 3/4, other descriptors retain it.
     unsafe {
         command.pre_exec(move || {
-            // A controller crash cannot leave its Chrome leader running with live authority.
-            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 || libc::getppid() as u32 != parent {
-                return Err(io::Error::from_raw_os_error(libc::EINTR));
-            }
             if libc::dup2(child_read.as_raw_fd(), 3) == -1 || libc::dup2(child_write.as_raw_fd(), 4) == -1 {
                 return Err(io::Error::last_os_error());
             }

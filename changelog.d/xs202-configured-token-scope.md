@@ -1,0 +1,1 @@
+TensorFS: a token given to `tensorfs.configure` goes only to the default endpoint (the one `configure` names, else `TENSORFS_ENDPOINT`). A call or `Writer` whose `endpoint=` is another origin sends its own `token=`, or none; before, it sent the configured token there.

@@ -92,6 +92,26 @@ for _ in $(seq 36); do
   sleep 5
 done
 [ -n "$listed" ] || check "forward update: cozy $latest's run $id isn't listed completed on $candidate: $(tail -c 300 "$OUT/fw-runs.json")"
+# The upgrade a person meets (cl-1055): local still on the Latest's TensorD and Runtime, below the candidate's minor. A project's run
+# moves it to the candidate's own Runtime first, saying so, completes, and its call's temporary file is in its project's scratch.
+# The project is one the candidate makes: the Latest's, with a run of its own, is refused until local's TensorD moves
+# (legacy_worker_custody_pending), which this cell doesn't judge.
+local moved_from temporary M=$OUT/forward-moved-project
+(machine_ready) || return 0
+moved_from=$(jq -r '.status.runtime' "$OUT/machine.json")
+mkdir -p "$M" && in_project "$M" --json new --unencrypted > "$OUT/fw-moved-new.json" 2>&1 \
+  || { check "forward update: $candidate's cozy new: $(tail -c 300 "$OUT/fw-moved-new.json")"; return 0; }
+in_project "$M" run e2e-scratch/probe "marker=FW_MOVED_$RANDOM" --on local > "$OUT/fw-moved.out" 2> "$OUT/fw-moved.err" \
+  || check "forward update: a project's probe on local (Runtime $moved_from) failed on $candidate: $(tail -c 400 "$OUT/fw-moved.err")"
+grep -q "upgrading local.s Runtime $moved_from → [^ ]* for this project" "$OUT/fw-moved.err" \
+  || check "forward update: the run didn't say it upgrades local's Runtime $moved_from for this project: $(tail -c 400 "$OUT/fw-moved.err")"
+temporary=$(awk '$1 == "temporary" { print $2 }' "$OUT/fw-moved.out" | tail -1)
+case $temporary in
+  "$(realpath "$M")"/.vault-machine/scratch/*) ;;
+  *) check "forward update: the moved run's temporary file was ${temporary:-nowhere said}, not in its project's scratch" ;;
+esac
+(machine_ready) || return 0
+echo "forward update: a project's run moved local from Runtime $moved_from to $(jq -r .status.runtime "$OUT/machine.json")"
 # The candidate set on local, as the suite's start puts it: a dev build is no release for the update to move it to.
 [ ! -f "${CAND_COZY:-}" ] || up+=(--tensord "$CAND_COZY")
 [ -z "$CAND_TFS" ] || up+=(--tensorfs "$CAND_TFS")
@@ -256,3 +276,68 @@ su_install() {
   [ "${2:-}" != --human ] || json=
   timeout 1800 "$COZY" $json package install "$E2E_NEXT" --on local > "$OUT/su-$1.out" 2>&1 < /dev/null
 }
+
+# update_offer (cl-1069; Paul 11-16: "on the user's machine, when there is a new update available, and they start cozy creator, we
+# should ask them if they want to update, rather than forcibly updating them … that gives them the ability to remain on the older
+# version"): the change built as a release (cozy-before, 0.24.99) at a terminal (script's pty), GitHub's Latest served as
+# COZY_DOWNLOAD_URL, in a home of its own whose `calcifer` is a file: each command ends at once after the question
+# (calcifer_start_failed), and the suite's Calcifer and machine are never touched.
+#  - asked "cozy <Latest> is out (this is 0.24.99). Update now? [Y/n]"; `n` keeps 0.24.99, the command goes on, the next isn't asked;
+#  - `--json`, or stdin not a terminal: nothing asked;
+#  - `y`: cozy becomes the Latest, its signed archive checked as `cozy update` checks it, and the command goes on.
+OF_HOME='' OF_URL=''
+update_offer() {
+step "a newer release is offered at a terminal, never forced (cl-1069)"
+[ "${RUNNER_OS:-}" = Linux ] || { echo "update offer: Linux"; return; }
+[ -n "${E2E_COZY_BEFORE:-}" ] && [ -f "$E2E_COZY_BEFORE" ] || { check "update offer: no cozy-before (${E2E_COZY_BEFORE:-unset})"; return; }
+su_latest || { check "update offer: GitHub names no Latest cozy"; return; }
+local latest=$SU_LATEST rel=$RUNNER_TEMP/offer-release port=$((20000 + RANDOM % 20000)) server f
+local asked="cozy $latest is out (this is 0.24.99). Update now? [Y/n]"
+rm -rf "$rel" && mkdir -p "$rel" || { check "update offer: $rel not made"; return; }
+for f in dist-manifest.json "$SU_ARCHIVE" "$SU_ARCHIVE.sigstore.jsonl"; do
+  curl -fsSL --retry 3 -o "$rel/$f" "https://github.com/cozy-creator/cozy-creator/releases/download/v$latest/$f" \
+    || { check "update offer: cozy $latest's $f not fetched"; return; }
+done
+(cd "$rel" && exec python3 -m http.server "$port" --bind 127.0.0.1 > "$OUT/offer-server.log" 2>&1) &
+server=$! OF_URL=http://127.0.0.1:$port OF_HOME=$RUNNER_TEMP/offer-home
+for _ in $(seq 30); do curl -fsS -o /dev/null "$OF_URL/dist-manifest.json" && break; sleep 1; done
+of_fresh || { kill "$server" 2> /dev/null || true; return; }
+
+# `n`: kept, said, and the command goes on; not asked again.
+of_run declined 'n\n' "$OF_HOME/.cozy/bin/cozy whoami"
+grep -qF "$asked" "$OUT/offer-declined.out" || check "update offer: a terminal wasn't asked \"$asked\": $(tail -c 300 "$OUT/offer-declined.out")"
+grep -qF 'staying on cozy 0.24.99' "$OUT/offer-declined.out" || check "update offer: declined, it didn't say it stays on 0.24.99"
+grep -qF 'error[calcifer_start_failed]' "$OUT/offer-declined.out" || check "update offer: declined, the command didn't go on"
+[ "$(of_version)" = "cozy 0.24.99" ] || check "update offer: declined, cozy is $(of_version)"
+of_run again 'n\n' "$OF_HOME/.cozy/bin/cozy whoami"
+! grep -qF 'is out' "$OUT/offer-again.out" || check "update offer: declined $latest, the next command was asked again"
+grep -qF 'error[calcifer_start_failed]' "$OUT/offer-again.out" || check "update offer: the next command didn't run: $(tail -c 300 "$OUT/offer-again.out")"
+
+# No one to ask: nothing asked.
+of_fresh || { kill "$server" 2> /dev/null || true; return; }
+of_run json 'n\n' "$OF_HOME/.cozy/bin/cozy --json whoami"
+! grep -qF 'is out' "$OUT/offer-json.out" || check "update offer: --json was asked"
+of_run stdin 'n\n' "$OF_HOME/.cozy/bin/cozy whoami < /dev/null"
+! grep -qF 'is out' "$OUT/offer-stdin.out" || check "update offer: stdin not a terminal, it was asked"
+
+# `y`: the Latest, and the command goes on.
+of_run updated 'y\n' "$OF_HOME/.cozy/bin/cozy whoami"
+grep -qF "$asked" "$OUT/offer-updated.out" || check "update offer: a fresh home wasn't asked \"$asked\""
+[ "$(of_version)" = "cozy $latest" ] || check "update offer: yes, cozy is $(of_version), not $latest: $(tail -c 400 "$OUT/offer-updated.out")"
+grep -qF "cozy 0.24.99 → $latest" "$OUT/offer-updated.out" || check "update offer: yes, the update didn't say cozy 0.24.99 → $latest"
+grep -qF 'error[calcifer_start_failed]' "$OUT/offer-updated.out" || check "update offer: yes, the command didn't go on"
+kill "$server" 2> /dev/null || true
+}
+
+# of_fresh: the offer's home, cozy-before and nothing else, its `calcifer` a file.
+of_fresh() {
+  rm -rf "$OF_HOME" && mkdir -p "$OF_HOME/.cozy/bin" && install -m 755 "$E2E_COZY_BEFORE" "$OF_HOME/.cozy/bin/cozy" && : > "$OF_HOME/.cozy/calcifer" \
+    || { check "update offer: its home not made"; return 1; }
+}
+
+# of_run <name> <typed> <command>: <command> at a terminal in the offer's home, <typed> its input; all it showed in $OUT/offer-<name>.out.
+of_run() {
+  printf '%b' "$2" | HOME=$OF_HOME COZY_DOWNLOAD_URL=$OF_URL timeout 300 script -qec "$3" /dev/null > "$OUT/offer-$1.out" 2>&1 || true
+}
+
+of_version() { HOME=$OF_HOME "$OF_HOME/.cozy/bin/cozy" --version 2>&1; }

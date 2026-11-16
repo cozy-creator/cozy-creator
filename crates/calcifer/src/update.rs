@@ -128,7 +128,13 @@ impl Machines {
             }
             None => return Err(refused("this cozy is a dev build of another platform than it, with no release to fetch".into())),
         };
-        let ask = MachineUpdate { tensord: Some(tensord), ..Default::default() };
+        // `local` below this cozy's Runtime minor takes this cozy's own Runtime in the same update, unless held by hand (cl-1055): a
+        // project's run then finds it on the minor, with no second update.
+        let runtime = match self.held_by_hand(name) {
+            Some(_) => None,
+            None => self.own_runtime(name, &frame).await.filter(|runtime| !api::prerelease::dev(runtime)),
+        };
+        let ask = MachineUpdate { tensord: Some(tensord), runtime: runtime.map(Component::Version), ..Default::default() };
         let (updating, _) = self.update(&key, name, ask).await.map_err(|e| refused(format!("its update was refused: {}", e.message)))?;
         Ok(updating.run)
     }

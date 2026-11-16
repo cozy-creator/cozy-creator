@@ -179,6 +179,13 @@ impl PyEndpoint {
     }
 }
 
+/// The endpoint a call reaches when it names none (`TENSORFS_ENDPOINT`, else Tensorhub).
+#[pyfunction]
+fn _default_endpoint() -> String {
+    Config::from_env().endpoint
+}
+
 pub(crate) fn install(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(_default_endpoint, m)?)?;
     m.add_class::<PyEndpoint>()
 }

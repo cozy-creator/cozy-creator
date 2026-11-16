@@ -451,11 +451,21 @@ impl Weights {
 
     fn of_interface(interface: &Interface, function: &str, made: &Map<String, Value>) -> Option<Self> {
         let callable = interface.callables.iter().find(|callable| callable.name == function)?;
+        if !interface.gpu(callable) {
+            return None;
+        }
+        Self::read(interface, function, made)
+    }
+
+    /// The weights `function` reads, whatever runs it: a CPU function's raw `Weights` (Runtime 0.47: raw weights select no GPU) download
+    /// before it runs all the same, so a machine without them is quoted that download (cl-1047). None: it reads none.
+    fn read(interface: &Interface, function: &str, made: &Map<String, Value>) -> Option<Self> {
+        let callable = interface.callables.iter().find(|callable| callable.name == function)?;
         let slots: Vec<Slot> = match callable.models.is_empty() {
             true => interface.call_slots(callable).into_iter().cloned().collect(),
             false => callable.models.clone(),
         };
-        if !interface.gpu(callable) || slots.is_empty() {
+        if slots.is_empty() {
             return None;
         }
         let on_box = (made.get("models").and_then(Value::as_object).into_iter().flatten())
@@ -635,10 +645,10 @@ async fn checkpoint(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> 
     found
 }
 
-/// The checkpoints `function` of `package` loads, each by its Hub card's lane checkpoint and bytes: what a machine's estimate counts the
-/// fetch of (cl-816). What the Hub doesn't say in time is left out.
+/// The checkpoints `function` of `package` reads, on a GPU or not, each by its Hub card's lane checkpoint and bytes: what a machine's
+/// estimate counts the fetch of (cl-816, cl-1047). What the Hub doesn't say in time is left out.
 pub(super) async fn checkpoints(api: &Api, hub: &str, package: &super::Package, function: &str, made: &Map<String, Value>) -> Vec<api::machine::ModelRef> {
-    let Some(weights) = Weights::of(package.document(), function, made) else { return vec![] };
+    let Some(weights) = Interface::parse(package.document()).ok().and_then(|interface| Weights::read(&interface, function, made)) else { return vec![] };
     let placed = match package.local {
         None => placed(api, hub, &package.name, &package.release, function).await,
         Some(_) => None,

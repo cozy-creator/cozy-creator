@@ -186,16 +186,15 @@ async fn list(ctx: &Context, project: &Project) -> Result<ExitCode, Error> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Its newest take's state: what's going, else what failed, else its newest version, done.
+/// Its newest take's state: what's going, else its last try failed, else its newest version, done.
 fn latest(asset: &Asset) -> Option<String> {
     if asset.kind == "text" && asset.tool.is_none() {
         return None;
     }
-    let going = asset.takes.iter().rev().find(|take| take.failure.is_none());
-    if let Some(take) = going {
+    if let Some(take) = asset.takes.last() {
         return Some(if take.queued { "queued".to_owned() } else { "running".to_owned() });
     }
-    if asset.takes.iter().any(|take| take.failure.is_some()) {
+    if asset.failure.is_some() {
         return Some("failed".to_owned());
     }
     asset.prefixes.iter().map(|prefix| prefix.number).max().map(|number| format!("{number} done"))

@@ -327,11 +327,15 @@ struct Found {
 async fn release_of(api: &Arc<Api>, hub: &str, package: &str, release: Option<&str>, held: Option<&Held>) -> Result<Found, Error> {
     let shown = package.trim_start_matches("_/");
     let read = std::sync::Mutex::new(HashMap::<String, Card>::new());
+    // A project's run on this computer needs this cozy's Runtime minor (cl-1055), whose every build keeps the call's files in the
+    // project: one more floor, moving the machine as a package's own floor does. A rental keeps its packages' own floors.
+    let project = crate::private_io::current().is_some() && held.is_some_and(|held| held.machine == "local");
     let requirement = |release: String| {
         let read = &read;
         async move {
             let card = card_of(api, hub, package, &release).await?;
             let needs = api::release::required(card.requirements().unwrap_or_default(), "cozy-runtime");
+            let needs = if project { Some(api::release::for_project(needs)) } else { needs };
             read.lock().expect("cards lock").insert(release, card);
             Ok::<_, Error>(needs)
         }
@@ -358,6 +362,17 @@ async fn release_of(api: &Arc<Api>, hub: &str, package: &str, release: Option<&s
             format!("{shown} {release} needs cozy-runtime{needs}, and {machine} is held on Runtime {} by hand: `cozy machine update {machine}` lets it move", held.runtime),
         )
         .next(format!("cozy machine update {machine}")),
+        // Below this cozy's minor with this cozy's Runtime not to be had now (offline, none named for this cozy): the update names it.
+        api::release::Refused::Unmet { .. }
+            if project && !api::release::on_runtime_minor(&held.runtime) && !held.runtimes.iter().any(|runtime| api::release::on_runtime_minor(runtime)) =>
+        {
+            Error::new(
+                Kind::Unavailable,
+                "runtime_outdated",
+                format!("{machine} runs Runtime {}, below this cozy's, and this cozy's Runtime can't be had for it now: `cozy machine update {machine}` moves it", held.runtime),
+            )
+            .next(format!("cozy machine update {machine}"))
+        }
         api::release::Refused::Unmet { release, needs } => Error::new(
             Kind::Conflict,
             "runtime_unmet",
@@ -383,7 +398,12 @@ async fn release_of(api: &Arc<Api>, hub: &str, package: &str, release: Option<&s
             (release, Some(Note { level: NoteLevel::Info, message }), None)
         }
         api::release::Chosen::Moves { release, runtime } => {
-            let upgrade = crate::floor::Upgrade { machine: machine.clone(), from: held.runtime.clone(), to: runtime, release: format!("{shown} {release}") };
+            // Moved for the project's floor rather than the package's: said so.
+            let wanted = match project && !api::release::on_runtime_minor(&held.runtime) {
+                true => format!("this project ({shown} {release})"),
+                false => format!("{shown} {release}"),
+            };
+            let upgrade = crate::floor::Upgrade { machine: machine.clone(), from: held.runtime.clone(), to: runtime, release: wanted };
             (release, said, Some(upgrade))
         }
     };
