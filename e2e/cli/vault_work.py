@@ -63,8 +63,8 @@ OUTLIVES = 50
 MAXIMUM = 15
 # The maximum's run's file, in MB: a save into the project that takes a while after its call ends (cl-1060).
 VIDEO_MB = 128
-# Steps 4 and 5's files, in MB: a save long enough to lock during, or to stop the machine under (cl-1060).
-SAVE_MB = 256
+# Steps 4 and 5's files, in MB: a save its machine is stopped under, mid-transfer (cl-1060).
+SAVE_MB = 512
 
 
 def cli(args: argparse.Namespace, name: str, *words: str, fails: bool = False) -> object:
@@ -121,12 +121,13 @@ def run_of(stdout: Path) -> Run:
     return {}
 
 
-def saving(stdout: Path, process: subprocess.Popen[bytes]) -> bool:
-    """Until the run says it's saving its outputs (its call ended), or it ends."""
+def exporting(stdout: Path, process: subprocess.Popen[bytes]) -> bool:
+    """Until the run's output starts coming into the project (its call ended, its row settled), or it ends."""
     while process.poll() is None:
-        if run_of(stdout).get("progress", {}).get("stage") == "saving the outputs":
-            return True
-        time.sleep(0.1)
+        for line in stdout.read_bytes().splitlines():
+            if b'"output_item.added"' in line:
+                return True
+        time.sleep(0.02)
     return False
 
 
@@ -352,29 +353,30 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
                                    "locked_after_end_s": round(max_lock_s, 1), "fetched": kept[0].name, "file_mb": VIDEO_MB}
 
     # 4. An explicit lock during a save goes through at once: the save stops, nothing half-written is left in the project, and the
-    #    next unlock saves the file whole, the bytes its run made (cl-1060).
+    #    next unlock saves the file whole, the bytes its run made (cl-1060). The save is held mid-transfer (its machine stopped as
+    #    the output starts coming), so the lock lands in it.
     script = unlock(args, "unlock-for-save-lock", 0) / "vault-work-proof" / "sleeper.py"
     mark = f"cl1060-lock-{time.time_ns()}"
     process, stdout = start(args, "save-lock", script, 2, mark, SAVE_MB)
-    assert saving(stdout, process), f"the run never said it was saving its outputs: {run_of(stdout)}"
-    began = time.monotonic()
-    locked = cast(Changed, cli(args, "lock-while-saving", "vault", "lock"))
-    save_lock_s = locked_within(args, 30) + (time.monotonic() - began)
-    assert save_lock_s < 15, f"a lock during a save took {save_lock_s:.0f} s"
-    process.wait(timeout=120)
-    saved = run_of(stdout).get("number")
-    left = [line for line in Path("/proc/self/mountinfo").read_text().splitlines() if f"{args.project}/.vault-runtime/" in line]
-    assert not left, f"the lock left a view mounted: {left}"
-    # The next unlock, its save held back (the machine stopped), shows nothing half-written.
+    assert exporting(stdout, process), f"the run's output never started coming: {run_of(stdout)}"
     stopped = machines(signal.SIGSTOP)
     try:
+        began = time.monotonic()
+        locked = cast(Changed, cli(args, "lock-while-saving", "vault", "lock"))
+        save_lock_s = locked_within(args, 30) + (time.monotonic() - began)
+        assert save_lock_s < 15, f"a lock during a save took {save_lock_s:.0f} s"
+        left = [line for line in Path("/proc/self/mountinfo").read_text().splitlines() if f"{args.project}/.vault-runtime/" in line]
+        assert not left, f"the lock left a view mounted: {left}"
+        # The next unlock, the save still held back, shows nothing half-written.
         view = unlock(args, "unlock-after-save-lock", 0)
         partial = [str(path) for path in view.rglob("*") if path.name.endswith((".part", ".part.held", ".manifest.part"))]
         torn = [str(path) for path in view.rglob("*") if path.is_file() and path.stat().st_size < SAVE_MB << 20
                 and mark.encode() in path.read_bytes()[:200]]
+        assert not partial and not torn, f"after a lock stopped a save, the project held half-written files: {partial} {torn}"
     finally:
         machines(signal.SIGCONT, stopped)
-    assert not partial and not torn, f"after a lock stopped run {saved}'s save, the project held half-written files: {partial} {torn}"
+    process.wait(timeout=120)
+    saved = run_of(stdout).get("number")
     status, record = settled(args, saved, 180)
     assert status == "completed", f"run {saved}, its save stopped by a lock, is {status or 'unread'} after the next unlock"
     size, digest = whole(args, saved, mark, "save-lock.out")
@@ -389,7 +391,7 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
     script = unlock(args, "unlock-for-stall", 0, MAXIMUM) / "vault-work-proof" / "sleeper.py"
     mark = f"cl1060-stall-{time.time_ns()}"
     process, stdout = start(args, "stall", script, MAXIMUM + 5, mark, SAVE_MB)
-    assert saving(stdout, process), f"the run never said it was saving its outputs: {run_of(stdout)}"
+    assert exporting(stdout, process), f"the run's output never started coming: {run_of(stdout)}"
     stopped = machines(signal.SIGSTOP)
     try:
         stall_lock_s = locked_within(args, 90)
