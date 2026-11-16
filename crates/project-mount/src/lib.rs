@@ -982,14 +982,37 @@ pub fn detach_dead_views() -> Vec<PathBuf> {
     Vec::new()
 }
 
-/// Whether a view's provider is gone: the kernel answers its root "transport endpoint is not connected". Probed on a thread
-/// of its own, since a provider that's alive but stuck never answers: no answer in time is never dead.
+/// Our view with no session left to lock it (a lock, a recovery, a stage's removal): a dead one detached lazily, a live one
+/// unmounted, which ends its provider. One still mounted after that refuses (`Busy`): it's never left serving and called gone.
+pub fn detach(view: &Path) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        if linux_identity(view)?.is_none() {
+            return Ok(());
+        }
+        let _ = unix_unmount(view, dead(view), CONTROL_ACK);
+        if linux_identity(view)?.is_some() {
+            return Err(Error::Busy(view.to_path_buf()));
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = view;
+        Ok(())
+    }
+}
+
+/// Whether a view's provider is gone: the kernel answers its root "transport endpoint is not connected". A read of the folder,
+/// which always asks the provider (a stat can be answered from cached attributes for a while). Probed on a thread of its own,
+/// since a provider that's alive but stuck never answers: no answer in time is never dead.
 #[cfg(target_os = "linux")]
 fn dead(view: &Path) -> bool {
     let (tell, heard) = mpsc::channel();
     let probe = view.to_path_buf();
     thread::spawn(move || {
-        let _ = tell.send(fs::symlink_metadata(&probe).err().map(|error| error.kind()));
+        let read = fs::read_dir(&probe).and_then(|mut entries| entries.next().transpose());
+        let _ = tell.send(read.err().map(|error| error.kind()));
     });
     matches!(heard.recv_timeout(Duration::from_secs(2)), Ok(Some(io::ErrorKind::NotConnected)))
 }
