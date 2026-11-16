@@ -7,7 +7,7 @@
 # executor (`again`: its steps once the upscale gave its memory back). The pod reads each process's GPU memory every 5 s
 # (gpu-pod.log); each render's record keeps the H3 executor's graphs receipt (pools, idle work). params:
 #   head, slice  each a Runtime manylinux wheel: https://…#sha256=<hex>, or a cozy-runtime dev-build run id
-#   tensorfs     TensorFS's wheel, https://…#sha256=<hex> (both arms)
+#   tensorfs     TensorFS's wheel, https://…#sha256=<hex> or artifact:<cozy-creator run>/<artifact> (both arms)
 #   to           1080p (default)
 . "$(dirname "$0")/lib.sh"
 TO=$(param to 1080p) WAS=$PACKAGES/was/minimax-h3 GATE=$(cd "$(dirname "$0")/.." && pwd)
@@ -17,6 +17,9 @@ wheel() {
   if [[ $1 == https://*'#sha256='* ]]; then
     local f; f=$d/$(basename "${1%%#*}" | sed 's/%2B/+/g')
     curl -fsSL --retry 5 --retry-all-errors "${1%%#*}" -o "$f" && [ "$(sha256sum "$f" | cut -c1-64)" = "${1##*sha256=}" ] && echo "$f"
+  elif [[ $1 == artifact:*/* ]]; then
+    local a=${1#artifact:}
+    gh run download "${a%%/*}" -R cozy-creator/cozy-creator -n "${a#*/}" -D "$d" > /dev/null 2>&1 && find "$d" -name '*manylinux*x86_64*.whl' | head -1
   else
     gh run download "$1" -R cozy-creator/cozy-runtime -p 'cozy-runtime-*' -D "$d" > /dev/null 2>&1 && find "$d" -name '*manylinux*x86_64*.whl' | head -1
   fi
