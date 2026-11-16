@@ -83,7 +83,7 @@ impl Before {
                 }
                 // A zombie leader's handle can read exited while a thread of it is still in the kernel (seen on Linux 6.x).
                 if one.alive() {
-                    return tracing::info!("pid {pid}, the TensorD before this one, still has a thread in the kernel; Status judges it as read");
+                    return tracing::info!(target: crate::config::MACHINE, "pid {pid}, the TensorD before this one, still has a thread in the kernel; Status judges it as read");
                 }
                 watched.exited(&one.birth);
             });
@@ -112,11 +112,11 @@ impl Before {
             }
             shown.len()
         };
-        tracing::info!("pid {}, the TensorD before this one, exited", birth.pid);
+        tracing::info!(target: crate::config::MACHINE, "pid {}, the TensorD before this one, exited", birth.pid);
         exited(&self.paths, birth);
         crate::activity::status_changed();
         if self.broken && left == 0 {
-            tracing::warn!("what left this machine broken exited: it starts again, to open its GPUs");
+            tracing::warn!(target: crate::config::MACHINE, "what left this machine broken exited: it starts again, to open its GPUs");
             super::supervise::leave(super::update::REPLACE_EXIT);
         }
     }

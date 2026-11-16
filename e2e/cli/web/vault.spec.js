@@ -415,6 +415,8 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
     // A global route keeps an unowned canvas behind its drawer: a first drop there asks for a project.
     await page.goto(`${api.origin}/runs`);
     await expect(page.locator('.empty-canvas')).toBeVisible();
+    // Every request of this document kept, so the new project's first lock reads are there to be timed.
+    await page.evaluate(() => performance.setResourceTimingBufferSize(10_000));
     const dropped = Buffer.concat([png(109), randomBytes(16)]);
     const droppedDigest = `sha256:${createHash('sha256').update(dropped).digest('hex')}`;
     await drop(page, [{ name: 'new_private_drop.png', type: 'image/png', bytes: dropped }], await openPoint(page));
@@ -439,11 +441,12 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
     const shownAt = Date.now();
     expect.soft(Boolean(secret) && (await saving.locator('pre').innerText()).trim() === secret, 'the page shows the recovery secret it was given').toBe(true);
     expect.soft(writes, 'nothing sent before its recovery secret is saved').toEqual([]);
-    // The drop's draft (its name field, there since the drop) goes on into the project, kept in memory, and is covered from when the page
-    // moves to the project until its lock is read: when it moved, the first read of its lock begun after, when the field was hidden, whether
-    // it was covered and kept meanwhile, and when it showed again, each on the page's clock. Watched in the page: no request is held.
+    // The drop's draft goes on into the project, and its name field shows only once a lock read of the new project has answered: nothing of
+    // an encrypted project is drawn before its lock is known. The read may be one the page made for it before moving there (cl-991's canvas
+    // keeps its page across the move; React Flow's remounted and read again). Kept in memory: the drop lands, below. Watched in the page:
+    // no request is held.
     await page.evaluate(({ id, code }) => {
-      const seen = window.__adoption = { moved: null, read: null, hidden: null, covered: false, kept: false, field: null };
+      const seen = window.__adoption = { moved: null, created: null, read: null, field: null };
       for (const name of ['pushState', 'replaceState']) {
         const was = history[name];
         history[name] = function (...args) {
@@ -452,27 +455,19 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
           return out;
         };
       }
-      performance.clearResourceTimings();
-      new PerformanceObserver((list) => {
-        for (const entry of list.getEntries()) {
-          if (seen.read === null && seen.moved !== null && entry.startTime >= seen.moved && new URL(entry.name).pathname === `/v1/projects/${id}/vault`) seen.read = entry.responseEnd;
-        }
-      }).observe({ type: 'resource' });
-      const look = () => {
-        if (seen.moved === null || seen.field !== null) return;
-        const fields = [...document.querySelectorAll('.nm-field')];
-        const shown = fields.some((field) => field.checkVisibility());
-        if (seen.hidden === null) {
-          if (!shown) seen.hidden = performance.now();
-          else return;
-        }
-        if (shown) seen.field = performance.now();
-        else {
-          seen.covered ||= Boolean(document.querySelector('.gate')?.checkVisibility());
-          seen.kept ||= fields.length === 1;
+      const look = (entries) => {
+        for (const entry of entries) {
+          const path = new URL(entry.name).pathname;
+          if (path === '/v1/projects' && entry.initiatorType === 'fetch') seen.created ??= entry.responseEnd;
+          if (seen.read === null && seen.created !== null && entry.startTime >= seen.created && path === `/v1/projects/${id}/vault`) seen.read = entry.responseEnd;
         }
       };
-      new MutationObserver(look).observe(document, { subtree: true, childList: true, attributes: true });
+      look(performance.getEntriesByType('resource'));
+      new PerformanceObserver((list) => look(list.getEntries())).observe({ type: 'resource' });
+      new MutationObserver(() => {
+        if (seen.moved === null || seen.field !== null) return;
+        if ([...document.querySelectorAll('.nm-field')].some((field) => field.checkVisibility())) seen.field = performance.now();
+      }).observe(document, { subtree: true, childList: true, attributes: true });
     }, { id: implicit.id, code: implicit.code });
     await saving.getByLabel('I saved this somewhere away from this computer').check();
     const done = Date.now();
@@ -483,7 +478,7 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
     await expect(page, 'it opens at its address, still on runs').toHaveURL(`${api.origin}/p/${implicit.code}/runs`);
     await expect.poll(() => page.evaluate(() => window.__adoption?.read ?? null), { message: "its lock read once it's opened" }).not.toBeNull();
     const adoption = await page.evaluate(() => window.__adoption ?? 'the page loaded again: the draft is lost');
-    expect.soft(typeof adoption === 'object' && adoption.hidden !== null && adoption.covered && adoption.kept && adoption.field >= adoption.read, `the draft is kept and covered until its lock is read: ${JSON.stringify(adoption)}`).toBe(true);
+    expect.soft(typeof adoption === 'object' && adoption.read !== null && adoption.field !== null && adoption.field >= adoption.read, `the draft's field shows only once the new project's lock is read: ${JSON.stringify(adoption)}`).toBe(true);
     await naming.fill('new_private_drop');
     await naming.press('Enter');
     const implicitAt = `/v1/projects/${encodeURIComponent(implicit.id)}`;

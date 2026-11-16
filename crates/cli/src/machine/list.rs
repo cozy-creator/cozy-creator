@@ -23,7 +23,7 @@ pub(crate) const FIELDS: &[&str] = &[
     "machines.running", "machines.queued", "machines.rental.sku", "machines.rental.accelerator", "machines.rental.gpus",
     "machines.rental.usd_micros_per_hour", "machines.rental.spend_usd_micros", "machines.rental.spend_basis",
     "machines.rental.rented_at_ms", "machines.status.version", "machines.status.phase", "machines.status.gpus.index",
-    "machines.status.gpus.name", "machines.status.gpus.memory_bytes", "machines.status.idle_deadline_ms",
+    "machines.status.gpus.name", "machines.status.gpus.memory_bytes", "machines.status.idle_deadline_ms", "machines.held",
 ];
 /// The columns of `HEADERS` a view shows without `--full`.
 const SHOWN: [usize; 8] = [0, 1, 2, 4, 5, 6, 8, 10];
@@ -94,6 +94,9 @@ pub(crate) fn print(ctx: &Context, list: &MachineList) {
         println!("{note}");
     }
     for note in live().filter_map(end_failed) {
+        println!("{note}");
+    }
+    for note in live().filter_map(held) {
         println!("{note}");
     }
     for m in live() {
@@ -220,6 +223,9 @@ pub(crate) fn record(ctx: &Context, m: &Machine) -> output::Record {
     }
     if let Some(reason) = &m.reason {
         record = record.field("reason", reason);
+    }
+    if let Some(note) = held(m) {
+        record = record.field("held", m.held.as_deref().unwrap_or_default()).note(note);
     }
     if m.state != MachineState::Ended {
         record = record.field("running", m.running).field("queued", m.queued);
@@ -484,7 +490,20 @@ pub(crate) fn state_cell(m: &Machine) -> String {
         }
         _ => {}
     }
+    if m.held.is_some() && m.state != MachineState::Ended {
+        cell += " · held";
+    }
     cell
+}
+
+/// What a machine an update by hand pinned keeps, and the command that lets it follow again (cl-952, cl-1029).
+fn held(m: &Machine) -> Option<String> {
+    let held = m.held.as_deref()?;
+    Some(format!(
+        "{}: held by hand on {held}: it moves to neither the open RC nor a package's floor; `cozy machine update {}` lets it follow again",
+        m.called(),
+        m.handle()
+    ))
 }
 
 /// The GPUs as the machine reports them, else as the rental was bought.

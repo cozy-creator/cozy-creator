@@ -2,9 +2,10 @@
 """Restarts this home's Calcifer (its systemd user unit) once it is idle, as `scripts/dev-local.sh` does after it installs a
 build (cl-962): while Calcifer serves a request (an upload, a publish, a run's submission, a page's write) or runs one of its own
 (`here`: an upload, a publish), it waits, asking `GET /v1/activity` every `--every` seconds, for at most `--wait` seconds; then it
-restarts it anyway and says so. Each line goes to stdout, which is the journal under systemd.
+restarts it anyway and says so. `--wait inf`, as dev-local.sh asks (cl-1029), never restarts it busy. Each line goes to stdout,
+which is the journal under systemd.
 
-    restart-calcifer-when-idle.py [--wait 600] [--every 2] [--service cozy-calcifer.service]
+    restart-calcifer-when-idle.py [--wait 600|inf] [--every 2] [--service cozy-calcifer.service]
 """
 
 from __future__ import annotations

@@ -219,11 +219,19 @@ impl Model {
     }
 
     pub(super) fn row(&self, project: &Project, i: usize) -> Row {
-        let mut row = self.rows[i].clone();
+        self.rows_of(project, &[i]).remove(0)
+    }
+
+    /// Assets `is` of the doc, as they stand this moment, read together.
+    pub(super) fn rows_of(&self, project: &Project, is: &[usize]) -> Vec<Row> {
         let walk = project.folder.walk_now().unwrap_or_default();
         let (making, takes) = (making_now(&walk), takes_now(project, &walk));
-        overlaid(&mut row, &project.key(), &project.rendering.lock().expect("rendering lock"), &making, &takes, &self.ids, &project.unseen.lock().expect("unseen lock"));
-        row
+        let (key, rendering, unseen) = (project.key(), project.rendering.lock().expect("rendering lock"), project.unseen.lock().expect("unseen lock"));
+        is.iter().map(|&i| {
+            let mut row = self.rows[i].clone();
+            overlaid(&mut row, &key, &rendering, &making, &takes, &self.ids, &unseen);
+            row
+        }).collect()
     }
 }
 

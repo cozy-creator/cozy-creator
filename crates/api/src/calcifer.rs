@@ -1265,6 +1265,10 @@ pub struct Machine {
     /// In a dev home (`dev = true`), a rental this computer ordered and the open RC's builds (cl-922).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rc: Option<RcFollow>,
+    /// The software an update by hand gave it, in that update's words, which it keeps: it moves to neither the open RC nor a
+    /// package's floor until `cozy machine update <name>` names nothing (cl-952).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<String>,
 }
 
 /// A dev home's rental and the open RC's newest builds (cl-922).

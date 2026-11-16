@@ -973,7 +973,7 @@ impl Updates {
             }
             return Err(error);
         }
-        tracing::info!(
+        tracing::info!(target: crate::config::MACHINE, 
             "update {}: restarting on cozy {}, Runtime {} / TensorFS {}",
             request.operation, to.cozy, to.runtime, to.tensorfs
         );
@@ -1240,7 +1240,7 @@ impl Updates {
             let machine = self.machine.as_ref().ok_or_else(|| invalid("this machine fetches nothing"))?;
             let stop = self.stop.lock().unwrap().clone();
             let downloads = self.paths.update("downloads");
-            return super::pypi::wheel_at(&choice.url, &choice.sha256, &choice.file, &downloads, machine, crate::origin::priority::NOW, &stop);
+            return super::pypi::wheel_at(&choice.url, &choice.sha256, &choice.file, &downloads, machine, crate::origin::priority::SOFTWARE, &stop);
         }
         if !choice.file.is_empty() {
             let path = self
