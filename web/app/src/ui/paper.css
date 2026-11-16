@@ -50,18 +50,6 @@
   }
 }
 
-/* A box stands off the sheet, in either theme: an edge, and a shadow it sits on. One with nothing in it is a lighter sheet, not a hole. */
-.canvas-node .media {
-  box-shadow: 0 0 0 1px var(--box-edge), 0 1px 2px var(--box-shade), 0 6px 14px var(--box-shade);
-}
-/* Far out only the edge is distinct; the native active card matches its overview picture. */
-.stage[data-lod="2"] .canvas-node .media {
-  box-shadow: 0 0 0 1px var(--box-edge);
-}
-.canvas-node .media.blank {
-  background-color: var(--box);
-}
-
 /* Warm cream around a picture skews how it reads, so a box being worked on shows it on neutral grey; a transparent one keeps its soft check. */
 .card.here > .media:not(.blank):not(.alpha) {
   background-color: var(--stage);
