@@ -139,7 +139,7 @@ def check(gate: GateHistory) -> tuple[list[str], list[str]]:
             if flat and min(flat) < 2.0:
                 fails.append(f'pixels {name}: {os.path.basename(f)} is flat (std {min(flat)}): a failed or non-finite decode')
     names = [line.split('\t')[0] for line in open(os.path.join(out, 'cells.tsv'))]
-    made, refs = sources(out, names)
+    made, mentions = sources(out, names)
     for line in open(os.path.join(out, 'cells.tsv')):
         name, _, number = line.rstrip('\n').split('\t')[:3]
         if name not in prompts or not number.isdigit() or name.split('-')[0] in SKIP:
@@ -149,7 +149,7 @@ def check(gate: GateHistory) -> tuple[list[str], list[str]]:
         ims = [rgb(f) for f in files if f.endswith(('.png', '.webp', '.jpg'))] + [fr for f in files if f.endswith('.mp4') for fr in frames(f)]
         if not ims:
             continue
-        text = judged(name, prompts, made, refs)
+        text = judged(name, prompts, made, mentions)
         if text != prompts[name]:
             notes.append(f'quality {name}: judged against "{text}"')
         cells[name] = judge(ims, text)
