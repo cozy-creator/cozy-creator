@@ -3,7 +3,7 @@
 # kamitsure's in-use H3 held 61 GB of bakes on a full 200 GB disk, and its store freed nothing for 3 h.
 # Here: Qwen3.5 0.8B lands and stays idle; SDXL runs bare and then with four LoRA stacks (cl-683's), each a bake of its own;
 # with 10 GiB free past the reserve, LTX-2.5 bf16 is refused naming what the models no call holds would free, the bakes counted
-# once (at least them, at most the store); a file then leaves the disk half of Qwen-Image 2.1 int8 short past its reserve, and
+# once (at least them, at most the store); a file then leaves the disk 4 GiB short of Qwen-Image 2.1 int8 past its reserve, and
 # that model is installed. It must land with every earlier model still installed, the store's log naming derived pages
 # freed and no model evicted. Before the fix the store evicted a model to make the room (session 43845669841: Qwen3.5 and
 # SDXL evicted beside 13.2 GiB of bakes). params:
@@ -51,13 +51,17 @@ before=$(installed)
 read -r free total store listed < <(show | jq -r '.status | "\(.disk_free_bytes) \(.disk_total_bytes) \(.disk_models_bytes) \(.models_bytes)"')
 derived=$((store - listed))
 say "installed: $before; store $((store >> 20)) MiB, $((listed >> 20)) MiB of it in listed models: $((derived >> 20)) MiB of bakes"
-# Qwen-Image 2.1 int8 is about 12 GB: the disk is left half of it short past TensorFS's reserve (2% of the disk, 1 to 10 GiB).
+# The disk is left 4 GiB short of Qwen-Image 2.1 int8 (its size from the Hub) past TensorFS's reserve (2% of the disk, 1 to 10
+# GiB): bakes no reader has open cover that. The idle SDXL executor keeps its last stacks' bakes open, about 4 of the ~13 GiB
+# (session 43857521603 freed 9.1 GiB of them).
 reserve=$((total / 50)); [ "$reserve" -ge $((1 << 30)) ] || reserve=$((1 << 30)); [ "$reserve" -le $((10 << 30)) ] || reserve=$((10 << 30))
-need=$((6 << 30))
+need=$((4 << 30))
+big=$(cozy --json model show qwen/qwen-image-2.1 2> /dev/null | jq -r '[.lanes[] | select(.lane == "int8") | .components[].bytes] | add // empty')
+[[ $big =~ ^[0-9]+$ ]] || fail "setup: no size for Qwen-Image 2.1 int8 from the Hub"
 [ "$derived" -gt $((need + (1 << 30))) ] || fail "setup: $((derived >> 20)) MiB of bakes, fewer than the $((need >> 20)) MiB the install must take from them"
 ballast() {  # ballast <bytes>: the file that takes the disk, at that size
   [ "$1" -gt 0 ] || return 0
-  cozy machine ssh "$NAME" "fallocate -l $1 /var/lib/cozy/cl1081-ballast && df -B1 --output=avail /var/lib/cozy | tail -1" > "$OUT/ballast.txt" 2>&1 ||
+  cozy machine ssh "$NAME" "rm -f /var/lib/cozy/cl1081-ballast && fallocate -l $1 /var/lib/cozy/cl1081-ballast && df -B1 --output=avail /var/lib/cozy | tail -1" > "$OUT/ballast.txt" 2>&1 ||
     fail "the ballast: $(tail -c 300 "$OUT/ballast.txt")"
   say "ballast $(($1 >> 20)) MiB: free now $(( $(show | jq -r .status.disk_free_bytes) >> 20 )) MiB, reserve $((reserve >> 20)) MiB"
 }
@@ -67,17 +71,16 @@ ballast() {  # ballast <bytes>: the file that takes the disk, at that size
 ballast $((free - reserve - (10 << 30)))
 cd "$TREE" || fail "no $TREE"
 step ltx run ./ltx-2.5/generate prompt="waves on a pebble beach at dusk, the sound of the surf" seed:=1081 --on "$NAME"
-N=$(runno ltx); cd "$RUN_PROJECT" || fail "no $RUN_PROJECT"
-[ -z "$N" ] || cozy run watch "$N" --once --json --full > "$OUT/ltx.json" 2>/dev/null
 cd "$OUT" || fail "no $OUT"
-said=$(jq -r '[.reason.code // "", .reason.message // ""] | join(": ")' "$OUT/ltx.json" 2>/dev/null)
+# The refusal as the CLI said it: `Run PRO-8 failed [machine_disk_full]: … (… free past its reserve, N GiB in models …)`.
+said=$(grep -m1 -F '[machine_disk_full]' "$OUT/ltx.txt")
 held=$(grep -oE '[0-9.]+ (GiB|MiB) in models no queued or running job holds' <<< "$said" | awk '{printf "%d", $1 * ($2 == "GiB" ? 1073741824 : 1048576)}')
 say "LTX-2.5: ${said:0:500}"
-[[ $said == machine_disk_full* ]] && [ -n "$held" ] || fail "LTX-2.5 was not refused machine_disk_full naming what the models free: ${said:0:300}"
+[ -n "$said" ] && [ -n "$held" ] || fail "LTX-2.5 was not refused machine_disk_full naming what the models free: $(tail -c 300 "$OUT/ltx.txt")"
 [ "$held" -ge $((derived - (1 << 30))) ] && [ "$held" -le $((store + (1 << 30))) ] ||
   fail "the refusal counts $((held >> 20)) MiB in models no call holds: want at least the $((derived >> 20)) MiB of bakes, at most the store's $((store >> 20)) MiB"
 free=$(show | jq -r .status.disk_free_bytes)
-ballast $(( $(cozy machine ssh "$NAME" "stat -c %s /var/lib/cozy/cl1081-ballast" 2> /dev/null | tail -1) + free - reserve - need ))
+ballast $(( $(cozy machine ssh "$NAME" "stat -c %s /var/lib/cozy/cl1081-ballast" 2> /dev/null | tail -1) + free - reserve - (big - need) ))
 step big model install qwen/qwen-image-2.1 --lane int8 --on "$NAME" -y; landed=$?
 after=$(installed)
 cozy machine logs "$NAME" tensord -n 0 > "$OUT/tensord.log" 2>&1

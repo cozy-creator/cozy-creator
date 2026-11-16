@@ -111,12 +111,12 @@ impl Hubs {
     /// this computer dials the Hub, as its client does.
     pub(crate) async fn serves(&self, hub: &config::Origin, namespace: &str, distribution: &str) -> Result<bool, Error> {
         let page = format!("{}/v1/index/{namespace}/simple/{distribution}/", hub.as_str().trim_end_matches('/'));
-        let unreached = |why: String| Error::new(Kind::Unavailable, "index_unreachable", format!("{page}: {why}"));
+        let unreached = |why: String| Error::new(Kind::Unavailable, "index_unreachable", format!("Cozy couldn't reach the package index at {page}: {why}."));
         let status = self.http.get(&page).send().await.map_err(|e| unreached(e.to_string()))?.status();
         match status {
             reqwest::StatusCode::NOT_FOUND => Ok(false),
             status if status.is_success() => Ok(true),
-            status => Err(unreached(format!("answered {status}"))),
+            status => Err(unreached(format!("it answered {status}"))),
         }
     }
 
@@ -275,7 +275,7 @@ impl Machines {
         let now = crate::store::now_ms();
         let instant = |at: &str| {
             ms(at).ok_or_else(|| {
-                let message = format!("{hub}: the Hub's rental time {at:?} is not RFC 3339");
+                let message = format!("The Hub at {hub} sent a rental time Cozy can't read: {at:?}.");
                 Error::new(Kind::Unavailable, "hub.rental_time_invalid", message)
             })
         };
@@ -346,7 +346,7 @@ impl Machines {
                     let _ = me.ask_hub(&ask, Some(answer)).await;
                 });
                 answered.await.map_err(|_| {
-                    Error::new(Kind::Unavailable, STOPPING, "Calcifer is stopping")
+                    Error::new(Kind::Unavailable, STOPPING, "Cozy is stopping. Try again once it's back.")
                 })??
             }
         };
@@ -369,7 +369,7 @@ impl Machines {
         run: Option<RunId>,
     ) -> Result<(Ask, bool), Error> {
         if run.as_ref().is_some_and(|id| matches!(self.calcifer.run_store(id.as_str()),Ok(crate::store::RunStore::Project(_)))) {
-            return Err(Error::new(Kind::Conflict,"project_remote_execution_unavailable","project work cannot create a global rental intent"));
+            return Err(Error::new(Kind::Conflict,"project_remote_execution_unavailable","A project's render can't rent a machine by itself. Rent one first, then pick it for the render."));
         }
         let origin = config::Origin::parse(hub)?;
         let mut intent = serde_json::json!({"hub": origin, "sku": sku, "gpus": shape.gpus,
@@ -387,13 +387,13 @@ impl Machines {
                 return Err(Error::new(
                     Kind::Conflict,
                     "idempotency_conflict",
-                    format!("the key {key:?} already asked for another rental"),
+                    format!("The key {key:?} was already used for a different rental."),
                 ));
             }
             return Ok((asked, false));
         }
         if self.store().legacy_rental_pending().map_err(internal)? {
-            return Err(Error::new(Kind::Conflict,"legacy_rental_pending","an earlier rental order still needs ownership or history recovery; resolve it before creating another order"));
+            return Err(Error::new(Kind::Conflict,"legacy_rental_pending","An earlier rental order from an older Cozy still needs its owner or history recovered. Sort that out before renting again."));
         }
         // A rent its Hub has not answered is this computer's one order for what it asks: asking
         // again, under any key, never buys a second pod.
@@ -404,7 +404,7 @@ impl Machines {
         }
         // An ask the Hub would refuse unasked, or one this computer cannot sign, records nothing.
         if !(1..=200).contains(&key.len()) {
-            let message = format!("the key {key:?} is not 1 to 200 characters");
+            let message = format!("The key {key:?} must be 1 to 200 characters.");
             return Err(Error::new(Kind::Usage, "idempotency_key_invalid", message));
         }
         let (mut request, alias, signer) = request(sku, shape);
@@ -429,7 +429,7 @@ impl Machines {
             crate::store::StoreError::Conflict(_) => Error::new(
                 Kind::Conflict,
                 "idempotency_conflict",
-                format!("the key {key:?} already asked for another rental"),
+                format!("The key {key:?} was already used for a different rental."),
             ),
             e => internal(e),
         })?;
@@ -505,8 +505,8 @@ impl Machines {
                     let name = ask.machine.as_deref().unwrap_or(&ask.key);
                     pause = e.wait_or((pause * 2).clamp(Duration::from_secs(2), Duration::from_secs(60)));
                     tell(&Err(e.remedy(format!(
-                        "it is asked again under one key, so it buys one pod at most: `cozy machine ls` shows it as {name}, `cozy machine end {name}` stops it"
-                    ))));
+                        "Cozy keeps asking with the same key, so it rents one machine at most. It shows as {name}; end it to cancel the order."
+                    )).next(format!("cozy machine end {name}"))));
                     tokio::select! {
                         () = tokio::time::sleep(pause) => {}
                         () = self.end_waits.notified() => {}
@@ -643,11 +643,11 @@ impl Machines {
         match RentBody::of(ask).is_ok_and(|body| body.stopped) {
             true => {
                 machine.state = MachineState::Ending;
-                machine.ending = Some(format!("{}'s answer: it ends what the order placed", ask.hub));
+                machine.ending = Some(format!("waiting for {} to answer, then ending whatever the order rented", ask.hub));
             }
             false => {
                 machine.boot = Some(match lock(&self.unanswered).get(&ask.key) {
-                    Some(why) => format!("ordering, not answered yet: {why}"),
+                    Some(why) => format!("ordering, still waiting for the Hub: {why}"),
                     None => "ordering".into(),
                 });
             }
@@ -791,7 +791,7 @@ impl Machines {
                 sku: sku.into(),
                 why: match e.code.as_str() {
                     "placement_needs_release" => String::new(),
-                    _ => format!("{sku} as asked, though {}", e.message),
+                    _ => format!("{sku}, as you asked (the Hub couldn't pick one itself: {})", e.message.trim_end_matches('.')),
                 },
                 ..Placed::default()
             }),
@@ -806,8 +806,8 @@ impl Machines {
             return Err(Error::new(
                 Kind::Usage,
                 "placement_needs_release",
-                "the Hub places a published release: run local code with --on <machine> or \
-                 --on new:<sku>",
+                "The Hub can only pick a machine for a published package. Run your own code on a machine \
+                 you have, or name the GPU to rent.",
             )
             .next("cozy machine rent"));
         };
@@ -831,7 +831,7 @@ impl Machines {
                 Kind::Capacity,
                 "placement_none_fits",
                 format!(
-                    "no product the Hub sells now holds this run: {}",
+                    "No machine the Hub rents right now can run this: {}.",
                     why.join("; ")
                 ),
             )
@@ -839,12 +839,12 @@ impl Machines {
         };
         let fast = placement.machines.iter().filter(|m| m.fast == Some(true)).count();
         let rule = match (top.fast, top.speed) {
-            (_, None) => format!("the cheapest of {} products", placement.machines.len()),
-            (Some(true), _) => format!("the cheapest per run of {fast} machines fast enough"),
-            _ => format!("the fastest of {}: none is fast enough", placement.machines.len()),
+            (_, None) => format!("the cheapest of {} machines", placement.machines.len()),
+            (Some(true), _) => format!("the cheapest per run of the {fast} fast enough"),
+            _ => format!("the fastest of {}, though none is fast enough", placement.machines.len()),
         };
         let why = format!(
-            "the Hub placed it on {} ({}× {}, {} GB): {rule} for {} GB of weights",
+            "The Hub picked {} ({}× {}, {}GB), {rule}, for {}GB of weights.",
             top.name,
             top.accelerator_count,
             top.accelerator_model,
@@ -882,7 +882,7 @@ impl Machines {
     /// What a `new` run would rent and its price, as `rent_for` would ask it: nothing is rented.
     pub(crate) async fn run_quote(&self, submit: &SubmitRun) -> Result<RunQuote, Error> {
         let On::New(sku) = &submit.on else {
-            return Err(Error::new(Kind::Usage, "quote_needs_new", "only a run with `--on new` rents"));
+            return Err(Error::new(Kind::Usage, "quote_needs_new", "Only a run on a new rental has a price."));
         };
         let gpus = (submit.spec.gpus > 0).then_some(submit.spec.gpus);
         let sku = match sku {
@@ -935,7 +935,7 @@ impl Machines {
             }
             // Asked before this Calcifer: whether the Hub took it is not known here.
             if ask.kind == AskKind::Rent {
-                lock(&self.unanswered).insert(ask.key.clone(), "its Calcifer restarted before the Hub answered".into());
+                lock(&self.unanswered).insert(ask.key.clone(), "Cozy restarted before it answered".into());
             }
             let me = self.clone();
             self.spawn(async move {
@@ -1215,7 +1215,7 @@ impl Machines {
         let pending = self.pending_end(&row.name)?;
         // An added machine nothing holds is removed now: no Hub is asked.
         if row.kind == MachineKind::Added && pending.is_none() && (force || owed.is_empty()) {
-            self.ended(&row.name, "removed from this controller");
+            self.ended(&row.name, "removed from this computer");
             let machine = self.picture(&self.row(&row.name)?)?;
             return Ok(Ended { machine, changed: true, abandoned });
         }
@@ -1399,7 +1399,7 @@ impl Machines {
         // An added machine is removed from this controller: no Hub is asked.
         if ask.hub.is_empty() {
             if let Some(name) = &ask.machine {
-                self.ended(name, "removed from this controller");
+                self.ended(name, "removed from this computer");
             }
             return settle(Ok(()));
         }
@@ -1420,7 +1420,7 @@ impl Machines {
                     Err(e) if e.kind == Kind::Conflict => released = Some(tokio::time::Instant::now()),
                     Err(e) if e.kind == Kind::NotFound => {
                         return settle(Err(format!(
-                            "release_unconfirmed: {} does not know rental {id}; nothing was ended",
+                            "the Hub at {} has no rental {id}, so nothing was ended",
                             ask.hub
                         )));
                     }
@@ -1435,7 +1435,7 @@ impl Machines {
                 if !noted && at.elapsed() >= END_UNCONFIRMED {
                     noted = true;
                     let minutes = END_UNCONFIRMED.as_secs() / 60;
-                    let said = format!("its Hub took the release {minutes} min ago and has not said the pod is gone: it may still be billing; Calcifer keeps asking");
+                    let said = format!("The Hub accepted the end {minutes}m ago but hasn't confirmed the rental is gone, so it may still be billing. Cozy keeps checking.");
                     match self.store().note_ask(&ask.key, &said) {
                         Ok(()) => self.calcifer.machine_changed(),
                         Err(e) => warn!(ask = ask.key, "{e}"),
@@ -1623,7 +1623,7 @@ pub(crate) fn independent_legacy_ask(kind:&str,bytes:&[u8])->bool {
 const ORDER_OPEN_FOR: Duration = Duration::from_secs(3600);
 
 /// Why a stopped order ended.
-const STOPPED: &str = "the order stopped before its Hub answered (`cozy machine end`, its run's end, or an hour unanswered); nothing bills for it";
+const STOPPED: &str = "The order was stopped before the Hub answered (you ended it, its run ended, or the Hub didn't answer for an hour). Nothing is billed for it.";
 
 /// One ask in flight: its loop's place, and what was said of it, are gone with it.
 struct Asking<'a>(&'a Machines, &'a str);
@@ -1641,9 +1641,10 @@ fn order_pending(ask: &Ask) -> Error {
     Error::new(
         Kind::Unavailable,
         "rental_order_pending",
-        format!("{name} is this order, not yet answered by {}: no second one is placed", ask.hub),
+        format!("{name} is already on order and the Hub ({}) hasn't answered yet, so Cozy didn't place a second one.", ask.hub),
     )
-    .remedy(format!("`cozy machine ls` shows it; `cozy machine end {name}` stops it"))
+    .remedy("End it if you don't want it.")
+    .next(format!("cozy machine end {name}"))
 }
 
 impl RentBody {
@@ -1679,17 +1680,12 @@ pub(crate) fn login(origin: &str) -> String {
     config::load().map(|loaded| loaded.config).unwrap_or_default().login(origin)
 }
 
-/// A refusal's message with its next step: what a run's reason says.
-fn words(error: &Error) -> String {
-    match error.next.first() {
-        Some(next) => format!("{} (`{next}`)", error.message),
-        None => error.message.clone(),
-    }
-}
-
-/// A refusal in one line: what an ask records.
+/// A refusal in one line, in words: what an ask records. A refused sign-in says what to do about it.
 fn said(error: &Error) -> String {
-    format!("{}: {}", error.code, words(error))
+    match error.kind {
+        Kind::Credential => format!("{} (sign in to the Hub again)", error.message.trim_end_matches('.')),
+        _ => error.message.clone(),
+    }
 }
 
 /// A refusal as a run's reason.
@@ -1721,7 +1717,7 @@ fn offline(rental: &types::Rental) -> Option<String> {
         "degraded" if code.starts_with("readiness.provider_stopped") => {
             Some(format!("{who} stopped it"))
         }
-        "release_requested" => Some(format!("its Hub is ending it ({})", cause(rental))),
+        "release_requested" => Some(format!("the Hub is ending it ({})", cause(rental))),
         _ => None,
     }
 }
@@ -1767,7 +1763,7 @@ fn cause(rental: &types::Rental) -> String {
     given(&rental.release_cause)
         .or_else(|| given(&rental.detail))
         .or_else(|| rental.failure.as_ref().map(|f| f.code.clone()))
-        .unwrap_or_else(|| format!("its Hub says it {}", rental.state))
+        .unwrap_or_else(|| format!("the Hub says it {}", rental.state))
 }
 
 /// What a rental is said as while its name is a handle (Paul 11-12: the GPU's name as soon as it has one, never the
@@ -1832,7 +1828,7 @@ fn boot_phase(rental: &types::Rental) -> Option<String> {
         rental.state == "pending_acquisition" && !d.is_empty() && replaced.is_none_or(|r| r.failure_code != *d)
     });
     if let Some(boot) = boot.filter(|_| replaced.is_some()) {
-        let again = format!("placing it again (attempt {})", boot.attempt);
+        let again = format!("finding another machine (attempt {})", boot.attempt);
         return Some(match pending {
             Some(why) => format!("{again}: {why}"),
             None => again,
@@ -1852,7 +1848,7 @@ fn boot_phase(rental: &types::Rental) -> Option<String> {
         .and_then(|b| Some(ms(&b.observed_at)? - ms(b.last_progress_at.as_deref()?)?))
         .map(|ms| ms / 60_000)
         .filter(|minutes| *minutes > 0)
-        .map(|minutes| format!(" (no progress {minutes} min)"));
+        .map(|minutes| format!(" (no progress for {minutes}m)"));
     let pull = boot.and_then(|b| b.pull.as_ref()).and_then(pull_words);
     (!words.is_empty()).then(|| words.join(": ") + &pull.unwrap_or_default() + &still.unwrap_or_default())
 }
@@ -1867,14 +1863,14 @@ fn pull_words(pull: &types::RentalPull) -> Option<String> {
         true => ("", pull.download_bytes, pull.download_total_bytes, pull.download_bytes_per_second),
         false => ("extracting ", pull.extract_bytes, pull.extract_total_bytes, pull.extract_bytes_per_second),
     };
-    let mut text = format!(" {doing}{}/{}", crate::bytes(done as f64), crate::bytes(total as f64));
+    let mut text = format!(" {doing}{} of {}", crate::bytes(done as f64), crate::bytes(total as f64));
     if let Some(rate) = rate.filter(|rate| *rate > 0.0) {
         text += &format!(", {}/s", crate::bytes(rate));
     }
     if let Some(left) = pull.remaining_seconds.filter(|left| left.is_finite()) {
-        text += &format!(", at least {left:.0} s left to pull");
+        text += &format!(", at least {left:.0}s left");
     }
-    text += &format!(", {}/{} layers done", pull.layers_complete, pull.layers_observed);
+    text += &format!(", {} of {} layers", pull.layers_complete, pull.layers_observed);
     Some(text)
 }
 
@@ -1983,34 +1979,34 @@ fn sku_refusal(sku: &str, gpus: u32, status: &types::RentalSkuStatus) -> Error {
         return Error::new(
             Kind::Validation,
             "sku_unknown",
-            format!("the Hub sells no machine named {sku:?}; nothing was rented"),
+            format!("The Hub doesn't rent a machine called {sku:?}, so nothing was rented."),
         )
         .next("cozy machine rent");
     }
     // The Hub's reason, of the offer that frees first; an older Hub gives none.
     let why = match status.held_for.as_deref() {
-        Some("no_capacity") => "has no capacity in the offers we can buy",
-        Some("failed_boot") => "is held back after a recent boot failure",
-        _ => "is held back",
+        Some("no_capacity") => "isn't available from any provider Cozy can buy from",
+        Some("failed_boot") => "is paused after a recent failed start",
+        _ => "is paused",
     };
     let held = match status.unavailable_reason.as_deref() {
         Some("cooldown") => Some((
             "sku_cooldown",
             match &status.retry_after {
-                Some(at) => format!("{ask} {why}; retry after {at}"),
-                None => format!("{ask} {why}; retry shortly"),
+                Some(at) => format!("{ask} {why}. Try again after {at}."),
+                None => format!("{ask} {why}. Try again shortly."),
             },
         )),
         Some("retry_in_progress") => Some((
             "sku_retry_in_progress",
-            format!("{ask} {why} while another rental retries it; try again once that ends"),
+            format!("{ask} {why} while another rental retries it. Try again once that one finishes."),
         )),
         _ => None,
     };
     if let Some((code, message)) = held {
         return Error::new(Kind::Capacity, code, message).next(retry).next("cozy machine rent");
     }
-    let mut message = format!("no provider has {ask} right now; nothing else was rented in its place.");
+    let mut message = format!("No provider has {ask} right now, so nothing was rented.");
     if let Some(at) = &status.last_seen_at {
         message += &format!(" It was last offered at {at}.");
     }
@@ -2020,7 +2016,7 @@ fn sku_refusal(sku: &str, gpus: u32, status: &types::RentalSkuStatus) -> Error {
         .collect();
     let error = match offered.first() {
         Some(first) => {
-            message += &format!(" {sku} is offered now with {} GPU(s).", offered.join(", "));
+            message += &format!(" {sku} is available now with {} GPUs.", offered.join(" or "));
             Error::new(Kind::Capacity, "sku_out_of_stock", message).next(format!("cozy machine rent {sku} --gpus {first}"))
         }
         None => Error::new(Kind::Capacity, "sku_out_of_stock", message).next(retry),

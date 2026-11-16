@@ -236,7 +236,7 @@ pub(crate) async fn ffmpeg(home: &Home, say: Say<'_>) -> Result<Ffmpeg, Error> {
     let dir = tools::ffmpeg_dir(&home.tools());
     fetch(say, "ffmpeg", archives, &dir).await?;
     usable_ffmpeg(home).await.ok_or_else(|| {
-        Error::new(Kind::Internal, "ffmpeg_unavailable", format!("the pinned ffmpeg in {} does not answer", dir.display()))
+        Error::new(Kind::Internal, "ffmpeg_unavailable", format!("The ffmpeg Cozy installed in {} doesn't run.", dir.display()))
     })
 }
 
@@ -256,7 +256,7 @@ pub(crate) async fn uv(home: &Home, say: Say<'_>) -> Result<PathBuf, Error> {
     fetch(say, "uv", std::slice::from_ref(&archive), &dir).await?;
     let found: Option<Found> = tools::uv(&home.tools(), &[]);
     found.map(|found| found.path).ok_or_else(|| {
-        Error::new(Kind::Internal, "uv_unavailable", format!("the pinned uv in {} does not answer", dir.display()))
+        Error::new(Kind::Internal, "uv_unavailable", format!("The uv Cozy installed in {} doesn't run.", dir.display()))
     })
 }
 
@@ -266,7 +266,7 @@ fn unpinned(name: &'static str) -> Error {
     Error::new(
         Kind::Unavailable,
         format!("{name}_unavailable"),
-        format!("cozy pins no {name} build for {} {}", std::env::consts::OS, std::env::consts::ARCH),
+        format!("Cozy has no {name} build for {} {}. Install it with your system's package manager.", std::env::consts::OS, std::env::consts::ARCH),
     )
     .next(install_hint(&Tool { install: Install::System(name), ..*tool }, &path()))
     .next("cozy doctor")
@@ -277,7 +277,7 @@ fn unpinned(name: &'static str) -> Error {
 async fn fetch(say: Say<'_>, name: &str, archives: &[Archive], dir: &Path) -> Result<(), Error> {
     let failed = |e: String| {
         Error::new(Kind::Unavailable, format!("{name}_unavailable"), e)
-            .remedy("the next command that needs it fetches it again")
+            .remedy("Cozy tries to download it again the next time it's needed.")
             .next("cozy doctor")
     };
     let parent = dir.parent().expect("a tool's directory has a parent");
@@ -293,7 +293,7 @@ async fn fetch(say: Say<'_>, name: &str, archives: &[Archive], dir: &Path) -> Re
             return Err(Error::new(
                 Kind::Validation,
                 format!("{name}_digest_mismatch"),
-                format!("{} is sha256:{got}, not the pinned sha256:{}", archive.url, archive.sha256),
+                format!("The download from {} doesn't match (sha256:{got}, not sha256:{}).", archive.url, archive.sha256),
             )
         .next("cozy doctor"));
         }

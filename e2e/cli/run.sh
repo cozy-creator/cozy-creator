@@ -184,7 +184,7 @@ done
 # What a function doesn't take is said, and the run goes on: these are no input of `ImageRequest`.
 if cell ratio-unknown "$ratio" "prompt=ratio $RANDOM" negative_prompt=blurry guidance:=3 prompt_upsampling:=true; then
   for field in guidance negative_prompt prompt_upsampling; do
-    grep -q "reads no input $field" "$OUT/ratio-unknown.ndjson" "$OUT/ratio-unknown.err" \
+    grep -q "has no input $field" "$OUT/ratio-unknown.ndjson" "$OUT/ratio-unknown.err" \
       || check "ratio-unknown: $field, which it doesn't take, isn't said"
   done
 fi

@@ -116,7 +116,7 @@ function page(verb, ...words) {
 
   // A name it doesn't have: refused in one line, with the name it likely meant.
   const typo = cozy('get', 'shot');
-  check('a_typo_is_refused_with_its_fix', typo.code !== 0 && /did you mean shot_1\?/.test(typo.err) && typo.err.trim().split('\n').length <= 2, typo);
+  check('a_typo_is_refused_with_its_fix', typo.code !== 0 && /[Dd]id you mean shot_1\?/.test(typo.err) && typo.err.trim().split('\n').length <= 2, typo);
 
   // Takes: three rendered, the newest shown and the rest counted; every one with --takes, and one by its number.
   page('render', '--on', 'local', '--n', '3', 'shot_1');

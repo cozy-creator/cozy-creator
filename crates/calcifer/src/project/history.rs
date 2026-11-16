@@ -689,7 +689,7 @@ async fn step(State(api): State<Arc<Api>>, Path(id): Path<String>, headers: Head
 /// The entries a step takes, in the order it takes them; `None` when what it names is so already.
 fn chosen(entries: &[Entry], asked: &HistoryStep, way: Way) -> Result<Option<Vec<Entry>>, Error> {
     let stands = |entry: &Entry| entry.undone.is_none() == (way == Way::Back);
-    let unknown = |what: String| Error::new(Kind::NotFound, "history_unknown", format!("this project's history has no {what}: it keeps the last {KEPT} edits")).next("cozy open");
+    let unknown = |what: String| Error::new(Kind::NotFound, "history_unknown", format!("This project's history has no {what}. It keeps only the last {KEPT} edits.")).next("cozy open");
     let one = |entry: Option<&Entry>, what: String| match entry {
         None => Err(unknown(what)),
         Some(entry) if stands(entry) => Ok(Some(vec![entry.clone()])),
@@ -725,7 +725,7 @@ fn chosen(entries: &[Entry], asked: &HistoryStep, way: Way) -> Result<Option<Vec
     };
     match head {
         Some(entry) => Ok(Some(vec![entry.clone()])),
-        None => Err(Error::new(Kind::Conflict, "history_empty", format!("nothing to {}", way.verb())).next("cozy open")),
+        None => Err(Error::new(Kind::Conflict, "history_empty", format!("There's nothing to {}.", way.verb())).next("cozy open")),
     }
 }
 
@@ -785,18 +785,18 @@ fn purged_boxes(folder: &Folder, entry: &Entry, way: Way) -> Result<Vec<Bare>, E
 fn conflict(book: &Book, entry: &Entry, change: &Change, way: Way, what: &str) -> Refusal {
     // A take `reclaim` cleared has no files: no edit took it, and none brings it back.
     if let Some(what) = what.strip_suffix(CLEARED) {
-        let said = format!("can't {} \"{}\": {what}: reclaiming unused files cleared it, so it can't come back", way.verb(), entry.words);
+        let said = format!("Can't {} \"{}\": {what}. Clearing out unused files removed it, so it can't come back.", way.verb(), entry.words);
         return Refusal(Error::new(Kind::Conflict, "history_conflict", said).next("cozy open"));
     }
     let entries = book.entries.lock().unwrap_or_else(|e| e.into_inner());
     let later = entries.iter().rev().find(|other| other.id > entry.id && other.undone.is_none() && other.changes.iter().any(|held| held.touches(change.name())));
     let verb = way.verb();
-    let said = format!("can't {verb} \"{}\": {what}", entry.words);
+    let said = format!("Can't {verb} \"{}\": {what}", entry.words);
     let error = match later {
-        Some(later) => Error::new(Kind::Conflict, "history_conflict", format!("{said}, by \"{}\" ({})", later.words, said_by(&later.by)))
-            .remedy(format!("in the browser, undo history entry {} before retrying {verb} for entry {}", later.id, entry.id))
+        Some(later) => Error::new(Kind::Conflict, "history_conflict", format!("{said}, by \"{}\" ({}).", later.words, said_by(&later.by)))
+            .remedy(format!("Undo \"{}\" (entry {}) first, then {verb} entry {} again.", later.words, later.id, entry.id))
             .next("cozy open"),
-        None => Error::new(Kind::Conflict, "history_conflict", format!("{said}, by a render or before this history")).next("cozy open"),
+        None => Error::new(Kind::Conflict, "history_conflict", format!("{said}, by a render or before this history began.")).next("cozy open"),
     };
     Refusal(error)
 }

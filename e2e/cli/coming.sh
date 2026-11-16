@@ -108,7 +108,7 @@ J '[.runs[] | select(.kind == "call" and .machine == "stand-c" and .status == "c
 # `--on new`, stand-c sooner than a new rental: nothing rented (no quote to agree to), it runs there and says why.
 in_project "$P" --json run minimax-h3-tools/echo text=coming --on new > "$OUT/coming-new-run.ndjson" 2> "$OUT/coming-new-run.err" \
   || check "coming: run --on new: $(tail -c 300 "$OUT/coming-new-run.ndjson") $(tail -c 300 "$OUT/coming-new-run.err")"
-grep -q 'stand-c finishes it .*nothing is rented' "$OUT/coming-new-run.ndjson" "$OUT/coming-new-run.err" \
+grep -q 'stand-c would finish it .*nothing new is rented' "$OUT/coming-new-run.ndjson" "$OUT/coming-new-run.err" \
   || check "coming: run --on new didn't say stand-c finishes it sooner: $(tail -c 300 "$OUT/coming-new-run.err")"
 in_project "$P" --json run ls --limit 0 > "$OUT/coming-new-runs.json"
 J '[.runs[] | select(.target | test("/echo"))] | .[0].machine == "stand-c"' "$OUT/coming-new-runs.json" \

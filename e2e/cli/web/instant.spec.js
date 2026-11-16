@@ -277,7 +277,7 @@ test('instant', async ({ page, project, api, guards }) => {
     await softly.poll(() => canvasText(page, first), { message: 'rolled back to its name' }).toContain('Typed while it was held');
     await softly.poll(() => canvasText(page, 'taken'), { message: "the other writer's box" }).toContain("Another writer's");
     await softly.poll(async () => (await lines()).filter((line) => line.startsWith("Couldn't rename")), { message: 'one line says why' })
-      .toEqual([expect.stringMatching(new RegExp(`^Couldn't rename ${first}: .*taken.*already`))]);
+      .toEqual([expect.stringMatching(new RegExp(`^Couldn't rename ${first}: There's already a box called taken`))]);
     expect.soft((await project.asset(first))?.fields?.text, 'its words where they were').toBe('Typed while it was held');
     expect.soft((await project.asset('taken'))?.fields?.text).toBe("Another writer's");
   });

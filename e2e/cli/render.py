@@ -139,9 +139,9 @@ def main() -> int:
     # Current: nothing to render, said definitely; -n forces nothing.
     again = cozy("render", "film")
     seen["again"] = repr(again)
-    check("nothing_to_render", again.code == 0 and again.out.strip() == "nothing to render: film take 1 is current (--new renders it again)", again)
+    check("nothing_to_render", again.code == 0 and again.out.strip() == "nothing to render: film take 1 is up to date (use --new to render it again)", again)
     forced = cozy("render", "shot_1", "-n", "2", "--on", "local")
-    check("n_forces_nothing", forced.code == 0 and forced.out.strip() == "nothing to render: shot_1 take 1 is current (--new renders it again)", forced)
+    check("n_forces_nothing", forced.code == 0 and forced.out.strip() == "nothing to render: shot_1 take 1 is up to date (use --new to render it again)", forced)
 
     # --new renders a current node, -n of it; --json says each take.
     idle()
@@ -172,7 +172,7 @@ def main() -> int:
     api("/approve", "POST", {"name": "shot_1", "version": "1"})
     api("/assets/shot_1", "PATCH", {"fields": {"summary": "<mara> on <look>, at dawn."}})
     kept = cozy("render", "shot_1", "--on", "local")
-    check("approved_stands", kept.code == 0 and kept.out.startswith("nothing to render: shot_1 take 1 is approved, though") and "--outdated renders it again" in kept.out, kept)
+    check("approved_stands", kept.code == 0 and kept.out.startswith("nothing to render: shot_1 take 1 is approved, though") and "use --outdated to render it again" in kept.out, kept)
     outdated = cozy("render", "shot_1", "--outdated", "--on", "local")
     seen["outdated"] = repr(outdated)
     held = api("/assets/shot_1")
@@ -198,7 +198,7 @@ def main() -> int:
     lone.wait()
     check("killed_render_finishes", until("alone landed", lambda: len(versions("alone")) == 1 and not running("alone")))
     rejoined = cozy("render", "alone")
-    check("killed_then_current", rejoined.code == 0 and rejoined.out.strip() == "nothing to render: alone take 1 is current (--new renders it again)", rejoined)
+    check("killed_then_current", rejoined.code == 0 and rejoined.out.strip() == "nothing to render: alone take 1 is up to date (use --new to render it again)", rejoined)
 
     # A failure stops only what reads it.
     node("bad", SHOTS, "shoot", {"summary": "On <look>.", "refuse": "the fixture's lens cracked"})
@@ -226,8 +226,8 @@ def main() -> int:
     unchosen = cozy("render", "pick", "--on", "local")
     said = unchosen.out + unchosen.err
     seen["unchosen"] = repr(unchosen)
-    check("required_choice_says_choose", unchosen.code != 0 and "can't run: choose its Edit (Character swap, Head swap or Style transfer)" in said
-          and "choose pick's Edit" in said and "needs its edit" not in said and "write pick" not in said and not versions("pick"), unchosen)
+    check("required_choice_says_choose", unchosen.code != 0 and "can't render until you choose its Edit (Character swap, Head swap or Style transfer)" in said
+          and "Choose pick's Edit" in said and "needs its edit" not in said and "write pick" not in said and not versions("pick"), unchosen)
 
     print(json.dumps({"failures": failures, "seen": seen}, indent=1, default=str))
     return 1 if failures else 0

@@ -89,7 +89,7 @@ async fn opened(api: &Api, machine: &str, number: u64, after: u64) -> Result<(Ru
     let (row, link) = api.machines.linked(machine)?;
     let listed = link.runs(number + 1, 1).await.map_err(|e| refusal(&row.name, e))?;
     let state = (listed.runs.into_iter().find(|run| run.number == number)).ok_or_else(|| {
-        Error::new(Refused::NotFound, "run_not_found", format!("{} has no run {number} this computer reads", row.name))
+        Error::new(Refused::NotFound, "run_not_found", format!("{} has no run {number} that this computer can read.", row.name))
             .next(format!("cozy run ls --on {}", row.name))
     })?;
     let frames = link.events(&state.id, after).await.map_err(|e| refusal(&row.name, e))?;

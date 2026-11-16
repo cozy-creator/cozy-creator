@@ -18,7 +18,7 @@
 const { spawn } = require('child_process');
 const { appendFileSync, closeSync, copyFileSync, mkdirSync, openSync, readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, canvasVisible, canvasPoint, focus, openPoint, canvasIdle } = require('./fixtures');
+const { test, expect, canvasVisible, canvasPoint, focus, canvasIdle } = require('./fixtures');
 const { dropFiles, fit, toolRow, leave } = require('./hands');
 const { carry } = require('./geometry');
 
@@ -40,6 +40,27 @@ const SUMMARY = 'A lighthouse on a rocky coast at dusk.';
 const BEAT = 'The beam sweeps over the dark sea as waves roll in and break on the rocks. The scene is set at dawn.';
 // The h3 suite's: the VFX edit LoRA asked to change nothing of a synthetic test pattern.
 const GUIDE = 'The video is kept exactly as it is, with nothing changed. A synthetic broadcast test pattern fills the frame: colour bars, a moving gradient sweep, a turning marker and a running timecode on a dark field. The camera is static and no person appears.';
+
+/** Open canvas with a box's room around it (a video box is 360 wide), clear of every card and control, left to right from under the bar:
+ *  where a person lets go of a new box. fixtures.js's openPoint scans from the bottom right corner, where a box lands half off screen. */
+async function roomAt(page) {
+  let point;
+  await expect.poll(async () => {
+    point = await page.evaluate(() => {
+      const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+      if (!inspection) return null;
+      const open = (x, y) => document.elementFromPoint(x, y)?.classList.contains('canvas-pane') && !inspection.hitTest({ x, y });
+      for (let y = 160; y < innerHeight - 340; y += 40) for (let x = 520; x < innerWidth - 240; x += 40) {
+        let clear = true;
+        for (let dy = -40; clear && dy <= 320; dy += 40) for (let dx = -220; clear && dx <= 220; dx += 40) clear = open(x + dx, y + dy);
+        if (clear) return { x, y };
+      }
+      return null;
+    });
+    return Boolean(point);
+  }, { message: "open canvas with a box's room", timeout: 30_000 }).toBe(true);
+  return point;
+}
 
 /** In every document, before the page's own scripts: its `GET /v1/events` read twice, the page's copy untouched and ours handed to
  *  `__flowEvent` one `data:` block at a time, cut to what the judge reads (a machine's snapshot is large); and what the page shows,
@@ -186,6 +207,14 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
   const settled = (run) => ['completed', 'failed', 'canceled'].includes(run.status);
   const machineOf = (m) => [...machines.values()].find((one) => (m.rental_id && one.rental_id === m.rental_id) || one.name === m.name);
   const goto = async (url) => { flow.loads.push({ at: Date.now(), url, asked: true }); await page.goto(url); };
+  /** Beat `n`'s words in Focus `r`, its section opened first (a closed one is inert), typed as a person types them. */
+  const typeBeat = async (r, n, words) => {
+    const toggle = r.locator(`.beat-toggle[aria-controls$="-${n}"]`).first();
+    if ((await toggle.count()) && (await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
+    const beat = r.locator(`.mention-text[data-field="beats.${n}.description"]`);
+    await beat.click();
+    await page.keyboard.type(words);
+  };
   /** Box `name` in Focus, as a person finds it: out of any other's Focus, the canvas fitted, a double-click on it. */
   const look = async (name) => {
     const open = page.getByRole('region', { name: 'Focused asset' });
@@ -313,7 +342,7 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
 
     await test.step('a plate dropped on the canvas: its box', async () => {
       await canvasIdle(page);
-      await dropFiles(page, [{ name: 'plate.mp4', type: 'video/mp4', bytes: readFileSync(need('PLATE')) }], await openPoint(page));
+      await dropFiles(page, [{ name: 'plate.mp4', type: 'video/mp4', bytes: readFileSync(need('PLATE')) }], await roomAt(page));
       const naming = page.getByRole('textbox', { name: 'Name', exact: true });
       await expect(naming).toBeFocused({ timeout: 30_000 });
       await naming.fill('plate');
@@ -332,18 +361,23 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
       expect(generate, `the palette lists ${GENERATE}`).toBeTruthy();
       expect(edit, `the palette lists ${EDIT}`).toBeTruthy();
       const before = new Set((await project.assets()).map((asset) => asset.name));
+      await fit(page);
       const row = await toolRow(page, 'Video', generate.id);
-      await carry(page, row, await openPoint(page));
+      const at = await roomAt(page);
+      await carry(page, row, at);
+      flow.shot_dropped_at = at;
       await expect.poll(async () => {
         SHOT = (await project.assets()).find((asset) => !before.has(asset.name) && asset.tool === generate.id)?.name ?? null;
         return SHOT;
-      }, { message: 'the Shot box made', timeout: 60_000 }).not.toBeNull();
+      }, { message: `the Shot box made, let go at ${JSON.stringify(at)}`, timeout: 60_000 }).not.toBeNull().catch(async (error) => {
+        failed('the boxes when the Shot made none', (await project.assets()).map((asset) => `${asset.name}: ${asset.tool || asset.kind}`).join(', '));
+        throw error;
+      });
       await expect.poll(() => canvasVisible(page, SHOT), { timeout: 60_000 }).toBe(true);
       const r = await look(SHOT);
       await r.getByRole('textbox', { name: 'Summary', exact: true }).click();
       await page.keyboard.type(SUMMARY);
-      await r.locator('.mention-text[data-field="beats.0.description"]').click();
-      await page.keyboard.type(BEAT);
+      await typeBeat(r, 0, BEAT);
       await expect.poll(async () => (await project.asset(SHOT))?.fields?.beats?.[0]?.description, { message: 'its beat saved', timeout: 30_000 }).toBe(BEAT);
       const fields = (await project.asset(SHOT)).fields;
       flow.shot = { name: SHOT, fields };
@@ -361,13 +395,15 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
       await expect.poll(async () => (await project.asset('plate'))?.tool ?? null, { message: 'the plate takes the Edit tool', timeout: 60_000 }).toBe(edit.id);
       const r = await look('plate');
       await r.getByRole('combobox', { name: 'Edit', exact: true }).selectOption({ label: 'VFX edit' });
-      await r.locator('.mention-text[data-field="beats.0.description"]').click();
-      await page.keyboard.type(GUIDE);
+      await typeBeat(r, 0, GUIDE);
+      // Its beat as long as the plate, where the page offers a beat's length; an edit is as long as its plate either way.
       const duration = r.getByRole('slider', { name: "Beat 1's duration", exact: true });
-      await duration.focus();
-      await page.keyboard.press('Home');
-      for (let s = 1; s < PLATE_S; s++) await page.keyboard.press('ArrowRight');
-      await expect.poll(async () => (await project.asset('plate'))?.fields?.beats?.[0]?.duration, { message: `its beat ${PLATE_S} s`, timeout: 30_000 }).toBe(PLATE_S);
+      if (await duration.isVisible()) {
+        await duration.focus();
+        await page.keyboard.press('Home');
+        for (let s = 1; s < PLATE_S; s++) await page.keyboard.press('ArrowRight');
+        await expect.poll(async () => (await project.asset('plate'))?.fields?.beats?.[0]?.duration, { message: `its beat ${PLATE_S} s`, timeout: 30_000 }).toBe(PLATE_S);
+      }
       await expect.poll(async () => (await project.asset('plate'))?.fields?.edit, { message: 'VFX edit chosen', timeout: 30_000 }).toBe('vfx_edit');
       flow.edit = { name: 'plate', fields: (await project.asset('plate')).fields };
       await shot('edit-typed');

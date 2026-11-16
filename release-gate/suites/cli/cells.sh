@@ -93,7 +93,7 @@ project_cell() {
     {name: "pier", tool: $still, kind: "image", fields: {instructions: "A wooden pier with a red hut at its end, as in <hut>."}}
   ]' | cli_page boxes "$C" > project-cycle-boxes.log 2>&1 || cli_fail "the cycle's boxes: $(tail -c 300 project-cycle-boxes.log)"
   (cd "$C" && "$CLI" status) > project-cycle.log 2>&1 || cli_fail "status refused a cycle of mentions: $(tail -c 300 project-cycle.log)"
-  grep -q "pier mentions hut, which is made from it: that mention stays plain text" project-cycle.log \
+  grep -q "pier mentions hut, which is made from it, so that mention stays plain text" project-cycle.log \
     || cli_fail "status did not warn of the cycle: $(tail -c 300 project-cycle.log)"
   cli_page render "$C" --on "$M" --wait hut,pier all > project-cycle-render.log 2>&1 || cli_fail "render all with a cycle of mentions: $(tail -c 400 project-cycle-render.log)"
   project_status "$C" project-cycle.json

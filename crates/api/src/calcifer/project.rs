@@ -129,7 +129,7 @@ pub struct Key {
 
 /// A request in no project, which needs one.
 pub fn unnamed() -> Error {
-    Error::new(crate::error::Kind::Usage, "not_in_a_project", "run this command from an existing project directory. Use cozy new to create one")
+    Error::new(crate::error::Kind::Usage, "not_in_a_project", "Run this from inside a project folder, or create a project first.").next("cozy new")
         .next("cozy new")
 }
 
