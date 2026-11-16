@@ -131,7 +131,7 @@ export function ModelPicker({ name, onClose }: { name: string; onClose(): void }
   useEffect(() => { if (!view?.asset) close.current() }, [view?.asset])
   if (!view?.asset) return null
   return (
-      <div ref={dialog} className="model-picker nodrag nopan nowheel" role="dialog" aria-label="Models and LoRAs" tabIndex={-1} onKeyDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
+      <div ref={dialog} className="model-picker canvas-control" role="dialog" aria-label="Models and LoRAs" tabIndex={-1} onKeyDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
         <header className="model-picker-head">
           {page && <button type="button" className="iconb model-picker-back" aria-label="Back to model slots" title="Back" onClick={() => setPage(null)}><Icon name="back" /></button>}
           <div className="model-picker-title"><h2>{active ? slotName(active, qwen, slots) : page === "__legacy" ? "Existing LoRAs" : "Models & LoRAs"}</h2></div>

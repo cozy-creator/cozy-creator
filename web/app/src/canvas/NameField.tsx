@@ -48,7 +48,7 @@ export function NameField({ name, draft, onCancel }: { name: string; draft: stri
   return (
     <input
       ref={input}
-      className="nm-field nodrag nopan"
+      className="nm-field canvas-control"
       aria-label="Name"
       spellCheck={false}
       value={draft}

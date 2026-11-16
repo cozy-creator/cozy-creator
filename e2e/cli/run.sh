@@ -42,6 +42,8 @@ parse "$@"
 . "$(dirname "$0")/envcost.sh"
 . "$(dirname "$0")/egress.sh"
 . "$(dirname "$0")/stuck.sh"
+. "$(dirname "$0")/rentalself.sh"
+. "$(dirname "$0")/reports.sh"
 . "$(dirname "$0")/typedcalls.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
@@ -453,6 +455,7 @@ WEB_2=(
   live
   delete-undo
   canvas-nav
+  resize
 )
 WEB_3=(
   focus
@@ -462,6 +465,7 @@ WEB_3=(
   instant
   select
   move
+  svg
 )
 # The `@engines` cells in Firefox, and the vault (`@vault`), which needs the filesystem driver.
 WEB_ENGINES=(
@@ -527,6 +531,7 @@ case $SHARD in
     run_playback
     hub_away
     lock_refresh
+    performance_data
     bound_runs
     own_references
     lane_fit
@@ -536,6 +541,7 @@ case $SHARD in
     hostile_media
     egress
     hostile_inputs
+    private_weights
     unseen
     machine_checkout
     local_edits
@@ -573,6 +579,7 @@ case $SHARD in
     run_playback
     hub_away
     lock_refresh
+    performance_data
     logs
   " ;;
   executors) parts="
@@ -618,6 +625,7 @@ case $SHARD in
     hostile_media
     egress
     hostile_inputs
+    private_weights
     machine_show_runs
     writes_once
     project_stream
@@ -674,6 +682,7 @@ case $SHARD in
     old_takes
     db_migrate
     db_legacy
+    db_remote_custody
     db_opens
     db_migrate_large
     db_waits
@@ -688,6 +697,7 @@ case $SHARD in
   projectvault) parts="
     vault_times
     shared_scratch
+    open_unlocks
     projectvault
     vault_leftovers
     vault_swapped
@@ -704,6 +714,8 @@ case $SHARD in
   projectdb-migrate) parts="db_migrate logs" ;;
   # cozy status's legacy history and cozy doctor's old runs by folder, over a 0.24.0 store fenced here (cl-984).
   projectdb-legacy) parts="db_legacy logs" ;;
+  # Old runs an ended rental made import as the project's own, and the project takes new work (cl-1003).
+  projectdb-remote-custody) parts="db_remote_custody logs" ;;
   # A 5,000-box project of schema 3 opened here: migrated with nothing lost, its rows read (cl-885).
   projectdb-migrate-large) parts="db_migrate_large logs" ;;
   # project.db held by another program while a run begins, within Calcifer's wait and past it (cl-885).
@@ -733,12 +745,18 @@ case $SHARD in
     path_manifest
     from_source
     rental_end
+    rental_end_again
+    logs
+  " ;;
+  # Stops, restarts, updates and starts past a TensorD that can't exit, and a start that hangs, then a rental's own end against a
+  # stood-in Hub and provider (cl-977): about 12 min.
+  stuck) parts="
+    stuck_exit
+    rental_self
     logs
   " ;;
   # Typed package composition on the candidate cohort, with tiny local CPU inputs only.
   typed-calls) parts="typed_calls logs" ;;
-  # Stops, restarts, updates and starts past a TensorD that can't exit, and a start that hangs (cl-977): about 10 min.
-  stuck) parts="stuck_exit logs" ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
   coming) parts="coming_machine logs" ;;
   # `cozy update`, its own runner, as it replaces this computer's cozy: the Latest updating to the candidate, then cozy updating

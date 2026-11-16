@@ -182,6 +182,11 @@ media-src 'self' blob:; font-src 'self'; connect-src 'self'; base-uri 'none'; fo
 
 ### Status
 - `GET /v1/status`: `{version, os, local_usable, signed_in, heap_bytes, encrypted_project_creation, home}`. `home` is this person's home folder, where the page suggests a first project's folder. Clients must require `encrypted_project_creation: true` before sending encrypted-creation credentials or requests; older controllers omit it. `heap_bytes` is what Calcifer's code has allocated and not freed: what it holds, without what its allocator keeps of what was freed, which its resident memory counts too. `os` is `linux`, `macos` or `windows`; `local_usable` is
+- `GET /v1/settings`: `{send_performance_data}`, this computer's settings Calcifer holds (config.toml's `[calcifer]`); `PUT` sends them
+  whole, written to config.toml first. `send_performance_data` (default true, cl-1006): each published function's run on any
+  machine is reported to the Hub (`POST /v1/run-reports`) with no credential: its function, release, models, versions, OS, GPU,
+  size, times, kernels and outcome, never its inputs, outputs, names or keys. Reports wait in memory and go 64 at once or 10 min after
+  the first; a batch the Hub doesn't take is dropped. Off: nothing waits or goes.
 - `GET /v1/legacy`: `{existing, gone, unreadable}`, the old project runs (from before projects kept their own) Calcifer's store still holds: `existing` and `gone` list `{path, runs}` by the project folder each names, here or gone; `unreadable` counts records it can't read. `cozy doctor` says it (cl-984).
   whether this computer runs models itself; `signed_in` is whether it holds a device key for its Hub, which it answers
   without asking the Hub (`GET /v1/account` does).
@@ -311,7 +316,9 @@ The machine owns its GPU width (cl-816): a lone job runs wide, several queued jo
 - Calcifer quotes each machine a job may go to itself (cl-967), from the Status it pushes, with the estimator TensorD packs its queue by
   (`api::estimate::quote`): each job by `function` (`org/pkg/fn@release`, local code `sha256:<manifest>/fn`), `models` (each checkpoint's
   lane commit, bytes and repository, from its Hub card), `size` (`JobSize::of` its payload), `gpu` and `prior_ms` (eta's time for it on one
-  GPU of that kind, from runs at one width). A render's jobs not sent are planned together (`plan.rs`): each, in dependency order, where it
+  GPU of that kind, from runs at one width; with none and no measurement of ours on that card, ours or those runs on another card
+  scaled by the Hub's speeds). A machine that ran none of it and has no prior is timed by our measurement of its card
+  (`api::estimate::reference`, cl-1004), else a minute. A render's jobs not sent are planned together (`plan.rs`): each, in dependency order, where it
   finishes soonest after those placed before it, then single moves while the whole ends sooner. A ready job goes when its planned machine
   has a GPU for it (one machine: at once); each machine is told its upcoming jobs (`PUT /v1/upcoming`) and, idle with nothing planned
   while others hold unstarted work it can run, what to prepare (`PUT /v1/prepare`).
@@ -319,9 +326,10 @@ The machine owns its GPU width (cl-816): a lone job runs wide, several queued jo
   `boot.expected_ready_at`, from its provider and card's recent boots and the phase it's in; else 4 min from its attempt's start; not before
   its image's pull can end; once overdue, as long again as it's late, at least 30 s; an order its Hub has had no pod for a minute isn't
   quoted), then quoted as a machine that holds nothing (`placement::Picture`), the runs already sent to it ahead of the jobs asked, each
-  timed by this computer's runs on its card, else its Hub's (`GET /v1/run-times`), else a minute. Its quote's `ready_ms` says when.
-  A job held for one says so on the board: `why` `waits for pluto, ready in about 2 min`, `machine` pluto. A run on a rental that
-  completes tells its Hub what it took (`POST /v1/rentals/{id}/run-times`), so the next machine of that card is quoted before it runs.
+  timed by this computer's runs on its card, else our measurement of that card, else its Hub's from every cozy's anonymous run reports
+  (`GET /v1/run-times`, asked with no credential), else another card's scaled by the Hub's speeds, else a minute. Its quote's
+  `ready_ms` says when.
+  A job held for one says so on the board: `why` `waits for pluto, ready in about 2 min`, `machine` pluto.
 - A machine that can't run it at all (`fits: false`: its weights too big for the disk, its GPUs out of service) has no finish
   and is never chosen. Of the rest the soonest finish wins; within 2% (or 1 s), a machine that serves before one on its way, one whose
   quote stands on its own measured runs before one that doesn't, then a rental before `local`. `local` takes nothing it would do poorly (as `fit` judges) while another can, unless its
@@ -680,6 +688,17 @@ read settles and on `approve`, reading each asset's state, else its newest versi
   `--take`, `--in`: one asset's new take keeps the start of that take, or the one in use (`400 take_unknown`), for a function that fills `continue_from` from `take`: it gets that take's `video`, `latents` and `at_s`, and one its package didn't make is `409 take_not_continued`. `202 {id, path}`, or `200` when
   its key asked it already. The work goes on in the project's walk and is followed on its board.
 - `POST /v1/projects/{id}/fit` `{names, outdated?}`: `{tools: [{tool, label, names, line, bytes, here?}], rent?: {sku, gpus, card, vram_gb, usd_micros_per_hour, line}}`. What a render of `names` (or `all`, as `runs` reads it) on this computer alone would do poorly, a tool a row, said before it's sent. A tool is done poorly with no GPU when its function loads a model on one, as it would then run on the CPU, degraded; on a GPU its weights fill more than three quarters of, the Hub's rule for a card that holds them; on a GPU that also draws the screen (the machine's status `gpus[].display`), which a render makes lag; and when its runs here take more than 3× and a minute longer than its runs on a rented card (the Hub's pick, else another card it ran on scaled by the Hub's speeds). Its `bytes` are what the Hub places a run of its release by (`POST /v1/rental-placements`), local code's those of its models' releases, either with a checkpoint on a box in place of its model's; 0 when the Hub doesn't say in 5 s. `line` says why, how long it takes here against a rented card when this computer ran it on one (else how long it took here), and that it slows the screen; `rent` is what the Hub places them on: the biggest card of its picks for those not yet said for, else for all. `here`: Render here was said of it on this computer. A client asks this only of a render whose machines are `local` alone, and shows Rent a <card> first, then Run here anyway: with another, the walk gives `local` nothing it would do poorly, nor anything while its GPU draws the screen. A render sent to `local` alone that asked nothing (`cozy render --on local`) says the same line, and `cozy run` on `local` warns it, never asking. Nothing is listed while `local` hasn't said what it has, for what loads no model or runs on no GPU, or for what Calcifer makes itself. What the Hub says is kept 10 minutes.
+  Each box named (not `all`) also gets `estimates: [{name, machine, card, run_ms, basis, faster?: {run_ms, line, rent}}]` (cl-1004),
+  whatever its machines: where a render of it would go now (its project's machines, else the render set; each quoted as "Placement"
+  quotes it, from what it last said, nothing started, updated or rented; the soonest finish as placement chooses it), its GPU (`card`,
+  empty for none) and the run alone there (`run_ms`: its quote's finish less its start, no queue, install, download or load; 0 when
+  nothing says, `basis` `none`). `faster` is the tool's recommended GPU, the Hub's pick for its release, when that runs it more than 3×
+  faster and a minute sooner, or the machine has no GPU for a function that loads a model on one: its time there, both times in a
+  `line`, and the `rent`. A time where nothing of it ran (here, on the pick, in `line` and in `tools`) is what's typical on that card:
+  this computer's runs on it, else our measurement of it (`api::estimate::reference`, the release gate's numbers, published with each
+  release), else ours or this computer's runs on another card scaled by the Hub's per-SKU speeds, the card nearest in speed. A run's
+  media seconds (every `duration` in its input), frames, megapixels, steps and tokens scale each, and the pictures it reads pick the
+  measurement most like it. The page shows `run_ms` beside Render from 15 s, and `faster` as a notice that opens Rent with its card.
 - `POST /v1/projects/{id}/fit/here` `{names, outdated?}`: the same, each tool listed kept as rendered here in `state.db`, by what this computer's GPUs are (their names and usable memory, or none) and its weights: `here` then holds until another computer, or weights half as big again, such as a bigger checkpoint on its box.
 - `POST /v1/projects/{id}/approve` `{name, version}`: `{name, noun, number, files, path, stale, warnings?}`. `version` is a short run of digits, its version, or anything else a hash prefix, which pins any file of the project; `number` is 0 when it is no version's. Writes the version's main file's hash as that asset's `approved`.
   Makes any tool whose reads settled, with no machine.
@@ -765,8 +784,6 @@ The CLI resolves the current directory to an existing project and sends its abso
 | `cozy login --key FILE` | `PUT /v1/account/key`; `PUT /v1/account/name` while unnamed |
 | `cozy logout [--everywhere]` | `DELETE /v1/account`; with `--everywhere`, `POST /v1/account/codes` (`sign_out_everywhere`), `POST /v1/account/codes/{id}` |
 | `cozy whoami` | `GET /v1/account` |
-| `cozy org claim` | `POST /v1/orgs/{org}/claim` |
-| `cozy org edit` | `PATCH /v1/orgs/{org}` |
 | `cozy model ls [query]` | `GET /v1/models` |
 | `cozy model ls --on` | `GET /v1/machines/{name}/models`; `--on all`: `GET /v1/machines` |
 | `cozy model show`, `cozy lora show` | `GET /v1/models/{org}/{name}/headers` |
@@ -792,6 +809,7 @@ The CLI resolves the current directory to an existing project and sends its abso
 | `cozy delete NAME…` | `GET /v1/projects/{id}`, then `DELETE /v1/projects/{id}/assets/{name}` each, under one `Cozy-Edit` |
 | `cozy render NAME… [--on M,…] [-n N] [--new] [--outdated] [--pickup '<NAME.N>@FRAME']` | `GET /v1/projects/{id}`; `--pickup`, `GET /v1/projects/{id}/assets/{name}` and `GET /v1/tools?project=` for the frames it lands on; on `local` alone, `POST /v1/projects/{id}/fit` first (off a terminal a poor fit refuses, naming `--on local` or `cozy machine rent`); `GET /v1/events` showing the project (`PUT /v1/events/{stream}`), then `POST /v1/projects/{id}/runs`, followed until the board's `ended` names its ask. Stopping it never cancels the render |
 | `cozy key [KEY]` | current directory, `GET /v1/projects/{id}/address`, `GET` (`PUT`) `/v1/projects/{id}/key` |
+| `cozy config [list\|get KEY\|set KEY VALUE]` | `GET /v1/settings`; `set`, then `PUT /v1/settings` |
 <!-- each PR adds its verbs' rows -->
 | `machine use [MACHINE,...]` | current directory, `GET /v1/projects/{id}/address`, `PUT /v1/projects/{id}/machines` |
 | `machine ls` | `GET /v1/machines?refresh=true`; on a terminal, `GET /v1/events`, then `GET /v1/machines` |

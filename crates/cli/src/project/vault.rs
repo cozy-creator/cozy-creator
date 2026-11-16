@@ -186,19 +186,29 @@ async fn request_vault(ctx: &Context, client: &crate::calcifer_client::Client, p
     }
     let mut prompted = request.clone();
     for attempt in 1..=3 {
-        prompted.passphrase = Some(credential(None, "Project passphrase: ", false)?);
+        let typed = credential(None, "Project passphrase or recovery secret: ", false)?;
+        if recovery_shaped(&typed) { prompted.recovery_secret = Some(typed); } else { prompted.passphrase = Some(typed); }
         let result = request_once(ctx, client, path, &prompted).await;
-        prompted.passphrase = None;
+        (prompted.passphrase, prompted.recovery_secret) = (None, None);
         match result {
             Err(error) if error.kind == Kind::Credential && error.code == "vault_unlock_failed" && attempt < 3 => {
                 let remaining = 3 - attempt;
                 let noun = if remaining == 1 { "attempt" } else { "attempts" };
-                output::warn(&format!("The passphrase did not unlock this project. Try again ({remaining} {noun} remaining)."));
+                output::warn(&format!("That did not unlock this project. Try again ({remaining} {noun} remaining)."));
             }
             result => return result,
         }
     }
     unreachable!("the final credential attempt returns its result")
+}
+
+/// What is typed at the prompt is a recovery secret when it has one's shape (`cozy1`, then 72 hex digits; any case, dashes
+/// and spaces as shown); anything else is the passphrase.
+fn recovery_shaped(typed: &str) -> bool {
+    let compact: String = typed.chars().filter(|c| !c.is_ascii_whitespace() && *c != '-').collect();
+    compact.get(..5).is_some_and(|prefix| prefix.eq_ignore_ascii_case("cozy1"))
+        && compact.len() == 77
+        && compact[5..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// The private stream and progress renderer are shared without command result/status output.

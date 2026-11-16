@@ -6,7 +6,7 @@
 const { createHash } = require('crypto');
 const { readdirSync, readFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, box, canvasIdle, focus, middle, png, TEXT_END } = require('./fixtures');
+const { test, expect, box, canvasIdle, focus, middle, png, TEXT_END, canvasCard, canvasNames, canvasPoint, canvasVisible, selectedNames } = require('./fixtures');
 const { drag, drawn, rows, rowsOf } = require('./geometry');
 
 const WORDS = 'a lighthouse in <hei.2> beside <other>';
@@ -27,7 +27,7 @@ test('box-actions', async ({ page, project, api }) => {
   expect(cutout, 'the Hub lists BiRefNet').toBeTruthy();
   await api.patch(project.at('/assets/hei'), { tool: cutout.id });
   await expect.poll(async () => (await project.asset('hei'))?.tool, { message: 'BiRefNet on hei' }).toBe(cutout.id);
-  for (const name of ['hei', 'words', 'other', 'two']) await expect(box(page, name)).toBeVisible();
+  for (const name of ['hei', 'words', 'other', 'two']) await expect.poll(() => canvasVisible(page, name)).toBe(true);
   await page.getByRole('button', { name: /more zoom options$/ }).click();
   await page.getByRole('menuitem', { name: /^Zoom to fit/ }).click();
   await canvasIdle(page);
@@ -39,7 +39,7 @@ test('box-actions', async ({ page, project, api }) => {
     return { tool: asset.tool ?? null, approved: asset.approved ?? null, sha256: asset.sha256 ?? null, takes: versions.map((version) => `${version.number}:${Object.values(version.files).map((file) => file.sha256).sort().join('+')}`) };
   };
   const files = () => readdirSync(join(project.path, 'files')).length;
-  const on = (name) => middle(box(page, name).locator('.media').first());
+  const on = (name) => canvasPoint(page, name);
   const clickOn = async (name, modifier) => {
     const { x, y } = await on(name);
     if (modifier) await page.keyboard.down(modifier);
@@ -66,19 +66,20 @@ test('box-actions', async ({ page, project, api }) => {
     const [hei, before, held] = [await made('hei'), await names(), files()];
     await clickOn('hei');
     await clickOn('words', 'Shift');
-    await expect(box(page, 'words')).toHaveAttribute('aria-selected', 'true');
+    await expect.poll(() => selectedNames(page)).toContain('words');
     await page.keyboard.press('ControlOrMeta+c');
     // The pointer on open canvas under the row, in the middle of what's visible: the copies land around it, all in view.
     const spot = await page.evaluate(() => {
       const left = document.querySelector('.tools').getBoundingClientRect().right;
-      const below = Math.max(...[...document.querySelectorAll('.react-flow__node .card[data-asset]')].map((card) => card.getBoundingClientRect().bottom));
+      const scene = document.querySelector('.canvas-root').canvasInspection;
+      const below = Math.max(...scene.names().map(name => { const r = scene.card(name).bounds; return r.y + r.height; }));
       return { x: Math.round((left + innerWidth) / 2), y: Math.round(below + 220) };
     });
-    expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.classList.contains('react-flow__pane'), spot), `the pointer on open canvas at ${JSON.stringify(spot)}`).toBe(true);
+    expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.classList.contains('canvas-pane') && !document.querySelector('.canvas-root')?.canvasInspection?.hitTest({ x, y }), spot), `the pointer on open canvas at ${JSON.stringify(spot)}`).toBe(true);
     await page.mouse.move(spot.x, spot.y);
     await page.keyboard.press('ControlOrMeta+v');
     await expect.poll(names, { message: 'two boxes more' }).toEqual([...before, 'hei_2', 'words_2'].sort());
-    for (const name of ['hei_2', 'words_2']) await expect.soft(box(page, name)).toBeVisible();
+    for (const name of ['hei_2', 'words_2']) await expect.configure({ soft: true }).poll(() => canvasVisible(page, name)).toBe(true);
     expect.soft(await made('hei_2'), "hei's copy: its tool, takes and approval, by the same digests").toEqual(hei);
     expect.soft((await project.asset('hei_2')).fields, 'and its fields').toEqual((await project.asset('hei')).fields);
     expect.soft((await project.asset('words_2')).fields?.text, "the copy's mention names the copy").toBe('a lighthouse in <hei_2.2> beside <other>');
@@ -87,7 +88,7 @@ test('box-actions', async ({ page, project, api }) => {
     await page.mouse.move(2, 500);
     await page.keyboard.press('ControlOrMeta+z');
     await expect.poll(names, { message: 'one Undo takes both back' }).toEqual(before);
-    for (const name of ['hei_2', 'words_2']) await expect.soft(box(page, name)).toHaveCount(0);
+    for (const name of ['hei_2', 'words_2']) await expect.configure({ soft: true }).poll(async () => (await canvasNames(page)).includes(name), { timeout: 1000 }).toBe(false);
   });
 
   await test.step('duplicate with Ctrl+D, with Alt-drag and with menu › Duplicate; Ctrl+V inside a prompt', async () => {
@@ -100,7 +101,7 @@ test('box-actions', async ({ page, project, api }) => {
 
     before = await names();
     const [was, drawnWas] = [(await rows(project)).other, (await drawn(page)).other];
-    const from = await middle(box(page, 'other').locator('.head .nm'));
+    const from = await canvasPoint(page, 'other', 'title');
     await page.keyboard.press('Escape');
     await drag(page, from, { x: from.x, y: from.y + 320 }, 'Alt');
     copy = await another(before, 'an Alt-drag');
@@ -157,7 +158,7 @@ test('box-actions', async ({ page, project, api }) => {
     await input.fill('harbour');
     await input.press('Enter');
     await expect.poll(async () => (await names()).includes('harbour') && !(await names()).includes('other'), { message: 'renamed in the API' }).toBe(true);
-    await expect.soft(box(page, 'harbour').locator('.head .nm'), 'and on the box').toHaveText('harbour');
+    await expect.configure({ soft: true }).poll(async () => (await canvasCard(page, 'harbour'))?.rendered?.labels.title?.fullText ?? await box(page, 'harbour').locator('.head .nm').textContent(), { message: 'and on the box' }).toBe('harbour');
     const text = (await project.asset('words')).fields.text;
     expect.soft(text.includes('<harbour>') && !text.includes('<other>'), `and in its mentions: ${text}`).toBe(true);
   });

@@ -73,7 +73,7 @@ export function slowWords(machine: Machine): string[] {
 }
 
 export const stateClass = (machine: Machine) =>
-  machine.offline || machine.end_failed || (machine.broken && machine.state !== "ended")
+  machine.offline || machine.end_failed || machine.end_unconfirmed || (machine.broken && machine.state !== "ended")
     ? "s-bad"
     : machine.state === "ready"
       ? "s-current"

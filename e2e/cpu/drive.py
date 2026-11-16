@@ -9,6 +9,8 @@ model's real classes at a tiny config, written into a throwaway store by TensorF
     drive.py <package dir> <interface.json> <fixture.py> <out dir> [--refs DIR] [--only cell,...] [--record]
 
 Prints one line per cell: PASS|FAIL|SKIP <package> <entry> <cell> <seconds>s[: first error line]. Exit 1 on any FAIL.
+Outputs are judged against refs/<package>.json, or refs/<package>.<amd|intel>.json where the two vendors' CPUs differ
+(`stored`: bf16 sums in another order on each, deterministic on one; Paul 11-06, determinism desirable, not required).
 """
 
 from __future__ import annotations
@@ -358,6 +360,10 @@ class Executor:
                 # destination, which no cell names).
                 self.items.append({"output": got.get("output", ""), "repo_id": got.get("repo_id", ""),
                                    "revision": got.get("revision", "")})
+                self.send({"event": "answer", "seq": got.get("seq", 0), "ok": True, "code": "", "detail": ""})
+            elif got.get("event") == "request" and got.get("kind") == "model_need":
+                # A model the call reads now (cl-966): its weights are all in the throwaway store and came from no Hub, so
+                # TensorD has nothing to fetch and answers at once (`Runs::need`).
                 self.send({"event": "answer", "seq": got.get("seq", 0), "ok": True, "code": "", "detail": ""})
             elif got.get("event") == "request" and self.broker is not None and got.get("kind", "") in Broker.KINDS:
                 self.send(self.broker.answer(got))
@@ -1020,6 +1026,30 @@ def load_fixture(path: Path, package: str) -> Fixture:
     return cast(Fixture, module)
 
 
+def cpu() -> str:
+    """This computer's CPU as each reply names it (`execution_observation.accelerator`: the Runtime's `cpu_name`, the
+    model name in /proc/cpuinfo), or ''."""
+    with contextlib.suppress(OSError):
+        for row in Path("/proc/cpuinfo").read_text().splitlines():
+            if row.startswith("model name"):
+                return row.partition(":")[2].strip()
+    return ""
+
+
+def stored(folder: Path, package: str) -> tuple[Path, str]:
+    """The file of `package`'s references for this CPU's vendor, and what each cell's line says of it. bf16 matmuls sum
+    in another order on Intel than on AMD, alike on every CPU of one vendor: a tiny model's picture can move past a
+    reference's tolerance between them (krea-2 lineart, 13/255 in one block: e2e 43758038887 on AMD bit for bit,
+    43758045155, 43758051105, 43758057029 on three Intels the same). Determinism is desirable, not required (Paul 11-06),
+    so a package whose cells differ keeps `<package>.amd.json` and `<package>.intel.json`, one whose don't
+    `<package>.json`. Another vendor reads AMD's and says so. `--record` writes the file read."""
+    name = cpu()
+    vendor = next((v for v in ("amd", "intel") if v in name.lower()), "")
+    own = folder / f"{package}.{vendor or 'amd'}.json"
+    path = own if own.exists() else folder / f"{package}.json"
+    return path, "" if vendor else f"{name or 'this CPU'} is neither AMD nor Intel: AMD's references ({path.name})"
+
+
 def main() -> int:
     package_dir, interface_path, fixture_path, out = (Path(a).resolve() for a in sys.argv[1:5])
     flags = sys.argv[5:]
@@ -1039,13 +1069,14 @@ def main() -> int:
     waive = cast(dict[str, str], getattr(fixture, "WAIVE", {}))
     #: `module:NAME` -> the literal it takes in the executor (a release geometry shrunk)
     patch = {k: repr(v) for k, v in cast(dict[str, object], getattr(fixture, "PATCH", {})).items()}
-    references_path = (Path(flags[flags.index("--refs") + 1]) if "--refs" in flags else HERE / "refs") / f"{package}.json"
+    references_path, unknown = stored(Path(flags[flags.index("--refs") + 1]) if "--refs" in flags else HERE / "refs", package)
     references = cast(dict[str, Seen], json.loads(references_path.read_text())) if references_path.exists() else {}
     failed = 0
 
     def line(ok: bool, entry: str, name: str, started: float, why: str = "") -> None:
         nonlocal failed
         failed += not ok
+        why = "; ".join(filter(None, (why, unknown)))
         print(f"{'PASS' if ok else 'FAIL'} {package} {entry} {name} {time.monotonic() - started:.1f}s{': ' + why if why else ''}",
               flush=True)
 

@@ -16,7 +16,7 @@ const { STEP_MS, launch, projectUrl, signIn } = require('./page');
     const page = at === 0 ? first : await context.newPage();
     page.setDefaultTimeout(STEP_MS);
     await page.goto(await projectUrl(folder));
-    await page.waitForSelector('.react-flow__pane');
+    await page.getByRole('region', { name: 'Project canvas', exact: true }).waitFor();
   }
   console.log('open');
   await new Promise(() => {});

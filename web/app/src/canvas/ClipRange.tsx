@@ -40,7 +40,7 @@ export function ClipRange({ sha256, frames, fps, from, to, width, label, onSet }
   })
   const at = (frame: number) => `${(frame / frames) * 100}%`
   return (
-    <div className="clip-range nodrag nopan" ref={bar} role="group" aria-label={label}>
+    <div className="clip-range canvas-control" ref={bar} role="group" aria-label={label}>
       <Thumb sha256={sha256} cardWidth={width} strip={STRIP} className="clip-strip" />
       <span className="clip-out" style={{ left: 0, width: at(now.from) }} />
       <span className="clip-out" style={{ right: 0, width: `${((frames - now.to) / frames) * 100}%` }} />

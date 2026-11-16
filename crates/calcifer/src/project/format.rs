@@ -731,6 +731,18 @@ impl Doc {
         }
     }
 
+    /// How many pictures and videos asset `i`'s fields read: the boxes they mention that aren't text, each once (cl-1004).
+    pub(crate) fn media_read(&self, i: usize) -> u32 {
+        let mut read: Vec<usize> = (mentions_in(&Value::Object(self.assets[i].made.clone())).iter())
+            .filter_map(|mention| self.mentioned(i, mention))
+            .map(|(j, _)| j)
+            .filter(|&j| self.assets[j].kind != "text")
+            .collect();
+        read.sort_unstable();
+        read.dedup();
+        read.len() as u32
+    }
+
     /// Whether asset `i` has an operation that can make it.
     pub(crate) fn makes(&self, i: usize) -> bool {
         !self.assets[i].hollow

@@ -3,11 +3,12 @@
 // on, and its stop is a square. Two segments rendered: segment 1 plays on its take's tile while segment 2 renders, the run has reached its
 // frames and its beat is done on the box (cl-885); played in Focus as the
 // take lands, the joined take, one video with its sound, takes its place within 2 px and plays on. Its segments are blocks under the
-// player and a block seeks; Redo says what it keeps and asks for segment 2 alone.
+// player and a block seeks; Redo says what it keeps and asks for segment 2 alone. Another box continues the take from its end (cl-951): chosen
+// in its draft, said there, and sent as the take and its last frame.
 const { readFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, box, focus, fixtureTool, DARK_OPEN } = require('./fixtures');
-const { ffmpeg, fit, leave, rest, spread } = require('./hands');
+const { test, expect, box, focus, fixtureTool, DARK_OPEN, canvasCard, canvasVisible, hoverBox } = require('./fixtures');
+const { ffmpeg, fit, leave, rest, posterSpread } = require('./hands');
 
 const SEGMENTS = fixtureTool('segments.py/segments');
 const FPS = 24;
@@ -32,16 +33,19 @@ test('video', async ({ page, project, api, guards }) => {
   await project.import(clip(test.info().outputPath('walk.mp4')), { name: 'walk', at: { x: 0, y: 0 } });
   await project.import(DARK_OPEN, { name: 'dark', at: { x: 360, y: 0 } });
   await project.add({ name: 'shot', tool: SEGMENTS, kind: 'video', fields: { summary: 'Along the coast, segment after segment.', beats: [{ description: 'The cliffs.', duration: SECONDS }, { description: 'The harbour.', duration: SECONDS }], wait: WAIT }, at: { x: 0, y: 320 } });
+  // cl-951's continuation: another box of the same tool, no take of its own yet.
+  await project.add({ name: 'next', tool: SEGMENTS, kind: 'video', fields: { summary: 'On past the harbour.', beats: [{ description: 'The lighthouse.', duration: SECONDS }] }, at: { x: 360, y: 320 } });
   await expect.poll(async () => (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`)).tools.some((tool) => tool.local && tool.id === SEGMENTS), { message: 'the project lists its local tool' }).toBe(true);
-  for (const name of ['walk', 'dark', 'shot']) await expect(box(page, name)).toBeVisible();
+  for (const name of ['walk', 'dark', 'shot', 'next']) await expect.poll(() => canvasVisible(page, name)).toBe(true);
   await fit(page);
   const region = page.getByRole('region', { name: 'Focused asset' });
 
   await test.step('at rest, a poster, not black for one that opens dark, then a muted looping preview', async () => {
     for (const name of ['walk', 'dark']) {
-      const poster = box(page, name).locator('.media .scrub img').first();
-      await expect.poll(() => poster.evaluate((img) => img.complete && img.naturalWidth > 0), { message: `${name}'s poster`, timeout: 60_000 }).toBe(true);
-      expect.soft(await spread(poster), `${name}'s poster shows something, not a black frame`).toBeGreaterThanOrEqual(12);
+      await page.mouse.move(4, 600);
+      await expect.poll(async () => (await canvasCard(page, name))?.rendered?.media.ready ?? false, { message: `${name}'s poster`, timeout: 60_000 }).toBe(true);
+      expect.soft(await posterSpread(page, name), `${name}'s poster shows something, not a black frame`).toBeGreaterThanOrEqual(12);
+      await hoverBox(page, name);
       await rest(page, box(page, name).locator('.media'));
       const preview = box(page, name).locator('video.preview.on');
       await expect.poll(async () => (await preview.count()) && (await playing(preview)).at > 0.3, { message: `${name}'s preview plays`, timeout: 45_000 }).toBe(true);
@@ -150,5 +154,28 @@ test('video', async ({ page, project, api, guards }) => {
     await expect.poll(() => asked.length, { message: 'its render asked' }).toBe(1);
     expect.soft(asked[0].pickup, 'segment 1 kept, segment 2 asked for').toMatchObject({ take: '<shot.1>', out_frame: SEAM });
     expect.soft((await project.asset('shot')).versions, 'no take made').toBe(1);
+  });
+
+  await test.step('another box continues the take from its end: chosen in its draft, said there, and sent', async () => {
+    // cl-951 (Paul, 11-12: "it has to be obvious that we're continuing another video").
+    const main = (await project.asset('shot')).prefixes[0].main;
+    const last = Math.round((main.duration_ms / 1000) * (main.fps || FPS));
+    // Its end on the tool's pickup grid, as H3's takes end on theirs (ranges.ts pickupAt).
+    const snap = (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`)).tools.find((tool) => tool.id === SEGMENTS)?.pickup;
+    const end = snap ? Math.max(snap.first, snap.offset + Math.floor((last - snap.offset) / snap.every) * snap.every) : last;
+    await page.unrouteAll({ behavior: 'wait' });
+    const asked = [];
+    await page.route((url) => /\/v1\/projects\/[^/]+\/runs$/.test(url.pathname), (route) => {
+      if (route.request().method() !== 'POST') return route.fallback();
+      asked.push(route.request().postDataJSON());
+      return route.fulfill({ status: 409, json: { error: { kind: 'conflict', code: 'e2e_held', message: 'held by the cell' } } });
+    });
+    await focus(page, 'next');
+    await region.getByRole('combobox', { name: 'Continue a video from its end', exact: true }).selectOption({ label: '<shot.1>' });
+    await expect(region.locator('.lead-in .lead-in-words b')).toHaveText(/^Continues <shot\.1> from its end · /);
+    expect.soft(asked, 'choosing renders nothing until Render').toEqual([]);
+    await region.getByRole('button', { name: 'Render', exact: true }).click();
+    await expect.poll(() => asked.length, { message: 'its render asked' }).toBe(1);
+    expect.soft(asked[0].pickup, `from <shot.1>'s end, frame ${end} of ${last}`).toMatchObject({ take: '<shot.1>', out_frame: end, beats_from: 0 });
   });
 });

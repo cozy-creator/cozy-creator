@@ -19,7 +19,7 @@ function Setting({ label, value, options, unset, onPick }: { label: string; valu
   return (
     <label className="menu-row">
       {label}
-      <select className="field nodrag" aria-label={label} value={held} onChange={(event) => onPick(event.target.value || null)}>
+      <select className="field canvas-control" aria-label={label} value={held} onChange={(event) => onPick(event.target.value || null)}>
         {unset && <option value="">{unset}</option>}
         {[...new Set([...options.map(String), ...(held ? [held] : [])])].map((option) => (
           <option key={option} value={option}>

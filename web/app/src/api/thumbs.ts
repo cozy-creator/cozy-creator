@@ -1,4 +1,5 @@
 import type { StreamEvent } from "./calcifer"
+import type { Transport } from "./transport"
 
 /**
  * Thumbnails Calcifer is still making (cl-982). Each is made as its file lands and kept in its project; one asked for before that answers
@@ -8,8 +9,16 @@ import type { StreamEvent } from "./calcifer"
 const waiting = new Map<string, Set<() => void>>()
 const keyOf = (project: string, sha256: string) => `${project} ${sha256.replace(/^sha256:/, "").toLowerCase()}`
 
-/** How many times a thumbnail is asked for before it's said to have none. */
+/** Consecutive real failures before a thumbnail is unavailable; accepted pending work does not spend this budget. */
 export const THUMB_TRIES = 6
+
+/** An img/decode failure has no HTTP status. Probe only that failed thumbnail, without downloading its bytes again. */
+export async function thumbPending(transport: Pick<Transport, "fetch">, path: string, signal: AbortSignal): Promise<boolean> {
+  const response = await transport.fetch(path, { method: "HEAD", signal })
+  const pending = response.status === 202
+  await response.body?.cancel()
+  return pending
+}
 
 /** `then`, once, when `project`'s thumbnail of `sha256` is made (or can't be), the stream starts over, or `ms` passes. Returns how to stop. */
 export function whenThumb(project: string, sha256: string, ms: number, then: () => void): () => void {

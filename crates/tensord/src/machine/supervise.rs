@@ -244,6 +244,7 @@ pub(crate) fn supervise(paths: &super::update::Paths, provider: Option<ProviderS
             match super::update::rollback_pending(paths, &cause)? {
                 Recovered::Nothing => {
                     tracing::error!("{cause}; stopping");
+                    end_rental(provider.as_ref());
                     end(code, listeners);
                 }
                 Recovered::Restored => tracing::warn!("{cause}; update rolled back"),
@@ -274,6 +275,18 @@ fn exec(paths: &super::update::Paths, launch: &std::path::Path, provider: Option
     let cause = format!("cannot run {}: {error}", launch.display());
     tracing::error!("{cause}");
     super::update::rollback_pending(paths, &cause).map(drop)
+}
+
+/// A rental's parent giving up ends its pod first (cl-977): nothing will serve there again, and a stopped container may still bill
+/// (RunPod starts it again). It asks its provider until the provider takes the pod, and this process ends with it. Elsewhere (no
+/// provider credential) it only stops.
+#[cfg(unix)]
+fn end_rental(provider: Option<&ProviderSelf>) {
+    let Some(provider) = provider else { return };
+    match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(runtime) => runtime.block_on(provider.end_until_gone()),
+        Err(error) => tracing::error!("no runtime to end this pod at its provider ({error}); stopping"),
+    }
 }
 
 /// This parent's exit. A service it leaves stuck (cl-977) holds the listeners it forked with: they stop listening first, so the

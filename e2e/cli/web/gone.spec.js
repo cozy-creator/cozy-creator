@@ -4,7 +4,7 @@
 // more. The tab stays there and the index lets the project go; a reload says the same, and stays. Its own cell, off the native lane:
 // Windows can't move a folder Calcifer holds open.
 const { renameSync, rmSync } = require('fs');
-const { test, expect, canvasIdle, recordAddress, stays } = require('./fixtures');
+const { test, expect, canvasIdle, recordAddress, stays, canvasNames, canvasVisible } = require('./fixtures');
 const { camera, sameCamera } = require('./geometry');
 
 test.use({ projectOptions: { starter: true } });
@@ -13,7 +13,7 @@ test('gone', async ({ context, project, api, signIn }) => {
   await context.addInitScript(recordAddress);
   const page = await context.newPage();
   await signIn(page, project.url());
-  await expect(page.locator('.react-flow__node').first()).toBeVisible();
+  await expect.poll(async () => { const names = await canvasNames(page); return names.length > 0 && await canvasVisible(page, names[0]); }).toBe(true);
   await expect.soft(page.locator('.unread, .gate'), 'it opens').toHaveCount(0);
   // Opened, the page fits it and keeps its view: that write lands before the folder goes, as a person deletes a folder after the page
   // has settled.

@@ -211,10 +211,46 @@ pub(crate) async fn offers(api: &Arc<Api>, jobs: &[Job], update: bool) -> (Vec<V
     let now = now_ms();
     let machines = machines_of(jobs);
     let pictured = pictures(api, &machines, update, now).await;
+    offered(api, jobs, &machines, &pictured, now).await
+}
+
+/// `offers` from what each machine last said, for a quote that changes nothing (cl-1004: an estimate shown before a render): a stopped
+/// `local` isn't started, a machine on another minor isn't updated, and none is asked; one on its way as it will picture itself.
+pub(crate) async fn offers_now(api: &Arc<Api>, jobs: &[Job]) -> (Vec<Vec<Offer>>, Vec<Result<Picture, String>>) {
+    let now = now_ms();
+    let machines = machines_of(jobs);
+    let mut pictured = vec![];
+    for on in &machines {
+        pictured.push(match on {
+            On::Machine(name) => match api.machines.coming(name, now) {
+                Some(coming) => Ok(crate::coming::picture(api, &coming).await),
+                None => last_picture(api, on, name),
+            },
+            _ => Err("it isn't rented yet".into()),
+        });
+    }
+    let (offers, _) = offered(api, jobs, &machines, &pictured, now).await;
+    (offers, pictured)
+}
+
+/// `on` as its last Status pictured it, however long ago; none for one that never said, is broken, or runs another minor.
+fn last_picture(api: &Arc<Api>, on: &On, name: &str) -> Result<Picture, String> {
+    let frame = api.machines.frame(name).ok_or("it hasn't said what it has")?;
+    if let Some(broken) = &frame.broken {
+        return Err(format!("it's broken: {}", broken.message));
+    }
+    if !same_minor(&frame.version, this_release()) && !rc_version() {
+        return Err(format!("it runs cozy {}, another minor than this cozy's", frame.version));
+    }
+    Ok(Picture { on: on.clone(), name: name.to_owned(), frame, ready_at_ms: None, ahead: vec![] })
+}
+
+/// Each job quoted on each of `machines` as `pictured`.
+async fn offered(api: &Arc<Api>, jobs: &[Job], machines: &[On], pictured: &[Result<Picture, String>], now: i64) -> (Vec<Vec<Offer>>, Vec<String>) {
     // What each job's function read of its models on any of them (cl-967).
     let frames: Vec<&v1::StatusFrame> = pictured.iter().filter_map(|pictured| pictured.as_ref().ok()).map(|picture| &picture.frame).collect();
     let frames = &frames;
-    let asked = machines.iter().zip(&pictured).map(|(on, pictured)| async move {
+    let asked = machines.iter().zip(pictured).map(|(on, pictured)| async move {
         let mine: Vec<usize> = (0..jobs.len()).filter(|&at| jobs[at].on.contains(on)).collect();
         let answer = match pictured {
             Ok(picture) => {

@@ -120,45 +120,12 @@ if [ "$SAMPLE" = true ]; then
   (printf '%s' "$SAMPLE_PY" | T=9000 pod "cat > /tmp/sample.py && python3 /tmp/sample.py 2> /tmp/sample.err" > /dev/null 2>&1) &
   say "sampling the pod's disk, pressure and page cache"
 fi
-# The pod's TensorFS store emptied (each root its processes name, every file but its format) and its executors ended.
-RESET_PY=$(cat <<'PY'
-import glob, json, os, shutil, signal
-def roots(name):
-    found = set()
-    for env in glob.glob("/proc/[0-9]*/environ"):
-        try:
-            for kv in open(env, "rb").read().split(b"\0"):
-                if kv.startswith(name.encode() + b"="):
-                    found.add(kv.split(b"=", 1)[1].decode())
-        except OSError:
-            pass
-    return sorted(r for r in found if os.path.isdir(r))
-stores = sorted(set(roots("COZY_TENSORFS_ROOT")) | set(roots("TENSORFS_HOME")))  # before the executors that name one end
-ended = []
-for d in glob.glob("/proc/[0-9]*"):
-    try:
-        if b"cozy_runtime.internal.executor" in open(d + "/cmdline", "rb").read():
-            os.kill(int(d[6:]), signal.SIGKILL); ended.append(int(d[6:]))
-    except OSError:
-        pass
-out = {"executors_ended": len(ended), "roots": {}}
-for root in stores:
-    size = sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fs in os.walk(root) for f in fs if os.path.isfile(os.path.join(dp, f)))
-    for entry in os.listdir(root):
-        path = os.path.join(root, entry)
-        if entry == "format":
-            continue
-        shutil.rmtree(path, ignore_errors=True) if os.path.isdir(path) and not os.path.islink(path) else os.remove(path)
-    out["roots"][root] = {"gb_before": round(size / 1e9, 2), "left": sorted(os.listdir(root))}
-print(json.dumps(out))
-PY
-)
 
 for ARM in "${names[@]}"; do
   D=$OUT${ARM:+/arm-$ARM} TAG=${ARM:+-$ARM} BEGAN=$(date +%s)
   [ -z "$ARM" ] || RUN_PROJECT=$OUT/project-$ARM
   if [ "$RESET" = true ]; then
-    printf '%s' "$RESET_PY" | T=600 pod "cat > /tmp/reset.py && python3 /tmp/reset.py" > "$D/reset.json" 2>&1 || fail "${ARM:+arm $ARM: }the pod's store wasn't emptied: $(tail -c 300 "$D/reset.json")"
+    T=600 pod "cat > /tmp/reset.py && python3 /tmp/reset.py" < "$(dirname "$0")/empty-store.py" > "$D/reset.json" 2>&1 || fail "${ARM:+arm $ARM: }the pod's store wasn't emptied: $(tail -c 300 "$D/reset.json")"
     say "${ARM:+arm $ARM: }the pod's store emptied: $(tail -c 400 "$D/reset.json")"
     step "uninstall$TAG" package uninstall "${PICTURE%%/*}" "${VIDEO%%/*}" --on "$NAME" -y || say "${ARM:+arm $ARM: }the packages weren't uninstalled"
   fi

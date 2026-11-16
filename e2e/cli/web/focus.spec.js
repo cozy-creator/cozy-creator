@@ -1,13 +1,17 @@
 // focus (cl-973 core cell 4): a double click opens a box in Focus, at its own address; every way out (Esc, Close focus, Back to canvas, the
-// browser's Back) puts the canvas back exactly where it was, and Forward and a reload come back to Focus on the same box. A press that began
-// inside Focus, the Files drawer or a box's menu and was let go outside keeps it open; one that began outside closes it (Paul, 11-12). In
-// Focus the wheel zooms the picture, never the canvas, and a sharper one loads with no blank frame.
-const { test, expect, box, canvasIdle, focus, middle, observeStill, openPoint, png } = require('./fixtures');
+// browser's Back, and while a trackpad's scroll or pinch still glides: cl-955) puts the canvas back exactly where it was, and Forward and a
+// reload come back to Focus on the same box. A press that began inside Focus, the Files drawer or a box's menu and was let go outside keeps
+// it open; one that began outside closes it (Paul, 11-12). In Focus the wheel zooms the picture, never the canvas, and a sharper one loads
+// with no blank frame. An edit's backdrop shows every picture its words use, as large as they can be (cl-949).
+const { test, expect, canvasIdle, focus, middle, observeStill, openPoint, png, canvasPoint, canvasVisible } = require('./fixtures');
 const { camera, drag, sameCamera } = require('./geometry');
 
 // A tall picture, so its fitted size in Focus asks for a small thumbnail, and a zoom for a larger one; and Qwen's Image with a take beside it.
 const PICTURE = 'tall';
 const TOOLED = 'harbour';
+// cl-949's edit: Qwen's box with a take, its words mentioning three pictures of three shapes.
+const EDIT = 'edit';
+const USED = { wide: [320, 160], square: [200, 200], narrow: [160, 280] };
 
 /** Focus as it stands once it has drawn in: its region, naming `name`, and the canvas still. */
 async function inFocus(page, project, name) {
@@ -68,7 +72,11 @@ test('focus', async ({ page, project, api }) => {
   await project.add({ name: TOOLED, tool: qwen.id, kind: 'image', fields: { instructions: 'a lighthouse at dusk, waves on black rocks' }, at: { x: 420, y: 0 } });
   await api.post(project.at(`/assets/${TOOLED}/versions`), { source: await project.upload(png(150)) });
   await expect.poll(async () => (await project.asset(TOOLED)).versions, { message: `${TOOLED} has its take` }).toBe(1);
-  for (const name of [PICTURE, TOOLED]) await expect(box(page, name)).toBeVisible();
+  for (const [i, [name, [w, h]]] of Object.entries(USED).entries()) await project.import(png(60 + i * 70, w, h), { name, at: { x: 840 + i * 360, y: 0 } });
+  await project.add({ name: EDIT, tool: qwen.id, kind: 'image', fields: { instructions: '<wide>, <square> and <narrow> in one picture' }, at: { x: 840, y: 420 } });
+  await api.post(project.at(`/assets/${EDIT}/versions`), { source: await project.upload(png(100, 300, 200)) });
+  await expect.poll(async () => (await project.asset(EDIT)).versions, { message: `${EDIT} has its take` }).toBe(1);
+  for (const name of [PICTURE, TOOLED, EDIT, ...Object.keys(USED)]) await expect.poll(() => canvasVisible(page, name)).toBe(true);
   // The canvas somewhere of its own: all in view, then a step out.
   await page.getByRole('button', { name: /more zoom options$/ }).click();
   await page.getByRole('menuitem', { name: /^Zoom to fit/ }).click();
@@ -103,6 +111,29 @@ test('focus', async ({ page, project, api }) => {
     await inFocus(page, project, TOOLED);
     await page.keyboard.press('Escape');
     await backHome(page, project, before, 'Esc after the reload');
+  });
+
+  await test.step('leave while a scroll, then a pinch, still glides', async () => {
+    // cl-955 (Paul, 11-12: "I exit out, but rather than snapping back … I just sit there at like 400% zoom-in"): a trackpad's wheel goes
+    // on after the hand has gone, and reaches the canvas as Focus closes.
+    const glide = (ctrlKey) => page.evaluate((ctrlKey) => new Promise((done) => {
+      const [x, y] = [innerWidth / 2, innerHeight / 2], end = performance.now() + 1200;
+      const tick = () => {
+        (document.elementFromPoint(x, y) ?? document.body).dispatchEvent(new WheelEvent('wheel', { deltaY: ctrlKey ? -3 : 9, ctrlKey, clientX: x, clientY: y, bubbles: true, cancelable: true }));
+        if (performance.now() < end) setTimeout(tick, 16);
+        else done();
+      };
+      tick();
+    }), ctrlKey);
+    for (const [way, ctrlKey] of [['a scroll', false], ['a pinch', true]]) {
+      await focus(page, TOOLED);
+      await inFocus(page, project, TOOLED);
+      const gliding = glide(ctrlKey);
+      await page.waitForTimeout(250);
+      await page.keyboard.press('Escape');
+      await gliding;
+      await backHome(page, project, before, `left while ${way} glides`);
+    }
   });
 
   await test.step('press inside the prompt and release over the canvas, then press and release outside', async () => {
@@ -144,7 +175,7 @@ test('focus', async ({ page, project, api }) => {
     await expect.soft(drawer, 'a press and release on the canvas closes it').toHaveCount(0);
     await expect.soft(page).toHaveURL(project.url());
 
-    const { x, y } = await middle(box(page, PICTURE).locator('.media').first());
+    const { x, y } = await canvasPoint(page, PICTURE);
     await page.mouse.click(x, y, { button: 'right' });
     const menu = page.getByRole('menu', { name: `${PICTURE}'s menu` });
     await expect(menu).toBeVisible();
@@ -190,5 +221,27 @@ test('focus', async ({ page, project, api }) => {
     await expect.soft(region, 'still in Focus').toBeVisible();
     await page.keyboard.press('Escape');
     await backHome(page, project, before, 'Esc after the wheel');
+  });
+
+  await test.step("an edit's backdrop: every picture its words use, each a real share, together the frame", async () => {
+    // cl-949 (Paul, 11-12: "it should display all 3, as large as possible in the background, full-bleed where possible").
+    const region = await focus(page, EDIT);
+    await region.getByRole('button', { name: 'Edit image', exact: true }).click();
+    await expect(region.locator('.in-frame .mention-text').first()).toBeVisible();
+    const used = Object.keys(USED);
+    const behind = () => region.locator('.card.here').first().evaluate((card) => {
+      const backdrop = card.querySelector('.backdrop');
+      if (!backdrop) return { pictures: [], covered: 0 };
+      const frame = backdrop.getBoundingClientRect();
+      const pictures = [...backdrop.querySelectorAll('.spread-picture')].map((cell) => {
+        const r = cell.getBoundingClientRect(), img = cell.querySelector('img');
+        return { key: cell.dataset.picture, share: (r.width * r.height) / (frame.width * frame.height), loaded: Boolean(img?.complete && img.naturalWidth > 0) };
+      });
+      return { pictures, covered: pictures.reduce((sum, one) => sum + one.share, 0) };
+    });
+    await expect.poll(async () => { const now = await behind(); return used.filter((key) => now.pictures.some((one) => one.key === key && one.loaded)); }, { message: 'all three behind the edit', timeout: 20_000 }).toEqual(used);
+    const now = await behind();
+    expect.soft(now.pictures.filter((one) => used.includes(one.key) && one.share < 0.12), `each a real share: ${JSON.stringify(now)}`).toEqual([]);
+    expect.soft(now.covered, `together the frame: ${JSON.stringify(now)}`).toBeGreaterThanOrEqual(0.93);
   });
 });

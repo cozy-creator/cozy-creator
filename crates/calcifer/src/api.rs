@@ -247,6 +247,7 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .route("/v1/runs/{id}/play", get(crate::play::play))
         .route("/v1/down", post(down))
         .route("/v1/status", get(status))
+        .route("/v1/settings", get(crate::reports::show).put(crate::reports::change))
         .route("/v1/legacy", get(legacy))
         .route("/v1/activity", get(activity))
         .route("/v1/machines", get(machines::list).post(machines::create))

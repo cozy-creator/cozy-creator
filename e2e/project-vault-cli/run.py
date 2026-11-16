@@ -1029,7 +1029,7 @@ foreach ($rule in $allowed) {
         os.close(slave)
         transcript = bytearray()
         entered = 0
-        prompt = b'Project passphrase: '
+        prompt = b'Project passphrase or recovery secret: '
         deadline = time.monotonic() + FIRST_COLD_SECONDS
         try:
             while process.poll() is None:
@@ -1078,10 +1078,10 @@ foreach ($rule in $allowed) {
     def open_unlocks_locked_project(self, password: Path, wrong: Path) -> None:
         refused = self.command('open', cwd=self.project, refusal=True)
         assert json.loads(refused.stdout)['error']['code'] == 'project_locked'
-        assert 'Project passphrase:' not in refused.stdout + refused.stderr
+        assert 'Project passphrase' not in refused.stdout + refused.stderr
         plain = self.command('open', cwd=self.project, refusal=True, json_output=False)
         assert 'cozy vault unlock' in plain.stdout + plain.stderr
-        assert 'Project passphrase:' not in plain.stdout + plain.stderr
+        assert 'Project passphrase' not in plain.stdout + plain.stderr
         self.assert_locked()
         self.cell('open_noninteractive_and_json_keep_unlock_guidance')
         if os.name != 'posix':
@@ -1099,18 +1099,18 @@ foreach ($rule in $allowed) {
         environment['COZY_TEST_BROWSER_LOG'] = str(browser_log)
         code, stdout, stderr = self.open_in_tty(None, environment, '--json')
         assert code != 0 and json.loads(stdout)['error']['code'] == 'project_locked'
-        assert 'Project passphrase:' not in stderr and not browser_log.exists()
+        assert 'Project passphrase' not in stderr and not browser_log.exists()
         self.cell('open_json_with_a_real_tty_still_never_prompts')
         bad = wrong.read_text().strip()
         good = password.read_text().strip()
         code, stdout, stderr = self.open_in_tty([bad, bad, bad], environment)
         assert code != 0 and 'vault_unlock_failed' in stderr and not browser_log.exists()
-        assert stderr.count('Project passphrase: ') == 3
+        assert stderr.count('Project passphrase or recovery secret: ') == 3
         self.assert_locked()
         self.cell('open_three_wrong_hidden_credentials_stop_without_a_browser')
         code, stdout, stderr = self.open_in_tty([bad, bad, good], environment)
         assert code == 0 and 'project:' in stdout and 'url:' in stdout
-        assert stderr.count('Project passphrase: ') == 3
+        assert stderr.count('Project passphrase or recovery secret: ') == 3
         assert 'readable view:' not in stdout and ': unlocked' not in stdout
         assert self.status()['state'] == 'unlocked' and browser_log.exists()
         self.cell('open_retries_two_wrong_credentials_then_opens_once')
@@ -1128,10 +1128,10 @@ foreach ($rule in $allowed) {
         self.assert_locked()
         code, stdout, stderr = self.open_in_tty(None, environment, '--json', command=('vault', 'unlock'))
         assert code != 0 and json.loads(stdout)['error']['code'] == 'vault_credential'
-        assert 'Project passphrase:' not in stderr
+        assert 'Project passphrase' not in stderr
         before = browser_log.read_text()
         code, _, stderr = self.open_in_tty([bad, bad, good], environment, command=('vault', 'unlock'))
-        assert code == 0 and stderr.count('Project passphrase: ') == 3
+        assert code == 0 and stderr.count('Project passphrase or recovery secret: ') == 3
         assert self.status()['state'] == 'unlocked' and browser_log.read_text() == before
         self.cell('explicit_interactive_unlock_retries_but_json_requires_a_credential_file')
         self.vault('lock', allow_locking=True)

@@ -10,6 +10,7 @@
 #   db_deleted_gc   a deleted box resolves nowhere; Undo in the window; its files and thumbnails gone after it, across a stopped Calcifer too
 #   db_purged       Undo past the 3-hour purge brings each box back where it was without its files, saying so
 #   db_closes       a project closes once no call, stream or render reads it; Calcifer's heap comes back; a reopen is as quick
+#   db_remote_custody  old runs an ended rental made import as the project's own, and the project takes new work (cl-1003)
 # Uses project.sh's `api`, `status`, `held` and `sha`.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # project.db's schema (db.rs VERSION): what a project this cozy opens holds, and what its copy before a migration is named after.
@@ -67,7 +68,8 @@ calcifer_halt() {
 # in_files <project> <sha256:hex or hex>: a file of that hash is in the project's files/.
 in_files() { local hex=${2#sha256:}; find "$1/files" -name "$hex*" 2> /dev/null | grep -q .; }
 # derived <project> <sha256:hex or hex>: what Calcifer made of that file and keeps by its hash (thumbnails, posters, clips), wherever.
-derived() { local hex=${2#sha256:}; find "$HOME/.cozy/cache" "$1/.vault-calcifer" \( -name "$hex-*" -o -name "$hex.*" \) 2> /dev/null; }
+# cl-982 keeps thumbnails, posters and previews in the project's own `.thumbs`; clips stay in the caches.
+derived() { local hex=${2#sha256:}; find "$HOME/.cozy/cache" "$1/.vault-calcifer" "$1/.thumbs" \( -name "$hex-*" -o -name "$hex.*" \) 2> /dev/null; }
 # entry_of <project> <words>: the newest history entry with those words, not undone.
 entry_of() { project_api "$1" '/history?limit=50' | jq -r --arg w "$2" '[.entries[] | select(.words == $w and (.undone | not))][0].id // empty'; }
 # place_of <project> <box>: where its card is, `x,y`.
@@ -81,6 +83,11 @@ box_kept() { asset_of "$1" "$2" | J '(.sha256 // null) == null and ((.versions /
 # Undo brings it back within the window (config.toml's calcifer.undo_seconds, cut to 40 s), and once the window ends its file and what
 # Calcifer made of it leave the project, unless another box holds the same file; Undo then brings the box back without them, saying so.
 # One deleted while Calcifer is stopped across its window is gone once Calcifer starts. The page's own half is the delete-undo cell.
+# closes_busy <id a> <id b>: whether each project's render is going, `true false`, by the projects' list, which opens none.
+closes_busy() {
+  curl -fsS -H "Authorization: Bearer $(jq -r .token "$lock")" -H 'cozy-project-storage: 3' "http://$(jq -r .address "$lock")/v1/projects?limit=1000" \
+    | jq -r --arg a "$1" --arg b "$2" '[([.projects[] | select(.id == $a)][0].busy // false), ([.projects[] | select(.id == $b)][0].busy // false)] | map(tostring) | join(" ")' || true
+}
 db_deleted_gc() {
 step "deleted boxes: resolve nowhere, Undo in the window, their files gone after it, across a stopped Calcifer too (cl-919)"
 local lock=$HOME/.cozy/calcifer/calcifer.lock.holder P=$OUT/deleted-gc window=40 pic twin late entry began code=0 said='' before after c
@@ -96,6 +103,8 @@ pic=$(asset_of "$P" pic | jq -r .sha256) twin=$(asset_of "$P" twin_b | jq -r .sh
 in_files "$P" "$pic" && in_files "$P" "$twin" || check "deleted gc: the imports aren't in files/"
 # A thumbnail made, as the page asks one: its going is checked below.
 project_api "$P" "/thumbs/${pic#sha256:}" -o /dev/null || check "deleted gc: no thumbnail of pic"
+# The first ask answers `202 thumb_pending` and draws it next (cl-982): wait until it's drawn.
+for _ in $(seq 60); do [ -z "$(derived "$P" "$pic")" ] || break; sleep 0.5; done
 [ -n "$(derived "$P" "$pic")" ] || check "deleted gc: pic's thumbnail isn't kept by its hash, so its going proves nothing"
 
 # Deleted: it resolves nowhere. A render of what mentions it, and the CLI's run of it, fail free, naming it.
@@ -224,7 +233,7 @@ step "projects closed once nothing reads them: by the CLI and a page's stream, m
 [ "${RUNNER_OS:-}" = Linux ] || { echo "closes: Calcifer's open files are read on Linux"; return 0; }
 CLOSES=$OUT/closes CLOSES_PREV='' CLOSES_OPENS=() CLOSES_REOPENS=() CLOSES_OPEN=() CLOSES_HELD=()
 CLOSES_PAGE=(-H "Host: $(jq -r .address "$HOME/.cozy/calcifer/calcifer.lock.holder")" -H 'Sec-Fetch-Site: same-origin' -H 'Sec-Fetch-Mode: cors' -H 'Sec-Fetch-Dest: empty' -H 'cozy-project-storage: 3')
-local lock=$HOME/.cozy/calcifer/calcifer.lock.holder n=12 start later pid first second update run_first look queued=0 held_first=0 held_second=0 P a b h1 h2 busy
+local lock=$HOME/.cozy/calcifer/calcifer.lock.holder n=12 start later pid first second update run_first look queued=0 held_first=0 held_second=0 P a b h1 h2 busy again=0
   local dropped=() looks=()
 mkdir -p "$CLOSES"
 ffmpeg -v error -y -f lavfi -i 'color=c=gray:size=32x18' -frames:v 1 "$CLOSES/seed.png"
@@ -279,8 +288,12 @@ for _ in $(seq 240); do
   h1=0 h2=0
   ! closes_open "$first" || h1=1
   ! closes_open "$second" || h2=1
-  busy=$(curl -fsS -H "Authorization: Bearer $(jq -r .token "$lock")" -H 'cozy-project-storage: 3' "http://$(jq -r .address "$lock")/v1/projects?limit=1000" \
-    | jq -r --arg a "$a" --arg b "$b" '[([.projects[] | select(.id == $a)][0].busy // false), ([.projects[] | select(.id == $b)][0].busy // false)] | map(tostring) | join(" ")' || true)
+  busy=$(closes_busy "$a" "$b")
+  # Probed before the list said busy, a project may have closed and opened again between (a render's end, then another walk of it),
+  # or the probe missed: one busy and not seen open is probed once more, after the list said so. A render going holds it then.
+  [ "${busy% *}" != true ] || [ "$h1" = 1 ] || ! closes_open "$first" || { h1=1; again=$((again + 1)); }
+  [ "${busy#* }" != true ] || [ "$h2" = 1 ] || ! closes_open "$second" || { h2=1; again=$((again + 1)); }
+  echo "$SECONDS h1=$h1 h2=$h2 busy=$busy" >> "$CLOSES/samples.log"
   look=$(project_api "$second" /runs | jq -r '[.runs[] | select(.kind == "call")][0] // empty | "\(.status)/\(.machine_state // "")"' || true)
   [[ " ${looks[*]} " == *" ${look:-none} "* ]] || looks+=("${look:-none}")
   [ "${busy% *}" != true ] || [ "$h1" = 1 ] || dropped+=("first while it ran")
@@ -290,9 +303,9 @@ for _ in $(seq 240); do
   [ "$busy" != "false false" ] || break
   sleep 0.5
 done
-echo "closes: the second render went ${looks[*]}; dropped while going: ${dropped[*]:-none}"
+echo "closes: the second render went ${looks[*]}; dropped while going: ${dropped[*]:-none}; seen open only when probed again: $again"
 [ "$queued" = 1 ] || check "closes: the second render was never seen waiting behind the first: ${looks[*]}"
-[ "$held_first" = 1 ] && [ ${#dropped[@]} = 0 ] || check "closes: a render going didn't hold its project open: ${dropped[*]:-never seen going}"
+[ "$held_first" = 1 ] && [ ${#dropped[@]} = 0 ] || check "closes: a render going didn't hold its project open: ${dropped[*]:-never seen going}: $(grep -n 'busy=true' "$CLOSES/samples.log" | grep -E 'h1=0|h2=0' | head -5 | tr '\n' ' ')"
 [ "$held_second" = 1 ] || check "closes: a render waiting for its machine didn't hold its project open"
 for _ in $(seq 300); do kill -0 "$update" 2> /dev/null || break; sleep 1; done
 kill "$update" 2> /dev/null || true; wait "$update" 2> /dev/null || true
@@ -1145,6 +1158,90 @@ J --arg gone "$G" '.legacy == {existing: [], gone: [{path: $gone, runs: 2}], unr
   || check "legacy: doctor after the open: $(jq -c .legacy "$OUT/legacy-doctor-after.json" 2> /dev/null)"
 echo "legacy: $(jq -r .legacy_history "$OUT/legacy-status.json"); store after: $(jq -c .legacy "$OUT/legacy-doctor-after.json")"
 in_cozy "$now" || check "legacy: this cozy back on its own store"
+}
+
+# db_remote_custody (cl-1003): a project's old runs an ended rental made import as its own, and it takes new work. On rc/0.26.0 Paul's
+# lab took none: its 3 imported runs, made on a rental now ended, stayed pending a custody only `local` can verify, and every render
+# was refused `legacy_worker_custody_pending`. Both states: a first import here, and one an earlier import left pending (the runs in
+# project.db pending, their old rows still in Calcifer's store), as lab's is.
+db_remote_custody() {
+step "legacy custody: old runs of an ended rental import as the project's own, and the project takes new work (cl-1003)"
+local D=$OUT/remote-custody now=$OUT/cozy-now old P pid ids
+old=$(cozy_0240) || { check "remote custody: 0.24.0's archive"; return; }
+[ -f "$now" ] || cp "$COZY" "$now"
+in_cozy "$old" && [ "$(cozy --version)" = "cozy 0.24.0" ] || { check "remote custody: 0.24.0 in this cozy's place: $(cozy --version)"; in_cozy "$now"; return; }
+P=$D/here
+mkdir -p "$P"
+boxes_in "$P" <<< '[{"name": "notes", "fields": {"text": "A project a rental ran for."}}]' || { check "remote custody: 0.24.0 made no project"; in_cozy "$now"; return; }
+pid=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder" 2> /dev/null) || pid=''
+[ -z "$pid" ] || term_calcifer "$pid" || { in_cozy "$now"; return; }
+ids=$(python3 - "$HOME/.cozy/calcifer/state.db" "$P" <<'PY'
+import json, sqlite3, sys
+path, here = sys.argv[1:3]
+db = sqlite3.connect(path, isolation_level=None)
+assert db.execute("PRAGMA user_version").fetchone()[0] == 7, "not a 0.24 store"
+db.execute("INSERT INTO machines (name, kind, key, state, created_at) VALUES ('gone-rental', 'rental', '', 'ended', 1700000000000)")
+done = json.dumps({"status": "succeeded", "result": {}, "outputs": [], "execution_ms": 1000, "measurements": {"observations": []}})
+first = (db.execute("SELECT max(number) FROM runs").fetchone()[0] or 0) + 1
+ids = []
+for i in range(2):
+    ids.append(f"run-rental{i:020d}")
+    db.execute("INSERT INTO runs (id, number, idempotency_key, digest, hub, kind, target, machine, pinned, spec, out_dir, state, status, outcome, created_at, settled_at) "
+               "VALUES (?, ?, ?, 'sha256:00', 'http://127.0.0.1:1', 'call', 'legacy/runs', 'gone-rental', 0, X'7B7D', ?, 'settled', 'completed', CAST(? AS BLOB), ?, ?)",
+               (ids[-1], first + i, f"rental-{i}", here + "/.runs", done, 1700000000000 + i, 1700000000000 + i))
+db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+print(json.dumps(ids))
+PY
+) || { check "remote custody: runs into 0.24.0's store"; in_cozy "$now"; return; }
+# This cozy fences that store at its first start. Its old rows of the project, as they are before any import, kept aside.
+cp "$now" "$COZY.new" && chmod +x "$COZY.new" && mv -f "$COZY.new" "$COZY" && cozy --json machine ls > /dev/null && db_calcifer \
+  || { check "remote custody: this cozy on 0.24.0's store"; in_cozy "$now"; return; }
+pid=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder") && term_calcifer "$pid" || { in_cozy "$now"; return; }
+python3 - "$HOME/.cozy/calcifer/state.db" "$D/source.db" "$ids" <<'PY' || { check "remote custody: its fenced rows"; in_cozy "$now"; return; }
+import json, sqlite3, sys
+db = sqlite3.connect(sys.argv[1], isolation_level=None)
+db.execute("ATTACH ? AS kept", (sys.argv[2],))
+ids = json.dumps(json.loads(sys.argv[3]))
+for table in ["legacy_project_runs", "legacy_run_owners"]:
+    db.execute(f"CREATE TABLE kept.{table} AS SELECT * FROM main.{table} WHERE id IN (SELECT value FROM json_each(?))", (ids,))
+    n = db.execute(f"SELECT count(*) FROM kept.{table}").fetchone()[0]
+    assert n == 2, f"{table}: {n} fenced rows of the project, not 2"
+# Its old index row too, which a first import retires once nothing of it is pending (lab's is still there).
+db.execute("CREATE TABLE kept.legacy_project_projects AS SELECT * FROM main.legacy_project_projects")
+assert db.execute("SELECT count(*) FROM kept.legacy_project_projects").fetchone()[0] == 1, "not the project's one old index row"
+PY
+remote_custody_admits() {
+  in_project "$P" --json status > "$OUT/remote-custody-$1-status.json" 2> "$OUT/remote-custody-$1-status.err" \
+    || check "remote custody ($1): status: $(tail -c 300 "$OUT/remote-custody-$1-status.err")"
+  J '.legacy_history == "2 runs imported, 0 pending"' "$OUT/remote-custody-$1-status.json" \
+    || check "remote custody ($1): status says $(jq -c .legacy_history "$OUT/remote-custody-$1-status.json" 2> /dev/null)"
+  [ "$(sql1 "$P" "SELECT count(*) FROM runs WHERE machine = 'gone-rental' AND custody = 'owned'")" = 2 ] \
+    || check "remote custody ($1): the rental's runs in project.db: $(sql "$P" "SELECT id, custody FROM runs WHERE machine = 'gone-rental'" | tr '\n' ' ')"
+  in_project "$P" --json run minimax-h3-tools/echo "text=after the rental $1" > "$OUT/remote-custody-$1-run.ndjson" 2> "$OUT/remote-custody-$1-run.err" \
+    || check "remote custody ($1): a new run refused: $(tail -c 300 "$OUT/remote-custody-$1-run.ndjson") $(tail -c 300 "$OUT/remote-custody-$1-run.err")"
+}
+cozy --json machine ls > /dev/null && db_calcifer || { check "remote custody: this cozy again"; in_cozy "$now"; return; }
+remote_custody_admits first
+# As an earlier import left lab: the runs pending custody in project.db, their old rows and the project's old index row still
+# in Calcifer's store.
+pid=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder") && term_calcifer "$pid" || { in_cozy "$now"; return; }
+python3 - "$P/project.db" "$HOME/.cozy/calcifer/state.db" "$D/source.db" <<'PY' || { check "remote custody: lab's state"; in_cozy "$now"; return; }
+import sqlite3, sys
+project = sqlite3.connect(sys.argv[1], isolation_level=None)
+assert project.execute("UPDATE runs SET custody = 'legacy_pending' WHERE machine = 'gone-rental'").rowcount == 2
+project.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+store = sqlite3.connect(sys.argv[2], isolation_level=None)
+store.execute("ATTACH ? AS kept", (sys.argv[3],))
+store.execute("BEGIN")
+for table in ["legacy_project_runs", "legacy_run_owners", "legacy_project_projects"]:
+    store.execute(f"INSERT OR IGNORE INTO main.{table} SELECT * FROM kept.{table}")
+store.execute("COMMIT")
+store.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+PY
+cozy --json machine ls > /dev/null && db_calcifer || { check "remote custody: this cozy on lab's state"; in_cozy "$now"; return; }
+remote_custody_admits again
+echo "remote custody: $(jq -r .legacy_history "$OUT/remote-custody-again-status.json" 2> /dev/null)"
+in_cozy "$now" || check "remote custody: this cozy back on its own store"
 }
 
 db_migrate_large() {

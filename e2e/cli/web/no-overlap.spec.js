@@ -1,8 +1,8 @@
-// no-overlap (cl-973 core cell 6): no two boxes ever lie on each other, in the DOM or by the API's rows. A box let go over another stays where it
+// no-overlap (cl-973 core cell 6): no two boxes ever lie on each other, in the renderer or by the API's rows. A box let go over another stays where it
 // was let go and pushes that one along the row (Paul, 11-06: "the placement position of the new object should be primary, and then other objects
 // should move around it"); boxes added with no place appear clear of the rest; a place another writer sets is kept, never overwritten (cl-800),
 // and what it lands on is pushed. Settled, nothing moves for 3 s.
-const { test, expect, box, canvasIdle, observeStill, png } = require('./fixtures');
+const { test, expect, canvasIdle, observeStill, png, canvasCard, canvasVisible } = require('./fixtures');
 const { drag, drawn, lying, rows, rowsOf } = require('./geometry');
 
 // Pictures 240 wide and 182 tall, a row of three 60 apart.
@@ -18,7 +18,7 @@ async function settled(page, project, what) {
 
 test('no-overlap', async ({ page, project, api }) => {
   for (const [i, name] of Object.keys(ROW).entries()) await project.import(png(50 + 60 * i), { name, at: ROW[name] });
-  for (const name of Object.keys(ROW)) await expect(box(page, name)).toBeVisible();
+  for (const name of Object.keys(ROW)) await expect.poll(() => canvasVisible(page, name)).toBe(true);
   await page.getByRole('button', { name: /more zoom options$/ }).click();
   await page.getByRole('menuitem', { name: /^Zoom to fit/ }).click();
   await canvasIdle(page);
@@ -27,12 +27,12 @@ test('no-overlap', async ({ page, project, api }) => {
     const laid = await rowsOf(project, Object.keys(ROW));
     expect.soft(Object.fromEntries(Object.entries(laid).map(([name, { x, y }]) => [name, { x, y }])), 'laid out as asked').toEqual(ROW);
     await settled(page, project, 'the row');
-    const zoom = (await page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a));
+    const zoom = await page.evaluate(() => document.querySelector('.canvas-root').canvasInspection.camera().zoom);
     // Held by the left end of its head and let go 200 along: A over most of B, the pointer short of B, so B is in the way, not a box A joins.
-    const head = await box(page, 'A').locator('.head').boundingBox();
+    const head = (await canvasCard(page, 'A')).title;
     const from = { x: head.x + 8, y: head.y + head.height / 2 };
     const to = { x: from.x + 200 * zoom, y: from.y };
-    expect(await page.evaluate(({ x, y }) => document.elementsFromPoint(x, y).every((el) => !el.closest('.card[data-asset="B"]')), to), 'let go off B').toBe(true);
+    expect(await page.evaluate(({ x, y }) => document.querySelector('.canvas-root')?.canvasInspection?.hitTest({ x, y })?.name !== 'B', to), 'let go off B').toBe(true);
     await drag(page, from, to);
     await expect.poll(async () => (await rows(project)).A?.x, { message: 'A is let go' }).not.toBe(ROW.A.x);
     await settled(page, project, 'A over B');
@@ -48,7 +48,7 @@ test('no-overlap', async ({ page, project, api }) => {
 
   await test.step('with the canvas open, add 5 boxes with no at', async () => {
     for (const [i, name] of ADDED.entries()) await project.import(png(20 + 40 * i), { name });
-    for (const name of ADDED) await expect(box(page, name)).toBeVisible();
+    for (const name of ADDED) await expect.poll(() => canvasVisible(page, name)).toBe(true);
     await rowsOf(project, ADDED);
     await settled(page, project, 'five with no place');
   });

@@ -128,7 +128,7 @@ fi
 # The Hub back, at the same address, for what follows.
 [ "${RUNNER_OS:-}" != Windows ] || exe=.exe
 mkdir -p "$OUT/hub-again"
-"${RUNNER_TEMP:-$OUT}/hubcheck$exe" --hub "${HUB_CHECK_UPSTREAM:?}" --out "$OUT/hub-again" --listen "$addr" > /dev/null 2> "$OUT/hub-again/hubcheck.log" &
+"${RUNNER_TEMP:-$OUT}/hubcheck$exe" --hub "${HUB_CHECK_UPSTREAM:?}" --out "$OUT/hub-again" --listen "$addr" --keep 'POST /v1/run-reports' > /dev/null 2> "$OUT/hub-again/hubcheck.log" &
 HUB_CHECK=$!
 for _ in $(seq 30); do curl -sS -m 5 -o /dev/null "http://$addr/openapi.yaml" 2> /dev/null && break; sleep 1; done
 }

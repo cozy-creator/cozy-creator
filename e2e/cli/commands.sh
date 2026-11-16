@@ -101,7 +101,10 @@ cozy machine rent > "$OUT/rent-catalog.txt" 2>&1 && grep -q -E '^NAME +GPU +GPUS
   || check "machine rent: no catalog table: $(head -c 300 "$OUT/rent-catalog.txt")"
 cozy --json machine rent > "$OUT/rent-catalog.json" 2> "$OUT/rent-catalog.err" && J 'type == "array" and all(.[]; .name | length > 0)' "$OUT/rent-catalog.json" \
   || check "machine rent --json: no catalog array: $(head -c 300 "$OUT/rent-catalog.json") $(head -c 200 "$OUT/rent-catalog.err")"
-code=0; in_project "$RUN_PROJECT" --json run birefnet/remove_background --file "image=$(picture dog1.jpg)" --on new > "$OUT/rent-signed-out.json" 2>&1 || code=$?
+# Pinned to the checkout's release: an RC-only package (a prerelease, xs-196 C) is refused package_rc_only before the sign-in check.
+bir=birefnet/remove_background; v=$(sed -n 's/^version = "\(.*\)"$/\1/p' "${PACKAGES:-/nonexistent}/birefnet/pyproject.toml" 2>/dev/null | head -1)
+[ -z "$v" ] || bir="birefnet/remove_background@$v"
+code=0; in_project "$RUN_PROJECT" --json run "$bir" --file "image=$(picture dog1.jpg)" --on new > "$OUT/rent-signed-out.json" 2>&1 || code=$?
 [ "$code" != 0 ] && grep -q 'cozy login' "$OUT/rent-signed-out.json" || check "run --on new signed out: exit $code, not refused for sign-in: $(head -c 300 "$OUT/rent-signed-out.json")"
 printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n' > "$OUT/id_private"
 code=0; cozy --json machine rent rtx-4090 --ssh "$OUT/id_private" > "$OUT/rent-ssh.json" 2> "$OUT/rent-ssh.err" || code=$?

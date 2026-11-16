@@ -45,6 +45,15 @@ test = "pr: entrypoints, current-project health counts and warnings with an expa
 [key]
 test = "pr: project_keys, two projects' keys shown, one changed, its old KEY-N still resolving from outside both"
 
+[config]
+test = "pr: performance_data, the settings listed: send_performance_data on by default"
+["config list"]
+test = "pr: performance_data, the settings listed"
+["config get"]
+test = "pr: performance_data, send_performance_data read back off"
+["config set"]
+test = "pr: performance_data, send_performance_data off (none of a run's report reaches the Hub) and on (one does, anonymous)"
+
 [update]
 test = "pr: update, the candidate to the newest release"
 
@@ -257,7 +266,7 @@ test = "pr: agent, the file, a kind, a tool's block and one field of it in words
 
 [open]
 "--port" = "pr: entrypoint parser, loopback listener and preserved config tests"
-test = "pr: entrypoints, local authenticated URL and expiry; web-open redeems the link in a browser; page_http (commands) refuses what must be"
+test = "pr: entrypoints, local authenticated URL and expiry; web-open redeems the link in a browser; page_http (commands) refuses what must be; open_unlocks (projectvault), a locked project unlocked at a terminal by passphrase or recovery secret, refused with --json or from a pipe"
 
 ["vault"]
 "--directory" = "pr: projectvault: convert and rekey from outside the backing folder"

@@ -42,6 +42,7 @@ fn main() {
     v.visit::<error::Envelope>();
     v.visit::<interface::Snap>();
     v.visit::<calcifer::CalciferStatus>();
+    v.visit::<calcifer::Settings>();
     v.visit::<calcifer::RemoveModel>();
     v.visit::<calcifer::RemovedModel>();
     v.visit::<calcifer::ProjectShowReply>();

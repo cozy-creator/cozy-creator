@@ -68,21 +68,30 @@ LONG=$((WINDOW + SLACK))
 (cd "$RUN_PROJECT" && cozy --json run "$OUT/quiet/silent" "seconds:=$LONG" --on "$NAME" > "$OUT/working.ndjson" 2> "$OUT/working.err") & QP=$!
 for _ in $(seq 900); do grep -qE '"stage": *"waiting silently"' "$OUT/working.ndjson" && break; kill -0 "$QP" 2> /dev/null || break; sleep 1; done
 grep -qE '"stage": *"waiting silently"' "$OUT/working.ndjson" || fail "working: the run never began: $(tail -c 300 "$OUT/working.ndjson") $(tail -c 300 "$OUT/working.err")"
+N=$(jq -r 'select(.run?.number) | .run.number' "$OUT/working.ndjson" | tail -1)
+[ -n "$N" ] || fail "working: the run names no number: $(tail -c 300 "$OUT/working.ndjson")"
 T0=$(date +%s)
-while kill -0 "$QP" 2> /dev/null; do
+# The CLI stops following a run that says nothing for 10 min (it keeps running), so the run's own state and its machine's are read:
+# the machine ready throughout, and the run completed once its silence ends.
+status=''
+while [ $(($(date +%s) - T0)) -le $((LONG + 300)) ]; do
   s=$(show | jq -r '.state // empty')
   [ "$s" = ready ] || fail "working: $NAME is ${s:-unlisted} $(($(date +%s) - T0))s into a live run: $(show | jq -c '{state, reason}')"
+  status=$(cd "$RUN_PROJECT" && cozy run watch "$N" --once --json --full 2> /dev/null < /dev/null | jq -r '.status // empty')
+  case $status in completed) break ;; failed | canceled) fail "working: run $N $status: $(cd "$RUN_PROJECT" && cozy run watch "$N" --once --json --full 2>&1 | tail -c 400)" ;; esac
   sleep 30
 done
-wait "$QP" || fail "working: the run failed: $(tail -c 400 "$OUT/working.ndjson") $(tail -c 300 "$OUT/working.err")"
-grep -q '"completed"' "$OUT/working.ndjson" || fail "working: the run didn't complete: $(tail -c 400 "$OUT/working.ndjson")"
-say "working: a run silent $(($(date +%s) - T0))s (window ${WINDOW}s) completed; $NAME stayed ready throughout, untouched by its Hub"
+kill "$QP" 2> /dev/null; wait "$QP" 2> /dev/null
+took=$(($(date +%s) - T0))
+[ "$status" = completed ] || fail "working: run $N is '${status:-unknown}' ${took}s on, not completed"
+[ "$took" -ge $((LONG - 5)) ] || fail "working: run $N completed after ${took}s, not its ${LONG}s"
+say "working: run $N silent ${took}s (window ${WINDOW}s) completed; $NAME stayed ready throughout, untouched by its Hub"
 
 pid=$(service)
 [ -n "$pid" ] || fail "silent: no TensorD service on the pod: $(sh 'ps -eo pid,ppid,stat,comm' | head -20)"
-sh "kill -STOP $pid" || fail "silent: kill -STOP $pid"
+# One SSH call stops it and reads its state: a later `machine ssh` waits on the machine it just stopped (43756749942).
+state=$(sh "kill -STOP $pid && sleep 1 && cut -d' ' -f3 /proc/$pid/stat") || fail "silent: kill -STOP $pid"
 T0=$(date +%s)
-state=$(sh "cut -d' ' -f3 /proc/$pid/stat")
 [ "$state" = T ] || fail "silent: the service $pid is '$state', not stopped"
 say "silent: TensorD's service $pid stopped (its container and supervisor run on); the Hub must release it within $((WINDOW + SLACK))s"
 until gone "$RID"; do

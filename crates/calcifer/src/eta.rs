@@ -40,6 +40,8 @@ pub(crate) struct Took {
     pub stages: Vec<StageTook>,
     /// From its last stage's end to its own: its outputs encoded and sent.
     pub tail_ms: f64,
+    /// What its input asked, as `JobSize::of` reads it: its media's seconds, frames and tokens scale a prior from it (cl-1004).
+    pub size: JobSize,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -125,7 +127,7 @@ impl Took {
             (Some((_, first)), Some(last)) => ((first.started_unix_ms - started).clamp(0.0, end - started), (end - last).max(0.0)),
             _ => (end - started, 0.0),
         };
-        Some(Took { machine: machine.into(), gpu: gpu.into(), megapixels, width: measured.execution.degree.max(1), lead_ms, stages, tail_ms })
+        Some(Took { machine: machine.into(), gpu: gpu.into(), megapixels, width: measured.execution.degree.max(1), lead_ms, stages, tail_ms, size: JobSize::default() })
     }
 
     pub(crate) fn total_ms(&self) -> f64 {
@@ -186,6 +188,8 @@ pub(crate) struct Prior {
     pub confidence: f64,
     /// What it weighs against the run's own steps, in steps.
     weight: f64,
+    /// Its runs' media seconds, frames and tokens, each the median of those that asked it.
+    pub extent: JobSize,
 }
 
 impl Prior {
@@ -231,6 +235,13 @@ impl Prior {
         let middle = median(&totals).unwrap_or(0.0);
         let spread = median(&totals.iter().map(|total| (total - middle).abs()).collect::<Vec<_>>()).unwrap_or(0.0) / middle.max(1.0);
         let (weight, trust) = if scaled { (weight / 2.0, trust * 0.8) } else { (weight, trust) };
+        let of_size = |pick: &dyn Fn(&JobSize) -> Option<f64>| median(&tooks.iter().filter_map(|took| pick(&took.size)).collect::<Vec<_>>());
+        let extent = JobSize {
+            seconds: of_size(&|size| size.seconds),
+            frames: of_size(&|size| size.frames.map(|n| n as f64)).map(|n| n as u64),
+            tokens: of_size(&|size| size.tokens.map(|n| n as f64)).map(|n| n as u64),
+            ..JobSize::default()
+        };
         Some(Prior {
             basis,
             runs: tooks.len(),
@@ -239,13 +250,14 @@ impl Prior {
             tail_ms: of(&|took| Some(took.tail_ms)).unwrap_or(0.0),
             confidence: trust * (1.0 - spread.min(0.5)),
             weight,
+            extent,
         })
     }
 
     /// A whole run's time and nothing of its phases: its machine's quote, standing on `basis`.
     fn whole(ms: f64, basis: EtaBasis) -> Self {
         let confidence = if basis == EtaBasis::Machine { 0.6 } else { 0.4 };
-        Prior { basis, runs: 0, lead_ms: ms, stages: vec![], tail_ms: 0.0, confidence, weight: GPU_WEIGHT }
+        Prior { basis, runs: 0, lead_ms: ms, stages: vec![], tail_ms: 0.0, confidence, weight: GPU_WEIGHT, extent: JobSize::default() }
     }
 
     /// Another card's runs as this card's: each time `factor` times as long (the Hub's speed of that card over this one's), trusted
@@ -294,10 +306,13 @@ impl Prior {
 }
 
 /// What a run of `size` takes on one GPU, by the runs like it at one width on `machine`, else on its GPU: a machine's
-/// estimate's `prior_ms`, used where that machine ran none of it.
+/// estimate's `prior_ms`, used where that machine ran none of it. Its media's seconds, frames and tokens scale it from what those
+/// runs asked (cl-1004: a 5 s shot after 15 s ones).
 pub(crate) fn one_gpu_ms(history: &[Took], machine: &str, gpu: &str, size: &JobSize) -> Option<f64> {
     let one: Vec<Took> = history.iter().filter(|took| took.width <= 1).cloned().collect();
-    Some(Prior::of(&one, machine, gpu, size.megapixels)?.with_steps(size.steps).total_ms(size.steps))
+    let prior = Prior::of(&one, machine, gpu, size.megapixels)?;
+    let asked = JobSize { seconds: size.seconds, frames: size.frames, tokens: size.tokens, ..JobSize::default() };
+    Some(prior.clone().with_steps(size.steps).total_ms(size.steps) * asked.ratio(&prior.extent))
 }
 
 /// Whether a GPU's name as its machine says it (`NVIDIA GeForce RTX 4090`) is the card a Hub sells (`RTX 4090`, `rtx-4090`): their
@@ -391,7 +406,7 @@ impl Clock {
     pub(crate) fn quoted(&mut self, quoted: Quoted) {
         let basis = match quoted.basis {
             Basis::Measured => Some(EtaBasis::Machine),
-            Basis::Prior => Some(EtaBasis::Gpu),
+            Basis::Prior | Basis::Reference => Some(EtaBasis::Gpu),
             Basis::None => None,
         };
         if let (None, Some(basis)) = (&self.prior, basis) {

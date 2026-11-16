@@ -627,7 +627,7 @@ export function VideoEditor({ name }: { name: string }) {
           )}
         </div>
       </FocusFrame>
-      <div ref={box} className="tl nodrag nopan nowheel" data-drop-target="" tabIndex={0} aria-label="Timeline" onKeyDown={key} onKeyUp={() => setTrim(null)} onDragOver={(event) => event.dataTransfer.types.includes("Files") && event.preventDefault()} onDrop={dropFiles}>
+      <div ref={box} className="tl canvas-control" data-drop-target="" tabIndex={0} aria-label="Timeline" onKeyDown={key} onKeyUp={() => setTrim(null)} onDragOver={(event) => event.dataTransfer.types.includes("Files") && event.preventDefault()} onDrop={dropFiles}>
         <div className="tl-bar" role="toolbar" aria-label="Timeline tools">
           <SplitButton preview={preview} clips={clips} fps={fps} onSplit={cutHere} />
           <button type="button" className="tb" aria-label="Delete clip" title="Delete clip (Delete)" disabled={selected === null || !clips[selected]} onClick={() => selected !== null && remove(selected)}>

@@ -32,7 +32,7 @@ export function CopyError({ text }: { text: string }) {
   return (
     <button
       type="button"
-      className="copy-error nodrag nopan"
+      className="copy-error canvas-control"
       title="Copy the whole error"
       onClick={(event) => {
         event.stopPropagation()
