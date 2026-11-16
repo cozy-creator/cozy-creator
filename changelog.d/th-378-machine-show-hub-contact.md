@@ -1,0 +1,1 @@
+`cozy machine show` names when the Hub last heard a rented machine on each route (its check-in, the Hub's probe, your computer's vouch) and says when the Hub's last probe missed it; `--json` carries them as `rental.contact`.

@@ -1349,9 +1349,12 @@ pub struct Rental {
     /// Why it runs off the requester's continent: nothing nearer fit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement_note: Option<String>,
-    /// Since when the Hub cannot reach it, though its provider reports it running.
+    /// Since when no route reaches it (no check-in, probe or vouch), though its provider reports it running.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unreachable_since_ms: Option<i64>,
+    /// When its Hub last heard it on each route; absent from a Hub before th-378.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact: Option<Contact>,
     /// The worker image it boots, by digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_worker_image_digest: Option<String>,
@@ -1369,6 +1372,22 @@ pub struct Rental {
     pub datacenter: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub nfs_drive: bool,
+}
+
+/// A ready rental's machine as its Hub last heard it (th-378): its check-in, the Hub's probe that reached it, and its owner's
+/// vouch for its boot; absent when never.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Contact {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_in_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reached_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vouched_at_ms: Option<i64>,
+    /// The Hub's latest probe did not reach it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub probe_missed: bool,
 }
 
 /// A machine's `Status`, as it last sent it.
