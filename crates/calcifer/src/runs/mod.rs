@@ -730,7 +730,7 @@ pub(crate) fn default_on(api: &Api) -> On {
     if platform::Os::CURRENT.local_inference() {
         return local;
     }
-    let machines = api.calcifer.store().machines().unwrap_or_default();
+    let machines = api.calcifer.store().live_machines().unwrap_or_default();
     match machines.iter().any(|row| row.kind != MachineKind::Local && row.state != MachineState::Ended && api.machines.ordered(row)) {
         true => On::Any,
         false => local,

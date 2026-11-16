@@ -295,7 +295,7 @@ impl Machines {
     pub(crate) async fn follow_rcs(self: Arc<Self>) {
         loop {
             let took = crate::took::Took::new("follow_rcs");
-            let up = match self.store().machines() {
+            let up = match self.store().live_machines() {
                 Ok(rows) => {
                     let local = |row: &&crate::store::MachineRow| {
                         row.kind == MachineKind::Local && crate::checkout::configured() && self.frame(&row.name).is_some_and(|frame| frame.phase == "ready")
