@@ -1746,6 +1746,14 @@ macro_rules! journal_methods {
         })
     }
 
+    /// Points the unsettled run `id`, recorded under `from`, at `to`: its machine's name now (cl-1089, `Calcifer::machine_now`).
+    pub(crate) fn repoint(&self, id: &str, from: &str, to: &str) -> Result<Vec<Event>> {
+        self.write(|tx| {
+            let moved = tx.execute("UPDATE runs SET machine = ?3 WHERE id = ?1 AND machine = ?2 AND state <> 'settled'", params![id, from, to])?;
+            Ok(if moved == 1 { vec![lifecycle(tx, id)?] } else { vec![] })
+        })
+    }
+
     /// Returns an accepted run its machine refused for its Runtime to the outbox (cl-1069, `Machines::refloored`), saying `said`:
     /// to its machine once that moved, or (`elsewhere`) an `any` run to be placed again. Nothing past its attempts or once canceled:
     /// it settles as refused.

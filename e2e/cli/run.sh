@@ -713,6 +713,8 @@ case $SHARD in
   " ;;
   # Calcifer restarted on a large store, its disk slow (cl-1010).
   restart) parts="state_restart logs" ;;
+  # A project's run sent to a rental by its handle follows its Hub's name for the host (cl-1089).
+  rental-rename) parts="rental_rename logs" ;;
   # A dev build's Calcifer at the stack size it ships resumes a render walk and answers /fit (cl-1069: E2E_DEV_COZY, e2e.yaml).
   dev-start) parts="dev_start logs" ;;
   # What cozy needs is on the computer once its installer is done (cl-1030): Linux, macOS and Windows.
@@ -850,6 +852,7 @@ case $SHARD in
     from_source
     rental_end
     rental_end_again
+    rental_rename
     logs
   " ;;
   # Stops, restarts, updates and starts past a TensorD that can't exit, and a start that hangs, then a rental's own end against a
