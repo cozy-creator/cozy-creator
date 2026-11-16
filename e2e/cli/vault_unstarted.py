@@ -3,7 +3,7 @@
 privacy promise").
 
 A fresh synthetic encrypted project (its machine holds nothing of it, so a lock needs no answer from it), unlocked with a 30 s
-maximum. The local machine is stopped (SIGSTOP) and a run is asked of it: its machine never begins it. The vault locks at its
+maximum. The local machine's service is stopped (SIGSTOP) and a run is asked of it: its machine never begins it. The vault locks at its
 maximum all the same, while the machine is still stopped, and the run fails `vault_locked`, never begun. On the RC the run held the
 vault open until its machine came back and ran it. The machine always goes on at the end.
 """
@@ -43,13 +43,22 @@ def vault_unstarted_sleep(payload: Request, out: Outputs) -> Answer:
 '''
 
 
-def machine_pid() -> int:
-    """The local machine's process: what holds its root's lock, `cozy machine serve`."""
+def services() -> list[int]:
+    """The local machine's service: what answers its requests. The lock's holder is its stable parent, which only holds the
+    listeners and forks the service (tensord machine/supervise.rs): stopping that parent stops nothing that answers."""
     holder = Path.home() / ".cozy/machine/var/lib/cozy/machine/agent.lock.holder"
-    pid = int(json.loads(holder.read_text())["pid"])
-    command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
-    assert "serve" in command, f"the local machine {pid} is {command!r}"
-    return pid
+    parent = int(json.loads(holder.read_text())["pid"])
+    found = []
+    for stat in Path("/proc").glob("[0-9]*/stat"):
+        try:
+            fields = stat.read_text().rsplit(")", 1)[1].split()
+            command = (stat.parent / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+        except OSError:
+            continue
+        if int(fields[1]) == parent and "serve" in command:
+            found.append(int(stat.parent.name))
+    assert found, f"no service under the local machine's parent {parent}"
+    return found
 
 
 def main() -> None:
@@ -69,8 +78,9 @@ def main() -> None:
     script.parent.mkdir(exist_ok=True)
     script.write_text(SLEEPER)
     assert not (view / ".vault-machine").exists(), "the machine already holds some of this fresh project"
-    pid = machine_pid()
-    os.kill(pid, signal.SIGSTOP)
+    stopped = services()
+    for pid in stopped:
+        os.kill(pid, signal.SIGSTOP)
     locked_s: float | None = None
     try:
         process, stdout = start(args, "unstarted", script, 120)
@@ -84,12 +94,13 @@ def main() -> None:
         except subprocess.TimeoutExpired:
             process.kill()
     finally:
-        os.kill(pid, signal.SIGCONT)
+        for pid in stopped:
+            os.kill(pid, signal.SIGCONT)
     run = cast(dict[str, object], run_of(stdout))
     reason = run.get("reason")
     facts = {"maximum_s": MAXIMUM, "locked_s": locked_s, "run": run.get("number"), "status": run.get("status"),
              "reason": reason.get("code") if isinstance(reason, dict) else None, "started_at_ms": run.get("started_at_ms"),
-             "machine_stopped": pid}
+             "service_stopped": stopped}
     (args.out / "receipt.json").write_text(json.dumps(facts, indent=2))
     print(f"vault unstarted: {json.dumps(facts)}", flush=True)
     assert locked_s is not None, f"the vault was open {MAXIMUM + BOUND} s past a {MAXIMUM} s maximum, held by a run its machine hadn't begun: {facts}"
