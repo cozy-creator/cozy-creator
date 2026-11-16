@@ -20,7 +20,6 @@ use api::{
 use serde::Deserialize;
 use tensorfs::{
     Endpoint,
-    err::Code,
     family::Facts,
     fetch::Hardware,
     format::{ClassRef, Component, Header, ObjectRef},
@@ -264,8 +263,8 @@ async fn resolve(endpoint: &Endpoint, model: &ModelId, ask: &Ask, gpus: &str) ->
     let list = |text: &str| text.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect::<Vec<_>>();
     let hardware = Hardware { gpus: list(gpus), components: list(ask.components.as_deref().unwrap_or_default()), ..Hardware::default() };
     let resolved = (endpoint.resolve(&model.to_string(), ask.release.as_deref(), ask.lane.as_deref(), &hardware).await).map_err(|why| {
-        Refusal(match why.code {
-            Code::HUB_UNREACHABLE => Error::unavailable("model_resolution_failed", why.detail),
+        Refusal(match why.kind {
+            tensorfs::Kind::Network => Error::unavailable("model_resolution_failed", why.detail),
             _ => Error::not_found("model_resolution_failed", why.detail),
         })
     })?;
