@@ -6,13 +6,15 @@ import type { Board } from "./Board"
 import { hitOf, type Part } from "./CardView"
 import type { Media } from "./Media"
 import { pictureBox } from "./presentation"
+import type { Why } from "./renderer"
 import type { Scene } from "./Scene"
 
 interface Sources {
   board: Board; store: CanvasStore; media: Media
   scene(): Scene | null; renderer(): Renderer | null
   interaction(): { state(): { pointerDown: boolean; dragging: boolean; marquee: boolean; resizing: string | null; hover: { name: string; part: Part } | null; locked: boolean } } | null
-  frames(): number; open(): { read: number; cards: number; previews: number; log: number[][] }; ticking(): boolean; software(): boolean; retired(): boolean
+  frames(): number; open(): { read: number; cards: number; previews: number; log: number[][] }; ticking(): boolean; retired(): boolean
+  graphics(): { backend: "webgl" | "canvas"; why: Why; gpu: string; state: "ready" } | { backend: "none"; state: "starting" | "failed"; refused: string }
 }
 
 /** The canvas as tests read it, in screen pixels and by meaning: what each card says, where its parts are, whether the canvas is still. */
@@ -118,7 +120,7 @@ export function inspection(o: Sources) {
       const retired = o.retired()
       const scene = retired ? null : o.scene()
       const views = scene ? [...scene.views()] : []
-      const renderer = retired ? null : o.renderer()
+      const graphics = retired ? null : o.graphics()
       const media = retired ? { textures: 0, pinnedTextures: 0, textureBytes: 0, pinnedBytes: 0, unusedBytes: 0, unusedTargetBytes: 0, loading: 0, failed: 0, queued: 0 } : o.media.stats()
       const labels = views.reduce((sum, [, held]) => sum + held.view.labelViews().size, 0)
       const latents = views.filter(([, held]) => held.view.latentShown)
@@ -126,7 +128,8 @@ export function inspection(o: Sources) {
         latentBytes: latents.reduce((sum, [, held]) => sum + (held.view.latentShown?.width ?? 0) ** 2 * 4, 0), activeLatents: latents.length,
         activeDecoders: views.filter(([, held]) => held.view.previewing).length, frames: o.frames(), open: o.open(), scheduledFrame: o.ticking(), automaticTicker: false, totalCards: retired ? 0 : o.board.getNodes().length, visibleCards: views.length,
         loadedCards: views.filter(([, held]) => held.view.picture?.handle?.texture).length,
-        graphics: renderer ? { backend: "gl" in renderer ? "webgl" : "canvas", software: o.software() } : null }
+        // Which renderer drew, and why: WebGL only on a hardware GPU, else the 2D canvas (software WebGL, none, or WebGL refused to start).
+        graphics: graphics && { ...graphics, software: graphics.backend === "canvas" } }
     },
   }
 }
