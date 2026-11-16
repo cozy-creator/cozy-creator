@@ -28,6 +28,15 @@ import { Scene } from "./Scene"
 import { forgetMeasurements, onFontsLoaded } from "./text"
 
 type Pointer = MouseEvent | PointerEvent
+
+function startRenderer(width: number, height: number): Promise<Renderer> {
+  const options = { width: Math.max(1, width), height: Math.max(1, height), resolution: devicePixelRatio || 1, autoDensity: true, backgroundAlpha: 0, antialias: true, failIfMajorPerformanceCaveat: false }
+  return autoDetectRenderer({ ...options, preference: ["webgl", "canvas"] }).catch(() => autoDetectRenderer({ ...options, preference: ["canvas"] }))
+}
+/** A renderer begun as the page loads, before any project is read (cl-1018: one begun as the canvas mounts held the open's first frame
+ *  60–90 ms past its state): the first canvas takes it. It holds nothing of any project until then. */
+let early: Promise<Renderer> | null = startRenderer(1, 1)
+early.catch(() => {})
 export interface StageProps {
   store: CanvasStore
   active: boolean
@@ -153,11 +162,11 @@ export function Stage(props: StageProps) {
     ticker.add(tick)
 
     const ready = async () => {
-      const options = { width: Math.max(1, width), height: Math.max(1, height), resolution: devicePixelRatio || 1, autoDensity: true, backgroundAlpha: 0, antialias: true, failIfMajorPerformanceCaveat: false }
-      let made: Renderer
-      try { made = await autoDetectRenderer({ ...options, preference: ["webgl", "canvas"] }) }
-      catch { made = await autoDetectRenderer({ ...options, preference: ["canvas"] }) }
+      const taken = early
+      early = null
+      const made = await (taken ?? startRenderer(width, height)).catch((error) => { if (!taken) throw error; return startRenderer(width, height) })
       if (stopped) { made.destroy({ removeView: true }); return }
+      if (taken) made.resize(Math.max(1, width), Math.max(1, height), devicePixelRatio || 1)
       renderer = made
       if ("gl" in made) {
         const gl = (made as unknown as { gl: WebGLRenderingContext }).gl
