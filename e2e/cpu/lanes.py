@@ -5,10 +5,10 @@ as well."
 Nothing runs. Each package of the checkout is described through cozy (`cozy run <dir> --describe`), and each slot that takes
 encoded weights (`encoded_leaves: accept`, not raw `weights`) and names a Hub default that is no LoRA (its factors go on its base
 model's lane) is resolved by `cozy model show <default> --gpu <cc> [--components ...]` (dev-only): the Hub resolve TensorD asks
-for that slot, against tensorhub.com's releases. Memory
-is not asked: at the 8-bit floor it never lowers a lane (Paul 11-06, xs-154 Q1); a 4-bit-floor slot (`min_bits: 4`) may still
-go lower on a card short of memory, by design. A lane other than EXPECTED's, or OTHERWISE's for that default, fails: a default
-lane moves only with its line here changed on purpose, named in the PR.
+for that slot, against tensorhub.com's releases. Memory is not asked: at the 8-bit floor it never lowers a lane (Paul 11-06,
+xs-154 Q1); a 4-bit-floor slot (`min_bits: 4`) may still go lower on a card short of memory, by design. A lane other than
+EXPECTED's, or OTHERWISE's for that default, fails: a default lane moves only with its line here changed on purpose, named in
+the PR.
 
     lanes.py --cozy BIN --project DIR --packages DIR --out DIR PACKAGE...
 
