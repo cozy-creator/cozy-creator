@@ -8,11 +8,18 @@
 #   last        now: last_frame=<teapot>
 #   first-last  now: first_frame=<lighthouse>, last_frame=<lantern> (the lighthouse's lantern room, cropped from it)
 #   was-ref     was: <pearl> mentioned in the prompt: the box says the mention is unused, the run carries a mention_unused note
+#   ref         now: <pearl> mentioned: the Ingredients reference sheet; the box keeps the mention (no `unused`)
+#   ref-first   now: <pearl> mentioned and first_frame=<teapot> (a combination Ingredients was not trained on)
+#   sound       now: <beat> mentioned, a synthetic two-beats-a-second drum: the soundtrack, returned as given
+#   pickup      now: text's take picked up at frame 72: the take's first 72 frames kept, 96 new (5 s less the 25 carried)
+#   text-up, first-up, ref-up   text, first and ref with prompt_upsampling on (Lightricks' Gemma 4 E2B enhancer)
+# The `now` cells render with prompt_upsampling off unless named `-up`; each keeps the text the model read
+# ($OUT/sheets/<cell>.txt, the result's `prompt`) beside its sheet.
 # Each cell keeps its run record, its video, a contact sheet ($OUT/sheets/<cell>.jpg: the first picture, frames 0, 30, 60, 90 and
 # 120, the last picture) and, for each picture, its SSIM against every frame of the clip (scaled and centre-cropped to it, as
 # Diffusers prepares it): the frame it matches best and the SSIM at frames 0 and 120. One rental; the pod's host RAM must hold the
 # 67 GB model (`ram_gb`). params:
-#   cells     what to run (default: all six)
+#   cells     what to run (default: the first six)
 #   seed      2611160            runtime   the Runtime manylinux wheel, https://…#sha256=<hex> (default: RUNTIME_WHEEL)
 #   ram_gb    96                 need_s    seconds the cap must buy (5400)
 . "$(dirname "$0")/lib.sh"
@@ -21,6 +28,9 @@ RAM=$(param ram_gb 96) NEED=$(param need_s 5400)
 WAS=$PACKAGES/was/ltx-2.5 NOW=$PACKAGES/now/ltx-2.5 FIX=$(cd "$(dirname "$0")" && pwd)/fixtures/ltx-images
 for t in "$WAS" "$NOW"; do [ -f "$t/pyproject.toml" ] || fail "no packages_refs checkout ${t#"$PACKAGES"/}"; done
 grep -q 'last_frame' "$NOW/ltx_2_5/__init__.py" || fail "now's ltx-2.5 takes no last_frame"
+for c in ref ref-up ref-first sound pickup text-up first-up; do
+  [[ ",$CELLS," != *",$c,"* ]] || grep -q 'Prompt\[Image | Audio\]' "$NOW/ltx_2_5/__init__.py" || fail "now's ltx-2.5 is older than references (cell $c)"
+done
 [ -f "$FIX/pearl.jpg" ] && [ -f "$FIX/teapot.jpg" ] && [ -f "$REF/seed.jpg" ] || fail "no fixtures"
 command -v ffprobe > /dev/null || fail "no ffprobe (pod-session.yaml installs it from the tool cache)"
 mkdir -p "$OUT/wheel" "$OUT/sheets" "$OUT/videos" "$OUT/runs"
@@ -39,8 +49,12 @@ J() { jq -e "$@" > /dev/null; }
 cp "$REF/seed.jpg" "$OUT/lighthouse.jpg"; cp "$FIX/pearl.jpg" "$OUT/pearl.jpg"
 ffmpeg -v error -y -i "$REF/seed.jpg" -vf "crop=420:420:178:40" "$OUT/lantern.jpg" || fail "lantern crop"
 cp "$FIX/teapot.jpg" "$OUT/teapot.jpg"
-for p in lighthouse lantern teapot pearl; do
-  run_page import "$OUT/$p.jpg" --name "$p" > "$OUT/import-$p.txt" 2>&1 || fail "import $p: $(cat "$OUT/import-$p.txt")"
+# Two drum beats a second for 6 s: a 60 Hz thump and a click, each decaying in 0.12 s, stereo 48 kHz.
+ffmpeg -v error -y -f lavfi -i "aevalsrc='0.9*sin(2*PI*60*t)*exp(-25*mod(t,0.5))+0.3*sin(2*PI*2400*t)*exp(-90*mod(t,0.5))':s=48000:d=6:c=stereo" \
+  -c:a pcm_s16le "$OUT/beat.wav" || fail "beat"
+for p in lighthouse lantern teapot pearl beat; do
+  f=$OUT/$p.jpg; [ -f "$f" ] || f=$OUT/$p.wav
+  run_page import "$f" --name "$p" > "$OUT/import-$p.txt" 2>&1 || fail "import $p: $(cat "$OUT/import-$p.txt")"
 done
 
 newest_run() { run_page asset "$1" | jq -r '.versions[-1].runs[-1]'; }
@@ -85,6 +99,8 @@ cell() {
   run_page asset "$n" > "$OUT/runs/$n-asset.json" 2>&1
   vid=$(file_of "$n" video) || { say "MISS $n: no video"; bad+=("$n"); return 1; }
   cp "$vid" "$OUT/videos/$n.mp4"
+  jq -r '[.. | objects | select(has("frame_count") and has("prompt")) | .prompt] | first // empty' "$OUT/runs/$n.json" > "$OUT/sheets/$n.txt"
+  [ -s "$OUT/sheets/$n.txt" ] && say "$n read: $(head -c 1500 "$OUT/sheets/$n.txt" | tr '\n' ' ')"
   say "$n: run $(jq -r '.run.number // .number // empty' "$OUT/runs/$n.json" 2>/dev/null | head -1) $(size "$vid"), $(frames "$vid") frames, $(ffprobe -v error -show_entries format=duration -of csv=p=0 "$vid") s"
   sheet "$n" "$vid" "$a" "$b"
   [ -z "$a" ] || say "$n first ($(basename "$a")): $(matched "$vid" "$a" "$n-first")"
@@ -94,6 +110,8 @@ has() { [[ ",$CELLS," == *",$1,"* ]]; }
 bad=()
 TEXT="A young woman with a blue headscarf walks slowly through a sunlit outdoor market, turns her head toward the camera and smiles. A medium shot, the camera tracks beside her. Market chatter and distant gulls."
 base() { jq -cn --arg p "$1" --argjson s "$SEED" '{prompt: $p, resolution: "720p", duration_s: 5, seed: $s}'; }
+# now <prompt> [up]: a now cell's fields, its prompt_upsampling off unless `up`.
+now() { base "$1" | jq -c --argjson u "$([ "${2:-}" = up ] && echo true || echo false)" '. + {prompt_upsampling: $u}'; }
 
 quote "$NEED"
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
@@ -106,20 +124,52 @@ step update machine update "$NAME" --tensord "$(command -v cozy)" --runtime "$W"
 say "pod $(cozy machine show "$NAME" --json | jq -c '{v: .status.version, rt: .status.runtime, gpu: .status.gpus[0].name}')"
 
 has was-text && cell was-text "$WAS" "$(base "$TEXT")"
-has text && cell text "$NOW" "$(base "$TEXT")"
+has text && cell text "$NOW" "$(now "$TEXT")"
+has text-up && cell text-up "$NOW" "$(now "$TEXT" up)"
 if has was-text && has text && [ -s "$OUT/videos/was-text.mp4" ] && [ -s "$OUT/videos/text.mp4" ]; then
   ffmpeg -v error -i "$OUT/videos/text.mp4" -i "$OUT/videos/was-text.mp4" -lavfi "[0:v][1:v]ssim=stats_file=$OUT/ssim-text-vs-was.txt" -f null - &&
     say "text vs was-text: $(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^All:/) { v = substr($i, 5) + 0; s += v; n++; if (!seen || v < low) { low = v; seen = 1 } } } END { printf "SSIM mean %.4f, lowest %.4f over %d frames", s / n, low, n }' "$OUT/ssim-text-vs-was.txt")"
   [ "$(sha256sum < "$OUT/videos/text.mp4")" = "$(sha256sum < "$OUT/videos/was-text.mp4")" ] && say "text and was-text are byte-identical"
+  ffmpeg -v error -y -i "$OUT/sheets/was-text.jpg" -i "$OUT/sheets/text.jpg" -filter_complex vstack "$OUT/sheets/text-vs-was.jpg" || true
 fi
-has first && cell first "$NOW" "$(base "The camera slowly pushes in on the lighthouse on its snowy sea cliff as waves crash against the rocks below and snow keeps falling. Howling wind and surf." | jq -c '. + {first_frame: "<lighthouse>"}')" "$OUT/lighthouse.jpg"
-has last && cell last "$NOW" "$(base "A cozy café table by a rainy window; the camera drifts slowly toward a ceramic teapot beside a glowing lamp and settles on it. Rain patters on the glass." | jq -c '. + {last_frame: "<teapot>"}')" "" "$OUT/teapot.jpg"
-has first-last && cell first-last "$NOW" "$(base "The camera rises and pushes in from the sea cliff to the lantern room at the top of the lighthouse while snow falls. Howling wind and surf." | jq -c '. + {first_frame: "<lighthouse>", last_frame: "<lantern>"}')" "$OUT/lighthouse.jpg" "$OUT/lantern.jpg"
+FIRST="The camera slowly pushes in on the lighthouse on its snowy sea cliff as waves crash against the rocks below and snow keeps falling. Howling wind and surf."
+has first && cell first "$NOW" "$(now "$FIRST" | jq -c '. + {first_frame: "<lighthouse>"}')" "$OUT/lighthouse.jpg"
+has first-up && cell first-up "$NOW" "$(now "$FIRST" up | jq -c '. + {first_frame: "<lighthouse>"}')" "$OUT/lighthouse.jpg"
+has last && cell last "$NOW" "$(now "A cozy café table by a rainy window; the camera drifts slowly toward a ceramic teapot beside a glowing lamp and settles on it. Rain patters on the glass." | jq -c '. + {last_frame: "<teapot>"}')" "" "$OUT/teapot.jpg"
+has first-last && cell first-last "$NOW" "$(now "The camera rises and pushes in from the sea cliff to the lantern room at the top of the lighthouse while snow falls. Howling wind and surf." | jq -c '. + {first_frame: "<lighthouse>", last_frame: "<lantern>"}')" "$OUT/lighthouse.jpg" "$OUT/lantern.jpg"
 if has was-ref; then
   cell was-ref "$WAS" "$(base "<pearl> walks slowly through a sunlit outdoor market, turns her head toward the camera and smiles. A medium shot, the camera tracks beside her. Market chatter and distant gulls.")" "$OUT/pearl.jpg"
   say "was-ref unused: $(jq -c '.asset.unused // []' "$OUT/runs/was-ref-asset.json")"
   say "was-ref notes: $(jq -c '[.. | objects | select(.code? == "mention_unused") | .message] | unique' "$OUT/runs/was-ref.json" 2>/dev/null)"
   J '.asset.unused | any(.mention == "pearl")' "$OUT/runs/was-ref-asset.json" || { say "MISS was-ref: the box doesn't say <pearl> is unused"; bad+=(was-ref-unused); }
+fi
+REFP="<pearl> walks slowly through a sunlit outdoor market, turns her head toward the camera and smiles. A medium shot, the camera tracks beside her. Market chatter and distant gulls."
+for c in ref ref-up; do
+  has "$c" || continue
+  cell "$c" "$NOW" "$(now "$REFP" "${c#ref-}")" "$OUT/pearl.jpg"
+  J '(.asset.unused // []) | any(.mention == "pearl") | not' "$OUT/runs/$c-asset.json" || { say "MISS $c: the box says <pearl> is unused"; bad+=("$c-unused"); }
+  grep -q '^Reference sheet: Center: pearl\.' "$OUT/sheets/$c.txt" || { say "MISS $c: the model read no reference sheet"; bad+=("$c-sheet"); }
+done
+has ref-first && cell ref-first "$NOW" "$(now "<pearl> sits down at the café table by the rainy window and pours tea from the teapot, then looks up at the camera. Rain patters on the glass." | jq -c '. + {first_frame: "<teapot>"}')" "$OUT/teapot.jpg"
+if has sound; then
+  cell sound "$NOW" "$(now "<beat> A drummer in a dim rehearsal room strikes a large bass drum, one hit on every beat, the drum skin shaking with each hit. A medium shot, the camera remains static.")"
+  if [ -s "$OUT/videos/sound.mp4" ]; then
+    ffmpeg -v error -i "$OUT/videos/sound.mp4" -i "$OUT/beat.wav" -filter_complex "[0:a]aresample=48000,atrim=end=5[a];[1:a]atrim=end=5[b];[a][b]amix=inputs=2:weights='1 -1',astats=metadata=1:reset=0,ametadata=print:key=lavfi.astats.Overall.RMS_level:file=$OUT/sound-diff.txt" -f null - 2>/dev/null
+    say "sound: the clip's audio less the beat, RMS $(tail -1 "$OUT/sound-diff.txt" | cut -d= -f2) dB (the beat itself: about -10 dB)"
+  fi
+fi
+if has pickup && has text && [ -s "$OUT/videos/text.mp4" ]; then
+  say "pickup: text's take from frame 72"
+  run_page render --on "$NAME" --pickup '<text.1>' 72 text > "$OUT/runs/pickup-render.txt" 2>&1 || { say "MISS pickup: $(tail -c 500 "$OUT/runs/pickup-render.txt")"; bad+=(pickup); }
+  run=$(newest_run text)
+  (cd "$RUN_PROJECT" && cozy --json --full run watch "$run" --once) > "$OUT/runs/pickup.json" 2>&1
+  vid=$(file_of text video) && cp "$vid" "$OUT/videos/pickup.mp4" && {
+    say "pickup: $(size "$vid"), $(frames "$vid") frames (72 kept + 96 new = 168)"
+    ffmpeg -v error -i "$OUT/videos/pickup.mp4" -i "$OUT/videos/text.mp4" -lavfi "[0:v]trim=end_frame=72,setpts=N/FRAME_RATE/TB[a];[1:v]trim=end_frame=72,setpts=N/FRAME_RATE/TB[b];[a][b]ssim=stats_file=$OUT/ssim-pickup-kept.txt" -f null - &&
+      say "pickup kept: $(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^All:/) { v = substr($i, 5) + 0; s += v; n++; if (!seen || v < low) { low = v; seen = 1 } } } END { printf "SSIM to the take mean %.4f, lowest %.4f over %d frames", s / n, low, n }' "$OUT/ssim-pickup-kept.txt")"
+    ffmpeg -v error -y -i "$OUT/videos/pickup.mp4" -vf "select='between(n,66,78)',scale=-2:256,tile=13x1:padding=4" -frames:v 1 "$OUT/sheets/pickup-join.jpg"
+    sheet pickup "$OUT/videos/pickup.mp4"
+  }
 fi
 [ "${#bad[@]}" = 0 ] || fail "missed: ${bad[*]}"
 say "PASS: every cell rendered; judge $OUT/sheets (each picture beside the frames it should be) and the SSIM lines above"
