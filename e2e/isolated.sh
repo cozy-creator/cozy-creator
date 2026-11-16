@@ -541,7 +541,7 @@ PYCALLS
     rm -f "$seed"/calls-*.safetensors
   fi
   if [[ " $needs " == *" enhancer "* ]]; then
-    # enhance.py's (cl-1101): each request's own model (16 MiB) and two prompt enhancers (96 MiB each), none sharing a chunk.
+    # project/enhance's (cl-1101): each request's own model (16 MiB) and two prompt enhancers (96 MiB each), none sharing a chunk.
     # `plain`'s are ondemand_behind's; ondemand_enhancers runs all three.
     requests=plain
     [[ " $needs " != *" enhancers "* ]] || requests='words edit plain'

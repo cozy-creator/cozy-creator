@@ -1,7 +1,3 @@
-# /// script
-# requires-python = ">=3.12"
-# dependencies = ["cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19"]
-# ///
 """The cli suite's two prompt enhancers (cl-1101), as Qwen Image 2.1's: `expander` rewrites a prompt of words and `rewriter` one
 with pictures, each needed by a rule over its request (cl-1103), and a request reads at most one of them, as its first stage.
 `words`, `edit` and `plain` are one function, each with a model and two enhancers of its own, so each request starts with none of

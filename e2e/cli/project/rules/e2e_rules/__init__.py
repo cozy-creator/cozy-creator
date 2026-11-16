@@ -1,7 +1,3 @@
-# /// script
-# requires-python = ">=3.12"
-# dependencies = ["cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19"]
-# ///
 """The cli suite's rule holders (cl-1103): `pick` has two models, each needed by a rule over its request, as Qwen Image 2's two
 prompt enhancers are (one with pictures, one without), and reads the one its request needs. `route` loads no model and calls `left`
 or `right` by rule, as H3's `generate` calls one segment function or the other. `stray` has `left`'s and `right`'s models under

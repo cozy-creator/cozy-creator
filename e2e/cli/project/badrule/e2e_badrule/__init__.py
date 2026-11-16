@@ -1,7 +1,3 @@
-# /// script
-# requires-python = ">=3.12"
-# dependencies = ["cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19"]
-# ///
 """The cli suite's bad rule (cl-1103): `typo`'s rule reads `request.wordz`, a field its request doesn't have. Cozy refuses it when
 it reads the code, before anything installs or runs."""
 
