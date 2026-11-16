@@ -66,15 +66,18 @@ def main() -> None:
     empty = Path(outside.name)
     records = []
     environment = os.environ.copy()
-    # The default browser, as this computer's user set it: $BROWSER, a program that writes down the address it was given (cl-1067).
+    # The user's browser, as they set it ($BROWSER): a Chrome that writes down what it was asked to open (cl-1067).
     browser_log = case / "browser-opened.txt"
-    browser = case / ("browser.cmd" if os.name == "nt" else "browser")
-    if os.name == "nt":
-        browser.write_text(f'@echo %1>> "{browser_log}"\r\n')
-    else:
-        browser.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{browser_log}'\n")
-        browser.chmod(0o755)
-    environment["BROWSER"] = str(browser)
+
+    def recording(name: str) -> Path:
+        program = case / (name + (".cmd" if os.name == "nt" else ""))
+        if os.name == "nt":
+            program.write_text(f'@echo %*>> "{browser_log}"\r\n')
+        else:
+            program.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{browser_log}'\n")
+            program.chmod(0o755)
+        return program
+    environment["BROWSER"] = str(recording("google-chrome"))
 
     def run(name: str, words: list[str], directory: Path = empty, code: int = 0) -> subprocess.CompletedProcess[str]:
         if log := environment.get("ARGV_LOG"):
@@ -254,31 +257,31 @@ def main() -> None:
         assert set(opened) == {"url"}, f"--json open: {opened}"
         assert not url.fragment and not url.query, f"the --json address carries something besides the page: {opened['url']}"
         assert not browser_log.exists(), "--json open started the default browser"
-        # cl-1067 (Paul, 11-16, of Cozy's private Chrome: "I don't want this anymore"): `cozy open` starts the default browser at the
-        # page's address, prints it, and exits 0.
+        # cl-1067 (Paul, 11-16, of Cozy's private Chrome: "I don't want this anymore"; "always open an incognito browser window, no matter
+        # what"): `cozy open` starts a private window of the user's own browser at the page's address, prints it, and exits 0.
         plain_open = run("default project URL", ["open"], project)
         assert not plain_open.stdout.lstrip().startswith("{") and opened["url"] in plain_open.stdout, f"open: {plain_open.stdout}"
-        assert browser_log.exists() and browser_log.read_text().split() == [opened["url"]], \
-            f"open didn't start the default browser at {opened['url']}: {browser_log.read_text() if browser_log.exists() else 'nothing started'}"
+        assert browser_log.exists() and browser_log.read_text().split() == ["--incognito", opened["url"]], \
+            f"open didn't start a private window at {opened['url']}: {browser_log.read_text() if browser_log.exists() else 'nothing started'}"
         assert "no browser" not in plain_open.stderr, f"open: {plain_open.stderr}"
-        # With no browser to start, it prints the address all the same and says so in one line: no error.
-        for name, unset in (("no such $BROWSER", False), ("no $BROWSER and no display", True)):
-            if unset and not sys.platform.startswith("linux"):
-                continue  # macOS's `open` and Windows' `start` need no display
-            saved = dict(environment)
-            environment["BROWSER"] = str(case / "no-such-browser")
-            if unset:
+        # With no browser that has a private window, it opens nothing, prints the address all the same and says so in one line: no error.
+        # Linux only: a macOS or Windows runner has real browsers installed, which would open.
+        if sys.platform.startswith("linux"):
+            for name, browser in (("a $BROWSER with no private window", str(recording("lynx"))), ("no $BROWSER", None)):
+                saved = dict(environment)
                 for key in ("BROWSER", "DISPLAY", "WAYLAND_DISPLAY"):
                     environment.pop(key, None)
-            try:
-                without = run(f"open with {name}", ["open"], project)
-            finally:
-                environment.clear()
-                environment.update(saved)
-            said = [line for line in without.stderr.splitlines() if line.strip()]
-            assert opened["url"] in without.stdout and len(said) == 1 and "no browser could be started" in said[0], \
-                f"open with {name}: {without.stdout}{without.stderr}"
-        assert browser_log.read_text().split() == [opened["url"]], "a failed open started the default browser"
+                if browser:
+                    environment["BROWSER"] = browser
+                try:
+                    without = run(f"open with {name} and no display", ["open"], project)
+                finally:
+                    environment.clear()
+                    environment.update(saved)
+                said = [line for line in without.stderr.splitlines() if line.strip()]
+                assert opened["url"] in without.stdout and len(said) == 1 and "no browser with a private window" in said[0], \
+                    f"open with {name}: {without.stdout}{without.stderr}"
+        assert browser_log.read_text().split() == ["--incognito", opened["url"]], "an open with no private window started a browser"
         for flag in ("--no-open", "--print-url"):
             run(f"removed open flag {flag}", ["open", flag], project, code=2)
         run("removed run selector", ["run", "-p", str(project), "example/generate", "prompt=test"], project, code=2)
