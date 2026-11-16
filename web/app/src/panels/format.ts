@@ -13,20 +13,21 @@ export function bytes(n: number): string {
   return `${value < 10 ? value.toFixed(1).replace(/\.0$/, "") : value.toFixed(0)}${units[unit]}`
 }
 
-/** A span of seconds as Paul writes it: `41s`, `3m 12s`, `2h 5m`, `1d 4h`. */
+/** A span of seconds as Paul writes it: `41s`, `3m 12s`, `5m`, `2h 5m`, `1d 4h`. */
 export function span(s: number): string {
   const whole = Math.max(0, Math.floor(s))
   if (whole < 60) return `${whole}s`
-  if (whole < 3600) return `${Math.floor(whole / 60)}m ${whole % 60}s`
-  if (whole < 86400) return `${Math.floor(whole / 3600)}h ${Math.floor((whole % 3600) / 60)}m`
-  return `${Math.floor(whole / 86400)}d ${Math.floor((whole % 86400) / 3600)}h`
+  const two = (big: number, unit: string, small: number, of: string) => `${big}${unit}${small ? ` ${small}${of}` : ""}`
+  if (whole < 3600) return two(Math.floor(whole / 60), "m", whole % 60, "s")
+  if (whole < 86400) return two(Math.floor(whole / 3600), "h", Math.floor((whole % 3600) / 60), "m")
+  return two(Math.floor(whole / 86400), "d", Math.floor((whole % 86400) / 3600), "h")
 }
 
 /** Time still to go, as a span says it, to the minute past 90 s: `40s left`, `6m left`, `2h 5m left`. */
 export function leftWords(s: number): string {
   if (s < 90) return `${Math.max(1, Math.round(s))}s left`
   const minutes = Math.round(s / 60)
-  return minutes < 90 ? `${minutes}m left` : `${Math.floor(minutes / 60)}h ${minutes % 60}m left`
+  return minutes < 90 ? `${minutes}m left` : `${span(minutes * 60)} left`
 }
 
 /** A short time: milliseconds, tenths of a second under a minute, then a span. */
