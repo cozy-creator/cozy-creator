@@ -551,11 +551,14 @@ pub fn private_browser_pipe(command: &mut Command) -> Result<(std::fs::File, std
     unix::private_browser_pipe(command).map_err(Error::os("open a private browser pipe"))
 }
 
-/// [`spawn`] from one thread that lives as long as this process. Linux sends a child its parent-death signal (the browser
-/// pipe's SIGKILL) when the thread that forked it ends, not the process (prctl(2)): a tokio thread that `block_in_place`
-/// handed on idles out of the blocking pool, and a child forked from it would die with it.
+/// [`spawn`], and the child is SIGKILLed when this process ends: the one way to fork a child with a parent-death signal
+/// (`build` refuses one armed anywhere else but [`die_with_parent`]).
+/// PDEATHSIG follows the forking THREAD; only fork such a child from a thread that lives as long as the child should.
+/// A tokio thread that `block_in_place` hands on idles out of the blocking pool, so the fork happens on one thread that
+/// lasts as long as this process. TensorD's pool-owned `ChildLauncher` can fold into this.
 #[cfg(target_os = "linux")]
-pub fn spawn_lasting(command: Command) -> Result<Tree> {
+pub fn spawn_lasting(mut command: Command) -> Result<Tree> {
+    unix::die_with_spawner(&mut command);
     use std::sync::{OnceLock, mpsc};
     type Ask = (Command, mpsc::SyncSender<Result<Tree>>);
     static SPAWNER: OnceLock<Option<mpsc::Sender<Ask>>> = OnceLock::new();

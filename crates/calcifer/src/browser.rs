@@ -220,6 +220,7 @@ impl OwnedBrowser {
         let capture = startup::Capture::create().map_err(|_| Step::Capture.unavailable())?;
         command.stderr(capture.stdio().map_err(|_| Step::Capture.unavailable())?);
         let (send, receive) = platform::process::private_browser_pipe(&mut command).map_err(|_| Step::Pipe.unavailable())?;
+        // A controller crash cannot leave its Chrome leader running: it dies with this process, never with a thread.
         let tree = platform::process::spawn_lasting(command).map_err(|_| Step::Spawn.unavailable())?;
         let birth = platform::process::Birth::of(tree.pid()).map_err(|_| Step::Birth.unavailable())?;
         let id = profile.nonce().to_owned();
