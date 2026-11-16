@@ -311,7 +311,8 @@ export function Stage(props: StageProps) {
     }
     stops.push(
       board.subscribeNodes(() => { announce(); publishDom(); invalidate() }),
-      board.camera.subscribeCamera(() => { placeWorld(); latest.current.onMoveStart?.() }),
+      // A move of the camera ends a hover: what was under the pointer has moved; a new one comes with the pointer's next move.
+      board.camera.subscribeCamera(() => { placeWorld(); if (scene?.hovered) scene.setHover(null); latest.current.onMoveStart?.() }),
       board.camera.subscribeCameraEnd((view) => { latest.current.onMoveEnd(null, view); invalidate() }),
       store.sceneRevision.subscribe(() => { publishDom(); invalidate() }),
       store.tools.subscribe(invalidate), store.names.subscribe(invalidate), theme.subscribe(invalidate), carried.subscribe(invalidate),
