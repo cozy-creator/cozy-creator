@@ -5,7 +5,7 @@ import { fieldsOf } from "../controls"
 import { ratioWords } from "../ratios"
 import { faceOf as runFace, short, type Face } from "../RunFace"
 import { type NodeState, viewState } from "../StateDot"
-import { aspectOf, failureOf, HEAD, hexOf, isPicture, makes, ratioOf, shownOf, toolName, valueIn, valuesOf } from "../shown"
+import { aspectOf, failureOf, HEAD, hexOf, isPicture, makes, ratioOf, selectedOf, shownOf, toolName, valueIn, valuesOf } from "../shown"
 import { clock, lineAt, mentionsIn } from "../text"
 
 export interface RunContext {
@@ -85,8 +85,12 @@ export function pictureBox(node: SceneNode): Box {
   return { x: box.x, y: box.y + HEAD, w: box.w, h: Math.max(1, box.w / aspectOf(view)) }
 }
 
+/** What a box shows: the take it looks at, unless that take failed, then what it had. A box never holds a failed try: the failure is
+ *  said once, as it happens (Paul, 11-16: "that should have been a toast notification error that pops up"). */
+const shownHere = (view: ElementView) => (failureOf(view) ? selectedOf(view) : shownOf(view))
+
 function pictureOf(view: ElementView): ScenePicture | undefined {
-  const shown = shownOf(view)
+  const shown = shownHere(view)
   const own = view.preview && (!view.preview.sha256 || !shown || hexOf(shown.sha256) === view.preview.sha256)
   if (own && view.preview) return { url: view.preview.url, kind: view.placing?.media ?? shown?.field ?? view.asset?.kind ?? "image" }
   // A file kept on another computer has no thumbnail here: it says where it is instead (as the RC's canvas did; asking 404s).
@@ -107,7 +111,7 @@ function shapeOf(view: ElementView, tools: Map<string, Tool>): string {
   const field = fieldsOf(asset, tools).find((held) => held.type === "shape")
   const value = field ? valueIn(view, field.field) : undefined
   if (typeof value === "string" && ratioOf(value)) return ratioWords(value)
-  const shown = shownOf(view)
+  const shown = shownHere(view)
   const asked = asset.prefixes?.find((version) => version.number === shown?.number)?.aspect_ratio
   if (asked && ratioOf(asked)) return ratioWords(asked)
   if (shown?.width && shown.height) return ratioWords(shown.width / shown.height)
@@ -119,7 +123,7 @@ function shapeOf(view: ElementView, tools: Map<string, Tool>): string {
 function slotsOf(store: CanvasStore, links?: Record<string, string>): EntitySlot[] {
   return Object.entries(links ?? {}).map(([field, target]) => {
     const view = store.get(target)
-    const shown = view && shownOf(view)
+    const shown = view && shownHere(view)
     return {
       field, target,
       picture: view && shown?.field !== "audio" ? pictureOf(view) : undefined,
@@ -133,12 +137,11 @@ export function present(store: CanvasStore, node: SceneNode, now = Date.now()): 
   const { view, name } = node
   const asset = view.asset
   const tools = store.tools.get()
-  const shown = shownOf(view)
+  const shown = shownHere(view)
   const kind = view.entity?.kind ?? shown?.field ?? view.placing?.media ?? asset?.kind ?? "file"
   const line = asset ? lineAt(valuesOf(view), fieldsOf(asset, tools)) : null
   let words = line?.words ?? "", at = line?.at
   const tool = asset?.tool ? tools.get(asset.tool) : undefined
-  const failed = failureOf(view) ?? (viewState(view) === "failed" ? asset?.failure : undefined)
   const output = pictureOf(view)
   const run = node.runContext?.run ?? view.run
   const onItsWay = asset?.standing === "making" || Boolean(view.queued) || view.asked !== undefined
@@ -202,7 +205,7 @@ export function present(store: CanvasStore, node: SceneNode, now = Date.now()): 
     state: view.entity ? view.linked === "failed" ? "failed" : view.linked === "making" ? "running" : null : viewState(view),
     unseen: asset?.unseen?.length ?? 0, kind, picture: output, references, words, note,
     unused,
-    error: failed?.message.replace(`${name}: `, "") ?? view.refused,
+    error: view.refused,
     tool: asset?.tool ? tool ? toolName(tool) : asset.tool : "",
     shape: shapeOf(view, tools), from, progress,
     duration: shown?.duration_ms ? clock(shown.duration_ms) : "",
