@@ -1477,6 +1477,10 @@ pub struct MachineStatus {
     /// Why its Runtime serves its GPUs none of its native kernels; empty: it does.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub runtime_kernels: String,
+    /// When its GPUs are free of the runs it holds, on this computer's clock to 10 s, as placement's quotes count them
+    /// (`api::estimate::busy_ms`, cl-1107); none: none holds or waits for one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub busy_until_ms: Option<i64>,
 }
 
 impl MachineStatus {

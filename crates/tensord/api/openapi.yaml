@@ -1236,8 +1236,10 @@ components:
         running: {type: boolean, description: "It left its queue: its executor starts or it runs."}
         width: {type: integer, format: int32, minimum: 0, description: The GPUs it holds, running.}
         started_at_unix_ms: {type: integer, format: int64}
-        models: {type: array, items: {type: string}, description: The repositories it waits to download.}
-        bytes_left: {type: integer, format: int64, minimum: 0, description: "Its weights' bytes still to come."}
+        gpu_at_unix_ms: {type: integer, format: int64, description: "When its work took its GPUs: its own claim, or a root on no GPU of its own (an orchestrator), its first call's. Absent: not yet."}
+        gpu_waits: {type: boolean, description: "It runs on its CPU alone while its GPU work waits to begin: all its work is still ahead of it."}
+        models: {type: array, items: {type: string}, description: "The repositories it waits to download, its calls' included."}
+        bytes_left: {type: integer, format: int64, minimum: 0, description: "Its weights' bytes still to come, its calls' included."}
     Timed:
       type: object
       properties:

@@ -1511,7 +1511,12 @@ heat?: Array<GpuHeat>,
 /**
  * Why its Runtime serves its GPUs none of its native kernels; empty: it does.
  */
-runtime_kernels?: string, };
+runtime_kernels?: string,
+/**
+ * When its GPUs are free of the runs it holds, on this computer's clock to 10 s, as placement's quotes count them
+ * (`api::estimate::busy_ms`, cl-1107); none: none holds or waits for one.
+ */
+busy_until_ms?: number | null, };
 
 /**
  * `POST /v1/machines/{name}/update` (with an `Idempotency-Key`): the machine's Runtime, TensorFS
