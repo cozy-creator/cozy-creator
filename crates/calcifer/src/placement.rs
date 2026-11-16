@@ -383,14 +383,11 @@ pub(crate) async fn offers_now(api: &Arc<Api>, jobs: &[Job]) -> (Vec<Vec<Offer>>
     (offers, pictured)
 }
 
-/// `on` as its last Status pictured it, however long ago; none for one that never said, is broken, or runs another minor.
+/// `on` as its last Status pictured it, however long ago; none for one that never said, or is broken.
 fn last_picture(api: &Arc<Api>, on: &On, name: &str) -> Result<Picture, String> {
     let frame = api.machines.frame(name).ok_or("it hasn't said what it has")?;
     if let Some(broken) = &frame.broken {
         return Err(format!("it's broken: {}", broken.message));
-    }
-    if !same_minor(&frame.version, this_release()) && !rc_version() {
-        return Err(format!("it runs cozy {}, another minor than this cozy's", frame.version));
     }
     Ok(Picture { on: on.clone(), name: name.to_owned(), frame, ready_at_ms: None, ahead: vec![], references: Arc::default() })
 }
@@ -489,15 +486,14 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
     if let Some(broken) = &frame.broken {
         return Err(format!("it's broken: {}", broken.message));
     }
+    // Any version takes work (cl-1069); one on an older minor this computer may move is updated first, and placed once it's done.
     let own = this_release();
-    if !same_minor(&frame.version, own) && !rc_version() {
-        if !update {
-            return Err(format!("it runs cozy {}, another minor than this cozy's {own}: its first run updates it", frame.version));
-        }
-        match machines.current(&row.name).await.map_err(|e| e.message)? {
-            None => {}
-            Some(run) => return Err(format!("updating it to cozy {own} first (run {})", run.name)),
-        }
+    if update
+        && !same_minor(&frame.version, own)
+        && !rc_version()
+        && let Some(run) = machines.current(&row.name).await.map_err(|e| e.message)?
+    {
+        return Err(format!("updating it to cozy {own} first (run {})", run.name));
     }
     Ok(Picture { on: on.clone(), name: row.name, frame, ready_at_ms: None, ahead: vec![], references: Arc::default() })
 }

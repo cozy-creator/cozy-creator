@@ -1859,7 +1859,7 @@ impl Calcifer {
                 }
                 continue;
             };
-            // Work goes only to a machine on this cozy's minor: one on another is updated first, or the run fails saying how.
+            // Work goes to a machine of any version; one on an older minor this computer may move is updated first (cl-1069).
             if run.state == State::Queued
                 && run.kind != ::api::calcifer::Kind::Update
                 && let Some(machines) = self.machines()
@@ -1872,14 +1872,6 @@ impl Calcifer {
                         tokio::select! {
                             _ = settled.changed() => {}
                             _ = wake.notified() => {}
-                        }
-                        continue;
-                    }
-                    Err(e) if e.code == crate::update::OTHER_MINOR => {
-                        let reason = Reason { code: e.code, message: e.message, next: e.next, ..Default::default() };
-                        match self.with_run_store(id.as_str(), |store| store.fail(id.as_str(), reason)) {
-                            Ok(events) => self.publish(id, events),
-                            Err(e) => warn!(run = %id, "{e}"),
                         }
                         continue;
                     }
