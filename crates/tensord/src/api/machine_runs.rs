@@ -59,7 +59,7 @@ pub(super) async fn follow(
             let run = id.clone();
             if let Ok(mut state) = blocking(&runs, move |runs| runs.state(actor, &run)).await {
                 if matches!(state.state.as_str(), "succeeded" | "failed" | "canceled") && owner {
-                    state.waiting = format!("its outcome can't be read: {}: {}", error.code, error.message);
+                    state.waiting = format!("{} ({})", error.message.trim_end_matches('.'), error.code);
                     let _ = sender.send(Ok(v1::RunEvent { sequence: 0, at_ms: 0, event: v1::Event::State(state) })).await;
                     return;
                 }

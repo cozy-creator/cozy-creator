@@ -189,14 +189,14 @@ export function long(run: Run, now: number): boolean {
 /** Its stage, how far, and how fast bytes move; what it waits on says first. */
 export function progressWords(run: Run): string {
   const progress = run.progress
-  if (!progress) return run.waiting ?? run.machine_state ?? ""
+  if (!progress) return sentence(run.waiting ?? run.machine_state ?? "")
   const parts = [stageWords(progress)]
   parts.push(countWords(progress))
   if (progress.bytes_per_s) parts.push(rateWords(progress.bytes_per_s))
   const left = eta(run)
   if (left) parts.push(left)
   const line = parts.filter(Boolean).join(" · ")
-  return run.waiting ? `${run.waiting} · ${line}` : line
+  return run.waiting ? `${sentence(run.waiting)} · ${line}` : line
 }
 
 /** Its own time, never its queue's. */

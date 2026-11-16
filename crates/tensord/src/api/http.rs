@@ -454,7 +454,7 @@ async fn remove_model(State(m): State<Machine>, headers: HeaderMap, body: Bytes)
     let removed = m.call(move |runs| {
         let reading = runs.reading(&model)?;
         if let Some(first) = reading.first() {
-            let message = format!("{model} is in use by run {}: uninstall it once that run ends", reading.join(", "));
+            let message = format!("{model} is being used by {}. Remove it once that finishes.", reading.join(" and "));
             return Err(Error::conflict("model_in_use", message).next(format!("cozy run watch {first}")));
         }
         let result = runs.service.engine.store.remove_cached_model(&model)

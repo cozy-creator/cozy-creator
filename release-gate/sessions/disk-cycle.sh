@@ -37,7 +37,7 @@ both=$(jq -s '[.[].settled_at_ms // 0] | max' "$OUT/hidream.json" "$OUT/fibo.jso
 cycle sdxl-again sdxl/generate prompt="an empty concrete skate park at sunset with long shadows, photo"
 
 cozy machine logs "$NAME" tensord -n 0 > "$OUT/tensord.log" 2>&1
-grep -E "tensorfs: evicted [^c]|ended the idle executors|the disk was short|doesn't fit|making room in .* waited|fetch refused .*CAPACITY" "$OUT/tensord.log" | cut -c1-300 >> "$R"
+grep -E "tensorfs: evicted [^c]|ended the idle executors|short for this render|doesn't fit|making room in .* waited|fetch refused .*CAPACITY" "$OUT/tensord.log" | cut -c1-300 >> "$R"
 evicted=$(grep -c "tensorfs: evicted [^c]" "$OUT/tensord.log")
 # Until both settled, no ended executor held hidream-o1 or fibo-2: theirs served a run.
 disturbed=$(python3 - "$OUT/tensord.log" "$both" <<'PY'

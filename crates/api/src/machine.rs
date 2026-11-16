@@ -736,8 +736,12 @@ pub struct RunState {
     /// The log's head.
     pub sequence: u64,
     pub attempt: u32,
-    /// Why a queued run waits, for people.
+    /// Why a queued run waits, for people. A run another of this machine's clients sent is named by its id there
+    /// (`run-<hex>`), which its client names as people know it.
     pub waiting: String,
+    /// Its place in this machine's line while it waits there, 1 next.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub place: Option<u32>,
     /// The runs it waits for, by id (an update waits for those in flight).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub waiting_for: Vec<String>,

@@ -127,7 +127,7 @@ pub(crate) struct Request {
 impl Request {
     /// The run's Hub, for `what`: refused when the run carries no Hub access.
     fn hub(&self, what: &str) -> Result<&hub::Source, Failure> {
-        let absent = || ("hub_access_absent", format!("{what} needs the run's Hub access, and this run carries none: `cozy login <email>` on the computer that sent it, then run it again"));
+        let absent = || ("hub_access_absent", format!("This run uses {what}, and the computer that sent it isn't signed in to the Hub. Sign in to the Hub there, then run it again."));
         self.source.as_ref().ok_or_else(absent)
     }
 
@@ -282,7 +282,7 @@ pub(crate) fn named_source(source: &str) -> Result<(), Failure> {
 /// A preparation its run's cancel stopped.
 pub(crate) const CANCELED: &str = "preparation_canceled";
 fn canceled() -> Failure {
-    (CANCELED, "the run was canceled while it prepared".into())
+    (CANCELED, "The run was canceled while it was getting ready.".into())
 }
 
 /// A lookup the network could not answer for now: no name resolution, a link refused, reset or
@@ -301,8 +301,9 @@ pub(crate) fn patiently<T>(job: &Job, mut prepare: impl FnMut() -> Result<T, Fai
             Err((UNREACHABLE, why)) => why,
             answered => return answered,
         };
-        let Some((wait, said)) = backoff.again(&format!("unreachable: {why}"), false, None) else {
-            return Err((UNREACHABLE, format!("{}. Nothing else is wrong with this run: send it again once that answers", backoff.spent(&format!("no answer: {why}")))));
+        let Some((wait, said)) = backoff.again(&format!("can't connect: {why}"), false, None) else {
+            let spent = backoff.spent(&format!("Couldn't connect ({why})"));
+            return Err((UNREACHABLE, format!("{spent}. Nothing else is wrong with this run, so run it again once the connection is back.")));
         };
         tracing::warn!(run = %job.caller, "{said}");
         job.stage(said.clone());
@@ -552,7 +553,7 @@ impl Publisher {
         };
         // A disk that can't hold it says what fills it and what would.
         patiently(&job, || self.work(service, actor, request, &job)).map_err(|(code, why)| match code {
-            "machine_disk_full" if !why.contains("--disk-gb") => (code, format!("{why}{}", crate::reclaim::advice(self.store.root(), 0))),
+            "machine_disk_full" => (code, crate::reclaim::advised(&why, self.store.root(), 0)),
             _ => (code, why),
         })
     }
@@ -1286,8 +1287,8 @@ impl Publisher {
         if lock.try_lock().is_err() {
             let holder = self.building.lock().unwrap().get(identity).cloned();
             job.waiting(Some(match holder {
-                Some(run) => format!("waiting for run {run} to install {package} {release}"),
-                None => format!("waiting for another run's install of {package} {release}"),
+                Some(run) => format!("waiting for {run} to install {package} {release}"),
+                None => format!("waiting for another render to install {package} {release}"),
             }));
             let _install = crate::activity::wait(crate::activity::Kind::Install, package, &job.caller);
             lock.lock().map_err(io_failure)?;
@@ -1852,11 +1853,12 @@ fn private(source: &hub::Source, named: &Named, failure: Failure, refusal: &tens
 /// network left unanswered (TensorFS's `network` kind) is [`UNREACHABLE`].
 fn refused(code: &'static str, refusal: tensorfs::err::Refusal) -> Failure {
     match refusal.code {
-        tensorfs::err::Code::CAPACITY_EXHAUSTED => ("machine_disk_full", refusal.to_string()),
+        tensorfs::err::Code::CAPACITY_EXHAUSTED => ("machine_disk_full", format!("This machine's disk is full ({}).", refusal.detail)),
         // The run's capability was refused (expired); without one a private object is absent.
         tensorfs::err::Code::CREDENTIAL_REQUIRED => ("hub_credential_refused", refusal.detail),
         // A provider's own answer to a token it wants, or one it refused.
-        tensorfs::err::Code::PERMISSION_DENIED => (code, format!("{refusal}: a gated or private source reads with your token there, HF_TOKEN or CIVITAI_TOKEN (or `huggingface_token`, `civitai_token` in cozy's config) on the computer that sent it")),
+        tensorfs::err::Code::PERMISSION_DENIED => (code, format!("The model's source refused the download ({refusal}). A gated or private model needs your \
+            Hugging Face or Civitai token on the computer that sent the render: set HF_TOKEN or CIVITAI_TOKEN there, or huggingface_token or civitai_token in Cozy's config.")),
         _ if tensorfs::Failure::from(refusal.clone()).kind == tensorfs::Kind::Network => (UNREACHABLE, refusal.to_string()),
         _ => (code, refusal.to_string()),
     }
@@ -1867,8 +1869,8 @@ fn refused(code: &'static str, refusal: tensorfs::err::Refusal) -> Failure {
 fn held_local(store: &Store, model: &str) -> Result<storage::Local, Failure> {
     let held = storage::local(store, model).map_err(io_failure)?.filter(|local| store.holds(&local.header));
     held.ok_or_else(|| ("checkpoint_absent", format!(
-        "this machine holds no {model}: a local/ name is a model downloaded to the machine that runs it; \
-         download it there first (`cozy model download <source> {model} --on <machine>`)")))
+        "This machine doesn't have the model {model}. A local/ model lives on the machine that runs it, so download it to this \
+         machine as {model} first.")))
 }
 
 /// The oldest Runtime and TensorFS whose executors open an adapter view from Load's bytes
@@ -2181,7 +2183,7 @@ impl HubFile {
 /// next ask. Answers the blob's path.
 pub(crate) fn io_failure(error: io::Error) -> Failure {
     match error.kind() {
-        io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded => ("machine_disk_full", error.to_string()),
+        io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded => ("machine_disk_full", format!("This machine's disk is full ({error}).")),
         _ => ("release_root_preparation_failed", error.to_string()),
     }
 }

@@ -791,10 +791,11 @@ impl Runs {
             // A run preparing inside itself (`runs`) shows its stage and bytes as progress.
             let preparing = record.state == State::Queued
                 && record.waiting_reason.as_deref() == Some(crate::journal::PREPARING);
-            // What a queued run waits for (another run's install, its place in the queue) is its state,
+            // What a queued run waits for (another run's install, a GPU) and its place in line are its state,
             // until its weights arrive meanwhile: then their bytes are its progress, the client
             // saying both.
             let waiting = record.waiting.clone().filter(|_| record.state == State::Queued);
+            let place = record.place.filter(|_| waiting.is_some());
             let payload = record.progress.as_ref().map(|progress| {
                 serde_json::from_str::<Value>(progress)
                     .ok()
@@ -817,7 +818,7 @@ impl Runs {
             } else {
                 // Every cursor up to the head is answered, or a waiting client would spin.
                 let waiting = waiting.or_else(|| record.waiting_reason.clone()).or(starting);
-                events.push(event(record.revision, "state", &json!({"state":state_name(&record),"completed_units":record.completed_units,"waiting_reason":waiting}))?);
+                events.push(event(record.revision, "state", &json!({"state":state_name(&record),"completed_units":record.completed_units,"waiting_reason":waiting,"place":place}))?);
             }
         }
         events.sort_by_key(|event| event.sequence);
@@ -1123,6 +1124,7 @@ impl Log {
                     sequence: event.sequence,
                     attempt: event.attempt_ordinal as u32,
                     waiting: body["waiting_reason"].as_str().unwrap_or_default().into(),
+                    place: body["place"].as_u64().map(|place| place as u32),
                     ..Default::default()
                 })
             }

@@ -502,8 +502,8 @@ impl LocalSources {
             Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
             Err(std::sync::TryLockError::WouldBlock) => {
                 let reason = match installer.holder.lock().unwrap().clone() {
-                    Some(holder) => format!("waiting for run {holder} to install {package}"),
-                    None => "waiting for another run's install".into(),
+                    Some(holder) => format!("waiting for {holder} to install {package}"),
+                    None => format!("waiting for another render to install {package}"),
                 };
                 let tell = |reason| match run.is_empty() {
                     true => Ok(()),

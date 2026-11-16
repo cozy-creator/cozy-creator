@@ -297,10 +297,13 @@ pub(crate) struct Execution {
     pub attempt: u32,
     #[serde(default)]
     pub waiting_reason: Option<String>,
-    /// Why a queued run waits, for people (another run's install, its place in the queue): an
-    /// observation the engine overlays, never journaled.
+    /// Why a queued run waits, for people (another run's install, a free GPU): an observation
+    /// the engine overlays, never journaled.
     #[serde(skip)]
     pub waiting: Option<String>,
+    /// Its place in this machine's line while it waits there, 1 next; None out of it. Overlaid as `waiting` is.
+    #[serde(skip)]
+    pub place: Option<u32>,
     /// Live process ownership only; cleared after a proven return. `executor` retains history.
     pub process: Option<Birth>,
     pub cancel_actor: Option<String>,
@@ -520,8 +523,9 @@ pub(crate) struct StoredProduct {
 pub(crate) struct ProgressSnapshot {
     pub completed_units: u64,
     pub detail: String,
-    /// What the run waits for, while it waits (`Execution::waiting`).
+    /// What the run waits for, while it waits (`Execution::waiting`), and its place in line (`Execution::place`).
     pub waiting: Option<String>,
+    pub place: Option<u32>,
     /// The weights it waits on while they arrive, shown in `detail` over its own detail, kept here.
     pub weights: Option<(Weights, String)>,
     pub revision: u64,
@@ -562,6 +566,7 @@ impl ProgressSnapshot {
             record.progress = Some(self.detail.clone());
         }
         record.waiting = self.waiting.clone();
+        record.place = self.place;
         record.revision = record.revision.max(self.revision);
         record.progress_at_ms = self.at_ms;
         true
@@ -1772,6 +1777,7 @@ fn insert(
         attempt: 0,
         waiting_reason: waiting.map(String::from),
         waiting: None,
+        place: None,
         process: None,
         cancel_actor: None,
         canceled_before_acceptance: false,

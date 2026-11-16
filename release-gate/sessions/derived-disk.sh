@@ -72,9 +72,10 @@ ballast $((free - reserve - (10 << 30)))
 cd "$TREE" || fail "no $TREE"
 step ltx run ./ltx-2.5/generate prompt="waves on a pebble beach at dusk, the sound of the surf" seed:=1081 --on "$NAME"
 cd "$OUT" || fail "no $OUT"
-# The refusal as the CLI said it: `Run PRO-8 failed [machine_disk_full]: … (… free past its reserve, N GiB in models …)`.
+# The refusal as the CLI said it: `Run PRO-8 failed [machine_disk_full]: … (… free, plus 12GB in models nothing queued or running needs)`.
 said=$(grep -m1 -F '[machine_disk_full]' "$OUT/ltx.txt")
-held=$(grep -oE '[0-9.]+ (GiB|MiB) in models no queued or running job holds' <<< "$said" | awk '{printf "%d", $1 * ($2 == "GiB" ? 1073741824 : 1048576)}')
+held=$(grep -oE '[0-9.]+(TB|GB|MB|KB|B) in models nothing queued or running needs' <<< "$said" | sed -E 's/^([0-9.]+)([A-Z]+) .*/\1 \2/' \
+  | awk '{printf "%d", $1 * ($2 == "TB" ? 1e12 : $2 == "GB" ? 1e9 : $2 == "MB" ? 1e6 : $2 == "KB" ? 1e3 : 1)}')
 say "LTX-2.5: ${said:0:500}"
 [ -n "$said" ] && [ -n "$held" ] || fail "LTX-2.5 was not refused machine_disk_full naming what the models free: $(tail -c 300 "$OUT/ltx.txt")"
 [ "$held" -ge $((derived - (1 << 30))) ] && [ "$held" -le $((store + (1 << 30))) ] ||

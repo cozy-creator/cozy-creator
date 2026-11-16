@@ -1734,7 +1734,8 @@ impl Pool {
         };
         blocked.then(|| {
             let why: Vec<String> = settled.iter().map(|d| format!("GPU {}: {}", self.index(*d), out[d].0)).collect();
-            format!("its {width} GPU(s) aren't in service on this machine: {}", why.join("; "))
+            let gpus = if width == 1 { "a working GPU".to_owned() } else { format!("{width} working GPUs side by side") };
+            format!("This machine doesn't have {gpus} for this run ({}).", why.join("; "))
         })
     }
 
@@ -2650,7 +2651,7 @@ impl Pool {
                         && !engine.root_in_flight(seq) && self.allocations.holds(seq)
                     {
                         let name = holder.and_then(|record| record.submission.map(|s| s.request_id))
-                            .filter(|id| !id.is_empty()).unwrap_or_else(|| format!("request {seq}"));
+                            .filter(|id| !id.is_empty()).unwrap_or_else(|| "Another render".into());
                         // Nothing else will release its lane, and no command restarts a rented TensorD.
                         if let Some(lane) = self.allocations.release(seq) {
                             tracing::warn!(root, holder = seq, "the GPU lane {lane:?} of {name}, which has ended, was never released: released now");
@@ -2658,8 +2659,8 @@ impl Pool {
                         }
                         // A call slot is a thread's, which may still be on the card: that one isn't ours to take.
                         if self.allocations.holds(seq) {
-                            return Err(Some(format!("its GPU is held by a call of {name}, which has ended, and nothing \
-                                will release it; this call fails instead of waiting")));
+                            return Err(Some(format!("{name} ended but still holds the GPU this run needs, and nothing will \
+                                free it, so this run failed instead of waiting.")));
                         }
                         return self.root_lane(engine, root, claims);
                     }
@@ -4488,7 +4489,7 @@ fn with_end(error: io::Error, ended: &device_executor::Ended, stderr: &str) -> i
     let why = match (oom, &crash) {
         (true, _) => host_out_of_memory(),
         (false, Some(crash)) => crash.clone(),
-        (false, None) => format!("the executor ended on its own ({})", ended.status),
+        (false, None) => format!("The process running this ended unexpectedly ({}).", ended.status),
     };
     match refused(&error) {
         Some(_) => error,
@@ -4514,8 +4515,8 @@ fn crashed(signal: i32, stderr: &str) -> Option<String> {
     };
     let frame = stderr.lines().rev().find_map(|line| line.strip_prefix("executor crashed: ")?.strip_prefix(name)?.strip_prefix(" in "));
     Some(match frame {
-        Some(frame) => format!("executor crashed: {name} in {}", crate::triage::ends(frame.trim(), 240)),
-        None => format!("executor crashed: {name}"),
+        Some(frame) => format!("The process running this crashed ({name} in {}).", crate::triage::ends(frame.trim(), 240)),
+        None => format!("The process running this crashed ({name})."),
     })
 }
 #[cfg(not(unix))]
@@ -4525,16 +4526,16 @@ fn crashed(_: i32, _: &str) -> Option<String> {
 
 /// Why the kernel killed an executor for host memory, in this machine's numbers.
 fn host_out_of_memory() -> String {
-    let gib = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;
+    let size = crate::reclaim::size;
     match platform::contain::budget() {
         Some(budget) => format!(
-            "the computer ran out of memory for this run: the kernel stopped its executor at this machine's \
-             {:.1} GiB limit, which keeps {:.1} GiB for the computer's other programs",
-            gib(budget.max), gib(budget.reserve)
+            "This computer ran out of memory for this run, so the system stopped it at this machine's {} limit, which keeps {} \
+             for the computer's other programs.",
+            size(budget.max), size(budget.reserve)
         ),
         None => format!(
-            "the host ran out of memory for this run: the kernel stopped its executor at {:.1} GiB",
-            gib(u64::try_from(host_memory::read().bound).unwrap_or(0))
+            "This machine ran out of memory for this run, so the system stopped it at {}.",
+            size(u64::try_from(host_memory::read().bound).unwrap_or(0))
         ),
     }
 }
@@ -4550,7 +4551,7 @@ fn unsettled(reply: &Frame, lost: &str) -> Refused {
         Some(o) if !o.code.is_empty() && o.code != "ok" => (o.code.as_str(), o.message.as_str()),
         _ if !reply.ok && !reply.code.is_empty() => (reply.code.as_str(), reply.detail.as_str()),
         _ if !reply.poisoned.is_empty() => ("executor_poisoned", reply.poisoned.as_str()),
-        _ => ("executor_poisoned", "the executor named no reason"),
+        _ => ("executor_poisoned", "The process running this stopped without saying why."),
     };
     Refused { code: code.into(), detail: detail.into() }
 }

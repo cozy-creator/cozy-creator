@@ -184,6 +184,8 @@ impl Drop for Canceling {
 #[derive(Default)]
 struct Live {
     waiting: Option<String>,
+    /// Its place in its machine's line while it waits there, as the machine says it (1 next).
+    place: Option<u32>,
     progress: Option<Progress>,
     moving: (String, VecDeque<(Instant, u64)>),
     clock: Option<eta::Clock>,
@@ -1099,8 +1101,10 @@ impl Calcifer {
             (run.project_id, run.project) = (Some(id), Some(name));
         }
         if owned { self.live_gpu(&mut run); }
+        let mut place = None;
         if let Some(live) = lock(&self.live).get(&row.id).filter(|_| owned) {
             run.waiting.clone_from(&live.waiting);
+            place = live.place;
             run.progress.clone_from(&live.progress);
             let said: Vec<Warning> = (live.warned.iter())
                 .filter(|text| !run.warnings.iter().any(|warning| warning.message == **text))
@@ -1114,9 +1118,7 @@ impl Calcifer {
         }
         if queued(&run) {
             // Its machine's count, else the runs waiting ahead of it for that machine.
-            let told = (run.waiting.as_deref())
-                .and_then(|w| w.split("position ").nth(1)?.split(' ').next()?.parse().ok());
-            run.queue_position = match told {
+            run.queue_position = match place {
                 Some(place) => Some(place),
                 None => Some(journal.queued_ahead(run.machine.as_deref(),run.number)?+1),
             };
@@ -2455,6 +2457,7 @@ impl Calcifer {
                 }
                 Frame::State(state) => {
                     state_now.clone_from(&state.state);
+                    lock(&self.live).entry(id.clone()).or_default().place = state.place;
                     if finished(&state.state) {
                         unsent.clone_from(&state.waiting);
                     }
@@ -2482,6 +2485,9 @@ impl Calcifer {
                     continue;
                 }
                 Frame::Outcome(mut outcome) => {
+                    if let Some(reason) = outcome.reason.as_mut() {
+                        reason.message = self.runs_named(&reason.message);
+                    }
                     // Canceled there to go where it finishes sooner (`move_to`): sent again, there.
                     let moving = lock(&self.moving).remove(id);
                     if let Some(to) = moving.filter(|_| outcome.status == "canceled") {
@@ -2556,8 +2562,8 @@ impl Calcifer {
         }
     }
 
-    /// What the run waits on by its machine's word. A reason that only repeats the machine's
-    /// state (`preparing`) says nothing more.
+    /// What the run waits on by its machine's word, each run it names as people know them; its state (queued, preparing) is
+    /// its status's to say, and a reason that only repeats it says nothing more.
     fn machine_waiting(&self, id: &RunId, mut state: v1::RunState) -> Option<String> {
         if let Some(waiting) = self.waiting_for(&state.waiting_for) {
             state.waiting = waiting;
@@ -2568,11 +2574,35 @@ impl Calcifer {
                 None
             }
             waiting => {
-                let reason = format!("{}: {waiting}", state.state);
+                let reason = self.runs_named(waiting);
                 self.waiting(id, reason.clone());
                 Some(reason)
             }
         }
+    }
+
+    /// `text` from a machine with each run id this computer sent (`run-<hex>`, `~<attempt>` a resend's) as people name that run
+    /// (`LAB2-12`); one it doesn't know (another computer's) is "another render" (cl-1084).
+    pub(crate) fn runs_named(&self, text: &str) -> String {
+        let (mut named, mut rest) = (String::with_capacity(text.len()), text);
+        while let Some(at) = rest.find("run-") {
+            named.push_str(&rest[..at]);
+            let token = &rest[at..];
+            let id = &token[..token.find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '~')).unwrap_or(token.len())];
+            let hex = id["run-".len()..].split('~').next().unwrap_or_default();
+            let word = rest[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '-' || c == '_');
+            if word || hex.len() < 8 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+                named.push_str(id);
+            } else {
+                match self.active_run(store::calcifer_id(id)) {
+                    Some(row) => named.push_str(&self.run_name(&row)),
+                    None if named.trim_end().is_empty() || named.trim_end().ends_with('.') => named.push_str("Another render"),
+                    None => named.push_str("another render"),
+                }
+            }
+            rest = &token[id.len()..];
+        }
+        named + rest
     }
 
     /// `answer`, saying while it is outstanding how long its machine has not answered: a busy

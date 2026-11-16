@@ -167,7 +167,7 @@ fn watch(child: &mut Child, stop: Option<&crate::stop::Stop>, wrote: &dyn Fn(u64
                 exact.kill()?;
                 let _ = child.wait();
                 return Err(io::Error::new(io::ErrorKind::TimedOut, format!(
-                    "it showed no progress (no CPU, no byte read or written) for {} s, and was ended", stall.as_secs())));
+                    "It made no progress (no CPU use, nothing read or written) for {}, so Cozy ended it.", api::calcifer::clock(stall.as_millis() as i64))));
             }
         }
         if stop.is_some_and(|stop| stop.is_cancelled()) {
