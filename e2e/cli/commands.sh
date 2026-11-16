@@ -183,29 +183,29 @@ grep -q e2e-birefnet "$OUT/models.json" || check "model ls --on local: the local
 
 # cl-1076 (Paul, 11-16, a rental's disk full with LTX 2.5's 71.5 GB unused): "The CLI can remove a model from a rental. `cozy model
 # uninstall` only works on this computer; give it `--on <machine>`." On local through the route a rental takes: while ondemand.py's
-# `keep` holds with fontbox bound, its uninstall is refused naming that run; once the run ends, fontbox goes, its bytes freed.
+# `hold` holds with e2e/uninstall bound, its uninstall is refused naming that run; once the run ends, it goes, its bytes freed.
 uninstall_on() {
 step "a model uninstalled from a named machine, refused while a run reads it (cl-1076)"
 [ -n "$LOCAL" ] || return 0
 local run
-cozy --json model install lilylilith/fontbox --on local > "$OUT/uninstall-on-install.ndjson" 2>&1 \
-  || { check "uninstall --on: model install lilylilith/fontbox failed: $(tail -c 300 "$OUT/uninstall-on-install.ndjson")"; return; }
-[ -n "$(run_submit "$OUT" uninstall-on-hold run "$here/script/ondemand.py/keep" seconds:=20 --on local)" ] \
+cozy --json model install e2e/uninstall --on local > "$OUT/uninstall-on-install.ndjson" 2>&1 \
+  || { check "uninstall --on: model install e2e/uninstall failed: $(tail -c 300 "$OUT/uninstall-on-install.ndjson")"; return; }
+[ -n "$(run_submit "$OUT" uninstall-on-hold run "$here/script/ondemand.py/hold" seconds:=20 --model extra=e2e/uninstall --on local)" ] \
   || { check "uninstall --on: the holding run was not made: $(tail -c 300 "$OUT/uninstall-on-hold.err")"; return; }
 run=$(cat "$OUT/uninstall-on-hold.id")
 for _ in $(seq 900); do grep -q '"holding"' "$OUT/uninstall-on-hold.ndjson" 2> /dev/null && break; sleep 0.2; done
 grep -q '"holding"' "$OUT/uninstall-on-hold.ndjson" || { check "uninstall --on: run $run never held: $(tail -c 300 "$OUT/uninstall-on-hold.ndjson")"; return; }
-cozy --json model uninstall lilylilith/fontbox --on local > "$OUT/uninstall-on-held.json" 2> "$OUT/uninstall-on-held.err" \
-  && check "uninstall --on: fontbox went while run $run held it"
+cozy --json model uninstall e2e/uninstall --on local > "$OUT/uninstall-on-held.json" 2> "$OUT/uninstall-on-held.err" \
+  && check "uninstall --on: e2e/uninstall went while run $run held it"
 J --arg run "$run" '.error.cause == "model_in_use" and (.error.message | contains($run)) and .error.next == ["cozy run watch \($run)"]' "$OUT/uninstall-on-held.json" \
   || check "uninstall --on: not refused naming run $run: $(head -c 400 "$OUT/uninstall-on-held.json") $(tail -c 200 "$OUT/uninstall-on-held.err")"
 run_wait "$OUT" uninstall-on-hold && [ "$(run_get "$OUT" uninstall-on-hold .status)" = completed ] \
   || { check "uninstall --on: run $run did not complete: $(tail -c 300 "$OUT/uninstall-on-hold.ndjson")"; return; }
-cozy --json model uninstall lilylilith/fontbox --on local > "$OUT/uninstall-on.json" 2> "$OUT/uninstall-on.err" \
-  && J '.model == "lilylilith/fontbox" and .removed and .cache_bytes_removed > 0' "$OUT/uninstall-on.json" \
-  || check "uninstall --on local: fontbox not removed, or no bytes freed: $(head -c 400 "$OUT/uninstall-on.json") $(tail -c 200 "$OUT/uninstall-on.err")"
-cozy --json model ls --on local > "$OUT/uninstall-on-models.json" && J 'all(.models[]; .model != "lilylilith/fontbox")' "$OUT/uninstall-on-models.json" \
-  || check "uninstall --on local: model ls --on local still lists lilylilith/fontbox"
+cozy --json model uninstall e2e/uninstall --on local > "$OUT/uninstall-on.json" 2> "$OUT/uninstall-on.err" \
+  && J '.model == "e2e/uninstall" and .removed and .cache_bytes_removed > 0' "$OUT/uninstall-on.json" \
+  || check "uninstall --on local: e2e/uninstall not removed, or no bytes freed: $(head -c 400 "$OUT/uninstall-on.json") $(tail -c 200 "$OUT/uninstall-on.err")"
+cozy --json model ls --on local > "$OUT/uninstall-on-models.json" && J 'all(.models[]; .model != "e2e/uninstall")' "$OUT/uninstall-on-models.json" \
+  || check "uninstall --on local: model ls --on local still lists e2e/uninstall"
 echo "uninstall --on: $(jq -c . "$OUT/uninstall-on.json")"
 }
 
