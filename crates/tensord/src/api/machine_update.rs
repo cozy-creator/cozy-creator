@@ -51,6 +51,9 @@ struct Cohort {
     gpu_memory_limit: Option<u64>,
     /// Categorical sharing policy, applied by the same drain/restart as other machine settings.
     mode: Option<api::config::MachineMode>,
+    /// The PyTorch its Hub names (`2.11.0`; empty: the newest held, else the newest for its accelerator): a machine with no
+    /// image holds its own base at it, installed now rather than at its first run (cl-1030).
+    torch: Option<String>,
     #[serde(flatten)]
     unknown: BTreeMap<String, serde_json::Value>,
 }
@@ -263,6 +266,9 @@ fn stage(
             return Err(Error::validation("toolchain_unknown", format!("the toolchain is installed, not {other:?}")));
         }
     };
+    if let Some(version) = cohort.torch.as_deref().filter(|v| !v.bytes().all(|c| c.is_ascii_alphanumeric() || b".+".contains(&c))) {
+        return Err(Error::validation("invalid_payload", format!("the update's torch is a version, not {version:?}")));
+    }
     // A limit stands a card in for a smaller one, never a larger: above a card, that card is as it was.
     let limit = cohort.gpu_memory_limit;
     let gib = |n: u64| format!("{:.1} GiB", n as f64 / (1u64 << 30) as f64);
@@ -280,6 +286,7 @@ fn stage(
         mode: cohort.mode,
         binary,
         toolchain,
+        torch: cohort.torch,
         notes,
     };
     updates

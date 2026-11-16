@@ -160,6 +160,9 @@ pub mod path {
     pub const STATUS: &str = "/v1/status";
     /// `POST`: renews a rental's idle deadline; answers the frame.
     pub const KEEPALIVE: &str = "/v1/keepalive";
+    /// `POST` by this computer's controller: a project whose folder is gone (cl-1031). Every record of it here goes, as a lock's
+    /// does: 204 once nothing of it is here, 409 while a folder it ran in still holds it or its runs are active.
+    pub const PROJECT_GONE: &str = "/v1/project-gone/{project_id}";
     /// `POST` a [`super::RunRequest`] of [`super::RunKind::Update`], the one request a controller of
     /// another release sends; `GET` a [`super::RunList`], `?before=<number>&limit=`.
     pub const RUNS: &str = "/v1/runs";
@@ -1141,9 +1144,11 @@ pub enum Basis {
     Measured,
     /// The caller's `prior_ms`.
     Prior,
-    /// Its release's benchmarks (`estimate::References`, cl-1024): of this card, else another's scaled by the Hub's speeds; scaled to
-    /// its size.
+    /// Its release's benchmark of this card (`estimate::References`, cl-1024), scaled to its size.
     Reference,
+    /// Estimated: its release's benchmark of another card, scaled to this one by how the two compare across the functions both were
+    /// measured on, else by the Hub's spec speeds (`References::time`; Paul 11-15, "a rough guess"). Never counted as measured.
+    Scaled,
     /// Nothing: a minute is assumed.
     #[default]
     None,
@@ -1198,8 +1203,8 @@ pub struct StatusFrame {
     /// The executors' cozy-runtime.
     pub runtime: String,
     pub tensorfs: String,
-    /// The PyTorch its packages use (`2.15.0+cu132`): its image's, else the one its Hub names
-    /// (`/v1/software`); empty until a machine with no image installs one.
+    /// The PyTorch its packages use (`2.15.0+cu132`): its image's, else its own base's; empty while a machine with no
+    /// image holds none.
     pub torch: String,
     /// The caller's held package installations.
     pub environments: Vec<Environment>,

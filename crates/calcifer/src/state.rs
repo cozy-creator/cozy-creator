@@ -75,14 +75,6 @@ pub(crate) struct KnownProject {
     pub used_at_ms: i64,
 }
 
-/// A project whose folder went (cl-980): what it was known by, and where.
-#[derive(Clone, Debug)]
-pub(crate) struct GoneProject {
-    pub id: String,
-    pub code: String,
-    pub path: PathBuf,
-}
-
 fn known(row: &rusqlite::Row) -> rusqlite::Result<KnownProject> {
     let path = PathBuf::from(row.get::<_, String>(1)?);
     let name = Some(row.get::<_, String>(4)?).filter(|name| !name.is_empty());
@@ -219,26 +211,27 @@ impl Store {
         })
     }
 
-    /// These left the index: their folders are gone. Where each was is kept, so asking for one says so (cl-980).
+    /// These left the index: their folders are gone (cl-1031). Only where each was stays, as a locked project's folder does: not its
+    /// id, code or KEY-N names, their pages overwritten and the WAL emptied. Opened again from its folder, it registers again from its
+    /// own project.db.
     pub(crate) fn projects_gone(&self, ids: &[String]) -> Result<()> {
         self.write(|tx| {
-            let mut kept = tx.prepare("INSERT OR REPLACE INTO projects_gone (id, code, path) SELECT id, code, path FROM projects WHERE id = ?1")?;
-            let mut statement = tx.prepare("DELETE FROM projects WHERE id = ?1")?;
+            tx.pragma_update(None, "secure_delete", "ON")?;
+            let mut paths = tx.prepare("SELECT path FROM projects WHERE id = ?1")?;
             for id in ids {
-                kept.execute([id])?;
-                statement.execute([id])?;
+                let Some(path) = paths.query_row([id], |row| row.get::<_, String>(0)).optional()? else { continue };
+                let mut bytes = [0u8; 16];
+                getrandom::fill(&mut bytes).expect("the OS gives random bytes");
+                tx.execute("DELETE FROM projects_gone WHERE path = ?1", [&path])?;
+                tx.execute("INSERT INTO projects_gone (id, code, path) VALUES (?1, '', ?2)", params![format!("gone-{}", hex::encode(bytes)), path])?;
+                tx.execute("DELETE FROM projects WHERE id = ?1", [id])?;
+                tx.execute("DELETE FROM project_keys WHERE id = ?1", [id])?;
             }
             Ok(())
-        })
-    }
-
-    /// The project `id` or `code` whose folder went, if it did: its id, its code, and where it was.
-    pub(crate) fn project_gone(&self, id: &str, code: &str) -> Result<Option<GoneProject>> {
-        self.read(|conn| {
-            Ok(conn.query_row("SELECT id, code, path FROM projects_gone WHERE id = ?1 OR (code <> '' AND code = ?2)", [id, code], |row| {
-                Ok(GoneProject { id: row.get(0)?, code: row.get(1)?, path: PathBuf::from(row.get::<_, String>(2)?) })
-            }).optional()?)
-        })
+        })?;
+        // A reader's snapshot keeps the old pages a moment: emptied by the next write that empties it, never a refused listing.
+        if let Err(e) = self.empty_wal() { tracing::warn!("state.db: {e}"); }
+        Ok(())
     }
 
     /// `id`, called `name`, in `path`, opened at `used_at_ms` (none: when it was last, or now if it's new here); whether it was walking stands.
@@ -321,12 +314,18 @@ impl Store {
             tx.execute("INSERT INTO projects (id, path, code) VALUES (?1, ?2, '')", params![handle, path.to_string_lossy()])?;
             Ok(())
         })?;
+        self.empty_wal()
+    }
+
+    /// The WAL checkpointed into state.db and emptied, retried while a reader holds an older snapshot: no deleted row's page outlives
+    /// this there.
+    fn empty_wal(&self) -> Result<()> {
         for _ in 0..40 {
             let busy: i64 = self.read(|conn| Ok(conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?))?;
             if busy == 0 { return Ok(()); }
             std::thread::sleep(std::time::Duration::from_millis(250));
         }
-        Err(StoreError::Protected("a reader holds the index's older pages of a locked project".into()))
+        Err(StoreError::Protected("a reader holds the index's older pages of a project it let go".into()))
     }
 
     /// Whether each project is being walked, which the next start walks again.

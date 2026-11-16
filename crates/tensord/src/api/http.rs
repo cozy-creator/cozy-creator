@@ -68,6 +68,7 @@ pub(super) fn router(identity: Arc<MachineIdentity>, runs: Arc<Runs>) -> Router 
 
 fn routes() -> Router<Machine> {
     Router::new()
+        .route(path::PROJECT_GONE, post(project_gone))
         .route(path::STATUS, get(status))
         .route(path::KEEPALIVE, post(keepalive))
         .route(path::RUNS, post(update).layer(DefaultBodyLimit::max(16 << 20)).get(list))
@@ -247,6 +248,28 @@ async fn legacy_custody(m: Machine, descriptor: v1::LocalPrivateStorage, migrate
         Ok(answer)
     }).await;
     match looked { Ok(answer) => Json(answer).into_response(), Err(error) => Refusal::from(error).into_response() }
+}
+
+/// Calcifer found project `project`'s folder gone (cl-1031): its runs here end, and its executors, memo tier, scope and journal
+/// rows go, now or as the last of its runs settles.
+async fn project_gone(State(m): State<Machine>, Path(project): Path<String>, headers: HeaderMap) -> Answer {
+    if !m.identity.lifecycle.is_local() {
+        return Err(Error::forbidden("local_private_only", "only this computer's local machine runs its projects").into());
+    }
+    let caller = m.caller(&headers)?;
+    caller.machine()?;
+    let actor = actor_id(caller.actor);
+    m.call(move |runs| {
+        runs.service.engine.forget_project(&project, &actor).map_err(|error| match error.kind() {
+            std::io::ErrorKind::AlreadyExists => Error::conflict("project_present", error.to_string()),
+            _ => Error::conflict("private_storage_busy", error.to_string()),
+        })?;
+        if let Some(pool) = runs.service.pool() {
+            if let Err(error) = pool.close_project_namespace(&project) { tracing::warn!("a project whose folder is gone: its executors: {error}"); }
+        }
+        Ok(())
+    }).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 async fn close_private(State(m): State<Machine>, headers: HeaderMap) -> Answer {

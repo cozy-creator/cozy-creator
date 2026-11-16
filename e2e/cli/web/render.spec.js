@@ -26,7 +26,7 @@ const WARNS = `# /// script
 import os
 
 import msgspec
-from cozy_runtime.author import App, ImageFrame, Outputs
+from cozy_runtime.author import App, ImageFrame
 from cozy_runtime.fields import Image, Prompt
 from cozy_runtime.media import ImageFile
 
@@ -45,9 +45,9 @@ class Warned(msgspec.Struct):
 
 
 @app.tool(label="Warns", named="warned", accelerator=False)
-def warned(payload: Drawing, out: Outputs) -> Warned:
+def warned(payload: Drawing) -> Warned:
     """A still of one colour, and a warning."""
-    image = out.save_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png")
+    image = ImageFile.from_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png")
     return Warned(image, payload.instructions.text, ["${WARNED}"])
 `;
 // A tool of an environment of its own (tool.py's and tomli-w): its first render installs it.
@@ -60,7 +60,7 @@ const INSTALLS = `# /// script
 import os
 
 import msgspec
-from cozy_runtime.author import App, ImageFrame, Outputs
+from cozy_runtime.author import App, ImageFrame
 from cozy_runtime.fields import Image, Prompt
 from cozy_runtime.media import ImageFile
 
@@ -78,9 +78,9 @@ class Picture(msgspec.Struct):
 
 
 @app.tool(label="Installs", named="installed", accelerator=False)
-def installed(payload: Drawing, out: Outputs) -> Picture:
+def installed(payload: Drawing) -> Picture:
     """A still of one colour, once its environment is installed."""
-    return Picture(out.save_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png"), payload.instructions.text)
+    return Picture(ImageFile.from_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png"), payload.instructions.text)
 `;
 
 const softly = expect.configure({ soft: true });

@@ -12,6 +12,7 @@ scans, for macOS and Windows runners: the installed CLI and Calcifer's own API, 
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from http.client import HTTPConnection
 import io
 import json
@@ -26,7 +27,7 @@ from typing import cast
 from urllib.parse import quote, urlsplit
 
 from common import Failure, sha
-from scan import Scanner, places
+from scan import Scanner, explained, places
 
 PROGRAM = '''# /// script
 # requires-python = ">=3.12"
@@ -120,17 +121,19 @@ def main() -> int:
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     scanner = Scanner()
-    folder = args.root.resolve() / ("notraces-" + secrets.token_hex(12))
     credential = "proof-" + secrets.token_hex(32)
     scanner.add(credential)
+    folder = args.root.resolve() / ("notraces-" + secrets.token_hex(12))
     try:
         created = cozy(args.cli, "new", str(folder), "--passphrase-file", "-", stdin=(credential + "\n").encode())[-1]
     except Stop as stopped:
-        # A runner with no encrypted filesystem provider (Windows CI has none installed) can't make one: said, not passed.
-        if "'vault_provider'" not in str(stopped):
+        # A runner with no encrypted filesystem provider (Windows CI installs no WinFsp): `cozy doctor --fix` installs it, as an
+        # administrator's would, whatever it exits; then once more, in a new folder, and a second refusal fails the cell.
+        if "'vault_provider'" not in str(stopped) and "'vault_dependency_missing'" not in str(stopped):
             raise
-        print(json.dumps({"no_traces": "skipped", "os": sys.platform, "why": "no encrypted filesystem provider on this runner (vault_provider)"}))
-        return 0
+        subprocess.run([str(args.cli), "doctor", "--fix"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        folder = args.root.resolve() / ("notraces-" + secrets.token_hex(12))
+        created = cozy(args.cli, "new", str(folder), "--passphrase-file", "-", stdin=(credential + "\n").encode())[-1]
     require(isinstance(created.get("id"), str), "notraces_project_identity")
     project = cast(str, created["id"])
     recovery = created.get("recovery_secret")
@@ -188,10 +191,23 @@ def main() -> int:
     located = places(home, Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir())), projects=args.root.resolve(), temporary=temporary.resolve())
     result = scanner.scan(sorted({root.resolve() for root in roots if root.exists()}), [], args.out.resolve() / "notraces.json", located)
     counts = {key: value for key, value in result.items() if type(value) is int}
-    (args.out / "notraces.json").write_text(json.dumps({"os": sys.platform, "ran": local, **counts}, indent=2))
+    # Every path it couldn't read, named: on Windows each must be one WINDOWS_UNREADABLE explains, or the cell fails.
+    unreadable, empty = sorted(set(scanner.unreadable)), sorted(set(scanner.empty))
+    (args.out / "notraces.json").write_text(json.dumps({"os": sys.platform, "ran": local, **counts, "unreadable_paths": unreadable,
+                                                        "empty_unopened_paths": empty}, indent=2))
+    for path in unreadable:
+        print("unreadable: " + path, file=sys.stderr)
+    for path in empty:
+        print("unreadable, empty: " + path, file=sys.stderr)
     require(counts.get("files", 0) > 0, "notraces_scanned_nothing")
     require(counts.get("matches", 0) == 0, "outside_project_canary: " + json.dumps({key: value for key, value in counts.items() if key.startswith("match")}))
-    print(json.dumps({"no_traces": True, "os": sys.platform, "ran": local, "files": counts.get("files"), "matches": 0}))
+    cases = Counter(explained(path) for path in unreadable) if sys.platform == "win32" else Counter[str | None]()
+    if empty:
+        cases["empty, nothing to read"] = len(empty)
+    unknown = [path for path in unreadable if explained(path) is None] if sys.platform == "win32" else []
+    require(not unknown, "unreadable_unexplained: " + json.dumps(unknown))
+    print(json.dumps({"no_traces": True, "os": sys.platform, "ran": local, "files": counts.get("files"), "matches": 0,
+                      "unreadable": len(unreadable) + len(empty), "unreadable_cases": {str(name): count for name, count in sorted(cases.items(), key=str)}}))
     return 0
 
 

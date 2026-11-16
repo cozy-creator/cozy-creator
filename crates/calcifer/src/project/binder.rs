@@ -662,8 +662,16 @@ impl Binder<'_> {
                 }
                 Type::Literal(members) if !value.is_null() && !members.contains(value) => {
                     let offered: Vec<String> = members.iter().filter(|member| !member.is_null()).map(|member| member.as_str().map_or_else(|| member.to_string(), str::to_owned)).collect();
-                    self.warn(format!("{of}'s {key}: {value} isn't one of {}, so it's its default", offered.join(", ")));
-                    fields.remove(key);
+                    match nearest(members, value) {
+                        Some(held) => {
+                            self.warn(format!("{of}'s {key}: {value} isn't one of {}, so it's {held}", offered.join(", ")));
+                            *value = held;
+                        }
+                        None => {
+                            self.warn(format!("{of}'s {key}: {value} isn't one of {}, so it's its default", offered.join(", ")));
+                            fields.remove(key);
+                        }
+                    }
                 }
                 Type::Shape => {
                     if let Some(held) = value.as_str().and_then(|ratio| shape(field, ratio))
@@ -759,6 +767,33 @@ fn limits(field: &Field) -> (Option<f64>, Option<f64>) {
     let extra = |key: &str| field.extra.get(key).and_then(Value::as_f64);
     let c = &field.constraints;
     (c.ge.or(c.gt).or_else(|| extra("min")), c.le.or(c.lt).or_else(|| extra("max")))
+}
+
+/// The choice nearest `value` when it and the choices are numbers in the same words (`768p` among `1080p`, `1440p`: `1080p`;
+/// 3 among 2 and 4: 2, the smaller on a tie). A resolution as people say it, which `cozy run` lets through for a choice of
+/// them (`runs/bind.rs` `tiers`), is one: 1080 is 1080p, 4k is 2160p. None: they aren't, and it goes as its default.
+fn nearest(members: &[Value], value: &Value) -> Option<Value> {
+    let number = |value: &Value| -> Option<(f64, String)> {
+        match value {
+            Value::Number(number) => Some((number.as_f64()?, String::new())),
+            Value::String(text) => {
+                let text = text.trim();
+                let digits = text.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(text.len());
+                Some((text[..digits].parse().ok()?, text[digits..].to_ascii_lowercase()))
+            }
+            _ => None,
+        }
+    };
+    let (mut at, mut words) = number(value)?;
+    if members.iter().any(|member| number(member).is_some_and(|(_, said)| said == "p")) && matches!(words.as_str(), "" | "k") {
+        at *= if words == "k" { 540.0 } else { 1.0 };
+        words = "p".to_owned();
+    }
+    members
+        .iter()
+        .filter_map(|member| number(member).filter(|(_, said)| *said == words).map(|(n, _)| (n, member)))
+        .min_by(|a, b| (a.0 - at).abs().total_cmp(&(b.0 - at).abs()).then(a.0.total_cmp(&b.0)))
+        .map(|(_, member)| member.clone())
 }
 
 /// `ratio` held to what a shape takes: the nearest allowed, else within its ends. None: it's no ratio, and goes as written.

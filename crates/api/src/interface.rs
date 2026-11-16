@@ -132,6 +132,11 @@ pub fn invocable(entry: &Value) -> &Value {
     &entry["invocable"]
 }
 
+/// Its Files parameter (`assets`), which a caller fills through `call(..., assets=...)`.
+pub fn files_parameter(entry: &Value) -> Option<&str> {
+    entry["assets"]["parameter"].as_str()
+}
+
 /// The module and export its invocable is called by.
 pub fn callable(entry: &Value) -> Option<(&str, &str)> {
     let invocable = invocable(entry);

@@ -124,9 +124,11 @@ fn run(
             Stdio::null()
         })
         .stdout(Stdio::piped())
-        .stderr(provider_stderr()?)
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(io_error("start native disk-image tool"))?;
+    // hdiutil's words on a failure, its cause (cl-1049): about the image and its mount point, never a project's file.
+    let said = child.stderr.take().map(tail_of);
     if let Some(secret) = secret {
         let mut input = child
             .stdin
@@ -158,8 +160,9 @@ fn run(
     } else {
         control_process(child, operation, budget)?.0
     };
+    let said = said.map(|said| said.join().unwrap_or_default()).unwrap_or_default();
     if !status.success() {
-        return Err(provider.failure(operation, status));
+        return Err(provider.failure_said(operation, status, &said));
     }
     reader
         .join()

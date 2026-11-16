@@ -10,9 +10,9 @@ import os
 from typing import Annotated, Literal
 
 import msgspec
-from cozy_runtime.author import App, ImageFrame, Outputs
+from cozy_runtime.author import App, ImageFrame
 from cozy_runtime.fields import Advanced, Image, Prompt, Range
-from cozy_runtime.fields import When  # type: ignore[attr-defined]  # the RC Runtime's; the type check pins 0.45.0
+from cozy_runtime.fields import When
 from cozy_runtime.media import ImageFile
 
 app = App()
@@ -32,7 +32,7 @@ class Picture(msgspec.Struct):
 
 
 @app.tool(label="Image", named="still")
-def image(payload: Box, out: Outputs) -> Picture:
+def image(payload: Box) -> Picture:
     """A still of one colour, and what it was given."""
     given = f"creativity={payload.creativity} temporal_overlap={payload.temporal_overlap}"
-    return Picture(out.save_image(ImageFrame(16, 16, os.urandom(3) * 256), format="png"), given)
+    return Picture(ImageFile.from_image(ImageFrame(16, 16, os.urandom(3) * 256), format="png"), given)

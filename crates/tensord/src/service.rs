@@ -87,6 +87,8 @@ impl Service {
             ));
         }
         let engine = Engine::open(&root.join("execution"), store)?;
+        // A project whose folder went while this machine wasn't running leaves nothing here (cl-1031).
+        engine.forget_gone_projects();
         // A completed request does not prove its retained CUDA context ended. A prior
         // machine's executor cannot be adopted (nothing can reach it), so it is ended now
         // and GPU admission stays fenced until its exit is observed.

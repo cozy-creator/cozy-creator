@@ -170,6 +170,9 @@ A package a session runs or installs from a `packages_refs` checkout carries its
 `scripts/triton.sh` as a release ships them (`lib.sh` `kernels`). `parity` (xs-194) runs a package from source and its Hub release on one
 pod, each cold then warm on the same seed: the environments' distributions, their `_triton` kernels, cold execution and the output bytes must match.
 `tool-functions` (cl-774) takes `qwen-image-2/image`, `birefnet/remove_background`, `minimax-h3/generate`, `upscale` and `edit` from dropping the tool to accepting its output on one 4090, as the page does (`e2e/page.py`), a shape like `lab`'s beside them, from a `packages_refs` checkout `pk`, keeping frames to judge.
+`h3-upscale` (se-138) upscales the gate's 15 s Skater take as the page does, from `packages_refs` checkouts `was` and `now`: with no
+prompt both must give the same frames; an overriding prompt (0.7 and 0.909) must differ; the take's file as a box (no latents) runs with
+a prompt, and with no text it warns and holds the source by the gate's regen bar. Side-by-side frames in `frames/`.
 `h3-later-segments` (se-130) is a 26 s H3 shot of two segments whose summary names segment 1's event, then a redo from its seam, as the
 page does it (`e2e/page.py`), from a `packages_refs` checkout `pk`: segment 2's summary and the redo's say only that they continue,
 without the event, their prompts are the same, and their frames are kept to judge that the event isn't played again.

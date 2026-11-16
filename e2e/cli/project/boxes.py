@@ -136,6 +136,6 @@ class Picture(msgspec.Struct):
 
 
 @app.tool(label="A still", named="still")
-def still(payload: StillBox, out: Outputs) -> Picture:
+def still(payload: StillBox) -> Picture:
     """A still of one colour."""
-    return Picture(out.save_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png"))
+    return Picture(ImageFile.from_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png"))

@@ -365,7 +365,7 @@ replaced?: Replaced | null, };
 /**
  * What a quote's run time stands on.
  */
-export type Basis = "measured" | "prior" | "reference" | "none";
+export type Basis = "measured" | "prior" | "reference" | "scaled" | "none";
 
 /**
  * A render as a view draws it: everything it covers, what has ended first, then what is going, then what waits. It is
@@ -1512,7 +1512,12 @@ gpu_memory_limit?: number | null,
 /**
  * Shared/Dedicated category, applied after the ordinary drain and restart.
  */
-mode?: MachineMode | null, };
+mode?: MachineMode | null,
+/**
+ * The machine's own PyTorch base at the version its Hub names, installed now rather than at its first run
+ * (`cozy doctor --fix`, `cozy update`; cl-1030). An update naming nothing asks it too.
+ */
+torch?: boolean, };
 
 /**
  * The file people mean by a version, and what is measured of it so far.

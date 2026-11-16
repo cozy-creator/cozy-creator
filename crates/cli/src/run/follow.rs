@@ -121,23 +121,13 @@ pub(crate) fn mint_key() -> String {
     format!("idem-{}", hex::encode(bytes))
 }
 
-/// 0 for a run that completed or goes on (no longer followed), 1 for one that failed or was canceled,
-/// `STALLED` for one going that has stopped moving, said in one line.
+/// 0 for a run that completed or goes on (no longer followed), 1 for one that failed or was canceled. A run that makes no
+/// progress is followed on, its warning shown (cl-977): only its end, or Ctrl-C, ends the following.
 pub(crate) fn exit_code(run: &Run) -> ExitCode {
     match run.status {
         Status::Failed | Status::Canceled => ExitCode::FAILURE,
-        _ if let Some(stalled) = run.stalled.as_ref().filter(|_| !settled(run)) => {
-            let n = handle(&run);
-            output::warned(&format!("run {n}: {}. It keeps running: `cozy run watch {n}` follows it", stalled_words(stalled)));
-            ExitCode::from(output::STALLED)
-        }
         _ => ExitCode::SUCCESS,
     }
-}
-
-/// An event saying its run has stopped moving. A replayed one never does: the record a follower starts from says it.
-fn stalls(event: &Event) -> bool {
-    matches!(event, Event::InProgress { run, .. } if run.stalled.is_some())
 }
 
 /// Follows `run` to its end and its outputs to this computer, until Ctrl-C, which stops following
@@ -273,11 +263,6 @@ async fn watch(
     let mut placing: Option<Following> = None;
     let mut notices = Notices::default();
     let mut tick = tokio::time::interval(Duration::from_secs(1));
-    // A run that has stopped moving ends the following, as one that ended does; it goes on until it's canceled.
-    if run.stalled.is_some() && !settled(&run) {
-        view.done();
-        return Ok((run, true));
-    }
     loop {
         // One read of the stream, kept going across the view's ticks: a reconnect's pause and retries carry on.
         let event = {
@@ -326,14 +311,6 @@ async fn watch(
             Some(Err(error)) => {
                 view.done();
                 return Err(error);
-            }
-            Some(Ok(event)) if stalls(&event) => {
-                match events_out {
-                    true => output::ndjson(&event),
-                    false => view.on(&event),
-                }
-                view.done();
-                return Ok((calcifer.run(&address).await?, true));
             }
             Some(Ok(event)) if events.restarted() && !events_out => {
                 view.line(&format!("  Calcifer restarted; following run {} again", view.number));
@@ -459,7 +436,10 @@ pub(super) fn keyed(basis: &str) -> &'static str {
 
 /// Where the plan sent it and what it quoted there: `enishi, to finish in 20 s (measured, warm; 9 s preparing, 0.3 GiB to fetch)`.
 fn placed_words(placed: &api::calcifer::Placed) -> String {
-    let basis = serde_json::to_value(placed.basis).ok().and_then(|basis| basis.as_str().map(str::to_owned)).unwrap_or_default();
+    let basis = match placed.basis {
+        api::machine::Basis::Scaled => "estimated".to_owned(),
+        basis => serde_json::to_value(basis).ok().and_then(|basis| basis.as_str().map(str::to_owned)).unwrap_or_default(),
+    };
     let warm = if placed.warm { ", warm" } else { "" };
     let fetch = match placed.fetch_bytes {
         0 => String::new(),
@@ -929,11 +909,12 @@ pub(crate) fn said(progress: &Progress) -> String {
 }
 
 /// How long the run has left, as Calcifer estimates it: `41s left`, `about 3m10s left` while that is
-/// little trusted, or that nothing like it has run to tell yet.
+/// little trusted, `(estimated)` when it stands on another card's runs, or that nothing like it has run to tell yet.
 pub(crate) fn left(progress: &Progress) -> Option<String> {
     match (progress.eta_s, progress.eta_basis) {
         // Only the bytes it moves are known: at least that.
         (Some(left), Some(EtaBasis::Bytes)) => Some(format!("at least {} left", output::span(left))),
+        (Some(left), Some(EtaBasis::Card)) => Some(format!("about {} left (estimated)", output::span(left))),
         (Some(left), _) => {
             let about = if progress.eta_confidence.is_some_and(|c| c < 0.5) { "about " } else { "" };
             Some(format!("{about}{} left", output::span(left)))

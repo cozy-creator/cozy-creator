@@ -408,6 +408,7 @@ impl Clock {
         let basis = match quoted.basis {
             Basis::Measured => Some(EtaBasis::Machine),
             Basis::Prior | Basis::Reference => Some(EtaBasis::Gpu),
+            Basis::Scaled => Some(EtaBasis::Card),
             Basis::None => None,
         };
         if let (None, Some(basis)) = (&self.prior, basis) {

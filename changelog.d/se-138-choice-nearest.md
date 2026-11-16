@@ -1,0 +1,1 @@
+A size or count a choice doesn't offer runs at the nearest one it does, and the run says so (se-138, Paul's clamp-and-warn rule): H3 Upscale's `to: 768p` is 1080p, not its 1440p default. A word that names no choice still goes as its default, with the same line.

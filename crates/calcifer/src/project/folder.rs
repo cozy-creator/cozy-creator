@@ -963,6 +963,32 @@ struct JournalReaders {
     opened: bool,
 }
 
+/// A journal read's turn: counted from its start until it's dropped, on unwind too (a read that panicked left `reading` up, so the
+/// project's close answered busy until Calcifer restarted, and a lock failed). Its connection goes back idle, unless the read
+/// panicked holding it.
+struct JournalReader<'a> {
+    shared: &'a Shared,
+    conn: Option<rusqlite::Connection>,
+}
+
+impl<'a> JournalReader<'a> {
+    fn take(shared: &'a Shared) -> Self {
+        let mut journal = shared.journal.lock().unwrap_or_else(|e| e.into_inner());
+        journal.reading += 1;
+        Self { shared, conn: journal.idle.pop() }
+    }
+}
+
+impl Drop for JournalReader<'_> {
+    fn drop(&mut self) {
+        let mut journal = self.shared.journal.lock().unwrap_or_else(|e| e.into_inner());
+        journal.reading -= 1;
+        if let Some(conn) = self.conn.take().filter(|_| !std::thread::panicking() && journal.idle.len() < JOURNAL_READERS) {
+            journal.idle.push(conn);
+        }
+    }
+}
+
 /// How many idle journal readers a project keeps: as many as the reads a page and the CLI make at once.
 const JOURNAL_READERS: usize = 8;
 
@@ -1626,23 +1652,12 @@ impl Folder {
             drop(self.held().map_err(protected)?);
             self.shared.journal.lock().unwrap_or_else(|e| e.into_inner()).opened = true;
         }
-        let idle = {
-            let mut journal = self.shared.journal.lock().unwrap_or_else(|e| e.into_inner());
-            journal.reading += 1;
-            journal.idle.pop()
+        let mut reader = JournalReader::take(&self.shared);
+        let conn = match reader.conn.take().map_or_else(|| db::reader(&self.db()), Ok) {
+            Ok(conn) => reader.conn.insert(conn),
+            Err(error) => return Err(protected(error)),
         };
-        let done = |conn: Option<rusqlite::Connection>| {
-            let mut journal = self.shared.journal.lock().unwrap_or_else(|e| e.into_inner());
-            journal.reading -= 1;
-            if let Some(conn) = conn.filter(|_| journal.idle.len() < JOURNAL_READERS) { journal.idle.push(conn); }
-        };
-        let conn = match idle.map_or_else(|| db::reader(&self.db()), Ok) {
-            Ok(conn) => conn,
-            Err(error) => { done(None); return Err(protected(error)); }
-        };
-        let read = read(&conn);
-        done(Some(conn));
-        read
+        read(conn)
     }
 
     /// Whether this thread is inside one of this project's acts: its writer is this thread's until the act commits.

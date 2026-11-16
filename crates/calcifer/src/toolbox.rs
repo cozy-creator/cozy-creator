@@ -281,37 +281,52 @@ fn staged(api: &Api, scope: Option<&private_io::Scope>, path: &Path) -> Result<a
 const LOCAL_LATE: Duration = Duration::from_secs(60);
 /// How many of them are read at once.
 static LOCAL_READS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
-/// How long a list waits for the checkout's packages to be read from source; one read later is listed by a later list.
-const SOURCE_LATE: Duration = Duration::from_secs(20);
-/// How long a list waits for a package's new reading when it has a good one to show meanwhile.
-const SOURCE_FRESH: Duration = Duration::from_secs(1);
+/// A checkout package's source is read again behind a list at most this often: a reading locks and describes it with uv.
+const SOURCE_EVERY: Duration = Duration::from_secs(30);
 /// How many of them are read at once: each locks and describes its source with uv.
 static SOURCE_READS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 /// A checkout package's tools as a list asks for them: its name, the Hub and the machine.
 type SourceKey = (String, String, String);
-/// Each package's last good tools, shown while a new reading goes on (or failed), so a slow read never empties the list.
-static LAST_GOOD: LazyLock<Mutex<HashMap<SourceKey, Vec<Tool>>>> = LazyLock::new(Mutex::default);
+/// Each package's last good tools, shown while a new reading goes on (or failed), so a slow read never empties the list; kept across
+/// a restart in Calcifer's home (`kept-source-tools.json`), so a start lists them before its first reading ends.
+static LAST_GOOD: std::sync::OnceLock<Mutex<HashMap<SourceKey, Vec<Tool>>>> = std::sync::OnceLock::new();
+/// When each package's source was last read behind a list.
+static SOURCE_READ_AT: LazyLock<Mutex<HashMap<SourceKey, Instant>>> = LazyLock::new(Mutex::default);
+
+fn kept_source_tools(api: &Api) -> PathBuf {
+    api.machines.hubs.home().calcifer().join("kept-source-tools.json")
+}
+
+fn last_good(api: &Api) -> &'static Mutex<HashMap<SourceKey, Vec<Tool>>> {
+    LAST_GOOD.get_or_init(|| {
+        let kept: Vec<(SourceKey, Vec<Tool>)> = std::fs::read(kept_source_tools(api)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+        Mutex::new(kept.into_iter().collect())
+    })
+}
 /// The one reading of each package going on: every list waits on it, none starts another.
 static READING: LazyLock<Mutex<HashMap<SourceKey, Shared<BoxFuture<'static, ()>>>>> = LazyLock::new(Mutex::default);
 
 /// The tools of each first-party package the dev home's checkout holds, read from its source as a run of it is (xs-195), each
-/// saying its branch and commit. Each package is read once at a time, behind every list that asks; a list shows each one's
-/// newest good tools: what its reading found within [`SOURCE_FRESH`] (or [`SOURCE_LATE`] for one never read), else its last
-/// good ones. One never read well yet is said in the note, and listed once read.
+/// saying its branch and commit. Each package is read once at a time, behind the lists, at most each [`SOURCE_EVERY`]; a list shows
+/// each one's last good tools. One never read well yet is said in the note, and listed once read.
 async fn from_source(api: &Arc<Api>, hub: &str, on: &On) -> (Vec<Tool>, Option<String>) {
     let packages = checkout::packages();
     let key = |name: &str| (name.to_owned(), hub.to_owned(), on.to_string());
-    let known = {
-        let last = LAST_GOOD.lock().expect("last good lock");
-        packages.iter().all(|(name, _)| last.contains_key(&key(name)))
-    };
-    let deadline = tokio::time::Instant::now() + if known { SOURCE_FRESH } else { SOURCE_LATE };
-    let reads: Vec<_> = packages.iter().map(|(name, dir)| reading(api, hub, on, key(name), dir.clone())).collect();
-    for read in reads {
-        let _ = tokio::time::timeout_at(deadline, read).await;
+    // Read behind the list, never waited for: the first list after a start waited up to 20 s for uv, and every list after it up to
+    // 1 s for a reading it started again each time (cl-1010: 6.5 s, then 1–3 s per list on Paul's laptop).
+    for (name, dir) in &packages {
+        let due = {
+            let mut read_at = SOURCE_READ_AT.lock().expect("source read lock");
+            let due = read_at.get(&key(name)).is_none_or(|at| at.elapsed() >= SOURCE_EVERY);
+            if due { read_at.insert(key(name), Instant::now()); }
+            due
+        };
+        if due {
+            drop(reading(api, hub, on, key(name), dir.clone()));
+        }
     }
-    let last = LAST_GOOD.lock().expect("last good lock");
+    let last = last_good(api).lock().expect("last good lock");
     let (mut tools, mut late) = (vec![], vec![]);
     for (name, _) in &packages {
         match last.get(&key(name)) {
@@ -333,7 +348,12 @@ fn reading(api: &Arc<Api>, hub: &str, on: &On, key: SourceKey, dir: PathBuf) -> 
     // It takes its place below before it can end: the lock is held until then.
     let task = tokio::spawn(async move {
         if let Some(found) = source_tools(&api, &hub, &on, &held.0, &dir).await {
-            LAST_GOOD.lock().expect("last good lock").insert(held.clone(), found);
+            let kept: Vec<(SourceKey, Vec<Tool>)> = {
+                let mut last = last_good(&api).lock().expect("last good lock");
+                last.insert(held.clone(), found);
+                last.iter().map(|(key, tools)| (key.clone(), tools.clone())).collect()
+            };
+            let _ = platform::durable::replace(&kept_source_tools(&api), &serde_json::to_vec(&kept).expect("serializes"), 0o600);
         }
         READING.lock().expect("reading lock").remove(&held);
     });

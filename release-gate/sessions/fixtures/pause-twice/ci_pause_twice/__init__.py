@@ -11,22 +11,26 @@ import msgspec
 import sdxl
 from sdxl import GenerateInput, SdxlModel
 
-from cozy_runtime.author import Adjustments, App, Context, Outputs, Seed, Telemetry, call
+from cozy_runtime.author import Adjustments, App, Context, Seed, Telemetry, call
 from cozy_runtime.image import ImageResult
 
 app = App()
 
 
+class PaintInput(msgspec.Struct, kw_only=True):
+    prompt: str
+    seed: int
+    steps: int = 20
+
+
 @app.entrypoint(private=True, defaults={"model": "stabilityai/sdxl@1.0.0"})
 async def paint(
-    ctx: Context, *, prompt: str, seed: int, steps: int = 20, model: SdxlModel, out: Outputs,
+    ctx: Context, request: PaintInput, *, model: SdxlModel,
     tel: Telemetry, adj: Adjustments,
 ) -> ImageResult:
     """sdxl's own generate, as this package's GPU call."""
-    payload = GenerateInput(prompt=prompt, seed=cast(Seed, seed), steps=steps)  # cast: Seed is a NewType of int
-    generate = sdxl.app._registry["generate"].fn
-    # cast: a registration's handler is typed `object`; sdxl's generate returns its ImageResult (typings/sdxl)
-    return cast(ImageResult, generate(ctx, payload, sdxl.resolve_generate(payload), model, out, tel, adj))
+    payload = GenerateInput(prompt=request.prompt, seed=cast(Seed, request.seed), steps=request.steps)
+    return sdxl.generate(ctx, payload, sdxl.resolve_generate(payload), model, tel, adj)
 
 
 class Twice(msgspec.Struct):
@@ -39,13 +43,13 @@ class Done(msgspec.Struct):
     seconds: list[float]
 
 
-async def twice(ctx: Context, payload: Twice, out: Outputs) -> Done:
+async def twice(ctx: Context, payload: Twice) -> Done:
     seconds = []
     for i in range(2):
         if i:
             await asyncio.sleep(payload.pause_s)
         started = time.monotonic()
-        await call(paint, prompt=payload.prompt, seed=payload.seed + i)
+        await call(paint, PaintInput(prompt=payload.prompt, seed=payload.seed + i))
         seconds.append(round(time.monotonic() - started, 2))
     return Done(seconds)
 
