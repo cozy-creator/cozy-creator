@@ -40,6 +40,7 @@ parse "$@"
 . "$(dirname "$0")/selfupdate.sh"
 . "$(dirname "$0")/idle.sh"
 . "$(dirname "$0")/plan.sh"
+. "$(dirname "$0")/prefetch.sh"
 . "$(dirname "$0")/render.sh"
 . "$(dirname "$0")/source.sh"
 . "$(dirname "$0")/envcost.sh"
@@ -724,6 +725,8 @@ case $SHARD in
   disk) parts="disk_full logs" ;;
   # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.
   plan) parts="estimate_line plan_picks plan_published plan_update plan_fetch prepare_ahead logs" ;;
+  # A box's tool gets its machine ready before Render (cl-1104): a guess switched, a request sent meanwhile, a box deleted.
+  prefetch) parts="prefetch_switch prefetch_ready prefetch_yields logs" ;;
   entrypoints) parts="entrypoints" ;;
   commands) parts="
     entrypoints

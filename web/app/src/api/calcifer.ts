@@ -58,8 +58,9 @@ source: string, };
 export type Agreed = { usd_micros_per_hour: number, };
 
 /**
- * One upcoming job's code and weights its machine has ready ahead of it (cl-967): no job's run; wrong, it costs bytes, and the job's
- * run fetches what it needs.
+ * The code and weights a machine has ready ahead of a job (cl-967): an upcoming job's, or with no job yet a guess's, what a render of
+ * the boxes it names would run on the machine it would go to (cl-1104). No job's run; wrong, it costs bytes, and the job's run
+ * fetches what it needs.
  */
 export type Ahead = {
 /**
@@ -71,7 +72,7 @@ function: string, machine: string,
  */
 run: number,
 /**
- * The boxes it prepares for: each shows it as its own preparation while it waits.
+ * The boxes it prepares for: each shows it as its own preparation while it waits. None: a guess that is one no more.
  */
 names?: Array<string>,
 /**
@@ -89,7 +90,11 @@ ready?: boolean,
 /**
  * Why it stopped short: the disk has no room, or it was canceled.
  */
-held_back?: string | null, };
+held_back?: string | null,
+/**
+ * A guess's, with no job yet: ready, its boxes say so beside Render.
+ */
+guess?: boolean, };
 
 /**
  * Another machine a run could rent, against the pick: its time as a multiple of the pick's, and

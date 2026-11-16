@@ -54,6 +54,9 @@ pub(crate) struct Invocation {
     /// It prepares only (warm, remove): it never takes a GPU.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub prepares: bool,
+    /// A caller's guess (`ahead::guess`, cl-1104): no job, so it holds no rental and never starts its idle clock again (`jobs`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
     /// A child run's parent (its execution id): children end with it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub parent: String,
@@ -2014,16 +2017,20 @@ impl Journal {
     /// Accepted history remains evidence of use even after every execution is terminal.
     /// Whether a job (any run asked of this machine: a call, a warm-up, an upload) is queued or
     /// running, and when the last one ended: `since` or later. One waiting for its sender's access
-    /// (`NEEDS_ACCESS`) is none: a sender that never comes back leaves the machine idle.
+    /// (`NEEDS_ACCESS`) is none: a sender that never comes back leaves the machine idle. Nor is a
+    /// caller's guess (`Invocation::background`, cl-1104): what a machine fetches in case it is asked
+    /// is no use of it.
     /// A record changed since `since` is the only one that can have stopped after it, so each
     /// sample reads only what changed.
     pub(crate) fn jobs(&self, since: i64) -> io::Result<(bool, i64)> {
         self.connection
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM executions WHERE state IN ('queued','starting','running')
-                   AND COALESCE(json_extract(record,'$.waiting_reason'),'')<>?2),
+                   AND COALESCE(json_extract(record,'$.waiting_reason'),'')<>?2
+                   AND COALESCE(json_extract(record,'$.invocation.background'),0)=0),
                  (SELECT MAX(json_extract(record,'$.finished_at_ms')) FROM executions
-                   WHERE updated_ms>=?1 AND state IN ('completed','failed','canceled'))",
+                   WHERE updated_ms>=?1 AND state IN ('completed','failed','canceled')
+                   AND COALESCE(json_extract(record,'$.invocation.background'),0)=0)",
                 params![since, NEEDS_ACCESS],
                 |row| Ok((row.get(0)?, row.get::<_, Option<i64>>(1)?.unwrap_or(0).max(since))),
             )

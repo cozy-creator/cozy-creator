@@ -474,8 +474,9 @@ impl Service {
                 return Ok(());
             }
         }
-        // A run's need comes before every guess at what another may read (cl-905).
+        // A run's need comes before every guess at what another may read (cl-905), a caller's too (cl-1104).
         crate::access::drop_guesses();
+        crate::ahead::make_way();
         self.sweep(missing, false);
         let room = match store.room() {
             Ok(room) => room,

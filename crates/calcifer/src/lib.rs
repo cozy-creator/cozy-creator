@@ -10,7 +10,6 @@
 #![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
 mod access;
-mod ahead;
 mod maintenance_source;
 mod api;
 mod authorized;
@@ -40,6 +39,7 @@ mod others;
 mod page;
 mod placement;
 mod plan;
+mod prefetch;
 mod previews;
 mod rc;
 pub(crate) mod private_io;

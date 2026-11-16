@@ -98,7 +98,7 @@ pub(crate) struct Machines {
     /// Told when a rental becomes ready: a dev home's moves to the RC before its first run.
     pub(crate) rc_ready: Notify,
     /// What each machine is told to have ready (cl-967).
-    pub(crate) lists: crate::ahead::Lists,
+    pub(crate) lists: crate::prefetch::Lists,
     /// Moves when a machine becomes ready or ends: what plans re-plan on (cl-967).
     pub(crate) arrivals: tokio::sync::watch::Sender<u64>,
     /// Anonymous performance data: whether it's sent, and the reports waiting (cl-1006).
@@ -199,7 +199,7 @@ impl Machines {
             download_url: config.download_url.as_ref().map(|url| url.as_str().to_owned()),
             rc: crate::rc::Rc::default(),
             rc_ready: Notify::new(),
-            lists: crate::ahead::Lists::default(),
+            lists: crate::prefetch::Lists::default(),
             arrivals: tokio::sync::watch::channel(0).0,
             reports,
             calcifer,
