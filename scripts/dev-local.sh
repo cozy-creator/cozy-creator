@@ -2,8 +2,8 @@
 # Keep the local Cozy on this checkout's RC branch (cl-1029): follow the branch's head, build, install the CLI, restart Calcifer
 # once it is idle, and say when local's TensorD (which Calcifer moves to the installed cozy once this computer is at rest) runs
 # it too. Local edits to the checkout build the same way. Requires watchexec, pnpm, Python 3, and the pinned Rust toolchain.
-# With COZY_DEV_PAGE=vite the page comes from the checkout's Vite (`[calcifer] development_web`), hot-reloaded: an edit under
-# web/ is on screen at once, builds nothing and restarts nothing.
+# When Calcifer serves the page from the checkout's Vite (`dev = true` and `[calcifer] development_web`), an edit under web/ is on
+# screen at once, builds nothing and restarts nothing.
 # Run with --once for one build, --follow for the follower alone. The default follows and watches until stopped.
 set -euo pipefail
 
@@ -16,6 +16,23 @@ mkdir -p "$CARGO_TARGET_DIR"
 cd "$root"
 
 say() { printf '%s %s\n' "$(date -Is)" "$*"; }
+
+# True when Calcifer serves the page from Vite: it reads these two keys of ~/.cozy/config.toml at its start, as this does at its own
+# (crates/calcifer/src/serve.rs). After changing them, restart Calcifer and this.
+vite() {
+python3 - "$HOME/.cozy/config.toml" <<'PYTHON'
+import sys
+import tomllib
+
+try:
+    with open(sys.argv[1], "rb") as file:
+        config = tomllib.load(file)
+except (OSError, tomllib.TOMLDecodeError):
+    sys.exit(1)
+calcifer = config.get("calcifer")
+sys.exit(0 if config.get("dev") is True and isinstance(calcifer, dict) and calcifer.get("development_web") else 1)
+PYTHON
+}
 
 # One look at the branch's head (git can't tell us it moved: one fetch a minute): true when the checkout fast-forwarded to it.
 # Only on an rc/* branch, never past a local commit; uncommitted edits come along. Merges in quick succession land as one: it
@@ -98,7 +115,7 @@ fi
 if [[ ${1:-} != --once ]]; then
     "$root/scripts/dev-local.sh" --follow &
     page=()
-    [[ ${COZY_DEV_PAGE:-} == vite ]] || page=(--watch web)
+    vite || page=(--watch web)
     exec watchexec --debounce 500ms --on-busy-update queue --shell none \
         --watch crates "${page[@]}" --watch vendor --watch scripts/dev-local.sh \
         --watch scripts/prepare-securefs.py --watch scripts/restart-calcifer-when-idle.py \
@@ -127,8 +144,7 @@ page_inputs=$(git ls-files -z --cached --others --exclude-standard -- web | sort
     while IFS= read -r -d '' file; do
         if [[ -f $file ]]; then sha256sum -- "$file"; fi
     done | sha256sum | cut -d ' ' -f 1)
-if [[ ! -f web/app/dist/index.html || ! -f $page_stamp ]] || \
-    [[ ${COZY_DEV_PAGE:-} != vite && $page_inputs != "$(cat "$page_stamp")" ]]; then
+if [[ ! -f web/app/dist/index.html || ! -f $page_stamp ]] || { [[ $page_inputs != "$(cat "$page_stamp")" ]] && ! vite; }; then
     web/build.sh
     printf '%s\n' "$page_inputs" > "$page_stamp"
 fi
