@@ -1660,7 +1660,7 @@ pub struct VaultChanged {
     /// Already-missing retained media skipped during conversion. Their project records remain missing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skipped_files: Vec<PathBuf>,
-    /// The runs whose outputs a lock stopped saving, by name (cl-1060): owed, and saved at the next unlock.
+    /// The runs whose outputs a lock cut, their save gone silent, by name (cl-1060): not saved, each run failed saying so.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unsaved: Vec<String>,
 }
