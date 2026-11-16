@@ -6,7 +6,7 @@
 // A failed render is said once, as a toast, and its take is gone: nothing in the column to pick or delete, the frame back on the take it
 // showed, through a reload (cl-1070). The take watched in Focus is the one drawn
 // when it lands, through a reload; its run's warnings are the box's, never a note. Two boxes rendered at once: the one whose tool is warm
-// is ready before the other's install has built, waiting only for the CPU another run holds, which its log names (cl-1086). A picture's
+// is ready before the other's install ends, waiting only for the CPU another run holds, which its log names (cl-1086). A picture's
 // take on its way is, in its takes column, the shape it will be: the one set, else Auto's from the picture it edits (cl-1072).
 const { writeFileSync } = require('fs');
 const { join } = require('path');
@@ -472,13 +472,13 @@ test('render', async ({ page, project, api, cli }) => {
     expect.soft(notes.filter((text) => text.includes(WARNED)), 'no note says a warning').toEqual([]);
   });
 
-  await test.step("Render two boxes at once: the one whose tool is warm is ready before the other's install has built, waiting only for the CPU, named", async () => {
+  await test.step("Render two boxes at once: the one whose tool is warm is ready before the other's install ends, waiting only for the CPU, named", async () => {
     // One render of both, so they're ready in one turn of its walk: `eager` on tool.py, installed and read by this project in the first step;
     // `fresh` on installs.py, whose first render installs it (cl-973: a box that can start now never waits for another's install).
     // cl-1086 (Paul: "a run never waits on something it doesn't need"; "every wait is tied to what it waits on, observed"): a run of
-    // tool.py's `slow` holds this machine's one CPU slot first, so eager waits for it whatever else the lane runs. Its log says so as the wait
-    // begins, naming that run, and it begins before fresh's install has built, both on the machine's clock: Calcifer's settle, a moment
-    // later, judges nothing. Once the CPU is free, eager goes before fresh.
+    // tool.py's `slow` holds this machine's one CPU slot first, so eager waits for it whatever else the lane runs, and its start (a cold
+    // executor, ~2 s) judges nothing. Its log says what it waits for as the wait begins, naming that run, on the machine's clock: it is
+    // ready before fresh's install ends, and nothing it waits for is fresh's. Once the CPU is free, eager goes before fresh.
     const installs = join(project.path, 'installs.py');
     writeFileSync(installs, INSTALLS);
     await project.add({ name: 'eager', tool: STILL, kind: 'image', fields: { instructions: 'Ready now.' }, at: { x: 720, y: 420 } });
@@ -510,7 +510,7 @@ test('render', async ({ page, project, api, cli }) => {
         .filter((event) => event.type === 'run.log' && event.level === 'stage').map((event) => ({ at: event.at_ms, text: event.text }));
     };
     const [waited, building] = [await stages(eager), await stages(install)];
-    // Built, the install gives up the machine's install line and describes what it built.
+    // Built, the install gives up the machine's install line and describes what it built (said, not judged: a warm uv cache builds in 0.7 s).
     const built = building.find((line) => line.text.startsWith('describing '))?.at;
     // Ready: queued for what it waits on, or else starting.
     const queued = waited.filter((line) => / in the queue\b/.test(line.text));
@@ -518,8 +518,7 @@ test('render', async ({ page, project, api, cli }) => {
     const times = (run) => run && { number: run.number, status: run.status, created: run.created_at_ms, started: run.started_at_ms, ended: run.settled_at_ms };
     const told = JSON.stringify({ hold: hold.id, built, ready, eager: { ...times(eager), log: waited }, install: times(install), fresh: times(fresh) });
     expect.soft([install, eager, fresh].map((run) => run?.status), `fresh's install, eager's call, fresh's call: ${told}`).toEqual(['completed', 'completed', 'completed']);
-    expect.soft(built, `fresh's install says when it built: ${told}`).toBeGreaterThan(0);
-    expect.soft(ready < built, `eager is ready, waiting only for the CPU, before fresh's install has built: ${told}`).toBe(true);
+    expect.soft(ready < install?.settled_at_ms, `eager is ready, waiting only for the CPU, before fresh's install ends: ${told}`).toBe(true);
     expect.soft(queued.map((line) => line.text).join('\n'), `eager's wait names the run holding the CPU: ${told}`).toContain(hold.id);
     const theirs = waited.filter((line) => /install/.test(line.text) || [install?.id, fresh?.id].some((id) => id && line.text.includes(id)));
     expect.soft(theirs, `eager waits for nothing of fresh's: ${told}`).toEqual([]);
