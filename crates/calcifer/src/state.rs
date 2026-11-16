@@ -1,18 +1,15 @@
 //! Calcifer's own state beside its runs, as tables of `state.db` (cl-818): the project folders it opened, your tool
 //! list, Render here, model header caches and independent asks. Project activity belongs to project.db. Each change is one
-//! transaction; nothing is rewritten whole. The JSON files an earlier Calcifer kept these in are imported once, at open, and deleted ([`import`]).
+//! transaction; nothing is rewritten whole.
 use std::{
-    collections::{BTreeMap, HashMap},
-    io::ErrorKind,
+    collections::HashMap,
     path::{Path, PathBuf},
 };
 
 use api::calcifer::tool::ToolList;
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::{Deserialize, de::DeserializeOwned};
 use sha2::{Digest as _, Sha256};
 use tensorfs::family::Facts;
-use tracing::{info, warn};
 
 use crate::store::{Result, Store, StoreError};
 
@@ -389,117 +386,3 @@ impl Store {
 
 }
 
-#[derive(Deserialize)]
-struct OldIndex {
-    #[serde(default)]
-    projects: BTreeMap<String, OldProject>,
-}
-
-#[derive(Deserialize)]
-struct OldProject {
-    path: PathBuf,
-    used_at_ms: i64,
-    #[serde(default)]
-    walking: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct OldHere {
-    #[serde(default)]
-    here: Vec<OldRenderedHere>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct OldRenderedHere {
-    tool: String,
-    machine: String,
-    #[serde(default)]
-    bytes: u64,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct OldHeaders {
-    families: String,
-    facts: HashMap<String, Facts>,
-}
-
-/// What an old file holds: none when it isn't there, or can't be read now (it stays for a later start); `Some(None)` when it can't
-/// be parsed, and goes, as the next write of it would have replaced it.
-fn old<T: DeserializeOwned>(path: &Path) -> Option<Option<T>> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(e) if e.kind() == ErrorKind::NotFound => return None,
-        Err(e) => {
-            warn!("{}: {e}; imported at a later start", path.display());
-            return None;
-        }
-    };
-    match serde_json::from_slice(&bytes) {
-        Ok(read) => Some(Some(read)),
-        Err(e) => {
-            warn!("{}: {e}; not imported", path.display());
-            Some(None)
-        }
-    }
-}
-
-/// Imports the JSON files an earlier Calcifer kept its own state in, in `dir` beside `state.db`, in one transaction, then deletes them.
-/// A row already here wins: killed between the commit and the deletes, the next start imports the same files over what they wrote.
-pub(crate) fn import(store: &Store, dir: &Path) {
-    let file = |name: &str| dir.join(name);
-    let index = old::<OldIndex>(&file("projects.json"));
-    // An earlier Calcifer's browser sessions: there are none now (cl-980), so the file only goes.
-    let sessions = old::<serde_json::Value>(&file("sessions.json"));
-    let tools = old::<ToolList>(&file("tools.json"));
-    let here = old::<OldHere>(&file("here.json"));
-    let headers = old::<OldHeaders>(&file("checkpoints.json"));
-    let after_dir = dir.join("after");
-    let mut steps = vec![];
-    if let Ok(entries) = std::fs::read_dir(&after_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Some(key) = (path.extension().is_some_and(|e| e == "json")).then(|| path.file_stem()).flatten() else { continue };
-            let Some(step) = old::<serde_json::Value>(&path) else { continue };
-            steps.push((key.to_string_lossy().into_owned(), step.map(|step| step.to_string()), path));
-        }
-    }
-    let none = index.is_none() && sessions.is_none() && tools.is_none() && here.is_none() && headers.is_none() && steps.is_empty();
-    if none {
-        let _ = std::fs::remove_dir(&after_dir);
-        return;
-    }
-    let mut counts = BTreeMap::new();
-    let imported = store.write(|tx| {
-        for (id, project) in index.iter().flatten().flat_map(|index| &index.projects) {
-            let sql = "INSERT OR IGNORE INTO projects (id, path, code) VALUES (?1, ?2, '')";
-            *counts.entry("projects").or_insert(0) += tx.execute(sql, params![id, project.path.to_string_lossy()])?;
-        }
-        if let Some(Some(list)) = &tools
-            && tool_list_in(tx)? == ToolList::default()
-        {
-            for package in &list.packages {
-                *counts.entry("tool_list").or_insert(0) += tx.execute("INSERT OR IGNORE INTO tool_list (package) VALUES (?1)", [package])?;
-            }
-            for tool in &list.without {
-                *counts.entry("tools_off").or_insert(0) += tx.execute("INSERT OR IGNORE INTO tools_off (tool) VALUES (?1)", [tool])?;
-            }
-        }
-        Ok(())
-    });
-    if let Err(e) = imported {
-        warn!("importing Calcifer's files into state.db: {e}; they stay for the next start");
-        return;
-    }
-    info!("imported into state.db: {counts:?}");
-    let read = [("projects.json", false), ("sessions.json", sessions.is_some()), ("tools.json", tools.is_some()), ("here.json", false), ("checkpoints.json", false)];
-    let gone = read.into_iter().filter(|(_, read)| *read).map(|(name, _)| file(name));
-    for path in gone {
-        if let Err(e) = std::fs::remove_file(&path) {
-            warn!("{}: {e}", path.display());
-        }
-    }
-    let _ = std::fs::remove_dir(&after_dir);
-}

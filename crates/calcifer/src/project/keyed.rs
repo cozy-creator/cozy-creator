@@ -204,12 +204,7 @@ async fn creation(api:&Arc<Api>,bytes:&[u8],key:&str,digest:&str)->Result<Creati
             }
         }
     }
-    let legacy=api.calcifer.maintenance_store().read(|conn| {
-        let exists=conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='legacy_project_answers')",[],|row|row.get::<_,bool>(0))?;
-        if !exists {return Ok(false);}
-        Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM legacy_project_answers WHERE key=?1)",[key],|row|row.get::<_,bool>(0))?)
-    })?;
-    if legacy {Err(pending())} else {Ok(Creation::Fresh)}
+    Ok(Creation::Fresh)
 }
 
 fn conflict(key: &str) -> Response {

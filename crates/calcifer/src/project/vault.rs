@@ -443,13 +443,6 @@ fn status(root: &FsPath) -> VaultStatus {
     VaultStatus { encrypted: encrypted(root), state: state.into(), path: root.to_owned(), view, expires_at_ms: expires, idle_timeout_s: idle, next }
 }
 
-/// Whether the legacy source still holds this project's own history; another project's never holds it.
-fn own_migration_pending(api: &Api, root: &FsPath) -> Result<bool, Error> {
-    let Some(id) = project_id(root).or_else(|| plain_project_id(root)) else { return Ok(false) };
-    api.calcifer.maintenance_store().project_migration_required(root, &id)
-        .map_err(|_| error("project_migration_pending", "legacy project storage could not be checked"))
-}
-
 fn milliseconds(seconds: u64) -> i64 { i64::try_from(seconds).unwrap_or(i64::MAX).saturating_mul(1000) }
 
 fn expired(session: &Session) -> bool { session.timer.expired() }
@@ -692,12 +685,6 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser:
     tokio::runtime::Handle::current().block_on(crate::private_io::close_private_project(api, root))?;
     crate::runs::files::release_private(root)?;
     if let Some(id) = project_id(root).or_else(|| plain_project_id(root)) { api.calcifer.retire_project(&id); }
-    let pending = api.calcifer.maintenance_store().migration_required()
-        .map_err(|_| error("project_migration_pending", "legacy storage could not be checked before closing"))?;
-    if !pending {
-        api.calcifer.maintenance_store().cleanup_private_journal()
-            .map_err(|_| error("project_migration_pending", "legacy database pages could not be retired before closing"))?;
-    }
     if let Some(session) = held(root) {
         let mut session = session.lock().expect("vault session");
         session.mount.try_unmount().map_err(|why| match why {
@@ -717,7 +704,7 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser:
             crate::events::project_vault(&keybag.info().project_id, &state.state);
             let converting = CONVERTING.lock().expect("vault conversions").contains(root);
             if state.state != "locked" && !converting {
-                return Err(error("project_migration_pending", "the project is closed, but legacy data outside it still needs a verified storage update"));
+                return Err(error("project_storage_pending", "the project is closed; its storage change finishes at its next unlock"));
             }
             // Locked, nothing of it stays here but its folder (cl-984): not its id, code or keys, so its KEY-N is unknown here (cl-987).
             if !converting {
@@ -1045,8 +1032,6 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
         let id = project_id(root).or_else(|| plain_project_id(root)).ok_or_else(|| error("vault_identity", "the project has no verified identity"))?;
         let store = api.projects.transition_store(api, &id, transition)?;
         progress.admit_receipt(&store)?;
-        // Legacy history that can't be imported stays where it is, for the hard cut (cl-1003); it never holds the change up.
-        if let Err(failed) = api.calcifer.maintenance_store().migrate_project_sealing(&store, &api.calcifer.inputs) { crate::store::legacy_not_imported("storage_change", &failed); }
         progress.prepared = true;
     }
     let mut recovery_secret = None;
@@ -1104,22 +1089,8 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
             let store = api.projects.transition_store(api, &id, transition)?;
             drop(opened);
             progress.admit_receipt(&store)?;
-            if api.calcifer.maintenance_store().migration_required().unwrap_or(true) {
-                progress.phase("updating_project_storage");
-                // One that can't be imported stays where it is, for the hard cut (cl-1003): the project opens all the same.
-                if let Err(failed) = api.calcifer.maintenance_store().migrate_project_sealing(&store, &api.calcifer.inputs) { crate::store::legacy_not_imported("unlock", &failed); }
-            }
-            let completing = receipt_path(root).is_file();
-            if completing || journal_cleanup_pending(root)? {
-                // Compaction copies the whole store: it waits while any project's history, this one's too, is still pending there.
-                if !own_migration_pending(api, root).unwrap_or(true) && !api.calcifer.maintenance_store().migration_required().unwrap_or(true) {
-                    progress.phase("compacting_history");
-                    api.calcifer.maintenance_store().cleanup_private_journal().map_err(|_| error("project_migration_pending", "the project is open, but legacy journal cleanup is still pending"))?;
-                    progress.phase("cleaning_up");
-                    journal_cleanup_done(root)?;
-                }
-                if completing { finish_conversion(root)?; }
-            }
+            if receipt_path(root).is_file() { finish_conversion(root)?; }
+            let _ = fs::remove_file(root.join(JOURNAL_CLEANUP_FILE));
             if let Some(session) = held(root) { crate::events::project_vault(session.lock().expect("vault session").secret.project_id(), "unlocked"); }
             progress.finish_receipt(&store, "completed")?;
         }
@@ -2000,43 +1971,10 @@ fn fresh() -> String { let mut bytes = [0u8;16]; getrandom::fill(&mut bytes).exp
 pub(crate) const PAYLOAD_PREFIX: &[u8] = b"cozy:vault:journal:2:";
 const JOURNAL_DIR: &str = ".vault-journal";
 const MAX_JOURNAL_BYTES: u64 = 32 << 20;
+/// The marker a 0.26 RC left beside an encrypted project while Calcifer's store still had to be compacted for it (cl-1003: none is now).
 const JOURNAL_CLEANUP_FILE: &str = "project.vault.journal-pending";
-const JOURNAL_CLEANUP_MARKER: &[u8] = b"cozy project journal cleanup 1\n";
 static KEY_ROOTS: LazyLock<Mutex<BTreeMap<String, PathBuf>>> = LazyLock::new(Mutex::default);
 static TRUSTED_KEYS: LazyLock<Mutex<BTreeMap<PathBuf, Keybag>>> = LazyLock::new(Mutex::default);
-
-fn journal_cleanup_pending(root: &FsPath) -> Result<bool, Error> {
-    let path = root.join(JOURNAL_CLEANUP_FILE);
-    let metadata = match fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(why) if why.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(why) => return Err(io(why)),
-    };
-    let mut bytes = Vec::new();
-    if metadata.file_type().is_file() {
-        fs::File::open(&path).map_err(io)?.take(JOURNAL_CLEANUP_MARKER.len() as u64 + 1).read_to_end(&mut bytes).map_err(io)?;
-    }
-    if bytes != JOURNAL_CLEANUP_MARKER {
-        return Err(error("vault_journal_cleanup", format!("unexpected {JOURNAL_CLEANUP_FILE}; preserve this file and resolve the conflict before retrying")));
-    }
-    Ok(true)
-}
-
-/// Durable before the global SQL rewrite commits; contains no private data or key material.
-pub(crate) fn mark_journal_cleanup(root: &FsPath) -> Result<(), Error> {
-    if !journal_cleanup_pending(root)? {
-        platform::durable::replace(&root.join(JOURNAL_CLEANUP_FILE), JOURNAL_CLEANUP_MARKER, 0o600).map_err(provider)?;
-    }
-    Ok(())
-}
-
-fn journal_cleanup_done(root: &FsPath) -> Result<(), Error> {
-    if journal_cleanup_pending(root)? {
-        fs::remove_file(root.join(JOURNAL_CLEANUP_FILE)).map_err(io)?;
-        platform::durable::sync_dir(root).map_err(provider)?;
-    }
-    Ok(())
-}
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ProtectedPayload {
@@ -2090,13 +2028,7 @@ pub(crate) fn seal_payload(path: &FsPath, context: &str, value: &[u8]) -> Result
 
 pub(crate) fn payload_root(value: &[u8]) -> Result<Option<PathBuf>, Error> { Ok(payload(value)?.map(|record| current_root(&record))) }
 
-/// The project a sealed record names and the root it was sealed under, before a move this Calcifer saw (`payload_root`).
-pub(crate) fn payload_owner(value: &[u8]) -> Result<Option<(String, PathBuf)>, Error> { Ok(payload(value)?.map(|record| (record.project_id, record.root))) }
 
-/// The projects this Calcifer saw move to `root` or below it: their sealed records' roots now read there.
-pub(crate) fn projects_moved_under(root: &FsPath) -> Vec<String> {
-    KEY_ROOTS.lock().expect("vault project roots").iter().filter(|(_, at)| at.starts_with(root)).map(|(id, _)| id.clone()).collect()
-}
 
 pub(crate) fn payload_path(value: &[u8], decoded: &FsPath) -> Result<PathBuf, Error> {
     let Some(reference) = payload(value)? else { return Ok(decoded.to_owned()) };
@@ -2131,13 +2063,6 @@ pub(crate) fn open_payload(context: &str, value: &[u8]) -> Result<Option<Vec<u8>
     Ok(Some(plain))
 }
 
-/// Full filesystem rekey already rewrites these blob bytes. Preserve their logical pointer identity.
-pub(crate) fn rekey_payload(context: &str, value: &[u8], old: &ProjectSecret, new: &Keybag) -> Result<Vec<u8>, Error> {
-    let Some(reference) = payload(value)? else { return Err(error("vault_journal", "expected a private journal pointer")) };
-    if reference.context != context || reference.project_id != old.project_id() || reference.project_id != new.info().project_id { return Err(error("vault_journal", "private journal rekey context mismatch")); }
-    if open_payload(context, value)?.is_none() { return Err(locked(&current_root(&reference))); }
-    Ok(value.to_vec())
-}
 
 /// Private responses never enter browser caches; an existing stream stops yielding new chunks once lock begins.
 pub(super) async fn privacy(

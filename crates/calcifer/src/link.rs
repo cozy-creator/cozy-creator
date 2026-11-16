@@ -129,15 +129,6 @@ impl Link {
         self.machine.probe_private().await.map_err(LinkError::from)
     }
 
-    pub(crate) async fn migrate_private(&self) -> Result<(), LinkError> { self.machine.migrate_private().await.map_err(LinkError::from) }
-
-    pub(crate) async fn legacy_project_bindings(&self, request_ids: &[String]) -> Result<api::machine::ProjectExecutionLegacyLookupAnswer, LinkError> { self.machine.legacy_project_bindings(request_ids).await.map_err(LinkError::from) }
-
-    pub(crate) async fn legacy_bindings(&self, request_ids: &[String]) -> Result<api::machine::ProjectExecutionLegacyLookupAnswer, LinkError> { self.machine.legacy_bindings(request_ids).await.map_err(LinkError::from) }
-    pub(crate) async fn migrate_private_bindings(&self, verified: &api::machine::ProjectExecutionMigrationReceipt) -> Result<(), LinkError> { self.machine.migrate_private_bindings(verified).await.map_err(LinkError::from) }
-
-    pub(crate) async fn migration_receipt(&self) -> Result<api::machine::ProjectExecutionMigrationReceipt, LinkError> { self.machine.migration_receipt().await.map_err(LinkError::from) }
-
     pub(crate) async fn project_gone(&self, id: &str) -> Result<(), LinkError> {
         self.machine.project_gone(id).await.map_err(LinkError::from)
     }

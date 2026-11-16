@@ -241,6 +241,7 @@ impl Store {
         }
         let mut retired = RetiredObjects::default();
         let uses = self.uses(&BTreeSet::new())?;
+        let expired = SystemTime::now().checked_sub(super::retention::TTL).unwrap_or(SystemTime::UNIX_EPOCH);
         for used in uses {
             if requested.contains(&used.name)
                 && !keep.contains(&used.name)
@@ -251,10 +252,11 @@ impl Store {
             {
                 self.remove_record(&self.root.join("uses").join(&used.name))?;
                 retired.removed_uses.push(used.name);
-            } else {
+            } else if used.used >= expired {
                 keep.insert(used.name);
                 keep.extend(used.digests);
             }
+            // Past the TTL a use keeps nothing: only a root kept it from the last collection, and what a root holds is kept above.
         }
         let before = SystemTime::now();
         for object in objects {

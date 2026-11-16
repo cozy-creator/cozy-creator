@@ -187,10 +187,11 @@ fn runtime(_loaded: &Loaded) -> Result<tokio::runtime::Runtime, Error> {
         .map_err(|e| Error::new(Kind::Internal, "calcifer_runtime", e.to_string()))
 }
 
-/// Logs why Calcifer cannot start and leaves it in `<home>/calcifer/refused.json` for the CLI: the
-/// failed step's code as its cause, never its message.
+/// Logs why Calcifer cannot start (`calcifer/health.log`) and leaves it in
+/// `<home>/calcifer/refused.json` for the CLI: the failed step's code as its cause, never its message.
 fn refuse(home: &Home, error: Error) -> Error {
     crate::health::service_health(crate::health::HealthEvent::StartRefused);
+    error!(target: "cozy.service_health", code = %error.code, "Calcifer cannot start: {}", error.message);
     let envelope = serde_json::to_vec(&Envelope {
         error: Error::new(Kind::Unavailable, "calcifer_start_failed", "Calcifer could not start")
             .cause(error.code.clone())
@@ -279,9 +280,6 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
         return Ok(Stopped::AnotherHolds);
     };
     crate::browser::recover_profiles(&home.calcifer()).map_err(|error| failed(error.0))?;
-    // Old raw captures are disposable, unlike the authoritative run journal. A
-    // retained/unknown artifact remains visible through migration_required.
-    let _ = crate::legacy_cleanup::retire(&home.calcifer());
     crate::project::bind_calcifer(&home.calcifer()).map_err(failed)?;
     // Only the holder announces: its birth is what `Services::stop` must end.
     Services::new(home, &loaded.user_home)
@@ -298,8 +296,13 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     }
     steps.done("home");
 
-    let calcifer = Calcifer::open(&home.calcifer(), &home.outputs())
-        .map_err(|e| failed(Error::new(Kind::Internal, "calcifer_store", e.to_string())))?;
+    let calcifer = Calcifer::open(&home.calcifer(), &home.outputs()).map_err(|e| {
+        failed(match e {
+            // The legacy cut stopped before it replaced the old store (cl-1003): what to do, and the old store as it was.
+            crate::Error::Store(crate::store::StoreError::Cut(why)) => Error::new(Kind::Unavailable, "legacy_cut", why),
+            e => Error::new(Kind::Internal, "calcifer_store", e.to_string()),
+        })
+    })?;
     steps.done("store");
     let listener = match listen(port, PORT).await {
         Ok(listener) => listener,

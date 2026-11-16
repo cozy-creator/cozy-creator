@@ -26,7 +26,6 @@ mod hub;
 mod health;
 mod kept;
 mod legacy_cleanup;
-mod legacy_status;
 mod lanes;
 mod link;
 mod local;
@@ -287,13 +286,10 @@ impl Calcifer {
     pub(crate) fn open(home: &Path, outputs: &Path) -> Result<Arc<Self>, Error> {
         let store = Store::open(&home.join("state.db"))?;
         let projects = Instant::now();
-        state::import(&store, home);
         project::vault::sweep_runtime(home);
         project::vault::restore_plain_roots(&store);
         tracing::info!(target: "cozy.service_health", step = "store_projects", ms = projects.elapsed().as_millis() as u64, "started");
-        // Before 0.23 Calcifer kept uploaded files here; they are objects of this computer's TensorFS store now
-        // (`runs::files`). A run recorded since staged its own (`inputs/`), and a sender still has the rest.
-        // Existing controller files are retained until their owning migration verifies retirement.
+        // A run outside any project stages its inputs here; a project's run in the project (`private_io::input_root`).
         let inputs = home.join("inputs");
         std::fs::create_dir_all(&inputs).map_err(|e| Error::Input {
             path: inputs.clone(),
@@ -331,6 +327,9 @@ impl Calcifer {
         lock(&calcifer.run_owners).extend(maintenance.into_iter().map(|id| (id, None)));
         calcifer.sweep_inputs()?;
         tracing::info!(target: "cozy.service_health", step = "store_runs", ms = runs.elapsed().as_millis() as u64, "started");
+        // What the legacy cut's copies couldn't let go of in this computer's TensorFS store yet, let go of again, off the start's path.
+        let kept = home.to_owned();
+        std::thread::spawn(move || project::release_kept(&kept));
         Ok(calcifer)
     }
 
@@ -506,8 +505,8 @@ impl Calcifer {
         let owner = store.owner();
         let ids:Vec<String>=store.read(|conn| {
             // By `runs_owed` and `outputs_unexported`, never every run (cl-1010).
-            let mut stmt=conn.prepare(&format!("SELECT id FROM runs WHERE state<>'settled' AND owner=?1 AND custody='owned'
-                UNION SELECT id FROM runs WHERE id IN (SELECT outputs.run FROM outputs WHERE {}) AND owner=?1 AND custody='owned'",store::OWED))?;
+            let mut stmt=conn.prepare(&format!("SELECT id FROM runs WHERE state<>'settled' AND owner=?1
+                UNION SELECT id FROM runs WHERE id IN (SELECT outputs.run FROM outputs WHERE {}) AND owner=?1",store::OWED))?;
             Ok(stmt.query_map([store.project_id()],|row|row.get(0))?.collect::<rusqlite::Result<_>>()?)
         })?;
         let mut routes=lock(&self.run_owners);
@@ -520,8 +519,7 @@ impl Calcifer {
         };
         routes.extend(ids.into_iter().map(|id|(id,Some(owner.clone()))));
         drop(routes);
-        // Driver/export admission is idempotent, and a verified legacy receipt
-        // can make an already-open owner's old rows ready on a later read.
+        // Driver/export admission is idempotent.
         // Only what is routed: a run being recorded is driven by its submitter, one not yet owned once a later attach routes it.
         for id in store.unsettled()? { if lock(&self.run_owners).contains_key(id.as_str()) { self.drive(id); } }
         for (id, _) in store.exports_owed()? { self.export(&id); }
@@ -1124,7 +1122,6 @@ impl Calcifer {
             };
         }
         run.stalled=owned.then(||self.stalled(&run)).flatten();
-        if row.custody_pending && row.state!=State::Settled {run.stalled=None;run.waiting=Some("waiting to confirm the old worker has let go of this run before it resumes".into());run.progress=None;run.queue_position=None;}
         if !owned && row.state!=State::Settled {run.waiting=Some("copied from another project's history, so it won't resume here".into());run.progress=None;run.queue_position=None;}
         Ok(run)
     }
@@ -2800,7 +2797,6 @@ impl Calcifer {
     /// Deletes staged inputs no unsettled run names (a Calcifer that stopped between a run's end
     /// and their deletion).
     fn sweep_inputs(&self) -> Result<(), Error> {
-        if self.maintenance_store().migration_required()? { return Ok(()); }
         let entries = std::fs::read_dir(&self.inputs).map_err(|e| Error::Input {
             path: self.inputs.clone(),
             message: e.to_string(),
