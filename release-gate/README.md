@@ -182,6 +182,12 @@ machine B (`sku_b`, `gpus_b`) rented, a third render, every take back and shown,
 judges works, lean, fast (`bench.json`, 5%), placement and what the page says, one table per run and machine (`flow/report.md`, the job
 summary): `gh workflow run pod-session.yaml -R cozy-creator/cozy-creator --ref rc/<x> -f hub=prod -f script=user-flow -f sku=rtx-5090
 -f disk=300 -f cap=6 -f cozy=<dev-build run> -f params='{"sku_b": "rtx-4090", "gpus_b": 2}' -f rent=true`.
+`llm-tools` (xs-204, cl-1100) runs Qwen3.5's and Qwen3.6's `write` from a `packages_refs` checkout (`tree`) on one rental of two GPUs in a
+dev home on the session's RC cozy: each asked about a photo and a video by `cozy run`, each answer saying what it shows; both writing at
+once while the machine drawer's GPU use is held to the pod's nvidia-smi (10 points, 200 MB); and Qwen3.6 on the canvas in Chrome, a Text
+box rendered twice and a caption of the photo and of the video. Without `rent` its page cells run on the runner with the local LLM fixture:
+`gh workflow run pod-session.yaml -R cozy-creator/cozy-creator --ref rc/<x> -f hub=prod -f script=llm-tools -f packages_refs=rc=<the
+packages RC> -f sku=rtx-a6000 -f disk=200 -f cap=6 -f cozy=<dev-build run> -f params='{"tree": "rc", "gpus": 2}' -f rent=true`.
 `render-placement` (cl-774) is a render with the page's Run on at Automatically (`e2e/page.py render --on auto`) on a runner with no GPU and one rental: a tie and a model this computer has no GPU for go to the rental, nothing warns, and with the rental busy a weightless still goes here.
 `render-estimate` (cl-1004) is the bench's H3 Turbo 15 s shot as a box on one pod this runner never ran H3 on: the time `fit` gives
 the page before any run (its release's benchmark of that card) against the warm render's, within 35%, then `fit` again, measured there.

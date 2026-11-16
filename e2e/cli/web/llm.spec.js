@@ -8,7 +8,7 @@
 // picture (project/clip.py) let go on a picture makes a new video box reading it, one step that Undo takes away. On a sound, which it can't
 // read, the LLM changes nothing and says why. The LLM row, the Text box with its answer and the new box beside the picture are kept at
 // 1440×900 and 1920×1080, on paper and dark.
-const { mkdirSync } = require('fs');
+const { mkdirSync, readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
 const { test, expect, canvasIdle, canvasNames, canvasPoint, canvasText, canvasVisible, fixtureTool, focus, MP4, png, wav } = require('./fixtures');
 const { carry, rowsOf } = require('./geometry');
@@ -195,4 +195,137 @@ test('llm', async ({ page, project, api }) => {
     expect.soft({ tool: after.tool ?? null, kind: after.kind, fields: after.fields }, 'the sound stays as it was').toEqual({ tool: before.tool ?? null, kind: before.kind, fields: before.fields });
     expect.soft((await project.assets()).length, 'and no box is made').toBe(count);
   });
+});
+
+// xs-204's GPU proof, release-gate/sessions/llm-tools.sh: the same hands on a real model, its renders on a rental. LLM_MACHINE is where the
+// project's renders go (`local` in the session's $0 pre-flight); LLM_TOOL the tool (`qwen3.6/write`, the dev home's checkout's; a local
+// fixture's path in the pre-flight); LLM_PICTURE and LLM_VIDEO the files, boxes named `photo` and `clip` so their names say nothing of
+// them; LLM_SEES_PICTURE and LLM_SEES_VIDEO what an answer that saw each says (case-insensitive patterns). A Text box with words and the
+// LLM on it rendered twice: two versions of words, different, each whole in Focus and the newest on the box at rest. The LLM let go on
+// the picture and on the video: a new box of words right of it, `<name>` its prompt, the caret after it; " write a caption" typed and
+// rendered: its run's input carries the file and its answer describes it. Answers, runs and machines in $OUT/web/llm-gpu/answers.json,
+// with the page at 1440×900 and 1920×1080, on paper and dark.
+test('llm: real models on a GPU', { tag: '@gpu' }, async ({ page, project, api, cli }) => {
+  const machine = process.env.LLM_MACHINE, want = process.env.LLM_TOOL;
+  test.skip(!machine || !want, 'release-gate/sessions/llm-tools.sh sets LLM_MACHINE and LLM_TOOL');
+  test.setTimeout(3_600_000);
+  // A render waits on its machine's install and download the first time: a hang, not slowness, fails it (the session's watch).
+  const RENDER_MS = 30 * 60_000;
+  const sees = { picture: new RegExp(process.env.LLM_SEES_PICTURE ?? '.', 'i'), video: new RegExp(process.env.LLM_SEES_VIDEO ?? '.', 'i') };
+  const shots = join(process.env.OUT, 'web', 'llm-gpu');
+  mkdirSync(shots, { recursive: true });
+  const kept = { machine, tool: want, boxes: {} };
+  const keep = () => writeFileSync(join(shots, 'answers.json'), JSON.stringify(kept, null, 2));
+  const listed = async () => (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`)).tools;
+  /** A version's run as the CLI reads it: where it ran, and whether its input carries `digest`. */
+  const runOf = async (run, digest) => {
+    const said = await cli('--json', 'run', 'watch', String(run), '--once', '--full');
+    let record = {};
+    try { record = JSON.parse(said.stdout); } catch { record = JSON.parse(said.stdout.trim().split('\n').filter((line) => line.startsWith('{')).at(-1) ?? '{}'); }
+    const input = JSON.stringify(record.request?.input ?? null);
+    return { run, machine: record.machine ?? null, gpu: record.gpu ?? null, status: record.status ?? null, execution_ms: record.execution_ms ?? null, carries: digest ? input.includes(digest) : null, input: input.slice(0, 600) };
+  };
+  /** `name`'s version `n` landed; a run that ended without it fails at once, not at the wait's end: what was making it, and the runs. */
+  const lands = async (name, n) => {
+    const start = Date.now();
+    let seen = false, idle = null;
+    for (;;) {
+      const asset = await project.asset(name);
+      if ((asset?.versions ?? 0) >= n) return;
+      const making = asset?.making ?? [];
+      if (making.length) [seen, idle] = [true, null];
+      else idle ??= Date.now();
+      if ((idle && Date.now() - idle > (seen ? 45_000 : 180_000)) || Date.now() - start > RENDER_MS) {
+        const runs = await cli('--json', 'run', 'ls', '--limit', '3');
+        throw new Error(`${name}'s version ${n} never landed (${Math.round((Date.now() - start) / 1000)} s; making ${JSON.stringify(making)}, seen ${seen}): ${runs.stdout.slice(0, 1500)}`);
+      }
+      await page.waitForTimeout(2_000);
+    }
+  };
+  const shoot = async (what) => {
+    for (const [width, height] of [[1440, 900], [1920, 1080]]) for (const theme of ['paper', 'dark']) {
+      await page.setViewportSize({ width, height });
+      await page.evaluate((dark) => { if (dark) document.documentElement.dataset.theme = 'dark'; else delete document.documentElement.dataset.theme; }, theme === 'dark');
+      await fit(page);
+      await page.screenshot({ path: join(shots, `${what}-${width}x${height}-${theme}.png`) });
+    }
+    await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+    await page.setViewportSize({ width: 1600, height: 1000 });
+    await fit(page);
+  };
+
+  await api.call('PUT', project.at('/machines'), { machines: [machine] });
+  await project.import(readFileSync(process.env.LLM_PICTURE), { name: 'photo', at: { x: 0, y: 0 } });
+  await project.add({ name: 'note', fields: { text: 'Write one sentence about the sea at night.' }, at: { x: 720, y: 0 } });
+  await project.import(readFileSync(process.env.LLM_VIDEO), { name: 'clip', at: { x: 0, y: 330 } });
+  // A local tool is listed once a box names it (the pre-flight's fixture); a checkout's as any first-party tool is.
+  if (want.startsWith('/')) await project.add({ name: 'asker', tool: want, kind: 'text', fields: { instructions: 'Say hello.' }, at: { x: 720, y: 330 } });
+  let tool;
+  await expect.poll(async () => (tool = (await listed()).find((one) => one.makes === 'text' && (one.id === want || one.id.endsWith(`/${want}`))))?.id ?? null,
+    { message: `Tools lists ${want}, which makes text`, timeout: 180_000 }).not.toBeNull();
+  kept.tool = { id: tool.id, package_title: tool.package_title, label: tool.label, source: tool.source ?? null, release: tool.release };
+  keep();
+  await page.reload();
+  await expect(page.locator('.stage')).toBeVisible();
+  for (const name of ['photo', 'note', 'clip']) await expect.poll(() => canvasVisible(page, name)).toBe(true);
+  await fit(page);
+
+  await test.step(`${tool.package_title} let go on a Text box with words, rendered twice: two versions of words`, async () => {
+    await carry(page, await toolRow(page, 'LLM', tool.id), await canvasPoint(page, 'note'));
+    await expect.poll(async () => (await project.asset('note'))?.tool ?? null, { message: 'the LLM goes on note' }).toBe(tool.id);
+    const region = await focus(page, 'note');
+    for (const n of [1, 2]) {
+      await region.getByRole('button', { name: 'Render', exact: true }).click();
+      await lands('note', n);
+    }
+    const note = await project.asset('note');
+    kept.boxes.note = [];
+    for (const version of note.prefixes) kept.boxes.note.push({ version: version.number, field: version.main?.field ?? null, text: version.main?.text ?? '', ...(await runOf(version.run)) });
+    keep();
+    const answers = kept.boxes.note.map((version) => version.text);
+    expect(kept.boxes.note.map((version) => version.field), 'each a version of words').toEqual(['text', 'text']);
+    for (const answer of answers) expect(answer.trim().length, 'an answer in words').toBeGreaterThan(0);
+    expect.soft(answers[0], 'each render its own').not.toBe(answers[1]);
+    for (const version of kept.boxes.note) expect.soft(version.machine, `version ${version.version} ran on ${machine}`).toBe(machine);
+    for (const [at, answer] of answers.entries()) {
+      await region.getByRole('button', { name: `version ${at + 1}`, exact: true }).click();
+      await expect.soft(region.locator('.answer'), `version ${at + 1} whole in Focus`).toHaveText(answer);
+      await page.screenshot({ path: join(shots, `focus-version-${at + 1}.png`) });
+    }
+    await leave(page);
+    const start = answers[1].trim().split(/\s+/).slice(0, 3).join(' ');
+    await expect.configure({ soft: true }).poll(async () => (await canvasText(page, 'note'))?.replace(/\s+/g, ' ') ?? '', { message: 'its answer on the box at rest' }).toContain(start);
+    await shoot('text-box');
+  });
+
+  for (const [kind, name] of [['picture', 'photo'], ['video', 'clip']]) {
+    await test.step(`${tool.package_title} let go on the ${kind}: a new box of words beside it, "write a caption" rendered describes it`, async () => {
+      const was = (await project.assets()).map((asset) => asset.name);
+      await carry(page, await toolRow(page, 'LLM', tool.id), await canvasPoint(page, name));
+      let made;
+      await expect.poll(async () => (made = (await project.assets()).find((asset) => !was.includes(asset.name)))?.name ?? null, { message: `the LLM on ${name} makes a box` }).not.toBeNull();
+      expect.soft(made, 'a box of words with the LLM on it').toMatchObject({ kind: 'text', tool: tool.id });
+      expect.soft(made.fields?.instructions, `its prompt starts with the ${kind}`).toBe(`<${name}>`);
+      const rows = await rowsOf(project, [name, made.name]);
+      expect.soft(rows[made.name].x > rows[name].x && Math.abs(rows[made.name].y - rows[name].y) <= 1, `right of it: ${JSON.stringify(rows[made.name])} from ${JSON.stringify(rows[name])}`).toBe(true);
+      const words = page.locator(`.card.here[data-asset=${JSON.stringify(made.name)}] .in-frame .mention-text[data-field="instructions"]`);
+      await expect(words, 'opened on its words').toBeFocused();
+      await page.keyboard.type(' write a caption');
+      await expect.poll(async () => (await project.asset(made.name))?.fields?.instructions, { message: "what's typed is after it" }).toBe(`<${name}> write a caption`);
+      await page.keyboard.press('ControlOrMeta+Enter');
+      await lands(made.name, 1);
+      const [version] = (await project.asset(made.name)).prefixes;
+      const digest = String((await project.asset(name)).sha256 ?? '').replace(/^sha256:/, '');
+      kept.boxes[made.name] = [{ reads: name, kind, version: version.number, field: version.main?.field ?? null, text: version.main?.text ?? '', ...(await runOf(version.run, digest)) }];
+      keep();
+      const [one] = kept.boxes[made.name];
+      expect(one.field, 'a version of words').toBe('text');
+      expect.soft(one.carries, `its run's input carries the ${kind} (${digest})`).toBe(true);
+      expect.soft(one.machine, `it ran on ${machine}`).toBe(machine);
+      expect.soft(one.text, `its answer describes the ${kind}`).toMatch(sees[kind]);
+      await page.keyboard.press('Escape');
+      await canvasIdle(page);
+      await shoot(`beside-${kind}`);
+    });
+  }
 });

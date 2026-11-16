@@ -44,8 +44,9 @@ module.exports = defineConfig({
     trace: 'retain-on-failure',
   },
   projects: [
-    // `@flow` (user-flow.spec.js) runs on real rentals, from release-gate/sessions/user-flow.sh with flow.config.js, never here.
-    { name: 'chrome', grepInvert: /@solo|@vault|@flow/, use: chrome },
+    // `@flow` (user-flow.spec.js) and `@gpu` run on real rentals, from release-gate/sessions/user-flow.sh (flow.config.js) and llm-tools.sh
+    // (gpu.config.js), never here.
+    { name: 'chrome', grepInvert: /@solo|@vault|@flow|@gpu/, use: chrome },
     { name: 'firefox', grep: /@engines/, use: firefox },
     { name: 'webkit', grep: /@engines/, use: { browserName: 'webkit' } },
     { name: 'vault', grep: /@vault/, use: chrome },
