@@ -79,12 +79,13 @@ elif [ "$what" = cozy ]; then
     # A release's version gets +dev.g<sha8>; the RC's dev version (0.26.0-dev) gets +g<sha8> from crates/api/build.rs (cl-976).
     uv run -q --no-project python -c 'import re,sys; p="Cargo.toml"; s=open(p).read(); open(p,"w").write(re.sub(r"(?m)^version = \"([^\"]+)\"$", lambda m: m[0] if "-" in m[1] else f"version = \"{m[1]}+dev.g{sys.argv[1][:8]}\"", s, count=1))' "$sha"
     cargo update -w --offline
-    COZY_COMMIT=$sha cargo build --release --locked --offline -p cozy --bin cozy
+    # Proof branch only, never to merge (cl-1003): the dev profile, as the laptop's build that overflowed its stack.
+    COZY_COMMIT=$sha cargo build --locked --offline -p cozy --bin cozy
     git checkout -- Cargo.toml Cargo.lock)
   (cd "$stage_src"
     COZY_COMMIT=$(git rev-parse HEAD) cargo build --release --locked -p api --example stage-code)
   # cozy is one file (00e565d72): varena is the TensorFS wheel's.
-  cp "$src/target/release/cozy$exe" "$out/cozy$exe"
+  cp "$src/target/debug/cozy$exe" "$out/cozy$exe"
   cp "$stage_src/target/release/examples/stage-code$exe" "$out/stage-code$exe"
 elif [ "$what" = cozy-before ]; then
   # A release's version, no +dev: it updates itself. Its TensorFS crate is the line's, whose protocol is what it runs. No page.
