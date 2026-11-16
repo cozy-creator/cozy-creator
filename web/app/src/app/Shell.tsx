@@ -329,6 +329,7 @@ export function Shell() {
   // A project opened: what the + asked for is put away.
   useEffect(() => { if (id && asked.get()?.by === "plus") asked.set(null) }, [id])
   const vault = useQuery({ ...vaultQuery(client, id ?? ""), enabled: Boolean(id) })
+  const live = useSignal(stream.health).state === "live"
   const [verified, setVerified] = useState<string | null>(null)
   const [checking, setChecking] = useState(false)
   // A cached unlocked status is not authority after selecting or adopting a project.
@@ -358,8 +359,15 @@ export function Shell() {
   // Opened here: used now, as Calcifer records it when it's shown.
   useEffect(() => { if (id && readable) opened(id) }, [id, readable])
   useEffect(() => {
-    if (checked && document.visibilityState === "visible") setChecking(false)
-  }, [id, vault.dataUpdatedAt, vault.isFetchedAfterMount, checked])
+    if (checked && document.visibilityState === "visible" && (live || !vault.data?.encrypted)) setChecking(false)
+  }, [id, vault.dataUpdatedAt, vault.isFetchedAfterMount, checked, live, vault.data?.encrypted])
+  // An encrypted project's page is covered while its stream is down: a Calcifer that crashed said no `locking`, and the page shows nothing
+  // of it until the stream is back and the vault still says unlocked (cl-1067).
+  useEffect(() => {
+    if (!id || !vault.data?.encrypted) return
+    if (!live) { setChecking(true); return }
+    void vault.refetch().then((answer) => { if (!answer.isError) setChecking(false) })
+  }, [id, vault.data?.encrypted, live, vault.refetch])
   const to = useTo()
   const navigate = useNavigate()
   const location = useLocation()

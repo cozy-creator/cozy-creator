@@ -483,7 +483,8 @@ pub fn spawn(mut command: Command) -> Result<Tree> {
 /// A process that outlives its spawner: its own session (Unix); no console, out of the spawner's
 /// job when allowed (Windows). It reads null and appends stdout and stderr to `log` (null without
 /// one), and inherits nothing else: a caller reading the spawner's output to its end, as
-/// `out=$(cozy status)` does, gets that end when the spawner exits.
+/// `out=$(cozy status)` does, gets that end when the spawner exits. It starts in the home folder,
+/// never the one its spawner was in, which it would hold (on Windows, as a folder no one can rename).
 pub fn detach(program: &Path, args: &[OsString], log: Option<&Path>) -> Result<Detached> {
     let log = log
         .map(|path| {
@@ -491,7 +492,8 @@ pub fn detach(program: &Path, args: &[OsString], log: Option<&Path>) -> Result<D
             opened.map_err(Error::io("open log", path))
         })
         .transpose()?;
-    let child = tree::detach(program, args, log).map_err(Error::os("spawn"))?;
+    let home = std::env::home_dir().filter(|home| home.is_dir()).unwrap_or_else(std::env::temp_dir);
+    let child = tree::detach(program, args, log, &home).map_err(Error::os("spawn"))?;
     Ok(Detached(child))
 }
 
@@ -542,34 +544,4 @@ impl Drop for Tree {
     fn drop(&mut self) {
         let _ = self.kill();
     }
-}
-
-/// Chromium's closed debugging pipe: parent send/receive; child reads fd 3 and writes fd 4.
-/// Call before any final descriptor-confinement callback, classifying those pipes as KernelIpc.
-#[cfg(target_os = "linux")]
-pub fn private_browser_pipe(command: &mut Command) -> Result<(std::fs::File, std::fs::File)> {
-    unix::private_browser_pipe(command).map_err(Error::os("open a private browser pipe"))
-}
-
-/// [`spawn`], and the child is SIGKILLed when this process ends: the one way to fork a child with a parent-death signal
-/// (`build` refuses one armed anywhere else but [`die_with_parent`]).
-/// PDEATHSIG follows the forking THREAD; only fork such a child from a thread that lives as long as the child should.
-/// A tokio thread that `block_in_place` hands on idles out of the blocking pool, so the fork happens on one thread that
-/// lasts as long as this process. TensorD's pool-owned `ChildLauncher` can fold into this.
-#[cfg(target_os = "linux")]
-pub fn spawn_lasting(mut command: Command) -> Result<Tree> {
-    unix::die_with_spawner(&mut command);
-    use std::sync::{OnceLock, mpsc};
-    type Ask = (Command, mpsc::SyncSender<Result<Tree>>);
-    static SPAWNER: OnceLock<Option<mpsc::Sender<Ask>>> = OnceLock::new();
-    let lost = || Error::os("spawn")(io::Error::other("Cozy's spawning thread is gone"));
-    let spawner = SPAWNER.get_or_init(|| {
-        let (send, asks) = mpsc::channel::<Ask>();
-        let thread = std::thread::Builder::new().name("cozy-spawner".into())
-            .spawn(move || for (command, answer) in asks { let _ = answer.send(spawn(command)); });
-        thread.ok().map(|_| send)
-    }).as_ref().ok_or_else(lost)?;
-    let (answer, answered) = mpsc::sync_channel(1);
-    spawner.send((command, answer)).map_err(|_| lost())?;
-    answered.recv().map_err(|_| lost())?
 }
