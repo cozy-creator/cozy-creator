@@ -582,6 +582,11 @@ impl Calcifer {
         self.routed(project).into_iter().find(|id| lock(&self.driving).contains(id) || self.export_moving(id))
     }
 
+    /// A run of `project` whose exporter is moving its outputs into it (`writing_into` without the drivers, cl-1082).
+    pub(crate) fn exporting_into(&self, project: &str) -> Option<RunId> {
+        self.routed(project).into_iter().find(|id| self.export_moving(id))
+    }
+
     /// Run `id`'s driver task going, until the returned guard drops with it (cl-1060).
     fn driving(self: &Arc<Self>, id: &RunId) -> Driving {
         lock(&self.driving).insert(id.clone());
