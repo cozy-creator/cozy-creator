@@ -777,8 +777,8 @@ jobs:
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
           release: ${{ inputs.publish_run }}
-      # The project part's fixtures and probes (e2e/cli/project.sh); Calcifer, a service, fetches its own.
-      - if: (matrix.shard == 'commands' || startsWith(matrix.shard, 'commands@')) || (matrix.shard == 'web' || startsWith(matrix.shard, 'web@')) || startsWith(matrix.shard, 'web-') || (matrix.shard == 'local-code' || startsWith(matrix.shard, 'local-code@')) || (matrix.shard == 'coming' || startsWith(matrix.shard, 'coming@')) || (matrix.shard == 'control' || startsWith(matrix.shard, 'control@')) || startsWith(matrix.shard, 'projectvault') || startsWith(matrix.shard, 'projectdb') || startsWith(matrix.shard, 'project-stream')
+      # The project part's fixtures and probes (e2e/cli/project.sh) and llm_write's clip (xs-204); Calcifer, a service, fetches its own.
+      - if: (matrix.shard == 'commands' || startsWith(matrix.shard, 'commands@')) || (matrix.shard == 'runs' || startsWith(matrix.shard, 'runs@')) || (matrix.shard == 'web' || startsWith(matrix.shard, 'web@')) || startsWith(matrix.shard, 'web-') || (matrix.shard == 'local-code' || startsWith(matrix.shard, 'local-code@')) || (matrix.shard == 'coming' || startsWith(matrix.shard, 'coming@')) || (matrix.shard == 'control' || startsWith(matrix.shard, 'control@')) || startsWith(matrix.shard, 'projectvault') || startsWith(matrix.shard, 'projectdb') || startsWith(matrix.shard, 'project-stream')
         uses: AnimMouse/setup-ffmpeg@v1
       # The HMR fixtures: containment's, and web-access's dev mode through Calcifer (web/access.js). Their Vite serves the web of the
       # cozy under test (the candidate's own commit), never the harness's: a harness from another commit would test another page.

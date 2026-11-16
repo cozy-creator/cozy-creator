@@ -55,6 +55,7 @@ parse "$@"
 . "$(dirname "$0")/harness.sh"
 . "$(dirname "$0")/devstart.sh"
 . "$(dirname "$0")/standing.sh"
+. "$(dirname "$0")/llm.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
@@ -590,6 +591,7 @@ case $SHARD in
     lazy_slots
     describe
     first_run
+    llm_write
     previews
     second_executor
     lifetime
@@ -661,6 +663,7 @@ case $SHARD in
     weightless
     describe
     first_run
+    llm_write
     previews
     run_flags
     run_playback
