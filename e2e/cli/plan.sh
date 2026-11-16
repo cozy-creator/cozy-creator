@@ -52,13 +52,13 @@ echo "estimate line: Qwen had $((left >> 20)) MiB to come; BiRefNet quoted to fi
 plan_machine() { status "$P" | jq -r --arg a "$1" '[.board.jobs[]? | select(.asset == $a) | .machine // empty] | last // empty'; }
 
 # plan_picks (phase b): this computer's machine and a stand-in (another user's cozy on this runner) both ran the weighted tool, so its
-# time is measured on each; then stand-w's copy of BiRefNet's weights, which it reads, goes. A render that may go to either goes to
-# local, where nothing downloads: on a tie a rental would go first, so only the download's time sends it there. (A machine busy for
+# time is measured on each; then stand-w's copy of BiRefNet's weights, which it reads, goes, and its machine restarts so no warm executor
+# holds them in memory either. A render that may go to either goes to local, where nothing downloads: on a tie a rental would go first, so only the download's time sends it there. (A machine busy for
 # longer than a download is the GPU proof's: on a runner's CPU, runs go side by side.)
 plan_picks() {
 step "plan (cl-967): a job goes where its weights are"
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "plan: its stand-in is another user of a fresh GitHub runner"; return; }
-local P=$OUT/plan tool=$here/project/weighted.py/weighted r=$RANDOM went
+local P=$OUT/plan tool=$here/project/weighted.py/weighted r=$RANDOM went stand_holder stand_pid
 cozy --json machine show local > "$OUT/set-local.json" || { check "plan: machine show local"; return; }
 stand_in stand-w || return
 cozy --json new --unencrypted "$P" > "$OUT/plan-new.json" 2>&1 || { check "plan: new: $(tail -c 300 "$OUT/plan-new.json")"; return; }
@@ -72,6 +72,22 @@ coming_go warm_l '["local"]'
 coming_done warm_l 900
 # stand-w's copy goes (its user's cozy, whose machine it is): a job there downloads BiRefNet again.
 stand_as stand-w --json model uninstall zhengpeng7/birefnet > "$OUT/plan-uninstall.json" || { check "plan: stand-w's model uninstall: $(tail -c 300 "$OUT/stand-w.err")"; return; }
+# warm_w's executor may still hold BiRefNet in memory, which a quote rightly counts as held (`resident`): then both finish together and
+# the tie isn't local's (rc-e2e 43807131201). stand-w's machine stops, as machine_stop stops local, and its user's cozy starts it again;
+# near waits until this computer sees stand-w holding BiRefNet nowhere.
+stand_holder=$(sudo find "/home/cozy-stand-w/.cozy/machine" -name agent.lock.holder 2> /dev/null | head -1)
+stand_pid=$([ -z "$stand_holder" ] || sudo grep -o '"pid": *[0-9]*' "$stand_holder" | grep -o '[0-9]*$' || true)
+[ -n "$stand_pid" ] || { check "plan: stand-w's machine has no lock holder"; return; }
+sudo kill "$stand_pid"
+for _ in $(seq 60); do case $(ps -o stat= -p "$stand_pid" 2> /dev/null || true) in '' | Z*) break ;; esac; sleep 1; done
+stand_as stand-w --json machine show local > "$OUT/plan-stand-w-again.json" || { check "plan: stand-w didn't start again: $(tail -c 300 "$OUT/stand-w.err")"; return; }
+for _ in $(seq 120); do
+  cozy --json machine show stand-w > "$OUT/plan-stand-w.json" 2> /dev/null || true
+  J '.state == "ready" and ([.status.resident[]?.checkpoints[]?] | length) == 0
+     and ([.status.models[]? | select(.repository == "zhengpeng7/birefnet")] | length) == 0' "$OUT/plan-stand-w.json" && break
+  sleep 1
+done
+J '.state == "ready"' "$OUT/plan-stand-w.json" || { check "plan: stand-w isn't ready again: $(jq -c '{state, resident: .status.resident}' "$OUT/plan-stand-w.json")"; return; }
 in_project "$P" --json machine use "local,stand-w" > "$OUT/plan-use.json" 2>&1 || { check "plan: machine use: $(tail -c 300 "$OUT/plan-use.json")"; return; }
 
 coming_go near '["local","stand-w"]'
