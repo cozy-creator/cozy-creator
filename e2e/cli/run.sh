@@ -653,7 +653,7 @@ case $SHARD in
   # A second project's first install and run against the first's (cl-984): by dispatch, as it builds seven environments.
   env-cost) parts="env_cost logs" ;;
   # What a call may read on demand, on a cold machine (cl-966).
-  ondemand) parts="ondemand_ahead ondemand_need ondemand_calls ondemand_adapted logs" ;;
+  ondemand) parts="ondemand_ahead ondemand_need ondemand_calls ondemand_adapted ondemand_order logs" ;;
   # The install's share of the link beside 1.6 GB of weights (cl-1007): about 8 min on its own, so its own shard.
   ondemand-share) parts="ondemand_share logs" ;;
   # A model's weights alone through the 60 Mbit link, timed, with the streams the ramp settled at (th-378).

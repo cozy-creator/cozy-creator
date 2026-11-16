@@ -439,9 +439,10 @@ if [ -n "$needs" ]; then
   fi
   if [[ " $needs " == *" calls "* ]]; then
     # ondemand_calls' orchestrator (cl-1077): the model of the function it calls and of one it never calls, 32 MiB each; and
-    # ondemand_adapted's other model, bigger than its base, so its root's prefetch (smallest first) can't land it before its call.
+    # ondemand_adapted's other model, bigger than its base, so its root's prefetch (smallest first) can't land it before its call;
+    # and ondemand_order's two, the earlier run's bigger, so the later run's call is wanted while it still downloads.
     page=https://github.com/cozy-creator/cozy-creator/tree/master/e2e
-    for name in used:32 unused:32 other:256; do
+    for name in used:32 unused:32 other:256 early:256 late:128; do
       random_weights "$seed/calls.safetensors" "${name#*:}" "calls-${name%:*}"
       name=${name%:*}
       mirror "$seed/calls.safetensors" "e2e/calls-$name" bf16 0.1.0 "$page" --source-format as-is
@@ -486,7 +487,7 @@ PYCALLS
       E2E_CALLS_SEED="e2e/calls-lora: $(tail -c 400 "$seed/calls-lora.err" | tr '\n' ' ')"
     fi
     export E2E_CALLS_SEED=${E2E_CALLS_SEED:-}
-    log "published e2e/calls-used, e2e/calls-unused, e2e/calls-other, e2e/calls-base and e2e/calls-lora${E2E_CALLS_SEED:+ (not all: $E2E_CALLS_SEED)}"
+    log "published e2e/calls-used, -unused, -other, -early, -late, -base and e2e/calls-lora${E2E_CALLS_SEED:+ (not all: $E2E_CALLS_SEED)}"
     rm -f "$seed"/calls-*.safetensors
   fi
   if [[ " $needs " == *" spare "* ]]; then
