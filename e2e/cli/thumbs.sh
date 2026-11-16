@@ -2,10 +2,10 @@
 # generated ahead of time, and stored in the project", Paul 11-13). On macOS the canvas's opens cell, two projects of the same 50
 # pictures (1200x1200 PNGs of ~4 MB), found none stored in 60 s (e2e 43791131996): every import's measuring took the thumbnails'
 # ffmpeg turns, so none was drawn until the imports ended; and finding ffmpeg, which runs it, on the threads that answer, so the page
-# itself went unanswered for 30 s (43800786375). As it set up: Calcifer's page answers within a second throughout the imports, the
-# first project's thumbnails are all stored by the time the second's imports end, and each project's within 60 s of the last; else what
-# Calcifer, its ffmpeg and the thumbnail route said, in $OUT/thumbs/. Meanwhile, each second: how many are stored, which ffmpeg and
-# ffprobe run (thumbs/progress.txt), and how long the page took (thumbs/page.txt).
+# itself went unanswered for 30 s (43800786375). As it set up: Calcifer's page answers within a second throughout the imports, and every
+# thumbnail is stored within 15 s of the last import (drawn as they land: 4-5 s on a Mac; behind the measuring, 28-29 s, 43801918285);
+# else what Calcifer, its ffmpeg and the thumbnail route said, in $OUT/thumbs/. Meanwhile, each second: how many are stored, which
+# ffmpeg and ffprobe run (thumbs/progress.txt), and how long the page took (thumbs/page.txt).
 thumbs_stored() {
 step "pictures imported into two plain projects get their thumbnails stored (cl-1054)"
 local out=$OUT/thumbs n=${THUMBS_PICTURES:-50} i p made began short= watcher
@@ -44,9 +44,7 @@ kill "$pager" 2> /dev/null || true
 slow=$(awk '$2 !~ /^2/ || $3 > 1.0' "$out/page.txt" | wc -l | tr -d ' ')
 echo "thumbs: the page during the imports: $(wc -l < "$out/page.txt" | tr -d ' ') asks, $slow over a second or not answered$( [ "$slow" = 0 ] || echo ": $(awk '$2 !~ /^2/ || $3 > 1.0' "$out/page.txt" | head -5 | tr '\n' '|')")"
 [ "$slow" = 0 ] || check "thumbs: Calcifer's page took over a second, or didn't answer, $slow times during the imports"
-made=$(stored one)
-echo "thumbs: the first project's when the second's imports ended: ${made:-0} of $n"
-[ "${made:-0}" -ge "$n" ] || check "thumbs: the first project's thumbnails when the second's imports ended: ${made:-0} of $n (they wait behind the imports' measuring)"
+echo "thumbs: when the imports ended: one $(stored one), two $(stored two) of $n"
 began=$SECONDS
 while [ $((SECONDS - began)) -lt 60 ]; do
   short=
@@ -58,8 +56,10 @@ while [ $((SECONDS - began)) -lt 60 ]; do
   sleep 1
 done
 kill "$watcher" 2> /dev/null || true
-echo "thumbs: $((SECONDS - began)) s after the last import, short of $n:${short:- none}"
-[ -n "$short" ] || return 0
+local after=$((SECONDS - began))
+echo "thumbs: $after s after the last import, short of $n:${short:- none}"
+[ -n "$short" ] || [ "$after" -gt 15 ] || return 0
+[ -n "$short" ] || { check "thumbs: every thumbnail stored only $after s after the last import, not within 15 s (they wait behind the imports' measuring)"; return 0; }
 check "thumbs: thumbnails stored 60 s after the last import, short of $n:$short"
 # What says why: Calcifer's threads, the folders, cozy's ffmpeg and what it encodes, the thumbnail route, Calcifer's warnings.
 local P=$out/one ffmpeg hex pid
