@@ -10,3 +10,12 @@
   color: var(--bad);
   font-size: var(--small);
 }
+/* In the frame, under its words' box and lined up with it, readable over the picture behind. */
+.in-frame .unsupported-note {
+  flex: none;
+  align-self: flex-start;
+  margin: -8px 14px 8px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel) 84%, transparent);
+}

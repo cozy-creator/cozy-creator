@@ -323,6 +323,7 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
     await leave(page);
 
     // Qwen Image 2's reads pictures in its prompt: it goes on in SDXL's place, and the picture its words start from is its reference.
+    await openOperation('image');
     const reading = implementations('image').and(palette.locator('[data-tool^="qwen-image-2/"]')).first();
     await reading.scrollIntoViewIfNeeded();
     const readerId = await reading.getAttribute('data-tool');
