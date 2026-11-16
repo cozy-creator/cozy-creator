@@ -393,8 +393,8 @@ pub struct ModelCheckpoint {
     pub created_at: String,
 }
 
-/// `GET /v1/models/{org}/{name}/headers?release=|checkpoint=&lane=&full=` (`cozy model show`): what each lane of a release, or
-/// one checkpoint, holds, read from its header alone, never a weight.
+/// `GET /v1/models/{org}/{name}/headers?release=|checkpoint=&lane=&full=[&gpus=&components=]` (`cozy model show`): what each lane
+/// of a release, or one checkpoint, holds, read from its header alone, never a weight.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ModelHeaders {
     pub model: String,
@@ -406,7 +406,27 @@ pub struct ModelHeaders {
     /// The newer release a run naming this one takes: the newest of its series (xs-183).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolves_to: Option<String>,
+    /// With `gpus=` (dev-only `--gpu`): the lane a machine with those GPUs resolves, the one lane shown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved: Option<ResolvedLane>,
     pub lanes: Vec<LaneHeader>,
+}
+
+/// The lane the Hub resolves a release to for a machine's GPUs and the components a slot reads, as TensorD asks it for a slot
+/// that takes encoded weights, by capability alone (cl-1076).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ResolvedLane {
+    /// Each GPU's compute capability (`8.9`).
+    pub gpus: Vec<String>,
+    /// None: all of them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<String>,
+    pub lane: String,
+    /// `sha256:<hex>` of its tree.
+    pub checkpoint: String,
+    /// Why a better-ranked lane was passed over.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasons: Vec<String>,
 }
 
 /// One lane's checkpoint as its header says.

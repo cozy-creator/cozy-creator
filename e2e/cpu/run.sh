@@ -6,7 +6,8 @@
 #                  [--only pkg,...] [--cells entry/cell,...] [--jobs N] [--refs DIR] [--helpers pkg,...] [--record] [--keep]
 # R and T: a wheel, a source dir (the Runtime), an exact release version, or `lock` (what each package's lock pins).
 # --cozy: a cozy whose Calcifer is up, and --project a project folder of it: each package's code is also uploaded,
-# locked and its cells' requests bound through it (cli.sh); without it those cells are not run.
+# locked and its cells' requests bound through it (cli.sh), and each slot's default lane resolved per GPU family first
+# (lanes.py; `--cells lanes` alone); without it those cells are not run.
 # --keep keeps each package's tiny weights, inputs and outputs (else only logs and replies stay);
 # --refs reads (and --record writes) references elsewhere than refs/; --helpers installs those packages from the
 # checkout over the releases the locks pin (a helper not yet published). e2e/lib.sh's other candidate flags are ignored.
@@ -125,15 +126,24 @@ one() {
 export -f one
 
 started=$SECONDS
-printf '%s\n' $packages | xargs -P "$JOBS" -I{} bash -c 'one "$@"' _ {} | tee "$OUT/cells.txt" || true
-# Static: the TensorFS names the Runtime reads, against the candidate TensorFS (in any package's environment).
-for q in $packages; do
-  py=$ENVS/$q/bin/python
-  [ -x "$py" ] || continue
-  CUDA_VISIBLE_DEVICES= "$py" "$HERE/surface.py" "$("$py" -c 'import cozy_runtime, os; print(os.path.dirname(cozy_runtime.__file__))')" \
+: > "$OUT/cells.txt"
+# The lane each slot's default resolves to on each GPU family, through cozy against tensorhub.com's releases (lanes.py,
+# cl-1076); `--cells lanes` runs it alone.
+if [ -n "$COZY" ] && { [ -z "$CELLS" ] || [[ ",$CELLS," == *,lanes,* ]]; }; then
+  python3 -I "$HERE/lanes.py" --cozy "$COZY" --project "$PROJECT" --packages "$PACKAGES" --out "$OUT/lanes" $packages \
     | tee -a "$OUT/cells.txt" || true
-  break
-done
+fi
+if [ "$CELLS" != lanes ]; then
+  printf '%s\n' $packages | xargs -P "$JOBS" -I{} bash -c 'one "$@"' _ {} | tee -a "$OUT/cells.txt" || true
+  # Static: the TensorFS names the Runtime reads, against the candidate TensorFS (in any package's environment).
+  for q in $packages; do
+    py=$ENVS/$q/bin/python
+    [ -x "$py" ] || continue
+    CUDA_VISIBLE_DEVICES= "$py" "$HERE/surface.py" "$("$py" -c 'import cozy_runtime, os; print(os.path.dirname(cozy_runtime.__file__))')" \
+      | tee -a "$OUT/cells.txt" || true
+    break
+  done
+fi
 pass=$(grep -c '^PASS' "$OUT/cells.txt" || true) fail=$(grep -c '^FAIL' "$OUT/cells.txt" || true)
 # The CPU the references were chosen by (drive.py `stored`): AMD's and Intel's bf16 sums differ.
 cpu=$(sed -n '/^model name/{s/^model name[[:space:]]*: *//p;q}' /proc/cpuinfo 2> /dev/null || true)

@@ -257,6 +257,8 @@ test = "pr: agent, the file, a kind, a tool's block and one field of it in words
 [hidden]
 "machine rent --provider" = "pending: dev-only (`dev = true`, crates/cli/DEV.md); release-gate/suites/hub rents cpu once per provider where the config has it, ended and checked gone"
 "run --attention-capture" = "manual: dev-only (`dev = true`, crates/cli/DEV.md); release-gate/suites/attention-corpus captures with it on a rented pod (xs-171 M-B)"
+"model show --gpu" = "pending: dev-only (`dev = true`, crates/cli/DEV.md); the cpu suite's lanes cell (e2e/cpu/lanes.py, cl-1076) resolves every first-party slot's default per GPU family on each run, which the cli suite's coverage doesn't read"
+"model show --components" = "pending: dev-only; the cpu suite's lanes cell (e2e/cpu/lanes.py, cl-1076) gives each slot's components, which the cli suite's coverage doesn't read"
 "package publish" = "release: isolated package publication; TensorHub admins only in v1"
 "package benchmarks" = "pr: commands, unseen: a project with no warm GPU run of the package refused no_benchmarks (rows: the release gate's pod, cl-1024)"
 "package benchmarks --out" = "pending: writes the same rows elsewhere; rows need a GPU pod (cl-1024)"

@@ -12,7 +12,8 @@ use crate::Context;
 use crate::calcifer_client::path;
 use crate::output::{self, Record, Table};
 
-pub(crate) async fn show(ctx: &Context, args: Show, noun: &str) -> Result<ExitCode, Error> {
+/// `resolve`: dev-only `--gpu` and `--components`, the one lane a machine with those GPUs resolves for a slot reading those components.
+pub(crate) async fn show(ctx: &Context, args: Show, noun: &str, resolve: Option<(&str, Option<&str>)>) -> Result<ExitCode, Error> {
     let (model, release, checkpoint) = match ModelRef::parse(&args.model)? {
         ModelRef::Hub { model, release } => (model, release, None),
         ModelRef::Checkpoint { model, checkpoint } => (model, None, Some(checkpoint.to_string())),
@@ -28,6 +29,10 @@ pub(crate) async fn show(ctx: &Context, args: Show, noun: &str) -> Result<ExitCo
     if ctx.full {
         query.push(("full", "true".into()));
     }
+    if let Some((gpus, components)) = resolve {
+        query.push(("gpus", gpus.to_owned()));
+        query.extend(components.map(|components| ("components", components.to_owned())));
+    }
     let at = path(&["v1", "models", &model.org, &model.name, "headers"]);
     let shown: ModelHeaders = ctx.calcifer().await?.get_query(&at, &query).await?;
     if ctx.json {
@@ -39,6 +44,16 @@ pub(crate) async fn show(ctx: &Context, args: Show, noun: &str) -> Result<ExitCo
     anstream::println!("{name}{private}{}", shown.family.as_ref().map_or_else(String::new, |family| format!(" · {family}")));
     if let (Some(release), Some(newer)) = (&shown.release, &shown.resolves_to) {
         output::say(ctx, &format!("A run naming {release} takes {newer}, its newest fix."));
+    }
+    if let Some(resolved) = &shown.resolved {
+        let reads = match resolved.components.is_empty() {
+            true => String::new(),
+            false => format!(", reading {}", resolved.components.join(", ")),
+        };
+        anstream::println!("GPUs {}{reads} resolve lane {}", resolved.gpus.join(", "), resolved.lane);
+        for reason in &resolved.reasons {
+            anstream::println!("  {reason}");
+        }
     }
     for lane in &shown.lanes {
         anstream::println!();
