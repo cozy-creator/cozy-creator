@@ -132,6 +132,13 @@ step() {
   if [ "$1" = run ]; then
     [[ ${words[1]:-} != .* ]] || words[1]="$PWD/${words[1]}"
     directory=$RUN_PROJECT
+  elif [ "$1" = model ] && [ "${2:-}" = quantize ]; then
+    # A recipe from local code runs in a project (`project_required`): the session's, its package by absolute path.
+    local i
+    for i in "${!words[@]}"; do
+      [ "${words[$i]}" = --package ] && [[ ${words[$((i + 1))]:-} == .* ]] && words[$((i + 1))]="$PWD/${words[$((i + 1))]}"
+    done
+    directory=$RUN_PROJECT
   fi
   # A package run or installed from a packages checkout: its kernels first.
   if [ "$1" = run ] || { [ "$1" = package ] && [ "${2:-}" = install ]; }; then
