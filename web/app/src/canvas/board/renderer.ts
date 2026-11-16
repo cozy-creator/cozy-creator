@@ -86,6 +86,19 @@ let early: Promise<Chosen> | null = start(innerWidth, innerHeight)
 early.catch(() => {})
 
 /** A project left (not locked): the page keeps its one renderer and GL context for the next project's canvas. */
+// Probe (cl-1018, not for merge): with localStorage cozy.probe.pagehide = "1", a page going for good lets its GL context go at pagehide, the
+// renderer in use or parked, and the early one if never taken; one kept for back/forward (persisted) keeps it.
+let current: Chosen | null = null
+export function probeCurrent(chosen: Chosen | null) { current = chosen }
+addEventListener("pagehide", (event) => {
+  let on = false
+  try { on = localStorage.getItem("cozy.probe.pagehide") === "1" } catch { /* off */ }
+  if (!on || event.persisted) return
+  const lose = (chosen: Chosen | null) => { if (chosen && "gl" in chosen.renderer) (chosen.renderer as unknown as { gl: WebGLRenderingContext }).gl.getExtension("WEBGL_lose_context")?.loseContext() }
+  lose(current)
+  if (early) void early.then((chosen) => { if (chosen !== current) lose(chosen) }, () => {})
+})
+
 export function parkRenderer(chosen: Chosen) {
   chosen.renderer.canvas.remove()
   early = Promise.resolve(chosen)

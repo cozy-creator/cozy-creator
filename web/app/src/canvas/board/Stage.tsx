@@ -23,7 +23,7 @@ import { inspection } from "./inspect"
 import { createInteraction } from "./Interaction"
 import { Media } from "./Media"
 import { pictureBox, type RunContext } from "./presentation"
-import { type Chosen, parkRenderer, takeRenderer } from "./renderer"
+import { type Chosen, parkRenderer, probeCurrent, takeRenderer } from "./renderer"
 import { Scene } from "./Scene"
 import { forgetMeasurements, onFontsLoaded } from "./text"
 
@@ -187,6 +187,7 @@ export function Stage(props: StageProps) {
 
     const ready = async () => {
       const taken = await takeRenderer(width, height)
+      probeCurrent(taken)
       const made = taken.renderer
       if (stopped) { made.destroy({ removeView: true }); return }
       renderer = made
