@@ -278,8 +278,10 @@ test.use({ trace: { mode: 'retain-on-failure', snapshots: false } });
 // 11-16). A Mac's runner keeps its own GPU compositing and GL.
 test.use({ launchOptions: { executablePath: process.env.CHROME, args: chromeArgs(...(gpuless ? ['--disable-gpu-compositing'] : [])) } });
 
+// Skipped before its fixtures, which make the encrypted copy.
+test.skip(process.platform === 'win32', "a Windows runner's GL has a performance caveat: the 2D path is Linux's (web-2d-solo)");
+
 test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signIn }, testInfo) => {
-  test.skip(process.platform === 'win32', "a Windows runner's GL has a performance caveat: the 2D path is Linux's (web-2d-solo)");
   test.slow(process.platform === 'darwin', "a Mac's runner makes thumbnails slowly at rc (agent a92b210): each wait runs out before the frames are judged");
   const speed = runnerSpeed();
   const BAR = Object.fromEntries(Object.entries(BARS).map(([name, ms]) => [name, Math.round(ms * speed.factor)]));
