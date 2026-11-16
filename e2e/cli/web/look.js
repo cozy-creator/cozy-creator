@@ -321,6 +321,41 @@ async function died(why) {
     },
   });
 
+  // The selection as Figma draws it (Paul, 11-16): one box selected, then every box, fitted and at 25%, 100% and 200% about it.
+  const select = { one: async (page) => {
+    await leave(page);
+    await fitCanvas(page);
+    const { x, y, width, height } = (await canvasBox(page, 'still')).body;
+    await page.mouse.click(x + width / 2, y + height / 2);
+    await settled(page);
+  }, all: async (page) => {
+    await leave(page);
+    await fitCanvas(page);
+    await page.keyboard.press('ControlOrMeta+a');
+    await settled(page);
+  } };
+  for (const [which, open] of Object.entries(select)) {
+    for (const [at, steps] of [['fit', null], ['25', ['Zoom out', 4]], ['100', ['Zoom in', 0]], ['200', ['Zoom in', 2]]]) {
+      await shoot(`select-${which}-${at}`, {
+        open,
+        prepare: async (page) => {
+          await fitCanvas(page);
+          if (!steps) return;
+          await page.keyboard.press('Shift+2');
+          await settled(page);
+          await zoomMenu(page, /^Zoom to 100%/);
+          for (let i = 0; i < steps[1]; i++) {
+            await page.click(`button[aria-label="${steps[0]}"]`);
+            await settled(page);
+          }
+          await page.mouse.move(4, 600);
+          await settled(page);
+        },
+      });
+    }
+  }
+  await both((page) => leave(page).then(() => fitCanvas(page)));
+
   // Each box close, at 100%: selected, then at rest. A box at rest is the scene's (cl-991): its card's bounds with what hangs off them, its
   // name above and its lines under it, from what the canvas drew.
   const tileOf = (page, name) => page.evaluate((name) => {
