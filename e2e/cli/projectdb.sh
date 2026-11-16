@@ -1245,6 +1245,67 @@ echo "remote custody: $(jq -r .legacy_history "$OUT/remote-custody-again-status.
 in_cozy "$now" || check "remote custody: this cozy back on its own store"
 }
 
+# db_legacy_burst (cl-1003; #3470 on Paul's laptop: lab2's open aborted Calcifer twice, after its legacy import failed
+# `project_input_migration_pending` 13 times in 0.75 s and Calcifer reached 3.4 GB). A project whose old history can't be imported
+# (an old run's input bytes are nowhere) has it tried once in a Calcifer's life, not by each of a burst of its requests, and each
+# check of what is left reads one old run at a time. The 0.24.0 store's 200 runs land in the project, each with a 256 KiB spec.
+db_legacy_burst() {
+step "a legacy import that fails is tried once per Calcifer, not by each of 20 requests at once; Calcifer stays up (cl-1003)"
+local D=$OUT/legacy-burst now=$OUT/cozy-now old P pid before after tried peak i failed=0
+old=$(cozy_0240) || { check "legacy burst: 0.24.0's archive"; return; }
+[ -f "$now" ] || cp "$COZY" "$now"
+in_cozy "$old" && [ "$(cozy --version)" = "cozy 0.24.0" ] || { check "legacy burst: 0.24.0 in this cozy's place: $(cozy --version)"; in_cozy "$now"; return; }
+P=$D/here
+mkdir -p "$P"
+boxes_in "$P" <<< '[{"name": "notes", "fields": {"text": "A project whose old runs input bytes that are gone."}}]' \
+  || { check "legacy burst: 0.24.0 made no project"; in_cozy "$now"; return; }
+pid=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder" 2> /dev/null) || pid=''
+[ -z "$pid" ] || term_calcifer "$pid" || { in_cozy "$now"; return; }
+python3 - "$HOME/.cozy/calcifer/state.db" "$P" <<'PY2' || { check "legacy burst: runs into 0.24.0's store"; in_cozy "$now"; return; }
+import json, os, sqlite3, sys
+path, here = sys.argv[1:3]
+db = sqlite3.connect(path, isolation_level=None)
+assert db.execute("PRAGMA user_version").fetchone()[0] == 7, "not a 0.24 store"
+done = json.dumps({"status": "succeeded", "result": {}, "outputs": [], "execution_ms": 1000, "measurements": {"observations": []}})
+first = (db.execute("SELECT max(number) FROM runs").fetchone()[0] or 0) + 1
+db.execute("BEGIN")
+for i in range(200):
+    # An input whose bytes are in no staging folder, no project file and no store: its import fails project_input_migration_pending.
+    gone = json.dumps([["sha256:" + os.urandom(32).hex(), 1234]])
+    spec = json.dumps({"pad": "x" * (256 * 1024)}).encode()
+    db.execute("INSERT INTO runs (id, number, idempotency_key, digest, hub, kind, target, machine, pinned, spec, out_dir, state, status, outcome, inputs, created_at, settled_at) "
+               "VALUES (?, ?, ?, 'sha256:00', 'http://127.0.0.1:1', 'call', 'legacy/runs', NULL, 0, ?, ?, 'settled', 'completed', CAST(? AS BLOB), ?, ?, ?)",
+               (f"run-burst{i:021d}", first + i, f"burst-{i}", spec, here + "/.runs", done, gone, 1700000000000 + i, 1700000000000 + i))
+db.execute("COMMIT")
+db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+PY2
+# This cozy on that store: its first start fences it, and nothing opens the project yet.
+cp "$now" "$COZY.new" && chmod +x "$COZY.new" && mv -f "$COZY.new" "$COZY" && cozy --json machine ls > /dev/null && db_calcifer \
+  || { check "legacy burst: this cozy on 0.24.0's store"; in_cozy "$now"; return; }
+pid=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder")
+before=$(grep -ac "legacy history was not imported" "$HOME/.cozy/calcifer/health.log" 2> /dev/null) || before=0
+# A page's open: 20 of the project's requests at once.
+for i in $(seq 20); do
+  ( in_project "$P" --json run list > "$OUT/legacy-burst-$i.json" 2> "$OUT/legacy-burst-$i.err"; echo $? > "$OUT/legacy-burst-$i.code" ) &
+done
+wait
+peak=$(awk '/^VmHWM/ {print $2 " " $3}' "/proc/$pid/status" 2> /dev/null) || peak=
+after=$(grep -ac "legacy history was not imported" "$HOME/.cozy/calcifer/health.log" 2> /dev/null) || after=0
+tried=$((after - before))
+echo "legacy burst: the failing import was tried $tried time(s) for 20 requests; Calcifer's peak resident ${peak:-unread}"
+kill -0 "$pid" 2> /dev/null && [ "$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder")" = "$pid" ] \
+  || check "legacy burst: Calcifer $pid didn't live through the burst (now $(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder" 2> /dev/null))"
+[ "$tried" = 1 ] || check "legacy burst: the failing import was tried $tried times for 20 requests, not once"
+grep -a "legacy history was not imported" "$HOME/.cozy/calcifer/health.log" | tail -1 | grep -q "project_input_migration_pending" \
+  || check "legacy burst: the import failed otherwise: $(grep -a 'legacy history was not imported' "$HOME/.cozy/calcifer/health.log" | tail -1)"
+for i in $(seq 20); do [ "$(cat "$OUT/legacy-burst-$i.code" 2> /dev/null)" = 0 ] || failed=$((failed + 1)); done
+[ "$failed" = 0 ] || check "legacy burst: $failed of 20 run lists failed: $(tail -c 300 "$OUT/legacy-burst-1.err")"
+# The project opens and takes new work, its old history left for the hard cut.
+in_project "$P" --json run minimax-h3-tools/echo "text=after the burst" > "$OUT/legacy-burst-run.ndjson" 2> "$OUT/legacy-burst-run.err" \
+  || check "legacy burst: a new run refused: $(tail -c 300 "$OUT/legacy-burst-run.ndjson") $(tail -c 300 "$OUT/legacy-burst-run.err")"
+in_cozy "$now" || check "legacy burst: this cozy back on its own store"
+}
+
 db_migrate_large() {
 step "project.db: a 5,000-box project of schema 3 migrates with nothing lost"
 local L=$OUT/migrate-large K=$OUT/migrate-large-kept n=5000 pid was began
