@@ -4848,7 +4848,9 @@ fn refused(error: &io::Error) -> Option<&Refused> {
 /// models it ran, as resolved.
 pub(crate) fn record_measurements(engine: &Engine, id: &str, plan: &Plan, reply: &Frame, driver: &[platform::gpu::Used]) {
     let software = engine.get(id).ok().and_then(|run| run.executor.map(|executor| executor.software(run.attempt)));
-    let measurements = measured(plan, reply, software, call_memory(reply, driver));
+    let mut measurements = measured(plan, reply, software, call_memory(reply, driver));
+    // Without the raw bind trace: its per-step table (cl-1010).
+    api::machine::kept_measurements(&mut measurements);
     let recorded = serde_json::to_vec(&measurements)
         .map_err(io::Error::other)
         .and_then(|bytes| engine.with_journal(|journal| journal.record_measurements(id, &bytes)));

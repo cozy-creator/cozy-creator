@@ -3464,11 +3464,11 @@ impl From<&MachineRow> for Machine {
     }
 }
 
-/// What a run keeps of its outcome: its measurements without the raw bind trace (`runs::report::kept`).
+/// What a run keeps of its outcome: its measurements without the raw bind trace (`v1::kept_measurements`).
 fn kept_outcome(outcome: &v1::Outcome) -> Vec<u8> {
     let mut value = serde_json::to_value(outcome).expect("serializes");
     if let Some(measurements) = value.get_mut("measurements") {
-        crate::runs::report::kept(measurements);
+        v1::kept_measurements(measurements);
     }
     serde_json::to_vec(&value).expect("serializes")
 }
@@ -3479,7 +3479,7 @@ fn kept_call(level: &str, text: String) -> String {
     let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&text) else { return text };
     match value.get_mut("measurements") {
         Some(measurements) => {
-            crate::runs::report::kept(measurements);
+            v1::kept_measurements(measurements);
             value.to_string()
         }
         None => text,

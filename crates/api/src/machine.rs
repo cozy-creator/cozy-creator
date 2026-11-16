@@ -835,6 +835,42 @@ pub struct LogLine {
     pub code: String,
 }
 
+/// What a run keeps of its measurements: all but each GPU's raw varena bind trace (every bind of the run, megabytes on a long one: 1.85
+/// GB of one laptop's store, cl-1010), which becomes the per-step table `cozy run show --detail full` reads, `trace_steps`: each plan
+/// step's bytes by where they came from (`hit`, `kept`, `store`, `derived`) and how many of them were `prefetched`. A fill-order trace
+/// is no plan step's and goes. TensorD applies it as it records a call's, Calcifer as a run or a call settles.
+pub fn kept_measurements(measurements: &mut serde_json::Value) {
+    use serde_json::{Value, json};
+    let Some(gpus) = measurements.pointer_mut("/memory/stats/varena").and_then(Value::as_array_mut) else { return };
+    for gpu in gpus {
+        let Some(stats) = gpu.get_mut("stats").and_then(Value::as_object_mut) else { continue };
+        let Some(Value::Array(trace)) = stats.remove("trace") else { continue };
+        if stats.get("trace_scope").and_then(Value::as_str) == Some("fills") {
+            continue;
+        }
+        let mut by_step: std::collections::BTreeMap<u64, [u64; 5]> = std::collections::BTreeMap::new();
+        for bind in &trace {
+            let (Some(step), bytes) = (bind["step"].as_u64(), bind["bytes"].as_u64().unwrap_or(0)) else { continue };
+            let at = match bind["origin"].as_str() {
+                Some("hit") => 0,
+                Some("kept") => 1,
+                Some("store") => 2,
+                Some("derived") => 3,
+                _ => continue,
+            };
+            let cell = by_step.entry(step).or_default();
+            cell[at] += bytes;
+            if bind["speculative"].as_bool() == Some(true) {
+                cell[4] += bytes;
+            }
+        }
+        let steps = by_step.into_iter().map(|(step, [hit, kept, store, derived, prefetched])| json!({
+            "step": step, "hit": hit, "kept": kept, "store": store, "derived": derived, "prefetched": prefetched,
+        }));
+        stats.insert("trace_steps".into(), Value::Array(steps.collect()));
+    }
+}
+
 /// How a run ended: status, reason, result and outputs, with its measurements and memo facts.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
