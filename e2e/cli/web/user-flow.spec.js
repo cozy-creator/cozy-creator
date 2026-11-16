@@ -174,6 +174,11 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
     heard += 1;
     appendFileSync(join(FLOW, 'events.ndjson'), `{"at":${at},"event":${line}}\n`);
     const event = JSON.parse(line);
+    if (event.type === 'machine.removed') {
+      machines.delete(event.id);
+      for (const waiter of waiters) waiter.moved();
+      return;
+    }
     const key = event.run ? `run ${event.run.id}` : event.machine ? `machine ${event.machine.name}` : null;
     if (!key) return;
     const said = JSON.stringify(event.run ?? event.machine);
@@ -285,13 +290,15 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
 
   /** Its "Prefer" checkbox in its drawer, checked: this project renders there. */
   const prefer = async (m) => {
-    if (m.preferred_at) return;
     const box = page.locator('.machine-head input.render-check');
     await expect(box, `${m.label} can be preferred`).toBeEnabled({ timeout: 60_000 });
-    if (!(await box.isChecked())) await box.check();
+    if (await box.isChecked()) return;
+    // Checked as it booted, under the handle its order gave it: still checked once its Hub names its host (cl-1089's rename).
+    if (m.preferred_at) failed(`${m.label}'s Prefer, checked as it booted, held through its rename`, `unchecked in ${m.name}'s drawer once ready`);
+    await box.check();
     await expect(box).toBeChecked();
-    m.preferred_at = Date.now();
-    mark(`${m.label} preferred`);
+    m.preferred_at = m.preferred_at ?? Date.now();
+    mark(`${m.label} preferred`, { name: m.name });
   };
 
   /** Followed by the page's stream until it's ready, then the project's canvas again. */
@@ -304,10 +311,8 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
     });
     Object.assign(m, { name: now.name, ready_at: Date.now(), disk_gb: now.rental?.disk_gb, usd_micros_per_hour: now.rental?.usd_micros_per_hour, gpu_names: now.gpus });
     mark(`${m.label} ready`, { name: m.name });
-    if (!m.preferred_at) {
-      await goto(`${project.url()}/machines/${encodeURIComponent(m.name)}`);
-      await prefer(m);
-    }
+    await goto(`${project.url()}/machines/${encodeURIComponent(m.name)}`);
+    await prefer(m);
     await shot(`${m.label}-ready`);
     await goto(project.url());
     await expect(page.locator('.stage')).toBeVisible({ timeout: 60_000 });
@@ -554,7 +559,7 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
             m.end_says = (await confirm.locator('.says').textContent().catch(() => '')).trim();
             await confirm.getByRole('button', { name: 'End it', exact: true }).click();
             m.end_pressed_at = Date.now();
-            await until(`${m.label} ended`, () => (machineOf(m)?.state === 'ended' ? true : null));
+            await until(`${m.label} ended`, () => (!machineOf(m) || machineOf(m).state === 'ended' ? true : null));
             m.ended_at = Date.now();
             await shot(`${m.label}-ended`);
           } catch (error) {
