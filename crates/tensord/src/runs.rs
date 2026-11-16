@@ -1980,8 +1980,39 @@ impl Runs {
         let model = crate::held_models::Pulled::of(store, checkpoint.id())?.map_or_else(|| manifest.to_string(), |pulled| pulled.model);
         let (engine, bytes, began) = (&self.service.engine, absent.iter().map(|object| object.length).sum::<u64>(), std::time::Instant::now());
         crate::private_io::info(engine, id, format_args!("emergency: {model} is read now, before every other download: {bytes} bytes"));
-        machine.objects(&remote, &absent, crate::origin::priority::EMERGENCY, &Stop::default())
-            .map_err(|refusal| refused("model_fetch_failed", format!("{model}: {refusal}")))?;
+        // What it waits on shows on its run and its root's, as a run's own weights do, while it lands (tfs-300, LAB2-47829: an
+        // edit's prompt enhancer, 10 GiB on demand, showed as its stage with no progress for 2 minutes).
+        let landing = std::sync::atomic::AtomicBool::new(true);
+        let fetched = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let wait = crate::activity::wait(crate::activity::Kind::Download, &model, &engine.caller_id(id));
+                let root = engine.get(id).ok().map(|record| record.invocation.root).filter(|root| !root.is_empty() && root.as_str() != id);
+                let tell = |weights: Option<crate::journal::Weights>| {
+                    for run in root.iter().map(String::as_str).chain([id]) {
+                        if let Err(error) = engine.observe_weights(run, weights.clone()) {
+                            tracing::warn!("run {run}: its on-demand weights' progress: {error}");
+                        }
+                    }
+                };
+                while landing.load(std::sync::atomic::Ordering::Acquire) {
+                    let states = machine.fetching(&remote, &absent);
+                    let done: u64 = (absent.iter().zip(states))
+                        .map(|(object, state)| match store.holds(object) {
+                            true => object.length,
+                            false => state.map_or(0, |state| state.reached.min(object.length)),
+                        })
+                        .sum();
+                    wait.moved("", done, bytes);
+                    tell(Some(crate::journal::Weights { models: model.clone(), done, total: bytes }));
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                }
+                tell(None);
+            });
+            let fetched = machine.objects(&remote, &absent, crate::origin::priority::EMERGENCY, &Stop::default());
+            landing.store(false, std::sync::atomic::Ordering::Release);
+            fetched
+        });
+        fetched.map_err(|refusal| refused("model_fetch_failed", format!("{model}: {refusal}")))?;
         let seconds = began.elapsed().as_secs_f64();
         crate::private_io::info(engine, id, format_args!("emergency: {model} is here: {bytes} bytes in {seconds:.1} s"));
         Ok(())
