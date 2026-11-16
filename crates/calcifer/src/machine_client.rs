@@ -41,6 +41,9 @@ const CAP_SECONDS: i64 = 300;
 /// connection ends once `PROBES` in a row go unanswered by the peer's kernel.
 const PROBE: Duration = Duration::from_secs(20);
 const PROBES: u32 = 3;
+/// How long a machine has to say its frame: one that's connected but doesn't answer (its TensorD alive and stuck) is slow, and
+/// its last picture stands, never a wait with no end (xs-199: a walk's quote waited on one forever).
+const STATUS_WAIT: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -218,7 +221,7 @@ impl Machine {
 
     /// The machine's frame. Without a credential: identity, version, capabilities and receipt.
     pub(crate) async fn status(&self) -> Result<StatusFrame, Error> {
-        let request = self.request(Method::GET, path::STATUS, &[]);
+        let request = self.request(Method::GET, path::STATUS, &[]).timeout(STATUS_WAIT);
         json(send(request.header(header::ACCEPT, "application/json")).await?).await
     }
 
