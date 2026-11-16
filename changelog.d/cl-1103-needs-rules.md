@@ -1,0 +1,4 @@
+A package says which requests need each of its models, and a call downloads only those: `needs={"slot": "<CEL>"}` on a function (Runtime 0.47), one boolean expression over `request` per model argument, or per function it calls.
+- A machine evaluates a call's rules against its request before anything is fetched: a model whose rule is true is part of what the call waits on, one whose rule is false isn't downloaded for it (Qwen Image 2's other prompt enhancer, H3's other DiT), and one with no rule is as before.
+- A rule is checked against its function's request when its code is read (`cozy run ./code`, `cozy package publish`): one that isn't CEL, or reads a field the request doesn't have, is refused there (`needs_rule_invalid`).
+- A run that reads a model, or calls a function, its rule said the request doesn't need downloads it then and warns on the run that the rule is wrong for the request.

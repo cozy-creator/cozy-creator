@@ -1367,6 +1367,10 @@ pub(crate) fn describe_with(uv: &Path, dir: &Path, python: &str, runtime: Option
     if !interface(&document) {
         return Err(refuse("package_interface_invalid", "the describer's answer is not a package interface"));
     }
+    // A `needs` rule that isn't CEL over its function's own request stops here, at the read, never at a run (cl-1103).
+    if let Some(fault) = ::needs::faults(&document).into_iter().next() {
+        return Err(refuse("needs_rule_invalid", fault));
+    }
     Ok((said.trim_end().to_owned(), document))
 }
 

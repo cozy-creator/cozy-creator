@@ -11,6 +11,7 @@ platform = { workspace = true, features = ["fetch"] }
 getrandom.workspace = true
 api = { workspace = true, features = ["hub"] }
 executor-api.workspace = true
+needs.workspace = true
 str0m = { version = "0.24", default-features = false, features = ["aws-lc-rs"] }
 reqwest.workspace = true
 tensorfs = { workspace = true, features = ["net"] }
