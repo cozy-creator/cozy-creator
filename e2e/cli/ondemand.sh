@@ -273,6 +273,61 @@ cat "$OUT/ondemand-need.timeline.json"
 while read -r why; do check "ondemand-need: $why"; done < "$OUT/ondemand-need.failed"
 }
 
+# cl-1101 (Paul, 11-16): "We can download extras (Z) in the background, in anticipation of maybe needing them, but they aren't in
+# the critical path of inference (user request) so they shouldn't be waited on." A call's on-demand models are its guesses, wanted
+# with its needs, and the downloader started them beside its needs: each range took its share of the link. enhance.py's `plain`
+# needs its model (16 MiB: 1.7 s alone over this 10 MB/s link) and guesses two prompt enhancers (96 MiB each) it never reads: its
+# model took 6.5 s and its function started 5 s late (run 43955873288). No guess starts while a need of any run is under way.
+ondemand_behind() {
+[ "$RUNNER_OS" = Linux ] || return 0
+step "a call's guesses never take the link from its needs (cl-1101)"
+local began
+slow_store ondemand-behind 80mbit || return 0
+began=$(date -u +%s%3N)
+cell ondemand-behind "$here/script/enhance.py/plain" prompt_upsampling:=false seconds:=6 || :
+sudo tc qdisc del dev lo root || check "ondemand-behind: the store's link wasn't restored"
+cozy machine logs local --lines 0 --since 1h > "$OUT/ondemand-behind.tensord.log" 2>&1 || check "ondemand-behind: machine logs local failed"
+python3 - "$OUT" "$began" <<'JUDGE' > "$OUT/ondemand-behind.timeline.json" 2> "$OUT/ondemand-behind.failed" || true
+import json, re, sys
+from datetime import datetime
+from pathlib import Path
+out, began = Path(sys.argv[1]), int(sys.argv[2])
+def at(line):
+    try:
+        return int(datetime.fromisoformat(line.split(" ", 1)[0].replace("Z", "+00:00")).timestamp() * 1000)
+    except ValueError:
+        return 0
+# The line's orders (`origin::priority`): 2 + (class << 62 | run << 32 | rank), class 0 a run's needs and 2 a guess.
+needs, guesses = [], []
+for line in (out / "ondemand-behind.tensord.log").read_text(errors="replace").splitlines():
+    t = at(line)
+    found = re.search(r": (fetching|landed) .*bytes=(\d+).*priority=(\d+)", line)
+    if t < began or not found or int(found[3]) < 2:
+        continue
+    kind = (int(found[3]) - 2) >> 62
+    if kind in (0, 2):
+        (needs if kind == 0 else guesses).append((t - began, found[1], int(found[2])))
+weights = [n for n in needs if n[2] >= 1 << 20]
+first = min((t for t, kind, _ in weights if kind == "fetching"), default=None)
+landed = max((t for t, kind, _ in weights if kind == "landed"), default=None)
+size = sum(b for _, kind, b in weights if kind == "landed")
+guessed = min((t for t, kind, _ in guesses if kind == "fetching"), default=None)
+seconds = (landed - first) / 1e3 if first is not None and landed is not None else None
+print(json.dumps({"need_bytes": size, "need_first_fetching_ms": first, "need_landed_ms": landed, "need_seconds": seconds,
+                  "need_mb_s": round(size / seconds / 1e6, 2) if seconds else None, "first_guess_fetching_ms": guessed,
+                  "guess_objects_started": sum(1 for _, kind, _ in guesses if kind == "fetching")}, indent=1))
+fail = lambda why: print(why, file=sys.stderr)
+if landed is None or size < 16 << 20:
+    fail(f"its model didn't come as its need: {size} bytes landed at a run's order")
+elif guessed is None:
+    fail("none of its on-demand models was guessed: nothing started at a guess's order")
+elif guessed < landed:
+    fail(f"a guess started {landed - guessed} ms before its call's need had landed ({size} bytes in {seconds:.1f} s over the 10 MB/s link)")
+JUDGE
+cat "$OUT/ondemand-behind.timeline.json"
+while read -r why; do check "ondemand-behind: $why"; done < "$OUT/ondemand-behind.failed"
+}
+
 # cl-1101 (Paul, 11-16): "the same goes for qwen image 2.1 image's prompt enhancer; it has two (T2I and I2I) but we only need one
 # when we get a request." Qwen Image 2.1's `expander` (a prompt of words) and `rewriter` (one with pictures) are both on demand,
 # and a request reads at most one, as its first stage. enhance.py is that function three times, each with a model (16 MiB) and two
