@@ -1026,8 +1026,8 @@ pub fn run_supervisor() -> Option<i32> {
 }
 
 fn supervise(arguments: &[OsString]) -> Result<()> {
-    platform::private_exec::disable_project_parent_dumps()
-        .map_err(|_| Error::Invalid("cannot protect filesystem unlock material from process dumps"))?;
+    platform::private_exec::limit_own_cores()
+        .map_err(|_| Error::Invalid("cannot keep filesystem unlock material out of core files"))?;
     if arguments.len() != 8 {
         return Err(Error::Invalid("invalid filesystem supervisor arguments"));
     }
