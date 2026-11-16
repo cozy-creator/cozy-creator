@@ -224,6 +224,7 @@ export function Stage(props: StageProps) {
       })
       const resize = new ResizeObserver(() => {
         width = element.clientWidth; height = element.clientHeight
+        board.camera.measure()
         if (width > 0 && height > 0 && renderer && viewport) { renderer.resize(width, height, devicePixelRatio || 1); viewport.resize(width, height); stage.hitArea = new Rectangle(0, 0, width, height); invalidate() }
       })
       resize.observe(element)
