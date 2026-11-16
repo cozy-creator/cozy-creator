@@ -196,8 +196,9 @@ pub(super) fn rebuild(path: &Path, from: i64) -> Result<()> {
 /// Before anything of the old store is left behind, every project's files left on `local` that only this computer's TensorFS store
 /// holds are held there (`kept_path`), whatever their uses' ages: a readable project's as its lock names them, a locked one's (an
 /// encrypted project's lock can't be read while it is locked, nor an older plain project's before its first open migrates it, nor
-/// one whose folder isn't where the index says) as the old store says its runs left them, never exported. Then every readable project's are copied into it, each checked and noted
-/// (a copy that fails stops the cut), and only once all are in, each readable project's hold and copies are let go of: the store
+/// one whose folder isn't where the index says) as the old store says its runs left them, never exported. Then every readable
+/// project's are copied into it, each checked and noted (a copy that fails stops the cut), and only once all are in, each readable
+/// project's hold and copies are let go of: the store
 /// lets an object go only when no project's hold still names it. A locked project's are copied in as it opens. A file of a locked
 /// project's runs this store no longer names (one imported already) can't be known before then. Answers how many locked projects
 /// wait for an open, and each plain project that had lost files before, how many (`cozy doctor` and its page say so).
