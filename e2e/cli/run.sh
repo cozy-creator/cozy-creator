@@ -696,6 +696,7 @@ case $SHARD in
   # cl-1000: a runner with no FUSE (e2e.yaml installs no vault driver for it).
   projectvault-nofuse) parts="vault_no_fuse logs" ;;
   projectvault) parts="
+    idle_vault
     vault_times
     shared_scratch
     open_unlocks
