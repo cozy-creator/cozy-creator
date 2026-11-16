@@ -103,9 +103,21 @@ pub struct Slot {
     /// The components of its checkpoint the function fetches; none: every one its class uses.
     #[serde(default, deserialize_with = "or_default")]
     pub components: Vec<String>,
+    /// The components each of its class's methods uses: what's fetched when it declares none.
+    #[serde(default, deserialize_with = "or_default")]
+    pub component_use: BTreeMap<String, Vec<String>>,
 }
 
 impl Slot {
+    /// The components of its checkpoint a machine fetches for it, as TensorD binds it: those declared, else every one its class's
+    /// methods use. None: its checkpoint whole.
+    pub fn fetched_components(&self) -> Vec<String> {
+        match self.components.is_empty() {
+            false => self.components.clone(),
+            true => self.component_use.values().flatten().cloned().collect::<std::collections::BTreeSet<_>>().into_iter().collect(),
+        }
+    }
+
     /// A declared slot, its parameter read from its path; why when it is not
     /// `<callable>.models.<param>`.
     pub fn read(raw: &Value) -> Result<Self, String> {

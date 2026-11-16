@@ -189,8 +189,7 @@ pub struct Queued {
     pub run: Option<u64>,
 }
 
-/// `POST /v1/projects/{id}/cancel`: these assets' queued work dropped and their runs canceled, or `all`; and these takes, by id: one
-/// that failed is dismissed.
+/// `POST /v1/projects/{id}/cancel`: these assets' queued work dropped and their runs canceled, or `all`; and these takes, by id.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Cancel {
     #[serde(default)]
@@ -200,7 +199,8 @@ pub struct Cancel {
 }
 
 /// A take of an asset that hasn't landed, by its id, from the render that asked it to its version (`VersionPrefix::id`): queued
-/// until its turn, then sent, with its run once that has a number (cl-945); or one that failed, with why (cl-954).
+/// until its turn, then sent, with its run once that has a number (cl-945). One that fails is gone: its failure is its asset's, said
+/// once as it happens (cl-1070).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct TakeNow {
@@ -209,9 +209,6 @@ pub struct TakeNow {
     pub queued: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<u64>,
-    /// It ended with no version, and why: listed until it's dismissed (`Cancel::takes`), as it failed (cl-954).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failure: Option<Error>,
 }
 
 /// What a cancel did: the names dropped from the queue, and the runs asked to stop.
