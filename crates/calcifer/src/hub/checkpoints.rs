@@ -150,7 +150,7 @@ pub(super) async fn said(api: &Api, hub: &Origin, cards: &[types::ModelCard], mo
 const NAMED_FOR: Duration = Duration::from_secs(600);
 
 /// The family and kind of each declared default, by Hub and reference, when read.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 struct DefaultModel {
     family: Option<String>,
     kind: Option<ModelKind>,
@@ -158,8 +158,26 @@ struct DefaultModel {
 
 static NAMED: OnceLock<Mutex<HashMap<String, (Instant, DefaultModel)>>> = OnceLock::new();
 
-fn named_so_far() -> &'static Mutex<HashMap<String, (Instant, DefaultModel)>> {
-    NAMED.get_or_init(Default::default)
+/// What was read so far, kept across a restart in Calcifer's home (`kept-families.json`): a restart's first list says them (cl-1010).
+fn named_so_far(api: &Api) -> &'static Mutex<HashMap<String, (Instant, DefaultModel)>> {
+    NAMED.get_or_init(|| {
+        let kept: HashMap<String, (i64, DefaultModel)> = std::fs::read(kept_families(api)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+        let now = crate::store::now_ms();
+        let at = |ms: i64| Instant::now().checked_sub(Duration::from_millis((now - ms).max(0) as u64)).unwrap_or_else(Instant::now);
+        Mutex::new(kept.into_iter().map(|(key, (ms, model))| (key, (at(ms), model))).collect())
+    })
+}
+
+fn kept_families(api: &Api) -> std::path::PathBuf {
+    api.machines.hubs.home().calcifer().join("kept-families.json")
+}
+
+/// Keeps what was read so far for the next start, each with when (Unix ms).
+fn keep_families(api: &Api) {
+    let now = (crate::store::now_ms(), Instant::now());
+    let kept: HashMap<String, (i64, DefaultModel)> = named_so_far(api).lock().expect("named lock").iter()
+        .map(|(key, (at, model))| (key.clone(), (now.0 - now.1.duration_since(*at).as_millis() as i64, model.clone()))).collect();
+    let _ = platform::durable::replace(&kept_families(api), &serde_json::to_vec(&kept).expect("serializes"), 0o600);
 }
 
 /// A declared default: its family label or header, and its real checkpoint kind.
@@ -317,7 +335,7 @@ pub(crate) fn families(api: &std::sync::Arc<Api>, hub: &str, tools: &mut [Tool])
     let defaults: BTreeSet<String> = tools.iter().flat_map(|tool| tool.models.iter().chain(tool.model.iter())).filter_map(|model| model.default.clone()).collect();
     let Ok(origin) = Origin::parse(hub) else { return };
     let (found, unread): (HashMap<String, DefaultModel>, Vec<String>) = {
-        let held = named_so_far().lock().expect("named lock");
+        let held = named_so_far(api).lock().expect("named lock");
         let found = defaults.iter().filter_map(|default| Some((default.clone(), held.get(&format!("{origin} {default}"))?.1.clone()))).collect();
         let fresh = |default: &&String| held.get(&format!("{origin} {default}")).is_some_and(|(at, _)| at.elapsed() < NAMED_FOR);
         (found, defaults.iter().filter(|default| !fresh(default)).cloned().collect())
@@ -335,10 +353,13 @@ pub(crate) fn families(api: &std::sync::Arc<Api>, hub: &str, tools: &mut [Tool])
                 });
                 let reads: Vec<(String, DefaultModel)> = stream::iter(reads).buffered(READS).collect().await;
                 save(api);
-                let mut held = named_so_far().lock().expect("named lock");
-                for (default, model) in reads {
-                    held.insert(format!("{origin} {default}"), (Instant::now(), model));
+                {
+                    let mut held = named_so_far(api).lock().expect("named lock");
+                    for (default, model) in reads {
+                        held.insert(format!("{origin} {default}"), (Instant::now(), model));
+                    }
                 }
+                keep_families(api);
             };
             let _ = tokio::time::timeout(Duration::from_secs(60), read).await;
             READING.store(false, std::sync::atomic::Ordering::Release);

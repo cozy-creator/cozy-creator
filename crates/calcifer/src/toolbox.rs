@@ -564,7 +564,54 @@ struct Runner {
 
 /// Each machine's [`Runner`] as last worked out, by what it runs and whether it takes the RC: when, it, and whether it's being worked out.
 type Runners = HashMap<(String, String, String, bool), (Option<Instant>, Option<Arc<Runner>>, bool)>;
-static RUNNERS: LazyLock<Mutex<Runners>> = LazyLock::new(Mutex::default);
+static RUNNERS: std::sync::OnceLock<Mutex<Runners>> = std::sync::OnceLock::new();
+
+/// A Runner as Calcifer's home keeps it across a restart (`kept-runners.json`): a restart's first list holds back what it did (cl-1010).
+#[derive(serde::Serialize, Deserialize)]
+struct KeptRunner {
+    machine: String,
+    runtime: String,
+    tensorfs: String,
+    rc: bool,
+    runtimes: Vec<String>,
+    moves: String,
+    newer: Option<(String, Vec<String>, bool)>,
+    at_ms: i64,
+}
+
+fn kept_runners(api: &Api) -> PathBuf {
+    api.machines.hubs.home().calcifer().join("kept-runners.json")
+}
+
+fn runners(api: &Api) -> &'static Mutex<Runners> {
+    RUNNERS.get_or_init(|| {
+        let kept: Vec<KeptRunner> = std::fs::read(kept_runners(api)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+        let now = crate::store::now_ms();
+        let runners = kept.into_iter().filter_map(|kept| {
+            let moves = match kept.moves.as_str() { "yes" => Moves::Yes, "held" => Moves::Held, "no" => Moves::No, _ => return None };
+            let newer = kept.newer.map(|(cozy, runtimes, major)| api::release::Newer { cozy, runtimes, major });
+            let at = Instant::now().checked_sub(Duration::from_millis((now - kept.at_ms).max(0) as u64));
+            let runner = Runner { runtime: kept.runtime.clone(), tensorfs: kept.tensorfs.clone(), runtimes: kept.runtimes, moves, newer };
+            Some(((kept.machine, kept.runtime, kept.tensorfs, kept.rc), (at, Some(Arc::new(runner)), false)))
+        });
+        Mutex::new(runners.collect())
+    })
+}
+
+/// Keeps each machine's Runner for the next start.
+fn keep_runners(api: &Api) {
+    let now = (crate::store::now_ms(), Instant::now());
+    let kept: Vec<KeptRunner> = runners(api).lock().expect("runners lock").iter().filter_map(|((machine, runtime, tensorfs, rc), (at, runner, _))| {
+        let (at, runner) = (at.as_ref()?, runner.as_ref()?);
+        let moves = match runner.moves { Moves::Yes => "yes", Moves::Held => "held", Moves::No => "no" };
+        Some(KeptRunner {
+            machine: machine.clone(), runtime: runtime.clone(), tensorfs: tensorfs.clone(), rc: *rc, runtimes: runner.runtimes.clone(),
+            moves: moves.into(), newer: runner.newer.as_ref().map(|newer| (newer.cozy.clone(), newer.runtimes.clone(), newer.major)),
+            at_ms: now.0 - now.1.duration_since(*at).as_millis() as i64,
+        })
+    }).collect();
+    let _ = platform::durable::replace(&kept_runners(api), &serde_json::to_vec(&kept).expect("serializes"), 0o600);
+}
 /// A machine's Runner worked out this recently is current.
 const RUNNER_FOR: Duration = Duration::from_secs(60);
 
@@ -579,7 +626,7 @@ impl Runner {
         let rc = api.machines.takes_rc(name, on);
         let key = (name.clone(), frame.runtime.clone(), frame.tensorfs.clone(), rc);
         let (held, ask) = {
-            let mut runners = RUNNERS.lock().expect("runners lock");
+            let mut runners = runners(api).lock().expect("runners lock");
             let (at, held, asking) = runners.entry(key.clone()).or_default();
             let ask = !*asking && at.is_none_or(|at| at.elapsed() >= RUNNER_FOR);
             *asking |= ask;
@@ -589,12 +636,16 @@ impl Runner {
             let (api, name) = (api.clone(), name.clone());
             tokio::spawn(async move {
                 let worked = tokio::time::timeout(Duration::from_secs(60), api.machines.runtimes(&name, &frame, rc)).await.ok();
-                let mut runners = RUNNERS.lock().expect("runners lock");
-                let (at, held, asking) = runners.entry(key).or_default();
-                if let Some((runtimes, moves, newer)) = worked {
-                    (*at, *held) = (Some(Instant::now()), Some(Arc::new(Self { runtime: frame.runtime, tensorfs: frame.tensorfs, runtimes, moves, newer })));
+                {
+                    let mut runners = runners(&api).lock().expect("runners lock");
+                    let (at, held, asking) = runners.entry(key).or_default();
+                    if let Some((runtimes, moves, newer)) = &worked {
+                        let runner = Self { runtime: frame.runtime, tensorfs: frame.tensorfs, runtimes: runtimes.clone(), moves: *moves, newer: newer.clone() };
+                        (*at, *held) = (Some(Instant::now()), Some(Arc::new(runner)));
+                    }
+                    *asking = false;
                 }
-                *asking = false;
+                if worked.is_some() { keep_runners(&api); }
             });
         }
         held
