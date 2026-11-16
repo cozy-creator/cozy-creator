@@ -388,6 +388,10 @@ pub(crate) async fn show(
     let was = SHOWN.lock().expect("shown lock").get_mut(&stream).map(|held| std::mem::replace(held, Shows { readers, machines: shown.machines }));
     match was {
         Some(was) => {
+            // A project this page shows now and didn't is used now: the index lists by it (Paul, 11-16: most recently used first).
+            for id in reply.held.iter().filter(|id| !was.readers.iter().any(|reader| reader.id() == id.as_str())) {
+                project::used_now(&api, id);
+            }
             drop(was);
             Ok(axum::Json(reply))
         }

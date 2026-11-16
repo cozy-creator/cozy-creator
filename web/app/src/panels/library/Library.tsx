@@ -5,13 +5,13 @@ import { useTo } from "../../app/Shell"
 import { useSignedIn } from "../common"
 import { DrawerFrame } from "../Drawer"
 
-/** The wide drawer's frame: Packages and Models, and what signing in would add here. */
+/** The wide drawer's frame, Installations (Paul, 11-16): Packages and Models, and what signing in would add here. */
 export function LibraryFrame({ on, title, back, children }: { on: "packages" | "models"; title?: string; back?: string; children: ReactNode }) {
   const { client } = useConnection()
   const to = useTo()
   const signedIn = useSignedIn()
   return (
-    <DrawerFrame title={title ?? "Library"} back={back}>
+    <DrawerFrame title={title ?? "Installations"} back={back}>
       <div className="row tabs">
         <Link className={`tab ${on === "packages" ? "on" : ""}`} to={to("packages")}>
           Packages

@@ -18,7 +18,8 @@ pub(crate) const TABLES: &str = "
     CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,
         path TEXT NOT NULL,
-        code TEXT NOT NULL DEFAULT ''
+        code TEXT NOT NULL DEFAULT '',
+        used_at_ms INTEGER NOT NULL DEFAULT 0
     ) STRICT;
     CREATE TABLE IF NOT EXISTS project_keys (
         key TEXT PRIMARY KEY,
@@ -98,7 +99,7 @@ fn known(row: &rusqlite::Row) -> rusqlite::Result<KnownProject> {
 }
 
 /// `known`'s columns, from `projects`.
-const KNOWN: &str = "SELECT id, path, 0, 0, '', code, (SELECT key FROM project_keys WHERE project_keys.id = projects.id AND current = 1) FROM projects";
+const KNOWN: &str = "SELECT id, path, used_at_ms, 0, '', code, (SELECT key FROM project_keys WHERE project_keys.id = projects.id AND current = 1) FROM projects";
 
 /// Whether project `id` may take `key` here: no reserved key, and none another project this index knows has, now or before (cl-987).
 /// A key of a project the index let go of is free.
@@ -122,6 +123,14 @@ fn key_kept(conn: &Connection, id: &str, key: &str, current: bool) -> rusqlite::
 
 /// A store from before cl-819 names no project: its column, added.
 pub(crate) fn project_names(_conn: &Connection) -> rusqlite::Result<()> { Ok(()) }
+
+/// When each project was last used, which the index lists by (Paul, 11-16: most recently used first): a column older indexes gain.
+pub(crate) fn project_used(conn: &Connection) -> rusqlite::Result<()> {
+    if conn.prepare("SELECT used_at_ms FROM projects LIMIT 0").is_err() {
+        conn.execute_batch("ALTER TABLE projects ADD COLUMN used_at_ms INTEGER NOT NULL DEFAULT 0")?;
+    }
+    Ok(())
+}
 
 /// Older indexes gain public codes without replacing their project identities or rows.
 pub(crate) fn project_codes(conn: &Connection) -> rusqlite::Result<()> {
@@ -248,7 +257,7 @@ impl Store {
     /// Every project opened here, last used first.
     pub(crate) fn known_projects(&self) -> Result<Vec<KnownProject>> {
         self.read(|conn| {
-            let mut statement = conn.prepare(&format!("{KNOWN} ORDER BY id"))?;
+            let mut statement = conn.prepare(&format!("{KNOWN} ORDER BY used_at_ms DESC, id"))?;
             Ok(statement.query_map([], known)?.collect::<rusqlite::Result<_>>()?)
         })
     }
@@ -279,7 +288,7 @@ impl Store {
     }
 
     /// `id`, called `name`, in `path`, opened at `used_at_ms` (none: when it was last, or now if it's new here); whether it was walking stands.
-    pub(crate) fn project_opened(&self, id: &str, _name: &str, path: &Path, _used_at_ms: Option<i64>, preferred: Option<&str>) -> Result<String> {
+    pub(crate) fn project_opened(&self, id: &str, _name: &str, path: &Path, used_at_ms: Option<i64>, preferred: Option<&str>) -> Result<String> {
         let path = folder(path);
         // Already so, as at nearly every open: read, the writer untouched (cl-1010: each open wrote it, and waited on whatever held the writer).
         let kept = self.read(|conn| {
@@ -292,6 +301,7 @@ impl Store {
             );
             Ok(kept.optional()?)
         })?;
+        // Its use, when it's one, is `project_used`'s, off the open's path.
         if let Some(code) = kept.filter(|code| preferred.is_none_or(|preferred| preferred == code)) {
             return Ok(code);
         }
@@ -300,14 +310,23 @@ impl Store {
             tx.pragma_update(None, "secure_delete", "ON")?;
             // The handle it had while locked names it still, until its next lock (cl-1090): a page that opened it from the list goes on.
             tx.execute("INSERT OR IGNORE INTO project_handles (handle, path) SELECT id, path FROM projects WHERE path = ?1 AND id LIKE 'locked-%'", [&path])?;
+            // Its locked handle there was this project: its last use stays.
+            let was: i64 = tx.query_row("SELECT COALESCE(MAX(used_at_ms), 0) FROM projects WHERE id = ?1 OR path = ?2", params![id, path], |row| row.get(0))?;
             tx.execute("DELETE FROM projects WHERE path = ?2 AND id <> ?1", params![id, path])?;
             tx.execute("DELETE FROM projects_gone WHERE id = ?1 OR path = ?2", params![id, path])?;
             let code = project_code(tx, id, preferred, crate::project::code::generate)?;
-            tx.execute("INSERT INTO projects (id, path, code) VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET path = excluded.path, code = excluded.code", params![id, path, code])?;
+            tx.execute("INSERT INTO projects (id, path, code, used_at_ms) VALUES (?1, ?2, ?3, ?4)
+                ON CONFLICT(id) DO UPDATE SET path = excluded.path, code = excluded.code, used_at_ms = excluded.used_at_ms",
+                params![id, path, code, used_at_ms.unwrap_or(was).max(was)])?;
             // A handle whose folder no longer holds a project here (it moved, its folder went, it never locked again) goes.
             tx.execute("DELETE FROM project_handles WHERE path NOT IN (SELECT path FROM projects)", [])?;
             Ok(code)
         })
+    }
+
+    /// Project `id` used now: a page shows it.
+    pub(crate) fn project_used(&self, id: &str, at_ms: i64) -> Result<()> {
+        self.write(|tx| Ok(tx.execute("UPDATE projects SET used_at_ms = MAX(used_at_ms, ?2) WHERE id = ?1", params![id, at_ms]).map(drop)?))
     }
 
     /// The key project `id`, in `path`, goes by here (cl-987), given `held`, the keys its project.db keeps, its key now last: that one
@@ -408,13 +427,15 @@ impl Store {
         let path = folder(path);
         self.write(|tx| {
             tx.pragma_update(None, "secure_delete", "ON")?;
+            // When it was last used stays, so the list keeps its place.
+            let used: i64 = tx.query_row("SELECT COALESCE(MAX(used_at_ms), 0) FROM projects WHERE id = ?1 OR path = ?2", params![id, path], |row| row.get(0))?;
             tx.execute("DELETE FROM projects WHERE id = ?1 OR path = ?2", params![id, path])?;
             tx.execute("DELETE FROM projects_gone WHERE id = ?1 OR path = ?2", params![id, path])?;
             // Its keys too (cl-987): its project.db keeps them, its next open registers them again, and its KEY-N is unknown here meanwhile.
             tx.execute("DELETE FROM project_keys WHERE id = ?1", [id])?;
             // The handles of its last lock go: each lock's is new.
             tx.execute("DELETE FROM project_handles WHERE path = ?1", [&path])?;
-            tx.execute("INSERT INTO projects (id, path, code) VALUES (?1, ?2, '')", params![handle, path])?;
+            tx.execute("INSERT INTO projects (id, path, code, used_at_ms) VALUES (?1, ?2, '', ?3)", params![handle, path, used])?;
             Ok(())
         })?;
         self.empty_wal()

@@ -2334,6 +2334,10 @@ video.preview.on {
 .shell[data-drawer="wide"] {
   --drawer: 760px;
 }
+/* A locked project's page keeps clear of an open drawer. */
+.shell > main.gate {
+  padding-right: var(--drawn);
+}
 .drawer {
   position: fixed;
   top: var(--top);
@@ -4339,8 +4343,7 @@ input[type="checkbox"] {
   align-items: center;
   gap: calc(8px * var(--ui));
 }
-.ptabs,
-.ptabs-add {
+.ptabs {
   display: flex;
   align-items: stretch;
   gap: calc(2px * var(--ui));
@@ -4374,7 +4377,7 @@ input[type="checkbox"] {
 .ptab.more {
   flex: none;
 }
-/* The + that makes a project, right after the tabs, in a strip of its own as tall as theirs. */
+/* The + that makes a project: the strip's last tab (the machines' + is the same class). */
 .ptab.add {
   flex: none;
   cursor: pointer;
@@ -4630,16 +4633,10 @@ p.warn.slow {
   line-height: 1.45;
 }
 
-/* All projects: a search, and a line under those with no tab. */
+/* All projects: a search above them. */
 .field.find {
-  margin-top: 8px;
+  margin-bottom: 8px;
 }
-.list .tabbed {
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px solid var(--line);
-}
-/* Where a project is, so a person can find it. */
 
 /* Zoom, in the canvas's bottom right corner (FigJam's): − the zoom +, sized like the top bar's buttons. The zoom opens its menu above it. */
 .zoom {

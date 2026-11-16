@@ -67,7 +67,7 @@ export const theRouter = () =>
             { path: "assets/:name", element: null },
             ...drawers,
             drawer("new", <NewRun />),
-            drawer("files", <Files />),
+            drawer("assets", <Files />),
             drawer("vault", <ProjectVault />),
           ],
         })),
