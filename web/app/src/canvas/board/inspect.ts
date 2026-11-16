@@ -35,7 +35,8 @@ export function inspection(o: Sources) {
     const body = pictureBox(held.node)
     const main = card.picture
     const texture = main?.handle?.texture
-    const [source, width] = main ? JSON.parse(main.key || "[{},0]") as [{ kind?: string; sha256?: string }, number] : [{}, 0]
+    // What's on screen: the picture before the one asked for, until that one has decoded.
+    const [source, width] = main ? JSON.parse(main.shownKey || main.key || "[{},0]") as [{ kind?: string; sha256?: string }, number] : [{}, 0]
     const labels = Object.fromEntries([...card.labelViews()].map(([key, view]) => {
       const text = view as Text
       const role = key.startsWith("words-") || key === "words" ? key : key
@@ -56,8 +57,7 @@ export function inspection(o: Sources) {
       references: card.referencesShown.map((reference) => ({ key: reference.key, ready: reference.ready, ...screen(reference.box, origin, scale)!, ...(reference.sha ? { sha: reference.sha } : {}) })),
       glide: held.glide ? { active: true } : null, landing: held.landing !== undefined ? { active: true } : null,
       loadingPulse: main && !texture && main.next && !main.next.failed && !main.local ? { active: true } : null,
-      // Ready: its own picture is on screen, not the one before it while it decodes.
-      media: { ready: Boolean(texture) && !(main?.next && !main.next.failed), failed: Boolean(main?.handle?.failed ?? main?.next?.failed), local: Boolean(main?.local), width: texture?.width ?? 0, height: texture?.height ?? 0,
+      media: { ready: Boolean(texture), failed: Boolean(main?.handle?.failed ?? main?.next?.failed), local: Boolean(main?.local), width: texture?.width ?? 0, height: texture?.height ?? 0,
         requestedWidth: width, resolution: main?.local ? "local" : source.kind === "thumb" ? String(width) : source.kind ? "original" : "", sha: source.sha256, key: source.kind },
       broken: false,
     }

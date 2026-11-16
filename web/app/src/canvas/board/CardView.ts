@@ -40,7 +40,7 @@ export function hitOf(target: Container | null): Hit | null {
   return null
 }
 
-interface Picture { sprite: Sprite; key: string; handle?: MediaHandle; next?: MediaHandle; crop?: Texture; cover: boolean; box: Box; main: boolean; local: boolean }
+interface Picture { sprite: Sprite; key: string; handle?: MediaHandle; next?: MediaHandle; nextKey?: string; shownKey?: string; crop?: Texture; cover: boolean; box: Box; main: boolean; local: boolean }
 
 /** One card's display objects, made once and changed in place: a hover, a store echo or a move never rebuilds them. */
 export class CardView {
@@ -406,6 +406,7 @@ export class CardView {
       picture.next?.release()
       const held = picture
       // The old picture stays until its replacement has decoded: no flash between versions or sizes.
+      held.nextKey = wanted
       held.next = env.media.acquire({ source: request.source, width: request.width }, () => { this.reveal(held, env); env.invalidate() })
     }
     this.reveal(picture, env)
@@ -416,7 +417,8 @@ export class CardView {
     if (picture.next?.texture || (picture.next?.failed && !picture.handle?.texture)) {
       picture.handle?.release()
       picture.handle = picture.next
-      picture.next = undefined
+      picture.shownKey = picture.nextKey
+      picture.next = picture.nextKey = undefined
       revealed = Boolean(picture.handle.texture)
     }
     const texture = picture.handle?.texture
