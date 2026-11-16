@@ -495,6 +495,7 @@ WEB_2=(
   delete-undo
   canvas-nav
   resize
+  fullscreen
 )
 WEB_3=(
   focus
@@ -515,6 +516,7 @@ WEB_ENGINES=(
   move
   open
   vault
+  fullscreen
 )
 # What stops, restarts or re-points Calcifer, or needs the job to itself (`@solo`), one at a time, with the filesystem driver.
 WEB_SOLO=(
