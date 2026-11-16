@@ -199,7 +199,7 @@ async fn retire(
 /// `submit` under `key`, waited for until it settles.
 pub(crate) async fn settled(calcifer: &std::sync::Arc<Calcifer>, key: &str, submit: SubmitRun) -> Result<wire::Run, crate::Error> {
     let mut events = calcifer.subscribe();
-    let run = calcifer.submit(key, submit).await?.run;
+    let run = calcifer.submit(key, submit, crate::store::Task::Remove).await?.run;
     loop {
         if let Some(row) = calcifer.run_store(run.id.as_str())?.run(run.id.as_str())?
             && row.state == crate::store::State::Settled

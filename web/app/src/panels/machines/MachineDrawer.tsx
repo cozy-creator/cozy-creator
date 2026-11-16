@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
 import { type FormEvent, useRef, useState } from "react"
-import { useNavigate, useParams } from "react-router-dom"
+import { useParams } from "react-router-dom"
 import { machineQuery, machinesQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
 import { useTo } from "../../app/Shell"
@@ -16,6 +16,7 @@ import { Models, Packages } from "./Installed"
 import { MachineLogs } from "./MachineLogs"
 import { Queue } from "./Queue"
 import { RenderCheck, Spec, useRenderMachines } from "./RenderHere"
+import { statusWord, target } from "../runs/words"
 import { brokenWords, called, endsWords, kindWords, kernelsWords, named, spentWords } from "./words"
 import "./MachineDrawer.css"
 
@@ -37,8 +38,6 @@ function KeepRunning({ machine }: { machine: Machine }) {
 /** To a release, by version: dev builds stay in the CLI. Nothing named moves each to its Hub's target. */
 function Update({ machine }: { machine: Machine }) {
   const { client } = useConnection()
-  const navigate = useNavigate()
-  const to = useTo()
   const ask = useAsk()
   const [runtime, setRuntime] = useState("")
   const [tensorfs, setTensorfs] = useState("")
@@ -58,7 +57,8 @@ function Update({ machine }: { machine: Machine }) {
     void ask.run(async () => {
       const updating = await client.updateMachine(machine.name, body, key)
       asked.current = null
-      if (updating.run) navigate(to(`runs/${updating.run.number}`))
+      // Its update is a job of the machine's (cl-1028), listed under its jobs as it goes.
+      if (updating.run) setSaid(`Updating to ${updating.target}: it shows under Its jobs.`)
       else setSaid(`Already up to date (${updating.target}).`)
     })
   }
@@ -125,6 +125,18 @@ function Details({ machine, now }: { machine: Machine; now: number }) {
       {machine.ssh && (
         <Section title="SSH">
           <Copyable text={machine.ssh.line} />
+        </Section>
+      )}
+      {Boolean(machine.jobs?.length) && (
+        <Section title="Its jobs">
+          <ul className="rows">
+            {machine.jobs?.map((job) => (
+              <li className="heldrow" key={job.id} data-job={job.target}>
+                <span className="nm">{target(job)}</span>
+                <small>{[statusWord(job), job.progress?.stage, job.waiting, job.reason?.message].filter(Boolean).join(" · ")}</small>
+              </li>
+            ))}
+          </ul>
         </Section>
       )}
       {machine.state === "ready" && <Update machine={machine} />}

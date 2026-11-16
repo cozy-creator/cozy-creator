@@ -16,9 +16,7 @@ const mediaKind = (item: OutputItem) => {
 /** Whether its bytes landed in Calcifer, so its route serves them. */
 const landed = (item: OutputItem) => Boolean(item.url)
 type OutputProps = { run: Run; item: OutputItem; project: string | null }
-const outputPath = (client: Client, { project, run, item }: OutputProps) => project
-  ? client.output({ project, run: run.id }, item.name, item.index)
-  : client.maintenanceOutput(run.id, item.name, item.index)
+const outputPath = (client: Client, { project, run, item }: OutputProps) => client.output({ project: project ?? "", run: run.id }, item.name, item.index)
 
 /** A URL for a tag that can't send a header. Only an API path is ever followed. */
 function useSrc(path: string | null): string | undefined {
@@ -75,7 +73,7 @@ function FromMachine({ run, item, project }: OutputProps) {
 
   const start = () =>
     ask.run(async () => {
-      const answer = await (project ? client.play({ project, run: run.id }, item.name, item.index) : client.maintenancePlay(run.id, item.name, item.index))
+      const answer = await client.play({ project: project ?? "", run: run.id }, item.name, item.index)
       setOpen(true)
       const el = video.current
       if (!el) return

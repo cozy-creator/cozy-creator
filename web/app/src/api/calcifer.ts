@@ -1328,6 +1328,14 @@ attempt?: Attempt | null,
  */
 running: number, queued: number,
 /**
+ * Calcifer's jobs on it (an install, a download, an upload, a quantization, an update, a removal; on `local` also its own:
+ * a lock, a publication, cozy's update), cl-1028: those going, and the last that ended of each job type (install, download,
+ * upload, quantize, warm, remove, update, lock, publish) and outcome (completed, failed, canceled). They are no project's runs: none is
+ * listed with runs, and an ended one is kept until a newer one of its type and outcome ends here a minute or more after it, or its
+ * machine goes.
+ */
+jobs?: Array<Run>,
+/**
  * False: a rental another client of this account ordered. This controller reaches it as its
  * own (the Hub grants it every device the account signed in on), but places no run on it unasked.
  */
@@ -2856,8 +2864,8 @@ id: RunId,
  */
 number: number,
 /**
- * What names it to a person from any folder (cl-987): `KEY-N`, its project's key and its number there, `COZY-N` for Calcifer's
- * own; its id for one another client sent.
+ * What names it to a person from any folder (cl-987): `KEY-N`, its project's key and its number there; empty for one of
+ * Calcifer's jobs (cl-1028) or one another client sent, which its id names.
  */
 name: string,
 /**

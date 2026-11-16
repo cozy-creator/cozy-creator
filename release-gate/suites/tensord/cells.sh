@@ -4,7 +4,7 @@ T=$OUT/tensord; mkdir -p "$T"
 # --only names none of this suite: nothing here runs, only --cells (a suite's rows are not cells, so cell() can't skip them).
 [ -z "$ONLY" ] || [[ $ONLY == *,tensord* ]] || return 0
 # Local code's environment stays whole through reclaim's passes, 10 minutes apart: its own wheels were deleted while it ran (cl-724: 26176, 26187).
-links_resolve() { nice -n 19 "$CLI" run -p "$RUN_PROJECT" "$HERE/suites/tensord/links_resolve.py" --on "$M" --json 2>/dev/null | tail -1 | jq -r '.. | .report? // empty' | tail -1; }
+links_resolve() { (cd "$RUN_PROJECT" && nice -n 19 "$CLI" run "$HERE/suites/tensord/links_resolve.py" --on "$M" --json) 2>/dev/null | tail -1 | jq -r '.. | .report? // empty' | tail -1; }
 LINKS_AT=$(date +%s); LINKS_FIRST=$(links_resolve)
 # submit <target> [inputs]: a run on $M (e2e/run.sh's run_submit), followed in the background; prints its number. Its
 # files are $T/run-*.{ndjson,json,...}, named in $T/<number>.name.
@@ -86,8 +86,9 @@ busy=(); for i in $(seq "${NGPU:-1}"); do busy+=("$(submit "sdxl/generate@$NEW" 
 a=${busy[0]}
 b=$(submit "sdxl/generate@$NEW" prompt="$OBJECT, the queued run" steps:=60 seed:=$((R + 35)))
 until_status "$a" in_progress; qb=$(get "$b" machine_state); [ -n "$qb" ] || qb=$(get "$b" status)  # where it waits: Calcifer, preparing, queued
-"$CLI" run cancel "$b" -y > "$T/cancel-queued.log" 2>&1; until_status "$b" terminal
-for x in "${busy[@]}"; do "$CLI" run cancel "$x" -y > "$T/cancel-running-$x.log" 2>&1; done
+# A run's number names it in its project; its KEY-N (run_ref) from anywhere.
+"$CLI" run cancel "$(run_ref "$T" "$(nm "$b")" "$b")" -y > "$T/cancel-queued.log" 2>&1; until_status "$b" terminal
+for x in "${busy[@]}"; do "$CLI" run cancel "$(run_ref "$T" "$(nm "$x")" "$x")" -y > "$T/cancel-running-$x.log" 2>&1; done
 for x in "${busy[@]}"; do until_status "$x" terminal; done
 c=$(submit "sdxl/generate@$NEW" prompt="$CHAR, the landed run" seed:=$((R + 36))); until_status "$c" terminal
 f=$(get "$c" output) want=$(get "$c" length)
@@ -161,7 +162,7 @@ fi
 # Output delivery (cl-781): an output's landing against this pod's own link, measured over SSH right after it, so a slow
 # host doesn't read as our transport and a fast one doesn't hide it (5.9 MB took 4 min on 10-23). Bar: half that speed, and 2 s
 # to begin (past landings: 0.1-1.5 s). No measure is no pass.
-"$CLI" --json run -p "$RUN_PROJECT" "sdxl/generate@$NEW" --on "$M" prompt="$SCENE, a large render" megapixels:=2 seed:=$((R + 43)) 2>/dev/null \
+(cd "$RUN_PROJECT" && "$CLI" --json run "sdxl/generate@$NEW" --on "$M" prompt="$SCENE, a large render" megapixels:=2 seed:=$((R + 43))) 2>/dev/null \
   | while IFS= read -r l; do jq -c --arg t "$(date +%s.%N)" '. + {at_here: ($t | tonumber)}' <<< "$l" 2>/dev/null; done > "$T/delivery.ndjson"
 end=$(date +%s.%N)
 read -r done_ bytes <<< "$(jq -r 'select(.type == "output_item.done") | "\(.at_here) \(.item.length)"' "$T/delivery.ndjson" | tail -1)"

@@ -12,6 +12,8 @@ Until Runtime 0.43 the loop was a keyed `denoise_loop`, and the cell checked tha
 replayed unarmed for an armed call and that arming inside the step raised. Runtime 0.43 has no loop
 programs.
 
+A run is kept in its project (cl-1028): run it inside a project made on the runner or pod (`cozy new <folder>`, then cd into it), with `$CHECKOUT` the cozy-creator checkout:
+
 ```sh
-cozy run "$PWD/release-gate/suites/execution/drive/overlay_replay" seed:=331 --gpus=1 --lane int8 --on MACHINE --json
+cozy run "$CHECKOUT/release-gate/suites/execution/drive/overlay_replay" seed:=331 --gpus=1 --lane int8 --on MACHINE --json
 ```

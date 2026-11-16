@@ -61,7 +61,7 @@ async fn typed_nodes_fixture() {
     let home = platform::paths::Home::under(&root.join("cozy"));
     home.open().unwrap();
     std::fs::create_dir_all(home.calcifer()).unwrap();
-    let calcifer = crate::Calcifer::open(&home.calcifer(), &home.outputs()).unwrap();
+    let calcifer = crate::Calcifer::open(&home.calcifer()).unwrap();
     let config = api::config::Config { hub_url: api::config::Origin::parse("http://127.0.0.1:9").unwrap(), ..Default::default() };
     let machines = crate::machines::Machines::start(calcifer.clone(), home, &root, &config);
     let api = crate::api::Api::new(calcifer, machines, "typed-node-fixture");

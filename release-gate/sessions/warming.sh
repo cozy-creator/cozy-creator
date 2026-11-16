@@ -303,7 +303,7 @@ record_run() {
   t0=$(date +%s.%N)
   (cd "$RUN_PROJECT" && "$@") 2> "$OUT/$label.err" < /dev/null |
     python3 -u -c 'import sys,time; t0=float(sys.argv[1]); [print(f"{time.time()-t0:.3f} {l}", end="", flush=True) for l in sys.stdin]' "$t0" > "$OUT/$label.ndjson"
-  n=$(grep -o '"number": *[0-9]*' "$OUT/$label.ndjson" | head -1 | sed 's/.*: *//')
+  n=$(handle "$OUT/$label.ndjson")
   [ -n "$n" ] || { say "$label: no run: $(tail -c 300 "$OUT/$label.err")"; return 1; }
   echo "$n" > "$OUT/$label.n"
   cozy run watch "$n" --once --json --full > "$OUT/$label.json" 2>&1
@@ -397,7 +397,7 @@ item4() {
   runrec i4-a "$SDXL" --input "$OUT/i4-a.yaml" & local pa=$!
   local na='' i
   for i in $(seq 1 120); do
-    na=$(grep -o '"number":[0-9]*' "$OUT/i4-a.ndjson" 2>/dev/null | head -1 | cut -d: -f2)
+    na=$(handle "$OUT/i4-a.ndjson")
     [ -n "$na" ] && [ "$(cozy run watch "$na" --once --json --full 2>/dev/null | jq -r .status)" = in_progress ] && break
     sleep 1
   done
@@ -485,7 +485,7 @@ queue4b() {
   sdxl_input "$OUT/$l-a.yaml" 60
   runrec "$l-a" "$SDXL" --input "$OUT/$l-a.yaml" & local pa=$!
   for i in $(seq 1 240); do
-    n=$(grep -o '"number":[0-9]*' "$OUT/$l-a.ndjson" 2>/dev/null | head -1 | cut -d: -f2)
+    n=$(handle "$OUT/$l-a.ndjson")
     [ -n "$n" ] && [ -n "$(cozy run watch "$n" --once --json --full 2>/dev/null | jq -r '.started_at_ms // empty')" ] && break
     sleep 0.5
   done

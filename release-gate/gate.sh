@@ -157,7 +157,7 @@ end_it() {
     save_machine_logs
     "$CLI" --json machine show "$M" >machine-end.json 2>/dev/null
     if "$CLI" logs --help >/dev/null 2>&1; then "$CLI" logs calcifer; else "$CLI" machine logs local calcifer -n 0; fi >calcifer.log 2>&1
-    # Every run this gate's Calcifer made, by id (its health log names none).
+    # Every run this gate's Calcifer made, by id (its health log names none); its jobs (updates, downloads) are its machine's (cl-1028).
     "$CLI" --json run ls --all --limit 0 >runs.json 2>/dev/null || rm -f runs.json
   fi
   [ -z "$ON" ] || { M=; return; }
@@ -463,8 +463,8 @@ hold() {
     else
       continue
     fi
-    # On a machine it did not rent, only its own runs (each cell's <name>.number).
-    [ -z "$ON" ] || active=$(find "$OUT" -name '*.number' -exec cat {} + | grep -xF -f <(tr ' ' '\n' <<< "$active") | paste -sd' ')
+    # On a machine it did not rent, only its own runs (each cell's <name>.id: a run's KEY-N, a job's id).
+    [ -z "$ON" ] || active=$(find "$OUT" -name '*.id' -exec cat {} + | grep -xF -f <(tr ' ' '\n' <<< "$active") | paste -sd' ')
     [ -n "$active" ] || continue
     why="$why; canceled $active"
     case $why in

@@ -176,7 +176,7 @@ stall_cell() {
   held_job | jq -e '.stalled == null' > /dev/null || cli_fail "stall: held still stalled after it moved: $(held_job)"
   grep '"type":"job.updated"' "$stream" | grep '"asset":"held"' | tail -1 | grep -vq '"stalled"' || cli_fail "stall: the page's last job.updated for held still says stalled"
   kill "$page" 2> /dev/null || true
-  n=$(run_number stall-run.ndjson)
+  n=$(run_handle stall-run.ndjson)
   [ -n "$n" ] && [ "$("$CLI" --json run watch "$n" --once | jq -r .status)" = in_progress ] || cli_fail "stall: run ${n:-?} isn't going on"
   cli_page cancel "$S" held > stall-cancel.log 2>&1 || cli_fail "stall: cancel held: $(tail -c 300 stall-cancel.log)"
   [ -z "$n" ] || "$CLI" run cancel "$n" > stall-run-cancel.log 2>&1 || cli_fail "stall: run cancel $n: $(tail -c 300 stall-run-cancel.log)"

@@ -68,7 +68,8 @@ tfs_cut() {
   n=$(run_submit "$T" "$name" "$@")
   while [ -n "$n" ] && kill -0 "$(cat "$T/$name.pid")" 2>/dev/null; do
     moved=$(python3 -I "$HERE/suites/tensorfs/check.py" --past "$T/$name.ndjson" "$stage" "$frac")
-    if [ -n "$moved" ]; then "$CLI" run cancel "$n" -y >/dev/null 2>&1; echo "$moved" > "$T/$name.cut"; break; fi
+    # A job's number names nothing (cl-1028): its id (run_ref) does, as a run's KEY-N.
+    if [ -n "$moved" ]; then "$CLI" run cancel "$(run_ref "$T" "$name" "$n")" -y >/dev/null 2>&1; echo "$moved" > "$T/$name.cut"; break; fi
     sleep 0.5
   done
   run_wait "$T" "$name"

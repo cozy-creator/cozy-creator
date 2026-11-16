@@ -52,6 +52,15 @@ where
     }
 }
 
+/// The current project's id, for a run: outside any project, refused as a run is (cl-1028: every run is kept in its project).
+pub(crate) async fn for_run(ctx: &Context) -> Result<String, Error> {
+    match identity(ctx).await {
+        Ok(project) => Ok(project.id),
+        Err(error) if error.code == "not_in_a_project" => Err(api::calcifer::project::unnamed()),
+        Err(error) => Err(error),
+    }
+}
+
 /// The current project's id; None outside any project.
 pub(crate) async fn here(ctx: &Context) -> Result<Option<String>, Error> {
     match identity(ctx).await {

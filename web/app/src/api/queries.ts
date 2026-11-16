@@ -127,23 +127,11 @@ export const runsQuery = (client: Client, project: string, filter: RunFilter, li
     queryFn: ({ signal }) => client.runs(project, filter, limit, signal),
   })
 
-export const maintenanceRunsQuery = (client: Client, filter: RunFilter, limit = 50) =>
-  queryOptions({
-    queryKey: ["maintenance-runs", filter, limit],
-    queryFn: ({ signal }) => client.maintenanceRuns(filter, limit, signal),
-  })
-
 /** Kept live by `run.updated`, which carries a run's state, progress and outputs. */
 export const runQuery = (client: Client, project: string, number: number) =>
   queryOptions({
     queryKey: ["project-run", project, number],
     queryFn: ({ signal }) => client.run({ project, run: number }, signal),
-  })
-
-export const maintenanceRunQuery = (client: Client, number: number) =>
-  queryOptions({
-    queryKey: ["maintenance-run", number],
-    queryFn: ({ signal }) => client.maintenanceRun(number, signal),
   })
 
 /** A run's result, under a key of its own: `run.updated` writes its run's key with runs that carry none. A settled result never changes. */
@@ -159,12 +147,6 @@ export const runFullQuery = (client: Client, project: string, number: number, se
   queryOptions({
     queryKey: ["project-run", project, number, "full", settled],
     queryFn: ({ signal }) => client.runFull({ project, run: number }, signal),
-  })
-
-export const maintenanceRunFullQuery = (client: Client, number: number, settled: number) =>
-  queryOptions({
-    queryKey: ["maintenance-run", number, "full", settled],
-    queryFn: ({ signal }) => client.maintenanceRunFull(number, signal),
   })
 
 export const machinesQuery = (client: Client) =>

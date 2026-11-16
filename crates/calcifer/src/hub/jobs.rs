@@ -126,8 +126,8 @@ async fn source_project(api: &Arc<Api>, ask: &RunRequest) -> Result<Option<Strin
         return Ok(None);
     };
     match api::calcifer::project::run_name(run.split('#').next().unwrap_or(run)) {
-        Some((key, _)) if key != api::calcifer::project::MACHINE_KEY => crate::api::keyed_project(api, &key).await,
-        _ => Ok(None),
+        Some((key, _)) => crate::api::keyed_project(api, &key).await,
+        None => Ok(None),
     }
 }
 
@@ -182,7 +182,7 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, digest: &str, mut ask: Ru
             if let Some(after) = &after {
                 calcifer.plan(project.as_deref(), key, after)?;
             }
-            let submitted = calcifer.submit_under(key, digest, *submit).await;
+            let submitted = calcifer.submit_under(key, digest, *submit, crate::store::Task::of_job(&ask.target)).await;
             if submitted.is_err() && after.is_some() {
                 calcifer.unplan(project.as_deref(), key);
             }
@@ -193,7 +193,7 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, digest: &str, mut ask: Ru
             let kept = serde_json::to_vec(&ask).map_err(|e| Error::internal("job_ask", e.to_string()))?;
             let (its_api, its_hub, its_key) = (api.clone(), hub.clone(), key.to_owned());
             let work = move |here: Here| async move { work.run(&its_api, &its_hub, &its_key, &here).await };
-            calcifer.here(project.as_deref(), key, digest, target, &hub, kept, work).await.map_err(crate::runs::refused)
+            calcifer.here(project.as_deref(), key, digest, target, crate::store::Task::of_job(&ask.target), &hub, kept, work).await.map_err(crate::runs::refused)
         }
     };
     submitted.map(Job::Done)

@@ -72,7 +72,7 @@ Local-package (`--packages`) gates build a small source-staging helper from this
 3. Runs the chosen suites' cells, each once, with new prompts and seeds. Before a function's first cell, API warming to `downloaded`
    puts all its weights on the disk, its on-demand models' too (an upsampler), and `off` takes it out of the warm
    set: a cell times what a user who has used the function sees, never a download (cl-790). A slow run goes on; a hung one
-   stops: when no run on the machine moves for `--stall` minutes by the runs' own progress clock (15; the longest quiet in
+   stops: when no run or job on the machine moves for `--stall` minutes by their own progress clock (15; the longest quiet in
    786 real cells was 7.2), the gate cancels them, fails and ends the rental. It renews the rental's idle clock only while
    they move. A download that can't land before the job's cap (`--cap`, the workflow's `cap_minutes`) at the rate it has
    kept 4 to 8 minutes in fails the host, `host too slow: X MB/s, N GiB needs M min`: the pod ends, its files go to

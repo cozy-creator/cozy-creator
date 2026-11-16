@@ -1492,11 +1492,14 @@ cozy --json run ls --state canceled > "$OUT/canceled.json" && J --argjson n "${n
   || check "run ls --state canceled: wrong runs"
 }
 
-# After `basics`: its model installs are runs of zhengpeng7/birefnet.
+# After `basics`: its runs' targets filter (its model installs are jobs, no project's runs: cl-1028).
 run_filters() {
 step "run ls filters"
-cozy --json run ls --all --package zhengpeng7/birefnet > "$OUT/by-package.json" && J '(.runs | length > 0) and all(.runs[]; .target | startswith("zhengpeng7/birefnet"))' "$OUT/by-package.json" \
-  || check "run ls --package zhengpeng7/birefnet: none listed, or others listed"
+local prefix
+prefix=$(cozy --json run ls --all --limit 1 | jq -r '.runs[0].target // empty | split("@")[0]') || prefix=
+[ -n "$prefix" ] && cozy --json run ls --all --package "$prefix" > "$OUT/by-package.json" \
+  && J --arg p "$prefix" '(.runs | length > 0) and all(.runs[]; .target | startswith($p))' "$OUT/by-package.json" \
+  || check "run ls --package ${prefix:-?}: none listed, or others listed"
 cozy --json run ls --on local > "$OUT/by-machine.json" && J '(.runs | length > 0) and all(.runs[]; .machine == "local")' "$OUT/by-machine.json" \
   || check "run ls --on local: other machines listed"
 cozy --json run ls --limit 1 > "$OUT/limit.json" && J '(.runs | length) == 1' "$OUT/limit.json" || check "run ls --limit 1: not one run"
@@ -1560,11 +1563,12 @@ fi
 }
 
 # cl-987: a project's key names its runs, `KEY-N`, from any folder: proposed from its name, kept in its project.db (so it goes
-# with its folder), changed with `cozy key` while the key it had names them still. Calcifer's own runs are `COZY-N`.
+# with its folder), changed with `cozy key` while the key it had names them still. Calcifer's jobs are no project's runs (cl-1028): none
+# is listed with them, and none has a name.
 project_keys() {
 [ -n "$LOCAL" ] || return 0
 step "project keys: KEY-N from any folder (cl-987)"
-local root=$OUT/keys ka kb na nb ida idb n own
+local root=$OUT/keys ka kb na nb ida idb n
 local a=$root/kilo-alpha-bravo b=$root/zulu outside=$root/outside
 mkdir -p "$outside"
 cozy --json new --unencrypted "$a" > "$root-new-a.json" 2>&1 && cozy --json new --unencrypted "$b" > "$root-new-b.json" 2>&1 \
@@ -1590,12 +1594,9 @@ J --arg a "$na" --arg b "$nb" '[.runs[].name] | index($a) and index($b)' "$root-
   || check "keys: run ls --all doesn't name $na and $nb: $(jq -c '[.runs[]?.name]' "$root-ls.json")"
 (cd "$outside" && cozy run ls --all --limit 0) > "$root-ls.txt" 2>&1 || true
 grep -qE "(^| )$na( |$)" "$root-ls.txt" && grep -qE "(^| )$nb( |$)" "$root-ls.txt" || check "keys: run ls's table doesn't name $na and $nb: $(head -c 600 "$root-ls.txt")"
-# Calcifer's own runs (the downloads before) are COZY-N, from a project's folder too, never that project's N.
-J '[.runs[] | select(.project_id == null)] | length > 0 and all(.name | test("^COZY-[0-9]+$"))' "$root-ls.json" \
-  || check "keys: Calcifer's own runs aren't COZY-N: $(jq -c '[.runs[]? | select(.project_id == null) | .name]' "$root-ls.json")"
-own=$(jq -r '[.runs[]? | select(.project_id == null)][0] | "\(.name) \(.id)"' "$root-ls.json") || own=
-(cd "$a" && cozy --json run watch "${own% *}" --once) > "$root-watch-own.json" 2>&1 || true
-J --arg id "${own#* }" '.id == $id' "$root-watch-own.json" || check "keys: run watch ${own% *} in $ka's folder isn't Calcifer's run: $(tail -c 300 "$root-watch-own.json")"
+# Calcifer's jobs (the downloads before) are no project's runs (cl-1028): run ls --all lists none.
+J '[.runs[] | select(.project_id == null)] | length == 0' "$root-ls.json" \
+  || check "keys: run ls --all lists runs of no project: $(jq -c '[.runs[]? | select(.project_id == null) | {id, target}]' "$root-ls.json")"
 # A new key names its runs; the key it had names them still, and its project.db keeps both, so they go with the folder.
 (cd "$a" && cozy --json key kx987) > "$root-key.json" 2>&1 || true
 J --arg was "$ka" '.key == "KX987" and (.former | index($was))' "$root-key.json" || check "keys: cozy key kx987: $(tail -c 300 "$root-key.json")"
@@ -1609,11 +1610,11 @@ done
 J --arg was "$ka" '.key == "KX987" and .former == [$was]' "$root-shown.json" || check "keys: cozy key: not KX987, formerly $ka: $(tail -c 300 "$root-shown.json")"
 [ "$(python3 -c 'import sqlite3, sys; print(",".join(r[0] for r in sqlite3.connect(sys.argv[1]).execute("SELECT key FROM project_keys ORDER BY ord")))' "$a/project.db" 2>&1)" = "$ka,KX987" ] \
   || check "keys: its project.db doesn't keep $ka then KX987"
-# Another's key, Calcifer's, a misspelled one and one nobody has: refused, typed.
+# Another's key, a reserved one, a misspelled one and one nobody has: refused, typed.
 (cd "$b" && cozy --json key "$ka") > "$root-taken.json" 2>&1 || true
 J '.error.code == "project_key_taken"' "$root-taken.json" || check "keys: $kb took $ka, KX987's former key: $(tail -c 300 "$root-taken.json")"
-(cd "$b" && cozy --json key cozy) > "$root-reserved.json" 2>&1 || true
-J '.error.code == "project_key_taken"' "$root-reserved.json" || check "keys: $kb took COZY: $(tail -c 300 "$root-reserved.json")"
+(cd "$b" && cozy --json key run) > "$root-reserved.json" 2>&1 || true
+J '.error.code == "project_key_taken"' "$root-reserved.json" || check "keys: $kb took RUN: $(tail -c 300 "$root-reserved.json")"
 (cd "$b" && cozy --json key 9z) > "$root-invalid.json" 2>&1 || true
 J '.error.code == "project_key_invalid"' "$root-invalid.json" || check "keys: 9z wasn't refused project_key_invalid: $(tail -c 300 "$root-invalid.json")"
 (cd "$outside" && cozy --json run watch QQ987-1 --once) > "$root-none.json" 2>&1 || true
@@ -1897,4 +1898,90 @@ install_retry() {
   echo "$1" > "$dir/mode"
   if COZY_HUB_URL=http://$(cat "$dir/addr") cozy --json package install "$2" --on local > "$dir/$1.said" 2>&1; then echo "it installed" >> "$dir/$1.said"; fi
   echo $((SECONDS - began)) > "$dir/$1.took"
+}
+
+
+# cl-1028: every run is kept in its project. Outside one, `cozy run` and `POST /v1/runs` refuse before anything is done: one line
+# and the next command, and nothing of the run is made.
+outside_refuses() {
+step "a run outside a project refuses before anything is done, naming the next command (cl-1028)"
+local out=$OUT/outside lock=$HOME/.cozy/calcifer/calcifer.lock.holder began code=0 addr token made
+mkdir -p "$out/folder"
+began=$(date +%s%3N)
+(cd "$out/folder" && cozy run "$here/weightless/reverse" text=outside) > "$out/run.txt" 2>&1 || code=$?
+[ "$code" = 2 ] && grep -qxF "error[not_in_a_project]: Run this from inside a project folder, or create a project first." "$out/run.txt" \
+  && [ "$(grep -cxF 'next: cozy new' "$out/run.txt")" = 1 ] && ! grep -qE '^(hint|cause):' "$out/run.txt" \
+  || check "outside: cozy run outside a project said (exit $code): $(head -c 400 "$out/run.txt")"
+addr=$(jq -r .address "$lock") token=$(jq -r .token "$lock")
+code=$(curl -sS -o "$out/post.json" -w '%{http_code}' -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+  -H "Idempotency-Key: outside-$RANDOM$RANDOM" -X POST -d '{"target":"zhengpeng7/birefnet/remove_background","on":["local"]}' "http://$addr/v1/runs") || code=
+[ "$code" = 400 ] && J '.error.code == "not_in_a_project" and any(.error.next[]; test("cozy new"))' "$out/post.json" \
+  || check "outside: POST /v1/runs with no project answered ${code:-nothing}: $(head -c 300 "$out/post.json")"
+made=$(python3 - "$HOME/.cozy/calcifer/state.db" "$began" <<'PY'
+import sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True, timeout=10)
+print(c.execute("SELECT count(*) FROM runs WHERE created_at >= ? AND (target LIKE '%reverse%' OR target LIKE '%birefnet%')", (int(sys.argv[2]),)).fetchone()[0])
+PY
+) || made=?
+[ "$made" = 0 ] || check "outside: a refused run left $made rows in Calcifer's store"
+}
+
+# cl-1028: Calcifer's jobs (this shard's installs, downloads and updates on `local`; its removals, locks and publications, on no
+# machine) are no project's runs: no run list shows one, GET /v1/runs lists nothing, their machine lists them, and Calcifer's store
+# keeps of each machine, job type and outcome its newest ended job and those that ended in the minute before it: an older one goes as a
+# newer one's end comes, whatever order they ended in. Beside the shard's, each outside any project: a package install that fails on
+# `local` (its code builds no module, as run_failures'), then four models made from one file at once there (ending in any order), and
+# a package installed and removed twice. The failed install stays, its reason on its machine, though downloads and installs completed
+# after it (the review of #3423: one outcome or job type never takes another's).
+jobs_kept() {
+step "jobs are their machine's, not run history: its last of each job type and outcome (cl-1028)"
+local out=$OUT/jobs lock=$HOME/.cozy/calcifer/calcifer.lock.holder code=0 addr token i pids=()
+mkdir -p "$out"
+[ -s "$OUT/tiny.safetensors" ] || safetensors_file "$OUT/tiny.safetensors"
+rm -rf "$out/nomodule" && cp -r "$here/weightless" "$out/nomodule"
+sed -i -e 's/^module-name = "e2e_weightless"/module-name = "e2e_no_such_module"/' -e 's/^name = "e2e-weightless"/name = "e2e-jobs-no-module"/' "$out/nomodule/pyproject.toml"
+(cd "$out" && cozy --json package install "$out/nomodule" --on local -y) > "$out/failed.ndjson" 2>&1 || code=$?
+[ "$code" != 0 ] || check "jobs: a package install whose code builds no module completed: $(tail -c 300 "$out/failed.ndjson")"
+for i in 1 2 3 4; do
+  (cd "$out" && cozy --json model install "$OUT/tiny.safetensors" "local/e2e-jobs-$i" --source-format as-is) > "$out/model-$i.ndjson" 2>&1 & pids+=($!)
+done
+for i in 1 2 3 4; do wait "${pids[i-1]}" || check "jobs: model $i of four made at once failed: $(tail -c 300 "$out/model-$i.ndjson")"; done
+for i in 1 2; do
+  (cd "$out" && cozy --json package install "$here/weightless" --on local -y) > "$out/install-$i.ndjson" 2>&1 \
+    || check "jobs: package install $i outside a project failed: $(tail -c 300 "$out/install-$i.ndjson")"
+  (cd "$out" && cozy --json package uninstall local/e2e-weightless --on local) > "$out/uninstall-$i.json" 2>&1 \
+    || check "jobs: package uninstall $i outside a project failed: $(tail -c 300 "$out/uninstall-$i.json")"
+done
+cozy --json run ls --all --limit 0 > "$out/all.json" 2>&1 || true
+J '.runs != null and ([.runs[] | select(.project_id == null)] | length == 0)' "$out/all.json" \
+  || check "jobs: run ls --all lists runs of no project: $(jq -c '[.runs[]? | select(.project_id == null) | {id, kind, target}][:5]' "$out/all.json" 2> /dev/null | head -c 300)"
+addr=$(jq -r .address "$lock") token=$(jq -r .token "$lock")
+code=$(curl -sS -o "$out/list.json" -w '%{http_code}' -H "Authorization: Bearer $token" "http://$addr/v1/runs?limit=5") || code=
+[ "$code" = 400 ] && J '.error.code == "not_in_a_project"' "$out/list.json" || check "jobs: GET /v1/runs answered ${code:-nothing}: $(head -c 300 "$out/list.json")"
+cozy --json machine show local > "$out/local.json" 2>&1 || true
+J '(.jobs // []) | length > 0 and all(.[]; .name == "" and .project_id == null)' "$out/local.json" \
+  || check "jobs: machine show local lists no jobs, or names them as runs: $(jq -c '[.jobs[]? | {name, kind, target, status}]' "$out/local.json" 2> /dev/null | head -c 300)"
+J 'any(.jobs[]?; .status == "failed" and (.target | contains("e2e-jobs-no-module")) and ((.reason.message // "") != ""))' "$out/local.json" \
+  || check "jobs: the failed package install isn't on local with its reason after later ones completed: $(jq -c '[.jobs[]? | {kind, target, status, reason: .reason.message}]' "$out/local.json" 2> /dev/null | head -c 500)"
+echo "jobs: on local $(jq -c '[.jobs[]? | {kind, status, target}]' "$out/local.json" 2> /dev/null | head -c 600)"
+python3 - "$HOME/.cozy/calcifer/state.db" > "$out/kept.json" <<'PY'
+import json, sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True, timeout=10)
+# By job type (a store before it groups by kind). Each group: how many ended, and those kept that ended over a minute before its newest.
+task = "task" if any(col[1] == "task" for col in c.execute("PRAGMA table_info(runs)")) else "kind"
+groups = {}
+for machine, kind, status, number, ended in c.execute(f"SELECT machine, {task}, status, number, settled_at FROM runs WHERE state = 'settled'"):
+    groups.setdefault((machine, kind, status), []).append((number, ended or 0))
+kept = []
+for (machine, kind, status), rows in sorted(groups.items(), key=str):
+    rows.sort()
+    kept.append([machine, kind, status, len(rows), [number for number, ended in rows[:-1] if ended < rows[-1][1] - 65_000]])
+print(json.dumps({"made": c.execute("SELECT max(number) FROM runs").fetchone()[0], "groups": kept}))
+PY
+echo "jobs: $(cat "$out/kept.json") (machine, job type, status, ended, kept over a minute behind its newest)"
+J '.made >= 12 and any(.groups[]; .[0] == "local" and .[1] == "install" and .[2] == "failed") and any(.groups[]; .[0] == "local" and .[1] == "download" and .[2] == "completed")
+   and any(.groups[]; .[0] == "local" and .[1] == "install" and .[2] == "completed") and any(.groups[]; .[0] == null and .[1] == "remove" and .[2] == "completed")' "$out/kept.json" \
+  || check "jobs: no failed install beside completed downloads and installs on local and Calcifer's own removals, by job type, to prove what is kept: $(cat "$out/kept.json")"
+J 'all(.groups[]; .[4] == [])' "$out/kept.json" \
+  || check "jobs: Calcifer's store keeps an ended job over a minute behind the newest of its machine, job type and outcome (machine, job type, status, ended, those): $(cat "$out/kept.json")"
 }

@@ -47,7 +47,11 @@ pub(crate) async fn submit(
     let body = body?;
     prebuilt(&body)?;
     let ask: RunRequest = parse(&body)?;
-    if ask.project.is_some() || (ask.warm.is_none() && !crate::hub::jobs::is(&ask.target)) {
+    // Every run is kept in its project (cl-1028): here only Calcifer's jobs, which are no one's runs.
+    if ask.project.is_none() && ask.warm.is_none() && !crate::hub::jobs::is(&ask.target) {
+        return Err(Refusal(api::calcifer::project::unnamed()));
+    }
+    if ask.project.is_some() {
         return Err(Refusal(Error::new(Kind::Usage, "project_context_required", "Send this run through its project.")));
     }
     let project = ask.project.clone();
@@ -287,7 +291,8 @@ fn prebuilt(body: &[u8]) -> Result<(), Refusal> {
 /// answers the run that makes it ready (`preparing`): its client follows that, then asks again.
 /// The files it's given join its project, so asking it again still finds them once what held them is gone.
 pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Result<Submitted, Error> {
-    // A job that plans a call (a quantization) goes on as that call, here.
+    // A job that plans a call (a quantization) goes on as that call, here: Calcifer's job of that type (cl-1028).
+    let job = crate::store::Task::of_job(&ask.target);
     let ask = match crate::hub::jobs::is(&ask.target) {
         true => match Box::pin(crate::hub::jobs::request(api, key, &digest(&ask), ask)).await? {
             Job::Done(submitted) => return Ok(submitted),
@@ -328,12 +333,18 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Resul
             let given = given(&submit);
             let project = submit.out.as_deref().and_then(crate::project::of_landing).map(Path::to_owned);
             let mut offer = offers.into_iter().next().unwrap_or_default().into_iter().find(|offer| offer.machine == submit.on);
-            let submitted = match calcifer.submit_under(key, &digest, submit).await.map_err(refused) {
+            // A quantization's call, or a warm set asked of a machine, is one of Calcifer's jobs (cl-1028); anything else here is a
+            // project's run, whose row keeps none.
+            let task = match job {
+                crate::store::Task::None if submit.kind == ::api::calcifer::Kind::Warm => crate::store::Task::Warm,
+                job => job,
+            };
+            let submitted = match calcifer.submit_under(key, &digest, submit, task).await.map_err(refused) {
                 // The machine placement chose went as it was sent (a pod releasing itself that second, cl-920): placed again, once.
                 Err(e) if ask.on.len() != 1 && crate::project::GONE.contains(&e.code.as_str()) => {
                     let Prepared::Run { submit, .. } = prepare(api, key, &ask, For::Run).await? else { return Err(e) };
                     offer = None;
-                    calcifer.submit_under(key, &digest, submit).await.map_err(refused)?
+                    calcifer.submit_under(key, &digest, submit, task).await.map_err(refused)?
                 }
                 submitted => submitted?,
             };

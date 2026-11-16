@@ -1,4 +1,4 @@
-//! What took a second or more, one line in Calcifer's health log (`health`; its service discards stdout and stderr): a request by
+//! What took a second or more (or less, where a task says), one line in Calcifer's health log (`health`; its service discards stdout and stderr): a request by
 //! its method and route, a background task by its name, and the milliseconds. Never a path, an id or a query
 //! (PROJECT-DATA-OWNERSHIP.md: global diagnostics).
 use std::time::{Duration, Instant};
@@ -16,18 +16,24 @@ const SLOW: Duration = Duration::from_secs(1);
 pub(crate) struct Took {
     task: &'static str,
     began: Instant,
+    slow: Duration,
 }
 
 impl Took {
     pub(crate) fn new(task: &'static str) -> Self {
-        Self { task, began: Instant::now() }
+        Self::over(task, SLOW)
+    }
+
+    /// One said slow at `slow`: a task that should take milliseconds.
+    pub(crate) fn over(task: &'static str, slow: Duration) -> Self {
+        Self { task, began: Instant::now(), slow }
     }
 }
 
 impl Drop for Took {
     fn drop(&mut self) {
         let took = self.began.elapsed();
-        if took >= SLOW {
+        if took >= self.slow {
             tracing::info!(target: TARGET, task = self.task, ms = took.as_millis() as u64, "slow task");
         }
     }

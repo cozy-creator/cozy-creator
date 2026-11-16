@@ -93,10 +93,8 @@ pub struct Opened {
 /// CLI project commands resolve their current directory and send its absolute path.
 pub const NAMED_BY: &str = "a project's name, id or public code, or its folder on Calcifer's computer by its absolute path";
 
-/// What Calcifer's own runs (an update, an install, a download) are named by: `COZY-12` (cl-987). No project takes it.
-pub const MACHINE_KEY: &str = "COZY";
-/// Keys no project takes: the machine's, and `RUN`, as a run's id starts `run-`.
-pub const RESERVED_KEYS: &[&str] = &[MACHINE_KEY, "RUN"];
+/// Keys no project takes: `RUN`, as a run's id starts `run-`.
+pub const RESERVED_KEYS: &[&str] = &["RUN"];
 
 /// A project key as written, in any case (cl-987, as Jira's): A–Z and 0–9, a letter first, 2 to 10 long. Upper case.
 pub fn key(text: &str) -> Option<String> {
@@ -127,10 +125,9 @@ pub struct Key {
     pub former: Vec<String>,
 }
 
-/// A request in no project, which needs one.
+/// A run asked in no project (cl-1028): every run is kept in its project.
 pub fn unnamed() -> Error {
     Error::new(crate::error::Kind::Usage, "not_in_a_project", "Run this from inside a project folder, or create a project first.").next("cozy new")
-        .next("cozy new")
 }
 
 /// Where a card sits on a project's canvas: one row of its canvas.

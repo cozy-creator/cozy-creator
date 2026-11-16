@@ -551,10 +551,10 @@ impl RunPath {
     pub(crate) fn key(&self) -> &str { self.run.as_deref().unwrap_or(&self.id) }
 }
 
+/// One of Calcifer's jobs, by its id (cl-1028: a job has no name or number of a person's).
 pub(crate) fn find_maintenance(api: &Api, key: &str) -> Result<RunRow, Refusal> {
-    let store=api.calcifer.maintenance_store();
-    let row=store.run(key)?.or(match key.parse() { Ok(number)=>store.run_by_number(number)?,Err(_)=>None });
-    let row=row.ok_or_else(||refuse(Kind::NotFound,"run_not_found","There's no such run."))?;
+    let row=api.calcifer.maintenance_store().run(key)?;
+    let row=row.ok_or_else(||refuse(Kind::NotFound,"run_not_found","There's no such job going or kept."))?;
     api.calcifer.remember_maintenance_run(row.id.as_str());
     Ok(row)
 }
@@ -566,12 +566,11 @@ pub(crate) fn find_current(api:&Api,key:&str)->Result<RunRow,Refusal> {
     row.ok_or_else(||refuse(Kind::NotFound,"run_not_found","This project has no such run."))
 }
 
-/// The run `KEY-N` names from any scope (cl-987): run N of the project that has or had the key, `COZY-N` Calcifer's own. None when
-/// `text` is no such name, or no project here has the key.
+/// The run `KEY-N` names from any scope (cl-987): run N of the project that has or had the key. None when `text` is no such name,
+/// or no project here has the key.
 pub(crate) async fn named_run(api: &Arc<Api>, text: &str) -> Result<Option<RunRow>, Refusal> {
     let Some((key, number)) = ::api::calcifer::project::run_name(text) else { return Ok(None) };
     let journal = match key.as_str() {
-        ::api::calcifer::project::MACHINE_KEY => crate::store::RunStore::Maintenance(api.calcifer.maintenance_store()),
         reserved if ::api::calcifer::project::RESERVED_KEYS.contains(&reserved) => return Ok(None),
         _ => match keyed_project(api, &key).await? {
             Some(id) => crate::store::RunStore::Project(api.projects.store(api, &id).await.map_err(Refusal)?),
@@ -579,7 +578,6 @@ pub(crate) async fn named_run(api: &Arc<Api>, text: &str) -> Result<Option<RunRo
         },
     };
     let row = journal.run_by_number(number)?.ok_or_else(|| Refusal(Error::new(Kind::NotFound, "run_not_found", format!("There's no run {key}-{number}.")).next("cozy run ls --all")))?;
-    if matches!(journal, crate::store::RunStore::Maintenance(_)) { api.calcifer.remember_maintenance_run(row.id.as_str()); }
     Ok(Some(row))
 }
 
@@ -601,9 +599,11 @@ pub(crate) async fn find_scoped(api: &Arc<Api>, project: Option<&str>, key: &str
         Some(project) => crate::store::RunStore::Project(api.projects.store(api, project).await.map_err(Refusal)?),
         None => crate::store::RunStore::Maintenance(api.calcifer.maintenance_store()),
     };
+    // A number is a project's run's; a job of Calcifer's has only its id (cl-1028).
     let row = match journal.run(key)? {
         Some(row) => Some(row),
-        None => match key.parse() { Ok(number) => journal.run_by_number(number)?, Err(_) => None },
+        None if project.is_some() => match key.parse() { Ok(number) => journal.run_by_number(number)?, Err(_) => None },
+        None => None,
     };
     // cozy's own update (cl-978) is no project's: a project's client that asked for it follows it from Calcifer's journal.
     let row = match row {
@@ -631,21 +631,19 @@ pub(crate) struct Listing {
 }
 
 /// Runs newest first, and how many older ones match.
-async fn list(State(api): State<Arc<Api>>, query: Result<Query<Listing>, QueryRejection>) -> Result<Json<RunList>, Refusal> {
+async fn list(State(_): State<Arc<Api>>, query: Result<Query<Listing>, QueryRejection>) -> Result<Json<RunList>, Refusal> {
     let Query(listing) = query?;
     if listing.project.is_some() { return Err(refuse(Kind::Usage, "project_context_required", "Ask the project for its runs instead.")); }
-    list_scoped(&api, None, listing).await
+    // Runs are kept in their projects (cl-1028); Calcifer's jobs are its machines' (`GET /v1/machines`).
+    Err(Refusal(Error::new(Kind::Usage, "not_in_a_project", "Runs are kept in their projects. Ask a project for its runs.").next("cozy run ls --all")))
 }
 
 pub(crate) async fn project_list(State(api): State<Arc<Api>>, Path(project): Path<String>, query: Result<Query<Listing>, QueryRejection>) -> Result<Json<RunList>, Refusal> {
-    list_scoped(&api, Some(&project), query?.0).await
+    list_scoped(&api, &project, query?.0).await
 }
 
-async fn list_scoped(api: &Arc<Api>, project: Option<&str>, listing: Listing) -> Result<Json<RunList>, Refusal> {
-    let journal = match project {
-        Some(project) => crate::store::RunStore::Project(api.projects.store(api, project).await.map_err(Refusal)?),
-        None => crate::store::RunStore::Maintenance(api.calcifer.maintenance_store()),
-    };
+async fn list_scoped(api: &Arc<Api>, project: &str, listing: Listing) -> Result<Json<RunList>, Refusal> {
+    let journal = crate::store::RunStore::Project(api.projects.store(api, project).await.map_err(Refusal)?);
     let named = match &listing.machine {
         Some(text) => match api.machines.named(text).map_err(Refusal)? {
             Some(row) => Some(row),
@@ -666,7 +664,6 @@ async fn list_scoped(api: &Arc<Api>, project: Option<&str>, listing: Listing) ->
     })?;
     let mut runs = Vec::with_capacity(rows.len());
     for row in &rows {
-        if project.is_none() { api.calcifer.remember_maintenance_run(row.id.as_str()); }
         match api.calcifer.record(row) { Ok(run) => runs.push(run), Err(_) => unreadable.push("run_unavailable".into()) }
     }
     Ok(Json(RunList { runs, older, machine, unreadable, others: vec![] }))

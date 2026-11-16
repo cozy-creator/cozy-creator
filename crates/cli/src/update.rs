@@ -94,8 +94,8 @@ async fn update(ctx: &Context, wanted: Option<&str>) -> Result<Option<PathBuf>, 
     };
     let machine = match crate::machine::adopt(ctx)? {
         Adopted::MovesWhenIdle => match crate::machine::activate(ctx, &version).await {
-            Ok(Some(run)) => Adopted::Moves { run },
-            Ok(None) => Adopted::MovesWhenIdle,
+            Ok(true) => Adopted::Moves,
+            Ok(false) => Adopted::MovesWhenIdle,
             // It moves once idle all the same.
             Err(_) => Adopted::MovesWhenIdle,
         },
@@ -128,8 +128,8 @@ async fn update(ctx: &Context, wanted: Option<&str>) -> Result<Option<PathBuf>, 
         }
         println!("  calcifer: {}", step(&updated.calcifer));
         println!("  machine: {}", adopted(&updated.machine));
-        if let Adopted::Moves { run } = updated.machine {
-            crate::output::next(ctx, &[&format!("cozy run watch {run}")]);
+        if let Adopted::Moves = updated.machine {
+            crate::output::next(ctx, &["cozy machine show local"]);
         }
     }
     Ok(Some(updated.binary))
@@ -224,7 +224,7 @@ pub(crate) fn after_update(ctx: &Context, run: &api::calcifer::Run) -> Result<()
     }
     if run.status != api::calcifer::Status::Completed {
         let kept = run.result.as_ref().and_then(|result| serde_json::from_value::<Error>(result["error"].clone()).ok());
-        return Err(kept.unwrap_or_else(|| Error::new(Kind::Unavailable, "cozy_update_failed", format!("cozy's update (run {}) didn't finish", crate::run::handle(run))).next("cozy update")));
+        return Err(kept.unwrap_or_else(|| Error::new(Kind::Unavailable, "cozy_update_failed", "cozy's update didn't finish".to_owned()).next("cozy update")));
     }
     let binary = crate::calcifer_client::installed(&ctx.home)?;
     let said = std::process::Command::new(&binary).arg("--version").output().map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned());
@@ -279,7 +279,7 @@ fn adopted(adopted: &Adopted) -> String {
         Adopted::MovesWhenIdle => {
             "running; it moves to the new binary after 15 minutes idle, or at `cozy machine update local`".into()
         }
-        Adopted::Moves { run } => format!("running; it moves to the new binary once its runs end (run {run})"),
+        Adopted::Moves => "running; it moves to the new binary once its runs end".into(),
     }
 }
 

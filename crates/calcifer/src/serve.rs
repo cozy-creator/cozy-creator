@@ -302,7 +302,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     }
     steps.done("home");
 
-    let calcifer = Calcifer::open(&home.calcifer(), &home.outputs()).map_err(|e| {
+    let calcifer = Calcifer::open(&home.calcifer()).map_err(|e| {
         failed(match e {
             // The legacy cut stopped before it replaced the old store (cl-1003): what to do, and the old store as it was.
             crate::Error::Store(crate::store::StoreError::Cut(why)) => Error::new(Kind::Unavailable, "legacy_cut", why),

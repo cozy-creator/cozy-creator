@@ -39,6 +39,7 @@ stuck_diagnose() {
     echo "== connections to :$port"; ss -tnpoi state established "( sport = :$port or dport = :$port )" 2>&1
     echo "== tensord threads"; ps -eLo pid,tid,ppid,stat,wchan:32,comm | awk 'NR == 1 || $6 == "tensord" || $6 ~ /^tokio/ || $6 ~ /^machine-/'
     echo "== runs"; timeout 30 cozy --json run ls --all --limit 10 2>&1 | head -c 4000
+    echo "== local's jobs"; timeout 30 cozy --json machine show local 2>&1 | jq -c '[.jobs[]? | {id, kind, target, status, waiting}]' 2>&1 | head -c 4000
     echo "== tensord log"; stuck_log | tail -40
     echo "== calcifer"; tail -40 "$HOME/.cozy/calcifer/diagnostics.log" 2>&1
   } > "$OUT/stuck-$1.diag" 2>&1
@@ -58,11 +59,11 @@ stuck_run() {
   shift
   (cd "$RUN_PROJECT" && timeout 240 cozy --json run "$here/weightless/reverse" "text=$text" "$@" > "$OUT/stuck-$name.ndjson" 2>&1)
 }
-# settled <seconds>: no update run on local left unsettled, within that long.
+# settled <seconds>: no update job on local left unsettled, within that long (an update is local's job, cl-1028).
 stuck_settled() {
   for _ in $(seq "$1"); do
-    timeout 30 cozy --json run ls --all --on local > "$OUT/stuck-runs.json" 2> /dev/null || true
-    J '[.runs[]? | select(.kind == "update" and (.status | IN("completed", "failed", "canceled") | not))] | length == 0' "$OUT/stuck-runs.json" && return 0
+    timeout 30 cozy --json machine show local > "$OUT/stuck-runs.json" 2> /dev/null || true
+    J '.jobs != null and ([.jobs[] | select(.kind == "update" and (.status | IN("completed", "failed", "canceled") | not))] | length == 0)' "$OUT/stuck-runs.json" && return 0
     sleep 1
   done
   return 1
@@ -156,7 +157,7 @@ grep -qE "pid $first \(the TensorD before this one\), killed .* stuck in the ker
 cozy machine ls > "$OUT/stuck-ls.txt" 2>&1 || true
 grep -qE '^local .*1 stuck' "$OUT/stuck-ls.txt" || check "stuck: machine ls doesn't mark local stuck: $(grep '^local' "$OUT/stuck-ls.txt")"
 J '.broken == null' "$OUT/stuck-machine.json" || check "stuck: a machine with no GPU is broken: $(jq -c .broken "$OUT/stuck-machine.json")"
-stuck_settled 120 || { check "stuck: the update run never settled: $(jq -c '[.runs[]? | select(.kind == "update") | {number, status, waiting}]' "$OUT/stuck-runs.json")"; stuck_diagnose unsettled; }
+stuck_settled 120 || { check "stuck: the update job never settled: $(jq -c '[.jobs[]? | select(.kind == "update") | {id, status, waiting}]' "$OUT/stuck-runs.json")"; stuck_diagnose unsettled; }
 stuck_run after-update --on local || check "stuck: no run went to the machine after its update: $(tail -c 300 "$OUT/stuck-after-update.ndjson")"
 echo "stuck: updated in ${took} s past pid $first, which waits in the kernel"
 

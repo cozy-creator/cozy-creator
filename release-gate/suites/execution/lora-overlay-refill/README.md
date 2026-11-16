@@ -27,8 +27,10 @@ It needs a card where the int8 DiT and the f32 LoRA stay resident (about 23 GB: 
 On an RTX 4090 every baked block is refilled every forward, so no stale page can be served (runs
 40449344821: 0.34.0 and the fix alike).
 
+A run is kept in its project (cl-1028): run it inside a project made on the runner or pod (`cozy new <folder>`, then cd into it), with `$CHECKOUT` the cozy-creator checkout:
+
 ```sh
-cozy run "$PWD/release-gate/suites/execution/drive/lora_overlay_refill" seed:=321 \
+cozy run "$CHECKOUT/release-gate/suites/execution/drive/lora_overlay_refill" seed:=321 \
   --gpus=1 --lane int8 --attention-kernel sdpa --on MACHINE --json
 ```
 

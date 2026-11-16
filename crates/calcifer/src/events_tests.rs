@@ -23,7 +23,7 @@ async fn runs_scope_skips_other_subscriptions_and_streams_run_updates() {
     let root = tempfile::tempdir().unwrap();
     let home = platform::paths::Home::under(root.path());
     home.open().unwrap();
-    let calcifer = crate::Calcifer::open(&home.calcifer(), &home.outputs()).unwrap();
+    let calcifer = crate::Calcifer::open(&home.calcifer()).unwrap();
     let config = api::config::Config::default();
     let machines = Machines::start(calcifer.clone(), home, root.path(), &config);
     // Only the temporary controller and its event stream are under test, not machine startup.
@@ -63,7 +63,7 @@ async fn runs_scope_skips_other_subscriptions_and_streams_run_updates() {
     assert!(all.machines_changed.is_some());
     assert!(all.showing.is_some());
     PROJECTS.said.send(StreamEvent::ProjectVault { id: "test-project".into(), state: "locked".into() }).unwrap();
-    let submitted = calcifer.here(None, "scope-test", "scope-test", "test/echo".into(), &config.hub_url, b"{}".to_vec(),
+    let submitted = calcifer.here(None, "scope-test", "scope-test", "test/echo".into(), crate::store::Task::None, &config.hub_url, b"{}".to_vec(),
         |_| async { Ok(serde_json::json!({"done": true})) }).await.unwrap();
     let update = decoded(&tokio::time::timeout(Duration::from_secs(2), body.next()).await.unwrap().unwrap().unwrap());
     assert_eq!(update["type"], "run.updated");

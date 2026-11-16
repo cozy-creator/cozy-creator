@@ -213,6 +213,9 @@ calcifer_halt || return
 python3 "$here/restart_store.py" fill "$db" "$HOME/.cozy/outputs/e2e-restart" --runs 40000 --machines 3000 > "$S/fill.json" 2>&1 \
   || { check "restart: the store wasn't filled: $(tail -c 300 "$S/fill.json")"; systemctl --user start cozy-calcifer; return; }
 echo "restart: store $(cat "$S/fill.json")"
+local old_calls old_others
+old_calls=$(state1 "SELECT count(*) FROM runs WHERE id LIKE 'run-cl1010%' AND id NOT LIKE 'run-cl1010u%' AND kind = 'call'")
+old_others=$(state1 "SELECT count(*) FROM runs WHERE id LIKE 'run-cl1010%' AND kind <> 'call'")
 # A laptop's network: PyPI and the Hub answer each request 3 s late (slow_proxy.py), so a route that waits on them can't pass here.
 local proxy proxied
 python3 "$here/slow_proxy.py" "$S/proxy.port" 3 2> "$S/proxy.log" & proxy=$!
@@ -231,6 +234,18 @@ cat "$S/latency.ndjson"
 local going
 for _ in $(seq 120); do going=$(state1 "SELECT count(*) FROM runs WHERE id LIKE 'run-cl1010u%' AND state <> 'settled'") && [ "$going" = 0 ] && break; sleep 0.5; done
 [ "$going" = 0 ] || check "restart: $going of the runs left going weren't taken up 60 s after the restart"
+# Those were jobs of Calcifer's, calls on `local` that settled failed (cl-1028): released, each joined `ended_jobs`, and those of its
+# machine, kind and outcome released before it went, at most four of the five; none of the 40,000 runs from before cl-1028 (no read
+# finds one: the hard cut takes them), each end holding the writer under 100 ms (a slow task at 100 ms).
+local calls others kept
+calls=$(state1 "SELECT count(*) FROM runs WHERE id LIKE 'run-cl1010%' AND id NOT LIKE 'run-cl1010u%' AND kind = 'call'")
+others=$(state1 "SELECT count(*) FROM runs WHERE id LIKE 'run-cl1010%' AND kind <> 'call'")
+kept=$(state1 "SELECT count(*) FROM ended_jobs WHERE run LIKE 'run-cl1010u%'")
+[ "$calls" = "$old_calls" ] && [ "$others" = "$old_others" ] && [ "$kept" -ge 1 ] && [ "$kept" -le 5 ] \
+  || check "restart: 5 calls' ends took $((old_calls - calls)) older calls and $((old_others - others)) older runs (none of either), $kept of the 5 kept (1 to 5)"
+echo "restart: 5 calls' ends kept $kept of themselves and took none of the store's $old_calls older calls and $old_others others"
+! grep -a 'slow task task="job_ended"' "$HOME/.cozy/calcifer/health.log" > "$S/job-ended.slow" \
+  || check "restart: a job's end held the writer 100 ms or more on 40,000 runs: $(head -3 "$S/job-ended.slow")"
 echo "restart: reads slowed $(tail -1 "$S/busy-disk.log" 2> /dev/null); network asks delayed $(grep -c . "$S/proxy.log" 2> /dev/null || echo 0)"
 # Ended machines are kept 90 days (Paul 11-15): those older went as Calcifer took up what it left; the rest stayed.
 local cut gone kept

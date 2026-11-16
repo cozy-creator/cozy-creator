@@ -90,7 +90,7 @@ pub(crate) enum VaultProgress<'a> {
 
 /// A run number is meaningful only inside the explicit project that owns it. `None` is
 /// independent maintenance, never a fallback after a project lookup failed. A run id is unique:
-/// inside a project, one the project doesn't know is Calcifer's own run (a download, an update).
+/// inside a project, one the project doesn't know is one of Calcifer's jobs (a download, an update: cl-1028), named by its id.
 #[derive(Clone)]
 pub(crate) struct RunAddress { pub project: Option<String>, pub run: String }
 impl RunAddress {

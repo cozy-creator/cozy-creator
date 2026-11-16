@@ -1040,7 +1040,7 @@ pub(crate) async fn install_through(api: &Arc<Api>, key: &str, after: Option<&cr
             if let Some(after) = after {
                 api.calcifer.plan(crate::private_io::current().as_ref().map(|scope|scope.storage.project_id.as_str()), &key, after)?;
             }
-            let run = api.calcifer.submit(&key, submit()).await.map_err(|e| crate::api::Refusal::from(e).0)?.run;
+            let run = api.calcifer.submit(&key, submit(), crate::store::Task::Install).await.map_err(|e| crate::api::Refusal::from(e).0)?.run;
             return Ok(Install::Going(run));
         };
         match run.status {
