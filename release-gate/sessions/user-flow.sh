@@ -28,7 +28,17 @@ SKU_B=$(param sku_b "$SKU") GPUS_B=$(param gpus_b 2) PLATE_S=$(param plate_s 5) 
 FLOW=$OUT/flow
 mkdir -p "$FLOW"
 # Encryption's filesystem driver, as a person's computer has it: FUSE 3 beside libfuse.so.2 (the bundled provider's, and a release's).
-bash "$HERE/../../e2e/cli/install-vault-driver.sh" fuse3 > "$OUT/fuse.log" 2>&1 || fail "no FUSE: $(tail -c 300 "$OUT/fuse.log")"
+ROOT=$(cd "$HERE/../.." && pwd)
+bash "$ROOT/e2e/cli/install-vault-driver.sh" fuse3 > "$OUT/fuse.log" 2>&1 || fail "no FUSE: $(tail -c 300 "$OUT/fuse.log")"
+# And its provider: a release bundles securefs and puts it in the tools folder on first use; a dev build bundles none, so the pinned
+# one goes where a release puts it (crates/project-mount: the tools folder's copy before PATH).
+SECUREFS=$HOME/.cozy/tools/securefs/$(jq -r .version "$ROOT/crates/project-mount/helper/manifest.json")
+if [ ! -x "$SECUREFS/securefs" ]; then
+  archive=$(python3 -I "$ROOT/scripts/prepare-securefs.py" --target x86_64-unknown-linux-gnu --out-dir "$RUNNER_TEMP/securefs") || fail "no securefs"
+  mkdir -p "$SECUREFS" && chmod 700 "$SECUREFS" &&
+    python3 -I -c 'import sys, zipfile; open(sys.argv[2], "wb").write(zipfile.ZipFile(sys.argv[1]).read("securefs"))' "$archive" "$SECUREFS/securefs" &&
+    chmod 755 "$SECUREFS/securefs" || fail "securefs not put in $SECUREFS"
+fi
 V=$(cozy --version | awk '{print $2}')
 if [[ $V == *-dev* ]]; then
   cfg=$HOME/.cozy/config.toml
