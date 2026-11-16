@@ -110,8 +110,9 @@ pub(crate) const ARRIVING: &str = "downloading the result";
 enum Failure {
     /// A newer revision is recorded: that one is exported instead.
     Superseded,
-    /// This revision's bytes cannot be had: recorded with the item and not tried again.
-    Lost(String),
+    /// This revision's bytes cannot be had: recorded with the item and not tried again. `code` types why, set where the loss is
+    /// decided, for the run's reason (cl-1060): never read back from `why`'s words.
+    Lost { code: &'static str, why: String },
     /// Tried again after a pause, or once the machine changes.
     Again(String),
     /// Read whole, and its bytes are not this revision's. Tried again [`WRONG_READS`] times in all:
@@ -304,7 +305,7 @@ impl Calcifer {
         }
         let link = match self.reach(&run, &mut None).await {
             Ok(link) => link,
-            Err(Failure::Lost(_)) => return false,
+            Err(Failure::Lost { .. }) => return false,
             Err(_) => return true,
         };
         let Some(lane) = link.lane(0, false) else { return true };
@@ -348,7 +349,7 @@ impl Calcifer {
             let why = match done {
                 Ok(()) => return Ok(()),
                 Err(Failure::Superseded) => return Err("a newer version of it was saved".into()),
-                Err(Failure::Lost(message) | Failure::Refused(message)) => return Err(message),
+                Err(Failure::Lost { why: message, .. } | Failure::Refused(message)) => return Err(message),
                 Err(Failure::Again(message) | Failure::Wrong(message)) => message,
             };
             let Some((wait, said)) = backoff.again(&why, false, None) else { return Err(why) };
@@ -402,13 +403,13 @@ impl Calcifer {
                 let (name, index, rev) = (&item.name, item.index, item.rev);
                 let exported = match exported {
                     Err(Failure::Refused(message)) if run.state == RunState::Settled => {
-                        Err(Failure::Lost(format!("the machine refused to send it ({message})")))
+                        Err(Failure::Lost { code: "output_refused", why: format!("the machine refused to send it ({message})") })
                     }
                     Err(Failure::Wrong(message)) => {
                         let reads = wrong.entry((name.clone(), index, rev)).or_default();
                         *reads += 1;
                         match *reads >= WRONG_READS {
-                            true => Err(Failure::Lost(format!("Cozy tried {reads} times but never got the whole file: {message}"))),
+                            true => Err(Failure::Lost { code: "output_unreadable", why: format!("Cozy tried {reads} times but never got the whole file: {message}") }),
                             false => Err(Failure::Again(message)),
                         }
                     }
@@ -416,7 +417,7 @@ impl Calcifer {
                 };
                 match exported {
                     Ok(()) | Err(Failure::Superseded) => {}
-                    Err(Failure::Lost(reason)) => {
+                    Err(Failure::Lost { code, why: reason }) => {
                         export_warning(&run, format_args!("output {name} revision {rev} not exported: {reason}"));
                         if let Ok(out_dir) = crate::project::vault::resolve_path(&run.out_dir) {
                             let dest = out_dir.join(file_name(run.number, name, index, &item.media_type));
@@ -432,7 +433,7 @@ impl Calcifer {
                             }
                         }
                         // Its run never reads completed with an output that isn't saved (cl-1060), typed by why.
-                        let lost = ::api::calcifer::Reason { code: lost_code(&reason).into(), message: format!("output {name} wasn't saved: {reason}"), ..Default::default() };
+                        let lost = ::api::calcifer::Reason { code: code.into(), message: format!("output {name} wasn't saved: {reason}"), ..Default::default() };
                         if let Ok(events) = self.with_run_store(id.as_str(), |store| store.outputs_not_saved(id.as_str(), &lost)) { self.publish(id, events); }
                     }
                     Err(Failure::Again(message) | Failure::Refused(message) | Failure::Wrong(message)) => {
@@ -492,13 +493,13 @@ impl Calcifer {
         changed: &mut Option<watch::Receiver<()>>,
     ) -> Result<Link, Failure> {
         let Some(name) = &run.machine else {
-            return Err(Failure::Lost("the run never reached a machine".into()));
+            return Err(Failure::Lost { code: "machine_unreached", why: "the run never reached a machine".into() });
         };
         let (machine, link, watch, _) = self.machine(name).map_err(Failure::Again)?;
         *changed = Some(watch);
         if machine.state == MachineState::Ended {
             let reason = machine.reason.as_deref().unwrap_or("no reason given");
-            return Err(Failure::Lost(format!("{name} ended ({reason})")));
+            return Err(Failure::Lost { code: "machine_ended", why: format!("{name} ended ({reason})") });
         }
         let link = link.ok_or_else(|| Failure::Again(format!("waiting for {name} to start up")))?;
         let owner=self.row_owner(run).map_err(|_|Failure::Again("the project isn't open right now".into()))?;
@@ -584,7 +585,7 @@ impl Calcifer {
                         && machine.state == MachineState::Ended
                     {
                         let reason = machine.reason.as_deref().unwrap_or("no reason given");
-                        break Err(Failure::Lost(format!("{name} ended ({reason})")));
+                        break Err(Failure::Lost { code: "machine_ended", why: format!("{name} ended ({reason})") });
                     }
                     continue;
                 }
@@ -991,23 +992,6 @@ fn remove(path: &Path) {
     let _ = std::fs::remove_dir_all(path).or_else(|_| std::fs::remove_file(path));
 }
 
-/// This revision's bytes in `<file>.part`, checked against its digest. A revision that extends
-/// the one the file holds reads only its new tail; an attempt cut off before resumes with what it
-/// left in place (`.part.held`), cleared by a digest that doesn't match.
-/// Why an output wasn't saved, typed (cl-1060): its machine said it no longer holds it (`output_gone`); refused this read for good
-/// (`output_refused`: 400, 412, 416, 501); gave other bytes on every read (`output_unreadable`); ended (`machine_ended`); was never
-/// reached (`machine_unreached`); else `output_not_saved`.
-fn lost_code(reason: &str) -> &'static str {
-    match reason {
-        r if r.starts_with("the machine no longer has it") => "output_gone",
-        r if r.starts_with("the machine refused to send it") => "output_refused",
-        r if r.starts_with("Cozy tried ") => "output_unreadable",
-        r if r.starts_with("the run never reached a machine") => "machine_unreached",
-        // `{name} ended ({reason})`: the machine's name first.
-        r if r.contains(" ended (") => "machine_ended",
-        _ => "output_not_saved",
-    }
-}
 
 /// How long an exporter may move no byte past its high-water mark and land no item, and still count as saving (cl-1060): a lock
 /// waits that long on it before it cuts it. Progress is counted per chunk written (one body read's bytes, never a whole file) and
@@ -1037,6 +1021,9 @@ async fn batch(gate: &Option<crate::project::RunOwner>) -> Result<Option<tokio::
     }
 }
 
+/// This revision's bytes in `<file>.part`, checked against its digest. A revision that extends
+/// the one the file holds reads only its new tail; an attempt cut off before resumes with what it
+/// left in place (`.part.held`), cleared by a digest that doesn't match.
 async fn fetch_file(
     link: &Link,
     target: &v1::OutputTarget,
@@ -1123,7 +1110,7 @@ async fn fetch_tree(
     let _ = std::fs::remove_file(&manifest);
     let mut read: HashMap<String, PathBuf> = HashMap::new();
     let members =
-        tree::parse(&listed).map_err(|e| Failure::Lost(format!("couldn't read the folder's manifest: {e}")))?;
+        tree::parse(&listed).map_err(|e| Failure::Lost { code: "output_unreadable", why: format!("couldn't read the folder's manifest: {e}") })?;
     for (path, tree::Member { length, sha256, .. }) in members {
         let digest = format!("sha256:{sha256}");
         let file = stage.join(&path);
@@ -1370,7 +1357,7 @@ async fn read_range(
             "the machine has {} bytes of version {rev}, not {length}",
             output.length
         );
-        return Err(Ranged::Stop(Failure::Lost(held)));
+        return Err(Ranged::Stop(Failure::Lost { code: "output_mismatch", why: held }));
     }
     if output.range.0 != first {
         return Err(Ranged::Again(format!(
@@ -1432,7 +1419,7 @@ fn refused(e: machine_client::Error) -> Ranged<Failure> {
     match e {
         // Gone, said so: the machine holds no such run, output or object any more. The only loss (cl-1060).
         machine_client::Error::Refused { status: 404, error } if matches!(error.code.as_str(), "run_not_found" | "output_not_found" | "object_not_found") => {
-            Ranged::Stop(Failure::Lost(format!("the machine no longer has it ({}: {})", error.code, error.message)))
+            Ranged::Stop(Failure::Lost { code: "output_gone", why: format!("the machine no longer has it ({}: {})", error.code, error.message) })
         }
         // Definitive for this read: the machine will not serve it (400, 416, 501) or holds the output at another revision
         // (412). While the run goes on, its events bring the newer one; once it ended, none comes. A refusal of its scope
