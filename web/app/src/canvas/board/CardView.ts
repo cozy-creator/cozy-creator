@@ -6,7 +6,7 @@ import { pictureBox, type Presentation, type SceneNode, type ScenePicture } from
 import type { LatentHandle, Media, MediaHandle, MediaSource, VideoHandle } from "./Media"
 import { ellipsis, Label, type LabelStyle, width, wrap } from "./text"
 
-export type Part = "body" | "title" | "delete" | "cancel" | "corner" | "untool"
+export type Part = "body" | "title" | "delete" | "cancel" | "corner" | "untool" | "dot"
 export interface Hit { name: string; part: Part }
 /** The X beside a box's tool, in screen pixels: its glyph, its hit area, and the gap after the tool's name. */
 const UNTOOL_GLYPH = 8, UNTOOL_HIT = 18, UNTOOL_GAP = 3
@@ -66,16 +66,16 @@ export class CardView {
   private began = performance.now()
   private pulsing = false
   /** For inspection: each label's full text, the chips and controls as drawn, in card-local units. */
-  readonly drawn = { full: new Map<string, string>(), chips: [] as { text: string; struck: boolean; box: Box }[], controls: [] as { part: Part; box: Box }[], parts: new Map<Part, Box>(), meter: null as Box | null, dot: null as Box | null }
+  readonly drawn = { full: new Map<string, string>(), chips: [] as { text: string; struck: boolean; box: Box }[], controls: [] as { part: Part; box: Box }[], parts: new Map<Part, Box>(), meter: null as Box | null, dot: null as Box | null, unseen: null as Box | null }
 
   constructor() {
     this.pulse.eventMode = this.ground.eventMode = this.ink.eventMode = "none"
     this.pixels.eventMode = this.labels.eventMode = "none"
     this.root.addChild(this.pulse, this.ground, this.pixels, this.ink, this.labels)
-    for (const part of ["body", "title", "delete", "cancel", "corner", "untool"] as Part[]) {
+    for (const part of ["body", "title", "delete", "cancel", "corner", "untool", "dot"] as Part[]) {
       const area = new Container({ eventMode: "static" })
       area.hitArea = new Rectangle(0, 0, 0, 0)
-      area.cursor = part === "corner" ? "nwse-resize" : part === "body" ? "default" : "pointer"
+      area.cursor = part === "corner" ? "nwse-resize" : part === "body" || part === "dot" ? "default" : "pointer"
       area.visible = false
       this.parts.set(part, area)
       this.root.addChild(area)
@@ -137,7 +137,7 @@ export class CardView {
     body.x -= node.box.x; body.y -= node.box.y
     const used = new Set<string>(), pictures = new Set<string>()
     this.ground.clear(); this.ink.clear()
-    this.drawn.chips = []; this.drawn.controls = []; this.drawn.parts.clear(); this.drawn.meter = null; this.drawn.dot = null
+    this.drawn.chips = []; this.drawn.controls = []; this.drawn.parts.clear(); this.drawn.meter = null; this.drawn.dot = null; this.drawn.unseen = null
     for (const area of this.parts.values()) area.visible = false
     const label = (key: string, text: string, x: number, y: number, room: number, style: LabelStyle, lines = 1) => { used.add(key); return this.label(key, text, x, y, room, style, env, lines) }
     this.untool.at = null
@@ -213,12 +213,17 @@ export class CardView {
     const y = HEAD - 10 - size * 1.2
     let left = 2
     const naming = node.view.draft !== undefined
-    if (show.state && !naming) {
-      const dot = Math.max(8, size * 0.42)
-      this.ink.circle(2 + dot / 2, y + size * 0.62, dot / 2).fill(colors[show.state])
-      this.drawn.dot = { x: 2, y: y + size * 0.62 - dot / 2, w: dot, h: dot }
-      left = dot + 8
-    }
+    // Green first, at its top left, while a version is unseen (cl-1105); a run's queued, running or failed dot beside it.
+    const dots = naming ? [] : [show.unseen ? colors.unseen : -1, show.state && show.state !== "unseen" ? colors[show.state] : -1].filter((color) => color >= 0)
+    if (dots.length) {
+      const dot = Math.max(8, size * 0.42), cy = y + size * 0.62
+      dots.forEach((color, i) => this.ink.circle(2 + dot / 2 + i * (dot + 6), cy, dot / 2).fill(color))
+      const span = dots.length * dot + (dots.length - 1) * 6
+      this.drawn.dot = { x: 2, y: cy - dot / 2, w: span, h: dot }
+      if (show.unseen) this.drawn.unseen = { x: 2, y: cy - dot / 2, w: dot, h: dot }
+      this.area("dot", { x: 0, y: cy - dot, w: span + 4, h: dot * 2 })
+      left = span + 8
+    } else this.area("dot", null)
     const hasControl = !far && !naming && (node.view.asset || node.view.landed || node.view.placing)
     const hasVersion = !far && !naming && show.version ? width(show.version, SMALL) + 10 : 0
     const room = w - left - (hasControl ? 32 : 0) - hasVersion

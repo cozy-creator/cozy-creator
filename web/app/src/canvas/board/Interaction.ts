@@ -12,7 +12,7 @@ import type { Board } from "./Board"
 import type { Camera } from "./Camera"
 import type { StageProps } from "./Stage"
 
-export type Part = "body" | "title" | "delete" | "cancel" | "corner" | "untool"
+export type Part = "body" | "title" | "delete" | "cancel" | "corner" | "untool" | "dot"
 export interface Hit { name: string; part: Part }
 
 export interface InteractionOptions {
