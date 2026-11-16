@@ -198,8 +198,11 @@ impl Store {
 
     /// Retire only caller-proven use keys and object candidates after their verified copy.
     /// Uses containing an unrequested digest are retained, as are independent refs, header
-    /// roots, live holds, authoritative peer requests and open file readers. No grace or TTL
-    /// is used to infer ownership. This reuses the normal collection/deletion engine.
+    /// roots, live holds, authoritative peer requests and open file readers. A use past the
+    /// TTL keeps nothing: only a root kept it from the last collection, and what a root holds
+    /// is retained above. A use naming candidates beside nothing but manifests listing only
+    /// candidates (a machine's record of a run's held files, `[manifest, files]`) goes with
+    /// them, its manifests too; one naming anything else keeps what it names.
     pub fn retire_objects(
         &self,
         objects: &[ObjectRef],
@@ -241,17 +244,19 @@ impl Store {
         }
         let mut retired = RetiredObjects::default();
         let uses = self.uses(&BTreeSet::new())?;
+        let expired = SystemTime::now().checked_sub(super::retention::TTL).unwrap_or(SystemTime::UNIX_EPOCH);
+        let mut manifests = BTreeSet::new();
         for used in uses {
-            if requested.contains(&used.name)
-                && !keep.contains(&used.name)
-                && used
-                    .digests
-                    .iter()
-                    .all(|digest| candidates.contains(digest))
-            {
+            let others: Vec<&String> = used.digests.iter().filter(|digest| !candidates.contains(*digest)).collect();
+            let free = !keep.contains(&used.name) && used.digests.iter().all(|digest| !keep.contains(digest));
+            let owned = requested.contains(&used.name) && free && others.is_empty();
+            let listing = free && others.len() < used.digests.len() && !others.is_empty()
+                && others.iter().all(|digest| self.lists_only(digest, &candidates));
+            if owned || listing {
                 self.remove_record(&self.root.join("uses").join(&used.name))?;
+                manifests.extend(others.into_iter().cloned());
                 retired.removed_uses.push(used.name);
-            } else {
+            } else if used.used >= expired {
                 keep.insert(used.name);
                 keep.extend(used.digests);
             }
@@ -279,11 +284,42 @@ impl Store {
                 None => retired.retained.push(object.clone()),
             }
         }
+        for manifest in manifests.into_iter().filter(|manifest| !keep.contains(manifest)) {
+            match self.discard(&manifest, before)? {
+                Some(length) => retired.removed.push(ObjectRef { sha256: manifest, length }),
+                // A reader still has it: kept, said, for the caller to retire again.
+                None => if let Ok(metadata) = fs::metadata(self.blob(&manifest)?) {
+                    retired.retained.push(ObjectRef { sha256: manifest, length: metadata.len() });
+                }
+            }
+        }
         if !retired.removed.is_empty() {
             self.stamp_eviction()?;
         }
         *collections += 1;
         Ok(retired)
+    }
+
+    /// Whether `digest` is a small JSON document listing files by their digests (a tree, or a machine's manifest of a run's held
+    /// files), every one of them in `files`.
+    fn lists_only(&self, digest: &str, files: &BTreeSet<String>) -> bool {
+        fn named(value: &serde_json::Value, found: &mut BTreeSet<String>) {
+            match value {
+                serde_json::Value::Object(map) => map.iter().for_each(|(key, value)| match (key.as_str(), value) {
+                    ("sha256", serde_json::Value::String(digest)) => { found.insert(digest.trim_start_matches("sha256:").to_owned()); }
+                    _ => named(value, found),
+                }),
+                serde_json::Value::Array(items) => items.iter().for_each(|item| named(item, found)),
+                _ => {}
+            }
+        }
+        let Ok(path) = self.blob(digest) else { return false };
+        let Ok(bytes) = fs::read(&path) else { return false };
+        if bytes.len() > 1 << 16 || bytes.first() != Some(&b'{') { return false; }
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return false };
+        let mut found = BTreeSet::new();
+        named(&value, &mut found);
+        !found.is_empty() && found.is_subset(files)
     }
 
     /// What `root` keeps alive, each once: `root`, and for a tree its files and its header's

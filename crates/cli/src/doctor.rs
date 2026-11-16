@@ -75,10 +75,8 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     let mut checks = calcifer(ctx).await;
     let up = checks.iter().all(|c| c.ok);
     checks.push(service(ctx));
-    let mut legacy = None;
     if up {
         checks.extend(folders(ctx).await);
-        legacy = legacy_rows(ctx, &mut checks).await;
     }
     let tools = crate::tools::rows(ctx, Side::Computer);
     // Without --on, this computer's machine, where this OS runs models itself.
@@ -124,7 +122,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     let code = if healthy { ExitCode::SUCCESS } else { ExitCode::FAILURE };
     if ctx.json {
         output::json(&serde_json::json!({
-            "healthy": healthy, "checks": checks, "tools": tools, "machine": machine, "legacy": legacy,
+            "healthy": healthy, "checks": checks, "tools": tools, "machine": machine,
         }));
         return Ok(code);
     }
@@ -165,25 +163,25 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
 async fn folders(ctx: &Context) -> Vec<Check> {
     let Ok(client) = ctx.calcifer().await else { return vec![] };
     let Ok(listed) = client.get::<api::calcifer::project::Projects>("/v1/projects?limit=1000").await else { return vec![] };
+    // What the legacy cut keeps for projects (cl-1003): files gone before it could copy them in (said, nothing to fix), and the files
+    // it holds for projects not opened since, with how to let them go.
+    let cut = client.get::<api::calcifer::CutFiles>("/v1/cut").await.unwrap_or_default();
+    let mut lost: Vec<Check> = cut.lost.into_iter()
+        .map(|lost| Check::ok("project files", format!("warning: {} files of {} were lost before this upgrade", lost.files, lost.path.display()))).collect();
+    if cut.held_projects > 0 {
+        lost.push(Check::ok("project files", format!(
+            "{} of old files are held on this computer for {} projects not opened since the upgrade (moved, deleted or still locked): \
+             open or unlock each at the folder it had then to copy them in, or delete {} to let them go (an encrypted project not \
+             unlocked since loses its old files kept on this computer too)",
+            crate::output::bytes(cut.held_bytes), cut.held_projects, cut.kept.display())));
+    }
     let loosened = listed.projects.into_iter().filter(|project| platform::durable::others_may_open(&project.path).unwrap_or(false));
     loosened.map(|project| {
         let path = project.path.display();
         let fix = if cfg!(windows) { "give only your account access to it".to_owned() } else { format!("chmod 700 {path}") };
         // A warning: the project still opens, as it did.
         Check::ok("project folder", format!("warning: other accounts on this computer can open {path}: {fix}"))
-    }).collect()
-}
-
-/// The old project runs Calcifer's store still holds (cl-984), as one line: those whose project folder is here, those whose
-/// folder is gone, and unreadable ones. Nothing held, no line.
-async fn legacy_rows(ctx: &Context, checks: &mut Vec<Check>) -> Option<api::calcifer::LegacyRows> {
-    let rows: api::calcifer::LegacyRows = ctx.calcifer().await.ok()?.get("/v1/legacy").await.ok()?;
-    let runs = |folders: &[api::calcifer::LegacyFolder]| folders.iter().map(|folder| folder.runs).sum::<u64>();
-    if rows.existing.is_empty() && rows.gone.is_empty() && rows.unreadable == 0 { return Some(rows); }
-    checks.push(Check::ok("legacy history", format!(
-        "Calcifer's store holds {} old runs of {} project folders here (each imports as it opens), {} of {} folders gone, {} unreadable",
-        runs(&rows.existing), rows.existing.len(), runs(&rows.gone), rows.gone.len(), rows.unreadable)));
-    Some(rows)
+    }).chain(lost).collect()
 }
 
 /// Calcifer's lock record and whether it answers, running the installed cozy: each problem found,

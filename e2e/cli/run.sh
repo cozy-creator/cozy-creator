@@ -26,7 +26,6 @@ parse "$@"
 . "$(dirname "$0")/projectdb.sh"
 . "$(dirname "$0")/statedb.sh"
 . "$(dirname "$0")/projectvault.sh"
-. "$(dirname "$0")/containmentscale.sh"
 . "$(dirname "$0")/machineset.sh"
 . "$(dirname "$0")/rental.sh"
 . "$(dirname "$0")/fallback.sh"
@@ -37,6 +36,7 @@ parse "$@"
 . "$(dirname "$0")/coming.sh"
 . "$(dirname "$0")/slow.sh"
 . "$(dirname "$0")/oldtakes.sh"
+. "$(dirname "$0")/hardcut.sh"
 . "$(dirname "$0")/selfupdate.sh"
 . "$(dirname "$0")/idle.sh"
 . "$(dirname "$0")/plan.sh"
@@ -777,7 +777,6 @@ case $SHARD in
     db_closes
     old_takes
     db_migrate
-    db_legacy
     db_numbered
     db_keys
     db_remote_custody
@@ -811,6 +810,7 @@ case $SHARD in
     project_traces
     open_unlocks
     projectvault
+    hard_cut
     vault_leftovers
     kept_latents
     vault_swapped
@@ -820,20 +820,19 @@ case $SHARD in
   # An ended machine's own lines still read; a locked project's run nowhere outside it (cl-1012). Named projectvault-* for its driver.
   projectvault-ended-logs) parts="ended_logs logs" ;;
   projectdb-latency) parts="db_latency logs" ;;
-  # Dispatch-only: a large 0.24 home's first start here, and 100 project reads after it (containmentscale.sh).
-  containment-scale) parts="containment_scale logs" ;;
   # A keyed write cut off mid-request, sent again (cl-885).
   projectdb-keyed) parts="db_keyed logs" ;;
   # cozy render alone (cl-956), with the project part's fixtures.
   projectdb-render) parts="agent_render logs" ;;
   # A project 0.24.0 made, opened here (cl-904, schema 3).
   projectdb-migrate) parts="db_migrate logs" ;;
-  # cozy status's legacy history and cozy doctor's old runs by folder, over a 0.24.0 store fenced here (cl-984); a project's runs
-  # numbered from 1, and a run's key its own project's (cl-1075).
-  projectdb-legacy) parts="db_legacy db_numbered db_keys logs" ;;
   # A lock passing over a release no rental can install (cl-1011).
   lock-platforms) parts="lock_platforms logs" ;;
-  # Old runs an ended rental made import as the project's own, and the project takes new work (cl-1003).
+  # The legacy hard cut on a home 0.25.0 made and used, and on its store fenced as a 0.26 RC's (cl-1003).
+  hardcut) parts="hard_cut logs" ;;
+  hardcut-v8) export CUT_FROM=8; parts="hard_cut logs" ;;
+  hardcut-scale) parts="hard_cut_scale logs" ;;
+  # A project an earlier import left with runs pending custody (Paul's lab) takes new work (cl-1003).
   projectdb-remote-custody) parts="db_remote_custody logs" ;;
   # A 5,000-box project of schema 3 opened here: migrated with nothing lost, its rows read (cl-885).
   projectdb-migrate-large) parts="db_migrate_large logs" ;;

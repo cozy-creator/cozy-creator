@@ -230,7 +230,7 @@ pub(super) struct Progress {
     last: Instant,
     skipped: Vec<PathBuf>,
     pub(super) readable: Option<Arc<AtomicBool>>,
-    /// Its receipt is admitted and its legacy history checked: a change it retries (a decrypt's drain) does neither again.
+    /// Its receipt is admitted: a change it retries (a decrypt's drain) doesn't admit it again.
     pub(super) prepared: bool,
 }
 
