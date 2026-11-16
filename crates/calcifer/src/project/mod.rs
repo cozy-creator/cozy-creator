@@ -4150,9 +4150,11 @@ impl Walk {
             }
         }
         let mut pictures = vec![];
+        // `local` as this project sees it: what its own runs installed there, read in its scope, as the Render estimate does (cl-1047).
+        let scope = only.iter().find_map(|job| job.scope.clone());
         for (on, pictured) in machines.iter().zip(placement::pictures(&api, &machines, update, now).await) {
             match pictured {
-                Ok(picture) => pictures.push(picture),
+                Ok(picture) => pictures.push(placement::scoped_picture(&api, &picture, scope.as_ref()).await),
                 Err(why) => {
                     warn!("{dir}: {on} isn't planned on: {why}");
                     let name = on.to_string();
