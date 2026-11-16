@@ -125,7 +125,8 @@ class Cell:
             time.sleep(1)
         seconds = round(time.monotonic() - began, 1)
         if done.returncode != 0 or self.state() != "locked":
-            return seconds, {}, (done.stdout[-400:] + done.stderr[-400:]).decode(errors="replace") or f"still {self.state()}"
+            said = b" ".join((done.stdout[-400:] + done.stderr[-400:]).split()).decode(errors="replace")
+            return seconds, {}, said or f"still {self.state()}"
         return seconds, last(done.stdout), ""
 
     def locked_by(self, since: float, seconds: float) -> float | None:
@@ -442,7 +443,12 @@ def main() -> None:
         facts["going_stopped"] = stop(view)
         facts["going_locked_s"] = second.locked_by(unlocked_at, MAXIMUM + BOUND)
         failures.extend(deadline(second, "going", scanner, view, projects, facts, process))
+        # Its run read once local answered, from the project unlocked again: a locked project's runs aren't read.
+        if second.state() != "locked":
+            second.cozy("lock-before-reading", "vault", "lock")
+        second.unlock("unlock-to-read")
         facts["going_run"] = second.status(number)
+        second.cozy("lock-after-reading", "vault", "lock")
         if facts["going_locked_s"] is not None and not str(facts["going_run"]).startswith("canceled"):
             failures.append(f"going: the run going when local stopped is {facts['going_run']!r} once the vault locked, not canceled")
     finally:
@@ -455,12 +461,20 @@ def main() -> None:
           f"{MAXIMUM} s maximum, with local stopped; its clean-up done {facts['owed_paid_s']} s after it went on", flush=True)
 
 
+def clock(project: Path) -> None:
+    """What Calcifer's vault clock said of `project` (its diagnostics, on for this shard): why it stayed open."""
+    log = Path.home() / ".cozy/calcifer/diagnostics.log"
+    lines = [line for line in log.read_text(errors="replace").splitlines() if str(project) in line] if log.is_file() else []
+    print(f"lock hung: the clock on {project.name}: " + (" | ".join(lines[-30:]) or "nothing (no diagnostics log)"), flush=True)
+
+
 def deadline(cell: Cell, label: str, scanner: Scanner, view: Path, projects: list[Path], facts: dict[str, object],
              process: subprocess.Popen[bytes]) -> list[str]:
     """A deadline step once its vault locked or didn't: what's wrong with it, the machine gone on and its clean-up seen done."""
     failures = []
     if facts[f"{label}_locked_s"] is None:
         failures.append(f"{label}: the vault is open {MAXIMUM + BOUND} s past unlocking with a {MAXIMUM} s maximum while local is stopped")
+        clock(cell.project)
         facts[f"{label}_workaround"] = cell.workaround(label, scanner, view)
     else:
         found = facts[label] = hung(cell, label, scanner, view, projects)

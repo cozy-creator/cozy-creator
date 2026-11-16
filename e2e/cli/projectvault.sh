@@ -829,5 +829,7 @@ lock_hung() (
     --second "$second" --recovery-out "$secrets/recovery-second" --out "$work/proof" --cli "$COZY" 2> "$work/proof.err" \
     || { cat "$work/proof.err"; check "lock hung: $(tail -n 1 "$work/proof.err" | cut -c1-900)"; }
   cat "$work/proof/lock-hung.json" 2> /dev/null || true
+  # Locked, then gone: their 2 GB outputs aren't the job's to upload. Never across a mount a failed lock left.
   for folder in "$project" "$second"; do [ ! -d "$folder" ] || in_project "$folder" --json vault lock > /dev/null 2>&1 || true; done
+  rm -rf --one-file-system -- "$project" "$second" 2> /dev/null || true
 )

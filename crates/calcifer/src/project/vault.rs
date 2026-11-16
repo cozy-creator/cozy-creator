@@ -1075,6 +1075,12 @@ fn lock_lapsed(api: &Arc<Api>, root: &FsPath, unanswered: bool) {
             return;
         }
     }
+    // Its runs on a local that doesn't answer settle here, before its gate, as an explicit lock's do (cl-1064): a client following one
+    // holds the gate until it settles, and it settles only when the lock gives up on local.
+    if clocked && let Err(failure) = settle_unanswered(api, root) {
+        idle_lock_failed(root, &failure);
+        return;
+    }
     // No page's save is waited for: the view has lapsed, so a page can't save into it, and a wait only lets queued work begin past the
     // deadline (cl-1082 review). Its pages find it locked.
     // What its runs still owe lands first, judged by progress (cl-1060); then the project's turn, and `close` revokes nothing while
