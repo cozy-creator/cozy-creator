@@ -94,8 +94,8 @@ historical_relay() {
   sed -i 's/def echo(/def relay(/' "$copy/e2e_relay/__init__.py"
 }
 
-# held: the historical weightless relay published as `e2e-held` 0.1.0 and 0.2.0rc1, as a package built for the open RC's Runtime is
-# published (cl-922): newer by PEP 440, for machines on the RC only; and as `e2e-newer` 0.1.0 and 0.1.1 (held_prerelease,
+# held: the historical weightless relay published as `e2e-held` 0.1.0 and 0.2.0rc1: newer by PEP 440, a prerelease no unpinned run
+# takes (cl-1109); and as `e2e-newer` 0.1.0 and 0.1.1 (held_prerelease,
 # cl-952, se-128). Then floors (runtime_floor, cl-952): `e2e-floor` 0.1.0 (cozy-runtime>=0.45) and 0.2.0
 # (cozy-runtime>=0.45.1); `e2e-capped` 0.1.0 and 0.2.0 (cozy-runtime>=0.45,<0.47.0.dev0, which no Runtime of this cozy's
 # minor meets, cl-1055); and `e2e-lies` 0.1.0, whose cozy-runtime>=0.44 lacks the `call` it imports, which publishing refuses (what it said
@@ -124,6 +124,26 @@ held() {
   export E2E_LIES=$seed/publish-e2e-lies.json
   if (cd "$copy" && cozy --json package publish -y) > "$E2E_LIES" 2>&1; then log "published $account/e2e-lies 0.1.0, which it should have refused"
   else log "publishing e2e-lies was refused: $(tail -c 300 "$E2E_LIES" | tr '\n' ' ')"; fi
+}
+
+# final (held_prerelease, cl-1109): the hub suite's weightless echo as a tool, published as `e2e-final` 0.1.0 and then 0.2.0rc1, a
+# newer prerelease, as production has minimax-h3 0.12.0 and 0.13.0rc2 (xs-203). A refusal is the cell's to report.
+final() {
+  local copy=$seed/packages/e2e-final account version
+  account=$(cozy --json whoami | jq -r '.account // empty')
+  for version in 0.1.0 0.2.0rc1; do
+    rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$here/../release-gate/suites/hub/pkg" "$copy"
+    sed -i -e 's/^name = "ci-hub-pkg"$/name = "e2e-final"/' -e "s/^version = \"0.1.0\"$/version = \"$version\"/" "$copy/pyproject.toml"
+    sed -i -e "s/^RELEASE = \"0.1.0\"$/RELEASE = \"$version\"/" -e 's/^@app.entrypoint(accelerator=False)$/@app.tool(label="Echo", accelerator=False)/' \
+      "$copy/ci_hub_pkg/__init__.py"
+    if ! (cd "$copy" && cozy --json package publish -y) > "$seed/publish-e2e-final-$version.json" 2>&1; then
+      E2E_FINAL_REFUSED="$version: $(tail -c 400 "$seed/publish-e2e-final-$version.json" | tr '\n' ' ')"
+      export E2E_FINAL_REFUSED
+      return 0
+    fi
+    log "published $account/e2e-final $version"
+  done
+  export E2E_FINAL=$account/e2e-final
 }
 
 # rc_floor (rc_floor, xs-194): the historical weightless relay as `e2e-rcfloor` 0.1.0, whose floor only the open RC meets
@@ -409,6 +429,7 @@ if [ -n "$needs" ]; then
       systemctl --user restart cozy-calcifer > "$seed/calcifer-restart.log" 2>&1 || true
       relay
       held
+      final
       rc_floor ;;
   esac
   if [[ " $needs " == *" birefnet "* || " $needs " == *" qwen "* || " $needs " == *" downloads "* || " $needs " == *" loras "* || " $needs " == *" parts "* \
