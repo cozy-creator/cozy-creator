@@ -200,6 +200,14 @@ test('fields', async ({ page, project, api, cli }) => {
       return Boolean(top && element.contains(top));
     });
     expect.soft(front, 'the picker is in front of the picture').toBe(true);
+    // Every row takes its own click: nothing of the frame (its zoom or shape controls) lies over any of them.
+    const covered = await picker.locator('button[data-model-slot]').evaluateAll((rows) => rows.flatMap((row) => {
+      row.scrollIntoView({ block: 'nearest' });
+      const r = row.getBoundingClientRect();
+      const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return top && row.contains(top) ? [] : [row.getAttribute('data-model-slot')];
+    }));
+    expect.soft(covered, 'no slot row is covered by the frame').toEqual([]);
     await picker.locator('button[data-model-slot]', { hasText: /^VAE$/ }).click();
     await expect(picker.locator('.model-picker-choices [role="radio"]').filter({ hasText: 'madebyollin / Texture Fix VAE' })).toHaveCount(1);
     await page.keyboard.press('Escape');
