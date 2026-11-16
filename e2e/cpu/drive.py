@@ -397,10 +397,10 @@ class Executor:
         os.close(self.fd)
 
 
-#: A child call: (its function, its request, its input files by field path, its request id, each slot's caller LoRAs as
-#: (ref, strength)) -> its reply and spool.
+#: A child call: (its function, its request, its input files and their media types by field path, its request id, each
+#: slot's caller LoRAs as (ref, strength)) -> its reply and spool.
 type Loras = dict[str, list[tuple[str, float]]]
-type RunChild = Callable[[str, dict[str, Json], dict[str, Path], str, Loras], tuple[Reply, Path]]
+type RunChild = Callable[[str, dict[str, Json], dict[str, tuple[Path, str]], str, Loras], tuple[Reply, Path]]
 
 
 class Broker:
@@ -418,6 +418,8 @@ class Broker:
         self.files_at = files_at
         #: each file the caller holds, by digest: what it saved and passed, and what its children returned
         self.held: dict[str, Path] = {}
+        #: and its media type, as the attempt saved it or a child returned it (a held file's name has no extension)
+        self.types: dict[str, str] = {}
         self.settled: dict[int, Answer] = {}
 
     def answer(self, got: Reply) -> Answer:
@@ -444,6 +446,7 @@ class Broker:
             return self.settled[index]
         for saved in got.get("saved", []):
             self.held[saved["digest"]] = spooled(self.spool, saved["asset_ref"])
+            self.types[saved["digest"]] = saved["media_type"]
         # Every call is a serving call (`calls.rs` serving_call): its request, and the model choices it passes (`models`):
         # each slot's model as its default, with the LoRAs the choice stacks (`ModelChoice.lora`).
         document = cast(dict[str, Json], json.loads(got.get("payload", "{}")))
@@ -465,7 +468,7 @@ class Broker:
             loras[f"{export}.models.{parameter}"] = [
                 (str(lora["ref"]), float(cast(float, lora.get("strength", 1.0))))
                 for lora in cast(list[dict[str, Json]], choice.get("lora") or [])]
-        files = {path: self.held[digest] for path, digest in digests(request) if digest in self.held}
+        files = {path: (self.held[digest], self.types.get(digest, "")) for path, digest in digests(request) if digest in self.held}
         child = f"{self.request}-call-{index}"
         reply, spool = self.run(export, request, files, child, loras)
         outcome = reply.get("outcome", {})
@@ -504,7 +507,7 @@ class Broker:
             node.update(asset_ref=digest, digest=digest, size_bytes=len(data), media_type=media_type)
             grants.append({"output_id": output, "kind": str(node.get("kind", "")), "digest": digest, "length": len(data),
                            "content_bytes": len(data), "media_type": media_type, "local": str(local)})
-            self.held[digest] = local
+            self.held[digest], self.types[digest] = local, media_type
         return json.dumps(value, separators=(",", ":"), sort_keys=True), grants
 
 
@@ -1014,12 +1017,13 @@ def inputs(cell: Cell, payload: dict[str, Json], work: Path, made: Path,
     return metadata, granted
 
 
-def grant(field: str, path: Path) -> tuple[InputMetadata, InputFile]:
-    """A file the machine grants at `field` (its own path): `PrepareRequest.input_metadata`'s row and `Invoke.inputs`'."""
+def grant(field: str, path: Path, media_type: str = "") -> tuple[InputMetadata, InputFile]:
+    """A file the machine grants at `field` (its own path), of `media_type` (else its extension's):
+    `PrepareRequest.input_metadata`'s row and `Invoke.inputs`'."""
     data = path.read_bytes()
     digest = "sha256:" + hashlib.sha256(data).hexdigest()
     order = next((int(part) for part in reversed(field.split(".")) if part.isdigit()), 0)
-    media_type = MEDIA.get(path.suffix, "application/octet-stream")
+    media_type = media_type or MEDIA.get(path.suffix, "application/octet-stream")
     return ({"input_id": field, "media_type": media_type, "digest": digest, "length": len(data), "order": order},
             {"local": str(path), "media_type": media_type, "digest": digest, "length": len(data), "order": order})
 
@@ -1126,7 +1130,7 @@ def main() -> int:
     #: a call that constructs nothing loads one binding naming only its package, as TensorD sends it
     weightless: Binding = {"application": interface["application"], "package_interface": str(interface_path)}
 
-    def run_child(export: str, request: dict[str, Json], files: dict[str, Path], child: str,
+    def run_child(export: str, request: dict[str, Json], files: dict[str, tuple[Path, str]], child: str,
                   loras: Loras) -> tuple[Reply, Path]:
         """A child call through the child executor, as TensorD runs it on its own (GPU) executor: the callee's slots
         bound (with the LoRAs the call stacks) and loaded once, its input files granted where its request names them."""
@@ -1148,13 +1152,14 @@ def main() -> int:
                           "models": rows or [weightless]}
             executor.must(load)
             loaded.add((0, construction))
-        rows_in = {field: grant(field, path) for field, path in files.items()}
+        rows_in = {field: grant(field, path, media_type) for field, (path, media_type) in files.items()}
         executor.must({"cmd": "prepare_request", "request_id": child, "entrypoint": export, "payload": request,
                        "construction": construction, "input_metadata": {k: v[0] for k, v in rows_in.items()}})
         spool = out / "spool" / child
         spool.mkdir(parents=True)
         executor.broker = Broker(child, spool, run_child, files_at)
-        executor.broker.held |= {rows_in[field][1]["digest"]: path for field, path in files.items()}
+        executor.broker.held |= {rows_in[field][1]["digest"]: path for field, (path, _) in files.items()}
+        executor.broker.types |= {row["digest"]: row["media_type"] for _, row in rows_in.values()}
         reply = executor.ask({"cmd": "invoke", "request_id": child, "entrypoint": export, "spool": str(spool),
                               "construction": construction, "deadline_s": 1800, "inputs": {k: v[1] for k, v in rows_in.items()}},
                              timeout=1860)
@@ -1227,6 +1232,7 @@ def main() -> int:
                 # TensorD answers every attempt's durable requests: a call, a GPU release, a stage memo.
                 executor.broker = Broker(request, spool, run_child, files_at)
                 executor.broker.held |= {g["digest"]: Path(g["local"]) for g in granted.values()}  # it may pass them on
+                executor.broker.types |= {g["digest"]: g["media_type"] for g in granted.values()}
                 # As long as the deadline it gave the attempt: a busy computer's 1080p decode outlasts 900 s.
                 reply = executor.ask(invoke, timeout=invoke["deadline_s"] + 60)
                 executor.broker = None
