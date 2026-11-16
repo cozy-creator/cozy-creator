@@ -23,7 +23,7 @@ macro_rules! table {
 }
 
 /// The built-in tables.
-pub(crate) const TABLES: [&str; 27] = [
+pub(crate) const TABLES: [&str; 29] = [
     table!("sdxl.single_file"),
     table!("anima.single_file"),
     table!("anima.diffusion_model"),
@@ -33,6 +33,8 @@ pub(crate) const TABLES: [&str; 27] = [
     table!("qwen3vl.comfy"),
     table!("pan2.comfy"),
     table!("pan2.curve"),
+    table!("ltx2.comfy"),
+    table!("ltx2.comfy_gemma"),
     table!("h3.native"),
     table!("h3.comfy"),
     table!("h3.lora"),
@@ -181,6 +183,10 @@ pub(crate) struct Component {
     /// prefix, and the adapter config lists the module.
     #[serde(default)]
     pub modules_to_save: Vec<String>,
+    /// Output keys, with their shapes, that a source in this layout keeps in another file: the `--base` supplies
+    /// them, key by key, from its component of this name (`base::on_base`), and the import refuses without one.
+    #[serde(default)]
+    pub base: Vec<(String, Vec<u64>)>,
 }
 
 /// A component's rows. `[target, source, ops, {"e": n}]` stands for n rows, `e` = 0..n: `{e}`
@@ -486,8 +492,52 @@ impl Row {
     }
 }
 
+/// Components that share a prefix in one file (ComfyUI keeps two models' tensors under one), when no
+/// one of them is the whole bucket: each key goes to the one whose rows (or `drop`, `optional`) name
+/// it, and each must then be complete. `None` when fewer than two share `prefix`, or one is the
+/// bucket as it is (the components are alternative layouts).
+fn shared(
+    table: &Table,
+    prefix: &str,
+    keys: &BTreeSet<&str>,
+    group: &Group,
+) -> std::result::Result<Option<Vec<usize>>, String> {
+    let sharing: Vec<usize> = (0..table.components.len())
+        .filter(|i| table.components[*i].prefix == prefix && table.lora.is_none())
+        .collect();
+    if sharing.len() < 2 || sharing.iter().any(|i| mismatch(table, &table.components[*i], keys, group).is_none()) {
+        return Ok(None);
+    }
+    let names = |c: &Component, k: &str| {
+        c.rows.iter().any(|r| r.key() == Some(k)) || c.drop.iter().chain(&c.optional).any(|d| d == k)
+    };
+    let mut parts: BTreeMap<usize, BTreeSet<&str>> = BTreeMap::new();
+    for key in keys {
+        match sharing.iter().filter(|i| names(&table.components[**i], key)).collect::<Vec<_>>().as_slice() {
+            [one] => drop(parts.entry(**one).or_default().insert(*key)),
+            [] => return Err(format!("{key:?} is under {prefix:?}, which none of its components names")),
+            _ => return Err(format!("{key:?} is under {prefix:?}, which several of its components name")),
+        }
+    }
+    for (i, part) in &parts {
+        let c = &table.components[*i];
+        if let Some((unknown, missing)) = mismatch(table, c, part, group) {
+            return Err(format!(
+                "{}: {} unknown {:?}, {} missing {:?}",
+                c.name,
+                unknown.len(),
+                &unknown[..unknown.len().min(3)],
+                missing.len(),
+                &missing[..missing.len().min(3)]
+            ));
+        }
+    }
+    Ok(Some(parts.into_keys().collect()))
+}
+
 /// How `table` projects `group`: each prefix bucket of its keys, matched to the one
-/// component whose layout it is. `Err` names the closest mismatch.
+/// component whose layout it is, or split among those sharing its prefix ([`shared`]). `Err`
+/// names the closest mismatch.
 fn project(table: &Table, group: &Group) -> std::result::Result<Vec<usize>, String> {
     if let Some(lora) = &table.lora {
         let (strays, _) = lora_strays(table, lora, group);
@@ -520,6 +570,10 @@ fn project(table: &Table, group: &Group) -> std::result::Result<Vec<usize>, Stri
     }
     let mut out = Vec::new();
     for (prefix, keys) in &buckets {
+        if let Some(split) = shared(table, prefix, keys, group)? {
+            out.extend(split);
+            continue;
+        }
         let mut closest = (usize::MAX, String::new());
         let fits: Vec<usize> = (0..table.components.len())
             .filter(|i| {

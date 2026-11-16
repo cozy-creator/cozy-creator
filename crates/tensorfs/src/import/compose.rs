@@ -15,30 +15,40 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::format::{invalid, Body, Component, Header, Metadata, ObjectRef, Result, Value};
+use crate::format::{invalid, Body, Component, Header, Metadata, ObjectRef, Result, Tensor, Value};
 use crate::family::{self, Record};
 
-/// `component` of `header` becomes the composition's `name`.
+/// `component` of `header` becomes the composition's `name`, with the base's tensors of `fill`, the
+/// keys its source kept in another file.
 pub(crate) struct Supply<'h> {
     pub name: String,
     pub header: &'h Header,
     pub component: String,
+    pub fill: Vec<String>,
 }
 
-/// One component of an assembled header: its declaration (name, class, config, assets) and the
-/// component of `sources[source]` whose tensors it takes.
+/// One component of an assembled header: its declaration (name, class, config, assets) and each of
+/// its tensors, with the index of the source header whose chunks hold it.
 struct Taken<'h> {
     declared: Component,
-    source: usize,
-    from: &'h Component,
+    tensors: Vec<(usize, &'h Tensor)>,
+}
+
+impl<'h> Taken<'h> {
+    /// `declared` with every tensor of `from`, a component of `sources[source]`.
+    fn whole(declared: Component, source: usize, from: &'h Component) -> Taken<'h> {
+        Taken { declared, tensors: from.tensors.iter().map(|t| (source, t)).collect() }
+    }
 }
 
 /// The chunks and components of `taken`, its tensors re-indexed into one chunk list.
 fn assemble(sources: &[&Header], taken: Vec<Taken<'_>>) -> (Vec<ObjectRef>, Vec<Component>) {
     let mut touched = vec![BTreeSet::new(); sources.len()];
     for t in &taken {
-        for (_, at) in t.from.tensors.iter().flat_map(|t| t.locations()) {
-            touched[t.source].extend(sources[t.source].spans(&at).into_iter().map(|s| s.chunk));
+        for (source, tensor) in &t.tensors {
+            for (_, at) in tensor.locations() {
+                touched[*source].extend(sources[*source].spans(&at).into_iter().map(|s| s.chunk));
+            }
         }
     }
     let (mut chunks, mut index) = (Vec::new(), vec![BTreeMap::new(); sources.len()]);
@@ -50,27 +60,49 @@ fn assemble(sources: &[&Header], taken: Vec<Taken<'_>>) -> (Vec<ObjectRef>, Vec<
     }
     let components = taken
         .into_iter()
-        .map(|Taken { declared, source, from }| {
-            let mut component = Component { tensors: from.tensors.clone(), ..declared };
-            // An empty range touches no chunk; it keeps any index.
-            let moved = |chunk: u64| index[source].get(&chunk).copied().unwrap_or_default();
-            for tensor in &mut component.tensors {
-                match &mut tensor.body {
-                    Body::Data(at) => at.chunk = moved(at.chunk),
-                    Body::Encoded { parts, .. } => parts.iter_mut().for_each(|p| p.chunk = moved(p.chunk)),
-                }
-            }
-            component
+        .map(|Taken { declared, tensors }| {
+            let tensors = (tensors.into_iter())
+                .map(|(source, tensor)| {
+                    let mut tensor = tensor.clone();
+                    // An empty range touches no chunk; it keeps any index.
+                    let moved = |chunk: u64| index[source].get(&chunk).copied().unwrap_or_default();
+                    match &mut tensor.body {
+                        Body::Data(at) => at.chunk = moved(at.chunk),
+                        Body::Encoded { parts, .. } => parts.iter_mut().for_each(|p| p.chunk = moved(p.chunk)),
+                    }
+                    tensor
+                })
+                .collect();
+            Component { tensors, ..declared }
         })
         .collect();
     (chunks, components)
+}
+
+/// The base's `own` with `from`'s tensors (of `sources[source]`), and its own of `fill`, in its order.
+fn filled<'h>(own: &'h Component, source: usize, from: &'h Component, fill: &[String]) -> Result<Taken<'h>> {
+    let keyed = |c: &'h Component| c.tensors.iter().map(|t| (t.key.as_str(), t)).collect::<BTreeMap<&str, &Tensor>>();
+    let (mine, theirs) = (keyed(own), keyed(from));
+    if let Some(key) = fill.iter().find(|k| !mine.contains_key(k.as_str())) {
+        return invalid(format!("the base's {} has no {key}, which the source left to it", own.name));
+    }
+    let mut tensors: Vec<(usize, &Tensor)> = Vec::new();
+    for t in &own.tensors {
+        match theirs.get(t.key.as_str()) {
+            Some(supplied) => tensors.push((source, *supplied)),
+            None if fill.contains(&t.key) => tensors.push((0, t)),
+            None => {}
+        }
+    }
+    tensors.extend(from.tensors.iter().filter(|t| !mine.contains_key(t.key.as_str())).map(|t| (source, t)));
+    Ok(Taken { declared: own.clone(), tensors })
 }
 
 /// `base` with `supplies`, carrying `metadata`.
 pub(crate) fn compose(base: &Header, supplies: &[Supply<'_>], mut metadata: Metadata) -> Result<Header> {
     // Sources: the base, then each distinct supplying header.
     let mut sources: Vec<&Header> = vec![base];
-    let mut supplied: BTreeMap<&str, (usize, &Component)> = BTreeMap::new();
+    let mut supplied: BTreeMap<&str, (usize, &Component, &[String])> = BTreeMap::new();
     for s in supplies {
         let source = match sources.iter().position(|h| std::ptr::eq(*h, s.header)) {
             Some(i) => i,
@@ -82,7 +114,7 @@ pub(crate) fn compose(base: &Header, supplies: &[Supply<'_>], mut metadata: Meta
         let Some(component) = s.header.component(&s.component) else {
             return invalid(format!("the supplying header has no component {:?}", s.component));
         };
-        if supplied.insert(&s.name, (source, component)).is_some() {
+        if supplied.insert(&s.name, (source, component, &s.fill)).is_some() {
             return invalid(format!("component {:?} is supplied twice", s.name));
         }
     }
@@ -90,15 +122,17 @@ pub(crate) fn compose(base: &Header, supplies: &[Supply<'_>], mut metadata: Meta
     let mut taken: Vec<Taken> = Vec::new();
     for own in base.components() {
         taken.push(match supplied.remove(own.name.as_str()) {
-            Some((source, from)) => Taken { declared: own.clone(), source, from },
-            None => Taken { declared: own.clone(), source: 0, from: own },
+            Some((source, from, [])) => Taken::whole(own.clone(), source, from),
+            Some((source, from, fill)) => filled(own, source, from, fill)?,
+            None => Taken::whole(own.clone(), 0, own),
         });
     }
-    taken.extend(supplied.into_iter().map(|(name, (source, from))| Taken {
-        declared: Component { name: name.to_owned(), ..from.clone() },
-        source,
-        from,
-    }));
+    for (name, (source, from, fill)) in supplied {
+        if let Some(key) = fill.first() {
+            return invalid(format!("the base has no {name}, whose {key} the source left to it"));
+        }
+        taken.push(Taken::whole(Component { name: name.to_owned(), ..from.clone() }, source, from));
+    }
     let (chunks, components) = assemble(&sources, taken);
     let own = Record::read(&base.metadata);
     match own.clone().or_else(|| supplies.iter().find_map(|s| Record::read(&s.header.metadata))) {
@@ -127,7 +161,7 @@ pub(crate) fn cut(header: &Header, kept: &[(String, &str)]) -> Result<(Vec<Objec
     let mut taken = Vec::new();
     for (name, from) in kept {
         let Some(component) = header.component(from) else { return invalid(format!("the header has no component {from:?}")) };
-        taken.push(Taken { declared: Component { name: name.clone(), ..component.clone() }, source: 0, from: component });
+        taken.push(Taken::whole(Component { name: name.clone(), ..component.clone() }, 0, component));
     }
     Ok(assemble(&[header], taken))
 }
@@ -201,10 +235,10 @@ pub fn inherit(child: &Header, checkpoint: &ObjectRef, base: &Header, from: BTre
                 }
             }
         }
-        taken.push(Taken { declared, source, from });
+        taken.push(Taken::whole(declared, source, from));
     }
     for theirs in base.components().iter().filter(|b| child.component(&b.name).is_none()) {
-        taken.push(Taken { declared: theirs.clone(), source: 1, from: theirs });
+        taken.push(Taken::whole(theirs.clone(), 1, theirs));
         gave.components.push(theirs.name.clone());
     }
     if gave.is_empty() {

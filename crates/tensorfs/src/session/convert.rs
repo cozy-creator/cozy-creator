@@ -184,6 +184,7 @@ impl Client {
                 tmp: &tmp,
                 progress: &report,
                 stop: Some(&stopped),
+                based: false,
             };
             let (header, files) = import::into_store(&store, &request, None).map_err(provider::from_native)?;
             worker_control.check()?;

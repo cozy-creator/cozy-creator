@@ -30,6 +30,7 @@ target's construction order (its `state_dict()`), never sorted (#624).
 from __future__ import annotations
 
 import argparse
+import ast
 import fnmatch
 import hashlib
 import importlib
@@ -124,6 +125,7 @@ class Component[R](TypedDict, total=False):
     rows: Required[list[R]]
     keep: list[R]
     modules_to_save: list[str]
+    base: list[tuple[str, list[int]]]
 
 
 class Lora(TypedDict):
@@ -1076,6 +1078,102 @@ def pan2_comfy(name: str) -> Table[TableRow]:
     return {"name": name, "reference": PAN2_REFERENCE, "components": [component]}
 
 
+
+# ------------------------------------------------------------------ LTX-2.5 in ComfyUI's two files
+
+LTX25_COMFY = VECTORS / "ltx-2.5-comfy-headers"
+# diffusers' LTX-2 conversion script at v0.41.0, the pinned diffusers' own tag.
+LTX2_SCRIPT = (
+    "https://raw.githubusercontent.com/huggingface/diffusers/086bf9578c0f4acbc66e48cd1e7cc26befd9e10f/"
+    "scripts/convert_ltx2_to_diffusers.py",
+    "750448c833e61733629f1a5cf30754434e98e1d5ac509ee0455c018c661a8c54",
+)
+# What the tables take of the script: its key renames, handlers and split, run from its own source.
+LTX2_NAMES = ("update_state_dict_inplace", "remove_keys_inplace", "convert_ltx2_transformer_adaln_single",
+              "split_transformer_and_connector_state_dict", "get_ltx2_transformer_config", "get_ltx2_connectors_config",
+              "LTX_2_0_TRANSFORMER_KEYS_RENAME_DICT", "LTX_2_3_TRANSFORMER_KEYS_RENAME_DICT", "LTX_2_0_CONNECTORS_KEYS_RENAME_DICT",
+              "LTX_2_3_CONNECTORS_KEYS_RENAME_DICT", "LTX_2_0_TRANSFORMER_SPECIAL_KEYS_REMAP", "LTX_2_0_CONNECTORS_SPECIAL_KEYS_REMAP")
+# Lightricks' Gemma file (text_encoders/gemma4-12b-with-proj-*): Transformers' Gemma 4 names, its language model at
+# `model.` and its vision and audio embedders at the root, each found by key and shape in ltx-2-5's text_encoder.
+GEMMA_COMFY = (("model.", "model.language_model."), ("vision_model.", "model.embed_vision."),
+               ("multi_modal_projector.", "model.embed_vision.multimodal_embedder."), ("audio_projector.", "model.embed_audio."))
+# Its run data (chat template, configs, tokenizer) as U8 tensors: the base's text_encoder holds them as files.
+GEMMA_ASSETS = ("hf_asset__", "tokenizer_json")
+
+
+def ltx2_script() -> dict[str, Any]:  # type: ignore[explicit-any]  # the script's own definitions
+    tree = ast.parse(fetch(*LTX2_SCRIPT))
+    named = lambda node: {t.id for t in getattr(node, "targets", []) if isinstance(t, ast.Name)} | {getattr(node, "name", "")}  # noqa: E731
+    kept = [node for node in tree.body if named(node) & set(LTX2_NAMES)]
+    scope: dict[str, Any] = {"Any": Any}  # type: ignore[explicit-any]
+    exec(compile(ast.Module(body=kept, type_ignores=[]), LTX2_SCRIPT[0], "exec"), scope)  # noqa: S102  # pinned upstream
+    return scope
+
+
+def ltx2_native(script: dict[str, Any], keys: list[str]) -> tuple[dict[str, str], dict[str, str]]:  # type: ignore[explicit-any]
+    """Each native key (under no prefix) as the script names it: (transformer's, connectors'), `{target: native}`."""
+    transformer, connectors = script["split_transformer_and_connector_state_dict"]({k: k for k in keys})
+    out: list[dict[str, str]] = []
+    for part, (_, rename, special) in ((transformer, script["get_ltx2_transformer_config"]("2.5")),
+                                       (connectors, script["get_ltx2_connectors_config"]("2.5", types.SimpleNamespace(
+                                           hidden_size=3840, num_hidden_layers=48)))):
+        for key in list(part):
+            new = key
+            for old, name in rename.items():
+                new = new.replace(old, name)
+            script["update_state_dict_inplace"](part, key, new)
+        for key in list(part):
+            for mark, handler in special.items():
+                if mark in key and key in part:
+                    handler(key, part)
+        out.append({target: native for target, native in part.items()})
+    return out[0], out[1]
+
+
+def ltx2_comfy(name: str) -> Table[TableRow]:
+    """LTX-2.5 in ComfyUI's two files: the DiT's (`ltx2.comfy`, its connectors' blocks beside it under one prefix) and
+    Gemma's (`ltx2.comfy_gemma`, the connectors' input projections beside it). Each holds part of `connectors`, whose
+    rest the base supplies (`base` rows). Renames are diffusers' conversion script's (`LTX2_SCRIPT`), Gemma's
+    `GEMMA_COMFY`; rows are in the mirror's order. Checked against both banked files of each, bf16 and int8_convrot."""
+    components: dict[str, InspectedComponent] = {c["name"]: c for c in json.loads(LTX25.read_text())["components"]}
+    shapes = {c: {t["key"]: t["shape"] for t in components[c]["tensors"]} for c in ("transformer", "connectors", "text_encoder")}
+    order = {c: [t["key"] for t in components[c]["tensors"]] for c in shapes}
+    script = ltx2_script()
+    files = {"ltx2.comfy": "ltx-2.5-22b-distilled-transformer", "ltx2.comfy_gemma": "gemma4-12b-with-proj-ltx-2.5"}
+    held = [header(LTX25_COMFY / f"{files[name]}-{v}.safetensors.header") for v in ("bf16", "comfy-int8-convrot")]
+    plain = [{k: list(s) for k, (_, s) in h.items() if not k.endswith(COMPANIONS)} for h in held]
+    assert plain[0] == plain[1], (name, "the bf16 and int8 files hold other keys")
+    keys = plain[0]
+    built: list[Component[TableRow]] = []
+    if name == "ltx2.comfy":
+        prefix = "model.diffusion_model."
+        assert all(k.startswith(prefix) for k in keys), name
+        transformer, connectors = ltx2_native(script, [k.removeprefix(prefix) for k in keys])
+        for component, mapped in (("transformer", transformer), ("connectors", connectors)):
+            assert all(keys[prefix + n] == shapes[component][t] for t, n in mapped.items()), (component, "shapes")
+            rows = [row(t, mapped[t]) for t in order[component] if t in mapped]
+            assert set(mapped) <= set(shapes[component]), (component, sorted(set(mapped) - set(shapes[component]))[:4])
+            c: Component[TableRow] = {"name": component, "prefix": prefix, "rows": rows}
+            if rest := [(t, shapes[component][t]) for t in order[component] if t not in mapped]:
+                c["base"] = rest
+            built.append(c)
+        assert "base" not in built[0], "the DiT's own file lacks transformer keys"
+    else:
+        assets = sorted(k for k in keys if k.startswith(GEMMA_ASSETS))
+        projections = "text_embedding_projection."
+        _, connectors = ltx2_native(script, [k for k in keys if k.startswith(projections)])
+        renamed = {next(new + k.removeprefix(old) for old, new in GEMMA_COMFY if k.startswith(old)): k
+                   for k in keys if not k.startswith((projections, *GEMMA_ASSETS))}
+        assert renamed.keys() == shapes["text_encoder"].keys(), sorted(set(renamed) ^ set(shapes["text_encoder"]))[:4]
+        assert all(keys[n] == shapes["text_encoder"][t] for t, n in renamed.items()), "text_encoder shapes"
+        assert all(keys[n] == shapes["connectors"][t] for t, n in connectors.items()), "connectors shapes"
+        built.append({"name": "text_encoder", "rows": [row(t, renamed[t]) for t in order["text_encoder"]], "optional": assets})
+        built.append({"name": "connectors", "prefix": projections,
+                      "rows": [row(t, connectors[t].removeprefix(projections)) for t in order["connectors"] if t in connectors],
+                      "base": [(t, shapes["connectors"][t]) for t in order["connectors"] if t not in connectors]})
+    return {"name": name, "components": built}
+
+
 # ------------------------------------------------------------------ FLUX.2, FLUX.3 Klein and FIBO 2 LoRAs
 
 #: PEFT's and Diffusers' factors (also under DiffSynth's and PEFT's adapter name), and kohya's.
@@ -1677,6 +1775,7 @@ def generate() -> dict[str, Generated]:
         "qwenimage21.lora": qwenimage21_lora(),
         **{name: comfy_single_file(name) for name in COMFY},
         **{name: pan2_comfy(name) for name in PAN2},
+        **{name: ltx2_comfy(name) for name in ("ltx2.comfy", "ltx2.comfy_gemma")},
         "flux2.lora": flux2_lora(),
         "flux3klein.lora": flux3klein_lora(),
         "fibo2.lora": fibo2_lora(),

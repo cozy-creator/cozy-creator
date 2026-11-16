@@ -82,13 +82,23 @@ fn table_names<'a>(input: &'a Input, lora: bool) -> Vec<&'a str> {
 }
 
 fn base(input: &Input, bases: &[(&str, &[&Planned])], out: &mut Checked) -> Result<()> {
+    // What a base supplies (a table component's `base` rows) counts as held.
+    let mut supplied: BTreeMap<&str, Vec<(&str, &[u64])>> = BTreeMap::new();
+    for claim in &input.recognized.claims {
+        let rows = &input.tables[claim.table].components[claim.component].base;
+        supplied.entry(claim.name.as_str()).or_default().extend(rows.iter().map(|(k, s)| (k.as_str(), s.as_slice())));
+    }
+    fn held<'a>(supplied: &BTreeMap<&str, Vec<(&'a str, &'a [u64])>>, c: &str, t: &[&'a Planned]) -> Vec<(&'a str, &'a [u64])> {
+        let own = t.iter().map(|p| (p.key.as_str(), p.shape.as_slice()));
+        own.chain(supplied.get(c).into_iter().flatten().copied()).collect()
+    }
     let tables = table_names(input, false);
     let by_table = tables.iter().find_map(|t| family::of_table(t));
     let classes = (input.layout.pipeline.iter().map(|p| p.class.name.as_str()))
         .chain(input.layout.components.iter().map(|c| c.class.name.as_str()));
     let form = |fam: &Family| {
         let stored: Vec<Stored> = (bases.iter().filter(|(c, _)| fam.def(c).is_some()))
-            .map(|(c, t)| Stored { name: c, keys: t.iter().map(|p| (p.key.as_str(), p.shape.as_slice())).collect() })
+            .map(|(c, t)| Stored { name: c, keys: held(&supplied, c, t) })
             .collect();
         !stored.is_empty() && fam.form_of(&stored).is_ok()
     };
@@ -128,7 +138,7 @@ fn base(input: &Input, bases: &[(&str, &[&Planned])], out: &mut Checked) -> Resu
         return Ok(());
     }
     let stored: Vec<Stored> = (mine.iter())
-        .map(|(c, t)| Stored { name: c, keys: t.iter().map(|p| (p.key.as_str(), p.shape.as_slice())).collect() })
+        .map(|(c, t)| Stored { name: c, keys: held(&supplied, c, t) })
         .collect();
     let form = match fam.form_of(&stored) {
         Ok(form) => form,

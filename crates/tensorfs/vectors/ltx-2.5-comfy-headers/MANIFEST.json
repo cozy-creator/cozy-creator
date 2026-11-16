@@ -1,0 +1,41 @@
+{
+ "note": "LTX-2.5 in ComfyUI's two files, as Lightricks publishes them (Lightricks/LTX-2.5 is gated; these are a public re-upload, each file the size of Lightricks' own): the distilled DiT with its text connectors' blocks under `model.diffusion_model.` in LTX's native names, and Gemma 4 12B with the connectors' input projections (`text_embedding_projection.`) and its run data as U8 tensors; each in bf16 and ComfyUI's int8_convrot",
+ "members": [
+  {
+   "source": "comfyicu/LTX-2.5@1026e00f808dbd9601911479b22d65b760737dc8",
+   "member": "diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors",
+   "header_file": "ltx-2.5-22b-distilled-transformer-bf16.safetensors.header",
+   "header_sha256": "e0558e1aff461dedc507377213969ead72c1be73e0a0ebaea839f5e73942d747",
+   "header_bytes": 677624,
+   "full_length": 42018190584,
+   "declared_source_sha256": "31eb3cad89b9e54e99dd3baf286f70825ac4f6c660a70d9184d895be76d7bff4"
+  },
+  {
+   "source": "comfyicu/LTX-2.5@1026e00f808dbd9601911479b22d65b760737dc8",
+   "member": "diffusion_models/ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors",
+   "header_file": "ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors.header",
+   "header_sha256": "e17b9142e6789e13bc8eed785d4e507fb514399955a66539838a2e278e2dec76",
+   "header_bytes": 1086128,
+   "full_length": 21504034224,
+   "declared_source_sha256": "c4279eeff115cbeaca494bd2183e7d768c38fe85a184dc6afbb7159157c44334"
+  },
+  {
+   "source": "comfyicu/LTX-2.5@1026e00f808dbd9601911479b22d65b760737dc8",
+   "member": "text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors",
+   "header_file": "gemma4-12b-with-proj-ltx-2.5-bf16.safetensors.header",
+   "header_sha256": "232d5a16504de8e52eefee1ad1df8ba6a9e56f5c7fb4058d41599c53a70d6d94",
+   "header_bytes": 84096,
+   "full_length": 26263860594,
+   "declared_source_sha256": "1c647a94c0e902fb87f9a403cbca36a8b6d8e5867094442df1b41ae557cfd1c6"
+  },
+  {
+   "source": "comfyicu/LTX-2.5@1026e00f808dbd9601911479b22d65b760737dc8",
+   "member": "text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors",
+   "header_file": "gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors.header",
+   "header_sha256": "00e87feddb51fb56db9ea5a401f0d1c672a4adc63595395539104889016abcf0",
+   "header_bytes": 157144,
+   "full_length": 15372971786,
+   "declared_source_sha256": "09a89e084de1a149c3de60cfe9dfd3e5161967eb09eea39e806fcdeffdd568de"
+  }
+ ]
+}

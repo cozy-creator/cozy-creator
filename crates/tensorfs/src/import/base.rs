@@ -17,6 +17,51 @@ use super::{FILE_METADATA, SOURCE};
 
 /// Header metadata: the base a composition started from and each component's source.
 pub(crate) const COMPOSED: &str = "composed";
+/// Header metadata: each component's keys and shapes its source keeps in another file (a converter
+/// table's `base` rows), which [`on_base`] takes from the base. A composed header has none.
+pub(crate) const FROM_BASE: &str = "from_base";
+
+/// Each component's keys, with their shapes, that a base supplies.
+pub type Wanted = BTreeMap<String, Vec<(String, Vec<u64>)>>;
+
+pub(crate) fn wanted_value(wanted: &Wanted) -> Value {
+    let row = |(key, shape): &(String, Vec<u64>)| {
+        Value::List(vec![Value::Str(key.clone()), Value::List(shape.iter().map(|d| Value::Int((*d).into())).collect())])
+    };
+    Value::Map(wanted.iter().map(|(c, rows)| (c.clone(), Value::List(rows.iter().map(row).collect()))).collect())
+}
+
+/// What `header` still takes from a base: nothing once composed.
+pub fn wanted(header: &Header) -> Wanted {
+    let Some(Value::Map(by)) = header.metadata.get(FROM_BASE) else { return Wanted::new() };
+    let row = |v: &Value| match v {
+        Value::List(pair) => match pair.as_slice() {
+            [Value::Str(key), Value::List(dims)] => Some((key.clone(), dims.iter().filter_map(Value::as_u64).collect())),
+            _ => None,
+        },
+        _ => None,
+    };
+    (by.iter())
+        .map(|(c, rows)| (c.clone(), listed(Some(rows)).iter().filter_map(row).collect()))
+        .collect()
+}
+
+/// One line: what a source leaves to a base, and the base it needs.
+pub fn wanting(wanted: &Wanted) -> String {
+    let each: Vec<String> = (wanted.iter())
+        .map(|(c, rows)| {
+            let keys: Vec<&str> = rows.iter().take(3).map(|(k, _)| k.as_str()).collect();
+            let more = if rows.len() > keys.len() { ", …" } else { "" };
+            format!("{c}'s {} ({}{more})", rows.len(), keys.join(", "))
+        })
+        .collect();
+    let names: Vec<&str> = wanted.keys().map(String::as_str).collect();
+    format!(
+        "its layout keeps {} in another file: upload it with --base <model> whose {} holds them",
+        each.join("; "),
+        names.join(" and ")
+    )
+}
 
 /// The base a composition started from, as its header records it (empty fields are left out).
 #[derive(Clone, Debug, Default)]
@@ -86,9 +131,22 @@ pub fn on_base(store: &Store, base: &ObjectRef, source: &ObjectRef, names: &[Str
             "the source has {} components with tensors ({}): list only those, or take a source with one",
             many.len(), many.join(", "))),
     };
-    let supplies: Vec<Supply> = (pairs.iter())
-        .map(|(name, component)| Supply { name: name.clone(), header: &from, component: component.to_string() })
-        .collect();
+    let wanted = wanted(&from);
+    let mut supplies: Vec<Supply> = Vec::new();
+    for (name, component) in &pairs {
+        let rows = wanted.get(*component).map_or(&[][..], Vec::as_slice);
+        let lacking: Vec<String> = (rows.iter())
+            .filter(|(key, shape)| on.tensor(name, key).is_none_or(|t| &t.shape != shape))
+            .map(|(key, shape)| format!("{key} {shape:?}"))
+            .collect();
+        if !lacking.is_empty() {
+            return refuse(Code::MISSING_TENSOR, format!(
+                "the base's {name} lacks {} of what the source's layout keeps in another file ({}{}): take a base whose {name} holds them",
+                lacking.len(), lacking[..lacking.len().min(3)].join(", "), if lacking.len() > 3 { ", …" } else { "" }));
+        }
+        let fill = rows.iter().map(|(key, _)| key.clone()).collect();
+        supplies.push(Supply { name: name.clone(), header: &from, component: component.to_string(), fill });
+    }
     let mut metadata = on.metadata.clone();
     metadata.remove(Provenance::KEY);
     let mut sources = listed(metadata.get(SOURCE));

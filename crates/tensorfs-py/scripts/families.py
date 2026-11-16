@@ -368,7 +368,7 @@ FAMILIES: list[Spec] = [
         "inspected": "ltx-2.5-headers/lightricks-ltx-2.5-0.1.0-bf16.inspect.json",
         "classes": ["LTX2Pipeline", "LTX2VideoTransformer3DModel"],
         "folders": ["transformer", "connectors", "text_encoder", "vae", "audio_vae", "vocoder", "latent_upsampler"],
-        "sources": ["ltx2.lora"],
+        "sources": ["ltx2.lora", "ltx2.comfy", "ltx2.comfy_gemma"],
     },
     {
         "name": "pan2",
@@ -636,7 +636,8 @@ def check_tables(fam: Family) -> None:
             for comp in outs:
                 if comp not in fam["components"]:
                     sys.exit(f"{name}: component {comp} is not {fam['name']}'s")
-                targets = [r[0] for r in expand(c["rows"])]
+                # What the source keeps in another file, which a base supplies, is the component's too.
+                targets = [r[0] for r in expand(c["rows"])] + [k for k, _ in c.get("base", [])]
                 if t.get("lora"):
                     for r in expand(c["rows"]):
                         ops = cast(Ops, r[2])  # a LoRA row: [target, stem, ops]

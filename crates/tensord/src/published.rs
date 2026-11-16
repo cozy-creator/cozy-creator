@@ -593,7 +593,7 @@ impl Publisher {
             ));
         }
         let import = crate::activity::Import::new(&choice.source, &job.caller);
-        let made = self.make(ModelSource::Named(&choice.source), &choice.profiles, &choice.trained_on, providers, job.stop.as_ref(), &|stage, moved, total| {
+        let made = self.make(ModelSource::Named(&choice.source), &choice.profiles, &choice.trained_on, providers, false, job.stop.as_ref(), &|stage, moved, total| {
             import.moved(stage, moved, total);
             job.set(format!("{stage} for {path}"), moved, total)
         })?;
@@ -659,22 +659,25 @@ impl Publisher {
     }
 
     /// A provider source or a written file made into a local model (`make_source`), as a run's refusal.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn make_source(
         &self,
         source: ModelSource<'_>,
         profiles: &[String],
         trained_on: &str,
         providers: &Providers,
+        based: bool,
         stop: Option<&Stop>,
         progress: &(dyn Fn(&str, u64, u64) + Sync),
     ) -> Result<Made, Refused> {
-        self.make(source, profiles, trained_on, providers, stop, progress)
+        self.make(source, profiles, trained_on, providers, based, stop, progress)
             .map_err(|(code, message)| Refused { code, message })
     }
 
     /// A provider source or a written file made into a local model (`make_source`), one maker per source.
+    #[allow(clippy::too_many_arguments)]
     fn make(&self, source: ModelSource<'_>, profiles: &[String], trained_on: &str, providers: &Providers,
-        stop: Option<&Stop>, progress: &(dyn Fn(&str, u64, u64) + Sync),
+        based: bool, stop: Option<&Stop>, progress: &(dyn Fn(&str, u64, u64) + Sync),
     ) -> Result<Made, Failure> {
         let _inventory = crate::held_models::ModelChange;
         let source = match source {
@@ -692,7 +695,7 @@ impl Publisher {
         let gate = self.making.lock().unwrap().entry(key.clone()).or_default().clone();
         let made = {
             let _one = gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            make_source(&self.store, source, profiles, trained_on, providers, stop.cloned(), progress)
+            make_source(&self.store, source, profiles, trained_on, providers, based, stop.cloned(), progress)
         };
         let mut making = self.making.lock().unwrap();
         if Arc::strong_count(&gate) == 2 {
@@ -1752,12 +1755,14 @@ pub(crate) struct Made {
 /// `source` imported into a local model (normalized at ingest, design §6), or the one already
 /// made from its pinned spelling by the same converter tables: a moving revision is read again,
 /// a pinned one is reused.
+#[allow(clippy::too_many_arguments)]
 fn make_source(
     store: &Store,
     source: &str,
     profiles: &[String],
     trained_on: &str,
     providers: &Providers,
+    based: bool,
     cancellation: Option<Stop>,
     progress: &(dyn Fn(&str, u64, u64) + Sync),
 ) -> Result<Made, Failure> {
@@ -1798,6 +1803,11 @@ fn make_source(
     };
     let held = crate::storage::local(store, &format!("local/{name}")).map_err(io_failure)?;
     if let Some(local) = held.filter(|local| store.holds(&local.header)) {
+        let wanted = (!based).then(|| store.read(&local.header).ok().and_then(|bytes| tensorfs::format::Header::from_cbor(&bytes).ok()))
+            .flatten().map(|h| tensorfs::import::base::wanted(&h)).unwrap_or_default();
+        if !wanted.is_empty() {
+            return Err(("model_source_failed", tensorfs::import::base::wanting(&wanted)));
+        }
         crate::storage::transport(store, "import", tensorfs::fetch::shown(source), &format!("header={} reused", local.header.id()));
         return Ok(made(local.header));
     }
@@ -1820,6 +1830,7 @@ fn make_source(
         progress: &counted,
         // The stop wakes the import itself (`access`).
         stop: None,
+        based,
     };
     let started = Instant::now();
     let (header, files) = tensorfs::import::into_store(store, &request, Some(&name)).map_err(|e| {
@@ -1965,7 +1976,7 @@ fn apply_adapters(
         } else {
             // A provider-source LoRA (civitai://, hf://) is made here, normalized at ingest.
             let import = crate::activity::Import::new(&adapter.source, &job.caller);
-            let made = publisher.make(ModelSource::Named(&adapter.source), &adapter.profiles, "", providers, job.stop.as_ref(), &|stage, moved, total| {
+            let made = publisher.make(ModelSource::Named(&adapter.source), &adapter.profiles, "", providers, false, job.stop.as_ref(), &|stage, moved, total| {
                 import.moved(stage, moved, total);
                 job.set(format!("{stage} for an adapter of {}", grant.slot), moved, total)
             })?;

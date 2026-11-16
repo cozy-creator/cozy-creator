@@ -262,6 +262,8 @@ pub(crate) struct Imported {
     pub notes: Vec<String>,
     /// What no format read, kept with its keys as they are: why, source by source.
     pub unread: Vec<String>,
+    /// Each component's keys and shapes its source keeps in another file, which a base supplies.
+    pub from_base: base::Wanted,
 }
 
 impl Imported {
@@ -308,6 +310,9 @@ impl Imported {
         if let Some(family) = &self.family {
             out.insert(crate::family::FAMILY.into(), family.value());
         }
+        if !self.from_base.is_empty() {
+            out.insert(base::FROM_BASE.into(), base::wanted_value(&self.from_base));
+        }
         if !self.adapters.is_empty() {
             out.insert(crate::family::ADAPTER.into(), crate::family::Adapter::value_all(&self.adapters));
         }
@@ -332,6 +337,9 @@ pub struct Request<'a> {
     /// Asked before members/tensors and while network work is pending. True stops before
     /// finalization begins; an already-started commit cannot be undone.
     pub stop: Option<&'a (dyn Fn() -> bool + Sync)>,
+    /// A `--base` supplies what a layout keeps in another file (a table component's `base` rows):
+    /// without one, such a source is refused before its bulk downloads.
+    pub based: bool,
 }
 
 fn stopped(req: &Request) -> Result<()> {
@@ -965,6 +973,16 @@ pub(crate) fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
     let identity = |g: &source::Group| component(&g.folder, &g.stem);
     let mut ignored = Vec::new();
     let mut planned = engine::plan(&set, tables, &recognized, &identity, &mut ignored)?;
+    let mut from_base = base::Wanted::new();
+    for claim in &recognized.claims {
+        let rows = &tables[claim.table].components[claim.component].base;
+        if !rows.is_empty() {
+            from_base.entry(claim.name.clone()).or_default().extend(rows.iter().cloned());
+        }
+    }
+    if !from_base.is_empty() && !req.based {
+        return refuse(Code::MISSING_TENSOR, base::wanting(&from_base));
+    }
     let (mut files, mut filled, mut versions) = documents(&set, &recognized, &planned, req, &area)?;
     let sources: BTreeMap<String, &source::Group> = (recognized.claims.iter())
         .map(|c| (c.name.clone(), &set.groups[c.group]))
@@ -1179,6 +1197,7 @@ pub(crate) fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
         adapters: checked.adapters,
         notes: checked.notes,
         unread: unknown,
+        from_base,
     };
     // Reports completed conversion before publication: even the final progress callback
     // can refuse without committing a header. This is the final cooperative cancellation
@@ -1271,7 +1290,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         convert(&Request {
             sources: &[path.display().to_string()], converter: Some(AS_IS), source_variant: None,
-            trained_on: None, access: &Access::default(), tmp: tmp.path(), progress: &|_, _, _| {}, stop: None,
+            trained_on: None, access: &Access::default(), tmp: tmp.path(), progress: &|_, _, _| {}, stop: None, based: false,
         }, sink)
     }
 
@@ -1372,7 +1391,7 @@ mod tests {
         let store = crate::store::Store::open(dir.path().join("fresh-store")).unwrap();
         let sources = [path.display().to_string()];
         let request = Request { sources: &sources, converter: None, source_variant: None, trained_on: None,
-            access: &Access::default(), tmp: &dir.path().join("staging"), progress: &|_, _, _| {}, stop: None };
+            access: &Access::default(), tmp: &dir.path().join("staging"), progress: &|_, _, _| {}, stop: None, based: false };
         let (id, ancillary) = super::into_store(&store, &request, Some("native-import")).unwrap();
         assert_eq!(id, crate::format::ObjectRef::of(&header.to_cbor().unwrap()));
         assert!(ancillary.is_empty());
@@ -1400,6 +1419,7 @@ mod tests {
                 tmp: tmp.path(),
                 progress: &|_, _, _| {},
                 stop: None,
+                based: false,
             };
             let mut sink = Collected::default();
             let result = convert(&request, &mut sink);

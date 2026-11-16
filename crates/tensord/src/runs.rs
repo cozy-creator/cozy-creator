@@ -728,7 +728,7 @@ impl Runs {
             let choice = &stored::ModelChoice { parameter: parameter.to_owned(), ..choice.clone() };
             // On a base, cut to components, or with files added, a Hub checkpoint is referenced too: its header and tree are enough.
             let structure = base.is_some() || !adds.is_empty() || !kept.is_empty();
-            let Present { mut header, mut tree, mut row, folder, own_store } = self.present(actor, id, spec, choice, structure, observe, stoppable)?;
+            let Present { mut header, mut tree, mut row, folder, own_store } = self.present(actor, id, spec, choice, structure, base.is_some(), observe, stoppable)?;
             if own_store.is_some() && destination.starts_with("local/") {
                 return Err(refused("invalid_request", "a project's run's weights output stays in its project: upload it to a Hub model"));
             }
@@ -753,7 +753,7 @@ impl Runs {
                     return Err(refused("invalid_request", "a CozyTensors folder uploads as it is; compose from a model"));
                 }
                 // Its header and tree only: what the composition keeps stays the Hub's objects.
-                let on = self.present(actor, id, spec, base, true, observe, stoppable)?;
+                let on = self.present(actor, id, spec, base, true, false, observe, stoppable)?;
                 let record = tensorfs::import::base::Base {
                     model: base.model.clone(),
                     release: on.row["release"].as_str().unwrap_or_default().to_owned(),
@@ -891,6 +891,7 @@ impl Runs {
         spec: &Spec,
         choice: &stored::ModelChoice,
         structure: bool,
+        based: bool,
         observe: &(dyn Fn(&str, u64, u64) + Sync),
         stoppable: &Stoppable,
     ) -> Result<Present, Refused> {
@@ -916,7 +917,7 @@ impl Runs {
                 None => crate::published::ModelSource::Named(&choice.source),
             };
             let import = crate::activity::Import::new(&choice.source, &self.service.engine.caller_id(id));
-            let made = publisher.make_source(source, &choice.profiles, &choice.trained_on, &spec.providers, stop, &|stage, done, total| {
+            let made = publisher.make_source(source, &choice.profiles, &choice.trained_on, &spec.providers, based, stop, &|stage, done, total| {
                 import.moved(stage, done, total);
                 observe(stage, done, total)
             })?;
