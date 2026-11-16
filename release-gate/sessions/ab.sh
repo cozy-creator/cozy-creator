@@ -15,10 +15,14 @@
 #              run id, "tensord": true (this session's cozy as the pod's TensorD: a dev build's, `cozy` a run id,
 #              which the open RC's Runtime needs, `rc_runtime_needs_rc_cozy`), and "gpu_memory_limit" (`10GiB`,
 #              `off`: the development VRAM cap); the pod's `machine update` before this cell, so cells before and
-#              after compare two pairs)}];
+#              after compare two pairs; "tensord" may also be an https URL of a `cozy` binary or release archive)}];
 #              "wait_s" (optional: seconds the machine is left idle before the cell); "until_idle" (optional:
 #              {"region", "step_s", "max"}: while the cell's record shows the idle queue hadn't reached the region before it,
 #              wait step_s more and run it again with the next seed, as <cell>-w<i>, up to max);
+#              "host_free_gib" (optional: before this cell a root-shell process holds the pod's host memory so that
+#              about this many GiB stay available as it starts, killed first by the kernel; `off` ends it: a host
+#              as full as a smaller computer's);
+#              "optional" (optional: true, its failure does not count toward the stop);
 #              "expect" (optional: the status the cell must end in, `completed` by default; `failed` for a refusal it proves);
 #              "download" (optional: [[model ref, `cozy model install` flags…], …] made present on the pod first, so
 #              the cell's run starts with its weights on disk, as a machine whose package was installed earlier does);
@@ -34,6 +38,8 @@
 #              the 0.25.0 gate's RTX 5090 kazune was (about 3 GiB outside cozy; cr-293)
 . "$(dirname "$0")/lib.sh"
 CELLS=$(param cells '[]') COMPARE=$(param compare '[]') FREE_GIB=$(param free_gib '') GPUS=$(param gpus 1)
+# fetch_mbs: the first cell's weights must land at this many MB/s over its first 4 min, else the session ends (a slow host)
+FETCH_MBS=$(param fetch_mbs '')
 [[ -z $FREE_GIB || $FREE_GIB =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "free_gib $FREE_GIB"
 [[ $GPUS =~ ^[1-8]$ ]] || fail "gpus $GPUS"
 FLOOR0=$FLOOR_MBS AFTER0=$FLOOR_AFTER
@@ -70,8 +76,14 @@ for k in "${names[@]}"; do
     f=$(wheel "$k" "$kind" "$src") && [ -n "$f" ] || fail "cell $k: no $kind wheel from $src"
     say "cell $k: updates $kind to ${f##*/}"; w+=("--$kind" "$f")
   done
-  if [ "$(jq -r --arg k "$k" 'map(select(.name==$k)) | first | .update.tensord // false' <<<"$CELLS")" = true ]; then
+  td=$(jq -r --arg k "$k" 'map(select(.name==$k)) | first | .update.tensord // false' <<<"$CELLS")
+  if [ "$td" = true ]; then
     say "cell $k: updates TensorD to this session's $(cozy --version)"; w+=(--tensord "$(command -v cozy)")
+  elif [[ $td == https://* ]]; then
+    f=$OUT/wheels/$k-tensord; mkdir -p "$f"
+    if [[ $td == *.tar.gz ]]; then curl -fsSL --retry 5 "$td" | tar -xz -C "$f"; else curl -fsSL --retry 5 -o "$f/cozy" "$td"; fi
+    f=$(find "$f" -type f -name cozy | head -1); [ -n "$f" ] && chmod +x "$f" || fail "cell $k: no TensorD from $td"
+    say "cell $k: updates TensorD to $td"; w+=(--tensord "$f")
   fi
   cap=$(jq -r --arg k "$k" 'map(select(.name==$k)) | first | .update.gpu_memory_limit // empty' <<<"$CELLS")
   [[ -z $cap || $cap =~ ^([0-9]+[MG]iB|off)$ ]] || fail "cell $k: gpu_memory_limit $cap"
@@ -175,6 +187,63 @@ EOS
   [[ ${held:-x} =~ ^[0-9]+$ ]] || fail "$1: no holder: $(head -c 300 "$OUT/hold-$1-$2.txt")"
   say "$1: holder $((held >> 20)) MiB held, $((free >> 20)) MiB left free"
 }
+# hostmem <label>: the pod's host memory as the kernel accounts it (meminfo, each cgroup on TensorD's path, the
+# processes holding most), kept as host-<label>.txt with one summary line (tfs-299: a host tier with no room).
+HOSTMEM='m() { awk -v k="$1" "\$1 == k\":\" {printf \"%.1f\", \$2 / 1048576}" /proc/meminfo; }
+echo "meminfo GiB: total $(m MemTotal) available $(m MemAvailable) anon $(m AnonPages) shmem $(m Shmem) cached $(m Cached) dirty $(m Dirty) writeback $(m Writeback) slab_r $(m SReclaimable) slab_u $(m SUnreclaim) unevictable $(m Unevictable) mlocked $(m Mlocked)"
+t=$(pgrep -f "cozy_runtime.internal.executor" | head -1); t=$(ps -o ppid= -p "${t:-1}" 2>/dev/null | tr -d " "); [ -n "$t" ] || t=1
+d=/sys/fs/cgroup$(sed -n "s/^0:://p" /proc/$t/cgroup 2>/dev/null); d=${d%/}
+for _ in 1 2 3 4 5 6 7 8; do
+  [ -d "$d" ] || break
+  echo "cgroup $d max $(cat $d/memory.max 2>/dev/null) current $(cat $d/memory.current 2>/dev/null) $(grep -E "^(anon|file|kernel|shmem|file_dirty|file_writeback|slab_reclaimable|slab_unreclaimable|active_file|inactive_file|unevictable|sock) " $d/memory.stat 2>/dev/null | tr "\n" " ")"
+  case $d in /sys/fs/cgroup) break ;; esac; d=$(dirname "$d")
+done
+for x in /sys/fs/cgroup/*/cozy-* /sys/fs/cgroup/cozy-*; do [ -d "$x" ] && echo "cgroup $x current $(cat $x/memory.current 2>/dev/null) max $(cat $x/memory.max 2>/dev/null)"; done
+ps -eo pid,ppid,rss,stat,etimes,args --sort=-rss | head -14 | cut -c1-180
+for p in $(pgrep -f "cozy_runtime.internal.executor"); do echo "executor $p $(grep -E "^(VmRSS|RssAnon|RssFile|RssShmem|VmPin|VmLck):" /proc/$p/status 2>/dev/null | tr -s " \t" " " | tr "\n" " ")"; done
+df -h /dev/shm 2>/dev/null | tail -1'
+hostmem() {
+  timeout 60 cozy machine ssh "$NAME" "echo $(base64 -w0 <<< "$HOSTMEM") | base64 -d | sh" 2>&1 | grep -v '^Warning: Permanently added' > "$OUT/host-$1.txt"
+  say "$1 host: $(head -1 "$OUT/host-$1.txt" | cut -c1-240); $(grep -m1 '^cgroup' "$OUT/host-$1.txt" | cut -c1-260)"
+}
+# ballast <cell> <GiB|off>: a root-shell process on the pod holds anonymous memory so about GiB stay available as it starts
+# (the tightest of MemAvailable and the pod's cgroup); what executors take later comes out of those GiB. oom_score_adj 1000.
+BALLAST='import mmap, os, sys, time
+open("/proc/self/oom_score_adj", "w").write("1000")
+keep, ready, step = int(float(sys.argv[1]) * 2**30), sys.argv[2], 256 << 20
+def available():
+    a = next(int(l.split()[1]) * 1024 for l in open("/proc/meminfo") if l.startswith("MemAvailable:"))
+    try:
+        top = open("/sys/fs/cgroup/memory.max").read().strip()
+        if top != "max":
+            stat = dict(l.split() for l in open("/sys/fs/cgroup/memory.stat"))
+            used = int(open("/sys/fs/cgroup/memory.current").read()) - int(stat["inactive_file"]) - int(stat["active_file"])
+            a = min(a, int(top) - used)
+    except (OSError, KeyError, ValueError):
+        pass
+    return a
+held, ones = [], b"\1" * (16 << 20)
+while available() > keep + step:
+    m = mmap.mmap(-1, step, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
+    for _ in range(step // len(ones)):
+        m.write(ones)
+    held.append(m)
+open(ready, "w").write(f"{os.getpid()} {len(held) * step} {available()}\n")
+while True:
+    time.sleep(3600)'
+ballast() {
+  local script
+  if [ "$2" = off ]; then
+    script='pkill -f /var/tmp/ab-ballast.py; rm -f /var/tmp/ab-ballast.ready; sleep 2'
+  else
+    script="pkill -f /var/tmp/ab-ballast.py; rm -f /var/tmp/ab-ballast.ready; echo $(base64 -w0 <<< "$BALLAST") | base64 -d > /var/tmp/ab-ballast.py
+setsid nohup python3 /var/tmp/ab-ballast.py $2 /var/tmp/ab-ballast.ready > /var/tmp/ab-ballast.out 2>&1 < /dev/null &
+i=0; while [ \$i -lt 600 ]; do sleep 1; i=\$((i + 1)); [ -s /var/tmp/ab-ballast.ready ] && break; done; sleep 5; cat /var/tmp/ab-ballast.ready 2>/dev/null || tail -c 300 /var/tmp/ab-ballast.out"
+  fi
+  timeout 900 cozy machine ssh "$NAME" "echo $(base64 -w0 <<< "$script") | base64 -d | sh" > "$OUT/ballast-$1-$2.txt" 2>&1
+  say "$1: host ballast $2: $(grep -v '^Warning: Permanently added' "$OUT/ballast-$1-$2.txt" | tail -1 | cut -c1-200)"
+}
+hostmem start
 fails=0
 declare -A MADE=()
 for k in "${names[@]}"; do
@@ -204,11 +273,23 @@ for k in "${names[@]}"; do
   w=$(jq -r '.wait_s // 0' <<<"$c"); [[ $w =~ ^[0-9]+$ ]] || fail "cell $k: wait_s $w"
   [ "$w" = 0 ] || { say "$k: the machine left idle ${w}s"; sleep "$w"; }
   echo "$k" > "$OUT/current"
+  hb=$(jq -r '.host_free_gib // empty' <<<"$c"); [ -z "$hb" ] || ballast "$k" "$hb"
   say "$k: GPU before: $(gpu | paste -sd';')"
   tree=$(jq -r '.tree // empty' <<<"$c") target=$(jq -r .target <<<"$c")
   cd "$PACKAGES/$tree" || fail "no tree for $k"
   [ -z "$tree" ] || target=./$target
+  GW=''
+  if [ -n "$FETCH_MBS" ] && [ "$k" = "${names[0]}" ]; then
+    ( b0=$(cozy machine show "$NAME" --json 2>/dev/null | jq -r '.status.disk_models_bytes // 0'); sleep 240
+      b1=$(cozy machine show "$NAME" --json 2>/dev/null | jq -r '.status.disk_models_bytes // 0')
+      mbs=$(( (b1 - b0) / 240 / 1000000 ))
+      echo "$mbs" > "$OUT/fetch-mbs"
+      [ "$mbs" -ge "$FETCH_MBS" ] || { touch "$OUT/slow"; pkill -f "cozy run .* --on $NAME"; } ) & GW=$!
+  fi
   step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?
+  [ -z "$GW" ] || kill "$GW" 2>/dev/null
+  [ ! -f "$OUT/fetch-mbs" ] || say "$k: weights landed at $(cat "$OUT/fetch-mbs") MB/s over its first 4 min"
+  [ ! -f "$OUT/slow" ] || fail "a slow host: $(cat "$OUT/fetch-mbs") MB/s of weights, under $FETCH_MBS"
   N=$(runno "$k"); [ -n "$N" ] || N=$(current "$k")  # a failed run's output names it only in its first line
   # `step` runs every cell from the session's project (lib.sh RUN_PROJECT): its runs are known there alone.
   cd "$RUN_PROJECT" || fail "no $RUN_PROJECT"
@@ -237,6 +318,7 @@ for k in "${names[@]}"; do
     say "$k: $reg's idle queue before the last request: $q (after ${waited}s idle; the last request is $kk)"
   fi
   say "$k weights: $(weights "$k")"
+  hostmem "$k"
   want=$(jq -r '.expect // "completed"' <<<"$c")
   if [ "$st" != completed ]; then
     why=$(jq -r '.reason.message // .reason // empty' "$OUT/$k.json" 2>/dev/null)
@@ -246,7 +328,7 @@ for k in "${names[@]}"; do
   fi
   # A refusal before any run (st none) is the failure an `expect: failed` cell proves.
   [ "$st" = "$want" ] || { [ "$want" = failed ] && [ "$st" = none ] && [ "$code" != 0 ]; } ||
-    { fails=$((fails + 1)); [ "$fails" -lt 2 ] || fail "two cells failed"; }
+    [ "$(jq -r '.optional // false' <<<"$c")" = true ] || { fails=$((fails + 1)); [ "$fails" -lt 2 ] || fail "two cells failed"; }
 done
 rm -f "$OUT/current"
 
