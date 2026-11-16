@@ -13,6 +13,8 @@
 gh run download "$(param red)" -R cozy-creator/cozy-creator -p 'cozy-*' -D "$OUT/red" > /dev/null 2>&1 \
   && install -m 0755 "$OUT"/red/cozy-*/cozy-linux-x86_64 "$OUT/red-cozy" || fail "no cozy from dev-build $(param red)"
 say "red $("$OUT/red-cozy" --version), green $(cozy --version)"
+# ssh for the ballast file (`cozy machine ssh` needs a key the rental carries)
+[ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS="--ssh --gpus 2"
 quote "$(param need_s 3600)"
 rent
