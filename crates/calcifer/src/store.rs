@@ -1515,6 +1515,19 @@ macro_rules! journal_methods {
         })
     }
 
+    /// The machines' runs not yet settled that their machines haven't begun (cl-1082): a vault's maximum doesn't wait for them.
+    pub(crate) fn unsettled_unstarted(&self) -> Result<Vec<RunId>> {
+        self.read(|conn| {
+            let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind <> 'here' AND started_at IS NULL AND (?1 IS NULL OR owner=?1) AND custody='owned' ORDER BY +number")?;
+            let ids = statement
+                .query_map([self.owner_id()], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            ids.into_iter()
+                .map(|id| RunId::try_from(id).map_err(|e| StoreError::Corrupt(e.into())))
+                .collect()
+        })
+    }
+
     /// Calcifer's own runs not yet settled: those an earlier Calcifer stopped under, or that are going now.
     pub(crate) fn unsettled_here(&self) -> Result<Vec<RunId>> {
         self.read(|conn| {

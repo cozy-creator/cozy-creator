@@ -595,9 +595,9 @@ impl Calcifer {
             .filter_map(|(id, _)| RunId::try_from(id.clone()).ok()).collect()
     }
 
-    /// A run of `project` whose driver's task is going (cl-1060): settling, handing on.
-    pub(crate) fn driving_into(&self, project: &str) -> Option<RunId> {
-        self.routed(project).into_iter().find(|id| lock(&self.driving).contains(id))
+    /// The runs of `project` whose drivers' tasks are going (cl-1060): sending, settling, handing on.
+    pub(crate) fn driven_into(&self, project: &str) -> Vec<RunId> {
+        self.routed(project).into_iter().filter(|id| lock(&self.driving).contains(id)).collect()
     }
 
 
@@ -803,6 +803,31 @@ impl Calcifer {
 
     /// Existing accepted work can settle after viewing closes. This never
     /// constructs a public run response or admits another execution.
+    /// Ends `project`'s runs their machines haven't begun, as its vault locks past its maximum (cl-1082): one never accepted fails
+    /// `vault_locked`; one accepted but not begun its machine cancels. A run its machine began is never ended here.
+    pub(crate) fn end_unstarted(&self, project: &str) -> Result<Vec<u64>, Error> {
+        let Some(owner) = self.owner_of(project) else { return Ok(vec![]) };
+        let store = owner.store()?;
+        let mut ended = vec![];
+        for id in store.unsettled_unstarted()? {
+            let Some(row) = store.run(id.as_str())?.filter(|row| !row.cancel_requested) else { continue };
+            let events = match row.state {
+                State::Queued | State::Sent => store.fail(id.as_str(), Reason {
+                    code: "vault_locked".into(),
+                    message: "the project locked at its maximum before the run's machine began it".into(),
+                    next: vec!["cozy vault unlock".into()],
+                    ..Default::default()
+                })?,
+                State::Accepted => store.request_cancel(id.as_str())?,
+                State::Settled => continue,
+            };
+            self.publish(&id, events);
+            self.wake(&id);
+            ended.push(row.number);
+        }
+        Ok(ended)
+    }
+
     pub(crate) fn cancel_for_lock(&self,project:&str)->Result<Vec<u64>,Error> {
         let Some(owner)=self.owner_of(project) else {return Ok(vec![]);};
         let store=owner.store()?;
