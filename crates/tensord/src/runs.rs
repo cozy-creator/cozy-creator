@@ -590,6 +590,7 @@ impl Runs {
             inputs: spec.inputs.clone(),
             parent: spec.parent.clone(),
             prepares: spec.warm || spec.remove,
+            background: crate::ahead::guess(id),
             ..Default::default() // root and family: stamped at acceptance
         };
         Ok(Drafted::New(Box::new(draft), references))
@@ -632,6 +633,8 @@ impl Runs {
                 }
             };
             this.local.prepared(&run);
+            // A list's item that ended wants nothing more: what its list dropped for it ends too (`ahead::put`).
+            crate::ahead::lined(&this, &this.service.engine.caller_id(&run));
             if let Err(error) = ended {
                 crate::private_io::warning(&this.service.engine, &run, format_args!("preparation: {error}"));
             }
@@ -1066,6 +1069,10 @@ impl Runs {
         let hub = spec.hub.clone().or_else(|| self.own_hub.clone());
         // Its weights come at its place in the download line while its code installs (cl-966).
         let mut early = self.early(actor, id, &spec, hub.clone(), &stoppable.stop);
+        let caller = self.service.engine.caller_id(id);
+        if early.is_some() {
+            crate::ahead::lined(self, &caller);
+        }
         let held = match &spec.source {
             Source::Release { .. } | Source::Models => None,
             Source::Installation(alias) => Some(
@@ -1127,6 +1134,10 @@ impl Runs {
         // What a root call reads, for its function's next quote on any machine (cl-967).
         if let (false, true, Some(plan)) = (spec.warm, spec.parent.is_empty(), &plan) {
             self.record_reads(id, &plan.upfront());
+        }
+        // A call reads them: no longer what only a guess brought (cl-1104).
+        if let (false, Some(plan)) = (spec.warm, &plan) {
+            crate::ahead::brought(self.publisher.store(), &plan.upfront(), false);
         }
         // A call's weights come from here on, in the Start pass's order, until its executor
         // asks for them itself; its import-only parent starts now unless it already did. A
@@ -1251,7 +1262,20 @@ impl Runs {
                 };
                 let weights = format!("{}'s weights", installation.package);
                 let (sure, guess) = (|rank| self.order(id, &spec, rank), |rank| self.order_guess(id, rank));
-                moved = self.download(hub.clone(), &reads, (&sure, &guess), fits, &*observe, stoppable, &weights, id)?;
+                // A caller's guess (cl-1104): what nothing of was here is its own to bring, the first to go on a short disk, and
+                // its download ends for a run's need that has to make room.
+                let guessed = crate::ahead::guess(&caller).then(|| {
+                    let all: Vec<_> = reads.sure.iter().chain(reads.guesses.iter().flat_map(|(_, set)| set)).cloned().collect();
+                    crate::ahead::brought(self.publisher.store(), &all, true);
+                    crate::ahead::downloading(&stoppable.stop)
+                });
+                let downloaded = self.download(hub.clone(), &reads, (&sure, &guess), fits, &*observe, stoppable, &weights, id, &|| crate::ahead::lined(self, &caller));
+                // Ended, it holds nothing more before the need that ended it looks (`ahead::make_way`).
+                if downloaded.is_err() {
+                    drop(early.take());
+                }
+                drop(guessed);
+                moved = downloaded?;
             }
             // The installed release, its interface and the installation a call may name, in the
             // warm run's result.
@@ -1347,11 +1371,12 @@ impl Runs {
 
     /// Every chunk of `reads` here from `hub` (`Fetch::lined`), its sure ones at `order.0`, its guesses at `order.1`, its bytes
     /// the warm run's progress and the machine's download of `weights` for run `id`; `room` is asked for the sure ones absent
-    /// first, and each guess is fetched only while it fits on the disk beside what comes first.
+    /// first, and each guess is fetched only while it fits on the disk beside what comes first. `wanted` hears once they are
+    /// all in the download line.
     #[allow(clippy::too_many_arguments)]
     fn download(&self, hub: Option<hub::Source>, reads: &crate::access::Reads, order: (&dyn Fn(u32) -> u64, &dyn Fn(u32) -> u64),
         room: impl FnOnce(u64) -> Result<(), Refused>, observe: &(dyn Fn(&str, u64, u64) + Sync), stoppable: &Stoppable, weights: &str,
-        id: &str) -> Result<tensorfs::fetch::Landed, Refused> {
+        id: &str, wanted: &dyn Fn()) -> Result<tensorfs::fetch::Landed, Refused> {
         let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub, u64::MAX);
         room(fetch.absent(&reads.sure)?)?;
         let free = match reads.guesses.is_empty() {
@@ -1370,7 +1395,7 @@ impl Runs {
             wait.moved("", done, total);
             observe("downloading its weights", done, total)
         };
-        fetch.download(lined, &caller, &stoppable.stop, &report).map_err(|e| match stoppable.stop.is_cancelled() {
+        fetch.download(lined, &caller, &stoppable.stop, &report, wanted).map_err(|e| match stoppable.stop.is_cancelled() {
             true => refused(crate::published::CANCELED, "The run was canceled while its models downloaded."),
             false => {
                 let text = e.to_string();
@@ -1402,10 +1427,14 @@ impl Runs {
         }
     }
 
-    /// A guess of run `id`'s (`priority::guess`), `rank` within it: behind every run's sure needs, in job order.
+    /// A guess of run `id`'s (`priority::guess`), `rank` within it: behind every run's sure needs, in job order. A caller's guess
+    /// (a prepare item) has no sure need: all it fetches goes behind every run's guesses too (cl-1104).
     fn order_guess(&self, id: &str, rank: u32) -> u64 {
         let seq = self.service.engine.get(id).map_or(u64::MAX, |record| record.root_seq());
-        crate::origin::priority::guess(seq, rank)
+        match crate::ahead::guess(&self.service.engine.caller_id(id)) {
+            true => crate::origin::priority::prepare(seq, rank),
+            false => crate::origin::priority::guess(seq, rank),
+        }
     }
 
     /// A release's weights from its card, its static reading, wanted before its environment builds (cl-966): what its
@@ -1626,7 +1655,7 @@ impl Runs {
                     let weights = format!("{}'s weights", installation.package);
                     let reads = crate::access::Reads { sure: plan.read(), ..Default::default() };
                     let (sure, guess) = (|rank| self.order(id, spec, rank), |rank| self.order_guess(id, rank));
-                    self.download(hub.clone(), &reads, (&sure, &guess), room, &**observe, stoppable, &weights, id)?;
+                    self.download(hub.clone(), &reads, (&sure, &guess), room, &**observe, stoppable, &weights, id, &|| ())?;
                 }
                 kept.push(serde_json::to_string(&KeptMember {
                     installation: installation.alias.clone(),
@@ -1999,6 +2028,7 @@ impl Runs {
     pub(crate) fn need(&self, id: &str, manifest: &str, components: &[String]) -> Result<(), Refused> {
         let store = self.publisher.store();
         let checkpoint = crate::storage::checkpoint(store, manifest)?;
+        crate::ahead::brought(store, &[(manifest.to_owned(), vec![])], false);
         let absent: Vec<ObjectRef> = crate::storage::chunks(&checkpoint, components).into_iter().filter(|object| !store.holds(object)).collect();
         let Some(hub) = self.hub(id).filter(|_| !absent.is_empty()) else { return Ok(()) };
         let machine = self.publisher.machine();

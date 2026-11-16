@@ -302,8 +302,11 @@ paths:
   /v1/prepare:
     put:
       summary: >-
-        What the caller expects demand for here with no job yet, its whole set, replacing its last; each behind every upcoming
-        job (cl-967). Its downloads show in Status under `cozy:prepare:<key>`.
+        What the caller expects demand for here with no job yet, its whole set, replacing its last: its guesses (cl-1104) and
+        what waits elsewhere (cl-967). Each behind every upcoming job and every run's guesses, and no job: it holds no rental,
+        gives the install line and the disk to any run, and what only it brought is the first to go. One the set drops stops
+        once what replaced it is in the download line, so what both read never stops. Its downloads show in Status under
+        `cozy:prepare:<key>`.
       operationId: prepare
       requestBody:
         content: {application/json: {schema: {$ref: '#/components/schemas/Prepare'}}}

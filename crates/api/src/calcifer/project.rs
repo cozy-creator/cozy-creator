@@ -1404,8 +1404,9 @@ pub struct Ended {
     pub asks: Vec<String>,
 }
 
-/// One upcoming job's code and weights its machine has ready ahead of it (cl-967): no job's run; wrong, it costs bytes, and the job's
-/// run fetches what it needs.
+/// The code and weights a machine has ready ahead of a job (cl-967): an upcoming job's, or with no job yet a guess's, what a render of
+/// the boxes it names would run on the machine it would go to (cl-1104). No job's run; wrong, it costs bytes, and the job's run
+/// fetches what it needs.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Ahead {
@@ -1414,7 +1415,7 @@ pub struct Ahead {
     pub machine: String,
     /// Its run, kept out of the list people read.
     pub run: u64,
-    /// The boxes it prepares for: each shows it as its own preparation while it waits.
+    /// The boxes it prepares for: each shows it as its own preparation while it waits. None: a guess that is one no more.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub names: Vec<String>,
     /// `installing it`, `downloading its weights`, …; none once it ended.

@@ -92,7 +92,27 @@ impl Publisher {
         let _install = job.within(crate::activity::Kind::Install, project.package);
         // One build at a time, in job order (cl-905): its tools' downloads and disk don't split with another's.
         let said = |reason: Option<String>| job.waiting(reason);
-        let _turn = crate::line::INSTALLS.turn(job.order, &job.caller, project.label, job.stop.as_ref(), &said).ok_or_else(super::canceled)?;
+        loop {
+            let turn = crate::line::INSTALLS.turn(job.order, &job.caller, project.label, job.stop.as_ref(), &said).ok_or_else(super::canceled)?;
+            *job.yields.lock().unwrap() = Some(turn.outranked().clone());
+            let built = self.build_in_turn(env, project, job);
+            *job.yields.lock().unwrap() = None;
+            // A caller's guess a run's install took the line from (cl-1104): its build stopped, and goes again after that run's,
+            // from the turn its run first took.
+            let gave_way = turn.outranked().is_cancelled() && !job.stop.as_ref().is_some_and(crate::stop::Stop::is_cancelled);
+            let nested = turn.nested();
+            drop(turn);
+            match built {
+                Err((super::CANCELED, _)) if gave_way && !nested => {
+                    tracing::info!(run = job.caller, "install line: {} gave its turn to a run's install", project.label);
+                }
+                built => return built,
+            }
+        }
+    }
+
+    /// `build`, its turn in the install line held.
+    fn build_in_turn(&self, env: &Path, project: &Project, job: &Job) -> Result<Built, Failure> {
         // uv's downloads come from their own index, outside the downloader, and a full link of weights starved them (run
         // 43316018343: 1080 s at 100-450 KiB/s): while they move, the weights leave them the link but a share (cl-1007).
         let _installing = tensorfs::fetch::installing();
@@ -473,7 +493,8 @@ impl Publisher {
         command.args(args).envs(env.iter().copied()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
         // A package's environment is the machine's, whichever project's run builds it (cl-984): its uv runs on the
         // machine's cache and Pythons, never a project's.
-        let (ended, stderr) = run_builder(&mut command, &self.scope_namespace, job.stop.as_ref(), &|read| job.bytes(read, 0))?;
+        let stop = job.stops();
+        let (ended, stderr) = run_builder(&mut command, &self.scope_namespace, stop.as_ref().map(|(stop, _)| stop), &|read| job.bytes(read, 0))?;
         let step = args[..2.min(args.len())].join(" ");
         match ended {
             Supervised::Exited(status) if status.success() => Ok(()),

@@ -61,6 +61,11 @@ pub(crate) mod priority {
     }
     /// Kept for later (a warm set's `downloaded`).
     pub(crate) const BEHIND: u64 = u64::MAX;
+    /// Whether `order` is a caller's guess's (`prepare`, or kept for later): no run's, so it gives way to every run's, in the
+    /// install line too (cl-1104).
+    pub(crate) fn prefetch(order: u64) -> bool {
+        order.saturating_sub(2) >> 62 == 3
+    }
 }
 
 /// A checkpoint's origin, with the CAs its hosts may present beyond the public roots (a PEM
@@ -200,19 +205,34 @@ impl Machine {
 
     /// Every one of `wants` (objects from a remote, at an order) here, fetched when absent, all in
     /// line at once: the downloader takes them by their orders. Their bytes count into `progress`.
-    pub(crate) fn all(&self, wants: Vec<(Remote, Vec<ObjectRef>, u64)>, progress: Arc<Progress>, stop: &Stop) -> Result<Landed> {
+    /// `lined` hears once each absent one is in the downloader's line, before any is waited for.
+    pub(crate) fn all(&self, wants: Vec<(Remote, Vec<ObjectRef>, u64)>, progress: Arc<Progress>, lined: &dyn Fn(), stop: &Stop) -> Result<Landed> {
         let wants = (wants.into_iter())
             .map(|(remote, objects, priority)| Ok((self.of(&remote)?, remote.origin, objects, priority)))
             .collect::<Result<Vec<_>>>()?;
-        self.block(stop, async move {
+        let mut all = Box::pin(async move {
             let lines: Vec<Want> = wants.iter().map(|(.., priority)| Want { components: None, priority: *priority, progress: Some(progress.as_ref()) }).collect();
             let each = wants.iter().zip(&lines).map(|((fetcher, origin, objects, _), want)| fetcher.objects(origin, objects, want));
             let mut landed = Landed::default();
             for one in futures_util::future::try_join_all(each).await? {
                 (landed.origin, landed.volume, landed.local) = (landed.origin + one.origin, landed.volume + one.volume, landed.local + one.local);
             }
-            Ok(landed)
-        })
+            Ok::<_, Refusal>(landed)
+        });
+        let first = self.line(all.as_mut());
+        lined();
+        match first {
+            std::task::Poll::Ready(landed) => landed,
+            std::task::Poll::Pending => self.block(stop, all),
+        }
+    }
+
+    /// `wanted` polled once, here: a fetch wants each of its absent objects at its first poll (`Fetcher::objects`), so they are
+    /// in the downloader's line when this returns, and a want that takes over another's objects never finds one unwanted in
+    /// between (cl-1104, `ahead::put`). What it waits on from here is woken on the runtime it is then given to.
+    fn line<T>(&self, wanted: std::pin::Pin<&mut (impl Future<Output = T> + ?Sized)>) -> std::task::Poll<T> {
+        let _entered = self.runtime.enter();
+        wanted.poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
     }
 
     /// Each of `objects` here, fetched from `remote` when absent.
@@ -236,13 +256,17 @@ impl Machine {
     ) -> Result<tokio::task::JoinHandle<Result<Landed>>> {
         let (fetcher, origin, returned) = (self.of(remote)?, remote.origin.clone(), self.returned.clone());
         let completion = FetchCompletion(Some(settled));
-        Ok(self.runtime.spawn(async move {
+        let mut wanted = Box::pin(async move {
             let mut completion = completion;
             let result = fetcher.objects(&origin, &objects, &Want { priority, ..Want::default() }).await;
             returned.notify_one();
             if let Some(settled) = completion.0.take() { settled(&result); }
             result
-        }))
+        });
+        Ok(match self.line(wanted.as_mut()) {
+            std::task::Poll::Ready(result) => self.runtime.spawn(async move { result }),
+            std::task::Poll::Pending => self.runtime.spawn(wanted),
+        })
     }
 }
 

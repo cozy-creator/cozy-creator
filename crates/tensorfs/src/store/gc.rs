@@ -423,13 +423,23 @@ impl Store {
 
     /// The caller holds the collection fence for the whole mark and sweep.
     pub(super) fn collect_locked(&self, need: u64, older_than: Duration) -> Result<Collected> {
+        self.collect(need, older_than, false)
+    }
+
+    /// As `collect_locked`, of the checkpoints only a guess brought (`Store::guess`) alone, least recently used first, as far
+    /// as `need` asks: they go whether or not they free it all.
+    pub(super) fn collect_guessed(&self, need: u64) -> Result<Collected> {
+        self.collect(need, Duration::ZERO, true)
+    }
+
+    fn collect(&self, need: u64, older_than: Duration, guessed_only: bool) -> Result<Collected> {
         let now = SystemTime::now();
         let cutoff = now.checked_sub(self.grace).unwrap_or(SystemTime::UNIX_EPOCH);
         self.restore_trash()?;
         let mut marked = self.roots()?;
         let mut uses = self.uses(&marked)?;
         let objects = self.objects()?;
-        let (dropped, evicted, lanes) = self.drop_uses(&mut uses, &marked, &objects, need, older_than, cutoff)?;
+        let (dropped, evicted, lanes) = self.drop_uses(&mut uses, &marked, &objects, need, older_than, cutoff, guessed_only)?;
         for kept in uses {
             marked.extend(kept.digests);
             marked.insert(kept.name);
@@ -476,8 +486,9 @@ impl Store {
     /// Removes the lanes `need` asks for from the store and from `uses`, each logged: their
     /// names, and the objects only they kept, which go now. The least recently used unused for
     /// `older_than` go first, and only when, with the unreferenced objects past the grace, they
-    /// free `need` (`u64::MAX`: every one, the TTL's). A lane a root holds any of stays.
-    #[allow(clippy::type_complexity)]
+    /// free `need` (`u64::MAX`: every one, the TTL's). A lane a root holds any of stays. What only a guess brought
+    /// (`Store::guess`) goes before any a call read; `guessed_only`: those alone, as far as `need` asks.
+    #[allow(clippy::type_complexity, clippy::too_many_arguments)]
     fn drop_uses(
         &self,
         uses: &mut Vec<Use>,
@@ -486,12 +497,16 @@ impl Store {
         need: u64,
         older_than: Duration,
         cutoff: SystemTime,
+        guessed_only: bool,
     ) -> Result<(BTreeSet<String>, BTreeSet<String>, Vec<Evicted>)> {
         let none = (BTreeSet::new(), BTreeSet::new(), vec![]);
         let Some(since) = SystemTime::now().checked_sub(older_than).filter(|_| need > 0) else {
             return Ok(none);
         };
-        let lanes = lanes(uses);
+        let guessed = self.guesses();
+        let is_guess = |lane: &Lane<'_>| lane.digests.iter().any(|digest| guessed.contains(*digest));
+        let mut lanes = lanes(uses);
+        lanes.sort_by_key(|lane| !is_guess(lane));
         let mut count = keepers(&lanes);
         let length = |sha: &str| objects.get(sha).map_or(0, |(length, _)| *length);
         let old = |sha: &str| objects.get(sha).is_some_and(|(_, modified)| *modified < cutoff);
@@ -503,7 +518,7 @@ impl Store {
         let in_use: Vec<bool> = lanes.iter().map(|l| {
             l.uses.iter().any(|u| roots.contains(&u.name)) || l.digests.iter().any(|d| count[d] == 1 && roots.contains(*d))
         }).collect();
-        for (lane, _) in lanes.iter().zip(&in_use).filter(|(l, held)| l.used <= since && !**held) {
+        for (lane, _) in lanes.iter().zip(&in_use).filter(|(l, held)| l.used <= since && !**held && (!guessed_only || is_guess(*l))) {
             if free >= need {
                 break;
             }
@@ -519,7 +534,7 @@ impl Store {
             free = free.saturating_add(bytes);
             plan.push((lane, bytes));
         }
-        if free < need && need != u64::MAX {
+        if free < need && need != u64::MAX && !guessed_only {
             return Ok(none);
         }
         let names = if plan.is_empty() { HashMap::new() } else { self.names() };
@@ -527,6 +542,9 @@ impl Store {
         for (lane, bytes) in &plan {
             for u in &lane.uses {
                 self.remove_record(&self.root.join("uses").join(&u.name))?;
+            }
+            for digest in lane.digests.iter().filter(|digest| guessed.contains(**digest)) {
+                let _ = fs::remove_file(self.root.join("uses").join(super::retention::GUESSED).join(digest));
             }
             let name = lane.uses.iter().find_map(|u| names.get(&u.name)).cloned()
                 .unwrap_or_else(|| format!("cache entry {}", &lane.uses[0].name[..12]));
