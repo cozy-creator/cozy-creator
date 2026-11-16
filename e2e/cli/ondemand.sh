@@ -158,20 +158,74 @@ cat "$OUT/ondemand-need.timeline.json"
 while read -r why; do check "ondemand-need: $why"; done < "$OUT/ondemand-need.failed"
 }
 
-# An install's packages come from their own index, outside the downloader, whose many requests starved them on a pod (run
-# 43316018343: 1080 s at 100-450 KiB/s while weights came). While an install builds, every download after it gives way and none
-# starts; then they go on. `spare` holds with pagebox (900 MB, on demand) guessed behind every run's needs over the 30 MB/s link,
-# and meanwhile a package installs whose path dependency takes seconds to build.
-ondemand_install() {
-[ "$RUNNER_OS" = Linux ] || return 0
-step "while an install builds, the downloads after it give way (cl-966)"
-local began dir=$OUT/ondemand-install
-mkdir -p "$dir/slow"
-printf '[project]\nname = "e2e-slow-build"\nversion = "0.0.0"\n\n[build-system]\nrequires = ["setuptools>=70"]\nbuild-backend = "setuptools.build_meta"\n' \
-  > "$dir/slow/pyproject.toml"
-printf 'import time\n\nfrom setuptools import setup\n\ntime.sleep(4)\nsetup(py_modules=[])\n' > "$dir/slow/setup.py"
-package_at "$dir/caller" e2e_slow_caller '"cozy-runtime>=0.45", "msgspec>=0.19", "e2e-slow-build"' \
-  "$(printf '\n[tool.uv.sources]\ne2e-slow-build = { path = "../slow" }')" <<'PY'
+# cl-1007 (Paul, 11-15): "instead of pausing the download, wouldn't it be better to just leave extra room while another install is
+# happening … you can saturate the bandwidth as needed when an install isn't in progress"; his worry: "some long package install (say 2
+# or 3 minutes) might pause all model downloads unnecessarily". One 60 Mbit bottleneck: tc on the loopback, one FIFO for the isolated
+# Hub's MinIO and a wheel server. A package installs in about 2.5 min, mostly downloading nothing: its path dependency's metadata hook
+# sleeps (resolving), uv downloads a 30 MB wheel from a URL, the dependency's build sleeps, fetches 160 MB, sleeps again, then that
+# 160 MB unpacks into the environment. (a) It installs alone. (c) It installs while pagebox's 1.6 GB downloads, asked just after it: a
+# later job's weights, which #3126's hold, (b), stopped for the whole install. iptables counts each port's bytes every second, and the
+# judge holds (c) to it: the weights never stop, take the link outside the install's downloads and a share inside them, and the
+# install is no slower than alone. share.json keeps both series. The loopback's 64 KiB packets would leave a few dozen in the
+# bottleneck's queue, where a paced flow's one or two in flight lose to drop-tail and wait out TCP's retransmission timer; a
+# real link's are 1500 bytes, as here for the cell.
+share_link() {
+local minio=$1 wheels=$2
+sudo ip link set dev lo mtu 1500 && sudo tc qdisc add dev lo root handle 1: prio && sudo tc qdisc add dev lo parent 1:3 handle 30: tbf rate 60mbit burst 1mb latency 200ms \
+  && sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport "$minio" 0xffff flowid 1:3 \
+  && sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport "$wheels" 0xffff flowid 1:3 \
+  && sudo iptables -w -N E2E_SHARE && sudo iptables -w -I INPUT -i lo -j E2E_SHARE \
+  && sudo iptables -w -A E2E_SHARE -p tcp --sport "$minio" && sudo iptables -w -A E2E_SHARE -p tcp --sport "$wheels" \
+  || { share_unlink; check "ondemand-share: the shared link wasn't made"; return 1; }
+}
+
+share_unlink() {
+sudo tc qdisc del dev lo root 2> /dev/null
+sudo ip link set dev lo mtu 65536
+sudo iptables -w -D INPUT -i lo -j E2E_SHARE 2> /dev/null
+sudo iptables -w -F E2E_SHARE 2> /dev/null; sudo iptables -w -X E2E_SHARE 2> /dev/null
+true
+}
+
+# share_package <dir> <arm> <port>: arm's own package (names and URLs its own, so no cache of uv's serves another arm), its files on
+# the wheel server's directory <dir>/www.
+share_package() {
+local dir=$1 arm=$2 port=$3
+mkdir -p "$dir/$arm/slow/e2e_share_slow_$arm" "$dir/www" && : > "$dir/$arm/slow/e2e_share_slow_$arm/__init__.py"
+printf '[build-system]\nrequires = ["setuptools>=70"]\nbuild-backend = "setuptools.build_meta"\n' > "$dir/$arm/slow/pyproject.toml"
+cat > "$dir/$arm/slow/setup.py" <<PY
+import sys, time, urllib.request
+
+from setuptools import setup
+
+# Its metadata is the build's to say (no [project]): resolving waits for this hook, as for any sdist without static metadata.
+if "dist_info" in sys.argv:
+    time.sleep(45)
+# Built: a compile's worth of waiting, a download in the middle, more waiting; its wheel carries what came (160 MB to unpack).
+if "bdist_wheel" in sys.argv:
+    time.sleep(20)
+    urllib.request.urlretrieve("http://127.0.0.1:$port/blob-$arm.bin", "e2e_share_slow_$arm/blob.bin")
+    time.sleep(45)
+setup(name="e2e-share-slow-$arm", version="0.0.0", packages=["e2e_share_slow_$arm"], package_data={"e2e_share_slow_$arm": ["*.bin"]})
+PY
+python3 - "$dir/www" "$arm" <<'PY'
+import base64, hashlib, os, sys, zipfile
+www, arm = sys.argv[1], sys.argv[2]
+with open(f"{www}/blob-{arm}.bin", "wb") as blob:
+    for _ in range(160):
+        blob.write(os.urandom(1 << 20))
+name = f"e2e_share_dl_{arm}"
+files = {f"{name}/__init__.py": b"", f"{name}/data.bin": os.urandom(30 << 20),
+         f"{name}-0.0.0.dist-info/METADATA": f"Metadata-Version: 2.1\nName: e2e-share-dl-{arm}\nVersion: 0.0.0\n".encode(),
+         f"{name}-0.0.0.dist-info/WHEEL": b"Wheel-Version: 1.0\nGenerator: e2e\nRoot-Is-Purelib: true\nTag: py3-none-any\n"}
+digest = lambda data: "sha256=" + base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+record = "".join(f"{path},{digest(data)},{len(data)}\n" for path, data in files.items()) + f"{name}-0.0.0.dist-info/RECORD,,\n"
+with zipfile.ZipFile(f"{www}/{name}-0.0.0-py3-none-any.whl", "w", zipfile.ZIP_STORED) as wheel:
+    for path, data in [*files.items(), (f"{name}-0.0.0.dist-info/RECORD", record.encode())]:
+        wheel.writestr(path, data)
+PY
+package_at "$dir/$arm/caller" "e2e_share_$arm" "\"cozy-runtime>=0.45\", \"msgspec>=0.19\", \"e2e-share-slow-$arm\", \"e2e-share-dl-$arm\"" \
+  "$(printf '\n[tool.uv.sources]\ne2e-share-slow-%s = { path = "../slow" }\ne2e-share-dl-%s = { url = "http://127.0.0.1:%s/e2e_share_dl_%s-0.0.0-py3-none-any.whl" }' "$arm" "$arm" "$port" "$arm")" <<'PY'
 import msgspec
 
 from cozy_runtime.author import App
@@ -191,75 +245,108 @@ class Built(msgspec.Struct):
 def built(payload: Ask) -> Built:
     return Built(built=True)
 PY
-slow_store ondemand-install || return 0
+}
+
+ondemand_share() {
+[ "$RUNNER_OS" = Linux ] || return 0
+step "an install's downloads get the link, the weights a share of it, and only while it downloads (cl-1007)"
+local dir=$OUT/ondemand-share minio wheels server sampler began name
+minio=$(pgrep -af minio | grep -oE -- '--address[ =]127\.0\.0\.1:[0-9]+' | grep -oE '[0-9]+$' | head -1)
+[ -n "$minio" ] || { check "ondemand-share: the isolated Hub's MinIO port wasn't found: $(pgrep -af minio | head -2)"; return 0; }
+wheels=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+mkdir -p "$dir/www"
+share_package "$dir" a "$wheels" && share_package "$dir" c "$wheels" || { check "ondemand-share: its packages weren't made"; return 0; }
+python3 -m http.server "$wheels" --bind 127.0.0.1 --directory "$dir/www" > "$dir/server.log" 2>&1 &
+server=$!
+share_link "$minio" "$wheels" || { kill "$server"; return 0; }
+# Each second: the weights' bytes (from MinIO) and the install's (from the wheel server), as the bottleneck delivered them.
+( while :; do
+    printf '%s %s\n' "$(date +%s%3N)" "$(sudo iptables -w -nvxL E2E_SHARE | awk 'NR > 2 { printf "%s ", $2 }')"
+    sleep 1
+  done ) > "$dir/samples.txt" 2>&1 &
+sampler=$!
 began=$(date -u +%s%3N)
-run_submit "$OUT" ondemand-spare run "$here/script/ondemand.py/spare" seconds:=40 --on local > /dev/null
-for _ in $(seq 900); do grep -q '"holding"' "$OUT/ondemand-spare.ndjson" 2> /dev/null && break; sleep 0.2; done
-run_submit "$OUT" ondemand-install run "$dir/caller/built" --on local > /dev/null
-for name in ondemand-install ondemand-spare; do
-  run_wait "$OUT" "$name" || check "ondemand-install: $name did not end: $(tail -c 300 "$OUT/$name.ndjson")"
-  [ "$(run_get "$OUT" "$name" .status)" = completed ] || check "ondemand-install: $name $(run_get "$OUT" "$name" .status): $(run_get "$OUT" "$name" .reason.message | head -c 300)"
+# Local code installs before its run is made: the install is from the ask to its run's number.
+submitted() { local t0; t0=$(date +%s%3N); run_submit "$OUT" "$1" run "$dir/$2/caller/built" --on local > /dev/null; echo "$t0 $(date +%s%3N)" > "$dir/install-$2.ms"; }
+submitted share-a a
+run_wait "$OUT" share-a || check "ondemand-share: share-a did not end: $(tail -c 300 "$OUT/share-a.ndjson")"
+submitted share-c c &
+local installing=$!
+for _ in $(seq 300); do grep -qs 'installing' "$OUT/share-c.err" "$OUT/share-c.ndjson" && break; sleep 0.2; done
+run_submit "$OUT" share-weights model install lilylilith/pagebox --on local > /dev/null
+wait "$installing"
+for name in share-c share-weights; do
+  run_wait "$OUT" "$name" || check "ondemand-share: $name did not end: $(tail -c 300 "$OUT/$name.ndjson")"
 done
-sudo tc qdisc del dev lo root || check "ondemand-install: the store's link wasn't restored"
-cozy machine logs local --lines 0 --since 1h > "$OUT/ondemand-install.tensord.log" 2>&1 || check "ondemand-install: machine logs local failed"
-python3 - "$OUT" "$began" <<'JUDGE' > "$OUT/ondemand-install.timeline.json" 2> "$OUT/ondemand-install.failed" || true
+for name in share-a share-c share-weights; do
+  [ "$(run_get "$OUT" "$name" .status)" = completed ] || check "ondemand-share: $name $(run_get "$OUT" "$name" .status): $(run_get "$OUT" "$name" .reason.message | head -c 300)"
+done
+kill "$sampler" "$server" 2> /dev/null
+share_unlink
+rm -rf "$dir/www"
+cozy machine logs local --lines 0 --since 1h > "$OUT/ondemand-share.tensord.log" 2>&1 || check "ondemand-share: machine logs local failed"
+python3 - "$OUT" "$began" <<'JUDGE' > "$OUT/ondemand-share.json" 2> "$OUT/ondemand-share.failed" || true
 import json, re, sys
 from datetime import datetime
 from pathlib import Path
 out, began = Path(sys.argv[1]), int(sys.argv[2])
-def at(line):
-    try:
-        return int(datetime.fromisoformat(line.split(" ", 1)[0].replace("Z", "+00:00")).timestamp() * 1000)
-    except ValueError:
-        return 0
-# The downloader's floor (cl-966): each move is a line, with when it moved and what came while it stood where it was.
-def floors(path):
-    moves = []
-    for line in path.read_text(errors="replace").splitlines():
-        if "floor moved" in line:
-            f = dict(re.findall(r"(\w+)=(\S+)", line))
-            moves.append({"downloader": f["downloader"], "from": f["from"], "to": f["to"], "at": int(f["at_ms"]), "bytes": int(f["bytes"]),
-                          "seconds": float(f["seconds"]), "mb_s": float(f["mb_s"])})
-    return moves
-# Each stand of the floor at an order named by `at`: (from, to, bytes, seconds, mb_s), in order.
-def stands(moves, began, at):
-    out, open_ = [], {}
-    for m in moves:
-        if m["at"] < began:
-            continue
-        if m["from"] != "none" and at(int(m["from"])) and m["downloader"] in open_:
-            out.append((open_.pop(m["downloader"]), m["at"], m["bytes"], m["seconds"], m["mb_s"]))
-        if m["to"] != "none" and at(int(m["to"])):
-            open_[m["downloader"]] = m["at"]
-    return out
-fetching, landed = [], []
-for line in (out / "ondemand-install.tensord.log").read_text(errors="replace").splitlines():
-    t = at(line)
-    if t < began:
-        continue
-    found = re.search(r": (fetching|landed) .*bytes=(\d+).*priority=(\d+)", line)
-    # A guess's order: class 2 of the line's (`priority::guess`).
-    if found and (int(found[3]) - 2) >> 62 == 2:
-        (fetching if found[1] == "fetching" else landed).append((t, int(found[2])))
-# A run's install holds the floor at its job's order (class 0).
-builds = stands(floors(out / "ondemand-install.tensord.log"), began, lambda order: 2 <= order < 1 << 62)
-build = max(builds, key=lambda w: w[1] - w[0], default=None)
-s, e, came = (build[0], build[1], build[2]) if build else (0, 0, 0)
-print(json.dumps({"builds_ms": [[a - began, b - began, n] for a, b, n, _, _ in builds], "guess_objects": len(landed),
-                  "guess_bytes_before": sum(b for t, b in landed if t < s), "guess_bytes_after": sum(b for t, b in landed if t > e),
-                  "bytes_during": came, "started_during": sum(1 for t, _ in fetching if s < t < e)}, indent=1))
+LINK = 60e6 / 8  # the bottleneck, bytes/s
+samples = []
+for line in (out / "ondemand-share/samples.txt").read_text(errors="replace").splitlines():
+    f = line.split()
+    if len(f) >= 3 and all(x.isdigit() for x in f[:3]):
+        samples.append((int(f[0]), int(f[1]), int(f[2])))
+# Per second, from the sampler's own clock: (ms, weights bytes/s, install bytes/s).
+rates = [(b[0], (b[1] - a[1]) / ((b[0] - a[0]) / 1e3), (b[2] - a[2]) / ((b[0] - a[0]) / 1e3)) for a, b in zip(samples, samples[1:]) if b[0] > a[0]]
+installed = lambda arm: tuple(int(x) for x in (out / f"ondemand-share/install-{arm}.ms").read_text().split())
+(a0, a1), (c0, c1) = installed("a"), installed("c")
+w0 = json.loads((out / "share-weights.json").read_text()).get("accepted_at_ms") or 0
+weights = [t for t, w, _ in rates if w > 0.005 * LINK]
+w_first, w_last = (min(weights), max(weights)) if weights else (0, 0)
+# The install with the weights beside it: from the weights' first second (asked once the install began) to either's end.
+during = [(t, w, i) for t, w, i in rates if max(c0, w_first) + 3000 <= t <= min(c1, w_last)]
+# The install downloads in a second it moves a tenth of the link or more; the seconds either side are its edges, judged as neither.
+busy = {t for t, _, i in rates if i > 0.1 * LINK}
+edge = lambda t: any(abs(t - b) <= 2000 for b in busy)
+inside = [w for t, w, _ in during if t in busy]
+outside = [w for t, w, _ in during if not edge(t)]
+mean = lambda xs: sum(xs) / len(xs) if xs else 0.0
+stalls, run = [], []
+for t, w, _ in during:
+    run = run + [t] if w < 0.02 * LINK else []
+    if len(run) == 5:
+        stalls.append(run[0] - began)
+shares = []
+for line in (out / "ondemand-share.tensord.log").read_text(errors="replace").splitlines():
+    if "link shared with an install" in line or "weights take the whole link" in line:
+        shares.append(line.split(" ", 1)[0] + " " + " ".join(re.findall(r"\w+=\S+", line)))
+series = [[t - began, round(w / 1e6, 2), round(i / 1e6, 2)] for t, w, i in rates]
+summary = {"link_mb_s": LINK / 1e6, "install_alone_s": (a1 - a0) / 1e3, "install_with_weights_s": (c1 - c0) / 1e3,
+           "weights_asked_s": (w0 - began) / 1e3, "weights_first_s": (w_first - began) / 1e3, "weights_last_s": (w_last - began) / 1e3,
+           "weights_inside_mb_s": round(mean(inside) / 1e6, 2), "weights_outside_mb_s": round(mean(outside) / 1e6, 2),
+           "install_download_s": len([t for t in busy if c0 <= t <= c1]), "stalls_from_s": [s / 1e3 for s in stalls]}
+print(json.dumps({"summary": summary, "share_lines": shares[-200:], "series_ms_weights_install_mb_s": series}, indent=1))
+# The log's own copy: MB/s in 5 s buckets from the ask of (c) to the weights' end, weights / install.
+buckets = {}
+for t, w, i in rates:
+    if c0 - 10000 <= t <= w_last + 5000:
+        b = buckets.setdefault((t - c0) // 5000 * 5, [0.0, 0.0, 0])
+        b[0], b[1], b[2] = b[0] + w, b[1] + i, b[2] + 1
+(out / "ondemand-share.series").write_text(" ".join(f"{k:+d}s:{v[0] / v[2] / 1e6:.1f}/{v[1] / v[2] / 1e6:.1f}" for k, v in sorted(buckets.items())) + "\n")
 fail = lambda why: print(why, file=sys.stderr)
-if not build or e - s < 3000:
-    fail(f"no install held the floor for its build of seconds: {builds}")
-elif not any(t < s for t, _ in fetching) or not any(t > e for t, _ in landed):
-    fail("pagebox's guess wasn't in flight across the install's build: nothing was there to give way")
+if not during or not inside:
+    fail(f"the install didn't download beside the weights: {summary}")
 else:
-    if any(s < t < e for t, _ in fetching):
-        fail(f"{sum(1 for t, _ in fetching if s < t < e)} of pagebox's objects started while the install built")
-    # A request in flight gives way at its next bytes: while the install builds, the downloader receives next to nothing.
-    if came > 8 << 20:
-        fail(f"the downloader received {came} bytes while the install built: its requests in flight didn't give way")
+    if stalls:
+        fail(f"the weights stopped for 5 s or more during the install, from {summary['stalls_from_s']} s")
+    if mean(outside) < 0.75 * LINK:
+        fail(f"outside the install's downloads the weights moved {mean(outside) / 1e6:.2f} MB/s of the {LINK / 1e6:.2f} MB/s link")
+    if not 0 < mean(inside) <= 0.35 * LINK:
+        fail(f"during the install's downloads the weights moved {mean(inside) / 1e6:.2f} MB/s of the {LINK / 1e6:.2f} MB/s link: not a share")
+if (c1 - c0) > 1.1 * (a1 - a0):
+    fail(f"beside the weights the install took {(c1 - c0) / 1e3:.1f} s, alone {(a1 - a0) / 1e3:.1f} s")
 JUDGE
-cat "$OUT/ondemand-install.timeline.json"
-while read -r why; do check "ondemand-install: $why"; done < "$OUT/ondemand-install.failed"
+python3 -c 'import json, sys; print(json.dumps(json.load(open(sys.argv[1]))["summary"], indent=1))' "$OUT/ondemand-share.json" || true
+echo "weights/install MB/s from (c)'s ask: $(cat "$OUT/ondemand-share.series" 2> /dev/null)"
+while read -r why; do check "ondemand-share: $why"; done < "$OUT/ondemand-share.failed"
 }
