@@ -8,7 +8,9 @@
 #   warm-sdxl        the next call: a graph must serve it (check.py)
 #   co-*             all three again on one card: what does not fit is evicted and refilled
 #   reload-*         after an unload (a restart ends every executor), each model back from page cache or disk
-#   s8-* s6-* s3-*   under 8, 6 and 3 GiB software caps; at 6 GiB SDXL and Klein alternate three times
+#   anima-graphs-*   (> 8 GB card) Anima three times: the third replays the text encoder the second recorded (check.py)
+#   s8-* s6-* s3-*   under 8, 6 and 3 GiB software caps; at 6 GiB SDXL and Klein alternate three times, then Anima's
+#                    three calls again
 #   (≤ 8 GB card)    cold, co and reload only: the driver's own out-of-memory paths (a capped card never fills)
 #   h3-8gb           (≤ 8 GB card) H3 Turbo 15 s, the 8 GB tier's product shape
 #   host-*           on a CPU rental, under its cgroup's memory.max (host-cap.py): pages must spill to disk
@@ -96,6 +98,12 @@ if [ "$(grep -oE '· [0-9]+ GiB ·' machine.txt | head -1 | grep -oE '[0-9]+')" 
   authority
   return 0
 fi
+# cr-300 (Paul 11-16: "get CUDA graphs working right again"): Anima three times on one prompt, as its text encoder's
+# path is keyed by its token count. The second call records the encoder, checked bit for bit against the call as
+# written (analyze.py fails a replay_mismatch: 25263 of 31744 values differed while Transformers built a causal mask
+# under capture that its call skips); the third replays it (check.py). Again at 6 GiB.
+ANIMA=$(pkg anima generate) ANIMA_SAYS="masterpiece, best quality, anime illustration of $CHAR"
+for i in 1 2 3; do vcell anima-graphs-$i "$ANIMA" prompt="$ANIMA_SAYS" seed:=$((R + 60 + i)); done
 h3 reload-h3 9 5 "A slow pan follows the action."
 cap 8GiB
 vcell s8-sdxl "$SDXL" prompt="$OBJECT in a museum display case, photo" seed:=$((R + 11))
@@ -107,6 +115,7 @@ for i in 1 2 3; do
   vcell s6-sdxl-$i "$SDXL" prompt="$CHAR in $SCENE, film still $i" seed:=$((R + 20 + i))
   vcell s6-klein-$i "$KLEIN" prompt="$OBJECT, studio photo, angle $i" seed:=$((R + 30 + i))
 done
+for i in 1 2 3; do vcell s6-anima-$i "$ANIMA" prompt="$ANIMA_SAYS" seed:=$((R + 70 + i)); done
 cap 3GiB
 vcell s3-sdxl "$SDXL" prompt="$CHAR, oil painting" seed:=$((R + 41))
 vcell s3-klein "$KLEIN" prompt="an aerial photo of $SCENE" seed:=$((R + 42))
