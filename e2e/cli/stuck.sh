@@ -95,7 +95,7 @@ stuck_exit() {
 [ -n "$LOCAL" ] || return 0
 step "stuck: a TensorD whose exit sits in the kernel (cl-977)"
 local fs=$OUT/stuck-fs mnt=$RUNNER_TEMP/stuck-mnt trap=$OUT/stuck-trap log=$STUCK_ROOT/machine/start.log
-local service parent t0 took port first second
+local service parent t0 took port first second named
 mkdir -p "$fs" "$mnt"
 : > "$trap"
 # FUSE 2 (fusermount, libfuse.so.2), as the project-encryption driver installs it.
@@ -144,6 +144,10 @@ echo "stuck: pid $first's threads: $(stuck_states "$first")"
 # 10 s to exit, 60 s with no progress, then the next service's boot.
 [ "$took" -le 200 ] || check "stuck: the update took ${took} s past a service that can't exit"
 stuck_log | grep -q "pid $first can't exit: thread " || check "stuck: TensorD's log doesn't say pid $first can't exit"
+# Its thread named only as the machine names it (its place, or the Runtime's call_<n> / ~watcher), never by a comm any code can set:
+# the line is kept in Calcifer's store once the machine ends (cl-1012, #3393's review).
+named=$(stuck_log | grep -oE "pid $first can't exit: thread [0-9]+ \([^)]*\)" | head -1)
+[[ $named =~ \((#[0-9]+|call_[0-9]+|~watcher)\)$ ]] || check "stuck: the line names its thread by a free-form name: $named"
 stuck_ready 30 || { check "stuck: the machine isn't ready after its update: $(tail -c 300 "$OUT/stuck-machine.json")"; stuck_diagnose after-update; }
 stuck_listed "$first" || check "stuck: machine show local lists no stuck pid $first: $(jq -c .status.stuck "$OUT/stuck-machine.json")"
 cozy machine show local > "$OUT/stuck-show.txt" 2>&1 || true
