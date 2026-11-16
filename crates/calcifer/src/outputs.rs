@@ -96,6 +96,10 @@ pub(crate) struct Exports {
     arriving: Mutex<HashMap<RunId, (String, std::collections::VecDeque<(Instant, u64)>)>>,
     /// Each machine's bytes a second into here, as its last exports of a MiB or more came (cl-921: a run's time left counts its results).
     rates: Mutex<HashMap<String, f64>>,
+    /// Each exporter's bytes in place as last seen, and since when (cl-1060): whether it still moves them.
+    seen: Mutex<HashMap<RunId, (u64, Instant)>>,
+    /// Each exporter's task: a lock that goes on past a stalled one ends it, and with it its open files in the project.
+    tasks: Mutex<HashMap<RunId, tokio::task::AbortHandle>>,
 }
 
 /// What a run's results coming here are called, as its progress says them.
@@ -106,8 +110,9 @@ pub(crate) const ARRIVING: &str = "downloading the result";
 enum Failure {
     /// A newer revision is recorded: that one is exported instead.
     Superseded,
-    /// This revision's bytes cannot be had: recorded with the item and not tried again.
-    Lost(String),
+    /// This revision's bytes cannot be had: recorded with the item and not tried again. `code` types why, set where the loss is
+    /// decided, for the run's reason (cl-1060): never read back from `why`'s words.
+    Lost { code: &'static str, why: String },
     /// Tried again after a pause, or once the machine changes.
     Again(String),
     /// Read whole, and its bytes are not this revision's. Tried again [`WRONG_READS`] times in all:
@@ -141,6 +146,8 @@ impl Calcifer {
         lock(&self.exports.moving).retain(|(id,..),_|!ids.contains(id.as_str()));
         lock(&self.exports.arriving).retain(|id,_|!ids.contains(id.as_str()));
         lock(&self.exports.runs).retain(|id,wake| { if ids.contains(id.as_str()) { wake.notify_waiters(); false } else { true } });
+        lock(&self.exports.seen).retain(|id, _| !ids.contains(id.as_str()));
+        lock(&self.exports.tasks).retain(|id, task| { if ids.contains(id.as_str()) { task.abort(); false } else { true } });
     }
 
     /// Starts an exporter for each run that owes one, then for each run whose outputs change.
@@ -173,11 +180,8 @@ impl Calcifer {
                         | Event::OutputDelta { .. }
                         | Event::OutputDone { .. },
                     )) => me.export(&id),
-                    // Untyped bytes were waiting for this: they stay on the machine, or are all that came.
-                    Ok((id, event)) if event.is_terminal() => {
-                        me.note_stays(&id);
-                        me.export(&id);
-                    }
+                    // Untyped bytes were waiting for this: they stay on the machine (the driver noted it), or are all that came.
+                    Ok((id, event)) if event.is_terminal() => me.export(&id),
                     Ok(_) => {}
                     Err(RecvError::Lagged(_)) => match me.each_store(|store| store.exports_owed()).map(|lists| lists.into_iter().flatten().collect::<Vec<_>>()) {
                         Ok(owed) => owed.iter().for_each(|(id, _)| me.export(id)),
@@ -199,9 +203,39 @@ impl Calcifer {
         tasks.spawn(task);
     }
 
+    /// Ends these runs' exporters (cl-1060), for a lock that cuts a save gone silent: each stops at its next write batch, which the
+    /// lock's turn holds off.
+    pub(crate) fn end_exports_of(&self, ids: &[RunId]) {
+        self.retire_exports(&ids.iter().map(|id| id.to_string()).collect());
+    }
+
     /// Whether the run's exporter goes on.
     pub(super) fn exporting(&self, id: &RunId) -> bool {
         lock(&self.exports.runs).contains_key(id)
+    }
+
+    /// Its exports' bytes in place now, over every item in flight.
+    fn bytes_in_place(&self, id: &RunId) -> u64 {
+        lock(&self.exports.moving).iter().filter(|((run, ..), _)| run == id).map(|(_, (moved, _))| moved.load(Ordering::Relaxed)).sum()
+    }
+
+    /// An item of `id` landed (cl-1060): progress, as bytes past its high-water mark are; the mark starts again from what's left.
+    fn landed_progress(&self, id: &RunId) {
+        let left = self.bytes_in_place(id);
+        if let Some(seen) = lock(&self.exports.seen).get_mut(id) { *seen = (left, Instant::now()); }
+    }
+
+    /// Whether the run's exporter still moves its outputs into its project (cl-1060): bytes in place past their high-water mark, or
+    /// an item landed, within `EXPORT_SILENCE` (a new exporter has that long to start). Nothing else counts: an attempt that
+    /// starts again with nothing moved, a wake, a retry. One that stalls holds no vault open: its outputs stay owed.
+    pub(super) fn export_moving(&self, id: &RunId) -> bool {
+        if !self.exporting(id) { return false; }
+        let in_place = self.bytes_in_place(id);
+        let now = Instant::now();
+        let mut seen = lock(&self.exports.seen);
+        let mark = seen.entry(id.clone()).or_insert((in_place, now));
+        if in_place > mark.0 { *mark = (in_place, now); }
+        now.duration_since(mark.1) < EXPORT_SILENCE
     }
 
     /// Starts the run's exporter, or wakes it.
@@ -214,23 +248,37 @@ impl Calcifer {
             }
             let wake = Arc::new(Notify::new());
             runs.insert(id.clone(), wake.clone());
+            // A new exporter has `EXPORT_SILENCE` to move its first bytes; one started again keeps its run's mark (cl-1060).
+            lock(&self.exports.seen).entry(id.clone()).or_insert((0, Instant::now()));
             wake
         };
-        let (me, id) = (self.clone(), id.clone());
-        self.spawn_task(async move { me.export_run(&id, &wake).await });
+        let (me, run) = (self.clone(), id.clone());
+        let mut tasks = lock(&self.tasks);
+        // Closed (asked under the lock `close` aborts under, #3456): no exporter, and its entries go, so none holds a vault as work.
+        if self.closed() {
+            drop(tasks);
+            lock(&self.exports.runs).remove(id);
+            lock(&self.exports.seen).remove(id);
+            return;
+        }
+        while tasks.try_join_next().is_some() {}
+        let task = tasks.spawn(async move { me.export_run(&run, &wake).await });
+        lock(&self.exports.tasks).insert(id.clone(), task);
     }
 
-    /// A project's run that ended: what stays on its machine, in the project's lock with who holds it.
-    fn note_stays(&self, id: &RunId) {
-        let Ok(Some(row)) = self.with_run_store(id.as_str(), |store| store.run(id.as_str())) else { return };
-        let (Some(project), Some(machine)) = (crate::project::of_landing(&row.out_dir), &row.machine) else { return };
-        let Ok(run) = self.record(&row) else { return };
+    /// A project's run that ended: what stays on its machine, in the project's lock with who holds it. `project_busy` when a lock
+    /// had the project's turn: its driver waits it out and notes it again (`hand_on`).
+    pub(super) fn note_stays(&self, id: &RunId) -> Result<(), StoreError> {
+        let Some(row) = self.with_run_store(id.as_str(), |store| store.run(id.as_str()))? else { return Ok(()) };
+        let (Some(project), Some(machine)) = (crate::project::of_landing(&row.out_dir), &row.machine) else { return Ok(()) };
+        let Ok(run) = self.record(&row) else { return Ok(()) };
         for item in run.output.iter().filter(|item| item.stays && item.path.is_none()) {
             let Some(sha256) = &item.sha256 else { continue };
             if let Err(why) = crate::project::stays(project, &sha256.to_string(), machine, item.length) {
                 export_warning(&row, format_args!("output {} not in its project lock: {why}", item.name));
             }
         }
+        Ok(())
     }
 
     fn making_scoped(&self, digest: &str, machine: &str) -> crate::store::Result<Option<(RunRow, OutputRow)>> {
@@ -257,7 +305,7 @@ impl Calcifer {
         }
         let link = match self.reach(&run, &mut None).await {
             Ok(link) => link,
-            Err(Failure::Lost(_)) => return false,
+            Err(Failure::Lost { .. }) => return false,
             Err(_) => return true,
         };
         let Some(lane) = link.lane(0, false) else { return true };
@@ -301,7 +349,7 @@ impl Calcifer {
             let why = match done {
                 Ok(()) => return Ok(()),
                 Err(Failure::Superseded) => return Err("a newer version of it was saved".into()),
-                Err(Failure::Lost(message) | Failure::Refused(message)) => return Err(message),
+                Err(Failure::Lost { why: message, .. } | Failure::Refused(message)) => return Err(message),
                 Err(Failure::Again(message) | Failure::Wrong(message)) => message,
             };
             let Some((wait, said)) = backoff.again(&why, false, None) else { return Err(why) };
@@ -355,13 +403,13 @@ impl Calcifer {
                 let (name, index, rev) = (&item.name, item.index, item.rev);
                 let exported = match exported {
                     Err(Failure::Refused(message)) if run.state == RunState::Settled => {
-                        Err(Failure::Lost(format!("the machine refused to send it ({message})")))
+                        Err(Failure::Lost { code: "output_refused", why: format!("the machine refused to send it ({message})") })
                     }
                     Err(Failure::Wrong(message)) => {
                         let reads = wrong.entry((name.clone(), index, rev)).or_default();
                         *reads += 1;
                         match *reads >= WRONG_READS {
-                            true => Err(Failure::Lost(format!("Cozy tried {reads} times but never got the whole file: {message}"))),
+                            true => Err(Failure::Lost { code: "output_unreadable", why: format!("Cozy tried {reads} times but never got the whole file: {message}") }),
                             false => Err(Failure::Again(message)),
                         }
                     }
@@ -369,7 +417,7 @@ impl Calcifer {
                 };
                 match exported {
                     Ok(()) | Err(Failure::Superseded) => {}
-                    Err(Failure::Lost(reason)) => {
+                    Err(Failure::Lost { code, why: reason }) => {
                         export_warning(&run, format_args!("output {name} revision {rev} not exported: {reason}"));
                         if let Ok(out_dir) = crate::project::vault::resolve_path(&run.out_dir) {
                             let dest = out_dir.join(file_name(run.number, name, index, &item.media_type));
@@ -384,6 +432,9 @@ impl Calcifer {
                                 again = true;
                             }
                         }
+                        // Its run never reads completed with an output that isn't saved (cl-1060), typed by why.
+                        let lost = ::api::calcifer::Reason { code: code.into(), message: format!("output {name} wasn't saved: {reason}"), ..Default::default() };
+                        if let Ok(events) = self.with_run_store(id.as_str(), |store| store.outputs_not_saved(id.as_str(), &lost)) { self.publish(id, events); }
                     }
                     Err(Failure::Again(message) | Failure::Refused(message) | Failure::Wrong(message)) => {
                         export_warning(&run, format_args!("output {name} revision {rev} waits: {message}"));
@@ -420,11 +471,14 @@ impl Calcifer {
             Ok(None) => {
                 runs.remove(id);
                 lock(&self.exports.appended).retain(|(run, ..), _| run != id);
+                lock(&self.exports.seen).remove(id);
+                lock(&self.exports.tasks).remove(id);
             }
             // Its project closed: the exporter ends, and the project's next opening starts another.
             Err(StoreError::Locked(code)) if code != "project_busy" => {
-                warn!(run = %id, "its exporter ends with its outputs owed: {code}");
+                warn!("an exporter ends with its outputs owed: {code}");
                 drop(runs.remove(id));
+                lock(&self.exports.tasks).remove(id);
             }
             _ => {}
         }
@@ -439,19 +493,21 @@ impl Calcifer {
         changed: &mut Option<watch::Receiver<()>>,
     ) -> Result<Link, Failure> {
         let Some(name) = &run.machine else {
-            return Err(Failure::Lost("the run never reached a machine".into()));
+            return Err(Failure::Lost { code: "machine_unreached", why: "the run never reached a machine".into() });
         };
         let (machine, link, watch, _) = self.machine(name).map_err(Failure::Again)?;
         *changed = Some(watch);
         if machine.state == MachineState::Ended {
             let reason = machine.reason.as_deref().unwrap_or("no reason given");
-            return Err(Failure::Lost(format!("{name} ended ({reason})")));
+            return Err(Failure::Lost { code: "machine_ended", why: format!("{name} ended ({reason})") });
         }
         let link = link.ok_or_else(|| Failure::Again(format!("waiting for {name} to start up")))?;
         let owner=self.row_owner(run).map_err(|_|Failure::Again("the project isn't open right now".into()))?;
         if let Some(owner)=owner {
             if run.owner!=owner.project_id() { return Err(Failure::Refused("it was copied from another project's history".into())); }
-            return crate::private_io::execution_link(owner.project_id(),owner.root(),name,&link).await.map_err(|error|Failure::Refused(error.code));
+            // Not proven yet (a new view after an unlock, a machine restarting, its namespace sealed by a lock): asked again,
+            // proven afresh, never a loss (cl-1060).
+            return crate::private_io::execution_link(owner.project_id(),owner.root(),name,&link).await.map_err(|error|Failure::Again(error.code));
         }
         Ok(link)
     }
@@ -488,18 +544,21 @@ impl Calcifer {
         let moved = Arc::new(AtomicU64::new(0));
         let key = (run.id.clone(), item.name.clone(), item.index);
         lock(&self.exports.moving).insert(key.clone(), (moved.clone(), item.length));
+        // Its project, whose read each write batch holds (cl-1060): a lock and a write never interleave.
+        let gate = self.row_owner(run).ok().flatten();
         let work = async {
             tokio::fs::create_dir_all(&out_dir).await.map_err(|e| {
                 Failure::Again(format!("couldn't create {}: {e}", out_dir.display()))
             })?;
             let staged = if item.media_type == tree::MEDIA {
-                fetch_tree(link, &target, item, &dest, &moved).await?
+                fetch_tree(link, &target, item, &dest, &moved, &gate).await?
             } else {
                 let appended = (run.id.clone(), item_id(run.number, item), item.rev);
                 let appended = lock(&self.exports.appended).get(&appended).copied();
-                fetch_file(link, &target, item, &dest, appended, &moved).await?
+                fetch_file(link, &target, item, &dest, appended, &moved, &gate).await?
             };
             let measured = self.measured(item, &staged).await;
+            let _batch = batch(&gate).await.map_err(Failure::Again)?;
             // It waits on its project's turn and the store's commit: off the async workers, which answer the page.
             tokio::task::block_in_place(|| self.land(run, item, &staged, &dest, measured.as_ref()))?;
             remove(&suffixed(&dest, HELD));
@@ -526,7 +585,7 @@ impl Calcifer {
                         && machine.state == MachineState::Ended
                     {
                         let reason = machine.reason.as_deref().unwrap_or("no reason given");
-                        break Err(Failure::Lost(format!("{name} ended ({reason})")));
+                        break Err(Failure::Lost { code: "machine_ended", why: format!("{name} ended ({reason})") });
                     }
                     continue;
                 }
@@ -551,6 +610,7 @@ impl Calcifer {
             }
         };
         lock(&self.exports.moving).remove(&key);
+        if done.is_ok() { self.landed_progress(&run.id); }
         if done.is_ok()
             && let Some(machine) = &run.machine
         {
@@ -932,6 +992,35 @@ fn remove(path: &Path) {
     let _ = std::fs::remove_dir_all(path).or_else(|_| std::fs::remove_file(path));
 }
 
+
+/// How long an exporter may move no byte past its high-water mark and land no item, and still count as saving (cl-1060): a lock
+/// waits that long on it before it cuts it. Progress is counted per chunk written (one body read's bytes, never a whole file) and
+/// at each landing. It can misjudge a writer that moves nothing for this long on a slow or busy disk, or one checking or measuring a
+/// very large file it fetched; a lock then cuts it: a remote machine's output stays owed and is saved at the next unlock, a local
+/// one is recorded not saved, its run failed and the lock's answer saying so.
+pub(crate) const EXPORT_SILENCE: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// An ended save's half-written files in its project (cl-1060): none is seen half-written, and the next unlock fetches the outputs
+/// whole.
+pub(crate) fn drop_partials(run: &RunRow, owed: &[OutputRow]) {
+    let Ok(out_dir) = crate::project::vault::resolve_path(&run.out_dir) else { return };
+    for item in owed {
+        let dest = out_dir.join(file_name(run.number, &item.name, item.index, &item.media_type));
+        remove(&suffixed(&dest, ".part"));
+        remove(&suffixed(&dest, HELD));
+        remove(&suffixed(&dest, ".manifest.part"));
+    }
+}
+
+/// A read of the project for one write batch into it (cl-1060): a lock waits for the batch, and no batch starts into a view a lock
+/// has. None for Calcifer's own runs, which write into no project.
+async fn batch(gate: &Option<crate::project::RunOwner>) -> Result<Option<tokio::sync::OwnedRwLockReadGuard<()>>, String> {
+    match gate {
+        Some(owner) => owner.writing().await.map(Some).map_err(|e| e.message),
+        None => Ok(None),
+    }
+}
+
 /// This revision's bytes in `<file>.part`, checked against its digest. A revision that extends
 /// the one the file holds reads only its new tail; an attempt cut off before resumes with what it
 /// left in place (`.part.held`), cleared by a digest that doesn't match.
@@ -942,6 +1031,7 @@ async fn fetch_file(
     dest: &Path,
     appended: Option<u64>,
     moved: &Arc<AtomicU64>,
+    gate: &Option<crate::project::RunOwner>,
 ) -> Result<PathBuf, Failure> {
     let (part, journal) = (suffixed(dest, ".part"), suffixed(dest, HELD));
     let follows = item.exported_rev.is_some_and(|held| held + 1 == item.rev);
@@ -971,7 +1061,7 @@ async fn fetch_file(
             phase = "output_prepare_file", bytes = item.length, appended_from = from, in_place,
             elapsed_ms = prepare_began.elapsed().as_secs_f64() * 1000.0); }
         moved.store(in_place, Ordering::Relaxed);
-        fetch(link, target, item.rev, &held, item.length, &part, Some(&journal), moved).await?;
+        fetch(link, target, item.rev, &held, item.length, &part, Some(&journal), moved, gate).await?;
         match check(&part, item.length, &item.digest).await {
             Ok(()) => return Ok(part),
             // What was in place before (an earlier attempt's, the revision this one extends) was
@@ -996,10 +1086,13 @@ async fn fetch_tree(
     item: &OutputRow,
     dest: &Path,
     moved: &Arc<AtomicU64>,
+    gate: &Option<crate::project::RunOwner>,
 ) -> Result<PathBuf, Failure> {
     let (stage, manifest) = (suffixed(dest, ".part"), suffixed(dest, ".manifest.part"));
     let unwritable =
         |e: std::io::Error| Failure::Again(format!("couldn't write {}: {e}", stage.display()));
+    // A write into the project, as each batch is: never into a view a lock has, nor after a lock dropped what it left (cl-1060).
+    let preparing = batch(gate).await.map_err(Failure::Again)?;
     let prepared = blocking({
         let (stage, manifest, length) = (stage.clone(), manifest.clone(), item.length);
         move || {
@@ -1010,13 +1103,14 @@ async fn fetch_tree(
         }
     });
     prepared.await.map_err(unwritable)?;
-    fetch(link, target, item.rev, &[], item.length, &manifest, None, moved).await?;
+    drop(preparing);
+    fetch(link, target, item.rev, &[], item.length, &manifest, None, moved, gate).await?;
     check(&manifest, item.length, &item.digest).await?;
     let listed = std::fs::read(&manifest).map_err(unwritable)?;
     let _ = std::fs::remove_file(&manifest);
     let mut read: HashMap<String, PathBuf> = HashMap::new();
     let members =
-        tree::parse(&listed).map_err(|e| Failure::Lost(format!("couldn't read the folder's manifest: {e}")))?;
+        tree::parse(&listed).map_err(|e| Failure::Lost { code: "output_unreadable", why: format!("couldn't read the folder's manifest: {e}") })?;
     for (path, tree::Member { length, sha256, .. }) in members {
         let digest = format!("sha256:{sha256}");
         let file = stage.join(&path);
@@ -1033,7 +1127,7 @@ async fn fetch_tree(
             member: path,
             ..target.clone()
         };
-        fetch(link, &member, item.rev, &[], length, &file, None, moved).await?;
+        fetch(link, &member, item.rev, &[], length, &file, None, moved, gate).await?;
         check(&file, length, &digest).await?;
         read.insert(digest, file);
     }
@@ -1151,17 +1245,18 @@ async fn fetch(
     part: &Path,
     journal: Option<&Path>,
     moved: &Arc<AtomicU64>,
+    gate: &Option<crate::project::RunOwner>,
 ) -> Result<(), Failure> {
     let ranges = lanes::parts(held, length, RANGES_PER_LANE * LANES, RANGE);
     let read = lanes::transfer(ranges, LANES, |leg| {
         let lane = link.lane(leg.lane, leg.fresh);
-        let (target, part, moved) = (target.clone(), part.to_owned(), moved.clone());
+        let (target, part, moved, gate) = (target.clone(), part.to_owned(), moved.clone(), gate.clone());
         let stretch = Stretch { journal: journal.map(Path::to_owned), first: leg.first, at: leg.at.clone() };
         async move {
             let _stretch = stretch;
             let lane = lane.ok_or_else(|| Ranged::Again("no connection to the machine".into()))?;
             let range = (leg.first, leg.end, length);
-            read_range(lane, target, rev, range, part, leg.at, &moved).await
+            read_range(lane, target, rev, range, part, leg.at, &moved, &gate).await
         }
     });
     match read.await {
@@ -1235,6 +1330,7 @@ async fn read_range(
     part: PathBuf,
     at: Arc<AtomicU64>,
     moved: &AtomicU64,
+    gate: &Option<crate::project::RunOwner>,
 ) -> Result<(), Ranged<Failure>> {
     let mut timing = RangeTiming {
         private: private_path(&part),
@@ -1261,7 +1357,7 @@ async fn read_range(
             "the machine has {} bytes of version {rev}, not {length}",
             output.length
         );
-        return Err(Ranged::Stop(Failure::Lost(held)));
+        return Err(Ranged::Stop(Failure::Lost { code: "output_mismatch", why: held }));
     }
     if output.range.0 != first {
         return Err(Ranged::Again(format!(
@@ -1302,9 +1398,11 @@ async fn read_range(
         let data = &data[..data.len().min((end - done) as usize)];
         timing.phase = "write_file";
         let write_began = Instant::now();
+        let batch = batch(gate).await.map_err(Ranged::Again)?;
         file.write_all(data).await.map_err(unwritable)?;
         timing.phase = "flush_file";
         file.flush().await.map_err(unwritable)?;
+        drop(batch);
         timing.file_write_ms += write_began.elapsed().as_secs_f64() * 1000.0;
         timing.chunks += 1;
         done += data.len() as u64;
@@ -1319,15 +1417,15 @@ async fn read_range(
 /// A machine's refusal of a read, as the read acts on it.
 fn refused(e: machine_client::Error) -> Ranged<Failure> {
     match e {
-        machine_client::Error::Refused { status: 404, error } => Ranged::Stop(Failure::Lost(format!(
-            "the machine no longer has it ({}: {})",
-            error.code, error.message
-        ))),
-        // Definitive: the machine will not serve this read (403, 400, 416, 501) or holds the
-        // output at another revision (412). While the run goes on, its events bring the newer
-        // one; once it ended, none comes.
+        // Gone, said so: the machine holds no such run, output or object any more. The only loss (cl-1060).
+        machine_client::Error::Refused { status: 404, error } if matches!(error.code.as_str(), "run_not_found" | "output_not_found" | "object_not_found") => {
+            Ranged::Stop(Failure::Lost { code: "output_gone", why: format!("the machine no longer has it ({}: {})", error.code, error.message) })
+        }
+        // Definitive for this read: the machine will not serve it (400, 416, 501) or holds the output at another revision
+        // (412). While the run goes on, its events bring the newer one; once it ended, none comes. A refusal of its scope
+        // (403: a private namespace a lock sealed, a view or proof not yet renewed) is asked again, re-proved (cl-1060).
         machine_client::Error::Refused {
-            status: 400 | 403 | 412 | 416 | 501,
+            status: 400 | 412 | 416 | 501,
             error,
         } => Ranged::Stop(Failure::Refused(format!(
             "{}: {}",

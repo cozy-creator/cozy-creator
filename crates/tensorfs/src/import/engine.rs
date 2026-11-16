@@ -23,7 +23,7 @@ macro_rules! table {
 }
 
 /// The built-in tables.
-pub(crate) const TABLES: [&str; 24] = [
+pub(crate) const TABLES: [&str; 25] = [
     table!("sdxl.single_file"),
     table!("anima.single_file"),
     table!("anima.diffusion_model"),
@@ -43,6 +43,7 @@ pub(crate) const TABLES: [&str; 24] = [
     table!("moss.lora"),
     table!("anima.lora"),
     table!("qwenimage.lora"),
+    table!("ltx2.lora"),
     table!("seedvr2"),
     table!("h3.latent_upscaler"),
     table!("relayvsr"),
@@ -173,6 +174,11 @@ pub(crate) struct Component {
     /// output heads (PDD's `proj_out.weight`), `[steps, out, in]` for a row's `io` `[in, out]`.
     #[serde(default, deserialize_with = "rows")]
     pub keep: Vec<Row>,
+    /// A LoRA table's whole modules an adapter may carry beside its factors, PEFT's `modules_to_save` (LiconStudio's
+    /// MSR adds LTX reference-slot embeddings): every source key in one is stored as it is under its name past the
+    /// prefix, and the adapter config lists the module.
+    #[serde(default)]
+    pub modules_to_save: Vec<String>,
 }
 
 /// A component's rows. `[target, source, ops, {"e": n}]` stands for n rows, `e` = 0..n: `{e}`
@@ -388,11 +394,14 @@ const LOKR: [(&str, Factor); 6] = [
 
 /// Whether `key`, past `c`'s prefix, is a factor of one of its modules shaped for it (A
 /// `[r, in, kernel…]`, B `[out, r, 1…]` as stored, a scalar alpha, a magnitude `[out]`, `[out, 1]`
-/// or another axis's `[1, in]`), or a tensor it keeps. By shape, so families whose module names
-/// coincide (H3's and Qwen-Image 2.1's Diffusers `transformer_blocks.*.attn.to_q`) claim only their own files.
+/// or another axis's `[1, in]`), or a tensor it keeps or one of a whole module it carries. By shape, so families whose module
+/// names coincide (H3's and Qwen-Image 2.1's Diffusers `transformer_blocks.*.attn.to_q`) claim only their own files.
 fn lora_module(lora: &Lora, c: &Component, key: &str, t: &Tensor) -> bool {
     if let Some(r) = c.keep.iter().find(|r| r.key() == Some(key)) {
         return kept(r, t);
+    }
+    if c.modules_to_save.iter().any(|m| super::lora::within(key, m)) {
+        return true;
     }
     let Some((stem, factor)) = lora_split(lora, key) else { return false };
     let shaped = |r: &Row| {
@@ -1370,6 +1379,16 @@ fn plan_lora(
         if kept(row, t) && t.encoded.is_none() {
             out.push(planned(&claim.name, &row.target, t, &Ops::default(), None)?);
         }
+    }
+    // The whole modules it carries, as they are, in the source's order.
+    let mut whole: Vec<(&str, &Tensor)> = (group.tensors.iter())
+        .filter(|(k, _)| longest(k) == Some(c.prefix.as_str()))
+        .map(|(k, t)| (&k[c.prefix.len()..], t))
+        .filter(|(k, _)| c.modules_to_save.iter().any(|m| super::lora::within(k, m)))
+        .collect();
+    whole.sort_by_key(|(_, t)| (t.file, t.start));
+    for (key, t) in whole {
+        out.push(planned(&claim.name, key, t, &Ops::default(), None)?);
     }
     Ok(())
 }

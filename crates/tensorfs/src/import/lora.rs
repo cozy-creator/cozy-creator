@@ -22,6 +22,12 @@ use crate::format::{Config, Dtype};
 
 /// PEFT's adapter config: a LoRA component's config file.
 pub(crate) const ADAPTER_CONFIG: &str = "adapter_config.json";
+/// A reference-conditioned adapter's `__metadata__` fields, which its loader reads and the config carries: Lightricks'
+/// IC-LoRAs' `reference_downscale_factor` (ltx_pipelines iclora_utils.py), LiconStudio's MSR slot layout
+/// (`reference_slot_embedding_dim`, `reference_audio_slot_duration_seconds`, …; liconstudio/ComfyUI-LTX2.5-MSR nodes.py).
+const REFERENCE: &str = "reference_";
+/// PEFT's whole modules an adapter carries beside its factors, stored under their own keys.
+const SAVED: &str = "modules_to_save";
 const A: &str = ".lora_A.weight";
 const B: &str = ".lora_B.weight";
 const ALPHA: &str = ".alpha";
@@ -92,6 +98,18 @@ pub(crate) fn unusable(group: &Group) -> Option<String> {
     })
 }
 
+/// Whether `key` lies in module `name`: its path, or its last segments (as PEFT matches `modules_to_save`).
+pub(crate) fn within(key: &str, name: &str) -> bool {
+    !name.is_empty()
+        && (key.match_indices(name)).any(|(at, _)| (at == 0 || key[..at].ends_with('.')) && key[at + name.len()..].starts_with('.'))
+}
+
+/// Whether `key` lies in a whole module `config`'s `modules_to_save` names, which the adapter carries.
+pub(crate) fn saved(key: &str, config: &Config) -> bool {
+    let names = config.get(SAVED).and_then(Json::as_array).into_iter().flatten();
+    names.filter_map(Json::as_str).any(|name| within(key, name))
+}
+
 /// Ordinary tensors explicitly named by PEFT's modules_to_save belong to this adapter.
 fn saved_key(key: &str, config: &Config) -> Option<String> {
     let key = key.strip_prefix(PEFT_PREFIX).unwrap_or(key);
@@ -99,10 +117,7 @@ fn saved_key(key: &str, config: &Config) -> Option<String> {
         Some((module, tail)) => format!("{module}.{}", tail.split_once('.')?.1),
         None => key.to_owned(),
     };
-    let module = canonical.rsplit_once('.')?.0;
-    config.get("modules_to_save")?.as_array()?.iter().filter_map(Json::as_str)
-        .any(|name| module == name || module.ends_with(&format!(".{name}")))
-        .then_some(canonical)
+    saved(&canonical, config).then_some(canonical)
 }
 
 #[cfg(test)]
@@ -120,14 +135,18 @@ mod saved_tests {
 /// PEFT's `adapter_config.json` for LoRA `modules` (module, rank): `source`'s fields where it
 /// states them (its patterns as they are: a caller that folds them into `.alpha` empties them),
 /// else `r` the commonest rank, `target_modules` the modules, `lora_alpha` `r` when every rank is
-/// `r` (omitted otherwise: each module states its own `.alpha`), and `base_model_name_or_path`
-/// `base_model`, else the source's, else kohya's `ss_sd_model_name`. Kohya's `ss_network_alpha`
+/// `r` (omitted otherwise: each module states its own `.alpha`), `base_model_name_or_path`
+/// `base_model`, else the source's, else kohya's `ss_sd_model_name`, `modules_to_save` the whole
+/// modules it `carries` beside the source's, and each `reference_*` field of its metadata
+/// ([`REFERENCE`]) as JSON: `True`/`False` (Python's) and `true`/`false` a boolean, a JSON number
+/// a number, else the string. Kohya's `ss_network_alpha`
 /// is never a scale: its loaders, and ComfyUI's, read only `.alpha` tensors (none is `α = r`).
 pub(crate) fn adapter_config(
     modules: impl IntoIterator<Item = (String, u64)>,
     metadata: &BTreeMap<String, String>,
     source: Option<&Config>,
     base_model: Option<&str>,
+    carries: &BTreeSet<String>,
 ) -> Config {
     let modules: BTreeMap<String, u64> = modules.into_iter().collect();
     let mut counts: BTreeMap<u64, usize> = BTreeMap::new();
@@ -148,6 +167,20 @@ pub(crate) fn adapter_config(
     if let Some(base) = base {
         config.insert("base_model_name_or_path".into(), json!(base));
     }
+    if !carries.is_empty() {
+        let mut names: BTreeSet<String> = carries.clone();
+        let stated = config.get(SAVED).and_then(Json::as_array).into_iter().flatten().filter_map(Json::as_str);
+        names.extend(stated.map(str::to_owned));
+        config.insert(SAVED.into(), json!(names));
+    }
+    for (field, value) in metadata.iter().filter(|(field, _)| field.starts_with(REFERENCE)) {
+        let typed = match value.trim() {
+            "True" | "true" => Json::Bool(true),
+            "False" | "false" => Json::Bool(false),
+            v => v.parse::<serde_json::Number>().map_or_else(|_| json!(value), Json::Number),
+        };
+        config.entry(field.as_str()).or_insert(typed);
+    }
     config
 }
 
@@ -167,11 +200,12 @@ pub(crate) struct Adapter {
 /// Normalizes, in `planned`, each component holding LoRA factors ([`peft_key`]), and returns its
 /// adapter. `sources` is each component's source group; an adapter config file read becomes the
 /// component's config and leaves `files`. `set` reads the source files a reading names. A key of
-/// a component no table converted (`tabled`) that is no factor refuses: nothing is left out.
+/// a component no table converted (`tabled`, each with the whole modules its table may carry) that
+/// is no factor refuses: nothing is left out.
 pub(crate) fn normalize(
     planned: &mut Vec<Planned>,
     sources: &BTreeMap<String, &Group>,
-    tabled: &BTreeSet<String>,
+    tabled: &BTreeMap<String, BTreeSet<String>>,
     files: &mut BTreeMap<String, Vec<u8>>,
     set: &SourceSet,
 ) -> Result<BTreeMap<String, Adapter>> {
@@ -196,16 +230,24 @@ pub(crate) fn normalize(
             (None, Some(text)) => Some(unpacked(component, parse(DIFFUSERS_CONFIG, text.as_bytes())?)),
             (None, None) => None,
         };
+        // The whole modules its table carries that it holds: their keys stay as they are.
+        let carries: BTreeSet<String> = (tabled.get(component).into_iter().flatten())
+            .filter(|m| mine.iter().any(|i| within(&planned[*i].key, m)))
+            .cloned()
+            .collect();
         let mut seen = BTreeSet::new();
         let (mut modules, mut kept, mut magnitudes, mut strays) = (BTreeMap::new(), BTreeSet::new(), BTreeSet::new(), vec![]);
         for i in &mine {
             let p = &mut planned[*i];
+            if carries.iter().any(|m| within(&p.key, m)) {
+                continue;
+            }
             match peft_key(&p.key) {
                 Some(key) => p.key = key,
                 None if source.as_ref().and_then(|config| saved_key(&p.key, config)).is_some() => {
                     p.key = saved_key(&p.key, source.as_ref().expect("checked")).expect("checked");
                 }
-                None if !tabled.contains(component) => strays.push(p.key.clone()),
+                None if !tabled.contains_key(component) => strays.push(p.key.clone()),
                 None => {}
             }
             if let Some(m) = p.key.strip_suffix(MAGNITUDE).map(str::to_owned) {
@@ -236,7 +278,7 @@ pub(crate) fn normalize(
         // Each `.alpha` the source holds, as the F32 scalar its loaders read.
         let mut stated: BTreeMap<String, f64> = BTreeMap::new();
         for i in &mine {
-            let Some(m) = planned[*i].key.strip_suffix(ALPHA).map(str::to_owned) else { continue };
+            let Some(m) = planned[*i].key.strip_suffix(ALPHA).map(str::to_owned).filter(|m| kept.contains(m)) else { continue };
             let value = scalar(component, &planned[*i], set)?;
             stated.insert(m, value);
             let p = &mut planned[*i];
@@ -257,7 +299,7 @@ pub(crate) fn normalize(
             }
         }
         let ranks = modules.iter().map(|(m, v)| (m.clone(), v.rank));
-        let mut config = adapter_config(ranks, &group.metadata, source.as_ref(), None);
+        let mut config = adapter_config(ranks, &group.metadata, source.as_ref(), None, &carries);
         if !magnitudes.is_empty() {
             config.insert("use_dora".into(), Json::Bool(true));
         }

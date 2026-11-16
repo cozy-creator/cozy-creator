@@ -21,7 +21,6 @@ import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { VideoEditor } from "./timeline/VideoEditor"
 import { ToolLine } from "./ToolLine"
 import { FocusFrame, useFocusResize } from "./FocusFrame"
-import { Asking } from "./Asking"
 import { SlowNotice } from "./RenderTime"
 import { StateDot, viewState } from "./StateDot"
 import { TakeProgress } from "./TakeProgress"
@@ -326,7 +325,6 @@ function Status({ view, name }: { view: ElementView; name: string }) {
   if (will) return <div className="status">Will be {will}</div>
   const asset = view.asset
   if (!asset) return null
-  if (view.asking) return <Asking name={name} fit={view.asking.fit} />
   if (view.waiting) {
     return (
       <div className="status mak">
@@ -651,11 +649,6 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
       {here && !lite && asset?.tool && !view.placing && <ToolLine name={name} view={view} width={width} />}
       {here && !lite && asset && asset.kind !== "image" && !view.hereWords && !view.placing && !looking && <ShapeLine name={name} view={view} />}
       {view.refused && <div className="refused-line">{view.refused}</div>}
-      {!here && view.asking && (
-        <div className="rest-asking canvas-control">
-          <Asking name={name} fit={view.asking.fit} />
-        </div>
-      )}
       {here && asset && asset.kind !== "text" && (!asset.timeline || cut) && <Takes view={view} name={name} width={width} side focused={focused} />}
       {/* Slow here, opened from Render's row where nothing else is under the box (cl-1004). */}
       {here && asset && !under && view.slowOpen && (

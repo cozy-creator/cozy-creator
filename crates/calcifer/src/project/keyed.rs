@@ -104,9 +104,6 @@ async fn project_of(api: &Arc<Api>, parts: &mut axum::http::request::Parts) -> R
 /// same key waits for it and hears what it said.
 pub(super) async fn answered(State(api): State<Arc<Api>>, mut request: Request, next: Next) -> Response {
     let mut activity=None;
-    if !matches!(*request.method(),Method::GET|Method::HEAD|Method::OPTIONS) && !crate::api::speaks_project_storage(request.headers()) {
-        return crate::api::project_storage_protocol_required().into_response();
-    }
     // Opening a project attaches only its admitted journal, using a bounded lease.
     // The middleware releases it before a handler waits for a worker or a stream.
     if request.uri().path()!="/v1/projects" {
@@ -204,12 +201,7 @@ async fn creation(api:&Arc<Api>,bytes:&[u8],key:&str,digest:&str)->Result<Creati
             }
         }
     }
-    let legacy=api.calcifer.maintenance_store().read(|conn| {
-        let exists=conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='legacy_project_answers')",[],|row|row.get::<_,bool>(0))?;
-        if !exists {return Ok(false);}
-        Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM legacy_project_answers WHERE key=?1)",[key],|row|row.get::<_,bool>(0))?)
-    })?;
-    if legacy {Err(pending())} else {Ok(Creation::Fresh)}
+    Ok(Creation::Fresh)
 }
 
 fn conflict(key: &str) -> Response {

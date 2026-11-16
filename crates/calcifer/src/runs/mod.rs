@@ -42,14 +42,12 @@ use target::Resolved;
 pub(crate) async fn submit(
     State(api): State<Arc<Api>>,
     IdempotencyKey(key): IdempotencyKey,
-    headers: axum::http::HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, Refusal> {
     let body = body?;
     prebuilt(&body)?;
     let ask: RunRequest = parse(&body)?;
     if ask.project.is_some() || (ask.warm.is_none() && !crate::hub::jobs::is(&ask.target)) {
-        if !crate::api::speaks_project_storage(&headers) { return Err(crate::api::project_storage_protocol_required()); }
         return Err(Refusal(Error::new(Kind::Usage, "project_context_required", "Send this run through its project.")));
     }
     let project = ask.project.clone();
@@ -592,8 +590,12 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
             }
             if set.len() > 1 {
                 on = match chosen {
-                    Ok(chosen) => chosen,
-                    // An estimate shows each machine's refusal; a run none of them can take is refused, naming them.
+                    Ok((chosen, fell_back)) => {
+                        // None of those named could take it: where a run naming none goes, which isn't what was asked.
+                        notes.extend(fell_back.map(|message| Note { level: NoteLevel::Warning, message }));
+                        chosen
+                    }
+                    // An estimate shows each machine's refusal; a run nothing can take is refused, naming them.
                     Err(_) if estimates => on,
                     Err(e) => return Err(e),
                 };
@@ -679,7 +681,7 @@ async fn instead_of_renting(api: &Arc<Api>, run: Weighed<'_>) -> Option<(On, Str
         return None;
     }
     let (chosen, offers, _) = crate::project::run_on(api, &set, run.hub, run.package, run.release, run.function, run.size, run.gpus, run.gpu, 1, false).await;
-    let chosen = chosen.ok()?;
+    let (chosen, _) = chosen.ok()?;
     let offer = offers.first()?.iter().find(|offer| offer.machine == chosen && offer.fits)?.clone();
     let rental = api.machines.new_rental(run.hub, run.spec).await.ok()?;
     let way = crate::rentals::OnItsWay { ready_at_ms: 0, card: rental.card.clone(), gpus: rental.gpus };

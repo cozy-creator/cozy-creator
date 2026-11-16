@@ -100,18 +100,6 @@ fn check(tx: &Transaction<'_>, runs: &[(String, i64)], moved: usize) -> Result<(
     Ok(())
 }
 
-/// Run `id`, numbered `old` in Calcifer's old store, imported as run `new` here (cl-1075): each number project.db keeps of it moves
-/// with it. One without the id moves only when `old` names no other run here.
-pub(crate) fn imported(tx: &Transaction<'_>, id: &str, old: i64, new: i64) -> Result<(), Refused> {
-    if old == new { return Ok(()); }
-    let taken = tx.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE number = ?1 AND id <> ?2)", params![old, id], |row| row.get::<_, bool>(0)).map_err(sql)?;
-    visit(tx, |_, label, _| match &label.id {
-        Some(held) if held == id => Fate::Number(new),
-        None if label.number == old && !taken => Fate::Number(new),
-        _ => Fate::Keep,
-    })
-}
-
 /// Each run number project.db keeps outside `runs`, by where it is (the table) and whether it may go (a version's may: its id stays),
 /// given to `fate`; what it says of each is written. Err: one it refused.
 fn visit(tx: &Transaction<'_>, mut fate: impl FnMut(&str, &Label, bool) -> Fate) -> Result<(), Refused> {

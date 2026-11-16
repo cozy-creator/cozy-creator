@@ -1,0 +1,16 @@
+{
+ "note": "LTX-2.5's Diffusers release as Cozy's Hub mirror holds it: `tfs --json inspect lightricks/ltx-2.5@sha256:52006a91...` (tensorfs 0.25.1) prints its bf16 lane's header, each component's class, config and every tensor's key, dtype and shape, read by its header alone. The mirror was imported from Lightricks' gated repository as it is (no converter; the header's `source` pins its files), so its keys are the reference's; families.py reads ltx-2-5's components from it",
+ "members": [
+  {
+   "source": "lightricks/ltx-2.5@sha256:52006a9153444121e43feda29dabbb4decfa12a17a94573a340de4c62fab7a2c",
+   "release": "lightricks/ltx-2.5@0.1.0",
+   "lane": "bf16",
+   "origin": "hf://Lightricks/LTX-2.5-Diffusers@4791a1100e0cf97f7ed5c55c12dd71dce13f9dd3",
+   "header": "sha256:bd4a292ae21336392e59f73e1c26e2fc630c9a4cabe13820540702c8296d45a4",
+   "header_bytes": 554894,
+   "file": "lightricks-ltx-2.5-0.1.0-bf16.inspect.json",
+   "file_sha256": "ba67fa502e44ebb06d2ed7a781bf69848987a6dc795fd284c98f09717dca75cf",
+   "file_bytes": 601808
+  }
+ ]
+}

@@ -166,11 +166,12 @@ mirror() {
 }
 
 # standin_lora <file> <org/name> <page> <family> [--trigger <words>]...: a LoRA uploaded, published at 0.1.0, its family (none
-# when empty) and triggers named, as an admin mirrors an author's LoRA. $FORMAT: its --source-format, else detected.
+# when empty) and triggers named, as an admin mirrors an author's LoRA. $FORMAT: its --source-format, else detected; $LANE its
+# lane, else f16.
 standin_lora() {
   local file=$1 lora=$2 page=$3 family=$4 commit
   shift 4
-  cozy --json lora upload "$file" "$lora" --lane f16 --mirror "$page" --on local -y ${FORMAT:+--source-format "$FORMAT"} \
+  cozy --json lora upload "$file" "$lora" --lane "${LANE:-f16}" --mirror "$page" --on local -y ${FORMAT:+--source-format "$FORMAT"} \
     > "$seed/upload-${lora##*/}.json" 2>&1 \
     || { echo "uploading $lora failed: $(tail -c 600 "$seed/upload-${lora##*/}.json")" >&2; return 1; }
   commit=$(python3 "$here/model-details.py" "$lora" | jq -r '.checkpoints[0].checkpoint // empty')
@@ -234,12 +235,13 @@ case $key in
   cli:entrypoints | cli:executors | cli:projectdb-cancel | cli:local-wake | cli:containment | cli:containment-web | cli:projectvault-static | cli:projectvault-static-distros) needs='' ;;
   # forward's run that moves local's Runtime for its project (cl-1055).
   cli:selfupdate) needs='next scratch' ;;
-  cli:runs) needs='packages birefnet' ;;
+  # llm_write's Qwen3.5 0.8B (xs-204).
+  cli:runs) needs='packages birefnet qwen' ;;
   # project_runtime's probe (cl-1055).
   cli:local-code) needs='packages birefnet scratch' ;;
   # commands shows a LoRA's modules (lora show, xs-183), fits a lane on a slot's components (lane_fit, xs-191) and composes a
   # model of one component with another's (xs-190).
-  cli:commands) needs='packages birefnet loras fits parts lorabase uninstall' ;;
+  cli:commands) needs='packages birefnet loras fits parts lorabase uninstall ltxlora' ;;
   cli:follow) needs='packages downloads' ;;
   cli:lines) needs='packages birefnet downloads' ;;
   cli:idle) needs='packages downloads' ;;
@@ -253,7 +255,7 @@ case $key in
   cli:env-cost) needs='packages birefnet' ;;
   # plan_fetch quotes a fine-tune composed of a base's parts (cl-1071).
   cli:plan) needs='packages birefnet downloads composed' ;;
-  cli:) needs='packages birefnet downloads spare loras vaes fits parts composed lorabase calls uninstall' ;;
+  cli:) needs='packages birefnet qwen downloads spare loras vaes fits parts composed lorabase calls uninstall ltxlora' ;;
   # shared_scratch's probe and its warm BiRefNet (cl-984).
   cli:projectvault) needs='packages birefnet scratch' ;;
   cli:*) needs='packages' ;;
@@ -408,7 +410,8 @@ if [ -n "$needs" ]; then
       held
       rc_floor ;;
   esac
-  if [[ " $needs " == *" birefnet "* || " $needs " == *" downloads "* || " $needs " == *" loras "* || " $needs " == *" parts "* || " $needs " == *" disk "* || " $needs " == *" lorabase "* ]]; then
+  if [[ " $needs " == *" birefnet "* || " $needs " == *" qwen "* || " $needs " == *" downloads "* || " $needs " == *" loras "* || " $needs " == *" parts "* \
+    || " $needs " == *" disk "* || " $needs " == *" lorabase "* || " $needs " == *" ltxlora "* ]]; then
     update=()
     [ -z "$runtime" ] || update+=(--runtime "$runtime")
     [ -z "$tensorfs" ] || update+=(--tensorfs "$tensorfs")
@@ -418,9 +421,15 @@ if [ -n "$needs" ]; then
   if [[ " $needs " == *" birefnet "* ]]; then
     mirror hf://ZhengPeng7/BiRefNet@e2bf8e4460fc8fa32bba5ea4d94b3233d367b0e4 zhengpeng7/birefnet fp16 0.1.0 https://huggingface.co/ZhengPeng7/BiRefNet
   fi
+  # The real Qwen3.5 0.8B, which an LLM tool runs on the CPU (xs-204); it also stands in for the downloads' 1.6 GB.
+  if [[ " $needs " == *" qwen "* ]]; then
+    mirror hf://Qwen/Qwen3.5-0.8B@2fc06364715b967f1860aea9cf38778875588b17 qwen/qwen3.5-0.8b bf16 0.1.0 https://huggingface.co/Qwen/Qwen3.5-0.8B
+  fi
   if [[ " $needs " == *" downloads "* ]]; then
-    random_weights "$seed/qwen3.5-0.8b.safetensors" 1640
-    mirror "$seed/qwen3.5-0.8b.safetensors" qwen/qwen3.5-0.8b bf16 0.1.0 https://huggingface.co/Qwen/Qwen3.5-0.8B --source-format as-is
+    if [[ " $needs " != *" qwen "* ]]; then
+      random_weights "$seed/qwen3.5-0.8b.safetensors" 1640
+      mirror "$seed/qwen3.5-0.8b.safetensors" qwen/qwen3.5-0.8b bf16 0.1.0 https://huggingface.co/Qwen/Qwen3.5-0.8B --source-format as-is
+    fi
     random_weights "$seed/fontbox.safetensors" 115
     mirror "$seed/fontbox.safetensors" lilylilith/fontbox bf16 0.1.0 https://huggingface.co/lilylilith/fontbox --source-format as-is
     rm -f "$seed"/*.safetensors
@@ -435,6 +444,12 @@ if [ -n "$needs" ]; then
     # And one bigger than the disk can make free, refused with the sizes.
     random_weights "$seed/disk.safetensors" 2048 disk-big
     mirror "$seed/disk.safetensors" e2e/disk-big bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is
+    rm -f "$seed/disk.safetensors"
+    # And disk_run_object's (cl-1076): its asset is a file the package that runs it carries too (cli/tokenizer), as H3 holds
+    # the Qwen3-VL processor files minimax-h3 carries.
+    random_weights "$seed/disk.safetensors" 384 disk-tokenizer
+    mirror "$seed/disk.safetensors" e2e/disk-tokenizer bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is \
+      --add "processor/vocab.json=$here/cli/tokenizer/e2e_tokenizer/processor/vocab.json"
     rm -f "$seed/disk.safetensors"
   fi
   if [[ " $needs " == *" calls "* ]]; then
@@ -637,6 +652,20 @@ PY
     standin_lora "$seed/proj-lora.safetensors:transformer" e2e/lora-proj "$page" '' || exit 1
     log "published e2e/lora-base@0.1.0 (text_encoder, transformer) and e2e/lora-proj@0.1.0 (a LoRA of its proj)"
     rm -f "$seed"/*.safetensors
+  fi
+  if [[ " $needs " == *" ltxlora "* ]]; then
+    # ltx_lora (cli/commands.sh): Lightricks' LTX-2.3 Motion Track Control IC-LoRA (327 MB, ungated) as Lightricks publishes it,
+    # LTX's native names under diffusion_model., uploaded from Hugging Face by the candidate machine. commands.sh says what the
+    # upload made of it, so a failed one doesn't end the shard.
+    LANE=bf16 standin_lora "hf://Lightricks/LTX-2.3-22b-IC-LoRA-Motion-Track-Control@022bf183b6da565fd2e2800e135ba0b46db57d32/ltx-2.3-22b-ic-lora-motion-track-control-ref0.5.safetensors" \
+      lightricks/ltx-2.3-motion-track-control https://huggingface.co/Lightricks/LTX-2.3-22b-IC-LoRA-Motion-Track-Control '' \
+      && log "published lightricks/ltx-2.3-motion-track-control@0.1.0 (an LTX-2.3 IC-LoRA)" \
+      || log "lightricks/ltx-2.3-motion-track-control: $(tail -c 400 "$seed/upload-ltx-2.3-motion-track-control.json" 2> /dev/null)"
+    # ltx_msr: LiconStudio's Multiple-Subject Reference V2 for LTX-2.5 (2.2 GB, Apache-2.0, ungated), the same way.
+    LANE=bf16 standin_lora "hf://LiconStudio/LTX-2.5-Multiple-Subject-Reference@aa19b48f845995525d8ace60cdc89b842e951ce6/LTX-2.5-Licon-MSR-V2.safetensors" \
+      liconstudio/licon-msr-v2 https://huggingface.co/LiconStudio/LTX-2.5-Multiple-Subject-Reference '' \
+      && log "published liconstudio/licon-msr-v2@0.1.0 (an LTX-2.5 reference LoRA with slot embeddings)" \
+      || log "liconstudio/licon-msr-v2: $(tail -c 400 "$seed/upload-licon-msr-v2.json" 2> /dev/null)"
   fi
   cd "$start"
 fi

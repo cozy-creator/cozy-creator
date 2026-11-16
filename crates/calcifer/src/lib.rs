@@ -26,7 +26,6 @@ mod hub;
 mod health;
 mod kept;
 mod legacy_cleanup;
-mod legacy_status;
 mod lanes;
 mod link;
 mod local;
@@ -109,6 +108,8 @@ pub(crate) struct Calcifer {
     events: broadcast::Sender<(RunId, Event)>,
     live: Mutex<HashMap<RunId, Live>>,
     drivers: Mutex<HashMap<RunId, Arc<Notify>>>,
+    /// Each driver whose task is going, kept by the task itself (`Driving`): what a run's writes into its project count of it.
+    driving: Mutex<HashSet<RunId>>,
     /// Runs told to cancel whose request is still to be kept: a project's edit held its writer when it asked.
     canceling: Mutex<HashSet<String>>,
     /// Queued runs told to cancel on their machine to go to another that finishes them sooner (cl-1073), by id: where each goes.
@@ -281,19 +282,29 @@ impl From<StoreError> for Stop {
     }
 }
 
+/// A driver's task going (cl-1060), gone with the task however it ends: an entry in `drivers` with no task behind it (a drive asked
+/// after close) or one whose task ended counts for nothing.
+struct Driving {
+    calcifer: Arc<Calcifer>,
+    id: RunId,
+}
+
+impl Drop for Driving {
+    fn drop(&mut self) {
+        lock(&self.calcifer.driving).remove(&self.id);
+    }
+}
+
 impl Calcifer {
     /// Opens Calcifer's home (`~/.cozy/calcifer`) and resumes every run it owes. `outputs` holds
     /// each package's folder, where a run's outputs land unless it names its own directory.
     pub(crate) fn open(home: &Path, outputs: &Path) -> Result<Arc<Self>, Error> {
         let store = Store::open(&home.join("state.db"))?;
         let projects = Instant::now();
-        state::import(&store, home);
         project::vault::sweep_runtime(home);
         project::vault::restore_plain_roots(&store);
         tracing::info!(target: "cozy.service_health", step = "store_projects", ms = projects.elapsed().as_millis() as u64, "started");
-        // Before 0.23 Calcifer kept uploaded files here; they are objects of this computer's TensorFS store now
-        // (`runs::files`). A run recorded since staged its own (`inputs/`), and a sender still has the rest.
-        // Existing controller files are retained until their owning migration verifies retirement.
+        // A run outside any project stages its inputs here; a project's run in the project (`private_io::input_root`).
         let inputs = home.join("inputs");
         std::fs::create_dir_all(&inputs).map_err(|e| Error::Input {
             path: inputs.clone(),
@@ -308,6 +319,7 @@ impl Calcifer {
             events: broadcast::channel(4096).0,
             live: Mutex::default(),
             drivers: Mutex::default(),
+            driving: Mutex::default(),
             canceling: Mutex::default(),
             moving: Mutex::default(),
             machines: Mutex::default(),
@@ -331,6 +343,9 @@ impl Calcifer {
         lock(&calcifer.run_owners).extend(maintenance.into_iter().map(|id| (id, None)));
         calcifer.sweep_inputs()?;
         tracing::info!(target: "cozy.service_health", step = "store_runs", ms = runs.elapsed().as_millis() as u64, "started");
+        // What the legacy cut's copies couldn't let go of in this computer's TensorFS store yet, let go of again, off the start's path.
+        let kept = home.to_owned();
+        std::thread::spawn(move || project::release_kept(&kept));
         Ok(calcifer)
     }
 
@@ -422,6 +437,7 @@ impl Calcifer {
         let mut tasks = lock(&self.tasks);
         while tasks.try_join_next().is_some() {}
         tasks.spawn(async move {
+            let _driving = me.driving(&id);
             let scope=match me.run_scope_when_ready(id.as_str(),&wake).await { Ok(scope)=>scope,Err(error)=>{ me.ended_here(&id,Err(error)); me.driver_done(&id); return; } };
             if let Ok(Some(row))=me.with_run_store(id.as_str(),|store|store.run(id.as_str())) {
                 if row.state==State::Settled {me.driver_done(&id);return;}
@@ -506,8 +522,8 @@ impl Calcifer {
         let owner = store.owner();
         let ids:Vec<String>=store.read(|conn| {
             // By `runs_owed` and `outputs_unexported`, never every run (cl-1010).
-            let mut stmt=conn.prepare(&format!("SELECT id FROM runs WHERE state<>'settled' AND owner=?1 AND custody='owned'
-                UNION SELECT id FROM runs WHERE id IN (SELECT outputs.run FROM outputs WHERE {}) AND owner=?1 AND custody='owned'",store::OWED))?;
+            let mut stmt=conn.prepare(&format!("SELECT id FROM runs WHERE state<>'settled' AND owner=?1
+                UNION SELECT id FROM runs WHERE id IN (SELECT outputs.run FROM outputs WHERE {}) AND owner=?1",store::OWED))?;
             Ok(stmt.query_map([store.project_id()],|row|row.get(0))?.collect::<rusqlite::Result<_>>()?)
         })?;
         let mut routes=lock(&self.run_owners);
@@ -520,8 +536,7 @@ impl Calcifer {
         };
         routes.extend(ids.into_iter().map(|id|(id,Some(owner.clone()))));
         drop(routes);
-        // Driver/export admission is idempotent, and a verified legacy receipt
-        // can make an already-open owner's old rows ready on a later read.
+        // Driver/export admission is idempotent.
         // Only what is routed: a run being recorded is driven by its submitter, one not yet owned once a later attach routes it.
         for id in store.unsettled()? { if lock(&self.run_owners).contains_key(id.as_str()) { self.drive(id); } }
         for (id, _) in store.exports_owed()? { self.export(&id); }
@@ -565,6 +580,50 @@ impl Calcifer {
 
     /// A project run that settled and owes no output stops holding its project open: its route goes, and the project closes
     /// once nothing else holds it (a later run, request or view opens it again).
+    /// A run of `project` that still writes into it (cl-1060): its driver going (settling, its log and journal rows, what stays on
+    /// its machine) or its exporter moving its outputs, latents among them, into the project (`export_moving`). The project's vault
+    /// clock and every lock wait for it; an exporter that stalls stops holding them.
+    pub(crate) fn writing_into(&self, project: &str) -> Option<RunId> {
+        self.routed(project).into_iter().find(|id| lock(&self.driving).contains(id) || self.export_moving(id))
+    }
+
+    /// Run `id`'s driver task going, until the returned guard drops with it (cl-1060).
+    fn driving(self: &Arc<Self>, id: &RunId) -> Driving {
+        lock(&self.driving).insert(id.clone());
+        Driving { calcifer: self.clone(), id: id.clone() }
+    }
+
+    /// The routed runs of `project`.
+    fn routed(&self, project: &str) -> Vec<RunId> {
+        lock(&self.run_owners).iter()
+            .filter(|(_, owner)| owner.as_ref().is_some_and(|owner| owner.project_id() == project))
+            .filter_map(|(id, _)| RunId::try_from(id.clone()).ok()).collect()
+    }
+
+    /// A run of `project` whose driver's task is going (cl-1060): settling, handing on.
+    pub(crate) fn driving_into(&self, project: &str) -> Option<RunId> {
+        self.routed(project).into_iter().find(|id| lock(&self.driving).contains(id))
+    }
+
+
+    /// What a run that ended still owes its project, handed on before its driver lets go (cl-1060): what stays on its machine noted,
+    /// and its exporter started, so it's never neither driven nor exporting while its project is owed a write. A lock's turn on the
+    /// project is waited out, not dropped.
+    async fn hand_on(self: &Arc<Self>, id: &RunId) {
+        let owner = lock(&self.run_owners).get(id.as_str()).cloned().flatten();
+        for _ in 0..3 {
+            match self.note_stays(id) {
+                Err(StoreError::Locked(code)) if code == "project_busy" => match &owner {
+                    Some(owner) if owner.when_admitted().await.is_ok() => continue,
+                    _ => break,
+                },
+                Err(e) => { warn!("what a run left on its machine isn't noted in its project: {e}"); break; }
+                Ok(()) => break,
+            }
+        }
+        self.export(id);
+    }
+
     pub(crate) fn release_run(&self, id: &RunId) {
         if lock(&self.drivers).contains_key(id) || self.exporting(id) { return; }
         let Some(Some(owner)) = lock(&self.run_owners).get(id.as_str()).cloned() else { return };
@@ -764,6 +823,7 @@ impl Calcifer {
         for (id,wake) in lock(&self.drivers).iter() { if ids.contains(id.as_str()) { wake.notify_waiters(); } }
         lock(&self.warm).clear();
         for behind in lock(&self.behind).values_mut() { behind.retain(|id,_|!ids.contains(id)); }
+        crate::project::purge::forget(&self.store, project);
     }
 
     /// Existing accepted work can settle after viewing closes. This never
@@ -1124,7 +1184,6 @@ impl Calcifer {
             };
         }
         run.stalled=owned.then(||self.stalled(&run)).flatten();
-        if row.custody_pending && row.state!=State::Settled {run.stalled=None;run.waiting=Some("waiting to confirm the old worker has let go of this run before it resumes".into());run.progress=None;run.queue_position=None;}
         if !owned && row.state!=State::Settled {run.waiting=Some("copied from another project's history, so it won't resume here".into());run.progress=None;run.queue_position=None;}
         Ok(run)
     }
@@ -1742,9 +1801,11 @@ impl Calcifer {
         }
         while tasks.try_join_next().is_some() {}
         tasks.spawn(async move {
+            let _driving = me.driving(&id);
             let scope=match me.run_scope_when_ready(id.as_str(),&wake).await { Ok(scope)=>scope,Err(error)=>{ let _=me.fail(&id,Reason {code:error.code,message:error.message,..Default::default()}); me.driver_done(&id); return; } };
             private_io::context(scope,me.follow_to_end(&id,&wake)).await;
             lock(&me.live).remove(&id);
+            me.hand_on(&id).await;
             me.driver_done(&id);
         });
     }
@@ -2800,7 +2861,6 @@ impl Calcifer {
     /// Deletes staged inputs no unsettled run names (a Calcifer that stopped between a run's end
     /// and their deletion).
     fn sweep_inputs(&self) -> Result<(), Error> {
-        if self.maintenance_store().migration_required()? { return Ok(()); }
         let entries = std::fs::read_dir(&self.inputs).map_err(|e| Error::Input {
             path: self.inputs.clone(),
             message: e.to_string(),

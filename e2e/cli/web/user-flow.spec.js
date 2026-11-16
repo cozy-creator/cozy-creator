@@ -148,7 +148,7 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
   test.setTimeout(4 * 3600_000);
   for (const dir of ['runs', 'machines', 'shots']) mkdirSync(join(FLOW, dir), { recursive: true });
   const holder = () => JSON.parse(readFileSync(need('HOLDER'), 'utf8'));
-  const flow = { cozy: process.env.COZY_VERSION ?? '?', rent: RENT, sku: SKU, sku_b: SKU_B, gpus_b: GPUS_B, plate_s: PLATE_S, project: { id: project.id, path: project.path }, calcifer: { pid_at_start: holder().pid }, steps: [], machines: {}, sent: [], loads: [], failures: [] };
+  const flow = { cozy: process.env.COZY_VERSION ?? '?', rent: RENT, sku: SKU, sku_b: SKU_B, gpus_b: GPUS_B, plate_s: PLATE_S, project: { id: project.id, path: project.path }, calcifer: { pid_at_start: holder().pid }, steps: [], machines: {}, sent: [], loads: [], failures: [], errors: [] };
   const keep = () => writeFileSync(join(FLOW, 'flow.json'), JSON.stringify(flow, null, 2));
   const mark = (what, extra = {}) => { flow.steps.push({ at: Date.now(), what, ...extra }); keep(); };
   /** A step's failure is said and the flow goes on where it can: collection and End always come. */
@@ -161,6 +161,7 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
   const runs = new Map(), machines = new Map(), last = new Map(), waiters = new Set(), watching = new Set();
   let heard = 0;
   const mine = (run) => run.project_id === project.id || run.project === project.name;
+  const ourMachine = (one) => Object.values(flow.machines).some((m) => (m.name && m.name === one.name) || (m.rental_id && m.rental_id === one.rental_id));
   const watch = (run) => {
     // Each run's own events, by the CLI, from its first sight: its progress frames aren't in its log after.
     const name = run.name || String(run.number);
@@ -175,8 +176,15 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
     appendFileSync(join(FLOW, 'events.ndjson'), `{"at":${at},"event":${line}}\n`);
     const event = JSON.parse(line);
     if (event.type === 'machine.removed') {
+      const was = machines.get(event.id);
       machines.delete(event.id);
-      for (const waiter of waiters) waiter.moved();
+      // One of ours gone from the list before End was pressed ended by itself (a rental idle 15 min releases itself): when, and its last state.
+      for (const m of Object.values(flow.machines)) {
+        if (m.left_at || m.end_pressed_at || machineOf(m) || !(m.name === event.id || (m.rental_id && was?.rental_id === m.rental_id))) continue;
+        Object.assign(m, { left_at: at, left_state: was?.state ?? null });
+        keep();
+      }
+      for (const waiter of waiters) waiter.moved(ourMachine({ name: event.id, rental_id: was?.rental_id }));
       return;
     }
     const key = event.run ? `run ${event.run.id}` : event.machine ? `machine ${event.machine.name}` : null;
@@ -188,18 +196,20 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
       runs.set(event.run.id, { ...event.run, seen_at: runs.get(event.run.id)?.seen_at ?? at });
       if (mine(event.run) && event.run.kind === 'call') watch(event.run);
     } else machines.set(event.machine.name, event.machine);
-    for (const waiter of waiters) waiter.moved();
+    // The account's other machines and other projects' runs are on this stream too: only ours say this flow is still moving.
+    for (const waiter of waiters) waiter.moved(event.run ? mine(event.run) : ourMachine(event.machine));
   });
   await context.exposeBinding('__flowSeen', (source, at, key, text) => appendFileSync(join(FLOW, 'seen.ndjson'), `${JSON.stringify({ at, key, text })}\n`));
   await context.addInitScript(recorders);
 
-  /** Until `holds()` answers, each time what the page reads changes; fails once nothing has for QUIET_MS, or after STEP_MS. */
+  /** Until `holds()` answers, each time what the page reads changes; fails once nothing of ours (this project's runs, the machines it
+   *  rented) has for QUIET_MS, or after STEP_MS. */
   const until = (what, holds) => new Promise((done, fail) => {
     const began = Date.now();
     let moved = began;
     const waiter = {
-      moved() {
-        moved = Date.now();
+      moved(ours = true) {
+        if (ours) moved = Date.now();
         try { const got = holds(); if (got) { stop(); done(got); } } catch (error) { stop(); fail(error); }
       },
     };
@@ -277,7 +287,8 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
     await goto(`${project.url()}/machines`);
     const row = page.locator('li.sku').filter({ has: page.locator(`b:text-is(${JSON.stringify(sku)})`) });
     await expect(row, `${sku} is offered`).toBeVisible({ timeout: 120_000 });
-    const width = row.getByRole('combobox', { name: `${sku}: GPUs` });
+    // "GPUs for <sku>" since cl-1084's words; "<sku>: GPUs" before (tonight's RC).
+    const width = row.getByRole('combobox', { name: new RegExp(`^(GPUs for ${sku}|${sku}: GPUs)$`) });
     if (await width.count()) await width.selectOption(String(gpus));
     else if (gpus !== 1) throw new Error(`${sku} is offered with one GPU only`);
     await row.getByRole('button', { name: 'Rent', exact: true }).click();
@@ -301,6 +312,16 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
     // The page opens its drawer as it orders: preferred there while it boots.
     await page.waitForURL(/\/machines\/.+/, { timeout: 60_000 }).catch(() => {});
     await prefer(m).catch((error) => failed(`${label} preferred as it boots`, error));
+    // Its Hub names its host a moment after the order (rent-… becomes its name, cl-1089). Still preferred under that name before the
+    // next request is placed: its loss is said and it's checked again, so the request's placement is judged with both preferred.
+    if (/^rent-[0-9a-f]+$/.test(m.name ?? '')) {
+      const named = await expect.poll(() => { const it = machineOf(m); return it && it.name !== m.name ? it.name : null; }, { timeout: 60_000 }).not.toBeNull().then(() => machineOf(m)?.name ?? null, () => null);
+      if (named) {
+        Object.assign(m, { ordered_as: m.name, name: named });
+        await goto(`${project.url()}/machines/${encodeURIComponent(named)}`);
+        await prefer(m).catch((error) => failed(`${label} preferred under its Hub's name`, error));
+      }
+    }
     await shot(`${label}-ordered`);
     return m;
   };
@@ -311,7 +332,7 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
     await expect(box, `${m.label} can be preferred`).toBeEnabled({ timeout: 60_000 });
     if (await box.isChecked()) return;
     // Checked as it booted, under the handle its order gave it: still checked once its Hub names its host (cl-1089's rename).
-    if (m.preferred_at) failed(`${m.label}'s Prefer, checked as it booted, held through its rename`, `unchecked in ${m.name}'s drawer once ready`);
+    if (m.preferred_at) failed(`${m.label}'s Prefer, checked as it booted, held through its rename`, `unchecked in ${m.name}'s drawer${m.ready_at ? ' once ready' : ', as its Hub named it'}`);
     await box.check();
     await expect(box).toBeChecked();
     m.preferred_at = m.preferred_at ?? Date.now();
@@ -356,6 +377,10 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
   page = await context.newPage();
   page.on('domcontentloaded', () => flow.loads.push({ at: Date.now(), url: page.url() }));
   guards.allow(/status of 409\b/);
+  // What the cell's guards fail on once the flow is over, kept for the judge's table too.
+  const erred = (line) => { if (!/status of 409\b/.test(line)) { flow.errors.push({ at: Date.now(), line: line.slice(0, 400) }); keep(); } };
+  page.on('pageerror', (error) => erred(`page error: ${error.message}`));
+  page.on('console', (message) => { if (message.type() === 'error') erred(`console error: ${message.text()} ${message.location().url}`); });
   try {
     await test.step('the project locked, opened from the Projects list and unlocked with its passphrase', async () => {
       const locked = await cli('--json', 'vault', '--directory', project.path, 'lock');
@@ -376,9 +401,12 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
       await shot('unlocked');
       // Unlocked where it was opened, it's the project: its canvas, not a page about its locked handle (43852897461: "This project can't
       // be opened yet", its uploads sent to `locked-…`). Said, then opened at its own address so the flow goes on.
-      const stuck = page.getByText("This project can't be opened yet", { exact: true });
-      if (await stuck.waitFor({ state: 'visible', timeout: 10_000 }).then(() => true, () => false)) {
-        failed('the project opens where it was unlocked, from the Projects list', (await page.locator('main, .stage').first().innerText()).replace(/\s+/g, ' ').slice(0, 300));
+      // The page's words for it: "Couldn't open this project" since cl-1084, "This project can't be opened yet" before. Either way the
+      // tab stays at `locked-…`, which is no project's address.
+      const stuck = page.getByRole('heading', { name: /^(Couldn't open this project|This project can't be opened yet)$/ });
+      const stale = await stuck.waitFor({ state: 'visible', timeout: 10_000 }).then(() => true, () => false);
+      if (stale || /\/locked-/.test(new URL(page.url()).pathname)) {
+        failed('the project opens where it was unlocked, from the Projects list', `at ${new URL(page.url()).pathname}: ${(await page.locator('main, .stage').first().innerText()).replace(/\s+/g, ' ').slice(0, 300)}`);
         await goto(project.url());
         await expect(page.locator('.stage')).toBeVisible({ timeout: 60_000 });
         await expect(stuck).toHaveCount(0, { timeout: 30_000 });
@@ -504,16 +532,19 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
     await test.step('every take lands in the project and shows', async () => {
       // Focus stays on the Shot (two takes, one per machine when placed well) until both land, then on the plate's edit.
       const takes = async (name) => (await project.asset(name))?.versions ?? 0;
-      const want = { [SHOT]: 3, plate: 2 };
+      // A take for each run that completed, beside the plate's own file: a run that failed lands none, and nothing waits for one.
+      const held = { [SHOT]: 0, plate: 1 };
       for (const name of [SHOT, 'plate']) {
         await look(name);
-        await until(`${name}'s takes`, () => {
+        const ended = await until(`${name}'s takes`, () => {
           const mineNow = flow.sent.filter((sent) => sent.box === name && sent.run).map((sent) => runs.get(sent.run));
           return mineNow.every((run) => run && settled(run)) ? mineNow : null;
         });
         await shot(`${name}-settled`);
+        const made = ended.filter((run) => run.status === 'completed').length;
         try {
-          await expect.poll(() => takes(name), { message: `${name}'s takes landed`, timeout: 900_000, intervals: [5_000] }).toBeGreaterThanOrEqual(want[name]);
+          if (made < ended.length) throw new Error(`${made} of its ${ended.length} runs completed: ${ended.map((run) => `${run.name} ${run.status}${run.reason?.code ? ` (${run.reason.code})` : ''}`).join(', ')}`);
+          await expect.poll(() => takes(name), { message: `${name}'s takes landed`, timeout: 900_000, intervals: [5_000] }).toBeGreaterThanOrEqual(held[name] + made);
           mark(`${name}'s takes landed`);
         } catch (error) {
           failed(`${name}'s takes landed`, error);
@@ -568,13 +599,22 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
       await test.step('both machines ended through the page', async () => {
         for (const m of Object.values(flow.machines).filter((one) => one.name || one.rental_id)) {
           try {
+            // Gone from the list, or ending, before End is pressed: it ended by itself (idle 15 min). Said with when; the judge says why.
+            const now = machineOf(m);
+            if (!now || ['ending', 'ended'].includes(now.state)) {
+              Object.assign(m, { left_at: m.left_at ?? Date.now(), left_state: now?.state ?? m.left_state ?? null });
+              continue;
+            }
+            delete m.left_at;
+            delete m.left_state;
             await goto(`${project.url()}/machines/${encodeURIComponent(m.name ?? m.rental_id)}`);
             const actions = page.locator('.machine-actions');
             await actions.getByRole('button', { name: 'End', exact: true }).click({ timeout: 60_000 });
             const confirm = page.locator('.confirm');
             await expect(confirm).toBeVisible();
             m.end_says = (await confirm.locator('.says').textContent().catch(() => '')).trim();
-            await confirm.getByRole('button', { name: 'End it', exact: true }).click();
+            // "End rental" since cl-1084's words; "End it" before (tonight's RC).
+            await confirm.getByRole('button', { name: /^(End rental|End it)$/ }).click();
             m.end_pressed_at = Date.now();
             await until(`${m.label} ended`, () => (!machineOf(m) || machineOf(m).state === 'ended' ? true : null));
             m.ended_at = Date.now();

@@ -24,7 +24,7 @@ macro_rules! family {
 }
 
 /// The built-in families.
-pub(crate) const FAMILIES: [&str; 14] = [
+pub(crate) const FAMILIES: [&str; 15] = [
     family!("minimax-h3"),
     family!("sdxl"),
     family!("anima"),
@@ -39,6 +39,7 @@ pub(crate) const FAMILIES: [&str; 14] = [
     family!("fibo-2"),
     family!("hunyuan-image-3"),
     family!("hidream-o1"),
+    family!("ltx-2-5"),
 ];
 
 /// The form a family's reference is in.
@@ -53,7 +54,8 @@ pub(crate) const ADAPTER: &str = "adapter";
 #[serde(deny_unknown_fields)]
 pub struct Family {
     pub name: String,
-    /// The pinned repository (`hf://org/repo@<commit>`) the components were read from.
+    /// The pinned repository (`hf://org/repo@<commit>`) the components were read from, or Cozy's Hub mirror of a gated one
+    /// (`org/name@sha256:<commit>`).
     pub reference: String,
     /// The converter tables whose output is this family's (`h3.native`, `h3.lora`).
     #[serde(default)]
@@ -259,8 +261,10 @@ pub(crate) fn fitting(targets: &BTreeMap<&str, Factors>) -> Vec<(&'static Family
         .collect()
 }
 
-fn is_lora(component: &Component) -> bool {
-    component.tensors.iter().all(|t| lora_key(&t.key))
+/// Whether every tensor of a component is a LoRA's ([`lora_key`]) or in a whole module its adapter config carries
+/// (PEFT's `modules_to_save`).
+pub(crate) fn is_lora(component: &Component) -> bool {
+    component.tensors.iter().all(|t| lora_key(&t.key) || crate::import::lora::saved(&t.key, &component.config))
 }
 
 /// What a checkpoint is, from its header alone.

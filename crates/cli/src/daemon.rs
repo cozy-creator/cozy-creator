@@ -74,12 +74,6 @@ pub(crate) async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Err
         "warnings": project.warnings.iter().take(if ctx.full { usize::MAX } else { 10 }).collect::<Vec<_>>(),
         "next": next,
     });
-    // History from before projects kept their own (cl-984): imported into its journal, and still in Calcifer's store.
-    let legacy = crate::calcifer_client::path(&["v1", "projects", &project.id, "legacy"]);
-    if let Ok(history) = ctx.calcifer().await?.get::<api::calcifer::LegacyHistory>(&legacy).await
-        && (history.imported > 0 || history.pending > 0) {
-        document["legacy_history"] = json!(format!("{} runs imported, {} pending", history.imported, history.pending));
-    }
     if !project.unsent.is_empty() {
         document["counts"]["errors"] = json!(project.unsent.len());
         document["errors"] = json!(project.unsent.iter().take(if ctx.full { usize::MAX } else { 5 }).collect::<Vec<_>>());
@@ -88,7 +82,7 @@ pub(crate) async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Err
     if !project.notes.is_empty() {
         document["notes"] = json!(project.notes.iter().map(|note| &note.message).collect::<Vec<_>>());
     }
-    output::view(ctx, &document, &["project", "health", "counts", "legacy_history", "warnings", "errors", "notes", "next"]);
+    output::view(ctx, &document, &["project", "health", "counts", "warnings", "errors", "notes", "next"]);
     Ok(ExitCode::SUCCESS)
 }
 

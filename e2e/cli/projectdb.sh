@@ -10,9 +10,9 @@
 #   db_deleted_gc   a deleted box resolves nowhere; Undo in the window; its files and thumbnails gone after it, across a stopped Calcifer too
 #   db_purged       Undo past the 3-hour purge brings each box back where it was without its files, saying so
 #   db_closes       a project closes once no call, stream or render reads it; Calcifer's heap comes back; a reopen is as quick
-#   db_remote_custody  old runs an ended rental made import as the project's own, and the project takes new work (cl-1003)
 #   db_numbered     a project's runs numbered 46550.. open as 1..n, each number kept of them moved; one that can't stays as it was (cl-1075)
 #   db_keys         a run's KEY-N names only its own project: lab2 is LAB2, lab3_2 LAB32, and one that held LAB2 is keyed again (cl-1075)
+#   db_remote_custody  a project whose runs an earlier import left pending custody (Paul's lab) takes new work (cl-1003)
 # Uses project.sh's `api`, `status`, `held` and `sha`.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # project.db's schema (db.rs VERSION): what a project this cozy opens holds, and what its copy before a migration is named after.
@@ -1118,65 +1118,6 @@ echo "migrate: 0.24.0's project read here as it read there: $(jq -sc 'map({(.nam
 # row and rows_at and conflicts to meta, changes no row 3 has, and keeps the project as it was beside it once; its rows then stand at
 # the document, so a read takes them, and adds the project's run journal and keys beside them. Schema 3 is this cozy's project, Calcifer
 # stopped, with what 4 to 6 added taken off.
-# Paul's projects are verified fully migrated before the 0.27 hard cut by these (cl-984): a project's `cozy status` says its legacy
-# history, imported and pending, and `cozy doctor` says the old project runs Calcifer's store still holds, by folders here and gone.
-# A 0.24.0 store's runs: 3 landing in a project here, 2 in a folder that is gone; this cozy's first start fences them (v7 -> v8),
-# and the project's open imports its 3. They're numbered as the one store numbered Paul's (46550..); imported, they're the project's
-# 1, 2 and 3 in the order made, and its next run is 4 (cl-1075, Paul 11-16: "When I start a new project, the run counter should start at 1").
-db_legacy() {
-step "legacy history: cozy status and cozy doctor count what is imported and what is left"
-local D=$OUT/legacy now=$OUT/cozy-now old P G pid
-old=$(cozy_0240) || { check "legacy: 0.24.0's archive"; return; }
-[ -f "$now" ] || cp "$COZY" "$now"
-in_cozy "$old" && [ "$(cozy --version)" = "cozy 0.24.0" ] || { check "legacy: 0.24.0 in this cozy's place: $(cozy --version)"; in_cozy "$now"; return; }
-P=$D/here G=$D/gone
-mkdir -p "$P"
-boxes_in "$P" <<< '[{"name": "notes", "fields": {"text": "A project 0.24.0 ran in."}}]' || { check "legacy: 0.24.0 made no project"; in_cozy "$now"; return; }
-pid=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder" 2> /dev/null) || pid=''
-[ -z "$pid" ] || term_calcifer "$pid" || { in_cozy "$now"; return; }
-python3 - "$HOME/.cozy/calcifer/state.db" "$P" "$G" <<'PY' || { check "legacy: runs into 0.24.0's store"; in_cozy "$now"; return; }
-import json, sqlite3, sys
-path, here, gone = sys.argv[1:4]
-db = sqlite3.connect(path, isolation_level=None)
-assert db.execute("PRAGMA user_version").fetchone()[0] == 7, "not a 0.24 store"
-done = json.dumps({"status": "succeeded", "result": {}, "outputs": [], "execution_ms": 1000, "measurements": {"observations": []}})
-first = max((db.execute("SELECT max(number) FROM runs").fetchone()[0] or 0) + 1, 46550)
-for i, root in enumerate([here, here, here, gone, gone]):
-    db.execute("INSERT INTO runs (id, number, idempotency_key, digest, hub, kind, target, machine, pinned, spec, out_dir, state, status, outcome, created_at, settled_at) "
-               "VALUES (?, ?, ?, 'sha256:00', 'http://127.0.0.1:1', 'call', 'legacy/runs', NULL, 0, X'7B7D', ?, 'settled', 'completed', CAST(? AS BLOB), ?, ?)",
-               (f"run-legacy{i:020d}", first + i, f"legacy-{i}", root + "/.runs", done, 1700000000000 + i, 1700000000000 + i))
-db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-PY
-# This cozy on that store, not the one put aside: its first start fences it.
-cp "$now" "$COZY.new" && chmod +x "$COZY.new" && mv -f "$COZY.new" "$COZY" && cozy --json machine ls > /dev/null && db_calcifer \
-  || { check "legacy: this cozy on 0.24.0's store"; in_cozy "$now"; return; }
-cozy --json doctor > "$OUT/legacy-doctor.json" 2> "$OUT/legacy-doctor.err" || true
-J --arg here "$P" --arg gone "$G" '.legacy == {existing: [{path: $here, runs: 3}], gone: [{path: $gone, runs: 2}], unreadable: 0}' "$OUT/legacy-doctor.json" \
-  || check "legacy: doctor before the open: $(jq -c .legacy "$OUT/legacy-doctor.json" 2> /dev/null || tail -c 300 "$OUT/legacy-doctor.err")"
-jq -r '.checks[] | select(.check == "legacy history") | .state' "$OUT/legacy-doctor.json" | grep -q '3 old runs of 1 project folders here' \
-  || check "legacy: doctor's line: $(jq -c '.checks' "$OUT/legacy-doctor.json" 2> /dev/null | head -c 400)"
-in_project "$P" --json status > "$OUT/legacy-status.json" 2> "$OUT/legacy-status.err" || check "legacy: status: $(tail -c 300 "$OUT/legacy-status.err")"
-J '.legacy_history == "3 runs imported, 0 pending"' "$OUT/legacy-status.json" || check "legacy: status says $(jq -c .legacy_history "$OUT/legacy-status.json" 2> /dev/null)"
-cozy --json doctor > "$OUT/legacy-doctor-after.json" 2> /dev/null || true
-J --arg gone "$G" '.legacy == {existing: [], gone: [{path: $gone, runs: 2}], unreadable: 0}' "$OUT/legacy-doctor-after.json" \
-  || check "legacy: doctor after the open: $(jq -c .legacy "$OUT/legacy-doctor-after.json" 2> /dev/null)"
-# cl-1075: its old runs are its own 1, 2 and 3 in the order made, by name from any folder, and its next run is 4.
-local key i
-key=$(jq -r '.project.key // empty' "$OUT/legacy-status.json")
-for i in 0 1 2; do
-  (cd "$D" && cozy --json run watch "$key-$((i + 1))" --once) > "$OUT/legacy-named-$i.json" 2>&1 || true
-  J --arg id "run-legacy$(printf %020d "$i")" '.id == $id' "$OUT/legacy-named-$i.json" \
-    || check "legacy: $key-$((i + 1)) isn't its old run $i (cl-1075): $(tail -c 300 "$OUT/legacy-named-$i.json")"
-done
-in_project "$P" --json run minimax-h3-tools/echo "text=after its old runs" > "$OUT/legacy-next.ndjson" 2> "$OUT/legacy-next.err" \
-  || check "legacy: a run after its old ones: $(tail -c 300 "$OUT/legacy-next.ndjson") $(tail -c 300 "$OUT/legacy-next.err")"
-in_project "$P" --json run ls --limit 0 > "$OUT/legacy-runs.json" 2>&1 || true
-J --arg key "$key" '[.runs[].name] | sort == ([1, 2, 3, 4] | map("\($key)-\(.)"))' "$OUT/legacy-runs.json" \
-  || check "legacy: its runs are $(jq -c '[.runs[]?.name]' "$OUT/legacy-runs.json"), not $key-1 to $key-4 (cl-1075)"
-echo "legacy: $(jq -r .legacy_history "$OUT/legacy-status.json"); runs $(jq -c '[.runs[]?.name]' "$OUT/legacy-runs.json"); store after: $(jq -c .legacy "$OUT/legacy-doctor-after.json")"
-in_cozy "$now" || check "legacy: this cozy back on its own store"
-}
-
 # db_numbered (cl-1075). Paul, 11-16: "why are all of our runs starting at like run number 47,000? … When I start a new project, the
 # run counter should start at 1." A project an old import left numbered as Calcifer's one store numbered its runs (46550.., as his
 # lab3_2) opens numbered 1..n in the order made, and every number project.db keeps of them moves with them: a take's (versions), a
@@ -1270,88 +1211,26 @@ J --arg id "$first_b" '.id == $id and .name == "LAB32-1"' "$D/LAB32-1.json" || c
 echo "keys: lab2 $(jq -r .key "$D/a-key.json"), lab3_2 $(jq -r .key "$D/b-key.json")"
 }
 
-# db_remote_custody (cl-1003): a project's old runs an ended rental made import as its own, and it takes new work. On rc/0.26.0 Paul's
-# lab took none: its 3 imported runs, made on a rental now ended, stayed pending a custody only `local` can verify, and every render
-# was refused `legacy_worker_custody_pending`. Both states: a first import here, and one an earlier import left pending (the runs in
-# project.db pending, their old rows still in Calcifer's store), as lab's is.
+# db_remote_custody (cl-1003): a project an earlier import left with runs pending a custody only `local` could verify takes new work.
+# Paul's lab was left so on rc/0.26.0 (its runs made on a rental since ended), and refused every run `legacy_worker_custody_pending`;
+# nothing reads that custody now. Its project.db as lab's: the column, and its runs pending on a machine gone.
 db_remote_custody() {
-step "legacy custody: old runs of an ended rental import as the project's own, and the project takes new work (cl-1003)"
-local D=$OUT/remote-custody now=$OUT/cozy-now old P pid ids
-old=$(cozy_0240) || { check "remote custody: 0.24.0's archive"; return; }
-[ -f "$now" ] || cp "$COZY" "$now"
-in_cozy "$old" && [ "$(cozy --version)" = "cozy 0.24.0" ] || { check "remote custody: 0.24.0 in this cozy's place: $(cozy --version)"; in_cozy "$now"; return; }
-P=$D/here
-mkdir -p "$P"
-boxes_in "$P" <<< '[{"name": "notes", "fields": {"text": "A project a rental ran for."}}]' || { check "remote custody: 0.24.0 made no project"; in_cozy "$now"; return; }
-pid=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder" 2> /dev/null) || pid=''
-[ -z "$pid" ] || term_calcifer "$pid" || { in_cozy "$now"; return; }
-ids=$(python3 - "$HOME/.cozy/calcifer/state.db" "$P" <<'PY'
-import json, sqlite3, sys
-path, here = sys.argv[1:3]
-db = sqlite3.connect(path, isolation_level=None)
-assert db.execute("PRAGMA user_version").fetchone()[0] == 7, "not a 0.24 store"
-db.execute("INSERT INTO machines (name, kind, key, state, created_at) VALUES ('gone-rental', 'rental', '', 'ended', 1700000000000)")
-done = json.dumps({"status": "succeeded", "result": {}, "outputs": [], "execution_ms": 1000, "measurements": {"observations": []}})
-first = (db.execute("SELECT max(number) FROM runs").fetchone()[0] or 0) + 1
-ids = []
-for i in range(2):
-    ids.append(f"run-rental{i:020d}")
-    db.execute("INSERT INTO runs (id, number, idempotency_key, digest, hub, kind, target, machine, pinned, spec, out_dir, state, status, outcome, created_at, settled_at) "
-               "VALUES (?, ?, ?, 'sha256:00', 'http://127.0.0.1:1', 'call', 'legacy/runs', 'gone-rental', 0, X'7B7D', ?, 'settled', 'completed', CAST(? AS BLOB), ?, ?)",
-               (ids[-1], first + i, f"rental-{i}", here + "/.runs", done, 1700000000000 + i, 1700000000000 + i))
-db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-print(json.dumps(ids))
-PY
-) || { check "remote custody: runs into 0.24.0's store"; in_cozy "$now"; return; }
-# This cozy fences that store at its first start. Its old rows of the project, as they are before any import, kept aside.
-cp "$now" "$COZY.new" && chmod +x "$COZY.new" && mv -f "$COZY.new" "$COZY" && cozy --json machine ls > /dev/null && db_calcifer \
-  || { check "remote custody: this cozy on 0.24.0's store"; in_cozy "$now"; return; }
-pid=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder") && term_calcifer "$pid" || { in_cozy "$now"; return; }
-python3 - "$HOME/.cozy/calcifer/state.db" "$D/source.db" "$ids" <<'PY' || { check "remote custody: its fenced rows"; in_cozy "$now"; return; }
-import json, sqlite3, sys
-db = sqlite3.connect(sys.argv[1], isolation_level=None)
-db.execute("ATTACH ? AS kept", (sys.argv[2],))
-ids = json.dumps(json.loads(sys.argv[3]))
-for table in ["legacy_project_runs", "legacy_run_owners"]:
-    db.execute(f"CREATE TABLE kept.{table} AS SELECT * FROM main.{table} WHERE id IN (SELECT value FROM json_each(?))", (ids,))
-    n = db.execute(f"SELECT count(*) FROM kept.{table}").fetchone()[0]
-    assert n == 2, f"{table}: {n} fenced rows of the project, not 2"
-# Its old index row too, which a first import retires once nothing of it is pending (lab's is still there).
-db.execute("CREATE TABLE kept.legacy_project_projects AS SELECT * FROM main.legacy_project_projects")
-assert db.execute("SELECT count(*) FROM kept.legacy_project_projects").fetchone()[0] == 1, "not the project's one old index row"
-PY
-remote_custody_admits() {
-  in_project "$P" --json status > "$OUT/remote-custody-$1-status.json" 2> "$OUT/remote-custody-$1-status.err" \
-    || check "remote custody ($1): status: $(tail -c 300 "$OUT/remote-custody-$1-status.err")"
-  J '.legacy_history == "2 runs imported, 0 pending"' "$OUT/remote-custody-$1-status.json" \
-    || check "remote custody ($1): status says $(jq -c .legacy_history "$OUT/remote-custody-$1-status.json" 2> /dev/null)"
-  [ "$(sql1 "$P" "SELECT count(*) FROM runs WHERE machine = 'gone-rental' AND custody = 'owned'")" = 2 ] \
-    || check "remote custody ($1): the rental's runs in project.db: $(sql "$P" "SELECT id, custody FROM runs WHERE machine = 'gone-rental'" | tr '\n' ' ')"
-  in_project "$P" --json run minimax-h3-tools/echo "text=after the rental $1" > "$OUT/remote-custody-$1-run.ndjson" 2> "$OUT/remote-custody-$1-run.err" \
-    || check "remote custody ($1): a new run refused: $(tail -c 300 "$OUT/remote-custody-$1-run.ndjson") $(tail -c 300 "$OUT/remote-custody-$1-run.err")"
-}
-cozy --json machine ls > /dev/null && db_calcifer || { check "remote custody: this cozy again"; in_cozy "$now"; return; }
-remote_custody_admits first
-# As an earlier import left lab: the runs pending custody in project.db, their old rows and the project's old index row still
-# in Calcifer's store.
-pid=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder") && term_calcifer "$pid" || { in_cozy "$now"; return; }
-python3 - "$P/project.db" "$HOME/.cozy/calcifer/state.db" "$D/source.db" <<'PY' || { check "remote custody: lab's state"; in_cozy "$now"; return; }
+step "legacy custody: a project whose runs an earlier import left pending takes new work (cl-1003)"
+local P=$OUT/remote-custody pid
+cozy --json new --unencrypted "$P" > "$OUT/remote-custody-new.json" 2>&1 || { check "remote custody: new: $(tail -c 300 "$OUT/remote-custody-new.json")"; return; }
+in_project "$P" --json run minimax-h3-tools/echo text=first > "$OUT/remote-custody-1.ndjson" 2> "$OUT/remote-custody-1.err" \
+  || { check "remote custody: first run: $(tail -c 300 "$OUT/remote-custody-1.err")"; return; }
+pid=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder") && term_calcifer "$pid" || return
+python3 - "$P/project.db" <<'PY' || { check "remote custody: lab's state"; return; }
 import sqlite3, sys
-project = sqlite3.connect(sys.argv[1], isolation_level=None)
-assert project.execute("UPDATE runs SET custody = 'legacy_pending' WHERE machine = 'gone-rental'").rowcount == 2
-project.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-store = sqlite3.connect(sys.argv[2], isolation_level=None)
-store.execute("ATTACH ? AS kept", (sys.argv[3],))
-store.execute("BEGIN")
-for table in ["legacy_project_runs", "legacy_run_owners", "legacy_project_projects"]:
-    store.execute(f"INSERT OR IGNORE INTO main.{table} SELECT * FROM kept.{table}")
-store.execute("COMMIT")
-store.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+db = sqlite3.connect(sys.argv[1], isolation_level=None)
+if "custody" not in [row[1] for row in db.execute("PRAGMA table_info(runs)")]:
+    db.execute("ALTER TABLE runs ADD COLUMN custody TEXT NOT NULL DEFAULT 'owned' CHECK(custody IN ('owned','legacy_pending'))")
+assert db.execute("UPDATE runs SET custody = 'legacy_pending', machine = 'gone-rental'").rowcount >= 1
+db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 PY
-cozy --json machine ls > /dev/null && db_calcifer || { check "remote custody: this cozy on lab's state"; in_cozy "$now"; return; }
-remote_custody_admits again
-echo "remote custody: $(jq -r .legacy_history "$OUT/remote-custody-again-status.json" 2> /dev/null)"
-in_cozy "$now" || check "remote custody: this cozy back on its own store"
+in_project "$P" --json run minimax-h3-tools/echo text=after > "$OUT/remote-custody-2.ndjson" 2> "$OUT/remote-custody-2.err" \
+  || check "remote custody: a new run refused: $(tail -c 300 "$OUT/remote-custody-2.ndjson") $(tail -c 300 "$OUT/remote-custody-2.err")"
 }
 
 db_migrate_large() {
@@ -1379,7 +1258,7 @@ import sqlite3, sys
 db = sqlite3.connect(sys.argv[1], isolation_level=None)
 db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 journal = ["outputs", "run_logs", "asks", "runs", "project_view", "project_diagnostics", "journal_migrations", "after_steps",
-    "project_headers", "project_rendered_here", "project_vault_operations", "project_keys"]
+    "project_headers", "project_vault_operations", "project_keys"]
 db.executescript("BEGIN; ALTER TABLE boxes DROP COLUMN id; DELETE FROM meta WHERE key IN ('rows_at', 'conflicts'); "
     + "".join(f"DROP TABLE {table}; " for table in journal) + "PRAGMA user_version = 3; COMMIT;")
 PY

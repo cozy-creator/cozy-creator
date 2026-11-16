@@ -6,7 +6,7 @@ import { projectsQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { newFolder } from "../app/making"
 import { Failure } from "./common"
-import { Recovery } from "./ProjectVault"
+import { Recovery, vaultKey } from "./ProjectVault"
 
 /** What a folder refusal is: said beside the Folder field, in Calcifer's words, never in a dialog. */
 const OF_FOLDER = new Set(["project_exists", "project_not_empty", "project_permission", "project_io", "project_path", "project_own_folder", "vault_nested_project"])
@@ -66,9 +66,16 @@ export function ProjectCreate({ onCreated, onCancel, onHolding, autoFocus = fals
   useEffect(() => { if (named === null && field.current === document.activeElement) field.current?.select() }, [suggested, named])
   useEffect(() => { onHolding?.(busy || Boolean(recovery)) }, [onHolding, busy, recovery])
 
-  // The recovery secret it was made with stays on screen until Done, whatever happens to the connection meanwhile: it is shown once.
-  const finish = () => {
+  // The recovery secret it was made with stays on screen until Done, whatever happens to the connection meanwhile: it is shown once. Its
+  // lock is read here before it opens: a first drop's canvas stays mounted across the move only while its project's lock is known (Shell),
+  // and without it the drop's draft was lost (web-engines vault, run 43841290809).
+  const finish = async () => {
     if (!created) return
+    setBusy(true)
+    const status = await client.vault(created.id).catch(() => null)
+    if (status) queries.setQueryData(vaultKey(created.id), status)
+    if (!mounted.current) return
+    setBusy(false)
     setRecovery(null)
     onCreated(created)
   }
@@ -97,7 +104,7 @@ export function ProjectCreate({ onCreated, onCancel, onHolding, autoFocus = fals
   const ofFolder = Boolean(code && OF_FOLDER.has(code))
   const said = (failure: unknown) => sentence(failure instanceof Error ? failure.message : String(failure))
 
-  if (recovery && created) return <Recovery secret={recovery} disabled={busy} onDone={finish} />
+  if (recovery && created) return <Recovery secret={recovery} disabled={busy} onDone={() => void finish()} />
   return (
     <form className="stack" onSubmit={(event) => void submit(event)}>
       <label className="said-beside">

@@ -30,7 +30,6 @@ pub(crate) mod journal;
 pub(crate) mod key;
 pub(crate) use journal::{OpenProject, ProjectRef, ProjectStore, RunOwner};
 mod keyed;
-pub(crate) mod legacy_worker;
 mod view;
 pub(crate) mod model;
 mod nodes;
@@ -101,10 +100,13 @@ pub(crate) use thumbs::previews;
 
 /// The projects this Calcifer knows: those open now, by id, which each keeps in its `project.db` (cl-819). Every one it opened is
 /// in `state.db`'s `projects`, by id, with its name and where it last was. A project is open while anything reads it: a call, a
-/// stream, its walk (which goes until nothing is owed), a page showing it. The last of them to let go closes it (cl-823).
+/// stream, its walk (which goes until nothing is owed), a page showing it, and a plaintext one `LINGER` after a request. The last of them
+/// to let go closes it (cl-823).
 #[derive(Default)]
 pub(crate) struct Projects {
     open: Mutex<HashMap<String, Weak<Project>>>,
+    /// Plaintext projects a request used, held until `LINGER` after the last, by id, with their project.db's file as it was then.
+    lingering: Mutex<HashMap<String, Lingering>>,
     /// What was last heard of each published package projects name, by `with`.
     heard: Mutex<HashMap<String, Heard>>,
     /// How many times that changed: what a read said of them is good until then.
@@ -151,6 +153,8 @@ pub(crate) struct Project {
     /// Cache ownership follows the physical mount, not a replaceable viewer authorization.
     mount_id: Option<vault::MountIdentity>,
     folder: Folder,
+    /// Which file its project.db was as it opened (`db_file`): another there is another project's, or a restored copy, never this one.
+    db_file: Option<(u64, u64)>,
     /// What its files say, as last read.
     model: tokio::sync::Mutex<Option<Arc<model::Model>>>,
     /// What streams were last told of it.
@@ -228,13 +232,11 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/runs/{run}/play", get(crate::play::play))
         .route("/v1/projects/{id}/runs/{run}/preview", get(crate::previews::serve))
         .route("/v1/projects/{id}/fit", post(fit::fit))
-        .route("/v1/projects/{id}/fit/here", post(fit::here))
         .route("/v1/projects/{id}/benchmarks", get(benchmarks::benchmarks))
         .route("/v1/projects/{id}/cancel", post(cancel))
         .route("/v1/projects/{id}/approve", post(approve))
         .route("/v1/projects/{id}/unpin", post(unpin))
         .route("/v1/projects/{id}/rename", post(rename))
-        .route("/v1/projects/{id}/legacy", get(legacy))
         .route("/v1/projects/{id}/machines", put(machines))
         .route("/v1/projects/{id}/reclaim", post(reclaim))
         .route("/v1/projects/{id}/assets", post(assets::create))
@@ -312,8 +314,14 @@ impl Projects {
     }
 
     /// The project a route's `{id}` names (`api::calcifer::project::NAMED_BY`): its id, public code or name, or its folder on this computer. Open,
-    /// else opened from the index. It stays open while the answer is held.
+    /// else opened from the index. It stays open while the answer is held, and a plaintext one `LINGER` after.
     fn get(&self, api: &Arc<Api>, named: &str) -> Result<Arc<Project>, Refusal> {
+        let project = self.found(api, named)?;
+        self.linger(api, &project);
+        Ok(project)
+    }
+
+    fn found(&self, api: &Arc<Api>, named: &str) -> Result<Arc<Project>, Refusal> {
         if let Some(project) = self.open_now(named) {
             return Ok(project);
         }
@@ -331,6 +339,54 @@ impl Projects {
         Ok(project)
     }
 
+    /// A project lingering in `dir` whose project.db isn't the file it was (its folder deleted and made again), let go: what opens there
+    /// now reads the new file, never the old one's connections and document a lingering project would keep shared.
+    fn let_go_replaced(&self, dir: &FsPath) {
+        let now = db_file(dir);
+        let mut lingering = self.lingering.lock().expect("lingering lock");
+        let stale: Vec<String> = lingering.iter().filter(|(_, held)| held.project.folder.dir == dir && held.project.db_file != now).map(|(id, _)| id.clone()).collect();
+        let gone: Vec<Lingering> = stale.iter().filter_map(|id| lingering.remove(id)).collect();
+        drop(lingering);
+        drop(gone);
+    }
+
+    /// Every project held after its last request let go, its connections closed and its WAL emptied first: Calcifer stops.
+    pub(crate) fn close_lingering(&self) {
+        let lingering: Vec<Lingering> = self.lingering.lock().expect("lingering lock").drain().map(|(_, held)| held).collect();
+        for held in lingering {
+            if let Err(error) = held.project.folder.close_connections(true) {
+                warn!(code = %error.code, "a project held after its request didn't close as Calcifer stopped");
+            }
+        }
+    }
+
+    /// `project`, a plaintext one a request used, held open until `LINGER` after this, its last use: one task a project lets it go.
+    fn linger(&self, api: &Arc<Api>, project: &Arc<Project>) {
+        if vault::encrypted(&project.root) {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+        let held = Lingering { project: project.clone(), until: Instant::now() + LINGER };
+        let fresh = self.lingering.lock().expect("lingering lock").insert(project.id.clone(), held).is_none();
+        if !fresh {
+            return;
+        }
+        let (api, id) = (api.clone(), project.id.clone());
+        runtime.spawn(async move {
+            loop {
+                let Some(until) = api.projects.lingering.lock().expect("lingering lock").get(&id).map(|held| held.until) else { return };
+                tokio::time::sleep_until(until.into()).await;
+                let mut lingering = api.projects.lingering.lock().expect("lingering lock");
+                if lingering.get(&id).is_some_and(|held| held.until <= Instant::now()) {
+                    let gone = lingering.remove(&id);
+                    drop(lingering);
+                    drop(gone);
+                    return;
+                }
+            }
+        });
+    }
+
     /// Project `id` held open by a stream that shows it, until the stream lets it go.
     pub(crate) fn reader(&self, api: &Arc<Api>, id: &str) -> Result<Reader, Refusal> {
         self.get(api, id).map(Reader)
@@ -343,6 +399,7 @@ impl Projects {
         let mount_id = vault::mount_identity(&root);
         let physical = current_view(&root)?;
         let dir = physical.as_path();
+        self.let_go_replaced(dir);
         let (folder, Identified { id, name, code, key }) = tokio::task::block_in_place(|| Folder::open_with(dir, api.machines.hubs.home(), |folder| {
             let identified = identify_loaded(api, dir, folder)?;
             let id = &identified.id;
@@ -362,8 +419,9 @@ impl Projects {
         IDENTITIES.lock().expect("identities lock").insert(dir.to_owned(), (id.clone(), name));
         crate::events::project_opened(dir);
         let mut open = self.open.lock().expect("projects lock");
+        let file = db_file(dir);
         let project = match open.get(&id).and_then(Weak::upgrade)
-            .filter(|project| project.root == root && project.mount_id == mount_id && project.folder.dir == dir) {
+            .filter(|project| project.root == root && project.mount_id == mount_id && project.folder.dir == dir && project.db_file == file) {
             Some(project) => {
                 *project.key.lock().expect("key lock") = key;
                 project
@@ -378,6 +436,7 @@ impl Projects {
                     root,
                     mount_id,
                     folder,
+                    db_file: file,
                     jobs: Jobs::new(id.clone()),
                     model: tokio::sync::Mutex::default(),
                     told: Mutex::default(),
@@ -406,8 +465,20 @@ impl Projects {
         drop(open);
         // Calcifer finds its journal while anything holds it open.
         api.calcifer.note_open(RunOwner::of(&project, &api.calcifer));
-        // Its deleted boxes looked at as it opens: one set aside before cl-919 counts from now.
-        purge::due(&project.id, now_ms());
+        // Its deleted boxes looked at as it opens, if it has any.
+        purge::opened(&project.id, &project.folder);
+        // What the legacy cut held for it in this computer's TensorFS store, copied in now it can be read (cl-1003).
+        if crate::store::kept_path(&api.machines.hubs.home().calcifer(), &project.root).exists() {
+            match keep_left_on_local(&project.root, &api.machines.hubs.home().calcifer()) {
+                Ok(Some(0)) | Ok(None) => {}
+                Ok(Some(gone)) => { let _ = api.calcifer.store().note_lost(&project.root, gone as u64); }
+                // Its cause and nothing of the project outside it (an encrypted project's leave no trace there); said on its page too.
+                Err(cause) => {
+                    tracing::warn!(target: "cozy.service_health", code = "legacy_copy_failed", cause, "a project's old files couldn't be copied into it; they stay held until its next open");
+                    project.said.lock().expect("said lock").push(format!("this project's old files kept on this computer couldn't be copied into it ({cause}): they stay kept, and its next open copies them"));
+                }
+            }
+        }
         // Told until a reader hears it: a project closes when nothing holds it, so this open may not be the one read.
         if let Some(said) = copy_note(&project.root) {
             let mut told = project.said.lock().expect("said lock");
@@ -423,6 +494,31 @@ impl Projects {
 const CANCELED: &str = "version_canceled";
 /// How long what was heard of a package stands before a read asks again, in the background.
 const HEARD_FOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// How long a plaintext project a request opened stays open after it: asked again meanwhile (a page's next read, a client's next
+/// call), it isn't loaded again (cl-1010: each run list of a 3,000-box project loaded its whole document, 50–60 ms, 200 four at once).
+/// An encrypted one closes with its request, as every project did.
+const LINGER: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A project held open after a request (`Projects::linger`).
+struct Lingering {
+    project: Arc<Project>,
+    until: Instant,
+}
+
+/// Which file `dir`'s project.db is: its device and inode. Elsewhere none: Windows can't delete a database a process has open.
+fn db_file(dir: &FsPath) -> Option<(u64, u64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(dir.join("project.db")).ok().map(|meta| (meta.dev(), meta.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        None
+    }
+}
 
 /// Where a run of the project in `dir` lands its outputs.
 pub(crate) fn landing(dir: &FsPath) -> PathBuf {
@@ -754,6 +850,187 @@ pub(crate) fn landed(project: &FsPath, made: &Landed, dest: &FsPath) -> Result<(
 pub(crate) fn stays(project: &FsPath, sha256: &str, machine: &str, length: u64) -> Result<(), String> {
     let physical = vault::resolve_path(project).map_err(|error| error.message)?;
     Folder::at(&physical).stays(sha256, machine, length).map_err(|e| e.message)
+}
+
+/// The files the lock of the project at `root` says stay on `local` and its folder lacks (cl-1003): what the legacy cut holds in this
+/// computer's TensorFS store for it before any copy lets go of anything. None when its lock can't be read here.
+pub(crate) fn left_on_local(root: &FsPath) -> Option<Vec<tensorfs::format::ObjectRef>> {
+    let physical = vault::resolve_path(root).ok()?;
+    let folder = Folder::at(&physical);
+    let lock = folder.lock().ok()?;
+    Some(lock.files.values().filter(|file| file.machine == "local" && !folder.path(&file.path).is_file())
+        .filter_map(|file| Some(tensorfs::format::ObjectRef { sha256: file.sha256.strip_prefix("sha256:")?.to_owned(), length: file.length }))
+        .collect())
+}
+
+/// Projects an open is copying the legacy cut's held files into now: a second open of one leaves it to the first.
+static COPYING: std::sync::LazyLock<Mutex<std::collections::HashSet<PathBuf>>> = std::sync::LazyLock::new(Mutex::default);
+
+/// Why a write failed, in a person's words (cl-1003): the disk read-only, no permission there, the disk full, or else.
+pub(crate) fn write_cause(error: &(dyn std::error::Error + 'static)) -> &'static str {
+    let mut at = Some(error);
+    while let Some(error) = at {
+        if let Some(io) = error.downcast_ref::<std::io::Error>() {
+            return match io.kind() {
+                std::io::ErrorKind::ReadOnlyFilesystem => "the disk is read-only",
+                std::io::ErrorKind::PermissionDenied => "cozy may not write there",
+                std::io::ErrorKind::StorageFull | std::io::ErrorKind::QuotaExceeded => "the disk is full",
+                _ => "it couldn't be written",
+            };
+        }
+        at = error.source();
+    }
+    "it couldn't be written"
+}
+
+/// The legacy cut's hold of the project at `root`, at its open (cl-1003). Each file its lock says stays on `local` and only this
+/// computer's TensorFS store holds (made before projects kept their own machine objects) is copied into its `files/`: written under a
+/// hidden name of this open's own, synced, read back and checked against its hash, then put in place. One a local run made since
+/// containment is in the project's own `.vault-machine/objects` already. Then its hold goes, and what the copies brought in is let go
+/// of in the store; what another project's hold still names stays there for a later start (`release_kept`). Answers how many files
+/// the store no longer held whole (gone before now: nothing brings them back); None when its lock can't be read here or another open
+/// is copying it. Err: why one couldn't be copied (`write_cause`); its hold stays for its next open.
+pub(crate) fn keep_left_on_local(root: &FsPath, calcifer: &FsPath) -> Result<Option<usize>, &'static str> {
+    use std::io::Read as _;
+    struct Copying(PathBuf);
+    impl Drop for Copying { fn drop(&mut self) { COPYING.lock().expect("copying lock").remove(&self.0); } }
+    let logical = vault::logical(root);
+    if !COPYING.lock().expect("copying lock").insert(logical.clone()) { return Ok(None); }
+    let _copying = Copying(logical);
+    let Ok(physical) = vault::resolve_path(root) else { return Ok(None) };
+    let folder = Folder::at(&physical);
+    let Ok(lock) = folder.lock() else { return Ok(None) };
+    let store = crate::runs::files::store().map_err(|_| "this computer's file store can't be opened")?;
+    // The project's own machine store, looked at by path only: opening it could write its layout under a running TensorD.
+    let own = physical.join(".vault-machine").join("objects").join("blobs");
+    let record = crate::store::kept_path(calcifer, root).with_extension("release");
+    let mut nonce = [0u8; 8];
+    getrandom::fill(&mut nonce).map_err(|_| "it couldn't be written")?;
+    let nonce = hex::encode(nonce);
+    // What a stopped copy left: one open copies at a time, so none of these is being written.
+    for entry in std::fs::read_dir(physical.join("files")).into_iter().flatten().flatten() {
+        if entry.file_name().to_str().is_some_and(|name| name.starts_with('.') && name.ends_with(".cut-part")) { let _ = std::fs::remove_file(entry.path()); }
+    }
+    let mut gone = 0;
+    for file in lock.files.values().filter(|file| file.machine == "local") {
+        let at = folder.path(&file.path);
+        let Some(hex) = file.sha256.strip_prefix("sha256:") else { continue };
+        if at.is_file() { continue; }
+        let object = tensorfs::format::ObjectRef { sha256: hex.to_owned(), length: file.length };
+        let ours = hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()) && own.join(&hex[..2]).join(&hex[2..4]).join(hex).is_file();
+        if ours { continue; }
+        let Some(from) = store.path(&object).ok().filter(|from| from.is_file()) else { gone += 1; continue };
+        // Hidden while it's written: a name that starts with its hash would be taken for the file itself (`Folder::lock`).
+        let part = at.with_file_name(format!(".{}.{nonce}.cut-part", at.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()));
+        let done = (|| -> Result<bool, &'static str> {
+            let failed = |error: std::io::Error| write_cause(&error);
+            if let Some(dir) = part.parent() { std::fs::create_dir_all(dir).map_err(failed)?; }
+            // A file of its own (the store's are read-only), synced, then read back and checked against its hash.
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+            let mut written = options.open(&part).map_err(failed)?;
+            std::io::copy(&mut std::fs::File::open(&from).map_err(failed)?, &mut written).map_err(failed)?;
+            written.sync_all().map_err(failed)?;
+            drop(written);
+            let (mut read, mut hash, mut buffer) = (std::fs::File::open(&part).map_err(failed)?, Sha256::new(), vec![0; 1 << 20]);
+            loop {
+                let n = read.read(&mut buffer).map_err(failed)?;
+                if n == 0 { break; }
+                hash.update(&buffer[..n]);
+            }
+            if hex::encode(hash.finalize()) != object.sha256 { return Ok(false); }
+            std::fs::rename(&part, &at).map_err(failed)?;
+            if let Some(dir) = at.parent() { platform::durable::sync_dir(dir).map_err(|error| write_cause(&error))?; }
+            Ok(true)
+        })();
+        match done {
+            Ok(true) => {
+                let mut noted = released(&record);
+                noted.push(object);
+                note(&record, &noted);
+            }
+            // The store's copy isn't what the lock names: as lost as one gone, and never let go of here.
+            Ok(false) => { let _ = std::fs::remove_file(&part); gone += 1; }
+            Err(cause) => { let _ = std::fs::remove_file(&part); return Err(cause); }
+        }
+    }
+    release_left(root, calcifer);
+    Ok(Some(gone))
+}
+
+/// What the legacy cut held for the project at `root` in this computer's TensorFS store let go of, and what its copies brought in
+/// (noted by `keep_left_on_local`) let go of there too; what the store keeps yet (another project's hold, a reader) is let go of at
+/// a later start (`release_kept`).
+fn release_left(root: &FsPath, calcifer: &FsPath) {
+    let kept = crate::store::kept_path(calcifer, root);
+    if kept.exists() && std::fs::remove_file(&kept).is_err() {
+        tracing::warn!(target: "cozy.service_health", code = "legacy_hold_kept", "a hold of the legacy cut stays until the next open");
+        return;
+    }
+    let Ok(store) = crate::runs::files::store() else { return };
+    let record = kept.with_extension("release");
+    release(store, &record, released(&record));
+}
+
+/// The legacy cut's holds not let go of yet (each a project not opened since at the folder it had then), and the bytes they keep in
+/// this computer's TensorFS store.
+pub(crate) fn held(calcifer: &FsPath) -> (u64, u64) {
+    let Ok(entries) = std::fs::read_dir(calcifer.join("kept")) else { return (0, 0) };
+    let store = crate::runs::files::store().ok();
+    let (mut projects, mut bytes) = (0, 0);
+    for entry in entries.flatten().filter(|entry| entry.path().extension().is_some_and(|e| e == "cozytensors")) {
+        projects += 1;
+        let Some(header) = std::fs::read(entry.path()).ok().and_then(|read| tensorfs::format::Header::from_cbor(&read).ok()) else { continue };
+        bytes += header.objects().filter(|object| store.is_some_and(|store| store.path(object).is_ok_and(|at| at.is_file()))).map(|object| object.length).sum::<u64>();
+    }
+    (projects, bytes)
+}
+
+/// What a project's copies left in this computer's TensorFS store and couldn't let go of yet (`release`).
+fn released(record: &FsPath) -> Vec<tensorfs::format::ObjectRef> {
+    std::fs::read(record).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+}
+
+/// Lets go of `objects` in this computer's TensorFS store, each copied into a project and checked there, with the uses named by
+/// them. What the store keeps (another project's hold, a reader, a delete Windows defers) is left in `record` for the next start.
+fn release(store: &tensorfs::store::Store, record: &FsPath, objects: Vec<tensorfs::format::ObjectRef>) {
+    let named: Vec<String> = objects.iter().map(|object| object.sha256.clone()).collect();
+    let kept = match objects.is_empty() {
+        true => vec![],
+        false => match store.retire_objects(&objects, &named, &[]) {
+            Ok(retired) => retired.retained,
+            Err(_) => {
+                tracing::warn!(target: "cozy.service_health", code = "legacy_release_failed", "files copied into a project stay in this computer's store until the next start");
+                objects
+            }
+        },
+    };
+    if kept.is_empty() {
+        let _ = std::fs::remove_file(record);
+        return;
+    }
+    tracing::info!(target: "cozy.service_health", code = "legacy_release_kept", kept = kept.len(), "files copied into a project stay in this computer's store until nothing else holds them");
+    note(record, &kept);
+}
+
+/// `objects` noted in `record`, to let go of in this computer's TensorFS store.
+fn note(record: &FsPath, objects: &[tensorfs::format::ObjectRef]) {
+    let written = record.parent().map_or(Ok(()), platform::durable::private_dir)
+        .and_then(|()| platform::durable::replace(record, &serde_json::to_vec(objects).expect("serializes"), 0o600));
+    if written.is_err() { tracing::warn!(target: "cozy.service_health", code = "legacy_release_unnoted", "what a project's copies brought in couldn't be noted for letting go"); }
+}
+
+/// What a project's copies couldn't let go of in this computer's TensorFS store before, let go of again (cl-1003): at each start.
+pub(crate) fn release_kept(calcifer: &FsPath) {
+    let Ok(entries) = std::fs::read_dir(calcifer.join("kept")) else { return };
+    let records: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).filter(|path| path.extension().is_some_and(|e| e == "release")).collect();
+    if records.is_empty() { return; }
+    let Ok(store) = crate::runs::files::store() else { return };
+    for record in records {
+        release(store, &record, released(&record));
+    }
 }
 
 /// Each open project's id and name by its folder, as its `project.db` keeps them, read as it opens.
@@ -1302,7 +1579,7 @@ fn current_view(root: &FsPath) -> Result<PathBuf, Error> {
 impl Project {
     /// Old references are bound to their original physical view, never a recycled drive.
     fn require_view(&self) -> Result<(), Error> {
-        if self.mount_id != vault::mount_identity(&self.root) || current_view(&self.root)? != self.folder.dir {
+        if self.mount_id != vault::mount_identity(&self.root) || current_view(&self.root)? != self.folder.dir || db_file(&self.folder.dir) != self.db_file {
             return Err(Error::new(Kind::Conflict, "project_view_changed", "This project's folder changed while it was open. Open the project again."));
         }
         Ok(())
@@ -1458,11 +1735,40 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, retry:Option<axum
     Ok(if open.unencrypted { response } else { vault::private(response) })
 }
 
-/// What's said of a project folder other accounts on this computer may open: one line, and what to do.
+/// A project folder other accounts on this computer may open, shut to them (fix, don't warn; cl-1066): what's said only when that
+/// fails, in one line. On Windows, where an access list reaches into all the folder holds, it's done once per folder on a thread of its
+/// own, off this read's path; a failure is said at the next read.
 pub(crate) fn loosened(dir: &FsPath) -> Option<String> {
-    platform::durable::others_may_open(dir).ok()?.then(|| {
-        format!("Other accounts on this computer can open {}. To keep it private, give only your account access to it.", dir.display())
-    })
+    if !platform::durable::open_to_others(dir).ok()? {
+        return None;
+    }
+    let said = |e: &dyn std::fmt::Display| format!("Other accounts on this computer can open {}, and Cozy couldn't shut them out: {e}", dir.display());
+    if !cfg!(windows) {
+        return platform::durable::shut_to_others(dir).err().map(|e| said(&e));
+    }
+    // A folder being shut: None; one that couldn't be: why, said once, then tried again. One shut leaves, so it's shut again if reopened.
+    static SHUTTING: std::sync::LazyLock<Mutex<HashMap<PathBuf, Option<String>>>> = std::sync::LazyLock::new(Mutex::default);
+    let mut shutting = SHUTTING.lock().expect("shutting lock");
+    match shutting.get(dir) {
+        Some(None) => return None,
+        Some(Some(e)) => {
+            let line = said(e);
+            shutting.remove(dir);
+            return Some(line);
+        }
+        None => {}
+    }
+    shutting.insert(dir.to_owned(), None);
+    let dir = dir.to_owned();
+    std::thread::spawn(move || {
+        let done = platform::durable::shut_to_others(&dir).err().map(|e| e.to_string());
+        let mut shutting = SHUTTING.lock().expect("shutting lock");
+        match done {
+            Some(e) => shutting.insert(dir, Some(e)),
+            None => shutting.remove(&dir),
+        };
+    });
+    None
 }
 
 /// A folder that can't be made, in a person's words: no permission there, or why not.
@@ -1647,6 +1953,8 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
     state.unsent = project.unsent.lock().expect("unsent lock").clone();
     state.warnings.extend(project.said.lock().expect("said lock").drain(..).map(ProjectWarning::of_project));
     state.warnings.extend(loosened(&project.root).map(ProjectWarning::of_project));
+    let lost = api.calcifer.store().lost_before_upgrade().unwrap_or_default().into_iter().find(|(path, _)| vault::logical(path) == vault::logical(&project.root));
+    state.warnings.extend(lost.map(|(_, files)| ProjectWarning::of_project(format!("{files} files of this project were lost before this upgrade: the machine that kept them no longer had them"))));
     copy_told(&project.root);
     Ok(Json(state))
 }
@@ -2234,16 +2542,6 @@ async fn reclaim(
 /// it, what renders going say of it, its row on the canvas, and its box's name and every `<from>`, unless the project has moved to `to` already. A name is no input, so
 /// what stood on the text that said `from` stands on the text that says `to`. The lock goes before the text, and the old name finds its row until the text says so: a read
 /// between is never of an empty box. Nothing on disk moves.
-/// `GET /v1/projects/{id}/legacy`: its history from before projects kept their own: imported, and still in Calcifer's store (cl-984).
-async fn legacy(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Json<api::calcifer::LegacyHistory>, Refusal> {
-    // As a project read does: what can be imported is, first.
-    let journal = api.projects.store(&api, &id).await.map_err(Refusal)?;
-    let (project, root) = journal.execution_scope();
-    let (project, root) = (project.to_owned(), root.to_owned());
-    let history = tokio::task::block_in_place(|| crate::legacy_status::project(api.calcifer.maintenance_store(), &journal, &root, &project))?;
-    Ok(Json(history))
-}
-
 async fn rename(
     State(api): State<Arc<Api>>,
     Path(id): Path<String>,
@@ -2761,7 +3059,7 @@ async fn render(api: &Arc<Api>, id: &str, mut asked: Runs) -> Result<Asked, Refu
     }))
     .map_err(Refusal)?;
     if lost.get() {
-        purge::due(&project.id, now_ms() + purge::window_ms());
+        purge::deleted(&project.id, now_ms() + purge::window_ms());
     }
     project.join(&project.folder.lock().map_err(Refusal)?);
     let queued = queued_now(&project, &ask.id);
@@ -3717,7 +4015,7 @@ impl Walk {
             return on.iter().filter(|on| !matches!(on, On::Machine(name) if api.machines.gone(name).is_some())).cloned().collect();
         }
         // The set a render naming none takes, under this project's storage policy. `any` alone is a rental, which never comes uninvited.
-        let automatic = crate::private_io::check_project_placement(&self.project.id, &self.project.root, &api.machines.automatic()).unwrap_or_default();
+        let automatic = crate::private_io::check_project_placement(&self.project.id, &self.project.root, &api.machines.fallback()).unwrap_or_default();
         if self.fell_back.lock().expect("fell back lock").insert(ask.to_owned()) {
             let set = automatic.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
             let gone: Vec<&str> = gone.iter().map(|said| inner(said)).collect();
@@ -4490,7 +4788,11 @@ impl Walk {
         let placed = self.project.walker.lock().expect("walker lock").placed.get(job).cloned();
         let planned = placed.as_ref().map(|placed| placed.soonest.clone()).filter(|offer| on.contains(&offer.machine));
         let offers: Vec<Offer> = placed.map(|placed| placed.offers).unwrap_or_default().into_iter().filter(|offer| on.contains(&offer.machine)).collect();
-        pick(&self.host.api(), on, &offers, planned.as_ref(), hub, Some(package), &renderer.function, &asset.made).await
+        let (chosen, offer, said) = pick(&self.host.api(), on, &offers, planned.as_ref(), hub, Some(package), &renderer.function, &asset.made).await?;
+        if let Some(message) = said {
+            self.say(Told::Warning { message, name: Some(asset.name.clone()) });
+        }
+        Ok((chosen, offer))
     }
 
     /// Takes in what was asked since: said once, and what can't be read ends there.
@@ -5437,10 +5739,9 @@ impl Walk {
             }
             _ => soonest,
         };
-        // Sent here alone, as `cozy render --on local`, which asks nothing: said as a box asks it, unless Render here was said (cl-897).
+        // Sent here alone, which asks nothing (cl-1066): said once, as the box's render goes (cl-897).
         if placed.is_local() && on.len() == 1 {
-            let tool = asset.tool.clone().unwrap_or_else(|| asset.target.clone());
-            if let Some(line) = fit::told_here(&self.host.api(), &hub, package, &renderer.function, &asset.made, &tool) {
+            if let Some(line) = fit::told_here(&self.host.api(), &hub, package, &renderer.function, &asset.made) {
                 self.say(Told::Said { message: format!("{name}: {line}"), name: Some(name.clone()) });
             }
         }
@@ -6344,12 +6645,13 @@ fn find(doc: &Doc, name: &str) -> Result<usize, Error> {
 /// Of `on`, where a job goes (cl-816): the soonest finish its machines quoted (`offers`), a rental before this computer on a tie, and not
 /// this computer when it would run `function` poorly (`fit`) and no quote of its own runs says it ends it first (Paul, 11-05: a rented
 /// GPU is for using), nor when its GPU draws the screen, which a render makes lag (cl-897). With no quote that fits, the first of `on`
-/// that can take it (`placement::takes`).
+/// that can take it, else where a job naming none goes, said (`placement::takes`).
 #[allow(clippy::too_many_arguments)]
-async fn pick(api: &Arc<Api>, on: &[On], offers: &[Offer], planned: Option<&Offer>, hub: &str, package: Option<&Package>, function: &str, made: &Map<String, Value>) -> Result<(On, Option<Offer>), Error> {
+async fn pick(api: &Arc<Api>, on: &[On], offers: &[Offer], planned: Option<&Offer>, hub: &str, package: Option<&Package>, function: &str, made: &Map<String, Value>) -> Result<(On, Option<Offer>, Option<String>), Error> {
     let now = now_ms();
     let Some(soonest) = planned.filter(|offer| offer.fits).or_else(|| placement::soonest(offers, now)) else {
-        return Ok((placement::takes(api, on, offers).await?, None));
+        let (taken, said) = placement::takes(api, on, offers).await?;
+        return Ok((taken, None, said));
     };
     let poorly = soonest.machine.is_local()
         && (fit::draws_screen(api) || (soonest.basis != v1::Basis::Measured && package.is_some_and(|package| fit::poorly_now(api, hub, package, function, made))));
@@ -6358,13 +6660,13 @@ async fn pick(api: &Arc<Api>, on: &[On], offers: &[Offer], planned: Option<&Offe
         true => placement::soonest(&others, now).unwrap_or(soonest),
         false => soonest,
     };
-    Ok((chosen.machine.clone(), Some(chosen.clone())))
+    Ok((chosen.machine.clone(), Some(chosen.clone()), None))
 }
 
 /// Where `cozy run` of `function` goes among `set` (Paul, 11-06): as a render's job does (`pick`), each machine asked once, for `count`
 /// copies of it as if sent at once. Also each copy's offers, and a line for each machine that didn't answer.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str, release: &str, function: &str, size: v1::JobSize, gpus: u32, gpu: bool, count: u32, update: bool) -> (Result<On, Error>, Vec<Vec<Offer>>, Vec<String>) {
+pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str, release: &str, function: &str, size: v1::JobSize, gpus: u32, gpu: bool, count: u32, update: bool) -> (Result<(On, Option<String>), Error>, Vec<Vec<Offer>>, Vec<String>) {
     let host = Host::new(api);
     let read = host.published(hub, &format!("{package}@{release}"), set.first()).await.ok();
     let fetched = match &read {
@@ -6377,16 +6679,18 @@ pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str,
         .collect();
     let (offers, said) = placement::offers(api, &jobs, update).await;
     let chosen = pick(api, set, offers.first().map_or(&[][..], Vec::as_slice), None, hub, read.as_ref(), function, &Map::new()).await;
-    (chosen.map(|(chosen, _)| chosen), offers, said)
+    (chosen.map(|(chosen, _, fell_back)| (chosen, fell_back)), offers, said)
 }
 
 /// The machines the project `named` pins its runs to (cl-873), those that ended left out (cl-920); none: wherever they finish soonest.
-/// With every one of them gone now (ending, or offline by its Hub's word), wherever they finish soonest too.
+/// With every one of them gone now (ending, or offline by its Hub's word), this computer and this account's rentals: never an added
+/// machine the project didn't name (cl-1066).
 pub(crate) fn machines_of(api: &Arc<Api>, named: &str) -> Result<Vec<On>, Error> {
     let project = api.projects.get(api, named).map_err(|Refusal(e)| e)?;
     let pinned = chosen(api, &project.folder);
     match pinned.iter().all(|name| api.machines.gone(name).is_some()) {
-        true => Ok(vec![]),
+        true if pinned.is_empty() => Ok(vec![]),
+        true => Ok(api.machines.fallback()),
         false => Ok(pinned.into_iter().map(On::Machine).collect()),
     }
 }

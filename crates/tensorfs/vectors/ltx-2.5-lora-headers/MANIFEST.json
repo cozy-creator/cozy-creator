@@ -1,0 +1,14 @@
+{
+ "note": "LiconStudio's Multiple-Subject Reference V2 for LTX-2.5 (Apache-2.0, ungated), LTX's native names under diffusion_model.: rank-128 lora_A/lora_B (no .alpha) on the blocks' attention and feed-forward linears, video and audio, and two Fourier-MLP reference-slot embeddings the DiT has not (reference_slot_embedding, reference_audio_slot_embedding: frequencies [16], net.0 [256, 33], net.2 [128, 256]), with their reference_* layout in __metadata__; ltx2.lora carries the embeddings whole (modules_to_save)",
+ "members": [
+  {
+   "source": "LiconStudio/LTX-2.5-Multiple-Subject-Reference@aa19b48f845995525d8ace60cdc89b842e951ce6",
+   "member": "LTX-2.5-Licon-MSR-V2.safetensors",
+   "header_file": "LTX-2.5-Licon-MSR-V2.safetensors.header",
+   "header_sha256": "0731561ccce3d5e29bfd2082b4618870f33ed259f57ec773b7f5d7532a2a8a45",
+   "header_bytes": 335352,
+   "full_length": 2215094328,
+   "declared_source_sha256": "7cf982168d4f77f44b02943fb458f937f90c89335dcf7cf71b2f425e78bab713"
+  }
+ ]
+}

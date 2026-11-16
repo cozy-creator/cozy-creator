@@ -6,7 +6,9 @@ projectvault() (
   # boxes_of <project>: its boxes as the API answers them, the logical state compared across encryption, rekey and decryption.
   boxes_of() {
     local state
-    state=$(project_api "$1" '') && jq -S '[.assets[] | {name, tool, fields, approved, pinned}]' <<< "$state" || fail "the project's boxes could not be read"
+    # Its failure goes to stderr: the caller sends stdout to a file.
+    state=$(project_api "$1" '') && jq -S '[.assets[] | {name, tool, fields, approved, pinned}]' <<< "$state" \
+      || fail "the project's boxes could not be read: $(head -c 300 <<< "$state")" >&2
   }
   work=$(mktemp -d "$OUT/project-vault.XXXXXX")
   secrets=$(mktemp -d "$OUT/vault-credentials.XXXXXX")

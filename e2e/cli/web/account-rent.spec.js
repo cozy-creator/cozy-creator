@@ -4,9 +4,8 @@
 // there costs, and Rent with it. Signed out by Account's inline
 // confirm, Rent says to sign in; a wrong code stays in the form in plain words, the code the isolated Hub logs signs in, and nothing of
 // the Hub's is in the browser. On localfit's GPU stand-in (a proxy in front of the isolated Hub that sells an rtx-4090 and places runs on
-// it), a box this computer would render poorly asks on itself, Rent a GPU first: Run here anyway renders here and is kept (canceled as it
-// waits on its fresh install, that install ends with it, and the next Render installs again), and Rent opens Machines with the card chosen,
-// rendering nothing. Then the docker provider's cpu, rented from Machines at its quoted price, listed as the CLI lists it, made the
+// it), a box this computer would render poorly renders here at once, asking nothing (cl-1066: Slow here already offers the rental),
+// canceled as it waits on its fresh install, that install ending with it, and the next Render installs again. Then the docker provider's cpu, rented from Machines at its quoted price, listed as the CLI lists it, made the
 // project's machine and ended: nothing of it left running. Never paid: that provider starts a container here that never gets ready
 // (e2e/cli/rental.sh). In a dev home whose packages checkout holds H3 (an RC build), the checkout's H3 is timed by its source's
 // benchmarks.json before any run (cl-1024).
@@ -407,24 +406,17 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       }
     });
 
-    await test.step('A heavy box asks first; Run here anyway renders here, then Cancel; Render again, and again after a reload', async () => {
+    await test.step('A heavy box renders here at once, asking nothing; then Cancel; Render again, and again after a reload', async () => {
       await page.goto(project.url());
       await expect.poll(() => canvasVisible(page, 'heavy')).toBe(true);
-      await expect.poll(() => canvasVisible(page, 'kite')).toBe(true);
       await zoomToFit(page);
       let region = await focus(page, 'heavy');
-      const asking = region.getByRole('group', { name: 'Render here?' });
+      const asking = page.getByRole('group', { name: 'Render here?' });
+      const first = page.waitForRequest(renderOf('heavy'), { timeout: 30_000 });
       await region.getByRole('button', { name: 'Render', exact: true }).click();
-      await expect(asking, 'it asks on the box itself').toBeVisible({ timeout: 60_000 });
-      await expect.soft(asking.locator('p').first()).toHaveText(/^This computer has no GPU, so .+ would run on its CPU, slowly\./);
-      expect.soft(await asking.getByRole('button').allInnerTexts(), 'Rent a GPU first, Run here anyway second').toEqual(['Rent a GPU', 'Run here anyway']);
-      expect.soft(asked.filter((one) => one.names?.includes('heavy')), 'no render sent before the choice').toEqual([]);
-
-      const first = page.waitForRequest(renderOf('heavy'));
-      await asking.getByRole('button', { name: 'Run here anyway', exact: true }).click();
       const sent = await first;
-      expect.soft(sent.postDataJSON().on, 'Run here anyway renders here').toEqual(['local']);
-      expect((await sent.response())?.ok(), 'its render asked').toBe(true);
+      expect((await sent.response())?.ok(), 'its render asked at once').toBe(true);
+      await expect.soft(asking, 'nothing asked first (cl-1066)').toHaveCount(0);
       // Cancel as a person presses it, as soon as its face offers it. Run 43401337115: pressed 80 ms after its 202, Calcifer answered
       // {"dropped":["heavy"]}, and the run went on to complete with its take. Since #3259 a job dropped as it's sent is never sent (no
       // run), and a run it was making is canceled at its machine: settled once nothing is asked, queued or running.
@@ -443,15 +435,14 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await expect.poll(async () => (await installsOf(project)).every((one) => ended.includes(one.status)), { message: "heavy's install settled", timeout: 60_000 }).toBe(true);
       const dropped = await installsOf(project);
       expect.soft(dropped.map((one) => `${one.target}: ${one.status}`), 'its install, which only the canceled render waited on, canceled with it').toEqual(['install local/heavy: canceled']);
-      expect.soft((await api.post(project.at('/fit'), { names: ['heavy'] })).tools, 'Run here anyway, kept by Calcifer').toMatchObject([{ here: true }]);
 
       /** Render, asking nothing: sent to this computer, and one more take lands. */
       const again = async (what) => {
         const had = (await project.asset('heavy')).versions ?? 0;
         const next = page.waitForRequest(renderOf('heavy'));
         await region.getByRole('button', { name: 'Render', exact: true }).click();
-        expect.soft((await next).postDataJSON().on, `${what} renders here, asking nothing`).toEqual(['local']);
-        await expect.soft(asking).toHaveCount(0);
+        await next;
+        await expect.soft(asking, `${what} asks nothing`).toHaveCount(0);
         await expect.poll(async () => (await project.asset('heavy')).versions ?? 0, { message: `${what}: heavy's take ${had + 1}`, timeout: 120_000 }).toBe(had + 1);
       };
       await again('Render again');
@@ -464,27 +455,6 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await again('Render after a reload');
       const later = (await runsOf(project, 'heavy')).filter((one) => !canceled.some((was) => was.number === one.number));
       expect.soft(later.map((one) => `${one.status} on ${one.machine}`), 'the later renders, each on this computer').toEqual(['completed on local', 'completed on local']);
-    });
-
-    await test.step("Rent a GPU on another heavy box: Machines opens with the stand-in's rtx-4090 chosen, and nothing renders", async () => {
-      // heavy.py is local code, whose card no Hub places, and Run here anyway is kept for its tool: the other box is the Hub's Qwen Image 2.
-      await page.getByRole('region', { name: 'Focused asset' }).getByRole('button', { name: 'Back to canvas' }).click();
-      await expect(page.getByRole('region', { name: 'Focused asset' })).toHaveCount(0);
-      await canvasIdle(page);
-      // Asked first: were it not said to render poorly here, its Render would run Qwen Image 2 on this runner's CPU.
-      expect(await api.post(project.at('/fit'), { names: ['kite'] }), 'the Hub, by the stand-in, places it on the rtx-4090').toMatchObject({ tools: [{ names: ['kite'] }], rent: { sku: CARD.name, card: 'RTX 4090' } });
-      const region = await focus(page, 'kite');
-      const asking = region.getByRole('group', { name: 'Render here?' });
-      await region.getByRole('button', { name: 'Render', exact: true }).click();
-      await expect(asking, 'it asks on the box itself').toBeVisible({ timeout: 60_000 });
-      expect.soft(await asking.getByRole('button').allInnerTexts(), 'Rent a GPU first, Run here anyway second').toEqual(['Rent an RTX 4090', 'Run here anyway']);
-      await asking.getByRole('button', { name: 'Rent an RTX 4090', exact: true }).click();
-      await expect(page, 'Machines, the card asked for').toHaveURL(`${project.url('machines')}?rent=${CARD.name}&gpus=1`);
-      await expect.soft(rent.getByRole('listitem').filter({ has: page.getByText(CARD.name, { exact: true }) }), 'the rtx-4090 chosen').toHaveAttribute('aria-current', 'true');
-      expect.soft(asked.filter((one) => one.names?.includes('kite')), 'Rent renders nothing').toEqual([]);
-      expect.soft(await runsOf(project, 'image'), 'no run of it').toEqual([]);
-      expect.soft((await project.asset('kite')).versions ?? 0, 'no take of it').toBe(0);
-      testInfo.annotations.push({ type: 'stand-in', description: stand.asked.join(', ') });
     });
 
     await test.step('Machines › Rent a machine › cpu › Rent, then Rent 1× CPU at its price', async () => {
