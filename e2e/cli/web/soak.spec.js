@@ -134,12 +134,14 @@ test('soak', { tag: '@solo' }, async ({ context, project, api, signIn, removeAft
 
       const region = await focus(page, 'notes');
       const text = region.getByRole('textbox', { name: 'Text' });
+      // Its words replaced by as many as before, so what the canvas holds stays the same size from cycle to cycle.
+      const words = `Cycle ${String(cycle).padStart(2, '0')} of the soak.`;
       await text.click();
-      await page.keyboard.press(process.platform === 'darwin' ? 'Meta+ArrowDown' : 'Control+End');
-      await page.keyboard.type(` ${cycle}`);
+      await page.keyboard.press('ControlOrMeta+a');
+      await page.keyboard.type(words);
       await page.keyboard.press('Escape');
       await expect(region).toHaveCount(0);
-      await soft.poll(async () => (await project.asset('notes'))?.fields?.text?.endsWith(` ${cycle}`), { message: `cycle ${cycle}: the words saved` }).toBe(true);
+      await soft.poll(async () => (await project.asset('notes'))?.fields?.text, { message: `cycle ${cycle}: the words saved` }).toBe(words);
 
       await canvasIdle(page);
       const was = (await rows(project)).spare;

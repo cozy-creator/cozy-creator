@@ -36,7 +36,8 @@ async function touch(cdp, moments) {
     down = points.length > 0;
   }
 }
-const along = (from, to, steps) => Array.from({ length: steps + 1 }, (_, i) => [from[0] + ((to[0] - from[0]) * i) / steps, from[1] + ((to[1] - from[1]) * i) / steps]);
+/** One finger from `from` to `to`: each moment its one point. */
+const along = (from, to, steps) => Array.from({ length: steps + 1 }, (_, i) => [[from[0] + ((to[0] - from[0]) * i) / steps, from[1] + ((to[1] - from[1]) * i) / steps]]);
 const selectionLength = (page) => page.evaluate(() => document.getSelection()?.toString().length ?? 0);
 
 test('input', { tag: '@engines' }, async ({ page, project, browserName }) => {
