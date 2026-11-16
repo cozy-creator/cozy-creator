@@ -159,27 +159,35 @@ impl Store {
         Ok(true)
     }
 
-    /// A project's legacy import, once per project in this Calcifer while it fails (cl-1003): one going now, or one that failed,
-    /// isn't tried again until a restart, so a burst of the project's requests never repeats it over the whole legacy store.
+    /// A project's legacy import, once per project in this Calcifer while it fails (cl-1003): one that failed isn't tried again
+    /// until a restart, so a burst of the project's requests never repeats it over the whole legacy store. A request that finds
+    /// one going waits for it, as it waited on the writer before, so it answers with what was imported, never an empty history.
     /// What wasn't imported stays in the store for the hard cut, and the project opens without it.
     fn migrate_into(&self, project: Destination<'_,'_>, inputs: &Path) -> Result<()> {
         let id = project.project_id().to_owned();
-        if !self.legacy_tried.lock().unwrap_or_else(|error| error.into_inner()).insert(id.clone()) { return Ok(()); }
+        let mut imports = self.legacy_imports.lock().unwrap_or_else(|error| error.into_inner());
+        while let Some(&now) = imports.get(&id) {
+            if !now { return Ok(()); }
+            imports = self.legacy_imported.wait(imports).unwrap_or_else(|error| error.into_inner());
+        }
+        imports.insert(id.clone(), true);
+        drop(imports);
+        let mut going = Going { store: self, id, worked: false };
         let imported = self.import_into(project, inputs);
-        if imported.is_ok() { self.legacy_tried.lock().unwrap_or_else(|error| error.into_inner()).remove(&id); }
+        going.worked = imported.is_ok();
         imported
     }
 
     /// Whether the project's legacy import is going now or failed in this Calcifer (`migrate_into`): its worker custody isn't
     /// asked for either until a restart.
     pub(crate) fn legacy_import_held(&self, id: &str) -> bool {
-        self.legacy_tried.lock().unwrap_or_else(|error| error.into_inner()).contains(id)
+        self.legacy_imports.lock().unwrap_or_else(|error| error.into_inner()).contains_key(id)
     }
 
     /// True the first time it's asked for `id` in this Calcifer: the project's legacy worker custody is asked for once, never on
     /// each of its requests (cl-1003).
     pub(crate) fn legacy_worker_first(&self, id: &str) -> bool {
-        self.legacy_tried.lock().unwrap_or_else(|error| error.into_inner()).insert(format!("worker:{id}"))
+        self.legacy_worker_asked.lock().unwrap_or_else(|error| error.into_inner()).insert(id.to_owned())
     }
 
     fn import_into(&self, project: Destination<'_,'_>, inputs: &Path) -> Result<()> {
@@ -499,4 +507,17 @@ pub(crate) fn legacy_not_imported(during: &'static str, error: &StoreError) {
         _ => "other".into(),
     };
     tracing::warn!(target: "cozy.service_health", during, code = %code, "a project's legacy history was not imported; the project opens without it");
+}
+
+/// A project's import going now (`Store::migrate_into`): when it ends, even by a panic, the project leaves the map if it worked
+/// and stays as failed if not, and the requests waiting on it wake.
+struct Going<'a> { store: &'a Store, id: String, worked: bool }
+
+impl Drop for Going<'_> {
+    fn drop(&mut self) {
+        let mut imports = self.store.legacy_imports.lock().unwrap_or_else(|error| error.into_inner());
+        if self.worked { imports.remove(&self.id); } else { imports.insert(std::mem::take(&mut self.id), false); }
+        drop(imports);
+        self.store.legacy_imported.notify_all();
+    }
 }

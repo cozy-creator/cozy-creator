@@ -966,9 +966,14 @@ pub(crate) struct Store {
     legacy_home: PathBuf,
     /// Projects whose legacy files this Calcifer found nothing left of to retire, until another import changes what is left.
     settled: Mutex<std::collections::HashSet<String>>,
-    /// Projects whose legacy import is going now, or failed in this Calcifer: not tried again until it restarts (cl-1003), so a
-    /// project's requests never each repeat a failing import over the whole legacy store. One that worked leaves the set.
-    legacy_tried: Mutex<std::collections::HashSet<String>>,
+    /// Projects whose legacy import is going now (`true`) or failed in this Calcifer (`false`): a failed one isn't tried again until
+    /// it restarts (cl-1003), so a project's requests never each repeat a failing import over the whole legacy store. One that
+    /// worked leaves the map.
+    legacy_imports: Mutex<std::collections::HashMap<String, bool>>,
+    /// Wakes the requests waiting on a project's import going now.
+    legacy_imported: std::sync::Condvar,
+    /// Projects whose legacy worker custody this Calcifer has asked for: once each (cl-1003).
+    legacy_worker_asked: Mutex<std::collections::HashSet<String>>,
     writer: Mutex<Connection>,
     readers: Readers,
     durable: Durable,
@@ -2312,7 +2317,9 @@ impl Store {
         Ok(Self {
             legacy_home: path.parent().unwrap_or(Path::new(".")).to_owned(),
             settled: Mutex::default(),
-            legacy_tried: Mutex::default(),
+            legacy_imports: Mutex::default(),
+            legacy_imported: std::sync::Condvar::new(),
+            legacy_worker_asked: Mutex::default(),
             writer: Mutex::new(writer),
             readers,
             durable: Durable { wal: wal.then(|| journal.into()), ..Durable::sqlite() },
