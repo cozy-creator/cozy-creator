@@ -20,6 +20,7 @@ parse "$@"
 . "$(dirname "$0")/lines.sh"
 . "$(dirname "$0")/ondemand.sh"
 . "$(dirname "$0")/disk.sh"
+. "$(dirname "$0")/link.sh"
 . "$(dirname "$0")/control.sh"
 . "$(dirname "$0")/project.sh"
 . "$(dirname "$0")/web.sh"
@@ -646,6 +647,21 @@ case $SHARD in
   ondemand-share) parts="ondemand_share logs" ;;
   # A model's weights alone through the 60 Mbit link, timed, with the streams the ramp settled at (th-378).
   ondemand-ramp) parts="ondemand_ramp logs" ;;
+  # tfs-300's download-system metrics (link.sh), by dispatch: each scenario's arms, a record each, e2e/link/table.py compares.
+  link-cold) parts="link_cold logs" ;;
+  link-mix) parts="
+    link_need
+    link_thirdparty
+    link_cancel
+    link_update
+    logs
+  " ;;
+  link-control) parts="link_control logs" ;;
+  link-two) parts="
+    link_two
+    link_disk
+    logs
+  " ;;
   # A small disk full of idle models' weights makes room for the next runs' (tfs-150).
   disk) parts="disk_full logs" ;;
   # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.

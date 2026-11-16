@@ -244,6 +244,10 @@ case $key in
   cli:ondemand-share) needs='packages birefnet downloads spare' ;;
   cli:ondemand-ramp) needs='packages spare' ;;
   cli:disk) needs='packages disk' ;;
+  # tfs-300's link metrics (cli/link.sh): pagebox, e2e/link-a and -b, and the cold start's packages.
+  cli:link-cold) needs='packages spare linkpkg' ;;
+  cli:link-mix | cli:link-two) needs='packages spare link' ;;
+  cli:link-control) needs='packages spare' ;;
   # H3's Models & LoRAs, Qwen's VAE slot and heavy.py's BiRefNet; macOS and Windows run no models.
   cli:web-suite) needs='packages birefnet loras vaes'; [ "${RUNNER_OS:-Linux}" = Linux ] || needs='packages' ;;
   cli:env-cost) needs='packages birefnet' ;;
@@ -432,6 +436,18 @@ if [ -n "$needs" ]; then
     random_weights "$seed/pagebox.safetensors" 1600
     mirror "$seed/pagebox.safetensors" lilylilith/pagebox bf16 0.1.0 https://huggingface.co/lilylilith/pagebox --source-format as-is
     rm -f "$seed"/*.safetensors
+  fi
+  if [[ " $needs " == *" link "* ]]; then
+    # tfs-300's two models (cli/link.sh): 600 MiB of random weights each, sharing no chunk.
+    for m in a b; do
+      random_weights "$seed/link.safetensors" 600 "link-$m"
+      mirror "$seed/link.safetensors" "e2e/link-$m" bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is
+      rm -f "$seed/link.safetensors"
+    done
+  fi
+  if [[ " $needs " == *" linkpkg "* ]]; then
+    . "$here/link/packages.sh"
+    link_packages "$seed" || { echo "tfs-300's cold-start packages weren't published" >&2; exit 1; }
   fi
   if [[ " $needs " == *" loras "* ]]; then
     # What H3's Models & LoRAs lists (cl-934): its default model, a stand-in its family names, and LoRAs of that family.
