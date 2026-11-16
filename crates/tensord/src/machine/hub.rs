@@ -37,7 +37,7 @@ pub(crate) enum Refusal {
 
 impl Hub {
     pub(crate) fn new(grant: HubGrant, sign: WorkerSigner) -> io::Result<Self> {
-        let http = crate::hub::http(grant.ca_der.as_deref()).map_err(|e| io::Error::other(e.0))?;
+        let http = crate::hub::rental_http(grant.ca_der.as_deref()).map_err(|e| io::Error::other(e.0))?;
         Ok(Self::with(grant, sign, http, Arc::new(AtomicI64::new(0))))
     }
 

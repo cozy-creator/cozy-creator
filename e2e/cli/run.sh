@@ -47,8 +47,10 @@ parse "$@"
 . "$(dirname "$0")/stuck.sh"
 . "$(dirname "$0")/rentalself.sh"
 . "$(dirname "$0")/reports.sh"
+. "$(dirname "$0")/thumbs.sh"
 . "$(dirname "$0")/endedlogs.sh"
 . "$(dirname "$0")/fresh.sh"
+. "$(dirname "$0")/typedcalls.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
@@ -82,7 +84,7 @@ step candidates; candidates
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
 # web_serves reads what the gate costs from Calcifer's Server-Timing, which it sends only with its diagnostics on (cl-985); coming keeps
 # its project's walk log (.vault-calcifer/diagnostics/walk.log) with them on.
-case $SHARD in projectvault | projectvault-static | plan | stuck | coming) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* ]] || calcifer_diagnostics ;; esac
+case $SHARD in projectvault | projectvault-static | plan | stuck | coming | thumbs) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* ]] || calcifer_diagnostics ;; esac
 }
 
 # A vault failure names its reason, and web_serves reads the gate's Server-Timing: Calcifer started again with config.toml's
@@ -639,7 +641,9 @@ case $SHARD in
   # A second project's first install and run against the first's (cl-984): by dispatch, as it builds seven environments.
   env-cost) parts="env_cost logs" ;;
   # What a call may read on demand, on a cold machine (cl-966).
-  ondemand) parts="ondemand_ahead ondemand_need ondemand_share logs" ;;
+  ondemand) parts="ondemand_ahead ondemand_need logs" ;;
+  # The install's share of the link beside 1.6 GB of weights (cl-1007): about 8 min on its own, so its own shard.
+  ondemand-share) parts="ondemand_share logs" ;;
   # A model's weights alone through the 60 Mbit link, timed, with the streams the ramp settled at (th-378).
   ondemand-ramp) parts="ondemand_ramp logs" ;;
   # A small disk full of idle models' weights makes room for the next runs' (tfs-150).
@@ -696,6 +700,8 @@ case $SHARD in
   web-engines) web_cells=(${WEB_ENGINES[@]+"${WEB_ENGINES[@]}"}); parts="web_lane logs" ;;
   web-solo) web_cells=(${WEB_SOLO[@]+"${WEB_SOLO[@]}"}); parts="web_lane logs" ;;
   web-native) web_cells=(${WEB_NATIVE[@]+"${WEB_NATIVE[@]}"}); parts="web_lane logs" ;;
+  # Pictures imported into a plain project get their thumbnails stored (cl-1054: none on macOS).
+  thumbs) parts="thumbs_stored logs" ;;
   # cl-982's opens on a busy computer: 3,000 other loopback connections open (web/busy.js), as the gate's lookups meet them (cl-985).
   web-opens-busy) export BUSY_SOCKETS=3000; web_cells=(opens); parts="web_lane logs" ;;
   # The page as Calcifer's own and what the access rule refuses (cl-985), alone.
@@ -829,6 +835,8 @@ case $SHARD in
   " ;;
   # A call asleep past Calcifer's 10-minute "no progress", followed by `cozy run` to its end (cl-977): by dispatch, 12 min.
   asleep) parts="asleep logs" ;;
+  # Typed package composition on the candidate cohort, with tiny local CPU inputs only.
+  typed-calls) parts="typed_calls logs" ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
   coming) parts="coming_machine logs" ;;
   # `cozy update`, its own runner, as it replaces this computer's cozy: the Latest updating to the candidate, then cozy updating
@@ -858,7 +866,7 @@ esac
 # is the same lane there.
 if [ -z "$LOCAL" ] && [ "$parts" != "web_lane logs" ]; then
   case $SHARD in
-    entrypoints | projectvault | projectvault-native | web-serves | notraces | fresh) ;;
+    entrypoints | projectvault | projectvault-native | web-serves | notraces | fresh | thumbs | typed-calls) ;;
     web-*) parts="web_alone logs" ;;
     *) parts="
       entrypoints

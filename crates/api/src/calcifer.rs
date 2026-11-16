@@ -2054,6 +2054,10 @@ pub struct MachineUpdate {
     /// Shared/Dedicated category, applied after the ordinary drain and restart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<crate::config::MachineMode>,
+    /// The machine's own PyTorch base at the version its Hub names, installed now rather than at its first run
+    /// (`cozy doctor --fix`, `cozy update`; cl-1030). An update naming nothing asks it too.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub torch: bool,
 }
 
 /// One component of a `MachineUpdate`: `{"version": "0.33.1"}`, or a dev build sent first

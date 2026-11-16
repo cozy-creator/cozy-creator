@@ -40,7 +40,7 @@ struct Parent {
     actor: String,
     spool: PathBuf,
     /// `(module, export)` of each invocable it may call: the App it belongs to (empty: its own
-    /// package's; else a callee's in its environment) and the entrypoint registered for it.
+    /// package's; else a callee's in its environment), the entrypoint registered for it and its Files parameter.
     callables: Callables,
     /// It is itself memoized: a call it makes that is not means a replay of its result would skip
     /// that call's effects, so its result is not kept (`Engine::unmemoize`).
@@ -69,7 +69,7 @@ impl Parent {
         Some(measured)
     }
 
-    fn callable(&self, module: &str, export: &str) -> Result<&(String, String), (&'static str, String)> {
+    fn callable(&self, module: &str, export: &str) -> Result<&Callee, (&'static str, String)> {
         self.callables
             .get(&(module.to_owned(), export.to_owned()))
             .ok_or((
@@ -294,7 +294,7 @@ impl Calls {
             .service
             .upgrade()
             .ok_or(("child_call_refused", "machine is stopping".into()))?;
-        let (application, entrypoint) = parent.callable(&call.module, &call.export)?;
+        let (application, entrypoint, files) = parent.callable(&call.module, &call.export)?;
         let callable = (call.module.clone(), call.export.clone());
         if parent.pure && !parent.pure_callables.contains(&callable) {
             let why = format!("it called {}.{}, which is not memoized", call.module, call.export);
@@ -325,12 +325,13 @@ impl Calls {
                 Received { length: object.length, media_type: file.media_type.clone() },
             );
         }
-        let input: Value = crate::boundary_json::parse(call.payload.as_bytes()).map_err(|e| {
+        let mut input: Value = crate::boundary_json::parse(call.payload.as_bytes()).map_err(|e| {
             (
                 "child_call_refused",
                 format!("call request is not JSON: {e}"),
             )
         })?;
+        with_files(&mut input, files.as_deref(), &call.module, &call.export)?;
         // Every call is a serving call: its request, and the models it passes by value to the
         // callee's slots (null leaves a slot to the choice its parent carries for it).
         let (request_input, choices) = serving_call(&input, entrypoint)?;
@@ -534,7 +535,7 @@ impl Calls {
     }
 
     fn model_prefetch(&self, parent: &Parent, seq: u64, prefetch: &ModelPrefetch) -> Result<Answer, (&'static str, String)> {
-        let (application, entrypoint) = parent.callable(&prefetch.module, &prefetch.export)?;
+        let (application, entrypoint, _) = parent.callable(&prefetch.module, &prefetch.export)?;
         // Explicit choices use the ordinary child-call decoder and selection path; a hint
         // cannot turn a model name into byte authority.
         let raw = if prefetch.payload.is_empty() { "{}" } else { &prefetch.payload };
@@ -713,7 +714,8 @@ fn pure_callables(generation: &crate::catalog::Generation) -> std::collections::
 /// Every App this environment holds: its own exports, including internal ones, and the
 /// other Apps' public exports. A callee can call its own App or another dependency too.
 /// None names an export owned by different Apps: only that call is refused.
-type Callables = HashMap<(String, String), Option<(String, String)>>;
+type Callee = (String, String, Option<String>);
+type Callables = HashMap<(String, String), Option<Callee>>;
 fn invocables(
     generation: &crate::catalog::Generation,
     application: &str,
@@ -740,12 +742,13 @@ fn invocables(
             }
             let key = (module.to_string(), export.to_string());
             if let Some(existing) = callables.get_mut(&key) {
-                if existing.as_ref().is_some_and(|(app, _)| app != owner) {
+                if existing.as_ref().is_some_and(|(app, _, _)| app != owner) {
                     *existing = None;
                 }
                 continue;
             }
-            callables.insert(key, Some((owner.to_string(), name.to_string())));
+            let files = api::interface::files_parameter(entry).map(String::from);
+            callables.insert(key, Some((owner.to_string(), name.to_string(), files)));
             rows.push(CallInterface {
                 module: module.into(),
                 export: export.into(),
@@ -755,6 +758,30 @@ fn invocables(
         }
     }
     (rows, callables)
+}
+
+/// The files a call passed by `assets=` (a list beside its request), placed at the callee's Files parameter: the callee,
+/// its inputs' custody and its memo identity read one ordinary request. Absent, the parameter is an empty list.
+fn with_files(call: &mut Value, parameter: Option<&str>, module: &str, export: &str) -> Result<(), (&'static str, String)> {
+    let refuse = |why: String| ("child_call_refused", why);
+    let assets = match call.as_object_mut().and_then(|call| call.remove("assets")) {
+        None => vec![],
+        Some(Value::Array(items)) => items,
+        Some(_) => return Err(refuse(format!("{module}:{export}: a call's assets are a list"))),
+    };
+    let Some(parameter) = parameter else {
+        return match assets.is_empty() {
+            true => Ok(()),
+            false => Err(refuse(format!("{module}:{export} takes no files"))),
+        };
+    };
+    let request = call.get_mut("payload").and_then(Value::as_object_mut)
+        .ok_or_else(|| refuse("serving call has no request object".into()))?;
+    if request.contains_key(parameter) {
+        return Err(refuse(format!("{module}:{export}: its files come by assets=, not as its request's {parameter}")));
+    }
+    request.insert(parameter.into(), Value::Array(assets));
+    Ok(())
 }
 
 /// A serving call's request and the model choices it carries (`model_choices`).

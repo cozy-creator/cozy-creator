@@ -32,16 +32,33 @@ mkdir -p "$seed"
 log() { echo "$(date -u +%H:%M:%SZ) isolated Hub: $*"; }
 cozy() { "$cozy_bin" "$@"; }
 J() { jq -e "$@" > /dev/null; }
+if [ -n "${COZY_TEST_SEED_SDK:-}" ]; then
+  export E2E_SEED_COHORT=$seed/cohort.json
+  cohort_args=(--cohort "$COZY_TEST_SEED_SDK" --origin "$COZY_TEST_HUB_ORIGIN")
+  uv run -q --no-project "$here/seed_sdk.py" record "${cohort_args[@]}" \
+    ${packages:+--packages "$packages"} --runtime-ref "${E2E_SELECTED_RUNTIME_REF:-}" \
+    --packages-ref "${E2E_SELECTED_PACKAGES_REF:-}" --receipt "$E2E_SEED_COHORT" > "$seed/cohort.txt"
+  cat "$seed/cohort.txt"
+  [ -z "${GITHUB_STEP_SUMMARY:-}" ] || { printf '\n### Isolated seed cohort\n\n'; cat "$seed/cohort.txt"; } >> "$GITHUB_STEP_SUMMARY"
+fi
 
-# publish <dir>: a package's own directory published at the root, from a copy (publication writes its lock), with its benchmarks.json
-# (cl-1024): its own, else release-gate's seed's rows when it has any, as a promotion carries the gate's.
+# publish <dir> [cohort]: a package's own directory published at the root, from a copy (publication writes its lock), with its
+# benchmarks.json (cl-1024): its own, else release-gate's seed's rows when it has any, as a promotion carries the gate's. Only cohort
+# sources take the selected SDK; deliberate old-floor/negative fixtures keep their own requirements and source selection.
 publish() {
   local copy=$seed/packages/${1##*/}
   rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$1" "$copy"
   [ -f "$copy/benchmarks.json" ] \
     || jq -e --arg p "${1##*/}" '.[$p] // empty' "$here/../release-gate/benchmarks-seed.json" > "$copy/benchmarks.json" 2> /dev/null || rm -f "$copy/benchmarks.json"
+  if [ "${2:-}" = cohort ]; then
+    [ -n "${COZY_TEST_SEED_SDK:-}" ] || { echo "no selected SDK reached isolated package seeding" >&2; return 1; }
+    uv run -q --no-project "$here/seed_sdk.py" pin --project "$copy" "${cohort_args[@]}" || return 1
+  fi
   (cd "$copy" && cozy --json package publish --root -y) > "$seed/publish-${1##*/}.json" 2>&1 \
     || { echo "publishing ${1##*/} at the isolated Hub's root failed: $(tail -c 600 "$seed/publish-${1##*/}.json")" >&2; return 1; }
+  if [ "${2:-}" = cohort ]; then
+    uv run -q --no-project "$here/seed_sdk.py" verify --project "$copy" "${cohort_args[@]}" --receipt "$E2E_SEED_COHORT" || return 1
+  fi
   log "published ${1##*/} $(sed -n 's/^version = "\(.*\)"$/\1/p' "$copy/pyproject.toml" | head -1) at the root"
 }
 
@@ -52,7 +69,10 @@ relay() {
   rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$here/cli/relay" "$copy"
   account=$(cozy --json whoami | jq -r '.account // empty')
   export E2E_RELAY_PUBLISHED=$seed/publish-e2e-relay.json
+  [ -n "${COZY_TEST_SEED_SDK:-}" ] || { echo "no selected SDK reached the positive relay fixture" >&2; return 1; }
+  uv run -q --no-project "$here/seed_sdk.py" pin --project "$copy" "${cohort_args[@]}" || return 1
   if (cd "$copy" && cozy --json package publish -y) > "$E2E_RELAY_PUBLISHED" 2>&1; then
+    uv run -q --no-project "$here/seed_sdk.py" verify --project "$copy" "${cohort_args[@]}" --receipt "$E2E_SEED_COHORT" || return 1
     export E2E_RELAY=$account/e2e-relay
     log "published $E2E_RELAY 0.1.0"
   else
@@ -62,7 +82,19 @@ relay() {
   fi
 }
 
-# held: e2e-relay's code published again as `e2e-held` 0.1.0 and 0.2.0rc1, as a package built for the open RC's Runtime is
+# Historical release selection needs code the old Runtime can execute. The existing weightless echo has that contract;
+# the positive managed relay uses the hard-cut call API, which only the RC's Runtime has.
+historical_relay() {
+  local copy=$1 fixture=$here/../release-gate/suites/hub/pkg
+  mkdir -p "$copy"
+  cp "$fixture/pyproject.toml" "$copy/pyproject.toml"
+  cp -r "$fixture/ci_hub_pkg" "$copy/e2e_relay"
+  sed -i -e 's/^name = "ci-hub-pkg"$/name = "e2e-relay"/' -e 's/ci_hub_pkg/e2e_relay/g' \
+    -e 's/"cozy-runtime[^"]*"/"cozy-runtime>=0.45"/' "$copy/pyproject.toml"
+  sed -i 's/def echo(/def relay(/' "$copy/e2e_relay/__init__.py"
+}
+
+# held: the historical weightless relay published as `e2e-held` 0.1.0 and 0.2.0rc1, as a package built for the open RC's Runtime is
 # published (cl-922): newer by PEP 440, for machines on the RC only; and as `e2e-newer` 0.1.0 and 0.1.1 (held_prerelease,
 # cl-952, se-128). Then floors (runtime_floor, cl-952): `e2e-floor` 0.1.0 (cozy-runtime>=0.45) and 0.2.0
 # (cozy-runtime>=0.45.1); `e2e-capped` 0.1.0 and 0.2.0 (cozy-runtime>=0.45,<0.47.0.dev0, which no Runtime of this cozy's
@@ -74,9 +106,9 @@ held() {
   for name in e2e-held:0.1.0 e2e-held:0.2.0rc1 e2e-newer:0.1.0 e2e-newer:0.1.1 e2e-floor:0.1.0 'e2e-floor:0.2.0:>=0.45.1' \
     e2e-capped:0.1.0 'e2e-capped:0.2.0:>=0.45,<0.47.0.dev0'; do
     IFS=: read -r name version runtime <<< "$name"
-    rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$here/cli/relay" "$copy"
+    rm -rf "$copy" && mkdir -p "$seed/packages" && historical_relay "$copy"
     sed -i -e "s/^name = \"e2e-relay\"$/name = \"$name\"/" -e "s/^version = \"0.1.0\"$/version = \"$version\"/" "$copy/pyproject.toml"
-    [ -z "$runtime" ] || sed -i "s/\"cozy-runtime>=0.45\"/\"cozy-runtime$runtime\"/" "$copy/pyproject.toml"
+    [ -z "$runtime" ] || sed -i "s/\"cozy-runtime[^\"]*\"/\"cozy-runtime$runtime\"/" "$copy/pyproject.toml"
     if ! (cd "$copy" && cozy --json package publish -y) > "$seed/publish-$name-$version.json" 2>&1; then
       E2E_HELD_REFUSED="$name $version: $(tail -c 400 "$seed/publish-$name-$version.json" | tr '\n' ' ')"
       export E2E_HELD_REFUSED
@@ -85,21 +117,23 @@ held() {
     log "published $account/$name $version"
   done
   export E2E_HELD=$account/e2e-held E2E_NEWER=$account/e2e-newer E2E_FLOOR=$account/e2e-floor E2E_CAPPED=$account/e2e-capped
-  rm -rf "$copy" && cp -r "$here/cli/relay" "$copy"
-  sed -i -e 's/^name = "e2e-relay"$/name = "e2e-lies"/' -e 's/"cozy-runtime>=0.45"/"cozy-runtime>=0.44"/' "$copy/pyproject.toml"
+  rm -rf "$copy" && historical_relay "$copy"
+  sed -i -e 's/^name = "e2e-relay"$/name = "e2e-lies"/' -e 's/"cozy-runtime[^"]*"/"cozy-runtime>=0.44"/' "$copy/pyproject.toml"
+  # Keep the precise dishonest-import assertion without a managed dependency that requires the new SDK.
+  sed -i 's/from cozy_runtime.author import App$/from cozy_runtime.author import App, call/' "$copy/e2e_relay/__init__.py"
   export E2E_LIES=$seed/publish-e2e-lies.json
   if (cd "$copy" && cozy --json package publish -y) > "$E2E_LIES" 2>&1; then log "published $account/e2e-lies 0.1.0, which it should have refused"
   else log "publishing e2e-lies was refused: $(tail -c 300 "$E2E_LIES" | tr '\n' ' ')"; fi
 }
 
-# rc_floor (rc_floor, xs-194): e2e-relay's code as `e2e-rcfloor` 0.1.0, whose floor only the open RC meets
-# (cozy-runtime>=0.47.0.dev0,<0.48) and which names no Runtime wheel: publishing it locks the RC's newest build. What it said
-# is exported, a refusal too, for the cell to judge.
+# rc_floor (rc_floor, xs-194): the historical weightless relay as `e2e-rcfloor` 0.1.0, whose floor only the open RC meets
+# (cozy-runtime>=0.47.0.dev0,<0.48) and which names no Runtime wheel: publishing it locks the RC's newest build, whatever that
+# build's author API. What it said is exported, a refusal too, for the cell to judge.
 rc_floor() {
   local copy=$seed/packages/e2e-rcfloor account
   account=$(cozy --json whoami | jq -r '.account // empty')
-  rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$here/cli/relay" "$copy"
-  sed -i -e 's/^name = "e2e-relay"$/name = "e2e-rcfloor"/' -e 's/"cozy-runtime>=0.45"/"cozy-runtime>=0.47.0.dev0,<0.48"/' "$copy/pyproject.toml"
+  rm -rf "$copy" && mkdir -p "$seed/packages" && historical_relay "$copy"
+  sed -i -e 's/^name = "e2e-relay"$/name = "e2e-rcfloor"/' -e 's/"cozy-runtime[^"]*"/"cozy-runtime>=0.47.0.dev0,<0.48"/' "$copy/pyproject.toml"
   export E2E_RCFLOOR_PUBLISHED=$seed/publish-e2e-rcfloor.json E2E_RCFLOOR=$account/e2e-rcfloor
   if (cd "$copy" && cozy --json package publish -y) > "$E2E_RCFLOOR_PUBLISHED" 2>&1; then log "published $E2E_RCFLOOR 0.1.0 (cozy-runtime>=0.47.0.dev0)"
   else log "publishing e2e-rcfloor was refused: $(tail -c 300 "$E2E_RCFLOOR_PUBLISHED" | tr '\n' ' ')"; fi
@@ -111,7 +145,7 @@ next() {
   local copy=$seed/packages/e2e-next account
   account=$(cozy --json whoami | jq -r '.account // empty')
   rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$here/../release-gate/suites/hub/pkg" "$copy"
-  sed -i -e 's/^name = "ci-hub-pkg"$/name = "e2e-next"/' -e 's/"cozy-runtime>=0.30"/"cozy-runtime>=0.46.0"/' "$copy/pyproject.toml"
+  sed -i -e 's/^name = "ci-hub-pkg"$/name = "e2e-next"/' -e 's/"cozy-runtime[^"]*"/"cozy-runtime>=0.46.0"/' "$copy/pyproject.toml"
   (cd "$copy" && cozy --json package publish -y) > "$seed/publish-e2e-next.json" 2>&1 \
     || { echo "publishing e2e-next failed: $(tail -c 600 "$seed/publish-e2e-next.json")" >&2; return 1; }
   export E2E_NEXT=$account/e2e-next
@@ -208,7 +242,9 @@ case $key in
   cli:follow) needs='packages downloads' ;;
   cli:lines) needs='packages birefnet downloads' ;;
   cli:idle) needs='packages downloads' ;;
-  cli:ondemand) needs='packages birefnet downloads spare' ;;
+  cli:ondemand) needs='packages birefnet downloads' ;;
+  # pagebox's 1.6 GB (`spare`) beside the install (cl-1007).
+  cli:ondemand-share) needs='packages birefnet downloads spare' ;;
   cli:ondemand-ramp) needs='packages spare' ;;
   cli:disk) needs='packages disk' ;;
   # H3's Models & LoRAs, Qwen's VAE slot and heavy.py's BiRefNet; macOS and Windows run no models.
@@ -259,7 +295,7 @@ if [ "$suite" = cpu ]; then
   [ -z "$packages" ] || dependencies=$(hub_dependencies ${only//,/ })
   if [ -n "$dependencies" ]; then
     for dependency in $dependencies; do
-      publish "$packages/$dependency" || log "$dependency not published: $(tail -c 300 "$seed/publish-$dependency.json" | tr '\n' ' ')"
+      publish "$packages/$dependency" cohort || { echo "$dependency could not be seeded from the selected cohort" >&2; exit 1; }
     done
     sudo cp "${COZY_TEST_HUB_CA:?}" /usr/local/share/ca-certificates/cozy-test-hub.crt && sudo update-ca-certificates > "$seed/ca.log" 2>&1
     systemctl --user set-environment SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
@@ -290,7 +326,7 @@ if [ "$suite" = imports ]; then
   systemctl --user set-environment SSL_CERT_FILE="$SSL_CERT_FILE"
   systemctl --user restart cozy-calcifer > "$seed/imports-calcifer-restart.log" 2>&1
   while IFS= read -r dependency; do
-    publish "$staged/$dependency"
+    publish "$staged/$dependency" cohort
   done < <(jq -r '.dependencies[].directory' "$report")
   while IFS= read -r package; do
     python3 "$here/package-lock.py" --cozy "$cozy_bin" --root "$staged/$package" > "$seed/imports-lock-$package.json" \
@@ -330,11 +366,13 @@ if [ -n "$needs" ]; then
   for f in pyproject.toml package.toml; do
     sed -e 's/^name = "ci-hub-pkg"/name = "minimax-h3-tools"/' -e 's/ci_hub_pkg/minimax_h3_tools/g' "$tools/$f" > "$tools/$f.next" && mv "$tools/$f.next" "$tools/$f"
   done
+  # Weightless (App only) and on a stable floor, as on the RC: published for every platform, so a consumer's universal lock
+  # resolves it on each (hub_away's Windows-only dependency). A cohort pin would lock it to this runner alone.
   publish "$tools"
-  for p in qwen-image-2 minimax-h3 sdxl birefnet; do publish "$packages/$p"; done
+  for p in qwen-image-2 minimax-h3 sdxl birefnet; do publish "$packages/$p" cohort; done
   [[ " $needs " != *" scratch "* ]] || publish "$here/cli/scratch"
   # MOSS Image, which takes words only: a mention it can't use is crossed out (cl-944).
-  case $key in cli: | cli:web-suite) publish "$packages/moss-image" ;; esac
+  case $key in cli: | cli:web-suite) publish "$packages/moss-image" cohort ;; esac
   # Every other first-party package, as production's catalog holds them: what the palette lists (cl-896). Orbit's lock takes minimax-h3
   # from the root index, under the Hub's own CA, as relay's does. One refused is the cell's to find missing.
   if [[ " $needs " == *" catalog "* ]]; then
@@ -344,7 +382,7 @@ if [ -n "$needs" ]; then
     for dir in "$packages"/*/; do
       dir=${dir%/} && case ${dir##*/} in qwen-image-2 | minimax-h3 | sdxl | birefnet) continue ;; esac
       grep -q '^\[project.entry-points."cozy.application"\]' "$dir/pyproject.toml" 2> /dev/null || continue
-      publish "$dir" || log "${dir##*/} not published: $(tail -c 300 "$seed/publish-${dir##*/}.json" | tr '\n' ' ')"
+      publish "$dir" cohort || { echo "${dir##*/} could not be seeded from the selected cohort" >&2; exit 1; }
     done
     # A release locked to the Runtime before this one, as flux-3-klein 0.7.0 is on production (run 46790): the palette leaves it out.
     old=$seed/e2e-runtime-044

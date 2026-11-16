@@ -167,7 +167,9 @@ impl Machines {
             "" => self.hubs.default_origin(),
             hub => hub.to_owned(),
         };
-        let flagless = asked.is_empty() && ask.gpu_memory_limit.is_none() && ask.mode.is_none();
+        let flagless = asked.is_empty() && ask.gpu_memory_limit.is_none() && ask.mode.is_none() && !ask.torch;
+        // The Hub's PyTorch, once read for this update.
+        let mut hub_torch = None;
         // The cozy `cozy update` installed here and `local` has not moved to yet: it goes with the
         // update, unless another `cozy` is named.
         let mut placed = placed(self, &m).await;
@@ -193,6 +195,7 @@ impl Machines {
                 }
             } else {
                 let target = self.hubs.anonymous(&hub)?.get_software().await.map_err(|e| hub_refusal(&hub, e))?;
+                hub_torch = Some(target.torch.clone());
                 // An unpinned target older than the machine's software is no reason to go back.
                 let moves = |running: &str, wanted: &str| running != wanted && (target.pinned || newer(wanted, running));
                 let cozy = target.cozy.as_deref().filter(|cozy| moves(&status.version, cozy) && placed.is_none());
@@ -206,11 +209,15 @@ impl Machines {
                     }
                 }
             }
-            if asked.is_empty() && placed.is_none() {
-                // Nothing to move, and nothing named: it lets go of a hold by hand all the same (cl-952).
+        }
+        let torch = self.torch(&m, &hub, ask.torch || hub_torch.is_some(), hub_torch).await?;
+        let settings = ask.gpu_memory_limit.is_some() || ask.mode.is_some();
+        if asked.is_empty() && placed.is_none() && torch.is_none() && !settings {
+            // Nothing to move, and nothing named: it lets go of a hold by hand all the same (cl-952).
+            if flagless {
                 self.mind_hold(&m.name, key, "", true);
-                return Ok((Updating { machine: m, run: None, target: String::new(), warnings: vec![] }, true));
             }
+            return Ok((Updating { machine: m, run: None, target: String::new(), warnings: vec![] }, true));
         }
         rc_pairing(&m, &asked, placed.as_deref())?;
         let platform = m.status.as_ref().map(|s| s.platform.clone()).unwrap_or_default();
@@ -294,6 +301,13 @@ impl Machines {
             named.push(format!("cozy {version} (installed)"));
             payload.insert("cozy".into(), version.into());
         }
+        if let Some(version) = torch {
+            named.push(match version.as_str() {
+                "" => "its PyTorch".into(),
+                version => format!("PyTorch {version}{hub_target}"),
+            });
+            payload.insert("torch".into(), version.into());
+        }
         let restarts = payload.contains_key("tensord") || payload.contains_key("cozy");
         if let Some(limit) = ask.gpu_memory_limit {
             named.push(match limit {
@@ -345,6 +359,38 @@ impl Machines {
         }
         let updating = Updating { machine: m, run: Some(submitted.run), target, warnings };
         Ok((updating, !submitted.replay))
+    }
+
+    /// The PyTorch `m` installs as its own base when `asked` (cl-1030): the version its Hub names (`named`, else read
+    /// now), when it holds another; with none named (an older Hub, or none answering, as at a first run), the newest, when
+    /// it holds none. Only a machine on this cozy's minor knows the member; a rental's is its worker image's.
+    async fn torch(&self, m: &Machine, hub: &str, asked: bool, named: Option<Option<String>>) -> Result<Option<String>, Error> {
+        let Some(status) = m.status.as_ref().filter(|_| asked && m.kind != MachineKind::Rental) else {
+            return match asked && m.kind != MachineKind::Rental {
+                true => Err(Error::new(Kind::Unavailable, "machine_unanswered", format!("{} has not reported the software it runs", m.name))
+                    .next(format!("cozy machine show {}", m.name))),
+                false => Ok(None),
+            };
+        };
+        if !same_minor(&status.version, this_release()) {
+            return Ok(None);
+        }
+        let named = match named {
+            Some(named) => named,
+            None => match self.hubs.anonymous(hub)?.get_software().await {
+                Ok(software) => software.torch,
+                Err(e) => {
+                    tracing::warn!(machine = %m.name, "{hub} did not name its PyTorch: {e}");
+                    None
+                }
+            },
+        };
+        let held = status.torch.split('+').next().unwrap_or_default();
+        Ok(match named {
+            Some(version) if version != held => Some(version),
+            None if held.is_empty() => Some(String::new()),
+            _ => None,
+        })
     }
 
     /// An update run's outcome as it settles: one that succeeded while its machine does not run

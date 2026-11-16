@@ -6,7 +6,7 @@
 # goes there at once: a rental that will be later doesn't hold it. `wait` again would take stand-c 8 min, so it waits for the rental,
 # nothing sent, its box saying "waits for <rental>, ready in …"; the rental ended, it goes to stand-c. `--on new` of a run stand-c
 # finishes sooner than a new rental would rents nothing and runs there. On a GitHub runner the machines run CPU work side by side, so
-# stand-c is late by its own measured time, not by a queue: placement compares the same finish. Its own shard (`coming`), by hand: it
+# stand-c is late by its own measured time, not by a queue: placement compares the same finish. Its own shard (`coming`), on every RC run: it
 # takes about 15 min.
 coming_machine() {
 step "coming machine (cl-915): a job waits for a rental on its way that finishes it sooner, never for one that's later"

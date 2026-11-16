@@ -29,17 +29,17 @@
   ],
   "result": {
    "context": {
-    "asset_ref": "file/0003",
+    "asset_ref": "file/0002",
     "kind": "file",
     "media_type": "application/octet-stream"
    },
    "last_frame": {
-    "asset_ref": "image/0002",
+    "asset_ref": "image/0004",
     "kind": "image",
     "media_type": "image/png"
    },
    "latents": {
-    "asset_ref": "file/0004",
+    "asset_ref": "file/0003",
     "kind": "file",
     "media_type": "application/octet-stream"
    },
@@ -85,17 +85,17 @@
   ],
   "result": {
    "context": {
-    "asset_ref": "file/0003",
+    "asset_ref": "file/0002",
     "kind": "file",
     "media_type": "application/octet-stream"
    },
    "last_frame": {
-    "asset_ref": "image/0002",
+    "asset_ref": "image/0004",
     "kind": "image",
     "media_type": "image/png"
    },
    "latents": {
-    "asset_ref": "file/0004",
+    "asset_ref": "file/0003",
     "kind": "file",
     "media_type": "application/octet-stream"
    },
@@ -141,17 +141,17 @@
   ],
   "result": {
    "context": {
-    "asset_ref": "file/0003",
+    "asset_ref": "file/0002",
     "kind": "file",
     "media_type": "application/octet-stream"
    },
    "last_frame": {
-    "asset_ref": "image/0002",
+    "asset_ref": "image/0004",
     "kind": "image",
     "media_type": "image/png"
    },
    "latents": {
-    "asset_ref": "file/0004",
+    "asset_ref": "file/0003",
     "kind": "file",
     "media_type": "application/octet-stream"
    },
@@ -248,17 +248,17 @@
   ],
   "result": {
    "context": {
-    "asset_ref": "file/0003",
+    "asset_ref": "file/0002",
     "kind": "file",
     "media_type": "application/octet-stream"
    },
    "last_frame": {
-    "asset_ref": "image/0002",
+    "asset_ref": "image/0004",
     "kind": "image",
     "media_type": "image/png"
    },
    "latents": {
-    "asset_ref": "file/0004",
+    "asset_ref": "file/0003",
     "kind": "file",
     "media_type": "application/octet-stream"
    },

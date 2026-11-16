@@ -7,7 +7,7 @@ from typing import Annotated
 
 import msgspec
 from cozy_runtime.accel import sequence_parallel
-from cozy_runtime.author import App, ImageFrame, Loader, Model, Outputs, uses_components
+from cozy_runtime.author import App, ImageFrame, Loader, Model, uses_components
 from cozy_runtime.fields import Range
 from cozy_runtime.media import ImageFile
 
@@ -28,11 +28,11 @@ class Shaded(msgspec.Struct):
 
 
 @app.entrypoint(accelerator=False, memoize=True)
-def shade(payload: ShadeInput, out: Outputs) -> Shaded:
+def shade(payload: ShadeInput) -> Shaded:
     """A flat grey still, as dark as `amount` asks."""
     time.sleep(payload.hold)
     level = round(255 * (1 - payload.amount))
-    return Shaded(out.save_image(ImageFrame(SIDE, SIDE, bytes([level]) * 3 * SIDE**2), format="png"), level < 128)
+    return Shaded(ImageFile.from_image(ImageFrame(SIDE, SIDE, bytes([level]) * 3 * SIDE**2), format="png"), level < 128)
 
 
 @sequence_parallel(degrees=(2, 4))
@@ -56,6 +56,6 @@ class Enlarged(msgspec.Struct):
 
 
 @app.entrypoint(defaults={"model": "e2e/upscaler@0.1.0"})
-def enlarge(payload: EnlargeInput, model: Upscaler, out: Outputs) -> Enlarged:
+def enlarge(payload: EnlargeInput, model: Upscaler) -> Enlarged:
     """The still, twice the size."""
     return Enlarged(payload.image)

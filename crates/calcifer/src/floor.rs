@@ -299,7 +299,7 @@ impl Machines {
 /// Reads which `cozy_runtime` names a package wheel imports that a Runtime wheel lacks.
 const READER: &str = include_str!("floor_reader.py");
 
-/// A Runtime wheel the floor check reads: its version, and its pure wheel (URL, sha256).
+/// A Runtime wheel the floor check reads: its version, URL and sha256.
 pub(crate) struct Wheel {
     pub version: String,
     pub url: String,
@@ -314,8 +314,8 @@ fn requirement_of(src: &Path) -> Option<VersionSpecifiers> {
 }
 
 /// The Runtime `src` takes where its `cozy-runtime` floor is an RC build that no release meets (`>=0.47.0.dev0`): the open RC's
-/// newest, which every machine of the RC runs (xs-194). A package names only that floor, never the RC's wheel, which each
-/// Runtime merge replaces: a lock binds the newest build by URL in a private copy, and a publish's floor check reads it.
+/// newest (xs-194), unless the developer explicitly selected a wheel. The completed lock binds that selection;
+/// the floor check never replaces it with a newer rolling build.
 /// None: it names no RC floor, a release meets it, or no RC build does.
 pub(crate) async fn rc_runtime(src: &Path) -> Result<Option<Wheel>, Error> {
     let Some(requirement) = requirement_of(src) else { return Ok(None) };
@@ -326,12 +326,25 @@ pub(crate) async fn rc_runtime(src: &Path) -> Result<Option<Wheel>, Error> {
     if released.iter().any(|release| Version::from_str(&release.version).is_ok_and(|version| requirement.contains(&version))) {
         return Ok(None);
     }
+    // A named candidate is already the developer's cohort. Never substitute another RC
+    // while checking that cohort's unpublished floor. Stable floors still use releases above.
+    let project: Option<toml::Value> = std::fs::read_to_string(src.join("pyproject.toml"))
+        .ok().and_then(|text| toml::from_str(&text).ok());
+    let explicit = project.as_ref().and_then(|p| p.get("tool"))
+        .and_then(|p| p.get("uv")).and_then(|p| p.get("sources"))
+        .and_then(|p| p.get("cozy-runtime")).and_then(|p| p.get("url"))
+        .and_then(toml::Value::as_str);
+    if let Some(url) = explicit {
+        let selected = std::fs::read_to_string(src.join("uv.lock")).ok().and_then(|text| locked(&text));
+        return Ok(selected.filter(|wheel| wheel.url == url && Version::from_str(&wheel.version)
+            .is_ok_and(|version| requirement.contains(&version.without_local()))));
+    }
     let Some((build, url)) = crate::rc::runtime_now().await? else { return Ok(None) };
     let meets = Version::from_str(&build.version).is_ok_and(|version| requirement.contains(&version.without_local()));
     Ok(meets.then_some(Wheel { version: build.version, url, sha256: build.sha256 }))
 }
 
-/// The pure wheel of the `cozy-runtime` a lock holds: from an index, or the URL its source names (the open RC's build).
+/// The Runtime wheel a lock holds: the explicit URL source, else the index's pure wheel.
 fn locked(lock: &str) -> Option<Wheel> {
     #[derive(Deserialize)]
     struct Lock {
@@ -344,6 +357,8 @@ fn locked(lock: &str) -> Option<Wheel> {
         #[serde(default)]
         version: String,
         #[serde(default)]
+        source: BTreeMap<String, toml::Value>,
+        #[serde(default)]
         wheels: Vec<Locked>,
     }
     #[derive(Deserialize)]
@@ -354,14 +369,23 @@ fn locked(lock: &str) -> Option<Wheel> {
     }
     let lock: Lock = toml::from_str(lock).ok()?;
     let row = lock.package.into_iter().find(|row| row.name == "cozy-runtime")?;
-    let wheel = row.wheels.into_iter().find(|wheel| wheel.url.ends_with("-py3-none-any.whl"))?;
+    let source = row.source.get("url").and_then(toml::Value::as_str);
+    let wheel = row.wheels.into_iter().find(|wheel| source.map_or_else(
+        || wheel.url.ends_with("-py3-none-any.whl"), |source| wheel.url == source))?;
     Some(Wheel { version: row.version, url: wheel.url, sha256: wheel.hash.trim_start_matches("sha256:").to_owned() })
 }
 
 /// `wheel` fetched into `dir`, held to its sha256.
 async fn fetched(wheel: &Wheel, dir: &Path) -> Result<PathBuf, Error> {
     let failed = |why: String| Error::new(Kind::Unavailable, "runtime_unfetched", format!("cozy-runtime {} ({}): {why}", wheel.version, wheel.url));
-    let answer = http()?.get(&wheel.url).send().await.and_then(reqwest::Response::error_for_status).map_err(|e| failed(e.to_string()))?;
+    // A selected wheel may be at the same private origin uv trusts (the isolated Hub's ingress).
+    // Match TensorD's wheel fetch: this trust applies to package bytes, not Hub clients or release discovery.
+    let roots = api::config::environment().get("SSL_CERT_FILE")
+        .and_then(|path| std::fs::read(path).ok()).filter(|pem| !pem.is_empty())
+        .map(|pem| tensorfs::fetch::pem_roots(&pem)).transpose().map_err(|e| failed(e.to_string()))?.unwrap_or_default();
+    let client = tensorfs::fetch::http(&roots.iter().map(Vec::as_slice).collect::<Vec<_>>())
+        .map_err(|e| failed(e.to_string()))?.read_timeout(tensorfs::fetch::STALL).build().map_err(|e| failed(e.to_string()))?;
+    let answer = client.get(&wheel.url).send().await.and_then(reqwest::Response::error_for_status).map_err(|e| failed(e.to_string()))?;
     let bytes = answer.bytes().await.map_err(|e| failed(e.to_string()))?;
     let found = hex::encode(Sha256::digest(&bytes));
     if !wheel.sha256.is_empty() && found != wheel.sha256 {
@@ -398,7 +422,7 @@ pub(crate) async fn check(api: &Arc<Api>, uv: &Path, python: &str, src: &Path, p
     let Some(requirement) = requirement_of(src) else { return Ok(()) };
     let lock = std::fs::read_to_string(src.join("uv.lock")).ok().and_then(|lock| locked(&lock));
     let floor = match rc_runtime(src).await? {
-        // An RC floor no release meets: the RC's newest build, which its machines run.
+        // An unreleased floor: the explicitly selected wheel, else the open RC's newest build.
         Some(rc) => rc,
         None => {
             let released = released().await?;
@@ -444,7 +468,7 @@ pub(crate) async fn check(api: &Arc<Api>, uv: &Path, python: &str, src: &Path, p
         .collect();
     let more = if missing.len() > 3 { format!(" and {} more", missing.len() - 3) } else { String::new() };
     let floor_said = match api::prerelease::dev(&floor.version) {
-        true => format!("cozy-runtime {}, the open RC's newest build,", prerelease::shown(&floor.version)),
+        true => format!("cozy-runtime {}, the selected build for its unreleased floor,", prerelease::shown(&floor.version)),
         false => format!("cozy-runtime {}, the oldest its cozy-runtime{requirement} admits,", floor.version),
     };
     let error = refuse("runtime_floor_lacks", format!("{label} imports {}{more}, which {floor_said} lacks", named.join(", ")));

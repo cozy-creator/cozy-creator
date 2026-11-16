@@ -1212,8 +1212,13 @@ pub(crate) struct Python {
     pub full: String,
 }
 
-/// The cozy-runtime `root`'s uv.lock holds, as uv asks for it (`cozy-runtime==0.45.1`), if it holds one.
+/// The Runtime source this copied project's lock holds, as uv asks for it. A local SDK or
+/// carried wheel is not interchangeable with the index's build of the same version.
 pub(crate) fn locked_runtime(root: &Path) -> Option<String> {
+    locked_requirement(root, "cozy-runtime")
+}
+
+fn locked_requirement(root: &Path, name: &str) -> Option<String> {
     #[derive(Deserialize)]
     struct Lock {
         #[serde(default)]
@@ -1228,12 +1233,34 @@ pub(crate) fn locked_runtime(root: &Path) -> Option<String> {
         source: std::collections::BTreeMap<String, toml::Value>,
     }
     let lock: Lock = toml::from_str(&fs::read_to_string(root.join("uv.lock")).ok()?).ok()?;
-    let locked = lock.package.into_iter().find(|p| p.name == "cozy-runtime")?;
-    // The open RC's Runtime is no index's: a lock takes its newest pure wheel by URL (`floor::rc_runtime`).
-    Some(match locked.source.get("url").and_then(toml::Value::as_str) {
-        Some(url) => format!("cozy-runtime @ {url}"),
-        None => format!("cozy-runtime=={}", locked.version),
-    })
+    let locked = lock.package.into_iter().find(|p| p.name == name)?;
+    if let Some(url) = locked.source.get("url").and_then(toml::Value::as_str) {
+        return Some(format!("{name} @ {url}"));
+    }
+    for kind in ["path", "directory", "editable"] {
+        if let Some(path) = locked.source.get(kind).and_then(toml::Value::as_str) {
+            let path = std::path::absolute(root.join(path)).ok()?;
+            let url = url::Url::from_file_path(path).ok()?;
+            return Some(format!("{name} @ {url}"));
+        }
+    }
+    if let Some(git) = locked.source.get("git").and_then(toml::Value::as_str) {
+        // uv locks a resolved commit after '#', with the requested branch/rev in the query.
+        // The describer takes the resolved commit, retaining a subdirectory when present.
+        let (head, commit) = git.split_once('#').unwrap_or((git, ""));
+        let (repository, query) = head.split_once('?').unwrap_or((head, ""));
+        let directory = url::form_urlencoded::parse(query.as_bytes())
+            .find_map(|(key, value)| (key == "subdirectory").then(|| value.into_owned()));
+        let revision = if commit.is_empty() { String::new() } else { format!("@{commit}") };
+        let fragment = directory.map_or_else(String::new, |directory| {
+            let query = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("subdirectory", &directory)
+                .finish();
+            format!("#{query}")
+        });
+        return Some(format!("{name} @ git+{}{revision}{fragment}", repository.trim_start_matches("git+")));
+    }
+    Some(format!("{name}=={}", locked.version))
 }
 
 /// The SDK is always cozy-runtime: the one named (a version, or an RC build's wheel URL), an authoritative lock, else
@@ -1292,6 +1319,13 @@ pub(crate) fn describe_with(uv: &Path, dir: &Path, python: &str, runtime: Option
     let from = describer_requirement(dir, runtime)?;
     let mut command = self::uv(uv, dir);
     command.args(["tool", "run", "--no-progress", "--python", python, "--from", from.as_str()]);
+    // Carry the locked pair only when this reader chose that lock's Runtime. A caller's
+    // explicit machine Runtime remains authoritative and must not inherit a different lock's TensorFS.
+    if runtime.is_some() && runtime == locked_runtime(dir).as_deref() {
+        if let Some(tensorfs) = locked_requirement(dir, "tensorfs") {
+            command.args(["--with", &tensorfs]);
+        }
+    }
     if runtime.is_none() && from != "cozy-runtime@latest" {
         // Refresh within the bounds, ignoring an older installed tool even when it meets them.
         command.arg("--isolated").args(platform::tools::uv_upgrade(["cozy-runtime"]));

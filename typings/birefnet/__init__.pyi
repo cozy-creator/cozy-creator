@@ -1,7 +1,7 @@
-# The birefnet package (packages repo) as a dependent package imports it: its registered function, which a caller
-# runs as a managed call (`await call(remove_background, payload=...)`, release-gate xs132-pipeline).
+# The birefnet implementation signature for ordinary local use. Managed callers use generated Operation references
+# and `await call(remove_background, RemoveBackgroundInput(...))` (release-gate xs132-pipeline).
 import msgspec
-from cozy_runtime.author import Context, Outputs, Telemetry
+from cozy_runtime.author import Context, Telemetry
 from cozy_runtime.media import ImageFile
 
 class RemoveBackgroundInput(msgspec.Struct):
@@ -13,5 +13,5 @@ class RemoveBackgroundOutput(msgspec.Struct):
 class BackgroundRemovalModel: ...
 
 def remove_background(
-    ctx: Context, payload: RemoveBackgroundInput, model: BackgroundRemovalModel, out: Outputs, tel: Telemetry
+    ctx: Context, payload: RemoveBackgroundInput, model: BackgroundRemovalModel, tel: Telemetry
 ) -> RemoveBackgroundOutput: ...

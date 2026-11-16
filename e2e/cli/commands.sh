@@ -774,10 +774,10 @@ step "local code calling a published cozy package, locked at its run (cl-871)"
 [ -n "$LOCAL" ] || return 0
 local dir=$OUT/hub-dependency
 rm -rf "$dir"
-package_at "$dir" e2e_local_relay '"cozy-runtime>=0.45", "msgspec>=0.19", "minimax-h3-tools"' \
+package_at "$dir" e2e_local_relay '"cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19", "minimax-h3-tools>=0.1.0"' \
   "$(printf '\n[tool.uv.sources]\nminimax-h3-tools = { index = "tensorhub" }')" <<'PY'
-import minimax_h3_tools
 import msgspec
+from e2e_local_relay_calls import Text, echo
 
 from cozy_runtime.author import App, call
 
@@ -794,12 +794,14 @@ class Relayed(msgspec.Struct):
 
 
 async def relay(payload: Relay) -> Relayed:
-    echoed = await call(minimax_h3_tools.echo, payload=minimax_h3_tools.Text(text=payload.text))
+    echoed = await call(echo, Text(text=payload.text))
     return Relayed(text=echoed.text, release=echoed.release)
 
 
 app.entrypoint(relay, accelerator=False)
 PY
+cp "$here/relay/e2e_relay/echo_calls.py" "$dir/e2e_local_relay_calls.py"
+sed -i 's/only-include = \["e2e_local_relay.py"\]/only-include = ["e2e_local_relay.py", "e2e_local_relay_calls.py"]/' "$dir/pyproject.toml"
 cell hub-dependency "$dir/relay" "text=from the root index" || return 0
 grep -q '"text": *"from the root index"' "$OUT/hub-dependency.ndjson" && grep -q '"release": *"0.1.0"' "$OUT/hub-dependency.ndjson" \
   || check "hub dependency: the reply is not minimax-h3-tools 0.1.0's echo: $(tail -c 300 "$OUT/hub-dependency.ndjson")"
@@ -845,7 +847,7 @@ echo "rc floor: the open RC's newest Runtime is ${runtime:-unread}"
 grep -q '"status": *"published' "${E2E_RCFLOOR_PUBLISHED:-/dev/null}" 2> /dev/null \
   || check "rc floor: publishing e2e-rcfloor failed: $(tail -c 300 "${E2E_RCFLOOR_PUBLISHED:-/dev/null}" 2> /dev/null | tr '\n' ' ')"
 rm -rf "$src" && cp -r "$here/relay" "$src"
-sed -i -e 's/^name = "e2e-relay"$/name = "e2e-rcsource"/' -e 's/"cozy-runtime>=0.45"/"cozy-runtime>=0.47.0.dev0,<0.48"/' "$src/pyproject.toml"
+sed -i 's/^name = "e2e-relay"$/name = "e2e-rcsource"/' "$src/pyproject.toml"
 cell rc-floor-source "$src/relay" "text=from source" || check "rc floor: its source run failed: $(run_get "$OUT" rc-floor-source .reason.message | head -c 300)"
 grep -q 'cozy-runtime = ' "$src/pyproject.toml" && check "rc floor: its pyproject.toml took a Runtime source"
 if [ -f "$src/uv.lock" ] && [ -n "$runtime" ]; then
@@ -1089,7 +1091,7 @@ step "a child result holding Latents, in another package's caller (cr-276)"
 [ -n "$LOCAL" ] || return 0
 local dir=$OUT/child-latents
 rm -rf "$dir"
-package_at "$dir/maker" e2e_latents_maker '"cozy-runtime>=0.45", "msgspec>=0.19"' <<'PY'
+package_at "$dir/maker" e2e_latents_maker '"cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19"' <<'PY'
 import hashlib
 from typing import cast
 
@@ -1118,13 +1120,13 @@ def shot(payload: Ask, out: Outputs) -> Shot:
     kept = out.save_bytes(data, media_type="application/octet-stream")  # a saved file fills a Latents field
     return Shot(clip=clip, latents=cast(Latents, kept), sha256=f"sha256:{hashlib.sha256(data).hexdigest()}")
 PY
-package_at "$dir/caller" e2e_latents_caller '"cozy-runtime>=0.45", "msgspec>=0.19", "e2e-latents-maker"' \
+package_at "$dir/caller" e2e_latents_caller '"cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19", "e2e-latents-maker"' \
   "$(printf '\n[tool.uv.sources]\ne2e-latents-maker = { path = "../maker" }')" <<'PY'
 import hashlib
 from importlib.metadata import version
 
-import e2e_latents_maker
 import msgspec
+from e2e_latents_calls import Ask as MakerAsk, shot
 
 from cozy_runtime.author import App, call
 
@@ -1143,18 +1145,20 @@ class Got(msgspec.Struct):
 
 
 async def relay(payload: Ask) -> Got:
-    shot = await call(e2e_latents_maker.shot, payload=e2e_latents_maker.Ask(text=payload.text))
-    data = b"" if shot.latents is None else shot.latents.read_bytes()
+    made = await call(shot, MakerAsk(text=payload.text))
+    data = b"" if made.latents is None else made.latents.read_bytes()
     return Got(
-        latents=type(shot.latents).__name__,
-        clip=type(shot.clip).__name__,
-        same_bytes=f"sha256:{hashlib.sha256(data).hexdigest()}" == shot.sha256,
+        latents=type(made.latents).__name__,
+        clip=type(made.clip).__name__,
+        same_bytes=f"sha256:{hashlib.sha256(data).hexdigest()}" == made.sha256,
         runtime=version("cozy-runtime"),
     )
 
 
 app.entrypoint(relay, accelerator=False)
 PY
+cp "$here/latents_maker_calls.py" "$dir/caller/e2e_latents_calls.py"
+sed -i 's/only-include = \["e2e_latents_caller.py"\]/only-include = ["e2e_latents_caller.py", "e2e_latents_calls.py"]/' "$dir/caller/pyproject.toml"
 # No uv.lock: cozy locks it at the run, its path dependency included, and writes the lock beside it (cl-878).
 cell child-latents "$dir/caller/relay" "text=latents" || return 0
 grep -q 'directory = "../maker"' "$dir/caller/uv.lock" 2> /dev/null \
@@ -1748,4 +1752,3 @@ install_retry() {
   if COZY_HUB_URL=http://$(cat "$dir/addr") cozy --json package install "$2" --on local > "$dir/$1.said" 2>&1; then echo "it installed" >> "$dir/$1.said"; fi
   echo $((SECONDS - began)) > "$dir/$1.took"
 }
-

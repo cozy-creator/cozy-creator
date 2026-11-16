@@ -114,7 +114,13 @@ function placeIn(box: HTMLElement, x: number, y: number): Place {
   const [start, end] = [{ node: box, offset: 0 }, { node: box, offset: box.childNodes.length }]
   if (y > rect.bottom || (y >= rect.top && x > rect.right)) return end
   if (y < rect.top || x < rect.left) return start
-  const at = caretFromPoint(x, y)
+  // In its padding, above its first line or below its last, a point is taken on that line, as a browser's own selection takes it: asked
+  // there, the browser answered the words' start for every point, and a drag along the top of a box selected nothing (cl-1051).
+  const words = document.createRange()
+  words.selectNodeContents(box)
+  const lines = words.getBoundingClientRect()
+  if (lines.height && y > lines.bottom) return end
+  const at = caretFromPoint(x, lines.height ? Math.max(lines.top + 1, y) : y)
   if (!at || !box.contains(at.node)) return end
   const name = (at.node instanceof Element ? at.node : at.node.parentElement)?.closest("[data-mention]")
   if (name?.parentNode && box.contains(name)) return { node: name.parentNode, offset: [...name.parentNode.childNodes].indexOf(name) + 1 }

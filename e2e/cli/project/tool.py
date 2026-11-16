@@ -44,14 +44,14 @@ class Picture(msgspec.Struct):
     prompt: str
 
 
-def _picture(out: Outputs) -> ImageFile:
-    return out.save_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png")
+def _picture() -> ImageFile:
+    return ImageFile.from_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png")
 
 
 @app.tool(label="A still", named="still")
-def still(payload: StillBox, out: Outputs) -> Picture:
+def still(payload: StillBox) -> Picture:
     """A still of one colour."""
-    return Picture(_picture(out), payload.instructions.text)
+    return Picture(_picture(), payload.instructions.text)
 
 
 class SlowBox(msgspec.Struct, kw_only=True):
@@ -61,13 +61,13 @@ class SlowBox(msgspec.Struct, kw_only=True):
 
 
 @app.tool(label="A slow still")
-def slow(ctx: Context, payload: SlowBox, out: Outputs, tel: Telemetry) -> Picture:
+def slow(ctx: Context, payload: SlowBox, tel: Telemetry) -> Picture:
     """A still that takes its time, saying how far it's got in steps."""
     with tel.stage("drawing"):
         for at in range(10):
             time.sleep(payload.seconds / 10)
             ctx.progress(at, 10)
-    return Picture(_picture(out), payload.instructions.text)
+    return Picture(_picture(), payload.instructions.text)
 
 
 class FetchingBox(msgspec.Struct, kw_only=True):
@@ -76,7 +76,7 @@ class FetchingBox(msgspec.Struct, kw_only=True):
 
 
 @app.tool(label="A still that downloads first")
-def fetching(ctx: Context, payload: FetchingBox, out: Outputs, tel: Telemetry) -> Picture:
+def fetching(ctx: Context, payload: FetchingBox, tel: Telemetry) -> Picture:
     """A still whose run first spends `download` seconds as a machine downloading weights does, then `seconds` drawing."""
     if payload.download:
         with tel.stage("downloading its weights"):
@@ -87,7 +87,7 @@ def fetching(ctx: Context, payload: FetchingBox, out: Outputs, tel: Telemetry) -
         for at in range(10):
             time.sleep(payload.seconds / 10)
             ctx.progress(at, 10)
-    return Picture(_picture(out), "")
+    return Picture(_picture(), "")
 
 
 class SteppedInput(msgspec.Struct, kw_only=True):
@@ -99,7 +99,7 @@ class SteppedInput(msgspec.Struct, kw_only=True):
 
 
 @app.entrypoint()
-def stepped(ctx: Context, payload: SteppedInput, out: Outputs, tel: Telemetry) -> Picture:
+def stepped(ctx: Context, payload: SteppedInput, tel: Telemetry) -> Picture:
     """A still made as a model makes one, weightless: its prompt encoded, its steps (the first slower, as a warm-up is), decoded."""
     with tel.stage("encoding prompt"):
         time.sleep(payload.step)
@@ -109,7 +109,7 @@ def stepped(ctx: Context, payload: SteppedInput, out: Outputs, tel: Telemetry) -
             ctx.progress(at, payload.steps)
     with tel.stage("decoding image"):
         time.sleep(payload.step)
-    return Picture(_picture(out), payload.prompt)
+    return Picture(_picture(), payload.prompt)
 
 
 class Beat(msgspec.Struct, kw_only=True):
@@ -128,9 +128,9 @@ class ToldBox(msgspec.Struct, kw_only=True):
 
 
 @app.tool(label="Told", named="told")
-def told(payload: ToldBox, out: Outputs) -> Picture:
+def told(payload: ToldBox) -> Picture:
     """A still of one colour, from a prompt and its beats."""
-    return Picture(_picture(out), payload.instructions.text)
+    return Picture(_picture(), payload.instructions.text)
 
 
 class NeedBox(msgspec.Struct, kw_only=True):
