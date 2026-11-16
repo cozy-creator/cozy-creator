@@ -50,13 +50,27 @@ pub fn rules(entry: &Value) -> Vec<(String, String)> {
 
 /// What `entry`'s rules say of the request `sent`; one sent as nothing is its defaults.
 pub fn answers(entry: &Value, sent: &Value) -> Answers {
+    answered(entry, sent, true)
+}
+
+/// What `entry`'s rules say of a box's fields as `written`, before its request is bound (a quote's). What only binding knows is
+/// left unknown, so a rule that reads it gives no answer, never a wrong one: the references of a prompt that mentions something,
+/// which the binder finds, and a pickup, which a gesture fills.
+pub fn answers_written(entry: &Value, written: &Value) -> Answers {
+    answered(entry, written, false)
+}
+
+fn answered(entry: &Value, sent: &Value, bound: bool) -> Answers {
     let mut answers = Answers::default();
     let rules = rules(entry);
     if rules.is_empty() {
         return answers;
     }
     let request = match Struct::deserialize(&entry["request"]) {
-        Ok(request) => filled(&request, sent),
+        Ok(request) => match sent {
+            Value::Object(members) => Value::Object(fields(&request.fields, members, bound)),
+            _ => Value::Object(fields(&request.fields, &Map::new(), bound)),
+        },
         Err(error) => {
             answers.unanswered = rules.into_iter().map(|(name, _)| (name, format!("its request can't be read: {error}"))).collect();
             return answers;
@@ -102,33 +116,29 @@ pub fn faults(document: &Value) -> Vec<String> {
 }
 
 /// `sent` as a rule reads it: each field it leaves out at its declared default, at any depth, and a prompt sent as words alone as
-/// its text with no references. A field with no default that isn't sent stays out.
-pub fn filled(request: &Struct, sent: &Value) -> Value {
-    match sent {
-        Value::Object(members) => Value::Object(fields(&request.fields, members)),
-        _ => Value::Object(fields(&request.fields, &Map::new())),
-    }
-}
-
-fn fields(declared: &[Field], sent: &Map<String, Value>) -> Map<String, Value> {
+/// its text with no references. A field with no default that isn't sent stays out. Not `bound` (a box's fields as written): a
+/// prompt that mentions something stays its words, its references unknown, and a pickup not written stays out, unknown.
+fn fields(declared: &[Field], sent: &Map<String, Value>, bound: bool) -> Map<String, Value> {
     let mut filled = sent.clone();
     for field in declared {
-        if let Some(held) = sent.get(&field.name).or(field.default.as_ref()) {
-            filled.insert(field.name.clone(), typed(&field.ty, held));
+        let gesture = !bound && matches!(field.ty.plain(), Type::Pickup(_));
+        if let Some(held) = sent.get(&field.name).or(field.default.as_ref().filter(|_| !gesture)) {
+            filled.insert(field.name.clone(), typed(&field.ty, held, bound));
         }
     }
     filled
 }
 
-fn typed(ty: &Type, held: &Value) -> Value {
+fn typed(ty: &Type, held: &Value, bound: bool) -> Value {
     match (ty, held) {
-        (Type::Struct(inner) | Type::Pickup(inner), Value::Object(members)) => Value::Object(fields(&inner.fields, members)),
-        (Type::Media { extras, .. }, Value::Object(members)) => Value::Object(fields(&extras.fields, members)),
-        (Type::List(item), Value::Array(items)) => Value::Array(items.iter().map(|held| typed(item, held)).collect()),
+        (Type::Struct(inner) | Type::Pickup(inner), Value::Object(members)) => Value::Object(fields(&inner.fields, members, bound)),
+        (Type::Media { extras, .. }, Value::Object(members)) => Value::Object(fields(&extras.fields, members, bound)),
+        (Type::List(item), Value::Array(items)) => Value::Array(items.iter().map(|held| typed(item, held, bound)).collect()),
         (Type::Map(item), Value::Object(members)) => {
-            Value::Object(members.iter().map(|(name, held)| (name.clone(), typed(item, held))).collect())
+            Value::Object(members.iter().map(|(name, held)| (name.clone(), typed(item, held, bound))).collect())
         }
-        (Type::Prompt(_), Value::String(text)) => serde_json::json!({"text": text, "references": []}),
+        // Written words that mention nothing have no references; a mention's file is the binder's to find.
+        (Type::Prompt(_), Value::String(text)) if bound || !text.contains('<') => serde_json::json!({"text": text, "references": []}),
         (Type::Prompt(_), Value::Object(members)) => {
             let mut prompt = members.clone();
             prompt.entry("text").or_insert_with(|| Value::String(String::new()));
@@ -137,12 +147,12 @@ fn typed(ty: &Type, held: &Value) -> Value {
         }
         (Type::Union { .. }, Value::Null) => Value::Null,
         // `T | None`, set: as `T`.
-        (Type::Union { .. }, held) if !std::ptr::eq(ty.plain(), ty) => typed(ty.plain(), held),
+        (Type::Union { .. }, held) if !std::ptr::eq(ty.plain(), ty) => typed(ty.plain(), held, bound),
         (_, held) => held.clone(),
     }
 }
 
-/// Whether `rule` holds for `request` (`filled`). Why not, when it gives no answer: it can't be read, it reads what the request
+/// Whether `rule` holds for `request`, its defaults filled. Why not, when it gives no answer: it can't be read, it reads what the request
 /// doesn't hold, or it gives something other than true or false.
 pub fn holds(rule: &str, request: &Value) -> Result<bool, String> {
     let program = compiled(rule)?;
