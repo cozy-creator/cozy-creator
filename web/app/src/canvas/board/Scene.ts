@@ -83,6 +83,11 @@ export class Scene {
         if (show?.progress?.time) wake = Math.min(wake ?? 1000, 1000 - (Date.now() % 1000))
       } catch (error) {
         held.view.fault(held.node ?? { id: node.id, name: node.data.name, box: node.bounds, view: viewOf, selected: Boolean(node.selected) }, env)
+        // The broken tile stands in its own box, never where its view last was (a new view sits at 0,0, over the box there).
+        const root = held.view.root
+        root.scale.set(1); root.alpha = 1; root.zIndex = 0
+        root.position.set(node.bounds.x, node.bounds.y)
+        root.visible = !frame.hidden.has(node.data.name)
         const message = `${node.id}:${error instanceof Error ? error.message : String(error)}`
         if (!this.faults.has(message)) { this.faults.add(message); console.error(`Couldn't draw ${node.data.name}:`, error) }
       }
