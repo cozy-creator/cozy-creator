@@ -104,7 +104,7 @@ h3 reload-h3 9 5 "A slow pan follows the action."
 # lora-* (check.py `lora`): request 1 keeps or writes what it bakes, request 2 and the restart's bake nothing, and the
 # restart's reads its pages from disk and makes request 1's picture. lora-0 (no LoRA) starts Qwen-Image-2's executor first;
 # LORA_GIB then leaves its tier no room, so only the idle models' pages or a write make the bake last.
-QWEN_TURBO=$(pkg qwen-image-2 generate_turbo) LORA_GIB=${LORA_GIB:-3}
+QWEN_TURBO=$(pkg qwen-image-2 generate_turbo) LORA_GIB=${LORA_GIB:-1.5}
 lora_pod() { timeout 900 "$CLI" machine ssh "$M" "$1" < /dev/null; }
 lora() { vcell "$1" "$QWEN_TURBO" prompt="$OBJECT on a windowsill, morning light, photo" seed:=$((R + $2)) megapixels:=1 prompt_upsampling:=false "${@:3}"; }
 vcell lora-0 "$(pkg qwen-image-2 generate)" prompt="$SCENE, fine architectural detail" seed:=$((R + 60)) megapixels:=1 prompt_upsampling:=false
