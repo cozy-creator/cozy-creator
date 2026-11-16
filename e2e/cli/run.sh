@@ -354,6 +354,34 @@ code=0; wait "$lister" || code=$?
 wait "$submitter" || true
 }
 
+# cl-1028: a plaintext project's run going when Calcifer restarts, its client gone and nothing opening the project, is taken up by the
+# next Calcifer at start and settles in its project.db. One that took up only its own runs left it `accepted` until something opened the
+# project (containment dropped the global walking flag, 2969bb2ca). The project is read from its file alone: any cozy command would open it.
+restart_resumes() {
+[ "$RUNNER_OS" = Linux ] || return 0
+step "a project's run going across a Calcifer restart, its client gone, settles with nothing opening the project (cl-1028)"
+local holder=$HOME/.cozy/calcifer/calcifer.lock.holder db=$RUN_PROJECT/project.db n client pid state=
+(cd "$RUN_PROJECT" && exec cozy --json run "$here/weightless/wait" seconds:=30 --on local) > "$OUT/resume-run.ndjson" 2> "$OUT/resume-run.err" & client=$!
+for _ in $(seq 240); do grep -q '"run.in_progress"' "$OUT/resume-run.ndjson" 2> /dev/null && break; sleep 0.5; done
+n=$(grep -m1 -oE '"number": *[0-9]+' "$OUT/resume-run.ndjson" | grep -oE '[0-9]+$') || n=
+grep -q '"run.in_progress"' "$OUT/resume-run.ndjson" && [ -n "$n" ] \
+  || { check "restart resumes: the run never went: $(tail -c 300 "$OUT/resume-run.err")"; kill -9 "$client" 2> /dev/null; return; }
+sleep 2
+kill -9 "$client" 2> /dev/null; wait "$client" 2> /dev/null || true
+pid=$(jq -r .pid "$holder")
+systemctl --user restart cozy-calcifer || check "restart resumes: systemctl --user restart cozy-calcifer failed"
+for _ in $(seq 120); do [ "$(jq -r .pid "$holder" 2> /dev/null)" != "$pid" ] && [ -s "$holder" ] && break; sleep 0.5; done
+for _ in $(seq 150); do
+  state=$(python3 -c 'import sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True, timeout=5)
+print("/".join(map(str, c.execute("SELECT state, status FROM runs WHERE number = ?", (int(sys.argv[2]),)).fetchone() or ())))' "$db" "$n" 2> /dev/null) || state=
+  [ "${state%%/*}" = settled ] && break
+  sleep 1
+done
+[ "$state" = settled/completed ] \
+  || check "restart resumes: run $n is ${state:-unread} 150 s after Calcifer restarted, with nothing opening its project: $(grep -a 'resum' "$HOME/.cozy/calcifer/health.log" 2> /dev/null | tail -3)"
+}
+
 # cl-716 B: a run followed while Calcifer restarts goes on being followed to its end; a burst of restarts past
 # systemd's start limit (five in 10 s) leaves Calcifer startable by the next command. Last, as these stop Calcifer.
 calcifer_restarts() {
@@ -663,6 +691,7 @@ case $SHARD in
     completions
     calcifer_faults
     watch_restart
+    restart_resumes
     calcifer_restarts
     logs
   " ;;
@@ -723,6 +752,8 @@ case $SHARD in
   projectdb-opens) parts="db_opens logs" ;;
   # A run watched across Calcifer restarts, one whose lock record lands late (cl-885).
   follow-watch) parts="watch_restart logs" ;;
+  # A project's run going across a Calcifer restart, its client gone, settles with nothing opening the project (cl-1028).
+  follow-resume) parts="restart_resumes logs" ;;
   projectdb-existing) parts="db_existing logs" ;;
   projectdb-cancel) parts="db_cancel_undo logs" ;;
   projectdb-cancelrace) parts="db_cancel_race logs" ;;
