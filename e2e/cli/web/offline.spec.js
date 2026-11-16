@@ -37,8 +37,14 @@ print(json.dumps({"seq": seq and seq[0], "boxes": boxes, "canvas": canvas}))`;
 
 /** Where `name` is drawn on the canvas: its node's flow position. */
 const placeOf = async (page, name) => {
-  const card = await canvasCard(page, name), at = card?.rendered?.transform ?? card?.position;
-  return at ? [Math.round(at.x), Math.round(at.y)] : null;
+  // At rest: once the carry's lift has eased back (about 90 ms), two reads 100 ms apart agree. `+ 0` makes -0 a 0.
+  const read = async () => {
+    const card = await canvasCard(page, name), at = card?.rendered?.transform ?? card?.position;
+    return at ? [Math.round(at.x) + 0, Math.round(at.y) + 0] : null;
+  };
+  let place = null, last;
+  await expect.poll(async () => { place = await read(); const same = JSON.stringify(place) === JSON.stringify(last); last = place; return same; }, { message: `${name}'s place at rest`, intervals: [100] }).toBe(true);
+  return place;
 };
 
 /** The top bar's word on Calcifer and what waits for it, and everything it says. */

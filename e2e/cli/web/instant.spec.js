@@ -228,7 +228,9 @@ test('instant', async ({ page, project, api, guards }) => {
       const now = await placeOf(page, first);
       return now ? Math.round(Math.max(Math.abs(now.x - was.x - (to.x - grip.x) / zoom), Math.abs(now.y - was.y - (to.y - grip.y) / zoom))) : Infinity;
     }, { message: 'the move shows at once, on the canvas where it was let go: px off', timeout: 1000 }).toBeLessThanOrEqual(2);
-    const place = await placeOf(page, first);
+    // Where it rests once the carry's lift has eased back (about 90 ms): what the page then saves.
+    let place = null, last = null;
+    await expect.poll(async () => { place = await placeOf(page, first); const same = JSON.stringify(place) === JSON.stringify(last); last = place; return same; }, { message: 'its place at rest', intervals: [100] }).toBe(true);
     expect.soft(posts.calls.length, 'still the one POST, held').toBe(1);
     const going = writes.slice(writes.indexOf('POST /assets')).filter((write) => write === `PATCH /assets/${encodeURIComponent(first)}` || write === 'PATCH /canvas');
     expect.soft(going, 'its words and its move wait behind its POST').toEqual([]);
