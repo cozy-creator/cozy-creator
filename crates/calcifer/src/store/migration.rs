@@ -98,6 +98,7 @@ impl Destination<'_,'_> {
     fn input_root(&self)->Result<PathBuf> { match self { Self::Open(store)=>store.input_root(),Self::Sealing(store)=>store.input_root() } }
     fn read<T>(&self, f:impl FnOnce(&Connection)->Result<T>)->Result<T> { match self { Self::Open(store)=>store.read(f),Self::Sealing(store)=>store.read(f) } }
     fn write<T>(&self, f:impl FnOnce(&Transaction<'_>)->Result<T>)->Result<T> { match self { Self::Open(store)=>store.write(f),Self::Sealing(store)=>store.write(f) } }
+    fn write_held<T>(&self, f:impl FnOnce(&Transaction<'_>)->Result<T>)->Result<T> { match self { Self::Open(store)=>store.write_held(f),Self::Sealing(store)=>store.write_held(f) } }
 }
 
 impl Store {
@@ -256,11 +257,19 @@ impl Store {
                     .map_err(|_| StoreError::Protected("project_input_migration_pending".into()))?;
             }
             let receipt=format!("controller-v7:run:{id}");
-            project.write(|tx| {
+            project.write_held(|tx| {
                 let prior:Option<String>=tx.query_row("SELECT digest FROM journal_migrations WHERE source=?1",[&receipt],|row|row.get(0)).optional()?;
                 if prior.as_ref().is_some_and(|prior| prior!=&source_digest) { return Err(StoreError::Protected("project_migration_source_changed".into())); }
                 // An earlier import left a remote run pending custody that can never come: it is owned now, as imported again.
                 if !pending_worker { tx.execute("UPDATE runs SET custody='owned' WHERE id=?1 AND custody='legacy_pending'",[&id])?; }
+                // The project's next number, in the order its old runs were made (cl-1075); one imported before keeps its own. Each number
+                // project.db keeps of it moves with it.
+                let number=runs.column("number")?;
+                let old=integer(&runs.values[0][number])?;
+                let kept:Option<i64>=tx.query_row("SELECT number FROM runs WHERE id=?1",[&id],|row|row.get(0)).optional()?;
+                let new=match kept { Some(kept)=>kept, None=>tx.query_row("SELECT COALESCE(MAX(number),0)+1 FROM runs",[],|row|row.get(0))? };
+                runs.values[0][number]=Value::Integer(new);
+                crate::project::numbers::imported(tx,&id,old,new).map_err(|_|StoreError::Protected("project_run_numbers".into()))?;
                 runs.insert_verified(tx,"runs")?; outputs.insert_verified(tx,"outputs")?; logs.insert_verified(tx,"run_logs")?; asks.insert_verified(tx,"asks")?;
                 if let Some(after)=&after { after.insert_verified(tx,"after_steps")?; }
                 if let Some((step,_))=&after_file {

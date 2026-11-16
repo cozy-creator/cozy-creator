@@ -23,7 +23,6 @@ const STRIP_FRAMES = [1, 2, 4, 8, 16, 32]
 /** The clips part this far for what's being dragged in. */
 const GAP = 64
 const MOST_ZOOM = 64
-const POSTER_FRAMES = 16
 /** A cut changed this long ago, and nothing since, is joined into its next version. */
 const JOIN_MS = 1200
 
@@ -138,7 +137,8 @@ const Clip = memo(function Clip({
   )
 })
 
-/** What's at the playhead, filling the frame center-cropped as the film is, exact once it's been sought. A click plays or pauses it. */
+/** What's at the playhead, filling the frame center-cropped as the film is, exact once it's been sought. A click plays or pauses it. Until a
+ *  video clip's own frame is decoded, its poster stands in at no more than its own size (cl-1080). */
 function Monitor({ preview, layout, empty }: { preview: Preview; layout: Layout; empty: boolean }) {
   const store = useCanvasStore()
   const holder = useRef<HTMLDivElement>(null)
@@ -148,7 +148,6 @@ function Monitor({ preview, layout, empty }: { preview: Preview; layout: Layout;
   const ready = useSignal(preview.ready)
   const kept = useSignal(preview.kept)
   const failed = useSignal(preview.failed)
-  const frame = useSignal(preview.frame)
   useLayoutEffect(() => {
     preview.attach(holder.current, still.current)
     return () => preview.attach(null, null)
@@ -162,12 +161,10 @@ function Monitor({ preview, layout, empty }: { preview: Preview; layout: Layout;
     const image = holder.current?.parentElement?.querySelector("img")
     if (place && clip?.sha256 && image) preview.picture(place.index, clip.sha256, image)
   }
-  // Until it's sought, the nearest of a strip's frames: a trimmed clip doesn't open on its take's first.
-  const tile = place && clip?.holds ? Math.min(POSTER_FRAMES - 1, Math.floor(((place.in + (frame - place.at)) / clip.holds) * POSTER_FRAMES)) : 0
   return (
     <div className="tl-monitor" data-clip={clip ? (clip.name ?? named(clip)) : undefined} data-live={live ? "" : undefined} onClick={() => !empty && preview.toggle()}>
       {clip?.sha256 && !clip.missing && (isStill(clip) || !(videoReady || drawn)) && store.projectId && (
-        moving && tile > 0 ? <Thumb sha256={clip.sha256} cardWidth={512} strip={POSTER_FRAMES} exact frame={tile} className="tl-poster" /> : <Thumb sha256={clip.sha256} cardWidth={1024} onSize={pictureReady} />
+        <Thumb sha256={clip.sha256} cardWidth={1024} className={moving ? "tl-stand-in" : undefined} onSize={pictureReady} />
       )}
       <canvas ref={still} className={drawn ? "" : "off"} />
       {/* One for the box, there only while it holds its slot: what plays is whatever it holds now. */}
@@ -314,6 +311,11 @@ export function VideoEditor({ name }: { name: string }) {
   drawnAt.current = scale
   useEffect(() => preview.edit(layout, fps), [preview, layout, fps])
   useEffect(() => () => preview.stop(), [preview])
+  // Its own frame at the playhead from the first, at its own size: not a poster stretched over the player (cl-1080).
+  const framed = layout.frames > 0
+  useEffect(() => {
+    if (framed) preview.seek(preview.frame.get())
+  }, [preview, framed])
 
   const held = valuesOf(view).aspect_ratio
   const ratio = typeof held === "string" ? held : ""

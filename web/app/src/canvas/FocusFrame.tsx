@@ -1,5 +1,7 @@
-import { createContext, type PointerEvent, type ReactNode, useCallback, useContext, useLayoutEffect, useRef, useState } from "react"
+import { createContext, type PointerEvent, type ReactNode, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { useSignal } from "../ui/signal"
 import { useCanvasStore } from "./context"
+import { canFull, enterFull, fullElement, fullNow, FullScreenContext, justLeft, leaveFull, typing } from "./FullScreen"
 
 type Camera = { scale: number; x: number; y: number }
 type Resize = { width: number; height: number; from: { width: number; height: number; camera: Camera } }
@@ -15,8 +17,11 @@ const UI = "button, input, select, textarea, a, video, audio, [contenteditable],
 /** Image-space pan/zoom never changes the Wander camera. */
 /** What sits right under the frame (a video's segments and Redo): its row's height is kept out of the fit. */
 const UNDER = 44
+/** Full screen, the transport goes once the pointer has rested this long, and comes back as it moves (cl-1080). */
+const REST_MS = 2500
 
-/** `zooms`: a picture can be zoomed and panned in it; a player that's its own control (an Edit's cut, cl-957) is only fitted. */
+/** `zooms`: a picture can be zoomed and panned in it; a player that's its own control (an Edit's cut, cl-957) is only fitted, and goes full
+ *  screen (cl-1080): letterboxed on black at its own aspect, what's `under` it over its bottom. */
 export function FocusFrame({ enabled, aspect, fitted = true, zooms = true, under, children }: { enabled: boolean; aspect: number; fitted?: boolean; zooms?: boolean; under?: ReactNode; children: ReactNode }) {
   const zoomable = fitted && zooms
   const store = useCanvasStore()
@@ -29,7 +34,27 @@ export function FocusFrame({ enabled, aspect, fitted = true, zooms = true, under
   cameraNow.current = camera
   const dragging = useRef<{ id: number; x: number; y: number; from: Camera } | null>(null)
   const moved = useRef(false)
-  const roomHeight = Math.max(0, room.height - (under ? UNDER : 0))
+  const player = !zooms && canFull()
+  const showing = useSignal(fullElement)
+  const full = showing !== null && showing === element.current
+  const [offered, setOffered] = useState(false)
+  const offers = useRef(0)
+  const offer = useCallback(() => {
+    if (++offers.current === 1) setOffered(true)
+    return () => {
+      if (--offers.current === 0) setOffered(false)
+    }
+  }, [])
+  const toggle = useCallback(() => {
+    const held = element.current
+    if (!held) return
+    if (fullNow() === held) leaveFull()
+    else enterFull(held)
+  }, [])
+  const screen = useMemo(() => ({ full, toggle, offer }), [full, toggle, offer])
+  const [resting, setResting] = useState(false)
+  // Full screen, what's under it lies over the picture, which has the whole height.
+  const roomHeight = Math.max(0, room.height - (under && !full ? UNDER : 0))
   const fitWidth = fitted && room.width && roomHeight ? Math.min(room.width, roomHeight * aspect) : room.width
   const fitHeight = fitted && fitWidth ? fitWidth / aspect : room.height
   const width = resize?.width ?? fitWidth
@@ -108,13 +133,57 @@ export function FocusFrame({ enabled, aspect, fitted = true, zooms = true, under
     held.addEventListener("wheel", wheel, { passive: false })
     return () => held.removeEventListener("wheel", wheel)
   }, [enabled, zoomable, zoom])
+  // F toggles full screen, but in a field of words; Esc leaves it, and only it (cl-1080).
+  const offering = enabled && player && offered
+  useEffect(() => {
+    if (!offering) return
+    const key = (event: KeyboardEvent) => {
+      const held = element.current
+      if (!held || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return
+      if (event.key === "Escape") {
+        if (fullNow() !== held && !justLeft()) return
+        event.preventDefault()
+        leaveFull()
+      } else if (event.key.toLowerCase() === "f" && !event.repeat && !typing(event.target)) {
+        event.preventDefault()
+        toggle()
+      }
+    }
+    document.addEventListener("keydown", key)
+    return () => document.removeEventListener("keydown", key)
+  }, [offering, toggle])
+  // Full screen, its transport goes once the pointer rests, and comes back as it moves: over the transport, it stays.
+  useEffect(() => {
+    const held = element.current
+    if (!full || !held) return
+    let timer = 0
+    const wake = (event?: Event) => {
+      setResting(false)
+      clearTimeout(timer)
+      if (!(event?.target instanceof Element && event.target.closest(".focus-under"))) timer = window.setTimeout(() => setResting(true), REST_MS)
+    }
+    wake()
+    held.addEventListener("pointermove", wake)
+    held.addEventListener("pointerdown", wake)
+    return () => {
+      clearTimeout(timer)
+      held.removeEventListener("pointermove", wake)
+      held.removeEventListener("pointerdown", wake)
+      setResting(false)
+    }
+  }, [full])
   if (!enabled) return <>{children}</>
   const end = (event: PointerEvent<HTMLDivElement>) => {
     if (dragging.current?.id !== event.pointerId) return
     dragging.current = null
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
   }
-  return <ResizeContext.Provider value={{ start: startResize, move: moveResize, end: endResize }}><div ref={element} className="focus-viewer" data-zoomed={shown.scale > 1 || undefined} data-resizing={Boolean(resize) || undefined} onClickCapture={(event) => {
+  return <ResizeContext.Provider value={{ start: startResize, move: moveResize, end: endResize }}><FullScreenContext.Provider value={player ? screen : null}><div ref={element} className="focus-viewer" data-zoomed={shown.scale > 1 || undefined} data-resizing={Boolean(resize) || undefined} data-full={full || undefined} data-resting={(full && resting) || undefined} onDoubleClick={(event) => {
+    // A double-click on the picture toggles full screen, as a player's does.
+    if (!offering || (event.target as Element).closest("button, input, select, textarea, a, [contenteditable], .focus-under, .orbit-bar")) return
+    event.stopPropagation()
+    toggle()
+  }} onContextMenu={full ? (event) => event.stopPropagation() : undefined} onClickCapture={(event) => {
     if (moved.current) { event.preventDefault(); event.stopPropagation(); moved.current = false }
   }} onPointerDown={(event) => {
     moved.current = false
@@ -136,7 +205,7 @@ export function FocusFrame({ enabled, aspect, fitted = true, zooms = true, under
         <button type="button" className="tb" aria-label="Zoom out image" disabled={camera.scale <= 1} onClick={() => zoom(0.8, true)}>−</button>
         <button type="button" className="tb" aria-label="Zoom in image" disabled={camera.scale >= 8} onClick={() => zoom(1.25, true)}>+</button>
       </div>}
-      {under && <div className="focus-under" style={{ width: width || "100%" }}>{under}</div>}
+      {under && <div className="focus-under" style={full ? undefined : { width: width || "100%" }}>{under}</div>}
     </div>
-  </div></ResizeContext.Provider>
+  </div></FullScreenContext.Provider></ResizeContext.Provider>
 }

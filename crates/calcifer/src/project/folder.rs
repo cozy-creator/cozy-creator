@@ -1248,6 +1248,11 @@ impl Folder {
         self.reading_db(db::keys)
     }
 
+    /// `db::key_review`.
+    pub(crate) fn key_review(&self) -> Result<bool, Error> {
+        self.reading_db(db::key_review)
+    }
+
     /// Keeps `key` as its key now (`db::set_key`): no part of the project moves.
     pub(crate) fn set_key(&self, key: &str, fresh: bool) -> Result<(), Error> {
         self.write_past(|conn| db::set_key(conn, &self.db(), key, fresh))
@@ -1651,6 +1656,18 @@ impl Folder {
     /// Whether this thread is inside one of this project's acts: its writer is this thread's until the act commits.
     pub(crate) fn acting_here(&self) -> bool {
         acting(self.id()).is_some()
+    }
+
+    /// `journal_write` of what `held` keeps too (a run's numbers in its versions and walk, cl-1075): `held` isn't told it saw the
+    /// commit, so the next read reads it again, as another connection's.
+    pub(crate) fn journal_write_held<T>(&self, write: impl FnOnce(&rusqlite::Transaction<'_>) -> crate::store::Result<T>) -> crate::store::Result<T> {
+        if self.acting_here() { return Err(crate::store::StoreError::Locked("project_acting".into())); }
+        let mut turn = self.shared.writing.lock().unwrap_or_else(|error| error.into_inner());
+        let conn = self.writer(&mut turn).map_err(|error| crate::store::StoreError::Protected(error.code.to_string()))?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let value = write(&tx)?;
+        tx.commit()?;
+        Ok(value)
     }
 
     pub(crate) fn journal_write<T>(&self, write: impl FnOnce(&rusqlite::Transaction<'_>) -> crate::store::Result<T>) -> crate::store::Result<T> {

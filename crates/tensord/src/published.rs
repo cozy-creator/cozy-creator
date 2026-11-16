@@ -352,6 +352,9 @@ pub(crate) struct Publisher {
 /// reaches this machine within it, and a warm run never waits on the Hub (minimal-submit-path).
 const FRESH: Duration = Duration::from_secs(10 * 60);
 
+/// The rule held answers and the preparations made of them were resolved under: one moved makes them again.
+const RESOLVE: &str = "resolve-v6";
+
 /// A name as its Hub resolved it, with the hardware it was asked for: read again, it is asked as
 /// it was then (free VRAM moves; the first answer's stands).
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -777,12 +780,10 @@ impl Publisher {
             Answer::ask(&self.machine, source, &named, hardware)?
         } else {
             let origin = hub::origin_key(&source.origin).unwrap_or_default();
-            // v4 could hold a private version under a public key. Only anonymous reads fill v5.
-            // A slot that reads only some components has an answer of its own (xs-191); one that reads all keeps its key.
-            let mut key = json!(["resolve-v5", origin, named.model, named.release, named.lane, hardware.gpus, hardware.plain]);
-            if !hardware.components.is_empty() {
-                key.as_array_mut().expect("an array").push(json!(hardware.components));
-            }
+            // Only anonymous reads fill it. v5 held lanes free memory lowered (cl-1076); a 4-bit floor's answer, which
+            // memory still picks, and a slot's that reads only some components (xs-191) are each their own.
+            let key = json!([RESOLVE, origin, named.model, named.release, named.lane, hardware.gpus, hardware.plain,
+                hardware.components, hardware.free_vram.is_some()]);
             let name = key.to_string();
             let held = service.engine.with_journal(|j| j.named(&name)).map_err(io_failure)?;
             match held.and_then(|(answer, read)| Some((serde_json::from_str::<Answer>(&answer).ok()?, read))) {
@@ -1022,7 +1023,7 @@ impl Publisher {
         let package = request.installed.as_ref().map(|i| i.package.as_str()).unwrap_or(&request.package);
         let release = request.installed.as_ref().map(|i| i.release.as_str()).unwrap_or(&request.release);
         let capability = request.source.as_ref().is_some_and(|source| source.capability.is_some());
-        let key = json!({"installation":alias,"package":package,"release":release,"hub":origin,"owner":request.owner,"capability":capability,"catalog":catalog,"entrypoint":request.entrypoint,"choices":choices,"row":gpus,"gpus":request.gpus,"lane":request.lane});
+        let key = json!({"rule":RESOLVE,"installation":alias,"package":package,"release":release,"hub":origin,"owner":request.owner,"capability":capability,"catalog":catalog,"entrypoint":request.entrypoint,"choices":choices,"row":gpus,"gpus":request.gpus,"lane":request.lane});
         Ok(format!("hub-{}", sha256::hex_digest(key.to_string().as_bytes())))
     }
 
@@ -1569,9 +1570,11 @@ impl Publisher {
                 named.lane = request.lane.clone();
             }
             // A class that takes no encoded leaves, or raw weights read as data, takes plain lanes only; a lane fits on the
-            // components the slot reads (xs-191: a `vae` slot sized as its whole checkpoint).
+            // components the slot reads (xs-191: a `vae` slot sized as its whole checkpoint). Free memory lowers only a
+            // 4-bit floor's lane: H3's int8 on a 5090 was served nvfp4 for not fitting its free bytes (cl-1076).
             let plain = slot["encoded_leaves"] != "accept" || slot["weights"] == true;
-            let hardware = tensorfs::fetch::Hardware { plain, components: slot_components(slot), ..hardware.clone() };
+            let free_vram = (slot["min_bits"] == 4).then(|| gpu.free_vram(degree)).flatten();
+            let hardware = tensorfs::fetch::Hardware { plain, components: slot_components(slot), free_vram, ..hardware.clone() };
             let named = self.resolve(service, request.hub(&format!("the model for {path}"))?, named, &hardware, job.order)?;
             let warnings = named.reasons.iter().map(|why| format!("{}: {why}", named.model)).collect();
             let grant = ModelGrant {

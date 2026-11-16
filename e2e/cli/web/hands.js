@@ -114,7 +114,8 @@ function ffmpeg(tool) {
     for (const entry of entries) {
       const at = join(dir, entry.name);
       if (entry.isFile() && entry.name.replace(/\.exe$/, '') === tool) return at;
-      if (entry.isDirectory()) {
+      // A hidden folder is one being unpacked (`.tmpXXXX`): its ffmpeg isn't whole yet.
+      if (entry.isDirectory() && !entry.name.startsWith('.')) {
         const found = find(at);
         if (found) return found;
       }

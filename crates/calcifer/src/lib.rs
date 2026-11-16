@@ -635,9 +635,9 @@ impl Calcifer {
     /// What names `row` to a person (cl-987): `KEY-N`, its project's key and its number there, `COZY-N` for Calcifer's own; its
     /// number alone while its project isn't open. Naming a run never opens its project (a lock may be closing it).
     pub(crate) fn run_name(&self,row:&RunRow)->String {
-        let Some(root)=&row.project_root else { return format!("{}-{}", ::api::calcifer::project::MACHINE_KEY, row.number) };
+        let Some(root)=&row.project_root else { return ::api::calcifer::project::run_label(::api::calcifer::project::MACHINE_KEY, row.number) };
         match self.live_owners().into_iter().find(|owner| owner.root()==root) {
-            Some(owner) => format!("{}-{}", owner.key(), row.number),
+            Some(owner) => ::api::calcifer::project::run_label(&owner.key(), row.number),
             None => row.number.to_string(),
         }
     }

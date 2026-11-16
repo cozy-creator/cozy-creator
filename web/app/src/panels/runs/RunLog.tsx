@@ -27,9 +27,9 @@ function line(event: RunEvent, start: number): string | null {
     case "run.call":
       return `        call ${event.call.index} ${event.call.function}: ${event.call.status}${event.call.reason ? `, ${event.call.reason.message}` : ""}`
     case "output_item.landed":
-      return `        ${event.item.name}${event.item.index ? ` ${event.item.index}` : ""} landed here`
+      return `        ${event.item.name}${event.item.index ? ` ${event.item.index}` : ""} downloaded`
     case "output_item.done":
-      return event.item.export_error ? `        ${event.item.name} will not land: ${event.item.export_error}` : null
+      return event.item.export_error ? `        ${event.item.name} won't download: ${event.item.export_error}` : null
     case "run.in_progress":
     case "run.completed":
     case "run.failed":
@@ -92,9 +92,9 @@ export function RunLog({ run, project }: { run: Run; project: string | null }) {
   const note = followingLine(following, "a log")
   return (
     <Section title="Log">
-      <LogView text={text} empty={following.state === "ended" ? "It logged nothing." : "Nothing yet."} />
+      <LogView text={text} empty={following.state === "ended" ? "No log output." : "Nothing yet."} />
       {note && <p className="muted">{note}</p>}
-      {following.state === "refused" && <Failure error={following.error} lead="Couldn't read its log" />}
+      {following.state === "refused" && <Failure error={following.error} lead="Couldn't load the log" />}
     </Section>
   )
 }

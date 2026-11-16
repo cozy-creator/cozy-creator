@@ -75,9 +75,9 @@
 .tl-monitor .off {
   visibility: hidden;
 }
-.tl-monitor img.tl-poster {
-  width: 1600%;
-  object-fit: fill;
+/* A video clip's poster, until its own frame is decoded: never stretched past its own size (cl-1080). */
+.tl-monitor img.tl-stand-in {
+  object-fit: scale-down;
 }
 .tl-empty {
   position: absolute;
@@ -107,9 +107,11 @@
   transition: transform 0.2s;
 }
 
-/* Under the player, as under any video: play, the time, and a scrubber over the whole cut. */
+/* Under the player, as under any video: play, the time, a scrubber over the whole cut, and full screen. Under a narrow picture (9:16) it's
+   wider than the picture, so its scrubber has room (cl-1080). */
 .focus-under:has(.tl-transport) {
   justify-content: stretch;
+  min-width: min(560px, 90vw);
 }
 .tl-transport {
   flex: 1;
@@ -123,14 +125,16 @@
   border-radius: var(--round2);
   background: color-mix(in srgb, var(--panel) 90%, transparent);
 }
-.tl-transport .tl-go {
+.tl-transport .tl-go,
+.tl-transport .tl-full {
   display: inline-grid;
   place-items: center;
   min-width: 44px;
   min-height: 36px;
   padding: 0;
 }
-.tl-transport .tl-go .icon {
+.tl-transport .tl-go .icon,
+.tl-transport .tl-full .icon {
   width: 18px;
   height: 18px;
 }

@@ -1365,13 +1365,17 @@ impl Pool {
     pub(crate) fn problems(&self) -> Vec<String> {
         self.config.problems.clone()
     }
-    /// The first `degree` GPUs' current capability and free bytes, counting what idle peers hold:
-    /// they give it back when asked, so it is room a new model can plan on.
+    /// The first `degree` GPUs' capability, as a lane resolves for them. Memory is no part of it:
+    /// at an 8- or 16-bit floor the 8-bit lane always serves (Paul 11-06, xs-154 Q1).
     pub(crate) fn hardware(&self, degree: u32) -> tensorfs::fetch::Hardware {
-        let devices: Vec<&Device> = self.devices.iter().take(degree as usize).collect();
-        let gpus = devices.iter().filter_map(|d| self.inventory(&d.entry)).map(|g| g.compute_cap.clone()).filter(|cc| !cc.is_empty()).collect();
-        let free_vram = devices.iter().filter_map(|d| Some(d.memory.as_ref()?.free()? + d.idle_bytes())).min();
-        tensorfs::fetch::Hardware { gpus, free_vram, ..Default::default() }
+        let gpus = self.devices.iter().take(degree as usize).filter_map(|d| self.inventory(&d.entry))
+            .map(|g| g.compute_cap.clone()).filter(|cc| !cc.is_empty()).collect();
+        tensorfs::fetch::Hardware { gpus, ..Default::default() }
+    }
+    /// The first `degree` GPUs' least free bytes, counting what idle peers hold: they give it back
+    /// when asked, so it is room a new model can plan on. Only a 4-bit floor's lane resolves by it.
+    pub(crate) fn free_vram(&self, degree: u32) -> Option<u64> {
+        self.devices.iter().take(degree as usize).filter_map(|d| Some(d.memory.as_ref()?.free()? + d.idle_bytes())).min()
     }
     fn inventory(&self, entry: &str) -> Option<&crate::machine::receipt::Gpu> {
         self.config.inventory.iter().find(|g| g.device_index.to_string() == entry || g.device_uuid == entry)

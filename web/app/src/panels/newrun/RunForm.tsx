@@ -42,7 +42,7 @@ function JsonField({ value, hint, onChange }: { value: unknown; hint: string; on
             onChange(JSON.parse(next))
             setBad("")
           } catch (error) {
-            setBad(error instanceof Error ? error.message : "It isn't JSON")
+            setBad(error instanceof Error ? error.message : "That isn't valid JSON")
             onChange(UNREADABLE)
           }
         }}
@@ -64,7 +64,7 @@ function FileField({ field, asset, many, value, files, onChange }: { field: Requ
   return (
     <div className="filefield">
       {brought.map((digest, at) => (
-        <FileRow key={digest} file={{ id: -at, name: "The file it was given", digest }} onRemove={() => set(named.filter((other) => other !== digest))} />
+        <FileRow key={digest} file={{ id: -at, name: "The file from the earlier run", digest }} onRemove={() => set(named.filter((other) => other !== digest))} />
       ))}
       {held.map((file) => (
         <FileRow
@@ -90,7 +90,7 @@ function FileField({ field, asset, many, value, files, onChange }: { field: Requ
             setRows((now) => [...now, ...ids])
           }}
         >
-          Drop {many ? `${asset}s` : `a ${asset}`} here, or choose
+          {many ? `Drop ${asset} files here, or choose them` : `Drop ${/^[aeiou]/.test(asset) ? "an" : "a"} ${asset} file here, or choose one`}
         </DropZone>
       )}
     </div>
@@ -158,7 +158,7 @@ function Control({ field, value, files, onChange }: { field: RequestField; value
     case "tree":
       return (
         <span className="filefield">
-          <small className="muted">A folder on this computer fills it, which this page can't send: run it from a terminal.</small>
+          <small className="muted">A folder can only be given from a terminal.</small>
         </span>
       )
     case "json":

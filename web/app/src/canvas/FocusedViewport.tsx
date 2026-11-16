@@ -14,8 +14,8 @@ import { useSignal } from "../ui/signal"
 import { pressBeganOutside } from "../ui/press"
 import "./FocusedViewport.css"
 
-/** What's on a focused item rather than its background. */
-const OWN = ".media, .tl, .tl-player, .tl-transport, .focus-heading, .focus-warnings, .run-face, .here-side, .here-under, .image-controls, .focus-image-zoom, button, input, textarea, select, [contenteditable]"
+/** What's on a focused item rather than its background: full screen, all of it (cl-1080). */
+const OWN = ".focus-viewer[data-full], .media, .tl, .tl-player, .tl-transport, .focus-heading, .focus-warnings, .run-face, .here-side, .here-under, .image-controls, .focus-image-zoom, button, input, textarea, select, [contenteditable]"
 const own = (element: Element) => Boolean(element.closest(OWN))
 
 /** A workspace for one item. The Wander camera stays behind it, unchanged. */

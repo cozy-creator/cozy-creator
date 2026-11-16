@@ -496,6 +496,7 @@ WEB_2=(
   delete-undo
   canvas-nav
   resize
+  fullscreen
 )
 WEB_3=(
   focus
@@ -516,6 +517,7 @@ WEB_ENGINES=(
   move
   open
   vault
+  fullscreen
 )
 # What stops, restarts or re-points Calcifer, or needs the job to itself (`@solo`), one at a time, with the filesystem driver.
 WEB_SOLO=(
@@ -761,6 +763,8 @@ case $SHARD in
     old_takes
     db_migrate
     db_legacy
+    db_numbered
+    db_keys
     db_remote_custody
     db_opens
     db_migrate_large
@@ -809,8 +813,9 @@ case $SHARD in
   projectdb-render) parts="agent_render logs" ;;
   # A project 0.24.0 made, opened here (cl-904, schema 3).
   projectdb-migrate) parts="db_migrate logs" ;;
-  # cozy status's legacy history and cozy doctor's old runs by folder, over a 0.24.0 store fenced here (cl-984).
-  projectdb-legacy) parts="db_legacy logs" ;;
+  # cozy status's legacy history and cozy doctor's old runs by folder, over a 0.24.0 store fenced here (cl-984); a project's runs
+  # numbered from 1, and a run's key its own project's (cl-1075).
+  projectdb-legacy) parts="db_legacy db_numbered db_keys logs" ;;
   # A lock passing over a release no rental can install (cl-1011).
   lock-platforms) parts="lock_platforms logs" ;;
   # Old runs an ended rental made import as the project's own, and the project takes new work (cl-1003).

@@ -444,3 +444,99 @@ body:has(.focus-viewport) .zoom {
   .focus-card > .focus-actions { right: calc(min(25vw, 150px) + 8px); }
   .focus-viewport:has(.focus-actions) .focus-title { padding-right: 260px; }
 }
+/* A video in Focus shows its own frame at its own size (cl-1080; Paul, 11-16): until it's decoded the poster stands in, no larger than it is,
+   and the player over it shows nothing rather than black. Nothing over the picture blurs it. */
+.focus-image-transform .scrub > img:not(.strip) {
+  object-fit: scale-down;
+}
+.focus-image-transform .media .live:not([data-drawn]) {
+  background: none;
+}
+/* Full screen (cl-1080): the picture letterboxed on black at its own aspect, its track and transport over its bottom, dark whatever the
+   theme, as a player's are. While it plays they go once the pointer rests, and come back as it moves. */
+.focus-viewer[data-full] {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  background: #000;
+  --bg: #141415;
+  --panel: #121316;
+  --card: #17181b;
+  --card2: #26282d;
+  --well: #0a0a0b;
+  --line: #ffffff33;
+  --line2: #ffffff59;
+  --ink: #f2f2f2;
+  --mute: #c4c6cc;
+  --faint: #a3a5ac;
+  --ember: #ff8a3d;
+  --on-ember: #1b1006;
+  --select: #3d8bff;
+  --scrim: #000a;
+  --shadow: #0009;
+  --tint: #ffffff14;
+  --halo: 0 0 2px #000, 0 0 6px #000;
+  color-scheme: dark;
+}
+.focus-viewer[data-full] > .focus-stack {
+  position: static;
+}
+.focus-viewer[data-full] .focus-under {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 48px 24px 14px;
+  background: linear-gradient(to top, #000000b3, #0000);
+  transition: opacity 0.2s;
+}
+.focus-viewer[data-full] .focus-under:empty {
+  display: none;
+}
+.focus-viewer[data-full] .tl-transport {
+  flex: none;
+  padding: 0;
+  background: none;
+}
+/* Its buttons light on the picture, in paper too: no drawn frame (paper.css), as a player's are. */
+.focus-viewer[data-full] .tl-transport .tb {
+  border-color: transparent;
+  border-image-source: none;
+  background: none;
+  color: #fff;
+}
+.focus-viewer[data-full] .tl-transport .tb:hover {
+  background: #ffffff26;
+}
+.focus-viewer[data-full] .tl-take {
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+.focus-viewer[data-full] .tl-take .tl-bar,
+.focus-viewer[data-full] .tl-take .tl-rail {
+  display: none;
+}
+.focus-viewer[data-full] .tl-take .tl-scroll {
+  background: none;
+}
+.focus-viewer[data-full] .tl-take .tl-track {
+  padding-bottom: 0;
+}
+.focus-viewer[data-full] .tl-take .tl-clips,
+.focus-viewer[data-full] .tl-take .tl-span {
+  height: 22px;
+  margin-top: 0;
+}
+.focus-viewer[data-resting]:has(.tl-transport[data-playing]) .focus-under {
+  opacity: 0;
+  pointer-events: none;
+}
+.focus-viewer[data-resting]:has(.tl-transport[data-playing]),
+.focus-viewer[data-resting]:has(.tl-transport[data-playing]) * {
+  cursor: none;
+}

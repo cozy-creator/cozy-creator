@@ -37,12 +37,12 @@ function Picker({ onPick }: { onPick: (target: string) => void }) {
           if (text) onPick(text)
         }}
       >
-        <input className="field" autoFocus spellCheck={false} aria-label="A package or function" placeholder="A package, or package/function" value={typed} onChange={(event) => setTyped(event.target.value)} />
+        <input className="field" autoFocus spellCheck={false} aria-label="Package or function" placeholder="package, or package/function" value={typed} onChange={(event) => setTyped(event.target.value)} />
         <button type="submit" className="tb" disabled={!text}>
           Open
         </button>
       </form>
-      <Failure error={error} lead="Couldn't search the packages" />
+      <Failure error={error} lead="Couldn't search packages" />
       <ul className="rows choose">
         {data?.packages.map((found) => (
           <li key={found.package}>
@@ -91,7 +91,7 @@ function Asking({ target, resolved, id, startInput }: { target: string; resolved
       setSwitchNote("")
       setMode("form")
     } catch {
-      setSwitchNote("Only JSON goes back to the form: this text stays as it is, and runs as it is.")
+      setSwitchNote("Only JSON can go back to the form. Your text stays as it is, and runs as written.")
     }
   }
 
@@ -116,7 +116,7 @@ function Asking({ target, resolved, id, startInput }: { target: string; resolved
 
   const done = ({ run, notes, replay }: Submitted) => {
     // One note for one run, whatever it has to say.
-    const lines = [replay ? `This was asked already: run ${runName(run)}.` : "", ...(notes ?? []).map((note) => note.message)].filter(Boolean)
+    const lines = [replay ? `You already started this: run ${runName(run)}.` : "", ...(notes ?? []).map((note) => note.message)].filter(Boolean)
     if (lines.length) say(lines.join(" "))
     navigate(to(`runs/${run.number}`))
   }
@@ -135,7 +135,7 @@ function Asking({ target, resolved, id, startInput }: { target: string; resolved
       {resolved.summary && <p className="muted">{resolved.summary}</p>}
       {entry?.description && <p className="muted">{entry.description}</p>}
       <p className="muted">
-        {resolved.release_from === "source" ? `From source: ${resolved.release}` : `Release ${resolved.release} (${resolved.release_from})`}
+        {resolved.release_from === "source" ? `Running from source: ${resolved.release}` : `Release ${resolved.release} (${resolved.release_from})`}
       </p>
       <div className="row tabs">
         <button type="button" className={`tab ${mode === "form" ? "on" : ""}`} onClick={() => mode !== "form" && toForm()}>
@@ -156,10 +156,10 @@ function Asking({ target, resolved, id, startInput }: { target: string; resolved
           })} />
           {extra.length > 0 && (
             <p className="warn">
-              Not in this release's interface: {extra.join(", ")}. They're sent as they were, and Calcifer warns and drops what it can't use.
+              This release doesn't take {extra.join(", ")}. They're sent anyway, and Cozy drops what it can't use and tells you.
             </p>
           )}
-          {unreadable && <p className="warn">A field above doesn't read, so this can't run yet.</p>}
+          {unreadable && <p className="warn">A field above isn't valid yet, so this can't run.</p>}
         </>
       )}
       {mode === "text" && (
@@ -168,13 +168,13 @@ function Asking({ target, resolved, id, startInput }: { target: string; resolved
             className="field area code"
             spellCheck={false}
             rows={14}
-            aria-label="The input, as YAML"
+            aria-label="Input as YAML"
             placeholder={"prompt: a lighthouse at dusk\nseed: 7"}
             value={text}
             onChange={(event) => setText(event.target.value)}
           />
           <DropZone multiple onFiles={dropInText}>
-            Drop files here, or choose. Each is named by its label in the text.
+            Drop files here, or choose them. Each one goes into the text under its label.
           </DropZone>
           {files.files
             .filter((file) => file.digest && labels.current.has(file.digest))
@@ -190,14 +190,14 @@ function Asking({ target, resolved, id, startInput }: { target: string; resolved
             .filter(([digest]) => !files.files.some((file) => file.digest === digest))
             .map(([digest, label]) => (
               <p className="muted" key={digest}>
-                <code>{label}</code> is a file it was given.
+                <code>{label}</code> is a file from the earlier run.
               </p>
             ))}
-          <p className="muted">A field the function doesn't declare is dropped with a warning, shown on the run.</p>
+          <p className="muted">Fields the function doesn't take are dropped, with a warning on the run.</p>
         </>
       )}
       <details className="sect">
-        <summary>Models, lane and GPUs</summary>
+        <summary>Models, precision and GPUs</summary>
         <div className="stack">
           {entry?.models?.map((slot) => {
             const param = slot.path.split(".models.")[1] ?? slot.path
@@ -207,7 +207,7 @@ function Asking({ target, resolved, id, startInput }: { target: string; resolved
                 <input
                   className="field"
                   spellCheck={false}
-                  placeholder={slot.default ? shown(slot.default) : "the function's default"}
+                  placeholder={slot.default ? shown(slot.default) : "The function's default"}
                   value={modelTerms[param] ?? ""}
                   onChange={(event) => setModelTerms((now) => ({ ...now, [param]: event.target.value }))}
                 />
@@ -216,21 +216,21 @@ function Asking({ target, resolved, id, startInput }: { target: string; resolved
           })}
           <label>
             LoRAs
-            <textarea className="field area" rows={2} spellCheck={false} placeholder="[slot=]org/lora[,strength], one a line" value={loras} onChange={(event) => setLoras(event.target.value)} />
+            <textarea className="field area" rows={2} spellCheck={false} placeholder="[slot=]org/lora[,strength], one per line" value={loras} onChange={(event) => setLoras(event.target.value)} />
           </label>
           <label>
-            Lane
-            <input className="field" spellCheck={false} placeholder="the Hub's pick for the machine" value={lane} onChange={(event) => setLane(event.target.value)} />
+            Precision
+            <input className="field" spellCheck={false} placeholder="Best for the machine (the Hub picks)" value={lane} onChange={(event) => setLane(event.target.value)} />
           </label>
           <label>
             GPUs
-            <input className="field" type="number" min={1} placeholder="every GPU its slots support" value={gpus} onChange={(event) => setGpus(event.target.value)} />
+            <input className="field" type="number" min={1} placeholder="As many as it can use" value={gpus} onChange={(event) => setGpus(event.target.value)} />
           </label>
         </div>
       </details>
       {resolved.contract && (
         <details className="sect">
-          <summary>Its contract</summary>
+          <summary>Contract</summary>
           <pre className="yaml">{resolved.contract}</pre>
         </details>
       )}
@@ -242,7 +242,7 @@ function Asking({ target, resolved, id, startInput }: { target: string; resolved
         ask={(ask, key) => client.submit(id, ask, key)}
         onDone={done}
       />
-      {files.moving && <p className="muted">Waiting for its files to reach Calcifer.</p>}
+      {files.moving && <p className="muted">Waiting for the files to upload…</p>}
     </>
   )
 }
@@ -290,19 +290,17 @@ export function NewRun() {
     <DrawerFrame title={title} back={picked && !again ? undefined : to("runs")}>
       {picked && !again && (
         <button type="button" className="more topback" onClick={() => setPicked(null)}>
-          ← Another function
+          ← Pick another function
         </button>
       )}
-      <Failure error={askedError} lead={`Couldn't read run ${again}`} />
-      {again && asked && !asked.request && <p className="warn">This Calcifer has no record of what run {again} was asked.</p>}
-      {again && asked?.request && <p className="muted">From run {again}: its input, models and LoRAs. Not its lane, GPUs or attention kernel, which are for you to say below.</p>}
+      <Failure error={askedError} lead={`Couldn't load run ${again}`} />
+      {again && asked && !asked.request && <p className="warn">Cozy has no record of what run {again} was asked to do.</p>}
+      {again && asked?.request && <p className="muted">Copied from run {again}: its input, models and LoRAs. Its precision, GPUs and attention kernel aren't copied; set them below if you need to.</p>}
       {!picked && !again && <Picker onPick={setPicked} />}
       {local && picked && (
-        <>
-          <p className="muted">Local code runs from a terminal: it names a path on this computer.</p>
-        </>
+        <p className="muted">{picked} is a path on this computer, so it can only run from a terminal.</p>
       )}
-      <Failure error={error} lead={`Couldn't read ${picked}`} />
+      <Failure error={error} lead={`Couldn't load ${picked}`} />
       {resolved && !resolved.function && (resolved.functions?.length ?? 0) > 1 && (
         <ul className="rows choose">
           {resolved.functions?.map((choice) => (

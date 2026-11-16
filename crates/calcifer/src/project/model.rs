@@ -176,8 +176,8 @@ fn overlaid(row: &mut Row, key: &str, rendering: &BTreeMap<String, f64>, making:
         row.standing = RowStanding::Making;
         row.failure = None;
         row.status = match runs.as_slice() {
-            [run] => format!("making (run {key}-{run})"),
-            runs => format!("making (runs {})", runs.iter().map(|run| format!("{key}-{run}")).collect::<Vec<_>>().join(", ")),
+            [run] => format!("making (run {})", ::api::calcifer::project::run_label(key, *run)),
+            runs => format!("making (runs {})", runs.iter().map(|run| ::api::calcifer::project::run_label(key, *run)).collect::<Vec<_>>().join(", ")),
         };
     }
 }
