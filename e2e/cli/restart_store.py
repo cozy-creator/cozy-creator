@@ -181,7 +181,7 @@ def measure(args: argparse.Namespace) -> None:
 
 parser = argparse.ArgumentParser()
 sub = parser.add_subparsers(dest="verb", required=True)
-p = sub.add_parser("fill"); p.add_argument("db"); p.add_argument("outputs"); p.add_argument("--runs", type=int, default=40_000); p.add_argument("--machines", type=int, default=3_000); p.add_argument("--unsettled", type=int, default=50)
+p = sub.add_parser("fill"); p.add_argument("db"); p.add_argument("outputs"); p.add_argument("--runs", type=int, default=40_000); p.add_argument("--machines", type=int, default=3_000); p.add_argument("--unsettled", type=int, default=5)
 p = sub.add_parser("empty"); p.add_argument("db")
 p = sub.add_parser("measure"); p.add_argument("--holder", required=True); p.add_argument("--old-pid", type=int, required=True); p.add_argument("--project", required=True)
 p.add_argument("--log", required=True); p.add_argument("--run", required=True); p.add_argument("--timed", required=True); p.add_argument("--seconds", type=float, default=6); p.add_argument("--budget-ms", type=float, default=200)
