@@ -1248,7 +1248,7 @@ fn working(api: &Arc<Api>, root: &FsPath) -> Option<Work> {
     let Some(project) = projects.iter().find(|project| project.root == root) else {
         return if following { going("a client following a run", true) } else if submitting { waiting } else { None };
     };
-    if api.calcifer.writing_into(&project.id).is_some() { return going("a run saving its outputs", false); }
+    if api.calcifer.exporting_into(&project.id).is_some() { return going("a run saving its outputs", false); }
     if *project.walking.lock().expect("walking lock") { return going("a render", true); }
     if project.moving.try_lock().is_err() || project.cutting.try_lock().is_err() { return going("a move or cut", false); }
     let Ok(transition) = exclusive(root) else { return going("a reader holding the project", false) };
