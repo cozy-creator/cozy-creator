@@ -27,6 +27,18 @@ FLOOR_MBS=$(param floor_mb_s 50) FLOOR_AFTER=$(param floor_after_s 120)
 state() { cozy machine show "$1" --json 2>/dev/null | jq -r '.state // empty'; }
 . "$(dirname "${BASH_SOURCE[0]}")/../machines.sh"
 gone() { local s; s=$(state "$1"); { [ "$s" = ended ] || [ -z "$s" ]; } && ! listed "$1"; }
+# wheel_from <dir> <source>: a manylinux x86_64 wheel fetched into dir, its path printed. source: an https URL,
+# `artifact:<run id>/<name>` of a cozy-creator run (a dev-build's tensorfs-wheel-<sha>) or a cozy-runtime dev-build run id
+# (its cozy-runtime-<sha> carries the kernels a machine's Runtime must have: a pure wheel is `runtime_without_kernels`).
+wheel_from() {
+  mkdir -p "$1"
+  case $2 in
+    https://*) curl -fsSL --retry 5 -o "$1/${2##*/}" "$2" || return 1 ;;
+    artifact:*/*) local a=${2#artifact:}; gh run download "${a%%/*}" -R cozy-creator/cozy-creator -n "${a#*/}" -D "$1" >/dev/null 2>&1 || return 1 ;;
+    *) gh run download "$2" -R cozy-creator/cozy-runtime -p 'cozy-runtime-*' -D "$1" >/dev/null 2>&1 || return 1 ;;
+  esac
+  find "$1" -name '*manylinux*x86_64*.whl' | head -1
+}
 # made <name>: the checkpoint a step's upload or quantize made, as sha256:<hex>: its `checkpoint <org/name>@sha256:…` line
 # (a machine's own `checkpoint sha256:…` line names no model); cozy 0.24's quantize says `commit`.
 made() { awk '($1=="checkpoint" || $1=="commit") && $2 ~ /@sha256:/ {c=$2} END{sub(/.*@/, "", c); print c}' "$OUT/$1.txt"; }

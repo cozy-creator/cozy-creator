@@ -61,15 +61,7 @@ done
 jq -e --argjson n "$(jq -c 'map(.name)' <<<"$CELLS")" 'all(.[]; length == 2 and all(.[]; . as $x | $n | index($x)))' <<<"$COMPARE" >/dev/null ||
   fail "compare names cells that are not there"
 # Each update's wheels, fetched before renting so a missing one costs nothing.
-wheel() {
-  local d=$OUT/wheels/$1-$2; mkdir -p "$d"
-  case $3 in
-    https://*) curl -fsSL --retry 5 -o "$d/${3##*/}" "$3" || return 1 ;;
-    artifact:*/*) local a=${3#artifact:}; gh run download "${a%%/*}" -R cozy-creator/cozy-creator -n "${a#*/}" -D "$d" >/dev/null 2>&1 || return 1 ;;
-    *) gh run download "$3" -R cozy-creator/cozy-runtime -p 'cozy-runtime-*' -D "$d" >/dev/null 2>&1 || return 1 ;;
-  esac
-  find "$d" -name '*manylinux*x86_64*.whl' | head -1
-}
+wheel() { wheel_from "$OUT/wheels/$1-$2" "$3"; }
 declare -A UPDATE=()
 for k in "${names[@]}"; do
   w=()
