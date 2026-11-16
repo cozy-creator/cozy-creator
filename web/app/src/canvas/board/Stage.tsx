@@ -70,6 +70,8 @@ export function Stage(props: StageProps) {
   const live = useRef({ invalidate: () => {}, enable: () => {} })
   const [failed, setFailed] = useState<string | null>(null)
   const [lostGraphics, setLostGraphics] = useState(false)
+  // Bumped when a lost GPU context comes back: the canvas starts over on a new renderer (cl-1043).
+  const [generation, setGeneration] = useState(0)
   const [said, setSaid] = useState("")
   const [overlays, setOverlays] = useState<{ name: string; draft?: string; box: { x: number; y: number; w: number; under: number } }[]>([])
   const [cards, setCards] = useState<{ name: string; label: string; selected: boolean; cancel: boolean }[]>([])
@@ -80,7 +82,7 @@ export function Stage(props: StageProps) {
   useEffect(() => {
     const element = root.current
     if (!element) return
-    let stopped = false, lost = false
+    let stopped = false, lost = false, restart = false
     let renderer: Renderer | null = null, viewport: PixiViewport | null = null, scene: Scene | null = null
     let interaction: ReturnType<typeof createInteraction> | null = null
     let wakeTimer: ReturnType<typeof setTimeout> | undefined
@@ -217,7 +219,9 @@ export function Stage(props: StageProps) {
       made.canvas.className = "canvas-pixels canvas-pane"
       element.prepend(made.canvas)
       const contextLost = (event: Event) => { event.preventDefault(); lost = true; setLostGraphics(true); enable() }
-      const contextRestored = () => { lost = false; setLostGraphics(false); enable(); scene?.redrawAll(); invalidate() }
+      // A context given back holds none of what was drawn, and Pixi's own restore left some pictures black (cl-1043): the canvas starts over
+      // on a new renderer and context, from the board and the store, with no reload.
+      const contextRestored = () => { lost = false; restart = true; setLostGraphics(false); setGeneration((count) => count + 1) }
       made.canvas.addEventListener("webglcontextlost", contextLost)
       made.canvas.addEventListener("webglcontextrestored", contextRestored)
       stops.push(() => { made.canvas.removeEventListener("webglcontextlost", contextLost); made.canvas.removeEventListener("webglcontextrestored", contextRestored) })
@@ -364,7 +368,7 @@ export function Stage(props: StageProps) {
       // A project switch keeps the page's one renderer and context (its textures are already gone with the scene and media); a lock or a
       // sign-out loses the context whole, so nothing of a private project's pictures stays on the card.
       const locked = signedOut.get() || store.projectId === null || (project !== null && bridge.projectEpoch(project) !== projectEpoch)
-      if (renderer && chosen && !locked) parkRenderer(chosen)
+      if (renderer && chosen && !locked && !restart) parkRenderer(chosen)
       else {
         // Pixi's destroy loses the GL context itself; one already lost isn't lost again (WebKit logs that as an error).
         const gl = renderer && "gl" in renderer ? (renderer as unknown as { gl: WebGLRenderingContext; context: { extensions: { loseContext?: unknown } } }) : null
@@ -375,7 +379,7 @@ export function Stage(props: StageProps) {
       delete (element as HTMLDivElement & { canvasInspection?: unknown }).canvasInspection
       live.current = { invalidate: () => {}, enable: () => {} }
     }
-  }, [board, store, client, queries, projectEpoch, loggedOut])
+  }, [board, store, client, queries, projectEpoch, loggedOut, generation])
 
   return <div ref={root} className="canvas-root" tabIndex={0} role="region" aria-label="Project canvas" aria-describedby={helpId}>
     {props.children}
