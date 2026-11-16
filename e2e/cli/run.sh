@@ -569,6 +569,7 @@ case $SHARD in
     own_references
     lane_fit
     no_descriptions
+    choice_clamp
     orbit_angles
     old_runtime
     hostile_media
