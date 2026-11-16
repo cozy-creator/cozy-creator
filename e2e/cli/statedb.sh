@@ -4,10 +4,10 @@
 #                  browser session (cl-985)
 #   state_import   OLD=<dir>, an earlier Calcifer's files as its build wrote them: imported at the next start, then gone; its sessions
 #                  deleted unread
-#   state_restart  Calcifer restarted on 40,000 runs and 3,000 ended rentals, the first read of each page of state.db slow as on a busy
-#                  disk's cold cache (busy-disk.c), PyPI and the Hub 3 s late (slow_proxy.py): every route a client asks answers in
-#                  200 ms while it takes up what it left, and
-#                  none is said slow in health.log (cl-1010)
+#   state_restart  Calcifer restarted on 40,000 runs, 3,000 ended rentals and four 3,000-box projects (opened by nothing at the start),
+#                  the first read of each page of state.db slow as on a busy disk's cold cache (busy-disk.c), PyPI and the Hub 3 s
+#                  late (slow_proxy.py): every route a client asks answers in 200 ms while it takes up what it left, and none is
+#                  said slow in health.log, nor the start's purge (cl-1010)
 # Uses project.sh's `api` and projectdb.sh's `kill9`, `db_calcifer` and `calcifer_halt`.
 
 # state <query>: what state.db holds, read only, one JSON row a line.
@@ -171,6 +171,21 @@ local dropin=$HOME/.config/systemd/user/cozy-calcifer.service.d/cl1010-busy-disk
 mkdir -p "$S"
 cc -std=c11 -O2 -Wall -Wextra -Werror -shared -fPIC -o "$S/busy-disk.so" "$here/busy-disk.c" -ldl || { check "restart: busy-disk.c didn't build"; return; }
 cozy --json machine ls > /dev/null && db_calcifer && id=$(id_of "$RUN_PROJECT") && [ -n "$id" ] || { check "restart: no project to ask about"; return; }
+# Four projects of a real size (3,000 boxes each; Paul's largest project.db is 27 MB), with nothing deleted: a start opens none of them
+# (a start's purge opened every known project and loaded its document, 5 s on Paul's laptop, and their requests waited on it).
+local large=() big i
+for i in 1 2 3 4; do
+  big=$S/large-$i
+  cozy --json new --unencrypted "$big" > "$S/large-$i-new.json" 2>&1 || { check "restart: project $i: $(tail -c 300 "$S/large-$i-new.json")"; continue; }
+  python3 - "$big/nodes.yaml" 3000 "$i" <<'PY'
+import sys
+with open(sys.argv[1], "w") as out:
+    for n in range(int(sys.argv[2])):
+        out.write(f"note_{n}:\n  kind: text\n  text: Note {n} of project {sys.argv[3]}. The colossal blue whale rises through a storm, lit from below.\n")
+PY
+  in_project "$big" apply -f nodes.yaml > "$S/large-$i-apply.txt" 2>&1 || { check "restart: project $i's 3,000 boxes: $(tail -c 300 "$S/large-$i-apply.txt")"; continue; }
+  large+=("$(id_of "$big")")
+done
 # Its tools listed once, as a computer's page has: the list a restart answers from is kept.
 api -fsS -o /dev/null "http://$ADDR/v1/tools" || check "restart: GET /v1/tools before the restart failed"
 # A dev home, as Paul's laptop is: a packages checkout (`dev = true`, `[calcifer] packages`) whose first-party package a list reads
@@ -204,7 +219,7 @@ mkdir -p "${dropin%/*}" && printf '[Service]\nEnvironment=LD_PRELOAD=%s\nEnviron
   "$S/busy-disk.so" "$S/busy-disk.log" "$proxied" "$proxied" "$proxied" "$proxied" > "$dropin"
 systemctl --user daemon-reload && systemctl --user start cozy-calcifer || check "restart: systemctl --user start cozy-calcifer failed"
 python3 "$here/restart_store.py" measure --holder "$holder" --old-pid "$pid" --project "$id" --log "$HOME/.cozy/calcifer/health.log" \
-  --run "$(jq -r '.unsettled[0]' "$S/fill.json")" \
+  --run "$(jq -r '.unsettled[0]' "$S/fill.json")" --large "$(IFS=,; echo "${large[*]}")" \
   --timed "$S/timed.json" --seconds 6 --budget-ms 200 > "$S/latency.ndjson" 2>&1 \
   || check "restart: routes over 200 ms, or said slow, as Calcifer restarted on 40,000 runs: $(tail -n 1 "$S/latency.ndjson" | jq -c '{over, slow: (.slow_requests // [] | .[:3]), steps}' 2> /dev/null || tail -c 600 "$S/latency.ndjson")"
 cat "$S/latency.ndjson"
