@@ -205,7 +205,6 @@ impl Machines {
             }
             Err(e) => warn!("reading the machines: {e}"),
         }
-        me.prune_kept();
         me.resume_asks();
         me.spawn(me.clone().local_tasks());
         me.spawn(me.clone().place_runs());
@@ -705,7 +704,7 @@ impl Machines {
     }
 
     /// The newest `lines` whole lines (0: all) of a log the machine keeps.
-    /// A machine that cannot answer (ended, lost, unreachable) answers the copy Calcifer kept.
+    /// A machine that cannot answer (ended, lost, unreachable) answers its own lines Calcifer kept of its TensorD log.
     pub(crate) async fn logs(&self, text: &str, log: MachineLog, lines: u64) -> Result<Vec<u8>, Error> {
         let read = match self.linked(text) {
             Ok((row, link)) => link.read_log(log_name(log), lines).await.map_err(|e| log_refusal(&row.name, log, e)),
@@ -715,11 +714,21 @@ impl Machines {
             Err(error)
                 if matches!(
                     error.code.as_str(),
-                    "machine_ended" | "machine_unreachable" | "machine_unanswered"
+                    "machine_ended" | "machine_unreachable" | "machine_unanswered" | "machine_name_ended"
                 ) =>
             {
-                let row = self.named(text)?;
-                row.and_then(|row| self.kept_log(&row.name, log, lines)).ok_or(error)
+                let Some(row) = self.kept_named(text)? else { return Err(error) };
+                if log != MachineLog::Tensord {
+                    return Err(Error::new(
+                        Kind::NotFound,
+                        "machine_log_not_kept",
+                        format!("{} can't answer, and Calcifer keeps only its own lines of its TensorD log", row.name),
+                    )
+                    .next(format!("cozy machine logs {}", row.name)));
+                }
+                self.kept_log(&row.name, lines)
+                    .map(String::into_bytes)
+                    .ok_or_else(|| error.remedy("Calcifer kept none of its lines"))
             }
             read => read,
         }
@@ -734,13 +743,29 @@ impl Machines {
         lines: u64,
         after: Option<&str>,
     ) -> Result<crate::link::Live<v1::LogLines>, Error> {
-        let (row, link) = self.linked(text).map_err(|error| match self.named(text) {
-            Ok(Some(row)) if self.kept_log(&row.name, log, 1).is_some() => error
-                .remedy("without --follow, it prints the copy of the log Calcifer kept"),
+        let (row, link) = self.linked(text).map_err(|error| match self.kept_named(text) {
+            Ok(Some(row)) if log == MachineLog::Tensord && self.kept_log(&row.name, 1).is_some() => error
+                .remedy("without --follow, it prints its own lines Calcifer kept"),
             _ => error,
         })?;
         let lines = link.follow_log(log_name(log), lines, after).await;
         lines.map_err(|e| log_refusal(&row.name, log, e))
+    }
+
+    /// The machine whose kept lines `text` reads: as `named`, or by its name the one ended machine that had it when no live
+    /// one has (a rental id names it too; an added machine has none).
+    fn kept_named(&self, text: &str) -> Result<Option<MachineRow>, Error> {
+        match self.named(text) {
+            Err(error) if error.code == "machine_name_ended" => {
+                let mut ended = self.store().machines_named(text).map_err(internal)?;
+                ended.retain(|row| row.state == MachineState::Ended);
+                match ended.len() {
+                    1 => Ok(ended.pop()),
+                    _ => Err(error),
+                }
+            }
+            named => named,
+        }
     }
 
     pub(crate) fn row(&self, name: &str) -> Result<MachineRow, Error> {
@@ -988,15 +1013,7 @@ impl Machines {
             task.abort();
         }
         if let Some(endpoint) = endpoint {
-            let status = self.clone().follow_status(row.name.clone(), row.kind);
-            // Another client's rental is read live: its logs are its client's to keep.
-            let logs = self.ordered(row).then(|| self.clone().keep_logs(row.name.clone(), row.kind));
-            let task = self.spawn(async move {
-                match logs {
-                    Some(logs) => drop(tokio::join!(status, logs)),
-                    None => status.await,
-                }
-            });
+            let task = self.spawn(self.clone().follow_status(row.name.clone(), row.kind));
             watching.insert(row.name.clone(), (endpoint, task));
         }
     }
@@ -1119,6 +1136,9 @@ impl Machines {
     }
 
     fn observe(&self, name: &str, mut frame: v1::StatusFrame) {
+        if let Some(text) = frame.machine_log.take() {
+            self.keep_log(name, &text);
+        }
         self.calcifer.observe_warm(name, frame.warm.clone());
         self.calcifer.observe_downloads(name, &frame.activity);
         self.lists.observe(name, &frame);

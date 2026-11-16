@@ -2186,6 +2186,7 @@ impl Store {
         writer.execute_batch(crate::maintenance_source::TABLES)?;
         writer.execute_batch(crate::project::vault_operation::TABLES)?;
         writer.execute_batch(crate::state::TABLES)?;
+        writer.execute_batch(MACHINE_LOGS)?;
         index_legacy_owners(&mut writer)?;
         migrate_maintenance_asks(&mut writer)?;
         migrate_maintenance_runs(&mut writer)?;
@@ -2662,6 +2663,23 @@ impl Store {
         self.write(|tx| put_machine_in(tx, machine))
     }
 
+    /// Keeps `text` as the newest of the machine's own lines, in place of those kept before (cl-1012).
+    pub(crate) fn keep_machine_log(&self, machine: &str, text: &str) -> Result<()> {
+        self.write(|tx| {
+            tx.execute(
+                "INSERT INTO machine_logs (machine, text) SELECT name, ?2 FROM machines WHERE name = ?1
+                 ON CONFLICT (machine) DO UPDATE SET text = excluded.text",
+                params![machine, text],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// The machine's own lines kept, if any.
+    pub(crate) fn machine_log(&self, machine: &str) -> Result<Option<String>> {
+        self.read(|conn| Ok(conn.query_row("SELECT text FROM machine_logs WHERE machine = ?1", [machine], |r| r.get(0)).optional()?))
+    }
+
     pub(crate) fn machine(&self, name: &str) -> Result<Option<MachineRow>> {
         self.read(|conn| {
             conn.query_row(
@@ -2978,11 +2996,26 @@ fn output_row(r: &Row) -> rusqlite::Result<OutputRow> {
     })
 }
 
+/// The newest of each remote machine's own lines (`StatusFrame::machine_log`), so an ended one's still read (cl-1012). They go
+/// with the machine's row.
+const MACHINE_LOGS: &str = "
+    CREATE TABLE IF NOT EXISTS machine_logs (
+        machine TEXT PRIMARY KEY REFERENCES machines (name) ON DELETE CASCADE,
+        text TEXT NOT NULL
+    ) STRICT;";
+
 fn put_machine_in(tx: &Transaction, machine: &MachineRow) -> Result<()> {
     let (worker, address, pin) = match &machine.endpoint {
         Some(e) => (Some(&e.worker_id), Some(&e.address), Some(e.pin.to_vec())),
         None => (None, None, None),
     };
+    // A new machine under an ended one's name keeps none of its lines.
+    if machine.state != MachineState::Ended {
+        tx.execute(
+            "DELETE FROM machine_logs WHERE machine = ?1 AND EXISTS (SELECT 1 FROM machines WHERE name = ?1 AND state = 'ended')",
+            [&machine.name],
+        )?;
+    }
     tx.execute(
         "INSERT INTO machines (name, kind, hub, rental_id, worker_id, address, pin, key, state,
              served, reason, created_at)
@@ -3270,6 +3303,7 @@ fn move_machine(tx: &Transaction, from: &str, to: &str, alias: Option<&str>) -> 
     )?;
     tx.execute("UPDATE runs SET machine = ?2 WHERE machine = ?1", params![from, to])?;
     tx.execute("UPDATE asks SET machine = ?2 WHERE machine = ?1", params![from, to])?;
+    tx.execute("UPDATE machine_logs SET machine = ?2 WHERE machine = ?1", params![from, to])?;
     tx.execute("DELETE FROM machines WHERE name = ?1", [from])?;
     Ok(())
 }

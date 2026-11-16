@@ -139,12 +139,12 @@ impl ProviderSelf {
             asks += 1;
             let wait = match self.end().await {
                 Ok(()) => {
-                    tracing::info!("the provider accepted this pod's end (ask {asks}); asked again in {} s if the pod is still here", accepted.as_secs());
+                    tracing::info!(target: crate::config::MACHINE, "the provider accepted this pod's end (ask {asks}); asked again in {} s if the pod is still here", accepted.as_secs());
                     let next = (accepted * 2).min(MOST_ACCEPTED);
                     std::mem::replace(&mut accepted, next)
                 }
                 Err(error) => {
-                    tracing::error!("the provider did not end this pod (ask {asks}: {error}); asking again in {} s", refused.as_secs());
+                    tracing::error!(target: crate::config::MACHINE, "the provider did not end this pod (ask {asks}: {error}); asking again in {} s", refused.as_secs());
                     let next = (refused * 2).min(MOST_REFUSED);
                     std::mem::replace(&mut refused, next)
                 }

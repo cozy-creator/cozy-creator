@@ -33,6 +33,9 @@ struct Watching {
     changes: tokio::sync::watch::Receiver<u64>,
     last: Option<v1::StatusFrame>,
     looked: bool,
+    /// `machine.log` as last read, and its files' lengths and times then (cl-1012).
+    machine_log: Option<String>,
+    machine_log_seen: Option<LogStamp>,
 }
 
 /// The whole picture, sent again whenever it changes, until the caller leaves: read each `BUSY_LOOK` while something
@@ -54,6 +57,8 @@ pub(super) fn watch(
         changes: crate::activity::status_changes(),
         last: None,
         looked: false,
+        machine_log: None,
+        machine_log_seen: None,
     };
     futures_util::stream::unfold(watching, |mut watching| async move {
         loop {
@@ -69,10 +74,18 @@ pub(super) fn watch(
             watching.looked = true;
             // Seen before the read: a change while it reads is read again.
             watching.changes.borrow_and_update();
-            match look(&watching).await {
+            let looked = look(&watching).await;
+            let (logs, seen) = (watching.identity.logs.clone(), watching.machine_log_seen);
+            if let Ok((seen, read)) = tokio::task::spawn_blocking(move || machine_log(&logs, seen)).await {
+                watching.machine_log_seen = seen;
+                if let Some(read) = read {
+                    watching.machine_log = Some(read);
+                }
+            }
+            match looked.map(|next| v1::StatusFrame { machine_log: watching.machine_log.clone(), ..next }) {
                 Ok(next) if watching.last.as_ref().is_some_and(|last| !changed(last, &next)) => {}
                 Ok(next) => {
-                    // The queue and the times go again only when they changed: absent, they stand as last sent.
+                    // The queue, the times and the machine's log go again only when they changed: absent, they stand as last sent.
                     let mut sent = next.clone();
                     if let Some(last) = &watching.last {
                         if last.queue == next.queue {
@@ -80,6 +93,9 @@ pub(super) fn watch(
                         }
                         if last.times == next.times {
                             sent.times = None;
+                        }
+                        if last.machine_log == next.machine_log {
+                            sent.machine_log = None;
                         }
                     }
                     watching.last = Some(next);
@@ -89,6 +105,26 @@ pub(super) fn watch(
             }
         }
     })
+}
+
+/// `machine.log`'s and `machine.log.1`'s lengths and modification times.
+type LogStamp = [(u64, Option<std::time::SystemTime>); 2];
+
+/// The newest of the machine's own lines (`config::MACHINE`), read again only once its files changed since `seen`: a
+/// stat a look, nothing while it stays as it was.
+fn machine_log(dir: &std::path::Path, seen: Option<LogStamp>) -> (Option<LogStamp>, Option<String>) {
+    let stamp = |name: &str| {
+        std::fs::metadata(dir.join(name)).map_or((0, None), |meta| (meta.len(), meta.modified().ok()))
+    };
+    let now = [stamp("machine.log"), stamp("machine.log.1")];
+    if seen == Some(now) || now == [(0, None), (0, None)] {
+        return (Some(now), None);
+    }
+    let log = platform::tail::Log::rotated(dir.to_owned(), "machine.log");
+    match log.read(platform::tail::Start::Last(api::machine::MACHINE_LOG_LINES)) {
+        Ok(text) => (Some(now), Some(api::machine::log_tail(&text, 0, api::machine::MACHINE_LOG_BYTES).to_owned())),
+        Err(_) => (seen, None),
+    }
 }
 
 /// One read of the whole picture.

@@ -316,7 +316,7 @@ fn same_attestation(before: &[u8], after: &[u8], refresh_local_gpu: bool) -> io:
     let same_gpus = before.get("gpus") == after.get("gpus");
     // A rental's facts are served as measured: a GPU lost since costs that GPU, and Status says so.
     if !same_gpus && !refresh_local_gpu {
-        tracing::warn!("this machine's GPUs differ from what this boot attested");
+        tracing::warn!(target: crate::config::MACHINE, "this machine's GPUs differ from what this boot attested");
     }
     let different: Vec<_> = before.iter().filter_map(|(key, value)|
         (after.get(key) != Some(value) && *key != "gpus").then_some(*key)).collect();
