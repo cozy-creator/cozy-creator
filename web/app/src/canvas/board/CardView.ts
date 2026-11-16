@@ -9,9 +9,9 @@ import { ellipsis, Label, type LabelStyle, width, wrap } from "./text"
 export type Part = "body" | "title" | "delete" | "cancel" | "corner" | "untool"
 export interface Hit { name: string; part: Part }
 /** The X beside a box's tool, in screen pixels: its glyph, its hit area, and the gap after the tool's name. */
-const UNTOOL_GLYPH = 8, UNTOOL_HIT = 18, UNTOOL_GAP = 0
-/** What the tool's name leaves for its X, in canvas units: its hit area where the line is drawn farthest out (0.45). */
-const UNTOOL_ROOM = Math.ceil(UNTOOL_HIT / 0.45)
+const UNTOOL_GLYPH = 8, UNTOOL_HIT = 18, UNTOOL_GAP = 3
+/** What the tool's name leaves for its X, in canvas units: its gap and hit area where the line is drawn farthest out (0.45). */
+const UNTOOL_ROOM = Math.ceil((UNTOOL_GAP + UNTOOL_HIT) / 0.45)
 
 /** Every colour comes from the page's tokens (tokens.css), read once per theme. */
 export interface Palette {
