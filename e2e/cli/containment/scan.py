@@ -26,8 +26,6 @@ from common import Failure, require, sha
 # Windows files no process of the user's can read, each case named, with its pattern and why. no-traces lists every unreadable
 # path and, on Windows, fails on one these don't explain: an unreadable place is never where a trace may hide unnoticed (cl-984).
 WINDOWS_UNREADABLE: dict[str, tuple[str, str]] = {
-    "app execution aliases": (r"\\AppData\\Local\\Microsoft\\WindowsApps\\(?:[^\\]+\\)?[^\\]+\.exe$",
-        "reparse points Windows resolves only to launch a Store app; they hold no file data"),
     "registry hives": (r"\\AppData\\Local\\(?:Microsoft\\Windows\\UsrClass|Packages\\[^\\]+\\(?:Settings\\settings|SystemAppData\\Helium\\User(?:Classes)?))\.dat(?:\.LOG[12])?$",
         "hives the registry keeps loaded while the user is signed in; cozy writes no registry value but its Run key, in NTUSER.DAT"),
     "WinINet cache": (r"\\AppData\\Local\\Microsoft\\Windows\\(?:WebCache\\[^\\]+|WebCacheLock\.dat)$",
@@ -69,6 +67,8 @@ class Scanner:
         self.matches: set[str] = set()
         # Every path the last scan couldn't read: no-traces lists them (never part of `scan`'s result, which names no path).
         self.unreadable: list[str] = []
+        # Windows: empty files it couldn't open, so nothing in them to read (their names were scanned); listed too.
+        self.empty: list[str] = []
 
     def add(self, value: str | bytes) -> None:
         raw = value.encode() if isinstance(value, str) else value
@@ -209,7 +209,7 @@ class Scanner:
     def scan(self, roots: list[Path], excluded_roots: list[Path], receipt: Path, classes: dict[str, Path] | None = None,
              since_ns: int | None = None) -> dict[str, object]:
         """`since_ns`: only files written since then (a marker made after it can be in no older file)."""
-        self.counts.clear(); self.matches.clear(); self.unreadable.clear()
+        self.counts.clear(); self.matches.clear(); self.unreadable.clear(); self.empty.clear()
         inside = self.patterns()
         require(inside, "scan_markers_missing")
         outside = self.patterns(self.markers + self.identities)
@@ -276,9 +276,11 @@ class Scanner:
                     except OSError as error:
                         if not isinstance(error, PermissionError) and sys.platform != "win32":
                             raise
-                        # Windows: an empty file another process holds locked (Calcifer's own lock file) has nothing to read.
+                        # Windows: an empty file it can't open has nothing to read: Calcifer's own lock file, which Calcifer holds
+                        # locked, and Windows' app execution aliases, reparse points with no data.
                         if sys.platform == "win32" and metadata is not None and metadata.st_size == 0:
                             self.counts["empty_unopened"] += 1
+                            self.empty.append(str(path))
                             continue
                         self.counts["unreadable"] += 1
                         self.unreadable.append(str(path))
