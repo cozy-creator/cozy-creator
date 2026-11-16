@@ -143,22 +143,22 @@ def main() -> int:
             continue
         last_at = at
         for shown in look.get("shown") or []:
-            gpu = of(last, shown["index"])
+            seen = of(last, shown["index"])
             near = nearest(smi.get(shown["index"]) or [], at)
-            if gpu and near:
+            if seen and near:
                 clock = time.strftime("%H:%M:%S", time.gmtime(at / 1000))
-                table.append(f"| {clock} | {shown['index']} | {shown['busy']}% | {shown['memory']} | {gpu['busy_percent']}% |"
-                             f" {gpu['memory_used_bytes'] / 2**20:.0f} | {near[1]}% | {near[2] / 2**20:.0f} |")
+                table.append(f"| {clock} | {shown['index']} | {shown['busy']}% | {shown['memory']} | {seen['busy_percent']}% |"
+                             f" {seen['memory_used_bytes'] / 2**20:.0f} | {near[1]}% | {near[2] / 2**20:.0f} |")
     print("\n".join(table))
     # The drawer shows the reading it heard last.
     agree = total = 0
     for look in drawer:
         for shown in look.get("shown") or []:
-            gpu = of(look.get("last"), shown["index"])
-            if not gpu:
+            heard_last = of(look.get("last"), shown["index"])
+            if not heard_last:
                 continue
             total += 1
-            agree += shown["busy"] == gpu["busy_percent"] and (shown["memory"] or "").startswith(shown_bytes(gpu["memory_used_bytes"]))
+            agree += shown["busy"] == heard_last["busy_percent"] and (shown["memory"] or "").startswith(shown_bytes(heard_last["memory_used_bytes"]))
     if total == 0:
         fails.append("the drawer showed no GPU use")
     elif agree / total < SHARE:
