@@ -66,6 +66,10 @@ class Project {
   /** A box exactly named, as the page posts one: `{name, tool, kind, fields, at}`. A box with no tool needs `fields.text` or a `kind`. */
   add(box) { return this.api.post(this.at('/assets'), { tool: '', exact: true, ...box }); }
 
+  /** Its own appearance (cl-1097): `paper` or `dark` over everywhere's; null, as everywhere. A cell's theme is its project's, as
+   *  every cell on the job shares the Calcifer's own. */
+  look(theme) { return this.api.call('PUT', this.at('/appearance'), { appearance: theme ? { theme } : null }); }
+
   /** Bytes held in its own content store, as the page sends a file: their `sha256:`. */
   async upload(bytes) {
     const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
@@ -787,5 +791,10 @@ const TEXT_END = process.platform === 'darwin' ? 'Meta+ArrowDown' : 'Control+End
 /** A local fixture tool (e2e/cli/project/<file>/<function>), as a box or `cozy run` names it. */
 const fixtureTool = (path) => join(__dirname, '..', 'project', path);
 
-module.exports = { test, expect, canvasCard, canvasNames, canvasText, canvasLabel, canvasPoint, canvasVisible, selectedNames, hoverBox, screenshotPixels, box,
+/** Once `page` shows `theme` (`paper` or `dark`). */
+async function themed(page, theme) {
+  await expect.poll(() => page.evaluate(() => document.documentElement.dataset.theme ?? 'paper'), { message: `the page shows ${theme}` }).toBe(theme);
+}
+
+module.exports = { test, expect, themed, canvasCard, canvasNames, canvasText, canvasLabel, canvasPoint, canvasVisible, selectedNames, hoverBox, screenshotPixels, box,
   newCanvas, partPoint, titlePoint, renameField, trashPoint, cornerPoint, liveRatio, previewState, previewsPlaying, nameUnderPointer, canvasIdle, focus, middle, observeStill, openPoint, recordAddress, stays, zoomOf, fixtureTool, TEXT_END, TEXT_START, DARK_OPEN, MP4, photo, png, wav };
