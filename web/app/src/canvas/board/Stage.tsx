@@ -23,7 +23,7 @@ import { inspection } from "./inspect"
 import { createInteraction } from "./Interaction"
 import { Media } from "./Media"
 import { pictureBox, type RunContext } from "./presentation"
-import { type Chosen, takeRenderer } from "./renderer"
+import { type Chosen, parkRenderer, takeRenderer } from "./renderer"
 import { Scene } from "./Scene"
 import { forgetMeasurements, onFontsLoaded } from "./text"
 
@@ -100,6 +100,7 @@ export function Stage(props: StageProps) {
     live.current = { invalidate, enable }
     /** The renderer chosen and why, or why none started: what inspection reports. */
     let chosen: Chosen | null = null, refused = ""
+    const project = store.projectId
 
     // Run context for a card's progress line: its machine, what it waits on, an install for its tool (RunFace's inputs).
     const asked = new Set<number>()
@@ -332,9 +333,14 @@ export function Stage(props: StageProps) {
       scene?.destroy()
       media.destroy()
       stage.destroy({ children: true })
-      // Its GPU context goes with it: nothing of a closed or locked project's pictures stays on the card.
-      if (renderer && "gl" in renderer) (renderer as unknown as { gl: WebGLRenderingContext }).gl.getExtension("WEBGL_lose_context")?.loseContext()
-      renderer?.destroy({ removeView: true })
+      // A project switch keeps the page's one renderer and context (its textures are already gone with the scene and media); a lock or a
+      // sign-out loses the context whole, so nothing of a private project's pictures stays on the card.
+      const locked = signedOut.get() || store.projectId === null || (project !== null && bridge.projectEpoch(project) !== projectEpoch)
+      if (renderer && chosen && !locked) parkRenderer(chosen)
+      else {
+        if (renderer && "gl" in renderer) (renderer as unknown as { gl: WebGLRenderingContext }).gl.getExtension("WEBGL_lose_context")?.loseContext()
+        renderer?.destroy({ removeView: true })
+      }
       forgetMeasurements()
       delete (element as HTMLDivElement & { canvasInspection?: unknown }).canvasInspection
       live.current = { invalidate: () => {}, enable: () => {} }
