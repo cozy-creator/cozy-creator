@@ -626,7 +626,9 @@ vault_swapped() (
   cozy --json new "$S" --passphrase-file "$secrets/pass" --recovery-out "$secrets/recovery" > "$work/created.json" 2> "$work/created.err" \
     || fail "vault swapped: new encrypted project: $(tail -c 300 "$work/created.err")"
   in_project "$S" --json vault lock > "$work/locked.json" || fail "vault swapped: lock: $(head -c 300 "$work/locked.json")"
-  # Calcifer and its supervisor are nondumpable (#2858): their /proc links read as root only.
+  # Since cl-984 Calcifer only sets a zero core limit (`limit_own_cores`) and stays dumpable: its /proc links read without root, so
+  # the `sudo` on Calcifer's links here is left from #2858 and not needed. Only the vault supervisor is non-dumpable
+  # (`disable_project_parent_dumps` in project-mount's `supervise`): its `exe` link below reads as root only; its cmdline reads as anyone.
   pid=$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder") || fail "vault swapped: no Calcifer lock record"
   exe=$(sudo -n readlink "/proc/$pid/exe") || fail "vault swapped: Calcifer ($pid)'s program can't be read"
   [ -f "$exe" ] || fail "vault swapped: Calcifer ($pid) runs $exe, not a file"

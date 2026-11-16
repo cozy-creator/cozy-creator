@@ -316,7 +316,8 @@ drop_folder "$CLOSES"
 }
 # closes_heap: Calcifer's heap, MiB, as its status says.
 closes_heap() { local lock=$HOME/.cozy/calcifer/calcifer.lock.holder; curl -fsS -H "Authorization: Bearer $(jq -r .token "$lock")" "http://$(jq -r .address "$lock")/v1/status" | jq '.heap_bytes / 1048576 * 10 | round / 10'; }
-# closes_open <project>: Calcifer has its project.db open. Calcifer is nondumpable: its file descriptors read as root.
+# closes_open <project>: Calcifer has its project.db open. Calcifer stays dumpable since cl-984 (only a zero core limit), so its
+# descriptors read without root; the `sudo` is left from when it wasn't, and isn't needed.
 closes_open() { sudo -n find "/proc/$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder")/fd" -lname "$(realpath "$1")/project.db" 2> /dev/null | grep -q .; }
 # closes_shut <project>: it closes within 10 s.
 closes_shut() { local _; for _ in $(seq 50); do closes_open "$1" || return 0; sleep 0.2; done; return 1; }
