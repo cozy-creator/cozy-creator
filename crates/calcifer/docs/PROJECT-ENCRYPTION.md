@@ -98,7 +98,8 @@ refuse conversion rather than risk unrelated data.
 
 ## Platform and execution boundaries
 
-Linux/Windows use pinned bundled securefs. Linux encryption needs FUSE2 and glibc 2.34+; ordinary
+Linux/Windows use pinned bundled securefs. Linux encryption needs FUSE (`/dev/fuse` and `fusermount3` or `fusermount`);
+its securefs is static, musl and libfuse linked in. Ordinary
 CLI requirements remain unchanged. Windows needs WinFsp 2.1 and the Microsoft Visual C++ x64
 runtime; Windows 11 emulates the filesystem and ffmpeg/ffprobe helpers on ARM64.
 macOS uses built-in encrypted APFS images,

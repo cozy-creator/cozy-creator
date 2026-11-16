@@ -6,9 +6,22 @@
 const { defineConfig } = require('@playwright/test');
 const { tmpdir } = require('os');
 const { join } = require('path');
+const { chromeArgs } = require('./chrome');
 
 const out = join(process.env.OUT || tmpdir(), 'web');
-const chrome = { browserName: 'chromium', launchOptions: { executablePath: process.env.CHROME } };
+// A runner has no GPU, so each browser draws WebGL in software (chrome.js). The canvas asks for a context without a major performance
+// caveat (CanvasSurface.tsx); Firefox is told to give its software context without the caveat, as Chrome's does. The browser's setting,
+// not the page's: each cell's bars stand.
+const chrome = { browserName: 'chromium', launchOptions: { executablePath: process.env.CHROME, args: chromeArgs() } };
+// Headless Firefox makes no WebGL context on Linux; web.sh gives it a virtual display (FIREFOX_DISPLAY) and Mesa's software GL there.
+const firefox = {
+  browserName: 'firefox',
+  launchOptions: {
+    headless: !process.env.FIREFOX_DISPLAY,
+    env: { ...process.env, ...(process.env.FIREFOX_DISPLAY ? { DISPLAY: process.env.FIREFOX_DISPLAY } : {}), LIBGL_ALWAYS_SOFTWARE: '1' },
+    firefoxUserPrefs: { 'webgl.force-enabled': true, 'webgl.forbid-software': false, 'webgl.disable-fail-if-major-performance-caveat': true },
+  },
+};
 
 module.exports = defineConfig({
   testDir: __dirname,
@@ -32,7 +45,7 @@ module.exports = defineConfig({
   },
   projects: [
     { name: 'chrome', grepInvert: /@solo|@vault/, use: chrome },
-    { name: 'firefox', grep: /@engines/, use: { browserName: 'firefox' } },
+    { name: 'firefox', grep: /@engines/, use: firefox },
     { name: 'webkit', grep: /@engines/, use: { browserName: 'webkit' } },
     { name: 'vault', grep: /@vault/, use: chrome },
     { name: 'solo', grep: /@solo/, timeout: 300_000, use: chrome },

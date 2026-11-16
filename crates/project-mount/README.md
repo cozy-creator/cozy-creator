@@ -7,8 +7,11 @@ the user's passphrase, recovery secret or Hub credentials. Ordinary projects
 load no provider and require no driver.
 
 Linux and Windows use securefs 2.0.0 lite format. Their releases embed a pinned
-upstream executable and redistribution notices. Linux's dynamic provider needs
-glibc 2.34+ and FUSE2; Windows needs WinFsp 2.1 and the Microsoft Visual C++ x64
+upstream executable and redistribution notices. Linux's is upstream's static
+build (musl and libfuse 2.9.9 linked in), so it needs only `/dev/fuse` and
+`fusermount3` or `fusermount`; where only `fusermount3` exists, the provider runs
+with a private `fusermount` link to it (`<tools>/securefs/2.0.0/bin`) first on its
+PATH. Windows needs WinFsp 2.1 and the Microsoft Visual C++ x64
 runtime. The x64 helper runs under Windows11 emulation on ARM64. Windows read-only
 requests are explicitly refused because this provider does not enforce them.
 

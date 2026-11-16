@@ -190,7 +190,7 @@ impl Calcifer {
         Ok(())
     }
 
-    fn spawn_task(&self, task: impl Future<Output = ()> + Send + 'static) {
+    pub(super) fn spawn_task(&self, task: impl Future<Output = ()> + Send + 'static) {
         let mut tasks = lock(&self.tasks);
         while tasks.try_join_next().is_some() {}
         tasks.spawn(task);
