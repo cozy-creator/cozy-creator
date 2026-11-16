@@ -12,7 +12,7 @@ use std::{
 
 use crate::project::vault;
 mod hard_cut;
-pub(crate) use hard_cut::kept_path;
+pub(crate) use hard_cut::{hold, kept_path};
 use api::{
     calcifer::{Agreed, Call, Event, ItemStatus, Kind, Machine, MachineKind, MachineState, Memo, OutputItem, Reason, Run, Status, Warning},
     config::Origin,
