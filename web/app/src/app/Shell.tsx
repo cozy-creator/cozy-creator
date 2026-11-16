@@ -26,7 +26,7 @@ import { useConnection } from "./Connection"
 import { projectPath, rememberProject, useProjectId, useTo } from "./project"
 export { useProjectId, useTo } from "./project"
 
-/** A few tries in, it isn't a blip. Nothing restarts Calcifer on Windows, and `cozy open` does anywhere. */
+/** A few tries in, it isn't a blip. Nothing restarts Calcifer on Windows, and starting Cozy again does anywhere. */
 const SAYS_HOW = 5
 /** How long before an unlock's deadline its status is asked again. */
 const EXPIRY_ASK_MS = 2000
@@ -47,7 +47,7 @@ function Connectivity() {
           {health.attempt >= SAYS_HOW && (
             <>
               {" "}
-              · run <code>cozy open</code>
+              · start Cozy again
             </>
           )}
         </span>

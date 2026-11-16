@@ -1,11 +1,10 @@
 import { useQueryClient } from "@tanstack/react-query"
 import { useConnection } from "../../app/Connection"
 import type { Machine, MachineList } from "../../api/calcifer"
-import { Copyable } from "../../ui/Copyable"
 import { say } from "../../ui/notes"
 import { Confirm, Failure, useAsk } from "../common"
 import { usd } from "../format"
-import { called, handle, stableName } from "./words"
+import { called, stableName } from "./words"
 
 /** Puts what an ask answered into the list at once; the stream says the same a moment later. */
 function useKeepInList() {
@@ -96,7 +95,6 @@ export function End({ machine }: { machine: Machine }) {
         <div className="failure" role="alert">
           <span>{called(machine)} was not shut down: {machine.end_failed}</span>
           <span className="remedy">Nothing was ended, and it may still be billing. End it again to ask again.</span>
-          <Copyable text={`cozy machine end ${handle(machine)}`} />
         </div>
       )}
       <Failure error={ask.error} lead="Couldn't end it" />

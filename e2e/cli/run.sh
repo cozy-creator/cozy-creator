@@ -30,6 +30,7 @@ parse "$@"
 . "$(dirname "$0")/machineset.sh"
 . "$(dirname "$0")/rental.sh"
 . "$(dirname "$0")/fallback.sh"
+. "$(dirname "$0")/retry.sh"
 . "$(dirname "$0")/previews.sh"
 . "$(dirname "$0")/released.sh"
 . "$(dirname "$0")/installed.sh"
@@ -601,6 +602,7 @@ case $SHARD in
     local_idle
     machine_set
     fall_back
+    retry_elsewhere
     coming_machine
     slow_runs
     completions
@@ -742,6 +744,7 @@ case $SHARD in
     local_idle
     machine_set
     fall_back
+    retry_elsewhere
     db_deleted_gc
     db_purged
     db_closes
@@ -756,6 +759,8 @@ case $SHARD in
     agent_render
     logs
   " ;;
+  # A run a machine's end cut short, retried elsewhere from the CLI and the page's toast (cl-1085), alone.
+  projectdb-retry) parts="retry_elsewhere logs" ;;
   # Deleted boxes' files after the undo window, Undo after the purge (cl-919), and a project closed once nothing reads it (cl-823).
   projectdb-deleted) parts="db_deleted_gc logs" ;;
   projectdb-purged) parts="db_purged logs" ;;

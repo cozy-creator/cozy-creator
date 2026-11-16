@@ -2,6 +2,10 @@
 const STROKES = {
   menu: "M3 6h14M3 10h14M3 14h14",
   close: "M5.5 5.5l9 9M14.5 5.5l-9 9",
+  /** Copy, as everywhere: two sheets, one over the other. */
+  copy: "M7.5 7.5h8.5v8.5H7.5zM12.5 7.5V4H4v8.5h3.5",
+  /** Copied. */
+  check: "M4.5 10.5l3.5 3.5 7.5-8",
   /** What deletes or discards, which Undo brings back; ✕ only closes (Paul, 11-12). */
   trash: "M3.5 5.5h13M8 5.5V3.8h4v1.7M5.3 5.5l.8 11h7.8l.8-11M8.6 8.5v5.5M11.4 8.5v5.5",
   plus: "M10 4.5v11M4.5 10h11",

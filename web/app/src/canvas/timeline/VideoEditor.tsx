@@ -503,7 +503,7 @@ export function VideoEditor({ name }: { name: string }) {
       setSelected(null)
       armed.current = null
       commit(before.filter((_, n) => n !== index))
-      say(`Took ${gone.name ?? named(gone)} out of the cut`, undefined, { action: { label: "Undo", run: () => commit(before) }, ms: 8_000 })
+      say(`Took ${gone.name ?? named(gone)} out of the cut`, undefined, { action: { label: "Undo", run: () => commit(before) } })
     },
     [commit],
   )

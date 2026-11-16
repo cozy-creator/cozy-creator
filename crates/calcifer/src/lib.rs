@@ -1944,9 +1944,10 @@ impl Calcifer {
                         let left = match (run.pinned, run.wants.as_str()) {
                             (false, "any") => self.with_run_store(id.as_str(), |store| store.unplace(id.as_str())),
                             _ => self.with_run_store(id.as_str(), |store| store.fail(id.as_str(), Reason {
-                                code: "machine_released".into(),
-                                message: format!("{name} released itself before it took the run: {message}"),
-                                next: vec![format!("cozy run {} … --on new", run.target)],
+                                code: ::api::calcifer::MACHINE_LOST.into(),
+                                message: format!("{name} released itself before it took {}", self.run_name(&run)),
+                                detail: message.clone(),
+                                next: vec![format!("cozy run retry {}", self.run_name(&run))],
                                 ..Default::default()
                             })),
                         };

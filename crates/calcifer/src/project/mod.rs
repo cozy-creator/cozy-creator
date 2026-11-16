@@ -221,6 +221,7 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/runs/submit", post(crate::runs::submit_project))
         .route("/v1/projects/{id}/runs/{run}", get(crate::api::show))
         .route("/v1/projects/{id}/runs/{run}/cancel", post(crate::api::cancel))
+        .route("/v1/projects/{id}/runs/{run}/retry", post(retry))
         .route("/v1/projects/{id}/runs/{run}/events", get(crate::api::events))
         .route("/v1/projects/{id}/runs/{run}/outputs/{name}", get(crate::outputs::serve))
         .route("/v1/projects/{id}/runs/{run}/play", get(crate::play::play))
@@ -2463,8 +2464,13 @@ async fn runs(
     Path(id): Path<String>,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<(StatusCode, Json<Asked>), Refusal> {
-    let body = body?;
-    let mut asked: Runs = parse(&body)?;
+    let asked: Runs = parse(&body?)?;
+    Ok((StatusCode::ACCEPTED, Json(render(&api, &id, asked).await?)))
+}
+
+/// `asked` of project `id`: what `POST /v1/projects/{id}/runs` and a retry of a box's run (`retry`, cl-1085) add to its walk.
+async fn render(api: &Arc<Api>, id: &str, mut asked: Runs) -> Result<Asked, Refusal> {
+    let (api, id) = (api.clone(), id.to_owned());
     api::calcifer::machine_set(&asked.on).map_err(Refusal)?;
     if asked.on.iter().any(|on| matches!(on, On::New(_))) {
         let said = "a project's runs go to machines: rent one first, then name it with --on";
@@ -2750,7 +2756,44 @@ async fn runs(
     let board = project.jobs.board();
     drop(walking);
     let said = lines.into_inner();
-    Ok((StatusCode::ACCEPTED, Json(Asked { id, ask: begun, path: project.folder.dir.clone(), joined, added, skipped, queued, said, next: vec!["cozy status".into()], board })))
+    Ok(Asked { id, ask: begun, path: project.folder.dir.clone(), joined, added, skipped, queued, said, next: vec!["cozy status".into()], board })
+}
+
+/// `POST /v1/projects/{id}/runs/{run}/retry` (cl-1085): a run that ended without its result asked again, placed as a run naming no machine
+/// is (the project's machines, else where it finishes soonest), so never on one that ended. A box's take renders again, on its inputs and
+/// the seed it failed with (`tried`), answered as a render is; any other call is sent again with its own input and seed.
+async fn retry(
+    State(api): State<Arc<Api>>,
+    Path((id, run)): Path<(String, String)>,
+    crate::api::IdempotencyKey(key): crate::api::IdempotencyKey,
+) -> Result<Response, Refusal> {
+    let row = crate::api::find_scoped(&api, Some(&id), &run).await?;
+    let name = api.calcifer.run_name(&row);
+    if row.state != crate::store::State::Settled {
+        return Err(Refusal(Error::new(Kind::Conflict, "run_going", format!("{name} hasn't ended: nothing to retry")).next(format!("cozy run watch {name}"))));
+    }
+    if row.status == Some(RunStatus::Completed) {
+        return Err(Refusal(Error::new(Kind::Conflict, "run_completed", format!("{name} completed: nothing to retry"))));
+    }
+    let project = api.projects.get(&api, &id)?;
+    let made = project.folder.lock().map_err(Refusal)?.assets.values().find(|held| held.failed.as_ref().and_then(|failed| failed.run) == Some(row.number)).map(|held| held.name.clone());
+    if let Some(made) = made {
+        let asked = Runs { names: vec![made], n: 1, on: vec![], hub: String::new(), approve: false, missing: false, outdated: false, pickup: None, takes: vec![] };
+        return Ok((StatusCode::ACCEPTED, Json(render(&api, &id, asked).await?)).into_response());
+    }
+    if row.kind != RunKind::Call {
+        return Err(Refusal(Error::new(Kind::Usage, "retry_call_only", format!("{name} is no call of a function: nothing to retry"))));
+    }
+    let (Some(hub), Some(asked)) = (row.hub.as_ref(), crate::runs::asked(&row)) else {
+        let said = format!("{name} ran local code, which goes from its folder");
+        return Err(Refusal(Error::new(Kind::Usage, "retry_local_code", said).next(format!("cozy run {} …", row.target))));
+    };
+    let ask = api::calcifer::RunRequest { target: asked.target, input: Some(asked.input), hub: hub.to_string(), project: Some(project.id.clone()), ..Default::default() };
+    vault::project_reply(&api, Some(&id), async {
+        let submitted = crate::runs::request(&api, &key, ask).await.map_err(Refusal)?;
+        let status = if submitted.replay { StatusCode::OK } else { StatusCode::ACCEPTED };
+        Ok((status, Json(submitted)))
+    }).await
 }
 
 /// A run by its number, as its record says now.
@@ -4906,7 +4949,7 @@ impl Walk {
             missed.names.insert(name.to_owned());
         }
         if error.code != CANCELED {
-            let failed = Failed { inputs, error: error.clone() };
+            let failed = Failed { inputs, error: error.clone(), run };
             let kept = self.folder().update_lock(|lock| lock.asset_mut(name, kind).failed = Some(failed.clone()));
             if let Err(error) = kept {
                 warn!("{name}: {error}");
@@ -5592,15 +5635,22 @@ impl Walk {
                 self.deleted(pending.job_of(key), &name);
                 return Ok(None);
             }
-            if let (Some(machine), Some(reason), RunStatus::Failed) = (&run.machine, &run.reason, run.status) {
+            // Its machine shut down under it (cl-1085): said as that, which Retry renders again elsewhere. Not the machine's fault.
+            let lost = run.status == RunStatus::Failed && run.reason.as_ref().is_some_and(|reason| reason.code == api::calcifer::MACHINE_LOST);
+            if let (Some(machine), Some(reason), RunStatus::Failed, false) = (&run.machine, &run.reason, run.status, lost) {
                 self.fault(machine, &reason.code, &reason.message)?;
             }
             let status = format!("{:?}", run.status).to_lowercase();
             let said = match &run.reason {
+                Some(reason) if lost => format!("{name}: {}", reason.message),
                 Some(reason) => format!("{name}: {status}: {}", reason.message),
                 None => format!("{name}: {status}"),
             };
-            let code = if run.status == RunStatus::Canceled { CANCELED } else { "version_failed" };
+            let code = match run.status {
+                RunStatus::Canceled => CANCELED,
+                _ if lost => api::calcifer::MACHINE_LOST,
+                _ => "version_failed",
+            };
             let next = run.reason.iter().flat_map(|reason| reason.next.iter().cloned()).chain([format!("cozy run watch {}", run.number)]);
             return Err(next.fold(Error::new(Kind::Unavailable, code, said), Error::next));
         }

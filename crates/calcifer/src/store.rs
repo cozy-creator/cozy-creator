@@ -1857,13 +1857,15 @@ macro_rules! journal_methods {
                     )?;
                     vec![lifecycle(tx, &id)?]
                 } else {
+                    // Said plainly, its cause kept in `detail`; asked again elsewhere by `cozy run retry` or the page's Retry (cl-1085).
+                    let run = run_name(tx, &row);
                     let message = match row.state {
-                        State::Accepted if reason == "released_by_pod" => format!("{machine} accepted the run, but its result never reached Calcifer, and {machine} released itself after 15 idle minutes: the result is gone"),
-                        State::Accepted => format!("its machine {machine} ended mid-run, and the run was not retried: {reason}"),
-                        _ => format!("its machine {machine} ended before it accepted the run: {reason}"),
+                        State::Accepted if reason == "released_by_pod" => format!("{machine} accepted {run}, but its result never reached Calcifer, and {machine} released itself after 15 idle minutes: the result is gone"),
+                        State::Accepted => format!("{machine} shut down, so {run} stopped"),
+                        _ => format!("{machine} shut down before it took {run}"),
                     };
-                    let next = vec![format!("cozy run {} … --on new", row.target)];
-                    end(tx, &id, Status::Failed, Some(Reason { code: "machine_lost".into(), message, next, ..Default::default() }))?
+                    let reason = Reason { code: api::calcifer::MACHINE_LOST.into(), message, detail: format!("{machine} ended: {reason}"), next: vec![format!("cozy run retry {run}")], ..Default::default() };
+                    end(tx, &id, Status::Failed, Some(reason))?
                 };
                 events.extend(ended.into_iter().map(|event| (row.id.clone(), event)));
             }

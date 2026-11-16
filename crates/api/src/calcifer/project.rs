@@ -169,6 +169,14 @@ pub struct Asked {
     pub board: Board,
 }
 
+/// `POST /v1/projects/{id}/runs/{run}/retry` (cl-1085): a box's take rendered again, answered as its render is, or another run asked again.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Retried {
+    Render(Box<Asked>),
+    Run(Box<crate::calcifer::Submitted>),
+}
+
 /// One thing an ask queued, and the names ahead of it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]

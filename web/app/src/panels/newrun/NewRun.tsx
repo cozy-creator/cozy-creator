@@ -5,7 +5,6 @@ import { useConnection } from "../../app/Connection"
 import { useProjectId, useTo } from "../../app/Shell"
 import type { RunRequest, Submitted, Target } from "../../api/calcifer"
 import type { TargetInterface, TargetRequest } from "../../types"
-import { Copyable } from "../../ui/Copyable"
 import { say } from "../../ui/notes"
 import { Failure } from "../common"
 import { DrawerFrame } from "../Drawer"
@@ -149,7 +148,7 @@ function Asking({ target, resolved, id, startInput }: { target: string; resolved
       {switchNote && <p className="warn">{switchNote}</p>}
       {mode === "form" && (
         <>
-          <RunForm fields={fields} values={values} files={files} target={target} onChange={(name, value) => setValues((now) => {
+          <RunForm fields={fields} values={values} files={files} onChange={(name, value) => setValues((now) => {
             const next = { ...now }
             if (value === undefined) delete next[name]
             else next[name] = value
@@ -301,7 +300,6 @@ export function NewRun() {
       {local && picked && (
         <>
           <p className="muted">Local code runs from a terminal: it names a path on this computer.</p>
-          <Copyable text={`cozy run ${picked}`} />
         </>
       )}
       <Failure error={error} lead={`Couldn't read ${picked}`} />

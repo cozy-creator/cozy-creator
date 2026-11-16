@@ -1105,8 +1105,7 @@ code {
 .focus-viewport > .run-face.above .face-state b {
   flex: 0 1 auto;
 }
-.focus-viewport > .run-face.above .face-cancel,
-.focus-card .run-face .copy-error {
+.focus-viewport > .run-face.above .face-cancel {
   min-height: 32px;
   padding: 0 12px;
   text-shadow: none;
@@ -2544,107 +2543,14 @@ video.preview.on {
   word-break: break-all;
 }
 
-/* Lines the page says */
-/* Bottom left, beside the tools and over the zoom's row, short of an open drawer where there's room: on no other panel. */
-/* A note is read, and only its buttons take the pointer: a drag or a click goes through it to what's under it. */
-.notes {
-  position: fixed;
-  left: var(--beside-tools);
-  bottom: calc(16px * var(--ui) + var(--zoom-h));
-  width: min(560px, calc(100vw - var(--beside-tools) - 8px), max(320px, calc(100vw - var(--beside-tools) - var(--drawn) - 24px)));
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  z-index: 60;
-  pointer-events: none;
-}
-.note button,
-.note code,
-.note .line {
-  pointer-events: auto;
-}
 /* An error is text to select and copy (Paul, 11-12): selecting it drags, opens and dismisses nothing. */
-.error-text,
-.note .line {
+.error-text {
   user-select: text;
   -webkit-user-select: text;
   cursor: text;
 }
 .run-face .error-text {
   pointer-events: auto;
-}
-.copy-error {
-  flex: none;
-  padding: 0 calc(0.6em);
-  border: 1px solid var(--line2);
-  border-radius: var(--round);
-  background: var(--field);
-  color: var(--ink);
-  font: inherit;
-  font-size: 0.9em;
-  line-height: 1.6;
-  pointer-events: auto;
-  cursor: pointer;
-}
-.note {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 10px;
-  background: var(--float);
-  border: 1px solid var(--line2);
-  border-radius: var(--round2);
-  box-shadow: 0 8px 24px var(--shadow);
-  font-size: var(--body);
-  animation: open-up 140ms ease-out;
-}
-.note .line {
-  flex: 1;
-  min-width: 0;
-}
-/* Its × top right, big enough to hit; an error's words take their row whole, with Copy and what to run under them. */
-.note > .iconb {
-  width: 28px;
-  height: 28px;
-}
-.note > .iconb .icon {
-  width: 16px;
-  height: 16px;
-}
-.note .copy-error {
-  min-height: 28px;
-}
-.note:has(> .copy-error, > .copyable) {
-  align-items: flex-start;
-}
-.note:has(> .copy-error, > .copyable) > .line {
-  flex-basis: calc(100% - 40px);
-  padding-top: 3px;
-}
-.note:has(> .copy-error, > .copyable) > .iconb {
-  order: 1;
-}
-.note:has(> .copy-error, > .copyable) > .copy-error,
-.note:has(> .copy-error, > .copyable) > .note-act {
-  order: 3;
-}
-/* What a finished render made (cl-937): its take, small, before its words. */
-.note-picture {
-  flex: none;
-  width: 48px;
-  height: 48px;
-  border-radius: var(--round);
-  background: var(--well);
-  object-fit: cover;
-}
-.note .remedy {
-  flex-basis: 100%;
-  color: var(--mute);
-  order: 2;
-}
-.note .copyable {
-  order: 3;
 }
 
 /* Panels */
@@ -4439,10 +4345,6 @@ input[type="checkbox"] {
   height: 26px;
   font-size: var(--body);
 }
-.note-act {
-  flex: none;
-}
-
 /* Alive, and brief. Only what arrives moves, on the compositor, and coming back on screen isn't arriving. */
 .card.landing {
   animation: land 260ms cubic-bezier(0.2, 0.9, 0.3, 1);

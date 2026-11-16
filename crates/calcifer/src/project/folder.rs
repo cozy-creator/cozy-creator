@@ -392,6 +392,9 @@ pub(crate) struct Failed {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inputs: Option<String>,
     pub error: Error,
+    /// The run it was, by its number: what `cozy run retry` names to render the box again (cl-1085).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<u64>,
 }
 
 /// The seed last sent for `inputs`.

@@ -3,10 +3,8 @@ import { type ReactNode, useCallback, useLayoutEffect, useRef, useState } from "
 import { ApiError } from "../api/client"
 import { statusQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
-import { Copyable } from "../ui/Copyable"
 
-/** A refusal as Calcifer said it: its message, its remedy, and `next` as text to copy. */
-/** With `plain`, only what went wrong: no command, where someone is signing in here and may have no terminal to hand. */
+/** A refusal as Calcifer said it: its message and its remedy, never a command (Paul, 11-16). With `plain`, only what went wrong. */
 export function Failure({ error, lead, plain }: { error: unknown; lead?: string; plain?: boolean }) {
   if (!error) return null
   const body = error instanceof ApiError ? error.body : undefined
@@ -15,7 +13,6 @@ export function Failure({ error, lead, plain }: { error: unknown; lead?: string;
     <div className="failure" role="alert">
       <span>{lead ? `${lead}: ${message}` : message}</span>
       {!plain && body?.remedy && <span className="remedy">{body.remedy}</span>}
-      {!plain && body?.next?.map((command) => <Copyable key={command} text={command} />)}
     </div>
   )
 }

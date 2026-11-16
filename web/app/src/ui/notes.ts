@@ -2,15 +2,14 @@ import { ApiError } from "../api/client"
 import { signal } from "./signal"
 import { bodyText, errorText } from "./CopyError"
 
-/** A line the page says: a file it couldn't take, a move that didn't land. `next` holds commands, shown as text to copy. */
+/** A line the page says: a file it couldn't take, a move that didn't land. What it offers is a button, never a command to run. */
 export interface Note {
   id: number
   message: string
   remedy?: string
-  next?: string[]
   /** What it offers, for as long as it's up. */
   action?: { label: string; run: () => void }
-  /** An error's whole text, to copy and paste (code, commands): every error the page says has it. */
+  /** An error's whole text, to copy and paste: every error the page says has it. */
   copy?: string
   /** A small picture of what it's about: a take's thumbnail, by its path on Calcifer (cl-937). */
   picture?: string
@@ -22,18 +21,18 @@ export const held = new Set<number>()
 export const notes = signal<Note[]>([])
 let last = 0
 
-const SAID_MS = 5_000
-const FAILED_MS = 12_000
+/** Every note goes by itself (Paul, 11-16): after this long, or `OFFERED_MS` with something to press. */
+const SAID_MS = 6_000
+const OFFERED_MS = 10_000
 
-/** `stays`: up until it's dismissed, as a run's failure is (cl-921: Paul saw them flash past); else gone after `ms`. */
-export function say(message: string, error?: unknown, offer?: { action?: NonNullable<Note["action"]>; ms?: number; picture?: string; stays?: boolean }): number {
+export function say(message: string, error?: unknown, offer?: { action?: NonNullable<Note["action"]>; picture?: string }): number {
   const body = error instanceof ApiError ? error.body : undefined
   const reason = error instanceof Error ? error.message : undefined
   const text = reason && reason !== message ? `${message}: ${reason}` : message
   const id = ++last
   const copy = error === undefined ? undefined : body ? bodyText({ ...body, message: text }) : errorText({ message: text })
-  notes.set([...notes.get().slice(-7), { id, message: text, remedy: body?.remedy ?? undefined, next: body?.next, action: offer?.action, copy, picture: offer?.picture }])
-  if (!offer?.stays) expire(id, offer?.ms ?? (error ? FAILED_MS : SAID_MS))
+  notes.set([...notes.get().slice(-7), { id, message: text, remedy: body?.remedy ?? undefined, action: offer?.action, copy, picture: offer?.picture }])
+  expire(id, offer?.action ? OFFERED_MS : SAID_MS)
   return id
 }
 
@@ -48,5 +47,6 @@ function expire(id: number, ms: number) {
 }
 
 export function dismiss(id: number) {
+  held.delete(id)
   notes.set(notes.get().filter((note) => note.id !== id))
 }
