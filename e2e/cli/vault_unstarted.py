@@ -3,7 +3,8 @@
 privacy promise").
 
 A fresh synthetic encrypted project (its machine holds nothing of it, so a lock needs no answer from it), unlocked with a 30 s
-maximum. The local machine's service is stopped (SIGSTOP) and a run is asked of it: its machine never begins it. The vault locks at its
+maximum. The local machine's service is stopped (SIGSTOP) and a published tool's run is asked of it (no local code, so asking
+needs no answer from the machine): its machine never begins it. The vault locks at its
 maximum all the same, while the machine is still stopped, and the run fails `vault_locked`, never begun. On the RC the run held the
 vault open until its machine came back and ran it. The machine always goes on at the end.
 """
@@ -20,27 +21,12 @@ import time
 from typing import cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from vault_work import cli, run_of, start, state, unlock  # noqa: E402
+from vault_work import cli, run_of, state, unlock  # noqa: E402
 
 MAXIMUM = 30
-BOUND = 30
-SLEEPER = '''# /// script
-# requires-python = ">=3.12"
-# dependencies = ["cozy-runtime>=0.43.1", "msgspec>=0.19"]
-# ///
-import time
-import msgspec
-from cozy_runtime.author import App, Outputs
-app = App()
-class Request(msgspec.Struct, forbid_unknown_fields=True):
-    seconds: int
-class Answer(msgspec.Struct):
-    slept: int
-@app.entrypoint(accelerator=False)
-def vault_unstarted_sleep(payload: Request, out: Outputs) -> Answer:
-    time.sleep(payload.seconds)
-    return Answer(payload.seconds)
-'''
+BOUND = 45
+# Long enough never to lock it first: Calcifer's diagnostics then say what holds its idle clock, every 10 s.
+IDLE = 600
 
 
 def services() -> list[int]:
@@ -72,18 +58,17 @@ def main() -> None:
 
     if state(args) != "locked":
         cli(args, "lock-before", "vault", "lock")
-    view = unlock(args, "unlock", 0, MAXIMUM)
+    view = unlock(args, "unlock", IDLE, MAXIMUM)
     unlocked = time.monotonic()
-    script = view / "vault-unstarted" / "sleeper.py"
-    script.parent.mkdir(exist_ok=True)
-    script.write_text(SLEEPER)
     assert not (view / ".vault-machine").exists(), "the machine already holds some of this fresh project"
     stopped = services()
     for pid in stopped:
         os.kill(pid, signal.SIGSTOP)
     locked_s: float | None = None
     try:
-        process, stdout = start(args, "unstarted", script, 120)
+        stdout = args.out / "unstarted.ndjson"
+        process = subprocess.Popen([str(args.cli), "--json", "run", "minimax-h3-tools/echo", "text=vault unstarted", "--on", "local"],
+                                   cwd=args.project, stdout=stdout.open("wb"), stderr=(args.out / "unstarted.stderr").open("wb"))
         while time.monotonic() - unlocked < MAXIMUM + BOUND:
             if state(args) == "locked":
                 locked_s = round(time.monotonic() - unlocked, 1)
