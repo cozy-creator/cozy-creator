@@ -198,6 +198,13 @@ fn digest(key: &str) -> String {
     hex::encode(Sha256::digest(key))
 }
 
+
+/// A folder as the index keys it: its components, so `/a/b/` and `/a/b` are one folder to its string compares (cl-1090: a project
+/// registered with a trailing slash kept its locked handle's row beside it, and its handle named nothing).
+fn folder(path: &Path) -> String {
+    path.components().collect::<PathBuf>().to_string_lossy().into_owned()
+}
+
 impl Store {
     pub(crate) fn known_project(&self, id: &str) -> Result<Option<KnownProject>> {
         self.read(|conn| Ok(conn.query_row(&format!("{KNOWN} WHERE id = ?1"), [id], known).optional()?))
@@ -258,13 +265,14 @@ impl Store {
 
     /// `id`, called `name`, in `path`, opened at `used_at_ms` (none: when it was last, or now if it's new here); whether it was walking stands.
     pub(crate) fn project_opened(&self, id: &str, _name: &str, path: &Path, _used_at_ms: Option<i64>, preferred: Option<&str>) -> Result<String> {
+        let path = folder(path);
         // Already so, as at nearly every open: read, the writer untouched (cl-1010: each open wrote it, and waited on whatever held the writer).
         let kept = self.read(|conn| {
             let kept = conn.query_row(
                 "SELECT code FROM projects WHERE id = ?1 AND path = ?2 AND code <> ''
                    AND NOT EXISTS (SELECT 1 FROM projects WHERE path = ?2 AND id <> ?1)
                    AND NOT EXISTS (SELECT 1 FROM projects_gone WHERE id = ?1 OR path = ?2)",
-                params![id, path.to_string_lossy()],
+                params![id, path],
                 |row| row.get::<_, String>(0),
             );
             Ok(kept.optional()?)
@@ -276,11 +284,11 @@ impl Store {
             // What it retires leaves no page behind (cl-984): a locked project's handle row among them.
             tx.pragma_update(None, "secure_delete", "ON")?;
             // The handle it had while locked names it still, until its next lock (cl-1090): a page that opened it from the list goes on.
-            tx.execute("INSERT OR IGNORE INTO project_handles (handle, path) SELECT id, path FROM projects WHERE path = ?1 AND id LIKE 'locked-%'", [path.to_string_lossy()])?;
-            tx.execute("DELETE FROM projects WHERE path = ?2 AND id <> ?1", params![id, path.to_string_lossy()])?;
-            tx.execute("DELETE FROM projects_gone WHERE id = ?1 OR path = ?2", params![id, path.to_string_lossy()])?;
+            tx.execute("INSERT OR IGNORE INTO project_handles (handle, path) SELECT id, path FROM projects WHERE path = ?1 AND id LIKE 'locked-%'", [&path])?;
+            tx.execute("DELETE FROM projects WHERE path = ?2 AND id <> ?1", params![id, path])?;
+            tx.execute("DELETE FROM projects_gone WHERE id = ?1 OR path = ?2", params![id, path])?;
             let code = project_code(tx, id, preferred, crate::project::code::generate)?;
-            tx.execute("INSERT INTO projects (id, path, code) VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET path = excluded.path, code = excluded.code", params![id, path.to_string_lossy(), code])?;
+            tx.execute("INSERT INTO projects (id, path, code) VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET path = excluded.path, code = excluded.code", params![id, path, code])?;
             // A handle whose folder no longer holds a project here (it moved, its folder went, it never locked again) goes.
             tx.execute("DELETE FROM project_handles WHERE path NOT IN (SELECT path FROM projects)", [])?;
             Ok(code)
@@ -382,15 +390,16 @@ impl Store {
         let mut bytes = [0u8; 16];
         getrandom::fill(&mut bytes).expect("the OS gives random bytes");
         let handle = format!("locked-{}", hex::encode(bytes));
+        let path = folder(path);
         self.write(|tx| {
             tx.pragma_update(None, "secure_delete", "ON")?;
-            tx.execute("DELETE FROM projects WHERE id = ?1 OR path = ?2", params![id, path.to_string_lossy()])?;
-            tx.execute("DELETE FROM projects_gone WHERE id = ?1 OR path = ?2", params![id, path.to_string_lossy()])?;
+            tx.execute("DELETE FROM projects WHERE id = ?1 OR path = ?2", params![id, path])?;
+            tx.execute("DELETE FROM projects_gone WHERE id = ?1 OR path = ?2", params![id, path])?;
             // Its keys too (cl-987): its project.db keeps them, its next open registers them again, and its KEY-N is unknown here meanwhile.
             tx.execute("DELETE FROM project_keys WHERE id = ?1", [id])?;
             // The handles of its last lock go: each lock's is new.
-            tx.execute("DELETE FROM project_handles WHERE path = ?1", [path.to_string_lossy()])?;
-            tx.execute("INSERT INTO projects (id, path, code) VALUES (?1, ?2, '')", params![handle, path.to_string_lossy()])?;
+            tx.execute("DELETE FROM project_handles WHERE path = ?1", [&path])?;
+            tx.execute("INSERT INTO projects (id, path, code) VALUES (?1, ?2, '')", params![handle, path])?;
             Ok(())
         })?;
         self.empty_wal()
