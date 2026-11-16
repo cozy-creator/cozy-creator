@@ -531,6 +531,7 @@ WEB_SOLO=(
   opens
   open
   account-rent
+  machine-tabs
   offline
 )
 # macOS and Windows (the nightly): the `@engines` cells, WebKit's too on a Mac, layout, and what the old native cells durable, see and undo

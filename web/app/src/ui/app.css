@@ -4397,12 +4397,9 @@ input[type="checkbox"] {
   font-weight: var(--w-title);
 }
 
-/* Each machine, top right: what it's doing, its name, and how many things. */
-/* Every machine shows: past its width the chips wrap to another row. */
+/* Each machine, top right: what it's doing, its name, and how many things. As many as fit, the rest behind "N more", then + (MachineTabs). */
 .mtabs {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
   align-items: stretch;
   gap: calc(2px * var(--ui));
   min-width: 0;
