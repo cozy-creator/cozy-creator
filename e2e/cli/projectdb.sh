@@ -11,10 +11,12 @@
 #   db_purged       Undo past the 3-hour purge brings each box back where it was without its files, saying so
 #   db_closes       a project closes once no call, stream or render reads it; Calcifer's heap comes back; a reopen is as quick
 #   db_remote_custody  old runs an ended rental made import as the project's own, and the project takes new work (cl-1003)
+#   db_numbered     a project's runs numbered 46550.. open as 1..n, each number kept of them moved; one that can't stays as it was (cl-1075)
+#   db_keys         a run's KEY-N names only its own project: lab2 is LAB2, lab3_2 LAB32, and one that held LAB2 is keyed again (cl-1075)
 # Uses project.sh's `api`, `status`, `held` and `sha`.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # project.db's schema (db.rs VERSION): what a project this cozy opens holds, and what its copy before a migration is named after.
-SCHEMA=6
+SCHEMA=7
 
 # sql <project> <query>: what project.db holds, read only, one JSON row a line.
 sql() {
@@ -1119,7 +1121,8 @@ echo "migrate: 0.24.0's project read here as it read there: $(jq -sc 'map({(.nam
 # Paul's projects are verified fully migrated before the 0.27 hard cut by these (cl-984): a project's `cozy status` says its legacy
 # history, imported and pending, and `cozy doctor` says the old project runs Calcifer's store still holds, by folders here and gone.
 # A 0.24.0 store's runs: 3 landing in a project here, 2 in a folder that is gone; this cozy's first start fences them (v7 -> v8),
-# and the project's open imports its 3.
+# and the project's open imports its 3. They're numbered as the one store numbered Paul's (46550..); imported, they're the project's
+# 1, 2 and 3 in the order made, and its next run is 4 (cl-1075, Paul 11-16: "When I start a new project, the run counter should start at 1").
 db_legacy() {
 step "legacy history: cozy status and cozy doctor count what is imported and what is left"
 local D=$OUT/legacy now=$OUT/cozy-now old P G pid
@@ -1137,7 +1140,7 @@ path, here, gone = sys.argv[1:4]
 db = sqlite3.connect(path, isolation_level=None)
 assert db.execute("PRAGMA user_version").fetchone()[0] == 7, "not a 0.24 store"
 done = json.dumps({"status": "succeeded", "result": {}, "outputs": [], "execution_ms": 1000, "measurements": {"observations": []}})
-first = (db.execute("SELECT max(number) FROM runs").fetchone()[0] or 0) + 1
+first = max((db.execute("SELECT max(number) FROM runs").fetchone()[0] or 0) + 1, 46550)
 for i, root in enumerate([here, here, here, gone, gone]):
     db.execute("INSERT INTO runs (id, number, idempotency_key, digest, hub, kind, target, machine, pinned, spec, out_dir, state, status, outcome, created_at, settled_at) "
                "VALUES (?, ?, ?, 'sha256:00', 'http://127.0.0.1:1', 'call', 'legacy/runs', NULL, 0, X'7B7D', ?, 'settled', 'completed', CAST(? AS BLOB), ?, ?)",
@@ -1157,8 +1160,113 @@ J '.legacy_history == "3 runs imported, 0 pending"' "$OUT/legacy-status.json" ||
 cozy --json doctor > "$OUT/legacy-doctor-after.json" 2> /dev/null || true
 J --arg gone "$G" '.legacy == {existing: [], gone: [{path: $gone, runs: 2}], unreadable: 0}' "$OUT/legacy-doctor-after.json" \
   || check "legacy: doctor after the open: $(jq -c .legacy "$OUT/legacy-doctor-after.json" 2> /dev/null)"
-echo "legacy: $(jq -r .legacy_history "$OUT/legacy-status.json"); store after: $(jq -c .legacy "$OUT/legacy-doctor-after.json")"
+# cl-1075: its old runs are its own 1, 2 and 3 in the order made, by name from any folder, and its next run is 4.
+local key i
+key=$(jq -r '.project.key // empty' "$OUT/legacy-status.json")
+for i in 0 1 2; do
+  (cd "$D" && cozy --json run watch "$key-$((i + 1))" --once) > "$OUT/legacy-named-$i.json" 2>&1 || true
+  J --arg id "run-legacy$(printf %020d "$i")" '.id == $id' "$OUT/legacy-named-$i.json" \
+    || check "legacy: $key-$((i + 1)) isn't its old run $i (cl-1075): $(tail -c 300 "$OUT/legacy-named-$i.json")"
+done
+in_project "$P" --json run minimax-h3-tools/echo "text=after its old runs" > "$OUT/legacy-next.ndjson" 2> "$OUT/legacy-next.err" \
+  || check "legacy: a run after its old ones: $(tail -c 300 "$OUT/legacy-next.ndjson") $(tail -c 300 "$OUT/legacy-next.err")"
+in_project "$P" --json run ls --limit 0 > "$OUT/legacy-runs.json" 2>&1 || true
+J --arg key "$key" '[.runs[].name] | sort == ([1, 2, 3, 4] | map("\($key)-\(.)"))' "$OUT/legacy-runs.json" \
+  || check "legacy: its runs are $(jq -c '[.runs[]?.name]' "$OUT/legacy-runs.json"), not $key-1 to $key-4 (cl-1075)"
+echo "legacy: $(jq -r .legacy_history "$OUT/legacy-status.json"); runs $(jq -c '[.runs[]?.name]' "$OUT/legacy-runs.json"); store after: $(jq -c .legacy "$OUT/legacy-doctor-after.json")"
 in_cozy "$now" || check "legacy: this cozy back on its own store"
+}
+
+# db_numbered (cl-1075). Paul, 11-16: "why are all of our runs starting at like run number 47,000? … When I start a new project, the
+# run counter should start at 1." A project an old import left numbered as Calcifer's one store numbered its runs (46550.., as his
+# lab3_2) opens numbered 1..n in the order made, and every number project.db keeps of them moves with them: a take's (versions), a
+# `cozy run`'s files (lock_runs, run_files), the walk's (pending, runs, landing) and a failed take's (lock_assets); the answers it kept
+# for retries (request_keys) go, and it is kept as it was beside it once. Its first run made is KEY-1 from any folder. One whose numbers
+# don't hold (a take naming one run by its number and another by its id) opens as it was, on 6, and Calcifer says why, once.
+db_numbered() {
+step "run numbers: a project's runs numbered 46550.. open as 1..n with each number kept of them (cl-1075)"
+local D=$OUT/numbered N B pid key was p
+N=$D/numbered B=$D/unheld
+mkdir -p "$D"
+for p in "$N" "$B"; do
+  cozy --json new --unencrypted "$p" > "$p.new.json" 2>&1 || { check "numbered: cozy new $p: $(tail -c 300 "$p.new.json")"; return; }
+done
+pid=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder") && term_calcifer "$pid" || return
+python3 "$here/numbered.py" fixture "$N/project.db" "$(sql1 "$N" "SELECT value FROM meta WHERE key = 'id'")" \
+  && python3 "$here/numbered.py" fixture "$B/project.db" "$(sql1 "$B" "SELECT value FROM meta WHERE key = 'id'")" bad \
+  || { check "numbered: its fixtures"; return; }
+was=$(python3 "$here/numbered.py" read "$B/project.db") || { check "numbered: read the one that can't move"; return; }
+in_project "$N" --json status > "$OUT/numbered-status.json" 2> "$OUT/numbered-status.err" \
+  || { check "numbered: it doesn't open: $(tail -c 300 "$OUT/numbered-status.err")"; return; }
+db_calcifer
+python3 "$here/numbered.py" moved "$N/project.db" > "$OUT/numbered-moved.json" \
+  || check "numbered: its numbers didn't move as made: $(head -c 800 "$OUT/numbered-moved.json")"
+[ -f "$N/project.db.pre-schema$SCHEMA" ] || check "numbered: no copy of it as it was beside it"
+key=$(jq -r '.project.key // empty' "$OUT/numbered-status.json")
+for p in 1 2 3 4; do
+  (cd "$D" && cozy --json run watch "$key-$p" --once) > "$OUT/numbered-$p.json" 2>&1 || true
+  J --arg id "run-numbered$(printf %018d "$p")" --arg name "$key-$p" '.id == $id and .name == $name' "$OUT/numbered-$p.json" \
+    || check "numbered: $key-$p isn't run $p made: $(tail -c 300 "$OUT/numbered-$p.json")"
+done
+# The one that can't move opens, twice, as it was; Calcifer says why once.
+for p in 1 2; do
+  in_project "$B" --json status > "$OUT/numbered-unheld.json" 2>&1 || check "numbered: one that can't move doesn't open ($p): $(tail -c 300 "$OUT/numbered-unheld.json")"
+done
+python3 "$here/numbered.py" kept "$B/project.db" "$was" > "$OUT/numbered-kept.json" || check "numbered: one that can't move changed: $(head -c 800 "$OUT/numbered-kept.json")"
+[ "$(grep -ac 'runs_not_renumbered' "$HOME/.cozy/calcifer/health.log")" = 1 ] && grep -a 'runs_not_renumbered' "$HOME/.cozy/calcifer/health.log" | grep -q 'versions' \
+  || check "numbered: Calcifer didn't say once why its numbers stayed: $(grep -a 'runs_not_renumbered' "$HOME/.cozy/calcifer/health.log" | tail -c 600)"
+echo "numbered: $key-1 is $(jq -r .id "$OUT/numbered-1.json"); kept: $(grep -a 'runs_not_renumbered' "$HOME/.cozy/calcifer/health.log" | tail -1 | head -c 300)"
+}
+
+# db_keys (cl-1075): a run's KEY-N names only its own project. A key keeps its name's digits (lab2 is LAB2, lab3_2 LAB32, where they
+# were LAB and LAB2), and is never another folder's name's own key, a locked one's too. As Paul's lab3_2 held LAB2 while his lab2 was
+# locked (coordinator, 11-16: kamitsure's run named LAB2-47844 was lab3_2's), a project holding another folder's name's key is keyed
+# again once, by its own, and nothing names it by the one it had. Each project's runs are its own 1, 2, …
+db_keys() {
+step "project keys: a run's KEY-N names only its own project (cl-1075)"
+local D=$OUT/keyed-1075 a b ida idb pid p n
+a=$D/lab2 b=$D/lab3_2
+mkdir -p "$D"
+cozy --json new --unencrypted "$a" > "$D/a.json" 2>&1 && cozy --json new --unencrypted "$b" > "$D/b.json" 2>&1 \
+  || { check "keys: cozy new: $(tail -c 300 "$D/a.json") $(tail -c 300 "$D/b.json")"; return; }
+J '.key == "LAB2"' "$D/a.json" || check "keys: lab2's key is $(jq -r .key "$D/a.json"), not LAB2"
+J '.key == "LAB32"' "$D/b.json" || check "keys: lab3_2's key is $(jq -r .key "$D/b.json"), not LAB32"
+n=0
+for p in "$a" "$a" "$b"; do
+  n=$((n + 1))
+  in_project "$p" --json run minimax-h3-tools/echo "text=keys $n" > "$D/run-$n.ndjson" 2> "$D/run-$n.err" \
+    || check "keys: run $n: $(tail -c 300 "$D/run-$n.ndjson") $(tail -c 300 "$D/run-$n.err")"
+done
+in_project "$a" --json run ls --limit 0 > "$D/a-runs.json" 2>&1; in_project "$b" --json run ls --limit 0 > "$D/b-runs.json" 2>&1
+J '[.runs[].name] | sort == ["LAB2-1", "LAB2-2"]' "$D/a-runs.json" || check "keys: lab2's runs are $(jq -c '[.runs[]?.name]' "$D/a-runs.json"), not LAB2-1 and LAB2-2"
+J '[.runs[].name] == ["LAB32-1"]' "$D/b-runs.json" || check "keys: lab3_2's runs are $(jq -c '[.runs[]?.name]' "$D/b-runs.json"), not LAB32-1"
+local first_a first_b
+first_a=$(jq -r 'first(.runs[]? | select(.name == "LAB2-1") | .id) // empty' "$D/a-runs.json") first_b=$(jq -r 'first(.runs[]? | .id) // empty' "$D/b-runs.json")
+# As Paul's were: lab2 locked, so its key in no index, and lab3_2 holding LAB2, its project.db of schema 6.
+ida=$(sql1 "$a" "SELECT value FROM meta WHERE key = 'id'") idb=$(sql1 "$b" "SELECT value FROM meta WHERE key = 'id'")
+pid=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder") && term_calcifer "$pid" || return
+python3 - "$HOME/.cozy/calcifer/state.db" "$b/project.db" "$ida" "$idb" <<'PY' || { check "keys: Paul's state"; return; }
+import sqlite3, sys
+store, project, a, b = sys.argv[1:5]
+db = sqlite3.connect(store, isolation_level=None)
+db.executescript("BEGIN; DELETE FROM project_keys WHERE id IN ('%s', '%s'); INSERT INTO project_keys (key, id, current) VALUES ('LAB2', '%s', 1); COMMIT;" % (a, b, b))
+db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+db = sqlite3.connect(project, isolation_level=None)
+db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+db.executescript("BEGIN; DELETE FROM project_keys; INSERT INTO project_keys (key, ord) VALUES ('LAB2', 1); PRAGMA user_version = 6; COMMIT;")
+db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+PY
+in_project "$b" --json key > "$D/b-key.json" 2>&1 || true
+J '.key == "LAB32" and ((.former // []) == [])' "$D/b-key.json" || check "keys: lab3_2 that held LAB2 is $(tail -c 300 "$D/b-key.json"), not LAB32 alone"
+in_project "$a" --json key > "$D/a-key.json" 2>&1 || true
+J '.key == "LAB2"' "$D/a-key.json" || check "keys: lab2 unlocked is $(tail -c 300 "$D/a-key.json"), not LAB2"
+db_calcifer
+for p in LAB2-1 LAB32-1; do
+  (cd "$D" && cozy --json run watch "$p" --once) > "$D/$p.json" 2>&1 || true
+done
+J --arg id "$first_a" '.id == $id and .name == "LAB2-1"' "$D/LAB2-1.json" || check "keys: LAB2-1 isn't lab2's first run ($first_a): $(tail -c 300 "$D/LAB2-1.json")"
+J --arg id "$first_b" '.id == $id and .name == "LAB32-1"' "$D/LAB32-1.json" || check "keys: LAB32-1 isn't lab3_2's first run ($first_b): $(tail -c 300 "$D/LAB32-1.json")"
+echo "keys: lab2 $(jq -r .key "$D/a-key.json"), lab3_2 $(jq -r .key "$D/b-key.json")"
 }
 
 # db_remote_custody (cl-1003): a project's old runs an ended rental made import as its own, and it takes new work. On rc/0.26.0 Paul's
