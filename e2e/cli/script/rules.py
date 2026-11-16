@@ -5,13 +5,15 @@
 """The cli suite's rule holders (cl-1103): `pick` has two models, each needed by a rule over its request, as Qwen Image 2's two
 prompt enhancers are (one with pictures, one without), and reads the one its request needs. `route` loads no model and calls `left`
 or `right` by rule, as H3's `generate` calls one segment function or the other. `stray` has `left`'s and `right`'s models under
-the same rules and reads the one its rule rules out: a rule wrong for its request."""
+the same rules and reads the one its rule rules out: a rule wrong for its request. `hinted` has `pick`'s models and says mid-run
+which one it will read against its rule (`ctx.need`), holds, then reads it."""
 
 import asyncio
+import time
 
 import msgspec
 
-from cozy_runtime.author import App, Loader, Model, Telemetry, call
+from cozy_runtime.author import App, Context, Loader, Model, Telemetry, call
 
 app = App()
 
@@ -31,6 +33,12 @@ class Ask(msgspec.Struct, kw_only=True):
 
 class Said(msgspec.Struct):
     used: str
+
+
+class Read(msgspec.Struct):
+    used: str
+    #: How long its read of the model took.
+    read_ms: int
 
 
 _WORDS = "size(request.words) > 0"
@@ -70,6 +78,22 @@ def stray(payload: Ask, named: Extra, other: Extra, tel: Telemetry) -> Said:
     with tel.stage("reading it"):
         _ = (other if payload.words else named).graph
     return Said(used="e2e/rules-right" if payload.words else "e2e/rules-left")
+
+
+@app.entrypoint(
+    accelerator=False,
+    defaults={"worded": "e2e/rules-worded@0.1.0", "plain": "e2e/rules-plain@0.1.0"},
+    needs={"worded": _WORDS, "plain": f"!({_WORDS})"},
+)
+def hinted(ctx: Context, payload: Ask, worded: Extra, plain: Extra, tel: Telemetry) -> Read:
+    """Says it will read the model its rules say the request doesn't need, holds `seconds` while it comes, then reads it."""
+    ctx.need("plain" if payload.words else "worded")
+    with tel.stage("holding"):
+        time.sleep(payload.seconds)
+    began = time.time()
+    with tel.stage("reading it"):
+        _ = (plain if payload.words else worded).graph
+    return Read(used="e2e/rules-plain" if payload.words else "e2e/rules-worded", read_ms=int((time.time() - began) * 1000))
 
 
 @app.entrypoint(accelerator=False, needs={"left": _WORDS, "right": f"!({_WORDS})"})

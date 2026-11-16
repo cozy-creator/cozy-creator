@@ -294,7 +294,8 @@ while read -r why; do check "ondemand-needs: $why"; done < "$OUT/ondemand-needs.
 # one with pictures, one without), and `route` loads none and calls one of two functions by rule (as H3's `generate` calls one
 # segment function or the other). On this cold machine a request with words brings the model its rule names as its call's needs
 # (`measurements.weights`), none as an extra, and never the other; `route` brings what the function it calls reads, never the
-# other's; `stray` reads the model its rule rules out, which then comes at once and is said on its run; and badrule.py, whose rule
+# other's; `stray` reads the model its rule rules out, which then comes at once and is said on its run; `hinted` says mid-run
+# that it will read one (`ctx.need`), over a 10 MB/s link, and finds it here when it reads it 8 s later; and badrule.py, whose rule
 # reads a field its request doesn't have, is refused when its code is read.
 ondemand_rules() {
 [ "$RUNNER_OS" = Linux ] || return 0
@@ -325,6 +326,15 @@ gone=$(rules_bytes e2e/rules-right)
 echo "ondemand-rules: a read its rule ruled out: $gone bytes of e2e/rules-right came; $(rules_warned rules-stray)"
 [ "${gone:-0}" -ge 33554432 ] || check "ondemand-rules: e2e/rules-right, which the call read against its rule, didn't come: $gone bytes"
 [[ "$(rules_warned rules-stray)" == *other* ]] || check "ondemand-rules: a read of the model its rule ruled out wasn't said on its run: $(jq -c '.warnings' "$OUT/rules-stray.json" 2> /dev/null)"
+# `pick` left e2e/rules-plain's header alone here: `hinted` asks for the rest as it starts (3.4 s of this link) and reads it after 8.
+slow_store ondemand-rules 80mbit || return 0
+cell rules-need "$here/script/rules.py/hinted" 'words:=["a"]' seconds:=8 || :
+sudo tc qdisc del dev lo root || check "ondemand-rules: the store's link wasn't restored"
+gone=$(rules_bytes e2e/rules-plain)
+weights=$(jq -r '[.. | objects | select(has("read_ms")) | .read_ms] | first // empty' "$OUT/rules-need.json" 2> /dev/null)
+echo "ondemand-rules: a model asked for mid-run: $gone bytes of e2e/rules-plain came, and its read took ${weights:-?} ms"
+[ "${gone:-0}" -ge 33554432 ] || check "ondemand-rules: e2e/rules-plain, which the call asked for mid-run, didn't come: $gone bytes"
+[ -n "$weights" ] && [ "$weights" -lt 1500 ] || check "ondemand-rules: its read of the model it asked for 8 s earlier took ${weights:-no time said} ms: it wasn't fetched meanwhile"
 ALLOW=needs_rule_invalid cell rules-bad "$here/script/badrule.py/typo" || :
 [ -s "$OUT/rules-bad.refused" ] || check "ondemand-rules: a rule that reads a field its request doesn't have wasn't refused: $(tail -c 300 "$OUT/rules-bad.err" 2> /dev/null)"
 }
