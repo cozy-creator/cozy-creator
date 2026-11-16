@@ -522,6 +522,10 @@ pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
         digest,
         length: document.len() as u64,
     });
+    let needs = crate::floor::requirement_of(&project_dir);
+    if let Some(needs) = &needs {
+        NEEDS.lock().expect("needs lock").insert(digest.to_string(), needs.clone());
+    }
     Ok(Source {
         package: manifest.package,
         source: v1::LocalSource {
@@ -529,8 +533,17 @@ pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
         },
         inputs,
         environment,
-        needs: crate::floor::requirement_of(&project_dir),
+        needs,
     })
+}
+
+/// Each local source's `cozy-runtime` requirement by its manifest, as `source` read it while Calcifer runs: what a machine that
+/// refused its install for its Runtime moves for (cl-1069, `Machines::refloored`).
+static NEEDS: LazyLock<Mutex<HashMap<String, pep440_rs::VersionSpecifiers>>> = LazyLock::new(Mutex::default);
+
+/// The `cozy-runtime` requirement of the local source `manifest` names, as `source` read it.
+pub(crate) fn needs_of(manifest: &str) -> Option<pep440_rs::VersionSpecifiers> {
+    NEEDS.lock().expect("needs lock").get(manifest).cloned()
 }
 
 /// What a lock of `code`'s copy for `hub` leaves beside the copy (`locked`): `lock`, the lock it made or nothing when the tree's
