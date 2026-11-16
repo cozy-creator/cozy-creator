@@ -102,7 +102,8 @@ mod imp {
                 Ok(pressure) => pressure,
                 Err(error) => return tracing::warn!("host pages: idle tiers look again only when asked: {error}"),
             };
-            let watching = std::thread::Builder::new().name("tensorfs-host-pressure".into()).spawn(move || {
+            // `~`: a watcher; TensorD's hang watch reads its wakes as no sign of this process's work (cl-977).
+            let watching = std::thread::Builder::new().name("~host-pressure".into()).spawn(move || {
                 while pressure.wait().is_ok() {
                     for tier in self.tiers() {
                         tier.relook();

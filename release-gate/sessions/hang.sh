@@ -44,13 +44,14 @@ cd "$FIX" || fail "no fixtures"
 
 # stuck, followed in the background: its executor's threads are read over SSH while it hangs.
 (step stuck run ./hang/stuck --on "$NAME" seed:=$RANDOM) & SP=$!
-T0='' S=''
-for _ in $(seq 600); do
-  S=$(runno stuck)
-  [ -n "$S" ] && [ "$(cozy run watch "$S" --once --json < /dev/null 2> /dev/null | jq -r '.progress.completed // 0')" -ge 2 ] && { T0=$(date +%s); break; }
+# The hang: an executor runs the step sampler (`~host-stalls`, from its first step on), and the call stops in its second.
+T0=''
+for _ in $(seq 180); do
+  sh 'grep -lx "~host-stalls" /proc/[0-9]*/task/*/comm 2> /dev/null | head -1' | grep -q comm && { T0=$(date +%s); break; }
   kill -0 "$SP" 2> /dev/null || break
-  sleep 2
+  sleep 5
 done
+S=$(runno stuck)
 [ -n "$T0" ] || T0=$(date +%s)
 sleep 10
 # What TensorD may read of it (Yama, its capabilities, each thread's syscall as root here), and which threads tick: each thread's
