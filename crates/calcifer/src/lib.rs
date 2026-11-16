@@ -108,6 +108,8 @@ pub(crate) struct Calcifer {
     events: broadcast::Sender<(RunId, Event)>,
     live: Mutex<HashMap<RunId, Live>>,
     drivers: Mutex<HashMap<RunId, Arc<Notify>>>,
+    /// Each driver whose task is going, kept by the task itself (`Driving`): what a run's writes into its project count of it.
+    driving: Mutex<HashSet<RunId>>,
     /// Runs told to cancel whose request is still to be kept: a project's edit held its writer when it asked.
     canceling: Mutex<HashSet<String>>,
     /// Queued runs told to cancel on their machine to go to another that finishes them sooner (cl-1073), by id: where each goes.
@@ -280,6 +282,19 @@ impl From<StoreError> for Stop {
     }
 }
 
+/// A driver's task going (cl-1060), gone with the task however it ends: an entry in `drivers` with no task behind it (a drive asked
+/// after close) or one whose task ended counts for nothing.
+struct Driving {
+    calcifer: Arc<Calcifer>,
+    id: RunId,
+}
+
+impl Drop for Driving {
+    fn drop(&mut self) {
+        lock(&self.calcifer.driving).remove(&self.id);
+    }
+}
+
 impl Calcifer {
     /// Opens Calcifer's home (`~/.cozy/calcifer`) and resumes every run it owes. `outputs` holds
     /// each package's folder, where a run's outputs land unless it names its own directory.
@@ -304,6 +319,7 @@ impl Calcifer {
             events: broadcast::channel(4096).0,
             live: Mutex::default(),
             drivers: Mutex::default(),
+            driving: Mutex::default(),
             canceling: Mutex::default(),
             moving: Mutex::default(),
             machines: Mutex::default(),
@@ -421,6 +437,7 @@ impl Calcifer {
         let mut tasks = lock(&self.tasks);
         while tasks.try_join_next().is_some() {}
         tasks.spawn(async move {
+            let _driving = me.driving(&id);
             let scope=match me.run_scope_when_ready(id.as_str(),&wake).await { Ok(scope)=>scope,Err(error)=>{ me.ended_here(&id,Err(error)); me.driver_done(&id); return; } };
             if let Ok(Some(row))=me.with_run_store(id.as_str(),|store|store.run(id.as_str())) {
                 if row.state==State::Settled {me.driver_done(&id);return;}
@@ -563,6 +580,50 @@ impl Calcifer {
 
     /// A project run that settled and owes no output stops holding its project open: its route goes, and the project closes
     /// once nothing else holds it (a later run, request or view opens it again).
+    /// A run of `project` that still writes into it (cl-1060): its driver going (settling, its log and journal rows, what stays on
+    /// its machine) or its exporter moving its outputs, latents among them, into the project (`export_moving`). The project's vault
+    /// clock and every lock wait for it; an exporter that stalls stops holding them.
+    pub(crate) fn writing_into(&self, project: &str) -> Option<RunId> {
+        self.routed(project).into_iter().find(|id| lock(&self.driving).contains(id) || self.export_moving(id))
+    }
+
+    /// Run `id`'s driver task going, until the returned guard drops with it (cl-1060).
+    fn driving(self: &Arc<Self>, id: &RunId) -> Driving {
+        lock(&self.driving).insert(id.clone());
+        Driving { calcifer: self.clone(), id: id.clone() }
+    }
+
+    /// The routed runs of `project`.
+    fn routed(&self, project: &str) -> Vec<RunId> {
+        lock(&self.run_owners).iter()
+            .filter(|(_, owner)| owner.as_ref().is_some_and(|owner| owner.project_id() == project))
+            .filter_map(|(id, _)| RunId::try_from(id.clone()).ok()).collect()
+    }
+
+    /// A run of `project` whose driver's task is going (cl-1060): settling, handing on.
+    pub(crate) fn driving_into(&self, project: &str) -> Option<RunId> {
+        self.routed(project).into_iter().find(|id| lock(&self.driving).contains(id))
+    }
+
+
+    /// What a run that ended still owes its project, handed on before its driver lets go (cl-1060): what stays on its machine noted,
+    /// and its exporter started, so it's never neither driven nor exporting while its project is owed a write. A lock's turn on the
+    /// project is waited out, not dropped.
+    async fn hand_on(self: &Arc<Self>, id: &RunId) {
+        let owner = lock(&self.run_owners).get(id.as_str()).cloned().flatten();
+        for _ in 0..3 {
+            match self.note_stays(id) {
+                Err(StoreError::Locked(code)) if code == "project_busy" => match &owner {
+                    Some(owner) if owner.when_admitted().await.is_ok() => continue,
+                    _ => break,
+                },
+                Err(e) => { warn!("what a run left on its machine isn't noted in its project: {e}"); break; }
+                Ok(()) => break,
+            }
+        }
+        self.export(id);
+    }
+
     pub(crate) fn release_run(&self, id: &RunId) {
         if lock(&self.drivers).contains_key(id) || self.exporting(id) { return; }
         let Some(Some(owner)) = lock(&self.run_owners).get(id.as_str()).cloned() else { return };
@@ -1739,9 +1800,11 @@ impl Calcifer {
         }
         while tasks.try_join_next().is_some() {}
         tasks.spawn(async move {
+            let _driving = me.driving(&id);
             let scope=match me.run_scope_when_ready(id.as_str(),&wake).await { Ok(scope)=>scope,Err(error)=>{ let _=me.fail(&id,Reason {code:error.code,message:error.message,..Default::default()}); me.driver_done(&id); return; } };
             private_io::context(scope,me.follow_to_end(&id,&wake)).await;
             lock(&me.live).remove(&id);
+            me.hand_on(&id).await;
             me.driver_done(&id);
         });
     }

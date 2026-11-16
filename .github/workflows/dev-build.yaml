@@ -145,7 +145,14 @@ jobs:
                cargo update -w --offline ;;
           esac
           rm -rf "$target/rustup" && mkdir -p "$target" dist/cozy dist/tensord
-          docker run --rm -e CARGO_BUILD_JOBS="$(nproc)" --user "$(id -u):$(id -g)" -e HOME=/tmp -e RUSTUP_HOME=/target/rustup -e COZY_COMMIT="$sha" -e FEATURES -e PROFILE -e CARGO_PROFILE_DEV_DEBUG=0 \
+          # The pinned filesystem provider, embedded as a release embeds it (cl-1091): without it this cozy refuses encrypted projects
+          # (vault_dependency_missing). Under the target directory, which the build container mounts. A ref from before it has none.
+          securefs=() archive=''
+          if [ -f scripts/prepare-securefs.py ]; then
+            archive=$(python3 scripts/prepare-securefs.py --target "$arch-unknown-linux-gnu" --out-dir "$target/vault-helper")
+            securefs=(-e "COZY_SECUREFS_ARCHIVE=/target/vault-helper/${archive##*/}" -e COZY_SECUREFS_REQUIRED=1)
+          fi
+          docker run --rm -e CARGO_BUILD_JOBS="$(nproc)" --user "$(id -u):$(id -g)" -e HOME=/tmp -e RUSTUP_HOME=/target/rustup -e COZY_COMMIT="$sha" -e FEATURES -e PROFILE -e CARGO_PROFILE_DEV_DEBUG=0 "${securefs[@]}" \
             -v "$HOME/.cargo/registry:/cargo/registry" -v "$HOME/.cargo/git:/cargo/git" -v "$PWD:/src:ro" -v "$target:/target" -w /src \
             "quay.io/pypa/manylinux_2_28_$arch:2026.10.03-1" \
             sh -c 'curl -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain 1.99.1 >&2 && PATH=/tmp/.cargo/bin:$PATH CARGO_HOME=/cargo cargo build --profile "$PROFILE" --locked --offline --target-dir /target -p cozy -p tensord --features "$FEATURES" "$@"' sh "${bins[@]}"
@@ -155,6 +162,9 @@ jobs:
             (cd dist/cozy && sha256sum "cozy-linux-$arch" > "cozy-linux-$arch.sha256")
             said=$("dist/cozy/cozy-linux-$arch" --version)
             case $said in *"+dev.g${sha:0:8}" | *"-dev+g${sha:0:8}") echo "$said" ;; *) echo "::error::the dev cozy says $said"; exit 1 ;; esac
+            # It carries the pinned provider: the archive's bytes are in it.
+            [ -z "$archive" ] || python3 -c 'import sys; sys.exit(open(sys.argv[2], "rb").read() not in open(sys.argv[1], "rb").read())' "dist/cozy/cozy-linux-$arch" "$archive" \
+              || { echo "::error::the dev cozy embeds no securefs, so it refuses encrypted projects (vault_dependency_missing, cl-1091)"; exit 1; }
           fi
           if [[ $BUILD == *tensord* ]]; then
             install -m 0755 "$target/$out/tensord" "dist/tensord/tensord-linux-$arch"

@@ -25,7 +25,12 @@
 #     naming them and its manifest) is gone too, and nothing in the machine's store names the file's digest or its path;
 #   - every box of the five (the locked ones once unlocked) lists the files it did and answers each, and its preview, with the
 #     same bytes;
-#   - the `state.db.pre-*` copies beside the store are gone.
+#   - the `state.db.pre-*` copies beside the store are gone;
+#   - once local runs this cozy's TensorD (cl-1035), before any unlock, its journal keeps no old run that retains nothing (one failed
+#     there), nor its words, nor a copy an earlier format kept; every old run whose output is retained stays, with its objects and
+#     every retained output, but none of its prompts; one of them whose result copies were swept, collected after it as a run
+#     outside a project is resumed, completes with its files, no word of its prompt and the note saying so; the unlocks after it
+#     still let go of what those runs retained.
 # With CUT_FROM=8 (--shard hardcut-v8) the store is first fenced as a 0.26 RC left one (Paul's laptop's): its project runs in
 # legacy tables beside the live ones, cl-1012's machine lines, and the hold an RC read from local's update by hand.
 CUT_RELEASE=0.25.0 CUT_RUNTIME=0.46.0 CUT_TENSORFS=0.25.1
@@ -48,6 +53,11 @@ done
 sudo install -D -m 755 "$OUT/cozy-cut/cozy-x86_64-unknown-linux-gnu/cozy" /opt/cozy-cut/cozy-old && sudo install -D -m 755 "$COZY" /opt/cozy-cut/cozy-new \
   && sudo install -D -m 644 "$OUT/cut-draw.py" /opt/cozy-cut/draw.py && sudo install -D -m 644 "$OUT/cut-shaped.py" /opt/cozy-cut/shaped.py \
   || { check "hard cut: not installed for its user"; return; }
+# The still's tool, failing as it starts (cl-1035): a run the machine ends failed, retaining nothing, so the machine journal's cut
+# has an old run to take.
+sed 's/^def draw(payload: Drawing, adj: Adjustments, out: Outputs) -> ImageResult:$/&\n    raise RuntimeError(payload.instructions.text)/' "$OUT/cut-draw.py" > "$OUT/cut-fail.py" \
+  && grep -q '^    raise RuntimeError' "$OUT/cut-fail.py" && sudo install -D -m 644 "$OUT/cut-fail.py" /opt/cozy-cut/fail.py \
+  || { check "hard cut: no failing tool"; return; }
 [ "$(cut_cozy old --version)" = "cozy $CUT_RELEASE" ] || { check "hard cut: it says $(cut_cozy old --version)"; return; }
 cut_cozy old --json machine update local --runtime "$CUT_RUNTIME" --tensorfs "$CUT_TENSORFS" -y > "$OUT/cut-update.json" \
   || { check "hard cut: its machine: $(tail -c 400 "$OUT/cut-update.json") $(tail -c 300 "$OUT/cozy-cut.err")"; return; }
@@ -56,6 +66,7 @@ for folder in "$P" "$Q" "$R" "$E" "$F"; do
   cut_cozy old --json new --unencrypted "$folder" > "$OUT/cut-new.json" || { check "hard cut: new $folder: $(tail -c 300 "$OUT/cozy-cut.err")"; return; }
 done
 cut_fill old "$P" plain twin:9 && cut_fill old "$Q" plain2 twin:9 && cut_fill old "$R" plain3 twin:9 && cut_fill old "$E" sealed && cut_fill old "$F" sealed2 solo:8 || return
+cut_failed "$P" || return
 # The second and third encrypted after their runs, as Paul's were: what they left on local is only in the machine's store.
 for folder in "$E" "$F"; do
   cut_in "$folder" old --json vault encrypt --passphrase-file "$pass" --recovery-out "$folder.recovery" > "$OUT/cut-encrypt.json" \
@@ -93,6 +104,7 @@ sudo mv "$R" "$R.away" || { check "hard cut: the third plain project not moved";
 echo "hard cut: before: $(cut_store_facts)"
 sudo install -m 644 -o "$(id -u)" "$home/.cozy/calcifer/state.db" "$OUT/cut-store-before.db" || true
 before=$(sudo find "$E" "$F" -mindepth 1 -maxdepth 1 -type f -printf '%p %s\n' | sort)
+CUT_JOURNAL_BEFORE=$(cut_journal_facts "$home/.cozy/machine/var/lib/cozy/tensord/execution/executions.sqlite3")
 cut_windows "$(cut_store_facts)"
 
 # This cozy on that home, installed in the release's place as an update leaves it (the Calcifer it starts is the installed one).
@@ -146,6 +158,8 @@ sudo mv "$R.away" "$R" || check "hard cut: the third plain project not put back"
 cut_tensord_stopped
 cut_check "$R" plain3
 sudo test ! -e "$twinblob" || check "hard cut: the store still has what the plain projects alone share, all three copied in"
+# Local on this cozy's TensorD before any unlock (cl-1035): the unlocks below let go of what the kept old runs retained, after the cut.
+cut_machine_journal
 
 # The latents the three share: held for each locked project past the store's 7 days, through a collection, until its own unlock
 # copies them in; the plain project's copy at the cut let go of nothing a locked project still needs, nor the first unlock.
@@ -199,6 +213,193 @@ for _ in $(seq 50); do [ -z "$(sudo find "$home/.cozy/calcifer/kept" -name '*.re
 cut_doctor "" "not opened since the upgrade|were lost before this upgrade"
 for folder in "$E" "$F"; do cut_in "$folder" new --json vault lock > "$OUT/cut-relock.json" || check "hard cut: lock again: $(tail -c 300 "$OUT/cut-relock.json")"; done
 sudo pkill -KILL -u "$CUT_USER" || true
+}
+
+# cut_failed <folder>: a still there whose run fails on local (`fail.py`), its words a mark only that run's record holds.
+CUT_FAILED_MARK="a run that fails on purpose $RANDOM$RANDOM"
+# The words every project's still is asked for (`cut_fill`): a kept old run's prompt, which the cut leaves nowhere in the machine journal.
+CUT_PROMPT_MARK="the cut's prompt mark $RANDOM$RANDOM"
+cut_failed() {
+  cut_api "$1" /assets -X POST -H 'Content-Type: application/json' \
+    -d "$(jq -nc --arg words "$CUT_FAILED_MARK" '{name: "broken", exact: true, tool: "/opt/cozy-cut/fail.py/draw", kind: "image", fields: {instructions: $words}}')" > /dev/null \
+    && cut_api "$1" /runs -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: cut-broken-$RANDOM$RANDOM" -d '{"names":["broken"],"on":["local"]}' > /dev/null \
+    || { check "hard cut: the failing still: $(tail -c 300 "$OUT/cozy-cut.err")"; return 1; }
+  for _ in $(seq 300); do
+    cut_api "$1" "" > "$OUT/cut-broken-state.json" 2> /dev/null || true
+    J 'any(.assets[]; .name == "broken" and .failure != null)' "$OUT/cut-broken-state.json" 2> /dev/null && return 0
+    sleep 1
+  done
+  check "hard cut: the failing still never failed: $(jq -c '[.assets[] | select(.name == "broken")]' "$OUT/cut-broken-state.json" 2> /dev/null)"
+  return 1
+}
+
+# cut_machine_journal: local runs this cozy's TensorD (started as `machine show` starts it, or by an update when it isn't on it yet); its
+# first start there cut the old runs that retain nothing from its journal (cl-1035), and kept every other without its words: no prompt
+# of theirs is left in the file or its WAL, while their identity, objects and retained outputs stay. The journal as 0.25.0 left it is in
+# $CUT_JOURNAL_BEFORE. Before any unlock, so the unlocks after it let go of what those runs retained.
+cut_machine_journal() {
+  local journal=$home/.cozy/machine/var/lib/cozy/tensord/execution/executions.sqlite3 after running folder tag
+  echo "hard cut: the machine journal 0.25.0 left: $(jq -c '{legacy: (.legacy | length), kept: (.kept | length), objects, outputs: (.outputs | length), format, mark, prompt}' <<< "$CUT_JOURNAL_BEFORE")"
+  J '(.legacy | length) > 0 and (.kept | length) > 0 and .format < 3 and .mark > 0 and .prompt > 0' <<< "$CUT_JOURNAL_BEFORE" \
+    || check "hard cut: the 0.25 machine journal kept no old run to cut and none to keep: $(head -c 400 <<< "$CUT_JOURNAL_BEFORE")"
+  # Started as `machine show` starts it (lib.sh's machine_ready), then what it runs.
+  for _ in $(seq 60); do
+    cut_cozy new --json machine show local > "$OUT/cut-local.json" 2>&1 && grep -q '"state": *"ready"' "$OUT/cut-local.json" && break
+    sleep 2
+  done
+  running=$(jq -r '.status.version // empty' "$OUT/cut-local.json" 2> /dev/null)
+  echo "hard cut: local runs TensorD ${running:-unknown}"
+  if [ "$running" != "$(cut_cozy new --version | awk '{print $2}')" ]; then
+    # Its own copy, as `cozy update` leaves a person's.
+    sudo install -m 755 -o "$CUT_USER" /opt/cozy-cut/cozy-new "$home/cozy-candidate" || { check "hard cut: no copy of this cozy for its user"; return; }
+    cut_cozy new --json machine update local --tensord "$home/cozy-candidate" -y > "$OUT/cut-tensord.json" \
+      || { check "hard cut: local onto this cozy's TensorD: $(tail -c 300 "$OUT/cut-tensord.json") $(tail -c 300 "$OUT/cozy-cut.err")"; return; }
+  fi
+  cut_tensord_stopped
+  after=$(cut_journal_facts "$journal")
+  echo "hard cut: the machine journal on this cozy's TensorD: $(jq -c '{legacy: (.legacy | length), kept: (.kept | length), objects, outputs: (.outputs | length), format, copies, mark, prompt}' <<< "$after")"
+  # Every old run that retained nothing is gone, its words too; every one whose output is retained stays, with its objects and every
+  # retained output, and no prompt of theirs.
+  jq -e --argjson before "$CUT_JOURNAL_BEFORE" '
+    .format == 3 and .copies == 0 and .mark == 0 and .prompt == 0
+    and ([.ids[] | select(IN($before.legacy[]))] | length) == 0
+    and ($before.kept - .ids | length) == 0
+    and .objects == $before.objects
+    and ($before.outputs - .outputs | length) == 0' <<< "$after" > /dev/null \
+    || check "hard cut: the machine journal's cut: legacy left $(jq -c --argjson before "$CUT_JOURNAL_BEFORE" '[.ids[] | select(IN($before.legacy[]))]' <<< "$after"), kept lost $(jq -c --argjson before "$CUT_JOURNAL_BEFORE" '$before.kept - .ids' <<< "$after"), outputs lost $(jq -c --argjson before "$CUT_JOURNAL_BEFORE" '($before.outputs - .outputs) | length' <<< "$after"), $(jq -c --argjson before "$CUT_JOURNAL_BEFORE" '{format, copies, mark, prompt, objects, objects_before: $before.objects}' <<< "$after")"
+  cut_cozy new --json machine ls > /dev/null || check "hard cut: this cozy after its TensorD moved"
+  cut_collect_late
+  for folder in P:plain Q:plain2 R:plain3; do
+    tag=${folder#*:} folder=${folder%%:*}
+    cut_check "${!folder}" "$tag"
+  done
+}
+# cut_wal_sql <query>: the cut's user's state.db as its Calcifer writes it now, through its WAL, as that user (nothing is written).
+cut_wal_sql() {
+  sudo -u "$CUT_USER" python3 -I - "$home/.cozy/calcifer/state.db" "$1" <<'PY'
+import sqlite3, sys
+for row in sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True).execute(sys.argv[2]):
+    print(*row)
+PY
+}
+# cut_collect_late: a kept old run collected after the machine journal's cut (cl-1035), as a run outside a project #3410 keeps to
+# resume is: plain's still, its result copies swept as an idle machine sweeps them, recorded again in Calcifer's store as going and
+# landing outside any project. Calcifer collects it from the machine: it completes with the still's bytes, with no word of its prompt
+# and the one note saying its words were cleared.
+cut_collect_late() {
+  local run exec want state i out=$home/collected engine=$home/.cozy/machine/var/lib/cozy/tensord/execution
+  run=$(sudo python3 -I - "$OUT/cut-store-before.db" "$P/.runs" <<'PY'
+import sqlite3, sys
+db = sqlite3.connect(f"file:{sys.argv[1]}?immutable=1", uri=True)
+tables = {name for (name,) in db.execute("SELECT name FROM sqlite_schema WHERE type = 'table'")}
+for table in ("runs", "legacy_project_runs"):
+    if table not in tables: continue
+    row = db.execute(f"SELECT id FROM {table} WHERE out_dir = ? AND target LIKE '%/draw/draw' AND status = 'completed' ORDER BY number LIMIT 1", (sys.argv[2],)).fetchone()
+    if row:
+        print(row[0])
+        break
+PY
+)
+  [ -n "$run" ] || { check "hard cut: no old run of plain's still to collect late"; return; }
+  exec=$(sudo -u "$CUT_USER" python3 -I - "$engine/executions.sqlite3" "$run" <<'PY'
+import sqlite3, sys
+db = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+row = db.execute("SELECT id FROM executions WHERE request_id = ?", (sys.argv[2],)).fetchone()
+print(row[0] if row else "")
+PY
+)
+  [ -n "$exec" ] || { check "hard cut: the machine kept no run $run of plain's still"; return; }
+  want=$(jq -r '.card.image.sha256 | sub("^sha256:"; "")' "$OUT/cut-plain-before.json")
+  sudo pkill -KILL -u "$CUT_USER" || true
+  while pgrep -u "$CUT_USER" > /dev/null; do sleep 0.2; done
+  # Swept as an idle machine sweeps a settled run's result copies: only its made outcome and its retained outputs name its files now.
+  sudo rm -rf "$engine/results/$exec"
+  sudo install -m 600 -o "$CUT_USER" "$OUT/cut-store-before.db" "$home/cut-store-before.db" || { check "hard cut: the old store not kept for its user"; return; }
+  sudo -u "$CUT_USER" python3 -I - "$home/.cozy/calcifer/state.db" "$home/cut-store-before.db" "$run" "$out" <<'PY' || { check "hard cut: the old run not put back in Calcifer's store"; return; }
+import sqlite3, sys
+path, before, run, out = sys.argv[1:5]
+db = sqlite3.connect(path, isolation_level=None)
+db.execute("ATTACH ? AS old", (before,))
+table = "runs" if db.execute("SELECT count(*) FROM old.runs WHERE id = ?", (run,)).fetchone()[0] else "legacy_project_runs"
+have = {row[1] for row in db.execute(f"PRAGMA old.table_info({table})")}
+both = [row[1] for row in db.execute("PRAGMA main.table_info(runs)") if row[1] in have]
+db.execute(f"INSERT INTO main.runs ({','.join(both)}) SELECT {','.join(both)} FROM old.{table} WHERE id = ?", (run,))
+db.execute("""UPDATE main.runs SET state = 'accepted', status = NULL, outcome = NULL, reason = NULL, reason_code = NULL, settled_at = NULL,
+    cursor = 0, out_dir = ?, owner = '' WHERE id = ?""", (out, run))
+db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+PY
+  sudo -u "$CUT_USER" mkdir -p "$out"
+  cut_cozy new --json machine ls > /dev/null || { check "hard cut: this cozy with the old run going"; return; }
+  cut_cozy new --json machine show local > /dev/null 2>&1 || true
+  for i in $(seq 120); do
+    state=$(cut_wal_sql "SELECT state || ' ' || coalesce(status, '') FROM runs WHERE id = '$run'")
+    [ "$state" = "settled completed" ] && break
+    [ "${state% *}" = settled ] && break
+    sleep 1
+  done
+  echo "hard cut: the old run $run collected after the cut: $state"
+  [ "$state" = "settled completed" ] || { check "hard cut: a kept old run whose result copies were swept, collected after the cut, is $state: $(cut_wal_sql "SELECT coalesce(reason_code, '') || ': ' || coalesce(reason, '') FROM runs WHERE id = '$run'")"; return; }
+  [ -n "$(sudo find "$out" -type f -exec sha256sum {} + | awk -v want="$want" '$1 == want')" ] \
+    || check "hard cut: the late collection's files aren't the still's bytes: $(sudo find "$out" -type f -exec sha256sum {} + | tr '\n' ' ')"
+  sudo -u "$CUT_USER" python3 -I - "$home/.cozy/calcifer/state.db" "$run" "$CUT_PROMPT_MARK" <<'PY' || check "hard cut: the late collection's words"
+import sqlite3, sys
+db = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+import base64, json
+outcome = bytes(db.execute("SELECT coalesce(outcome, X'') FROM runs WHERE id = ?", (sys.argv[2],)).fetchone()[0])
+said = [outcome]
+def walk(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key == "inline_result" and isinstance(item, str): said.append(base64.b64decode(item))
+            else: walk(item)
+    elif isinstance(value, list):
+        for item in value: walk(item)
+try: walk(json.loads(outcome))
+except ValueError: pass
+assert not any(sys.argv[3].encode() in text for text in said), "the late collection holds the prompt"
+assert b"words were cleared" in outcome, f"the late collection carries no note: {outcome[:400]!r}"
+PY
+}
+# cut_journal_facts <journal>: the machine journal, as JSON, by TensorD's own rule (`Journal::legacy_runs`): `legacy`, the ended runs no
+# project owns whose family retains nothing (no asset's `native_outputs` row); `kept`, the other ended runs no project owns; `ids`, every
+# run; `outputs`, every retained output's owner; its format; the copies an earlier format kept beside it; and how often its file and
+# WAL hold the failing run's words (`mark`) and the projects' prompts (`prompt`); `objects`, the kept runs' object rows.
+cut_journal_facts() {
+  # As its user, through its WAL (what a stopped TensorD last wrote may be only there).
+  sudo -u "$CUT_USER" python3 -I - "$1" "$CUT_FAILED_MARK" "$CUT_PROMPT_MARK" <<'PY'
+import glob, hashlib, json, os, sqlite3, sys
+path, mark, prompt = sys.argv[1], sys.argv[2], sys.argv[3]
+db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+one = lambda sql: db.execute(sql).fetchone()[0]
+raw = b"".join(open(f, "rb").read() for f in (path, path + "-wal") if os.path.exists(f))
+workspace = one("SELECT value FROM machine_metadata WHERE key = 'workspace_id'")
+owners = sorted(owner for (owner,) in db.execute("SELECT owner FROM native_outputs"))
+held = set(owners)
+def owner(actor, request, asset):
+    canonical = json.dumps({"workspace": workspace, "actor": actor, "request": request, "asset": asset}, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+def retains(record):
+    try:
+        record = json.loads(record)
+    except ValueError:
+        return True
+    context, result = record.get("submission") or {}, record.get("result") or {}
+    return any(owner(context.get("actor", ""), context.get("request_id", ""), binding.get("asset_ref", "")) in held for binding in result.get("asset_bindings") or [])
+rows = db.execute("""SELECT id, COALESCE(NULLIF(json_extract(invocation,'$.root'),''), CAST(id AS TEXT)),
+    json_extract(invocation,'$.local_private.project_id') IS NULL AND state IN ('completed','failed','canceled'), record FROM executions""").fetchall()
+kept_families = {family for (_, family, ended, record) in rows if not ended or retains(record)}
+kept = [id for (id, family, ended, _) in rows if ended and family in kept_families]
+print(json.dumps({
+    "legacy": [id for (id, family, _, _) in rows if family not in kept_families],
+    "kept": kept,
+    "objects": sum(one(f"SELECT count(*) FROM run_objects WHERE execution = {id}") for id in kept),
+    "ids": [id for (id, _, _, _) in rows],
+    "outputs": owners,
+    "format": int(one("SELECT value FROM machine_metadata WHERE key = 'journal_format'")),
+    "copies": len(glob.glob(os.path.join(os.path.dirname(path), "executions.format-*"))),
+    "mark": raw.count(mark.encode()),
+    "prompt": sum(raw.count(words) for words in (prompt.encode(), b"a grey shot", b"a shot of its own"))}))
+PY
 }
 
 # cut_windows <facts>: the cut killed at each of its steps, and a project's copy at its first open after it, as a process killed there
@@ -396,7 +597,7 @@ c=lambda t,d: struct.pack(">I",len(d))+t+d+struct.pack(">I",zlib.crc32(t+d)&0xff
 open(sys.argv[1],"wb").write(b"\x89PNG\r\n\x1a\n"+c(b"IHDR",struct.pack(">IIBBBBB",w,h,8,2,0,0,0))+c(b"IDAT",zlib.compress(raw))+c(b"IEND",b""))' "$png"
   sha="sha256:$(sha "$png")"
   cut_api "$P" /assets -X POST -H 'Content-Type: application/json' \
-    -d "$(jq -nc --arg words "A still of one colour $RANDOM." '{name: "card", exact: true, tool: "/opt/cozy-cut/draw.py/draw", kind: "image", fields: {instructions: $words}}')" > /dev/null \
+    -d "$(jq -nc --arg words "A still of one colour, $CUT_PROMPT_MARK." '{name: "card", exact: true, tool: "/opt/cozy-cut/draw.py/draw", kind: "image", fields: {instructions: $words}}')" > /dev/null \
     && cut_api "$P" /assets -X POST -H 'Content-Type: application/json' \
       -d '{"name": "shot", "exact": true, "tool": "/opt/cozy-cut/shaped.py/shot", "kind": "video", "fields": {"summary": "a grey shot", "beats": [{"description": "one beat"}], "seed": 7}}' > /dev/null \
     || { check "hard cut ($tag): its boxes: $(tail -c 300 "$OUT/cozy-cut.err")"; return 1; }

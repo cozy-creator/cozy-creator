@@ -87,7 +87,7 @@ stores=$(cd "$dir" && find . -maxdepth 1 -name '*.json' ! -name refused.json | s
 [ -z "$stores" ] || check "state: JSON stores in $dir: $stores"
 [ ! -e "$dir/after" ] || check "state: $dir/after is still there: $(ls -A "$dir/after" | head -5 | paste -sd' ')"
 [ "$(stat -c %a "$dir/state.db")" = 600 ] || check "state: state.db is $(stat -c %a "$dir/state.db"), not 600"
-for table in projects tool_list tools_off rendered_here headers after_steps; do
+for table in projects tool_list tools_off headers after_steps; do
   [ "$(state1 "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = '$table'")" = 1 ] || check "state: state.db has no $table"
 done
 # Nothing signs a page in (cl-985): a Calcifer that kept sessions has them dropped at its next start.
@@ -146,12 +146,6 @@ if [ -f "$OLD/sessions.json" ]; then
     [ "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "http://$ADDR/v1/status")" = 401 ] || check "state import: a session from before the cut admits"
   done < "$OLD/tokens"
   echo "state import: sessions.json's $(jq length "$OLD/sessions.json") sessions deleted, none kept"
-fi
-if [ -f "$OLD/here.json" ]; then
-  want=$(jq -c '[.here[] | [.tool, .machine, (.bytes // 0)]] | sort' "$OLD/here.json")
-  got=$(state 'SELECT tool, machine, bytes FROM rendered_here' | jq -sc sort)
-  [ "$want" = "$got" ] || check "state import: Render here $got, not $want"
-  echo "state import: Render here $got"
 fi
 if [ -f "$OLD/checkpoints.json" ]; then
   want=$(jq -c '[.facts | to_entries[] | [(.key | split(" ") | .[0]), (.key | split(" ") | .[1]), .value.lora, .value.family]] | sort' "$OLD/checkpoints.json")

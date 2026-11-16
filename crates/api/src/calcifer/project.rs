@@ -1107,7 +1107,7 @@ fn one() -> u32 {
     1
 }
 
-/// `POST /v1/projects/{id}/fit` and `…/fit/here`: what a render of `names` on this computer (`local`) asks of it, `all` and `outdated` as
+/// `POST /v1/projects/{id}/fit`: what a render of `names` on this computer (`local`) would do poorly, `all` and `outdated` as
 /// a render reads them; and how long each box named takes where a render of it would go now.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -1189,9 +1189,6 @@ pub struct ToolFit {
     /// Its weights' bytes, as its machine would load them; 0: unknown.
     #[serde(default)]
     pub bytes: u64,
-    /// Render here was said of it on this computer, for weights as big: nothing asks again.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub here: bool,
 }
 
 /// A GPU to rent for it, as `POST /v1/machines` `{kind: rent}` names one.
@@ -1660,6 +1657,12 @@ pub struct VaultChanged {
     /// Already-missing retained media skipped during conversion. Their project records remain missing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skipped_files: Vec<PathBuf>,
+    /// The runs whose outputs a lock cut, their save gone silent, by name (cl-1060): not saved, each run failed saying so.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unsaved: Vec<String>,
+    /// The runs whose save a lock stopped while their remote machine didn't answer (cl-1060): still owed, saved when it answers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deferred: Vec<String>,
 }
 
 /// A private vault-operation stream. Progress counts copied bytes and completed files, not an estimated percentage.

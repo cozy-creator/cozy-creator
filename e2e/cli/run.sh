@@ -54,6 +54,7 @@ parse "$@"
 . "$(dirname "$0")/typedcalls.sh"
 . "$(dirname "$0")/harness.sh"
 . "$(dirname "$0")/devstart.sh"
+. "$(dirname "$0")/standing.sh"
 . "$(dirname "$0")/llm.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
@@ -509,6 +510,7 @@ WEB_3=(
   instant
   select
   move
+  dblclick-text
   svg
 )
 # The `@engines` cells in Firefox, and the vault (`@vault`), which needs the filesystem driver.
@@ -570,6 +572,7 @@ case $SHARD in
     component_models
     lora_reads
     ltx_lora
+    ltx_msr
     second_project
     lock_platforms
     yaml_requests
@@ -688,6 +691,7 @@ case $SHARD in
     component_models
     lora_reads
     ltx_lora
+    ltx_msr
     second_project
     lock_platforms
     yaml_requests
@@ -742,6 +746,9 @@ case $SHARD in
   web-native) web_cells=(${WEB_NATIVE[@]+"${WEB_NATIVE[@]}"}); parts="web_lane logs" ;;
   # Pictures imported into a plain project get their thumbnails stored (cl-1054: none on macOS).
   thumbs) parts="thumbs_stored logs" ;;
+  # What Paul's standing rules decide (cl-1066): a loose project folder made private, a project route with no protocol header, a run
+  # whose named machines can't take it placed where one naming none goes.
+  standing) parts="folder_private protocol_free machine_set logs" ;;
   # cl-982's opens on a busy computer: 3,000 other loopback connections open (web/busy.js), as the gate's lookups meet them (cl-985).
   web-opens-busy) export BUSY_SOCKETS=3000; web_cells=(opens); parts="web_lane logs" ;;
   # The page as Calcifer's own and what the access rule refuses (cl-985), alone.

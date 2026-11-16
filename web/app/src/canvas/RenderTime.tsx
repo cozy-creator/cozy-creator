@@ -2,9 +2,11 @@ import { useEffect, useRef } from "react"
 import { Icon } from "../ui/Icon"
 import { pressBeganOutside } from "../ui/press"
 import { useSignal } from "../ui/signal"
-import { article } from "./Asking"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore } from "./context"
+
+/** "an RTX 4090", "a B200": by how the card's first letter is said. */
+const article = (card: string) => (/^[aefhilmnorsx]/i.test(card) ? "an" : "a")
 
 /** A render this long or longer shows how long it takes; a shorter one needs no estimate (Paul, 11-15). */
 const SHOWN_MS = 15_000

@@ -1695,6 +1695,17 @@ impl Machines {
         }
     }
 
+    /// Where a job goes instead when the machines it names are gone or can't take it (cl-920, cl-1066): as `automatic`, but this
+    /// computer and this account's rentals alone, never an added machine, which may be someone else's computer.
+    pub(crate) fn fallback(&self) -> Vec<On> {
+        let added = |name: &str| self.store().machine(name).ok().flatten().is_some_and(|row| row.kind == MachineKind::Added);
+        let set: Vec<On> = self.automatic().into_iter().filter(|on| !matches!(on, On::Machine(name) if added(name))).collect();
+        match set.is_empty() {
+            true => vec![On::Machine("local".into())],
+            false => set,
+        }
+    }
+
     /// Where a render's job goes with no machine chosen (`api::calcifer::render_set`), by what's held here this moment.
     pub(crate) fn automatic(&self) -> Vec<On> {
         let here = platform::Os::CURRENT.local_inference();

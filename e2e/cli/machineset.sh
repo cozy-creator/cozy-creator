@@ -2,7 +2,8 @@
 # another computer's would be (release-gate session multi-machine), authorized for this controller and added here. `cozy machine
 # use local,stand-a` pins the project: a burst of `cozy run`s naming no machine stays on those two, and stand-b, which automatic
 # placement prefers to this computer, gets none; `--on stand-b` overrides the project's set for one run; `--on stand-a,stand-b`
-# places among them. With neither stand-in up, `--on stand-a,stand-b` is refused naming both, and nothing runs on another machine.
+# places among them. With neither stand-in up, `--on stand-a,stand-b` goes where a run naming none would (this computer), and says
+# once that neither could take it (cl-1066: fix, don't refuse).
 # stand_as <name> <cozy args...>: the stand-in's own cozy, in its user's default home. From /: the Calcifer it starts detached (no
 # user manager here) keeps the folder it started in, where its machine's uv would trip over this user's project .venv.
 stand_as() {
@@ -46,7 +47,7 @@ stand_in() {
 set_runs() { in_project "$1" --json run ls --limit 0 | jq -r '.runs[] | select(.kind == "call" and (.target | test("/echo"))) | "\(.number) \(.machine) \(.status)"' > "$2"; }
 
 machine_set() {
-step "machine set (cl-873): a project pinned to local and stand-a, its runs only there; --on a,b; one run's override; none of them up, refused"
+step "machine set (cl-873): a project pinned to local and stand-a, its runs only there; --on a,b; one run's override; none of them up, it runs here"
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] \
   || { echo "machine set: its stand-in machines are other users of a fresh GitHub runner"; return; }
 local P=$OUT/machine-set echo=minimax-h3-tools/echo before a b pids
@@ -96,8 +97,8 @@ head -n $(($(wc -l < "$OUT/set-pair.txt") - before)) "$OUT/set-pair.txt" > "$OUT
 code=0; in_project "$P" --json run "$echo" text=mixed --on stand-a,new > "$OUT/set-mixed.json" 2>&1 || code=$?
 [ "$code" != 0 ] && J '.error.code == "on_set"' "$OUT/set-mixed.json" || check "run --on stand-a,new: exit $code: $(head -c 300 "$OUT/set-mixed.json")"
 
-# Neither stand-in up: refused, naming both, and run nowhere else.
-step "machine set: none of the set up, refused"
+# Neither stand-in up: it runs where a run naming none goes, this computer, saying so once, naming both (cl-1066).
+step "machine set: none of the set up, it runs here and says why"
 sudo pkill -KILL -u cozy-stand-a || true
 sudo pkill -KILL -u cozy-stand-b || true
 for _ in $(seq 120); do
@@ -105,12 +106,11 @@ for _ in $(seq 120); do
   J '[.machines[] | select(.name == "stand-a" or .name == "stand-b") | select(.unreachable != null or .state == "ended")] | length == 2' "$OUT/set-down.json" && break
   sleep 1
 done
-set_runs "$P" "$OUT/set-before-down.txt"
-code=0; in_project "$P" --json run "$echo" text=down --on stand-a,stand-b > "$OUT/set-refused.json" 2>&1 || code=$?
-[ "$code" != 0 ] && J '.error.code == "machines_unavailable" and (.error.message | test("stand-a") and test("stand-b"))' "$OUT/set-refused.json" \
-  || check "run --on stand-a,stand-b with neither up: exit $code: $(head -c 400 "$OUT/set-refused.json")"
-set_runs "$P" "$OUT/set-after-down.txt"
-cmp -s "$OUT/set-before-down.txt" "$OUT/set-after-down.txt" || check "a run none of its set could take ran: $(head -2 "$OUT/set-after-down.txt" | tr '\n' ';')"
+code=0; in_project "$P" run "$echo" text=down --on stand-a,stand-b > "$OUT/set-fell.txt" 2>&1 || code=$?
+n=$(grep -oE '^run [A-Z][A-Z0-9]*-[0-9]+ ' "$OUT/set-fell.txt" | head -1 | cut -d' ' -f2 || true)
+{ [ "$code" = 0 ] && [ -n "$n" ] && in_project "$P" --json run watch "$n" --once | J '.status == "completed" and .machine == "local"' \
+  && grep -q "None of stand-a, stand-b can take this run" "$OUT/set-fell.txt" && grep -q "It goes to local" "$OUT/set-fell.txt"; } \
+  || check "run --on stand-a,stand-b with neither up: exit $code, run ${n:-none}: $(tail -c 600 "$OUT/set-fell.txt")"
 
 in_project "$P" --json machine use > "$OUT/set-any.json" && J '.machines == []' "$OUT/set-any.json" || check "machine use with none: $(cat "$OUT/set-any.json")"
 for name in stand-a stand-b; do timeout 60 "$COZY" --json machine end "$name" --force -y > "$OUT/$name-end.json" 2>&1 || true; done

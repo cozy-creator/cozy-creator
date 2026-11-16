@@ -54,6 +54,11 @@ impl RunOwner {
     pub(crate) async fn when_admitted(&self) -> Result<(), Error> {
         vault::admit_work(&self.project).await.map(drop)
     }
+    /// A read of the project for one write into it (cl-1060), waited for behind a lock that has its turn: the lock waits for the
+    /// write, and none starts into a view the lock took.
+    pub(crate) async fn writing(&self) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Error> {
+        vault::admit_work(&self.project).await
+    }
     pub(crate) fn store(&self) -> store::Result<ProjectStore> {
         let view = vault::try_admit_work(&self.project).map_err(project_error)?;
         Ok(ProjectStore { project: self.project.clone(), controller: self.controller.clone(), _view: view, access:Access::Work })
@@ -253,12 +258,6 @@ impl ProjectStore {
         self.project.folder.keep_answer(key, &answer.digest, answer.status, &answer.content_type, &answer.body).map_err(project_error)
     }
 
-    pub(crate) fn rendered_here(&self, machine: &str) -> store::Result<std::collections::HashMap<String,u64>> {
-        self.read(|conn| { let mut stmt=conn.prepare("SELECT tool,bytes FROM project_rendered_here WHERE machine=?1")?; Ok(stmt.query_map([machine], |row| Ok((row.get(0)?,row.get::<_,i64>(1)? as u64)))?.collect::<rusqlite::Result<_>>()?) })
-    }
-    pub(crate) fn keep_rendered_here(&self, machine: &str, tools: &[(String,u64)]) -> store::Result<()> {
-        self.write(|tx| { for (tool,bytes) in tools { tx.execute("INSERT OR REPLACE INTO project_rendered_here(tool,machine,bytes) VALUES(?1,?2,?3)",params![tool,machine,*bytes as i64])?; } Ok(()) })
-    }
 
     pub(crate) fn append_diagnostic(&self, code: &'static str, detail: &str) -> store::Result<()> {
         self.write(|tx| {
@@ -370,6 +369,5 @@ pub(super) const SCHEMA: &str = "    CREATE TABLE runs (
     CREATE TABLE journal_migrations (source TEXT PRIMARY KEY, digest TEXT NOT NULL, record TEXT NOT NULL) STRICT;
     CREATE TABLE after_steps (key_sha256 TEXT PRIMARY KEY, step TEXT NOT NULL) STRICT;
     CREATE TABLE project_headers (hub TEXT NOT NULL, sha256 TEXT NOT NULL, families TEXT NOT NULL, lora INTEGER NOT NULL, family TEXT, PRIMARY KEY (hub, sha256)) STRICT, WITHOUT ROWID;
-    CREATE TABLE project_rendered_here (tool TEXT NOT NULL, machine TEXT NOT NULL, bytes INTEGER NOT NULL, PRIMARY KEY (tool, machine)) STRICT, WITHOUT ROWID;
     CREATE TABLE project_vault_operations (id TEXT PRIMARY KEY, binding TEXT NOT NULL, state TEXT NOT NULL) STRICT;
 ";

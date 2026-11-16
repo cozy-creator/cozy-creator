@@ -445,6 +445,12 @@ if [ -n "$needs" ]; then
     random_weights "$seed/disk.safetensors" 2048 disk-big
     mirror "$seed/disk.safetensors" e2e/disk-big bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is
     rm -f "$seed/disk.safetensors"
+    # And disk_run_object's (cl-1076): its asset is a file the package that runs it carries too (cli/tokenizer), as H3 holds
+    # the Qwen3-VL processor files minimax-h3 carries.
+    random_weights "$seed/disk.safetensors" 384 disk-tokenizer
+    mirror "$seed/disk.safetensors" e2e/disk-tokenizer bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is \
+      --add "processor/vocab.json=$here/cli/tokenizer/e2e_tokenizer/processor/vocab.json"
+    rm -f "$seed/disk.safetensors"
   fi
   if [[ " $needs " == *" calls "* ]]; then
     # ondemand_calls' orchestrator (cl-1077): the model of the function it calls and of one it never calls, 32 MiB each; and
@@ -655,6 +661,11 @@ PY
       lightricks/ltx-2.3-motion-track-control https://huggingface.co/Lightricks/LTX-2.3-22b-IC-LoRA-Motion-Track-Control '' \
       && log "published lightricks/ltx-2.3-motion-track-control@0.1.0 (an LTX-2.3 IC-LoRA)" \
       || log "lightricks/ltx-2.3-motion-track-control: $(tail -c 400 "$seed/upload-ltx-2.3-motion-track-control.json" 2> /dev/null)"
+    # ltx_msr: LiconStudio's Multiple-Subject Reference V2 for LTX-2.5 (2.2 GB, Apache-2.0, ungated), the same way.
+    LANE=bf16 standin_lora "hf://LiconStudio/LTX-2.5-Multiple-Subject-Reference@aa19b48f845995525d8ace60cdc89b842e951ce6/LTX-2.5-Licon-MSR-V2.safetensors" \
+      liconstudio/licon-msr-v2 https://huggingface.co/LiconStudio/LTX-2.5-Multiple-Subject-Reference '' \
+      && log "published liconstudio/licon-msr-v2@0.1.0 (an LTX-2.5 reference LoRA with slot embeddings)" \
+      || log "liconstudio/licon-msr-v2: $(tail -c 400 "$seed/upload-licon-msr-v2.json" 2> /dev/null)"
   fi
   cd "$start"
 fi

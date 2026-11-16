@@ -329,16 +329,6 @@ pub(crate) fn refuse(kind: Kind, code: &str, message: impl Into<String>) -> Refu
     Refusal(Error::new(kind, code, message))
 }
 
-/// Whether a native client speaks project storage protocol 3; one released before it does not.
-pub(crate) fn speaks_project_storage(headers: &axum::http::HeaderMap) -> bool {
-    headers.get(::api::calcifer::project::PROJECT_STORAGE_HEADER).and_then(|value| value.to_str().ok()) == Some(::api::calcifer::project::PROJECT_STORAGE_VERSION)
-}
-
-/// What a client released before project storage protocol 3 is told for any project request.
-pub(crate) fn project_storage_protocol_required() -> Refusal {
-    Refusal(Error::new(Kind::Usage, "project_storage_protocol_required", "This cozy is too old to open projects here.")
-        .remedy("Use the installed cozy (~/.cozy/bin/cozy), or update this one.").next("cozy update"))
-}
 
 impl Refusal {
     pub(crate) fn remedy(self, remedy: &str) -> Self {
@@ -457,16 +447,6 @@ pub(crate) fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
     headers.get(header::AUTHORIZATION)?.to_str().ok()?.strip_prefix("Bearer ")
 }
 
-/// A read of a file, as `<img>` and `<video>` make one: no header of the page's own, the project storage's among them.
-fn file_read(request: &Request) -> bool {
-    let reads = matches!(*request.method(), Method::GET | Method::HEAD);
-    let path: Vec<&str> = request.uri().path().split('/').collect();
-    reads && matches!(
-        path[..],
-        ["", "v1", "runs", _, "outputs", _] | ["", "v1", "projects", _, "runs", _, "outputs", _] | ["", "v1", "projects", _, "files" | "cuts" | "thumbs", _]
-    )
-}
-
 /// Calcifer's own page or this computer's cozy, as its own account; then the admission gate for every mutation but `down`, held
 /// while it runs. Detached request work retains this existing admission lease until its mutation is finished.
 pub(crate) type MutationLease = Arc<tokio::sync::OwnedRwLockReadGuard<bool>>;
@@ -489,15 +469,6 @@ async fn admit(State(api): State<Arc<Api>>, ConnectInfo(peer): ConnectInfo<Peer>
     let page = client == crate::loopback::Client::Page;
     request.extensions_mut().insert(principal);
     request.extensions_mut().insert(client);
-    let path=request.uri().path();
-    // The capability probe is how a client learns protocol 3 before opting in; it is no project request.
-    let project_protocol=path != "/v1/project-storage" && (path.starts_with("/v1/projects") || path.starts_with("/v1/project-")
-        || path.starts_with("/v1/run-") || matches!(path,"/v1/events"|"/v1/targets"|"/v1/plans"));
-    // Native clients must opt into this storage contract before any project
-    // lookup/import/resume. A page's media elements send no header of its own.
-    if project_protocol && !(page && file_read(&request)) && !speaks_project_storage(request.headers()) {
-        return project_storage_protocol_required().into_response();
-    }
     let process = request.headers().get(PROCESS_HEADER).and_then(|value| value.to_str().ok()).unwrap_or_default();
     api.activity.note(if page { "page" } else { process });
     // Served until its answer is made (a stream's body is the open page's, not this); `/v1/activity` counts no one.
@@ -659,9 +630,8 @@ pub(crate) struct Listing {
 }
 
 /// Runs newest first, and how many older ones match.
-async fn list(State(api): State<Arc<Api>>, headers: axum::http::HeaderMap, query: Result<Query<Listing>, QueryRejection>) -> Result<Json<RunList>, Refusal> {
+async fn list(State(api): State<Arc<Api>>, query: Result<Query<Listing>, QueryRejection>) -> Result<Json<RunList>, Refusal> {
     let Query(listing) = query?;
-    if listing.project.is_some() && !speaks_project_storage(&headers) { return Err(project_storage_protocol_required()); }
     if listing.project.is_some() { return Err(refuse(Kind::Usage, "project_context_required", "Ask the project for its runs instead.")); }
     list_scoped(&api, None, listing).await
 }
@@ -710,17 +680,10 @@ pub(crate) struct Detail {
 pub(crate) async fn show(
     State(api): State<Arc<Api>>,
     Path(path): Path<RunPath>,
-    headers: axum::http::HeaderMap,
     query: Result<Query<Detail>, QueryRejection>,
 ) -> Result<Json<Run>, Refusal> {
     let key = path.key();
-    let row = match find_scoped(&api, path.project(), key).await {
-        // An older client asks the global route for what is now a project's run.
-        Err(refusal) if path.project().is_none() && refusal.0.code == "run_not_found" && !speaks_project_storage(&headers) => {
-            return Err(project_storage_protocol_required());
-        }
-        found => found?,
-    };
+    let row = find_scoped(&api, path.project(), key).await?;
     if query?.0.detail.as_deref() != Some("full") {
         return Ok(Json(api.calcifer.record(&row)?));
     }
