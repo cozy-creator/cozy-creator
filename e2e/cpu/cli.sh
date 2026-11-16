@@ -46,7 +46,10 @@ else
   line FAIL - upload "$(said "$cli/describe.json")"
 fi
 
-if python3 "$(dirname "$0")/../package-lock.py" --cozy "$COZY" "$cli/src/$p" > "$cli/lock.json" 2> "$cli/lock.err"; then
+if [ -d "$OUT/staged" ]; then
+  # Read from the checkout on an RC (run.sh, xs-195): its committed lock names first-party releases only promotion publishes.
+  line SKIP - lock "it takes first-party packages from the checkout on an RC; its committed lock is the publish suite's"
+elif python3 "$(dirname "$0")/../package-lock.py" --cozy "$COZY" "$cli/src/$p" > "$cli/lock.json" 2> "$cli/lock.err"; then
   # Locked on this suite's Hub: a Hub index's URLs and wheels are this Hub's (lock_same.py), every other byte the same.
   if stale=$(python3 -I "$(dirname "$0")/lock_same.py" "$PKG/uv.lock" "$cli/src/$p/uv.lock" "${COZY_TEST_HUB_ORIGIN:-}"); then
     line PASS - lock
