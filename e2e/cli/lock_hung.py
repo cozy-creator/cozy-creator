@@ -117,9 +117,37 @@ def number_of(stdout: Path) -> object:
 
 
 def machine_pid() -> int:
-    holders = list((Path.home() / ".cozy/machine").rglob("agent.lock.holder"))
-    assert holders, "no local machine running"
-    return int(json.loads(holders[0].read_text())["pid"])
+    """The local machine's process: what holds its root's lock (local.rs `lock`)."""
+    holder = Path.home() / ".cozy/machine/var/lib/cozy/machine/agent.lock.holder"
+    assert holder.is_file(), "no local machine running"
+    return int(json.loads(holder.read_text())["pid"])
+
+
+STOPPED: list[int] = []
+
+
+def stop() -> dict[str, object]:
+    """The local machine stopped (SIGSTOP), as a hung one is: its process as it holds its root now, seen stopped."""
+    pid = machine_pid()
+    command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+    os.kill(pid, signal.SIGSTOP)
+    STOPPED.append(pid)
+    state = ""
+    for _ in range(50):
+        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+        if state == "T":
+            break
+        time.sleep(0.1)
+    assert state == "T" and "serve" in command, f"the local machine {pid} ({command}) isn't stopped: {state}"
+    return {"pid": pid, "command": command, "state": state}
+
+
+def go_on() -> None:
+    while STOPPED:
+        try:
+            os.kill(STOPPED.pop(), signal.SIGCONT)
+        except ProcessLookupError:
+            pass
 
 
 def journal() -> list[Path]:
@@ -203,7 +231,6 @@ def main() -> None:
     cell, facts = Cell(args), dict[str, object]()
     scanner = Scanner()
     scanner.identity(cell.project, args.project_id, cell.project.name)
-    pid = machine_pid()
     try:
         if cell.state() != "locked":
             cell.cozy("lock-before", "vault", "lock")
@@ -218,7 +245,7 @@ def main() -> None:
         scanner.add(mark)
         process, stdout = cell.start("stopped-run", script, SLEEPS, mark)
         started, number = time.monotonic(), number_of(stdout)
-        os.kill(pid, signal.SIGSTOP)
+        facts["stopped"] = stop()
         began = time.monotonic()
         done = subprocess.run([str(cell.cli), "--json", "vault", "lock"], cwd=cell.project, capture_output=True, timeout=BOUND * 3)
         (cell.out / "lock-stopped.json").write_bytes(done.stdout)
@@ -229,7 +256,7 @@ def main() -> None:
         if done.returncode != 0 or cell.state() != "locked":
             # The release notes' workaround, as a person does it: the hung machine ended, then the lock asked again.
             facts["lock_failed"] = (done.stdout[-400:] + done.stderr[-400:]).decode(errors="replace")
-            os.kill(pid, signal.SIGKILL)
+            os.kill(cast(int, cast(dict[str, object], facts["stopped"])["pid"]), signal.SIGKILL)
             retried = subprocess.run([str(cell.cli), "--json", "vault", "lock"], cwd=cell.project, capture_output=True, timeout=BOUND * 3)
             facts["workaround"] = {"lock_exit": retried.returncode, "state": cell.state(), "mounted": mounted(view),
                                    "scan": traces(scanner, cell.out, "workaround", [cell.project.resolve()])}
@@ -243,7 +270,7 @@ def main() -> None:
         again = cell.unlock("unlock-again")
         assert again != view, f"unlocked again at the same view {view}"
         facts["canceled_before"] = cell.status(number)
-        os.kill(pid, signal.SIGCONT)
+        go_on()
         waited = time.monotonic()
         while time.monotonic() - waited < 90 and journaled(view):
             time.sleep(1)
@@ -265,13 +292,13 @@ def main() -> None:
         view = cell.unlock("unlock-maximum", MAXIMUM)
         unlocked_at = time.monotonic()
         process, stdout = cell.start("maximum-run", view / "lock-hung" / "sleeper.py", 300, mark)
-        os.kill(pid, signal.SIGSTOP)
+        facts["maximum_stopped"] = stop()
         while time.monotonic() - unlocked_at < MAXIMUM + BOUND and cell.state() != "locked":
             time.sleep(1)
         facts["maximum_locked_s"] = round(time.monotonic() - unlocked_at, 1)
         assert cell.state() == "locked", f"the vault is open {MAXIMUM + BOUND} s past a {MAXIMUM} s maximum while local is stopped"
         facts["maximum"] = hung(cell, "maximum", scanner, view, None)
-        os.kill(pid, signal.SIGCONT)
+        go_on()
         waited = time.monotonic()
         while time.monotonic() - waited < 90 and journaled(view):
             time.sleep(1)
@@ -279,10 +306,7 @@ def main() -> None:
         process.wait(timeout=60)
         facts["after_maximum"] = traces(scanner, cell.out, "maximum-after", [cell.project.resolve()])
     finally:
-        try:
-            os.kill(pid, signal.SIGCONT)
-        except ProcessLookupError:
-            pass
+        go_on()
         (args.out / "lock-hung.json").write_text(json.dumps(facts, indent=2, default=str))
 
     print(f"lock hung: {json.dumps({k: v for k, v in facts.items() if not isinstance(v, dict)})}", flush=True)
