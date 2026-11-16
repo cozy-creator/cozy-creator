@@ -1,8 +1,9 @@
 // unseen (cl-1105), Paul 11-16: "also when I produce new outputs, make sure that, on the node where they appeared, they are marked with a
 // green dot in the top left, both the node that has uninspected new outputs, and when in focus, on the images /thumbnails to the right that
-// haven't been viewed yet." A box with nothing approved renders twice: both versions are unseen, its green dot is drawn at its top left and
-// stays through a pan, a zoom and a reload, and hovering it says how many. Focus shows the newest, so that one is seen, and the other's
-// thumbnail keeps its dot; showing it clears both. Rendering again beside an unseen version draws the green dot and the blue one together.
+// haven't been viewed yet." A box with nothing approved renders three times (near white, near black, grey): all are unseen, its green dot is
+// drawn at its top left and stays through a pan, a zoom and a reload, and hovering it says how many. Focus shows the newest, so that one is
+// seen, and the others' thumbnails keep their dots until each is shown, then the box's goes. Rendering again beside an unseen version draws
+// the green dot and the blue one side by side.
 // Calcifer has one person, its OS user, so no second person's unseen is checked. Pictures at 1440×900 and 1920×1080, paper and dark, in
 // $OUT/web/unseen.
 const { randomUUID } = require('crypto');
@@ -45,7 +46,7 @@ async function shoot(page, what, which, prepare = async () => {}) {
 async function dots(page, name) {
   const card = await canvasCard(page, name);
   const shown = card?.rendered;
-  return shown ? { unseen: shown.unseen, state: shown.state, dot: shown.unseenDot, dots: shown.stateDot, bounds: card.bounds, body: shown.body } : null;
+  return shown ? { unseen: shown.unseen, state: shown.state, dot: shown.unseenDot, dots: shown.stateDot, bounds: card.bounds, body: shown.body, title: shown.labels.title } : null;
 }
 
 /** The colour the page draws at the middle of `box`, and the green the theme names. */
@@ -70,31 +71,33 @@ test('unseen', async ({ page, project, api }) => {
   await expect(page.locator('.stage')).toBeVisible();
   await fit(page);
 
-  await test.step('two versions land on a box with nothing approved', async () => {
-    await render('grey');
-    await expect.poll(() => versions('grey'), { message: 'version 1', timeout: 150_000 }).toBe(1);
-    await api.patch(project.at('/assets/grey'), { fields: { instructions: 'A dark grey.', shade: 0.06 } });
-    await render('grey');
-    await expect.poll(() => versions('grey'), { message: 'version 2', timeout: 120_000 }).toBe(2);
+  await test.step('three versions land on a box with nothing approved', async () => {
+    for (const [number, shade] of [[1, 0.94], [2, 0.06], [3, 0.5]]) {
+      await api.patch(project.at('/assets/grey'), { fields: { instructions: `A grey of ${shade}.`, shade } });
+      await render('grey');
+      await expect.poll(() => versions('grey'), { message: `version ${number}`, timeout: 150_000 }).toBe(number);
+    }
     expect((await project.asset('grey')).approved ?? null, 'nothing approved').toBeNull();
-    expect(await unseen('grey'), 'both unseen').toEqual([1, 2]);
+    expect(await unseen('grey'), 'all unseen').toEqual([1, 2, 3]);
   });
 
   await test.step('its green dot, at its top left, through a pan, a zoom and a reload', async () => {
     await expect.poll(async () => (await dots(page, 'grey'))?.dot ?? null, { message: 'the green dot drawn' }).not.toBeNull();
     const drawn = await dots(page, 'grey');
-    expect.soft(drawn.unseen, 'it counts 2').toBe(2);
-    // The box's top left: its picture's left edge, above the picture, in its top row.
+    expect.soft(drawn.unseen, 'it counts 3').toBe(3);
+    // The box's top left: at its left edge, in its name's row above the picture, before the name.
+    const middle = drawn.dot.y + drawn.dot.height / 2;
     expect.soft(Math.abs(drawn.dot.x - drawn.bounds.x), `at its left edge: ${JSON.stringify(drawn)}`).toBeLessThan(drawn.dot.width);
     expect.soft(drawn.dot.y + drawn.dot.height, 'above its picture').toBeLessThanOrEqual(drawn.body.y);
-    expect.soft(drawn.dot.y, 'in its top row').toBeGreaterThanOrEqual(drawn.bounds.y - 1);
-    expect.soft(drawn.dot.width, 'big enough to see').toBeGreaterThanOrEqual(6);
+    expect.soft(middle > drawn.title.y && middle < drawn.title.y + drawn.title.height, "in its name's row").toBe(true);
+    expect.soft(drawn.dot.x + drawn.dot.width, 'before its name').toBeLessThan(drawn.title.x);
+    expect.soft(drawn.dot.width, 'big enough to see').toBeGreaterThanOrEqual(8);
     const { got, want } = await colourAt(page, drawn.dot);
     expect.soft(Math.max(...got.map((value, i) => Math.abs(value - want[i]))), `green on screen: ${got} vs ${want}`).toBeLessThanOrEqual(40);
     for (const name of ['still_1', 'still_2', 'still_3']) expect.soft((await dots(page, name))?.dot ?? null, `${name} was imported: no dot`).toBeNull();
 
     await page.mouse.move(drawn.dot.x + drawn.dot.width / 2, drawn.dot.y + drawn.dot.height / 2);
-    await softly.poll(() => page.locator('.canvas-root').getAttribute('title'), { message: 'hovered, it says how many' }).toBe('2 new versions, not looked at');
+    await softly.poll(() => page.locator('.canvas-root').getAttribute('title'), { message: 'hovered, it says how many' }).toBe('3 new versions, not looked at');
 
     const open = await openPoint(page);
     await page.mouse.move(open.x, open.y);
@@ -104,27 +107,29 @@ test('unseen', async ({ page, project, api }) => {
     await canvasIdle(page);
     await page.waitForTimeout(3000);
     expect.soft((await dots(page, 'grey'))?.dot ?? null, 'still drawn after a pan and a zoom').not.toBeNull();
-    expect.soft(await unseen('grey'), 'drawing it looks at nothing').toEqual([1, 2]);
+    expect.soft(await unseen('grey'), 'drawing it looks at nothing').toEqual([1, 2, 3]);
 
     await fit(page);
     await shoot(page, 'canvas', 'paper', () => fit(page));
     await theme(page, 'dark');
     await fit(page);
-    await expect.poll(async () => (await dots(page, 'grey'))?.unseen ?? 0, { message: 'after a reload' }).toBe(2);
+    await expect.poll(async () => (await dots(page, 'grey'))?.unseen ?? 0, { message: 'after a reload' }).toBe(3);
     expect.soft((await dots(page, 'grey')).dot, 'its dot after a reload').not.toBeNull();
     await shoot(page, 'canvas', 'dark', () => fit(page));
-    expect.soft(await unseen('grey'), 'still unseen').toEqual([1, 2]);
+    expect.soft(await unseen('grey'), 'still unseen').toEqual([1, 2, 3]);
   });
 
-  await test.step('Focus: the one shown is seen, the other keeps its dot until shown', async () => {
+  await test.step('Focus: the one shown is seen, the others keep their dots until shown', async () => {
     const region = await focus(page, 'grey');
-    await expect.soft(region.getByLabel('Take', { exact: true })).toHaveText('v2');
-    await softly.poll(() => unseen('grey'), { message: 'the one shown is seen' }).toEqual([1]);
+    await expect.soft(region.getByLabel('Take', { exact: true })).toHaveText('v3');
+    await softly.poll(() => unseen('grey'), { message: 'the one shown is seen' }).toEqual([1, 2]);
     const mark = (number) => tile(region, number).getByRole('img', { name: 'Not looked at yet', exact: true });
-    await expect.soft(mark(1), 'version 1 has its dot').toBeVisible();
-    await expect.soft(mark(2), 'version 2 has none').toHaveCount(0);
-    const ring = await mark(1).boundingBox(), thumb = await tile(region, 1).boundingBox();
-    expect.soft(ring && thumb && ring.x - thumb.x < 12 && ring.y - thumb.y < 12, `at the thumbnail's top left: ${JSON.stringify({ ring, thumb })}`).toBe(true);
+    for (const number of [1, 2]) await expect.soft(mark(number), `version ${number} has its dot`).toBeVisible();
+    await expect.soft(mark(3), 'version 3 has none').toHaveCount(0);
+    for (const number of [1, 2]) {
+      const ring = await mark(number).boundingBox(), thumb = await tile(region, number).boundingBox();
+      expect.soft(ring && thumb && ring.x - thumb.x < 12 && ring.y - thumb.y < 12, `at version ${number}'s top left: ${JSON.stringify({ ring, thumb })}`).toBe(true);
+    }
     await shoot(page, 'focus', 'dark');
     await theme(page, 'paper');
     await expect(focused(page)).toHaveAttribute('data-focused-asset', 'grey');
@@ -132,8 +137,11 @@ test('unseen', async ({ page, project, api }) => {
     await shoot(page, 'focus', 'paper');
 
     await tile(focused(page), 1).click();
-    await softly.poll(() => unseen('grey'), { message: 'shown, it is seen' }).toEqual([]);
+    await softly.poll(() => unseen('grey'), { message: 'version 1 shown' }).toEqual([2]);
     await expect.soft(mark(1), 'its dot goes').toHaveCount(0);
+    await tile(focused(page), 2).click();
+    await softly.poll(() => unseen('grey'), { message: 'version 2 shown' }).toEqual([]);
+    await expect.soft(mark(2), 'its dot goes').toHaveCount(0);
     await focused(page).getByRole('button', { name: 'Back to canvas', exact: true }).click();
     await expect(focused(page)).toHaveCount(0);
     await canvasIdle(page);
@@ -141,9 +149,9 @@ test('unseen', async ({ page, project, api }) => {
   });
 
   await test.step('rendering beside an unseen version: green and blue together', async () => {
-    await api.patch(project.at('/assets/grey'), { fields: { instructions: 'A mid grey.', shade: 0.5, seconds: 0 } });
+    await api.patch(project.at('/assets/grey'), { fields: { instructions: 'A light grey again.', shade: 0.8, seconds: 0 } });
     await render('grey');
-    await expect.poll(() => versions('grey'), { message: 'version 3', timeout: 120_000 }).toBe(3);
+    await expect.poll(() => versions('grey'), { message: 'version 4', timeout: 120_000 }).toBe(4);
     await api.patch(project.at('/assets/grey'), { fields: { instructions: 'A slow grey.', seconds: 25 } });
     await render('grey');
     await expect.poll(async () => { const now = await dots(page, 'grey'); return now && `${now.state} ${now.unseen}`; }, { message: 'running, one unseen', timeout: 120_000 }).toBe('running 1');
@@ -157,7 +165,7 @@ test('unseen', async ({ page, project, api }) => {
     await theme(page, 'dark');
     await fit(page);
     await shoot(page, 'running', 'dark', () => fit(page));
-    await expect.poll(() => versions('grey'), { message: 'version 4', timeout: 120_000 }).toBe(4);
-    expect.soft(await unseen('grey'), 'both unseen').toEqual([3, 4]);
+    await expect.poll(() => versions('grey'), { message: 'version 5', timeout: 120_000 }).toBe(5);
+    expect.soft(await unseen('grey'), 'both unseen').toEqual([4, 5]);
   });
 });

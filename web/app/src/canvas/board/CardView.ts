@@ -216,9 +216,10 @@ export class CardView {
     // Green first, at its top left, while a version is unseen (cl-1105); a run's queued, running or failed dot beside it.
     const dots = naming ? [] : [show.unseen ? colors.unseen : -1, show.state && show.state !== "unseen" ? colors[show.state] : -1].filter((color) => color >= 0)
     if (dots.length) {
-      const dot = Math.max(8, size * 0.42), cy = y + size * 0.62
-      dots.forEach((color, i) => this.ink.circle(2 + dot / 2 + i * (dot + 6), cy, dot / 2).fill(color))
-      const span = dots.length * dot + (dots.length - 1) * 6
+      // As tall as the name's capitals, and apart by half of one, so two read as two at a fitted zoom (look-at-your-own-ui).
+      const dot = Math.max(12, size * 0.6), gap = dot / 2, cy = y + size * 0.62
+      dots.forEach((color, i) => this.ink.circle(2 + dot / 2 + i * (dot + gap), cy, dot / 2).fill(color))
+      const span = dots.length * dot + (dots.length - 1) * gap
       this.drawn.dot = { x: 2, y: cy - dot / 2, w: span, h: dot }
       if (show.unseen) this.drawn.unseen = { x: 2, y: cy - dot / 2, w: dot, h: dot }
       this.area("dot", { x: 0, y: cy - dot, w: span + 4, h: dot * 2 })
