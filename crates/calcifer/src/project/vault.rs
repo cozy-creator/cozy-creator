@@ -1019,7 +1019,7 @@ fn look(api: &Arc<Api>, runtime: &tokio::runtime::Handle, root: PathBuf) -> Opti
     drop(operation);
     // Past its idle limit or maximum, held only by its runs: its lock waits on their machine, and one that doesn't answer never keeps
     // the vault open (cl-1064). Asked at most every `ASKED_AGAIN` meanwhile, never otherwise.
-    if !needs && past && work.as_ref().is_some_and(|work| matches!(work.why, "runs not settled" | "a run not yet settled")) {
+    if !needs && past && work.is_some_and(|work| work.runs) {
         let asked = ASKED.lock().expect("vault asks").get(&root).is_some_and(|at| at.elapsed() < ASKED_AGAIN);
         if !asked {
             ASKED.lock().expect("vault asks").insert(root.clone(), Instant::now());
@@ -1029,7 +1029,7 @@ fn look(api: &Arc<Api>, runtime: &tokio::runtime::Handle, root: PathBuf) -> Opti
             runtime.spawn_blocking(move || {
                 if unanswered(&api, &root) {
                     if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
-                    lock_lapsed(&api, &root, Instant::now(), false);
+                    lock_lapsed(&api, &root, true);
                 }
                 LOCKING.lock().expect("vault locks").remove(&root);
                 ASKED.lock().expect("vault asks").remove(&root);
@@ -1049,7 +1049,7 @@ fn look(api: &Arc<Api>, runtime: &tokio::runtime::Handle, root: PathBuf) -> Opti
     LOCKING.lock().expect("vault locks").insert(root.clone());
     let api = api.clone();
     runtime.spawn_blocking(move || {
-        lock_lapsed(&api, &root);
+        lock_lapsed(&api, &root, false);
         LOCKING.lock().expect("vault locks").remove(&root);
     });
     // Looked at again while it stays: a busy view or an unsaved page puts its lock off.
@@ -1057,8 +1057,8 @@ fn look(api: &Arc<Api>, runtime: &tokio::runtime::Handle, root: PathBuf) -> Opti
 }
 
 /// A vault past its deadline locks once what holds it has ended or drained. Its pages aren't asked to send what they typed: a lapsed
-/// view takes no write.
-fn lock_lapsed(api: &Arc<Api>, root: &FsPath) {
+/// view takes no write. `unanswered`: its runs on a local that doesn't answer held it past its limit (cl-1064), a deadline lock too.
+fn lock_lapsed(api: &Arc<Api>, root: &FsPath, unanswered: bool) {
     let op = operation(root);
     let Ok(_operation) = op.try_lock() else { say(root, "operation", || "its lock waits for a vault operation".into()); return; };
     let still_needs = held(root).is_some_and(|session| {
@@ -1068,7 +1068,7 @@ fn lock_lapsed(api: &Arc<Api>, root: &FsPath) {
     if !still_needs { return; }
     // A run its machine hasn't begun doesn't keep it open past its deadline (cl-1082): it ends before anything else, before a queued
     // run can begin. An explicit lock (closing) has ended the project's runs its own way.
-    let clocked = held(root).is_some_and(|session| { let session = session.lock().expect("vault session"); !session.closing && expired(&session) });
+    let clocked = unanswered || held(root).is_some_and(|session| { let session = session.lock().expect("vault session"); !session.closing && expired(&session) });
     if let Some(id) = project_id(root).filter(|_| clocked) {
         if let Err(failure) = api.calcifer.end_unstarted(&id).map_err(|_| error("run_cancel", "the project's runs not begun could not be ended")) {
             idle_lock_failed(root, &failure);
@@ -1379,14 +1379,16 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
 
 /// What holds an unlocked vault open: why, whether its end stirs the vault clock (one that doesn't is looked at again shortly), and how
 /// (cl-1082): work going holds both clocks; a run its machine hasn't begun, its driver or a client following it, only the idle one.
+/// `runs`: only the project's runs hold it, so a lock past its limit waits on their machine (cl-1064).
 #[derive(Clone, Copy)]
-struct Work { why: &'static str, told: bool, held: Hold }
+struct Work { why: &'static str, told: bool, held: Hold, runs: bool }
 
 /// What holds an unlocked vault open now, if anything: a request, a private process, a run saving its outputs, a render, cut or file
 /// move, a reader, a run not settled or its driver, a client following a run, a run's submission.
 fn working(api: &Arc<Api>, root: &FsPath) -> Option<Work> {
-    let going = |why, told| Some(Work { why, told, held: Hold::Working });
-    let waiting = Some(Work { why: "a run its machine hasn't begun", told: true, held: Hold::Waiting });
+    let going = |why, told| Some(Work { why, told, held: Hold::Working, runs: false });
+    let running = |why, told| Some(Work { why, told, held: Hold::Working, runs: true });
+    let waiting = Some(Work { why: "a run its machine hasn't begun", told: true, held: Hold::Waiting, runs: true });
     if api.projects.active_requests(root) { return going("a project request being answered", true); }
     if crate::local_code::private_process_active(root) { return going("a private process", true); }
     let following = FOLLOWING.lock().expect("vault followers").contains_key(root);
@@ -1407,9 +1409,9 @@ fn working(api: &Arc<Api>, root: &FsPath) -> Option<Work> {
     };
     // A run its machine began holds both clocks (owner 11-11: "runs count as activity"), and so does a driver whose run did: one
     // settling or handing on its outputs (cl-1060).
-    if !here.is_empty() || sent.len() > unstarted.len() { return going("runs not settled", true); }
+    if !here.is_empty() || sent.len() > unstarted.len() { return running("runs not settled", true); }
     let driven = api.calcifer.driven_into(&project.id);
-    if driven.iter().any(|id| !unstarted.contains(id)) { return going("a run not yet settled", false); }
+    if driven.iter().any(|id| !unstarted.contains(id)) { return running("a run not yet settled", false); }
     if !unstarted.is_empty() || !driven.is_empty() || following || submitting { waiting } else { None }
 }
 

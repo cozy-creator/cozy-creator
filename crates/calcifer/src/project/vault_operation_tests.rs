@@ -24,7 +24,7 @@ fn revoked_result_cannot_reveal_recovery_or_old_view() {
     let mut event = VaultEvent::Completed { changed: VaultChanged {
         vault: api::calcifer::project::VaultStatus { encrypted: true, state: "unlocked".into(), path: "/project".into(),
             view: Some("/readable".into()), expires_at_ms: None, idle_timeout_s: 900, next: vec![] },
-        recovery_secret: Some("synthetic recovery".into()), ended: vec![], skipped_files: vec![], unsaved: vec![], deferred: vec![],
+        recovery_secret: Some("synthetic recovery".into()), ended: vec![], skipped_files: vec![], unsaved: vec![], deferred: vec![], owed: None,
     }};
     token.store(false, Ordering::Release);
     let mut locked = event.clone();
