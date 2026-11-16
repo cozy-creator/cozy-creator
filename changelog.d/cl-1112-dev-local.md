@@ -1,0 +1,1 @@
+The dev build (`scripts/dev-local.sh`) serves the page from Vite with `COZY_DEV_PAGE=vite`, follows the RC with uncommitted edits (carried three-way; a conflict leaves the checkout as it was and names the files), and goes back to the previous build when a new one doesn't stay up for 30 s (cl-1112).

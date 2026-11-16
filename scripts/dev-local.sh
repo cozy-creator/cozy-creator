@@ -2,6 +2,8 @@
 # Keep the local Cozy on this checkout's RC branch (cl-1029): follow the branch's head, build, install the CLI, restart Calcifer
 # once it is idle, and say when local's TensorD (which Calcifer moves to the installed cozy once this computer is at rest) runs
 # it too. Local edits to the checkout build the same way. Requires watchexec, pnpm, Python 3, and the pinned Rust toolchain.
+# With COZY_DEV_PAGE=vite the page comes from the checkout's Vite (`[calcifer] development_web`), hot-reloaded: an edit under
+# web/ is on screen at once, builds nothing and restarts nothing.
 # Run with --once for one build, --follow for the follower alone. The default follows and watches until stopped.
 set -euo pipefail
 
@@ -16,13 +18,23 @@ cd "$root"
 say() { printf '%s %s\n' "$(date -Is)" "$*"; }
 
 # One look at the branch's head (git can't tell us it moved: one fetch a minute): true when the checkout fast-forwarded to it.
-# Only on an rc/* branch, only when clean, never past a local commit. Merges in quick succession land as one: it waits for the
-# branch to hold still for COZY_DEV_FOLLOW_SETTLE_S, then takes the newest head. A release renames the RC (rc/0.25.0 ->
-# rc/0.26.0): it follows the newest rc/X.Y.Z that contains its commit.
+# Only on an rc/* branch, never past a local commit; uncommitted edits come along. Merges in quick succession land as one: it
+# waits for the branch to hold still for COZY_DEV_FOLLOW_SETTLE_S, then takes the newest head. A release renames the RC
+# (rc/0.25.0 -> rc/0.26.0): it follows the newest rc/X.Y.Z that contains its commit.
 skipped=
 skip() { [[ $1 == "$skipped" ]] || say "follow: $1"; skipped=$1; return 1; }
+# Carried edits go back on the commit the follow started from; if they can't, they stay in $carried and it says so.
+put_back() {
+    if ! { git reset -q --keep "$was" && git apply "$carried"; }; then
+        say "follow: uncommitted edits in ${overlap[*]} couldn't go back; they are in $carried (git apply -3 it)"; return 1
+    fi
+    rm -f "$carried"
+}
 follow_once() {
-    local branch head next newest
+    local branch head next newest was carried overlap=()
+    carried=$(git rev-parse --path-format=absolute --git-path cozy-dev-local-carried.patch)
+    [[ ! -e $carried ]] \
+        || { skip "uncommitted edits from a follow cut short are in $carried: git apply -3 it, then delete it"; return 1; }
     branch=$(git symbolic-ref --short -q HEAD) || { skip "not on a branch"; return 1; }
     [[ $branch == rc/* ]] || { skip "on $branch, not an rc/* branch"; return 1; }
     if ! git fetch -q origin "$branch" 2> /dev/null; then
@@ -35,7 +47,6 @@ follow_once() {
     fi
     head=$(git rev-parse "origin/$branch")
     [[ $head != "$(git rev-parse HEAD)" ]] || { skipped=; return 1; }
-    [[ -z $(git status --porcelain) ]] || { skip "the checkout has uncommitted changes; it follows $branch once they're gone"; return 1; }
     git merge-base --is-ancestor HEAD "$head" || { skip "the checkout has commits origin/$branch lacks"; return 1; }
     for _ in 1 2 3 4 5 6 7 8 9 10; do
         sleep "${COZY_DEV_FOLLOW_SETTLE_S:-30}"
@@ -47,12 +58,34 @@ follow_once() {
     # Never under a build reading the tree.
     exec 7>"$CARGO_TARGET_DIR/build.lock"
     flock 7
-    local was
     was=$(git rev-parse --short HEAD)
-    git merge -q --ff-only "$head" || { exec 7>&-; skip "origin/$branch doesn't fast-forward"; return 1; }
+    # Uncommitted edits, staged or not, in files the branch changed are carried over three-way (as `git stash` would, without the
+    # shared stash): one already merged applies as nothing; one that conflicts leaves the checkout as it was and names the files.
+    # Until they are back they wait in $carried, which a follow cut short leaves for the next to name.
+    mapfile -t overlap < <(git diff --name-only HEAD "$head" | grep -Fxf <(git diff --name-only HEAD) || true)
+    if ((${#overlap[@]})); then
+        git diff --binary HEAD -- "${overlap[@]}" > "$carried" \
+            || { rm -f "$carried"; exec 7>&-; skip "couldn't save the edits in ${overlap[*]}"; return 1; }
+        git restore -q --source=HEAD --staged --worktree -- "${overlap[@]}" \
+            || { put_back; exec 7>&-; skip "couldn't set aside the edits in ${overlap[*]}"; return 1; }
+    fi
+    if ! git merge -q --ff-only "$head"; then
+        ((${#overlap[@]})) && put_back
+        exec 7>&-; skip "couldn't fast-forward to origin/$branch (git says why above)"; return 1
+    fi
+    if ((${#overlap[@]})); then
+        if ! git apply -3 "$carried" 2> /dev/null || [[ -n $(git diff --name-only --diff-filter=U) ]]; then
+            # A file the branch deleted matches nothing here; then nothing was applied either.
+            git restore -q --source=HEAD --staged --worktree -- "${overlap[@]}" 2> /dev/null; put_back; exec 7>&-
+            skip "origin/$branch conflicts with uncommitted edits in ${overlap[*]}: it follows once those are resolved"; return 1
+        fi
+        git reset -q -- "${overlap[@]}"; rm -f "$carried"
+    fi
     exec 7>&-
     skipped=
-    say "follow: $branch $was -> $(git rev-parse --short HEAD) ($(git rev-list --count "$was..HEAD") commits)"
+    local moved
+    moved="$branch $was -> $(git rev-parse --short HEAD) ($(git rev-list --count "$was..HEAD") commits)"
+    say "follow: $moved${overlap[*]:+, carrying uncommitted edits in ${overlap[*]}}"
 }
 
 if [[ ${1:-} == --follow ]]; then
@@ -64,8 +97,10 @@ fi
 
 if [[ ${1:-} != --once ]]; then
     "$root/scripts/dev-local.sh" --follow &
+    page=()
+    [[ ${COZY_DEV_PAGE:-} == vite ]] || page=(--watch web)
     exec watchexec --debounce 500ms --on-busy-update queue --shell none \
-        --watch crates --watch web --watch vendor --watch scripts/dev-local.sh \
+        --watch crates "${page[@]}" --watch vendor --watch scripts/dev-local.sh \
         --watch scripts/prepare-securefs.py --watch scripts/restart-calcifer-when-idle.py \
         --watch Cargo.toml --watch Cargo.lock --watch rust-toolchain.toml \
         --ignore '**/target/**' --ignore '**/node_modules/**' --ignore '**/dist/**' \
@@ -93,7 +128,7 @@ page_inputs=$(git ls-files -z --cached --others --exclude-standard -- web | sort
         if [[ -f $file ]]; then sha256sum -- "$file"; fi
     done | sha256sum | cut -d ' ' -f 1)
 if [[ ! -f web/app/dist/index.html || ! -f $page_stamp ]] || \
-    [[ $page_inputs != "$(cat "$page_stamp")" ]]; then
+    [[ ${COZY_DEV_PAGE:-} != vite && $page_inputs != "$(cat "$page_stamp")" ]]; then
     web/build.sh
     printf '%s\n' "$page_inputs" > "$page_stamp"
 fi
@@ -235,8 +270,33 @@ if cmp --silent "$staged" "$installed"; then
     versions "already matched this build"
     exit 0
 fi
+# A build that doesn't stay up goes back to the one before it (Paul, 11-16: "swap it from v1 -> v2 so I never have downtime";
+# a Calcifer that crashed at every start kept his page down for four minutes): it must answer and keep one process for
+# COZY_DEV_STEADY_S, or the previous binary is put back and Calcifer restarted on it.
+steady() {
+    local pid restarts
+    pid=$(systemctl --user show cozy-calcifer.service -p MainPID --value)
+    restarts=$(systemctl --user show cozy-calcifer.service -p NRestarts --value)
+    for _ in $(seq 1 "${COZY_DEV_STEADY_S:-30}"); do
+        sleep 1
+        [[ $(systemctl --user show cozy-calcifer.service -p ActiveState --value) == active ]] || return 1
+        [[ $(systemctl --user show cozy-calcifer.service -p MainPID --value) == "$pid" ]] || return 1
+        [[ $(systemctl --user show cozy-calcifer.service -p NRestarts --value) == "$restarts" ]] || return 1
+    done
+}
 cp --reflink=auto -p "$installed" "$HOME/.cozy/bin/.cozy-previous"
 mv -f "$staged" "$installed"
 restart
-ready
+if ! { ready && steady; }; then
+    say "the new build didn't stay up (journalctl --user -u cozy-calcifer): back to the one before it"
+    # Renamed into place, as the new one was: anything running the installed binary keeps its inode (a copy over it is refused).
+    staged=$(mktemp "$HOME/.cozy/bin/.cozy-dev.XXXXXX")
+    cp --reflink=auto -p "$HOME/.cozy/bin/.cozy-previous" "$staged"
+    mv -f "$staged" "$installed"
+    systemctl --user reset-failed cozy-calcifer.service 2> /dev/null || true
+    systemctl --user restart cozy-calcifer.service
+    ready || true
+    versions "rolled back after a failed start"
+    exit 1
+fi
 versions "updated in $((SECONDS - started))s"
