@@ -114,7 +114,11 @@ test('isolation', async ({ page, project, guards }) => {
     await fit(page);
     await parked(page);
     await expect.configure({ soft: true }).poll(() => undrawn(page, [...others, ...Object.keys(odd)]), { message: 'every box drawn, the odd ones too', timeout: 30_000 }).toEqual([]);
-    await expect.configure({ soft: true }).poll(async () => (await canvasCard(page, 'gone_file'))?.rendered?.media?.failed ?? false, { message: 'the gone file: a placeholder', timeout: 90_000 }).toBe(true);
+    // Settled one way or the other: drawn from the thumbnail Calcifer made when it came in (thumbs outlive their file), or said unavailable.
+    await expect.configure({ soft: true }).poll(async () => {
+      const media = (await canvasCard(page, 'gone_file'))?.rendered?.media;
+      return Boolean(media?.ready || media?.failed);
+    }, { message: 'the gone file: drawn from its thumbnail, or a placeholder', timeout: 90_000 }).toBe(true);
     const settled = asks.length;
     await page.waitForTimeout(5_000);
     expect.soft(asks.length - settled, `the gone file not asked for again once given up (${settled} asks before)`).toBe(0);
