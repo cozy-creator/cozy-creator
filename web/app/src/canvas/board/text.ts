@@ -70,7 +70,7 @@ export class Label {
   readonly view: Container
   private text = ""
   private key = ""
-  constructor(private bitmap: boolean) {
+  constructor(readonly bitmap: boolean) {
     this.view = bitmap ? new BitmapText({ text: "", style: { fontFamily: family(false), fontSize: 12, fill: 0xffffff } }) : new Text({ text: "", style: { fontFamily: family(false), fontSize: 12 } })
     this.view.eventMode = "none"
   }
