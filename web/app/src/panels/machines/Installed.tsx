@@ -1,55 +1,64 @@
-import { useQuery } from "@tanstack/react-query"
-import { useState } from "react"
-import { useConnection } from "../../app/Connection"
-import type { Machine } from "../../api/calcifer"
-import { Failure } from "../common"
+import type { Environment, MachineStatus, Model } from "../../api/calcifer"
+import { Section } from "../common"
 import { bytes, shown } from "../format"
+import { packageWords } from "./activity"
 
-/** What a machine holds, as it last said. Only asked once opened, since asking starts `local`. */
-function Held({ machine }: { machine: Machine }) {
-  const { client } = useConnection()
-  const name = machine.name
-  const packages = useQuery({ queryKey: ["machine", name, "packages"], queryFn: ({ signal }) => client.machinePackages(name, signal) })
-  const models = useQuery({ queryKey: ["machine", name, "models"], queryFn: ({ signal }) => client.machineModels(name, signal) })
+/** How far in a package is, past installed, as a person says it; installed says nothing. */
+const LEVEL: Record<string, string> = { downloaded: "downloaded, not installed", imported: "loaded", host: "loaded in memory", gpu: "loaded on a GPU" }
+
+const byName = (a: Environment, b: Environment) => a.package.localeCompare(b.package) || b.release.localeCompare(a.release)
+
+/** The packages it holds installed, each release once, live from its Status: whoever's run put them there (Paul, 11-13). */
+export function Packages({ status }: { status: MachineStatus }) {
+  const packages = [...(status.environments ?? [])].sort(byName)
   return (
-    <>
-      <Failure error={packages.error} lead="Couldn't load this machine's packages" />
-      <ul className="rows">
-        {packages.data?.packages.map((held) => (
-          <li className="heldrow" key={`${held.package}@${held.release}`}>
-            <span className="nm">{shown(held.package)}</span>
-            <small>{[held.release, held.level, held.source === "hub" ? "" : held.source].filter(Boolean).join(" · ")}</small>
-            {held.warning && <small className="warn">{held.warning}</small>}
-          </li>
-        ))}
-      </ul>
-      {packages.data && !packages.data.packages.length && <p className="muted">No packages installed.</p>}
-      <Failure error={models.error} lead="Couldn't load this machine's models" />
-      {models.data?.silent && <p className="muted">It hasn't reported in yet, so its models aren't known.</p>}
-      <ul className="rows">
-        {models.data?.models.map((held) => (
-          <li className="heldrow" key={`${held.model}@${held.release}:${held.lane}`}>
-            <span className="nm">{shown(held.model)}</span>
-            <small>{[held.release, held.lane || held.precision, bytes(held.bytes)].filter(Boolean).join(" · ")}</small>
-          </li>
-        ))}
-      </ul>
-      {models.data && !models.data.silent && !models.data.models.length && <p className="muted">No models downloaded.</p>}
-      {Boolean(models.data?.bytes) && (
-        <p className="muted">
-          {bytes(models.data?.bytes ?? 0)} in total (shared files counted once).
-        </p>
+    <Section title="Packages" actions={packages.length ? <small className="count">{packages.length}</small> : undefined}>
+      {packages.length ? (
+        <ul className="rows held">
+          {packages.map((held) => (
+            <li className="heldrow" key={held.installation || `${held.package}@${held.release}`} data-package={held.package}>
+              <span className="nm">{packageWords(shown(held.package))}</span>
+              <span className="what">{[held.release, LEVEL[held.level], held.hub ? "" : "local code"].filter(Boolean).join(" · ")}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted">No packages installed yet. A package installs here the first time a run needs it.</p>
       )}
-    </>
+    </Section>
   )
 }
 
-export function Installed({ machine }: { machine: Machine }) {
-  const [open, setOpen] = useState(false)
+/** One model's checkpoints in a few words: its releases, precisions, a LoRA, and a download cut short. */
+function modelWords(model: Model): string {
+  const checkpoints = model.checkpoints ?? []
+  const each = (pick: (one: (typeof checkpoints)[number]) => string | undefined) => [...new Set(checkpoints.map(pick).filter(Boolean))].join(", ")
+  const parts = [each((one) => one.release), each((one) => one.precision || one.lane)]
+  if (checkpoints.some((one) => one.role === "lora")) parts.push("LoRA")
+  if (checkpoints.some((one) => one.complete === false)) parts.push("partly downloaded")
+  return parts.filter(Boolean).join(" · ")
+}
+
+/** The models it holds, biggest first, as what fills its disk, live from its Status. */
+export function Models({ status }: { status: MachineStatus }) {
+  const models = [...(status.models ?? [])].sort((a, b) => b.total_bytes - a.total_bytes)
+  const total = status.models_bytes || models.reduce((sum, model) => sum + model.total_bytes, 0)
   return (
-    <details className="sect" onToggle={(event) => setOpen(event.currentTarget.open)}>
-      <summary>What's installed</summary>
-      {open && <Held machine={machine} />}
-    </details>
+    <Section title="Models" actions={models.length ? <small className="count">{`${models.length} · ${bytes(total)}`}</small> : undefined}>
+      {models.length ? (
+        <ul className="rows held">
+          {models.map((model) => (
+            <li className="heldrow" key={model.repository} data-model={model.repository}>
+              <span className="nm">{shown(model.repository)}</span>
+              <span className="what">{modelWords(model)}</span>
+              <span className="size">{bytes(model.total_bytes)}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted">No models downloaded yet. A model downloads here the first time a run needs it.</p>
+      )}
+      {models.length > 1 && <p className="muted">Files that models share are counted once in the total.</p>}
+    </Section>
   )
 }

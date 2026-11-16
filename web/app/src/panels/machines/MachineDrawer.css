@@ -1,0 +1,221 @@
+/* A machine's drawer (cl-1100): its GPUs, disk, queue, packages and models, each a section. */
+.drawer-body {
+  --seg-models: var(--mak);
+  --seg-environments: #a8661c;
+  --seg-runtime: #7d4fb8;
+  --seg-runs: var(--cur);
+  --seg-other: var(--line2);
+}
+:root[data-theme="dark"] .drawer-body {
+  --seg-environments: #e0a458;
+  --seg-runtime: #b48cf0;
+  --seg-other: #6b6f78;
+}
+.sect h3 .count {
+  flex: none;
+  color: var(--mute);
+  font-size: var(--body);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.gpus,
+.queue {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.gpu {
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.gpu + .gpu {
+  margin-top: 6px;
+}
+.gpu-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+}
+.gpu-line b {
+  font: var(--w-heading) var(--body) var(--mono);
+}
+.gpu-name {
+  color: var(--ink);
+}
+.gpu-mem {
+  color: var(--mute);
+  font-variant-numeric: tabular-nums;
+}
+.gpu-state {
+  margin-left: auto;
+  padding: 1px 9px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+.gpu-state.ok {
+  color: var(--cur);
+  background: color-mix(in srgb, var(--cur) 14%, transparent);
+}
+.gpu-state.hot {
+  color: var(--ood);
+  background: color-mix(in srgb, var(--ood) 16%, transparent);
+}
+.gpu-state.bad {
+  color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 14%, transparent);
+}
+.gpu-why {
+  margin: 4px 0 0;
+}
+.gpu-why.bad,
+.gpu-problem {
+  color: var(--bad);
+}
+.gpu-why.hot {
+  color: var(--ood);
+}
+.gpu-why.faint {
+  color: var(--faint);
+}
+.gpu-problem {
+  margin: 6px 0 0;
+}
+
+.diskbar {
+  display: flex;
+  height: 14px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--tint2);
+}
+.diskbar.full {
+  border-color: var(--bad);
+}
+.seg {
+  display: block;
+  flex: none;
+  height: 100%;
+}
+.seg + .seg {
+  box-shadow: inset 1px 0 0 var(--float);
+}
+.seg.models {
+  background: var(--seg-models);
+}
+.seg.environments {
+  background: var(--seg-environments);
+}
+.seg.runtime {
+  background: var(--seg-runtime);
+}
+.seg.runs {
+  background: var(--seg-runs);
+}
+.seg.other {
+  background: var(--seg-other);
+}
+.disk-sum {
+  margin: 6px 0 4px;
+  font-variant-numeric: tabular-nums;
+}
+.disk-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--mute);
+}
+.disk-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.disk-legend b {
+  color: var(--ink);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.disk-legend .seg {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+}
+.disk-full {
+  margin: 8px 0 0;
+  padding: 7px 10px;
+  border-left: 3px solid var(--bad);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--bad) 9%, transparent);
+  color: var(--bad);
+}
+
+.qrow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 8px;
+  padding: 7px 4px;
+}
+.qrow + .qrow {
+  border-top: 1px solid var(--tint2);
+}
+.qrow .dot {
+  width: calc(9px * var(--ui));
+  height: calc(9px * var(--ui));
+  margin: 0;
+}
+.qrow b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.qrow a {
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.qrow a:hover b {
+  text-decoration: underline;
+}
+.qrow .kind {
+  color: var(--mute);
+}
+.qrow .bar,
+.qrow .said {
+  grid-column: 2 / 4;
+}
+.qrow .said {
+  color: var(--mute);
+  font-variant-numeric: tabular-nums;
+}
+
+.held .heldrow {
+  flex-wrap: nowrap;
+  align-items: baseline;
+  padding: 4px 4px;
+}
+.held .heldrow + .heldrow {
+  border-top: 1px solid var(--tint2);
+}
+.held .what {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--mute);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.held .size {
+  flex: none;
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
