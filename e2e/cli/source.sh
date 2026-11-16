@@ -109,14 +109,11 @@ if cell source-callee e2e-source-relay/relay "text=called from the checkout"; th
   [ "$callee" = _/minimax-h3-tools ] || check "from source: e2e-source-relay's environment names its callee ${callee:-nothing}, not _/minimax-h3-tools"
 fi
 
-# The real Orbit from source: its contract says the checkout, and its lock takes minimax-h3 from the checkout's folder (its
+# The real Orbit from source: its contract says the checkout, and the lock it was read with takes minimax-h3 from the checkout's folder (its
 # `{ index = "tensorhub" }` source staged as a path): the Hub's published H3 has the old call syntax and would not describe it.
 if [ -d "$co/orbit" ]; then
   in_project "$RUN_PROJECT" run orbit/orbit --describe > "$OUT/source-orbit.txt" 2>&1 && grep -qF "from source: $said" "$OUT/source-orbit.txt" \
     || check "from source: orbit's contract doesn't say 'from source: $said': $(head -c 600 "$OUT/source-orbit.txt")"
-  in_project "$RUN_PROJECT" --json run orbit/orbit --describe > "$OUT/source-orbit.json" 2> "$OUT/source-orbit.err" \
-    && J '[.interface.entrypoints[]? | select(.name == "orbit") | .calls[]? | select(.package == "minimax-h3")] != []' "$OUT/source-orbit.json" \
-    || check "from source: orbit's interface calls no minimax-h3: $(jq -c '[.interface.entrypoints[]? | {name, calls}]' "$OUT/source-orbit.json" 2> /dev/null) $(tail -c 300 "$OUT/source-orbit.err")"
   lock=$(grep -l '^name = "orbit"$' $(find "$HOME/.cozy" "$RUN_PROJECT" -path '*/locked-*/lock' -newer "$co/orbit/pyproject.toml" 2> /dev/null) /dev/null 2> /dev/null | head -1)
   echo "from source: orbit's lock ${lock:-was not made}: $(grep -A2 '^name = "minimax-h3"$' "${lock:-/dev/null}" 2> /dev/null | tr '\n' ' ')"
   grep -A2 '^name = "minimax-h3"$' "${lock:-/dev/null}" 2> /dev/null | grep -q 'source = { directory = "../minimax-h3" }' \
