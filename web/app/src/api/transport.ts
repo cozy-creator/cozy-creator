@@ -70,22 +70,18 @@ export function sameOrigin(): Transport {
   let proven = false
   let provenOnce = false
   const unproven = (keepalive?: boolean) => !proven && !(keepalive && provenOnce)
-  // The restart guard: the Calcifer this page first proved, its account and its process. Another account answering is refused;
-  // another process (Calcifer restarted) keeps the tab working, but is sent no passphrase or recovery secret until the page is
-  // reloaded (design/calcifer-access.md).
-  let pinned: { principal: string; birth: string } | null = null
-  let restarted = false
+  // The account this page first proved. Another account answering is refused; a restarted Calcifer is the same Calcifer.
+  let pinned: string | null = null
   const storage = async (signal?: AbortSignal | null) => {
     if (proven) return
     const response = await fetch(resolve("/v1/project-storage"), { signal, cache: "no-store", headers: { [PROJECT_STORAGE_HEADER]: PROJECT_STORAGE_VERSION } })
     if (response.status === 403) throw new Refused(response)
     const capability = response.ok ? await response.json() : null
-    if (capability?.version !== 3 || typeof capability?.daemon_birth !== "string" || !String(capability?.principal ?? "").startsWith("user:")) {
+    if (capability?.version !== 3 || !String(capability?.principal ?? "").startsWith("user:")) {
       throw new Error("Calcifer cannot prove project storage protocol 3 for this page")
     }
-    pinned ??= { principal: capability.principal, birth: capability.daemon_birth }
-    if (capability.principal !== pinned.principal) throw new Refused(refusal(403, "forbidden", "other_user", "Another account answers at this page's address"))
-    if (capability.daemon_birth !== pinned.birth) restarted = true
+    pinned ??= capability.principal
+    if (capability.principal !== pinned) throw new Refused(refusal(403, "forbidden", "other_user", "Another account answers at this page's address"))
     proven = provenOnce = true
   }
   // What carries a passphrase or a recovery secret: an encrypted project's creation, a vault unlock or recovery.
@@ -109,10 +105,9 @@ export function sameOrigin(): Transport {
         try { await storage(signal) } catch (error) { if (error instanceof Refused) return error.response; throw error }
       }
       if (secret(init.body)) {
-        // Proven again right before a secret leaves: the Calcifer it goes to is the one this page opened on.
+        // Proven again right before a secret leaves: the account it goes to is the one this page opened on.
         proven = false
         try { await storage(signal) } catch (error) { if (error instanceof Refused) return error.response; throw error }
-        if (restarted) return refusal(409, "conflict", "calcifer_restarted", "Calcifer restarted since this page opened: reload the page before entering a passphrase")
       }
       project?.check()
       const headers = new Headers(init.headers)

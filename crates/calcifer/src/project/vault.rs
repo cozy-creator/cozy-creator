@@ -450,15 +450,6 @@ fn own_migration_pending(api: &Api, root: &FsPath) -> Result<bool, Error> {
         .map_err(|_| error("project_migration_pending", "legacy project storage could not be checked"))
 }
 
-fn reported_status(api: &Api, root: &FsPath) -> VaultStatus {
-    let mut state = status(root);
-    if state.state == "locked" && own_migration_pending(api, root).unwrap_or(true) {
-        state.state = "storage_update_required".into();
-        state.next = vec!["cozy vault unlock".into()];
-    }
-    state
-}
-
 fn milliseconds(seconds: u64) -> i64 { i64::try_from(seconds).unwrap_or(i64::MAX).saturating_mul(1000) }
 
 fn expired(session: &Session) -> bool { session.timer.expired() }
@@ -722,7 +713,7 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser:
         CLOSED.notify_waiters();
         ROOTS.lock().expect("vault roots").retain(|_, logical| logical != root);
         if let Ok(keybag) = Keybag::load(&root.join(KEYBAG_FILE)) {
-            let state = reported_status(api, root);
+            let state = status(root);
             crate::events::project_vault(&keybag.info().project_id, &state.state);
             let converting = CONVERTING.lock().expect("vault conversions").contains(root);
             if state.state != "locked" && !converting {
@@ -884,7 +875,7 @@ fn lock_lapsed(api: &Arc<Api>, root: &FsPath, due: Instant, forced: bool) {
 pub(super) async fn read(State(api): State<Arc<Api>>, Path(named): Path<String>) -> Result<Response, Refusal> {
     let root = location(&api, &named).map_err(Refusal)?;
     let _access = access(&root).read_owned().await;
-    Ok(private(axum::Json(reported_status(&api, &root)).into_response()))
+    Ok(private(axum::Json(status(&root)).into_response()))
 }
 
 pub(super) async fn write(State(api): State<Arc<Api>>, Path(named): Path<String>, body: Result<Bytes, BytesRejection>) -> Result<Response, Refusal> {
@@ -905,7 +896,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
                 say(root, "activity op", || "its idle clock restarts on a page's activity".into());
             }
         }
-        return Ok(VaultChanged { vault: reported_status(api, root), recovery_secret: None, ended: vec![], skipped_files: vec![] });
+        return Ok(VaultChanged { vault: status(root), recovery_secret: None, ended: vec![], skipped_files: vec![] });
     }
     if ask.action == "lock" && !encrypted(root) {
         return Err(Error::new(Kind::Usage, "project_plain", "unencrypted projects cannot be locked"));
@@ -936,7 +927,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
         if let Some(busy) = busy {
             if ended.is_empty() { return Err(busy); }
             progress.readable = readable_token(root);
-            return Ok(VaultChanged { vault: reported_status(api, &root), recovery_secret: None, ended, skipped_files: vec![] });
+            return Ok(VaultChanged { vault: status(&root), recovery_secret: None, ended, skipped_files: vec![] });
         }
     }
     // A lock waits for the project as the drain above does: for the requests let in before its view was revoked (each now
@@ -951,7 +942,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
         Ok(transition) => transition,
         Err(busy) if settling && busy.code == "project_busy" => {
             progress.readable = readable_token(root);
-            return Ok(VaultChanged { vault: reported_status(api, &root), recovery_secret: None, ended, skipped_files: vec![] });
+            return Ok(VaultChanged { vault: status(&root), recovery_secret: None, ended, skipped_files: vec![] });
         }
         Err(error) => return Err(error),
     };
@@ -962,7 +953,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
     let mut changed = loop {
         match change(&api, &root, ask, progress, &transition, &mut browser) {
             // What it ended is still settling: the session is closing, and the sweeper locks it once it has.
-            Err(busy) if !ended.is_empty() && busy.code == "project_busy" => break VaultChanged { vault: reported_status(api, &root), recovery_secret: None, ended: vec![], skipped_files: vec![] },
+            Err(busy) if !ended.is_empty() && busy.code == "project_busy" => break VaultChanged { vault: status(&root), recovery_secret: None, ended: vec![], skipped_files: vec![] },
             // Its view is revoked, so nothing new opens it: what still holds it (a request, a journal read, a measurement) is
             // finishing. A lock or a decrypt waits for that a moment rather than refuse; Cozy's browser was asked already.
             Err(busy) if drains && busy.code == "project_busy" && std::time::Instant::now() < draining => {
@@ -1164,7 +1155,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
         let store = api.projects.transition_store(api, &id, transition)?;
         progress.finish_receipt(&store, "completed")?;
     }
-    Ok(VaultChanged { vault: reported_status(api, root), recovery_secret, ended: vec![], skipped_files: progress.skipped() })
+    Ok(VaultChanged { vault: status(root), recovery_secret, ended: vec![], skipped_files: progress.skipped() })
 }
 
 /// What holds an unlocked vault open: why, and whether its end stirs the vault clock. One that doesn't is looked at again shortly.
