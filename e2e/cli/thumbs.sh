@@ -1,8 +1,9 @@
-# cl-1054: pictures imported into plain projects get their thumbnails stored in them (cl-982: "all thumbnails should be generated
-# ahead of time, and stored in the project", Paul 11-13). On macOS the canvas's opens cell, two projects of the same 50 pictures
-# (1200x1200 PNGs of ~4 MB), found none stored in 60 s (e2e 43791131996). As it set up: each project's thumbnails in its `.thumbs/`
-# within 60 s of the last import; else what Calcifer, its ffmpeg and the thumbnail route said, in $OUT/thumbs/. Meanwhile, each
-# second: how many are stored, and which ffmpeg and ffprobe run (thumbs/progress.txt).
+# cl-1054: pictures imported into plain projects get their thumbnails stored in them as they land (cl-982: "all thumbnails should be
+# generated ahead of time, and stored in the project", Paul 11-13). On macOS the canvas's opens cell, two projects of the same 50
+# pictures (1200x1200 PNGs of ~4 MB), found none stored in 60 s (e2e 43791131996): every import's measuring took the thumbnails'
+# ffmpeg turns, so none was drawn until the imports ended. As it set up: the first project's thumbnails all stored by the time the
+# second's imports end, and each project's within 60 s of the last; else what Calcifer, its ffmpeg and the thumbnail route said, in
+# $OUT/thumbs/. Meanwhile, each second: how many are stored, and which ffmpeg and ffprobe run (thumbs/progress.txt).
 thumbs_stored() {
 step "pictures imported into two plain projects get their thumbnails stored (cl-1054)"
 local out=$OUT/thumbs n=${THUMBS_PICTURES:-50} i p made began short= watcher
@@ -32,6 +33,9 @@ for p in one two; do
       || { check "thumbs: import pic_$i into $p: $(tail -c 300 "$out/import-$p-$i.json")"; kill "$watcher"; return; }
   done
 done
+made=$(stored one)
+echo "thumbs: the first project's when the second's imports ended: ${made:-0} of $n"
+[ "${made:-0}" -ge "$n" ] || check "thumbs: the first project's thumbnails when the second's imports ended: ${made:-0} of $n (they wait behind the imports' measuring)"
 began=$SECONDS
 while [ $((SECONDS - began)) -lt 60 ]; do
   short=
