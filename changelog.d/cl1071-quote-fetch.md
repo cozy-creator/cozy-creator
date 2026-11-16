@@ -1,0 +1,1 @@
+- A run's quoted download is what it fetches before it starts: each slot it waits for, only the components it reads, each object once across checkpoints (a fine-tune shares its base's parts), less what the machine holds; an overridden slot's default and an on-demand slot aren't counted (cl-1071).

@@ -1,7 +1,10 @@
 //! What a model's checkpoints hold, from their headers alone (`cozy model show`, xs-183): each lane's components with their
 //! classes, configs, run data and tensor counts, and what the header records of where it came from. Only header objects are
 //! read, never a weight. [`lanes`] and [`header`] are how Calcifer reads the headers a reference names, lane by lane.
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::{Arc, LazyLock, Mutex},
+};
 
 use axum::{
     Json,
@@ -123,6 +126,29 @@ pub(crate) async fn header(endpoint: &Endpoint, object: &types::ObjectRef) -> Re
     let bytes = (endpoint.document(&object).await)
         .map_err(|why| Error::unavailable("header_unreadable", format!("header {}: {}", object.id(), why.detail)))?;
     Header::from_cbor(&bytes).map_err(|why| Error::new(Kind::Unavailable, "header_invalid", format!("header {}: {why}", object.id())).next("cozy update"))
+}
+
+/// The chunks a slot's checkpoint is fetched as, by Hub, header and components: content-addressed, so read once and kept.
+type Wanted = HashMap<(String, String, Vec<String>), Arc<Vec<ObjectRef>>>;
+static WANTED: LazyLock<Mutex<Wanted>> = LazyLock::new(Mutex::default);
+
+/// The chunks and assets `components` of the checkpoint `header` read (every one when empty), each once (cl-1071): what a machine that
+/// holds none of it fetches for a slot, as TensorD fetches it (`tensorfs::fetch::wanted`). Only the header is read, as `cozy model show`
+/// reads it. None: it can't be read, or names no such component.
+pub(crate) async fn wanted(api: &Api, hub: &str, header: &types::ObjectRef, components: &[String]) -> Option<Arc<Vec<ObjectRef>>> {
+    let hub = origin(api, Some(hub)).ok()?;
+    let key = (hub.to_string(), header.sha256.clone(), components.to_vec());
+    if let Some(held) = WANTED.lock().expect("wanted lock").get(&key) {
+        return Some(held.clone());
+    }
+    let endpoint = distribution(&reader(api, &hub).ok()?, &hub).await.ok()?;
+    let read = self::header(&endpoint, header).await.inspect_err(|why| tracing::debug!("{}", why.message)).ok()?;
+    let chunks = tensorfs::fetch::wanted(&read, (!components.is_empty()).then_some(components))
+        .inspect_err(|why| tracing::debug!("header {}: {}", header.sha256, why.detail))
+        .ok()?;
+    let chunks = Arc::new(chunks);
+    WANTED.lock().expect("wanted lock").insert(key, chunks.clone());
+    Some(chunks)
 }
 
 fn class(class: &ClassRef) -> [String; 3] {

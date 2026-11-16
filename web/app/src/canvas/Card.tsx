@@ -18,10 +18,9 @@ import { useDragScroll } from "./dragScroll"
 import { downloadable, Media, Preview, Thumb, usePreview, type PreviewHover } from "./Media"
 import { caretToEnd } from "./MentionText"
 import { NameField } from "./NameField"
-import { ORBIT, orbitOf } from "./Orbit"
 import { ratioWords } from "./ratios"
-import { bare, beingMade, ContinueFrom, LeadIn, Segments, VideoTransport } from "./Segments"
-import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, makes, makingRun, NARROWEST, paints, ratioOf, reshapes, shownOf, takingOf, toolName, valuesOf, watched, widthFor } from "./shown"
+import { bare, ContinueFrom, LeadIn, Segments, VideoTransport } from "./Segments"
+import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, makes, makingRun, makingShape, NARROWEST, paints, ratioOf, reshapes, shownOf, takingOf, toolName, valuesOf, watched, widthFor } from "./shown"
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { VideoEditor } from "./timeline/VideoEditor"
 import { AddOns } from "./AddOns"
@@ -208,6 +207,11 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
   const pending = takingOf(view)
   const making = (asset.making ?? []).filter((run) => !pending.some((take) => take.run === run))
   const waiting = !pending.length && !making.length && (view.queued || view.asked !== undefined)
+  // A picture's tile is its shape at a height of 100; one on its way is the shape its frame is (cl-1072), else its newest's.
+  const tileOf = (ratio: number) => ({ height: 100, width: Math.min(220, 100 * ratio), aspectRatio: "auto" })
+  const measured = versions.find((version) => version.main?.width && version.main.height)?.main
+  const coming = asset.kind === "image" ? makingShape(view) ?? (measured ? measured.width! / measured.height! : undefined) : undefined
+  const comingTile = coming ? tileOf(coming) : undefined
   const next = nextTake(store, view, name, tools)
   if (!next.adds && !versions.length && !view.joining && !pending.length && !making.length && !waiting) return null
   const pick = (number: number) => {
@@ -225,7 +229,7 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
       {next.adds && !focused && <NewTake next={next} />}
       {waiting && (
         <span className="take-at">
-          <button type="button" className="take making" title="Queued">
+          <button type="button" className="take making" title="Queued" style={comingTile}>
             …
           </button>
           <button type="button" className="take-off" aria-label="Cancel what's queued" title="Cancel what's queued" onClick={() => store.cancelRender(name)}>
@@ -233,31 +237,20 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
           </button>
         </span>
       )}
-      {pending.map((take) => {
-        // One that failed stays, red, its error a click away, until it's deleted (cl-954).
-        const failed = take.failure ? take.failure.message.replace(`${name}: `, "") : undefined
-        const state = failed !== undefined ? "failed" : take.run !== undefined ? "running" : "queued"
-        return (
-          <span key={take.id} className="take-at">
-            <button type="button" className={`take making ${state === "failed" ? "failed" : ""} ${watch?.id === take.id ? "on" : ""}`} data-take-id={take.id} data-run={take.run} data-state={state} title={failed !== undefined ? `Didn't render: ${failed}` : take.run !== undefined ? `Run ${store.runName(take.run)}` : "Queued"} onClick={() => store.watchTake(name, take.id)}>
-              <span className={`state-dot ${state}`} role="img" aria-label={state === "failed" ? "Failed" : state === "running" ? "Rendering" : "Queued"} />
-              {failed !== undefined ? <span className="take-failed">Failed</span> : take.run !== undefined ? <TakeProgress view={view} run={take.run} /> : "…"}
-            </button>
-            {failed !== undefined ? (
-              <button type="button" className="take-off" aria-label="Delete this failed take" title="Delete" onClick={() => store.cancelTake(name, take)}>
-                <Icon name="trash" />
-              </button>
-            ) : (
-              <button type="button" className="take-off" aria-label={take.run !== undefined ? `Cancel run ${store.runName(take.run)}` : "Cancel what's queued"} title={take.run !== undefined ? `Cancel run ${store.runName(take.run)}` : "Cancel this take"} onClick={() => store.cancelTake(name, take)}>
-                <Icon name="close" />
-              </button>
-            )}
-          </span>
-        )
-      })}
+      {pending.map((take) => (
+        <span key={take.id} className="take-at">
+          <button type="button" className={`take making ${watch?.id === take.id ? "on" : ""}`} data-take-id={take.id} data-run={take.run} title={take.run !== undefined ? `Run ${store.runName(take.run)}` : "Queued"} style={comingTile} onClick={() => store.watchTake(name, take.id)}>
+            <span className={`state-dot ${take.run !== undefined ? "running" : "queued"}`} role="img" aria-label={take.run !== undefined ? "Rendering" : "Queued"} />
+            {take.run !== undefined ? <TakeProgress view={view} run={take.run} /> : "…"}
+          </button>
+          <button type="button" className="take-off" aria-label={take.run !== undefined ? `Cancel run ${store.runName(take.run)}` : "Cancel what's queued"} title={take.run !== undefined ? `Cancel run ${store.runName(take.run)}` : "Cancel this take"} onClick={() => store.cancelTake(name, take)}>
+            <Icon name="close" />
+          </button>
+        </span>
+      ))}
       {making.map((run) => (
         <span key={run} className="take-at">
-          <button type="button" className="take making" data-run={run} title={`Run ${store.runName(run)}`}>
+          <button type="button" className="take making" data-run={run} title={`Run ${store.runName(run)}`} style={comingTile}>
             <TakeProgress view={view} run={run} />
           </button>
           <button type="button" className="take-off" aria-label={`Cancel run ${store.runName(run)}`} title={`Cancel run ${store.runName(run)}`} onClick={() => store.cancelTake(name, { id: "", run })}>
@@ -277,7 +270,7 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
             title={[`${asset.noun} ${version.number}`, version.execution_ms ? took(version.execution_ms) : "", version.pickup ? `picked up from ${version.pickup.take.slice(1, -1)} at frame ${version.pickup.out_frame}` : "", version.number === asset.approved ? "approved" : "", asset.unseen?.includes(version.number) ? "not looked at yet" : ""].filter(Boolean).join(", ")}
             data-take={version.number}
             data-take-id={version.id || undefined}
-            style={asset.kind === "image" ? { height: 100, width: Math.min(220, 100 * (version.main?.width && version.main.height ? version.main.width / version.main.height : 1.5)), aspectRatio: "auto" } : undefined}
+            style={asset.kind === "image" ? tileOf(version.main?.width && version.main.height ? version.main.width / version.main.height : 1.5) : undefined}
             onClick={() => pick(version.number)}
             onDoubleClick={() => store.toggleApproved(name, version.number)}
             onContextMenu={(event) => {
@@ -310,38 +303,6 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
     </div>
   ) : (
     row
-  )
-}
-
-/** Orbit viewing for the take shown, as its file says or as a person turns it on (Paul, 11-11): on, a drag turns the video and no play
- *  button plays it. It's what the file says of itself, kept with the take, so it's undone like any edit and puts nothing out of date. */
-function OrbitToggle({ view, name }: { view: ElementView; name: string }) {
-  const store = useCanvasStore()
-  const shown = shownOf(view)
-  // Being made, its row is there already, to set once the take lands: nothing moves when it does (Paul, 11-12).
-  if (beingMade(view) && !view.hereWords) {
-    return (
-      <label className="row orbit-toggle">
-        <input className="canvas-control" type="checkbox" role="switch" aria-label="Orbit: drag to turn" checked={false} disabled />
-        <span>Orbit</span>
-        <span className="muted">Plays</span>
-      </label>
-    )
-  }
-  if (!shown || shown.field !== "video" || view.hereWords || !view.asset) return null
-  const on = Boolean(orbitOf(shown))
-  const which = shown.number === undefined ? name : `${view.asset.noun} ${shown.number} of ${name}`
-  const flip = (want: boolean) => {
-    const rest = Object.fromEntries(Object.entries(shown.metadata ?? {}).filter(([key]) => key !== "orbit"))
-    const metadata = want ? { ...rest, orbit: ORBIT } : rest
-    store.setMetadata(name, shown.number, metadata, `Turned ${want ? "on" : "off"} orbit viewing for ${which}`)
-  }
-  return (
-    <label className="row orbit-toggle">
-      <input className="canvas-control" type="checkbox" role="switch" aria-label="Orbit: drag to turn" checked={on} onChange={(event) => flip(event.target.checked)} />
-      <span>Orbit</span>
-      <span className="muted">{on ? "Drag to turn" : "Plays"}</span>
-    </label>
   )
 }
 
@@ -796,8 +757,6 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
       </FocusFrame>}
       {plays && <Segments name={name} view={view} />}
       {rendering && <span className="render-wave" data-state={viewState(view) ?? undefined} aria-hidden="true" />}
-      {/* Watched, not written: orbit viewing turns on and off here too (xs-180), as in a take being written. */}
-      {focused && asset?.kind === "video" && !asset.timeline && !editing && <OrbitToggle view={view} name={name} />}
       {here && !lite && asset?.tool && !view.placing && <ToolLine name={name} view={view} width={width} />}
       {here && !lite && asset && asset.kind !== "image" && !view.hereWords && !view.placing && !looking && <ShapeLine name={name} view={view} />}
       {drawn && !here && !focused && <Under view={view} name={name} lite={lite} />}
@@ -824,7 +783,6 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
               {/* Slow here, opened from Render's row: in Focus first under the frame, else right under Render (cl-1004). */}
               {focused && <SlowNotice name={name} view={view} />}
               {editing && asset.kind === "video" && !asset.timeline && <ContinueFrom name={name} view={view} />}
-              {asset.kind !== "image" && !asset.timeline && <OrbitToggle view={view} name={name} />}
               {asset.kind !== "image" && !editing && <Bar view={view} name={name} />}
               {/* Looking at a take an image tool made, only its description: its tool and words are the next take's, behind its +. */}
               {/* With no tool, a picture or a video asks nothing and has nothing to render (Paul, 11-12). */}

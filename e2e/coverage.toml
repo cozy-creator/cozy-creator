@@ -212,7 +212,7 @@ test = "pr: a weightless request; BiRefNet on the CPU"
 "--model" = "pr: entrypoints rejects malformed model overrides; run flags forwards a model slot"
 "--gpus" = "gate: cli cells"
 "--attention-kernel" = "gate: cli cells"
-"--lora" = "gate: cli cells"
+"--lora" = "pr: lora reads, a LoRA'd call downloads only the components its slot reads (tfs-300)"
 "--output" = "pr: the CLI in a folder Calcifer can't see: a script's still, downloaded by its digest (-o)"
 "--previews" = "pr: previews: a denoise loop on the CPU, its previews saved while it runs"
 ["run watch"]

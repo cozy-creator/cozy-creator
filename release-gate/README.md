@@ -180,6 +180,8 @@ without the event, their prompts are the same, and their frames are kept to judg
 `render-estimate` (cl-1004) is the bench's H3 Turbo 15 s shot as a box on one pod this runner never ran H3 on: the time `fit` gives
 the page before any run (its release's benchmark of that card) against the warm render's, within 35%, then `fit` again, measured there.
 `run-no-on` (tools.md) is `cozy run` with no `--on` on a runner with no GPU and one rental: a weightless still and a function that orchestrates a GPU model go to the rental, as a render does, and nothing warns; `e2e/cli/project.sh`'s `run_no_on` is the case with no rental.
+`lane-floor` (cl-1076) runs H3's generate on one card with FP4 tensor cores and less memory than H3's 8-bit lane, the session's
+cozy as TensorD, until H3's header lands: it resolves to int8, never to a 4-bit lane for want of free memory.
 `disk` runs the `disk` suite's cells on one pod under the session's TensorD (its installs only with `installs: yes`);
 `disk-valentino` (cl-774) is a 100 GB 4090 past a full disk: Qwen-Image 2.1 and turbo, then H3, which makes its room by
 ending turbo's idle executor and evicting both, H3 untouched while it renders, H3 bf16 refused before it downloads.

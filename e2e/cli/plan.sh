@@ -135,6 +135,55 @@ for at in 1 2 3; do
 done
 }
 
+# plan_fetch (cl-1071; Paul 11-16, a 65 GiB quote where 22 landed: "why would it take 15 mins to download?"): a run's quoted download is
+# what its machine fetches. composed.py builds a transformer and a VAE, and a third model on demand that it never reads; its box takes
+# e2e/composed-tune (its own transformer on e2e/composed-base's VAE) for the transformer. On stand-c, which holds none of them, the run
+# is quoted the tune's transformer and the base's VAE once (64 MiB) to fetch before it starts, not each named checkpoint whole and the
+# on-demand one (160 MiB); and that is what stand-c then holds of the two, within 5%. The on-demand model, which a quote can't know a
+# run reads, is quoted besides ("plus up to" its 32 MiB, `on_demand_bytes`); its machine fetches it beside the run, and it is that,
+# within 5%: the gap measured, never silent.
+# plan_fetch_held: stand-c's own listing of what it holds; and how much of `$1` it holds, `$2` the other model whose parts it shares
+# (`total_bytes` of one, `unique_bytes` of the other: their objects once).
+plan_fetch_held() {
+  stand_as stand-c --json machine show local > "$OUT/plan-fetch-held.json" 2>> "$OUT/stand-c.err" || true
+  jq -r --arg a "$1" --arg b "${2:-}" '[.status.models[]? | select(.repository == $a) | .total_bytes] + [.status.models[]? | select(.repository == $b) | .unique_bytes]
+    | add // 0' "$OUT/plan-fetch-held.json" 2> /dev/null || echo 0
+}
+
+plan_fetch() {
+step "plan (cl-1071): a run's quoted download is what its machine fetches"
+[ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "plan: its stand-in is another user of a fresh GitHub runner"; return; }
+local P=$OUT/plan-fetch tool=$here/project/composed.py/composed r=$RANDOM job run placed quoted demand landed extra=0
+cozy --json machine show local > "$OUT/set-local.json" || { check "plan fetch: machine show local"; return; }
+stand_in stand-c || return
+cozy --json new --unencrypted "$P" > "$OUT/plan-fetch-new.json" 2>&1 || { check "plan fetch: new: $(tail -c 300 "$OUT/plan-fetch-new.json")"; return; }
+jq -n --arg t "$tool" --arg r "$r" '[{name: "fetched", tool: $t, kind: "image",
+  fields: {instructions: "A tune on a base, \($r).", models: {model: {ref: "e2e/composed-tune@0.1.0"}}}}]' | boxes_in "$P" || return
+coming_go fetched '["stand-c"]'
+coming_done fetched 900
+job=$(status "$P" | jq -c '[.board.jobs[]? | select(.asset == "fetched")] | last // empty')
+run=$(jq -r '.run // empty' <<< "${job:-null}")
+[ -n "$run" ] && J '.state == "done"' <<< "$job" || { check "plan fetch: its run didn't end done: ${job:-no job}"; return; }
+echo "$P" > "$OUT/plan-fetch.at"
+run_show "$OUT" plan-fetch "$run"
+placed=$(jq -c '.placed // empty' "$OUT/plan-fetch.json" 2> /dev/null)
+quoted=$(jq -r '.fetch_bytes // 0' <<< "${placed:-null}") demand=$(jq -r '.on_demand_bytes // 0' <<< "${placed:-null}")
+landed=$(plan_fetch_held e2e/composed-tune e2e/composed-base)
+# The on-demand model comes beside the run, after it may have ended.
+for _ in $(seq 120); do
+  extra=$(plan_fetch_held e2e/composed-extra)
+  J '[.status.models[]? | select(.repository == "e2e/composed-extra") | .checkpoints[]?.complete] | any' "$OUT/plan-fetch-held.json" && break
+  sleep 1
+done
+echo "plan fetch: run $run on stand-c quoted $((quoted >> 20)) MiB to fetch, plus up to $((demand >> 20)) MiB on demand ($placed);" \
+  "stand-c holds $((landed >> 20)) MiB of the tune and the base, and $((extra >> 20)) MiB of the on-demand model"
+echo "plan fetch: stand-c holds $(jq -c '[.status.models[]? | select(.repository | startswith("e2e/composed")) | {repository, total_bytes, unique_bytes, complete: [.checkpoints[]?.complete]}]' "$OUT/plan-fetch-held.json" 2> /dev/null)"
+[ "$landed" -gt 0 ] && [ $(( (quoted > landed ? quoted - landed : landed - quoted) * 20 )) -le "$landed" ] \
+  || check "plan fetch: quoted $((quoted >> 20)) MiB to fetch before it starts, but stand-c holds $((landed >> 20)) MiB of what it waits for"
+[ "$extra" -gt 0 ] && [ $(( (demand > extra ? demand - extra : extra - demand) * 20 )) -le "$extra" ] \
+  || check "plan fetch: quoted up to $((demand >> 20)) MiB on demand, but stand-c fetched $((extra >> 20)) MiB of its on-demand model"
+}
+
 # prepare_ahead (phase c): BiRefNet, as its Hub publishes it, on a still that takes 4 min, can't start before it: unstarted work,
 # planned where BiRefNet's weights are. stand-v, a new stand-in that holds nothing, has nothing planned and runs nothing, is told to
 # prepare its function with no job (`PUT /v1/prepare`): it installs BiRefNet's environment and holds its weights while that box
