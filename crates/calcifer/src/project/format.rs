@@ -511,6 +511,11 @@ impl Doc {
         self.warnings.extend(said);
     }
 
+    /// The words a version of words holds, from its file here (xs-204). None: it isn't here.
+    pub(super) fn words(&self, file: &folder::File) -> Option<String> {
+        folder::words(&self.dir, file)
+    }
+
     /// The box a mention names by the dotted name it was written with, read as its `_` form.
     pub(super) fn dotted_box(&self, mention: &str) -> Option<usize> {
         self.dotted.get(&name_key(mention)).copied()

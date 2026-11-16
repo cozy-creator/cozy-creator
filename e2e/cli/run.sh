@@ -506,6 +506,7 @@ WEB_2=(
   hover
   notes
   fullscreen
+  llm-reads
 )
 WEB_3=(
   focus
