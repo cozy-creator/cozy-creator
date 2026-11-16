@@ -3652,7 +3652,15 @@ ended?: Array<number>,
 /**
  * Already-missing retained media skipped during conversion. Their project records remain missing.
  */
-skipped_files?: Array<string>, };
+skipped_files?: Array<string>,
+/**
+ * The runs whose outputs a lock cut, their save gone silent, by name (cl-1060): not saved, each run failed saying so.
+ */
+unsaved?: Array<string>,
+/**
+ * The runs whose save a lock stopped while their remote machine didn't answer (cl-1060): still owed, saved when it answers.
+ */
+deferred?: Array<string>, };
 
 /**
  * A private vault-operation stream. Progress counts copied bytes and completed files, not an estimated percentage.
