@@ -628,6 +628,8 @@ fn forget(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Resu
         let store = api.projects.transition_store(api, &project.id, transition)?;
         if !store.unsettled().map_err(|_| error("project_journal", "the project journal could not be checked"))?.is_empty()
             || !store.unsettled_here().map_err(|_| error("project_journal", "the project journal could not be checked"))?.is_empty()
+            // A finished call's outputs still being saved into it (cl-1060).
+            || api.calcifer.writing_into(&project.id)
         {
             return Err(Error::new(Kind::Conflict, "project_busy", "the project's work is still stopping; retry after it settles"));
         }
@@ -861,6 +863,11 @@ fn lock_lapsed(api: &Arc<Api>, root: &FsPath, due: Instant, forced: bool) {
         lapsed(&session)
     });
     if !still_needs { return; }
+    // A run that settled since the clock looked still saves its outputs first (cl-1060): the view stays open to it.
+    if project_id(root).is_some_and(|id| api.calcifer.writing_into(&id)) {
+        say(root, "writes", || "locking waits for a run's outputs still being saved".into());
+        return;
+    }
     if let Some(session) = held(root) { mark_closing(&mut session.lock().expect("vault session")); }
     let Ok(transition) = exclusive(root) else {
         say(root, "gate", || "locking waits for a request still holding the project".into());
@@ -1172,6 +1179,8 @@ fn working(api: &Arc<Api>, root: &FsPath) -> Option<Work> {
     if crate::local_code::private_process_active(root) { return told("a private process"); }
     let projects = api.projects.now_open();
     let project = projects.iter().find(|project| project.root == root)?;
+    // A finished call still owes the project its settling and outputs, saved after its row settles (cl-1060).
+    if api.calcifer.writing_into(&project.id) { return untold("a run's writes still owed: its outputs being saved"); }
     if *project.walking.lock().expect("walking lock") { return told("a render"); }
     if project.moving.try_lock().is_err() || project.cutting.try_lock().is_err() { return untold("a move or cut"); }
     let Ok(transition) = exclusive(root) else { return untold("a reader holding the project") };
