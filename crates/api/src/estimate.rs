@@ -703,6 +703,24 @@ fn refused(code: &str, message: String) -> Option<v1::Reason> {
 /// unless an idle executor holds them or a run of the same function goes before it there; packed on its GPUs as its scheduler packs
 /// them.
 pub fn quote(frame: &StatusFrame, now_ms: i64, jobs: &[EstimateJob], references: &References) -> Vec<Quote> {
+    // An update going here waits for every root it holds to end, then installs, and nothing asked is sent before it has (cl-1073:
+    // chartreux, so, held a run 20 minutes it was quoted to finish in 209 s): what is asked starts after both, on the machine as it
+    // then is. Its preparation is its own: it waits that long for the machine first.
+    if frame.update.as_ref().is_some_and(|update| !matches!(update.state.as_str(), "succeeded" | "failed" | "canceled")) {
+        let machine = Machine::of(frame, now_ms, references);
+        let (held, _) = machine.queue(frame.queue.as_deref().unwrap_or_default());
+        let drained = (pack(machine.gpus, &held).iter().map(|place| place.finish_ms).fold(0.0, f64::max) + INSTALL_MS) as u64;
+        let after = StatusFrame { queue: None, update: None, ..frame.clone() };
+        let asks: Vec<EstimateJob> = jobs.iter().map(|job| EstimateJob { after_ms: job.after_ms.saturating_sub(drained), ..job.clone() }).collect();
+        return (quote(&after, now_ms, &asks, references).into_iter())
+            .map(|mut quote| {
+                if quote.fits {
+                    (quote.start_ms, quote.finish_ms) = (quote.start_ms + drained, quote.finish_ms + drained);
+                }
+                quote
+            })
+            .collect();
+    }
     let machine = Machine::of(frame, now_ms, references);
     let queue = frame.queue.as_deref().unwrap_or_default();
     let (mut packed, mut line) = machine.queue(queue);

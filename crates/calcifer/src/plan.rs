@@ -180,7 +180,7 @@ fn stays(job: &Job, was: &Option<(usize, Offer)>, now_placed: &Option<(usize, Of
 }
 
 /// `sooner` finishes clearly before `than`: 10% and 30 s.
-fn clearly_sooner(sooner: &Offer, than: &Offer, now: i64) -> bool {
+pub(crate) fn clearly_sooner(sooner: &Offer, than: &Offer, now: i64) -> bool {
     let gain = than.finish_at_ms - sooner.finish_at_ms;
     gain >= STAY_MS && gain as f64 >= STAY * (than.finish_at_ms - now).max(0) as f64
 }
