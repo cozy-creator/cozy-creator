@@ -42,8 +42,11 @@ wheel_from() {
 # made <name>: the checkpoint a step's upload or quantize made, as sha256:<hex>: its `checkpoint <org/name>@sha256:…` line
 # (a machine's own `checkpoint sha256:…` line names no model); cozy 0.24's quantize says `commit`.
 made() { awk '($1=="checkpoint" || $1=="commit") && $2 ~ /@sha256:/ {c=$2} END{sub(/.*@/, "", c); print c}' "$OUT/$1.txt"; }
-# runno <name>: the run a step's output names last (its own, after a local source's sync run).
+# runno <name>: the run a step's output names last (its own, after a local source's sync run): its KEY-N.
 runno() { awk '$1=="run" && NF==2{print $2}' "$OUT/$1.txt" | tail -1; }
+# handle <ndjson>: what names the run or job its events tell of from any folder: a run's KEY-N (cl-987), a job's id (cl-1028: no
+# project's run, it has no name or number of a person's). A line may lead with the runner's clock.
+handle() { sed 's/^[0-9.]* {/{/' "$1" 2>/dev/null | grep '^{' | jq -r 'select(.run.number != null) | if (.run.name // "") != "" then .run.name else .run.id end' 2>/dev/null | head -1; }
 finish() {
   local status=$?; [ "$RC" != 0 ] || RC=$status
   for p in $WD $BG $DL; do pkill -P "$p"; kill "$p"; done 2>/dev/null

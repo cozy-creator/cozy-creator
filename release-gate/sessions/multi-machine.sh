@@ -70,7 +70,7 @@ on() { local m=$1 n=$2; shift 2; step "$n" machine ssh "$m" -- "$*"; }
 # sh <machine> <command>: its stdout, for a value.
 sh() { local m=$1; shift; cozy machine ssh "$m" -- "$*" < /dev/null 2>> "$OUT/ssh.err"; }
 # num <step>: the run that step started (its first line names it, followed to its end or not).
-num() { grep -m1 -oE '^run [0-9]+' "$OUT/$1.txt" | awk '{print $2}'; }
+num() { grep -m1 -oE '^run [A-Z][A-Z0-9]*-[0-9]+' "$OUT/$1.txt" | awk '{print $2}'; }
 # record <machine|-> <step>: that run as its controller records it (-: the runner's); its status.
 record() {
   local n; n=$(num "$2")

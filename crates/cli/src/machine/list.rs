@@ -230,6 +230,12 @@ pub(crate) fn record(ctx: &Context, m: &Machine) -> output::Record {
     if m.state != MachineState::Ended {
         record = record.field("running", m.running).field("queued", m.queued);
     }
+    // Its jobs (cl-1028): those going, and the newest ended of each job type and outcome.
+    for job in &m.jobs {
+        let (status, progress) = (run::list::status(job), run::list::progress(job));
+        let said = if progress.is_empty() { status } else { format!("{status} · {progress}") };
+        record = record.field(&format!("job {}", run::list::target(job)), said);
+    }
     if let Some(why) = &m.unreachable {
         record = record.note(format!(
             "it did not answer just now ({why}); its facts are from its last report"

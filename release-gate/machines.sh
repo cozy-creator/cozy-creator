@@ -21,25 +21,36 @@ listed() {
 # has not answered) its name. On a fresh runner that is what this job ordered: another client's rentals read `ordered: false`.
 own() { machines_json "${1:-cozy}" | jq -r '.machines[] | select(.kind == "rental" and .ordered and .state != "ended") | .rental_id // .name'; }
 
+# going <machine> [cli]: the machine's runs (every project's) and its jobs (an install, a download, an update: cl-1028, no project's
+# runs, listed on the machine), as one `{runs}`; fails when neither answers.
+going() {
+  local runs jobs
+  runs=$(timeout 60 "${2:-cozy}" --json run ls --all --on "$1" < /dev/null 2> /dev/null) || runs=
+  jobs=$(timeout 60 "${2:-cozy}" --json machine show "$1" < /dev/null 2> /dev/null) || jobs=
+  [ -n "$runs$jobs" ] || return 1
+  jq -nc --argjson r "${runs:-null}" --argjson j "${jobs:-null}" '{runs: (($r.runs // []) + ($j.jobs // []))}'
+}
+
 # run_stands <machine> [cli]: where each running run says it stands, a line each: number, stage, steps done of steps, and
 # for a download its bytes. A bare clock moves on any event, so a run can crawl for an hour inside one stage (41904557331).
 run_stands() {
-  timeout 60 "${2:-cozy}" --json run ls --all --on "$1" < /dev/null 2> /dev/null | jq -er '
+  going "$1" "${2:-cozy}" | jq -er '
     .runs[] | select(.status == "in_progress") | (.progress.stage // "starting") as $s
     | "\(.number) \($s) \(.progress.completed // 0)/\(.progress.total // 0)\(if ($s | test("download")) then " \(.progress.bytes_done // 0)" else "" end)"'
 }
 
 # run_downloads <machine> [cli]: each running run's download still under way, a line each: number, bytes so far, of bytes.
 run_downloads() {
-  timeout 60 "${2:-cozy}" --json run ls --all --on "$1" < /dev/null 2> /dev/null | jq -r '.runs[] | select(.status == "in_progress")
+  going "$1" "${2:-cozy}" | jq -r '.runs[] | select(.status == "in_progress")
     | select((.progress.bytes_total // 0) > (.progress.bytes_done // 0)) | "\(.number) \(.progress.bytes_done // 0) \(.progress.bytes_total)"'
 }
 
 # run_clock <machine> [cli]: that machine's runs by their own clock: the ms of their newest move (`.progress.at_ms`, which
-# stands still on a silent run; a run with none yet by its start or end), then the numbers of those not settled. Fails when
+# stands still on a silent run; a run with none yet by its start or end), then what names each not settled from any folder:
+# a run's KEY-N, a job's id (cl-1028). Fails when
 # no listing answers.
 run_clock() {
-  timeout 60 "${2:-cozy}" --json run ls --all --on "$1" < /dev/null 2> /dev/null | jq -er '
+  going "$1" "${2:-cozy}" | jq -er '
     ([.runs[] | .progress.at_ms, .settled_at_ms, .started_at_ms, .accepted_at_ms, .created_at_ms | numbers] | max // 0) as $at
-    | [$at, (.runs[] | select(.status == "queued" or .status == "in_progress") | .number)] | map(tostring) | join(" ")'
+    | [$at, (.runs[] | select(.status == "queued" or .status == "in_progress") | if (.name // "") != "" then .name else .id end)] | map(tostring) | join(" ")'
 }

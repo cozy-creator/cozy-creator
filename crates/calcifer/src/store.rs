@@ -84,7 +84,8 @@ const SCHEMA: &str = "
         batch TEXT NOT NULL DEFAULT '',
         job BLOB,
         owner TEXT NOT NULL DEFAULT '',
-        attempt INTEGER NOT NULL DEFAULT 1
+        attempt INTEGER NOT NULL DEFAULT 1,
+        task TEXT NOT NULL DEFAULT ''
     ) STRICT;
     CREATE INDEX runs_owed ON runs (machine) WHERE state <> 'settled';
     CREATE TABLE outputs (
@@ -132,6 +133,15 @@ const SCHEMA: &str = "
         run TEXT REFERENCES runs (id)
     ) STRICT;";
 
+/// A job's type (cl-1028): a store from before has none on its rows, which no job's end reads.
+fn task_column(writer: &mut Connection) -> Result<()> {
+    let has: bool = writer.query_row("SELECT EXISTS (SELECT 1 FROM pragma_table_info('runs') WHERE name = 'task')", [], |r| r.get(0))?;
+    if !has {
+        writer.execute_batch("ALTER TABLE runs ADD COLUMN task TEXT NOT NULL DEFAULT ''")?;
+    }
+    Ok(())
+}
+
 /// What each project write's `Idempotency-Key` answered (cl-812), kept a day: a store made before it gains the table, at the same
 /// version, which a Calcifer that predates it never reads.
 const ANSWERS: &str = "
@@ -148,6 +158,9 @@ const ANSWERS: &str = "
 const KEPT_FOR_MS: i64 = 90 * 24 * 3600 * 1000;
 /// How many a machine's end takes out: more than end meanwhile, few enough to hold the writer briefly.
 const PRUNED_EACH: i64 = 16;
+/// How long an ended job is kept before a newer one of its machine, job type and outcome takes it (cl-1028): whoever asked for it
+/// has read its end by then.
+const ENDED_KEPT_MS: i64 = 60_000;
 /// A run this much older than the measurements kept, still not settled, never will be: `drop_measurements` goes past it.
 const GIVEN_UP_MS: i64 = 30 * 24 * 3600 * 1000;
 /// The newest run number whose measurements `drop_measurements` has gone past.
@@ -409,6 +422,57 @@ pub(crate) struct NewRun {
     pub batch: String,
     /// Calcifer's own run (`Kind::Here`): its job's ask, which a next Calcifer carries out again (cl-866).
     pub job: Option<Vec<u8>>,
+    /// What one of Calcifer's jobs does: kept on its state.db row (cl-1028).
+    pub task: Task,
+}
+
+/// What one of Calcifer's jobs does (cl-1028): its machine keeps the newest ended of each, by outcome. `None`: a project's run.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Task {
+    #[default]
+    None,
+    Install,
+    Download,
+    Upload,
+    Quantize,
+    Warm,
+    Remove,
+    Update,
+    Lock,
+    Publish,
+}
+
+impl Task {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Task::None => "",
+            Task::Install => "install",
+            Task::Download => "download",
+            Task::Upload => "upload",
+            Task::Quantize => "quantize",
+            Task::Warm => "warm",
+            Task::Remove => "remove",
+            Task::Update => "update",
+            Task::Lock => "lock",
+            Task::Publish => "publish",
+        }
+    }
+
+    /// The job a reserved target of the package `cozy` asks (`api::calcifer::hub::job`).
+    pub(crate) fn of_job(target: &str) -> Self {
+        use ::api::calcifer::hub::job;
+        match target {
+            job::MODEL_DOWNLOAD => Task::Download,
+            job::MODEL_UPLOAD => Task::Upload,
+            job::MODEL_QUANTIZE => Task::Quantize,
+            job::PACKAGE_INSTALL => Task::Install,
+            job::PACKAGE_REMOVE => Task::Remove,
+            job::PACKAGE_LOCK => Task::Lock,
+            job::PACKAGE_PUBLISH => Task::Publish,
+            job::COZY_UPDATE => Task::Update,
+            _ => Task::None,
+        }
+    }
 }
 
 /// How to reach a machine: the id its caps name, its address and its TLS leaf's sha256.
@@ -646,6 +710,41 @@ impl Durable {
         *flushed = covers;
         Ok(())
     }
+}
+
+/// The runs `which` selects (a condition on `runs`), newest first.
+fn jobs_where(conn: &Connection, which: &str, values: impl rusqlite::Params) -> rusqlite::Result<Vec<Result<RunRow>>> {
+    let mut statement = conn.prepare(&format!("SELECT {RUN_COLUMNS} FROM runs WHERE {which} ORDER BY number DESC"))?;
+    statement.query_map(values, run_row)?.collect()
+}
+
+/// Deletes the jobs `which` selects (a condition on `runs`) with what hangs off each: its log, outputs, placement, kept step, a
+/// rental ask's link to it and its `ended_jobs` row (cl-1028). At most a hundred at once; how many went.
+fn forget_jobs(tx: &Transaction<'_>, which: &str, values: impl rusqlite::Params) -> Result<usize> {
+    let jobs: Vec<(String, String)> = {
+        let mut statement = tx.prepare(&format!("SELECT id, idempotency_key FROM runs WHERE {which} LIMIT 100"))?;
+        statement.query_map(values, |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+    };
+    for (id, key) in &jobs {
+        for sql in ["DELETE FROM run_logs WHERE run = ?1", "DELETE FROM outputs WHERE run = ?1", "DELETE FROM run_placements WHERE run = ?1",
+                    "UPDATE asks SET run = NULL WHERE run = ?1", "DELETE FROM ended_jobs WHERE run = ?1"] {
+            tx.execute(sql, [id])?;
+        }
+        tx.execute("DELETE FROM after_steps WHERE key_sha256 = ?1", [key_digest(key)])?;
+        tx.execute("DELETE FROM runs WHERE id = ?1", [id])?;
+    }
+    Ok(jobs.len())
+}
+
+/// A warm set job `row` asked, now it completed: the machine's own, kept beside it (cl-1028), so the next set it is sent still has it.
+fn keep_warm_set(tx: &Transaction<'_>, row: &RunRow) -> Result<()> {
+    let (Kind::Warm, Some(machine), Some(set)) = (row.kind, &row.machine, &row.spec.set) else { return Ok(()) };
+    for item in &set.items {
+        let item = serde_json::to_string(&v1::WarmItem { holds: String::new(), held_back: String::new(), ..item.clone() })
+            .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+        tx.execute("INSERT OR IGNORE INTO machine_warm (machine, item) VALUES (?1, ?2)", params![machine, item])?;
+    }
+    Ok(())
 }
 
 fn key_digest(key: &str) -> String {
@@ -992,6 +1091,9 @@ macro_rules! journal_methods {
                     new.project.as_deref().unwrap_or_default(),
                 ],
             )?;
+            if self.owner_id().is_none() && new.task != Task::None {
+                tx.execute("UPDATE runs SET task = ?2 WHERE id = ?1", params![new.id.as_str(), new.task.as_str()])?;
+            }
             Ok((new.id.to_string(), true))
         })?;
         let row = self.run(&id)?.ok_or_else(|| StoreError::Corrupt(format!("run {id} vanished")))?;
@@ -1334,6 +1436,9 @@ macro_rules! journal_methods {
                 ],
             )?;
             events.extend(end(tx, id, status, reason)?);
+            if self.owner_id().is_none() && status == Status::Completed {
+                keep_warm_set(tx, &row)?;
+            }
             Ok(events)
         })
     }
@@ -1843,6 +1948,8 @@ impl Store {
         let row = self.machine(machine)?.ok_or_else(|| StoreError::UnknownMachine(machine.into()))?;
         self.write(|tx| {
             tx.execute("UPDATE machines SET state = 'ended', reason = ?2, ended_at = coalesce(ended_at, ?3) WHERE name = ?1", params![machine, reason, now_ms()])?;
+            // Its warm set goes; the jobs it ran stay with it, what it did, until it goes (cl-1028).
+            tx.execute("DELETE FROM machine_warm WHERE machine = ?1", [machine])?;
             Ok(())
         })?;
         let ended = self.runs_on_ended_machine(machine, row.served, reason);
@@ -1856,10 +1963,10 @@ impl Store {
         drop(self.writer.lock().unwrap_or_else(|e| e.into_inner()));
     }
 
-    /// Takes out ended machines older than [`KEPT_FOR_MS`] that no kept run names, at most `limit`, with their logs, and gives the pages
-    /// back (a new store vacuums incrementally): the store keeps 90 days of them, with no timer (Paul 11-15). Its own check stands for
-    /// the foreign key's, which with no index on runs(machine) (one would take the unsettled-run plans) read every run for each
-    /// machine: off for this transaction only. How many went.
+    /// Takes out ended machines older than [`KEPT_FOR_MS`] that no kept run names but their ended jobs, at most `limit`, with their logs
+    /// and those jobs (cl-1028), and gives the pages back (a new store vacuums incrementally): the store keeps 90 days of them and of
+    /// what they did, with no timer (Paul 11-15). Its own check stands for the foreign key's, which with no index on runs(machine) (one
+    /// would take the unsettled-run plans) read every run for each machine: off for this transaction only. How many went.
     pub(crate) fn prune_machines(&self, limit: i64) -> Result<usize> {
         let before = now_ms() - KEPT_FOR_MS;
         let (pruned, commit) = {
@@ -1870,9 +1977,10 @@ impl Store {
                 tx.execute_batch("CREATE TEMP TABLE IF NOT EXISTS pruned_machines (name TEXT PRIMARY KEY); DELETE FROM temp.pruned_machines;")?;
                 tx.execute(
                     "INSERT INTO temp.pruned_machines SELECT name FROM machines WHERE state = 'ended' AND ended_at < ?1
-                         AND name NOT IN (SELECT machine FROM runs WHERE machine IS NOT NULL) LIMIT ?2",
+                         AND name NOT IN (SELECT machine FROM runs WHERE machine IS NOT NULL AND id NOT IN (SELECT run FROM ended_jobs)) LIMIT ?2",
                     params![before, limit],
                 )?;
+                while forget_jobs(&tx, "id IN (SELECT run FROM ended_jobs WHERE machine IN (SELECT name FROM temp.pruned_machines))", [])? > 0 {}
                 tx.execute("DELETE FROM machine_logs WHERE machine IN (SELECT name FROM temp.pruned_machines)", [])?;
                 let pruned = tx.execute("DELETE FROM machines WHERE name IN (SELECT name FROM temp.pruned_machines)", [])?;
                 if pruned > 0 { tx.execute_batch("PRAGMA incremental_vacuum(256)")?; }
@@ -1913,7 +2021,8 @@ impl Store {
                 tx.pragma_update(None, "user_version", VERSION)?;
                 tx.commit()?;
             }
-            VERSION => {}
+            // One an RC build cut before cl-1028 has no job type on its runs.
+            VERSION => task_column(&mut writer)?,
             other => return Err(StoreError::Version(other)),
         }
         run_list_indexes(&writer)?;
@@ -1957,20 +2066,19 @@ impl Store {
         })
     }
 
-    /// The warm items this journal's runs set on `machine` (`spec.set`), without what a Status says of them: of a machine's warm
-    /// set, what this controller's views show. Read from its warm runs that carry a set (`runs_warm_set`), never every warm run (cl-1010).
+    /// The warm set Calcifer's own jobs asked of `machine`: what ended ones left (`machine_warm`, cl-1028) and what those going ask.
     pub(crate) fn warm_items(&self, machine: &str) -> Result<Vec<v1::WarmItem>> {
-        let rows = self.read(|conn| {
-            let mut statement = conn.prepare(&format!(
-                "SELECT {RUN_COLUMNS} FROM runs WHERE kind = 'warm' AND machine = ?1 AND instr(spec, CAST('\"set\":{{' AS BLOB)) > 0"
+        let (kept, going) = self.read(|conn| {
+            let mut kept = conn.prepare("SELECT item FROM machine_warm WHERE machine = ?1")?;
+            let kept = kept.query_map([machine], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut going = conn.prepare(&format!(
+                "SELECT {RUN_COLUMNS} FROM runs WHERE machine = ?1 AND state <> 'settled' AND kind = 'warm' AND instr(spec, CAST('\"set\":{{' AS BLOB)) > 0"
             ))?;
-            let rows = statement.query_map([machine], run_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(rows)
+            let going = going.query_map([machine], run_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok((kept, going))
         })?;
-        let mut items: Vec<v1::WarmItem> = vec![];
-        // A run of a project adapter, from when there were any, is no one's to read (`runs`); one that can't be opened sets nothing.
-        let rows = rows.into_iter().filter_map(|row| row.ok()).filter(|row| !row.target.to_ascii_lowercase().contains("/project-adapter-"));
-        for item in rows.flat_map(|row| row.spec.set.map(|set| set.items).unwrap_or_default()) {
+        let mut items: Vec<v1::WarmItem> = kept.iter().filter_map(|item| serde_json::from_str(item).ok()).collect();
+        for item in going.into_iter().filter_map(|row| row.ok()).flat_map(|row| row.spec.set.map(|set| set.items).unwrap_or_default()) {
             let item = v1::WarmItem { holds: String::new(), held_back: String::new(), ..item };
             if !items.contains(&item) {
                 items.push(item);
@@ -1979,6 +2087,53 @@ impl Store {
         Ok(items)
     }
 
+    /// Calcifer's jobs on `machine` (cl-1028): those going and the newest ended of each job type and outcome, newest first; with
+    /// `local`, also its own, which go to no machine (`''` in `ended_jobs`).
+    pub(crate) fn jobs_on(&self, machine: &str, local: bool) -> Result<Vec<RunRow>> {
+        let rows = self.read(|conn| {
+            // Each by an index: those going by `runs_owed`, the ended by `ended_jobs`' key.
+            let mut rows = jobs_where(conn, "machine = ?1 AND state <> 'settled'", [machine])?;
+            if local { rows.extend(jobs_where(conn, "machine IS NULL AND state <> 'settled'", [])?); }
+            rows.extend(jobs_where(
+                conn,
+                "id IN (SELECT run FROM ended_jobs e WHERE machine IN (?1, ?2)
+                    AND number = (SELECT max(number) FROM ended_jobs WHERE machine = e.machine AND task = e.task AND status = e.status))",
+                params![machine, if local { "" } else { machine }],
+            )?);
+            Ok(rows)
+        })?;
+        Ok(rows.into_iter().filter_map(|row| row.ok()).collect())
+    }
+
+    /// Job `row` ended, owes nothing and was released (cl-1028): it joins `ended_jobs`, and those of its machine, job type and
+    /// outcome released before it with lower numbers go, with their logs, eight at most, once their end is [`ENDED_KEPT_MS`] old (so
+    /// whoever asked for one has read it). So each (machine, job type, outcome) keeps its newest ended job, and those that ended in the
+    /// minute before it or after it, until its next. One going or not yet released is never in `ended_jobs`, nor any from before
+    /// cl-1028 (the hard cut, cl-1003, takes those). It holds the writer milliseconds: 100 ms is said slow.
+    pub(crate) fn job_ended(&self, row: &RunRow) -> Result<()> {
+        let Some(status) = row.status else { return Ok(()) };
+        let status = match status {
+            Status::Completed => "completed",
+            Status::Canceled => "canceled",
+            _ => "failed",
+        };
+        let machine = row.machine.as_deref().unwrap_or("");
+        let now = now_ms();
+        self.write_held(Some(("job_ended", std::time::Duration::from_millis(100))), |tx| {
+            tx.execute(
+                "INSERT OR IGNORE INTO ended_jobs (machine, task, status, number, run, ended_at)
+                 SELECT ?1, task, ?2, number, id, coalesce(settled_at, ?4) FROM runs WHERE id = ?3 AND state = 'settled'",
+                params![machine, status, row.id.as_str(), now],
+            )?;
+            forget_jobs(
+                tx,
+                "id IN (SELECT run FROM ended_jobs WHERE machine = ?1 AND task = (SELECT task FROM runs WHERE id = ?5) AND status = ?2
+                    AND number < ?3 AND ended_at <= ?4 ORDER BY number DESC LIMIT 8)",
+                params![machine, status, row.number as i64, now - ENDED_KEPT_MS, row.id.as_str()],
+            )?;
+            Ok(())
+        })
+    }
     /// Projects whose files left on a machine were gone before the legacy cut could copy them in, and how many (cl-1003).
     pub(crate) fn lost_before_upgrade(&self) -> Result<Vec<(PathBuf, u64)>> {
         self.read(|conn| {
@@ -2005,9 +2160,15 @@ impl Store {
     /// write-back: on a multi-thread runtime the worker says so first, so its other tasks (the
     /// API's among them) move on. The flush runs outside the writer lock: others commit meanwhile.
     pub(crate) fn write<T>(&self, f: impl FnOnce(&Transaction) -> Result<T>) -> Result<T> {
+        self.write_held(None, f)
+    }
+
+    /// `write`, said slow (`crate::took`) when it held the writer `held`'s time or more, its commit included.
+    fn write_held<T>(&self, held: Option<(&'static str, std::time::Duration)>, f: impl FnOnce(&Transaction) -> Result<T>) -> Result<T> {
         let commit = || {
             let (value, commit) = {
                 let mut conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+                let _took = held.map(|(task, slow)| crate::took::Took::over(task, slow));
                 let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
                 let value = f(&tx)?;
                 tx.commit()?;
@@ -2842,6 +3003,7 @@ impl From<&MachineRow> for Machine {
             attempt: None,
             running: 0,
             queued: 0,
+            jobs: vec![],
             ordered: true,
             unverified: false,
             controller_key: None,
@@ -3073,12 +3235,10 @@ fn output_url(row:&RunRow, name: &str, index: u32) -> String {
 
 /// A run row as the API answers it, with its output items in the order they first appeared.
 /// What names `row` to a person (cl-987): `KEY-N`, the key its project.db keeps now (a project's journal is its project.db) and its
-/// number there; `COZY-N` for Calcifer's own.
+/// number there. Calcifer's jobs are no one's runs and have no name (cl-1028): its id names one.
 fn run_name(conn: &Connection, row: &RunRow) -> String {
-    let key = match row.project_root {
-        Some(_) => conn.query_row("SELECT key FROM project_keys ORDER BY ord DESC LIMIT 1", [], |r| r.get::<_, String>(0)).ok(),
-        None => Some(api::calcifer::project::MACHINE_KEY.to_owned()),
-    };
+    if row.project_root.is_none() { return String::new(); }
+    let key = conn.query_row("SELECT key FROM project_keys ORDER BY ord DESC LIMIT 1", [], |r| r.get::<_, String>(0)).ok();
     key.map_or_else(|| row.number.to_string(), |key| api::calcifer::project::run_label(&key, row.number))
 }
 

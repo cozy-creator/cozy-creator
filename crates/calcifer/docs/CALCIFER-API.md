@@ -74,8 +74,8 @@ These hold for every resource. A route that cannot follow one says why in its se
 An action on a resource is a POST to a sub-resource named for it (`/v1/runs/{id}/cancel`,
 `/v1/projects/{id}/approve`). JSON fields are snake_case. Ids are strings with a kind prefix (`run-…`,
 `project-…`); a run's `number` is its project's, 1 for its first (cl-1075), and is accepted wherever its id is, in that project. A run's `name` is
-`KEY-N` (cl-987), its project's key and its number there, `COZY-N` for Calcifer's own runs; it is accepted wherever its id is,
-in any scope, as is a key the project had. A locked project's keys are in no index of Calcifer's, only its `project.db`, and are
+`KEY-N` (cl-987), its project's key and its number there; it is accepted wherever its id is, in any scope, as is a key the
+project had. Every run is a project's (cl-1028): Calcifer's jobs ("Jobs") are no project's runs, have no name, and their id names them. A locked project's keys are in no index of Calcifer's, only its `project.db`, and are
 registered again as it opens: its runs' names are unknown here until then (`404 run_not_found`). Times are Unix milliseconds in
 fields ending `_ms`, in records and queries alike (`since_ms`); durations end `_s` or `_ms`. Request bodies
 ignore unknown fields and name them in `Cozy-Ignored-Fields`.
@@ -199,9 +199,9 @@ A run is asked for unbound (`RunRequest`); Calcifer resolves its target, binds i
 interface, cuts and stages its files and builds the machine's spec (`crates/calcifer/src/runs`). No client builds
 a spec.
 
-- `POST /v1/runs` (`Idempotency-Key`): a `RunRequest`. A run needs a `project`, its id or name, or the folder on this computer holding one: without it `400 not_in_a_project`, an unknown one `404 project_unknown`, and its outputs land in that project's `files/`, listed as its runs'; a file it's given joins `files/` at submit, so it can be asked again once what held it is gone. Answers `202` (`200` when the key had made it) with
+- `POST /v1/runs` (`Idempotency-Key`): a `RunRequest`. A run needs a `project`, its id or name, or the folder on this computer holding one: without it `400 not_in_a_project` ("Run this from inside a project folder, or create a project first.", next `cozy new`), before anything else is done, an unknown one `404 project_unknown`, and its outputs land in that project's `files/`, listed as its runs'; a file it's given joins `files/` at submit, so it can be asked again once what held it is gone. Answers `202` (`200` when the key had made it) with
   `Submitted {run, replay, notes, preparing, lock?}`:
-  - `target`: one of Calcifer's own jobs, `cozy/…` ("Jobs"), which needs no project; else `[org/]pkg/fn[@release]` (no `@`: the newest release its machine holds that isn't yanked, else the
+  - `target`: one of Calcifer's jobs, `cozy/…` ("Jobs"), which is no project's run; else `[org/]pkg/fn[@release]` (no `@`: the newest release its machine holds that isn't yanked, else the
     Hub's newest, which it installs; a yanked one moves to the newest with a warning; `x/y` is root package x's function y, else account x's package y).
     With `code`, local code by content (Local code), `target` is the function of it, empty for none named. A target written as a path is `400 target_by_path`.
   - `on` (a list: `local`, a machine, several machines, `any`, `new[:sku]`; of several, whichever quotes the soonest finish ("Placement"), and when none of them can take it, the first of this computer and this account's rentals up now that can, said once in a warning naming each and why (never an added machine, never a rental it would buy), and `503 machines_unavailable` only when none of those can either (cl-1066); empty, Calcifer's to say, and no client picks a default: the project's machines (`PUT /v1/projects/{id}/machines`), else where a render's job would go, the set the browser sends for automatic placement, on whichever quotes the soonest finish ("Placement")), `hub`, `gpus` (a count the machine honours; absent, the machine chooses), `lane`, `attention_kernel`, `attention_capture` (dev-only: the Runtime's attention capture spec, JSON), `project`, `warm`
@@ -258,8 +258,9 @@ a spec.
   asks before each file it sends with nothing in a browser's console; asking is a use, as a `HEAD` is. `POST /v1/project-files/held?project=`
   asks a project's own content store, as `/v1/project-files/{digest}` sends to it. A file is held in one place for a project: its own store,
   else what's held for anyone (`PUT /v1/files`). An import, an apply, a run's inputs and both probes find it the same way.
-- `GET /v1/runs` (`status`, `package`, `machine`, `project`, `before`, `limit`): `{runs, older, machine?, unreadable?}`. `project` is an id or name (`404 project_unknown`), or a folder of this computer's:
-  that project's runs. Each run names its `project`, the project's name, and `project_id`.
+- `GET /v1/projects/{id}/runs` (`status`, `package`, `machine`, `before`, `limit`): `{runs, older, machine?, unreadable?}`, that project's runs.
+  Each run names its `project`, the project's name, and `project_id`. `GET /v1/runs` lists nothing: `400 not_in_a_project` (next
+  `cozy run ls --all`), as every run is a project's (cl-1028); Calcifer's jobs are on their machines (`GET /v1/machines`, `jobs`).
 - `GET /v1/runs/{id}`: the run. While it waits, `queue_position` (1 is next); while it runs, `progress` with
   `done_fraction`, `bytes_per_s`, `step_steady_ms`, and its time left: `eta_s`, `eta_confidence`, `eta_basis` ("Time left").
   `progress.unit` `tokens` is a decode's count: its `total` is only its cap, so it is no share of the run and times no step. A stage in
@@ -418,16 +419,16 @@ A machine is this computer's (`local`, started when used), a rental, or another 
 - `POST /v1/machines/{name}/keepalive`: `Keepalive`. It restarts a rental's 15-minute idle clock once the
   machine acknowledges.
 - `POST /v1/machines/{name}/update` (`MachineUpdate`), with an `Idempotency-Key`: the machine's Runtime,
-  TensorFS and TensorD (its `cozy`) in one update run and one restart. Any other run for that machine waits here for its end, saying `getting <name> ready`, and goes to what it became.
+  TensorFS and TensorD (its `cozy`) in one update, a job of the machine's (cl-1028), and one restart. Any other run for that machine waits here for its end, saying `getting <name> ready`, and goes to what it became.
   - Each component is `{"version": "0.33.1"}` or `{"file": {sha256, name, version?}}`, a dev build sent first (`PUT /v1/files`): a wheel
     `name`d `<distribution>-<version>-….whl`, or a `cozy` binary and the release it says it is (`cozy --version`), when it says one.
   - A wheel version that PyPI lacks is fetched from its GitHub prerelease, matched to the machine's platform.
   - With nothing named, each component moves to the Hub's target: always when the target is pinned, else only
     forward.
   - On `local`, a `cozy` that `cozy update` installed goes along with the update.
-  - It answers `Updating {machine, run?, target, warnings}`: `202` with the run, which is followed like any
-    other; `200` with no run when the machine already runs the target.
-  - The run fails `update_unapplied` unless the machine then runs what it asked for.
+  - It answers `Updating {machine, run?, target, warnings}`: `202` with the job (`run`), followed by its id as a run is; `200` with
+    none when the machine already runs the target.
+  - The job fails `update_unapplied` unless the machine then runs what it asked for.
 - `GET /v1/machines/{name}/packages[?fresh=true&hub=]`: `MachinePackages {machine, packages: [{machine, package, release, runtime, level, hub, source, warning}]}`. `source` is
   `local`, `hub`, or another Hub's URL, for a client of `hub` (default this computer's).
 - `GET /v1/machines/{name}/models[?fresh=true]`: `MachineModels {machine, models: [{machine, model, release, lane, precision, checkpoint, bytes, shared_bytes}], silent?, repositories, bytes, stored_bytes}`.
@@ -539,9 +540,14 @@ sends it back. A code lives 10 minutes, and a wrong answer leaves it waiting.
 - `DELETE /v1/models/{org}/{name}`, `…/releases/{version}`, `…/commits/{commit}` (`?hub=`):
   `ModelDeleted`.
 
-**Jobs.** What takes long is a run (cl-841), asked as any is: `POST /v1/runs` of a reserved target of the package `cozy`, its
-fields as `input` and `on`, `hub`, `code` and `agreed` the request's own, `202` with the run (`Submitted`); quoted by `POST
-/v1/run-quotes`; listed, shown, followed and canceled as a run. `terms`, `files` and the like are `400 job_input`. With no `on` it goes
+**Jobs.** What takes long is asked as a run is (cl-841): `POST /v1/runs` of a reserved target of the package `cozy`, its
+fields as `input` and `on`, `hub`, `code` and `agreed` the request's own, `202` with the job as a run record (`Submitted`); quoted by `POST
+/v1/run-quotes`; shown, followed and canceled by its id as a run is (`/v1/runs/{id}`). A job is no project's run (cl-1028): it has no name,
+is listed by no run list, and is kept only while it goes and as its machine's last ended of its job type (install, download,
+upload, quantize, warm, remove, update, lock, publish) and outcome (completed, failed, canceled; `GET /v1/machines`, `jobs`; Calcifer's
+own count as `local`'s); a newer one of that type and outcome ending once it is a minute old, or the machine going 90 days after its
+end, deletes it with its log. Asked inside a project
+of that project's own code or outputs (its local code, `run:KEY-N`), it is that project's run. `terms`, `files` and the like are `400 job_input`. With no `on` it goes
 to this computer's machine, else any rental there is. Records: `api::calcifer::hub` (`job`). What Calcifer does once a machine
 completes one happens before the run settles and is in its result (`result.after`, `AfterRun`), so a client that stops following never
 skips it. Some are Calcifer's own work, on no machine (`kind: here`, `machine` none): each says what it does in the run's log, its
@@ -674,7 +680,7 @@ read settles and on `approve`, reading each asset's state, else its newest versi
 - `GET|PUT /v1/projects/{id}/key` (`{key}`): `{key, former}`, the key its runs are named by and the keys it had here, which still name
   them. A key is 2 to 10 letters and digits, a letter first, unique among this computer's projects, proposed from the project's name
   as it first opens here (its digits kept, `lab3_2` is `LAB32`; one taken lengthened with letters; never another known folder's name's
-  first key, cl-1075) and kept in its `project.db`. `409 project_key_taken` (another project's, now or before, or `COZY`),
+  first key, cl-1075) and kept in its `project.db`. `409 project_key_taken` (another project's, now or before, or `RUN`),
   `400 project_key_invalid`.
 - `GET /v1/projects/{id}/address`: the index's `{id, code, key, gone?}` for a registered project. It resolves browser links while the project is locked without opening its content. One whose folder went is still answered, by what it was known by, with `gone`: where it was (cl-980); a link to it says so, and nothing of it reads.
 - `GET /v1/projects/{id}` (`?assets=false`: all but its assets; `unsent`: what kept its last render from reaching a machine, each error once, until another is asked): worked out once per revision, so another read costs only its answer. `{id, path, board?, assets, queue?: [{name, running, run?}], missing, stale: [{name, why}], orphans: [{name, kind, versions, bytes, renamed_to?}], busy,
@@ -800,7 +806,7 @@ The CLI resolves the current directory to an existing project and sends its abso
 | any verb, Calcifer of another version | `POST /v1/down`, then the installed cozy's Calcifer started |
 | `cozy run <target> [inputs] [flags]` | `HEAD`/`PUT /v1/files/sha256:<hex>` for each file and folder it names, and local code's tree, `POST /v1/run-quotes` (`--on new`), `POST /v1/runs` (again after a `preparing` install), then `GET /v1/runs/{id}/events`; `-o DIR`, each output `GET /v1/runs/{id}/outputs/{name}`; `--previews DIR`, `GET /v1/runs/{id}/preview` each second while it runs |
 | `cozy run <target> --describe`, `cozy run <package>` | local code's tree `PUT`, `GET /v1/targets` (`tree`, `at`) |
-| `cozy run ls` | `GET /v1/runs`; live: `GET /v1/events`, then `GET /v1/runs` |
+| `cozy run ls` | `GET /v1/projects/{id}/runs` (`--all`: each project's, `GET /v1/projects`); live: `GET /v1/events`, then the same |
 | `cozy run watch <run> [-o DIR] [--previews DIR]` | `GET /v1/runs/{id}?detail=full`, `GET /v1/runs/{id}/events`; `-o DIR`, each output `GET /v1/runs/{id}/outputs/{name}` (a folder's tree, then `?member=`); `--previews DIR`, `GET /v1/runs/{id}/preview` each second while it runs |
 | `cozy run cancel <run>` | `GET /v1/runs/{id}`, `POST /v1/runs/{id}/cancel` |
 | `cozy login <email>` | `GET /v1/account`; `POST /v1/account/codes` (`sign_in`), `POST /v1/account/codes/{id}`; `PUT /v1/account/name` while unnamed |
@@ -840,13 +846,13 @@ The CLI resolves the current directory to an existing project and sends its abso
 | `machine use [MACHINE,...]` | current directory, `GET /v1/projects/{id}/address`, `PUT /v1/projects/{id}/machines` |
 | `machine ls` | `GET /v1/machines?refresh=true`; on a terminal, `GET /v1/events`, then `GET /v1/machines` |
 | `machine ls --history [--since D]` | `GET /v1/rentals?since_ms=` |
-| `machine show <name>` | `GET /v1/machines/{name}`; live on a terminal, as `ls` |
+| `machine show <name>` | `GET /v1/machines/{name}`, its `jobs` among its fields; live on a terminal, as `ls` |
 | `machine logs <name> [log] [--since D] [-f]` | `GET /v1/machines/{name}/logs/{log}?lines=&since_ms=` (SSE with `-f`). `logs local calcifer` reads Calcifer's log file, so it works while Calcifer is down |
 | `machine rent` | `GET /v1/rental-skus` |
 | `machine rent <sku>` | `POST /v1/rental-quotes`, `POST /v1/machines` (rent), then `GET /v1/events` until ready or ended |
 | `machine end <name> [--force]` | `DELETE /v1/machines/{name}`, then `GET /v1/events` until ended |
 | `machine keepalive <name>` | `POST /v1/machines/{name}/keepalive` |
-| `machine update <name> [--runtime\|--tensorfs\|--tensord V\|PATH]` | a file `HEAD`/`PUT /v1/files/sha256:<hex>`, `POST /v1/machines/{name}/update`, then the run's events. A project directory is built here first |
+| `machine update <name> [--runtime\|--tensorfs\|--tensord V\|PATH]` | a file `HEAD`/`PUT /v1/files/sha256:<hex>`, `POST /v1/machines/{name}/update`, then its job's events. A project directory is built here first |
 | `machine add <name> <address>` | `POST /v1/machines` (add) |
 | `machine authorize <key> [--remove]` | `PUT` or `DELETE /v1/machines/local/authorized-keys/{key}` |
 | `machine ssh <name>` | `GET /v1/machines/{name}` for its address, then `ssh` here |

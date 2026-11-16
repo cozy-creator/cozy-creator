@@ -56,7 +56,7 @@ h3=$(step h3 model install minimaxai/minimax-h3 --lane int8 --on "$M" -y)
 qwen=$(step qwen model install qwen/qwen-image-2.1 --lane int8 --on "$M" -y)
 # On a CPU the call is minutes a step: it held SDXL while both landed, and it is canceled once they have.
 run_show "$T" "$held" "$(cat "$T/$held.number")"; during=$(run_get "$T" "$held" .status)
-"$CLI" run cancel "$(cat "$T/$held.number")" -y > "$T/held-cancel.log" 2>&1; run_wait "$T" "$held"
+"$CLI" run cancel "$(run_ref "$T" "$held" "$(cat "$T/$held.number")")" -y > "$T/held-cancel.log" 2>&1; run_wait "$T" "$held"
 evicted_sdxl=$(logs 'tensorfs: evicted stabilityai/sdxl')
 [ "$h3$qwen$during" = completedcompletedin_progress ] && [ "$evicted_sdxl" = 0 ] \
   && expect disk-held PASS "SDXL run $(cat "$T/$held.number") ran while H3 and Qwen landed; SDXL never evicted" \

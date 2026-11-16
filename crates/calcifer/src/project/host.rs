@@ -389,7 +389,7 @@ impl Host {
 
     /// Sends `run` under `key`: one key is one run, however often it is sent.
     pub(crate) async fn submit(&self, key: &str, run: SubmitRun) -> Result<Run, Error> {
-        Ok(self.api.calcifer.submit(key, run).await.map_err(refused)?.run)
+        Ok(self.api.calcifer.submit(key, run, crate::store::Task::None).await.map_err(refused)?.run)
     }
 
     /// Runs a turn of its walk sends `on` one machine: they go together (`Together`).

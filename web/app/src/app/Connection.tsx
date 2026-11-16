@@ -213,12 +213,28 @@ class Bridge {
     return () => this.runListeners.delete(listener)
   }
 
+  /** One of Calcifer's jobs as it moves (cl-1028): its machine lists it at once. Once it ends, the machine is read again: Calcifer keeps
+   *  the newest ended of each job type and outcome, which a job's record doesn't say. */
+  private jobMoved(job: Run) {
+    const name = job.machine ?? "local"
+    const holding = (machine: Machine): Machine => ({ ...machine, jobs: [job, ...(machine.jobs ?? []).filter((held) => held.id !== job.id)] })
+    for (const [key, list] of this.queries.getQueriesData<MachineList>({ queryKey: ["machines"] })) {
+      if (list) this.queries.setQueryData<MachineList>(key, { ...list, machines: list.machines.map((machine) => (machine.name === name ? holding(machine) : machine)) })
+    }
+    this.queries.setQueryData<Machine>(["machine", name], (machine) => machine && holding(machine))
+    if (job.status !== "queued" && job.status !== "in_progress") {
+      void this.queries.invalidateQueries({ queryKey: ["machines"] })
+      void this.queries.invalidateQueries({ queryKey: ["machine", name] })
+    }
+  }
+
   private flushRuns = () => {
     this.flushing = false
     const batch = [...this.runs.values()].filter((run) => !run.project_id || !this.privateBlocked.has(run.project_id))
     this.runs.clear()
     for (const run of batch) {
-      this.queries.setQueryData(run.project_id ? ["project-run", run.project_id, run.number] : ["maintenance-run", run.number], run)
+      if (run.project_id) this.queries.setQueryData(["project-run", run.project_id, run.number], run)
+      else this.jobMoved(run)
       for (const listener of this.runListeners) listener(run)
     }
     const ended = batch.some((run) => run.status !== "queued" && run.status !== "in_progress")
@@ -226,11 +242,11 @@ class Bridge {
     // of an install is kept as its call is asked, after the install's own end. The list is read again.
     if (batch.some((run) => run.status === "completed" && (run.kind !== "call" || run.target.startsWith("local/")))) void this.queries.invalidateQueries({ queryKey: ["tools"] })
     // A list shows a run it holds as it changes; one it doesn't hold may be new to it, so it's read again.
-    for (const [key, list] of this.queries.getQueriesData<RunList>({ predicate: ({ queryKey }) => queryKey[0] === "project-runs" || queryKey[0] === "maintenance-runs" })) {
+    for (const [key, list] of this.queries.getQueriesData<RunList>({ queryKey: ["project-runs"] })) {
       if (!list) continue
-      const scoped = key[0] === "project-runs" ? batch.filter((run) => run.project_id === key[1]) : batch.filter((run) => !run.project_id)
+      const scoped = batch.filter((run) => run.project_id === key[1])
       if (!scoped.length) continue
-      const after = runsAfter(list, key[key[0] === "project-runs" ? 2 : 1] as RunFilter, scoped)
+      const after = runsAfter(list, key[2] as RunFilter, scoped)
       this.queries.setQueryData<RunList>(key, after.list)
       // A read begun before a run ended answers with it still going, and nothing after it says otherwise.
       const stale = ended && this.queries.isFetching({ queryKey: key, exact: true }) > 0
@@ -259,7 +275,7 @@ class Bridge {
         break
       case "run.updated":
         if (event.run.project_id && this.privateBlocked.has(event.run.project_id)) break
-        this.runs.set(`${event.run.project_id ?? "maintenance"}\0${event.run.id}`, event.run)
+        this.runs.set(`${event.run.project_id ?? "job"}\0${event.run.id}`, event.run)
         if (!this.flushing) {
           this.flushing = true
           setTimeout(this.flushRuns, 16)
@@ -408,8 +424,8 @@ export async function connect(): Promise<Boot> {
   bridge.setVersion(status.version)
   stream.subscribe(bridge.handle)
   stream.subscribe(heardThumb)
-  // Runs of no project (installs, updates) come only while something here shows them: a machine's view, or the runs of no project.
-  const machineView = ({ queryKey }: { queryKey: readonly unknown[] }) => queryKey[0] === "maintenance-runs" || queryKey[0] === "maintenance-run"
+  // Calcifer's jobs (installs, updates: cl-1028) come only while something here shows a machine.
+  const machineView = ({ queryKey }: { queryKey: readonly unknown[] }) => queryKey[0] === "machines" || queryKey[0] === "machine"
   queries.getQueryCache().subscribe(({ type, query }) => {
     if (!["observerAdded", "observerRemoved", "removed"].includes(type) || !machineView(query)) return
     stream.showMachines(queries.getQueryCache().findAll({ predicate: machineView }).some((held) => held.getObserversCount() > 0))

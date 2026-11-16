@@ -105,10 +105,10 @@ function Row({ doing, boxes, to }: { doing: Doing; boxes: Map<number, string>; t
   return (
     <li className="doing" data-doing="run" data-run={run.number}>
       <MarkOf mark={going ? "work" : "idle"} />
-      <Link to={run.project_id ? to(`runs/${run.number}`) : `/runs/${run.number}`} title={`Run ${runLabel(run)}: ${run.target}`}>
+      <Link to={run.project_id ? to(`runs/${run.number}`) : to(`machines/${run.machine}`)} title={run.project_id ? `Run ${runLabel(run)}: ${run.target}` : run.target}>
         <b>{runName(run, boxes)}</b>
       </Link>
-      <span className="kind">Run {runLabel(run)}</span>
+      <span className="kind">{run.project_id ? `Run ${runLabel(run)}` : "Job"}</span>
       {going && fraction != null && <Bar fraction={fraction} />}
       {said && <span className="said">{said}</span>}
     </li>

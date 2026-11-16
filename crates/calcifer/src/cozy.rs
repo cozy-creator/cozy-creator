@@ -75,7 +75,7 @@ pub(crate) async fn update(api: &Arc<Api>, wanted: &Wanted) -> Result<(Run, Note
     let its = api.clone();
     let work = move |here: Here| async move { run(&its, input, &here).await };
     let digest = crate::runs::digest(&ask);
-    let run = calcifer.here(None, &key, &digest, job::COZY_UPDATE.into(), &hub, kept, work).await.map_err(crate::runs::refused)?.run;
+    let run = calcifer.here(None, &key, &digest, job::COZY_UPDATE.into(), crate::store::Task::Update, &hub, kept, work).await.map_err(crate::runs::refused)?.run;
     Ok((run, note))
 }
 
@@ -101,13 +101,22 @@ pub(crate) async fn run(api: &Arc<Api>, ask: CozyUpdate, here: &Here) -> Result<
     if !newer(&ask.to, own) {
         return Ok(serde_json::to_value(CozyUpdated { from: own.into(), to: own.into() }).unwrap_or_default());
     }
-    let download = api.machines.download_url.as_deref();
-    let dir = api::update::dir(download, Some(&ask.to))?;
-    let latest = api::update::release(&dir, Some(&ask.to)).await.map_err(|e| {
-        Error::new(Kind::Unavailable, "cozy_unreachable", format!("Cozy couldn't download cozy {} for {}: {}", ask.to, ask.needed_by, e.message)).next("cozy update")
-    })?;
     let binary = installed(&api.machines.home)?;
-    let installed = api::update::install(&dir, download.is_some(), &latest, &binary, &mut |_| {}).await.map_err(by_hand)?;
+    // Put in place already by this Calcifer's earlier ask, whose record a newer cozy update took (cl-1028): not again.
+    let asked = binary.clone();
+    let in_place = tokio::task::spawn_blocking(move || std::process::Command::new(&asked).arg("--version").output()).await
+        .is_ok_and(|out| out.is_ok_and(|out| String::from_utf8_lossy(&out.stdout).trim() == format!("cozy {}", ask.to)));
+    let installed = match in_place {
+        true => ask.to.clone(),
+        false => {
+            let download = api.machines.download_url.as_deref();
+            let dir = api::update::dir(download, Some(&ask.to))?;
+            let latest = api::update::release(&dir, Some(&ask.to)).await.map_err(|e| {
+                Error::new(Kind::Unavailable, "cozy_unreachable", format!("Cozy couldn't download cozy {} for {}: {}", ask.to, ask.needed_by, e.message)).next("cozy update")
+            })?;
+            api::update::install(&dir, download.is_some(), &latest, &binary, &mut |_| {}).await.map_err(by_hand)?.to
+        }
+    };
     loop {
         let mut tail = api.calcifer.subscribe();
         if api.busy_but(here.id.as_str())?.is_none() {
@@ -122,7 +131,8 @@ pub(crate) async fn run(api: &Arc<Api>, ask: CozyUpdate, here: &Here) -> Result<
     let (restarting, id) = (api.clone(), here.id.clone());
     tokio::spawn(async move {
         for _ in 0..100 {
-            let settled = restarting.calcifer.store().run(id.as_str()).ok().flatten().is_some_and(|row| restarting.calcifer.record(&row).is_ok_and(|run| run.status == Status::Completed));
+            // Gone is settled: a newer cozy update that completed took its record (cl-1028).
+            let settled = restarting.calcifer.store().run(id.as_str()).ok().flatten().is_none_or(|row| restarting.calcifer.record(&row).is_ok_and(|run| run.status == Status::Completed));
             if settled {
                 break;
             }
@@ -130,7 +140,7 @@ pub(crate) async fn run(api: &Arc<Api>, ask: CozyUpdate, here: &Here) -> Result<
         }
         restarting.restart_updated().await;
     });
-    Ok(serde_json::to_value(CozyUpdated { from: own.into(), to: installed.to }).unwrap_or_default())
+    Ok(serde_json::to_value(CozyUpdated { from: own.into(), to: installed }).unwrap_or_default())
 }
 
 /// Only a cozy of a new major runs `needed_by`: cozy doesn't update itself across one (Paul, 11-13).

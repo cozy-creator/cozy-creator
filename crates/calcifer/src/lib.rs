@@ -104,7 +104,6 @@ pub(crate) struct Calcifer {
     /// Open projects by id, held weakly: a project closes once nothing of it is active (`release_run`).
     project_owners: Mutex<HashMap<String, project::OpenProject>>,
     inputs: PathBuf,
-    outputs: PathBuf,
     events: broadcast::Sender<(RunId, Event)>,
     live: Mutex<HashMap<RunId, Live>>,
     drivers: Mutex<HashMap<RunId, Arc<Notify>>>,
@@ -296,9 +295,8 @@ impl Drop for Driving {
 }
 
 impl Calcifer {
-    /// Opens Calcifer's home (`~/.cozy/calcifer`) and resumes every run it owes. `outputs` holds
-    /// each package's folder, where a run's outputs land unless it names its own directory.
-    pub(crate) fn open(home: &Path, outputs: &Path) -> Result<Arc<Self>, Error> {
+    /// Opens Calcifer's home (`~/.cozy/calcifer`) and resumes every run it owes.
+    pub(crate) fn open(home: &Path) -> Result<Arc<Self>, Error> {
         let store = Store::open(&home.join("state.db"))?;
         let projects = Instant::now();
         project::vault::sweep_runtime(home);
@@ -315,7 +313,6 @@ impl Calcifer {
             run_owners: Mutex::default(),
             project_owners: Mutex::default(),
             inputs,
-            outputs: outputs.to_owned(),
             events: broadcast::channel(4096).0,
             live: Mutex::default(),
             drivers: Mutex::default(),
@@ -377,7 +374,8 @@ impl Calcifer {
     /// answers the recorded run and starts nothing; another ask under it is a conflict. Canceled, `work` is dropped where it
     /// stands. A Calcifer that stops under it leaves it to the next, which carries out its ask again (`hub::jobs::resume`).
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn here<F, Fut>(self: &Arc<Self>, project: Option<&str>, key: &str, digest: &str, target: String, hub: &Origin, job: Vec<u8>, work: F) -> Result<Submitted, Error>
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn here<F, Fut>(self: &Arc<Self>, project: Option<&str>, key: &str, digest: &str, target: String, task: store::Task, hub: &Origin, job: Vec<u8>, work: F) -> Result<Submitted, Error>
     where
         F: FnOnce(Here) -> Fut + Send + 'static,
         Fut: Future<Output = Result<serde_json::Value, ::api::error::Error>> + Send + 'static,
@@ -386,9 +384,10 @@ impl Calcifer {
             Some(project) => store::RunStore::Project(self.project_store(project)?),
             None => store::RunStore::Maintenance(self.maintenance_store()),
         };
+        // A job of Calcifer's lands nothing here (cl-1028).
         let out = match &journal {
             store::RunStore::Project(store) => project::landing(store.execution_scope().1),
-            store::RunStore::Maintenance(_) => outputs::package_outputs(&self.outputs, &target),
+            store::RunStore::Maintenance(_) => PathBuf::new(),
         };
         let new = NewRun {
             project: project.map(str::to_owned),
@@ -407,6 +406,7 @@ impl Calcifer {
             stays: vec![],
             batch: String::new(),
             job: Some(job),
+            task,
         };
         let (row, fresh) = self.submit_routed(&journal, key, digest, new)?;
         if fresh {
@@ -507,7 +507,7 @@ impl Calcifer {
         self.waiting_named(ids,|id| match project {Some(project)=>self.project_store(project).and_then(|store|store.run(id)),None=>self.maintenance_store().run(id)})
     }
     fn waiting_named(&self,ids:&[String],run:impl Fn(&str)->store::Result<Option<RunRow>>)->Option<String> {
-        let name=|id:&String| run(store::calcifer_id(id)).ok().flatten().map(|row|format!("run {}",self.run_name(&row))).unwrap_or_else(||"other work".into());
+        let name=|id:&String| run(store::calcifer_id(id)).ok().flatten().map(|row|self.named(&row)).unwrap_or_else(||"other work".into());
         match ids {[]=>None,[one]=>Some(format!("waiting for {} to end",name(one))),many=>Some(format!("waiting for {} to end",many.iter().map(name).collect::<Vec<_>>().join(", ")))}
     }
 
@@ -631,7 +631,8 @@ impl Calcifer {
 
     pub(crate) fn release_run(&self, id: &RunId) {
         if lock(&self.drivers).contains_key(id) || self.exporting(id) { return; }
-        let Some(Some(owner)) = lock(&self.run_owners).get(id.as_str()).cloned() else { return };
+        let Some(owner) = lock(&self.run_owners).get(id.as_str()).cloned() else { return };
+        let Some(owner) = owner else { return self.job_released(id) };
         let store = match owner.store() {
             Ok(store) => store,
             // A lock queued on the project holds every new read until it has the project or gives up: this waits its turn, then looks
@@ -653,6 +654,21 @@ impl Calcifer {
             && store.outputs_to_export(id.as_str()).is_ok_and(|owed| owed.is_empty());
         drop(store);
         if ended { lock(&self.run_owners).remove(id.as_str()); }
+    }
+
+    /// One of Calcifer's jobs whose driver ended (cl-1028): settled and owing nothing, it is its machine's newest of its job type and
+    /// outcome, and older ones go (`Store::job_ended`). One a later job's end took already is gone.
+    fn job_released(&self, id: &RunId) {
+        let row = match self.store.run(id.as_str()) {
+            Ok(Some(row)) => row,
+            Ok(None) => return drop(lock(&self.run_owners).remove(id.as_str())),
+            Err(_) => return,
+        };
+        if row.state != State::Settled || !self.store.outputs_to_export(id.as_str()).is_ok_and(|owed| owed.is_empty()) { return; }
+        // Its driver's end and its export's both release it, at once: only the one that takes its route goes on, or a store from
+        // before cl-1028 would lose eight more of its old jobs to each.
+        if lock(&self.run_owners).remove(id.as_str()).is_none() { return; }
+        if let Err(e) = self.store.job_ended(&row) { warn!(run = %id, "an ended job's older ones stay: {e}"); }
     }
 
     /// Records `new` in `journal`, routed to its owner before it is recorded: whatever reads the journal (an attach driving what
@@ -703,14 +719,18 @@ impl Calcifer {
         let open=self.live_owners().into_iter().find(|owner|owner.root()==root);
         open.or_else(||self.opened(&row.owner).filter(|owner|owner.root()==root)).map(Some).ok_or_else(||StoreError::Locked("project_not_open".into()))
     }
-    /// What names `row` to a person (cl-987): `KEY-N`, its project's key and its number there, `COZY-N` for Calcifer's own; its
-    /// number alone while its project isn't open. Naming a run never opens its project (a lock may be closing it).
+    /// What names `row` to a person (cl-987): `KEY-N`, its project's key and its number there; its number alone while its project
+    /// isn't open. Naming a run never opens its project (a lock may be closing it). A job of Calcifer's has none (cl-1028).
     pub(crate) fn run_name(&self,row:&RunRow)->String {
-        let Some(root)=&row.project_root else { return ::api::calcifer::project::run_label(::api::calcifer::project::MACHINE_KEY, row.number) };
+        let Some(root)=&row.project_root else { return String::new() };
         match self.live_owners().into_iter().find(|owner| owner.root()==root) {
             Some(owner) => ::api::calcifer::project::run_label(&owner.key(), row.number),
             None => row.number.to_string(),
         }
+    }
+    /// How a message names `row`: `run KEY-N`, or what one of Calcifer's jobs does (cl-1028: no one's run, it has no name).
+    pub(crate) fn named(&self,row:&RunRow)->String {
+        match row.project_root { Some(_)=>format!("run {}",self.run_name(row)), None=>row.target.clone() }
     }
     pub(crate) fn row_store(&self,row:&RunRow)->store::Result<store::RunStore<'_>> {
         match self.row_owner(row)? { Some(owner)=>owner.store().map(store::RunStore::Project),None=>Ok(store::RunStore::Maintenance(self.maintenance_store())) }
@@ -917,8 +937,8 @@ impl Calcifer {
 
     /// Records a prebuilt run under `key` and starts it; the same key again answers the recorded
     /// run.
-    pub(crate) async fn submit(self: &Arc<Self>, key: &str, submit: SubmitRun) -> Result<Submitted, Error> {
-        self.submit_under(key, &digest_of(&submit), submit).await
+    pub(crate) async fn submit(self: &Arc<Self>, key: &str, submit: SubmitRun, task: store::Task) -> Result<Submitted, Error> {
+        self.submit_under(key, &digest_of(&submit), submit, task).await
     }
 
     /// Records `runs` under their keys as one batch, then starts each: those that go to one machine
@@ -928,7 +948,7 @@ impl Calcifer {
         let mut answers = vec![];
         let mut fresh = vec![];
         for (key, submit) in runs {
-            let recorded = self.record_run(&key, &digest_of(&submit), submit, &batch).await;
+            let recorded = self.record_run(&key, &digest_of(&submit), submit, &batch, store::Task::None).await;
             answers.push(recorded.map(|(submitted, row)| {
                 fresh.extend(row);
                 submitted
@@ -944,27 +964,14 @@ impl Calcifer {
             store.admit_new_work()?;
             return Ok(store::RunStore::Project(store));
         }
-        // This constructor is reached only through the explicit typed machine
-        // updater. Its component files/payload are installation maintenance,
-        // including the candidate binary used before any project exists.
-        if submit.kind==::api::calcifer::Kind::Update && submit.spec.kind==v1::RunKind::Update && submit.out.is_none() && private_io::current().is_none() {
-            return Ok(store::RunStore::Maintenance(self.maintenance_store()));
-        }
-        // A model upload or other preparation without a project is not project data unless it publishes project code;
-        // code natively admitted as independent of every project is not.
-        let local_source = match submit.spec.source.as_ref() {
+        // No project: one of Calcifer's jobs (cl-1028), as a person's run is refused at the door (`runs::submit`). Asked inside a
+        // project, or of code no project's admission made the machine's (cl-990), it is that project's, which must be named.
+        let project_code = match submit.spec.source.as_ref() {
             Some(v1::Source::Local(local)) => !crate::maintenance_source::admitted_object(self.maintenance_store(), &local.manifest),
             _ => false,
         };
-        let hub_work = matches!(submit.kind, ::api::calcifer::Kind::Here | ::api::calcifer::Kind::Warm)
-            && submit.spec.kind != v1::RunKind::Call && submit.out.is_none() && !local_source;
-        if private_io::current().is_some()
-            || (!hub_work && (submit.kind == ::api::calcifer::Kind::Call || submit.spec.kind == v1::RunKind::Call
-                || submit.out.is_some() || !submit.inputs.is_empty() || !submit.spec.inputs.is_empty()
-                || submit.spec.payload.is_some() || local_source))
-        {
-            return Err(Error::Refused(::api::error::Error::new(::api::error::Kind::Validation, "project_required", "Running a function needs a project.")
-                .remedy("Run this from a project folder, or create a project first.").next("cozy new")));
+        if private_io::current().is_some() || project_code {
+            return Err(Error::Refused(::api::calcifer::project::unnamed()));
         }
         Ok(store::RunStore::Maintenance(self.maintenance_store()))
     }
@@ -976,8 +983,9 @@ impl Calcifer {
         key: &str,
         digest: &str,
         submit: SubmitRun,
+        task: store::Task,
     ) -> Result<Submitted, Error> {
-        let (submitted, fresh) = self.record_run(key, digest, submit, "").await?;
+        let (submitted, fresh) = self.record_run(key, digest, submit, "", task).await?;
         fresh.into_iter().for_each(|id| self.drive(id));
         Ok(submitted)
     }
@@ -989,6 +997,7 @@ impl Calcifer {
         digest: &str,
         mut submit: SubmitRun,
         batch: &str,
+        task: store::Task,
     ) -> Result<(Submitted, Option<RunId>), Error> {
         if let Some(project)=submit.project.as_deref() {
             let (id,root)={ let store=self.project_store(project)?; let(id,root)=store.execution_scope(); (id.to_owned(),root.to_owned()) };
@@ -1024,9 +1033,11 @@ impl Calcifer {
             On::Machine(name) => (Some(named.unwrap_or_else(|| name.clone())), true, None),
             on => (None, false, Some(on.to_string())),
         };
-        let out_dir = match submit.out {
-            Some(dir) => dir,
-            None => outputs::package_outputs(&self.outputs, &submit.target),
+        // A run lands in its project; a job of Calcifer's lands nothing here (cl-1028).
+        let out_dir = match (submit.out, submit.project.as_deref()) {
+            (Some(dir), _) => dir,
+            (None, Some(project)) => project::landing(self.project_store(project)?.execution_scope().1),
+            (None, None) => PathBuf::new(),
         };
         let hub = (!submit.hub.is_empty())
             .then(|| Origin::parse(&submit.hub))
@@ -1049,6 +1060,7 @@ impl Calcifer {
             stays: submit.stays,
             batch: batch.to_owned(),
             job: None,
+            task,
         };
         let (me, key, given, held, digest) = (self.clone(), key.to_owned(), submit.inputs, submit.held, digest.to_owned());
         let (row, fresh) = tokio::task::spawn_blocking(move || {
@@ -1431,7 +1443,7 @@ impl Calcifer {
                 continue;
             }
             let mut names: Vec<String> = (ahead.iter().flat_map(|op| &op.runs))
-                .map(|id| self.with_run_store(id, |store| store.run(id)).ok().flatten().map_or_else(|| "another run".to_owned(), |row| format!("run {}", self.run_name(&row))))
+                .map(|id| self.with_run_store(id, |store| store.run(id)).ok().flatten().map_or_else(|| "another run".to_owned(), |row| self.named(&row)))
                 .collect();
             names.sort();
             names.dedup();
@@ -1753,11 +1765,9 @@ impl Calcifer {
     fn history(&self, target: &str) -> Vec<eta::Took> {
         let base = target.split('@').next().unwrap_or(target);
         let filter = store::RunFilter { status: Some(RunStatus::Completed), target: Some(base.to_owned()), limit: 60, ..Default::default() };
-        let rows = match private_io::current() {
-            Some(scope) => self.project_store(&scope.storage.project_id).and_then(|store| store.runs(&filter)),
-            None => self.maintenance_store().runs(&filter),
-        };
-        let Ok((rows, ..)) = rows else { return vec![] };
+        // Runs are a project's (cl-1028): outside one there are none.
+        let Some(scope) = private_io::current() else { return vec![] };
+        let Ok((rows, ..)) = self.project_store(&scope.storage.project_id).and_then(|store| store.runs(&filter)) else { return vec![] };
         rows.iter()
             .filter(|row| row.target.split('@').next() == Some(base))
             .filter_map(|row| {
@@ -2511,7 +2521,7 @@ impl Calcifer {
                         n => format!("{n} GPUs"),
                     };
                     let holder = match self.with_run_store(&gpu.behind, |store| store.run(&gpu.behind)) {
-                        Ok(Some(holder)) => format!("run {}", self.run_name(&holder)),
+                        Ok(Some(holder)) => self.named(&holder),
                         _ => "another run".to_owned(),
                     };
                     let reason = format!("waiting for {gpus}, held by {holder}");

@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { CopyError, runText } from "../../ui/CopyError"
 import { Link, Navigate, useParams } from "react-router-dom"
-import { maintenanceRunFullQuery, maintenanceRunQuery, runFullQuery, runQuery } from "../../api/queries"
+import { runFullQuery, runQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
 import { useTo } from "../../app/Shell"
 import { useProjectHref, useProjectId } from "../../app/project"
@@ -26,9 +26,8 @@ export function RunDrawer() {
 function NamedRun({ name }: { name: string }) {
   const { client } = useConnection()
   const to = useTo()
-  const { data: run, error } = useQuery({ queryKey: ["named-run", name], queryFn: ({ signal }) => client.maintenanceRun(name, signal) })
+  const { data: run, error } = useQuery({ queryKey: ["named-run", name], queryFn: ({ signal }) => client.namedRun(name, signal) })
   const href = useProjectHref(run?.project_id, `runs/${run?.number}`)
-  if (run && !run.project_id) return <Navigate replace to={`/runs/${run.number}`} />
   if (href) return <Navigate replace to={href} />
   return (
     <DrawerFrame title={`Run ${name}`} back={to("runs")}>
@@ -43,8 +42,9 @@ function NumberedRun() {
   const to = useTo()
   const number = Number(useParams().number)
   const project = useProjectId()
-  const { data: run, error } = useQuery({ ...(project ? runQuery(client, project, number) : maintenanceRunQuery(client, number)), enabled: Number.isSafeInteger(number) })
-  const { data: full } = useQuery({ ...(project ? runFullQuery(client, project, number, run?.settled_at_ms ?? 0) : maintenanceRunFullQuery(client, number, run?.settled_at_ms ?? 0)), enabled: Boolean(run) })
+  // A run is a project's (cl-1028): outside one there is none to read.
+  const { data: run, error } = useQuery({ ...runQuery(client, project ?? "", number), enabled: Boolean(project) && Number.isSafeInteger(number) })
+  const { data: full } = useQuery({ ...runFullQuery(client, project ?? "", number, run?.settled_at_ms ?? 0), enabled: Boolean(project && run) })
   const again = useProjectHref(run?.project_id, `new?again=${number}`)
   const live = Boolean(run && !settled(run))
   const now = useNow(live)
@@ -72,7 +72,7 @@ function NumberedRun() {
               disabled={cancelled || cancel.busy}
               says={`Cancel run ${runName(run)}? Any unfinished work is lost. The machine keeps running.`}
               yes="Cancel run"
-              onYes={() => void cancel.run(() => project ? client.cancelRun({ project, run: run.id }) : client.cancelMaintenanceRun(run.id))}
+              onYes={() => void cancel.run(async () => project && client.cancelRun({ project, run: run.id }))}
             />
           )}
           {again && asked && (

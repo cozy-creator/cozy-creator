@@ -270,9 +270,9 @@ fi
 request() {
   local label=$1 fn=$2 input=$3 t0
   t0=$(date +%s.%N)
-  cozy run -p "$RUN_PROJECT" "$fn" --on "$NAME" --input "$input" --json 2> "$OUT/$label.err" |
+  (cd "$RUN_PROJECT" && cozy run "$fn" --on "$NAME" --input "$input" --json) 2> "$OUT/$label.err" |
     python3 -u -c 'import sys,time; t0=float(sys.argv[1]); [print(f"{time.time()-t0:.3f} {l}", end="", flush=True) for l in sys.stdin]' "$t0" > "$OUT/$label.ndjson"
-  local n; n=$(grep -o '"number":[0-9]*' "$OUT/$label.ndjson" | head -1 | cut -d: -f2)
+  local n; n=$(handle "$OUT/$label.ndjson")
   [ -n "$n" ] || { say "$label: no run"; return 1; }
   cozy run watch "$n" --once --json --full > "$OUT/$label.json" 2>&1
   say "$label: run $n $(jq -r .status "$OUT/$label.json"), landed $(grep output_item.landed "$OUT/$label.ndjson" | tail -1 | cut -d' ' -f1) s; legs $(jq -c '.measurements.execution.executor.legs_ms' "$OUT/$label.json")"

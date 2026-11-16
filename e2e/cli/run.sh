@@ -725,6 +725,7 @@ case $SHARD in
     entrypoints
     open_fails
     open_slow
+    outside_refuses
     catalog
     basics
     uninstall_on
@@ -759,6 +760,7 @@ case $SHARD in
     web_serves
     install_retries
     harness_abort
+    jobs_kept
     logs
   " ;;
   # A part that ends on a shell error fails its shard (cl-1079), alone.

@@ -35,7 +35,9 @@ const EXAMPLES: &str = "Examples
   cozy run birefnet/remove_background --file image=./character.png
 
 Repeat --model for multiple slots. For the same slot, the last flag overrides earlier flags,
-model.<slot>= inputs and the request file.";
+model.<slot>= inputs and the request file.
+
+A run is kept in its project: run these inside one (`cozy new <folder>` makes one).";
 
 #[derive(clap::Args, Debug)]
 #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true, arg_required_else_help = true, subcommand_value_name = "ls|watch|cancel|retry", after_help = EXAMPLES)]
@@ -145,7 +147,7 @@ enum Verb {
         /// Show at most N runs (default 20, 0 for all).
         #[arg(long, value_name = "N")]
         limit: Option<u64>,
-        /// Include runs from every project.
+        /// List every project's runs.
         #[arg(long)]
         all: bool,
     },
@@ -265,7 +267,7 @@ async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
             }
         };
     }
-    let within = crate::project::identity(ctx).await?.id;
+    let within = crate::project::for_run(ctx).await?;
     let sender = Sender::for_project(ctx, &within).await?;
     // Local code goes by content: the target is then the function it names.
     let (target, code, package) = match local(ctx, &written, &cwd)? {

@@ -80,15 +80,15 @@ pub(crate) async fn job(ctx: &Context, target: &str, input: &impl serde::Seriali
 /// One of Calcifer's own runs (`Kind::Here`), followed quietly to its end: its result, or the refusal it ended with, whole.
 pub(crate) async fn done<T: serde::de::DeserializeOwned>(ctx: &Context, run: Run) -> Result<T, Error> {
     let run = settle(ctx, run).await?;
-    let show = format!("cozy run watch {}", handle(&run));
+    let show = again(&run);
     let result = run.result.clone().unwrap_or_default();
     match run.status {
-        Status::Completed => serde_json::from_value(result).map_err(|e| Error::new(Kind::Internal, "untyped_answer", format!("run {}'s result: {e}", handle(&run)))),
+        Status::Completed => serde_json::from_value(result).map_err(|e| Error::new(Kind::Internal, "untyped_answer", format!("{}'s result: {e}", named(&run)))),
         Status::Failed | Status::Canceled => Err(serde_json::from_value(result["error"].clone()).unwrap_or_else(|_| {
             let reason = run.reason.clone().unwrap_or_default();
             Error::new(Kind::Unavailable, "run_failed", format!("{}: {}", run.target, reason.message)).next(&show)
         })),
-        _ => Err(Error::new(Kind::Unavailable, "run_unfollowed", format!("Stopped watching run {}; it is still running", handle(&run))).next(&show)),
+        _ => Err(Error::new(Kind::Unavailable, "run_unfollowed", format!("Stopped watching {}; it is still running", named(&run))).next(&show)),
     }
 }
 
@@ -97,6 +97,28 @@ pub(crate) fn handle(run: &Run) -> String {
     match run.name.is_empty() {
         true => run.id.to_string(),
         false => run.name.clone(),
+    }
+}
+
+/// Whether `run` is one of Calcifer's jobs (an install, a download, an update: cl-1028): no project's run, it has no name, and its
+/// machine shows it.
+pub(crate) fn is_job(run: &Run) -> bool {
+    run.project_id.is_none() && run.name.is_empty()
+}
+
+/// How a person reads `run`: `run SE-5`, or a job by what it does and where (`sdxl@1.0 on local`).
+pub(crate) fn named(run: &Run) -> String {
+    match is_job(run) {
+        true => format!("{} on {}", run.target, run.machine.as_deref().unwrap_or("this computer")),
+        false => format!("run {}", handle(run)),
+    }
+}
+
+/// What follows `run` again: `cozy run watch SE-5`, or a job's machine.
+pub(crate) fn again(run: &Run) -> String {
+    match is_job(run) {
+        true => format!("cozy machine show {}", run.machine.as_deref().unwrap_or("local")),
+        false => format!("cozy run watch {}", handle(run)),
     }
 }
 
@@ -147,11 +169,11 @@ pub(crate) async fn carry_out(ctx: &Context, run: Run) -> Result<Run, Error> {
     if matches!(run.status, Status::Failed | Status::Canceled) {
         let reason = run.reason.clone().unwrap_or_default();
         let code = if reason.code.is_empty() { "run_failed" } else { reason.code.as_str() };
-        let mut said = format!("run {} {}", handle(&run), status_word(run.status));
+        let mut line = format!("{} {}", named(&run), status_word(run.status));
         if !reason.message.is_empty() {
-            let _ = write!(said, ": {}", reason.message);
+            let _ = write!(line, ": {}", reason.message);
         }
-        return Err(failure_next(&run).into_iter().fold(Error::new(Kind::Unavailable, code, said), Error::next));
+        return Err(failure_next(&run).into_iter().fold(Error::new(Kind::Unavailable, code, line), Error::next));
     }
     if !ctx.json {
         record(ctx, &run);
@@ -206,13 +228,13 @@ fn saved(run: Run) -> Result<Run, Error> {
     if lost.is_empty() || !settled(&run) {
         return Ok(run);
     }
-    let show = format!("cozy run watch {}", handle(&run));
+    let show = again(&run);
     Err(Error::new(
         Kind::Unavailable,
         "output_not_saved",
         format!(
-            "Run {} {}. Outputs not saved: {}",
-            handle(&run),
+            "{} {}. Outputs not saved: {}",
+            named(&run),
             status_word(run.status),
             lost.join(", ")
         ),
@@ -263,10 +285,10 @@ async fn watch(
                     _ = &mut interrupt => {
                         view.done();
                         let run = calcifer.run(&address).await?;
-                        let n = handle(&run);
+                        let (n, again, id) = (named(&run), again(&run), handle(&run));
                         output::say(ctx, &match settled(&run) {
-                            true => format!("stopped following: run {n} ended and its outputs are still being saved; `cozy run watch {n}` follows them"),
-                            false => format!("stopped following: run {n} keeps running; `cozy run watch {n}` follows it again, `cozy run cancel {n}` cancels it"),
+                            true => format!("stopped following: {n} ended and its outputs are still being saved; `{again}` follows them"),
+                            false => format!("stopped following: {n} keeps running; `{again}` follows it again, `cozy run cancel {id}` cancels it"),
                         });
                         return Ok((run, true));
                     }
@@ -369,7 +391,10 @@ pub(crate) fn record(ctx: &Context, run: &Run) {
         return;
     }
     if matches!(run.status, Status::Failed | Status::Canceled) {
-        let mut line = format!("Run {} {}", handle(&run), status_word(run.status));
+        let mut line = match is_job(run) {
+            true => format!("{} {}", named(run), status_word(run.status)),
+            false => format!("Run {} {}", handle(run), status_word(run.status)),
+        };
         if let Some(reason) = &run.reason {
             if !reason.code.is_empty() {
                 let _ = write!(line, " [{}]", reason.code);
@@ -547,7 +572,7 @@ fn adjustment(row: &Adjustment) -> String {
 
 /// What to do next with `run`: follow it while it goes on, show it when it did not succeed.
 pub(super) fn next(ctx: &Context, run: &Run) {
-    let watch = format!("cozy run watch {}", handle(&run));
+    let watch = again(run);
     match run.status {
         Status::Completed => {}
         Status::Failed | Status::Canceled => output::next(ctx, &failure_next(run).iter().map(String::as_str).collect::<Vec<_>>()),
@@ -632,7 +657,10 @@ struct View {
 
 impl View {
     fn new(ctx: &Context, run: &Run) -> Self {
-        output::say(ctx, &format!("run {} · {}", handle(&run), run.target));
+        output::say(ctx, &match is_job(run) {
+            true => named(run),
+            false => format!("run {} · {}", handle(run), run.target),
+        });
         let bar = (!ctx.json && ctx.term.stderr).then(|| {
             let bar = crate::progress::Line::stderr(true, None, |s| {
                 format!("{} {} {} {}", s.spinner(), s.msg(), crate::progress::WIDE_BAR, s.elapsed())

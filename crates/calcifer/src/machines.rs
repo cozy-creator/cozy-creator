@@ -853,6 +853,9 @@ impl Machines {
         machine.ordered = self.ordered(row);
         let load = self.calcifer.machine_load().map_err(internal)?;
         (machine.running, machine.queued) = load.get(&row.name).copied().unwrap_or_default();
+        machine.jobs = (store.jobs_on(&row.name, row.kind == MachineKind::Local).map_err(internal)?.iter())
+            .filter_map(|job| self.calcifer.record(job).ok())
+            .collect();
         if let Some(ask) = ending.filter(|_| row.state != MachineState::Ended) {
             machine.state = MachineState::Ending;
             let owed = self.end_owes(&ask.key, &row.name);
@@ -976,7 +979,7 @@ impl Machines {
         let mut project=None;
         let mut number=|id:&str| {
             let id=crate::store::calcifer_id(id);
-            if let Some(row)=self.calcifer.maintenance_store().run(id).ok().flatten() { return Some((row.number,self.calcifer.run_name(&row))); }
+            if let Some(row)=self.calcifer.maintenance_store().run(id).ok().flatten() { return Some((row.number,self.calcifer.named(&row))); }
             match self.calcifer.run_store(id).ok()? {
                 crate::store::RunStore::Project(store) if projects.iter().any(|project| project==store.project_id()) => {
                     let row=store.run(id).ok().flatten()?;

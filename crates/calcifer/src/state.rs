@@ -61,7 +61,22 @@ pub(crate) const TABLES: &str = "
     CREATE TABLE IF NOT EXISTS after_steps (
         key_sha256 TEXT PRIMARY KEY,
         step TEXT NOT NULL
-    ) STRICT;";
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS machine_warm (
+        machine TEXT NOT NULL,
+        item TEXT NOT NULL,
+        PRIMARY KEY (machine, item)
+    ) STRICT, WITHOUT ROWID;
+    -- Calcifer's jobs once released (cl-1028), by machine ('' for its own), job type and outcome: what keeps the newest of each.
+    CREATE TABLE IF NOT EXISTS ended_jobs (
+        machine TEXT NOT NULL,
+        task TEXT NOT NULL,
+        status TEXT NOT NULL,
+        number INTEGER NOT NULL,
+        run TEXT NOT NULL UNIQUE,
+        ended_at INTEGER NOT NULL,
+        PRIMARY KEY (machine, task, status, number)
+    ) STRICT, WITHOUT ROWID;";
 
 /// A project Calcifer opened, by its id: its name, and where it last was.
 #[derive(Clone, Debug)]
