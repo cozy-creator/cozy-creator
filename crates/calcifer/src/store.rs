@@ -11,8 +11,8 @@ use std::{
 };
 
 use crate::project::vault;
-mod migration;
-pub(crate) use migration::legacy_not_imported;
+mod hard_cut;
+pub(crate) use hard_cut::kept_path;
 use api::{
     calcifer::{Agreed, Call, Event, ItemStatus, Kind, Machine, MachineKind, MachineState, Memo, OutputItem, Reason, Run, Status, Warning},
     config::Origin,
@@ -25,13 +25,10 @@ use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehav
 #[path = "store_listing_tests.rs"]
 mod listing_tests;
 
-#[cfg(test)]
-#[path = "store_journal_tests.rs"]
-mod journal_tests;
 
 /// The store's version (`PRAGMA user_version`), and the schema a new store is made with. A store
 /// at another version is not read.
-pub(crate) const VERSION: i64 = 8;
+pub(crate) const VERSION: i64 = 9;
 const SCHEMA: &str = "
     CREATE TABLE machines (
         name TEXT PRIMARY KEY,
@@ -87,7 +84,6 @@ const SCHEMA: &str = "
         batch TEXT NOT NULL DEFAULT '',
         job BLOB,
         owner TEXT NOT NULL DEFAULT '',
-        custody TEXT NOT NULL DEFAULT 'owned' CHECK(custody IN ('owned','legacy_pending')),
         attempt INTEGER NOT NULL DEFAULT 1
     ) STRICT;
     CREATE INDEX runs_owed ON runs (machine) WHERE state <> 'settled';
@@ -136,426 +132,6 @@ const SCHEMA: &str = "
         run TEXT REFERENCES runs (id)
     ) STRICT;";
 
-/// Fence the old writer before project.db can accept a new journal write. Only what names a project leaves for the legacy
-/// tables, which keep it until an admitted project verifies its import; Calcifer's own runs (updates, installs, calls outside
-/// any project) and their rows stay where they are, never copied out and back. Each move is one statement.
-fn fence_legacy_projects(writer: &mut Connection) -> Result<()> {
-    let tx = writer.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    tx.execute_batch("CREATE TEMP TABLE fence_owned (id TEXT PRIMARY KEY, owner_root TEXT NOT NULL, owner_project TEXT);
-                      CREATE TEMP TABLE fence_kept_after (key_sha256 TEXT PRIMARY KEY);
-                      CREATE TEMP TABLE fence_held_asks (key TEXT PRIMARY KEY);")?;
-    if has_table(&tx, "runs")? {
-        let mut owned = tx.prepare("INSERT INTO temp.fence_owned VALUES (?1, ?2, ?3)")?;
-        let mut kept = tx.prepare("INSERT OR IGNORE INTO temp.fence_kept_after VALUES (?1)")?;
-        let mut stmt = tx.prepare("SELECT id, out_dir, spec, idempotency_key FROM runs")?;
-        let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
-            let (id, out_dir, spec, key): (String, String, Vec<u8>, String) = (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?);
-            match legacy_run_owner(&out_dir, &spec) {
-                Some((root, project)) => { owned.execute(params![id, root, project])?; }
-                None => { kept.execute([key_digest(&key)])?; }
-            }
-        }
-    }
-    if has_table(&tx, "asks")? {
-        // A Hub ask of no run stays when it is this computer's own (a rental's); any other is fenced with the rest.
-        let mut held = tx.prepare("INSERT INTO temp.fence_held_asks VALUES (?1)")?;
-        let mut stmt = tx.prepare("SELECT key, kind, body FROM asks WHERE run IS NULL")?;
-        let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
-            let (key, kind, body): (String, String, Vec<u8>) = (row.get(0)?, row.get(1)?, row.get(2)?);
-            if !crate::rentals::independent_legacy_ask(&kind, &body) { held.execute([key])?; }
-        }
-    }
-    // What leaves each table, as the earlier whole-table fence and its copies back left it.
-    let leaving = [
-        ("runs", "id IN (SELECT id FROM temp.fence_owned)"),
-        ("outputs", "run IN (SELECT id FROM temp.fence_owned)"),
-        ("run_logs", "run IN (SELECT id FROM temp.fence_owned)"),
-        ("asks", "run IN (SELECT id FROM temp.fence_owned) OR (run IS NULL AND key IN (SELECT key FROM temp.fence_held_asks))"),
-        ("answers", "key NOT IN (SELECT idempotency_key FROM runs WHERE id NOT IN (SELECT id FROM temp.fence_owned))"),
-        ("after_steps", "key_sha256 NOT IN (SELECT key_sha256 FROM temp.fence_kept_after)"),
-    ];
-    for (table, which) in leaving {
-        if !has_table(&tx, table)? { continue; }
-        let sql: String = tx.query_row("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?1", [table], |row| row.get(0))?;
-        let legacy = sql.replacen(&format!("CREATE TABLE {table}"), &format!("CREATE TABLE legacy_project_{table}"), 1)
-            .replace("REFERENCES runs", "REFERENCES legacy_project_runs");
-        if legacy == sql { return Err(StoreError::Corrupt(format!("{table} is not this store's table"))); }
-        tx.execute_batch(&legacy)?;
-        tx.execute_batch(&format!("INSERT INTO legacy_project_{table} SELECT * FROM {table} WHERE {which}"))?;
-    }
-    // Children first, once every copy is made. What may be private is erased as it leaves (secure_delete).
-    for (table, which) in leaving.iter().rev() {
-        if has_table(&tx, table)? { tx.execute_batch(&format!("DELETE FROM {table} WHERE {which}"))?; }
-    }
-    if has_table(&tx, "legacy_project_runs")? {
-        tx.execute_batch(LEGACY_RUN_OWNERS)?;
-        tx.execute_batch("INSERT INTO legacy_run_owners SELECT id, owner_root, owner_project FROM temp.fence_owned")?;
-    }
-    if has_table(&tx, "legacy_project_answers")? { index_answer_owners(&tx)?; }
-    tx.execute_batch("DROP TABLE temp.fence_owned; DROP TABLE temp.fence_kept_after; DROP TABLE temp.fence_held_asks;")?;
-    for (column, definition) in [("owner", "owner TEXT NOT NULL DEFAULT ''"),
-                                 ("custody", "custody TEXT NOT NULL DEFAULT 'owned' CHECK(custody IN ('owned','legacy_pending'))")] {
-        let has: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('runs') WHERE name = ?1)", [column], |row| row.get(0))?;
-        if !has { tx.execute_batch(&format!("ALTER TABLE runs ADD COLUMN {definition}"))?; }
-    }
-    for table in ["projects", "rendered_here", "headers", "vault_operations", "unseen"] {
-        if !has_table(&tx, table)? { continue; }
-        let indexes: Vec<String> = {
-            let mut stmt = tx.prepare("SELECT name FROM sqlite_schema WHERE type = 'index' AND tbl_name = ?1 AND sql IS NOT NULL")?;
-            stmt.query_map([table], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?
-        };
-        for index in indexes { tx.execute_batch(&format!("DROP INDEX \"{}\"", index.replace('"', "\"\"")))?; }
-        tx.execute_batch(&format!("ALTER TABLE {table} RENAME TO legacy_project_{table}"))?;
-    }
-    // Protocol-3 rejects old mutation/operation IDs. These are recomputable
-    // caches or obsolete replay barriers, never authoritative run history.
-    for table in ["legacy_project_headers", "legacy_project_rendered_here", "legacy_project_vault_operations"] {
-        tx.execute_batch(&format!("DROP TABLE IF EXISTS {table}"))?;
-    }
-    // Machine/account state is unrelated to project admission and remains available.
-    tx.execute_batch(ANSWERS)?;
-    tx.execute_batch(crate::state::TABLES)?;
-    tx.execute_batch(crate::project::vault_operation::TABLES)?;
-    let has_code: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('legacy_project_projects') WHERE name = 'code')", [], |row| row.get(0))?;
-    let has_projects: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = 'legacy_project_projects')", [], |row| row.get(0))?;
-    if has_projects {
-        let code = if has_code { "code" } else { "''" };
-        tx.execute_batch(&format!("INSERT INTO projects(id, path, code) SELECT id, path, {code} FROM legacy_project_projects"))?;
-    }
-    tx.pragma_update(None, "user_version", VERSION)?;
-    tx.commit()?;
-    Ok(())
-}
-
-/// Who each fenced run belongs to, worked out once (`legacy_run_owner`), so a project's status or open never decodes every
-/// old run: only what names a project has a row. A sealed record's project id rides along, which a moved project's current
-/// root follows (`vault::payload_root`).
-const LEGACY_RUN_OWNERS: &str = "
-    CREATE TABLE IF NOT EXISTS legacy_run_owners (id TEXT PRIMARY KEY, owner_root TEXT NOT NULL, owner_project TEXT) STRICT;
-    CREATE INDEX IF NOT EXISTS legacy_run_owners_root ON legacy_run_owners (owner_root);
-    CREATE INDEX IF NOT EXISTS legacy_run_owners_project ON legacy_run_owners (owner_project) WHERE owner_project IS NOT NULL;";
-/// The same of each fenced retry answer that names a project; its root is none when nothing says which.
-const LEGACY_ANSWER_OWNERS: &str = "
-    CREATE TABLE IF NOT EXISTS legacy_answer_owners (key TEXT PRIMARY KEY, owner_root TEXT, owner_project TEXT) STRICT;
-    CREATE INDEX IF NOT EXISTS legacy_answer_owners_root ON legacy_answer_owners (owner_root) WHERE owner_root IS NOT NULL;
-    CREATE INDEX IF NOT EXISTS legacy_answer_owners_project ON legacy_answer_owners (owner_project) WHERE owner_project IS NOT NULL;";
-/// A sealed record that can't be read: every project's history waits on it.
-const UNREADABLE_OWNER: &str = "*";
-
-/// A path as the owner index keeps it: its components, so `/a/b/` and `/a/b` are one.
-fn path_key(path: &Path) -> String {
-    path.components().collect::<PathBuf>().to_string_lossy().into_owned()
-}
-
-/// A fenced run's owner, when it names a project: its spec sealed to one (its root, and its project id) or its outputs landing
-/// in one (`<project>/.runs`), even a project now gone. None for the controller's own maintenance (an update, an install, a
-/// publish, a call outside any project).
-fn legacy_run_owner(out_dir: &str, spec: &[u8]) -> Option<(String, Option<String>)> {
-    match vault::payload_owner(spec) {
-        Ok(Some((project, root))) => Some((path_key(&root), Some(project))),
-        Err(_) => Some((UNREADABLE_OWNER.into(), None)),
-        Ok(None) => crate::project::of_landing(Path::new(out_dir)).map(|dir| (path_key(dir), None)),
-    }
-}
-
-/// Indexes every fenced retry answer that names a project (`migration_required`'s), with the owner `project_migration_required`
-/// reads.
-fn index_answer_owners(tx: &Transaction<'_>) -> Result<()> {
-    tx.execute_batch(LEGACY_ANSWER_OWNERS)?;
-    let mut owner = tx.prepare("INSERT OR REPLACE INTO legacy_answer_owners VALUES (?1, ?2, ?3)")?;
-    let mut stmt = tx.prepare("SELECT key, body FROM legacy_project_answers")?;
-    let mut rows = stmt.query([])?;
-    while let Some(row) = rows.next()? {
-        let (key, body): (String, Vec<u8>) = (row.get(0)?, row.get(1)?);
-        if !(vault::is_payload(&body) || answer_path(&body).is_some()) { continue; }
-        let (root, project) = match vault::payload_owner(&body) {
-            Ok(Some((project, root))) => (Some(path_key(&root)), Some(project)),
-            Err(_) => (Some(UNREADABLE_OWNER.into()), None),
-            Ok(None) => (answer_path(&body).map(|path| path_key(&vault::logical(&path))), None),
-        };
-        owner.execute(params![key, root, project])?;
-    }
-    Ok(())
-}
-
-/// A store fenced before the owner index has it built once, in one pass over each fenced table.
-fn index_legacy_owners(writer: &mut Connection) -> Result<()> {
-    let runs = has_table(writer, "legacy_project_runs")? && !has_table(writer, "legacy_run_owners")?;
-    let answers = has_table(writer, "legacy_project_answers")? && !has_table(writer, "legacy_answer_owners")?;
-    if !runs && !answers { return Ok(()); }
-    let tx = writer.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    if runs {
-        tx.execute_batch(LEGACY_RUN_OWNERS)?;
-        let mut owner = tx.prepare("INSERT INTO legacy_run_owners VALUES (?1, ?2, ?3)")?;
-        let mut stmt = tx.prepare("SELECT id, out_dir, spec FROM legacy_project_runs")?;
-        let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
-            let (id, out_dir, spec): (String, String, Vec<u8>) = (row.get(0)?, row.get(1)?, row.get(2)?);
-            if let Some((root, project)) = legacy_run_owner(&out_dir, &spec) { owner.execute(params![id, root, project])?; }
-        }
-    }
-    if answers { index_answer_owners(&tx)?; }
-    tx.commit()?;
-    Ok(())
-}
-
-/// The fenced runs that may be the project's at `root` (`id`): those of its root, its sealed records' (a move this Calcifer
-/// saw included) and every unreadable one, as `(id, out_dir, spec)`, in the order made. The caller decides each as a full read did.
-pub(crate) fn legacy_run_candidates(conn: &Connection, root: &Path, id: &str) -> Result<Vec<(String, String, Vec<u8>)>> {
-    let mut projects = vault::projects_moved_under(root);
-    projects.push(id.to_owned());
-    let projects = serde_json::to_string(&projects).map_err(|error| StoreError::Corrupt(error.to_string()))?;
-    let mut stmt = conn.prepare("SELECT r.id, r.out_dir, r.spec FROM legacy_run_owners o JOIN legacy_project_runs r ON r.id = o.id
-        WHERE o.owner_root IN (?1, ?2) OR o.owner_project IN (SELECT value FROM json_each(?3)) ORDER BY r.created_at, r.number")?;
-    let rows = stmt.query_map(params![path_key(root), UNREADABLE_OWNER, projects], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
-}
-
-/// The fenced retry answers that may be the project's at `root` (`id`), as `(key, body)`: those at or under its root, its
-/// sealed ones and every unreadable one.
-pub(crate) fn legacy_answer_candidates(conn: &Connection, root: &Path, id: &str) -> Result<Vec<(String, Vec<u8>)>> {
-    let mut projects = vault::projects_moved_under(root);
-    projects.push(id.to_owned());
-    let projects = serde_json::to_string(&projects).map_err(|error| StoreError::Corrupt(error.to_string()))?;
-    let root = path_key(root);
-    let mut stmt = conn.prepare("SELECT a.key, a.body FROM legacy_answer_owners o JOIN legacy_project_answers a ON a.key = o.key
-        WHERE o.owner_root IN (?1, ?3) OR (o.owner_root > ?1 || '/' AND o.owner_root < ?1 || '0') OR (o.owner_root > ?1 || '\\' AND o.owner_root < ?1 || ']')
-           OR o.owner_project IN (SELECT value FROM json_each(?2))")?;
-    let rows = stmt.query_map(params![root, projects, UNREADABLE_OWNER], |row| Ok((row.get(0)?, row.get(1)?)))?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
-}
-
-// An earlier V8 draft may already have this RC's old global table. Fence it
-// before any project opens; no current writer creates or writes global unseen rows.
-fn fence_legacy_unseen(writer:&mut Connection)->Result<()> {
-    let exists=writer.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='unseen')",[],|row|row.get::<_,bool>(0))?;
-    if !exists {return Ok(());}
-    let legacy=writer.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='legacy_project_unseen')",[],|row|row.get::<_,bool>(0))?;
-    if legacy {return Err(StoreError::Protected("legacy_unseen_sources_conflict".into()));}
-    let tx=writer.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    tx.execute_batch("ALTER TABLE unseen RENAME TO legacy_project_unseen")?;
-    tx.commit()?;
-    Ok(())
-}
-
-fn has_table(conn: &Connection, name: &str) -> Result<bool> {
-    Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)", [name], |row| row.get(0))?)
-}
-
-/// The tables a fenced maintenance run's rows are in, children after their run: each by the column naming it and the batch's
-/// value for that column.
-const MAINTENANCE_TABLES: [(&str, &str, &str); 6] = [("runs", "id", "id"), ("outputs", "run", "id"), ("run_logs", "run", "id"),
-    ("asks", "run", "id"), ("answers", "key", "key"), ("after_steps", "key_sha256", "key_sha256")];
-
-/// A maintenance run an earlier fence moved returns to this store as on the RC, with its outputs, logs, asks, retry answer and
-/// after step, verified row for row before its legacy rows are retired: in batches, each table's rows by one statement. One a
-/// later maintenance run's number or key now holds stays fenced, never merged by guess; a run naming a project stays fenced
-/// until that project admits it.
-fn migrate_maintenance_runs(writer: &mut Connection) -> Result<()> {
-    if !has_table(writer, "legacy_project_runs")? { return Ok(()); }
-    let owners = if has_table(writer, "legacy_run_owners")? { "AND id NOT IN (SELECT id FROM legacy_run_owners)" } else { return Ok(()) };
-    writer.execute_batch("CREATE TEMP TABLE IF NOT EXISTS maintenance_batch (id TEXT PRIMARY KEY, key TEXT NOT NULL, key_sha256 TEXT NOT NULL);
-                          CREATE TEMP TABLE IF NOT EXISTS maintenance_fenced (id TEXT PRIMARY KEY);")?;
-    let columns = |conn: &Connection, table: &str| -> Result<String> {
-        let mut stmt = conn.prepare("SELECT name FROM pragma_table_info(?1)")?;
-        Ok(stmt.query_map([table], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?.join(","))
-    };
-    loop {
-        let tx = writer.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.execute_batch("DELETE FROM temp.maintenance_batch")?;
-        // Ids alone first, from the id index: a store with none left to move (every start until cl-1003's cut) reads no fenced
-        // run's row, which on a laptop's store is a scan of more than a gigabyte (cl-1010).
-        let batch: Vec<(String, String)> = {
-            let mut ids = tx.prepare(&format!("SELECT id FROM legacy_project_runs WHERE id NOT IN (SELECT id FROM temp.maintenance_fenced) {owners} LIMIT 2000"))?;
-            let ids: Vec<String> = ids.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
-            let mut key = tx.prepare("SELECT idempotency_key FROM legacy_project_runs WHERE id = ?1")?;
-            let mut batch = vec![];
-            for id in ids {
-                let keyed: String = key.query_row([&id], |row| row.get(0))?;
-                batch.push((id, keyed));
-            }
-            batch
-        };
-        if batch.is_empty() { tx.commit()?; break; }
-        {
-            let mut add = tx.prepare("INSERT INTO temp.maintenance_batch VALUES (?1, ?2, ?3)")?;
-            for (id, key) in &batch { add.execute(params![id, key, key_digest(key)])?; }
-        }
-        // Calcifer's own runs: nothing private is freed as they move.
-        tx.pragma_update(None, "secure_delete", "OFF")?;
-        let tables: Vec<(&str, &str, &str, String)> = MAINTENANCE_TABLES.iter().copied()
-            .filter_map(|(table, column, by)| match has_table(&tx, &format!("legacy_project_{table}")) {
-                Ok(true) => Some(columns(&tx, &format!("legacy_project_{table}")).map(|names| (table, column, by, names))),
-                Ok(false) => None,
-                Err(error) => Some(Err(error)),
-            }).collect::<Result<_>>()?;
-        let within = |column: &str, by: &str| format!("{column} IN (SELECT {by} FROM temp.maintenance_batch)");
-        let (_, _, _, run_columns) = &tables[0];
-        tx.execute_batch(&format!("INSERT OR IGNORE INTO runs({run_columns}) SELECT {run_columns} FROM legacy_project_runs WHERE {}", within("id", "id")))?;
-        tx.execute_batch("INSERT OR IGNORE INTO temp.maintenance_fenced SELECT id FROM temp.maintenance_batch b WHERE NOT EXISTS (SELECT 1 FROM runs r WHERE r.id = b.id);
-                          DELETE FROM temp.maintenance_batch WHERE id IN (SELECT id FROM temp.maintenance_fenced);")?;
-        for (table, column, by, names) in &tables[1..] {
-            tx.execute_batch(&format!("INSERT OR IGNORE INTO {table}({names}) SELECT {names} FROM legacy_project_{table} WHERE {}", within(column, by)))?;
-        }
-        let mut exact = true;
-        for (table, column, by, names) in &tables {
-            let scope = within(column, by);
-            exact &= tx.query_row(&format!("SELECT NOT EXISTS(SELECT {names} FROM legacy_project_{table} WHERE {scope} EXCEPT SELECT {names} FROM {table} WHERE {scope})"),
-                [], |row| row.get::<_, bool>(0))?;
-        }
-        if !exact {
-            // Copied otherwise than it was: each of the batch goes on its own, as before, and one that differs stays fenced.
-            tx.pragma_update(None, "secure_delete", "ON")?;
-            tx.rollback()?;
-            let tx = writer.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            for (id, key) in &batch {
-                if !migrate_maintenance_run(&tx, id, key)? { tx.execute("INSERT OR IGNORE INTO temp.maintenance_fenced VALUES (?1)", [id])?; }
-            }
-            tx.commit()?;
-            continue;
-        }
-        for (table, column, by, _) in tables.iter().rev() {
-            tx.execute_batch(&format!("DELETE FROM legacy_project_{table} WHERE {}", within(column, by)))?;
-        }
-        tx.pragma_update(None, "secure_delete", "ON")?;
-        tx.commit()?;
-    }
-    writer.execute_batch("DROP TABLE IF EXISTS temp.maintenance_batch; DROP TABLE IF EXISTS temp.maintenance_fenced;")?;
-    Ok(())
-}
-
-/// One fenced maintenance run back, verified row for row, its legacy rows then retired; false, kept fenced, when a later run
-/// holds its number or key or anything of it copies otherwise.
-fn migrate_maintenance_run(tx: &Transaction<'_>, id: &str, key: &str) -> Result<bool> {
-    tx.execute_batch("SAVEPOINT maintenance_run")?;
-    let moved = [("runs", "id", id.to_owned()), ("outputs", "run", id.to_owned()), ("run_logs", "run", id.to_owned()), ("asks", "run", id.to_owned()),
-                 ("answers", "key", key.to_owned()), ("after_steps", "key_sha256", key_digest(key))]
-        .into_iter().try_fold(true, |exact, (table, column, value)| -> Result<bool> {
-            let legacy = format!("legacy_project_{table}");
-            if !exact || !has_table(tx, &legacy)? { return Ok(exact); }
-            let columns: Vec<String> = {
-                let mut stmt = tx.prepare("SELECT name FROM pragma_table_info(?1)")?;
-                stmt.query_map([&legacy], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?
-            };
-            let columns = columns.join(",");
-            if tx.execute(&format!("INSERT OR IGNORE INTO {table}({columns}) SELECT {columns} FROM {legacy} WHERE {column}=?1"), [&value]).is_err() {
-                return Ok(false);
-            }
-            Ok(tx.query_row(&format!("SELECT NOT EXISTS(SELECT {columns} FROM {legacy} WHERE {column}=?1 EXCEPT SELECT {columns} FROM {table} WHERE {column}=?1)"),
-                [&value], |row| row.get::<_, bool>(0))?)
-        })?;
-    if !moved {
-        tx.execute_batch("ROLLBACK TO maintenance_run; RELEASE maintenance_run")?;
-        return Ok(false);
-    }
-    for (table, column, value) in [("after_steps", "key_sha256", key_digest(key)), ("answers", "key", key.to_owned()), ("asks", "run", id.to_owned()),
-                                   ("run_logs", "run", id.to_owned()), ("outputs", "run", id.to_owned()), ("runs", "id", id.to_owned())] {
-        let legacy = format!("legacy_project_{table}");
-        if has_table(tx, &legacy)? { tx.execute(&format!("DELETE FROM {legacy} WHERE {column}=?1"), [&value])?; }
-    }
-    tx.execute_batch("RELEASE maintenance_run")?;
-    Ok(true)
-}
-
-fn migrate_maintenance_asks(writer:&mut Connection)->Result<()> {
-    let exists=writer.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='legacy_project_asks')",[],|row|row.get::<_,bool>(0))?;
-    if !exists {return Ok(());}
-    let tx=writer.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let rows={let mut stmt=tx.prepare("SELECT key,kind,body FROM legacy_project_asks WHERE run IS NULL")?;stmt.query_map([],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,Vec<u8>>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?};
-    for (key,kind,body) in rows {
-        if !crate::rentals::independent_legacy_ask(&kind,&body) {continue;}
-        tx.execute("INSERT OR IGNORE INTO asks SELECT * FROM legacy_project_asks WHERE key=?1",[&key])?;
-        let exact=tx.query_row("SELECT NOT EXISTS(SELECT * FROM legacy_project_asks WHERE key=?1 EXCEPT SELECT * FROM asks WHERE key=?1)",[&key],|row|row.get::<_,bool>(0))?;
-        if !exact {return Err(StoreError::Protected("maintenance_ask_migration_conflict".into()));}
-        tx.execute("DELETE FROM legacy_project_asks WHERE key=?1",[&key])?;
-    }
-    tx.commit()?;
-    Ok(())
-}
-
-/// A store made before a run said what of it stays gains that column, empty: what it made comes here.
-fn stays_column(writer: &mut Connection) -> Result<()> {
-    let has: bool = writer.query_row(
-        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('runs') WHERE name = 'stays')",
-        [],
-        |r| r.get(0),
-    )?;
-    if !has {
-        writer.execute_batch("ALTER TABLE runs ADD COLUMN stays TEXT NOT NULL DEFAULT '[]'")?;
-    }
-    Ok(())
-}
-
-/// A store made before runs were sent in batches gains that column, empty: each run its own (cl-816).
-fn batch_column(writer: &mut Connection) -> Result<()> {
-    let has: bool = writer.query_row(
-        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('runs') WHERE name = 'batch')",
-        [],
-        |r| r.get(0),
-    )?;
-    if !has {
-        writer.execute_batch("ALTER TABLE runs ADD COLUMN batch TEXT NOT NULL DEFAULT ''")?;
-    }
-    Ok(())
-}
-
-/// A store made before Calcifer's own runs kept their job gains that column, empty: such a run the next Calcifer can't carry
-/// out again fails `calcifer_stopped` (cl-866).
-fn job_column(writer: &mut Connection) -> Result<()> {
-    let has: bool = writer.query_row(
-        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('runs') WHERE name = 'job')",
-        [],
-        |r| r.get(0),
-    )?;
-    if !has {
-        writer.execute_batch("ALTER TABLE runs ADD COLUMN job BLOB")?;
-    }
-    Ok(())
-}
-
-/// A store made before a hold by hand was kept (cl-952) gains that column: no machine held.
-/// When a machine ended, which its row is kept 90 days from (`prune_machines`). One that ended before has the first start since.
-fn ended_at_column(writer: &Connection) -> Result<()> {
-    let has: bool = writer.query_row("SELECT EXISTS (SELECT 1 FROM pragma_table_info('machines') WHERE name = 'ended_at')", [], |r| r.get(0))?;
-    if !has {
-        writer.execute_batch("ALTER TABLE machines ADD COLUMN ended_at INTEGER")?;
-    }
-    // One that ended before its end was kept says so now: its 90 days count from here, never from when it was made (a long rental
-    // went early).
-    writer.execute("UPDATE machines SET ended_at = ?1 WHERE state = 'ended' AND ended_at IS NULL", [now_ms()])?;
-    Ok(())
-}
-
-fn held_column(writer: &mut Connection) -> Result<()> {
-    let has: bool = writer.query_row(
-        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('machines') WHERE name = 'held')",
-        [],
-        |r| r.get(0),
-    )?;
-    if has {
-        return Ok(());
-    }
-    // A store from before holds were kept starts with none (cl-1055): 0.25 had no pin that keeps a machine from moving, and its
-    // updates' words can't tell one named by hand from its Hub's target. A hold exists only once an update by hand writes it.
-    writer.execute_batch("ALTER TABLE machines ADD COLUMN held TEXT")?;
-    Ok(())
-}
-
-/// A store made before a run could be sent again (cl-935) gains that column: each run on its first attempt.
-fn attempt_column(writer: &mut Connection) -> Result<()> {
-    let has: bool = writer.query_row(
-        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('runs') WHERE name = 'attempt')",
-        [],
-        |r| r.get(0),
-    )?;
-    if !has {
-        writer.execute_batch("ALTER TABLE runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1")?;
-    }
-    Ok(())
-}
-
 /// What each project write's `Idempotency-Key` answered (cl-812), kept a day: a store made before it gains the table, at the same
 /// version, which a Calcifer that predates it never reads.
 const ANSWERS: &str = "
@@ -576,27 +152,12 @@ const PRUNED_EACH: i64 = 16;
 const GIVEN_UP_MS: i64 = 30 * 24 * 3600 * 1000;
 /// The newest run number whose measurements `drop_measurements` has gone past.
 const MEASUREMENTS_DROPPED: &str = "CREATE TABLE IF NOT EXISTS measurements_dropped (through INTEGER NOT NULL) STRICT;";
+/// Projects whose files left on a machine were gone before the legacy cut could copy them in (cl-1003), said by `cozy doctor`
+/// and the project's page.
+pub(crate) const LOST: &str = "CREATE TABLE IF NOT EXISTS lost_before_upgrade (path TEXT PRIMARY KEY, files INTEGER NOT NULL) STRICT;";
 /// How long an answer is kept for its write's retries.
 const ANSWER_KEPT_MS: i64 = 24 * 60 * 60 * 1000;
 
-/// A store made before outputs were measured gains their columns. Its version stands: every statement names its columns, so a
-/// Calcifer that predates them goes on reading it.
-fn measured_columns(writer: &mut Connection) -> Result<()> {
-    let has: bool = writer.query_row(
-        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('outputs') WHERE name = 'measured_ms')",
-        [],
-        |r| r.get(0),
-    )?;
-    if has {
-        return Ok(());
-    }
-    let tx = writer.transaction()?;
-    for column in ["width", "height", "measured_ms"] {
-        tx.execute_batch(&format!("ALTER TABLE outputs ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"))?;
-    }
-    tx.commit()?;
-    Ok(())
-}
 
 /// What is measured of an output: 0 for what doesn't apply or couldn't be read.
 #[derive(Clone, Copy, Debug, Default)]
@@ -628,6 +189,8 @@ pub(crate) enum StoreError {
     ProjectKey(String),
     #[error("Calcifer's store could not flush its journal: {0}")]
     Flush(std::io::Error),
+    #[error("the legacy cut stopped and left Calcifer's store as it was: {0}")]
+    Cut(String),
 }
 
 pub(crate) type Result<T> = std::result::Result<T, StoreError>;
@@ -746,7 +309,6 @@ pub(crate) enum State {
 pub(crate) struct RunRow {
     pub project_root: Option<PathBuf>,
     pub owner: String,
-    pub custody_pending: bool,
     pub id: RunId,
     pub number: u64,
     pub kind: Kind,
@@ -936,9 +498,6 @@ pub(crate) struct OutputRow {
 /// The store: writes on one connection, one at a time, each durable before it returns; reads on
 /// their own, which WAL lets go on while a write waits on the disk.
 pub(crate) struct Store {
-    legacy_home: PathBuf,
-    /// Projects whose legacy files this Calcifer found nothing left of to retire, until another import changes what is left.
-    settled: Mutex<std::collections::HashSet<String>>,
     writer: Mutex<Connection>,
     readers: Readers,
     durable: Durable,
@@ -949,14 +508,8 @@ const READERS: usize = 8;
 
 /// The store's read connections. WAL lets each read while the writer commits.
 struct Readers {
-    idle: Mutex<Idle>,
+    idle: Mutex<Vec<Connection>>,
     returned: std::sync::Condvar,
-}
-
-struct Idle {
-    conns: Vec<Connection>,
-    /// A checkpoint waiting for every reader: no read starts meanwhile.
-    draining: bool,
 }
 
 impl Readers {
@@ -968,44 +521,18 @@ impl Readers {
             reader.pragma_update(None, "temp_store", "MEMORY")?;
             Ok(reader)
         }).collect::<Result<_>>()?;
-        Ok(Self { idle: Mutex::new(Idle { conns, draining: false }), returned: std::sync::Condvar::new() })
+        Ok(Self { idle: Mutex::new(conns), returned: std::sync::Condvar::new() })
     }
 
     /// An idle reader, waited for while every one reads.
     fn take(&self) -> Reader<'_> {
         let mut idle = self.idle.lock().unwrap_or_else(|e| e.into_inner());
         loop {
-            if !idle.draining && let Some(conn) = idle.conns.pop() {
+            if let Some(conn) = idle.pop() {
                 return Reader { readers: self, conn: Some(conn) };
             }
             idle = self.returned.wait(idle).unwrap_or_else(|e| e.into_inner());
         }
-    }
-
-    /// Every reader, once the reads going end: no snapshot pins the WAL while it's held.
-    fn all(&self) -> Drained<'_> {
-        let mut idle = self.idle.lock().unwrap_or_else(|e| e.into_inner());
-        while idle.draining {
-            idle = self.returned.wait(idle).unwrap_or_else(|e| e.into_inner());
-        }
-        idle.draining = true;
-        while idle.conns.len() < READERS {
-            idle = self.returned.wait(idle).unwrap_or_else(|e| e.into_inner());
-        }
-        idle.draining = false;
-        Drained { readers: self, _idle: idle }
-    }
-}
-
-/// Every reader held: the reads waiting go on once it's dropped.
-struct Drained<'a> {
-    readers: &'a Readers,
-    _idle: std::sync::MutexGuard<'a, Idle>,
-}
-
-impl Drop for Drained<'_> {
-    fn drop(&mut self) {
-        self.readers.returned.notify_all();
     }
 }
 
@@ -1024,7 +551,7 @@ impl std::ops::Deref for Reader<'_> {
 impl Drop for Reader<'_> {
     fn drop(&mut self) {
         let Some(conn) = self.conn.take() else { return };
-        self.readers.idle.lock().unwrap_or_else(|e| e.into_inner()).conns.push(conn);
+        self.readers.idle.lock().unwrap_or_else(|e| e.into_inner()).push(conn);
         self.readers.returned.notify_all();
     }
 }
@@ -1083,7 +610,7 @@ macro_rules! journal_methods {
         self.read(|conn| {
             let mut statement = conn.prepare(
                 "SELECT machine, SUM(state = 'accepted'), SUM(state <> 'accepted') FROM runs
-                 WHERE state <> 'settled' AND machine IS NOT NULL AND kind = 'call' AND (?1 IS NULL OR owner=?1) AND custody='owned' GROUP BY machine",
+                 WHERE state <> 'settled' AND machine IS NOT NULL AND kind = 'call' AND (?1 IS NULL OR owner=?1) GROUP BY machine",
             )?;
             let rows = statement.query_map([self.owner_id()], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))?;
             Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -1094,7 +621,7 @@ macro_rules! journal_methods {
         self.read(|conn| {
             let going = conn.query_row(
                 // `state <> 'settled'` reads `runs_owed`, not every run.
-                "SELECT COUNT(*) FROM runs WHERE machine = ?1 AND state <> 'settled' AND kind <> 'update' AND state IN ('sent', 'accepted') AND (?2 IS NULL OR owner=?2) AND custody='owned'",
+                "SELECT COUNT(*) FROM runs WHERE machine = ?1 AND state <> 'settled' AND kind <> 'update' AND state IN ('sent', 'accepted') AND (?2 IS NULL OR owner=?2)",
                 params![machine,self.owner_id()],
                 |r| r.get(0),
             )?;
@@ -1137,7 +664,7 @@ macro_rules! journal_methods {
         self.read(|conn| {
             let mut statement = conn.prepare(&format!(
                 "SELECT {RUN_COLUMNS}, idempotency_key FROM runs WHERE machine = ?1 AND kind = 'update' AND state = 'settled'
-                     AND status = 'completed' AND (?3 IS NULL OR owner=?3) AND custody='owned' ORDER BY number DESC LIMIT ?2"
+                     AND status = 'completed' AND (?3 IS NULL OR owner=?3) ORDER BY number DESC LIMIT ?2"
             ))?;
             let rows = statement.query_map(params![machine, limit, self.owner_id()], |r| {
                 let key: String = r.get(r.as_ref().column_count() - 1)?;
@@ -1151,7 +678,7 @@ macro_rules! journal_methods {
     pub(crate) fn unplaced(&self) -> Result<Vec<RunRow>> {
         self.read(|conn| {
             let mut statement = conn.prepare(&format!(
-                "SELECT {RUN_COLUMNS} FROM runs WHERE state = 'queued' AND machine IS NULL AND (?1 IS NULL OR owner=?1) AND custody='owned' ORDER BY number"
+                "SELECT {RUN_COLUMNS} FROM runs WHERE state = 'queued' AND machine IS NULL AND (?1 IS NULL OR owner=?1) ORDER BY number"
             ))?;
             let rows = statement.query_map([self.owner_id()], run_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
             unlocked_rows(rows)
@@ -1505,7 +1032,7 @@ macro_rules! journal_methods {
     pub(crate) fn unsettled(&self) -> Result<Vec<RunId>> {
         self.read(|conn| {
             // `+number`: ordered after reading `runs_owed`, never by walking every run in number order.
-            let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind <> 'here' AND (?1 IS NULL OR owner=?1) AND custody='owned' ORDER BY +number")?;
+            let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind <> 'here' AND (?1 IS NULL OR owner=?1) ORDER BY +number")?;
             let ids = statement
                 .query_map([self.owner_id()], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1518,7 +1045,7 @@ macro_rules! journal_methods {
     /// Calcifer's own runs not yet settled: those an earlier Calcifer stopped under, or that are going now.
     pub(crate) fn unsettled_here(&self) -> Result<Vec<RunId>> {
         self.read(|conn| {
-            let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind = 'here' AND (?1 IS NULL OR owner=?1) AND custody='owned' ORDER BY +number")?;
+            let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind = 'here' AND (?1 IS NULL OR owner=?1) ORDER BY +number")?;
             let ids = statement
                 .query_map([self.owner_id()], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1891,7 +1418,7 @@ macro_rules! journal_methods {
     pub(crate) fn runs_on_ended_machine(&self, machine: &str, served: bool, reason: &str) -> Result<Vec<(RunId, Event)>> {
         self.write(|tx| {
             let mut statement = tx.prepare(&format!(
-                "SELECT {RUN_COLUMNS} FROM runs WHERE machine = ?1 AND state <> 'settled' AND (?2 IS NULL OR owner=?2) AND custody='owned' ORDER BY number"
+                "SELECT {RUN_COLUMNS} FROM runs WHERE machine = ?1 AND state <> 'settled' AND (?2 IS NULL OR owner=?2) ORDER BY number"
             ))?;
             let rows = statement.query_map(params![machine,self.owner_id()], run_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
             let mut events = vec![];
@@ -2003,7 +1530,7 @@ macro_rules! journal_methods {
             let mut statement = conn.prepare(&format!(
                 // From `outputs_unexported`: a run's row is read only when it owes one (cl-1010).
                 "SELECT runs.id, runs.number FROM runs WHERE runs.id IN (SELECT outputs.run FROM outputs WHERE {OWED})
-                 AND (?1 IS NULL OR runs.owner=?1) AND runs.custody='owned' ORDER BY runs.number"
+                 AND (?1 IS NULL OR runs.owner=?1) ORDER BY runs.number"
             ))?;
             let rows = statement
                 .query_map([self.owner_id()], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)))?
@@ -2021,7 +1548,7 @@ macro_rules! journal_methods {
             let mut statement = conn.prepare(&format!(
                 "SELECT runs.id, runs.number, outputs.name, outputs.idx, outputs.length
                  FROM outputs CROSS JOIN runs ON runs.id = outputs.run
-                 WHERE runs.machine = ?1 AND {OWED} AND (?2 IS NULL OR runs.owner=?2) AND runs.custody='owned'
+                 WHERE runs.machine = ?1 AND {OWED} AND (?2 IS NULL OR runs.owner=?2)
                  ORDER BY runs.number, outputs.created_seq"
             ))?;
             let rows = statement
@@ -2102,6 +1629,22 @@ macro_rules! journal_methods {
 
     /// Records why revision `rev` of the output will not be exported; while that is its current
     /// revision, the run's next event is the item done again, carrying why.
+    /// A settled run with an output that wasn't saved (cl-1060): a lock cut its save, or its export failed for good. It reads failed
+    /// with `reason`, typed by why, never completed with no file; its items keep their own export errors.
+    pub(crate) fn outputs_not_saved(&self, run: &str, reason: &Reason) -> Result<Vec<Event>> {
+        self.write(|tx| {
+            let changed = tx.execute(
+                "UPDATE runs SET status = 'failed', reason_code = ?2, reason = ?3 WHERE id = ?1 AND state = 'settled' AND status = 'completed'",
+                params![
+                    run,
+                    seal_run_text(tx, run, &run_context(run, "reason_code"), &reason.code)?,
+                    seal_run_text(tx, run, &run_context(run, "reason"), &reason.message)?,
+                ],
+            )?;
+            Ok(if changed == 0 { vec![] } else { vec![lifecycle(tx, run)?] })
+        })
+    }
+
     pub(crate) fn export_failed(&self, run: &str, name: &str, index: u32, rev: u64, reason: &str) -> Result<Vec<Event>> {
         self.write(|tx| {
             tx.execute(
@@ -2227,14 +1770,13 @@ impl Store {
     }
 
     /// Takes out ended machines older than [`KEPT_FOR_MS`] that no kept run names, at most `limit`, with their logs, and gives the pages
-    /// back (a new store vacuums incrementally): the store keeps 90 days of them, with no timer (Paul 11-15). Not while the legacy
-    /// history's rows can still name them (cl-1003). Its own check stands for the foreign key's, which with no index on runs(machine) (one
-    /// would take the unsettled-run plans) read every run for each machine: off for this transaction only. How many went.
+    /// back (a new store vacuums incrementally): the store keeps 90 days of them, with no timer (Paul 11-15). Its own check stands for
+    /// the foreign key's, which with no index on runs(machine) (one would take the unsettled-run plans) read every run for each
+    /// machine: off for this transaction only. How many went.
     pub(crate) fn prune_machines(&self, limit: i64) -> Result<usize> {
         let before = now_ms() - KEPT_FOR_MS;
         let (pruned, commit) = {
             let mut conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-            if has_table(&conn, "legacy_project_runs")? { return Ok(0); }
             conn.pragma_update(None, "foreign_keys", "OFF")?;
             let pruned = (|| -> Result<usize> {
                 let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -2244,9 +1786,7 @@ impl Store {
                          AND name NOT IN (SELECT machine FROM runs WHERE machine IS NOT NULL) LIMIT ?2",
                     params![before, limit],
                 )?;
-                if has_table(&tx, "machine_logs")? {
-                    tx.execute("DELETE FROM machine_logs WHERE machine IN (SELECT name FROM temp.pruned_machines)", [])?;
-                }
+                tx.execute("DELETE FROM machine_logs WHERE machine IN (SELECT name FROM temp.pruned_machines)", [])?;
                 let pruned = tx.execute("DELETE FROM machines WHERE name IN (SELECT name FROM temp.pruned_machines)", [])?;
                 if pruned > 0 { tx.execute_batch("PRAGMA incremental_vacuum(256)")?; }
                 tx.commit()?;
@@ -2265,12 +1805,14 @@ impl Store {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| StoreError::Corrupt(e.to_string()))?;
         }
+        // A 0.24/0.25 store, or a 0.26 RC's: written again with its old history cut, before anything opens it (cl-1003).
+        let found = if path.exists() { Connection::open(path)?.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? } else { 0 };
+        if matches!(found, 7 | 8) { hard_cut::rebuild(path, found)?; }
         let mut writer = Connection::open(path)?;
         register_owner(&writer,None)?;
         let mode: String = writer.pragma_update_and_check(None, "journal_mode", "WAL", |r| r.get(0))?;
         let wal = mode.eq_ignore_ascii_case("wal");
         // In WAL mode a commit doesn't sync: `write` flushes for it (`Durable`).
-        // The old-writer fence must be durable before a project can commit V3.
         writer.pragma_update(None, "synchronous", "FULL")?;
         writer.pragma_update(None, "secure_delete", "ON")?;
         writer.pragma_update(None, "foreign_keys", "ON")?;
@@ -2284,31 +1826,13 @@ impl Store {
                 tx.pragma_update(None, "user_version", VERSION)?;
                 tx.commit()?;
             }
-            7 => {
-                measured_columns(&mut writer)?;
-                stays_column(&mut writer)?;
-                batch_column(&mut writer)?;
-                job_column(&mut writer)?;
-                attempt_column(&mut writer)?;
-                held_column(&mut writer)?;
-                ended_at_column(&writer)?;
-                fence_legacy_projects(&mut writer)?;
-            }
-            VERSION => {
-                measured_columns(&mut writer)?;
-                stays_column(&mut writer)?;
-                batch_column(&mut writer)?;
-                job_column(&mut writer)?;
-                attempt_column(&mut writer)?;
-                held_column(&mut writer)?;
-                ended_at_column(&writer)?;
-            }
+            VERSION => {}
             other => return Err(StoreError::Version(other)),
         }
-        fence_legacy_unseen(&mut writer)?;
         run_list_indexes(&writer)?;
         writer.execute_batch("CREATE INDEX IF NOT EXISTS machines_live ON machines (name) WHERE state <> 'ended';")?;
         writer.execute_batch(ANSWERS)?;
+        writer.execute_batch(LOST)?;
         writer.execute_batch(MEASUREMENTS_DROPPED)?;
         writer.execute_batch(crate::project::journal::PLACEMENTS)?;
         writer.execute_batch(crate::maintenance_source::TABLES)?;
@@ -2318,14 +1842,19 @@ impl Store {
         // The store step's parts, in the closed health log: a slow start names its slow part (cl-1010).
         let said = |part: &'static str, since: std::time::Instant| tracing::info!(target: "cozy.service_health", step = part, ms = since.elapsed().as_millis() as u64, "started");
         said("store_schema", began);
-        let legacy = std::time::Instant::now();
-        index_legacy_owners(&mut writer)?;
-        migrate_maintenance_asks(&mut writer)?;
-        migrate_maintenance_runs(&mut writer)?;
-        said("store_legacy", legacy);
         let rest = std::time::Instant::now();
         crate::state::project_names(&writer)?;
         crate::state::project_codes(&writer)?;
+        // What older Calcifers kept beside the store, at every start until none is left (cl-1003): a cut stopped after its rename
+        // still loses them.
+        if let Some(home) = path.parent() {
+            let admitted: std::collections::HashSet<String> = {
+                let mut stmt = writer.prepare("SELECT tree FROM maintenance_source_admissions")?;
+                let trees = stmt.query_map([], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<_>>()?;
+                trees
+            };
+            crate::legacy_cleanup::retire(home, &admitted);
+        }
         writer.pragma_update(None,"synchronous",if wal {"NORMAL"} else {"FULL"})?;
         private(path);
         let readers = Readers::open(path)?;
@@ -2333,8 +1862,6 @@ impl Store {
         let mut journal = path.as_os_str().to_owned();
         journal.push("-wal");
         Ok(Self {
-            legacy_home: path.parent().unwrap_or(Path::new(".")).to_owned(),
-            settled: Mutex::default(),
             writer: Mutex::new(writer),
             readers,
             durable: Durable { wal: wal.then(|| journal.into()), ..Durable::sqlite() },
@@ -2363,94 +1890,16 @@ impl Store {
         Ok(items)
     }
 
-    pub(crate) fn migration_required(&self) -> Result<bool> {
-        if crate::legacy_cleanup::pending(&self.legacy_home) { return Ok(true); }
-        // These are old authoritative sources, not an invitation to sweep a
-        // home directory. Unreadable and unattributed files stay pending.
-        for name in ["projects.json", "here.json", "checkpoints.json"] {
-            match std::fs::symlink_metadata(self.legacy_home.join(name)) {
-                Ok(_) => return Ok(true),
-                Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
-                Err(_)=>return Ok(true),
-            }
-        }
-        match std::fs::symlink_metadata(self.legacy_home.join("files")) {
-            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink()=>match std::fs::read_dir(self.legacy_home.join("files")) {Ok(mut entries)=>if entries.next().is_some() {return Ok(true);},Err(_)=>return Ok(true)},
-            Ok(_)=>return Ok(true),
-            Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
-            Err(_)=>return Ok(true),
-        }
-        match std::fs::read_dir(self.legacy_home.join("after")) {
-            Ok(mut entries)=>{ if entries.next().is_some() {return Ok(true);} },
-            Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
-            Err(_)=>return Ok(true),
-        }
+    /// Projects whose files left on a machine were gone before the legacy cut could copy them in, and how many (cl-1003).
+    pub(crate) fn lost_before_upgrade(&self) -> Result<Vec<(PathBuf, u64)>> {
         self.read(|conn| {
-            let tables: Vec<String> = {
-                let mut stmt = conn.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name LIKE 'legacy_project_%'")?;
-                stmt.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?
-            };
-            for table in tables {
-                // Runs (with their rows) and answers count when they name a project; a maintenance row kept fenced does not.
-                let owned = match table.as_str() {
-                    // By the owner index: a run that names a project has a row (`legacy_run_owner`).
-                    "legacy_project_runs" => !has_table(conn, "legacy_run_owners")?
-                        || conn.query_row("SELECT EXISTS(SELECT 1 FROM legacy_run_owners o JOIN legacy_project_runs r ON r.id = o.id)", [], |row| row.get(0))?,
-                    "legacy_project_outputs" | "legacy_project_run_logs" | "legacy_project_after_steps" => false,
-                    "legacy_project_answers" => !has_table(conn, "legacy_answer_owners")?
-                        || conn.query_row("SELECT EXISTS(SELECT 1 FROM legacy_answer_owners o JOIN legacy_project_answers a ON a.key = o.key)", [], |row| row.get(0))?,
-                    "legacy_project_asks" if has_table(conn, "legacy_project_runs")? => conn.query_row("SELECT EXISTS(SELECT 1 FROM legacy_project_asks WHERE run IS NULL OR run IN (SELECT id FROM legacy_project_runs))", [], |row| row.get(0))?,
-                    "legacy_project_asks" => conn.query_row("SELECT EXISTS(SELECT 1 FROM legacy_project_asks WHERE run IS NULL)", [], |row| row.get(0))?,
-                    other => conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM \"{}\")", other.replace('"', "\"\"")), [], |row| row.get(0))?,
-                };
-                if owned { return Ok(true); }
-            }
-            // Older source caches have no explicit owner. Do not silently call
-            // them independent maintenance merely because the SQL rows moved.
-            if conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='legacy_project_runs')",[],|row|row.get::<_,bool>(0))? {
-                let digests=self.legacy_home.parent().unwrap_or(&self.legacy_home).join("cache").join("digests");
-                if !crate::legacy_cleanup::digests_retired(&digests) {
-                    match std::fs::read_dir(&digests) {
-                        Ok(mut entries)=>if entries.next().is_some() {return Ok(true);},
-                        Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
-                        Err(_)=>return Ok(true),
-                    }
-                }
-                match std::fs::read_dir(self.legacy_home.join("local")) {
-                    Ok(entries)=>for entry in entries {
-                        let Ok(entry)=entry else {return Ok(true);};
-                        let Some(name)=entry.file_name().to_str().map(str::to_owned) else {return Ok(true);};
-                        let Some(hex)=name.strip_suffix(".json").filter(|hex|hex.len()==64&&hex.bytes().all(|byte|byte.is_ascii_hexdigit())) else {return Ok(true);};
-                        let digest=format!("sha256:{hex}");
-                        let admitted=conn.query_row("SELECT EXISTS(SELECT 1 FROM maintenance_source_objects WHERE digest=?1)",[&digest],|row|row.get::<_,bool>(0))?;
-                        if !admitted {return Ok(true);}
-                        let Ok(bytes)=std::fs::read(entry.path()) else {return Ok(true);};
-                        if Digest::of(&bytes).to_string()!=digest {return Ok(true);}
-                    },
-                    Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
-                    Err(_)=>return Ok(true),
-                }
-                match std::fs::read_dir(self.legacy_home.join("code")) {
-                    Ok(entries)=>for entry in entries {
-                        let Ok(entry)=entry else { return Ok(true); };
-                        let Some(name)=entry.file_name().to_str().map(str::to_owned) else { return Ok(true); };
-                        let tree=format!("sha256:{name}");
-                        let admitted=conn.query_row("SELECT EXISTS(SELECT 1 FROM maintenance_source_admissions WHERE tree=?1)",[tree],|row|row.get::<_,bool>(0))?;
-                        if name.len()!=64 || !name.bytes().all(|byte|byte.is_ascii_hexdigit()) || !admitted { return Ok(true); }
-                    },
-                    Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
-                    Err(_)=>return Ok(true),
-                }
-            }
-            Ok(false)
+            let mut stmt = conn.prepare("SELECT path, files FROM lost_before_upgrade ORDER BY path")?;
+            Ok(stmt.query_map([], |row| Ok((PathBuf::from(row.get::<_, String>(0)?), row.get::<_, i64>(1)?.max(0) as u64)))?.collect::<rusqlite::Result<_>>()?)
         })
     }
 
-    pub(crate) fn legacy_rental_pending(&self)->Result<bool> {
-        self.read(|conn| {
-            if !conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='legacy_project_asks')",[],|row|row.get::<_,bool>(0))? {return Ok(false);}
-            Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM legacy_project_asks WHERE kind='rent' AND state='pending')",[],|row|row.get::<_,bool>(0))?)
-        })
+    pub(crate) fn note_lost(&self, root: &Path, files: u64) -> Result<()> {
+        self.write(|tx| { tx.execute("INSERT OR REPLACE INTO lost_before_upgrade (path, files) VALUES (?1, ?2)", params![root.to_string_lossy(), files as i64])?; Ok(()) })
     }
 
     /// Waiting for a reader, loading rows and opening private records may block on I/O.
@@ -2482,274 +1931,6 @@ impl Store {
             Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(commit),
             _ => commit(),
         }
-    }
-
-    /// Protect already-recorded private content when an ordinary project opts into a vault.
-    /// The caller installs the keybag/public recipient before this atomic journal transaction.
-    pub(crate) fn protect_project_journal(&self, root: &Path) -> Result<()> {
-        self.rewrite_project_journal(root, |context, value, protected| {
-            if protected {
-                // Validate the existing slot; a prefix alone is not proof that it is valid ciphertext.
-                open_bytes(context, value)?;
-                return Ok(value.to_vec());
-            }
-            // A frame may have been sealed after the physical cutover but before this transaction.
-            // Only a verified same-root/context envelope is already protected. A legacy plaintext
-            // log that merely begins with our prefix is still data and must be encrypted.
-            if vault::is_payload(value)
-                && vault::payload_root(value).ok().flatten().as_deref() == Some(root)
-                && matches!(vault::open_payload(context, value), Ok(Some(_)))
-            {
-                return Ok(value.to_vec());
-            }
-            let sealed = seal_at(root, context, value)?;
-            if !vault::is_payload(&sealed) {
-                return Err(StoreError::Protected(
-                    "project encryption is not ready for journal conversion".into(),
-                ));
-            }
-            Ok(sealed)
-        })
-        .map(drop)
-    }
-
-    /// Rewrite every retained protected payload using the owner's verified replacement generation.
-    pub(crate) fn rekey_project_journal(&self, root: &Path, old: &project_vault::ProjectSecret, new: &project_vault::Keybag) -> Result<()> {
-        self.rewrite_project_journal(root, |context, value, protected| {
-            if protected {
-                return vault::rekey_payload(context, value, old, new).map_err(private_error);
-            }
-            // A newly protected slot (target on an older sealed-spec row) can still be
-            // plaintext. Put it in the current protected view rather than carrying it on.
-            let sealed = seal_at(root, context, value)?;
-            if !vault::is_payload(&sealed) {
-                return Err(StoreError::Protected("project encryption is not ready for journal rekey".into()));
-            }
-            Ok(sealed)
-        })
-        .map(drop)
-    }
-
-    fn rewrite_project_journal(&self, root: &Path, mut transform: impl FnMut(&str, &[u8], bool) -> Result<Vec<u8>>) -> Result<bool> {
-        self.write(|tx| {
-            let all: Vec<(String, String, Vec<u8>)> = {
-                // Keep only the prefix in Rust until the path or an envelope may belong to
-                // this project. Other projects' plaintext specs can be large.
-                // SQLite returns NULL for substr of an empty BLOB, although spec is NOT NULL.
-                let mut rows = tx.prepare("SELECT id, out_dir, coalesce(substr(spec, 1, ?1), x'') AS spec FROM runs NOT INDEXED")?;
-                rows.query_map([vault::PAYLOAD_PREFIX.len() as i64], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-                    .collect::<rusqlite::Result<_>>()?
-            };
-            let mut changed = false;
-            for (id, directory, probe) in all {
-                let path = vault::logical(Path::new(&directory));
-                if !path.starts_with(root) && !vault::is_payload(&probe) {
-                    continue;
-                }
-                // Every protected prefix is still fully parsed, including malformed or
-                // relocated envelopes whose out_dir no longer identifies their owner.
-                let spec: Vec<u8> = tx.query_row("SELECT spec FROM runs WHERE id = ?1", [&id], |row| row.get(0))?;
-                let protected = vault::is_payload(&spec);
-                let scope = vault::payload_root(&spec).map_err(private_error)?;
-                if !path.starts_with(root) && scope.as_deref() != Some(root) {
-                    continue;
-                }
-                if protected { tx.execute("UPDATE runs SET out_dir = ?2 WHERE id = ?1", params![&id, crate::project::landing(root).to_string_lossy()])?; }
-
-                for column in ["spec", "outcome"] {
-                    let value: Option<Vec<u8>> =
-                        tx.query_row(&format!("SELECT {column} FROM runs WHERE id = ?1"), [&id], |row| row.get(0))?;
-                    if let Some(value) = value {
-                        let sealed = transform(&run_context(&id, column), &value, protected)?;
-                        if sealed != value {
-                            tx.execute(&format!("UPDATE runs SET {column} = ?2 WHERE id = ?1"), params![id, sealed])?;
-                            changed = true;
-                        }
-                    }
-                }
-                for column in ["target", "warnings", "inputs", "reason_code", "reason"] {
-                    let value: Option<String> =
-                        tx.query_row(&format!("SELECT {column} FROM runs WHERE id = ?1"), [&id], |row| row.get(0))?;
-                    if let Some(value) = value {
-                        // Earlier private records already sealed their spec, before target
-                        // became a private slot. Its own envelope decides whether to retain
-                        // or seal it; the spec's marker alone is not sufficient.
-                        let protected = protected && (column != "target" || vault::is_payload(value.as_bytes()));
-                        let sealed = as_text(transform(&run_context(&id, column), value.as_bytes(), protected)?)?;
-                        if sealed != value {
-                            tx.execute(&format!("UPDATE runs SET {column} = ?2 WHERE id = ?1"), params![id, sealed])?;
-                            changed = true;
-                        }
-                    }
-                }
-                let outputs: Vec<(String, u32, u64, Option<u64>, Option<u64>)> = {
-                    let mut rows = tx.prepare("SELECT name, idx, rev, exported_rev, failed_rev FROM outputs WHERE run = ?1")?;
-                    rows.query_map([&id], |row| {
-                        Ok((
-                            row.get(0)?,
-                            row.get::<_, i64>(1)? as u32,
-                            row.get::<_, i64>(2)? as u64,
-                            row.get::<_, Option<i64>>(3)?.map(|n| n as u64),
-                            row.get::<_, Option<i64>>(4)?.map(|n| n as u64),
-                        ))
-                    })?
-                    .collect::<rusqlite::Result<_>>()?
-                };
-                for (name, index, rev, exported, failed) in outputs {
-                    for (column, revision) in [
-                        ("label", rev),
-                        ("checkpoint", rev),
-                        ("path", exported.unwrap_or(rev)),
-                        ("export_error", failed.unwrap_or(rev)),
-                    ] {
-                        let value: Option<String> = tx.query_row(
-                            &format!("SELECT {column} FROM outputs WHERE run = ?1 AND name = ?2 AND idx = ?3"),
-                            params![id, name, index],
-                            |row| row.get(0),
-                        )?;
-                        if let Some(value) = value {
-                            let sealed = as_text(transform(
-                                &output_context(&id, &name, index, revision, column),
-                                value.as_bytes(),
-                                protected,
-                            )?)?;
-                            if sealed != value {
-                                tx.execute(
-                                    &format!("UPDATE outputs SET {column} = ?4 WHERE run = ?1 AND name = ?2 AND idx = ?3"),
-                                    params![id, name, index, sealed],
-                                )?;
-                                changed = true;
-                            }
-                        }
-                    }
-                }
-                let logs: Vec<(i64, String)> = {
-                    let mut rows = tx.prepare("SELECT seq, text FROM run_logs WHERE run = ?1")?;
-                    rows.query_map([&id], |row| Ok((row.get(0)?, row.get(1)?)))?
-                        .collect::<rusqlite::Result<_>>()?
-                };
-                for (seq, text) in logs {
-                    let sealed = as_text(transform(&log_context(&id, seq as u64), text.as_bytes(), protected)?)?;
-                    if sealed != text {
-                        tx.execute(
-                            "UPDATE run_logs SET text = ?3 WHERE run = ?1 AND seq = ?2",
-                            params![id, seq, sealed],
-                        )?;
-                        changed = true;
-                    }
-                }
-                let asks: Vec<(String, Vec<u8>, Option<String>)> = {
-                    let mut rows = tx.prepare("SELECT key, body, reason FROM asks WHERE run = ?1")?;
-                    rows.query_map([&id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-                        .collect::<rusqlite::Result<_>>()?
-                };
-                for (key, body, reason) in asks {
-                    let sealed = transform(&format!("ask:{key}:body"), &body, protected)?;
-                    let sealed_reason = reason
-                        .as_ref()
-                        .map(|reason| transform(&format!("ask:{key}:reason"), reason.as_bytes(), protected).and_then(as_text))
-                        .transpose()?;
-                    if sealed != body || sealed_reason != reason {
-                        tx.execute(
-                            "UPDATE asks SET body = ?2, reason = ?3 WHERE key = ?1",
-                            params![key, sealed, sealed_reason],
-                        )?;
-                        changed = true;
-                    }
-                }
-            }
-            let answers: Vec<String> = {
-                // Preserve the old table-scan order rather than using the key index.
-                let mut rows = tx.prepare("SELECT key FROM answers NOT INDEXED")?;
-                rows.query_map([], |row| row.get(0))?
-                    .collect::<rusqlite::Result<_>>()?
-            };
-            for key in answers {
-                let body: Vec<u8> = tx.query_row("SELECT body FROM answers WHERE key = ?1", [&key], |row| row.get(0))?;
-                let scope = vault::payload_root(&body).map_err(private_error)?.or_else(|| answer_path(&body));
-                if scope.as_deref().is_none_or(|path| !vault::logical(path).starts_with(root)) {
-                    continue;
-                }
-                let sealed = transform(&format!("answer:{key}:body"), &body, vault::is_payload(&body))?;
-                if sealed != body {
-                    tx.execute("UPDATE answers SET body = ?2 WHERE key = ?1", params![key, sealed])?;
-                    changed = true;
-                }
-            }
-            if changed { vault::mark_journal_cleanup(root).map_err(private_error)?; }
-            Ok(changed)
-        })
-    }
-
-    /// Old plaintext must not remain in our live SQLite freelist or WAL after conversion.
-    /// This cannot erase historical external copies or SSD remnants.
-    /// Whether the legacy source still holds anything of the project at `root` (`id`): its runs and their rows, its retry
-    /// answers, its index entry or its unseen marks. Others' pending history never holds this project.
-    pub(crate) fn project_migration_required(&self, root: &Path, id: &str) -> Result<bool> {
-        let root = vault::logical(root);
-        let landing = crate::project::landing(&root);
-        match std::fs::read(self.legacy_home.join("projects.json")) {
-            Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
-                Ok(index) if index.get("projects").and_then(|projects| projects.get(id)).is_none() => {}
-                _ => return Ok(true),
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Ok(true),
-        }
-        self.read(|conn| {
-            if has_table(conn, "legacy_project_runs")? {
-                // Only the runs the owner index says may be this project's; each decided as a full read decided it.
-                if !has_table(conn, "legacy_run_owners")? { return Ok(true); }
-                for (_, out_dir, spec) in legacy_run_candidates(conn, &root, id)? {
-                    match vault::payload_root(&spec) {
-                        Ok(Some(owner)) if owner == root => return Ok(true),
-                        Ok(None) if Path::new(&out_dir) == landing => return Ok(true),
-                        Err(_) => return Ok(true),
-                        _ => {}
-                    }
-                }
-            }
-            if has_table(conn, "legacy_project_answers")? {
-                if !has_table(conn, "legacy_answer_owners")? { return Ok(true); }
-                for (_, body) in legacy_answer_candidates(conn, &root, id)? {
-                    let owner = vault::payload_root(&body).ok().flatten().or_else(|| answer_path(&body).map(|path| vault::logical(&path)));
-                    if owner.is_some_and(|owner| owner.starts_with(&root)) { return Ok(true); }
-                }
-            }
-            for (table, column) in [("legacy_project_projects", "id"), ("legacy_project_unseen", "project")] {
-                if has_table(conn, table)? && conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {column}=?1)"), [id], |row| row.get::<_, bool>(0))? {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
-        })
-    }
-
-    pub(crate) fn cleanup_private_journal(&self) -> Result<()> {
-        // VACUUM can build a temporary database. Never make a second global
-        // copy of unresolved private history; retire only after every owner is verified.
-        if self.migration_required()? {return Err(StoreError::Protected("project_migration_pending".into()));}
-        let writer = self.writer.lock().expect("store writer");
-        let _readers = self.readers.all();
-        writer.pragma_update(None, "secure_delete", "ON")?;
-        let checkpoint = |conn: &Connection| -> Result<()> {
-            let busy: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
-            if busy != 0 {
-                return Err(StoreError::Protected("journal cleanup is waiting for SQLite readers".into()));
-            }
-            Ok(())
-        };
-        checkpoint(&writer)?;
-        writer.execute_batch("VACUUM;")?;
-        checkpoint(&writer)
-    }
-
-    fn checkpoint_legacy_retirement(&self)->Result<()> {
-        let writer=self.writer.lock().expect("store writer");
-        let _readers=self.readers.all();
-        let busy:i64=writer.query_row("PRAGMA wal_checkpoint(TRUNCATE)",[],|row|row.get(0))?;
-        if busy!=0 {return Err(StoreError::Protected("legacy_retirement_checkpoint_pending".into()));}
-        Ok(())
     }
 
     /// What the write under `key` answered, if it was kept.
@@ -3178,7 +2359,7 @@ fn put_machine_in(tx: &Transaction, machine: &MachineRow) -> Result<()> {
 
 const RUN_COLUMNS: &str = "id, number, kind, target, hub, machine, pinned, spec, out_dir, state, cancel_requested,
     cursor, machine_state, status, reason_code, reason, state_seq, created_at, accepted_at, settled_at, warnings,
-    inputs, outcome, wants, agreed, started_at, cozy_project_root(), owner, custody, attempt";
+    inputs, outcome, wants, agreed, started_at, cozy_project_root(), owner, attempt";
 
 const RUN_LIST_SCOPE: &str = "FROM runs WHERE number < ?1
     AND (?2 IS NULL OR CASE state WHEN 'accepted' THEN 'in_progress' WHEN 'settled' THEN status ELSE 'queued' END = ?2)
@@ -3302,7 +2483,6 @@ fn run_row(r: &Row) -> rusqlite::Result<Result<RunRow>> {
         Ok(RunRow {
             project_root,
             owner:r.get(27)?,
-            custody_pending:r.get::<_,String>(28)?!="owned",
             id: RunId::try_from(id).map_err(|_| corrupt("a run id"))?,
             number: r.get::<_, i64>(1)? as u64,
             kind: Kind::parse(&kind).ok_or_else(|| corrupt("a run kind"))?,
@@ -3355,7 +2535,7 @@ fn run_row(r: &Row) -> rusqlite::Result<Result<RunRow>> {
             },
             wants: wants.unwrap_or_else(|| "any".into()),
             agreed: (agreed.as_deref().map(serde_json::from_str).transpose()).map_err(|_| corrupt("a run's agreed price"))?,
-            attempt: r.get::<_, i64>(29)?.max(1) as u32,
+            attempt: r.get::<_, i64>(28)?.max(1) as u32,
         })
     })())
 }

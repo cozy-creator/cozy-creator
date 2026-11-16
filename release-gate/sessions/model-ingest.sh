@@ -32,9 +32,11 @@
 #              the checkout's code, else the Hub's package. Outputs are in the session's artifact.
 #   version    the release (required unless held)    tags, family   set with `model edit` / `lora edit`
 #   hold       true: commits only, private, never published
-# tensord: true makes this session's cozy (a dev build: `cozy` = its run id) the pod's TensorD first; runtime: true
-# installs this session's RUNTIME_WHEEL (dispatched from rc/<x>, or runtime_ref) there too, for a package tree that
-# needs a Runtime no release has. A Civitai source
+# tensord: true makes this session's cozy (a dev build: `cozy` = its run id) the pod's TensorD first; runtime installs a
+# Runtime no release has there too, for a package tree that needs it: a wheel source as lib.sh `wheel_from` takes (a
+# cozy-runtime dev-build run id: its wheel carries the kernels a machine requires), or true for this session's
+# RUNTIME_WHEEL (dispatched from rc/<x>, or runtime_ref), a pure wheel an RC cozy refuses (`runtime_without_kernels`).
+# A mirror's `from` (bf16 by default) is the upload lane its `lanes` are written from: fp16 for a model published so. A Civitai source
 # that needs an account reads CIVITAI_TOKEN, the release-gate secret pod-session.yaml gives Calcifer. A failed item
 # stays private and the next goes on; the session fails if any did.
 . "$(dirname "$0")/lib.sh"
@@ -43,6 +45,15 @@ FUNCTION=$(param function ask) SLOT=$(param slot model)
 REQUEST=$(param request '{"prompt": "First, what is 17 + 25? Give just the number. Then describe this picture in two sentences.", "max_tokens": 160, "temperature": 0.7, "top_p": 0.8, "presence_penalty": 1.5, "seed": 0}')
 EXPECT=$(param expect 42) ASSET=$(param asset images) IMG=$REF/seed.jpg GATE=$(param gate true) FROM=$(param from bf16)
 MIRRORS=$(param mirrors '')
+# The pod's Runtime (`runtime`), fetched before anything is rented.
+RUNTIME='' SRC=$(param runtime false)
+if [ "$SRC" = true ]; then
+  [ -n "${RUNTIME_WHEEL:-}" ] || fail "runtime: true, and this session has no RUNTIME_WHEEL (dispatch from rc/<x>, or runtime_ref)"
+  RUNTIME=$RUNTIME_WHEEL
+elif [ "$SRC" != false ]; then
+  RUNTIME=$(wheel_from "$OUT/wheels/runtime" "$SRC") && [ -n "$RUNTIME" ] || fail "no Runtime wheel from $SRC"
+  say "runtime: ${RUNTIME##*/}"
+fi
 printf 'checkpoint  sha256:%064d\ncheckpoint  _/x@sha256:%064d\nrun 5 · x\nrun      17999\n' 1 7 > "$OUT/probe.txt"
 [ "$(made probe)" = "sha256:$(printf '%064d' 7)" ] && [ "$(runno probe)" = 17999 ] || fail "parsers"
 trees=("$PACKAGES"/*/)
@@ -55,9 +66,9 @@ released() {
 
 # mirror <i>: mirrors[i] uploaded, called, tagged and published (unless held); 1 on its first failure.
 mirror() {
-  local it m kind verb page slug version strength j k v u lane c n N fn req pulled='' bf16='' commits=() calls=() args
+  local it m kind verb page slug version strength j k v u lane c n N fn req pulled='' bf16='' from commits=() calls=() args
   it=$(jq -c ".[$1]" <<<"$MIRRORS"); m=$(jq -r .model <<<"$it"); kind=$(jq -r '.kind // "model"' <<<"$it")
-  page=$(jq -r .page <<<"$it"); version=$(jq -r '.version // ""' <<<"$it"); slug=${m//\//-}
+  page=$(jq -r .page <<<"$it"); version=$(jq -r '.version // ""' <<<"$it"); slug=${m//\//-} from=$(jq -r '.from // "bf16"' <<<"$it")
   verb=model; [ "$kind" = model ] || verb=lora
   for ((j = 0; j < $(jq '.uploads | length' <<<"$it"); j++)); do
     u=$(jq -c ".uploads[$j]" <<<"$it"); lane=$(jq -r .lane <<<"$u"); c=$(jq -r '.commit // ""' <<<"$u")
@@ -83,12 +94,12 @@ mirror() {
       fi
     fi
     [ "$(lane_of "$m" "$c")" = "$lane" ] || { say "MIRROR FAILED: $m: ${c:-no commit} is no $lane commit"; return 1; }
-    commits+=("$c"); calls+=("$lane=$c"); [ "$lane" != bf16 ] || bf16=$c
+    commits+=("$c"); calls+=("$lane=$c"); [ "$lane" != "$from" ] || bf16=$c
     say "COMMIT $m $lane $c"
   done
   for lane in $(jq -r '.lanes // [] | .[]' <<<"$it"); do
     v=$(jq -r '.recipes // ""' <<<"$it"); [[ $v != ./* ]] || v=$TREE/${v#./}
-    [ -n "$bf16" ] && [ -n "$v" ] || { say "MIRROR FAILED: $m: lane $lane needs a bf16 upload and recipes"; return 1; }
+    [ -n "$bf16" ] && [ -n "$v" ] || { say "MIRROR FAILED: $m: lane $lane needs a $from upload and recipes"; return 1; }
     [ -n "$pulled" ] || step "pull-$slug" model install "$m@$bf16" --on "$NAME" || { say "MIRROR FAILED: $m: pull"; return 1; }
     pulled=1
     step "$lane-$slug" model quantize "$m@$bf16" --lane "$lane" --package "$v" --on "$NAME" &&
@@ -150,9 +161,8 @@ if [ -n "$MIRRORS" ]; then
     step update machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "the pod's TensorD"
     cozy machine show "$NAME" > "$OUT/show-update.txt" 2>&1; grep -E '^(version|runtime|tensorfs) ' "$OUT/show-update.txt" | tee -a "$R"
   fi
-  if [ "$(param runtime false)" = true ]; then
-    [ -n "${RUNTIME_WHEEL:-}" ] || fail "runtime: true, and this session has no RUNTIME_WHEEL (dispatch from rc/<x>, or runtime_ref)"
-    step runtime machine update "$NAME" --runtime "$RUNTIME_WHEEL" -y || fail "the pod's Runtime"
+  if [ -n "$RUNTIME" ]; then
+    step runtime machine update "$NAME" --runtime "$RUNTIME" -y || fail "the pod's Runtime"
     cozy machine show "$NAME" 2>&1 | grep -E '^runtime ' | tee -a "$R"
   fi
   failed=()

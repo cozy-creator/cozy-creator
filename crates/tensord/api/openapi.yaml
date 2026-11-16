@@ -55,21 +55,6 @@ paths:
       parameters:
         - {name: project_id, in: path, required: true, schema: {type: string}}
       responses: {'204': {description: Project execution closed}, '403': {description: Scope or proof refused}, '409': {description: Work or custody remains active}}
-  /v1/project-execution/{project_id}/migrate:
-    parameters:
-      - {name: project_id, in: path, required: true, schema: {type: string}}
-    get:
-      summary: Whether this machine's global journal still holds runs of this project to move into it.
-      responses: {'200': {description: Pending migration, if any}, '403': {description: Scope or proof refused}}
-    post:
-      summary: Move this project's legacy global runs into its own journal, verified and receipted. Empty body.
-      responses: {'200': {description: Migrated}, '403': {description: Scope or proof refused}, '409': {description: Migration pending or busy}}
-  /v1/project-execution/{project_id}/migration-bindings:
-    post:
-      summary: Look up legacy acceptances this project's receipts cover; never adopts or retires them.
-      parameters:
-        - {name: project_id, in: path, required: true, schema: {type: string}}
-      responses: {'200': {description: Bindings}, '403': {description: Scope or proof refused}}
   /v1/health:
     get:
       summary: >-

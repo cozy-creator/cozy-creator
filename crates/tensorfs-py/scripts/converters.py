@@ -1281,6 +1281,64 @@ def qwenimage_lora() -> Table[LoraRow]:
     return dit_lora("qwenimage.lora", "qwen-image", [], [], vectors)
 
 
+# ------------------------------------------------------------------ LTX-2.5 LoRA
+
+#: ltx-2-5's reference, Cozy's mirror of Lightricks' gated release, as `tfs --json inspect` printed its header.
+LTX25 = VECTORS / "ltx-2.5-headers" / "lightricks-ltx-2.5-0.1.0-bf16.inspect.json"
+LTX23_LORAS = VECTORS / "ltx-2.3-lora-headers"
+#: Lightricks' distilled LoRA adapts every linear of the DiT: its keys are each one's native name.
+LTX23_DISTILLED = "ltx-2.3-22b-distilled-lora-384-1.1"
+
+
+class InspectedTensor(TypedDict):
+    key: str
+    shape: list[int]
+
+
+class InspectedComponent(TypedDict):
+    name: str
+    config: Config
+    tensors: list[InspectedTensor]
+
+
+def ltx2_lora() -> Table[LoraRow]:
+    """LTX-2.5's DiT is Diffusers' `LTX2VideoTransformer3DModel` (the mirror's config constructs ltx-2-5's transformer key for
+    key). Its LoRAs keep LTX's native names under `diffusion_model.` (Lightricks' trainer, ComfyUI, musubi-tuner, AI-Toolkit),
+    which are Diffusers' in the blocks; diffusers' `_convert_non_diffusers_ltx2_lora_to_diffusers` renames the rest
+    (`patchify_proj` to `proj_in`, `adaln_single.` to `time_embed.`, the `av_ca_*` and `prompt_adaln_single` modulations), each
+    native name read from Lightricks' distilled LoRA, which adapts every linear. LTX-2.3's linears are 2.5's, so its LoRAs
+    (Lightricks' IC-LoRAs, the community's) are read too; Diffusers' names as `dit_lora` spells them. No published LoRA adapts
+    the text connectors (`text_embedding_projection.`), which `connectors` would take."""
+    census = family_linears("ltx-2-5")
+    components: list[InspectedComponent] = json.loads(LTX25.read_text())["components"]
+    (held,) = [c for c in components if c["name"] == "transformer"]
+    model = construct("diffusers:LTX2VideoTransformer3DModel", held["config"])
+    assert {k: list(v.shape) for k, v in model.state_dict().items()} == {t["key"]: t["shape"] for t in held["tensors"]}, (
+        "diffusers' construction is not the mirror's transformer")
+    linears = {n: (m.in_features, m.out_features) for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)}
+    assert linears == census, "the family's linears are not the model's"
+    source = header(LTX23_LORAS / f"{LTX23_DISTILLED}.safetensors.header")
+    stand_in = torch.zeros(1, 1)
+    native: list[LoraRow] = []
+    reached: set[str] = set()
+    for key, (_, a) in source.items():
+        if not key.endswith(".lora_A.weight"):
+            continue
+        stem = key.removeprefix("diffusion_model.").removesuffix(".lora_A.weight")
+        read: dict[str, torch.Tensor] = lora_conversion_utils._convert_non_diffusers_ltx2_lora_to_diffusers({key: stand_in})  # type: ignore[no-untyped-call]  # untyped
+        target = next(iter(read)).removeprefix("transformer.").removesuffix(".lora_A.weight")
+        b = source[key.replace(".lora_A.", ".lora_B.")][1]
+        assert census[target] == (a[1], b[0]) and target not in reached, (stem, target, census.get(target))
+        reached.add(target)
+        if stem != target:
+            native.append((target, stem, {"io": list(census[target])}))
+    assert reached == set(census), ("the distilled LoRA does not adapt", sorted(set(census) - reached)[:5])
+    vectors = {f"ltx-2.3-lora-headers/{v}.safetensors.header": True for v in (
+        "ltx-2.3-22b-ic-lora-union-control-ref0.5", "ltx-2.3-22b-ic-lora-motion-track-control-ref0.5", LTX23_DISTILLED,
+        "Claymation", "ltx2.3_audio_reactive_lora_v2")}
+    return dit_lora("ltx2.lora", "ltx-2-5", native, [], vectors)
+
+
 # ------------------------------------------------------------------ SeedVR2
 
 
@@ -1573,6 +1631,7 @@ def generate() -> dict[str, Generated]:
         "moss.lora": moss_lora(),
         "anima.lora": anima_lora(anima),
         "qwenimage.lora": qwenimage_lora(),
+        "ltx2.lora": ltx2_lora(),
         "seedvr2": seedvr2(),
         "h3.latent_upscaler": h3_latent_upscaler(),
         "relayvsr": relayvsr(),

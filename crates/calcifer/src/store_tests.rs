@@ -3,11 +3,9 @@ use std::{sync::{Arc, mpsc}, time::Duration};
 
 fn store() -> Arc<Store> {
     Arc::new(Store {
-        legacy_home: PathBuf::new(),
-        settled: Mutex::default(),
         writer: Mutex::new(Connection::open_in_memory().unwrap()),
         readers: Readers {
-            idle: Mutex::new(Idle { conns: (0..READERS).map(|_| Connection::open_in_memory().unwrap()).collect(), draining: false }),
+            idle: Mutex::new((0..READERS).map(|_| Connection::open_in_memory().unwrap()).collect()),
             returned: std::sync::Condvar::new(),
         },
         durable: Durable::sqlite(),
@@ -28,7 +26,7 @@ fn assert_lock_wait_yields(writer: bool) {
     let locked_store = store.clone();
     let holder = std::thread::spawn(move || {
         let _writer = writer.then(|| locked_store.writer.lock().unwrap());
-        let _readers = (!writer).then(|| locked_store.readers.all());
+        let _readers = (!writer).then(|| (0..READERS).map(|_| locked_store.readers.take()).collect::<Vec<_>>());
         locked.send(()).unwrap();
         let _ = released.recv();
     });

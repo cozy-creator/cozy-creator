@@ -94,35 +94,6 @@ impl ProjectExecutionCapabilities {
     }
 }
 
-/// Actual legacy acceptances covered by complete inside-project migration receipts.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProjectExecutionMigrationReceipt { pub bindings: Vec<ProjectExecutionMigrationBinding> }
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProjectExecutionMigrationBinding {
-    pub request_id: String,
-    pub source_workspace_id: String,
-    pub invocation_spec_digest: String,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProjectExecutionMigrationRequest { pub legacy_requests: Vec<ProjectExecutionMigrationBinding> }
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProjectExecutionLegacyLookup { pub request_ids: Vec<String> }
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProjectExecutionLegacyLookupAnswer { pub bindings: Vec<ProjectExecutionLegacyBinding> }
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProjectExecutionLegacyBinding {
-    pub binding: ProjectExecutionMigrationBinding,
-    pub source_number: u64,
-}
-
 /// A proof file written only INSIDE the live encrypted mount. Its random token is sent
 /// as a private authentication header, never as RunSpec, URL, log or global journal data.
 #[derive(Clone, Serialize, Deserialize)]
@@ -150,10 +121,6 @@ pub mod path {
     pub const PROJECT_EXECUTION: &str = "/v1/project-execution/{project_id}/{*rest}";
     /// Close only this project's idle local execution namespace before unmount.
     pub const PRIVATE_CLOSE: &str = "/v1/project-execution/{project_id}/close";
-    /// Native proof-owned local legacy migration. Empty body; no unscoped attribution is inferred.
-    pub const PROJECT_MIGRATE: &str = "/v1/project-execution/{project_id}/migrate";
-    /// Lookup actual actor-owned acceptances; this never adopts or retires them.
-    pub const PROJECT_LEGACY_BINDINGS: &str = "/v1/project-execution/{project_id}/migration-bindings";
     /// `GET` with no credential: 204 while the machine serves.
     pub const HEALTH: &str = "/v1/health";
     /// `GET`: one JSON [`super::StatusFrame`]; SSE `status` frames with `Accept: text/event-stream`.

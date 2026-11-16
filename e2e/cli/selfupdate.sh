@@ -11,7 +11,8 @@ SU_OLD=(--set software.runtime=0.45.2 --set software.tensorfs=0.24.2 --set softw
 # <version>`, which checks its sigstore bundle. An RC build has no signed archive, so it goes in place as that update puts it after
 # the check (update.rs at v0.25.0): the binary kept as .cozy-previous, the candidate renamed over it, Calcifer restarted by the
 # service the Latest defined, and the Latest's client waiting for it. Then Calcifer runs the candidate, its first start on that home
-# ended within 300 s, the store is at the candidate's version, and the project opens, lists its run and completes a new one on the
+# ended within 300 s, the store is at the candidate's version (its old runs cut, cl-1003), the project opens, and its next run on
+# local as the Latest left it moves local to the candidate's own Runtime and completes (cl-1055); then a new one completes on the
 # candidate set. A failure before the candidate runs there puts the candidate's own home back.
 self_forward() {
 step "the Latest updates to the candidate (cozy update)"
@@ -24,7 +25,7 @@ forward() {
 [ "${RUNNER_OS:-}" = Linux ] && [ -n "${COZY_TEST_HUB_PID_FILE:-}" ] || { echo "forward update: Linux, on an isolated Hub"; return 0; }
 [ -n "${E2E_NEXT:-}" ] || { check "forward update: no e2e-next: ${E2E_NEXT_REFUSED:-}"; return 1; }
 su_latest || { check "forward update: GitHub names no Latest cozy"; return 1; }
-local latest=$SU_LATEST candidate dir=$RUNNER_TEMP/forward-latest bin bindir cand_store latest_store id listed='' code=0 up=() P=$OUT/forward-project
+local latest=$SU_LATEST candidate dir=$RUNNER_TEMP/forward-latest bin bindir cand_store latest_store id code=0 up=() P=$OUT/forward-project
 candidate=$(cozy --version | awk '{print $2}')
 if [ "$(printf '%s\n%s\n' "${candidate%%[-+]*}" "$latest" | sort -V | tail -1)" = "$latest" ]; then
   SU_STORE=''
@@ -85,33 +86,26 @@ FW_HOME=''
 echo "forward update: cozy $latest → $candidate: the update and Calcifer's first start on its home took $FW_TOOK s, its store version $latest_store → $(su_store)"
 
 in_project "$P" --json status > "$OUT/fw-status.json" 2>&1 || check "forward update: cozy $latest's project doesn't open on $candidate: $(tail -c 300 "$OUT/fw-status.json")"
-# Its run, migrated with the store: listed once the project's history is read (its first read imports it).
-for _ in $(seq 36); do
-  in_project "$P" --json run ls --limit 0 > "$OUT/fw-runs.json" 2>&1 \
-    && jq -e --arg id "$id" 'any(.runs[]; .id == $id and .status == "completed")' "$OUT/fw-runs.json" > /dev/null && { listed=1; break; }
-  sleep 5
-done
-[ -n "$listed" ] || check "forward update: cozy $latest's run $id isn't listed completed on $candidate: $(tail -c 300 "$OUT/fw-runs.json")"
-# The upgrade a person meets (cl-1055): local still on the Latest's TensorD and Runtime, below the candidate's minor. A project's run
-# moves it to the candidate's own Runtime first, saying so, completes, and its call's temporary file is in its project's scratch.
-# The project is one the candidate makes: the Latest's, with a run of its own, is refused until local's TensorD moves
-# (legacy_worker_custody_pending), which this cell doesn't judge.
-local moved_from temporary M=$OUT/forward-moved-project
+# Its run's history is cut with the store (cl-1003): not listed. (What a project's runs made stays in it: hard_cut.)
+in_project "$P" --json run ls --limit 0 > "$OUT/fw-runs.json" 2>&1 && jq -e --arg id "$id" 'all(.runs[]; .id != $id)' "$OUT/fw-runs.json" > /dev/null \
+  || check "forward update: cozy $latest's run $id is still listed on $candidate, or the list failed: $(tail -c 300 "$OUT/fw-runs.json")"
+# The upgrade a person meets (cl-1055): local still on the Latest's TensorD and Runtime, below the candidate's minor, nothing moved by
+# hand. The next run in the Latest's own project (its old history cut, nothing of it pending: cl-1003) moves local to the candidate's
+# own Runtime first, saying so, completes, and its call's temporary file is in its project's scratch.
+local moved_from temporary
 (machine_ready) || return 0
 moved_from=$(jq -r '.status.runtime' "$OUT/machine.json")
-mkdir -p "$M" && in_project "$M" --json new --unencrypted > "$OUT/fw-moved-new.json" 2>&1 \
-  || { check "forward update: $candidate's cozy new: $(tail -c 300 "$OUT/fw-moved-new.json")"; return 0; }
-in_project "$M" run e2e-scratch/probe "marker=FW_MOVED_$RANDOM" --on local > "$OUT/fw-moved.out" 2> "$OUT/fw-moved.err" \
-  || check "forward update: a project's probe on local (Runtime $moved_from) failed on $candidate: $(tail -c 400 "$OUT/fw-moved.err")"
+in_project "$P" run e2e-scratch/probe "marker=FW_MOVED_$RANDOM" --on local > "$OUT/fw-moved.out" 2> "$OUT/fw-moved.err" \
+  || check "forward update: the next run in cozy $latest's project on local (Runtime $moved_from) failed on $candidate: $(tail -c 400 "$OUT/fw-moved.err")"
 grep -q "Updating local.s Runtime from $moved_from to [^ ]* for this project" "$OUT/fw-moved.err" \
   || check "forward update: the run didn't say it upgrades local's Runtime $moved_from for this project: $(tail -c 400 "$OUT/fw-moved.err")"
 temporary=$(awk '$1 == "temporary" { print $2 }' "$OUT/fw-moved.out" | tail -1)
 case $temporary in
-  "$(realpath "$M")"/.vault-machine/scratch/*) ;;
+  "$(realpath "$P")"/.vault-machine/scratch/*) ;;
   *) check "forward update: the moved run's temporary file was ${temporary:-nowhere said}, not in its project's scratch" ;;
 esac
 (machine_ready) || return 0
-echo "forward update: a project's run moved local from Runtime $moved_from to $(jq -r .status.runtime "$OUT/machine.json")"
+echo "forward update: the next run in cozy $latest's project moved local from Runtime $moved_from to $(jq -r .status.runtime "$OUT/machine.json")"
 # The candidate set on local, as the suite's start puts it: a dev build is no release for the update to move it to.
 [ ! -f "${CAND_COZY:-}" ] || up+=(--tensord "$CAND_COZY")
 [ -z "$CAND_TFS" ] || up+=(--tensorfs "$CAND_TFS")

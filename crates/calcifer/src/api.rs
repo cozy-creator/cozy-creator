@@ -247,8 +247,8 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .route("/v1/runs/{id}/play", get(crate::play::play))
         .route("/v1/down", post(down))
         .route("/v1/status", get(status))
+        .route("/v1/cut", get(cut))
         .route("/v1/settings", get(crate::reports::show).put(crate::reports::change))
-        .route("/v1/legacy", get(legacy))
         .route("/v1/activity", get(activity))
         .route("/v1/machines", get(machines::list).post(machines::create))
         .route(
@@ -761,12 +761,6 @@ async fn down(State(api): State<Arc<Api>>) -> Result<Json<Down>, Refusal> {
     }))
 }
 
-/// `GET /v1/legacy`: the old runs Calcifer's store still holds, by the folder each names (cl-984).
-async fn legacy(State(api): State<Arc<Api>>) -> Result<Json<::api::calcifer::LegacyRows>, Refusal> {
-    let rows = tokio::task::block_in_place(|| crate::legacy_status::store(api.calcifer.maintenance_store()))?;
-    Ok(Json(rows))
-}
-
 async fn status(State(api): State<Arc<Api>>) -> Result<Json<CalciferStatus>, Refusal> {
     let hub = crate::hub::origin(&api, None)?;
     Ok(Json(CalciferStatus {
@@ -777,6 +771,17 @@ async fn status(State(api): State<Arc<Api>>) -> Result<Json<CalciferStatus>, Ref
         heap_bytes: platform::heap::held(),
         home: api.machines.user_home.clone(),
     }))
+}
+
+/// `GET /v1/cut`: what the legacy cut (cl-1003) still keeps for projects here, for `cozy doctor`: files gone before it could copy them
+/// in, and the files it holds for projects not opened since.
+async fn cut(State(api): State<Arc<Api>>) -> Result<Json<::api::calcifer::CutFiles>, Refusal> {
+    let calcifer = api.machines.hubs.home().calcifer();
+    let (lost, (held_projects, held_bytes)) = tokio::task::block_in_place(|| {
+        Ok::<_, crate::store::StoreError>((api.calcifer.store().lost_before_upgrade()?, crate::project::held(&calcifer)))
+    })?;
+    let lost = lost.into_iter().map(|(path, files)| ::api::calcifer::LostFiles { path, files }).collect();
+    Ok(Json(::api::calcifer::CutFiles { lost, held_projects, held_bytes, kept: calcifer.join("kept") }))
 }
 
 /// Who uses this Calcifer now (cl-962): a `cozy` of another version restarts it only when no page, run or other client does.
@@ -891,7 +896,7 @@ pub(crate) async fn events(
     let mut pending = VecDeque::from(
         api.calcifer.row_store(&row)?.events_after(row.id.as_str(), starting_after)?,
     );
-    // Replayed events use the live GPU without giving inert legacy rows a live tail.
+    // Replayed events use the live GPU without giving another project's rows a live tail.
     for event in &mut pending {
         if let Event::Created { run, .. } | Event::Queued { run, .. } | Event::InProgress { run, .. } = event {
             api.calcifer.live_gpu(run);
@@ -899,7 +904,7 @@ pub(crate) async fn events(
     }
     let owner = api.calcifer.row_owner(&row)?;
     let named = crate::project_of(&row);
-    let inert = row.custody_pending || owner.as_ref().is_some_and(|owner| owner.project_id() != row.owner);
+    let inert = owner.as_ref().is_some_and(|owner| owner.project_id() != row.owner);
     if !inert { pending.extend(api.calcifer.live(&row.id)); }
     let follow = Follow {
         owner,

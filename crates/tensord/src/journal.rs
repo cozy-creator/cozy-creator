@@ -806,66 +806,6 @@ impl Journal {
         })
     }
 
-    /// The acceptance of each of `requests` that `actor` (or its scoped key in `scope`) sent here: what Calcifer's import of
-    /// a project's legacy history checks its records against (cl-984). A request tagged to another project is refused.
-    pub(crate) fn legacy_bindings(&self, actor: &str, scoped: &str, scope: &api::machine::LocalPrivateStorage, requests: &[String])
-        -> io::Result<api::machine::ProjectExecutionLegacyLookupAnswer> {
-        if requests.len() > 256 {
-            return Err(db_error("legacy binding lookup exceeds its protocol bound"));
-        }
-        let mut answer = api::machine::ProjectExecutionLegacyLookupAnswer::default();
-        for request in requests {
-            if request.is_empty() || request.len() > 256 || request.chars().any(char::is_control) {
-                return Err(db_error("invalid legacy request identity"));
-            }
-            let row: Option<(u64, String)> = self.connection.query_row(
-                "SELECT id,record FROM executions WHERE request_id=?2 AND (actor=?1 OR actor=?3) LIMIT 1",
-                params![actor, request, scoped], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(db_error)?;
-            let Some((source_number, record)) = row else {
-                return Err(io::Error::new(io::ErrorKind::NotFound, "a legacy request has no acceptance at this worker"));
-            };
-            let record = decoded_execution(&record)?;
-            if record.invocation.local_private.as_ref().is_some_and(|tagged| tagged.project_id != scope.project_id) {
-                return Err(io::Error::new(io::ErrorKind::PermissionDenied, "a legacy request is tagged to another project"));
-            }
-            let accepted = record.submission.ok_or_else(|| db_error("a legacy request has no accepted binding"))?;
-            if accepted.request_id != *request || accepted.invocation_digest.is_empty() {
-                return Err(db_error("a legacy accepted binding is incomplete"));
-            }
-            answer.bindings.push(api::machine::ProjectExecutionLegacyBinding {
-                source_number,
-                binding: api::machine::ProjectExecutionMigrationBinding {
-                    request_id: request.clone(),
-                    source_workspace_id: self.workspace_id.clone(),
-                    invocation_spec_digest: accepted.invocation_digest,
-                },
-            });
-        }
-        Ok(answer)
-    }
-
-    /// Every unscoped run's retained output: (actor, owner, record).
-    pub(crate) fn machine_native_outputs(&self) -> io::Result<Vec<(String, String, Vec<u8>)>> {
-        let mut statement = self.connection.prepare("SELECT actor,owner,source FROM native_outputs").map_err(db_error)?;
-        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).map_err(db_error)?;
-        let rows: Vec<(String, String, Vec<u8>)> = rows.collect::<Result<_, _>>().map_err(db_error)?;
-        Ok(rows.into_iter().filter(|(_, _, source)| private_journal::scope(source).is_ok_and(|scope| scope.is_none())).collect())
-    }
-
-    /// Retired runs' retained outputs go, their pages overwritten.
-    pub(crate) fn retire_native_outputs(&mut self, outputs: &[(String, String)]) -> io::Result<()> {
-        if outputs.is_empty() {
-            return Ok(());
-        }
-        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
-        for (actor, owner) in outputs {
-            tx.execute("DELETE FROM native_outputs WHERE actor=?1 AND owner=?2", params![actor, owner]).map_err(db_error)?;
-        }
-        tx.commit().map_err(db_error)?;
-        self.truncate_wal();
-        Ok(())
-    }
-
     /// A locking project leaves nothing here (cl-984): every row of its runs and every row its scope keyed goes, their
     /// pages overwritten and the WAL emptied. Its history is its own (Calcifer's project journal); its runs are idle.
     pub(crate) fn retire_project(&mut self, project_id: &str) -> io::Result<()> {
@@ -918,57 +858,6 @@ impl Journal {
             projects.entry(project).or_default().extend(root.map(std::path::PathBuf::from));
         }
         Ok(projects)
-    }
-
-    /// Whether execution `id` is still journaled here.
-    pub(crate) fn holds_execution(&self, id: u64) -> io::Result<bool> {
-        self.connection.query_row("SELECT EXISTS(SELECT 1 FROM executions WHERE id=?1)", [id], |row| row.get(0)).map_err(db_error)
-    }
-
-    /// Deletes `ids`' executions and every row of theirs, their pages overwritten (cl-984): a project's legacy worker
-    /// history once Calcifer imported it into the project. Answers the objects only they named, and their triage subjects.
-    pub(crate) fn retire_executions(&mut self, ids: &[u64]) -> io::Result<(Vec<tensorfs::format::ObjectRef>, Vec<String>)> {
-        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
-        let (mut objects, mut subjects) = (vec![], vec![]);
-        for id in ids {
-            {
-                let mut only = tx.prepare("SELECT sha256,length FROM run_objects WHERE execution=?1 AND sha256 NOT IN (SELECT sha256 FROM run_objects WHERE execution<>?1)").map_err(db_error)?;
-                let rows = only.query_map([id], |row| Ok(tensorfs::format::ObjectRef { sha256: row.get(0)?, length: row.get(1)? })).map_err(db_error)?;
-                for row in rows { objects.push(row.map_err(db_error)?); }
-            }
-            // Every object its record names (inputs uploaded for it, outputs it made) that no other run holds.
-            let record: Option<String> = tx.query_row("SELECT record FROM executions WHERE id=?1", [id], |row| row.get(0)).optional().map_err(db_error)?;
-            if let Some(execution) = record.and_then(|record| decoded_execution(&record).ok()) {
-                let mut named = std::collections::BTreeMap::new();
-                for input in &execution.invocation.inputs {
-                    named.insert(input.digest.strip_prefix("sha256:").unwrap_or(&input.digest).to_owned(), input.length);
-                }
-                if let Ok(value) = serde_json::to_value(&execution) {
-                    let mut found = std::collections::BTreeSet::new();
-                    named_digests(&value, &mut found);
-                    for digest in found { named.entry(digest).or_insert(0); }
-                }
-                for (sha256, length) in named {
-                    let others: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM run_objects WHERE sha256=?1 AND execution<>?2)", params![sha256, id], |row| row.get(0)).map_err(db_error)?;
-                    if !others && sha256.len() == 64 && !objects.iter().any(|held| held.sha256 == sha256) {
-                        objects.push(tensorfs::format::ObjectRef { sha256, length });
-                    }
-                }
-            }
-            let triage: Option<String> = tx.query_row("SELECT record FROM triage WHERE execution=?1", [id], |row| row.get(0)).optional().map_err(db_error)?;
-            subjects.extend(triage.and_then(|record| serde_json::from_str::<Value>(&record).ok()?.get("subject_id")?.as_str().map(String::from)));
-            delete_execution(&tx, *id as i64)?;
-        }
-        // Their objects' uses, uploads and held memos name them too.
-        for object in &objects {
-            crate::project_objects::drop_naming(&tx, &object.sha256)?;
-            for table in ["object_uses", "objects"] {
-                tx.execute(&format!("DELETE FROM {table} WHERE sha256=?1"), [&object.sha256]).map_err(db_error)?;
-            }
-        }
-        tx.commit().map_err(db_error)?;
-        self.compact();
-        Ok((objects, subjects))
     }
 
     /// The journal rewritten whole, its WAL emptied before and after: `secure_delete` zeroes a deleted cell, but not the older

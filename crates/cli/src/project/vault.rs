@@ -168,6 +168,12 @@ async fn change(ctx: &Context, path: &str, request: VaultAsk, recovery_out: Opti
     for skipped in &changed.skipped_files {
         output::warn(&format!("retained-media link skipped: {}; its project reference was preserved", skipped.display()));
     }
+    for run in &changed.unsaved {
+        output::warn(&format!("{run}'s outputs weren't saved: their save had stopped moving when the project locked"));
+    }
+    for run in &changed.deferred {
+        output::warn(&format!("{run}'s outputs will be saved when its machine answers"));
+    }
     if ctx.json { output::json(&changed); return Ok(ExitCode::SUCCESS); }
     if !changed.ended.is_empty() {
         let runs: Vec<String> = changed.ended.iter().map(u64::to_string).collect();

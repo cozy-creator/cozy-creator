@@ -22,7 +22,8 @@
 #              "expect" (optional: the status the cell must end in, `completed` by default; `failed` for a refusal it proves);
 #              "download" (optional: [[model ref, `cozy model install` flags…], …] made present on the pod first, so
 #              the cell's run starts with its weights on disk, as a machine whose package was installed earlier does);
-#              in args, `{ref}` is release-gate/ref and `{out:<cell>}` an earlier cell's image or video;
+#              in args, `{ref}` is release-gate/ref, `{clip}` a 4 s 640x360 24 fps clip of its seed.jpg panned (made on
+#              the runner, for a video tool's input) and `{out:<cell>}` an earlier cell's image or video;
 #              two failed cells stop the session
 #              "floor_mb_s", "floor_after_s" (optional: this cell's slow-host floor, lib.sh `step`; the session's by default);
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR
@@ -42,6 +43,11 @@ VRAM=$(cd "$(dirname "$0")/../suites/bench" && pwd)/vram.py
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh; [ "$GPUS" = 1 ] || RENT_ARGS="--ssh --gpus $GPUS"
 command -v ffmpeg > /dev/null || fail "no ffmpeg (pod-session.yaml installs it from the tool cache)"
+CLIP=$OUT/clip.mp4
+if jq -e 'any(.[].args[]?; contains("{clip}"))' <<<"$CELLS" > /dev/null; then
+  ffmpeg -v error -y -loop 1 -i "$REF/seed.jpg" -vf "scale=1280:-2,crop=640:360:'(iw-640)*t/4':'(ih-360)/2',fps=24,format=yuv420p" \
+    -t 4 -c:v libx264 -crf 18 "$CLIP" || fail "the clip"
+fi
 mapfile -t names < <(jq -r '.[].name' <<<"$CELLS")
 [ "${#names[@]}" -gt 0 ] || fail "no cells"
 for k in "${names[@]}"; do
@@ -55,15 +61,7 @@ done
 jq -e --argjson n "$(jq -c 'map(.name)' <<<"$CELLS")" 'all(.[]; length == 2 and all(.[]; . as $x | $n | index($x)))' <<<"$COMPARE" >/dev/null ||
   fail "compare names cells that are not there"
 # Each update's wheels, fetched before renting so a missing one costs nothing.
-wheel() {
-  local d=$OUT/wheels/$1-$2; mkdir -p "$d"
-  case $3 in
-    https://*) curl -fsSL --retry 5 -o "$d/${3##*/}" "$3" || return 1 ;;
-    artifact:*/*) local a=${3#artifact:}; gh run download "${a%%/*}" -R cozy-creator/cozy-creator -n "${a#*/}" -D "$d" >/dev/null 2>&1 || return 1 ;;
-    *) gh run download "$3" -R cozy-creator/cozy-runtime -p 'cozy-runtime-*' -D "$d" >/dev/null 2>&1 || return 1 ;;
-  esac
-  find "$d" -name '*manylinux*x86_64*.whl' | head -1
-}
+wheel() { wheel_from "$OUT/wheels/$1-$2" "$3"; }
 declare -A UPDATE=()
 for k in "${names[@]}"; do
   w=()
@@ -183,7 +181,7 @@ for k in "${names[@]}"; do
   c=$(jq -c --arg k "$k" 'map(select(.name==$k)) | first' <<<"$CELLS"); mapfile -t args < <(jq -r '.args[]' <<<"$c")
   FLOOR_MBS=$(jq -r --arg d "$FLOOR0" '.floor_mb_s // $d' <<<"$c") FLOOR_AFTER=$(jq -r --arg d "$AFTER0" '.floor_after_s // $d' <<<"$c")
   for i in "${!args[@]}"; do
-    a=${args[$i]//\{ref\}/$REF}
+    a=${args[$i]//\{ref\}/$REF}; a=${a//\{clip\}/$CLIP}
     while [[ $a =~ \{out:([A-Za-z0-9_-]+)\} ]]; do
       [ -n "${MADE[${BASH_REMATCH[1]}]:-}" ] || fail "cell $k: ${BASH_REMATCH[1]} made no image or video"
       a=${a//"${BASH_REMATCH[0]}"/"${MADE[${BASH_REMATCH[1]}]}"}

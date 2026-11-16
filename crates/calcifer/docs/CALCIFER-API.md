@@ -182,6 +182,8 @@ media-src 'self' blob:; font-src 'self'; connect-src 'self'; base-uri 'none'; fo
 
 ### Status
 - `GET /v1/status`: `{version, os, local_usable, signed_in, heap_bytes, home}`. `home` is this person's home folder, where the page suggests a first project's folder. `heap_bytes` is what Calcifer's code has allocated and not freed: what it holds, without what its allocator keeps of what was freed, which its resident memory counts too. `os` is `linux`, `macos` or `windows`; `local_usable` is
+  whether this computer runs models itself; `signed_in` is whether it holds a device key for its Hub, which it answers
+  without asking the Hub (`GET /v1/account` does).
 - `GET /v1/settings`: `{send_performance_data}`, this computer's settings Calcifer holds (config.toml's `[calcifer]`); `PUT` sends them
   whole, written to config.toml first. `send_performance_data` (default true, cl-1006): each published function's run on any
   machine is reported to the Hub (`POST /v1/run-reports`) with no credential, for troubleshooting and usage, never estimates: its
@@ -190,9 +192,7 @@ media-src 'self' blob:; font-src 'self'; connect-src 'self'; base-uri 'none'; fo
   (`calcifer/report-id`); never its inputs, outputs, names, paths, keys or messages. Reports wait in memory and go 64 at once or 10 min
   after the first; a batch the Hub doesn't take is dropped. Off: nothing waits or goes, and the install ID is deleted, so on again
   makes a new one.
-- `GET /v1/legacy`: `{existing, gone, unreadable}`, the old project runs (from before projects kept their own) Calcifer's store still holds: `existing` and `gone` list `{path, runs}` by the project folder each names, here or gone; `unreadable` counts records it can't read. `cozy doctor` says it (cl-984).
-  whether this computer runs models itself; `signed_in` is whether it holds a device key for its Hub, which it answers
-  without asking the Hub (`GET /v1/account` does).
+- `GET /v1/cut`: `{lost, held_projects, held_bytes, kept}`, what the legacy cut (cl-1003) keeps for projects here: `lost` lists `{path, files}`, each project whose files left on a machine were gone before the cut could copy them in; `held_projects` and `held_bytes` count the old files it holds for projects not opened since at the folder they had then, in `kept` (deleting it lets them go). `cozy doctor` says both.
 
 ### Runs
 A run is asked for unbound (`RunRequest`); Calcifer resolves its target, binds it against the function's

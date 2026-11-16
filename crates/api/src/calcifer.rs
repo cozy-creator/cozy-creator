@@ -2279,30 +2279,6 @@ pub struct Down {
     pub owed: Vec<String>,
 }
 
-/// `GET /v1/projects/{id}/legacy`: the project's history from before projects kept their own (cl-984): runs imported into
-/// its journal, and runs Calcifer's store still holds for it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LegacyHistory {
-    pub imported: u64,
-    pub pending: u64,
-}
-
-/// `GET /v1/legacy`: the old project runs Calcifer's store still holds (cl-984), by the project folder each names: those whose
-/// folder is here (each imported as its project opens), those whose folder is gone, and those whose record can't be read.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LegacyRows {
-    pub existing: Vec<LegacyFolder>,
-    pub gone: Vec<LegacyFolder>,
-    pub unreadable: u64,
-}
-
-/// A project folder's old runs still in Calcifer's store.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LegacyFolder {
-    pub path: std::path::PathBuf,
-    pub runs: u64,
-}
-
 /// `GET` and `PUT /v1/settings`: this computer's settings Calcifer holds, in config.toml's `[calcifer]`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -2330,6 +2306,26 @@ pub struct CalciferStatus {
     /// This person's home folder on Calcifer's computer: where the page's New suggests a first project's folder (cl-980).
     #[serde(default)]
     pub home: PathBuf,
+}
+
+/// `GET /v1/cut`: what the legacy cut (cl-1003) still keeps for projects on this computer, for `cozy doctor`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CutFiles {
+    /// Each project whose files left on a machine were gone from it before the cut could copy them in.
+    pub lost: Vec<LostFiles>,
+    /// How many projects' old files are held on this computer until each opens again at the folder it had at the cut (moved,
+    /// deleted, or still locked), and their bytes.
+    pub held_projects: u64,
+    pub held_bytes: u64,
+    /// Where the holds are: deleting it lets those files go.
+    pub kept: PathBuf,
+}
+
+/// A project's files left on a machine that were gone from it before the legacy cut could copy them in: its folder, and how many.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LostFiles {
+    pub path: PathBuf,
+    pub files: u64,
 }
 
 /// The header each request of a `cozy` process carries: its pid, so Calcifer tells its requests from everyone else's (cl-962).
