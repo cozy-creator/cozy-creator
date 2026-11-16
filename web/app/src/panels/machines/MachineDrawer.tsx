@@ -6,7 +6,6 @@ import { useConnection } from "../../app/Connection"
 import { useTo } from "../../app/Shell"
 import type { Machine, MachineUpdate } from "../../api/calcifer"
 import { Copyable } from "../../ui/Copyable"
-import { say } from "../../ui/notes"
 import { Failure, KV, Section, useAsk, useNow } from "../common"
 import { DrawerFrame } from "../Drawer"
 import { bytes, shown, span } from "../format"
@@ -56,7 +55,6 @@ function Update({ machine }: { machine: Machine }) {
     void ask.run(async () => {
       const updating = await client.updateMachine(machine.name, body, key)
       asked.current = null
-      updating.warnings?.forEach((warning) => say(warning))
       if (updating.run) navigate(to(`runs/${updating.run.number}`))
       else setSaid(`It runs ${updating.target}: nothing to update.`)
     })
