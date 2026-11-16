@@ -2846,7 +2846,7 @@ export class CanvasStore {
         shown.forEach((one) => one.settle())
         if (answer.lost?.length) {
           dismiss(note)
-          this.stepped = say(`${back ? "Undone" : "Redone"}: ${taken.length} ${taken.length === 1 ? "edit" : "edits"}. ${lostSaid(answer.lost)}`, undefined)
+          this.stepped = say(`${back ? "Undone" : "Redone"}: ${taken.length} ${taken.length === 1 ? "edit" : "edits"}. ${lostSaid(answer.lost)}`)
         }
         if (answer.stopped) say(`Couldn't ${verb} them all`, new ApiError(409, answer.stopped))
         this.history.read()
