@@ -11,7 +11,6 @@
 #![deny(unreachable_pub)]
 mod access;
 mod ahead;
-mod browser;
 mod maintenance_source;
 mod api;
 mod authorized;

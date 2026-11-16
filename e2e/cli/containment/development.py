@@ -1,4 +1,4 @@
-"""Opt-in hosted Vite process and independent source-only HMR probe; never laptop config."""
+"""Opt-in hosted Vite process for Calcifer's dev mode; never laptop config."""
 from __future__ import annotations
 
 import json
@@ -19,22 +19,16 @@ class Development:
         require(os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted", "development_hosted_only")
         self.repo = Path(__file__).resolve().parents[3]
         self.config = Path.home() / ".cozy/config.toml"
-        self.module = self.repo / "web/app/src/__cozy_hmr_proof.ts"
-        require(not self.config.is_symlink() and not self.module.exists(), "development_owned_paths")
+        require(not self.config.is_symlink(), "development_owned_paths")
         self.original = self.config.read_bytes() if self.config.exists() else None
         self.written: bytes | None = None
-        self.identity: tuple[int, int] | None = None
         self.process: subprocess.Popen[bytes] | None = None
         self.birth: Birth | None = None
 
     def start(self) -> None:
-        """Vite and the probe, with `[calcifer] development_web` alone: Calcifer ignores it until `enable`."""
+        """Vite, with `[calcifer] development_web` alone: Calcifer ignores it until `enable`."""
         require(shutil.which("pnpm"), "development_pnpm_missing")
         self.write(dev=False)
-        with self.module.open("x") as target:
-            target.write(self.code(1))
-        metadata = self.module.lstat()
-        self.identity = (metadata.st_dev, metadata.st_ino)
         self.process = subprocess.Popen(["pnpm", "--dir", str(self.repo / "web/app"), "dev", "--host", "127.0.0.1", "--port", "5173"], cwd=self.repo, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         self.birth = birth(self.process.pid)
         deadline = time.monotonic() + 90
@@ -83,15 +77,6 @@ class Development:
         self.written = written_bytes
         self.config.write_bytes(written_bytes)
 
-    @staticmethod
-    def code(value: int) -> str:
-        return f'''/// <reference types="vite/client" />
-export const value = {value}
-const proof = globalThis as typeof globalThis & {{ __cozyHmrProof?: number }}
-proof.__cozyHmrProof = value
-if (import.meta.hot) import.meta.hot.accept((updated) => {{ if (updated) proof.__cozyHmrProof = updated.value }})
-'''
-
     def no_api_bridge(self) -> None:
         # Vite answers no API, and forwards none: every /v1 path is its fixed 404 (web/app/vite.config.ts).
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -107,11 +92,6 @@ if (import.meta.hot) import.meta.hot.accept((updated) => {{ if (updated) proof._
             code = None
         require(status == 404 and code == "development_api_in_calcifer", "development_native_bearer_bridge_present")
 
-    def update(self) -> None:
-        metadata = self.module.lstat()
-        require(self.identity == (metadata.st_dev, metadata.st_ino) and not self.module.is_symlink(), "development_probe_replaced")
-        self.module.write_text(self.code(2))
-
     def close(self) -> None:
         try:
             if self.process is not None:
@@ -120,15 +100,9 @@ if (import.meta.hot) import.meta.hot.accept((updated) => {{ if (updated) proof._
                     os.killpg(self.process.pid, 9)
                 self.process.wait()
         finally:
-            try:
-                if self.identity is not None:
-                    metadata = self.module.lstat()
-                    require(self.identity == (metadata.st_dev, metadata.st_ino) and not self.module.is_symlink(), "development_probe_replaced")
-                    self.module.unlink()
-            finally:
-                if self.written is not None:
-                    require(not self.config.is_symlink() and self.config.read_bytes() == self.written, "development_config_changed")
-                    if self.original is None:
-                        self.config.unlink()
-                    else:
-                        self.config.write_bytes(self.original)
+            if self.written is not None:
+                require(not self.config.is_symlink() and self.config.read_bytes() == self.written, "development_config_changed")
+                if self.original is None:
+                    self.config.unlink()
+                else:
+                    self.config.write_bytes(self.original)

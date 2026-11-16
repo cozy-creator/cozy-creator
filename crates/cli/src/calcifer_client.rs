@@ -1601,5 +1601,5 @@ fn storage_unsupported() -> Error {
 }
 
 fn needs_project_storage(path: &str) -> bool {
-    ["/v1/projects", "/v1/project-", "/v1/runs", "/v1/run-", "/v1/plans", "/v1/tools", "/v1/browser/", "/v1/maintenance/source", "/v1/events"].iter().any(|prefix| path.starts_with(prefix))
+    ["/v1/projects", "/v1/project-", "/v1/runs", "/v1/run-", "/v1/plans", "/v1/tools", "/v1/maintenance/source", "/v1/events"].iter().any(|prefix| path.starts_with(prefix))
 }

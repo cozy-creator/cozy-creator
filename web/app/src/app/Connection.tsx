@@ -275,6 +275,8 @@ class Bridge {
         this.machines((machines) => machines.filter((machine) => machine.name !== event.name))
         break
       case "project.vault": {
+        // Asked to send what's typed before it closes (`connect`): its protection is as it was.
+        if (event.state === "saving") break
         if (event.state === "plain") {
           this.forgetProject(event.id)
           // Discard old status work before the purge rerenders Shell. Only its
@@ -320,8 +322,6 @@ export interface Connection {
   outbox: Outbox
   /** Each project's canvas as it was last shown, by its id. */
   canvases: Map<string, CanvasStore>
-  /** Remount mixed-project drawers after a lock, dropping their local logs and snapshots. */
-  closeBlockers: Set<() => boolean>
   retireProject(id: string): void
   privateViewEpoch: ReturnType<typeof signal<number>>
   /** Which try a call is on, when it isn't the first; 0 otherwise. */
@@ -376,30 +376,17 @@ export async function connect(): Promise<Boot> {
     if (id) retireProject(id)
     else privateViewEpoch.set(privateViewEpoch.get() + 1)
   })
-  const closeBlockers = new Set<() => boolean>()
-  const stopEdit = (event: Event) => { event.preventDefault(); event.stopImmediatePropagation() }
-  const editEvents = ["pointerdown", "keydown", "beforeinput", "input", "drop", "paste", "submit"]
-  const hooks = globalThis as typeof globalThis & { __cozyFreeze?: () => boolean; __cozyPrepareClose?: () => Promise<void>; __cozyResume?: () => void; __cozyUnsent?: () => number }
-  // A lock past its deadline says how many edits it could not wait for: counts only.
-  hooks.__cozyUnsent = () => outbox.unsent() + client.unsentWrites()
-  hooks.__cozyFreeze = () => {
-    if ([...closeBlockers].some((blocked) => blocked())) return false
-    if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
-    document.documentElement.inert = true
-    for (const name of editEvents) document.addEventListener(name, stopEdit, true)
-    return true
-  }
-  hooks.__cozyPrepareClose = async () => {
-    await Promise.all([...canvases.values()].map((canvas) => canvas.prepareClose()))
-    await outbox.saved()
-    await client.savedWrites()
-    await outbox.saved()
-    outbox.freeze(); client.freezeWrites()
-  }
-  hooks.__cozyResume = () => {
-    for (const name of editEvents) document.removeEventListener(name, stopEdit, true)
-    document.documentElement.inert = false
-    outbox.resume(); client.resumeWrites()
+  // Before a lock, a storage change or a stop closes a project, Calcifer asks for what its pages typed of it: this tab writes its own now
+  // and, once each is answered, says so. One that can't be written says why in its box; the project closes all the same.
+  const save = async (id: string) => {
+    try {
+      await canvases.get(id)?.prepareClose()
+      await outbox.saved()
+    } catch {
+      // Said where it was typed.
+    } finally {
+      stream.saved(id)
+    }
   }
   bridge.setVersion(status.version)
   stream.subscribe(bridge.handle)
@@ -412,9 +399,10 @@ export async function connect(): Promise<Boot> {
   })
   stream.subscribe((event) => {
     if (event.type === "hello") outbox.back()
+    if (event.type === "project.vault" && event.state === "saving") void save(event.id)
   })
   stream.start()
-  return { connection: { client, queries, stream, bridge, outbox, canvases, closeBlockers, retireProject, privateViewEpoch, attempt, signedOut, status } }
+  return { connection: { client, queries, stream, bridge, outbox, canvases, retireProject, privateViewEpoch, attempt, signedOut, status } }
 }
 
 const Context = createContext<Connection | null>(null)

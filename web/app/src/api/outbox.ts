@@ -53,8 +53,6 @@ export type OutboxPort = Pick<Outbox, "add" | "owing" | "back" | "wait" | "owed"
 export class Outbox {
   readonly owed = signal<Owed>({ count: 0, slow: false })
   private queue: Action<any>[] = []
-  private frozen = false
-  private closeRefused = false
   /** What's on its way outside the queue: a file's bytes. */
   private outside = 0
   private going = false
@@ -110,23 +108,16 @@ export class Outbox {
     })
   }
 
-  freeze() { this.frozen = true; this.closeRefused = false }
   /** Edits not yet sent: queued, and files on their way. */
   unsent() { return this.queue.filter((action) => !action.view).length + this.outside }
-  resume() { this.frozen = false }
+  /** Once nothing is owed: every edit answered, saved or refused. */
   async saved(): Promise<void> {
     while (this.owed.get().count) {
-      if (this.closeRefused) throw new Error("A pending edit could not be saved")
       await new Promise<void>((done) => { const stop = this.owed.subscribe(() => { stop(); done() }) })
     }
-    if (this.closeRefused) throw new Error("A pending edit could not be saved")
   }
 
   add<T>(action: Action<T>) {
-    if (this.frozen) {
-      action.refused?.(new ApiError(409, { kind: "conflict", code: "browser_closing", message: "Cozy is saving your edits before the page closes" }))
-      return
-    }
     if (action.project && this.blocked.has(action.project)) {
       action.refused?.(new ApiError(423, { kind: "conflict", code: "project_locked", message: "Unlock the project to save this change" }))
       return
@@ -218,7 +209,6 @@ export class Outbox {
         }
         const was = tries > 1 && error instanceof ApiError ? action.landed?.(error) : undefined
         this.active.delete(action)
-        if (this.frozen && was === undefined) this.closeRefused = true
         this.tell()
         if (was === undefined) action.refused?.(error)
         else action.done?.(was)

@@ -543,33 +543,3 @@ impl Drop for Tree {
         let _ = self.kill();
     }
 }
-
-/// Chromium's closed debugging pipe: parent send/receive; child reads fd 3 and writes fd 4.
-/// Call before any final descriptor-confinement callback, classifying those pipes as KernelIpc.
-#[cfg(target_os = "linux")]
-pub fn private_browser_pipe(command: &mut Command) -> Result<(std::fs::File, std::fs::File)> {
-    unix::private_browser_pipe(command).map_err(Error::os("open a private browser pipe"))
-}
-
-/// [`spawn`], and the child is SIGKILLed when this process ends: the one way to fork a child with a parent-death signal
-/// (`build` refuses one armed anywhere else but [`die_with_parent`]).
-/// PDEATHSIG follows the forking THREAD; only fork such a child from a thread that lives as long as the child should.
-/// A tokio thread that `block_in_place` hands on idles out of the blocking pool, so the fork happens on one thread that
-/// lasts as long as this process. TensorD's pool-owned `ChildLauncher` can fold into this.
-#[cfg(target_os = "linux")]
-pub fn spawn_lasting(mut command: Command) -> Result<Tree> {
-    unix::die_with_spawner(&mut command);
-    use std::sync::{OnceLock, mpsc};
-    type Ask = (Command, mpsc::SyncSender<Result<Tree>>);
-    static SPAWNER: OnceLock<Option<mpsc::Sender<Ask>>> = OnceLock::new();
-    let lost = || Error::os("spawn")(io::Error::other("Cozy's spawning thread is gone"));
-    let spawner = SPAWNER.get_or_init(|| {
-        let (send, asks) = mpsc::channel::<Ask>();
-        let thread = std::thread::Builder::new().name("cozy-spawner".into())
-            .spawn(move || for (command, answer) in asks { let _ = answer.send(spawn(command)); });
-        thread.ok().map(|_| send)
-    }).as_ref().ok_or_else(lost)?;
-    let (answer, answered) = mpsc::sync_channel(1);
-    spawner.send((command, answer)).map_err(|_| lost())?;
-    answered.recv().map_err(|_| lost())?
-}

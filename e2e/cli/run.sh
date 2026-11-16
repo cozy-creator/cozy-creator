@@ -56,8 +56,8 @@ parse "$@"
 . "$(dirname "$0")/devstart.sh"
 . "$(dirname "$0")/standing.sh"
 
-# This proof owns its foreground Calcifer/private observation pipe. Keep it out
-# of the ordinary raw-log/body collectors and never emit its private CLI data.
+# This proof owns its foreground Calcifer. Keep it out of the ordinary raw-log/body
+# collectors and never emit its private CLI data.
 if [ "$SHARD" = containment ] || [ "$SHARD" = containment-web ]; then
   user_services
   step install; install_cozy
@@ -70,7 +70,7 @@ from pathlib import Path
 binary, ready = map(Path, sys.argv[1:3])
 ready.write_text(json.dumps({"ready": True, "native_execution": sys.argv[3] == "containment", "remote_cpu": sys.argv[3] == "containment-web", "runtime": sys.argv[4], "tensorfs": sys.argv[5], "development_web": True, "sha256": hashlib.file_digest(binary.open("rb"), "sha256").hexdigest()}))
 PY
-  exec xvfb-run -a uv run --no-project "$here/containment/run.py" \
+  exec uv run --no-project "$here/containment/run.py" \
     --ready-file "$OUT/containment/ready.json" --out "$OUT/containment"
 fi
 
@@ -528,6 +528,7 @@ WEB_SOLO=(
   open
   account-rent
   offline
+  restart
 )
 # macOS and Windows (the nightly): the `@engines` cells, WebKit's too on a Mac, layout, and what the old native cells durable, see and undo
 # checked (instant, canvas-nav, delete-undo).
@@ -551,8 +552,6 @@ case $SHARD in
   '') parts="
     uv_at_once
     entrypoints
-    open_fails
-    open_slow
     weightless
     script_package
     one_name_two_paths
@@ -680,8 +679,6 @@ case $SHARD in
   entrypoints) parts="entrypoints" ;;
   commands) parts="
     entrypoints
-    open_fails
-    open_slow
     catalog
     basics
     uninstall_on

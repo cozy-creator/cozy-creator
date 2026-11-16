@@ -306,6 +306,58 @@ pub(crate) fn release_project_readers(id: &str) {
     drop(gone);
 }
 
+/// What each page was asked to send before its project closes, by stream and project, until it answers or its stream ends.
+static SAVING: LazyLock<Mutex<std::collections::HashSet<(String, String)>>> = LazyLock::new(Mutex::default);
+/// Told as a page answers, ends or shows other projects.
+static SAVED: LazyLock<Notify> = LazyLock::new(Notify::new);
+
+/// Before projects `ids` close (a lock, a storage change, a stop): each stream showing one hears `project.vault` `saving`, and its page
+/// sends what it typed of it, then answers (`saved`). Waits for each answer or stream end, at most `within`: how many didn't answer.
+pub(crate) async fn save_first(ids: &[String], within: std::time::Duration) -> usize {
+    let asked: Vec<(String, String)> = SHOWN.lock().expect("shown lock").iter()
+        .flat_map(|(stream, shows)| shows.readers.iter().filter(|reader| ids.iter().any(|id| id == reader.id())).map(|reader| (stream.clone(), reader.id().to_owned())))
+        .collect();
+    if asked.is_empty() { return 0; }
+    SAVING.lock().expect("saving lock").extend(asked.iter().cloned());
+    for id in ids { project_vault(id, "saving"); }
+    let until = Instant::now() + within;
+    let left = loop {
+        let mut told = std::pin::pin!(SAVED.notified());
+        told.as_mut().enable();
+        let left = asked.iter().filter(|asked| owes(asked)).count();
+        if left == 0 || Instant::now() >= until { break left; }
+        tokio::select! {
+            () = told => {}
+            () = tokio::time::sleep_until(until) => {}
+        }
+    };
+    let mut saving = SAVING.lock().expect("saving lock");
+    for asked in &asked { saving.remove(asked); }
+    left
+}
+
+/// Whether `stream` still owes its answer for `project`: asked, not answered, and showing it still.
+fn owes(asked: &(String, String)) -> bool {
+    let unanswered = SAVING.lock().expect("saving lock").contains(asked);
+    unanswered && SHOWN.lock().expect("shown lock").get(&asked.0).is_some_and(|shows| shows.readers.iter().any(|reader| reader.id() == asked.1))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct Saved {
+    project: String,
+}
+
+/// `POST /v1/events/{stream}/saved` `{project}`: the page on `stream` sent what it typed of `project` (`save_first`).
+pub(crate) async fn saved(
+    axum::extract::Path(stream): axum::extract::Path<String>,
+    body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
+) -> Result<axum::http::StatusCode, crate::api::Refusal> {
+    let Saved { project } = crate::api::parse(&body?)?;
+    SAVING.lock().expect("saving lock").remove(&(stream, project));
+    SAVED.notify_waiters();
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
 /// A stream's place in `SHOWN`, by its id: what it holds is let go when it ends.
 struct Showing(String);
 
@@ -352,6 +404,7 @@ impl Drop for Showing {
         // Let go of outside the lock: the last reader of a project closes it.
         let held = SHOWN.lock().expect("shown lock").remove(&self.0);
         drop(held);
+        SAVED.notify_waiters();
     }
 }
 
@@ -389,6 +442,7 @@ pub(crate) async fn show(
     match was {
         Some(was) => {
             drop(was);
+            SAVED.notify_waiters();
             Ok(axum::Json(reply))
         }
         None => Err(gone()),

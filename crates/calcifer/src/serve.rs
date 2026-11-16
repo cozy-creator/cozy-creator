@@ -97,7 +97,7 @@ pub(crate) enum Stopped {
 /// `cozy calcifer`: exits 0 unless Calcifer could not start, which `refused.json` then says.
 /// Its persistent diagnostics are the closed events in `health.log`.
 pub fn main() -> ExitCode {
-    // Inherited native proof IPC stays available here, never in browser/worker/helper children.
+    // What Calcifer inherited never reaches its worker or helper children.
     #[cfg(unix)]
     platform::process::cloexec_from(3);
     // The controller holds keybags and project data: it writes no core, but stays dumpable (cl-984).
@@ -285,7 +285,6 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
         info!("another Calcifer holds this home");
         return Ok(Stopped::AnotherHolds);
     };
-    crate::browser::recover_profiles(&home.calcifer()).map_err(|error| failed(error.0))?;
     crate::project::bind_calcifer(&home.calcifer()).map_err(failed)?;
     // Only the holder announces: its birth is what `Services::stop` must end.
     Services::new(home, &loaded.user_home)
@@ -398,7 +397,6 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
             ended
         })
     });
-    crate::browser::hosted_proof(api.clone());
     crate::health::service_health(crate::health::HealthEvent::Started);
     info!(%address, ms = began.elapsed().as_millis() as u64, "Calcifer serves");
     // What an earlier Calcifer left is taken up beside the answers, never ahead of them: a big store's reads take what they

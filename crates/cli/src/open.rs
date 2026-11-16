@@ -1,7 +1,11 @@
-//! Open the current project in a browser and print its local URL. A `--json` caller is a program: it gets the link, and no browser starts.
+//! Open the current project in the default browser and print its local URL. A `--json` caller is a program: it gets the link, and no
+//! browser starts.
 use std::{
+    ffi::OsString,
     net::{Ipv4Addr, TcpListener},
+    path::Path,
     process::ExitCode,
+    time::{Duration, Instant},
 };
 
 use api::{
@@ -34,57 +38,71 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             (ctx.calcifer().await?, project)
         }
     };
+    let url = page_url(&calcifer, &project)?;
     // A `--json` caller is a program: it gets the page's address, and no browser starts.
-    let opened = match ctx.json {
-        true => json!({ "url": page_url(&calcifer, &project)?, "private": false }),
-        false => private(ctx, &calcifer, &project).await?,
-    };
-    output::document(ctx, &opened);
+    if !ctx.json && let Err(why) = browse(&url).await {
+        output::warn(&format!("no browser could be started ({why}): open this address in any browser"));
+    }
+    output::document(ctx, &json!({ "url": url }));
     Ok(ExitCode::SUCCESS)
 }
 
-/// The project in Cozy's own private browser, which Calcifer starts or reuses.
-async fn private(ctx: &Context, calcifer: &Client, project: &Address) -> Result<serde_json::Value, Error> {
-    let ask = json!({ "project": project.id });
-    let opening = calcifer.post::<_, Opened>("/v1/browser/open", &ask, None);
-    tokio::pin!(opening);
-    // Calcifer waits for Chrome while it lives (up to 2 minutes): a cold first start can take a while.
-    let opened = tokio::select! {
-        opened = &mut opening => opened,
-        () = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
-            output::say(ctx, "starting Cozy's private browser; a first start can take a while");
-            opening.await
-        }
+/// `url` in the default browser, as any local app opens one: `$BROWSER` when set (its commands in turn, `:`-separated, `;` on Windows;
+/// `%s` is the URL, else it goes last), else the system's opener. The browser is its own, and outlives `cozy`. Why none started, if none did.
+async fn browse(url: &str) -> Result<(), String> {
+    let separator = if cfg!(windows) { ';' } else { ':' };
+    let commands: Vec<Vec<String>> = match std::env::var("BROWSER") {
+        Ok(configured) if !configured.trim().is_empty() => configured.split(separator).filter_map(|command| {
+            let mut words: Vec<String> = command.split_whitespace().map(|word| word.replace("%s", url)).collect();
+            if words.is_empty() { return None; }
+            if !command.contains("%s") { words.push(url.to_owned()); }
+            Some(words)
+        }).collect(),
+        _ => vec![system_opener(url).ok_or_else(|| "no display".to_owned())?],
     };
-    match opened {
-        // The printed URL is reference-only; authority was injected through the owned native pipe.
-        Ok(opened) => Ok(json!({ "url": opened.url, "private": true })),
-        // No Chrome, or no display: any browser on this computer opens the page, Calcifer's own (cl-980).
-        Err(error) if error.code == "private_browser_unavailable" => {
-            let reason = error.message.clone();
-            let url = page_url(calcifer, project)?;
-            let name = match crate::project::current(ctx).await {
-                Ok(state) => state.path.file_name().map(|name| name.to_string_lossy().into_owned()),
-                Err(_) => None,
-            }.unwrap_or_else(|| project.code.clone());
-            output::warn(&format!("Cozy's private browser couldn't start ({reason}): open {name} at this address in any browser, which isn't private"));
-            Ok(json!({ "url": url, "private": false, "reason": reason }))
+    let mut why = Vec::new();
+    for words in commands {
+        match start(&words).await {
+            Ok(()) => return Ok(()),
+            Err(failed) => why.push(failed),
         }
-        // Chrome was found but didn't start: an error, saying why (its exit and first telling line), with the page's address.
-        Err(mut error) if error.code == "private_browser_failed" => {
-            error.remedy = Some(format!("{} opens it in any browser, which isn't private", page_url(calcifer, project)?));
-            Err(error)
-        }
-        Err(error) => Err(error),
     }
+    Err(why.join("; "))
 }
 
-#[derive(serde::Deserialize)]
-struct Opened {
-    url: String,
+/// The system's way to open a link: `open` (macOS), `start` (Windows), `xdg-open` (others), which without a display would start a text
+/// browser in this terminal, so none then.
+fn system_opener(url: &str) -> Option<Vec<String>> {
+    let words: &[&str] = if cfg!(target_os = "macos") {
+        &["open"]
+    } else if cfg!(windows) {
+        &["cmd", "/C", "start", ""]
+    } else if std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        &["xdg-open"]
+    } else {
+        return None;
+    };
+    Some(words.iter().map(|word| (*word).to_owned()).chain([url.to_owned()]).collect())
 }
 
-/// The project's page on this Calcifer, as the owned browser opens it: any browser of this account opens it as Calcifer's own page.
+/// `words` started on their own, given a moment to fail: one that exits well, or is still going, opened the page.
+async fn start(words: &[String]) -> Result<(), String> {
+    let program = &words[0];
+    let args: Vec<OsString> = words[1..].iter().map(OsString::from).collect();
+    let mut started = platform::process::detach(Path::new(program), &args, None).map_err(|e| format!("{program}: {e}"))?;
+    let until = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < until {
+        match started.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => return Err(format!("{program} {}", platform::process::ended(&status).0)),
+            Ok(None) => tokio::time::sleep(Duration::from_millis(50)).await,
+            Err(e) => return Err(format!("{program}: {e}")),
+        }
+    }
+    Ok(())
+}
+
+/// The project's page on this Calcifer: any browser of this account opens it as Calcifer's own page.
 fn page_url(calcifer: &Client, project: &Address) -> Result<String, Error> {
     let holder = calcifer.holder().ok_or_else(|| Error::new(Kind::Unavailable, "calcifer_unavailable", "Calcifer isn't running").next("cozy open"))?;
     Ok(format!("http://{}/projects/{}", holder.address, project.id))

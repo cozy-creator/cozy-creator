@@ -66,15 +66,15 @@ def main() -> None:
     empty = Path(outside.name)
     records = []
     environment = os.environ.copy()
+    # The default browser, as this computer's user set it: $BROWSER, a program that writes down the address it was given (cl-1067).
     browser_log = case / "browser-opened.txt"
-    if os.name == "posix":
-        browser_bin = case / "browser-bin"
-        browser_bin.mkdir()
-        browser = browser_bin / ("open" if sys.platform == "darwin" else "xdg-open")
-        browser.write_text("#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$COZY_TEST_BROWSER_LOG\"\n")
+    browser = case / ("browser.cmd" if os.name == "nt" else "browser")
+    if os.name == "nt":
+        browser.write_text(f'@echo %1>> "{browser_log}"\r\n')
+    else:
+        browser.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{browser_log}'\n")
         browser.chmod(0o755)
-        environment["PATH"] = str(browser_bin) + os.pathsep + environment.get("PATH", "")
-        environment["COZY_TEST_BROWSER_LOG"] = str(browser_log)
+    environment["BROWSER"] = str(browser)
 
     def run(name: str, words: list[str], directory: Path = empty, code: int = 0) -> subprocess.CompletedProcess[str]:
         if log := environment.get("ARGV_LOG"):
@@ -250,20 +250,35 @@ def main() -> None:
         url = urlsplit(opened["url"])
         assert url.hostname in {"127.0.0.1", "localhost", "::1"}, "open did not print a local URL"
         assert url.path == f"/projects/{created['id']}", f"open printed another project's URL: {url.path}"
-        # A --json caller is a program: it gets the page's plain address, said not to be private, and no browser starts (cl-985).
-        assert set(opened) == {"url", "private"} and opened["private"] is False, f"--json open: {opened}"
+        # A --json caller is a program: it gets the page's plain address, and no browser starts (cl-985).
+        assert set(opened) == {"url"}, f"--json open: {opened}"
         assert not url.fragment and not url.query, f"the --json address carries something besides the page: {opened['url']}"
+        assert not browser_log.exists(), "--json open started the default browser"
+        # cl-1067 (Paul, 11-16, of Cozy's private Chrome: "I don't want this anymore"): `cozy open` starts the default browser at the
+        # page's address, prints it, and exits 0.
         plain_open = run("default project URL", ["open"], project)
-        assert not plain_open.stdout.lstrip().startswith("{") and "url" in plain_open.stdout
-        private = "private: true" in plain_open.stdout
-        if private:
-            # Cozy's private browser opened it: the URL is the page's, and nothing went with it.
-            assert "code=" not in plain_open.stdout, "a private open printed a credential"
-        else:
-            # No display here, no Chrome, or its launch failed: the page's address, which any browser of this account opens, said not to be private.
-            assert "isn't private" in plain_open.stderr and project.name in plain_open.stderr, "the fallback didn't say it isn't private"
-        assert "expires_ms" not in plain_open.stdout
-        assert not browser_log.exists(), "open launched the default browser"
+        assert not plain_open.stdout.lstrip().startswith("{") and opened["url"] in plain_open.stdout, f"open: {plain_open.stdout}"
+        assert browser_log.exists() and browser_log.read_text().split() == [opened["url"]], \
+            f"open didn't start the default browser at {opened['url']}: {browser_log.read_text() if browser_log.exists() else 'nothing started'}"
+        assert "no browser" not in plain_open.stderr, f"open: {plain_open.stderr}"
+        # With no browser to start, it prints the address all the same and says so in one line: no error.
+        for name, unset in (("no such $BROWSER", False), ("no $BROWSER and no display", True)):
+            if unset and not sys.platform.startswith("linux"):
+                continue  # macOS's `open` and Windows' `start` need no display
+            saved = dict(environment)
+            environment["BROWSER"] = str(case / "no-such-browser")
+            if unset:
+                for key in ("BROWSER", "DISPLAY", "WAYLAND_DISPLAY"):
+                    environment.pop(key, None)
+            try:
+                without = run(f"open with {name}", ["open"], project)
+            finally:
+                environment.clear()
+                environment.update(saved)
+            said = [line for line in without.stderr.splitlines() if line.strip()]
+            assert opened["url"] in without.stdout and len(said) == 1 and "no browser could be started" in said[0], \
+                f"open with {name}: {without.stdout}{without.stderr}"
+        assert browser_log.read_text().split() == [opened["url"]], "a failed open started the default browser"
         for flag in ("--no-open", "--print-url"):
             run(f"removed open flag {flag}", ["open", flag], project, code=2)
         run("removed run selector", ["run", "-p", str(project), "example/generate", "prompt=test"], project, code=2)
@@ -278,9 +293,6 @@ def main() -> None:
         receipt = json.dumps(records, indent=2) + "\n"
         (case / "results.json").write_text(receipt)
         (out / "results.json").write_text(receipt)
-        if browser_log.exists():
-            for file in browser_log.read_text().splitlines():
-                Path(file).unlink(missing_ok=True)
         outside.cleanup()
 
 
