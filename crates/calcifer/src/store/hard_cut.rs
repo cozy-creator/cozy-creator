@@ -5,7 +5,7 @@
 //! one's place. Every old run of a project, every settled run outside one and every ended machine stay behind in the old file,
 //! which goes whole. Only what is live is read, so the start it happens on is slower by at most about a second on a cold disk, and
 //! nothing is vacuumed. A project's own files are untouched; what one left on `local` that only this computer's TensorFS store
-//! holds is copied into it first (`project::keep_left_on_local`). One-time code: it goes in the release after.
+//! holds is held, then copied into it, first (`keep_project_files`). One-time code: it goes in the release after.
 use super::*;
 
 /// What is filtered here, or left behind: the run tables, machines, retry answers, the index, an old store's caches, and the
@@ -191,13 +191,14 @@ pub(super) fn rebuild(path: &Path, from: i64) -> Result<()> {
     Ok(())
 }
 
-/// Before anything of the old store is left behind. What the old store says each locked project's runs left on `local` and never
-/// exported is held in this computer's TensorFS store (`kept_path`) until its next open copies it in and lets go: an encrypted
-/// project's lock can't be read while it is locked, nor an older plain project's before its first open migrates it. Then each
-/// readable project's files left on `local` that only that store holds are copied into it (a copy that fails stops the cut); what
-/// they leave there goes unless a locked project's hold, made first, still needs it. A file of a locked project's runs this store no
-/// longer names (one imported already) can't be known before its open. Answers how many locked projects wait for an open, and each
-/// plain project that had lost files before, how many (`cozy doctor` and its page say so).
+/// Before anything of the old store is left behind, every project's files left on `local` that only this computer's TensorFS store
+/// holds are held there (`kept_path`), whatever their uses' ages: a readable project's as its lock names them, a locked one's (an
+/// encrypted project's lock can't be read while it is locked, nor an older plain project's before its first open migrates it) as
+/// the old store says its runs left them, never exported. Then every readable project's are copied into it, each checked and noted
+/// (a copy that fails stops the cut), and only once all are in, each readable project's hold and copies are let go of: the store
+/// lets an object go only when no project's hold still names it. A locked project's are copied in as it opens. A file of a locked
+/// project's runs this store no longer names (one imported already) can't be known before then. Answers how many locked projects
+/// wait for an open, and each plain project that had lost files before, how many (`cozy doctor` and its page say so).
 fn keep_project_files(path: &Path, from: i64) -> Result<(usize, Vec<(PathBuf, u64)>)> {
     let calcifer = path.parent().unwrap_or(Path::new("."));
     let conn = Connection::open(path)?;
@@ -206,29 +207,39 @@ fn keep_project_files(path: &Path, from: i64) -> Result<(usize, Vec<(PathBuf, u6
         let mut stmt = conn.prepare("SELECT path FROM projects")?;
         stmt.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?
     };
-    let (mut locked, mut readable): (Vec<PathBuf>, Vec<PathBuf>) = (vec![], vec![]);
+    let (mut locked, mut readable): (Vec<PathBuf>, Vec<(PathBuf, Vec<tensorfs::format::ObjectRef>)>) = (vec![], vec![]);
     for indexed in paths {
         let root = vault::logical(Path::new(&indexed));
         if !root.is_dir() { continue; }
-        match !vault::encrypted(&root) && crate::project::lock_readable(&root) {
-            true => readable.push(root),
-            false => locked.push(root),
+        match (!vault::encrypted(&root)).then(|| crate::project::left_on_local(&root)).flatten() {
+            Some(left) => readable.push((root, left)),
+            None => locked.push(root),
         }
     }
     hold_locked(&conn, calcifer, from, &locked)?;
-    let mut lost = vec![];
-    for root in readable {
-        match crate::project::keep_left_on_local(&root, calcifer) {
-            Ok(Some((_, 0))) => {}
+    if readable.iter().any(|(_, left)| !left.is_empty()) {
+        let store = crate::runs::files::store().map_err(|error| cut(format!("this computer's TensorFS store: {}", error.message)))?;
+        for (root, left) in &readable {
+            let present: Vec<_> = left.iter().filter(|object| store.path(object).is_ok_and(|at| at.is_file())).cloned().collect();
+            if present.is_empty() { continue; }
+            hold(store, &kept_path(calcifer, root), present).map_err(|why| cut(format!("a project's files left on local couldn't be held ({why}): free space on that disk, then start cozy again")))?;
+        }
+    }
+    let (mut lost, mut copied) = (vec![], vec![]);
+    for (root, _) in readable {
+        match crate::project::copy_left_on_local(&root, calcifer) {
+            Ok(Some((_, 0))) => copied.push(root),
             Ok(Some((_, gone))) => {
-                tracing::warn!(target: "cozy.service_health", gone, project = %root.display(), "files this project left on local were gone from this computer's store already");
-                lost.push((root, gone as u64));
+                tracing::warn!(target: "cozy.service_health", code = "legacy_files_lost", gone, "files a project left on local were gone from this computer's store already");
+                lost.push((root.clone(), gone as u64));
+                copied.push(root);
             }
             // Unreadable since it was looked at: held as a locked one's are, and copied in as it opens.
             Ok(None) => { hold_locked(&conn, calcifer, from, std::slice::from_ref(&root))?; locked.push(root); }
             Err(why) => return Err(cut(format!("{}: {why}", root.display()))),
         }
     }
+    for root in copied { crate::project::release_left(&root, calcifer); }
     Ok((locked.len(), lost))
 }
 

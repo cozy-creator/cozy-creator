@@ -1,21 +1,25 @@
 # e2e/cli/hardcut.sh: the legacy hard cut (cl-1003) on a home cozy 0.25.0 made and used.
 
 # hard_cut: cozy 0.25.0 runs as another user of this runner in its own default home, with its own Calcifer and local machine
-# (old_takes' way). It makes three projects, each with a drawn still, a shot whose latents stay on its local machine (in that
-# machine's TensorFS store, nowhere in the project; one object all three share, by its seed) and an uploaded picture (0.25.0
-# refuses runs outside a project). It encrypts and locks the second and third, then stops. Before this cozy starts on that home,
-# a booting rental with its open order (tied to a project run) and an unsettled run outside any project are added to its store,
-# as a laptop updated mid-work has them. Checks:
+# (old_takes' way). It makes four projects, each with a drawn still, a shot whose latents stay on its local machine (in that
+# machine's TensorFS store, nowhere in the project; one object all four share, by its seed) and an uploaded picture (0.25.0
+# refuses runs outside a project). The two plain ones also share a shot of their own seed, and the last one has a shot of its own.
+# It encrypts and locks the third and fourth, then stops, and ages every use and those bytes past the store's TTL and grace. Before
+# this cozy starts on that home, a booting rental with its open order (tied to a project run) and an unsettled run outside any
+# project are added to its store, as a laptop updated mid-work has them. Checks:
+#   - killed at each step of the cut (`cut_windows`), the store is the old one whole or the new one whole, and the next start
+#     finishes the cut with every plain project's files as before;
 #   - the store is written again: version 9, no legacy table, no old settled run, no ended machine, small;
 #   - the booting rental and its order, and the unsettled run, are still there; the rental is still listed;
 #   - nothing is written into a locked project's folder;
-#   - the plain project's latents are copied into it, and the machine keeps them for the locked ones: each is held in the
-#     machine's store (a TensorFS header root beside Calcifer's store), still there after every use and the bytes are 8 days old,
-#     TensorD is stopped and a collection ran; the first unlock copies them in and lets go of its hold, the store keeps them for
-#     the other; the second does the same, and the store lets them go; at the next start no copy is left to let go of;
-#   - the third project's shot of its own seed: once its unlock copied its latents in, the machine's record of that run (the use
+#   - both plain projects have every file, the one only they share too, which the store then lets go;
+#   - the machine keeps the shared latents for the locked ones: each is held in the machine's store (a TensorFS header root beside
+#     Calcifer's store), still there after every use and the bytes are 8 days old, TensorD is stopped and a collection ran; the
+#     first unlock copies them in and lets go of its hold, the store keeps them for the other; the second does the same, and the
+#     store lets them go; at the next start no copy is left to let go of;
+#   - the last project's shot of its own seed: once its unlock copied its latents in, the machine's record of that run (the use
 #     naming them and its manifest) is gone too, and nothing in the machine's store names the file's digest or its path;
-#   - every box of the three (the locked ones once unlocked) lists the files it did and answers each, and its preview, with the
+#   - every box of the four (the locked ones once unlocked) lists the files it did and answers each, and its preview, with the
 #     same bytes;
 #   - the `state.db.pre-*` copies beside the store are gone.
 # With CUT_FROM=8 (--shard hardcut-v8) the store is first fenced as a 0.26 RC left one (Paul's laptop's): its project runs in
@@ -25,10 +29,10 @@ CUT_USER=cozy-cut CUT_FROM=${CUT_FROM:-7}
 hard_cut() {
 step "legacy hard cut (cl-1003): a $CUT_RELEASE home's old runs go, every project file stays (a locked one's from its unlock)"
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "hard cut: $CUT_RELEASE runs as another user of a fresh GitHub runner"; return; }
-local home P E F pass before facts latents solo record manifests paths pin pinf blob
+local home P Q E F pass before facts latents solo twin twinblob record manifests paths pin pinf blob
 id "$CUT_USER" > /dev/null 2>&1 || sudo useradd -m "$CUT_USER" || { check "hard cut: no user"; return; }
 home=$(getent passwd "$CUT_USER" | cut -d: -f6)
-P=$home/plain E=$home/sealed F=$home/sealed2 pass=$home/pass
+P=$home/plain Q=$home/plain2 E=$home/sealed F=$home/sealed2 pass=$home/pass
 mkdir -p "$OUT/cozy-cut"
 curl -fsSL --retry 3 -o "$OUT/cozy-cut.tgz" "https://github.com/cozy-creator/cozy-creator/releases/download/v$CUT_RELEASE/cozy-x86_64-unknown-linux-gnu.tar.gz" \
   && tar -xzf "$OUT/cozy-cut.tgz" -C "$OUT/cozy-cut" || { check "hard cut: no cozy $CUT_RELEASE"; return; }
@@ -44,10 +48,10 @@ sudo install -D -m 755 "$OUT/cozy-cut/cozy-x86_64-unknown-linux-gnu/cozy" /opt/c
 cut_cozy old --json machine update local --runtime "$CUT_RUNTIME" --tensorfs "$CUT_TENSORFS" -y > "$OUT/cut-update.json" \
   || { check "hard cut: its machine: $(tail -c 400 "$OUT/cut-update.json") $(tail -c 300 "$OUT/cozy-cut.err")"; return; }
 printf '%s\n' 'synthetic hard cut passphrase' | sudo -u "$CUT_USER" tee "$pass" > /dev/null && sudo chmod 600 "$pass"
-for folder in "$P" "$E" "$F"; do
+for folder in "$P" "$Q" "$E" "$F"; do
   cut_cozy old --json new --unencrypted "$folder" > "$OUT/cut-new.json" || { check "hard cut: new $folder: $(tail -c 300 "$OUT/cozy-cut.err")"; return; }
 done
-cut_fill old "$P" plain && cut_fill old "$E" sealed && cut_fill old "$F" sealed2 solo || return
+cut_fill old "$P" plain twin:9 && cut_fill old "$Q" plain2 twin:9 && cut_fill old "$E" sealed && cut_fill old "$F" sealed2 solo:8 || return
 # The second and third encrypted after their runs, as Paul's were: what they left on local is only in the machine's store.
 for folder in "$E" "$F"; do
   cut_in "$folder" old --json vault encrypt --passphrase-file "$pass" --recovery-out "$folder.recovery" > "$OUT/cut-encrypt.json" \
@@ -64,6 +68,15 @@ blob=$home/.cache/tensorfs/blobs/${latents:0:2}/${latents:2:2}/$latents
 # The last locked project's own latents: no other project's, so its machine's record of that run survives the collection.
 solo=$(jq -r '.solo.latents.sha256 | sub("^sha256:"; "")' "$OUT/cut-sealed2-before.json")
 [ "$solo" != "$latents" ] || { check "hard cut: the third project's own shot shares the others' latents"; return; }
+# What the two plain projects alone share (another seed): no locked project's hold keeps it, so one project's copy letting go of it
+# before the other's is made would lose it.
+twin=$(jq -r '.twin.latents.sha256 | sub("^sha256:"; "")' "$OUT/cut-plain-before.json")
+[ "sha256:$twin" = "$(jq -r .twin.latents.sha256 "$OUT/cut-plain2-before.json")" ] && [ "$twin" != "$latents" ] \
+  || { check "hard cut: the plain projects' own latents aren't shared: $(jq -r .twin.latents.sha256 "$OUT"/cut-plain*-before.json | tr '\n' ' ')"; return; }
+twinblob=$home/.cache/tensorfs/blobs/${twin:0:2}/${twin:2:2}/$twin
+# As old as a laptop's: every use and these bytes past the store's TTL and its grace, before the cut.
+sudo find "$home/.cache/tensorfs/uses" -type f -exec touch -d '8 days ago' {} + && sudo touch -d '8 days ago' "$blob" "$twinblob" \
+  || check "hard cut: uses not aged before the cut"
 sudo test -f "$blob" || { check "hard cut: the locked project's latents aren't in its machine's store before the cut"; return; }
 cut_sql "SELECT user_version FROM pragma_user_version" > "$OUT/cut-version-before" && [ "$(cat "$OUT/cut-version-before")" = 7 ] \
   || { check "hard cut: $CUT_RELEASE's store is at version $(cat "$OUT/cut-version-before"), not 7"; return; }
@@ -74,6 +87,7 @@ sudo -u "$CUT_USER" sh -c 'f=$1; cp "$f" "$f.pre-hand-copy" && touch "$f.pre-0.1
 echo "hard cut: before: $(cut_store_facts)"
 sudo install -m 644 -o "$(id -u)" "$home/.cozy/calcifer/state.db" "$OUT/cut-store-before.db" || true
 before=$(sudo find "$E" "$F" -mindepth 1 -maxdepth 1 -type f -printf '%p %s\n' | sort)
+cut_windows "$(cut_store_facts)"
 
 # This cozy on that home, installed in the release's place as an update leaves it (the Calcifer it starts is the installed one).
 sudo -u "$CUT_USER" -H sh -c 'printf %s /opt/cozy-cut/cozy-new > "$HOME/.cozy/installed"' || { check "hard cut: this cozy not installed"; return; }
@@ -109,6 +123,9 @@ if [ "$CUT_FROM" = 8 ]; then
   cut_sql "SELECT sql FROM sqlite_schema WHERE name = 'machine_logs'" | grep -q 'REFERENCES machines' || check "hard cut: machine_logs no longer names machines"
 fi
 cut_check "$P" plain
+cut_check "$Q" plain2
+# Both plain projects copied what they alone shared before either let go of it: then the store let it go.
+sudo test ! -e "$twinblob" || check "hard cut: the store still has what the plain projects alone share, both copied in"
 
 # The latents the three share: held for each locked project past the store's 7 days, through a collection, until its own unlock
 # copies them in; the plain project's copy at the cut let go of nothing a locked project still needs, nor the first unlock.
@@ -161,6 +178,61 @@ for _ in $(seq 50); do [ -z "$(sudo find "$home/.cozy/calcifer/kept" -name '*.re
 [ -z "$(sudo find "$home/.cozy/calcifer/kept" -name '*.release')" ] || check "hard cut: copies noted as not let go of: $(sudo find "$home/.cozy/calcifer/kept" -name '*.release' -exec cat {} + | head -c 300)"
 for folder in "$E" "$F"; do cut_in "$folder" new --json vault lock > "$OUT/cut-relock.json" || check "hard cut: lock again: $(tail -c 300 "$OUT/cut-relock.json")"; done
 sudo pkill -KILL -u "$CUT_USER" || true
+}
+
+# cut_windows <facts>: the cut killed at each of its steps, as a process killed there would be: its Calcifer runs under strace, which
+# kills it on entry to one system call on one file (no hook in cozy). After each kill the store is the old one whole (as <facts>
+# say) or the new one whole, and the next start finishes the cut with every plain project's files as before; then the home is put
+# back as it was. A kill can't land between the swap's rename and the folder's sync: that window is the file system's.
+cut_windows() {
+  local old=$1 calc=$home/.cozy/calcifer window path calls when want state key
+  command -v strace > /dev/null || sudo apt-get install -y -qq strace > /dev/null || { check "hard cut: no strace for the kills"; return; }
+  # What a start makes (an update of its machine) is no old run.
+  CUT_STARTED_MS=$(($(date +%s%N) / 1000000))
+  key=$(printf 'cozy: files a locked project left on local\n%s' "$P" | sha256sum | cut -d' ' -f1)
+  sudo rm -rf /opt/cozy-cut/home && sudo cp -a "$home" /opt/cozy-cut/home || { check "hard cut: the home not kept for the kills"; return; }
+  while IFS='|' read -r window path calls when want; do
+    sudo tee /opt/cozy-cut/cozy-killed > /dev/null <<WRAP
+#!/bin/sh
+exec strace -f -qq -o /dev/null -P '$path' -e trace=$calls -e inject=$calls:signal=KILL:when=$when /opt/cozy-cut/cozy-new "\$@"
+WRAP
+    sudo chmod 755 /opt/cozy-cut/cozy-killed
+    sudo -u "$CUT_USER" -H sh -c 'printf %s /opt/cozy-cut/cozy-killed > "$HOME/.cozy/installed"'
+    cut_cozy new --json machine ls > "$OUT/cut-killed.json" 2>&1 && check "hard cut: not killed $window"
+    sudo pkill -KILL -u "$CUT_USER" || true
+    while pgrep -u "$CUT_USER" > /dev/null; do sleep 0.2; done
+    state=$(cut_whole "$old")
+    echo "hard cut: killed $window: the store is $state"
+    [ "$state" = "$want whole" ] || check "hard cut: killed $window, the store is $state, not $want whole"
+    sudo -u "$CUT_USER" -H sh -c 'printf %s /opt/cozy-cut/cozy-new > "$HOME/.cozy/installed"'
+    cut_cozy new --json machine ls > /dev/null || check "hard cut: the start after the kill $window"
+    [ "$(cut_whole "$old")" = "new whole" ] || check "hard cut: the start after the kill $window left the store $(cut_whole "$old")"
+    cut_check "$P" plain
+    cut_check "$Q" plain2
+    sudo pkill -KILL -u "$CUT_USER" || true
+    while pgrep -u "$CUT_USER" > /dev/null; do sleep 0.2; done
+    sudo rsync -a --delete /opt/cozy-cut/home/ "$home/" || { check "hard cut: the home not put back after the kill $window"; return; }
+  # <what> | <file> | <system calls> | <which call> | <the store after>. SQLite's own fchmod as it makes the new file is `fchmod`.
+  done <<WINDOWS
+writing the new store|$calc/state.db.cut|pwrite64,write|1|old
+the new store synced, before the swap|$calc/state.db.cut|chmod,fchmodat,fchmodat2|1|old
+the swap|$calc/state.db.cut|rename,renameat,renameat2|1|old
+a project's copy|$P/files/$latents.part|write,pwrite64,copy_file_range,sendfile,splice|1|old
+copies verified, before letting go|$calc/kept/$key.cozytensors|unlink,unlinkat|1|old
+deleting the backups|$calc/state.db.pre-hand-copy|unlink,unlinkat|1|new
+WINDOWS
+}
+# cut_whole <old facts>: "old whole" when the store is as <old facts> say, "new whole" when it is cut, else what it is.
+cut_whole() {
+  local facts
+  facts=$(cut_store_facts)
+  if jq -e --argjson old "$1" '[.version, .legacy_tables, .settled_runs, .ended_machines] == ($old | [.version, .legacy_tables, .settled_runs, .ended_machines])' <<< "$facts" > /dev/null; then
+    echo "old whole"
+  elif J '.version == 9 and .legacy_tables == 0 and .settled_runs == 0 and .ended_machines == 0' <<< "$facts"; then
+    echo "new whole"
+  else
+    echo "neither: $facts"
+  fi
 }
 
 # cut_unlock <folder> <tag> <hold>: the locked project unlocked, its TensorD stopped (only the cut's hold keeps its latents); it
@@ -275,7 +347,7 @@ PY
 # cut_fill <old|new> <folder> <tag>: its boxes made and rendered on local: a still, a shot whose latents stay on the machine, and an
 # uploaded picture. What each box holds is kept in $OUT/cut-<tag>-before.json.
 cut_fill() {
-  local which=$1 P=$2 tag=$3 solo=${4:-} png=$OUT/cut-$3.png sha i name want=3
+  local which=$1 P=$2 tag=$3 extras=${4:-} png=$OUT/cut-$3.png sha i name want=3 extra
   python3 -c 'import os,sys,zlib,struct
 w=h=8; raw=b"".join(b"\0"+os.urandom(3)*w for _ in range(h))
 c=lambda t,d: struct.pack(">I",len(d))+t+d+struct.pack(">I",zlib.crc32(t+d)&0xffffffff)
@@ -286,25 +358,26 @@ open(sys.argv[1],"wb").write(b"\x89PNG\r\n\x1a\n"+c(b"IHDR",struct.pack(">IIBBBB
     && cut_api "$P" /assets -X POST -H 'Content-Type: application/json' \
       -d '{"name": "shot", "exact": true, "tool": "/opt/cozy-cut/shaped.py/shot", "kind": "video", "fields": {"summary": "a grey shot", "beats": [{"description": "one beat"}], "seed": 7}}' > /dev/null \
     || { check "hard cut ($tag): its boxes: $(tail -c 300 "$OUT/cozy-cut.err")"; return 1; }
-  if [ -n "$solo" ]; then
-    want=4
+  # Each extra shot <name>:<seed>: its latents shared with whatever other shot has that seed.
+  for extra in $extras; do
+    want=$((want + 1))
     cut_api "$P" /assets -X POST -H 'Content-Type: application/json' \
-      -d '{"name": "solo", "exact": true, "tool": "/opt/cozy-cut/shaped.py/shot", "kind": "video", "fields": {"summary": "a shot of its own", "beats": [{"description": "one beat"}], "seed": 8}}' > /dev/null \
-      || { check "hard cut ($tag): its own shot: $(tail -c 300 "$OUT/cozy-cut.err")"; return 1; }
-  fi
+      -d "$(jq -nc --arg name "${extra%%:*}" --argjson seed "${extra##*:}" '{name: $name, exact: true, tool: "/opt/cozy-cut/shaped.py/shot", kind: "video", fields: {summary: "a shot of its own", beats: [{description: "one beat"}], seed: $seed}}')" > /dev/null \
+      || { check "hard cut ($tag): its shot $extra: $(tail -c 300 "$OUT/cozy-cut.err")"; return 1; }
+  done
   local holder address token
   holder=$(sudo cat "$(getent passwd "$CUT_USER" | cut -d: -f6)/.cozy/calcifer/calcifer.lock.holder")
   address=$(jq -r .address <<< "$holder") token=$(jq -r .token <<< "$holder")
   sudo -u "$CUT_USER" curl --fail-with-body -sS -X PUT -H "Authorization: Bearer $token" --data-binary @- "http://$address/v1/files/$sha" < "$png" > /dev/null \
     && cut_api "$P" /imports -X POST -H 'Content-Type: application/json' -d "$(jq -nc --arg source "$sha" '{source: $source, name: "pic", exact: true}')" > /dev/null \
     || { check "hard cut ($tag): its upload"; return 1; }
-  for name in card shot ${solo:+solo}; do
+  for name in card shot $(for extra in $extras; do printf '%s ' "${extra%%:*}"; done); do
     cut_api "$P" /runs -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: cut-$tag-$name-$RANDOM$RANDOM" -d "{\"names\":[\"$name\"],\"on\":[\"local\"]}" > /dev/null \
       || { check "hard cut ($tag): render $name"; return 1; }
   done
   for i in $(seq 600); do
     cut_api "$P" "" > "$OUT/cut-$tag-state.json" 2> /dev/null || true
-    J --argjson want "$want" '[.assets[] | select(.name == "card" or .name == "shot" or .name == "pic" or .name == "solo")] | length == $want and all(.versions >= 1 and ((.making // []) | length) == 0)' "$OUT/cut-$tag-state.json" 2> /dev/null && break
+    J --argjson want "$want" '[.assets[] | select(.name == "card" or .name == "shot" or .name == "pic" or .name == "solo" or .name == "twin")] | length == $want and all(.versions >= 1 and ((.making // []) | length) == 0)' "$OUT/cut-$tag-state.json" 2> /dev/null && break
     J 'any(.assets[]; .failure != null)' "$OUT/cut-$tag-state.json" 2> /dev/null && { check "hard cut ($tag): a render failed: $(jq -c '[.assets[] | {name, failure}]' "$OUT/cut-$tag-state.json")"; return 1; }
     sleep 1
   done
@@ -314,7 +387,7 @@ open(sys.argv[1],"wb").write(b"\x89PNG\r\n\x1a\n"+c(b"IHDR",struct.pack(">IIBBBB
 }
 # cut_files <folder>: each box's files now, by output name: its hash and its path in the project, as its Calcifer lists them.
 cut_files() {
-  cut_api "$1" "" | jq -c '[.assets[] | select(.name == "card" or .name == "shot" or .name == "pic" or .name == "solo") | {key: .name, value: (.files // {} | map_values({sha256, path}))}] | from_entries'
+  cut_api "$1" "" | jq -c '[.assets[] | select(.name == "card" or .name == "shot" or .name == "pic" or .name == "solo" or .name == "twin") | {key: .name, value: (.files // {} | map_values({sha256, path}))}] | from_entries'
 }
 # cut_check <folder> <tag>: after the cut each box lists the files it did, and the project answers each one, from its own files/,
 # with the same bytes, and a picture's or video's preview.
@@ -372,10 +445,9 @@ PY
 
 # hard_cut_scale (--shard hardcut-scale): the cut on a store as big as a laptop's (about 2 GB: old project runs with their specs and
 # logs, runs outside any project, ended machines), made from this cozy's own store fenced as a 0.26 RC left it. Its first start
-# answers within 10 s. Then killed at points through the cut, again and again: each restart finds the store old (as it was) or new
-# (cut), never neither, and the last one ends cut.
+# answers within 10 s. (Kills at each step of the cut are hard_cut's, placed by event.)
 hard_cut_scale() {
-step "legacy hard cut (cl-1003) on a 2 GB store: its first start answers within 10 s; killed through it, never half done"
+step "legacy hard cut (cl-1003) on a 2 GB store: its first start answers within 10 s"
 local lock=$HOME/.cozy/calcifer/calcifer.lock.holder db=$HOME/.cozy/calcifer/state.db big=$OUT/cut-big began took delay pid state
 cozy --json machine ls > /dev/null || { check "cut scale: this cozy"; return; }
 pid=$(jq -r .pid < "$lock") && term_calcifer "$pid" || return
@@ -411,33 +483,6 @@ db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 print(f"{os.path.getsize(sys.argv[1]) >> 20} MiB")
 PY
 rm -f "$db-wal" "$db-shm" && cp "$db" "$big" || { check "cut scale: its copy"; return; }
-# Killed at points through the cut: old or new after each, never neither.
-for delay in 0.1 0.3 0.6 1 1.5 2.5; do
-  cp "$big" "$db" && rm -f "$db-wal" "$db-shm" "$db.cut"
-  (cozy --json machine ls > /dev/null 2>&1 &)
-  sleep "$delay"
-  # The client too, or it starts another Calcifer to finish what this one began.
-  pkill -KILL -f 'cozy --json machine ls' 2> /dev/null || true
-  pkill -KILL -f 'cozy calcifer' 2> /dev/null || true
-  systemctl --user stop cozy-calcifer > /dev/null 2>&1 || true
-  while pgrep -f 'cozy calcifer' > /dev/null || pgrep -f 'cozy --json machine ls' > /dev/null; do sleep 0.1; done
-  state=$(python3 - "$db" <<'PY'
-import sqlite3, sys
-db = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True, timeout=30)
-version = db.execute("PRAGMA user_version").fetchone()[0]
-tables = {name for (name,) in db.execute("SELECT name FROM sqlite_schema WHERE type = 'table'")}
-if version == 8 and "legacy_project_runs" in tables and db.execute("SELECT count(*) FROM legacy_project_runs").fetchone()[0] == 15000:
-    print("old")
-elif version == 9 and not any(name.startswith("legacy_") for name in tables) and db.execute("SELECT count(*) FROM runs WHERE id LIKE 'run-scale%'").fetchone()[0] == 0:
-    print("new")
-else:
-    print(f"neither: version {version}, tables {sorted(tables)[:6]}")
-PY
-) || state="unreadable"
-  [ "$state" != unreadable ] || state="unreadable: $(python3 -c 'import sqlite3,sys; sqlite3.connect(sys.argv[1], timeout=30).execute("PRAGMA user_version")' "$db" 2>&1 | tail -1) ($(ls "$(dirname "$db")" | grep -c '^state.db') state.db files)"
-  echo "cut scale: killed after ${delay}s: $state"
-  [ "$state" = old ] || [ "$state" = new ] || check "cut scale: killed after ${delay}s, the store is $state"
-done
 cp "$big" "$db" && rm -f "$db-wal" "$db-shm" "$db.cut"
 began=$(date +%s%N)
 cozy --json machine ls > "$OUT/cut-scale-ls.json" 2> "$OUT/cut-scale-ls.err" || check "cut scale: its first start: $(tail -c 300 "$OUT/cut-scale-ls.err")"
