@@ -155,9 +155,9 @@ fn same_class(a: &Component, b: &Component) -> bool {
     (&a.class.library, &a.class.name) == (&b.class.library, &b.class.name)
 }
 
-/// Whether a component is a LoRA's: every tensor a factor, an alpha or one it keeps.
+/// Whether a component is a LoRA's: every tensor a factor, an alpha or one it keeps or carries.
 fn adapter(component: &Component) -> bool {
-    !component.tensors.is_empty() && component.tensors.iter().all(|t| family::lora_key(&t.key))
+    !component.tensors.is_empty() && family::is_lora(component)
 }
 
 /// `child` (whose own header is `checkpoint`) with what it lacks of `base`, recorded as `from`

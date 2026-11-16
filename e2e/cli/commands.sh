@@ -296,6 +296,31 @@ J '.lanes[0].components[] | select(.name == "transformer") | .lora.modules == 48
   || check "$lora: its transformer is not 480 modules in Diffusers' names at r = lora_alpha = 32, reference_downscale_factor 2: $(jq -c '.lanes[0].components[] | select(.name == "transformer") | {lora, config_file, r: .config.r, lora_alpha: .config.lora_alpha, downscale: .config.reference_downscale_factor, targets: (.config.target_modules // [] | .[:3])}' "$show")"
 }
 
+# se-141 (the ltx-2.5 package's agent, for picture and voice references: "TensorFS ingests LiconStudio's Licon MSR V2 LoRA for
+# LTX-2.5 losslessly, so the ltx-2.5 package can run it"; Paul: canonical format, in-the-wild layouts converted at ingest, the
+# package never maps keys). e2e/isolated.sh uploads it from Hugging Face as published: LTX's native names under diffusion_model.,
+# 1152 rank-128 factor pairs (no .alpha) and two Fourier-MLP reference-slot embeddings the DiT has not. It is an ltx-2-5 LoRA of
+# its transformer holding all 2314 tensors and every byte of them, the embeddings carried whole (PEFT's modules_to_save), and its
+# reference_* metadata typed in the adapter config the package reads.
+ltx_msr() {
+step "LiconStudio's MSR is an ltx-2-5 LoRA that carries its reference-slot embeddings whole"
+local lora=liconstudio/licon-msr-v2 show=$OUT/msr-show.json
+cozy --json --full lora show "$lora" > "$show" 2>&1 || { check "lora show $lora: $(tail -c 300 "$show")"; return; }
+J '.family == "ltx-2-5" and .lanes[0].records.adapter.transformer == {family: "ltx-2-5", component: "transformer"}' "$show" \
+  || check "$lora: not a LoRA of ltx-2-5's transformer: $(jq -c '[.family, .lanes[0].records.adapter]' "$show")"
+J '[.lanes[0].components[] | select(.tensors > 0) | {name, tensors, bytes}] == [{name: "transformer", tensors: 2314, bytes: 2214758976}]' "$show" \
+  || check "$lora: not its 2314 tensors and 2214758976 bytes in transformer: $(jq -c '[.lanes[0].components[] | {name, tensors, bytes}]' "$show")"
+J '.lanes[0].components[] | select(.name == "transformer") | .lora.modules == 1152 and .lora.alphas == 0
+   and .config.r == 128 and .config.lora_alpha == 128 and (.config.target_modules | length) == 1152
+   and (.config.target_modules | index("transformer_blocks.0.video_to_audio_attn.to_out.0") != null)
+   and .config.modules_to_save == ["reference_audio_slot_embedding", "reference_slot_embedding"]
+   and .config.reference_slot_embedding_enabled == true and .config.reference_audio_sparse_slots == true
+   and .config.reference_slot_embedding_dim == 128 and .config.reference_audio_slot_embedding_num_frequencies == 16
+   and .config.reference_audio_slot_duration_seconds == 5.0 and .config.reference_audio_end_margin_seconds == 0.04
+   and .config.reference_slot_embedding_type == "fourier_mlp" and .config.reference_token_order == "prepend"' "$show" \
+  || check "$lora: its adapter config is not 1152 modules at r = lora_alpha = 128, the two embeddings carried and the reference_* layout typed: $(jq -c '.lanes[0].components[] | select(.name == "transformer") | {lora, config: (.config // {} | del(.target_modules))}' "$show")"
+}
+
 # Paul's rule (11-13, cl-984): "1. project data is private 2. models / packages installed are machine-specific (not project
 # specific)". After component_models ran parts.py (a script package on e2e/parts, ~4 MiB) in the suite's project, a second
 # project's first run of it downloads nothing, builds no environment and adds no weights anywhere, and the first project's
