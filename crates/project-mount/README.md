@@ -41,7 +41,9 @@ restarts. No normal lock acknowledges success while that owned image remains.
 The executable calls `project_mount::run_supervisor()` before normal CLI parsing.
 An encrypted mount starts that private role in the same executable. It watches
 the exact controller process birth and its pipe, and releases its provider/image
-after controller death. Unix views retain a sealed original mountpoint inode;
+after controller death. Under a systemd unit that kills its whole cgroup (Calcifer's
+`KillMode=mixed`), an unclosed controller's end SIGKILLs the supervisor and securefs too:
+the Linux view stays mounted dead, with no key, until `detach_dead_views` (cl-1057). Unix views retain a sealed original mountpoint inode;
 Windows uses an unused drive root. Normal locks preserve busy handles. Emergency
 cleanup acts only on the owned provider or image/device association.
 

@@ -280,6 +280,7 @@ impl Calcifer {
         let store = Store::open(&home.join("state.db"))?;
         state::import(&store, home);
         project::vault::sweep_runtime(home);
+        project::vault::detach_dead_views();
         project::vault::restore_plain_roots(&store);
         // Before 0.23 Calcifer kept uploaded files here; they are objects of this computer's TensorFS store now
         // (`runs::files`). A run recorded since staged its own (`inputs/`), and a sender still has the rest.
