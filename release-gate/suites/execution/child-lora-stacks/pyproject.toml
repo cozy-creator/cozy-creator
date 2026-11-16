@@ -7,10 +7,7 @@ name = "ci-child-lora-stacks"
 version = "0.1.0"
 description = "A child call's own LoRA stack per slot, over the request's --lora (cl-687)"
 requires-python = ">=3.12"
-dependencies = ["cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19"]
-
-[project.optional-dependencies]
-cozy-calls = ["sdxl[cozy-calls]>=0.11.0rc2"]
+dependencies = ["cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19", "sdxl>=0.11.0rc2"]
 
 [project.entry-points."cozy.application"]
 default = "ci_child_lora_stacks:app"

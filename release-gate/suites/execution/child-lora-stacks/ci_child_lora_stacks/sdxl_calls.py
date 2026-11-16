@@ -47,28 +47,24 @@ class UpscaleInput(msgspec.Struct, kw_only=True, frozen=True):
 
 generate: Operation[GenerateInput, ImageResult] = Operation(
     distribution='sdxl', module='sdxl', export='generate',
-    declaration='sha256:af6d0a7de332a4644bc4a4c3ab8ff9c8672deb27dcd5c8ad096854a171dde066', request=GenerateInput, result=ImageResult,
-    models=('model',), assets_parameter='',
-    wire_request=None,
+    request=GenerateInput, result=ImageResult,
+    models=('model',),
 )
 
 image: Operation[ImageBox, ImageResult] = Operation(
     distribution='sdxl', module='sdxl', export='image',
-    declaration='sha256:7d9d2a5892b685909f7e10b2de765bfadc742e811156ab76bc076a7377893d16', request=ImageBox, result=ImageResult,
-    models=('model',), assets_parameter='',
-    wire_request=None,
+    request=ImageBox, result=ImageResult,
+    models=('model',),
 )
 
 quantize: Operation[quantizeRequest, ModelArtifact] = Operation(
     distribution='sdxl', module='cozy_runtime.derive.recipes', export='quantize',
-    declaration='sha256:bada27432018227b59d507bc683368ec35e8c56fee1ec229a4eb94271035b6c5', request=quantizeRequest, result=ModelArtifact,
-    models=('source',), assets_parameter='',
-    wire_request=None,
+    request=quantizeRequest, result=ModelArtifact,
+    models=('source',),
 )
 
 upscale: Operation[UpscaleInput, ImageResult] = Operation(
     distribution='sdxl', module='sdxl', export='upscale',
-    declaration='sha256:8476334960f6654da284dd6e47185ac56a22354aa197da370bc1bc458ac692f2', request=UpscaleInput, result=ImageResult,
-    models=('model',), assets_parameter='',
-    wire_request=None,
+    request=UpscaleInput, result=ImageResult,
+    models=('model',),
 )

@@ -26,14 +26,6 @@ class shade_assetsRequest(msgspec.Struct, kw_only=True, frozen=True):
     number: int = 17
     fail: bool = False
 
-class AssetInputValue(msgspec.Struct, kw_only=True, frozen=True):
-    asset: File
-    label: str = ''
-    fidelity: Literal['auto', 'high', 'low', 'medium'] = 'auto'
-
-class _shade_assetsWireRequest(shade_assetsRequest, kw_only=True, frozen=True):
-    pictures: list[AssetInputValue]
-
 class WeightRequest(msgspec.Struct, kw_only=True, frozen=True):
     pass
 
@@ -44,21 +36,18 @@ class WeightResult(msgspec.Struct, kw_only=True, frozen=True):
 
 shade: Operation[Request, Result] = Operation(
     distribution='xs198-typed-child', module='typed_child', export='shade',
-    declaration='sha256:81c19bd2f9a1acd6eac07893d44c5b3b0a8547e8cb0f953e6005343758a68790', request=Request, result=Result,
-    models=(), assets_parameter='',
-    wire_request=None,
+    request=Request, result=Result,
+    models=(),
 )
 
 shade_assets: Operation[shade_assetsRequest, Result] = Operation(
     distribution='xs198-typed-child', module='typed_child', export='shade_assets',
-    declaration='sha256:52cfc8258b769b7f4f424e9455ebb8807cc5435400964eb020ebc150483ed28c', request=shade_assetsRequest, result=Result,
-    models=(), assets_parameter='pictures',
-    wire_request=_shade_assetsWireRequest,
+    request=shade_assetsRequest, result=Result,
+    models=(),
 )
 
 weighted: Operation[WeightRequest, WeightResult] = Operation(
     distribution='xs198-typed-child', module='typed_child', export='weighted',
-    declaration='sha256:d570cd5d0f11f8a17a8b743ee13dfea6aa2f8421b993b54f51809c74985b339d', request=WeightRequest, result=WeightResult,
-    models=('weights',), assets_parameter='',
-    wire_request=None,
+    request=WeightRequest, result=WeightResult,
+    models=('weights',),
 )

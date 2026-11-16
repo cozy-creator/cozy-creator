@@ -3,10 +3,7 @@ name = "xs132-pipeline"
 version = "0.1.0"
 description = "release-gate session fixture (warming.sh, xs-132): a CPU orchestrator whose one step calls birefnet"
 requires-python = ">=3.12"
-dependencies = ["cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19"]
-
-[project.optional-dependencies]
-cozy-calls = ["birefnet[cozy-calls]>=0.8.0rc1"]
+dependencies = ["cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19", "birefnet>=0.8.0rc1"]
 
 [project.entry-points."cozy.application"]
 default = "xs132_pipeline:app"

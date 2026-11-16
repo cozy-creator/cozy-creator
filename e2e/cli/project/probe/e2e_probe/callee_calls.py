@@ -26,14 +26,12 @@ class Shaded(msgspec.Struct, kw_only=True, frozen=True):
 
 enlarge: Operation[EnlargeInput, Enlarged] = Operation(
     distribution='e2e-probe-callee', module='e2e_probe_callee', export='enlarge',
-    declaration='sha256:b9202e59877e125affdb5808b669f1aafdc0b9c0415059259a0d0d8352fb6095', request=EnlargeInput, result=Enlarged,
-    models=('model',), assets_parameter='',
-    wire_request=None,
+    request=EnlargeInput, result=Enlarged,
+    models=('model',),
 )
 
 shade: Operation[ShadeInput, Shaded] = Operation(
     distribution='e2e-probe-callee', module='e2e_probe_callee', export='shade',
-    declaration='sha256:ba99770f58dc94ac654a3f90fe40be620337bc1444170ad320cbd1e940bf8c85', request=ShadeInput, result=Shaded,
-    models=(), assets_parameter='',
-    wire_request=None,
+    request=ShadeInput, result=Shaded,
+    models=(),
 )

@@ -711,8 +711,8 @@ step "local code calling a published cozy package, locked at its run (cl-871)"
 [ -n "$LOCAL" ] || return 0
 local dir=$OUT/hub-dependency
 rm -rf "$dir"
-package_at "$dir" e2e_local_relay '"cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19"' \
-  "$(printf '\n[project.optional-dependencies]\ncozy-calls = ["minimax-h3-tools[cozy-calls]>=0.1.0"]\n[tool.uv.sources]\nminimax-h3-tools = { index = "tensorhub" }')" <<'PY'
+package_at "$dir" e2e_local_relay '"cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19", "minimax-h3-tools>=0.1.0"' \
+  "$(printf '\n[tool.uv.sources]\nminimax-h3-tools = { index = "tensorhub" }')" <<'PY'
 import msgspec
 from e2e_local_relay_calls import Text, echo
 
@@ -975,8 +975,8 @@ def shot(payload: Ask, out: Outputs) -> Shot:
     kept = out.save_bytes(data, media_type="application/octet-stream")  # a saved file fills a Latents field
     return Shot(clip=clip, latents=cast(Latents, kept), sha256=f"sha256:{hashlib.sha256(data).hexdigest()}")
 PY
-package_at "$dir/caller" e2e_latents_caller '"cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19"' \
-  "$(printf '\n[project.optional-dependencies]\ncozy-calls = ["e2e-latents-maker[cozy-calls]>=0.0.0"]\n[tool.uv.sources]\ne2e-latents-maker = { path = "../maker" }')" <<'PY'
+package_at "$dir/caller" e2e_latents_caller '"cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19", "e2e-latents-maker"' \
+  "$(printf '\n[tool.uv.sources]\ne2e-latents-maker = { path = "../maker" }')" <<'PY'
 import hashlib
 from importlib.metadata import version
 

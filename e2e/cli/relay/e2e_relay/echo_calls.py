@@ -18,7 +18,6 @@ class Echoed(msgspec.Struct, kw_only=True, frozen=True):
 
 echo: Operation[Text, Echoed] = Operation(
     distribution='minimax-h3-tools', module='minimax_h3_tools', export='echo',
-    declaration='sha256:c5d2f39d41b5128954f4e74b411d7cd1f3a5d3f95b3cd7169074ed02438912f4', request=Text, result=Echoed,
-    models=(), assets_parameter='',
-    wire_request=None,
+    request=Text, result=Echoed,
+    models=(),
 )

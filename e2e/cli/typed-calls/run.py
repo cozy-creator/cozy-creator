@@ -117,14 +117,9 @@ def main() -> None:
         assert watched["status"] == "completed"
         assert watched["result"] == record["result"], (label, "watch/result mismatch")
         result = as_object(record["result"])
-        assert result["child_installed"] is False, (
-            label,
-            "callee implementation visible in caller",
-        )
-        assert result["callee_dependency_installed"] is False, (
-            label,
-            "xxhash visible in caller",
-        )
+        # Callees are ordinary dependencies: their code and closure are in the caller's one environment.
+        assert result["child_installed"] is True, (label, "callee not installed in the caller's environment")
+        assert result["callee_dependency_installed"] is True, (label, "xxhash not installed in the caller's environment")
         for field in (
             "shared_torch_available",
             "shared_sympy_available",
@@ -143,9 +138,8 @@ def main() -> None:
         assert result["prime"] is True  # generated request default number=17
         assert result["squared"] == 289  # the real memoized leaf, through its wheel binding
         assert re.fullmatch(r"[0-9a-f]{16}", as_text(result["fingerprint"]))
-        assert result["child_python"] and result["python"] != result["child_python"]
+        assert result["child_python"] == result["python"], "the child ran outside the caller's environment"
         assert result["descendant_python"] == result["child_python"]
-        assert ".cozy-calls" in Path(as_text(result["child_python"])).parts
         assert as_object(result["image"])["media_type"] == "image/png"
         pngs = list((args.out / "exports" / label).glob("*.png"))
         assert len(pngs) == 1, pngs
@@ -197,8 +191,7 @@ def main() -> None:
         assert re.fullmatch(r"sha256:[0-9a-f]{64}", as_text(result["checkpoint"])), (
             result
         )
-        assert result["child_python"] and result["python"] != result["child_python"]
-        assert ".cozy-calls" in Path(as_text(result["child_python"])).parts
+        assert result["child_python"] == result["python"], "the child ran outside the caller's environment"
         model_results.append(made)
     assert (
         model_results[0]["result"]["checkpoint"]

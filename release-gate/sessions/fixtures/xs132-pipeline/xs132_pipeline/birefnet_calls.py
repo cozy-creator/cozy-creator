@@ -17,7 +17,6 @@ class RemoveBackgroundOutput(msgspec.Struct, kw_only=True, frozen=True):
 
 remove_background: Operation[RemoveBackgroundInput, RemoveBackgroundOutput] = Operation(
     distribution='birefnet', module='birefnet', export='remove_background',
-    declaration='sha256:8b88200e1ce60c61262d6e2a3fdfccdbde0cad2975a3e57d399d26943bed18ad', request=RemoveBackgroundInput, result=RemoveBackgroundOutput,
-    models=('model',), assets_parameter='',
-    wire_request=None,
+    request=RemoveBackgroundInput, result=RemoveBackgroundOutput,
+    models=('model',),
 )

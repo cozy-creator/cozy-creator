@@ -26,14 +26,12 @@ class SquareResult(msgspec.Struct, kw_only=True, frozen=True):
 
 judge: Operation[PrimeRequest, PrimeResult] = Operation(
     distribution='xs198-typed-leaf', module='typed_leaf', export='judge',
-    declaration='sha256:00ff8319611447c1be01d0c60df2e93aa0c545b01e3844f90032ad9f3d282563', request=PrimeRequest, result=PrimeResult,
-    models=(), assets_parameter='',
-    wire_request=None,
+    request=PrimeRequest, result=PrimeResult,
+    models=(),
 )
 
 square: Operation[SquareRequest, SquareResult] = Operation(
     distribution='xs198-typed-leaf', module='typed_leaf', export='square',
-    declaration='sha256:831741b5631eb32cb9101834e27f43985a69c3d3c3ce06934c8b4de73ac71b42', request=SquareRequest, result=SquareResult,
-    models=(), assets_parameter='',
-    wire_request=None,
+    request=SquareRequest, result=SquareResult,
+    models=(),
 )

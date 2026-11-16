@@ -1,4 +1,4 @@
-"""Leaf without a cozy-calls extra: ordinary compute dependencies and a typed private self call."""
+"""The leaf: ordinary compute dependencies (SymPy, xxhash) and a typed private self call."""
 
 import sys
 from typing import Annotated

@@ -2,10 +2,7 @@
 name = "xs198-typed-caller"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["cozy-runtime>=0.47.0.dev0,<0.48"]
-
-[project.optional-dependencies]
-cozy-calls = ["xs198-typed-child[cozy-calls]"]
+dependencies = ["cozy-runtime>=0.47.0.dev0,<0.48", "xs198-typed-child"]
 
 [tool.uv.sources]
 xs198-typed-child = { path = "../child" }

@@ -19,7 +19,6 @@ class Shot(msgspec.Struct, kw_only=True, frozen=True):
 
 shot: Operation[Ask, Shot] = Operation(
     distribution='e2e-latents-maker', module='e2e_latents_maker', export='shot',
-    declaration='sha256:28b9c7ed17554ffd5d2c96bb2cbe030547acd71f422b920e1f9f68147c58e354', request=Ask, result=Shot,
-    models=(), assets_parameter='',
-    wire_request=None,
+    request=Ask, result=Shot,
+    models=(),
 )

@@ -1,4 +1,4 @@
-"""CPU caller: no child implementation or xxhash; the machine may supply its shared Torch layer."""
+"""CPU caller: its callees are ordinary dependencies, installed in its one environment and called by generated reference."""
 
 import importlib.util
 import sys
@@ -37,7 +37,7 @@ class Answer(msgspec.Struct, kw_only=True):
     python: str = ""
     child_python: str = ""
     descendant_python: str = ""
-    value: float = 0.0
+    value: float = 0
     checkpoint: str = ""
     child_installed: bool = False
     callee_dependency_installed: bool = False
