@@ -164,6 +164,8 @@ export function Stage(props: StageProps) {
         const info = gl.getExtension("WEBGL_debug_renderer_info")
         software.value = /swiftshader|llvmpipe|lavapipe|softpipe|swrast|software/i.test(String(info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)))
       } else software.value = true
+      // No global move walks every card on every pointer move: Interaction listens to the window while it holds a press.
+      made.events.features.globalMove = false
       made.canvas.className = "canvas-pixels"
       element.prepend(made.canvas)
       const contextLost = (event: Event) => { event.preventDefault(); lost = true; enable() }
