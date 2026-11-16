@@ -16,12 +16,7 @@ P=$home/old-takes Q=$OUT/old-takes
 mkdir -p "$OUT/cozy-old"
 curl -fsSL --retry 3 -o "$OUT/cozy-old.tgz" "https://github.com/cozy-creator/cozy-creator/releases/download/v$OLD_RELEASE/cozy-x86_64-unknown-linux-gnu.tar.gz" \
   && tar -xzf "$OUT/cozy-old.tgz" -C "$OUT/cozy-old" || { check "old takes: no cozy $OLD_RELEASE"; return; }
-# draw.py as its Runtime takes it: before the hard cut (xs-198) a returned picture was saved through Outputs.
-sed -e 's/^from cozy_runtime.author import Adjustments, App, ImageFrame, Seed$/from cozy_runtime.author import Adjustments, App, ImageFrame, Outputs, Seed/' \
-  -e 's/^def draw(payload: Drawing, adj: Adjustments) -> ImageResult:$/def draw(payload: Drawing, adj: Adjustments, out: Outputs) -> ImageResult:/' \
-  -e 's/ImageFile\.from_image(/out.save_image(/' "$here/project/draw.py" > "$OUT/draw-$OLD_RELEASE.py"
-[ "$(grep -c 'Outputs\|out.save_image' "$OUT/draw-$OLD_RELEASE.py")" = 3 ] || { check "old takes: draw.py no longer reads as $OLD_RELEASE's"; return; }
-sudo install -D -m 755 "$OUT/cozy-old/cozy-x86_64-unknown-linux-gnu/cozy" /opt/cozy-old/cozy && sudo install -D -m 644 "$OUT/draw-$OLD_RELEASE.py" /opt/cozy-old/draw.py \
+sudo install -D -m 755 "$OUT/cozy-old/cozy-x86_64-unknown-linux-gnu/cozy" /opt/cozy-old/cozy && sudo install -D -m 644 "$here/project/draw_runtime_045.py" /opt/cozy-old/draw.py \
   || { check "old takes: not installed for its user"; return; }
 [ "$(old --version)" = "cozy $OLD_RELEASE" ] || { check "old takes: it says $(old --version)"; return; }
 old --json machine show local > "$OUT/old-local.json" || { check "old takes: machine show local: $(tail -c 300 "$OUT/cozy-old.err")"; return; }
