@@ -89,7 +89,7 @@ step candidates; candidates
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
 # web_serves reads what the gate costs from Calcifer's Server-Timing, which it sends only with its diagnostics on (cl-985); coming keeps
 # its project's walk log (.vault-calcifer/diagnostics/walk.log) with them on.
-case $SHARD in projectvault | projectvault-static | plan | stuck | coming | thumbs) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* ]] || calcifer_diagnostics ;; esac
+case $SHARD in projectvault | projectvault-static | projectvault-unstarted | plan | stuck | coming | thumbs) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* ]] || calcifer_diagnostics ;; esac
 }
 
 # A vault failure names its reason, and web_serves reads the gate's Server-Timing: Calcifer started again with config.toml's
@@ -491,6 +491,7 @@ WEB_1=(
   gone
   references
   previews
+  play-link
 )
 WEB_2=(
   fields
@@ -522,6 +523,7 @@ WEB_3=(
   steady
   rendering
   glloss
+  llm
 )
 # The path of a computer with no GPU: the canvas in 2D (cl-1048), for the core cells (web.sh's lane `2d`; coordinator, 11-16).
 WEB_2D=(
@@ -546,11 +548,13 @@ WEB_ENGINES=(
   keyboard
   input
   fullscreen
+  play-link
 )
 # What stops, restarts or re-points Calcifer, or needs the job to itself (`@solo`), one at a time, with the filesystem driver.
 WEB_SOLO=(
   open
   account-rent
+  machine-tabs
   offline
 )
 # The timing and memory cells, `@solo`, in 2D: a runner's software GL drawing the WebGL path with MSAA is no computer's path, and the 2D
@@ -858,8 +862,14 @@ case $SHARD in
     vault_purge_due
     vault_swapped
     ended_logs
+    vault_reattach
+    vault_unstarted
     logs
   " ;;
+  # A run on local after a lock that ended one, a run and a lock, attaches (cl-1082), alone. Named projectvault-* for its driver.
+  projectvault-reattach) parts="vault_reattach logs" ;;
+  # A run its machine hasn't begun never holds a vault past its maximum (cl-1082), alone.
+  projectvault-unstarted) parts="vault_unstarted logs" ;;
   # An ended machine's own lines still read; a locked project's run nowhere outside it (cl-1012). Named projectvault-* for its driver.
   projectvault-ended-logs) parts="ended_logs logs" ;;
   # A deleted box's next purge kept for a plaintext project only, never an encrypted one's (cl-1010). Named projectvault-* for its driver.

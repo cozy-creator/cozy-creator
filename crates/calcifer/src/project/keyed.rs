@@ -111,7 +111,8 @@ pub(super) async fn answered(State(api): State<Arc<Api>>, mut request: Request, 
         let project=match project_of(&api,&mut parts).await { Ok(project)=>project,Err(refusal)=>return refusal.into_response() };
         if let Some(project)=project {
             let store=match api.projects.store(&api,&project.id).await {Ok(store)=>store,Err(error)=>return Refusal(error).into_response()};
-            activity=Some(api.projects.track_request(&api,store.execution_scope().1));
+            let root=store.execution_scope().1;
+            activity=Some(if parts.uri.path().ends_with("/runs/submit") { api.projects.track_submit(&api,root) } else { api.projects.track_request(&api,root) });
         }
         request=Request::from_parts(parts,body);
     }

@@ -73,9 +73,10 @@ function TakeName({ view }: { view: ElementView }) {
   )
 }
 
-/** A take on the row: a video's preview plays while the pointer rests on it. */
+/** A take on the row: a video's preview plays while the pointer rests on it; a version of words, its first ones. */
 function TakeThumb({ main, width, onShown }: { main: MainFile; width: number; onShown?: () => void }) {
   const { on, hover } = usePreview(main.field === "video")
+  if (main.field === "text") return <span className="take-words">{main.text ?? ""}</span>
   return (
     <span className="take-thumb" {...hover}>
       <Thumb sha256={main.sha256} cardWidth={width} onShown={onShown} />
@@ -649,7 +650,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
       {here && !lite && asset?.tool && !view.placing && <ToolLine name={name} view={view} width={width} />}
       {here && !lite && asset && asset.kind !== "image" && !view.hereWords && !view.placing && !looking && <ShapeLine name={name} view={view} />}
       {view.refused && <div className="refused-line">{view.refused}</div>}
-      {here && asset && asset.kind !== "text" && (!asset.timeline || cut) && <Takes view={view} name={name} width={width} side focused={focused} />}
+      {here && asset && (asset.kind !== "text" || asset.tool) && (!asset.timeline || cut) && <Takes view={view} name={name} width={width} side focused={focused} />}
       {/* Slow here, opened from Render's row where nothing else is under the box (cl-1004). */}
       {here && asset && !under && view.slowOpen && (
         <div className="here-under canvas-control">

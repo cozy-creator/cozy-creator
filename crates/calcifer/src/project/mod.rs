@@ -114,12 +114,15 @@ pub(crate) struct Projects {
     /// Held while a project is made: two first uses of one folder (two `cozy new`s, a page and the CLI) make one.
     making: Mutex<()>,
     requests:Mutex<HashMap<PathBuf,usize>>,
+    /// Run submissions being answered, apart from `requests`: one waits for its run's machine, which a vault's maximum doesn't (cl-1082).
+    submits:Mutex<HashMap<PathBuf,usize>>,
 }
 
-pub(super) struct RequestActivity {api:Arc<Api>,root:PathBuf}
+pub(super) struct RequestActivity {api:Arc<Api>,root:PathBuf,submit:bool}
 impl Drop for RequestActivity {
     fn drop(&mut self) {
-        let mut requests=self.api.projects.requests.lock().expect("project requests");
+        let projects=&self.api.projects;
+        let mut requests=if self.submit { projects.submits.lock() } else { projects.requests.lock() }.expect("project requests");
         let Some(count)=requests.get_mut(&self.root) else { return };
         *count-=1;
         if *count==0 { requests.remove(&self.root); drop(requests); vault::work_ended(&self.root); }
@@ -129,10 +132,20 @@ impl Projects {
     pub(crate) fn active_requests(&self,root:&FsPath)->bool {
         self.requests.lock().expect("project requests").get(&vault::logical(root)).is_some_and(|count|*count>0)
     }
+    /// Whether a run submission to the project is being answered (`track_submit`).
+    pub(crate) fn submitting(&self,root:&FsPath)->bool {
+        self.submits.lock().expect("project requests").get(&vault::logical(root)).is_some_and(|count|*count>0)
+    }
     fn track_request(&self,api:&Arc<Api>,root:&FsPath)->RequestActivity {
         let root=vault::logical(root);
         *self.requests.lock().expect("project requests").entry(root.clone()).or_default()+=1;
-        RequestActivity {api:api.clone(),root}
+        RequestActivity {api:api.clone(),root,submit:false}
+    }
+    /// A run submission being answered: it may wait for its run's machine, so it's no request a vault's lock waits for (cl-1082).
+    fn track_submit(&self,api:&Arc<Api>,root:&FsPath)->RequestActivity {
+        let root=vault::logical(root);
+        *self.submits.lock().expect("project requests").entry(root.clone()).or_default()+=1;
+        RequestActivity {api:api.clone(),root,submit:true}
     }
 }
 
@@ -2214,10 +2227,18 @@ fn whereabouts(file: &folder::File) -> (bool, Option<String>) {
     (absent, (absent && file.stays()).then(|| file.machine.clone()))
 }
 
+/// The most of a box of words' version a read of it says: the rest is in its file.
+const WORDS_MAX: usize = 64 * 1024;
+
 /// The file people mean by `files`, as a version lists it.
-fn main_file(lock: &Lock, version: &Version) -> Option<MainFile> {
+fn main_file(folder: &Folder, lock: &Lock, version: &Version) -> Option<MainFile> {
     let sha256 = version.main()?;
     let file = lock.files.get(sha256)?;
+    let text = (file.field() == format::TEXT && file.here).then(|| {
+        let words = std::fs::read(folder.path(&file.path)).ok()?;
+        let cut = String::from_utf8_lossy(&words[..words.len().min(WORDS_MAX)]).into_owned();
+        Some(cut)
+    }).flatten();
     let output = version.main_output()?.clone();
     let metadata = version.metadata.get(&output).cloned().unwrap_or_default();
     let (absent, machine) = whereabouts(file);
@@ -2227,6 +2248,7 @@ fn main_file(lock: &Lock, version: &Version) -> Option<MainFile> {
         path: file.path.clone(),
         sha256: sha256.clone(),
         field: file.field().to_owned(),
+        text,
         width: measured(file.width),
         height: measured(file.height),
         duration_ms: measured(file.lasts_ms()),
@@ -2368,7 +2390,7 @@ fn row(reading: &Reading, i: usize) -> Row {
                     latents: version.files.get("latents").and_then(|sha256| lock.files.get(sha256)).filter(|file| file.stays()).map(|file| file.machine.clone()),
                     execution_ms: (version.execution_ms > 0).then_some(version.execution_ms),
                     run: version.run,
-                    main: main_file(lock, version),
+                    main: main_file(folder, lock, version),
                     aspect_ratio: version.fields.as_ref().and_then(|fields| fields.get("aspect_ratio")?.as_str()).map(str::to_owned),
                     from: cut_from(lock, version),
                     without: version.without.iter().map(folder::Without::said).collect(),
@@ -5527,7 +5549,8 @@ impl Walk {
                 number.set(*last);
             })?;
             version.number = number.get();
-            let pending = Pending { job: key.clone(), kind: asset.kind.clone(), ask: ask.id.clone(), asset: name.clone(), version, run: 0, approve, unpin: next.unpin.then(|| asset.kind.clone()), target: target.clone() };
+            let words = (asset.kind == format::TEXT).then(|| api::calcifer::tool::text_field(&callable).map(str::to_owned)).flatten();
+            let pending = Pending { job: key.clone(), kind: asset.kind.clone(), ask: ask.id.clone(), asset: name.clone(), version, run: 0, approve, unpin: next.unpin.then(|| asset.kind.clone()), words, target: target.clone() };
             let settling = |walk: &mut folder::WalkFile| settle(&mut walk.walk);
             if now.asset(&name).is_some_and(|held| held.failed.is_some()) {
                 self.folder().update_lock(|lock| {
@@ -6105,6 +6128,10 @@ impl Walk {
                 None => continue,
             };
             saved.insert(file, sha256);
+        }
+        // A box of words keeps what its tool answered as its version's file, as a picture is kept (xs-204).
+        if let Some(words) = pending.words.as_deref().zip(run.result.as_ref()).and_then(|(field, result)| api::calcifer::tool::text_in(result, field)) {
+            saved.insert(format::TEXT.to_owned(), folder.keep_words(&words)?);
         }
         if saved.is_empty() && version.files.is_empty() {
             let said = format!("{name}: run {} finished without saving a file.", run.number);

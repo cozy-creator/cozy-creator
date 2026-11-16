@@ -275,20 +275,27 @@ pub fn stays(callable: &Callable) -> Vec<String> {
     callable.result.fields.iter().filter(|field| matches!(field.ty.plain(), Type::Asset(kind) if kind == "latents")).map(|field| field.name.clone()).collect()
 }
 
-/// What `callable` answered in words: its output's first text, or a list of texts' first. `warnings` is no answer.
-pub fn output_text(callable: &Callable, result: &Value) -> Option<String> {
-    let said = |field: &Field| match (field.ty.plain(), &result[field.name.as_str()]) {
-        (Type::Str, Value::String(text)) => Some(text.clone()),
-        (Type::List(item), Value::Array(texts)) if **item == Type::Str => texts.first()?.as_str().map(str::to_owned),
-        _ => None,
-    };
-    callable.result.fields.iter().filter(|field| field.name != "warnings").find_map(said).filter(|text| !text.trim().is_empty())
+/// The field of `callable`'s result its words are in, for a box of text: its first plain text but `warnings`.
+pub fn text_field(callable: &Callable) -> Option<&str> {
+    callable.result.fields.iter().find(|field| field.name != "warnings" && *field.ty.plain() == Type::Str).map(|field| field.name.as_str())
+}
+
+/// The words `result` holds in `field`. None: none.
+pub fn text_in(result: &Value, field: &str) -> Option<String> {
+    result.get(field)?.as_str().filter(|text| !text.trim().is_empty()).map(str::to_owned)
 }
 
 /// What a box of `callable` is: its result's first picture, video or sound, else `text` for a result with words.
-pub(crate) fn makes(callable: &Callable) -> Option<&str> {
-    let text = || callable.result.fields.iter().any(|field| field.name != "warnings" && *field.ty.plain() == Type::Str).then_some("text");
-    output_kind(callable).or_else(text)
+pub fn makes(callable: &Callable) -> Option<&str> {
+    output_kind(callable).or_else(|| text_field(callable).map(|_| "text"))
+}
+
+/// Where a box of a tool with `fields` reads a box of `kind`: its first required slot of that kind, else its first prompt. With `able`, only
+/// a prompt that takes that kind: words (`text`) any prompt takes, as a mention of them is them.
+pub fn reads_kind<'a>(fields: &'a [ToolField], kind: &str, able: bool) -> Option<&'a ToolField> {
+    let slot = fields.iter().find(|field| field.required && field.ty == FieldType::Slot && field.accept.as_deref() == Some(kind));
+    let takes = |field: &&ToolField| !able || kind == "text" || field.takes.as_ref().is_none_or(|kinds| kinds.iter().any(|one| one == kind));
+    slot.or_else(|| fields.iter().filter(|field| field.ty == FieldType::Prompt).find(takes))
 }
 
 /// Every tool of a package's interface: each public function that declares `@app.tool`. `summary` is what the package does in a line, its
