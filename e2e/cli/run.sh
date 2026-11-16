@@ -714,6 +714,7 @@ case $SHARD in
     ondemand_order
     ondemand_needs
     ondemand_behind
+    ondemand_rules
     logs
   " ;;
   # The install's share of the link beside 1.6 GB of weights (cl-1007): about 8 min on its own, so its own shard.

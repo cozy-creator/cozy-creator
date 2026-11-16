@@ -488,6 +488,12 @@ if [ -n "$needs" ]; then
       mirror "$seed/calls.safetensors" "e2e/calls-$name" bf16 0.1.0 "$page" --source-format as-is
       rm -f "$seed/calls.safetensors"
     done
+    # ondemand_rules' four (cl-1103): the two `pick` needs by rule, and the two of the functions `route` calls by rule.
+    for name in worded plain left right; do
+      random_weights "$seed/calls.safetensors" 32 "rules-$name"
+      mirror "$seed/calls.safetensors" "e2e/rules-$name" bf16 0.1.0 "$page" --source-format as-is
+      rm -f "$seed/calls.safetensors"
+    done
     # ondemand_progress' (tfs-300): read on demand as its call starts, 512 MiB, about 17 s over the 30 MB/s link.
     random_weights "$seed/calls.safetensors" 512 ondemand-read
     mirror "$seed/calls.safetensors" e2e/ondemand-read bf16 0.1.0 "$page" --source-format as-is
