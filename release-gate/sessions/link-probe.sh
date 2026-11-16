@@ -18,6 +18,10 @@ EXTRA=$(param install 'tensorflow-cpu>=2.18,<2.19')
 [ "$KEEP" = 0 ] || [ "$FLOOR_MBS" = 0 ] || fail "keep_under_mb_s needs floor_mb_s 0: a slow link is the point"
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS="--ssh${PROVIDER:+ --provider $PROVIDER}"
+# `--provider` is a dev-only knob: this runner's own config turns dev on (a top-level setting, before the first table).
+if [ -n "$PROVIDER" ] && ! grep -q '^dev *= *true' ~/.cozy/config.toml 2> /dev/null; then
+  { echo 'dev = true'; cat ~/.cozy/config.toml 2> /dev/null || true; } > ~/.cozy/config.toml.next && mv ~/.cozy/config.toml.next ~/.cozy/config.toml
+fi
 PKG=$OUT/probe-pkg
 mkdir -p "$PKG" && cat > "$PKG/probe.py" <<'PY'
 import msgspec
