@@ -23,6 +23,7 @@ export class Camera {
   private still = 0
   private enabled = true
   private held = false
+  private coast = true
   private animation: { resolve(landed: boolean): void } | null = null
   private moves = new Set<(view: Viewport) => void>()
   private ends = new Set<(view: Viewport) => void>()
@@ -146,8 +147,9 @@ export class Camera {
   }
 
   /** A press the canvas owns (a card, a marquee, a corner, a hand's pan): the viewport's own drag and glide sit it out. */
-  hold(held: boolean) {
+  hold(held: boolean, coast = true) {
     this.held = held
+    this.coast = coast
     this.gestures()
   }
 
@@ -156,7 +158,7 @@ export class Camera {
     if (!plugins) return
     for (const name of GESTURES) {
       const plugin = plugins.get(name)
-      const pause = !this.enabled || (this.held && (name === "drag" || name === "decelerate"))
+      const pause = !this.enabled || (this.held && (name === "drag" || name === "decelerate")) || (name === "decelerate" && !this.coast)
       // Resuming drag clears its anchor: only a change touches it, so a hand still on the canvas isn't interrupted.
       if (!plugin || plugin.paused === pause) continue
       if (pause) plugins.pause(name)

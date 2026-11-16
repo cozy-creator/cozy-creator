@@ -65,6 +65,8 @@ export function createInteraction(o: InteractionOptions): Interaction {
   /** What is under the pointer now, heard even while a press holds the hover still. */
   let under: Hit | null = null
   let space = false
+  /** The press under way is a finger's. */
+  let finger = false
   let lastTap: { name: string; at: number; x: number; y: number } | null = null
   const touches = new Set<number>()
 
@@ -77,7 +79,9 @@ export function createInteraction(o: InteractionOptions): Interaction {
 
   /** The viewport's drag sits out a press this module owns. A finger on a card not selected pans, as one on the background does.
    *  Locked (returning from Focus) is disabled too: the Stage turns the camera's gestures off for both. */
-  const sync = () => camera.hold(press !== null && press.kind !== "background" && !(press.kind === "card" && press.pans))
+  // A finger's flick carries the canvas on as it's let go; a mouse's or a pen's pan stops where it's let go, the canvas under the pointer
+  // (move: "the canvas pans with the pointer"; Firefox's last moves were read as a throw).
+  const sync = () => camera.hold(press !== null && press.kind !== "background" && !(press.kind === "card" && press.pans), !press || finger)
 
   const setHover = (hit: Hit | null) => {
     if (hover?.name === hit?.name && hover?.part === hit?.part) return
@@ -99,6 +103,7 @@ export function createInteraction(o: InteractionOptions): Interaction {
   const down = (e: FederatedPointerEvent) => {
     if (e.button > 1) return
     root.focus({ preventScroll: true })
+    if (!press) finger = e.pointerType === "touch"
     if (e.pointerType === "touch") {
       touches.add(e.pointerId)
       // A second finger is the viewport's pinch: whatever the first began is let go.
