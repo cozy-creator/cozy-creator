@@ -4424,6 +4424,12 @@ input[type="checkbox"] {
   display: flex;
   width: max-content;
 }
+/* Machines from "N more": a line under those with no tab. */
+.runrow.machine.tabbed {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
 .mtab .dot,
 .activity .dot {
   width: calc(9px * var(--ui));
@@ -4623,8 +4629,7 @@ p.warn.slow {
 .field.find {
   margin-top: 8px;
 }
-.list .tabbed,
-.rows .tabbed {
+.list .tabbed {
   margin-top: 6px;
   padding-top: 6px;
   border-top: 1px solid var(--line);
