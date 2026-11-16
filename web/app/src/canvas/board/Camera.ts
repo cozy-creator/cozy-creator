@@ -12,6 +12,7 @@ export const MAX_ZOOM = 4
 
 const same = (a: Viewport, b: Viewport) => a.x === b.x && a.y === b.y && a.zoom === b.zoom
 const valid = (view: Viewport) => Number.isFinite(view.x) && Number.isFinite(view.y) && Number.isFinite(view.zoom) && view.zoom > 0
+const GESTURES = ["drag", "pinch", "wheel", "decelerate"] as const
 
 /** The one camera: pixi-viewport, read once per tick after its update. Until a renderer binds it, it holds the saved view. */
 export class Camera {
@@ -20,6 +21,7 @@ export class Camera {
   private element: HTMLElement | null = null
   private moving = false
   private still = 0
+  private enabled = true
   private animation: { resolve(landed: boolean): void } | null = null
   private moves = new Set<(view: Viewport) => void>()
   private ends = new Set<(view: Viewport) => void>()
@@ -48,6 +50,7 @@ export class Camera {
     this.element = element
     this.viewport = viewport
     this.place(this.view)
+    this.setInteractionEnabled(this.enabled)
     return () => {
       if (this.viewport !== viewport) return
       this.finish(false)
@@ -124,6 +127,18 @@ export class Camera {
     const width = Math.max(1, rect.width - pl - pr), height = Math.max(1, rect.height - pt - pb)
     const zoom = Math.max(minZoom, Math.min(maxZoom, width / Math.max(1, right - left), height / Math.max(1, bottom - top)))
     return this.setViewport({ x: pl + width / 2 - (left + right) / 2 * zoom, y: pt + height / 2 - (top + bottom) / 2 * zoom, zoom }, { duration })
+  }
+
+  setInteractionEnabled(enabled: boolean) {
+    this.enabled = enabled
+    const plugins = this.viewport?.plugins
+    if (!plugins) return
+    for (const name of GESTURES) {
+      const plugin = plugins.get(name)
+      if (!plugin || plugin.paused === !enabled) continue
+      if (enabled) plugins.resume(name)
+      else plugins.pause(name)
+    }
   }
 
   private place(view: Viewport) {
