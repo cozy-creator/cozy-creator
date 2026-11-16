@@ -4,12 +4,15 @@
 // With more machines than fit, the tabs stay one row in the bar, the rest behind "N more", which opens Machines listing every one, those
 // with no tab first. Paul, 11-16: "have the + (for new projects) connected to the project list, and the + for new machines connected to the
 // machine list": the + ends the machines' strip, after "N more", as tall as the tabs and never over them, and opens New machine on the
-// rent form; Esc closes it, and so does a press outside, never one that began inside. Nothing is rented. The machines are one stand-in, another user's cozy on this runner
+// rent form; Esc closes it, and so does a press outside, never one that began inside. Paul, 11-16: "bring back the click / hover per machine
+// to see, at a glance, just a list of of jobs its working on. Kind of like how you can clikc on the download box in the upper right hand
+// corner of google chorme": a click on a machine's tab lists what it's working on under it (a run on this computer), an idle one says
+// "Nothing running.", its Details opens the machine; Esc and a press outside close it, never a press from inside. Nothing is rented. The machines are one stand-in, another user's cozy on this runner
 // (machineset.sh's stand_in), added under twelve names. Each view at 1440×900 and 1920×1080, paper and dark, kept for a person to look at.
 const { spawn } = require('child_process');
 const { closeSync, mkdirSync, openSync, readFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect } = require('./fixtures');
+const { test, expect, fixtureTool } = require('./fixtures');
 
 const LOOKS = [
   { width: 1440, height: 900, theme: 'paper' },
@@ -18,6 +21,8 @@ const LOOKS = [
   { width: 1920, height: 1080, theme: 'dark' },
 ];
 const STAND = 'cozy-mtabs';
+/** A weightless local still that takes `seconds`, warmed by setup.js. */
+const SLOW = fixtureTool('tool.py/slow');
 const NAMES = ['studio-4090', 'garage-3090', 'attic-a6000', 'office-4080', 'lab-l40s', 'spare-3060', 'den-4070', 'loft-a5000', 'basement-3080',
   'kitchen-2080', 'porch-4060', 'shed-a4000'];
 
@@ -178,6 +183,59 @@ test('machine-tabs', { tag: '@solo' }, async ({ page, project, api, cli }) => {
         await page.screenshot({ path: join(shots, `all-machines-${tag}.png`) });
         await page.keyboard.press('Escape');
         await expect(drawer).toHaveCount(0);
+      }
+    });
+
+    await test.step('a click on a machine lists what it is working on; Esc and a press outside close it', async () => {
+      const calls = async () => (await api.get(project.at('/runs?limit=50'))).runs.filter((one) => one.kind === 'call');
+      const before = (await calls()).map((one) => one.number);
+      const going = cli('run', SLOW, 'seconds:=150', '--on', 'local');
+      let run;
+      await expect.poll(async () => {
+        run = (await calls()).find((one) => !before.includes(one.number));
+        return run?.status;
+      }, { message: 'a run going on local', timeout: 90_000 }).toBe('in_progress');
+      try {
+        const panel = (name) => page.getByRole('dialog', { name: `What ${name} is doing`, exact: true });
+        for (const one of LOOKS) {
+          const tag = await look(one);
+          await nav.locator('.mtab[data-machine="local"]').click();
+          await expect(panel('local'), `${tag}: under its tab`).toBeVisible();
+          await expect(panel('local').locator(`[data-run="${run.number}"]`), `${tag}: the run it's working on`).toBeVisible({ timeout: 60_000 });
+          const at = await page.evaluate(() => {
+            const [tab, under] = [document.querySelector('.mtab[data-machine="local"]'), document.querySelector('.activity')].map((el) => el.getBoundingClientRect());
+            return { tab: { left: tab.left, right: tab.right, bottom: tab.bottom }, under: { left: under.left, right: under.right, top: under.top } };
+          });
+          expect.soft(at.under.top - at.tab.bottom, `${tag}: just under the tab`).toBeLessThanOrEqual(12);
+          expect.soft(at.under.left <= at.tab.right && at.under.right >= at.tab.left, `${tag}: beneath it ${JSON.stringify(at)}`).toBe(true);
+          await page.screenshot({ path: join(shots, `working-${tag}.png`) });
+          await page.keyboard.press('Escape');
+          await expect(panel('local'), `${tag}: Esc closes it`).toHaveCount(0);
+        }
+        const idle = (await tabbed()).find((name) => NAMES.includes(name));
+        await nav.locator(`.mtab[data-machine="${idle}"]`).click();
+        await expect(panel(idle).getByText('Nothing running.', { exact: true })).toBeVisible();
+        await page.screenshot({ path: join(shots, 'idle-1920x1080-dark.png') });
+        await panel(idle).getByRole('link', { name: 'Details', exact: true }).click();
+        await expect(title).toHaveText(idle);
+        await page.keyboard.press('Escape');
+        await expect(drawer).toHaveCount(0);
+
+        await nav.locator('.mtab[data-machine="local"]').click();
+        const head = await panel('local').locator('header').boundingBox();
+        const outside = { x: 520, y: 640 };
+        await page.mouse.move(head.x + 4, head.y + head.height / 2);
+        await page.mouse.down();
+        await page.mouse.move(outside.x, outside.y, { steps: 6 });
+        await page.mouse.up();
+        await page.waitForTimeout(300);
+        await expect(panel('local'), 'a press that began inside stays open').toBeVisible();
+        await page.mouse.click(outside.x, outside.y);
+        await expect(panel('local'), 'a press outside closes it').toHaveCount(0);
+      } finally {
+        const now = await api.get(project.at(`/runs/${encodeURIComponent(run.id)}`));
+        if (!['completed', 'failed', 'canceled'].includes(now.status)) await api.post(project.at(`/runs/${encodeURIComponent(run.id)}/cancel`));
+        await going;
       }
     });
 

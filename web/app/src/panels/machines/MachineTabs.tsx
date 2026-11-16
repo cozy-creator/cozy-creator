@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { flushSync } from "react-dom"
 import { Link } from "react-router-dom"
-import { machinesQuery, maintenanceRunsQuery, projectQuery, runsQuery } from "../../api/queries"
+import { machinesQuery, projectQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
 import type { Machine, Operation } from "../../api/calcifer"
 import { Icon } from "../../ui/Icon"
@@ -13,6 +13,7 @@ import { Checks, Spec } from "./RenderHere"
 import { type Doing, doingOf, fetchedWords, fractionOf, operationName, runName, waits, working } from "./activity"
 import type { MachinesAsk } from "./Machines"
 import { called, gpusWords, slowWords, stableName, stateWords } from "./words"
+import "./MachineTabs.css"
 
 type Mark = "broken" | "slow" | "up" | "download" | "install" | "work" | "idle"
 
@@ -22,7 +23,9 @@ function marksOf(machine: Machine, doing: Doing[]): Mark[] {
   if (machine.offline || machine.broken || machine.end_failed || machine.unreachable_since_ms || machine.rental?.unreachable_since_ms) return ["broken"]
   if (machine.state === "booting" || machine.state === "ending") return ["up"]
   if (machine.state !== "ready" && machine.state !== "stopped") return ["broken"]
-  const kinds = new Set(doing.map((one) => (one.kind === "run" ? (working(one.run, one.on) ? "work" : "waits") : one.kind)))
+  const kinds = new Set(
+    doing.map((one) => (one.kind === "run" ? (working(one.run, one.on) ? "work" : "waits") : one.kind === "other" ? (one.state === "running" ? "work" : "waits") : one.kind)),
+  )
   const marks: Mark[] = (["download", "install", "work"] as const).filter((kind) => kinds.has(kind))
   return [...(slowWords(machine).length ? (["slow"] as const) : []), ...(marks.length ? marks : (["idle"] as const))]
 }
@@ -68,6 +71,14 @@ function Row({ doing, boxes, to }: { doing: Doing; boxes: Map<number, string>; t
         <span className="said">{doing.words}</span>
       </li>
     )
+  if (doing.kind === "other")
+    return (
+      <li className="doing" data-doing="other">
+        <MarkOf mark={doing.state === "running" ? "work" : "idle"} />
+        <b>Another project's run</b>
+        <span className="kind">{sentence(doing.state)}</span>
+      </li>
+    )
   if (doing.kind !== "run") {
     const { operation } = doing
     const fraction = fractionOf(operation)
@@ -104,7 +115,8 @@ function Row({ doing, boxes, to }: { doing: Doing; boxes: Map<number, string>; t
   )
 }
 
-/** What a machine is doing, under its chip: open until a click elsewhere or Escape. */
+/** What a machine is working on, under its chip, as Chrome's downloads under its button (Paul 11-16): each thing a line with how far it
+ *  is, then its Render here and Details. Open until a press elsewhere or Escape. */
 function Activity({ machine, doing, boxes, to, chip, close }: { machine: Machine; doing: Doing[]; boxes: Map<number, string>; to: (rest?: string) => string; chip: HTMLElement; close: () => void }) {
   const held = useRef<HTMLDivElement>(null)
   const [at, setAt] = useState<{ top: number; right: number } | null>(null)
@@ -136,11 +148,6 @@ function Activity({ machine, doing, boxes, to, chip, close }: { machine: Machine
     <div className="activity" ref={held} role="dialog" aria-label={`What ${called(machine)} is doing`} style={at ? { top: at.top, right: at.right } : { visibility: "hidden" }}>
       <header>
         <Spec machine={machine} now={Date.now()} />
-        <Checks machine={machine}>
-          <Link className="more" to={to(`machines/${encodeURIComponent(stableName(machine))}`)} onClick={close}>
-            Details
-          </Link>
-        </Checks>
       </header>
       {slowWords(machine).map((line) => (
         <p className="warn slow" key={line}>
@@ -154,8 +161,15 @@ function Activity({ machine, doing, boxes, to, chip, close }: { machine: Machine
           ))}
         </ul>
       ) : (
-        <p className="said">Idle</p>
+        <p className="said">Nothing running.</p>
       )}
+      <footer>
+        <Checks machine={machine}>
+          <Link className="more" to={to(`machines/${encodeURIComponent(stableName(machine))}`)} onClick={close}>
+            Details
+          </Link>
+        </Checks>
+      </footer>
     </div>
   )
 }
@@ -167,11 +181,6 @@ function Activity({ machine, doing, boxes, to, chip, close }: { machine: Machine
 export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; projectId: string | null }) {
   const { client, stream } = useConnection()
   const { data } = useQuery(machinesQuery(client))
-  // The open project's runs, and this computer's own (its downloads, its updates), as on the RC: never another project's.
-  const running = useQuery({ ...runsQuery(client, projectId ?? "", { status: "in_progress" }, 100), enabled: Boolean(projectId) })
-  const queued = useQuery({ ...runsQuery(client, projectId ?? "", { status: "queued" }, 100), enabled: Boolean(projectId) })
-  const ownRunning = useQuery(maintenanceRunsQuery(client, { status: "in_progress" }, 100))
-  const ownQueued = useQuery(maintenanceRunsQuery(client, { status: "queued" }, 100))
   const { data: project } = useQuery({ ...projectQuery(client, stream, projectId ?? ""), enabled: Boolean(projectId) })
   const [open, setOpen] = useState<{ name: string; chip: HTMLElement } | null>(null)
   const [count, setCount] = useState(Number.POSITIVE_INFINITY)
@@ -224,7 +233,6 @@ export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; 
     }
   }, [])
 
-  const runs = [...(projectId ? [...(running.data?.runs ?? []), ...(queued.data?.runs ?? [])] : []), ...(ownRunning.data?.runs ?? []), ...(ownQueued.data?.runs ?? [])]
   const boxes = new Map((project?.assets ?? []).flatMap((asset) => (asset.making ?? []).map((number) => [number, asset.name] as const)))
   const shown = open && tabs.find((machine) => machine.name === open.name)
   return (
@@ -245,7 +253,7 @@ export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; 
                 setOpen((now) => (now?.name === machine.name ? null : { name: machine.name, chip }))
               }}
             >
-              <Face machine={machine} doing={doingOf(machine, runs, projectId)} />
+              <Face machine={machine} doing={doingOf(machine, projectId)} />
             </button>
           ))}
           {hidden.length > 0 && (
@@ -264,14 +272,14 @@ export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; 
         <div ref={sizes}>
           {machines.map((machine) => (
             <span key={machine.name} className="mtab">
-              <Face machine={machine} doing={doingOf(machine, runs, projectId)} />
+              <Face machine={machine} doing={doingOf(machine, projectId)} />
             </span>
           ))}
           <span className="mtab">{machines.length} more</span>
           {renting && <span className="ptab add">+</span>}
         </div>
       </div>
-      {open && shown && <Activity machine={shown} doing={doingOf(shown, runs, projectId)} boxes={boxes} to={to} chip={open.chip} close={() => setOpen(null)} />}
+      {open && shown && <Activity machine={shown} doing={doingOf(shown, projectId)} boxes={boxes} to={to} chip={open.chip} close={() => setOpen(null)} />}
     </>
   )
 }

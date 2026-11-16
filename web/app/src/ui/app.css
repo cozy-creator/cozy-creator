@@ -4407,30 +4407,7 @@ input[type="checkbox"] {
   color: var(--mute);
   font-variant-numeric: tabular-nums;
 }
-.mtab.more {
-  color: var(--mute);
-}
-.mtab.more:hover {
-  color: var(--ink);
-}
-/* Each tab at its full width, where no one sees it, as .ptabs-ghost. */
-.mtabs-ghost {
-  position: absolute;
-  width: 0;
-  overflow: hidden;
-  visibility: hidden;
-}
-.mtabs-ghost > div {
-  display: flex;
-  width: max-content;
-}
-/* Machines from "N more": a line under those with no tab. */
-.runrow.machine.tabbed {
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px solid var(--line);
-}
-.mtab .dot,
+.mtabs .dot,
 .activity .dot {
   width: calc(9px * var(--ui));
   height: calc(9px * var(--ui));
