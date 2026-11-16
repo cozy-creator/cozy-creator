@@ -961,8 +961,7 @@ pub fn detach_stale(view: &Path) -> bool {
 pub fn detach_dead_views() -> Vec<PathBuf> {
     #[cfg(target_os = "linux")]
     {
-        use std::os::unix::fs::MetadataExt;
-        let Ok(user) = fs::metadata("/proc/self").map(|own| own.uid()) else { return Vec::new() };
+        let user = platform::process::user_id();
         let ours = |view: &Path| {
             let runtime = view.parent();
             view.file_name().is_some_and(|name| name == "view")

@@ -372,6 +372,12 @@ pub fn die_with_parent(parent: u32) -> Result<bool> {
     sys::die_with_parent(parent)
 }
 
+/// This process's real user id (Unix). Not `/proc/self`'s owner, which is root for a nondumpable process.
+#[cfg(unix)]
+pub fn user_id() -> u32 {
+    rustix::process::getuid().as_raw()
+}
+
 /// Descriptors a process hands itself across an exec (Unix): the slots [`hand_on_exec`] fills
 /// and [`take_handed`] reads. After [`reserve_handed`] no owner in this process holds one.
 #[cfg(unix)]
