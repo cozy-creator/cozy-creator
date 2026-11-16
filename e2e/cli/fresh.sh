@@ -3,7 +3,7 @@
 # (COZY_DOWNLOAD_URL), and runs `cozy doctor --fix` as a release's installer will:
 #   Linux: a fresh Ubuntu 24.04 (no FUSE): a person with sudo answers its one question, then `cozy new` makes an encrypted project;
 #          and someone with no sudo and no terminal gets the command, and an install that completes.
-#   Windows: WinFsp installed by it (the runner has none), then `cozy new` makes an encrypted project.
+#   Windows: WinFsp installed by it from its pinned MSI with every feature (the runner has none), and ffmpeg and uv fetched.
 #   macOS: ffmpeg fetched by it, then the first thumbnail fetches nothing.
 fresh_here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
@@ -93,30 +93,23 @@ fresh_no_terminal() {
     || check "fresh: no terminal: $(grep FRESH-FAIL "$OUT/fresh-no-terminal.txt" | head -1 || tail -c 400 "$OUT/fresh-no-terminal.txt")"
 }
 
-# Windows with no WinFsp: the installer, as an administrator runs it here, installs it, and `cozy new` makes an encrypted project.
+# Windows with no WinFsp: the installer, as an administrator runs it here, installs it from its pinned MSI with every feature, and
+# fetches ffmpeg and uv; doctor then finds each. An encrypted project through Calcifer on Windows is its own fix's cell (tracker
+# cl-1049: provider mount failed with WinFsp installed, run 43787077181).
 fresh_windows() {
-  step "fresh: Windows with no WinFsp, then an encrypted project"
-  local dll="/c/Program Files (x86)/WinFsp/bin/winfsp-x64.dll" dir
+  step "fresh: Windows with no WinFsp: the installer installs it and fetches ffmpeg and uv"
+  local dll="/c/Program Files (x86)/WinFsp/bin/winfsp-x64.dll" row
   [ "${RUNNER_ARCH:-}" != ARM64 ] || dll="/c/Program Files (x86)/WinFsp/bin/winfsp-a64.dll"
   [ ! -f "$dll" ] || check "fresh: Windows: WinFsp was here before the install, so the install proves nothing"
   powershell -NoProfile -ExecutionPolicy Bypass -c "\$env:COZY_DOWNLOAD_URL = '$FRESH_URL'; & '$(cygpath -w "$OUT/fresh-release")\\cozy-installer.ps1'" > "$OUT/fresh-windows.txt" 2>&1 \
     || check "fresh: Windows: the installer failed: $(tail -c 400 "$OUT/fresh-windows.txt")"
-  [ -f "$dll" ] || { check "fresh: Windows: no WinFsp after the install: $(tail -c 400 "$OUT/fresh-windows.txt")"; return 0; }
-  dir=$OUT/fresh-vaulted
-  printf 'a long enough passphrase' > "$OUT/fresh-pass"
-  if ! cozy new "$dir" --passphrase-file "$OUT/fresh-pass" --recovery-out "$OUT/fresh-recovery" > "$OUT/fresh-new.txt" 2>&1; then
-    check "fresh: Windows: cozy new made no encrypted project: $(tail -c 400 "$OUT/fresh-new.txt")"
-    # What the provider said, for the next look: once more with Calcifer's diagnostics on and securefs's own stderr kept
-    # (COZY_VAULT_PROVIDER_DIAGNOSTICS, which project-mount hands the provider), with the job's logs.
-    export COZY_VAULT_PROVIDER_DIAGNOSTICS=$OUT/fresh-provider.log
-    calcifer_diagnostics || true
-    cozy new "$OUT/fresh-vaulted-again" --passphrase-file "$OUT/fresh-pass" --recovery-out "$OUT/fresh-recovery-again" > "$OUT/fresh-new-again.txt" 2>&1 || true
-    cp "$HOME/.cozy/calcifer/diagnostics.log" "$HOME/.cozy/calcifer/calcifer.log" "$OUT/" 2> /dev/null || true
-    find "$OUT/fresh-vaulted-again" -name walk.log -exec cp {} "$OUT/fresh-walk.log" \; 2> /dev/null || true
-    return 0
-  fi
-  (cd "$dir" && cozy --json vault status) > "$OUT/fresh-vault.json" 2>&1 || true
-  grep -q '"encrypted": *true' "$OUT/fresh-vault.json" || check "fresh: Windows: the project is not encrypted: $(tail -c 300 "$OUT/fresh-vault.json")"
+  [ -f "$dll" ] || check "fresh: Windows: no WinFsp after the install: $(tail -c 400 "$OUT/fresh-windows.txt")"
+  grep -q "ADDLOCAL=ALL\|winfsp: without it" "$OUT/fresh-windows.txt" || check "fresh: Windows: the installer didn't install WinFsp itself"
+  cozy --json doctor > "$OUT/fresh-doctor.json" 2> /dev/null || true
+  for row in winfsp vcruntime git ffmpeg uv; do
+    jq -e --arg row "$row" '[.tools[] | select(.name == $row and .found)] | length == 1' "$OUT/fresh-doctor.json" > /dev/null \
+      || check "fresh: Windows: doctor doesn't find $row after the install"
+  done
 }
 
 # macOS: the installer fetches ffmpeg, so the first thumbnail fetches nothing.
