@@ -1,7 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { CanvasController, type Viewport } from "./viewport"
-import { CanvasViewportProvider, useCanvasViewport, useCanvasViewportValue, useCanvasNodesValue } from "./viewportContext"
-import { CanvasSurface } from "./CanvasSurface"
+import { Board } from "./board/Board"
+import type { Viewport } from "./board/Camera"
+import { BoardProvider, useBoard, useCameraValue, useNodesValue } from "./board/context"
+import { Stage } from "./board/Stage"
 import { type ChangeEvent, type DragEvent, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { useMatch, useNavigate } from "react-router-dom"
@@ -216,7 +217,7 @@ function Addressed({ name, enter, leave }: { name: string; enter: (name: string)
 
 /** The zoom control, drawn again only as the zoom changes: a pan changes nothing here. */
 function Zoom({ zoomBy, items }: { zoomBy: (by: 1 | -1) => void; items: () => ZoomItem[] }) {
-  const zoom = useCanvasViewportValue((view) => view.zoom)
+  const zoom = useCameraValue((view) => view.zoom)
   return <ZoomControl zoom={zoom} zoomIn={() => zoomBy(1)} zoomOut={() => zoomBy(-1)} items={items} />
 }
 
@@ -224,7 +225,7 @@ function Zoom({ zoomBy, items }: { zoomBy: (by: 1 | -1) => void; items: () => Zo
 function Empty({ choose }: { choose: () => void }) {
   const store = useCanvasStore()
   useSignal(store.names)
-  const empty = useCanvasNodesValue((nodes) => nodes.length === 0)
+  const empty = useNodesValue((nodes) => nodes.length === 0)
   const home = useMatch({ path: "/", end: true })
   const making = useSignal(asked)
   if (!empty || (store.projectId && !store.hasRead) || !store.empty) return null
@@ -252,7 +253,7 @@ function Canvas({
   onAdopt: (id: string, code: string) => void
 }) {
   const connection = useConnection()
-  const flow = useCanvasViewport()
+  const flow = useBoard()
   const navigate = useNavigate()
   const to = useTo()
   const { client, stream, bridge, outbox, canvases, closeBlockers } = connection
@@ -940,12 +941,12 @@ function Canvas({
   const nodeDragStop = useCallback((event: Pointing, _: unknown, nodes: ElementNode[]) => dragStop(event, nodes), [dragStop])
 
   // Far out, a card shows its picture, its name and little else.
-  const band = useCanvasViewportValue((view) => bandOf(view.zoom))
+  const band = useCameraValue((view) => bandOf(view.zoom))
   useLayoutEffect(() => store.far.set(band === 2), [store, band])
-  const sharpness = useCanvasViewportValue((view) => 2 ** Math.max(-2, Math.ceil(Math.log2(view.zoom || 1))))
+  const sharpness = useCameraValue((view) => 2 ** Math.max(-2, Math.ceil(Math.log2(view.zoom || 1))))
   useLayoutEffect(() => store.sharpness.set(sharpness), [store, sharpness])
   // A selected box's ring keeps its width on screen: the zoom in steps of two, so a zoom sets it only as it crosses one.
-  const unzoom = useCanvasViewportValue((view) => 2 ** -Math.ceil(Math.log2(view.zoom || 1)))
+  const unzoom = useCameraValue((view) => 2 ** -Math.ceil(Math.log2(view.zoom || 1)))
   useLayoutEffect(() => stage.current?.style.setProperty("--unzoom", String(unzoom)), [unzoom])
   // A box's name keeps the body size on screen as the canvas zooms out (cl-958), as far as the room above a box allows (shown.ts nameZoomOf):
   // the zoom's inverse in quarter steps, so it's set only as a zoom crosses one. On the boxes' layer, not the stage: a custom property changed
@@ -995,7 +996,7 @@ function Canvas({
       >
         <Sheet />
         <Dots />
-        <CanvasSurface
+        <Stage
           store={store}
           onReady={() => store.onPlaced?.()}
           active={active}
@@ -1014,7 +1015,7 @@ function Canvas({
           onDragCancel={dragCancel}
         >
           {unread ? <Unread {...unread} /> : active && <Empty choose={choose} />}
-        </CanvasSurface>
+        </Stage>
         <Zoom zoomBy={zoomBy} items={zoomItems} />
         {veil && <div className="dropveil" />}
       </div>
@@ -1047,6 +1048,6 @@ export function CanvasHost(props: { projectId: string | null; active: boolean; s
 }
 
 function ReadyCanvas(props: Parameters<typeof Canvas>[0]) {
-  const [controller] = useState(() => new CanvasController(loadViewport(props.projectId) ?? undefined))
-  return <CanvasViewportProvider controller={controller}><Canvas {...props} /></CanvasViewportProvider>
+  const [board] = useState(() => new Board(loadViewport(props.projectId)))
+  return <BoardProvider board={board}><Canvas {...props} /></BoardProvider>
 }
