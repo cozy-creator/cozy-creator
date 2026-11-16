@@ -26,6 +26,14 @@ class CanvasGraphics extends CanvasGraphicsPipe {
 extensions.remove(CanvasGraphicsPipe)
 extensions.add(CanvasGraphics)
 
+/** Pixi's text system nulls a released label's entry but keeps its key, and no key comes back (each is the label's TextStyle uid): a pan
+ *  that builds and drops cards grew that table without end (e2e 43803931154, 0.4 MB in ten cycles at 1,000 boxes). The GC's collection
+ *  sweep drops the nulls, as it does for Pixi's own tables. */
+function tidy(renderer: Renderer) {
+  const { gc, canvasText } = renderer as unknown as { gc: { addCollection(context: object, collection: string, type: "hash"): void }; canvasText: object }
+  gc.addCollection(canvasText, "_activeTextures", "hash")
+}
+
 /** The GPU a context names. Firefox's RENDERER is already the device (and it warns on the debug extension); Chrome's says "WebKit WebGL". */
 function gpuOf(gl: WebGLRenderingContext): string {
   const plain = String(gl.getParameter(gl.RENDERER))
@@ -52,6 +60,7 @@ async function start(width: number, height: number): Promise<Chosen> {
   const twoD = async (why: Why | null, gpu: string): Promise<Chosen> => {
     const renderer = new CanvasRenderer()
     await renderer.init(options)
+    tidy(renderer)
     return { renderer, backend: "canvas", gpu, get why() { return why ?? withoutFast() } }
   }
   // One context, the renderer's own (each costs ~145 ms on a Mac runner), asked for only where it's no major performance caveat.
@@ -62,6 +71,7 @@ async function start(width: number, height: number): Promise<Chosen> {
     try {
       const renderer = new WebGLRenderer()
       await renderer.init({ ...options, canvas, context: gl as WebGL2RenderingContext, antialias: true })
+      tidy(renderer)
       // Its shaders compiled now, while nothing waits on it, and waited for here: left queued, the first call that waits on the GPU held
       // the page's first frame (cl-1018).
       const warm = new Container()
