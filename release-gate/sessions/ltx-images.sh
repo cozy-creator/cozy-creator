@@ -35,7 +35,8 @@
 # Diffusers prepares it): the frame it matches best and the SSIM at frames 0 and 120. One rental; the pod's host RAM must hold the
 # 67 GB model (`ram_gb`). params:
 #   cells     what to run (default: the first six)
-#   seed      2611160            runtime   the Runtime manylinux wheel, https://…#sha256=<hex> (default: RUNTIME_WHEEL)
+#   seed      2611160            runtime   the Runtime manylinux wheel, https://…#sha256=<hex> or a cozy-runtime dev-build run id
+#                                          (default: RUNTIME_WHEEL)
 #   ram_gb    96                 need_s    seconds the cap must buy (5400)
 . "$(dirname "$0")/lib.sh"
 CELLS=$(param cells "was-text,text,first,last,first-last,was-ref") SEED=$(param seed 2611160) URL=$(param runtime)
@@ -57,8 +58,11 @@ done
 [ -f "$FIX/pearl.jpg" ] && [ -f "$FIX/teapot.jpg" ] && [ -f "$REF/seed.jpg" ] || fail "no fixtures"
 command -v ffprobe > /dev/null || fail "no ffprobe (pod-session.yaml installs it from the tool cache)"
 mkdir -p "$OUT/wheel" "$OUT/sheets" "$OUT/videos" "$OUT/runs"
-if [ -n "$URL" ]; then
-  [[ $URL == https://*'#sha256='* ]] || fail "runtime is not https://…#sha256=<hex>"
+if [[ $URL =~ ^[0-9]+$ ]]; then
+  # A cozy-runtime dev-build run's manylinux wheel: an unmerged Runtime change, proven before it lands.
+  W=$(wheel_from "$OUT/wheel" "$URL") && [ -n "$W" ] || fail "no manylinux wheel in cozy-runtime run $URL"
+elif [ -n "$URL" ]; then
+  [[ $URL == https://*'#sha256='* ]] || fail "runtime is not https://…#sha256=<hex> or a cozy-runtime dev-build run id"
   W=$OUT/wheel/$(basename "${URL%%#*}" | sed 's/%2B/+/g')
   curl -fsSL --retry 5 --retry-all-errors "${URL%%#*}" -o "$W" || fail "cannot fetch the runtime wheel"
   [ "$(sha256sum "$W" | cut -c1-64)" = "${URL##*sha256=}" ] || fail "runtime wheel sha256"
