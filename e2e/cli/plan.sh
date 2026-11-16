@@ -136,65 +136,52 @@ done
 }
 
 # plan_fetch (cl-1071; Paul 11-16, a 65 GiB quote where 22 landed: "why would it take 15 mins to download?"): a run's quoted download is
-# what it then fetches. composed.py reads a transformer and a VAE as raw weights, and has a slot it fetches only on demand; its boxes take
-# e2e/composed-tune (its own transformer on e2e/composed-base's VAE) for the transformer. On stand-c, which holds none of them, a run
-# that never reads the on-demand slot is quoted the tune's transformer and the base's VAE once (64 MiB), not each named checkpoint whole
-# and the on-demand one (160 MiB), and that is what lands in stand-c's store, within 5%. Then one that reads it: a quote can't know which
-# on-demand slot a run reads, so it is quoted besides, "plus up to" its 32 MiB (`on_demand_bytes`), and what lands is that, within 5%:
-# the gap measured, never silent.
-# plan_fetch_held: what stand-c holds of e2e/composed-* (its own listing: each checkpoint's bytes and those held), and its walk's lines.
+# what its machine fetches. composed.py builds a transformer and a VAE, and a third model on demand that it never reads; its box takes
+# e2e/composed-tune (its own transformer on e2e/composed-base's VAE) for the transformer. On stand-c, which holds none of them, the run
+# is quoted the tune's transformer and the base's VAE once (64 MiB) to fetch before it starts, not each named checkpoint whole and the
+# on-demand one (160 MiB); and that is what stand-c then holds of the two, within 5%. The on-demand model, which a quote can't know a
+# run reads, is quoted besides ("plus up to" its 32 MiB, `on_demand_bytes`); its machine fetches it beside the run, and it is that,
+# within 5%: the gap measured, never silent.
+# plan_fetch_held: stand-c's own listing of what it holds; and how much of `$1` it holds, `$2` the other model whose parts it shares
+# (`total_bytes` of one, `unique_bytes` of the other: their objects once).
 plan_fetch_held() {
   stand_as stand-c --json machine show local > "$OUT/plan-fetch-held.json" 2>> "$OUT/stand-c.err" || true
-  echo "plan fetch: stand-c holds $(jq -c '[.status.models[]? | select(.model | startswith("e2e/composed")) | {model, total_bytes, unique_bytes,
-    held: [.checkpoints[]? | {release, bytes, held_bytes, complete}]}]' "$OUT/plan-fetch-held.json" 2> /dev/null)"
-  grep -h 'fetched' "$P"/.vault-calcifer/diagnostics/walk.log 2> /dev/null | tail -4 | sed 's/^/plan fetch: /' || true
+  jq -r --arg a "$1" --arg b "${2:-}" '[.status.models[]? | select(.repository == $a) | .total_bytes] + [.status.models[]? | select(.repository == $b) | .unique_bytes]
+    | add // 0' "$OUT/plan-fetch-held.json" 2> /dev/null || echo 0
 }
 
 plan_fetch() {
-step "plan (cl-1071): a run's quoted download is what it fetches"
+step "plan (cl-1071): a run's quoted download is what its machine fetches"
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "plan: its stand-in is another user of a fresh GitHub runner"; return; }
-local P=$OUT/plan-fetch tool=$here/project/composed.py/composed r=$RANDOM store=/home/cozy-stand-c/.cache/tensorfs before after job run placed quoted landed
+local P=$OUT/plan-fetch tool=$here/project/composed.py/composed r=$RANDOM job run placed quoted demand landed extra=0
 cozy --json machine show local > "$OUT/set-local.json" || { check "plan fetch: machine show local"; return; }
 stand_in stand-c || return
 cozy --json new --unencrypted "$P" > "$OUT/plan-fetch-new.json" 2>&1 || { check "plan fetch: new: $(tail -c 300 "$OUT/plan-fetch-new.json")"; return; }
 jq -n --arg t "$tool" --arg r "$r" '[{name: "fetched", tool: $t, kind: "image",
   fields: {instructions: "A tune on a base, \($r).", models: {model: {ref: "e2e/composed-tune@0.1.0"}}}}]' | boxes_in "$P" || return
-before=$(sudo du -sb "$store" 2> /dev/null | cut -f1)
 coming_go fetched '["stand-c"]'
 coming_done fetched 900
-after=$(sudo du -sb "$store" 2> /dev/null | cut -f1)
 job=$(status "$P" | jq -c '[.board.jobs[]? | select(.asset == "fetched")] | last // empty')
 run=$(jq -r '.run // empty' <<< "${job:-null}")
 [ -n "$run" ] && J '.state == "done"' <<< "$job" || { check "plan fetch: its run didn't end done: ${job:-no job}"; return; }
 echo "$P" > "$OUT/plan-fetch.at"
 run_show "$OUT" plan-fetch "$run"
 placed=$(jq -c '.placed // empty' "$OUT/plan-fetch.json" 2> /dev/null)
-quoted=$(jq -r '.fetch_bytes // 0' <<< "${placed:-null}")
-landed=$(( ${after:-0} - ${before:-0} ))
-echo "plan fetch: run $run on stand-c quoted $((quoted >> 20)) MiB to fetch ($placed); $((landed >> 20)) MiB landed in its store"
-plan_fetch_held
-[ "$quoted" -gt 0 ] && [ "$landed" -gt 0 ] || { check "plan fetch: nothing quoted ($quoted) or landed ($landed)"; return; }
-[ $(( (quoted > landed ? quoted - landed : landed - quoted) * 20 )) -le "$landed" ] \
-  || check "plan fetch: quoted $((quoted >> 20)) MiB to fetch, but $((landed >> 20)) MiB landed"
-
-# The same, reading its on-demand slot: what the run waits for is held now, and the on-demand slot lands inside the run.
-jq -n --arg t "$tool" --arg r "$r" '[{name: "fetched_read", tool: $t, kind: "image",
-  fields: {instructions: "A tune that reads its extra, \($r).", read_extra: true, models: {model: {ref: "e2e/composed-tune@0.1.0"}}}}]' | boxes_in "$P" || return
-before=$(sudo du -sb "$store" 2> /dev/null | cut -f1)
-coming_go fetched_read '["stand-c"]'
-coming_done fetched_read 900
-after=$(sudo du -sb "$store" 2> /dev/null | cut -f1)
-job=$(status "$P" | jq -c '[.board.jobs[]? | select(.asset == "fetched_read")] | last // empty')
-run=$(jq -r '.run // empty' <<< "${job:-null}")
-[ -n "$run" ] && J '.state == "done"' <<< "$job" || { check "plan fetch: the run reading its on-demand slot didn't end done: ${job:-no job}"; return; }
-run_show "$OUT" plan-fetch-read "$run"
-placed=$(jq -c '.placed // empty' "$OUT/plan-fetch-read.json" 2> /dev/null)
-quoted=$(jq -r '(.fetch_bytes // 0) + (.on_demand_bytes // 0)' <<< "${placed:-null}")
-landed=$(( ${after:-0} - ${before:-0} ))
-plan_fetch_held
-echo "plan fetch: run $run reading its on-demand slot was quoted $(jq -r '(.fetch_bytes // 0) / 1048576 | floor' <<< "${placed:-null}") MiB to fetch, plus up to $(jq -r '(.on_demand_bytes // 0) / 1048576 | floor' <<< "${placed:-null}") MiB on demand; $((landed >> 20)) MiB landed"
+quoted=$(jq -r '.fetch_bytes // 0' <<< "${placed:-null}") demand=$(jq -r '.on_demand_bytes // 0' <<< "${placed:-null}")
+landed=$(plan_fetch_held e2e/composed-tune e2e/composed-base)
+# The on-demand model comes beside the run, after it may have ended.
+for _ in $(seq 120); do
+  extra=$(plan_fetch_held e2e/composed-extra)
+  J '[.status.models[]? | select(.repository == "e2e/composed-extra") | .checkpoints[]?.complete] | any' "$OUT/plan-fetch-held.json" && break
+  sleep 1
+done
+echo "plan fetch: run $run on stand-c quoted $((quoted >> 20)) MiB to fetch, plus up to $((demand >> 20)) MiB on demand ($placed);" \
+  "stand-c holds $((landed >> 20)) MiB of the tune and the base, and $((extra >> 20)) MiB of the on-demand model"
+echo "plan fetch: stand-c holds $(jq -c '[.status.models[]? | select(.repository | startswith("e2e/composed")) | {repository, total_bytes, unique_bytes, complete: [.checkpoints[]?.complete]}]' "$OUT/plan-fetch-held.json" 2> /dev/null)"
 [ "$landed" -gt 0 ] && [ $(( (quoted > landed ? quoted - landed : landed - quoted) * 20 )) -le "$landed" ] \
-  || check "plan fetch: reading its on-demand slot, quoted $((quoted >> 20)) MiB with it, but $((landed >> 20)) MiB landed"
+  || check "plan fetch: quoted $((quoted >> 20)) MiB to fetch before it starts, but stand-c holds $((landed >> 20)) MiB of what it waits for"
+[ "$extra" -gt 0 ] && [ $(( (demand > extra ? demand - extra : extra - demand) * 20 )) -le "$extra" ] \
+  || check "plan fetch: quoted up to $((demand >> 20)) MiB on demand, but stand-c fetched $((extra >> 20)) MiB of its on-demand model"
 }
 
 # prepare_ahead (phase c): BiRefNet, as its Hub publishes it, on a still that takes 4 min, can't start before it: unstarted work,
