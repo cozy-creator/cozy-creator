@@ -120,15 +120,20 @@ test('previews: a picture whose file is gone', async ({ page, project, guards })
       const shown = (await canvasCard(page, 'lost'))?.rendered;
       return Boolean(shown?.loadingPulse?.active || shown?.media.failed || shown?.labels.unavailable || shown?.labels.note);
     };
-    await expect.poll(placeholder, { message: 'a placeholder while it is asked for' }).toBe(true);
-    await expect.poll(() => asks.length, { message: 'asked for' }).toBeGreaterThan(0);
-    const first = asks[0];
-    await page.waitForTimeout(Math.max(0, first + 10_000 - Date.now()));
-    expect.soft(asks.filter((when) => when - first < 10_000).length, `asked at most ${FIRST_TEN_S} times in its first 10 s`).toBeLessThanOrEqual(FIRST_TEN_S);
-    await expect.poll(async () => {
-      const shown = (await canvasCard(page, 'lost'))?.rendered;
-      return Boolean(shown?.media.failed && shown.labels.unavailable?.text);
-    }, { message: 'then it says it is unavailable', timeout: 90_000 }).toBe(true);
+    // Drawn from the thumbnail Calcifer made when it came in (thumbs outlive their file), or a placeholder while asked for and then said
+    // unavailable: either way settled, never asked for in a loop.
+    const drawn = async () => Boolean((await canvasCard(page, 'lost'))?.rendered?.media.ready);
+    await expect.poll(async () => (await drawn()) || (await placeholder()), { message: 'its picture, or a placeholder while it is asked for' }).toBe(true);
+    if (!(await drawn())) {
+      await expect.poll(() => asks.length, { message: 'asked for' }).toBeGreaterThan(0);
+      const first = asks[0];
+      await page.waitForTimeout(Math.max(0, first + 10_000 - Date.now()));
+      expect.soft(asks.filter((when) => when - first < 10_000).length, `asked at most ${FIRST_TEN_S} times in its first 10 s`).toBeLessThanOrEqual(FIRST_TEN_S);
+      await expect.poll(async () => {
+        const shown = (await canvasCard(page, 'lost'))?.rendered;
+        return Boolean(shown?.media.ready || (shown?.media.failed && shown.labels.unavailable?.text));
+      }, { message: 'then it is drawn or says it is unavailable', timeout: 90_000 }).toBe(true);
+    }
     const settled = asks.length;
     await page.waitForTimeout(5_000);
     expect.soft(asks.length, 'not asked again once it said so').toBe(settled);
