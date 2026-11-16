@@ -385,6 +385,36 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
     await tab.close();
   });
 
+  // cl-1090 (xs-203's user flow, Paul 11-16: "open webui, decrypt project"): unlocked where it was opened from the list, under its
+  // `locked-…` handle, the page said "can't be opened" and went on asking under the handle (404s, a dropped file lost).
+  await test.step('unlocked where it was opened from the list: it opens at its own address', async () => {
+    const listed = (await api.get('/v1/projects?limit=1000')).projects.find((row) => row.path === made.path);
+    expect(listed?.id, 'listed under its locked handle').toMatch(/^locked-/);
+    guards.allow(new RegExp(`status of 409\\b.*/v1/projects/${listed.id}\\b`));
+    const tab = await page.context().newPage();
+    let unlockedAt = null; // set once it is at its own address
+    const underHandle = [];
+    tab.on('request', (request) => {
+      const url = request.url();
+      if (unlockedAt !== null && url.includes(listed.id)) underHandle.push(`${request.method()} ${new URL(url).pathname}${new URL(url).search}`);
+    });
+    await tab.goto(`${api.origin}/projects/${listed.id}`);
+    await expect(tab.getByText('This project is locked.', { exact: true }), 'it says it is locked').toBeVisible({ timeout: 30_000 });
+    await tab.getByLabel('Passphrase', { exact: true }).fill(passphrase);
+    await tab.getByRole('button', { name: 'Unlock project', exact: true }).click();
+    await expect.poll(async () => (await vault()).state, { message: 'Calcifer has it unlocked', timeout: 60_000 }).toBe('unlocked');
+    await expect(tab, 'it goes on to its own address').toHaveURL(new RegExp(`/p/${made.code}(?:[/?#]|$)`), { timeout: 30_000 });
+    unlockedAt = Date.now();
+    await expect.poll(() => canvasVisible(tab, picture), { message: 'its canvas shows', timeout: 60_000 }).toBe(true);
+    await expect(tab.getByText(/can't be opened/i), 'no "can\'t be opened"').toHaveCount(0);
+    await tab.waitForTimeout(3000);
+    expect.soft(underHandle, 'nothing is asked under the locked handle once it opened').toEqual([]);
+    await tab.close();
+    const said = await cli('--json', 'vault', '--directory', made.path, 'lock');
+    expect.soft(said.code, `cozy vault lock: ${said.stdout.slice(-300)} ${said.stderr.slice(-300)}`).toBe(0);
+    await expect.poll(async () => (await vault()).state, { message: 'locked again for the next step', timeout: 60_000 }).toBe('locked');
+  });
+
   await test.step('unlocked with the recovery secret, then decrypted', async () => {
     const drawer = page.locator('.drawer');
     await drawer.getByLabel('Unlock with').selectOption('recovery');
