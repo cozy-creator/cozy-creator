@@ -112,12 +112,15 @@ pub(crate) struct Projects {
     /// Held while a project is made: two first uses of one folder (two `cozy new`s, a page and the CLI) make one.
     making: Mutex<()>,
     requests:Mutex<HashMap<PathBuf,usize>>,
+    /// Run submissions being answered, apart from `requests`: one waits for its run's machine, which a vault's maximum doesn't (cl-1082).
+    submits:Mutex<HashMap<PathBuf,usize>>,
 }
 
-pub(super) struct RequestActivity {api:Arc<Api>,root:PathBuf}
+pub(super) struct RequestActivity {api:Arc<Api>,root:PathBuf,submit:bool}
 impl Drop for RequestActivity {
     fn drop(&mut self) {
-        let mut requests=self.api.projects.requests.lock().expect("project requests");
+        let projects=&self.api.projects;
+        let mut requests=if self.submit { projects.submits.lock() } else { projects.requests.lock() }.expect("project requests");
         let Some(count)=requests.get_mut(&self.root) else { return };
         *count-=1;
         if *count==0 { requests.remove(&self.root); drop(requests); vault::work_ended(&self.root); }
@@ -127,10 +130,20 @@ impl Projects {
     pub(crate) fn active_requests(&self,root:&FsPath)->bool {
         self.requests.lock().expect("project requests").get(&vault::logical(root)).is_some_and(|count|*count>0)
     }
+    /// Whether a run submission to the project is being answered (`track_submit`).
+    pub(crate) fn submitting(&self,root:&FsPath)->bool {
+        self.submits.lock().expect("project requests").get(&vault::logical(root)).is_some_and(|count|*count>0)
+    }
     fn track_request(&self,api:&Arc<Api>,root:&FsPath)->RequestActivity {
         let root=vault::logical(root);
         *self.requests.lock().expect("project requests").entry(root.clone()).or_default()+=1;
-        RequestActivity {api:api.clone(),root}
+        RequestActivity {api:api.clone(),root,submit:false}
+    }
+    /// A run submission being answered: it may wait for its run's machine, so it's no request a vault's lock waits for (cl-1082).
+    fn track_submit(&self,api:&Arc<Api>,root:&FsPath)->RequestActivity {
+        let root=vault::logical(root);
+        *self.submits.lock().expect("project requests").entry(root.clone()).or_default()+=1;
+        RequestActivity {api:api.clone(),root,submit:true}
     }
 }
 
