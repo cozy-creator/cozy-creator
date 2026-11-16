@@ -311,12 +311,14 @@ impl Calcifer {
             api: OnceLock::new(),
             opened_ms: std::sync::atomic::AtomicI64::new(store::now_ms()),
         });
+        let runs = std::time::Instant::now();
         let maintenance: Vec<String> = calcifer.store.read(|conn| {
             let mut rows = conn.prepare("SELECT id FROM runs")?;
             Ok(rows.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?)
         })?;
         lock(&calcifer.run_owners).extend(maintenance.into_iter().map(|id| (id, None)));
         calcifer.sweep_inputs()?;
+        tracing::info!(target: "cozy.service_health", step = "store_runs", ms = runs.elapsed().as_millis() as u64, "started");
         Ok(calcifer)
     }
 
@@ -331,6 +333,16 @@ impl Calcifer {
         // Its own work, which stopped with the Calcifer that was doing it, is carried out again by `hub::jobs::resume`.
         self.export_outputs()?;
         Ok(resumed)
+    }
+
+    /// Ended machines past 90 days that went while no machine ended here go, beside the answers (`Store::prune_machines`), a few at a
+    /// time, each write followed by a pause as long as it took: the writer is never held more than half the time.
+    pub(crate) fn prune_ended_machines(&self) {
+        loop {
+            let began = Instant::now();
+            if !self.store.prune_machines(64).is_ok_and(|pruned| pruned > 0) { break; }
+            std::thread::sleep(began.elapsed());
+        }
     }
 
     /// Records a run Calcifer carries out itself (`Kind::Here`) under `key` as the ask `digest` names, kept whole (`job`), and

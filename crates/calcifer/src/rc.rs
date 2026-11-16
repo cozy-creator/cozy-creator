@@ -95,14 +95,16 @@ impl Sums {
 
 /// The RC's prereleases, read at most once a [`FRESH`].
 #[derive(Default)]
-pub(crate) struct Rc {
+pub(crate) struct Rc(Arc<Read>);
+
+#[derive(Default)]
+struct Read {
     read: tokio::sync::Mutex<Option<(Instant, Arc<Sums>)>>,
     last: Mutex<Option<Arc<Sums>>>,
 }
 
-impl Rc {
-    /// What the RC's prereleases name now.
-    pub(crate) async fn now(&self) -> Result<Arc<Sums>, Error> {
+impl Read {
+    async fn now(&self) -> Result<Arc<Sums>, Error> {
         let mut read = self.read.lock().await;
         if let Some((_, sums)) = read.as_ref().filter(|(at, _)| at.elapsed() < FRESH) {
             return Ok(sums.clone());
@@ -115,10 +117,33 @@ impl Rc {
         *self.last.lock().expect("rc lock") = Some(sums.clone());
         Ok(sums)
     }
+}
+
+impl Rc {
+    /// What the RC's prereleases name now: as last read, read again behind the answer when older than [`FRESH`], one read at a time.
+    /// Only a Calcifer that never read them waits for a read. A submit on an RC machine waited 12 s behind `follow_rcs`' read, which
+    /// held the lock across GitHub (cl-1010).
+    pub(crate) async fn now(&self) -> Result<Arc<Sums>, Error> {
+        let Some(last) = self.last() else { return self.0.now().await };
+        let stale = match self.0.read.try_lock() {
+            Ok(read) => read.as_ref().is_none_or(|(at, _)| at.elapsed() >= FRESH),
+            // A read is going: what was read stands meanwhile.
+            Err(_) => false,
+        };
+        if stale {
+            let read = self.0.clone();
+            tokio::spawn(async move {
+                if let Err(e) = read.now().await {
+                    warn!("the open RC's builds: {}", e.message);
+                }
+            });
+        }
+        Ok(last)
+    }
 
     /// What they named when last read, without reading them.
     pub(crate) fn last(&self) -> Option<Arc<Sums>> {
-        self.last.lock().expect("rc lock").clone()
+        self.0.last.lock().expect("rc lock").clone()
     }
 }
 

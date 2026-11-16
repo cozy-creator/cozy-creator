@@ -943,6 +943,9 @@ struct Shared {
     held: Mutex<Option<Held>>,
     /// A connection that only reads: what `held` doesn't keep, and whether another connection committed. In WAL a read waits on no writer.
     reading: Mutex<Option<rusqlite::Connection>>,
+    /// The connections a run journal's reads take, one each: a run list never waits on another read, nor on the document read again
+    /// (cl-1010).
+    journal: Mutex<JournalReaders>,
     /// A checkpoint is going.
     checkpointing: std::sync::atomic::AtomicBool,
     /// Its history, read from project.db once.
@@ -950,6 +953,18 @@ struct Shared {
     /// What ffprobe last said of each film at its root.
     films: Mutex<HashMap<PathBuf, Frames>>,
 }
+
+/// Idle journal readers, and how many are reading now.
+#[derive(Default)]
+struct JournalReaders {
+    idle: Vec<rusqlite::Connection>,
+    reading: usize,
+    /// project.db was opened here (and migrated) once: a reader needs no more.
+    opened: bool,
+}
+
+/// How many idle journal readers a project keeps: as many as the reads a page and the CLI make at once.
+const JOURNAL_READERS: usize = 8;
 
 /// How many frames a film holds, as ffprobe said of it at its size and time.
 type Frames = ((u64, std::time::SystemTime), Option<u64>);
@@ -967,10 +982,11 @@ impl Drop for Shared {
         drop(shared);
         let writing = self.writing.get_mut().unwrap_or_else(|e| e.into_inner()).take();
         let reading = self.reading.get_mut().unwrap_or_else(|e| e.into_inner()).take();
+        let journal = std::mem::take(&mut self.journal.get_mut().unwrap_or_else(|e| e.into_inner()).idle);
         let held = self.held.get_mut().unwrap_or_else(|e| e.into_inner()).take();
         let book = self.book.get_mut().unwrap_or_else(|e| e.into_inner()).take();
         let films = std::mem::take(self.films.get_mut().unwrap_or_else(|e| e.into_inner()));
-        if writing.is_none() && reading.is_none() && held.is_none() {
+        if writing.is_none() && reading.is_none() && held.is_none() && journal.is_empty() {
             return;
         }
         let dir = self.key.1.clone();
@@ -980,7 +996,7 @@ impl Drop for Shared {
             if let Some(conn) = writing.as_ref().or(reading.as_ref()) {
                 let _ = conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()));
             }
-            drop((writing, reading, held, book, films));
+            drop((journal, writing, reading, held, book, films));
             platform::heap::give_back();
             tracing::info!(
                 "{} closed: resident {} → {} MiB, allocator committed {} → {} MiB, in use {} MiB",
@@ -1028,6 +1044,7 @@ fn shared(dir: &Path) -> Arc<Shared> {
         collecting: Mutex::default(),
         held: Mutex::default(),
         reading: Mutex::default(),
+        journal: Mutex::default(),
         checkpointing: std::sync::atomic::AtomicBool::default(),
         book: Mutex::default(),
         films: Mutex::default(),
@@ -1135,6 +1152,10 @@ impl Folder {
         if self.shared.checkpointing.load(std::sync::atomic::Ordering::Acquire) { return Err(busy()); }
         let mut writer = self.shared.writing.try_lock().map_err(|_| busy())?;
         let mut reader = self.shared.reading.try_lock().map_err(|_| busy())?;
+        let mut journal = self.shared.journal.try_lock().map_err(|_| busy())?;
+        if journal.reading > 0 { return Err(busy()); }
+        journal.idle.clear();
+        drop(journal);
         let reading = reader.take();
         drop(reading);
         if checkpoint {
@@ -1598,7 +1619,30 @@ impl Folder {
     }
 
     pub(crate) fn journal_read<T>(&self, read: impl FnOnce(&rusqlite::Connection) -> crate::store::Result<T>) -> crate::store::Result<T> {
-        self.reading_db(read).map_err(|error| crate::store::StoreError::Protected(error.code.to_string()))?
+        let protected = |error: Error| crate::store::StoreError::Protected(error.code.to_string());
+        if !self.db().is_file() { return Err(protected(Self::not_a_project(&self.dir))); }
+        // Opened once as its reader opens it, migrated: a journal reader after that is a read-only file open (`db::reader`).
+        if !self.shared.journal.lock().unwrap_or_else(|e| e.into_inner()).opened {
+            drop(self.held().map_err(protected)?);
+            self.shared.journal.lock().unwrap_or_else(|e| e.into_inner()).opened = true;
+        }
+        let idle = {
+            let mut journal = self.shared.journal.lock().unwrap_or_else(|e| e.into_inner());
+            journal.reading += 1;
+            journal.idle.pop()
+        };
+        let done = |conn: Option<rusqlite::Connection>| {
+            let mut journal = self.shared.journal.lock().unwrap_or_else(|e| e.into_inner());
+            journal.reading -= 1;
+            if let Some(conn) = conn.filter(|_| journal.idle.len() < JOURNAL_READERS) { journal.idle.push(conn); }
+        };
+        let conn = match idle.map_or_else(|| db::reader(&self.db()), Ok) {
+            Ok(conn) => conn,
+            Err(error) => { done(None); return Err(protected(error)); }
+        };
+        let read = read(&conn);
+        done(Some(conn));
+        read
     }
 
     /// Whether this thread is inside one of this project's acts: its writer is this thread's until the act commits.
