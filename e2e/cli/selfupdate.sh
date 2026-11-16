@@ -223,7 +223,7 @@ su_hub "${SU_NEW[@]}" || return
 cozy --json machine update local --runtime 0.45.2 -y > "$OUT/su-hold.json" 2>&1 || { check "self update: hold local: $(tail -c 300 "$OUT/su-hold.json")"; return; }
 machine_ready
 code=0; su_install held || code=$?
-[ "$code" != 0 ] && grep -q '"runtime_held"' "$OUT/su-held.out" && grep -q 'cozy machine update local' "$OUT/su-held.out" && ! grep -q 'updating cozy' "$OUT/su-held.out" \
+[ "$code" != 0 ] && grep -q '"runtime_held"' "$OUT/su-held.out" && grep -q 'cozy machine update local' "$OUT/su-held.out" && ! grep -q 'Updating cozy' "$OUT/su-held.out" \
   || check "self update: held local wasn't refused runtime_held naming cozy machine update local: exit $code $(tail -c 400 "$OUT/su-held.out")"
 [ "$(cozy --version)" = "cozy $before" ] || check "self update: held, cozy moved to $(cozy --version)"
 # Let go: named by nothing on 0.24's pin, which it runs.

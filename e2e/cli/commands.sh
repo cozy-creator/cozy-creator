@@ -978,7 +978,7 @@ fi
 if cell held-newer-old "$E2E_NEWER/relay@0.1.0" "text=asked 0.1.0"; then
   in_project "$RUN_PROJECT" run "$E2E_NEWER/relay" text=newer --on local > "$OUT/held-newer.out" 2> "$OUT/held-newer.err" \
     || check "held prerelease: the unversioned e2e-newer run failed: $(tail -c 300 "$OUT/held-newer.err")"
-  grep -q 'e2e-newer 0.1.1, newer than local.s 0.1.0' "$OUT/held-newer.err" \
+  grep -q 'e2e-newer 0.1.1, newer than the 0.1.0 on local' "$OUT/held-newer.err" \
     || check "held prerelease: holding e2e-newer 0.1.0, the run didn't say it takes 0.1.1: $(tail -c 300 "$OUT/held-newer.err")"
 fi
 cozy --json machine update local --runtime "$released" -y > "$OUT/held-update.json" 2>&1 \

@@ -154,7 +154,7 @@ step "logout forgets a key installed from a file, and revokes none another compu
 # The 11-11 copy, done again: this computer's key installed from its file (as on a pod), then signed out there.
 cp "$key" "$held/laptop-key-2.json"
 cozy --json login --key "$held/laptop-key-2.json" > "$OUT/rental-install.json" 2> "$OUT/rental-install.err" || check "login --key with a copy of this computer's key failed: $(tail -c 300 "$OUT/rental-install.json")"
-cozy --json logout > "$OUT/rental-logout-installed.json" 2> "$OUT/rental-logout-installed.err" && J '.status == "signed out" and any(.notes[]?; test("not revoked"))' "$OUT/rental-logout-installed.json" \
+cozy --json logout > "$OUT/rental-logout-installed.json" 2> "$OUT/rental-logout-installed.err" && J '.status == "signed out" and any(.notes[]?; test("didn.t revoke it"))' "$OUT/rental-logout-installed.json" \
   || check "logout of an installed key: not forgotten without revoking: $(tail -c 300 "$OUT/rental-logout-installed.json")"
 # The computer it was copied from is still signed in.
 cozy --json login --key "$held/laptop-key-2.json" > /dev/null 2>&1 || true
