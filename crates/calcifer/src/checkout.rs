@@ -93,6 +93,13 @@ fn application(dir: &Path) -> Option<String> {
     Some(project.get("name")?.as_str()?.trim().to_ascii_lowercase())
 }
 
+/// What the package in `dir` does in a line, its pyproject's description, as the Hub keeps a release's (`Card::summary`): "" for none.
+pub(crate) fn description(dir: &Path) -> String {
+    let table = fs::read_to_string(dir.join("pyproject.toml")).ok().and_then(|text| toml::from_str::<toml::Table>(&text).ok());
+    let said = table.as_ref().and_then(|table| table.get("project")?.get("description")?.as_str().map(str::to_owned));
+    said.unwrap_or_default()
+}
+
 /// The checkout's folder of the package `text` names, unversioned and first-party, and the function it names. None: the Hub's.
 pub(crate) fn named(text: &str) -> Option<(PathBuf, Option<String>)> {
     root()?;
@@ -188,6 +195,8 @@ pub(crate) struct From {
     pub head: Option<Head>,
     /// Each `{ index = "tensorhub" }` source staged as a path to its folder here, as the package it is: `minimax-h3` → `_/minimax-h3`.
     pub callees: BTreeMap<String, String>,
+    /// What it does in a line (`description`), as its release's card would say.
+    pub summary: String,
 }
 
 impl From {
@@ -226,7 +235,7 @@ pub(crate) fn stage(dir: &Path, memo: Option<&Path>, patched: &Path) -> Result<S
         let before = head(root);
         let (staged, callees) = staged(root, dir, memo, patched)?;
         if head(root) == before {
-            let from = From { package, head: before, callees };
+            let from = From { package, head: before, callees, summary: description(dir) };
             STAGED.lock().expect("staged lock").insert((Digest::of(&staged.document), staged.at.clone()), from);
             return Ok(staged);
         }

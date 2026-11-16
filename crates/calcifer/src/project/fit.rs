@@ -380,7 +380,7 @@ async fn need_of(api: &Arc<Api>, hub: &str, dir: &FsPath, target: &str, tool: &s
     }
     let (bytes, pick) = weights.weighed(hub, &found.package, &found.release, &function, local_code);
     let interface = Interface::parse(&found.interface).ok()?;
-    let label = tool::tools_of(&found.package, &found.release, &interface).into_iter().find(|tool| tool.function == function).map_or_else(|| function.clone(), |tool| tool.package_title);
+    let label = tool::tools_of(&found.package, &found.release, &interface, &found.summary).into_iter().find(|tool| tool.function == function).map_or_else(|| function.clone(), |tool| tool.package_title);
     let measured = match local_code {
         true => format!("{}/{function}", found.package),
         false => format!("{}/{function}@", found.package),
@@ -412,7 +412,7 @@ pub(super) fn poorly_now(api: &Api, hub: &str, package: &super::Package, functio
 pub(super) fn told_here(api: &Api, hub: &str, package: &super::Package, function: &str, made: &Map<String, Value>, tool: &str) -> Option<String> {
     let interface = Interface::parse(package.document()).ok()?;
     let release = package.local.is_none().then_some(package.release.as_str());
-    let line = here_now(api, hub, &package.name, release, function, &interface, made)?;
+    let line = here_now(api, hub, &package.name, release, function, &interface, &package.summary, made)?;
     let weights = Weights::of_interface(&interface, function, made)?;
     let (bytes, _) = weights.weighed(hub, &package.name, &package.release, function, package.local.is_some());
     let kept = api.calcifer.store().rendered_here(&machine_of(&gpus(api)?)).ok()?;
@@ -422,7 +422,8 @@ pub(super) fn told_here(api: &Api, hub: &str, package: &super::Package, function
 /// What a run of `function` of `package@release` here says first when this computer would run it poorly, by what's known here without
 /// asking anyone, as `fit` says it: for `cozy run` and a walk's job sent here, which ask no one (cl-897). None on a computer with no GPU,
 /// which `cozy run` says itself.
-pub(crate) fn here_now(api: &Api, hub: &str, package: &str, release: Option<&str>, function: &str, interface: &Interface, made: &Map<String, Value>) -> Option<String> {
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn here_now(api: &Api, hub: &str, package: &str, release: Option<&str>, function: &str, interface: &Interface, summary: &str, made: &Map<String, Value>) -> Option<String> {
     let gpus = gpus(api).filter(|gpus| !gpus.is_empty())?;
     let weights = Weights::of_interface(interface, function, made)?;
     let local_code = release.is_none();
@@ -434,7 +435,7 @@ pub(crate) fn here_now(api: &Api, hub: &str, package: &str, release: Option<&str
         false => format!("{base}@{release}"),
     };
     let placed = (!local_code).then(|| placed_now(hub, package, release, function)).flatten();
-    let label = tool::tools_of(package, release, interface).into_iter().find(|tool| tool.function == function).map_or_else(|| base.clone(), |tool| tool.package_title);
+    let label = tool::tools_of(package, release, interface, summary).into_iter().find(|tool| tool.function == function).map_or_else(|| base.clone(), |tool| tool.package_title);
     let took_s = api.calcifer.here_ms(&base, made).map(|ms| ms / 1e3).or_else(|| typical_here(api, &full, made));
     let need = Need {
         tool: base.clone(),

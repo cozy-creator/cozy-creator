@@ -121,11 +121,11 @@ async fn describe_scoped(api: &Arc<Api>, hub: &str, text: &str, code: Option<&Lo
             Some(function) => Some(super::callable(&package, &interface, &function)?.name.clone()),
             None => None,
         };
-        let (release, from) = match crate::checkout::of(&code) {
-            Some(from) => (from.said(), ReleaseFrom::Source),
-            None => ("local".into(), ReleaseFrom::Local),
+        let (release, from, summary) = match crate::checkout::of(&code) {
+            Some(from) => (from.said(), ReleaseFrom::Source, from.summary),
+            None => ("local".into(), ReleaseFrom::Local, String::new()),
         };
-        return Ok(answer(package, function, release, from, String::new(), document, &interface));
+        return Ok(answer(package, function, release, from, summary, document, &interface));
     }
     let Resolved::Release { package, function, card, from, .. } = published(api, hub, text, Some(on), false).await? else {
         unreachable!("a published target resolves to a release");

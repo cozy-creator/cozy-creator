@@ -177,7 +177,7 @@ pub(crate) async fn browse(State(api): State<Arc<Api>>, query: Result<Query<Brow
         let api = api.clone();
         async move {
             let card = cards::card(|| api.machines.hubs.reader(&hub), root, &hub, &package, &release).await.ok()?;
-            let tools: Vec<String> = tool::tools_of(&package, &card.release, &card.interface).into_iter().map(|tool| tool.id).collect();
+            let tools: Vec<String> = tool::tools_of(&package, &card.release, &card.interface, card.summary()).into_iter().map(|tool| tool.id).collect();
             (!tools.is_empty()).then(|| BrowsedPackage { package: shown(&package), summary: card.summary().to_owned(), tools })
         }
     });
@@ -259,7 +259,8 @@ async fn read_local(api: &Arc<Api>, hub: &str, named: Vec<(String, PathBuf)>, on
             }
         };
         let Ok(interface) = Interface::parse(&document) else { continue };
-        tools.extend(tool::tools_of(&package, "local", &interface).into_iter().map(|tool| Tool {
+        // Local code's own description isn't read: its words are its name's (`tool::title`).
+        tools.extend(tool::tools_of(&package, "local", &interface, "").into_iter().map(|tool| Tool {
             id: format!("{written}/{}", tool.function),
             package: written.clone(),
             installs: Some(package.clone()),
@@ -383,7 +384,7 @@ async fn source_tools(api: &Arc<Api>, hub: &str, on: &On, name: &str, dir: &Path
     let interface = Interface::parse(&document).ok()?;
     let said = checkout::of(&code).map(|from| from.said());
     let release = said.clone().unwrap_or_else(|| "source".into());
-    Some(tool::tools_of(&package, &release, &interface).into_iter().map(|tool| Tool { source: said.clone(), ..tool }).collect())
+    Some(tool::tools_of(&package, &release, &interface, &checkout::description(dir)).into_iter().map(|tool| Tool { source: said.clone(), ..tool }).collect())
 }
 
 /// Whether every word of `q` is in `tool`'s package's name or its label.
@@ -556,7 +557,7 @@ fn kept_listing(api: &Api, hub: &str) -> Listed {
 /// `package`'s tools at `card`'s release, each with what the release requires of the Runtime pair.
 fn offered(package: &str, card: &cards::Card) -> Vec<Offered> {
     let pair: Arc<[String]> = card.requirements().unwrap_or_default().into_iter().filter(|required| on_the_pair(required)).map(str::to_owned).collect();
-    tool::tools_of(package, &card.release, &card.interface).into_iter().map(|tool| Offered { tool, pair: pair.clone() }).collect()
+    tool::tools_of(package, &card.release, &card.interface, card.summary()).into_iter().map(|tool| Offered { tool, pair: pair.clone() }).collect()
 }
 
 /// A tool the Hub lists, and what its release requires of the Runtime pair.
@@ -695,7 +696,7 @@ async fn read_all(api: &Arc<Api>, hub: &str, wanted: Vec<(String, String)>) -> V
     let reads = wanted.into_iter().map(|(package, release)| async move {
         let client = || api.machines.hubs.reader(hub);
         match cards::card(client, root, hub, &package, &release).await {
-            Ok(card) => tool::tools_of(&package, &card.release, &card.interface),
+            Ok(card) => tool::tools_of(&package, &card.release, &card.interface, card.summary()),
             Err(why) => {
                 tracing::debug!("{package}@{release}: {}", why.message);
                 vec![]
@@ -728,7 +729,7 @@ pub(crate) async fn tool_of(api: &Arc<Api>, tool: &str, dir: &Path) -> Result<To
         let functions = interface.public().iter().map(|name| format!("{}/{name}", shown(&found.package))).collect::<Vec<_>>().join(", ");
         return Err(Error::new(Kind::Usage, "tool_names_no_function", format!("{tool} is a package, not a tool. Pick one of its functions: {functions}.")));
     };
-    tool::tools_of(&found.package, &found.release, &interface).into_iter().find(|held| held.function == function)
+    tool::tools_of(&found.package, &found.release, &interface, &found.summary).into_iter().find(|held| held.function == function)
         .ok_or_else(|| Error::new(Kind::Usage, "tool_not_a_tool", format!("{tool} isn't a tool: its function has no @app.tool, or makes no media.")))
 }
 

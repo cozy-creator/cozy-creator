@@ -651,7 +651,8 @@ impl Holding {
     /// `cozy run`'s written fields bound as Render binds a box's: mentions read this project's boxes, then the run's own references
     /// (`inline`, each with its file here), ranges are cut here, and `pickup.` terms are the gesture. Answers the call, the files it
     /// names (the project's fetched here if a machine keeps them), what was said, and what it left out.
-    pub(crate) async fn bound(&self, target: &str, package: &str, callable: &api::interface::Callable, written: Map<String, Value>, clips: &crate::runs::clip::Clips, inline: &[(binder::Inline, PathBuf)]) -> Result<(Map<String, Value>, Vec<crate::runs::bind::InputFile>, Vec<String>, Vec<Unused>), Error> {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn bound(&self, target: &str, package: &str, title: &str, callable: &api::interface::Callable, written: Map<String, Value>, clips: &crate::runs::clip::Clips, inline: &[(binder::Inline, PathBuf)]) -> Result<(Map<String, Value>, Vec<crate::runs::bind::InputFile>, Vec<String>, Vec<Unused>), Error> {
         let _access = vault::admit_root(&self.dir).await?;
         let physical = vault::resolve_path(&self.dir)?;
         let folder = Folder::at(&physical);
@@ -668,7 +669,7 @@ impl Holding {
         let reserved = callable.tool.as_ref().map(|tool| tool.reserved.clone()).unwrap_or_default();
         doc.worded(&mut fields, &reserved);
         let own: Vec<binder::Inline> = inline.iter().map(|(named, _)| named.clone()).collect();
-        let call = binder::Call { name: target, tool: target, package, callable, fields: &fields, reserved: &reserved, doc: &doc, own: None, lock: &lock, stand: &stand, gone: &BTreeSet::new(), pickup: pickup.as_ref(), inline: &own };
+        let call = binder::Call { name: target, tool: target, package, title, callable, fields: &fields, reserved: &reserved, doc: &doc, own: None, lock: &lock, stand: &stand, gone: &BTreeSet::new(), pickup: pickup.as_ref(), inline: &own };
         let mut bound = binder::bind(&call)?;
         // The run's own files go as a cut clip does: by their digest, from where they are here.
         let mut cut: HashMap<String, PathBuf> = inline.iter().map(|(named, path)| (named.file.clone(), path.clone())).collect();
@@ -1711,6 +1712,8 @@ fn unmade(doc: &Doc, known: &HeardOf, lock: &Lock) -> Vec<ProjectWarning> {
 /// What one read says of a package its assets name, worked out once for all of them.
 struct HeardPackage {
     name: String,
+    /// It in words (`Package::title`).
+    title: String,
     tags: Vec<String>,
     makes: bool,
     /// The function its tool names: what its boxes' text is bound by.
@@ -1730,7 +1733,7 @@ fn known_packages(api: &Arc<Api>, doc: &Doc, dir: &FsPath) -> HeardOf {
             let callable = package.named.as_deref().and_then(|function| package.callable(function));
             // A checkout's first-party package is said as its release would be (xs-195).
             let local = is_local(&with) && crate::checkout::named(&with).is_none();
-            let heard = HeardPackage { name: package.name.clone(), tags: package.reserved(), makes: matches!(package.maker(), Ok(Some(_))), callable, local };
+            let heard = HeardPackage { name: package.name.clone(), title: package.title(), tags: package.reserved(), makes: matches!(package.maker(), Ok(Some(_))), callable, local };
             Some((with, heard))
         })
         .collect()
@@ -1745,7 +1748,7 @@ fn unused_of(reading: &Reading, i: usize) -> Vec<Unused> {
     };
     let fields = doc.inputs_of(i);
     let reserved = tags_now(doc, known, i).unwrap_or(heard.tags.as_slice());
-    let call = binder::Call { name: &doc.assets[i].name, tool: &target, package: &heard.name, callable, fields: &fields, reserved, doc, own: Some(i), lock, stand, gone: &BTreeSet::new(), pickup: None, inline: &[] };
+    let call = binder::Call { name: &doc.assets[i].name, tool: &target, package: &heard.name, title: &heard.title, callable, fields: &fields, reserved, doc, own: Some(i), lock, stand, gone: &BTreeSet::new(), pickup: None, inline: &[] };
     binder::unused(&call)
 }
 
@@ -5183,8 +5186,8 @@ impl Walk {
             let unknown = || Error::new(Kind::NotFound, "callable_unknown", format!("{} has no function called {}.", package.name, maker.function));
             let callable = package.callable(&maker.function).ok_or_else(unknown)?;
             let fields = doc.inputs_of(i);
-            let reserved = package.reserved();
-            let call = binder::Call { name: &name, tool: &doc.target(i), package: &package.name, callable: &callable, fields: &fields, reserved: &reserved, doc, own: Some(i), lock, stand, gone: &gone, pickup: pickup.as_ref(), inline: &[] };
+            let (reserved, title) = (package.reserved(), package.title());
+            let call = binder::Call { name: &name, tool: &doc.target(i), package: &package.name, title: &title, callable: &callable, fields: &fields, reserved: &reserved, doc, own: Some(i), lock, stand, gone: &gone, pickup: pickup.as_ref(), inline: &[] };
             let mut bound = binder::bind(&call)?;
             self.cut(&mut bound, lock).await.map_err(|why| cannot(&name, why))?;
             let (input, mut warnings, unused) = (bound.payload, bound.warnings, bound.unused);

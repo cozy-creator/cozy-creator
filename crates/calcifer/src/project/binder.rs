@@ -8,7 +8,7 @@ use api::{
     error::{Error, Kind},
     interface::{Callable, Field, Snap, Struct, Type, Wire},
     calcifer::project::{Pickup, Unused},
-    calcifer::tool::{self, MEDIA, PLATFORM},
+    calcifer::tool::{MEDIA, PLATFORM},
 };
 use serde_json::{Map, Value, json};
 
@@ -37,6 +37,8 @@ pub(crate) struct Call<'a> {
     pub tool: &'a str,
     /// Its package, whose own extras it reads.
     pub package: &'a str,
+    /// Its package in words, as what's said names it (`tool::title`): MiniMax H3.
+    pub title: &'a str,
     pub callable: &'a Callable,
     /// Its written fields, each text box put in as its words.
     pub fields: &'a Map<String, Value>,
@@ -188,7 +190,8 @@ impl Binder<'_> {
 
     /// Why a mention of `kind`, written where `takes` is what's taken, isn't used: None, it is. Words take a text box's words; a slot
     /// of `file` takes any file. What's said names the tool, and `here` when another of its fields would take it (Paul, 11-16: "does
-    /// not support this reference": `SDXL doesn't support reference images`).
+    /// not support this reference": `SDXL doesn't support reference images`). The page's `<` offers only what this uses (Unsupported.tsx
+    /// `usable`, the same rule).
     fn unusable(&self, takes: &[&str], kind: &str) -> Option<String> {
         if takes.contains(&kind) || (takes.contains(&"file") && MEDIA.contains(&kind)) {
             return None;
@@ -199,7 +202,7 @@ impl Binder<'_> {
             "video" => "videos",
             other => other,
         };
-        Some(format!("{} doesn't support reference {kinds}{here}", tool::title(self.call.package)))
+        Some(format!("{} doesn't support reference {kinds}{here}", self.call.title))
     }
 
     /// `inner`, written at `at`, left out for `why`.
