@@ -1240,7 +1240,7 @@ jobs:
           bash .creator/e2e/skew/run.sh --hub-bin "$RUNNER_TEMP/fixture-hub" --candidates "$CANDIDATES" --admin --out "$RUNNER_TEMP/e2e/hub" \
             --command .creator/e2e/isolated.sh -- cpu \
             --out "$RUNNER_TEMP/e2e" --envs "$RUNNER_TEMP/envs" "${cpu_args[@]}" $CANDIDATES \
-            $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo --packages "$PACKAGES_MASTER" ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
+            $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
 
       - if: always()
         run: uv cache prune --ci
