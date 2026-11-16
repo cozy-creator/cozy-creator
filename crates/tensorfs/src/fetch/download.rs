@@ -959,6 +959,8 @@ struct Pace {
     max: usize,
     /// The rate at the last doubling, and the bytes received when it last looked.
     last: Option<f64>,
+    /// The level before the last doubling: settling gives that doubling back when it didn't pay.
+    before: usize,
     seen: u64,
     /// Windows in a row since the last doubling that grew under `GAIN`.
     flat: u32,
@@ -1220,21 +1222,26 @@ impl Shared {
             (pace.last, pace.settled, pace.flat) = (None, false, 0);
         }
         pace.tail = tail;
-        if !(waiting || tail) || pace.settled || pace.level >= pace.max {
+        // A window that received nothing measured no rate: the first is the requests' latency (th-378: cale's ramp doubled on
+        // 0 MB/s, and then again on anything against it, to 64 streams on a 28 MB/s link).
+        if !(waiting || tail) || pace.settled || pace.level >= pace.max || rate == 0.0 {
             return false;
         }
-        // A doubling's new requests take more than a window to deliver: two flat windows settle it.
+        // A doubling's new requests take more than a window to deliver: two flat windows settle it, giving it back, as it
+        // bought nothing.
         if pace.last.is_some_and(|last| rate < last * GAIN) {
             pace.flat += 1;
             if pace.flat >= 2 {
                 pace.settled = true;
+                let gone = pace.level.saturating_sub(pace.before);
+                self.shrink(&mut pace, gone);
                 tracing::info!(streams = pace.level, mb_s = rate / 1e6, "streams settled");
             }
             return false;
         }
         pace.flat = 0;
         let grow = (pace.level * 2).min(pace.max) - pace.level;
-        (pace.level, pace.last) = (pace.level + grow, Some(rate));
+        (pace.before, pace.level, pace.last) = (pace.level, pace.level + grow, Some(rate));
         self.slots.add(grow);
         tracing::info!(streams = pace.level, mb_s = rate / 1e6, "more streams");
         false
