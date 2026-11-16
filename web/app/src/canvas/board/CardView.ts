@@ -13,6 +13,7 @@ export interface Hit { name: string; part: Part }
 export interface Palette {
   card: number; well: number; line: number; ink: number; mute: number; select: number; gap: number; glow: number; glowAlpha: number
   queued: number; running: number; unseen: number; failed: number; ember: number; ember2: number; check: string; check2: string
+  box: number; edge: number; edgeAlpha: number; shade: number; shadeAlpha: number
 }
 export interface CardState { hover: Part | null; dragging: boolean; offering: boolean; resizing: string | null; dropTarget: boolean; broken: boolean }
 export interface CardEnv {
@@ -115,14 +116,18 @@ export class CardView {
       this.ground.roundRect(0, 0, w, node.box.h, 8).fill(colors.card).stroke({ width: 1, color: colors.line })
       this.entity(show, w, colors, label, pictures, env)
     } else {
-      if (show.picture || show.note || show.error || show.references.length) this.ground.rect(body.x, body.y, body.w, body.h).fill(colors.well)
-      else this.corners(this.ground, body, colors.mute)
+      // A box stands off the sheet: a soft shadow and an edge; one with nothing in it is a lighter sheet, not a hole.
+      const lift = 1 / Math.max(0.25, env.zoom)
+      if (!far) for (const [grow, alpha] of [[6, 0.25], [3, 0.45], [1, 0.8]]) this.ground.rect(body.x - grow * lift, body.y - grow * lift + 2 * lift, body.w + grow * 2 * lift, body.h + grow * 2 * lift).fill({ color: colors.shade, alpha: colors.shadeAlpha * alpha * 0.35 })
+      this.ground.rect(body.x, body.y, body.w, body.h).fill(show.picture || show.note || show.error || show.references.length ? colors.well : colors.box)
+        .stroke({ width: lift, color: colors.edge, alpha: colors.edgeAlpha, alignment: 1 })
       this.alphaBacking(show.picture?.alpha ? body : null, env)
       if (show.picture) this.picturePart("main", show.picture, body, true, false, pictures, env)
       if (show.references.length) this.references(show, body, pictures, colors, env)
       const failed = this.pictures.get("main")
-      const sentence = failed && failed.handle?.failed && !failed.handle.texture ? "Selected image unavailable" : show.error ?? show.note
-      if (sentence) label("note", sentence, body.x + 12, body.y + Math.max(8, body.h / 2 - BODY * 1.25), body.w - 24, { size: BODY, color: show.error ? colors.failed : colors.mute }, 2)
+      const unavailable = Boolean(failed?.handle?.failed && !failed.handle.texture)
+      const sentence = unavailable ? "Selected image unavailable" : show.error ?? show.note
+      if (sentence) label(unavailable ? "unavailable" : "note", sentence, body.x + 12, body.y + Math.max(8, body.h / 2 - BODY * 1.25), body.w - 24, { size: BODY, color: show.error ? colors.failed : colors.mute }, 2)
       if (show.words && (!show.picture || node.view.asset?.standing === "making")) this.words(show, body, colors, used, env)
       if (show.duration && !far) {
         const room = width(show.duration, SMALL, true, true) + 12
@@ -249,10 +254,10 @@ export class CardView {
     }
     if (cut && runs.length) { const last = runs[runs.length - 1]; last.text = ellipsis(last.text + "…", room - last.x - (last.chip ? 10 : 0), last.chip ? SMALL : BODY, last.chip, last.chip) }
     // Plain runs on a row join into one label; each chip is its own.
-    let index = 0, pending: { text: string; x: number; row: number } | null = null
+    let index = 0, plain = 0, pending: { text: string; x: number; row: number } | null = null
     const flush = () => {
       if (!pending) return
-      const key = `words-${index++}`
+      const key = plain++ ? `words-${index++}` : (index++, "words")
       used.add(key)
       this.label(key, pending.text, x0 + pending.x, y0 + pending.row * BODY * 1.35, room - pending.x, { size: BODY, color: colors.ink }, env)
       pending = null
@@ -263,7 +268,7 @@ export class CardView {
       const box = { x: x0 + run.x, y: y0 + run.row * BODY * 1.35 + 1, w: width(run.text, SMALL, true, true) + 10, h: SMALL * 1.3 }
       const color = run.struck ? colors.failed : colors.ember2
       this.ink.roundRect(box.x, box.y, box.w, box.h, 4).fill({ color: run.struck ? colors.failed : colors.ember, alpha: 0.14 })
-      const key = `chip-${index++}`
+      const key = `words-chip-${index++}`
       used.add(key)
       this.label(key, run.text, box.x + 5, box.y + 1, box.w - 10, { size: SMALL, color, mono: true, bold: true }, env)
       if (run.struck) this.ink.moveTo(box.x + 4, box.y + box.h / 2).lineTo(box.x + box.w - 4, box.y + box.h / 2).stroke({ width: 1.2, color: colors.failed })
