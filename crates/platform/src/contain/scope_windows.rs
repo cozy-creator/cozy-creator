@@ -32,6 +32,11 @@ impl Scope {
         Ok(Self(crate::process::job().map_err(Error::os("create a process scope"))?))
     }
 
+    /// Its live processes: read on Linux only (cl-977's vigil reads its group elsewhere).
+    pub fn members(&self) -> Vec<u32> {
+        vec![]
+    }
+
     /// None: a scope's members end with its last handle, so none outlives the process that made it (see `sweep`).
     pub fn namespace_processes(_: &str) -> Result<usize> {
         Ok(0)

@@ -180,18 +180,25 @@ pub(super) fn lives(pid: u32) -> Option<Vec<super::Life>> {
         }
         let fields: Vec<&str> = rest.split_whitespace().collect();
         let ticks = fields.get(11)?.parse::<u64>().ok()? + fields.get(12)?.parse::<u64>().ok()?;
-        // Run time and run delay: nanoseconds, so a wakeup between ticks shows.
-        let scheduled: u64 = fs::read_to_string(base.join("schedstat")).unwrap_or_default()
-            .split_whitespace().take(2).filter_map(|n| n.parse::<u64>().ok()).sum();
-        let cpu = ticks.saturating_mul(1_000_000_000 / hertz).saturating_add(scheduled);
-        let moved = fs::read_to_string(base.join("io")).map_or(0, |io| io_bytes(&io));
+        // Run time, run delay and runs, in nanoseconds: a wakeup between ticks shows. Ticks where the kernel keeps no schedstat.
+        let scheduled: Vec<u64> = fs::read_to_string(base.join("schedstat")).unwrap_or_default()
+            .split_whitespace().filter_map(|n| n.parse::<u64>().ok()).collect();
+        let meter = super::Meter {
+            cpu_ns: match scheduled.as_slice() {
+                [ran, waited, ..] => ran.saturating_add(*waited),
+                _ => ticks.saturating_mul(1_000_000_000 / hertz),
+            },
+            runs: scheduled.get(2).copied().unwrap_or(0),
+            bytes: fs::read_to_string(base.join("io")).map_or(0, |io| io_bytes(&io)),
+            faults: fields.get(9).and_then(|faults| faults.parse().ok()).unwrap_or(0),
+        };
         let wait = match fs::read_to_string(base.join("syscall")) {
             Ok(line) => wait_of(pid, &line),
             Err(error) if gone(&error) => continue,
             Err(_) => super::Wait::Unknown,
         };
         let name = head.split_once(" (").map_or("", |(_, name)| name).to_owned();
-        lives.push(super::Life { tid, name, meter: (cpu, moved), wait });
+        lives.push(super::Life { tid, name, meter, wait });
     }
     Some(lives)
 }
@@ -209,7 +216,7 @@ fn wait_of(pid: u32, line: &str) -> super::Wait {
     use super::Wait;
     let mut fields = line.split_whitespace();
     // `running`, or `-1 …`: in the kernel outside a syscall (a fault).
-    let Some(nr) = fields.next().and_then(|nr| nr.parse::<i64>().ok()).filter(|nr| *nr >= 0) else { return Wait::Unknown };
+    let Some(nr) = fields.next().and_then(|nr| nr.parse::<i64>().ok()).filter(|nr| *nr >= 0) else { return Wait::Running };
     let arg: Vec<u64> = fields.take(6).filter_map(|a| u64::from_str_radix(a.trim_start_matches("0x"), 16).ok()).collect();
     let at = |i: usize| arg.get(i).copied().unwrap_or(0);
     let given = |i: usize| at(i) != 0;

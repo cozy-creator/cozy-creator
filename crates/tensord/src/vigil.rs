@@ -1,11 +1,17 @@
-//! Whether a process TensorD waits on is alive (cl-977 G9). Nothing judges how fast it goes: it is hung only when, for
-//! `platform::contain::STALL`, none of its threads used CPU or moved a byte, none waits on time or on a TCP peer that answers,
-//! its GPUs did nothing, and TensorD did no work for it. Then it is killed, and what waited on it says so ([`Hung`]).
-//! A thread's wait is read from its syscall, which a host that denies TensorD ptrace (Yama `ptrace_scope` 2, no CAP_SYS_PTRACE)
-//! keeps from it: an executor's own vigil ([`Line`]) reads itself and answers. One whose line never answered can't report, and
-//! what can't be read counts as alive; once it has answered, a wait it doesn't say is no sign of life. A report can only make an
-//! executor look alive, which its code can do anyway by spinning.
-use platform::process::{Exact, Life, Wait};
+//! Whether a process TensorD waits on is alive (cl-977 G9). Nothing judges how fast it goes. Its process tree (its group, and its
+//! scope: a builder in a session of its own too) is read each second, thread by thread:
+//! - work: a thread gaining [`WORK`] of a core, moving a byte or paging in from disk; its GPUs running a kernel; a thread coming
+//!   or going.
+//! - alive though still: TensorD answering one of its requests or running a call it made; a thread waiting on a TCP peer that
+//!   answers; a timed wait of the call's own threads (the main thread, the Runtime's `call_*`), or of any thread that hasn't woken
+//!   since the stillness began (a real sleep).
+//! - neither: threads that only tick (wake from a timed poll and sleep again: CUDA's own, a library's monitor, `~` watchers) and
+//!   untimed waits.
+//! Nothing working and nothing alive for [`WINDOW`] is a hang: the executor is killed, and the run fails `hung`, saying what was
+//! seen ([`Hung`]). A thread's wait is read from its syscall, which a host that denies TensorD ptrace keeps from it: an executor's
+//! own vigil ([`Line`]) reads itself and answers. Until its line has answered, what can't be read counts as alive. A report can
+//! only make an executor look alive, which its code can do anyway by spinning.
+use platform::process::{Exact, Life, Meter, Wait};
 use std::{
     collections::{HashMap, HashSet},
     io,
@@ -20,6 +26,12 @@ use std::{
 
 /// A watcher thread's name begins with this (the Runtime's step sampler, varena's donor): its ticks show nothing of the work.
 pub(crate) const WATCHER: char = '~';
+/// The share of a core a thread gains in a sample that is work. Measured on a deadlocked GPU call (jugram, RTX 4090, pod-session
+/// 43794289907): CUDA's own threads tick at 0.2-0.5 ms a second, the Runtime's and varena's watchers at 1-3 ms; work takes hundreds.
+const WORK: f64 = 0.01;
+/// Nothing working and nothing alive for this long is a hang. Several times the longest stillness measured in legitimate calls
+/// (cl-977's table); a false kill loses a render, a late one costs minutes of a pod.
+pub(crate) const WINDOW: Duration = Duration::from_secs(300);
 const SAMPLE: Duration = Duration::from_secs(1);
 /// A silent TCP peer is asked whether it is there by a connect of TensorD's own, this often and this long.
 const PROBE_EVERY: Duration = Duration::from_secs(10);
@@ -30,18 +42,18 @@ const UNANSWERED: u32 = 3;
 /// Signs of its life outside the process.
 #[derive(Default)]
 pub(crate) struct Elsewhere {
-    /// Busy readings of the GPUs it computes on (`platform::gpu::Peak::busy`).
+    /// Readings of the GPUs it computes on with a kernel running (`platform::gpu::Peak::busy`).
     pub gpu: Option<Arc<AtomicU64>>,
     /// It waits on work TensorD tracks elsewhere: a call it made that hasn't ended.
     pub waits: Option<Box<dyn Fn() -> bool + Send>>,
 }
 
-/// It showed no sign of life for the window, and was killed.
+/// It showed no sign of life for the window and was killed: what was seen.
 #[derive(Clone, Debug)]
-pub(crate) struct Hung;
+pub(crate) struct Hung(pub String);
 impl std::fmt::Display for Hung {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "no CPU, GPU or I/O for {} s, and nothing it waits on is alive: it was ended", platform::contain::STALL.as_secs())
+        write!(f, "{}; its executor was ended", self.0)
     }
 }
 impl std::error::Error for Hung {}
@@ -107,7 +119,7 @@ impl Line {
     }
 }
 
-/// Watches a process group while TensorD waits on it; dropped, it stops, and never kills after.
+/// Watches a process tree while TensorD waits on it; dropped, it stops, and never kills after.
 pub(crate) struct Vigil {
     stop: Option<mpsc::Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -115,22 +127,27 @@ pub(crate) struct Vigil {
 }
 
 impl Vigil {
-    /// `leader` and its process group; `answering` is set while TensorD answers one of its requests; `line`, its vigil's.
-    pub(crate) fn keep(leader: &Exact, answering: Arc<AtomicBool>, elsewhere: Elsewhere, line: Option<Arc<Line>>) -> io::Result<Self> {
+    /// `leader`'s group and scope while it does `what`; `answering` is set while TensorD answers one of its requests; `line`, its
+    /// vigil's.
+    pub(crate) fn keep(leader: &Exact, what: &str, answering: Arc<AtomicBool>, elsewhere: Elsewhere, line: Option<Arc<Line>>) -> io::Result<Self> {
         let leader = leader.try_clone()?;
         let (stop, stopped) = mpsc::channel::<()>();
         let verdict = Arc::new(OnceLock::new());
-        let found = verdict.clone();
+        let (found, what) = (verdict.clone(), what.to_owned());
         let thread = std::thread::Builder::new().name(format!("vigil-{}", leader.birth().pid)).spawn(move || {
             let mut watch = Watch::new(answering, elsewhere, line);
             while let Err(mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(SAMPLE) {
-                if watch.hung(&leader) {
-                    tracing::warn!("pid {}: no CPU, GPU or I/O for {} s, and nothing it waits on is alive: killed",
-                        leader.birth().pid, platform::contain::STALL.as_secs());
-                    let _ = found.set(Hung);
+                if let Some(seen) = watch.look(&leader) {
+                    tracing::warn!("pid {} ({what}): {seen}: killed", leader.birth().pid);
+                    let _ = found.set(Hung(seen));
                     let _ = leader.kill();
                     return;
                 }
+            }
+            // What legitimate calls show of stillness: the evidence for `WINDOW`.
+            if watch.longest >= Duration::from_secs(10) {
+                tracing::info!("pid {} ({what}): still for up to {} s (alive: {})", leader.birth().pid, watch.longest.as_secs(),
+                    if watch.why.is_empty() { "nothing" } else { &watch.why });
             }
         })?;
         Ok(Self { stop: Some(stop), thread: Some(thread), hung: verdict })
@@ -171,19 +188,23 @@ struct Peer {
 
 /// A thread as read: its process, itself, and whether its process's vigil read it (a meter is compared only with one read the
 /// same way).
-type Seen = (u32, u32, bool);
+type Key = (u32, u32, bool);
 
 struct Watch {
     answering: Arc<AtomicBool>,
     elsewhere: Elsewhere,
     line: Option<Arc<Line>>,
-    /// Each thread's meter, the processes read and how, and the GPUs' busy readings.
-    seen: HashMap<Seen, (u64, u64)>,
+    seen: HashMap<Key, Meter>,
     read: HashSet<(u32, bool)>,
     gpu: u64,
-    /// When something last moved (CPU, bytes, GPU, a thread came or went), and when it last showed any life.
-    moved: Instant,
+    sampled: Instant,
+    /// Since when nothing worked, when something last showed life, and which threads woke meanwhile.
+    still: Instant,
     alive: Instant,
+    woke: HashSet<Key>,
+    /// The longest stillness seen, and why it was alive then.
+    longest: Duration,
+    why: String,
     peers: HashMap<SocketAddr, Peer>,
     said: bool,
 }
@@ -192,55 +213,80 @@ impl Watch {
     fn new(answering: Arc<AtomicBool>, elsewhere: Elsewhere, line: Option<Arc<Line>>) -> Self {
         let now = Instant::now();
         Self {
-            answering, elsewhere, line, seen: HashMap::new(), read: HashSet::new(), gpu: 0, moved: now, alive: now,
-            peers: HashMap::new(), said: false,
+            answering, elsewhere, line, seen: HashMap::new(), read: HashSet::new(), gpu: 0, sampled: now, still: now, alive: now,
+            woke: HashSet::new(), longest: Duration::ZERO, why: String::new(), peers: HashMap::new(), said: false,
         }
     }
 
-    fn hung(&mut self, leader: &Exact) -> bool {
+    /// One sample: what was seen once it is a hang.
+    fn look(&mut self, leader: &Exact) -> Option<String> {
         let now = Instant::now();
+        let elapsed = now.duration_since(self.sampled).as_secs_f64();
+        self.sampled = now;
         let first = leader.birth().pid;
-        let pids = std::iter::once(first).chain(platform::process::group_members(leader.birth()).into_iter().map(|m| m.pid));
         let mut own = self.line.as_ref().and_then(|line| line.ask());
         let reports = self.line.as_ref().is_some_and(|line| line.reports());
-        let (mut moved, mut why, mut peers) = (false, vec![], vec![]);
-        let (mut seen, mut read) = (HashMap::new(), HashSet::new());
-        for pid in pids {
+        let mut pids: Vec<u32> = std::iter::once(first).chain(platform::process::group_members(leader.birth()).into_iter().map(|m| m.pid)).collect();
+        let mut threads: Vec<(Key, Life)> = vec![];
+        let (mut read, mut worked) = (HashSet::new(), false);
+        let mut take = |pid: u32, threads: &mut Vec<(Key, Life)>, read: &mut HashSet<(u32, bool)>, worked: &mut bool| {
             let (lives, vigil) = match own.take().filter(|_| pid == first) {
-                Some(threads) => (Some(threads), true),
+                Some(lives) => (Some(lives), true),
                 None => (platform::process::lives(pid), false),
             };
-            // A process it can't read decides nothing.
+            // A process gone between its listing and its read: one fewer, which counts as a change.
             let Some(lives) = lives else {
-                moved = true;
-                continue;
+                *worked = true;
+                return;
             };
             read.insert((pid, vigil));
-            for life in lives.into_iter().filter(|life| !life.name.starts_with(WATCHER)) {
-                seen.insert((pid, life.tid, vigil), life.meter);
-                match life.wait {
-                    // Unreadable (or running, which its meter shows): alive, from an executor that can't report.
-                    Wait::Unknown => moved |= !reports,
-                    Wait::Time => why.push(format!("thread {} ({}) waits on time", life.tid, life.name)),
-                    Wait::Peers { peers: waits } => peers.extend(waits),
-                    Wait::Still => {}
+            threads.extend(lives.into_iter().filter(|life| !life.name.starts_with(WATCHER)).map(|life| ((pid, life.tid, vigil), life)));
+        };
+        for pid in &pids {
+            take(*pid, &mut threads, &mut read, &mut worked);
+        }
+        worked |= self.worked(&threads, &read, elapsed);
+        // The rest of its scope (a builder in a session of its own), once its group shows no work.
+        if !worked {
+            for pid in leader.scope().map(|scope| scope.members()).unwrap_or_default() {
+                if !pids.contains(&pid) {
+                    pids.push(pid);
+                    take(pid, &mut threads, &mut read, &mut worked);
                 }
             }
+            worked |= self.worked(&threads, &read, elapsed);
         }
-        // A thread that moved, or came or went in a process read the same way both times.
-        let both = |(pid, _, vigil): &Seen| read.contains(&(*pid, *vigil)) && self.read.contains(&(*pid, *vigil));
-        moved |= seen.iter().any(|(key, meter)| self.seen.get(key).is_some_and(|before| before != meter));
-        moved |= seen.keys().any(|key| !self.seen.contains_key(key) && both(key));
-        moved |= self.seen.keys().any(|key| !seen.contains_key(key) && both(key));
-        (self.seen, self.read) = (seen, read);
         if let Some(gpu) = &self.elsewhere.gpu {
             let busy = gpu.load(Ordering::Relaxed);
-            moved |= busy != self.gpu;
+            worked |= busy != self.gpu;
             self.gpu = busy;
         }
-        if moved {
-            (self.moved, self.alive, self.said) = (now, now, false);
-            return false;
+        for (key, life) in &threads {
+            if self.seen.get(key).is_some_and(|before| life.meter.runs > before.runs) {
+                self.woke.insert(*key);
+            }
+        }
+        self.seen = threads.iter().map(|(key, life)| (*key, life.meter)).collect();
+        self.read = read;
+        if worked {
+            (self.still, self.alive, self.said) = (now, now, false);
+            self.woke.clear();
+            return None;
+        }
+        let stillness = now.duration_since(self.still);
+        // Alive though still, and what the call itself waits on.
+        let (mut why, mut peers, mut untimed) = (vec![], vec![], false);
+        for ((pid, tid, _), life) in &threads {
+            let call = *tid == *pid && *pid == first || life.name.starts_with("call_");
+            match &life.wait {
+                Wait::Time if call || !self.woke.contains(&(*pid, *tid, false)) && !self.woke.contains(&(*pid, *tid, true)) => {
+                    why.push(format!("thread {tid} ({}) waits on time", life.name));
+                }
+                Wait::Peers { peers: waits } => peers.extend(waits.iter().cloned()),
+                Wait::Unknown if !reports => why.push(format!("thread {tid} ({}) can't be read", life.name)),
+                Wait::Still if call => untimed = true,
+                _ => {}
+            }
         }
         if self.answering.load(Ordering::Acquire) {
             why.push("TensorD answers its request".into());
@@ -251,16 +297,44 @@ impl Watch {
         if why.is_empty() {
             why.extend(self.peer(&peers));
         }
-        if why.is_empty() {
-            return now.duration_since(self.alive) >= platform::contain::STALL;
+        if stillness > self.longest {
+            (self.longest, self.why) = (stillness, why.join("; "));
         }
-        self.alive = now;
-        if !self.said && now.duration_since(self.moved) >= platform::contain::STALL {
-            self.said = true;
-            tracing::info!("pid {}: no CPU, GPU or I/O for {} s, alive: {}", leader.birth().pid,
-                platform::contain::STALL.as_secs(), why.join("; "));
+        if !why.is_empty() {
+            self.alive = now;
+            if !self.said && stillness >= WINDOW {
+                self.said = true;
+                tracing::info!("pid {first}: no work for {} s, alive: {}", stillness.as_secs(), why.join("; "));
+            }
+            return None;
         }
-        false
+        if now.duration_since(self.alive) < WINDOW {
+            return None;
+        }
+        let ticking = self.woke.iter().filter(|(pid, tid, _)| !(*tid == *pid && *pid == first)).count();
+        Some(format!(
+            "{}; no CPU, GPU or I/O for {} s{}",
+            if untimed { "its call waits with no deadline" } else { "its call does no work" },
+            WINDOW.as_secs(),
+            match ticking {
+                0 => String::new(),
+                1 => " (1 other thread only ticking)".into(),
+                n => format!(" ({n} other threads only ticking)"),
+            }
+        ))
+    }
+
+    /// A thread gained `WORK` of a core, moved a byte or paged in, or came or went in a process read the same way both times.
+    fn worked(&self, threads: &[(Key, Life)], read: &HashSet<(u32, bool)>, elapsed: f64) -> bool {
+        let both = |(pid, _, vigil): &Key| read.contains(&(*pid, *vigil)) && self.read.contains(&(*pid, *vigil));
+        let now: HashSet<&Key> = threads.iter().map(|(key, _)| key).collect();
+        threads.iter().any(|(key, life)| match self.seen.get(key) {
+            Some(before) => {
+                let gained = life.meter.cpu_ns.saturating_sub(before.cpu_ns) as f64 / 1e9;
+                gained >= WORK * elapsed || life.meter.bytes > before.bytes || life.meter.faults > before.faults
+            }
+            None => both(key),
+        }) || self.seen.keys().any(|key| !now.contains(key) && both(key))
     }
 
     /// A TCP peer it waits on that is there: one acknowledging what it sent, or, with nothing unacknowledged, one that answers a

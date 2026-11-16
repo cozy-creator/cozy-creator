@@ -22,6 +22,11 @@ impl Scope {
         Err(Error::unsupported(Seam::Containment))
     }
 
+    /// Its live processes: read on Linux only (cl-977's vigil reads its group elsewhere).
+    pub fn members(&self) -> Vec<u32> {
+        vec![]
+    }
+
     /// Only Linux tells an OOM kill apart.
     pub fn oom_killed(&self) -> bool {
         false

@@ -347,21 +347,36 @@ pub fn meter(pid: u32) -> Option<(u64, u64)> {
     sys::meter(pid)
 }
 
-/// What one thread shows of life (cl-977): the CPU it used or is owed and the bytes it moved (`meter`'s), and what it waits on.
+/// What one thread shows of life (cl-977): its CPU, its runs, the bytes it moved, and what it waits on.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Life {
     pub tid: u32,
     pub name: String,
-    pub meter: (u64, u64),
+    pub meter: Meter,
     pub wait: Wait,
+}
+
+/// A thread's counters (`/proc/<pid>/task/<tid>/schedstat`, `io`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Meter {
+    /// Nanoseconds it ran or waited runnable (a starved working thread is owed CPU, never still).
+    pub cpu_ns: u64,
+    /// Times it ran: each wakeup counts one.
+    pub runs: u64,
+    /// Bytes read or written; 0 where unreadable.
+    pub bytes: u64,
+    /// Page faults that read from disk (a paged-in file, a page under host pressure).
+    pub faults: u64,
 }
 
 /// What a thread waits on, read from the syscall it is blocked in.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Wait {
-    /// It runs, or its wait can't be read.
+    /// Its wait can't be read.
     Unknown,
+    /// It runs, or is in the kernel outside a syscall: its meter shows any work.
+    Running,
     /// A sleep, or a wait with a deadline: it wakes by itself.
     Time,
     /// An untimed read, poll, epoll or select on these established TCP connections.

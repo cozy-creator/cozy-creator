@@ -439,6 +439,15 @@ impl Scope {
         }
     }
 
+    /// Its live processes, whatever group or session they left for (a builder in its own session).
+    pub fn members(&self) -> Vec<u32> {
+        match &self.0 {
+            Backend::Cgroup { relative, inode, .. } => Self::path(relative, *inode).ok().and_then(|path| procs(&path).ok()).unwrap_or_default(),
+            Backend::Tree { token, .. } => census().map(|rows| members(&rows, |t| t == token).filter(|row| row.alive).map(|row| row.pid).collect())
+                .unwrap_or_default(),
+        }
+    }
+
     /// Live processes in the scope.
     pub(crate) fn processes(&self) -> crate::Result<usize> {
         match &self.0 {
