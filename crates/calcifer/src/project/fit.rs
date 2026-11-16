@@ -195,7 +195,8 @@ async fn estimates(api: &Arc<Api>, project: &str, dir: &FsPath, hub: &str, boxes
         return vec![];
     }
     let Ok(on) = crate::runs::unnamed_set(api, Some(project)).await else { return vec![] };
-    let each = boxes.into_iter().map(|asked| estimate(api, dir, hub, asked, on.clone()));
+    // Each boxed: joined inline, every box's estimate sat in the poll's frames (a release `/fit` measured up to 1.8 of its 2 MiB).
+    let each = boxes.into_iter().map(|asked| Box::pin(estimate(api, dir, hub, asked, on.clone())));
     futures_util::future::join_all(each).await.into_iter().flatten().collect()
 }
 
