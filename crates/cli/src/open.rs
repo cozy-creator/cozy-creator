@@ -36,26 +36,48 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         }
     };
     // A `--json` caller is a program: it gets the page's address, and no browser starts.
-    let opened = if ctx.json {
-        json!({ "url": page_url(&calcifer, &project)?, "private": false })
-    } else { match calcifer.post::<_, Opened>("/v1/browser/open", &json!({ "project": project.id }), None).await {
+    let opened = match ctx.json {
+        true => json!({ "url": page_url(&calcifer, &project)?, "private": false }),
+        false => private(ctx, &calcifer, &project).await?,
+    };
+    output::document(ctx, &opened);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The project in Cozy's own private browser, which Calcifer starts or reuses.
+async fn private(ctx: &Context, calcifer: &Client, project: &Address) -> Result<serde_json::Value, Error> {
+    let ask = json!({ "project": project.id });
+    let opening = calcifer.post::<_, Opened>("/v1/browser/open", &ask, None);
+    tokio::pin!(opening);
+    // Calcifer waits for Chrome while it lives (up to 2 minutes): a cold first start can take a while.
+    let opened = tokio::select! {
+        opened = &mut opening => opened,
+        () = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
+            output::say(ctx, "starting Cozy's private browser; a first start can take a while");
+            opening.await
+        }
+    };
+    match opened {
         // The printed URL is reference-only; authority was injected through the owned native pipe.
-        Ok(opened) => json!({ "url": opened.url, "private": true }),
-        // No display, no Chrome, or its launch failed: any browser on this computer opens the page, Calcifer's own (cl-980).
+        Ok(opened) => Ok(json!({ "url": opened.url, "private": true })),
+        // No Chrome, or no display: any browser on this computer opens the page, Calcifer's own (cl-980).
         Err(error) if error.code == "private_browser_unavailable" => {
-            let reason = error.cause.clone().unwrap_or(error.code);
-            let url = page_url(&calcifer, &project)?;
+            let reason = error.message.clone();
+            let url = page_url(calcifer, project)?;
             let name = match crate::project::current(ctx).await {
                 Ok(state) => state.path.file_name().map(|name| name.to_string_lossy().into_owned()),
                 Err(_) => None,
             }.unwrap_or_else(|| project.code.clone());
             output::warn(&format!("Cozy's private browser couldn't start ({reason}): open {name} at this address in any browser, which isn't private"));
-            json!({ "url": url, "private": false, "reason": reason })
+            Ok(json!({ "url": url, "private": false, "reason": reason }))
         }
-        Err(error) => return Err(error),
-    } };
-    output::document(ctx, &opened);
-    Ok(ExitCode::SUCCESS)
+        // Chrome was found but didn't start: an error, saying why (its exit and first telling line), with the page's address.
+        Err(mut error) if error.code == "private_browser_failed" => {
+            error.remedy = Some(format!("{} opens it in any browser, which isn't private", page_url(calcifer, project)?));
+            Err(error)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// A locked project unlocks at a terminal, then opens (cl-1002). `--json` and pipes never ask for a credential: they get

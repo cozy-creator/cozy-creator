@@ -125,6 +125,14 @@ jobs:
         run: scripts/web-types.sh
       - if: steps.scope.outputs.run == 'true'
         run: scripts/memory-safety.sh
+      # cl-1063: Linux sends a parent-death signal when the thread that forked the child ends, not the process. Only
+      # platform::process::spawn_lasting (unix.rs `die_with_spawner`, from a thread that lasts) and `die_with_parent` (linux.rs,
+      # a single-threaded fork) arm one.
+      - if: steps.scope.outputs.run == 'true'
+        run: |
+          found=$(git grep -cE 'PR_SET_PDEATHSIG|set_parent_process_death_signal' -- 'crates/*.rs' 'crates/*.py' || true)
+          [ "$found" = $'crates/platform/src/process/linux.rs:2\ncrates/platform/src/process/unix.rs:1' ] \
+            || { echo "::error::a parent-death signal armed outside platform::process::spawn_lasting / die_with_parent:"; echo "$found"; exit 1; }
       # The release and signing workflows run each action by its commit, never a tag that can move (xs-196).
       - if: steps.scope.outputs.run == 'true'
         run: |
