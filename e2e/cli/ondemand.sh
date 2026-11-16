@@ -169,6 +169,124 @@ cat "$OUT/ondemand-order.json"
 while read -r why; do check "ondemand-order: $why"; done < "$OUT/ondemand-order.failed"
 }
 
+# cl-1102 (Paul, 11-16): "we need a general (has, needs) list. Like, my machine has (X) but needs (Y). And then we download just Y, and
+# nothing more. We can download extras (Z) in the background, in anticipation of maybe needing them, but they aren't in the critical
+# path of inference (user request) so they shouldn't be waited on." calls.py's `needs` loads e2e/calls-needed (192 MiB) and has
+# e2e/calls-extra (256 MiB) on demand, never read, on this cold machine over the 30 MB/s link. Its record says what the machine had
+# and downloaded for it (`measurements.weights`), and what came at its run's order is that and no more; while it waits and while it
+# runs, the machine lists e2e/calls-needed as its download and never e2e/calls-extra, which comes behind it; what it waits on says
+# how much it downloads; and a second call finds it all on the machine.
+ondemand_needs() {
+[ "$RUNNER_OS" = Linux ] || return 0
+step "a call downloads what it needs and no more; extras come in the background, never waited on (cl-1102)"
+[ -z "${E2E_CALLS_SEED:-}" ] || { check "ondemand-needs: its models weren't seeded: $E2E_CALLS_SEED"; return 0; }
+local began
+slow_store ondemand-needs || return 0
+began=$(date -u +%s%3N)
+run_submit "$OUT" ondemand-needs run "$here/script/calls.py/needs" seconds:=12 --on local > /dev/null
+# The machine as `cozy machine show` says it, while the call waits on its download and once it runs.
+for _ in $(seq 900); do grep -Eq 'downloading [^"]*weights|"holding"' "$OUT/ondemand-needs.ndjson" 2> /dev/null && break; sleep 0.2; done
+(cd "${RUN_PROJECT:-.}" && cozy --json machine show local) > "$OUT/ondemand-needs.waiting.json" 2> /dev/null || check "ondemand-needs: machine show local failed"
+for _ in $(seq 900); do grep -q '"holding"' "$OUT/ondemand-needs.ndjson" 2> /dev/null && break; sleep 0.2; done
+(cd "${RUN_PROJECT:-.}" && cozy --json machine show local) > "$OUT/ondemand-needs.running.json" 2> /dev/null || check "ondemand-needs: machine show local failed"
+run_wait "$OUT" ondemand-needs || check "ondemand-needs: it did not end: $(tail -c 300 "$OUT/ondemand-needs.ndjson")"
+[ "$(run_get "$OUT" ondemand-needs .status)" = completed ] || check "ondemand-needs: $(run_get "$OUT" ondemand-needs .status): $(run_get "$OUT" ondemand-needs .reason.message | head -c 300)"
+sudo tc qdisc del dev lo root || check "ondemand-needs: the store's link wasn't restored"
+cell ondemand-needs-again "$here/script/calls.py/needs" seconds:=0 || :
+cozy machine logs local --lines 0 --since 1h > "$OUT/ondemand-needs.tensord.log" 2>&1 || check "ondemand-needs: machine logs local failed"
+python3 - "$OUT" "$began" <<'JUDGE' > "$OUT/ondemand-needs.judged.json" 2> "$OUT/ondemand-needs.failed" || true
+import json, re, sys
+from datetime import datetime
+from pathlib import Path
+out, began = Path(sys.argv[1]), int(sys.argv[2])
+MIB, needed, extra = 1 << 20, "e2e/calls-needed", "e2e/calls-extra"
+fail = lambda why: print(why, file=sys.stderr)
+def read(name):
+    try:
+        return json.loads((out / name).read_text())
+    except (OSError, ValueError):
+        return {}
+def at(line):
+    try:
+        return int(datetime.fromisoformat(line.split(" ", 1)[0].replace("Z", "+00:00")).timestamp() * 1000)
+    except ValueError:
+        return 0
+# What its record says the machine had of its weights, downloaded for it, and fetched besides.
+weights = (read("ondemand-needs.json").get("measurements") or {}).get("weights") or {}
+again = (read("ondemand-needs-again.json").get("measurements") or {}).get("weights") or {}
+# The downloader's lines by order (`origin::priority`): 2 + (class << 62 | run << 32 | rank); 0 is an emergency. Class 0 is a run's
+# needs, class 2 its extras. A checkpoint's header and tree come at its run's order too, a few KiB each.
+by_class = {"needs": 0, "extras": 0, "emergency": 0}
+for line in (out / "ondemand-needs.tensord.log").read_text(errors="replace").splitlines():
+    found = re.search(r": landed .*bytes=(\d+).*priority=(\d+)", line)
+    if at(line) < began or not found:
+        continue
+    order = int(found[2])
+    if order == 0:
+        by_class["emergency"] += int(found[1])
+    elif order >= 2 and (order - 2) >> 62 == 0:
+        by_class["needs"] += int(found[1])
+    elif order >= 2 and (order - 2) >> 62 == 2:
+        by_class["extras"] += int(found[1])
+# What its progress said it downloads, and what it said it waits on.
+stages, waits = [], []
+for line in (out / "ondemand-needs.ndjson").read_text(errors="replace").splitlines():
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if not isinstance(event, dict):
+        continue
+    progress = event.get("progress") if isinstance(event.get("progress"), dict) else {}
+    stage = progress.get("stage") or ""
+    if "downloading" in stage and "weights" in stage:
+        stages.append((stage, progress.get("bytes_total") or 0))
+    if isinstance(event.get("reason"), str) and "waiting for the models to download: " in event["reason"]:
+        waits.append(event["reason"])
+# What the machine listed for it, waiting and running.
+listed = {}
+for when in ("waiting", "running"):
+    status = read(f"ondemand-needs.{when}.json").get("status") or {}
+    listed[when] = [{k: op.get(k) for k in ("kind", "subject", "bytes_done", "bytes_total", "runs")} for op in status.get("activity") or []]
+    for run in status.get("runs") or []:
+        said = run.get("waiting") or (run.get("run") or {}).get("waiting") or ""
+        if "waiting for the models to download: " in said:
+            waits.append(said)
+print(json.dumps({"weights": weights, "again": again, "landed": by_class, "progress": sorted(set(stages)), "waits": sorted(set(w[:160] for w in waits)),
+                  "listed": listed}, indent=1))
+has, needs, extras = (weights.get(k) for k in ("has", "needs", "extras"))
+if not weights:
+    fail("its record doesn't say what the machine had of its weights and downloaded for it (measurements.weights)")
+else:
+    if has != 0 or not 192 * MIB <= needs < 200 * MIB:
+        fail(f"a cold machine had {has} bytes and needed {needs}: not none, and {needed}'s 192 MiB")
+    if not 256 * MIB <= extras < 264 * MIB:
+        fail(f"its extras are {extras} bytes, not {extra}'s 256 MiB")
+    if not 0 <= by_class["needs"] - needs <= 2 * MIB:
+        fail(f"{by_class['needs']} bytes came at its run's order, and its record says it needed {needs}: its download isn't its needs alone")
+    if not 0 < by_class["extras"] <= extras + 2 * MIB:
+        fail(f"{by_class['extras']} bytes came at an extra's order, of {extras}: {extra} didn't come in the background")
+    if again.get("needs") != 0 or again.get("has") != needs:
+        fail(f"a second call's record says {again or 'nothing'}: not all {needs} bytes already on the machine, none to download")
+if by_class["emergency"]:
+    fail(f"{by_class['emergency']} bytes came as an emergency: the call read what it hadn't downloaded")
+for stage, total in sorted(set(stages)):
+    if extra in stage or needed not in stage or (weights and total != needs):
+        fail(f"its progress said \"{stage}\" of {total} bytes: not {needed}'s {needs} alone")
+for said in sorted(set(waits)):
+    if extra in said:
+        fail(f"it waited on its extra: {said[:200]}")
+    if not re.search(r"download: [0-9.]+[KMGT]?B to download", said):
+        fail(f"what it waits on doesn't say how much it downloads: {said[:200]}")
+for when, operations in listed.items():
+    for op in operations:
+        if op["subject"] == extra:
+            fail(f"while it was {when}, the machine listed {extra} as its download: {json.dumps(op)}")
+JUDGE
+cat "$OUT/ondemand-needs.judged.json"
+while read -r why; do check "ondemand-needs: $why"; done < "$OUT/ondemand-needs.failed"
+}
+
 # A call holds (resolved, its on-demand BiRefNet guessed behind every run's needs, so part of it may land first), then `cozy model
 # install` downloads Qwen3.5 0.8B's 1.6 GB, and while it does the call reads its on-demand BiRefNet (446 MB): its executor asks
 # TensorD for it (`model_need`), which fetches what of it is absent before every other download (order 0) and answers once it's

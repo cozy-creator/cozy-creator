@@ -6,14 +6,16 @@
 (e2e/calls-unused), as H3's `edit` calls its segments and never `upscale`'s regenerate. `adapt` calls `adapted` with a LoRA
 (e2e/calls-lora) on its `base` (e2e/calls-base) beside its own `extra` (e2e/calls-other), as H3's `edit` puts its edit LoRA on a
 segment's base beside the turbo LoRA. `early` reads e2e/calls-early itself; `late` calls `late_call`, which reads
-e2e/calls-late, as LTX and H3's `edit` met on one machine."""
+e2e/calls-late, as LTX and H3's `edit` met on one machine. `needs` loads e2e/calls-needed and has e2e/calls-extra on demand,
+never read (cl-1102)."""
 
 import asyncio
+import time
 
 import msgspec
 import torch
 
-from cozy_runtime.author import App, Loader, Lora, Model, ModelChoice, Serving, call, uses_components
+from cozy_runtime.author import App, Loader, Lora, Model, ModelChoice, Serving, Telemetry, call, uses_components
 
 app = App()
 
@@ -106,3 +108,22 @@ def late_call(payload: Ask, extra: Extra) -> Said:
 async def late(payload: Ask) -> Said:
     """Calls `late_call` at once: its root holds no GPU."""
     return await call(late_call, Ask())
+
+
+class Later(Model[object]):
+    graph: object
+
+    def load(self, loader: Loader) -> None:
+        self.graph = loader.construct(lambda config: object())
+
+
+@app.entrypoint(
+    accelerator=False,
+    defaults={"extra": "e2e/calls-needed@0.1.0", "later": "e2e/calls-extra@0.1.0"},
+    on_demand=("later",),
+)
+def needs(payload: Ask, extra: Extra, later: Later, tel: Telemetry) -> Said:
+    """Holds `seconds` with `extra` loaded and `later`, on demand, never read."""
+    with tel.stage("holding"):
+        time.sleep(payload.seconds)
+    return Said(used="e2e/calls-needed")
