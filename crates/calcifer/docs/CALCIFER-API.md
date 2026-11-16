@@ -433,6 +433,9 @@ A machine is this computer's (`local`, started when used), a rental, or another 
 - `GET /v1/machines/{name}/models[?fresh=true]`: `MachineModels {machine, models: [{machine, model, release, lane, precision, checkpoint, bytes, shared_bytes}], silent?, repositories, bytes, stored_bytes}`.
   `silent`: it has reported no Status yet. `repositories` and `bytes` are its store's, shared content counted once;
   `stored_bytes` is all its store takes on the disk, models or not (0 from a machine that doesn't measure it).
+- `POST /v1/machines/{name}/models/remove` `{model}`: its downloaded copies leave that machine, never the Hub:
+  `RemovedModel {model, removed, cache_bytes_removed, retained_bytes}`. One a run there reads is refused
+  `machine_refused` (cause `model_in_use`), naming the run.
 - `GET /v1/machines/{name}/logs/{tensord|tensorfs|memory}?lines=N&since_ms=T`, and on `local` `logs/calcifer`, Calcifer's own (`400 log_not_kept` elsewhere; the CLI reads its file, so it works with Calcifer down):
   - The newest `N` whole lines (`0`: all), as `text/plain`. `since_ms` drops the lines before the first one
     stamped at or after `T`.
@@ -802,6 +805,7 @@ The CLI resolves the current directory to an existing project and sends its abso
 | `cozy whoami` | `GET /v1/account` |
 | `cozy model ls [query]` | `GET /v1/models` |
 | `cozy model ls --on` | `GET /v1/machines/{name}/models`; `--on all`: `GET /v1/machines` |
+| `cozy model uninstall [--on]`, `cozy lora uninstall [--on]` | `POST /v1/machines/{name}/models/remove` (default `local`) |
 | `cozy model show`, `cozy lora show` | `GET /v1/models/{org}/{name}/headers` |
 | `cozy model edit` | `PATCH /v1/models/{org}/{name}` |
 | `cozy model publish` | `POST /v1/models/{org}/{name}/releases` |

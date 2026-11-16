@@ -153,9 +153,11 @@ test = "release: owner release visibility and scoped private-version install"
 ["lora unpublish"]
 test = "release: retained LoRA release visibility and checkpoint-reference protection"
 ["model uninstall"]
-test = "pending: local model removal backend fixture"
+test = "pr: uninstall_on, refused naming the run that reads it, then removed with its bytes freed"
+"--on" = "pr: uninstall_on, --on local through the route a rental takes"
 ["lora uninstall"]
-test = "pending: shared local model removal backend fixture"
+test = "pending: shared model removal route, as model uninstall"
+"--on" = "pending: shared model removal route, as model uninstall --on"
 ["lora edit"]
 test = "release: LoRA metadata fixture"
 "--family" = "release: LoRA metadata fixture"
