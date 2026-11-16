@@ -474,6 +474,7 @@ fn start_api(
     use crate::api;
     let publisher = crate::published::Publisher::new(sdk, machine.clone(), root);
     service.configure_publisher(publisher.clone());
+    identity.updates.installs_with(publisher.clone());
     let objects = Arc::new(crate::objects::Objects::new(service.engine.clone()));
     service.engine.hold_memos(&objects);
     let runs = Arc::new(crate::runs::Runs {

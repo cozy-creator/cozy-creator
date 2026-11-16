@@ -5,6 +5,7 @@
 #          and someone with no sudo and no terminal gets the command, and an install that completes.
 #   Windows: WinFsp installed by it from its pinned MSI with every feature (the runner has none), and ffmpeg and uv fetched.
 #   macOS: ffmpeg fetched by it, then the first thumbnail fetches nothing.
+#   Linux, on this runner's own machine: its PyTorch base installed by it as an update run, so the first run installs none.
 fresh_here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # fresh_release <dir>: the last release's installers with this tree's fix, and the candidate cozy as this computer's archive, served at
@@ -47,7 +48,7 @@ fresh_install() {
   step "fresh: the release's installer with doctor --fix"
   fresh_release "$OUT/fresh-release" || { check "fresh: the release couldn't be made: $(tail -c 300 "$OUT/fresh-server.log" 2> /dev/null)"; return 0; }
   case ${RUNNER_OS:-Linux} in
-    Linux) fresh_ubuntu; fresh_no_terminal ;;
+    Linux) fresh_ubuntu; fresh_no_terminal; fresh_torch ;;
     Windows) fresh_windows ;;
     macOS) fresh_macos ;;
   esac
@@ -91,6 +92,25 @@ fresh_no_terminal() {
     ' > "$OUT/fresh-no-terminal.txt" 2>&1 || true
   ! grep -q FRESH-FAIL "$OUT/fresh-no-terminal.txt" && grep -q "apt-get install -y .*fuse3" "$OUT/fresh-no-terminal.txt" \
     || check "fresh: no terminal: $(grep FRESH-FAIL "$OUT/fresh-no-terminal.txt" | head -1 || tail -c 400 "$OUT/fresh-no-terminal.txt")"
+}
+
+# This runner's machine, which has run nothing: the installer's doctor --fix installs its PyTorch base as an update run of
+# `local` (cl-1030), `machine show local` says it, and the first run installs none. A container has no Runtime for a run.
+fresh_torch() {
+  step "fresh: the installer installs the machine's PyTorch; the first run installs none"
+  local engine=$HOME/.cozy/machine/var/lib/cozy/tensord base torch
+  [ -z "$(ls -d "$engine"/torch-*/pyvenv.cfg 2> /dev/null)" ] || { check "fresh: PyTorch: a base was here before the install, so it proves nothing"; return 0; }
+  COZY_DOWNLOAD_URL="$FRESH_URL" sh "$OUT/fresh-release/cozy-installer.sh" < /dev/null > "$OUT/fresh-torch.txt" 2>&1 \
+    || check "fresh: PyTorch: the installer failed: $(tail -c 400 "$OUT/fresh-torch.txt")"
+  grep PyTorch "$OUT/fresh-torch.txt" || true
+  base=$(ls -d "$engine"/torch-*/pyvenv.cfg 2> /dev/null | head -1)
+  base=${base%/pyvenv.cfg}
+  [ -n "$base" ] || check "fresh: PyTorch: no torch-<version> after the install: $(grep PyTorch "$OUT/fresh-torch.txt" | tail -1)"
+  cozy --json machine show local > "$OUT/fresh-torch-machine.json" 2>&1 || true
+  torch=$(jq -r '.status.torch // empty' "$OUT/fresh-torch-machine.json" 2> /dev/null || true)
+  [ -n "$torch" ] && [ "torch-$torch" = "${base##*/}" ] || check "fresh: PyTorch: machine show local says '$torch', the base is '${base##*/}'"
+  cell fresh-first "$fresh_here/weightless/reverse" "text=fresh$RANDOM" || return 0
+  ! grep -q "installing this machine's PyTorch" "$OUT/fresh-first.ndjson" || check "fresh: PyTorch: the first run installed it"
 }
 
 # Windows with no WinFsp: the installer, as an administrator runs it here, installs it from its pinned MSI with every feature, and

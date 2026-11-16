@@ -66,6 +66,9 @@ pub(crate) struct Status {
     /// A toolchain install, not a software pair.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub toolchain: bool,
+    /// While it installs the machine's PyTorch: the bytes that has written so far.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub bytes: u64,
     /// While `waiting_activation`: the runs in flight it waits for, by their callers' ids.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub waiting_on: Vec<String>,
@@ -91,8 +94,8 @@ pub(crate) struct Step {
     pub waiting_for: Vec<String>,
 }
 
-fn is_zero(n: &u32) -> bool {
-    *n == 0
+fn is_zero<T: Default + PartialEq>(n: &T) -> bool {
+    *n == T::default()
 }
 impl Status {
     pub(crate) fn terminal(&self) -> bool {
@@ -106,6 +109,7 @@ impl Status {
             ("waiting_activation", 1) => "waiting for a run in flight to end".into(),
             ("waiting_activation", n) => format!("waiting for {n} runs in flight to end"),
             ("queued", _) => "waiting for the machine's start or the update in progress to end".into(),
+            ("installing_torch", _) => format!("installing this machine's PyTorch, {} so far", crate::reclaim::size(self.bytes)),
             _ => String::new(),
         }
     }
@@ -174,9 +178,21 @@ pub(crate) struct Request {
     /// Install the build toolchain (`super::toolchain`) instead of a software pair.
     #[serde(default)]
     pub toolchain: bool,
+    /// The PyTorch base a machine with no image holds (`Publisher::prepare_torch`), at this version (empty: the newest),
+    /// installed first, beside the software or alone.
+    #[serde(default)]
+    pub torch: Option<String>,
     /// What its caller noted of the ask, for its outcome (`Status::notes`).
     #[serde(default)]
     pub notes: Vec<String>,
+}
+
+impl Request {
+    /// Whether it changes the machine's software or settings, which ends in a restart.
+    fn software(&self) -> bool {
+        self.runtime.is_some() || self.tensorfs.is_some() || self.cozy.is_some() || self.binary.is_some()
+            || self.gpu_memory_limit.is_some() || self.mode.is_some()
+    }
 }
 
 /// An update waiting for the one in progress, with its status.
@@ -441,6 +457,8 @@ pub(crate) struct Updates {
     stop: Mutex<Stop>,
     /// The build toolchain as last probed: at start and after each install.
     toolchain: Mutex<Option<api::machine::Toolchain>>,
+    /// What installs packages here, which holds the machine's PyTorch: set once the service serves.
+    publisher: std::sync::OnceLock<Arc<crate::published::Publisher>>,
 }
 
 impl Updates {
@@ -479,6 +497,7 @@ impl Updates {
             machine,
             stop: Mutex::default(),
             toolchain: Mutex::default(),
+            publisher: std::sync::OnceLock::new(),
         }))
     }
 
@@ -538,12 +557,32 @@ impl Updates {
                 mode: None,
                 binary: None,
                 toolchain: true,
+                torch: None,
                 notes: vec![],
             };
             // One already answered (installed, failed or queued) asks nothing.
             let _ = self.request(fetch, true, |code| super::supervise::leave(code));
         }
         verdicts
+    }
+
+    /// Its updates' PyTorch member is installed by `publisher`, as packages' first runs install it.
+    pub(crate) fn installs_with(&self, publisher: Arc<crate::published::Publisher>) {
+        let _ = self.publisher.set(publisher);
+    }
+
+    /// The machine's PyTorch base at `version` (`Publisher::prepare_torch`), its bytes written so far in the status.
+    fn torch(self: &Arc<Self>, version: &str) -> Result<String, crate::published::Failure> {
+        let publisher = self.publisher.get().ok_or(("machine_starting", "this machine installs no packages yet".to_owned()))?;
+        let updates = self.clone();
+        let job = crate::published::Job {
+            observer: Some(Box::new(move |_: &str, written, _| {
+                let _ = updates.set(|s| s.bytes = written);
+            })),
+            stop: Some(self.stop.lock().unwrap().clone()),
+            ..Default::default()
+        };
+        publisher.prepare_torch(version, &job)
     }
 
     /// Where the machine's toolchain lives, which executors find through their environment.
@@ -716,11 +755,9 @@ impl Updates {
                 .operation
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
-            && (request.runtime.is_some() || request.tensorfs.is_some() || request.cozy.is_some() || request.binary.is_some()
-                || request.gpu_memory_limit.is_some() || request.mode.is_some())
-                != request.toolchain;
+            && (request.software() || request.torch.is_some()) != request.toolchain;
         if !valid {
-            return Err((400, "an update requires operation and software or machine settings, or the toolchain alone".into()));
+            return Err((400, "an update requires operation and software, machine settings or PyTorch, or the toolchain alone".into()));
         }
         let mut current = self.status.lock().unwrap();
         if let Some(status) = current.as_ref().filter(|s| s.operation == request.operation) {
@@ -829,7 +866,10 @@ impl Updates {
                 if let Err(error) = updates.run(&request, exit) {
                     let failed = updates.set(|s| {
                         if !s.terminal() {
-                            s.error = format!("{error}; it keeps Runtime {} and TensorFS {}", s.from.runtime, s.from.tensorfs);
+                            s.error = match request.software() {
+                                true => format!("{error}; it keeps Runtime {} and TensorFS {}", s.from.runtime, s.from.tensorfs),
+                                false => error.to_string(),
+                            };
                             s.code = error.get_ref().and_then(|e| e.downcast_ref::<Coded>()).map_or("", |c| c.code).into();
                             s.enter("failed");
                         }
@@ -864,8 +904,33 @@ impl Updates {
         Ok(())
     }
 
-    fn run(&self, request: &Request, exit: fn(i32)) -> io::Result<()> {
+    fn run(self: &Arc<Self>, request: &Request, exit: fn(i32)) -> io::Result<()> {
         let from = this_binary(identified(&self.paths.sdk())?);
+        // This machine's own PyTorch first, beside the software, which keeps running: nothing drains or restarts for it,
+        // and a failure leaves it to the first run, as on a machine with none (cl-1030).
+        if let Some(version) = &request.torch {
+            self.set(|s| s.enter("installing_torch"))?;
+            let alone = !request.software();
+            let note = match self.torch(version) {
+                Ok(held) => format!("this machine's PyTorch: {held}"),
+                Err((code, why)) if alone => {
+                    let message = format!("this machine's PyTorch was not installed: {why}; its first run installs it");
+                    return Err(io::Error::other(Coded { code, message }));
+                }
+                Err((code, why)) => format!("this machine's PyTorch was not installed ({code}): {why}; its first run installs it"),
+            };
+            self.set(|s| {
+                s.bytes = 0;
+                s.notes.push(note);
+                if alone {
+                    s.to = from.clone();
+                    s.enter("succeeded");
+                }
+            })?;
+            if alone {
+                return Ok(());
+            }
+        }
         // A toolchain is installed beside the software, which keeps running: nothing restarts.
         if request.toolchain {
             self.set(|s| {

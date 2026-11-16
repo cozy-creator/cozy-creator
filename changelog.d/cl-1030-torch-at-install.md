@@ -1,0 +1,1 @@
+On Linux the installer's `cozy doctor --fix` installs this computer's PyTorch as an update run of `local`, so the first run doesn't; `cozy update` and `cozy machine update` with nothing named do the same when the Hub names another PyTorch.
