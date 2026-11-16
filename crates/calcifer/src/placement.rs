@@ -356,10 +356,11 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
     if let Some(broken) = machines.broken(&row.name) {
         return Err(format!("it's broken: {}", broken.message));
     }
-    // Its Status as its open stream says it; with none open (it stopped answering, or never did), what it answers now, or no quote.
+    // Its Status as its open stream says it; with none open (it stopped answering, or never did), what it answers now, or no quote: one
+    // that doesn't answer isn't a candidate, never placed on what it said before, until it answers again (xs-199).
     let frame = match machines.live_frame(&row.name) {
         Some(frame) => frame,
-        None => link.status().await.map_err(|e| e.to_string())?,
+        None => machines.status_read(&row.name, &link).await?,
     };
     if let Some(broken) = &frame.broken {
         return Err(format!("it's broken: {}", broken.message));

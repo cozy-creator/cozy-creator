@@ -51,6 +51,7 @@ mod reports;
 mod runs;
 pub mod serve;
 mod slow;
+mod stages;
 mod state;
 mod store;
 mod toolbox;
