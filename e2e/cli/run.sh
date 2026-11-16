@@ -498,6 +498,7 @@ WEB_2=(
   delete-undo
   canvas-nav
   resize
+  notes
   fullscreen
 )
 WEB_3=(
