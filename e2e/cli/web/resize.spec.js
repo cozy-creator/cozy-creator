@@ -2,7 +2,7 @@
 // then it lets you resize it again, and then it zooms back to its original size… The image also keeps flashing on hover-over"): a picture
 // box's corner pulled in 30 steps across the canvas and past its edge grows at every step until the widest a box may be; let go, that size
 // is saved and stays; and its picture is on the screen in every frame, hovered, pulled, let go and left, never fetched again by a hover.
-const { test, expect, canvasCard, canvasIdle, canvasVisible, hoverBox, openPoint, png } = require('./fixtures');
+const { test, expect, canvasCard, canvasIdle, canvasVisible, cornerPoint, hoverBox, openPoint, png } = require('./fixtures');
 const { rows } = require('./geometry');
 const { fit } = require('./hands');
 
@@ -58,18 +58,19 @@ test('resize', async ({ page, project }) => {
 
   await test.step('hovered: its card, with its picture, in every frame, and nothing fetched', async () => {
     await mark('hover');
-    const card = await hoverBox(page, NAME);
+    await hoverBox(page, NAME);
     await page.waitForTimeout(600);
-    grip = await card.locator('.corner').first().boundingBox();
+    // Its corner: the old canvas's hover card's grip, the new canvas's drawn one, both shown as it's hovered.
+    grip = await cornerPoint(page, NAME);
     expect(grip, 'its corner').toBeTruthy();
     before = await width();
-    expect.soft(fetched, 'a hover fetches its picture again').toEqual([]);
+    expect.soft(fetched, 'a hover fetches its picture again (the hover card loads its own copy: cl-1048 PR 2)').toEqual([]);
   });
 
   const widths = [];
   await test.step('its corner pulled in 30 steps, past the canvas: wider at every step until the widest', async () => {
     await mark('pull');
-    const from = { x: grip.x + grip.width / 2, y: grip.y + grip.height / 2 };
+    const from = grip;
     const to = { x: page.viewportSize().width + 60, y: from.y + 120 };
     await page.mouse.move(from.x, from.y);
     await page.mouse.down();
@@ -109,7 +110,7 @@ test('resize', async ({ page, project }) => {
       else if (!frame.shown) (phases[phase] ??= []).push(frame.at);
     }
     expect.soft(frames.filter((frame) => !frame.mark).length, 'frames looked at').toBeGreaterThan(30);
-    expect.soft(phases, `frames with no picture on the screen, by phase (of ${frames.length})`).toEqual({});
+    expect.soft(phases, `frames with no picture on the screen, by phase (of ${frames.length}; cl-1016, cl-1048 PR 2)`).toEqual({});
     expect.soft(fetched.slice(was), 'leaving fetches its picture again').toEqual([]);
   });
 });

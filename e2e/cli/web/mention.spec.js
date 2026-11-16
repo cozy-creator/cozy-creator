@@ -5,7 +5,7 @@
 // only Walk's name, and `cozy run watch` says so once. `<` offers only what the box's tool can use (cl-1084; Paul, 11-16: "reference inputs
 // are offered only by tools that can use them (a text-to-image-only tool like SDXL shows none)"): still's lists Amy and Bea, never Walk, and
 // SDXL's, words only, lists a Text box and no picture or video.
-const { test, expect, canvasIdle, focus, fixtureTool, MP4, png, canvasCard, canvasPoint, canvasVisible, screenshotPixels, selectedNames, hoverBox } = require('./fixtures');
+const { test, expect, canvasIdle, focus, fixtureTool, MP4, png, canvasCard, canvasPoint, canvasVisible, renameField, screenshotPixels, selectedNames, hoverBox } = require('./fixtures');
 const { carry } = require('./geometry');
 const { backAfter, carryBox, fit, leave } = require('./hands');
 
@@ -117,8 +117,7 @@ test('mention', async ({ page, project, api, cli }) => {
 
   await test.step('Amy renamed Ann: the chip and the stored field', async () => {
     await leave(page);
-    await (await hoverBox(page, 'amy')).locator('.nm').click();
-    const field = page.getByRole('textbox', { name: 'Name', exact: true });
+    const field = await renameField(page, 'amy');
     await field.fill('ann');
     await field.press('Enter');
     await expect.poll(() => canvasVisible(page, 'ann')).toBe(true);

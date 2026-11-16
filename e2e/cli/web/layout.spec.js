@@ -2,9 +2,10 @@
 // the API put it, looked at 0.25, 0.5, 1 and 2, then one open in Focus. No box or label lies on another; nothing is cut off, nothing that floats
 // over the canvas lies on another, and Focus is under none of it; no scrollbar anywhere. Words read at 10 px or more (a box's at 100%: they're
 // drawn at the canvas's scale, cl-890); a prompt over a picture is bold, 4.5:1 or more against its surface (cl-901). A render's Cancel shows at
-// 1 and at 0.5, and the Focus frame fits the window. Each finding names its rule, where, and what (layout.js's rules, measured).
+// 1 and at 0.5, and the Focus frame fits the window. A name cut at rest says itself whole under the pointer (cl-1048 row 18). Each finding
+// names its rule, where, and what (layout.js's rules, measured).
 const { randomUUID } = require('crypto');
-const { test, expect, canvasCard, canvasNames, canvasIdle, hoverBox, focus, fixtureTool, observeStill, openPoint, screenshotPixels, MP4, png } = require('./fixtures');
+const { test, expect, canvasCard, canvasNames, canvasIdle, hoverBox, focus, fixtureTool, middle, nameUnderPointer, newCanvas, observeStill, openPoint, screenshotPixels, MP4, png } = require('./fixtures');
 
 test.use({
   launchOptions: {
@@ -284,12 +285,17 @@ test('layout', async ({ page, project, api }) => {
       });
       expect.soft(look.hit, `Cancel is reachable at ${zoom}`).toEqual({ name: 'making', part: 'cancel' });
       expect.soft(textPixels(screenshotPixels(await page.screenshot()), [painted.labels.cancel], look.ink, look.dpr), `Cancel has actual text pixels at ${zoom}`).toEqual([]);
-      // The sparse native control still has its accessible role when the person physically hovers the box.
+      // The sparse native control still has its accessible role when the person physically hovers the box (the old canvas's hover card;
+      // the new canvas draws Cancel, judged above by hitTest and its pixels, and names no DOM button for it).
       await hoverBox(page, 'making');
-      const cancel = face.getByRole('button', { name: "Cancel making's render" });
-      await expect.soft(cancel, `Cancel shows on the rendering face at ${zoom}`).toBeVisible();
-      const native = await cancel.boundingBox();
-      expect.soft(Boolean(native) && native.x >= 0 && native.y >= 0 && native.x + native.width <= 1600 && native.y + native.height <= 1000, `the native Cancel is on screen at ${zoom}: ${JSON.stringify(native)}`).toBe(true);
+      // The new canvas names it for a screen reader among the canvas's hidden actions (visually hidden, so present, not shown).
+      if (await newCanvas(page)) await expect.soft(page.locator('.canvas-actions[role=group]').getByRole('button', { name: "Cancel making's render", exact: true }), `Cancel named for a screen reader at ${zoom}`).toHaveCount(1);
+      else {
+        const cancel = face.getByRole('button', { name: "Cancel making's render" });
+        await expect.soft(cancel, `Cancel shows on the rendering face at ${zoom}`).toBeVisible();
+        const native = await cancel.boundingBox();
+        expect.soft(Boolean(native) && native.x >= 0 && native.y >= 0 && native.x + native.width <= 1600 && native.y + native.height <= 1000, `the native Cancel is on screen at ${zoom}: ${JSON.stringify(native)}`).toBe(true);
+      }
       await passive(page);
     };
 
@@ -310,6 +316,24 @@ test('layout', async ({ page, project, api }) => {
       await zoomMenu('Zoom to 200%');
       await looked('at 2');
       await zoomMenu('Zoom to fit');
+    });
+
+    await test.step('a name cut at rest says itself whole under the pointer, and nothing else moves', async () => {
+      // cl-1048 acceptance row 18 (Paul's): the long name, cut with an ellipsis where its box ends at rest; hovered, the whole of it.
+      await zoomMenu('Zoom to fit');
+      await passive(page);
+      const label = (await canvasCard(page, LONG))?.rendered?.labels?.title;
+      expect.soft(Boolean(label) && label.text !== label.fullText && label.text.trimEnd().endsWith('…') && label.fullText === LONG,
+        `cut at rest, with an ellipsis: ${JSON.stringify(label && { text: label.text, fullText: label.fullText })}`).toBe(true);
+      const where = () => page.evaluate(() => {
+        const inspection = document.querySelector('.canvas-root').canvasInspection;
+        return { camera: inspection.camera(), at: Object.fromEntries(inspection.names().map((name) => [name, inspection.card(name)?.position ?? null])) };
+      });
+      const before = await where();
+      const said = await nameUnderPointer(page, LONG);
+      expect.soft((said.title === LONG || (said.whole && said.text === LONG)) && said.under_pointer, `whole under the pointer: ${JSON.stringify(said)}`).toBe(true);
+      expect.soft(await where(), 'nothing else moves as it is hovered').toEqual(before);
+      await passive(page);
     });
 
     await test.step('then open one box in Focus', async () => {

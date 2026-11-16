@@ -7,7 +7,7 @@
 const { execFileSync } = require('child_process');
 const { createHash, randomBytes } = require('crypto');
 const { dirname, join } = require('path');
-const { test, expect, canvasIdle, fixtureTool, focus, middle, openPoint, png, canvasCard, canvasNames, canvasPoint, canvasVisible, canvasText, canvasLabel, hoverBox } = require('./fixtures');
+const { test, expect, canvasIdle, fixtureTool, focus, middle, openPoint, png, canvasCard, canvasNames, canvasPoint, canvasVisible, canvasText, canvasLabel, hoverBox, titlePoint, trashPoint } = require('./fixtures');
 
 const PLACES = { shot: { x: 0, y: 0 }, named: { x: 0, y: 420 }, spare: { x: 360, y: 420 }, words: { x: 720, y: 420 }, still: { x: 1080, y: 420 } };
 const STILL = `${fixtureTool('tool.py')}/still`;
@@ -37,8 +37,14 @@ print(json.dumps({"seq": seq and seq[0], "boxes": boxes, "canvas": canvas}))`;
 
 /** Where `name` is drawn on the canvas: its node's flow position. */
 const placeOf = async (page, name) => {
-  const card = await canvasCard(page, name), at = card?.rendered?.transform ?? card?.position;
-  return at ? [Math.round(at.x), Math.round(at.y)] : null;
+  // At rest: once the carry's lift has eased back (about 90 ms), two reads 100 ms apart agree. `+ 0` makes -0 a 0.
+  const read = async () => {
+    const card = await canvasCard(page, name), at = card?.rendered?.transform ?? card?.position;
+    return at ? [Math.round(at.x) + 0, Math.round(at.y) + 0] : null;
+  };
+  let place = null, last;
+  await expect.poll(async () => { place = await read(); const same = JSON.stringify(place) === JSON.stringify(last); last = place; return same; }, { message: `${name}'s place at rest`, intervals: [100] }).toBe(true);
+  return place;
 };
 
 /** The top bar's word on Calcifer and what waits for it, and everything it says. */
@@ -56,7 +62,7 @@ async function fitAll(page) {
 
 /** `name` dragged by its name, as a hand does. */
 async function drag(page, name, dx, dy) {
-  const { x, y } = await middle((await hoverBox(page, name)).locator('.nm'));
+  const { x, y } = await titlePoint(page, name);
   await page.mouse.move(x, y);
   await page.mouse.down();
   await page.mouse.move(x + 8, y + 2);
@@ -163,7 +169,7 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
     expect.soft(moved, 'the second move shows at once').not.toEqual(once);
 
     // A tap on its name at rest renames it.
-    const name = await middle((await hoverBox(page, 'named')).locator('.nm'));
+    const name = await titlePoint(page, 'named');
     await page.mouse.click(name.x, name.y);
     await expect(page.getByRole('textbox', { name: 'Name' })).toBeFocused();
     await page.keyboard.press('ControlOrMeta+a');
@@ -188,9 +194,7 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
     await drop(page, 'joined.png', JOINED, await canvasPoint(page, 'renamed'));
 
     // Deleted last, so Undo takes back the delete.
-    const head = await middle((await hoverBox(page, 'spare')).locator('.nm'));
-    await page.mouse.move(head.x, head.y);
-    const trash = await middle((await hoverBox(page, 'spare')).getByRole('button', { name: 'Delete', exact: true }));
+    const trash = await trashPoint(page, 'spare');
     await page.mouse.click(trash.x, trash.y);
     await expect.configure({ soft: true }).poll(async () => (await canvasNames(page)).includes('spare'), { message: 'the delete shows at once', ...AT_ONCE }).toBe(false);
     const clear = await openPoint(page);

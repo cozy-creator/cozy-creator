@@ -15,7 +15,7 @@ const { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } = 
 const http = require('http');
 const { dirname, join } = require('path');
 const { promisify } = require('util');
-const { test, expect, canvasIdle, focus, canvasVisible } = require('./fixtures');
+const { test, expect, canvasCard, canvasIdle, focus, canvasVisible, openPoint } = require('./fixtures');
 
 const need = (name) => process.env[name] || (() => { throw new Error(`$${name} is not set: web.sh's web_suite runs where e2e/isolated.sh sets it`); })();
 const run = promisify(execFile);
