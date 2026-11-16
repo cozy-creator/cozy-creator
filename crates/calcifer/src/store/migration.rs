@@ -159,7 +159,30 @@ impl Store {
         Ok(true)
     }
 
+    /// A project's legacy import, once per project in this Calcifer while it fails (cl-1003): one going now, or one that failed,
+    /// isn't tried again until a restart, so a burst of the project's requests never repeats it over the whole legacy store.
+    /// What wasn't imported stays in the store for the hard cut, and the project opens without it.
     fn migrate_into(&self, project: Destination<'_,'_>, inputs: &Path) -> Result<()> {
+        let id = project.project_id().to_owned();
+        if !self.legacy_tried.lock().unwrap_or_else(|error| error.into_inner()).insert(id.clone()) { return Ok(()); }
+        let imported = self.import_into(project, inputs);
+        if imported.is_ok() { self.legacy_tried.lock().unwrap_or_else(|error| error.into_inner()).remove(&id); }
+        imported
+    }
+
+    /// Whether the project's legacy import is going now or failed in this Calcifer (`migrate_into`): its worker custody isn't
+    /// asked for either until a restart.
+    pub(crate) fn legacy_import_held(&self, id: &str) -> bool {
+        self.legacy_tried.lock().unwrap_or_else(|error| error.into_inner()).contains(id)
+    }
+
+    /// True the first time it's asked for `id` in this Calcifer: the project's legacy worker custody is asked for once, never on
+    /// each of its requests (cl-1003).
+    pub(crate) fn legacy_worker_first(&self, id: &str) -> bool {
+        self.legacy_tried.lock().unwrap_or_else(|error| error.into_inner()).insert(format!("worker:{id}"))
+    }
+
+    fn import_into(&self, project: Destination<'_,'_>, inputs: &Path) -> Result<()> {
         own_remote_legacy(&project)?;
         // Found by the owner index under a read: a project the legacy store holds nothing of never takes the writer for it.
         if !self.project_migration_required(project.execution_scope().1, project.project_id())? {

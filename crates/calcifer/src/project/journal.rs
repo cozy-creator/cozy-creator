@@ -154,7 +154,13 @@ impl Projects {
         super::unseen::refresh(&store.project)?;
         // A history read never starts a worker. If the registered local worker is
         // already available, resolve actual bindings without retaining this view lease.
-        if store.legacy_worker_pending().unwrap_or(false) && api.machines.local.running() {
+        // Once per project in this Calcifer, and never after its import failed here (cl-1003): not on each of its requests.
+        let worker = {
+            let maintenance = api.calcifer.maintenance_store();
+            !maintenance.legacy_import_held(store.project_id()) && store.legacy_worker_pending().unwrap_or(false) && api.machines.local.running()
+                && maintenance.legacy_worker_first(store.project_id())
+        };
+        if worker {
             if let Ok(selectors)=api.calcifer.maintenance_store().verify_legacy_worker_requests(&store) {
                 if !selectors.is_empty() && selectors.iter().all(|(_,machine,_)|machine=="local") {
                     if let Ok(scope)=crate::private_io::scope_for_project(store.project_id(),store.execution_scope().1) {

@@ -304,18 +304,39 @@ fn index_legacy_owners(writer: &mut Connection) -> Result<()> {
 /// The fenced runs that may be the project's at `root` (`id`): those of its root, its sealed records' (a move this Calcifer
 /// saw included) and every unreadable one, as `(id, out_dir, spec)`. The caller decides each as a full read did.
 pub(crate) fn legacy_run_candidates(conn: &Connection, root: &Path, id: &str) -> Result<Vec<(String, String, Vec<u8>)>> {
+    let mut found = vec![];
+    any_legacy_run_candidate(conn, root, id, |id, out_dir, spec| { found.push((id.to_owned(), out_dir.to_owned(), spec.to_vec())); Ok(false) })?;
+    Ok(found)
+}
+
+/// Whether `decides` says yes of any of `legacy_run_candidates`, each read in turn and never all held at once: a project's check
+/// takes one row's memory, not every sealed run of every project (cl-1003).
+fn any_legacy_run_candidate(conn: &Connection, root: &Path, id: &str, mut decides: impl FnMut(&str, &str, &[u8]) -> Result<bool>) -> Result<bool> {
     let mut projects = vault::projects_moved_under(root);
     projects.push(id.to_owned());
     let projects = serde_json::to_string(&projects).map_err(|error| StoreError::Corrupt(error.to_string()))?;
     let mut stmt = conn.prepare("SELECT r.id, r.out_dir, r.spec FROM legacy_run_owners o JOIN legacy_project_runs r ON r.id = o.id
         WHERE o.owner_root IN (?1, ?2) OR o.owner_project IN (SELECT value FROM json_each(?3))")?;
-    let rows = stmt.query_map(params![path_key(root), UNREADABLE_OWNER, projects], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    let mut rows = stmt.query(params![path_key(root), UNREADABLE_OWNER, projects])?;
+    while let Some(row) = rows.next()? {
+        let read = |error: rusqlite::types::FromSqlError| StoreError::Corrupt(format!("legacy run: {error}"));
+        let (id, out_dir) = (row.get_ref(0)?.as_str().map_err(read)?, row.get_ref(1)?.as_str().map_err(read)?);
+        let spec = row.get_ref(2)?.as_blob_or_null().map_err(read)?.unwrap_or_default();
+        if decides(id, out_dir, spec)? { return Ok(true); }
+    }
+    Ok(false)
 }
 
 /// The fenced retry answers that may be the project's at `root` (`id`), as `(key, body)`: those at or under its root, its
 /// sealed ones and every unreadable one.
 pub(crate) fn legacy_answer_candidates(conn: &Connection, root: &Path, id: &str) -> Result<Vec<(String, Vec<u8>)>> {
+    let mut found = vec![];
+    any_legacy_answer_candidate(conn, root, id, |key, body| { found.push((key.to_owned(), body.to_vec())); Ok(false) })?;
+    Ok(found)
+}
+
+/// Whether `decides` says yes of any of `legacy_answer_candidates`, each read in turn, never all held at once (cl-1003).
+fn any_legacy_answer_candidate(conn: &Connection, root: &Path, id: &str, mut decides: impl FnMut(&str, &[u8]) -> Result<bool>) -> Result<bool> {
     let mut projects = vault::projects_moved_under(root);
     projects.push(id.to_owned());
     let projects = serde_json::to_string(&projects).map_err(|error| StoreError::Corrupt(error.to_string()))?;
@@ -323,8 +344,14 @@ pub(crate) fn legacy_answer_candidates(conn: &Connection, root: &Path, id: &str)
     let mut stmt = conn.prepare("SELECT a.key, a.body FROM legacy_answer_owners o JOIN legacy_project_answers a ON a.key = o.key
         WHERE o.owner_root IN (?1, ?3) OR (o.owner_root > ?1 || '/' AND o.owner_root < ?1 || '0') OR (o.owner_root > ?1 || '\\' AND o.owner_root < ?1 || ']')
            OR o.owner_project IN (SELECT value FROM json_each(?2))")?;
-    let rows = stmt.query_map(params![root, projects, UNREADABLE_OWNER], |row| Ok((row.get(0)?, row.get(1)?)))?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    let mut rows = stmt.query(params![root, projects, UNREADABLE_OWNER])?;
+    while let Some(row) = rows.next()? {
+        let read = |error: rusqlite::types::FromSqlError| StoreError::Corrupt(format!("legacy answer: {error}"));
+        let key = row.get_ref(0)?.as_str().map_err(read)?;
+        let body = row.get_ref(1)?.as_blob_or_null().map_err(read)?.unwrap_or_default();
+        if decides(key, body)? { return Ok(true); }
+    }
+    Ok(false)
 }
 
 // An earlier V8 draft may already have this RC's old global table. Fence it
@@ -939,6 +966,9 @@ pub(crate) struct Store {
     legacy_home: PathBuf,
     /// Projects whose legacy files this Calcifer found nothing left of to retire, until another import changes what is left.
     settled: Mutex<std::collections::HashSet<String>>,
+    /// Projects whose legacy import is going now, or failed in this Calcifer: not tried again until it restarts (cl-1003), so a
+    /// project's requests never each repeat a failing import over the whole legacy store. One that worked leaves the set.
+    legacy_tried: Mutex<std::collections::HashSet<String>>,
     writer: Mutex<Connection>,
     readers: Readers,
     durable: Durable,
@@ -2282,6 +2312,7 @@ impl Store {
         Ok(Self {
             legacy_home: path.parent().unwrap_or(Path::new(".")).to_owned(),
             settled: Mutex::default(),
+            legacy_tried: Mutex::default(),
             writer: Mutex::new(writer),
             readers,
             durable: Durable { wal: wal.then(|| journal.into()), ..Durable::sqlite() },
@@ -2647,21 +2678,20 @@ impl Store {
             if has_table(conn, "legacy_project_runs")? {
                 // Only the runs the owner index says may be this project's; each decided as a full read decided it.
                 if !has_table(conn, "legacy_run_owners")? { return Ok(true); }
-                for (_, out_dir, spec) in legacy_run_candidates(conn, &root, id)? {
-                    match vault::payload_root(&spec) {
-                        Ok(Some(owner)) if owner == root => return Ok(true),
-                        Ok(None) if Path::new(&out_dir) == landing => return Ok(true),
-                        Err(_) => return Ok(true),
-                        _ => {}
-                    }
-                }
+                let ours = any_legacy_run_candidate(conn, &root, id, |_, out_dir, spec| Ok(match vault::payload_root(spec) {
+                    Ok(Some(owner)) => owner == root,
+                    Ok(None) => Path::new(out_dir) == landing,
+                    Err(_) => true,
+                }))?;
+                if ours { return Ok(true); }
             }
             if has_table(conn, "legacy_project_answers")? {
                 if !has_table(conn, "legacy_answer_owners")? { return Ok(true); }
-                for (_, body) in legacy_answer_candidates(conn, &root, id)? {
-                    let owner = vault::payload_root(&body).ok().flatten().or_else(|| answer_path(&body).map(|path| vault::logical(&path)));
-                    if owner.is_some_and(|owner| owner.starts_with(&root)) { return Ok(true); }
-                }
+                let ours = any_legacy_answer_candidate(conn, &root, id, |_, body| {
+                    let owner = vault::payload_root(body).ok().flatten().or_else(|| answer_path(body).map(|path| vault::logical(&path)));
+                    Ok(owner.is_some_and(|owner| owner.starts_with(&root)))
+                })?;
+                if ours { return Ok(true); }
             }
             for (table, column) in [("legacy_project_projects", "id"), ("legacy_project_unseen", "project")] {
                 if has_table(conn, table)? && conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {column}=?1)"), [id], |row| row.get::<_, bool>(0))? {
