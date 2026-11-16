@@ -881,8 +881,6 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children, 
   // On its way, its face says so whole, unless a take is looked at, a glimpse of what it's making shows or its words are being written:
   // then along its bottom.
   const full = (busy || arriving !== undefined) && view.viewed === undefined && !glimpse && !(view.here && view.hereWords)
-  // What stopped its last try, in place: an approved box looked at shows nothing wrong (Card's dot).
-  const failed = !busy && !placing && Boolean(asset?.failure) && view.viewed === undefined && !(asset?.pinned && faceOf(view) === "media")
   return (
     <div className={`media ${glimpsed ? "glimpsed" : ""} ${asset?.kind === "image" ? "image-asset" : ""} ${pendingImage ? "pending-image" : ""} ${asset?.kind === "image" && view.hereWords ? "image-editing" : ""} ${view.here && view.hereWords ? "writing" : ""} ${shown?.alpha ? "alpha" : ""} ${slid ? "slid" : ""} ${blank ? "blank" : ""}`} style={{ aspectRatio: aspectOf(view) }} onAnimationEnd={() => slid && store.patch(name, { slid: undefined })} {...hover}>
       <div className="media-pixels" data-image-reference={asset?.kind === "image" && shown && !view.hereWords ? "" : undefined}>
@@ -918,7 +916,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children, 
       {/* At rest it keeps its size (cl-936): what's being made fades in over it, unless what it shows is approved; an image's covers its references (cl-940). */}
       {(busy || (!view.here && making && (!asset?.pinned || makingMedia))) && run !== undefined && view.viewed === undefined && !glimpse && <LatentPreview view={view} number={run} />}
       {busy && asset?.rendering != null && <Progress fraction={asset.rendering} says={`Rendering ${Math.round(asset.rendering * 100)}%`} rendering />}
-      {failedTake ? <FailedHere whole message={failedTake.message.replace(`${name}: `, "")} copy={bodyText(failedTake, watch?.run, undefined)} /> : failed && <FailedHere message={asset!.failure!.message.replace(`${name}: `, "")} copy={bodyText(asset!.failure!, view.run?.number, view.run?.machine)} />}
+      {failedTake && <FailedHere whole message={failedTake.message.replace(`${name}: `, "")} copy={bodyText(failedTake, watch?.run, undefined)} />}
       {/* What it can do is in Focus: at rest a box is its name, its picture, its tool and shape, and how its render goes (cl-932). */}
       {view.here && asset?.kind === "image" && asset.tool && !view.hereWords && !pendingImage && shown && <button type="button" className="image-edit-action canvas-control" aria-label="Edit image" onClick={(event) => { event.stopPropagation(); store.beginImageEdit(name) }}>Edit</button>}
       {turning && here && <OrbitView key={here.sha256} path={turning.path} shown={here} orbit={turning.orbit} />}

@@ -207,10 +207,9 @@ function VaultBody({ id }: { id: string }) {
   if (client.transport.channel) return <p>Open this project on its computer to manage local encryption.</p>
   if (!status) return <><p>Checking project protection…</p><Failure error={error} /><button className="tb" type="button" onClick={() => void refetch()}>Try again</button></>
   const unlocked = status.state === "unlocked"
-  const updating = status.state === "storage_update_required"
   return (
     <div className="stack" data-vault-state={status.state}>
-      <p>{updating ? "Project storage still needs a verified update. Protection cannot be confirmed until it finishes." : !status.encrypted ? "Encryption is off. This project uses ordinary local storage." : unlocked ? "This project is unlocked." : status.state === "locking" ? "Locking: another application is still using a file. Close it and try again." : "This project is locked."}</p>
+      <p>{!status.encrypted ? "Encryption is off. This project uses ordinary local storage." : unlocked ? "This project is unlocked." : status.state === "locking" ? "Locking: another application is still using a file. Close it and try again." : "This project is locked."}</p>
       <Failure error={ask.error} plain />
       {sourceRemoved && !error && status.encrypted && unlocked && <p>The unencrypted project was removed.</p>}
       {ended.length > 0 && <p className="muted">Locking ended the project's runs {ended.join(", ")}.</p>}
@@ -235,7 +234,7 @@ function VaultBody({ id }: { id: string }) {
             ? <label>Passphrase<input className="field" type="password" maxLength={4096} autoComplete="current-password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} /></label>
             : <label>Recovery secret<input className="field" type="password" maxLength={4096} autoComplete="off" spellCheck={false} value={recovery} onChange={(event) => setRecovery(event.target.value)} /></label>}
           {timeoutControls}
-          <button className="tb primary" type="submit" disabled={ask.busy || !(credential === "recovery" ? recovery : passphrase)}>{updating ? "Unlock and update storage" : "Unlock project"}</button>
+          <button className="tb primary" type="submit" disabled={ask.busy || !(credential === "recovery" ? recovery : passphrase)}>Unlock project</button>
         </form>
       ) : (
         <>
