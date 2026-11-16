@@ -77,3 +77,48 @@ echo "thumbs: ffmpeg: $(head -2 "$out/ffmpeg.txt" | tr '\n' ' ') route: $(cat "$
 echo "thumbs: Calcifer's warnings: $(grep -i 'thumb\|ffmpeg\|measur' "$out/diagnostics.log" 2> /dev/null | tail -5)"
 rm -rf "$out/pictures" "$out/one/files" "$out/two/files"
 }
+
+# thumb_arriving (cl-1108; xs-203's user-flow, pod-sessions 43961722220 and 43875113783): the page asks for a take's thumbnail a second
+# after its run completes on its rental, while its file is still on its way here, and a 404 logs a console error the web cells fail on.
+# A run's file held from landing (its project's .runs/ unwritable: its export waits and tries again, as a rental's slow link holds it),
+# its picture's thumbnail is asked for as the page asks: an answer that's no error, 202 (not yet), as one not drawn yet is. Let land,
+# the thumbnail is there.
+thumb_arriving() {
+step "a take's thumbnail asked for while its file is on its way here is no error (cl-1108)"
+[ -n "$LOCAL" ] || { echo "thumb_arriving: this computer runs no models itself"; return 0; }
+local P=$OUT/arriving pid number='' digest='' w=$OUT/arriving-watch.json code=''
+cozy --json new --unencrypted "$P" > "$OUT/arriving-new.json" 2>&1 || { check "thumb_arriving: new: $(tail -c 300 "$OUT/arriving-new.json")"; return; }
+mkdir -p "$P/.runs" && chmod 555 "$P/.runs"
+(in_project "$P" --json run "$here/project/draw.py/draw" instructions=arriving --on local > "$OUT/arriving-run.ndjson" 2>&1) & pid=$!
+# Its first local code here installs first: minutes on a cold runner.
+for _ in $(seq 300); do
+  [ -n "$number" ] || number=$(in_project "$P" --json run ls --limit 10 2> /dev/null | jq -r '[.runs[] | select(.kind == "call")][0].number // empty' 2> /dev/null || true)
+  if [ -n "$number" ]; then
+    in_project "$P" --json run watch "$number" --once > "$w" 2>&1 || true
+    digest=$(jq -r '.output[]? | select(.sha256 != null and .url == null) | .sha256' "$w" 2> /dev/null | head -1 || true)
+    [ -z "$digest" ] || break
+    J '.status == "failed" or .status == "canceled"' "$w" && break
+  fi
+  sleep 2
+done
+if [ -z "$digest" ]; then
+  check "thumb_arriving: no run with its file on its way: $(jq -c '{number, status, output: [.output[]? | {sha256, url}]}' "$w" 2> /dev/null) $(tail -c 300 "$OUT/arriving-run.ndjson")"
+else
+  code=$(project_api "$P" "/thumbs/$digest" -o "$OUT/arriving-thumb.json" -w '%{http_code}' 2> /dev/null || true)
+  in_project "$P" --json run watch "$number" --once > "$w" 2>&1 || true
+  echo "thumb_arriving: run $number, $(jq -r .status "$w" 2> /dev/null), its file $digest on its way ($(jq -c '[.output[]? | {sha256, url, arriving: (.url == null)}]' "$w" 2> /dev/null)): its thumbnail answered $code $(head -c 200 "$OUT/arriving-thumb.json")"
+  J --arg d "$digest" '[.output[]? | select(.sha256 == $d and .url == null)] | length == 1' "$w" || check "thumb_arriving: $digest landed while it was held, so the cell judges nothing"
+  [ "$code" = 202 ] || check "thumb_arriving: a thumbnail of $digest, on its way here, answered $code, not 202: $(head -c 300 "$OUT/arriving-thumb.json")"
+  # Let land: the export's next try takes it, and the thumbnail drawn as it landed is there.
+  chmod 755 "$P/.runs"
+  for _ in $(seq 60); do
+    code=$(project_api "$P" "/thumbs/$digest" -o "$OUT/arriving-landed.bin" -w '%{http_code}' 2> /dev/null || true)
+    [ "$code" = 200 ] && break
+    sleep 1
+  done
+  [ "$code" = 200 ] || check "thumb_arriving: once $digest could land, its thumbnail answered $code after 60 s: $(head -c 300 "$OUT/arriving-landed.bin")"
+fi
+chmod 755 "$P/.runs" 2> /dev/null || true
+kill "$pid" 2> /dev/null || true
+wait "$pid" 2> /dev/null || true
+}
