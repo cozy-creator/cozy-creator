@@ -242,14 +242,15 @@ WRAP
     while pgrep -u "$CUT_USER" > /dev/null; do sleep 0.2; done
     sudo rsync -a --delete /opt/cozy-cut/home/ "$home/" || { check "hard cut: the home not put back after the kill $window"; return; }
   # <what> | <file> | <system calls> | <which call> | <the store after> | <start, or the project's open>. SQLite's own fchmod as it makes
-  # the new file is `fchmod`.
+  # the new file is `fchmod`. strace's -P matches a rename by the name it moves, never the one it makes: a step that makes a file under
+  # a name of its own (a hold, a copy) is killed on its folder instead.
   done <<WINDOWS
-holding a project's files|$calc/kept/$key.cozytensors|rename,renameat,renameat2|1|old|start
+holding projects' files, before the first hold|$calc/kept|mkdir,mkdirat,openat,chmod,fchmodat,fchmodat2|1|old|start
 writing the new store|$calc/state.db.cut|pwrite64,write|1|old|start
 the new store synced, before the swap|$calc/state.db.cut|chmod,fchmodat,fchmodat2|1|old|start
 the swap|$calc/state.db.cut|rename,renameat,renameat2|1|old|start
 deleting the backups|$calc/state.db.pre-hand-copy|unlink,unlinkat|1|new|start
-a project's copy at its open, before it takes its place|$P/files/$latents|rename,renameat,renameat2|1|new|open
+a project's copy at its open in its place, before its folder is synced|$P/files|fsync,fdatasync|1|new|open
 a project's copies in, before its hold goes|$calc/kept/$key.cozytensors|unlink,unlinkat|1|new|open
 WINDOWS
 }
