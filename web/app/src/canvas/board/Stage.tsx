@@ -50,11 +50,14 @@ async function startRenderer(width: number, height: number): Promise<Renderer> {
   warm.addChild(new Graphics().rect(0, 0, 2, 2).fill(0x808080), new Sprite(Texture.WHITE), new Text({ text: "a" }))
   made.render(warm)
   warm.destroy({ children: true })
+  // ...and waited for here: left queued, the GPU was still compiling them when the canvas mounted, and the first call that waits on it
+  // (its resize) held the page 180 ms then (e2e 43784566887).
+  if ("gl" in made) (made as unknown as { gl: WebGLRenderingContext }).gl.getError()
   return made
 }
 /** A renderer begun as the page loads, before any project is read (cl-1018: one begun as the canvas mounts held the open's first frame
  *  60–90 ms past its state): the first canvas takes it. It holds nothing of any project until then. */
-let early: Promise<Renderer> | null = startRenderer(1, 1)
+let early: Promise<Renderer> | null = startRenderer(innerWidth, innerHeight)
 early.catch(() => {})
 export interface StageProps {
   store: CanvasStore
