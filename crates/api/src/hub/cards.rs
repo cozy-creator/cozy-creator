@@ -193,6 +193,14 @@ pub fn kept(root: &Path, hub: &str, package: &str, release: &str) -> Option<Card
     read(&document).ok()
 }
 
+/// The packages (`org/name`) with a card kept from `hub`.
+pub fn kept_packages(root: &Path, hub: &str) -> Vec<String> {
+    let entries = |dir: &Path| std::fs::read_dir(dir).into_iter().flatten().flatten().filter(|e| e.path().is_dir()).collect::<Vec<_>>();
+    (entries(&hub_dir(root, hub)).into_iter())
+        .flat_map(|org| entries(&org.path()).into_iter().map(move |name| format!("{}/{}", org.file_name().to_string_lossy(), name.file_name().to_string_lossy())))
+        .collect()
+}
+
 /// The releases of `package` whose cards are kept.
 pub fn kept_releases(root: &Path, hub: &str, package: &str) -> Vec<String> {
     let cards = std::fs::read_dir(dir(root, hub, package)).into_iter().flatten().flatten();

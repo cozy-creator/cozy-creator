@@ -1141,9 +1141,11 @@ pub enum Basis {
     Measured,
     /// The caller's `prior_ms`.
     Prior,
-    /// Its release's benchmarks (`estimate::References`, cl-1024): of this card, else another's scaled by the Hub's speeds; scaled to
-    /// its size.
+    /// Its release's benchmark of this card (`estimate::References`, cl-1024), scaled to its size.
     Reference,
+    /// Estimated: its release's benchmark of another card, scaled to this one by how the two compare across the functions both were
+    /// measured on, else by the Hub's spec speeds (`References::time`; Paul 11-15, "a rough guess"). Never counted as measured.
+    Scaled,
     /// Nothing: a minute is assumed.
     #[default]
     None,

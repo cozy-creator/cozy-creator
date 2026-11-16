@@ -459,7 +459,10 @@ pub(super) fn keyed(basis: &str) -> &'static str {
 
 /// Where the plan sent it and what it quoted there: `enishi, to finish in 20 s (measured, warm; 9 s preparing, 0.3 GiB to fetch)`.
 fn placed_words(placed: &api::calcifer::Placed) -> String {
-    let basis = serde_json::to_value(placed.basis).ok().and_then(|basis| basis.as_str().map(str::to_owned)).unwrap_or_default();
+    let basis = match placed.basis {
+        api::machine::Basis::Scaled => "estimated".to_owned(),
+        basis => serde_json::to_value(basis).ok().and_then(|basis| basis.as_str().map(str::to_owned)).unwrap_or_default(),
+    };
     let warm = if placed.warm { ", warm" } else { "" };
     let fetch = match placed.fetch_bytes {
         0 => String::new(),
@@ -929,11 +932,12 @@ pub(crate) fn said(progress: &Progress) -> String {
 }
 
 /// How long the run has left, as Calcifer estimates it: `41s left`, `about 3m10s left` while that is
-/// little trusted, or that nothing like it has run to tell yet.
+/// little trusted, `(estimated)` when it stands on another card's runs, or that nothing like it has run to tell yet.
 pub(crate) fn left(progress: &Progress) -> Option<String> {
     match (progress.eta_s, progress.eta_basis) {
         // Only the bytes it moves are known: at least that.
         (Some(left), Some(EtaBasis::Bytes)) => Some(format!("at least {} left", output::span(left))),
+        (Some(left), Some(EtaBasis::Card)) => Some(format!("about {} left (estimated)", output::span(left))),
         (Some(left), _) => {
             let about = if progress.eta_confidence.is_some_and(|c| c < 0.5) { "about " } else { "" };
             Some(format!("{about}{} left", output::span(left)))
