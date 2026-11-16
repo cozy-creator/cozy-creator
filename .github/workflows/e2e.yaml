@@ -389,6 +389,8 @@ jobs:
           - { what: cozy, repo: cozy-creator, take: "${{ inputs.tensord || inputs.publish_run }}" }
           - { what: tensorfs, repo: cozy-creator, take: "${{ inputs.tensorfs }}" }
           - { what: runtime, repo: cozy-runtime, take: "${{ inputs.runtime }}" }
+          # selfupdate's cozy of the line before (cl-978), built beside the candidate, not on its shard's path.
+          - { what: cozy-before, repo: cozy-creator, take: "${{ !(contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && contains(inputs.shards || 'selfupdate', 'selfupdate')) && 'none' || '' }}" }
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs sends no signal.
     timeout-minutes: 60
@@ -419,9 +421,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: .build -> target
-          key: ${{ matrix.what }}
+          # cozy-before is the candidate's own source at another version: cozy's cache, which it never saves over.
+          key: ${{ matrix.what == 'cozy-before' && 'cozy' || matrix.what }}
           # A merge group's cache is its own ref's, which nothing restores.
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          save-if: ${{ github.ref == 'refs/heads/master' && matrix.what != 'cozy-before' }}
       # The page cozy embeds; build.sh builds it. A ref from before web/app has none.
       - if: matrix.what == 'cozy' && matrix.take == '' && steps.reuse.outputs.name == '' && hashFiles('.build/web/app/package.json') != ''
         uses: actions/setup-node@v4
@@ -760,22 +763,16 @@ jobs:
         with:
           name: fixture-hub
           path: ${{ runner.temp }}/fixture-hub
-      # selfupdate (cl-978): the change built as a release of the line before the Latest, the cozy that updates itself.
+      # selfupdate (cl-978): the change built as a release of the line before the Latest, the cozy that updates itself (the
+      # `candidate cozy-before` job's).
       - if: (matrix.shard == 'selfupdate' || startsWith(matrix.shard, 'selfupdate@'))
-        uses: actions/checkout@v5
+        uses: actions/download-artifact@v4
         with:
-          repository: cozy-creator/cozy-creator
-          ref: ${{ needs.affected.outputs.repo == 'cozy-creator' && needs.affected.outputs.ref || needs.affected.outputs.stack }}
-          path: .before
+          pattern: cozy-before-*
+          path: ${{ runner.temp }}/before
+          merge-multiple: true
       - if: (matrix.shard == 'selfupdate' || startsWith(matrix.shard, 'selfupdate@'))
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: .before -> target
-          save-if: false
-      - if: (matrix.shard == 'selfupdate' || startsWith(matrix.shard, 'selfupdate@'))
-        env:
-          CARGO_INCREMENTAL: "0"
-        run: echo "E2E_COZY_BEFORE=$(bash .creator/e2e/candidates/build.sh cozy-before .before "$RUNNER_TEMP/before")" >> "$GITHUB_ENV"
+        run: chmod +x "$RUNNER_TEMP/before/cozy" && echo "E2E_COZY_BEFORE=$RUNNER_TEMP/before/cozy" >> "$GITHUB_ENV"
       - name: cli suite
         env:
           GH_TOKEN: ${{ github.token }}
@@ -803,7 +800,13 @@ jobs:
           fi
       # cozy's logs (Calcifer's too) however the suite ended: one the job's timeout ends never reaches its `logs` part (cl-837).
       - if: always() && !startsWith(matrix.shard, 'containment')
-        run: mkdir -p "$RUNNER_TEMP/e2e/cozy-logs" && cd ~/.cozy && find . -name '*.log' -size -20M | tar -cf - -T - | tar -xf - -C "$RUNNER_TEMP/e2e/cozy-logs" || true
+        run: |
+          mkdir -p "$RUNNER_TEMP/e2e/cozy-logs" && cd ~/.cozy && find . -name '*.log' -size -20M | tar -cf - -T - | tar -xf - -C "$RUNNER_TEMP/e2e/cozy-logs" || true
+          # Calcifer's own log is its user unit's journal; each project's walk keeps its placements in its own storage.
+          XDG_RUNTIME_DIR=/run/user/$(id -u) journalctl --user -u cozy-calcifer.service --no-pager > "$RUNNER_TEMP/e2e/cozy-logs/calcifer-journal.log" 2>&1 || true
+          find "$RUNNER_TEMP/e2e" -path '*/.vault-calcifer/diagnostics/walk.log' -size -20M 2> /dev/null | while read -r walk; do
+            cp "$walk" "$RUNNER_TEMP/e2e/cozy-logs/walk-$(basename "$(dirname "$(dirname "$(dirname "$walk")")")").log"
+          done || true
       - if: always() && !startsWith(matrix.shard, 'containment')
         uses: ./.creator/e2e/publish
         with:

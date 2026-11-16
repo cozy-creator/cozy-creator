@@ -59,6 +59,8 @@ fi
 plat=$(printf '%s-%s' "${RUNNER_OS:-Linux}" "${RUNNER_ARCH:-X64}" | tr '[:upper:]' '[:lower:]')
 name=candidate-$what-$inputs
 [ "$plat" = linux-x64 ] || name=$what-$plat-$inputs
+# cozy-before is another `cozy`: outside candidate-*, which every job takes whole, so it never replaces the candidate.
+[ "$what" != cozy-before ] || name=$what-$plat-$inputs
 if [ -n "${REUSE:-}" ]; then
   # REUSE=1 only reuses: nothing is written, and no name, when no run has these sources' candidate.
   reuse || { echo "$what: no e2e run of cozy-creator holds a build of ${sha:0:12}'s build inputs ($inputs)" >&2; exit 0; }
