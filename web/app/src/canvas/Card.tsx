@@ -18,9 +18,8 @@ import { useDragScroll } from "./dragScroll"
 import { downloadable, Media, Preview, Thumb, usePreview, type PreviewHover } from "./Media"
 import { caretToEnd } from "./MentionText"
 import { NameField } from "./NameField"
-import { ORBIT, orbitOf } from "./Orbit"
 import { ratioWords } from "./ratios"
-import { bare, beingMade, ContinueFrom, LeadIn, Segments, VideoTransport } from "./Segments"
+import { bare, ContinueFrom, LeadIn, Segments, VideoTransport } from "./Segments"
 import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, makes, makingRun, NARROWEST, paints, ratioOf, reshapes, shownOf, takingOf, toolName, valuesOf, watched, widthFor } from "./shown"
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { VideoEditor } from "./timeline/VideoEditor"
@@ -310,38 +309,6 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
     </div>
   ) : (
     row
-  )
-}
-
-/** Orbit viewing for the take shown, as its file says or as a person turns it on (Paul, 11-11): on, a drag turns the video and no play
- *  button plays it. It's what the file says of itself, kept with the take, so it's undone like any edit and puts nothing out of date. */
-function OrbitToggle({ view, name }: { view: ElementView; name: string }) {
-  const store = useCanvasStore()
-  const shown = shownOf(view)
-  // Being made, its row is there already, to set once the take lands: nothing moves when it does (Paul, 11-12).
-  if (beingMade(view) && !view.hereWords) {
-    return (
-      <label className="row orbit-toggle">
-        <input className="canvas-control" type="checkbox" role="switch" aria-label="Orbit: drag to turn" checked={false} disabled />
-        <span>Orbit</span>
-        <span className="muted">Plays</span>
-      </label>
-    )
-  }
-  if (!shown || shown.field !== "video" || view.hereWords || !view.asset) return null
-  const on = Boolean(orbitOf(shown))
-  const which = shown.number === undefined ? name : `${view.asset.noun} ${shown.number} of ${name}`
-  const flip = (want: boolean) => {
-    const rest = Object.fromEntries(Object.entries(shown.metadata ?? {}).filter(([key]) => key !== "orbit"))
-    const metadata = want ? { ...rest, orbit: ORBIT } : rest
-    store.setMetadata(name, shown.number, metadata, `Turned ${want ? "on" : "off"} orbit viewing for ${which}`)
-  }
-  return (
-    <label className="row orbit-toggle">
-      <input className="canvas-control" type="checkbox" role="switch" aria-label="Orbit: drag to turn" checked={on} onChange={(event) => flip(event.target.checked)} />
-      <span>Orbit</span>
-      <span className="muted">{on ? "Drag to turn" : "Plays"}</span>
-    </label>
   )
 }
 
@@ -796,8 +763,6 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
       </FocusFrame>}
       {plays && <Segments name={name} view={view} />}
       {rendering && <span className="render-wave" data-state={viewState(view) ?? undefined} aria-hidden="true" />}
-      {/* Watched, not written: orbit viewing turns on and off here too (xs-180), as in a take being written. */}
-      {focused && asset?.kind === "video" && !asset.timeline && !editing && <OrbitToggle view={view} name={name} />}
       {here && !lite && asset?.tool && !view.placing && <ToolLine name={name} view={view} width={width} />}
       {here && !lite && asset && asset.kind !== "image" && !view.hereWords && !view.placing && !looking && <ShapeLine name={name} view={view} />}
       {drawn && !here && !focused && <Under view={view} name={name} lite={lite} />}
@@ -824,7 +789,6 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
               {/* Slow here, opened from Render's row: in Focus first under the frame, else right under Render (cl-1004). */}
               {focused && <SlowNotice name={name} view={view} />}
               {editing && asset.kind === "video" && !asset.timeline && <ContinueFrom name={name} view={view} />}
-              {asset.kind !== "image" && !asset.timeline && <OrbitToggle view={view} name={name} />}
               {asset.kind !== "image" && !editing && <Bar view={view} name={name} />}
               {/* Looking at a take an image tool made, only its description: its tool and words are the next take's, behind its +. */}
               {/* With no tool, a picture or a video asks nothing and has nothing to render (Paul, 11-12). */}

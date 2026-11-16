@@ -12,7 +12,7 @@ export interface Orbit {
 }
 
 /** What turning orbit viewing on gives any video: one whole turn, clockwise, looping. */
-export const ORBIT: Orbit = { degrees: 360, direction: "cw", loops: true }
+const ORBIT: Orbit = { degrees: 360, direction: "cw", loops: true }
 
 /** A video's `orbit`, read as found: what's missing or malformed takes the whole turn's. None: it plays. */
 export function orbitOf(shown: { metadata?: Record<string, unknown> } | null | undefined): Orbit | null {
