@@ -705,6 +705,7 @@ case $SHARD in
   projectvault) parts="
     idle_vault
     vault_times
+    vault_queue
     shared_scratch
     open_unlocks
     projectvault

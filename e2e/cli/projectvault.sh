@@ -307,6 +307,23 @@ vault_times() (
   grep 'task="vault' "$HOME/.cozy/calcifer/health.log" 2> /dev/null | tail -n 12 || echo "vault times: no vault phase took a second"
 )
 
+# A lock queued on an encrypted project waits for nothing long, and holds up no other project (cl-1007): `cozy vault lock` beside a
+# slow upload to it locks, and a plain project's thumbnails come meanwhile (e2e/cli/vault_queue.py).
+vault_queue() (
+  step "a lock beside a slow upload locks at once, and another project's thumbnails go on (cl-1007)"
+  [ -n "$LOCAL" ] || exit 0
+  local work secrets
+  work=$(mktemp -d "$OUT/vault-queue.XXXXXX") secrets=$(mktemp -d "$OUT/vault-queue-credentials.XXXXXX")
+  trap 'in_project "$work/a" --json vault lock > /dev/null 2>&1 || true; rm -rf -- "$secrets"' EXIT
+  printf '%s\n' 'synthetic queue passphrase' > "$secrets/passphrase" && chmod 600 "$secrets/passphrase"
+  cozy --json new "$work/a" --passphrase-file "$secrets/passphrase" --recovery-out "$secrets/recovery" > "$work/a.json" 2> "$work/a.err" \
+    || fail "vault queue: cozy new (encrypted): $(tail -c 300 "$work/a.err")"
+  cozy --json new --unencrypted "$work/b" > "$work/b.json" 2> "$work/b.err" || fail "vault queue: cozy new: $(tail -c 300 "$work/b.err")"
+  python3 "$E2E/cli/vault_queue.py" --project-a "$work/a" --project-b "$work/b" --cli "$COZY" > "$work/queue.json" 2> "$work/queue.err" \
+    || fail "vault queue: $(jq -c '{failed, lock, b_thumb, upload}' "$work/queue.json" 2> /dev/null || tail -c 600 "$work/queue.err")"
+  jq -c '{lock_s: .lock.after_s, lock_state, b_thumb_s: .b_thumb.after_s, upload}' "$work/queue.json" | sed 's/^/vault queue: /'
+)
+
 # An ordinary and an unlocked encrypted project run on the machine's executors, one code path, each call in its own scratch
 # inside its project; BiRefNet stays warm across them; locked, nothing of the encrypted one is outside it (cl-984;
 # e2e/cli/shared_scratch.py). isolated.sh published e2e-scratch and BiRefNet's model.
