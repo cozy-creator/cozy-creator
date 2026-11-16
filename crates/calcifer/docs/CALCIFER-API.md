@@ -330,7 +330,7 @@ The machine owns its GPU width (cl-816): a lone job runs wide, several queued jo
   read in its scope, which the machine never times itself, so its quote is `measured`, cl-1047). A machine that ran none of it and has
   no prior is timed by its release's benchmarks (`api::estimate::References`, cl-1024: of its card, else another card's times its Hub
   speed over this one's, the card nearest in speed; local code from source, a packages checkout's or a project's `./dir`, by its own
-  `benchmarks.json`: rows travel with the package, in its source before it is published, on the Hub after), else a minute; a machine packing its own queue knows no benchmarks. A render's jobs not sent are planned together (`plan.rs`): each, in dependency order, where it
+  `benchmarks.json`: rows travel with the package, in its source before it is published, on the Hub after), else a minute; a machine packing its own queue knows no benchmarks. Before its release's benchmarks, another of this computer's machines' runs of it on the same card (`prior`), and after them its runs on another card scaled by how the two compare (`scaled`; GPUs only, cl-1107). A machine's runs ahead count all their work not done: a root on its GPUs what's left since it took them, a root started on its CPU alone while its GPU calls wait for their weights or a GPU (an orchestrator, `Queued::gpu_waits`) all of it, after its calls' downloads. A rental that hasn't measured its link is quoted at the median of what this account's other rentals from its Hub and provider measured (cl-1107). `cozy machine show` says when a machine's GPUs are free of what it holds, as these quotes count it (`status.busy_until_ms`). A render's jobs not sent are planned together (`plan.rs`): each, in dependency order, where it
   finishes soonest after those placed before it, then single moves while the whole ends sooner. A ready job goes when its planned machine
   has a GPU for it (one machine: at once); each machine is told its upcoming jobs (`PUT /v1/upcoming`) and, idle with nothing planned
   while others hold unstarted work it can run, what to prepare (`PUT /v1/prepare`).
@@ -348,6 +348,8 @@ The machine owns its GPU width (cl-816): a lone job runs wide, several queued jo
 - Only a machine on this cozy's minor quotes ("Machines on this minor"); one on another is updated first and quotes on the next turn.
 - With several machines, a job a machine would start more than a second after its preparation waits here, quoted again as the render
   moves or every 10 s, so it commits to no queue early. A quote reserves nothing: two clients picking one machine are settled by its queue.
+  A run sent that waits there (in its queue, or started on its CPU alone while its GPU work waits) is quoted again at each report of a
+  machine and moves, the same run, to one clearly sooner (10% and 30 s), never back to a machine it left (cl-1073, cl-1107).
 - `any` is never quoted: it goes to the least busy rental. A `new` run of a published function weighs a rental against the account's
   rentals up or on their way and the computers added here (not `local`): the rental's boot (its Hub's `boot_seconds` for the product it
   would place it on, else 4 min), preparation and run on that card against their soonest finish. When one of them is sooner it goes there,

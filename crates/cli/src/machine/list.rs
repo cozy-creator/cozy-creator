@@ -255,6 +255,10 @@ pub(crate) fn record(ctx: &Context, m: &Machine) -> output::Record {
                     record = record.field("rc", format!("{} {}: {}", rc.rc, rc.state, rc.detail));
                 }
             }
+            // How long its GPUs stay busy with the runs it holds, as placement counts them (cl-1107).
+            if let Some(until) = status.busy_until_ms.filter(|_| m.state != MachineState::Ended) {
+                record = record.field("busy for", format!("about {}, as placement counts its runs", clock((until - now_ms()).max(0))));
+            }
             // The warm set: each member at its level, or what it holds instead and why.
             for item in &status.warm {
                 let held = match item.holds.as_str() {

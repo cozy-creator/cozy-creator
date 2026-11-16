@@ -1119,12 +1119,13 @@ pub struct Quote {
 pub enum Basis {
     /// Runs of the function on this machine.
     Measured,
-    /// The caller's `prior_ms`.
+    /// Runs of it elsewhere on this card: the caller's `prior_ms`, else another of the caller's machines' (cl-1107).
     Prior,
     /// Its release's benchmark of this card (`estimate::References`, cl-1024), scaled to its size.
     Reference,
-    /// Estimated: its release's benchmark of another card, scaled to this one by how the two compare across the functions both were
-    /// measured on, else by the Hub's spec speeds (`References::time`; Paul 11-15, "a rough guess"). Never counted as measured.
+    /// Estimated: another of the caller's machines' runs of it on another card (cl-1107), else its release's benchmark of another
+    /// card, scaled to this one by how the two compare across the functions both were measured on, else by the Hub's spec speeds
+    /// (`References::time`; Paul 11-15, "a rough guess"). Never counted as measured.
     Scaled,
     /// Nothing: a minute is assumed.
     #[default]
@@ -1306,11 +1307,23 @@ pub struct Queued {
     pub width: u32,
     /// When it began executing, this machine's clock; 0 before.
     pub started_at_unix_ms: i64,
-    /// The repositories it waits to download.
+    /// When its work took its GPUs, this machine's clock: its own claim of them, or, for a root on no GPU of its own (an
+    /// orchestrator), its first call's (cl-1107). 0: not yet, or a machine that doesn't say.
+    #[serde(skip_serializing_if = "is_zero_i64")]
+    pub gpu_at_unix_ms: i64,
+    /// It runs on its CPU alone while its GPU work waits to begin: an orchestrator whose calls wait for their weights or a GPU
+    /// (cl-1107). All its work is still ahead of it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub gpu_waits: bool,
+    /// The repositories it waits to download, its calls' included.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub models: Vec<String>,
-    /// Its weights' bytes still to come.
+    /// Its weights' bytes still to come, its calls' included.
     pub bytes_left: u64,
+}
+
+fn is_zero_i64(n: &i64) -> bool {
+    *n == 0
 }
 
 /// A function's newest runs here (`StatusFrame::times`).

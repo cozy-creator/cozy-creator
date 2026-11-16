@@ -47,7 +47,8 @@ impl Machines {
 pub(crate) async fn picture(api: &Arc<Api>, coming: &Coming) -> Picture {
     let way = &coming.way;
     let gpus = (0..way.gpus).map(|index| v1::Gpu { index, name: way.card.clone(), ..Default::default() }).collect();
-    let frame = v1::StatusFrame { gpus, serving_gpus: way.gpus, ..Default::default() };
+    // Its link as the rentals beside it measured theirs (cl-1107).
+    let frame = crate::placement::linked(api, &coming.name, v1::StatusFrame { gpus, serving_gpus: way.gpus, ..Default::default() });
     let filter = RunFilter { status: Some(Status::Queued), machine: Some(coming.name.clone()), limit: QUEUED, ..RunFilter::default() };
     let sent = api.calcifer.each_store(|store| store.runs(&filter).map(|(rows, ..)| rows)).map(|lists| lists.into_iter().flatten().collect::<Vec<_>>()).unwrap_or_default();
     let mut ahead = vec![];
