@@ -226,7 +226,8 @@ handle=$(jq -r 'select(.type? == "rental.accepted") | .name // empty' "$OUT/rena
 [ -n "$rental" ] && [[ $handle == rent-* ]] || { check "rental_rename: no rental accepted with a handle: $(tail -c 400 "$OUT/rename-rent.ndjson")"; cozy --json logout > /dev/null 2>&1 || true; return; }
 # The project's run, to it by its handle before its host is named: it waits for the rental.
 (cd "$RUN_PROJECT" && cozy --json run "$rename_here/weightless/reverse" "text=renamed$RANDOM" --on "$handle" > "$OUT/rename-run.ndjson" 2>&1) & pid=$!
-for _ in $(seq 120); do number=$(run_number "$OUT/rename-run.ndjson"); [ -z "$number" ] || break; sleep 1; done
+# Its first local code here locks the package first: minutes on a cold runner.
+for _ in $(seq 600); do number=$(run_number "$OUT/rename-run.ndjson"); [ -z "$number" ] || break; sleep 1; done
 kill "$pid" 2> /dev/null || true
 wait "$pid" 2> /dev/null || true
 if [ -z "$number" ]; then
