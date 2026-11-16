@@ -70,7 +70,7 @@ const FIT = { x: 70, y: 90, zoom: 0.45 };
 /** Each frame, from the page's start: when each box is first drawn, when its preview is, and whether it pulses while it's on its way. */
 const SAMPLER = () => {
   try { performance.setResourceTimingBufferSize(10_000); } catch {}
-  const seen = { nodes: {}, frames: 0, misses: [], long: [] };
+  const seen = { nodes: {}, frames: 0, misses: [], long: [], ticks: [] };
   window.__opens = seen;
   // What held the page's thread: what a first frame waits behind.
   try {
@@ -105,6 +105,7 @@ const SAMPLER = () => {
   const tick = () => {
     const now = performance.now();
     seen.frames++;
+    if (now < 8000) seen.ticks.push(Math.round(now));
     const inspection = document.querySelector('.canvas-root')?.canvasInspection;
     for (const name of inspection?.resources()?.frames ? inspection.names() : []) {
       if (seen.nodes[name]?.preview != null) continue;
@@ -424,6 +425,8 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
           reads: api.map((entry) => [`${path(entry).replace(/project-[0-9a-f]+/, 'P')}${new URL(entry.name).search}`, Math.round(entry.startTime), Math.round(entry.responseEnd)]).sort((a, b) => a[2] - b[2]).slice(0, 24),
           long: (opens?.long ?? []).filter(({ at }) => at < 3000),
         },
+        open: document.querySelector('.canvas-root')?.canvasInspection?.resources()?.open ?? null,
+        ticks: (opens?.ticks ?? []),
         waiting: rows.filter(([, row]) => row.waiting > 0).length,
         pulsing: rows.filter(([, row]) => row.waiting > 0 && row.pulsing === row.waiting).length,
         misses: opens?.misses ?? [],
@@ -464,6 +467,7 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
       waited_for_preview: now.waiting,
       pulsed_while_waiting: now.pulsing,
       unpulsed: now.misses.slice(0, 5),
+      open: now.open, ticks: now.ticks,
       thumbnails_made: made,
       wire: wire.since(from),
     };
