@@ -350,3 +350,35 @@ python3 -c 'import json, sys; print(json.dumps(json.load(open(sys.argv[1]))["sum
 echo "weights/install MB/s from (c)'s ask: $(cat "$OUT/ondemand-share.series" 2> /dev/null)"
 while read -r why; do check "ondemand-share: $why"; done < "$OUT/ondemand-share.failed"
 }
+
+# ondemand_ramp (th-378): a model's weights alone through cl-1007's 60 Mbit FIFO, from an empty store: their time, and the streams
+# TensorFS's ramp settled at. 11-16 cale's ramp doubled on a window that received nothing (8 → 16 at 0 MB/s, then 32 against that)
+# and settled keeping a doubling that bought nothing: 64 streams on a 28 MB/s link. ondemand-ramp.json keeps the numbers.
+ondemand_ramp() {
+[ "$RUNNER_OS" = Linux ] || return 0
+step "a model's weights through a 60 Mbit link: their time and the streams the ramp settled at (th-378)"
+local minio began ended ramp
+minio=$(pgrep -af minio | grep -oE -- '--address[ =]127\.0\.0\.1:[0-9]+' | grep -oE '[0-9]+$' | head -1)
+[ -n "$minio" ] || { check "ondemand-ramp: the isolated Hub's MinIO port wasn't found: $(pgrep -af minio | head -2)"; return 0; }
+sudo ip link set dev lo mtu 1500 && sudo tc qdisc add dev lo root handle 1: prio \
+  && sudo tc qdisc add dev lo parent 1:3 handle 30: tbf rate 60mbit burst 1mb latency 200ms \
+  && sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport "$minio" 0xffff flowid 1:3 \
+  || { sudo tc qdisc del dev lo root 2> /dev/null; sudo ip link set dev lo mtu 65536; check "ondemand-ramp: the link wasn't slowed"; return 0; }
+began=$(date +%s%3N)
+run_submit "$OUT" ramp-weights model install lilylilith/pagebox --on local > /dev/null
+run_wait "$OUT" ramp-weights || check "ondemand-ramp: the install did not end: $(tail -c 300 "$OUT/ramp-weights.ndjson")"
+ended=$(date +%s%3N)
+sudo tc qdisc del dev lo root 2> /dev/null; sudo ip link set dev lo mtu 65536
+[ "$(run_get "$OUT" ramp-weights .status)" = completed ] \
+  || check "ondemand-ramp: $(run_get "$OUT" ramp-weights .status): $(run_get "$OUT" ramp-weights .reason.message | head -c 300)"
+cozy machine logs local --lines 0 --since 1h > "$OUT/ondemand-ramp.tensord.log" 2>&1 || check "ondemand-ramp: machine logs local failed"
+ramp=$(grep -oE '(more streams|streams settled|fewer streams)[^"]*' "$OUT/ondemand-ramp.tensord.log" | sed -E 's/ +/ /g' | paste -sd ';' -)
+python3 - "$OUT/ondemand-ramp.tensord.log" "$((ended - began))" > "$OUT/ondemand-ramp.json" <<'PY'
+import json, re, sys
+log, ms = open(sys.argv[1], errors="replace").read(), int(sys.argv[2])
+steps = [(m[1], int(m[2]), float(m[3])) for m in re.finditer(r"(more streams|streams settled|fewer streams)\S*\s+streams=(\d+)(?:\s+mb_s=([\d.]+))?", log) if m[3]]
+settled = [s for s in steps if s[0] == "streams settled"]
+print(json.dumps({"ms": ms, "settled_streams": settled[0][1] if settled else None, "ramp": steps}))
+PY
+echo "ondemand-ramp: pagebox in $((ended - began)) ms; ramp: $ramp"
+}

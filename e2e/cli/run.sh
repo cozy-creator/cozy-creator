@@ -638,6 +638,8 @@ case $SHARD in
   env-cost) parts="env_cost logs" ;;
   # What a call may read on demand, on a cold machine (cl-966).
   ondemand) parts="ondemand_ahead ondemand_need ondemand_share logs" ;;
+  # A model's weights alone through the 60 Mbit link, timed, with the streams the ramp settled at (th-378).
+  ondemand-ramp) parts="ondemand_ramp logs" ;;
   # A small disk full of idle models' weights makes room for the next runs' (tfs-150).
   disk) parts="disk_full logs" ;;
   # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.
