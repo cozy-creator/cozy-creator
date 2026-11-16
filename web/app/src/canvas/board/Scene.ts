@@ -1,6 +1,7 @@
 import { Color, Container, Graphics } from "pixi.js"
 import type { Client } from "../../api/client"
 import type { CanvasStore } from "../CanvasStore"
+import { carried } from "../checkpoints"
 import { GLIDE_MS } from "../clear"
 import type { Box } from "../graph"
 import { bandOf, hexOf, nameZoomOf, shownOf } from "../shown"
@@ -60,6 +61,7 @@ export class Scene {
     const live = new Set<string>()
     let animating = false, wake: number | null = null
     const tools = this.o.store.tools.get()
+    const going = carried.get()
     const visit = (node: CanvasNode) => {
       if (live.has(node.id)) return
       const viewOf = this.o.store.get(node.data.name)
@@ -73,7 +75,9 @@ export class Scene {
         this.held.set(node.id, held)
       }
       try {
-        animating = this.card(held, node, viewOf, frame, env, tools) || animating
+        // While something is carried, every box that would take it says so (AddOns' outline, now drawn at rest).
+        const takes = Boolean(going && viewOf.asset && !going.whyNot(node.data.name, viewOf, tools))
+        animating = this.card(held, node, viewOf, frame, env, tools, takes) || animating
         const show = held.show
         if (show?.progress?.time) wake = Math.min(wake ?? 1000, 1000 - (Date.now() % 1000))
       } catch (error) {
@@ -104,7 +108,7 @@ export class Scene {
     }
   }
 
-  private card(held: Held, node: CanvasNode, view: NonNullable<ReturnType<CanvasStore["get"]>>, frame: Frame, env: CardEnv, tools: unknown): boolean {
+  private card(held: Held, node: CanvasNode, view: NonNullable<ReturnType<CanvasStore["get"]>>, frame: Frame, env: CardEnv, tools: unknown, takes: boolean): boolean {
     const store = this.o.store
     const name = node.data.name
     const dragging = store.isDragging(name)
@@ -118,7 +122,7 @@ export class Scene {
     const card = held.view
     const state: CardState = {
       hover: this.hover?.name === name ? this.hover.part : null, dragging, offering: scene.offering ?? false,
-      resizing: this.resize?.name === name ? this.resize.label : null, dropTarget: false, broken: false,
+      resizing: this.resize?.name === name ? this.resize.label : null, dropTarget: takes && !dragging, broken: false,
     }
     card.update(scene, held.show!, state, env)
     // Position: the store's box, slid there when the store says it glides, never re-laid out by a move alone.
