@@ -63,7 +63,7 @@ test('resize', async ({ page, project }) => {
     grip = await card.locator('.corner').first().boundingBox();
     expect(grip, 'its corner').toBeTruthy();
     before = await width();
-    expect.soft(fetched, 'a hover fetches its picture again').toEqual([]);
+    expect.soft(fetched, 'a hover fetches its picture again (the hover card loads its own copy: cl-1028 PR 2)').toEqual([]);
   });
 
   const widths = [];
@@ -109,7 +109,7 @@ test('resize', async ({ page, project }) => {
       else if (!frame.shown) (phases[phase] ??= []).push(frame.at);
     }
     expect.soft(frames.filter((frame) => !frame.mark).length, 'frames looked at').toBeGreaterThan(30);
-    expect.soft(phases, `frames with no picture on the screen, by phase (of ${frames.length})`).toEqual({});
+    expect.soft(phases, `frames with no picture on the screen, by phase (of ${frames.length}; cl-1016, cl-1028 PR 2)`).toEqual({});
     expect.soft(fetched.slice(was), 'leaving fetches its picture again').toEqual([]);
   });
 });
