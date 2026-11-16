@@ -55,6 +55,8 @@ pub(crate) struct Service {
     /// While it holds (an update activating), no new root run starts: queued runs are journaled
     /// and start after the restart.
     held: std::sync::OnceLock<Box<dyn Fn() -> bool + Send + Sync>>,
+    /// Each run left waiting by a dispatch pass: since when, and what for, as this machine's log said it (cl-1086).
+    waits: Mutex<HashMap<String, (std::time::Instant, String)>>,
 }
 
 const SWEEP_EVERY: std::time::Duration = crate::reclaim::IDLE;
@@ -142,6 +144,7 @@ impl Service {
             started_ticks,
             queue: Default::default(),
             held: Default::default(),
+            waits: Default::default(),
         });
         service.engine.reconcile()?;
         // Its first sweep is the reclaim thread's (`reclaim_loop`): a long one never delays serving.
@@ -611,7 +614,7 @@ impl Service {
     /// One pass over the ready runs in the queue's order (`queue`). An older request with a
     /// ready GPU step keeps the GPUs it waits for (`claims`) from later offers (Slurm). A deviceless
     /// call takes CPU room; one waiting on its own call takes none. Each root left queued shows
-    /// its place in line.
+    /// its place in line and what it waits for, which this machine's log says as it changes.
     fn dispatch_ready(&self) -> io::Result<()> {
         let stopped = self.stopped.lock().unwrap();
         if *stopped {
@@ -634,10 +637,13 @@ impl Service {
         let mut claims = vec![None; pool.width()];
         let calls = self.calls();
         let waits = |r: &Execution| calls.as_ref().is_some_and(|calls| calls.waiting(&self.engine, &r.id));
-        let cpu_active = || -> io::Result<usize> {
-            Ok(self.engine.active(usize::MAX)?.iter()
-                .filter(|r| !gpu(r) && (output(r) || !waits(r))).count())
+        // The runs holding the CPU slots: a run left waiting for one names them.
+        let cpu_holders = || -> io::Result<Vec<Execution>> {
+            Ok(self.engine.active(usize::MAX)?.into_iter()
+                .filter(|r| !gpu(r) && (output(r) || !waits(r))).collect())
         };
+        let cpu_active = || cpu_holders().map(|holders| holders.len());
+        let mut waiting = HashSet::new();
         // CPU output work uses the existing capacity. At capacity one GPU wave may overlap;
         // once it returns, admit no more until CPU work advances.
         // A run whose plan cannot be read is its own model; its offer reports why.
@@ -657,6 +663,12 @@ impl Service {
                         true => "waiting for required model inputs".to_owned(),
                         false => format!("waiting for required model inputs: {on}"),
                     };
+                    // A private run's models aren't named in this machine's log.
+                    let said = match record.invocation.local_private {
+                        Some(_) => "for required model inputs",
+                        None => reason.trim_start_matches("waiting "),
+                    };
+                    self.waits_for(&record, said, &mut waiting);
                     self.engine.waiting(&record.id, Some(reason))?;
                     continue;
                 }
@@ -698,6 +710,7 @@ impl Service {
                 if root {
                     self.queue.lock().unwrap().started(&record);
                 }
+                self.went(&record);
             } else {
                 // An earlier incompatible GPU job remains a barrier. Lookahead never scans
                 // past it to improve model affinity at the expense of the existing queue.
@@ -713,14 +726,62 @@ impl Service {
                 }
                 if root {
                     place += 1;
-                    let after = if held { ", after the machine's update" } else { "" };
-                    let shown = self.engine.waiting(&record.id, Some(format!("position {place} in the queue{after}")));
+                    // What it waits for, named: a wait no one can see the cause of is a hang to whoever watches it (cl-1086).
+                    let holders = cpu_holders()?;
+                    let cpu_full = match invocation.degree {
+                        0 => holders.len() >= self.parallelism,
+                        _ => holders.len() > self.parallelism,
+                    };
+                    let why = if held {
+                        "after the machine's update".to_owned()
+                    } else if invocation.degree > 0 && gpu_fenced {
+                        "for the GPUs an earlier process holds".to_owned()
+                    } else if cpu_full {
+                        self.cpu_wait(&holders)
+                    } else if invocation.degree > 0 {
+                        "for a GPU".to_owned()
+                    } else {
+                        "for its turn".to_owned()
+                    };
+                    self.waits_for(&record, &why, &mut waiting);
+                    let shown = self.engine.waiting(&record.id, Some(format!("position {place} in the queue, {why}")));
                     shown.unwrap_or_else(|error| tracing::warn!("run {}: its place was not shown: {error}", record.id));
                 }
             }
         }
+        // A run that left the queue some other way (canceled, failed) waits no more.
+        self.waits.lock().unwrap().retain(|id, _| waiting.contains(id));
         pool.lookahead(&self.engine, next_gpu.as_ref().map(|(record, plan)| (record, plan)));
         Ok(())
+    }
+    /// What a deviceless run waits for while this machine's CPU slots are full: the runs holding them.
+    fn cpu_wait(&self, holders: &[Execution]) -> String {
+        let slots = match self.parallelism {
+            1 => "its one CPU slot".to_owned(),
+            n => format!("its {n} CPU slots"),
+        };
+        let named: Vec<String> = holders.iter().map(|holder| self.engine.caller_id(&holder.id)).collect();
+        match named.as_slice() {
+            [] => format!("for {slots}"),
+            [one] => format!("for this machine's CPU: {one} holds {slots}"),
+            many => format!("for this machine's CPU: {} hold {slots}", many.join(", ")),
+        }
+    }
+    /// Run `record` left waiting `why` this pass: this machine's log says so when what it waits for changes.
+    fn waits_for(&self, record: &Execution, why: &str, waiting: &mut HashSet<String>) {
+        waiting.insert(record.id.clone());
+        let mut waits = self.waits.lock().unwrap();
+        let (_, said) = waits.entry(record.id.clone()).or_insert_with(|| (std::time::Instant::now(), String::new()));
+        if said.as_str() != why {
+            why.clone_into(said);
+            drop(waits);
+            tracing::info!(run = %self.engine.caller_id(&record.id), "queue: waits {why}");
+        }
+    }
+    /// Run `record` went: if it waited, this machine's log says how long, and for what last.
+    fn went(&self, record: &Execution) {
+        let Some((since, why)) = self.waits.lock().unwrap().remove(&record.id) else { return };
+        tracing::info!(run = %self.engine.caller_id(&record.id), "queue: goes after {:.1} s waiting {why}", since.elapsed().as_secs_f64());
     }
     /// The plan `record` runs: its journaled preparation's, else a weightless call's.
     fn plan(&self, pool: &Pool, record: &Execution) -> io::Result<Plan> {

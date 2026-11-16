@@ -36,10 +36,19 @@ use tensorfs::{
 /// Where `header`, a checkpoint this machine pulled from a Hub (`held_models::Pulled`), comes
 /// from: `source`'s Hub. None for one never pulled (local).
 pub(crate) fn remote(machine: &Machine, source: &hub::Source, header: &ObjectRef) -> io::Result<Option<Remote>> {
-    if Pulled::of(machine.store(), header)?.is_none() {
+    if hub_pull(machine.store(), header)?.is_none() {
         return Ok(None);
     }
     origin::remote(machine, source).map(Some).map_err(io::Error::other)
+}
+
+/// The Hub checkpoint `header` is, as this machine pulled it; a view's (its LoRAs composed on a base, `adapter::compose`) is
+/// its base's, whose chunks it reads. None for one never pulled (local).
+pub(crate) fn hub_pull(store: &Store, header: &ObjectRef) -> io::Result<Option<Pulled>> {
+    match storage::view(&header.sha256) {
+        Some(view) => Pulled::of(store, &storage::held(store, &view.recipe.base)?),
+        None => Pulled::of(store, header),
+    }
 }
 
 /// The checkpoint `id` (`sha256:<hex>`), its structure here.
@@ -489,7 +498,7 @@ impl Fetch {
                 self.held.lock().unwrap().push(checkpoint);
                 continue;
             }
-            let pulled = Pulled::of(self.store(), checkpoint.id())?;
+            let pulled = hub_pull(self.store(), checkpoint.id())?;
             let model = pulled.as_ref().map_or_else(|| header.clone(), |p| p.model.clone());
             let (mut absent_all, mut here_all) = (vec![], 0);
             for component in components {
@@ -546,7 +555,7 @@ impl Fetch {
             for (header, components) in set {
                 let checkpoint = checkpoint(self.store(), header)?;
                 if let Some(remote) = self.source(checkpoint.id())? {
-                    let model = Pulled::of(self.store(), checkpoint.id())?.map_or_else(|| header.clone(), |p| p.model);
+                    let model = hub_pull(self.store(), checkpoint.id())?.map_or_else(|| header.clone(), |p| p.model);
                     let each: Vec<Vec<String>> = match components.is_empty() {
                         true => vec![vec![]],
                         false => components.iter().map(|component| vec![component.clone()]).collect(),

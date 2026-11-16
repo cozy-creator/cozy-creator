@@ -213,9 +213,16 @@ pub(super) async fn install(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option
     if let Some(code) = &code {
         let source = crate::local_code::source(home, code, &api.machines.hubs, hub).await.map_err(Refusal)?;
         crate::maintenance_source::keep_derived(api,code,&source).map_err(Refusal)?;
+        // Its machine's Runtime moves first to one its requirement admits, as a release's below (cl-1069).
+        let mut notes = vec![];
+        if let Some(upgrade) = Box::pin(crate::runs::target::local_upgrade(api, hub.as_str(), &on, &source.package, source.needs.clone())).await.map_err(Refusal)?
+            && Box::pin(api.machines.upgrade(&upgrade)).await.map_err(Refusal)?.is_some()
+        {
+            notes.push(upgrade.note().message);
+        }
         let mut submit = crate::local_code::install_run(home, hub.as_str(), on, &source);
         submit.agreed = agreed;
-        return Ok(Planned::Run { submit: Box::new(submit), after: Some(After::Keep(source.filed())), notes: vec![], mirror: None });
+        return Ok(Planned::Run { submit: Box::new(submit), after: Some(After::Keep(source.filed())), notes, mirror: None });
     }
     if api::target::written_as_path(&ask.package) {
         return Err(Refusal(crate::runs::target::by_path(&ask.package)));

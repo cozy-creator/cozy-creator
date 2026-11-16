@@ -166,6 +166,16 @@ fn fetches_ahead(spec: &Spec) -> bool {
     spec.warm && !spec.entrypoint.is_empty() && spec.set.is_none() && !matches!(spec.source, Source::Models)
 }
 
+/// A call's place in the download line (cl-1077): one sharing a GPU an ancestor holds (its family's) goes ahead of every queued
+/// run's; any other, an orchestrator's, takes its root's place in job order, so a later run's call never goes ahead of an earlier
+/// run about to start.
+fn call_order(record: &Execution) -> u64 {
+    match record.invocation.family.is_empty() {
+        false => crate::origin::priority::STARTED,
+        true => record.root_seq(),
+    }
+}
+
 /// A choice for the run's own slots: a bare parameter, or one under its own name.
 fn own_choice(choice: &stored::ModelChoice, entrypoint: &str) -> bool {
     match choice.parameter.split_once(".models.") {
@@ -379,7 +389,7 @@ impl Runs {
     fn place(&self, id: &str, ahead: bool, rank: u32) -> u64 {
         use crate::origin::priority;
         match self.service.engine.get(id) {
-            Ok(record) if !record.invocation.parent.is_empty() => priority::next(priority::STARTED, rank),
+            Ok(record) if !record.invocation.parent.is_empty() => priority::next(call_order(&record), rank),
             Ok(record) if ahead && self.service.engine.caller_id(id).starts_with(crate::ahead::PREPARE) => {
                 priority::prepare(record.root_seq(), rank)
             }
@@ -1125,7 +1135,7 @@ impl Runs {
             ahead = plan.as_ref().map(|plan| {
                 let order = self.service.engine.get(id).map_or(u64::MAX, |record| match record.invocation.parent.is_empty() {
                     true => record.root_seq(),
-                    false => crate::origin::priority::STARTED,
+                    false => call_order(&record),
                 });
                 let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub.clone(), order);
                 let room = |missing| self.service.room_for(id, missing);
@@ -1955,9 +1965,10 @@ impl Runs {
                     match runs.service.catalog.resolve(&installation.generation)
                         .and_then(|held| held.application(&application)) {
                         Ok(held) => {
-                            // A started run's, under the child's access: ahead of every queued run's.
+                            // Its call's place (`call_order`), under the child's access.
                             let hub = spec.hub.clone().or_else(|| runs.own_hub.clone());
-                            let fetch = crate::access::Fetch::new(runs.publisher.machine().clone(), hub, crate::origin::priority::STARTED);
+                            let order = if family.is_some() { crate::origin::priority::STARTED } else { root };
+                            let fetch = crate::access::Fetch::new(runs.publisher.machine().clone(), hub, order);
                             gpu.prefetch(&runs.service.engine, held, plan, (root, family.clone()), owner.clone(), fetch)
                         }
                         Err(error) => {
@@ -1989,7 +2000,7 @@ impl Runs {
         let Some(hub) = self.hub(id).filter(|_| !absent.is_empty()) else { return Ok(()) };
         let machine = self.publisher.machine();
         let Some(remote) = crate::access::remote(machine, &hub, checkpoint.id())? else { return Ok(()) };
-        let model = crate::held_models::Pulled::of(store, checkpoint.id())?.map_or_else(|| manifest.to_string(), |pulled| pulled.model);
+        let model = crate::access::hub_pull(store, checkpoint.id())?.map_or_else(|| manifest.to_string(), |pulled| pulled.model);
         let (engine, bytes, began) = (&self.service.engine, absent.iter().map(|object| object.length).sum::<u64>(), std::time::Instant::now());
         crate::private_io::info(engine, id, format_args!("emergency: {model} is read now, before every other download: {bytes} bytes"));
         // What it waits on shows on its run and its root's, as a run's own weights do, while it lands (tfs-300, LAB2-47829: an

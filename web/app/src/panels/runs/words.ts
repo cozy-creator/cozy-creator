@@ -1,5 +1,5 @@
 import type { Progress, Run, Stalled } from "../../api/calcifer"
-import { bytes, shown, span, usd } from "../format"
+import { shown, span, usd } from "../format"
 import stages from "./stages.json"
 
 export const settled = (run: Run) => run.status === "completed" || run.status === "failed" || run.status === "canceled"
@@ -104,6 +104,29 @@ export function countsOf(progress: Progress): Counts | undefined {
   return stageOf(progress.stage.split(/\s+\/\s+/).at(-1) ?? "")?.counts
 }
 
+/** What a stage's bytes are (Paul, 11-16, cl-1074): weights arriving here (`download`), or loaded into the GPU (`load`); none when it moves
+ *  none, or they're a package's or a result's. Bytes under a stage that doesn't say so (`preparing model adapters…`) are weights arriving. */
+export function bytesKind(progress: Progress): "download" | "load" | undefined {
+  if (!progress.bytes_total && !progress.bytes_done) return undefined
+  const phase = phaseOf(progress.stage)
+  if (phase === "loading") return "load"
+  return phase && ["installing", "uploading", "saving", "result"].includes(phase) ? undefined : "download"
+}
+
+/** A stage's words, saying what its bytes are where they don't: `Downloading weights · Preparing the adapters for lora`, `Loading
+ *  transformer into the GPU`. */
+function saysBytes(progress: Progress, words: string): string {
+  const kind = bytesKind(progress)
+  if (kind === "load") return `${words} into the GPU`
+  return kind === "download" && phaseOf(progress.stage) !== "downloading" ? `Downloading weights · ${words}` : words
+}
+
+/** A stage's name, and what its bytes are. */
+export const stageWords = (progress: Progress) => saysBytes(progress, stageName(progress.stage))
+
+/** A rate, in bytes a second (Paul, 11-16: never `MBps`, which reads as megabits): `117MB/s`, `1.2GB/s`. */
+export const rateWords = (rate: number) => `${size(rate)}/s`
+
 /** Bytes as Paul writes them: `2.1GB`, `340MB`. */
 export function size(n: number): string {
   const units = ["B", "KB", "MB", "GB", "TB"]
@@ -140,7 +163,7 @@ export function stageParts(progress: Progress): { words: string; count?: string 
   const parts = progress.stage.trim().split(/\s+\/\s+/).filter(Boolean)
   const own = parts.length ? stageName(parts.at(-1)!) : "Working"
   const scope = parts.slice(0, -1).map((part) => stageName(part)).join(", ")
-  const words = scope ? `${scope}: ${own}` : own
+  const words = saysBytes(progress, scope ? `${scope}: ${own}` : own)
   const count = countWords(progress)
   if (!count) return { words }
   return { words: countsOf(progress) === "token" ? `${words}:` : `${words} -`, count }
@@ -166,9 +189,9 @@ export function long(run: Run, now: number): boolean {
 export function progressWords(run: Run): string {
   const progress = run.progress
   if (!progress) return run.waiting ?? run.machine_state ?? ""
-  const parts = [stageName(progress.stage)]
+  const parts = [stageWords(progress)]
   parts.push(countWords(progress))
-  if (progress.bytes_per_s) parts.push(`${bytes(progress.bytes_per_s)}/s`)
+  if (progress.bytes_per_s) parts.push(rateWords(progress.bytes_per_s))
   const left = eta(run)
   if (left) parts.push(left)
   const line = parts.filter(Boolean).join(" · ")

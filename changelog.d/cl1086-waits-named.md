@@ -1,0 +1,1 @@
+A run left in its machine's queue says what it waits for: the runs holding the machine's CPU slots (by id), a GPU, the machine's update, or GPUs an earlier process holds. The machine's log says each wait as it begins and how long it lasted, and the run's log (`cozy run show`) keeps each wait its machine names, from when it began.

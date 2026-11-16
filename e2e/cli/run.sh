@@ -503,6 +503,7 @@ WEB_3=(
   create
   project-name
   takes
+  run-tiles
   no-overlap
   instant
   select
@@ -563,6 +564,7 @@ case $SHARD in
     kept_preparing
     catalog
     basics
+    uninstall_on
     component_models
     lora_reads
     second_project
@@ -654,7 +656,7 @@ case $SHARD in
   # A second project's first install and run against the first's (cl-984): by dispatch, as it builds seven environments.
   env-cost) parts="env_cost logs" ;;
   # What a call may read on demand, on a cold machine (cl-966).
-  ondemand) parts="ondemand_ahead ondemand_need ondemand_calls logs" ;;
+  ondemand) parts="ondemand_ahead ondemand_need ondemand_calls ondemand_adapted ondemand_order logs" ;;
   # The install's share of the link beside 1.6 GB of weights (cl-1007): about 8 min on its own, so its own shard.
   ondemand-share) parts="ondemand_share logs" ;;
   # A model's weights alone through the 60 Mbit link, timed, with the streams the ramp settled at (th-378).
@@ -662,7 +664,7 @@ case $SHARD in
   # A small disk full of idle models' weights makes room for the next runs' (tfs-150).
   disk) parts="disk_full logs" ;;
   # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.
-  plan) parts="estimate_line plan_picks plan_published plan_fetch prepare_ahead logs" ;;
+  plan) parts="estimate_line plan_picks plan_published plan_update plan_fetch prepare_ahead logs" ;;
   entrypoints) parts="entrypoints" ;;
   commands) parts="
     entrypoints
@@ -670,6 +672,7 @@ case $SHARD in
     open_slow
     catalog
     basics
+    uninstall_on
     component_models
     lora_reads
     second_project

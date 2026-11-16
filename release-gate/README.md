@@ -176,6 +176,12 @@ a prompt, and with no text it warns and holds the source by the gate's regen bar
 `h3-later-segments` (se-130) is a 26 s H3 shot of two segments whose summary names segment 1's event, then a redo from its seam, as the
 page does it (`e2e/page.py`), from a `packages_refs` checkout `pk`: segment 2's summary and the redo's say only that they continue,
 without the event, their prompts are the same, and their frames are kept to judge that the event isn't played again.
+`user-flow` (xs-203) is the release gate's main suite, Paul's flow through the page in Chrome (`e2e/cli/web/user-flow.spec.js`): an
+encrypted project unlocked, a plate dropped, H3's Shot and Edit from the Tools palette, machine A rented through the page, two renders,
+machine B (`sku_b`, `gpus_b`) rented, a third render, every take back and shown, both ended through the page. `fixtures/user-flow/judge.py`
+judges works, lean, fast (`bench.json`, 5%), placement and what the page says, one table per run and machine (`flow/report.md`, the job
+summary): `gh workflow run pod-session.yaml -R cozy-creator/cozy-creator --ref rc/<x> -f hub=prod -f script=user-flow -f sku=rtx-5090
+-f disk=300 -f cap=6 -f cozy=<dev-build run> -f params='{"sku_b": "rtx-4090", "gpus_b": 2}' -f rent=true`.
 `render-placement` (cl-774) is a render with the page's Run on at Automatically (`e2e/page.py render --on auto`) on a runner with no GPU and one rental: a tie and a model this computer has no GPU for go to the rental, nothing warns, and with the rental busy a weightless still goes here.
 `render-estimate` (cl-1004) is the bench's H3 Turbo 15 s shot as a box on one pod this runner never ran H3 on: the time `fit` gives
 the page before any run (its release's benchmark of that card) against the warm render's, within 35%, then `fit` again, measured there.
@@ -237,8 +243,8 @@ later call of the same model asks the Hub nothing, and a model the Hub has not i
 the pod's idle window: its release goes unaccepted, and it ends itself at its provider within one window of its deadline.
 `runtime-floor` (run 28075, one cheap GPU pod) puts a machine on an older numbered prerelease pair: a package whose floor
 that pair misses takes its own Runtime in its own environment, and the machine's pair stays.
-`rental-boot-first` (cl-1069, LAB2-47826; one cheap GPU pod) runs local code whose Runtime floor only the open RC meets
-`--on new` in a dev home on the session's RC cozy (`cozy=<dev-build run>`): the rental moves to the RC before it takes the code,
+`rental-boot-first` (cl-1069, LAB2-47826; one cheap GPU pod) sends local code whose Runtime floor only the open RC meets to a
+rental as it boots, in a dev home on the session's RC cozy (`cozy=<dev-build run>`): the rental moves to the RC before it takes the code,
 which runs on the RC's Runtime; held by hand on the release pair, the code is refused `runtime_held` before any install; let go and
 busy on that pair, the code `--on any` is refused there `runtime_floor_unmet`, and Calcifer moves the rental and sends it again.
 `machine-end` (cl-946, `pods` cheap pods, 3 by default) ends each with `cozy machine end <name>`: what it printed must be its

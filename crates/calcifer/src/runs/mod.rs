@@ -490,14 +490,12 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
         crate::private_io::check_project_placement(&project, &root, &set)?
     } else { set };
     let mut on = set.first().cloned().unwrap_or_else(|| default_on(api));
-    // Only to a machine on this cozy's minor: one on another is updated first, which the client follows, then asks again. Before
+    // A machine on an older minor this computer may move is updated first, which the client follows, then asks again (cl-1069). Before
     // anything is resolved there, local code's install too. Of several, placement does this for each.
     if let (On::Machine(machine), For::Run, 1) = (&on, purpose, set.len()) {
-        match api.machines.current(&machine).await {
-            Ok(Some(update)) => return Ok(Prepared::Install(update)),
-            Err(e) if e.code == crate::update::OTHER_MINOR => return Err(e),
-            // Not known yet: its driver asks again before it sends.
-            _ => {}
+        // Not known yet: its driver asks again before it sends.
+        if let Ok(Some(update)) = api.machines.current(&machine).await {
+            return Ok(Prepared::Install(update));
         }
     }
     // Local code installs as it resolves. A package answers for itself first: one named without a
@@ -637,14 +635,11 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
             notes.push(Note { level: NoteLevel::Warning, message: format!("{line} `--on new` rents a GPU: cozy run {named} … --on new") });
         }
     }
-    // The machine placement chose, on this cozy's minor likewise.
-    if let (On::Machine(machine), For::Run, true) = (&submit.on, purpose, placed) {
-        match api.machines.current(machine).await {
-            Ok(Some(update)) => return Ok(Prepared::Install(update)),
-            Err(e) if e.code == crate::update::OTHER_MINOR => return Err(e),
-            // Not known yet: its driver asks again before it sends.
-            _ => {}
-        }
+    // The machine placement chose, likewise.
+    if let (On::Machine(machine), For::Run, true) = (&submit.on, purpose, placed)
+        && let Ok(Some(update)) = api.machines.current(machine).await
+    {
+        return Ok(Prepared::Install(update));
     }
     if let Resolved::Release { moved: Some(moved), .. } = &resolved {
         notes.push(moved.clone());

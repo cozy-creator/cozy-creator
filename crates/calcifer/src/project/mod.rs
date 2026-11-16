@@ -3918,6 +3918,7 @@ impl Walk {
                 let unquoted = self.plan(false).await;
                 self.quote_later(unquoted, &mut work);
             }
+            self.moves().await;
             // What the jobs not sent will run with goes to the machines they're planned on, as each one's upcoming list (cl-967).
             let ahead = self.ahead_jobs();
             for (key, _, wanted) in &ahead {
@@ -4146,6 +4147,78 @@ impl Walk {
             format!("quote {job} ({read:?}, {with}) in {} ms: {said} ({stages})", began.elapsed().as_millis())
         });
         quoted
+    }
+
+    /// Its runs waiting for a machine, in its queue or held here while it updates, each moved to another of its machines that would
+    /// finish it clearly sooner (cl-1073, Paul 11-16: an LTX run waited 40 minutes in chartreux's queue behind runs still loading their
+    /// weights while kamitsure could run it): the same run (`Calcifer::move_to`). Where it waits is quoted as if asked again with what
+    /// holds that machine now; it leaves only for a finish clearly sooner (`plan::clearly_sooner`), what it fetched there given up.
+    async fn moves(&self) {
+        let Ok(walk) = self.folder().walk_now() else { return };
+        let api = self.host.api();
+        let quotables = self.project.walker.lock().expect("walker lock").quotables.clone();
+        let mut waiting = vec![];
+        for (key, pending) in walk.pending.iter().filter(|(_, pending)| pending.run > 0 && pending.target.on.len() > 1) {
+            let Some(run) = self.host.numbered(pending.run) else { continue };
+            // In its machine's queue, or held here for it (its machine updating).
+            let sent = run.accepted_at_ms.is_some();
+            let waits = match sent {
+                true => run.machine_state.as_deref() == Some("queued"),
+                false => run.status == RunStatus::Queued,
+            };
+            let waits = waits && run.started_at_ms.is_none() && run.settled_at_ms.is_none() && !api.calcifer.moving(&run.id);
+            let (true, Some(machine), Some(job)) = (waits, run.machine, quotables.get(pending.job_of(key))) else { continue };
+            // Between rentals and added machines: a run for this computer is made for it (its project's private storage), and one
+            // made for another isn't.
+            let on: Vec<On> = self.sending(&pending.ask, &pending.target.on).into_iter().filter(|on| !on.is_local()).collect();
+            if machine == "local" || on.len() < 2 {
+                continue;
+            }
+            waiting.push((key.clone(), pending.job_of(key).to_owned(), run.id, On::Machine(machine), sent, placement::Job { on, ..job.clone() }));
+        }
+        if waiting.is_empty() {
+            return;
+        }
+        let now = now_ms();
+        let jobs: Vec<placement::Job> = waiting.iter().map(|(.., job)| job.clone()).collect();
+        let machines = placement::machines_of(&jobs);
+        let scope = jobs.iter().find_map(|job| job.scope.clone());
+        let mut pictures = vec![];
+        for picture in placement::pictures(&api, &machines, false, now).await.into_iter().flatten() {
+            pictures.push(placement::scoped_picture(&api, &picture, scope.as_ref()).await);
+        }
+        placement::benched(&api, &jobs, pictures.iter_mut());
+        let frames: Vec<&api::machine::StatusFrame> = pictures.iter().map(|picture| &picture.frame).collect();
+        'runs: for (key, of, id, held, sent, job) in waiting {
+            let mut offers = vec![];
+            for picture in pictures.iter().filter(|picture| job.on.contains(&picture.on)) {
+                let mut picture = picture.clone();
+                if picture.on == held && sent {
+                    let queue = picture.frame.queue.get_or_insert_default();
+                    let listed = queue.len();
+                    queue.retain(|root| crate::store::calcifer_id(&root.run) != id.as_str());
+                    // Not listed there: nothing says where it stands.
+                    if queue.len() == listed {
+                        continue 'runs;
+                    }
+                }
+                let mut ask = placement::asked(&job, placement::prior(&api, &picture, &job).await);
+                api::estimate::learn_reads(&frames, &mut ask);
+                offers.extend(placement::quote(&picture, &[ask], now));
+            }
+            let Some(here) = offers.iter().find(|offer| offer.machine == held && offer.fits) else { continue };
+            let Some(sooner) = placement::soonest(&offers, now).filter(|offer| offer.machine != held && plan::clearly_sooner(offer, here, now)) else { continue };
+            let to = sooner.machine.to_string();
+            if !api.calcifer.move_to(&id, &to) {
+                continue;
+            }
+            let said = offers.iter().map(|offer| placement::said(offer, now)).collect::<Vec<_>>().join("; ");
+            info!("{}: {key} moves from {held} to {to}: {said}", self.folder().dir.display());
+            crate::private_io::diagnose(&self.folder().dir, || format!("{key} moves from {held} to {to}: {said}"));
+            self.host.placed(&self.project.id, &id, &sooner.placed());
+            self.host.quoted(&id, sooner.quoted());
+            self.project.walker.lock().expect("walker lock").sent.insert(of, sooner.clone());
+        }
     }
 
     /// Places the jobs not sent yet, the nearest `plan::PLANNED` of them (cl-967): every machine pictured from the Status it pushed, each

@@ -68,6 +68,8 @@ pub(crate) struct Source {
     /// What the machine's environment is built from, apart from the project's own source: its
     /// metadata and lock, its path dependencies, carried wheels and indexes.
     pub environment: Digest,
+    /// Its `cozy-runtime` requirement, as its pyproject declares it: what its machine's Runtime moves for (cl-1069).
+    pub needs: Option<pep440_rs::VersionSpecifiers>,
 }
 
 /// What an install answered: the code's interface, the machine's name for the installation, and
@@ -520,6 +522,10 @@ pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
         digest,
         length: document.len() as u64,
     });
+    let needs = crate::floor::requirement_of(&project_dir);
+    if let Some(needs) = &needs {
+        NEEDS.lock().expect("needs lock").insert(digest.to_string(), needs.clone());
+    }
     Ok(Source {
         package: manifest.package,
         source: v1::LocalSource {
@@ -527,7 +533,17 @@ pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
         },
         inputs,
         environment,
+        needs,
     })
+}
+
+/// Each local source's `cozy-runtime` requirement by its manifest, as `source` read it while Calcifer runs: what a machine that
+/// refused its install for its Runtime moves for (cl-1069, `Machines::refloored`).
+static NEEDS: LazyLock<Mutex<HashMap<String, pep440_rs::VersionSpecifiers>>> = LazyLock::new(Mutex::default);
+
+/// The `cozy-runtime` requirement of the local source `manifest` names, as `source` read it.
+pub(crate) fn needs_of(manifest: &str) -> Option<pep440_rs::VersionSpecifiers> {
+    NEEDS.lock().expect("needs lock").get(manifest).cloned()
 }
 
 /// What a lock of `code`'s copy for `hub` leaves beside the copy (`locked`): `lock`, the lock it made or nothing when the tree's
@@ -980,13 +996,22 @@ pub(crate) async fn prepare(
     };
     // By its manifest: code that changes during an install is another install, not that one's answer.
     let key = format!("{key}/install/{}", code.source.manifest);
-    if sent(api, &key)?.is_none()
-        && let Some(interface) = runtime.as_deref().filter(|_| !warm).and_then(|runtime| kept(&home, &code.filed(), runtime))
-    {
+    let fresh = sent(api, &key)?.is_none();
+    if fresh && let Some(interface) = runtime.as_deref().filter(|_| !warm).and_then(|runtime| kept(&home, &code.filed(), runtime)) {
         return Ok(prepared(Some(interface), None, None, None));
     }
     let submit = || SubmitRun { agreed: agreed.clone(), ..install_run(&home, origin.as_str(), on.clone(), &code) };
     let after = crate::private_io::current().is_none().then(|| crate::hub::after::After::Keep(code.filed()));
+    // Its machine's Runtime moves first to one its requirement admits, as a published release's does (cl-952, cl-1069): the install
+    // waits behind that update. Boxed, as their futures are large.
+    if fresh
+        && let Some(upgrade) = Box::pin(crate::runs::target::local_upgrade(api, origin.as_str(), on, &code.package, code.needs.clone())).await?
+        && Box::pin(api.machines.upgrade(&upgrade)).await?.is_some()
+        && crate::private_io::current().is_none()
+    {
+        // A project's own code stays out of Calcifer's log (cl-984).
+        tracing::info!("{}", upgrade.note().message);
+    }
     match install_through(api, &key, after.as_ref(), again, submit).await? {
         Install::Going(run) => Ok(prepared(None, None, None, Some(run))),
         Install::Ended(run) => {

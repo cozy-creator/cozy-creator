@@ -467,6 +467,14 @@ pub(crate) async fn previewed(ctx: &Context, run: Run, previews: Option<&Path>) 
 async fn describe(ctx: &Context, raw: &str, code: Option<&LocalCode>, on: Option<&str>, project: Option<&str>) -> Result<ExitCode, Error> {
     let target = target(ctx, raw, code, on, project).await?;
     match (&target.contract, &target.request) {
+        // With --full, its package's interface document too, as a package's functions carry it (`print_functions`).
+        (Some(_), Some(request)) if ctx.json && ctx.full => {
+            let mut request = request.clone();
+            if let Some(fields) = request.as_object_mut() {
+                fields.insert("interface".into(), target.interface.clone());
+            }
+            output::json(&request)
+        }
         (Some(_), Some(request)) if ctx.json => output::json(request),
         (Some(contract), _) => anstream::print!("{contract}"),
         _ => print_functions(ctx, &target),

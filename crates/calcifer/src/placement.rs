@@ -215,8 +215,9 @@ fn kept_benchmarks(root: &std::path::Path, hub: &str) -> Vec<(String, Vec<api::e
         .collect()
 }
 
-/// Each of `pictures` with the benchmarks its quotes stand on (`references_for`): those of `jobs` and of each function queued or ahead
-/// on any of them.
+/// Each of `pictures` with what its quotes stand on: the benchmarks of `jobs` and of each function queued or ahead on any of them
+/// (`references_for`), and each run of this computer's going on one, its time left as its clock says it (cl-1073, Paul 11-16: runs went
+/// to a busy machine while a faster one sat idle, each run going there counted seconds from done while it fetched its weights).
 pub(crate) fn benched<'j, 'p>(api: &Api, jobs: impl IntoIterator<Item = &'j Job>, pictures: impl IntoIterator<Item = &'p mut Picture>) {
     let mut pictures: Vec<&mut Picture> = pictures.into_iter().collect();
     let mut named: Vec<String> = vec![];
@@ -224,7 +225,13 @@ pub(crate) fn benched<'j, 'p>(api: &Api, jobs: impl IntoIterator<Item = &'j Job>
         named.extend(picture.frame.queue.iter().flatten().map(|root| root.function.clone()));
         named.extend(picture.ahead.iter().map(|job| job.function.clone()));
     }
-    let references = Arc::new(references_for(api, jobs, named));
+    let mut references = references_for(api, jobs, named);
+    for root in pictures.iter().flat_map(|picture| picture.frame.queue.iter().flatten()).filter(|root| root.running && !root.run.is_empty()) {
+        if let Some(left) = api.calcifer.left_there(crate::store::calcifer_id(&root.run)) {
+            references.left.insert(root.run.clone(), left);
+        }
+    }
+    let references = Arc::new(references);
     pictures.iter_mut().for_each(|picture| picture.references = references.clone());
 }
 
@@ -376,14 +383,11 @@ pub(crate) async fn offers_now(api: &Arc<Api>, jobs: &[Job]) -> (Vec<Vec<Offer>>
     (offers, pictured)
 }
 
-/// `on` as its last Status pictured it, however long ago; none for one that never said, is broken, or runs another minor.
+/// `on` as its last Status pictured it, however long ago; none for one that never said, or is broken.
 fn last_picture(api: &Arc<Api>, on: &On, name: &str) -> Result<Picture, String> {
     let frame = api.machines.frame(name).ok_or("it hasn't said what it has")?;
     if let Some(broken) = &frame.broken {
         return Err(format!("it's broken: {}", broken.message));
-    }
-    if !same_minor(&frame.version, this_release()) && !rc_version() {
-        return Err(format!("it runs cozy {}, another minor than this cozy's", frame.version));
     }
     Ok(Picture { on: on.clone(), name: name.to_owned(), frame, ready_at_ms: None, ahead: vec![], references: Arc::default() })
 }
@@ -424,14 +428,14 @@ async fn offered(api: &Arc<Api>, jobs: &[Job], machines: &[On], pictured: &[Resu
 }
 
 /// The soonest finish of `offers` that can run there at all (release owner, 11-09: one that can't has no finish); of those within a tie
-/// of it, a machine that serves before one on its way, one on its own measured runs before one that isn't, and a rental before this
-/// computer.
+/// of it, a machine that serves before one on its way, one on its own measured runs before one that isn't, a rental before this
+/// computer, then the sooner: never the first listed for being first (cl-1073).
 pub(crate) fn soonest(offers: &[Offer], now: i64) -> Option<&Offer> {
     let fits = || offers.iter().filter(|offer| offer.fits);
     let first = fits().map(|offer| offer.finish_at_ms).min()?;
     let tie = (((first - now).max(0) as f64 * TIE) as i64).max(1000);
     let tied = || fits().filter(|offer| offer.finish_at_ms <= first + tie);
-    let rank = |offer: &&Offer| (offer.ready_at_ms.is_some(), offer.basis != Basis::Measured, offer.machine.is_local());
+    let rank = |offer: &&Offer| (offer.ready_at_ms.is_some(), offer.basis != Basis::Measured, offer.machine.is_local(), offer.finish_at_ms);
     tied().min_by_key(rank)
 }
 
@@ -482,15 +486,14 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
     if let Some(broken) = &frame.broken {
         return Err(format!("it's broken: {}", broken.message));
     }
+    // Any version takes work (cl-1069); one on an older minor this computer may move is updated first, and placed once it's done.
     let own = this_release();
-    if !same_minor(&frame.version, own) && !rc_version() {
-        if !update {
-            return Err(format!("it runs cozy {}, another minor than this cozy's {own}: its first run updates it", frame.version));
-        }
-        match machines.current(&row.name).await.map_err(|e| e.message)? {
-            None => {}
-            Some(run) => return Err(format!("updating it to cozy {own} first (run {})", run.name)),
-        }
+    if update
+        && !same_minor(&frame.version, own)
+        && !rc_version()
+        && let Some(run) = machines.current(&row.name).await.map_err(|e| e.message)?
+    {
+        return Err(format!("updating it to cozy {own} first (run {})", run.name));
     }
     Ok(Picture { on: on.clone(), name: row.name, frame, ready_at_ms: None, ahead: vec![], references: Arc::default() })
 }

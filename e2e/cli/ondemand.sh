@@ -76,6 +76,99 @@ echo "ondemand-calls: the machine holds $held"
 [ -z "$pulled" ] || check "ondemand-calls: e2e/calls-unused was pulled: $pulled"
 }
 
+# cl-1077 (Paul, 11-16): "Downloading the minimax h3 turbo lora makes sense, although it's stuck right now." H3's `edit` puts its edit
+# LoRA on a segment's base, and TensorD pulled that base inline while it bound the slot: the segment's turbo LoRA was wanted only
+# once the base's 72.8 GB had landed, and sat at 0 bytes for 10 minutes. calls.py's `adapt` calls `adapted` with e2e/calls-lora on
+# its base's transformer (e2e/calls-base: 256 MiB, and a 16 MiB text encoder it doesn't read) beside e2e/calls-other, over a 30 MB/s
+# link: both come in the call's one download, at once, and only what it loads (a cold H3 edit: transformer_ref and the shared
+# parts, 51.7 of the int8 lane's 72.8 GB).
+ondemand_adapted() {
+[ "$RUNNER_OS" = Linux ] || return 0
+step "a LoRA'd base comes in its call's one download with the call's other weights (cl-1077)"
+[ -z "${E2E_CALLS_SEED:-}" ] || { check "ondemand-adapted: its models weren't seeded: $E2E_CALLS_SEED"; return 0; }
+local began
+slow_store ondemand-adapted || return 0
+began=$(date -u +%s)
+# Its downloads are judged whether or not the call then completes (`cell` records that).
+cell ondemand-adapted "$here/script/calls.py/adapt" || :
+sudo tc qdisc del dev lo root || check "ondemand-adapted: the store's link wasn't restored"
+cozy machine logs local tensorfs --lines 0 --since 1h > "$OUT/ondemand-adapted.tensorfs.log" 2>&1 || check "ondemand-adapted: machine logs local tensorfs failed"
+local pulled together
+# The base's chunks pulled on their own: a pull of e2e/calls-base of more than its header.
+pulled=$(awk -v t="$began" '$1 >= t && $2 == "pull" && $3 ~ /^e2e\/calls-base@/' "$OUT/ondemand-adapted.tensorfs.log" | grep -v ' objects=1 ' | head -2 || true)
+# What the call waited on, in order, as its root's progress says: "downloading <models> weights". The root's own prefetch may land
+# the base first (it reads only what `adapted` does); while the base still arrives, the call waits on both at once.
+grep -o 'downloading [^"]*weights' "$OUT/ondemand-adapted.ndjson" | uniq | sed 's/^/ondemand-adapted: /' || true
+together=$(grep -o 'downloading [^"]*weights' "$OUT/ondemand-adapted.ndjson" | grep -E 'e2e/calls-(base|other)' | head -1 || true)
+[[ "$together" != *e2e/calls-base* || "$together" == *e2e/calls-other* ]] || check "ondemand-adapted: the call waited on e2e/calls-base alone first: $together"
+[ -z "$pulled" ] || check "ondemand-adapted: the LoRA'd base was pulled before the call's other weights were wanted: $pulled"
+local held
+cozy --json model ls --on local > "$OUT/ondemand-adapted.models.json" 2>&1 || check "ondemand-adapted: model ls --on local failed"
+held=$(jq -c '[.models[]? | select(.model == "e2e/calls-base") | {complete, bytes}]' "$OUT/ondemand-adapted.models.json" 2> /dev/null || true)
+echo "ondemand-adapted: e2e/calls-base here: $held"
+jq -e '[.models[] | select(.model == "e2e/calls-base")] | length == 1 and .[0].complete == false and .[0].bytes >= 268435456 and .[0].bytes < 276824064' "$OUT/ondemand-adapted.models.json" > /dev/null \
+  || check "ondemand-adapted: e2e/calls-base here isn't its 256 MiB transformer alone (the call doesn't load its 16 MiB text encoder): $held"
+}
+
+# cl-1077 (Paul, 11-16, chartreux): LTX 2.5 (LAB2-47841), accepted at 07:49:30, waited while LAB2-47843, an H3 `edit` accepted at
+# 07:59:04, downloaded: "looks all messed up and discombobulated … it's not organizing things well." An orchestrator's root starts at
+# once, and its call's weights went as a started run's, ahead of every queued run's. Over a 30 MB/s link `early` (256 MiB) is
+# accepted, then `late` calls `late_call` (128 MiB): the later run's call takes its root's place in job order, never a started
+# run's, and the earlier run's weights land first.
+ondemand_order() {
+[ "$RUNNER_OS" = Linux ] || return 0
+step "a later run's call never downloads ahead of an earlier run's weights (cl-1077)"
+local began n name
+slow_store ondemand-order || return 0
+began=$(date -u +%s%3N)
+n=$(run_submit "$OUT" order-early run "$here/script/calls.py/early" --on local)
+for _ in $(seq 600); do cozy --json run watch "$n" --once 2> /dev/null | jq -e '.accepted_at_ms != null' > /dev/null && break; sleep 0.2; done
+run_submit "$OUT" order-late run "$here/script/calls.py/late" --on local > /dev/null
+for name in order-early order-late; do
+  run_wait "$OUT" "$name" || check "ondemand-order: $name did not end: $(tail -c 300 "$OUT/$name.ndjson")"
+  [ "$(run_get "$OUT" "$name" .status)" = completed ] || check "ondemand-order: $name $(run_get "$OUT" "$name" .status): $(run_get "$OUT" "$name" .reason.message | head -c 300)"
+done
+sudo tc qdisc del dev lo root || check "ondemand-order: the store's link wasn't restored"
+cozy machine logs local --lines 0 --since 1h > "$OUT/ondemand-order.tensord.log" 2>&1 || check "ondemand-order: machine logs local failed"
+python3 - "$OUT" "$began" <<'JUDGE' > "$OUT/ondemand-order.json" 2> "$OUT/ondemand-order.failed" || true
+import json, re, sys
+from datetime import datetime
+from pathlib import Path
+out, began = Path(sys.argv[1]), int(sys.argv[2])
+def at(line):
+    try:
+        return int(datetime.fromisoformat(line.split(" ", 1)[0].replace("Z", "+00:00")).timestamp() * 1000)
+    except ValueError:
+        return 0
+# The line's orders (`origin::priority`): 2 + (class << 62 | run << 32 | rank); a started run's is run 0 of class 0.
+runs = {}
+for line in (out / "ondemand-order.tensord.log").read_text(errors="replace").splitlines():
+    t = at(line)
+    found = re.search(r": (fetching|landed) .*bytes=(\d+).*priority=(\d+)", line)
+    if t < began or not found or int(found[3]) < 2 or (int(found[3]) - 2) >> 62:
+        continue
+    run = (int(found[3]) - 2) >> 32 & ((1 << 30) - 1)
+    each = runs.setdefault(run, {"objects": 0, "bytes": 0, "first_ms": None, "last_landed_ms": None})
+    if found[1] == "fetching":
+        each["first_ms"] = t - began if each["first_ms"] is None else each["first_ms"]
+    else:
+        each["objects"], each["bytes"], each["last_landed_ms"] = each["objects"] + 1, each["bytes"] + int(found[2]), t - began
+print(json.dumps({"by_run": runs}, indent=1))
+fail = lambda why: print(why, file=sys.stderr)
+if 0 in runs:
+    fail(f"{runs[0]['objects']} objects ({runs[0]['bytes']} bytes) came at a started run's order, ahead of every queued run's: the later run's call")
+queued = sorted(run for run in runs if run > 0)
+if len(queued) < 2:
+    fail(f"both runs' weights weren't in the line: orders of runs {queued}")
+else:
+    first, later = runs[queued[0]], runs[queued[-1]]
+    if first["last_landed_ms"] is None or later["last_landed_ms"] is None or first["last_landed_ms"] > later["last_landed_ms"]:
+        fail(f"the earlier run's weights landed last ({first['last_landed_ms']} ms), after the later run's ({later['last_landed_ms']} ms)")
+JUDGE
+cat "$OUT/ondemand-order.json"
+while read -r why; do check "ondemand-order: $why"; done < "$OUT/ondemand-order.failed"
+}
+
 # A call holds (resolved, its on-demand BiRefNet guessed behind every run's needs, so part of it may land first), then `cozy model
 # install` downloads Qwen3.5 0.8B's 1.6 GB, and while it does the call reads its on-demand BiRefNet (446 MB): its executor asks
 # TensorD for it (`model_need`), which fetches what of it is absent before every other download (order 0) and answers once it's

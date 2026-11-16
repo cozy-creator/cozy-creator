@@ -184,6 +184,61 @@ echo "plan fetch: stand-c holds $(jq -c '[.status.models[]? | select(.repository
   || check "plan fetch: quoted up to $((demand >> 20)) MiB on demand, but stand-c fetched $((extra >> 20)) MiB of its on-demand model"
 }
 
+# plan_update (phase b3), cl-1073 (Paul, 11-16): "I had an idle more powerful machine, with another machine that already had heavy
+# load on it, and instead it assigned the work to the old machine rather than the newer one. This is stupid." chartreux's update waited
+# for its runs to end and held each run sent after it (LAB2-47846, "getting chartreux ready" for 20 minutes), and placement quoted
+# chartreux as if it took them at once. Here stand-w holds BiRefNet's weights and local doesn't, so stand-w finishes a weighted still
+# first, until an update of stand-w waits behind a minute's still there: then local, which downloads them, finishes it first.
+plan_update() {
+step "plan (cl-1073): a machine whose update waits for its runs isn't quoted as free"
+[ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "plan update: its stand-in is another user of a fresh GitHub runner"; return; }
+local P=$OUT/plan weighted=$here/project/weighted.py/weighted wait=$here/project/waits.py/wait r=$RANDOM updating began went
+jq -n --arg w "$weighted" --arg h "$wait" --arg r "$r" '[
+  {name: "hold_w", tool: $h, kind: "image", fields: {instructions: "A minute on stand-w, \($r).", megapixels: 0.25, seconds: 60}},
+  {name: "past_update", tool: $w, kind: "image", fields: {instructions: "Where it finishes first, \($r).", seconds: 5}}]' | boxes_in "$P" || return
+# local's copy of BiRefNet goes, its machine stopped first so no executor holds it: a job there downloads it.
+machine_stop || { check "plan update: the local machine did not stop"; return; }
+machine_ready
+cozy --json model uninstall zhengpeng7/birefnet > "$OUT/update-uninstall.json" 2>&1 || { check "plan update: model uninstall: $(tail -c 300 "$OUT/update-uninstall.json")"; return; }
+cozy --json machine show stand-w > "$OUT/update-stand-w-held.json" 2> /dev/null || true
+J '[.status.models[]? | select(.repository == "zhengpeng7/birefnet")] | length > 0' "$OUT/update-stand-w-held.json" \
+  || { check "plan update: stand-w holds no BiRefNet: $(jq -c '[.status.models[]?.repository]' "$OUT/update-stand-w-held.json")"; return; }
+coming_go hold_w '["stand-w"]'
+for _ in $(seq 240); do
+  cozy --json machine show stand-w > "$OUT/update-stand-w-hold.json" 2> /dev/null || true
+  J '[.status.runs[]? | select(.state == "running")] | length > 0' "$OUT/update-stand-w-hold.json" && break
+  sleep 0.5
+done
+J '[.status.runs[]? | select(.state == "running")] | length > 0' "$OUT/update-stand-w-hold.json" \
+  || { check "plan update: hold_w never ran on stand-w: $(jq -c '[.status.runs[]? | {state, waiting}]' "$OUT/update-stand-w-hold.json")"; return; }
+# stand-w's own cozy updates it (a setting, so a restart): it waits for hold_w to end, and holds what comes after.
+(stand_as stand-w --json machine update local --gpu-memory-limit off -y > "$OUT/update-stand-w.json"; echo $? > "$OUT/update-stand-w.code") &
+updating=$!
+for _ in $(seq 60); do
+  cozy --json machine show stand-w > "$OUT/update-stand-w-show.json" 2> /dev/null || true
+  J '(.status.update // "") | test("wait")' "$OUT/update-stand-w-show.json" && break
+  sleep 1
+done
+J '(.status.update // "") | test("wait")' "$OUT/update-stand-w-show.json" \
+  || check "plan update: stand-w's update never waited for hold_w: $(jq -c '.status.update' "$OUT/update-stand-w-show.json")"
+began=$(date +%s)
+coming_go past_update '["local","stand-w"]'
+coming_done past_update 300
+went=$(plan_machine past_update)
+echo "plan update: past_update went to ${went:-nowhere}, done in $(($(date +%s) - began)) s; stand-w's update: $(jq -c '.status.update' "$OUT/update-stand-w-show.json")"
+[ "$went" = local ] || check "plan update: past_update went to ${went:-nowhere}, whose update waited for its run, not to local, which was free"
+# stand-w as the next cell takes it: its update done, ready again.
+coming_done hold_w 300
+for _ in $(seq 240); do kill -0 "$updating" 2> /dev/null || break; sleep 1; done
+[ "$(cat "$OUT/update-stand-w.code" 2> /dev/null)" = 0 ] || check "plan update: stand-w's update: $(tail -c 300 "$OUT/update-stand-w.json")"
+for _ in $(seq 180); do
+  cozy --json machine show stand-w > "$OUT/update-stand-w-after.json" 2> /dev/null || true
+  J '.state == "ready" and (.status.update // "") == ""' "$OUT/update-stand-w-after.json" && break
+  sleep 1
+done
+J '.state == "ready"' "$OUT/update-stand-w-after.json" || check "plan update: stand-w isn't ready after its update: $(jq -c '{state, update: .status.update}' "$OUT/update-stand-w-after.json")"
+}
+
 # prepare_ahead (phase c): BiRefNet, as its Hub publishes it, on a still that takes 4 min, can't start before it: unstarted work,
 # planned where BiRefNet's weights are. stand-v, a new stand-in that holds nothing, has nothing planned and runs nothing, is told to
 # prepare its function with no job (`PUT /v1/prepare`): it installs BiRefNet's environment and holds its weights while that box
