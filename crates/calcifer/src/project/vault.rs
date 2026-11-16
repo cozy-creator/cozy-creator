@@ -853,8 +853,8 @@ fn wait(at: Option<SystemTime>) {
 
 /// How long an explicit lock, its view revoked, waits for what still holds its project to finish before it refuses.
 const LOCK_DRAIN: Duration = Duration::from_secs(10);
-/// How long past an idle or maximum deadline a vault waits for its pages to send what they typed before it
-/// locks anyway: the deadline is a security one.
+/// How long past an idle or maximum deadline a lock that failed waits out its retry backoff: after it, each look tries again, as the
+/// deadline is a security one.
 const SAVE_GRACE: Duration = Duration::from_secs(30);
 /// When each open vault was first seen past its deadline and not yet locked.
 static DUE: LazyLock<Mutex<BTreeMap<PathBuf, std::time::Instant>>> = LazyLock::new(Mutex::default);
@@ -894,22 +894,16 @@ fn look(api: &Arc<Api>, runtime: &tokio::runtime::Handle, root: PathBuf) -> Opti
     LOCKING.lock().expect("vault locks").insert(root.clone());
     let api = api.clone();
     runtime.spawn_blocking(move || {
-        lock_lapsed(&api, &root, due);
+        lock_lapsed(&api, &root);
         LOCKING.lock().expect("vault locks").remove(&root);
     });
     // Looked at again while it stays: a busy view or an unsaved page puts its lock off.
     again()
 }
 
-/// A vault past its deadline locks, in order (what its pages typed sent, its requests drained) and, past `SAVE_GRACE`, whatever is
-/// unsent.
-fn lock_lapsed(api: &Arc<Api>, root: &FsPath, due: Instant) {
-    // The pages' writes may take the operation mutex: never wait for them while owning it.
-    let left = SAVE_GRACE.saturating_sub(due.elapsed());
-    if !left.is_zero() {
-        let unanswered = save_first(root, left);
-        if unanswered > 0 { say(root, "forced", || format!("its deadline passed {} s ago and {unanswered} page(s) didn't say they sent what was typed: locking anyway", due.elapsed().as_secs())); }
-    }
+/// A vault past its deadline locks once its requests have drained. Its pages aren't asked to send what they typed: a lapsed view takes
+/// no write.
+fn lock_lapsed(api: &Arc<Api>, root: &FsPath) {
     let op = operation(root);
     let Ok(_operation) = op.try_lock() else { say(root, "operation", || "its lock waits for a vault operation".into()); return; };
     let still_needs = held(root).is_some_and(|session| {

@@ -146,8 +146,9 @@ private, max-age=31536000, immutable`; everything else, `outputs/{name}` include
 - `job.updated {project, job, seq}`: one job of a project's render, whole, each time it changes; `id` names it for as long as the render goes, and the board has them all. A client reads the board, then keeps what's newer than its `seq`.
 - `ahead.updated {project, ahead}`: what a machine is fetching ahead of a project's queued jobs, as it stands now: `{function, machine, run, stage?, done, total, ready?, held_back?}`. The board's `ahead` has them all.
 - `history {id, undo?, redo?}`: a project's history moved, an edit, an undo or a redo, and the entries undo and redo would take now, as `GET /v1/projects/{id}/history` lists them.
-- `project.vault {id, state}`: a project's protection changed, to every stream: `unlocked`, `locking`, `locked`, `plain`. `saving` comes
-  first, before a lock, a storage change or a stop closes it: each page showing it sends what it typed of it, then answers `saved` (below).
+- `project.vault {id, state}`: a project's protection changed, to every stream: `unlocked`, `locking`, `locked`, `plain`.
+- `project.saving {id}`: before a lock, encrypt, decrypt, rotate or a stop closes it, to each page showing it: send what's typed of it
+  now, then answer `saved` (below). Not past a deadline: a lapsed view takes no write.
 - `resync`: this stream fell behind and goes on: read again what you hold.
 
 Newer services add optional `project.changed.cursor {generation, sequence}` and full project-state `covered` with the same shape.
@@ -166,9 +167,8 @@ without an authoritative per-ID result. `404
 stream_unknown` once the stream has ended: the next stream's `hello` names it. The page sends what all its tabs show, from the tab that
 holds the stream, each time that changes.
 
-`POST /v1/events/{stream}/saved` `{project}`: `204`, the page on this stream sent what it typed of `project` after `project.vault saving`,
-from every tab showing it. Calcifer waits for each stream showing the project to say so, or to end, up to 10 s (30 s past a deadline), then
-closes it anyway.
+`POST /v1/events/{stream}/saved` `{project}`: `204`, the page on this stream sent what it typed of `project` after `project.saving`, from
+every tab showing it. Calcifer waits for each stream showing the project to say so, or to end, up to 10 s, then closes it anyway.
 
 ACK-capable pages share the stable `cozy-events-presence-v1` Web Lock and BroadcastChannel. An older open page retains its older
 coordination cohort during an upgrade, so it cannot strand a new page waiting for an acknowledgement it does not implement. This is a

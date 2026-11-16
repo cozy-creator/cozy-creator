@@ -275,8 +275,6 @@ class Bridge {
         this.machines((machines) => machines.filter((machine) => machine.name !== event.name))
         break
       case "project.vault": {
-        // Asked to send what's typed before it closes (`connect`): its protection is as it was.
-        if (event.state === "saving") break
         if (event.state === "plain") {
           this.forgetProject(event.id)
           // Discard old status work before the purge rerenders Shell. Only its
@@ -399,7 +397,7 @@ export async function connect(): Promise<Boot> {
   })
   stream.subscribe((event) => {
     if (event.type === "hello") outbox.back()
-    if (event.type === "project.vault" && event.state === "saving") void save(event.id)
+    if (event.type === "project.saving") void save(event.id)
   })
   stream.start()
   return { connection: { client, queries, stream, bridge, outbox, canvases, retireProject, privateViewEpoch, attempt, signedOut, status } }

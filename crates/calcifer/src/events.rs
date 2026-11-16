@@ -315,7 +315,7 @@ static SAVING: LazyLock<Mutex<std::collections::HashSet<(String, String)>>> = La
 /// Told as a page answers, ends or shows other projects.
 static SAVED: LazyLock<Notify> = LazyLock::new(Notify::new);
 
-/// Before projects `ids` close (a lock, a storage change, a stop): each page's stream showing one hears `project.vault` `saving`, and
+/// Before projects `ids` close (a lock, a storage change, a stop): each page's stream showing one hears `project.saving`, and
 /// the page sends what it typed of it, then answers (`saved`). Waits for each answer or stream end, at most `within`: how many didn't answer.
 pub(crate) async fn save_first(ids: &[String], within: std::time::Duration) -> usize {
     let asked: Vec<(String, String)> = SHOWN.lock().expect("shown lock").iter().filter(|(_, shows)| shows.page)
@@ -323,9 +323,11 @@ pub(crate) async fn save_first(ids: &[String], within: std::time::Duration) -> u
         .collect();
     if asked.is_empty() { return 0; }
     SAVING.lock().expect("saving lock").extend(asked.iter().cloned());
-    for id in ids { project_vault(id, "saving"); }
+    // Let go of however this ends, a stop whose caller went away included.
+    let _asked = Asked(&asked);
+    for id in ids { let _ = PROJECTS.said.send(StreamEvent::ProjectSaving { id: id.clone() }); }
     let until = Instant::now() + within;
-    let left = loop {
+    loop {
         let mut told = std::pin::pin!(SAVED.notified());
         told.as_mut().enable();
         let left = asked.iter().filter(|asked| owes(asked)).count();
@@ -334,10 +336,17 @@ pub(crate) async fn save_first(ids: &[String], within: std::time::Duration) -> u
             () = told => {}
             () = tokio::time::sleep_until(until) => {}
         }
-    };
-    let mut saving = SAVING.lock().expect("saving lock");
-    for asked in &asked { saving.remove(asked); }
-    left
+    }
+}
+
+/// One `save_first`'s asks, let go of as it ends.
+struct Asked<'a>(&'a [(String, String)]);
+
+impl Drop for Asked<'_> {
+    fn drop(&mut self) {
+        let mut saving = SAVING.lock().expect("saving lock");
+        for asked in self.0 { saving.remove(asked); }
+    }
 }
 
 /// Whether `stream` still owes its answer for `project`: asked, not answered, and showing it still.
@@ -381,6 +390,11 @@ impl Showing {
     fn includes(&self, project: &str) -> bool {
         SHOWN.lock().expect("shown lock").get(&self.0)
             .is_some_and(|shows| shows.readers.iter().any(|reader| reader.id() == project))
+    }
+
+    /// Whether this stream is Calcifer's page's.
+    fn page(&self) -> bool {
+        SHOWN.lock().expect("shown lock").get(&self.0).is_some_and(|shows| shows.page)
     }
 
     /// Whether this stream's page shows a machine's view.
@@ -525,6 +539,8 @@ impl Watch {
     fn visible(&self, event: &StreamEvent) -> bool {
         let project_id = match event {
             StreamEvent::ProjectVault { .. } => return true,
+            // A page's alone: this computer's cozy has nothing typed to send.
+            StreamEvent::ProjectSaving { id } => return self.showing.as_ref().is_some_and(|showing| showing.page() && showing.includes(id)),
             // Out of the index by now: told to whoever shows it.
             StreamEvent::ProjectGone { id, .. } => return self.showing.as_ref().is_some_and(|showing| showing.includes(id)),
             StreamEvent::ProjectChanged { id, .. } | StreamEvent::Canvas { id, .. } | StreamEvent::History { id, .. } => Some(id),
