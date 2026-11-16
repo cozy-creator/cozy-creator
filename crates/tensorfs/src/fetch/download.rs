@@ -85,7 +85,7 @@ const TYPICAL: f64 = 2e6;
 /// The ramp (AWS CRT's): requests in flight start at `START` and double each `WINDOW` while the bytes
 /// received grow by `GAIN`, up to the cap; an error or a timeout halves them, once a window, never
 /// below `START`, and the ramp probes again.
-const START: usize = 8;
+const START: usize = 16;
 const WINDOW: Duration = Duration::from_millis(500);
 const GAIN: f64 = 1.1;
 
@@ -253,7 +253,8 @@ pub struct Installing(());
 /// [`SOFTWARE`]), the weights of every downloader of the process leave it the link but a share (cl-1007). What it downloads
 /// comes from [`install_received`]; where that can't be read, the weights take half the link while it runs.
 pub fn installing() -> Installing {
-    if SHARE.installs.fetch_add(1, Ordering::AcqRel) == 0 {
+    // tfs-300's no-scheduler reference (never merged): an install changes nothing.
+    if false && SHARE.installs.fetch_add(1, Ordering::AcqRel) == 0 {
         *lock(&SHARE.install) = Install::default();
     }
     Installing(())
@@ -278,7 +279,7 @@ pub fn install_received(bytes: Option<u64>) {
 
 impl Drop for Installing {
     fn drop(&mut self) {
-        if SHARE.installs.fetch_sub(1, Ordering::AcqRel) == 1 {
+        if false && SHARE.installs.fetch_sub(1, Ordering::AcqRel) == 1 {
             SHARE.whole("the install ended");
         }
     }
@@ -1108,7 +1109,7 @@ impl Shared {
             slots: Slots::new(START.min(requests.max(1))),
             flights: Mutex::default(),
             typical: Mutex::default(),
-            pace: Mutex::new(Pace { level: START.min(requests.max(1)), max: crate::descriptors::requests(requests.max(1)), ..Pace::default() }),
+            pace: Mutex::new(Pace { level: START.min(requests.max(1)), max: START.min(requests.max(1)), ..Pace::default() }),
             busy: AtomicUsize::new(0),
             settle: Notify::new(),
             started: Notify::new(),
@@ -1364,6 +1365,9 @@ impl Shared {
     /// A place in line for `object`, joining its task when one is open: at the more urgent of the two
     /// orders, an unstarted one's place in line and a started one's claim on the places that come free.
     pub(crate) fn want(&self, object: &ObjectRef, origin: &Arc<dyn Origin>, priority: u64) -> Waiter {
+        // tfs-300's no-scheduler reference (never merged): every request at one order, first come first served.
+        let _ = priority;
+        let priority = SOFTWARE + 1;
         let mut queue = lock(&self.queue);
         let task = match queue.tasks.get(&object.sha256).cloned() {
             Some(task) => {
