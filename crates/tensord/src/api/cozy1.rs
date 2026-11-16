@@ -11,7 +11,7 @@ use super::{
     machine_runs::follow,
     v1, MachineIdentity,
 };
-use crate::runs::{OutputSnapshot, Runs};
+use crate::runs::{actor_id, OutputSnapshot, Runs};
 use api::error::{Error, Kind};
 use serde_json::{json, Value};
 use platform::durable::FileAt;
@@ -720,10 +720,7 @@ impl Cozy {
         };
         let (runs, work) = (self.media.runs.clone(), self.work.clone());
         // Off the session: opening an output may wait on the journal.
-        let task = match get {
-            true => tokio::spawn(serve_get(runs, actor, target, work)),
-            false => tokio::spawn(serve_follow(runs, actor, target, work)),
-        };
+        let task = tokio::spawn(serve_in(get, runs, actor, grant.scope, target, work));
         self.streams.push(Stream {
             id,
             number: self.number,
@@ -922,6 +919,34 @@ fn end(target: &Target, status: Option<&str>, snapshot: Option<&OutputSnapshot>)
 }
 
 /// One byte range of an output's current bytes; a stale etag answers `changed`.
+/// A project's run is read in the project's workspace (cl-1066), open on this computer by the grant's signer.
+async fn serve_in(
+    get: bool,
+    runs: Arc<Runs>,
+    actor: VerifiedActor,
+    project: String,
+    target: Target,
+    work: mpsc::UnboundedSender<Work>,
+) {
+    let scope = match project.is_empty() {
+        true => None,
+        false => {
+            let signer = actor_id(actor);
+            let open = tokio::task::spawn_blocking(move || crate::private_io::opened(&project, &signer)).await;
+            let Ok(Some(scope)) = open else {
+                let shut = Error::unavailable("project_not_open", "the run's project isn't open on this computer");
+                let _ = work.send(Work::Stop { number: target.number, message: source_error(&target.id, &shut) });
+                return;
+            };
+            Some(scope)
+        }
+    };
+    match get {
+        true => crate::private_io::request_optional(scope, serve_get(runs, actor, target, work)).await,
+        false => crate::private_io::request_optional(scope, serve_follow(runs, actor, target, work)).await,
+    }
+}
+
 async fn serve_get(
     runs: Arc<Runs>,
     actor: VerifiedActor,

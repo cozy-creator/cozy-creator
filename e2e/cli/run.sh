@@ -487,6 +487,7 @@ WEB_1=(
   timeline
   open
   gone
+  play-link
 )
 WEB_2=(
   fields

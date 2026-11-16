@@ -1,0 +1,1 @@
+A plaintext project's run outputs play straight from their machine again (the run drawer's player and play links), this computer's machine included: it reads them in the project's workspace there. An encrypted project's outputs still get no link. A run sent again plays under the id its machine knows.

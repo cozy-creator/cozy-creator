@@ -149,6 +149,12 @@ pub(crate) fn resolve(descriptor: &LocalPrivateStorage) -> io::Result<LocalPriva
     Ok(verified_scope(descriptor)?.descriptor.clone())
 }
 
+/// `project_id`'s workspace as `actor` opened it, still unlocked: where a capability `actor` signed for that project's run reads.
+pub(crate) fn opened(project_id: &str, actor: &str) -> Option<LocalPrivateStorage> {
+    let held = VERIFIED.lock().unwrap().get(project_id).cloned()?;
+    (held.actor == actor).then(|| verified_scope(&held.descriptor).ok()).flatten().map(|scope| scope.descriptor.clone())
+}
+
 /// Conservative metadata classification for generation/import/JIT probes. It grants
 /// no access: actual I/O still resolves and revalidates the mounted proof each time.
 pub(crate) fn is_private_path(path: &std::path::Path) -> bool {

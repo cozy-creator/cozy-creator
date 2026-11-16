@@ -39,6 +39,10 @@ pub struct Grant {
     /// `name` (every index) or `name/i`; empty: every output of `run`.
     #[serde(rename = "p", default, skip_serializing_if = "Vec::is_empty")]
     pub outputs: Vec<String>,
+    /// The project workspace `run` was made in on this computer's machine (its private storage's project id), whose outputs the
+    /// machine opens there, as long as the signer has it open; empty: the machine's own runs.
+    #[serde(rename = "s", default, skip_serializing_if = "String::is_empty")]
+    pub scope: String,
     /// Unix seconds.
     #[serde(rename = "e")]
     pub expires: i64,
