@@ -287,8 +287,9 @@ while read -r why; do check "prefetch yields: $why"; done < "$OUT/pre-yields.fai
 # A second box, deleted while its transformer comes.
 jq -n --arg t "$tool" '[{name: "gone", tool: $t, kind: "image", fields: {instructions: "A still never rendered.", models: {model: {ref: "e2e/pre-b@0.1.0"}}}}]' \
   | boxes_in "$P" || { pre_end; return 0; }
-came=$(pre_wait "$P" gone 32)
-[ "$came" -ge $((32 << 20)) ] || { check "prefetch yields: stand-p fetched nothing of e2e/pre-b for the second box: its row: $(pre_row "$P" gone)"; pre_end; return 0; }
+# Its row counts the VAE, here already (320 MiB), with what comes: 32 MiB of its transformer in.
+came=$(pre_wait "$P" gone 352)
+[ "$came" -ge $((352 << 20)) ] || { check "prefetch yields: stand-p fetched nothing of e2e/pre-b's transformer for the second box: its row: $(pre_row "$P" gone)"; pre_end; return 0; }
 project_api "$P" /assets/gone -X DELETE > "$OUT/pre-yields-delete.json" 2>&1 || check "prefetch yields: the second box wasn't deleted: $(tail -c 300 "$OUT/pre-yields-delete.json")"
 for _ in $(seq 100); do
   [ -z "$(pre_row "$P" gone)" ] && { gone=0; break; }
@@ -302,7 +303,7 @@ first=$(pre_held "$OUT/pre-yields-gone.json" e2e/pre-b)
 sleep 5
 pre_machine stand-p "$OUT/pre-yields-gone.json"
 second=$(pre_held "$OUT/pre-yields-gone.json" e2e/pre-b)
-echo "prefetch yields: its row said $((came >> 20)) MiB had come when its box was deleted; of e2e/pre-b stand-p holds $first, and 5 s on $second"
+echo "prefetch yields: its row said $((came >> 20)) MiB were there (320 of them its VAE) when its box was deleted; of e2e/pre-b stand-p holds $first, and 5 s on $second"
 [ "$first" = "$second" ] || check "prefetch yields: e2e/pre-b went on coming after its box was deleted: $first, then $second"
 J 'all(.complete | all(. != true))' <<< "$second" || check "prefetch yields: e2e/pre-b is whole on stand-p though its box was deleted as it came: $second"
 [ -n "$(pre_row "$P" first)" ] || check "prefetch yields: the box that stayed lost its row with the one deleted"

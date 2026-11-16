@@ -1273,6 +1273,7 @@ impl Runs {
                 let guessed = crate::ahead::guess(&caller).then(|| {
                     let all: Vec<_> = reads.sure.iter().chain(reads.guesses.iter().flat_map(|(_, set)| set)).cloned().collect();
                     crate::ahead::brought(self.publisher.store(), &all, true);
+                    self.record_reads(id, &reads.sure);
                     crate::ahead::downloading(&stoppable.stop)
                 });
                 let downloaded = self.download(hub.clone(), &reads, (&sure, &guess), fits, &*observe, stoppable, &weights, id, &|| crate::ahead::lined(self, &caller));
@@ -1476,10 +1477,13 @@ impl Runs {
     /// as any run's need does (a fetch ahead's only where they fit); its guesses come while they fit beside
     /// what comes first.
     fn want_reads(&self, id: &str, ahead: bool, fetch: &Arc<crate::access::Fetch>, reads: &crate::access::Reads) -> Result<(), Refused> {
-        // A caller's guess: what nothing of is here yet is its own to bring, the first to go on a short disk (`ahead::brought`).
+        // A caller's guess: what nothing of is here yet is its own to bring, the first to go on a short disk (`ahead::brought`). What
+        // it reads is its function's, as a run's is (`record_reads`): a quote of the function here counts what of that is still
+        // to come, so the machine a guess made ready is quoted nothing to download (cl-1104).
         if crate::ahead::guess(&self.service.engine.caller_id(id)) {
             let all: Vec<_> = reads.sure.iter().chain(reads.guesses.iter().flat_map(|(_, set)| set)).cloned().collect();
             crate::ahead::brought(self.publisher.store(), &all, true);
+            self.record_reads(id, &reads.sure);
         }
         let sure = fetch.absent(&reads.sure)?;
         let free = || crate::reclaim::Disk::measure(self.publisher.store().root()).map(|disk| disk.free());

@@ -2,12 +2,13 @@
 // tool, we could figure out what machine, if we got a request, that request would land on. On that machine, we can pre-emptively install
 // packages + models, so that when we do get a request, we'll have those already ready." With the project open and its box <box> open,
 // whose machine Calcifer made ready with no render asked, the box says so beside its Render: "Ready on <where>", a note in the box's own
-// row of actions, left of the button and on its line. Looked at at 1440×900 and 1920×1080. Then its Render is pressed.
+// row of actions, left of the button and on its line. Looked at at 1440×900 and 1920×1080, and on the canvas under the pointer. Then
+// its Render is pressed.
 //   node ready.js <project folder> <box> <where, as the page names the machine>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $HOLDER: Calcifer's lock record; $SHOT: its pictures.
 // Prints what it saw as JSON, exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
-const { lastLook, launch, lookAt, noStall, openBox, projectUrl, renderOf, settled, signIn } = require('./page');
+const { hoverBox, lastLook, launch, lookAt, noStall, openBox, projectUrl, renderOf, settled, signIn } = require('./page');
 
 const [folder, box, where] = process.argv.slice(2);
 const failures = [];
@@ -34,6 +35,13 @@ const shot = (page, name) => (process.env.SHOT ? page.screenshot({ path: `${proc
   await signIn(page, await projectUrl(folder));
   await page.locator('.stage').waitFor();
   await settled(page);
+  // On the canvas, under the pointer: looked at, and whatever it says of its machine stays inside its card.
+  const card = await hoverBox(page, box);
+  await page.waitForTimeout(1500);
+  const [onCard, cardAt] = [await card.locator('.ready-on').boundingBox().catch(() => null), await card.boundingBox()];
+  seen.card_note_at = onCard;
+  check('card_note_inside_its_card', !onCard || (Boolean(cardAt) && onCard.x >= cardAt.x - 1 && onCard.x + onCard.width <= cardAt.x + cardAt.width + 1), { onCard, cardAt });
+  await shot(page, 'card');
   await openBox(page, box);
   const render = await renderOf(page, box);
   const note = page.locator(`.card.here[data-asset="${box}"] .ready-on`);
