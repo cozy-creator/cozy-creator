@@ -207,6 +207,13 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
   const settled = (run) => ['completed', 'failed', 'canceled'].includes(run.status);
   const machineOf = (m) => [...machines.values()].find((one) => (m.rental_id && one.rental_id === m.rental_id) || one.name === m.name);
   const goto = async (url) => { flow.loads.push({ at: Date.now(), url, asked: true }); await page.goto(url); };
+  /** Beat `n`'s words in Focus `r`, its section opened first (a closed one is inert), typed as a person types them. */
+  const typeBeat = async (r, n, words) => {
+    const beat = r.locator(`.mention-text[data-field="beats.${n}.description"]`);
+    if (!(await beat.isVisible())) await r.locator('.beat-toggle').filter({ hasText: new RegExp(`^\\s*Beat ${n + 1}\\b`) }).first().click();
+    await beat.click();
+    await page.keyboard.type(words);
+  };
   /** Box `name` in Focus, as a person finds it: out of any other's Focus, the canvas fitted, a double-click on it. */
   const look = async (name) => {
     const open = page.getByRole('region', { name: 'Focused asset' });
@@ -369,8 +376,7 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
       const r = await look(SHOT);
       await r.getByRole('textbox', { name: 'Summary', exact: true }).click();
       await page.keyboard.type(SUMMARY);
-      await r.locator('.mention-text[data-field="beats.0.description"]').click();
-      await page.keyboard.type(BEAT);
+      await typeBeat(r, 0, BEAT);
       await expect.poll(async () => (await project.asset(SHOT))?.fields?.beats?.[0]?.description, { message: 'its beat saved', timeout: 30_000 }).toBe(BEAT);
       const fields = (await project.asset(SHOT)).fields;
       flow.shot = { name: SHOT, fields };
@@ -388,13 +394,15 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
       await expect.poll(async () => (await project.asset('plate'))?.tool ?? null, { message: 'the plate takes the Edit tool', timeout: 60_000 }).toBe(edit.id);
       const r = await look('plate');
       await r.getByRole('combobox', { name: 'Edit', exact: true }).selectOption({ label: 'VFX edit' });
-      await r.locator('.mention-text[data-field="beats.0.description"]').click();
-      await page.keyboard.type(GUIDE);
+      await typeBeat(r, 0, GUIDE);
+      // Its beat as long as the plate, where the page offers a beat's length; an edit is as long as its plate either way.
       const duration = r.getByRole('slider', { name: "Beat 1's duration", exact: true });
-      await duration.focus();
-      await page.keyboard.press('Home');
-      for (let s = 1; s < PLATE_S; s++) await page.keyboard.press('ArrowRight');
-      await expect.poll(async () => (await project.asset('plate'))?.fields?.beats?.[0]?.duration, { message: `its beat ${PLATE_S} s`, timeout: 30_000 }).toBe(PLATE_S);
+      if (await duration.isVisible()) {
+        await duration.focus();
+        await page.keyboard.press('Home');
+        for (let s = 1; s < PLATE_S; s++) await page.keyboard.press('ArrowRight');
+        await expect.poll(async () => (await project.asset('plate'))?.fields?.beats?.[0]?.duration, { message: `its beat ${PLATE_S} s`, timeout: 30_000 }).toBe(PLATE_S);
+      }
       await expect.poll(async () => (await project.asset('plate'))?.fields?.edit, { message: 'VFX edit chosen', timeout: 30_000 }).toBe('vfx_edit');
       flow.edit = { name: 'plate', fields: (await project.asset('plate')).fields };
       await shot('edit-typed');
