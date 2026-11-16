@@ -152,14 +152,7 @@ pub fn main() -> ExitCode {
             );
         }
     };
-    let offered = !matches!(command, Command::Update(_) | Command::Completion(_));
-    let run = async {
-        if offered {
-            update::offer(&ctx).await;
-        }
-        dispatch(&ctx, command).await
-    };
-    match runtime.block_on(run) {
+    match runtime.block_on(dispatch(&ctx, command)) {
         Ok(code) => code,
         Err(error) => output::refusal(&ctx, &error),
     }

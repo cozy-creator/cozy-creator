@@ -3,14 +3,12 @@
 //! Calcifer on it; the local machine moves to it once idle. `download_url` (`COZY_DOWNLOAD_URL`, which dist's installers read too)
 //! serves one release's files in place of GitHub's.
 use std::{
-    io::{BufRead as _, Write as _},
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::ExitCode,
-    time::{Duration, SystemTime},
 };
 
 use api::error::{Error, Kind};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::{Context, machine::Adopted};
 
@@ -41,18 +39,12 @@ enum Step {
 }
 
 pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
-    update(ctx, args.version.as_deref()).await?;
-    Ok(ExitCode::SUCCESS)
-}
-
-/// `cozy update [wanted]`: the binary it put in place; none when this is the newest release.
-async fn update(ctx: &Context, wanted: Option<&str>) -> Result<Option<PathBuf>, Error> {
     if let Err(e) = crate::completion::install(&ctx.user_home) {
         crate::output::warn(&format!("shell completion not installed: {e}"));
     }
     let current = ::api::VERSION;
     let binary = installed()?;
-    let wanted = wanted.map(|v| v.trim_start_matches('v'));
+    let wanted = args.version.as_deref().map(|v| v.trim_start_matches('v'));
     let download_url = ctx.config.download_url.as_ref().map(|url| url.as_str().to_owned());
     let dir = api::update::dir(download_url.as_deref(), wanted)?;
     let release = api::update::release(&dir, wanted).await?;
@@ -62,7 +54,7 @@ async fn update(ctx: &Context, wanted: Option<&str>) -> Result<Option<PathBuf>, 
             Move::Up => {}
             Move::Stay => {
                 println!("cozy {current} is the newest release");
-                return Ok(None);
+                return Ok(ExitCode::SUCCESS);
             }
             Move::Down => {
                 let said = format!("the Latest release, cozy {version}, is older than this cozy {current}: an update never goes back unless the version is named");
@@ -135,87 +127,7 @@ async fn update(ctx: &Context, wanted: Option<&str>) -> Result<Option<PathBuf>, 
             crate::output::next(ctx, &[&format!("cozy run watch {run}")]);
         }
     }
-    Ok(Some(updated.binary))
-}
-
-/// The newest release as last read, and the one its person declined: kept in the cozy home (`update-offer.json`).
-#[derive(Serialize, Deserialize, Default)]
-struct Offered {
-    read_s: u64,
-    latest: String,
-    declined: String,
-}
-
-/// At the start of a command a person runs, a newer patch or minor release is offered (cl-1069, Paul 11-16: "ask them if they want to
-/// update, rather than forcibly updating them … that gives them the ability to remain on the older version"): yes installs it as
-/// `cozy update` does and the command goes on as it; no keeps this one until the next release. The newest is read at most once a day,
-/// waiting at most 3 s. A dev build, `--yes`, `--json`, or no terminal on stdin, stdout and stderr is offered nothing.
-pub(crate) async fn offer(ctx: &Context) {
-    if ::api::prerelease::dev(::api::VERSION) || ctx.yes || !crate::output::can_ask(ctx) || !ctx.term.stdout {
-        return;
-    }
-    let path = ctx.home.root().join("update-offer.json");
-    let mut offered: Offered = std::fs::read(&path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
-    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    if now.abs_diff(offered.read_s) >= 86_400 {
-        let download_url = ctx.config.download_url.as_ref().map(|url| url.as_str().to_owned());
-        let read = async { api::update::release(&api::update::dir(download_url.as_deref(), None)?, None).await };
-        // Read or not, not again for a day: offline, the 3 s are waited once a day.
-        offered.read_s = now;
-        if let Ok(Ok(release)) = tokio::time::timeout(Duration::from_secs(3), read).await {
-            offered.latest = release.version;
-        }
-        keep(&path, &offered);
-    }
-    let current = ::api::VERSION;
-    let major = |version: &str| semver::Version::parse(version).map(|v| v.major).ok();
-    if offered.latest == offered.declined || !matches!(moves(&offered.latest, current), Move::Up) || major(&offered.latest) != major(current) {
-        return;
-    }
-    anstream::eprint!("cozy {} is out (this is {current}). Update now? [Y/n] ", offered.latest);
-    let _ = std::io::stderr().flush();
-    let mut answer = String::new();
-    if !matches!(std::io::stdin().lock().read_line(&mut answer), Ok(1..)) {
-        anstream::eprintln!();
-        return;
-    }
-    if !matches!(answer.trim(), "" | "y" | "Y" | "yes") {
-        offered.declined = offered.latest.clone();
-        keep(&path, &offered);
-        anstream::eprintln!("staying on cozy {current}; `cozy update` updates it later");
-        return;
-    }
-    match update(ctx, Some(&offered.latest)).await {
-        Ok(Some(binary)) => crate::output::warn(&again(&binary).message),
-        Ok(None) => {}
-        Err(e) => crate::output::warn(&format!("cozy's update: {}", e.message)),
-    }
-}
-
-fn keep(path: &Path, offered: &Offered) {
-    if let Ok(bytes) = serde_json::to_vec(offered) {
-        let _ = platform::durable::replace(path, &bytes, 0o600);
-    }
-}
-
-/// This command again as the cozy at `binary`: on Unix this process becomes it; on Windows it runs it and exits as it does. What
-/// it answers is why it didn't.
-fn again(binary: &Path) -> Error {
-    let failed = |e: std::io::Error| Error::new(Kind::Internal, "cozy_continue_failed", format!("{} didn't take this command over: {e}", binary.display()));
-    let mut command = std::process::Command::new(binary);
-    command.args(std::env::args_os().skip(1));
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt as _;
-        failed(command.exec())
-    }
-    #[cfg(not(unix))]
-    {
-        match command.status() {
-            Ok(status) => std::process::exit(status.code().unwrap_or(1)),
-            Err(e) => failed(e),
-        }
-    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// What a command that waited behind cozy's own update (cl-978) does once it ended: completed, this command again on the installed
@@ -242,7 +154,21 @@ pub(crate) fn after_update(ctx: &Context, run: &api::calcifer::Run) -> Result<()
     while !moved() && began.elapsed() < std::time::Duration::from_secs(30) {
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
-    Err(again(&binary).next("cozy run ls"))
+    let failed = |e: std::io::Error| {
+        Error::new(Kind::Internal, "cozy_continue_failed", format!("{} didn't take this command over: {e}", binary.display())).next("cozy run ls")
+    };
+    let mut command = std::process::Command::new(&binary);
+    command.args(std::env::args_os().skip(1));
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        Err(failed(command.exec()))
+    }
+    #[cfg(not(unix))]
+    {
+        let status = command.status().map_err(failed)?;
+        std::process::exit(status.code().unwrap_or(1))
+    }
 }
 
 /// This binary's own file, through any link to it.
