@@ -610,7 +610,7 @@ async fn checkpoint(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> 
         (None, release) => {
             let release = match release {
                 Some(version) => card.releases.iter().find(|held| &held.version == version),
-                None => card.releases.first(),
+                None => api::release::newest_listed(&card.releases, |held| &held.version),
             };
             release
                 .and_then(|release| lane.and_then(|lane| release.lanes.get(lane)).or_else(|| release.lanes.values().filter(|held| held.bytes > 0).min_by_key(|held| held.bytes)))

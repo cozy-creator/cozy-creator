@@ -95,7 +95,8 @@ pub(crate) fn lanes<'c>(
             }
         },
         (None, None) => {
-            let newest = (card.releases.iter().find(|r| r.visibility == ReleaseVisibility::Public)).or(card.releases.first());
+            let public = card.releases.iter().filter(|r| r.visibility == ReleaseVisibility::Public);
+            let newest = api::release::newest_listed(public, |r| &r.version).or(card.releases.first());
             match newest {
                 Some(release) => (Some(release), of(release)),
                 None => {
