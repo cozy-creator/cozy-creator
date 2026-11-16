@@ -1093,6 +1093,20 @@ macro_rules! journal_methods {
         })
     }
 
+    /// The machines' runs not yet settled that their machines haven't begun (cl-1082): a vault's maximum doesn't wait for them.
+    pub(crate) fn unsettled_unstarted(&self) -> Result<Vec<RunId>> {
+        self.read(|conn| {
+            // A retried attempt (re-queued with `started_at` cleared) counts as begun: its earlier attempt may have.
+            let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind <> 'here' AND started_at IS NULL AND attempt <= 1 AND (?1 IS NULL OR owner=?1) ORDER BY +number")?;
+            let ids = statement
+                .query_map([self.owner_id()], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            ids.into_iter()
+                .map(|id| RunId::try_from(id).map_err(|e| StoreError::Corrupt(e.into())))
+                .collect()
+        })
+    }
+
     /// Calcifer's own runs not yet settled: those an earlier Calcifer stopped under, or that are going now.
     pub(crate) fn unsettled_here(&self) -> Result<Vec<RunId>> {
         self.read(|conn| {
@@ -1454,6 +1468,28 @@ macro_rules! journal_methods {
                 params![id, seal_run_text(tx, id, &run_context(id, "warnings"), &warnings)?],
             )?;
             Ok(vec![lifecycle(tx, id)?])
+        })
+    }
+
+    /// Ends run `id` as its vault locks past its deadline (cl-1082), only if no attempt of it has begun and no cancel is asked: one never
+    /// sent fails `vault_locked`; one sent or accepted is asked to cancel, through its machine as an explicit lock does, so none runs on
+    /// there orphaned. Each a guarded statement in this one transaction: a run its machine began meanwhile is left alone.
+    pub(crate) fn end_unstarted(&self, id: &str) -> Result<Vec<Event>> {
+        self.write(|tx| {
+            const UNBEGUN: &str = "started_at IS NULL AND attempt <= 1 AND cancel_requested = 0";
+            if tx.execute(&format!("UPDATE runs SET cancel_requested = 1 WHERE id = ?1 AND state = 'queued' AND {UNBEGUN}"), [id])? == 1 {
+                let reason = Reason {
+                    code: "vault_locked".into(),
+                    message: "the project locked at its deadline before the run's machine began it".into(),
+                    next: vec!["cozy vault unlock".into()],
+                    ..Default::default()
+                };
+                return end(tx, id, Status::Failed, Some(reason));
+            }
+            if tx.execute(&format!("UPDATE runs SET cancel_requested = 1 WHERE id = ?1 AND state IN ('sent', 'accepted') AND {UNBEGUN}"), [id])? == 1 {
+                return Ok(vec![lifecycle(tx, id)?]);
+            }
+            Ok(vec![])
         })
     }
 
