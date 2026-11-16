@@ -47,7 +47,7 @@ export function Report({ report }: { report: Measurements }) {
             ])}
           />
           <Table
-            head={["Slot", "Model", "Lane"]}
+            head={["Slot", "Model", "Precision"]}
             rows={(measured.models ?? []).map((model) => [
               model.slot,
               `${model.repository}${model.release ? `@${model.release}` : ""}${model.adapters?.length ? ` + ${model.adapters.map((adapter) => adapter.model).join(", ")}` : ""}`,

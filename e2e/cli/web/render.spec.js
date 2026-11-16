@@ -154,7 +154,7 @@ const recordBox = (page, name) => page.evaluate((name) => {
     const card = open?.querySelector('.card') ?? document.querySelector(`.canvas-node .card[data-asset=${JSON.stringify(name)}]`);
     const shown = document.querySelector('.canvas-root')?.canvasInspection?.card(name)?.rendered;
     const face = [...document.querySelectorAll('[role="status"]')].find(one => one.getAttribute('aria-label') === `${name}'s render`);
-    const meter = card?.querySelector('[role="progressbar"][aria-label="The whole job"]');
+    const meter = card?.querySelector('[role="progressbar"][aria-label="Overall progress"]');
     const preview = card?.querySelector('.latent-preview img');
     return {
       face: face?.querySelector('.face-state b')?.textContent ?? (shown?.progress ? [shown.labels.progress?.fullText, shown.labels.count?.fullText].filter(Boolean).join(' ') : null),
