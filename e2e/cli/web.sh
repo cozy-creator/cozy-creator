@@ -22,8 +22,8 @@ web_chrome() {
 # 1-minute load as it ended. <lane>: 1, 2, 3 (Chrome), engines (Firefox's `@engines` cells, and `@vault`), solo (`@solo`, one at a time),
 # native (one at a time, as it holds `@solo` tests), or a cell's own name (by hand: whichever project takes it, one at a time).
 web_suite() {
-  local lane=$1 pw=$OUT/playwright-test chrome cell engine code line web=$OUT/web
-  local projects=() workers=() filters=()
+  local lane=$1 pw=$OUT/playwright-test chrome cell engine code line web=$OUT/web xvfb=
+  local projects=() workers=() filters=() display=()
   shift
   [ $# -gt 0 ] || { echo "web-$lane: no cells written yet"; return 0; }
   step "web-$lane: $*"
@@ -42,7 +42,12 @@ web_suite() {
       projects=(firefox vault)
       # H.264 is the system's libavcodec on Linux: with none, Firefox says "This browser can't play it" (41966978063).
       bash "$here/install-browser-deps.sh" "$pw" > "$OUT/web-firefox-deps.log" 2>&1 \
-        || { check "web-$lane: Firefox's dependencies failed: $(tail -c 300 "$OUT/web-firefox-deps.log")"; return; } ;;
+        || { check "web-$lane: Firefox's dependencies failed: $(tail -c 300 "$OUT/web-firefox-deps.log")"; return; }
+      # Headless Firefox makes no WebGL context on Linux, so the canvas can't start: it runs on a virtual display, with Mesa's GL (config).
+      if [ "$(uname -s)" = Linux ] && command -v Xvfb > /dev/null; then
+        Xvfb :97 -screen 0 1920x1080x24 -nolisten tcp > "$OUT/web-xvfb.log" 2>&1 & xvfb=$!
+        display=(FIREFOX_DISPLAY=:97)
+      fi ;;
     solo) projects=(solo) workers=(--workers=1) ;;
     # Native and by hand, one test at a time: a `@solo` test stops the Calcifer the others share.
     native) projects=(chrome solo) workers=(--workers=1); [ "${RUNNER_OS:-}" != macOS ] || projects+=(webkit) ;;
@@ -62,12 +67,13 @@ web_suite() {
     until grep -q '^ready' "$OUT/web-busy.out" 2> /dev/null; do kill -0 "$busy" 2> /dev/null || { check "web-$lane: busy.js ended: $(tail -c 300 "$OUT/web-busy.out")"; return; }; sleep 0.2; done
   fi
   {
-    HOLDER=$(web_path "$HOME/.cozy/calcifer/calcifer.lock.holder") COZY=$(web_path "$COZY") CHROME=$chrome OUT=$(web_path "$OUT") ARGV_LOG=$(web_path "$OUT/argv.log") \
+    env ${display[@]+"${display[@]}"} HOLDER=$(web_path "$HOME/.cozy/calcifer/calcifer.lock.holder") COZY=$(web_path "$COZY") CHROME=$chrome OUT=$(web_path "$OUT") ARGV_LOG=$(web_path "$OUT/argv.log") \
       NODE_PATH=$(web_path "$pw/node_modules") node "$(web_path "$pw/node_modules/@playwright/test/cli.js")" test -c "$(web_path "$here/web/playwright.config.js")" \
       "${projects[@]/#/--project=}" ${workers[@]+"${workers[@]}"} "${filters[@]}" 2>&1 && echo 0 > "$web/$lane.code" || echo $? > "$web/$lane.code"
   } | tee "$web/$lane.log"
   code=$(cat "$web/$lane.code")
   [ -z "$busy" ] || { kill "$busy" 2> /dev/null; wait "$busy" 2> /dev/null || true; }
+  [ -z "$xvfb" ] || { kill "$xvfb" 2> /dev/null; wait "$xvfb" 2> /dev/null || true; }
   # A trace is a zip, which e2e/publish's scrub can't read: unpacked, its bearers and codes are scrubbed like any text.
   find "$web/results" -name trace.zip 2> /dev/null | while read -r trace; do
     python3 -m zipfile -e "$trace" "${trace%.zip}" && rm -f "$trace"
