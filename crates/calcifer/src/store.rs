@@ -1756,6 +1756,32 @@ macro_rules! journal_methods {
         })
     }
 
+    /// Sends run `id` to `machine`, which finishes it sooner (cl-1073): one not sent yet goes there; one accepted, once the machine that
+    /// held it canceled it, is sent again there, the same run, its next attempt (one that started as it was told is sent again whole).
+    /// None: it can't go (sent meanwhile, no longer accepted, or canceled by its asker), and settles as its machine said.
+    pub(crate) fn moved(&self, id: &str, machine: &str) -> Result<Option<Vec<Event>>> {
+        self.write(|tx| {
+            let Some(row) = run_in(tx, id)?.filter(|row| matches!(row.state, State::Queued | State::Accepted) && !row.cancel_requested) else {
+                return Ok(None);
+            };
+            match row.state {
+                State::Queued => tx.execute("UPDATE runs SET machine = ?2 WHERE id = ?1", params![id, machine])?,
+                _ => tx.execute(
+                    "UPDATE runs SET state = 'queued', attempt = ?2, cursor = 0, machine_state = NULL, accepted_at = NULL, started_at = NULL, machine = ?3
+                     WHERE id = ?1",
+                    params![id, row.attempt + 1, machine],
+                )?,
+            };
+            let text = format!("moved from {} to {machine}, which finishes it sooner", row.machine.unwrap_or_default());
+            let (seq, at_ms) = (next_seq(tx, id)?, now_ms());
+            tx.execute(
+                "INSERT INTO run_logs (run, seq, at_ms, level, text) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, seq as i64, at_ms, "info", seal_run_text(tx, id, &log_context(id, seq), &text)?],
+            )?;
+            Ok(Some(vec![log_event(seq, at_ms, "info".to_owned(), text), lifecycle(tx, id)?]))
+        })
+    }
+
     /// Settles a run its machine answered it has no record of: canceled when that was asked, else
     /// failed. It is never sent again, since the machine may have run part of it.
     pub(crate) fn lost(&self, id: &str, machine: &str) -> Result<Vec<Event>> {

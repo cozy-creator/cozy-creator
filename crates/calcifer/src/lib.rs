@@ -111,6 +111,8 @@ pub(crate) struct Calcifer {
     drivers: Mutex<HashMap<RunId, Arc<Notify>>>,
     /// Runs told to cancel whose request is still to be kept: a project's edit held its writer when it asked.
     canceling: Mutex<HashSet<String>>,
+    /// Queued runs told to cancel on their machine to go to another that finishes them sooner (cl-1073), by id: where each goes.
+    moving: Mutex<HashMap<RunId, String>>,
     machines: Mutex<HashMap<String, Machine>>,
     tasks: Mutex<JoinSet<()>>,
     /// Orders staging a run's inputs against deleting a settled run's.
@@ -303,6 +305,7 @@ impl Calcifer {
             live: Mutex::default(),
             drivers: Mutex::default(),
             canceling: Mutex::default(),
+            moving: Mutex::default(),
             machines: Mutex::default(),
             tasks: Mutex::default(),
             staging: Mutex::default(),
@@ -1011,6 +1014,40 @@ impl Calcifer {
         }
     }
 
+    /// Moves run `id`, waiting for its machine, to `machine`, which finishes it sooner (cl-1073): one held here (its machine updating)
+    /// goes there now; one in its machine's queue is canceled there before it starts and sent again, the same run, there
+    /// (`Store::moved`). Whether it goes: one that started, is canceled, or reads a file only its machine keeps, stays.
+    pub(crate) fn move_to(self: &Arc<Self>, id: &RunId, machine: &str) -> bool {
+        let Ok(Some(row)) = self.with_run_store(id.as_str(), |store| store.run(id.as_str())) else { return false };
+        if !matches!(row.state, State::Queued | State::Accepted) || row.cancel_requested || row.started_at_ms.is_some() || row.machine.as_deref() == Some(machine) {
+            return false;
+        }
+        let kept_there = |input: &v1::InputFile| !row.inputs.iter().any(|(digest, _)| digest.to_string() == input.digest);
+        if row.spec.inputs.iter().any(kept_there) {
+            return false;
+        }
+        if row.state == State::Queued {
+            return match self.with_run_store(id.as_str(), |store| store.moved(id.as_str(), machine)) {
+                Ok(Some(events)) => {
+                    self.publish(id, events);
+                    self.wake(id);
+                    true
+                }
+                _ => false,
+            };
+        }
+        if lock(&self.moving).insert(id.clone(), machine.to_owned()).is_some() {
+            return false;
+        }
+        self.stop_at_machine(id);
+        true
+    }
+
+    /// Whether run `id` is going to another machine (`move_to`).
+    pub(crate) fn moving(&self, id: &RunId) -> bool {
+        lock(&self.moving).contains_key(id)
+    }
+
     /// Asks run `id`'s machine to cancel it, by the link its driver uses; what it answers is the driver's to record.
     async fn tell_cancel(self: &Arc<Self>, id: &RunId) {
         let Ok(Some(row)) = self.with_run_store(id.as_str(), |store| store.run(id.as_str())) else { return };
@@ -1516,6 +1553,13 @@ impl Calcifer {
         if let Err(error) = self.project_store(project).and_then(|store| store.record_placement(id, placed)) {
             tracing::warn!("run {id}: where it was placed isn't kept: {error}");
         }
+    }
+
+    /// Run `id`'s time left on its machine as its clock says it now (cl-1073): what a quote of that machine counts of it. None: no clock,
+    /// or one with nothing to go on.
+    pub(crate) fn left_there(&self, id: &str) -> Option<::api::estimate::Left> {
+        let id = RunId::try_from(id.to_owned()).ok()?;
+        lock(&self.live).get(&id)?.clock.as_ref()?.left_there(store::now_ms() as f64)
     }
 
     pub(crate) fn quoted(&self, id: &RunId, quoted: eta::Quoted) {
@@ -2369,6 +2413,19 @@ impl Calcifer {
                     continue;
                 }
                 Frame::Outcome(mut outcome) => {
+                    // Canceled there to go where it finishes sooner (`move_to`): sent again, there.
+                    let moving = lock(&self.moving).remove(id);
+                    if let Some(to) = moving.filter(|_| outcome.status == "canceled") {
+                        self.record_batch(id, &mut batch)?;
+                        if let Some(events) = self.with_run_store(id.as_str(), |store| store.moved(id.as_str(), &to))? {
+                            // Its clock is made again for where it goes, from that machine's quote (`quoted`).
+                            if let Some(live) = lock(&self.live).get_mut(id) {
+                                live.clock = None;
+                            }
+                            self.publish(id, events);
+                            return Ok(());
+                        }
+                    }
                     // What its ask does once the machine completed it, before it settles.
                     self.after(id, &mut outcome).await;
                     if let Ok(Some(row)) = self.with_run_store(id.as_str(), |store| store.run(id.as_str()))

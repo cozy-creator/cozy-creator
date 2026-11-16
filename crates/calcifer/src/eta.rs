@@ -524,6 +524,13 @@ impl Clock {
         }
     }
 
+    /// What it has left on its machine at `here` (cl-1073): `estimate` but its results' way here, which holds none of its GPUs; and
+    /// whether that is only the weights it moves now, its compute not yet begun.
+    pub(crate) fn left_there(&self, here: f64) -> Option<api::estimate::Left> {
+        let estimate = self.estimate(here)?;
+        Some(api::estimate::Left { ms: (estimate.left_ms - self.result_ms).max(0.0), weights_only: estimate.basis == EtaBasis::Bytes })
+    }
+
     /// What it has left at `now` (this computer's) by what ran before it and its own steps; none with no basis.
     fn estimated(&self, here: f64) -> Option<Estimate> {
         let now = here - self.ahead.unwrap_or(0.0);

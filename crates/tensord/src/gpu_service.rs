@@ -2772,7 +2772,7 @@ impl Pool {
         if plan.degree == 0 {
             if !admit()? { return Ok(false); }
             let width = match record.invocation.gpus {
-                // Unpacked, it takes its narrowest width: never wider than proven (cr-268).
+                // Unpacked (its queue's packing failed), its narrowest width.
                 0 => width.or_else(|| record.invocation.widths.first().copied())
                     .unwrap_or_else(|| held.record.widest_group(self.serving_width()).min(1)) as usize,
                 gpus => gpus as usize,
