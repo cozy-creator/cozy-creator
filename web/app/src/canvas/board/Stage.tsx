@@ -169,6 +169,8 @@ export function Stage(props: StageProps) {
       viewport = new PixiViewport({ screenWidth: width, screenHeight: height, events: made.events, noTicker: true, passiveWheel: false, ignoreWheelFromOtherElements: true, disableOnContextMenu: true })
       viewport.enableRenderGroup()
       viewport.drag({ wheel: true }).pinch().wheel({ wheelZoom: false, trackpadPinch: true, smooth: false }).decelerate({ friction: 0.93 }).clampZoom({ minScale: MIN_ZOOM, maxScale: MAX_ZOOM })
+      // A gesture moves the viewport between ticks; it starts one.
+      viewport.on("moved", invalidate).on("zoomed", invalidate)
       stage.hitArea = new Rectangle(0, 0, width, height)
       stage.addChild(viewport)
       const layer = new Container({ eventMode: "passive" })
@@ -252,6 +254,22 @@ export function Stage(props: StageProps) {
     )
     publishDom()
     placeWorld()
+    // What lies at a client point for a drop: the topmost box whose body is there, past any box being carried.
+    store.canvasAt = (x, y) => {
+      if (!visible()) return null
+      const top = document.elementFromPoint(x, y)
+      if (!top || !element.contains(top)) return null
+      const point = board.camera.screenToWorld({ x, y })
+      const under = board.query({ x: point.x, y: point.y, w: 0, h: 0 }).reverse()
+      const found = under.sort((a, b) => Number(Boolean(b.selected)) - Number(Boolean(a.selected))).find((node) => {
+        const view = store.get(node.data.name)
+        if (!view || store.isDragging(node.data.name)) return false
+        const body = pictureBox({ id: node.id, name: node.data.name, box: node.bounds, view, selected: Boolean(node.selected) })
+        return point.x >= body.x && point.x <= body.x + body.w && point.y >= node.bounds.y && point.y <= body.y + body.h
+      })
+      return found?.data.name ?? null
+    }
+    stops.push(() => { store.canvasAt = () => null })
     Object.defineProperty(element, "canvasInspection", {
       configurable: true,
       value: inspection({ board, store, scene: () => scene, interaction: () => interaction, media, frames: () => frames, ticking: () => ticker.started, renderer: () => renderer, software: () => software.value }),
