@@ -693,6 +693,8 @@ case $SHARD in
   projectdb-deleted) parts="db_deleted_gc logs" ;;
   projectdb-purged) parts="db_purged logs" ;;
   projectdb-closes) parts="db_closes logs" ;;
+  # cl-1000: a runner with no FUSE (e2e.yaml installs no vault driver for it).
+  projectvault-nofuse) parts="vault_no_fuse logs" ;;
   projectvault) parts="
     vault_times
     shared_scratch

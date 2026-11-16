@@ -100,6 +100,10 @@ pub enum Error {
     HelperMissing,
     #[error("encrypted projects need {0}")]
     DriverMissing(&'static str),
+    /// What the provider needs from this computer is missing; `install` is the command that adds it, when this computer's package
+    /// manager is known (cl-1000).
+    #[error("encrypted projects need {needs} on this computer{}", .install.as_ref().map(|command| format!("; install it with `{command}`")).unwrap_or_default())]
+    DependencyMissing { needs: &'static str, install: Option<String> },
     #[error("{operation}: {source}")]
     Io {
         operation: &'static str,
@@ -151,6 +155,41 @@ pub fn requirements() -> &'static str {
         "windows" => "WinFsp and the Microsoft Visual C++ x64 runtime",
         _ => "a supported encrypted filesystem driver",
     }
+}
+
+/// What a Linux computer lacks for the bundled provider: FUSE itself, or the FUSE library the provider loads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Missing {
+    Fuse,
+    Library,
+}
+
+/// The command that installs what `missing` names, with this computer's package manager (apt, dnf, pacman or zypper); none where
+/// none of them is installed, or off Linux.
+pub fn install_command(missing: Missing) -> Option<String> {
+    if std::env::consts::OS != "linux" {
+        return None;
+    }
+    // Each manager's install verb, then FUSE (the kernel's userspace half and the library) and the library alone.
+    const MANAGERS: [(&str, &str, &str, &str); 4] = [
+        ("apt-get", "sudo apt install", "fuse3 libfuse2", "libfuse2"),
+        ("dnf", "sudo dnf install", "fuse fuse-libs", "fuse-libs"),
+        ("pacman", "sudo pacman -S", "fuse2 fuse3", "fuse2"),
+        ("zypper", "sudo zypper install", "fuse libfuse2", "libfuse2"),
+    ];
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|path| std::env::split_paths(&path).collect()).unwrap_or_default();
+    dirs.extend(["/usr/bin", "/bin", "/usr/sbin", "/sbin"].map(PathBuf::from));
+    MANAGERS.iter().find(|(program, ..)| dirs.iter().any(|dir| dir.join(program).is_file())).map(|(_, install, fuse, library)| {
+        format!("{install} {}", if missing == Missing::Fuse { fuse } else { library })
+    })
+}
+
+/// FUSE as a Linux computer provides it to the bundled provider.
+const FUSE: &str = "FUSE (/dev/fuse, fusermount and the FUSE 2 library)";
+
+/// Whether this process may open `/dev/fuse` to serve a filesystem (Linux).
+fn fuse_device() -> bool {
+    OpenOptions::new().read(true).write(true).open("/dev/fuse").is_ok()
 }
 
 /// A release must embed its pinned provider; ordinary development builds need not.
@@ -254,6 +293,14 @@ impl Provider {
             .output()
             .map_err(io_error("run securefs"))?;
         let first = String::from_utf8_lossy(&output.stdout);
+        // A provider that can't load its FUSE library never starts: the loader says so and exits 127. With no FUSE at all, that's
+        // what to install.
+        if cfg!(target_os = "linux") && output.status.code() == Some(127) && String::from_utf8_lossy(&output.stderr).contains("libfuse") {
+            return Err(match fuse_device() {
+                true => Error::DependencyMissing { needs: "the FUSE 2 library (libfuse.so.2)", install: install_command(Missing::Library) },
+                false => Error::DependencyMissing { needs: FUSE, install: install_command(Missing::Fuse) },
+            });
+        }
         if !output.status.success() {
             return Err(provider.failure("version", output.status));
         }
@@ -654,13 +701,8 @@ impl Provider {
             return Ok(());
         }
         #[cfg(target_os = "linux")]
-        if OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open("/dev/fuse")
-            .is_err()
-        {
-            return Err(Error::DriverMissing(requirements()));
+        if !fuse_device() {
+            return Err(Error::DependencyMissing { needs: FUSE, install: install_command(Missing::Fuse) });
         }
         #[cfg(target_os = "macos")]
         if macos_version() < (15, 4)
