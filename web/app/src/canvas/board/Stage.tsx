@@ -111,6 +111,9 @@ export function Stage(props: StageProps) {
     let interaction: ReturnType<typeof createInteraction> | null = null
     let wakeTimer: ReturnType<typeof setTimeout> | undefined
     let dirty = true, animating = false, frames = 0, width = element.clientWidth, height = element.clientHeight
+    // The open, counted (cl-1018): frames rendered from the first tick that has the project read to the first with every box in view built
+    // (cards) and with every picture in view drawn (previews); and each of those frames' start, scene and render ms.
+    const open = { read: -1, cards: -1, previews: -1, log: [] as number[][] }
     const stops: (() => void)[] = []
     const stage = new Container({ eventMode: "static" })
     const ticker = new Ticker()
@@ -172,6 +175,8 @@ export function Stage(props: StageProps) {
     const tick = () => {
       if (stopped || !renderer || !viewport || !scene) return
       if (!visible()) { ticker.stop(); return }
+      const began = performance.now()
+      if (open.read < 0 && store.hasRead) open.read = frames
       let moving = false
       try { viewport.update(ticker.deltaMS); moving = board.camera.sync() } catch (error) { console.error("Camera:", error) }
       if (moving) placeWorld()
@@ -188,8 +193,15 @@ export function Stage(props: StageProps) {
         } catch (error) { console.error("Scene:", error) }
       }
       // A frame always presents, whatever a card did: the canvas never freezes.
+      const updated = performance.now()
       renderer.render(stage)
       frames++
+      if (open.read >= 0 && open.previews < 0) {
+        const rendered = performance.now(), held = scene.coverage
+        if (open.log.length < 24) open.log.push([Math.round(began), Math.round(updated - began), Math.round(rendered - updated)])
+        if (open.cards < 0 && held.inView > 0 && held.built >= held.inView) open.cards = frames - open.read
+        if (open.cards >= 0 && held.pictured >= held.wanting) open.previews = frames - open.read
+      }
       try { scene.didRender() } catch (error) { console.error("Seen:", error) }
       if (!board.camera.hasDrawn && ((store.hasRead && store.empty) || [...scene.views()].length > 0)) board.camera.markDrawn()
       if (!dirty && !moving && !animating && !board.camera.isMoving) ticker.stop()
@@ -331,7 +343,7 @@ export function Stage(props: StageProps) {
     stops.push(() => { store.canvasAt = () => null })
     Object.defineProperty(element, "canvasInspection", {
       configurable: true,
-      value: inspection({ board, store, scene: () => scene, interaction: () => interaction, media, frames: () => frames, ticking: () => ticker.started, renderer: () => renderer, software: () => software.value }),
+      value: inspection({ board, store, scene: () => scene, interaction: () => interaction, media, frames: () => frames, open: () => open, ticking: () => ticker.started, renderer: () => renderer, software: () => software.value }),
     })
     return () => {
       stopped = true
