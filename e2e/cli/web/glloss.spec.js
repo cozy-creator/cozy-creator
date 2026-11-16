@@ -81,6 +81,18 @@ test('glloss', { tag: '@engines' }, async ({ page, project }) => {
         return missing;
       }, { message: 'each box drawn, each picture loaded', timeout: 30_000 }).toEqual([]);
       await expect.configure({ soft: true }).poll(() => unpainted(page), { message: 'every picture in its colour on the screen', timeout: 30_000 }).toEqual([]);
+      // What each picture not in its colour shows instead, and what the canvas says of it (cl-1043): kept with the result.
+      const off = await unpainted(page);
+      if (off.length) {
+        const read = screenshotPixels(await page.screenshot());
+        const dpr = await page.evaluate(() => devicePixelRatio);
+        const seen = [];
+        for (const name of off) {
+          const card = await canvasCard(page, name), body = card?.rendered?.body;
+          seen.push({ name, want: PICTURES[name], got: body && read((body.x + body.width / 2) * dpr, (body.y + body.height / 2) * dpr), media: card?.rendered?.media });
+        }
+        await test.info().attach(`restored-${cycle}-unpainted`, { body: Buffer.from(JSON.stringify(seen, null, 2)), contentType: 'application/json' });
+      }
       expect.soft(await page.evaluate(() => window.__unreloaded), 'no reload').toBe(true);
     });
   }
