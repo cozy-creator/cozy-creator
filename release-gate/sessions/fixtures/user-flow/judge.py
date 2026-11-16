@@ -647,7 +647,7 @@ check('no toast shows a CLI command (cl-1085)', not commands, '; '.join(commands
 cost = [obj(c) for c in arr(load('cost.json'))]
 spent = sum(num(c.get('spend_usd_micros')) or 0.0 for c in cost) / 1e6
 each = ', '.join('%s %s: $%.2f' % (text(c.get('rental_id')), text(c.get('sku')), (num(c.get('spend_usd_micros')) or 0.0) / 1e6) for c in cost) or 'not read'
-tools = ', '.join(text(obj(t).get('id')) + '@' + text(obj(t).get('version')) for t in arr(flow.get('tools'))) or '?'
+tools = ', '.join(text(obj(t).get('id')) + '@' + (text(obj(t).get('version')) or '?') + (' from source' if obj(t).get('source') else '') for t in arr(flow.get('tools'))) or '?'
 fails = [v for v in verdict if v.startswith('FAIL')]
 out = [f"### user-flow: {'PASS' if not fails else 'FAIL'} ({len(fails)} of {sum(1 for v in verdict if not v.startswith('NOTE'))} checks failed)\n",
        f"cozy {text(flow.get('cozy')) or '?'}; A {text(flow.get('sku'))} x1, B {text(flow.get('sku_b'))} x{flow.get('gpus_b')}; tools {tools}; billed ${spent:.2f} ({each})\n",
