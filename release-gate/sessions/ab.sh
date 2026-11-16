@@ -24,6 +24,7 @@
 #              the cell's run starts with its weights on disk, as a machine whose package was installed earlier does);
 #              in args, `{ref}` is release-gate/ref and `{out:<cell>}` an earlier cell's image or video;
 #              two failed cells stop the session
+#              "floor_mb_s", "floor_after_s" (optional: this cell's slow-host floor, lib.sh `step`; the session's by default);
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR
 #   need_s     seconds the cap must buy (3600)
 #   gpus       optional: the pod's GPU count (1); a cell's `--gpus=<n>` arg runs it on that many
@@ -34,6 +35,7 @@
 CELLS=$(param cells '[]') COMPARE=$(param compare '[]') FREE_GIB=$(param free_gib '') GPUS=$(param gpus 1)
 [[ -z $FREE_GIB || $FREE_GIB =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "free_gib $FREE_GIB"
 [[ $GPUS =~ ^[1-8]$ ]] || fail "gpus $GPUS"
+FLOOR0=$FLOOR_MBS AFTER0=$FLOOR_AFTER
 VRAM=$(cd "$(dirname "$0")/../suites/bench" && pwd)/vram.py
 [ -z "$FREE_GIB" ] || [ -f "$VRAM" ] || fail "no suites/bench/vram.py"
 # ssh for the holder and for what holds the GPU when a cell fails (`gpu`)
@@ -179,6 +181,7 @@ fails=0
 declare -A MADE=()
 for k in "${names[@]}"; do
   c=$(jq -c --arg k "$k" 'map(select(.name==$k)) | first' <<<"$CELLS"); mapfile -t args < <(jq -r '.args[]' <<<"$c")
+  FLOOR_MBS=$(jq -r --arg d "$FLOOR0" '.floor_mb_s // $d' <<<"$c") FLOOR_AFTER=$(jq -r --arg d "$AFTER0" '.floor_after_s // $d' <<<"$c")
   for i in "${!args[@]}"; do
     a=${args[$i]//\{ref\}/$REF}
     while [[ $a =~ \{out:([A-Za-z0-9_-]+)\} ]]; do
