@@ -53,9 +53,17 @@ for _ in $(seq 600); do
 done
 [ -n "$T0" ] || T0=$(date +%s)
 sleep 10
-threads=$(sh 'cat /proc/sys/kernel/yama/ptrace_scope; grep CapEff /proc/$(pgrep -xo tensord)/status; for p in $(pgrep -f cozy_runtime.internal.executor); do for t in /proc/$p/task/*; do echo "$p $(cat $t/comm) $(cat $t/wchan) $(head -c 24 $t/syscall 2>&1)"; done; done')
+# What TensorD may read of it (Yama, its capabilities, each thread's syscall as root here), and which threads tick: each thread's
+# run time (schedstat ns) 5 s apart.
+threads=$(sh 'echo "ptrace_scope $(cat /proc/sys/kernel/yama/ptrace_scope 2>&1)"; for s in $(pgrep -x tensord); do echo "tensord $s $(grep CapEff /proc/$s/status)"; done
+  for p in $(pgrep -f "^[^ ]*python[^ ]* .*cozy_runtime.internal.executor"); do
+    for t in /proc/$p/task/*; do w=$(cat $t/wchan); echo "$p ${t##*/} $(cat $t/comm | tr " " _) ${w:--} $(cut -d" " -f1 $t/schedstat) $(head -c 32 $t/syscall 2>&1 | tr " " ,)"; done
+    sleep 5; for t in /proc/$p/task/*; do echo "later ${t##*/} $(cat $t/comm | tr " " _) $(cut -d" " -f1 $t/schedstat)"; done
+  done')
 echo "$threads" > "$OUT/stuck.threads"
-say "stuck: its executor's threads while it hangs: $(awk '{print $2"("$3")"}' "$OUT/stuck.threads" | sort | uniq -c | tr -s ' \n' ' ')"
+say "stuck: $(head -1 "$OUT/stuck.threads"); $(grep -m1 '^tensord' "$OUT/stuck.threads"); its threads while it hangs: $(grep -vE '^(ptrace_scope|tensord|later)' "$OUT/stuck.threads" | awk '{print $3"("$4")"}' | sort | uniq -c | tr -s ' \n' ' ')"
+# Those whose run time moved in 5 s.
+awk '$1 == "later" {later[$2] = $4; name[$2] = $3} $1 ~ /^[0-9]+$/ {before[$2] = $5} END {for (k in later) if (k in before && later[k] != before[k]) print "ticking: " k " " name[k] " " later[k] - before[k] " ns"}' "$OUT/stuck.threads" | tee -a "$R"
 grep -q ' ~host-stalls ' "$OUT/stuck.threads" || fail "stuck: no ~host-stalls thread ran while it hung: the Runtime has no named step sampler"
 cozy machine logs "$NAME" -n 0 > "$OUT/stuck.log" 2>&1 < /dev/null
 grep -q "its vigil's line is up" "$OUT/stuck.log" || fail "stuck: no executor's vigil line came up (TensorD's log)"
