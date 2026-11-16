@@ -15,7 +15,7 @@ export interface Note {
   picture?: string
 }
 
-/** Notes held up: hovered, or with text selected in them. Their time runs out only once they're let go. */
+/** Notes the pointer is on. While it's on any, none goes: one gone from under it moves the rest, and the one reached for stays put. */
 export const held = new Set<number>()
 
 export const notes = signal<Note[]>([])
@@ -36,12 +36,12 @@ export function say(message: string, error?: unknown, offer?: { action?: NonNull
   return id
 }
 
-/** Its time runs out after `ms`, unless it's held then: hovered, or its text selected. Then it waits until it's let go. */
+/** Its time runs out after `ms`, unless the notes are held then: the pointer on one, or its text selected. Then it waits until they're let go. */
 function expire(id: number, ms: number) {
   setTimeout(() => {
     const selected = window.getSelection()
     const inIt = Boolean(selected && !selected.isCollapsed && selected.anchorNode?.parentElement?.closest(`[data-note="${id}"]`))
-    if (held.has(id) || inIt) expire(id, 1_000)
+    if (notes.get().some((note) => held.has(note.id)) || inIt) expire(id, 1_000)
     else dismiss(id)
   }, ms)
 }
