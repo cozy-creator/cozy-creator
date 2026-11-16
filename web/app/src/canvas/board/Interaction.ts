@@ -12,7 +12,7 @@ import type { Board } from "./Board"
 import type { Camera } from "./Camera"
 import type { StageProps } from "./Stage"
 
-export type Part = "body" | "title" | "delete" | "cancel" | "corner"
+export type Part = "body" | "title" | "delete" | "cancel" | "corner" | "untool"
 export interface Hit { name: string; part: Part }
 
 export interface InteractionOptions {
@@ -129,7 +129,7 @@ export function createInteraction(o: InteractionOptions): Interaction {
       const picked = board.getNodes().filter((held) => held.selected)
       // A finger on a card not selected pans; on a selected one it carries it. Returning from Focus, cards don't move.
       const pans = touch && !node.selected
-      const drags = !modified(e) && hit.part !== "delete" && hit.part !== "cancel" && !locked() && !pans
+      const drags = !modified(e) && hit.part !== "delete" && hit.part !== "cancel" && hit.part !== "untool" && !locked() && !pans
       press = { kind: "card", id: e.pointerId, hit, node, at, from: camera.screenToWorld(at), drags, pans, begun: false,
         nodes: picked.map((held) => ({ ...held, position: { ...held.position }, bounds: { ...held.bounds } })) }
       if (drags) capture(e)
@@ -261,6 +261,7 @@ export function createInteraction(o: InteractionOptions): Interaction {
     const props = o.props(), event = native(e), name = node.data.name
     props.onNodeClick(event, node)
     if (part === "delete") { store.remove([name]); return }
+    if (part === "untool") { store.takeToolOff(name); return }
     if (part === "cancel") {
       const view = store.get(name), take = view && watched(view)
       if (view?.placing) store.cancel(name)

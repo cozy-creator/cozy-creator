@@ -216,6 +216,7 @@ export class Scene {
     held.decoding = decoding ? held.decoding ?? now : undefined
     const waits = held.waits = decoding && now - held.decoding! < DECODE_MS
     card.root.visible = !frame.hidden.has(name) && !waits
+    card.pin(Math.max(0.0001, frame.camera.zoom))
     return card.animate(now, env) || animating || waits
   }
 

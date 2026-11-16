@@ -6,8 +6,12 @@ import { pictureBox, type Presentation, type SceneNode, type ScenePicture } from
 import type { LatentHandle, Media, MediaHandle, MediaSource, VideoHandle } from "./Media"
 import { ellipsis, Label, type LabelStyle, width, wrap } from "./text"
 
-export type Part = "body" | "title" | "delete" | "cancel" | "corner"
+export type Part = "body" | "title" | "delete" | "cancel" | "corner" | "untool"
 export interface Hit { name: string; part: Part }
+/** The X beside a box's tool, in screen pixels: its glyph, its hit area, and the gap after the tool's name. */
+const UNTOOL_GLYPH = 8, UNTOOL_HIT = 18, UNTOOL_GAP = 0
+/** What the tool's name leaves for its X, in canvas units: its hit area where the line is drawn farthest out (0.45). */
+const UNTOOL_ROOM = Math.ceil(UNTOOL_HIT / 0.45)
 
 /** Every colour comes from the page's tokens (tokens.css), read once per theme. */
 export interface Palette {
@@ -47,6 +51,9 @@ export class CardView {
   private pulse = new Graphics()
   private labels = new Container()
   private parts = new Map<Part, Container>()
+  /** The X beside a box's tool that takes it off (Paul, 11-16: "You are not deleting anything; you are closing it"): drawn in screen
+   *  pixels, an 8 px glyph in an 18 px hit area at every zoom, where it sits after the tool's name. */
+  private untool = { glyph: new Graphics(), at: null as { x: number; y: number } | null, color: -1, inked: -1 }
   private texts = new Map<string, Label>()
   private pictures = new Map<string, Picture>()
   private checker?: TilingSprite
@@ -65,7 +72,7 @@ export class CardView {
     this.pulse.eventMode = this.ground.eventMode = this.ink.eventMode = "none"
     this.pixels.eventMode = this.labels.eventMode = "none"
     this.root.addChild(this.pulse, this.ground, this.pixels, this.ink, this.labels)
-    for (const part of ["body", "title", "delete", "cancel", "corner"] as Part[]) {
+    for (const part of ["body", "title", "delete", "cancel", "corner", "untool"] as Part[]) {
       const area = new Container({ eventMode: "static" })
       area.hitArea = new Rectangle(0, 0, 0, 0)
       area.cursor = part === "corner" ? "nwse-resize" : part === "body" ? "default" : "pointer"
@@ -73,6 +80,10 @@ export class CardView {
       this.parts.set(part, area)
       this.root.addChild(area)
     }
+    const untool = this.parts.get("untool")!
+    untool.hitArea = new Rectangle(-UNTOOL_HIT / 2, -UNTOOL_HIT / 2, UNTOOL_HIT, UNTOOL_HIT)
+    this.untool.glyph.eventMode = "none"
+    untool.addChild(this.untool.glyph)
   }
 
   get picture() { return this.pictures.get("main") }
@@ -129,6 +140,7 @@ export class CardView {
     this.drawn.chips = []; this.drawn.controls = []; this.drawn.parts.clear(); this.drawn.meter = null; this.drawn.dot = null
     for (const area of this.parts.values()) area.visible = false
     const label = (key: string, text: string, x: number, y: number, room: number, style: LabelStyle, lines = 1) => { used.add(key); return this.label(key, text, x, y, room, style, env, lines) }
+    this.untool.at = null
 
     if (show.entity) {
       this.ground.roundRect(0, 0, w, node.box.h, 8).fill(colors.card).stroke({ width: 1, color: colors.line })
@@ -174,6 +186,8 @@ export class CardView {
       this.drawn.meter = meter
     }
     this.hot(node, body, colors)
+    this.untool.color = colors.mute
+    this.pin(env.zoom)
     if (state.dropTarget) this.dashed(this.ink, { x: body.x - 4, y: body.y - 4, w: body.w + 8, h: body.h + 8 }, colors.ember, 2 / Math.min(1, env.zoom))
     this.area("body", body)
     const canResize = Boolean(node.view.asset) && !node.view.placing && !far && !show.entity
@@ -239,7 +253,11 @@ export class CardView {
     let y = body.y + body.h + gap
     if (show.tool || show.shape || show.from) {
       const shape = show.shape ? Math.min(w * 0.5, width(show.shape, SMALL)) : 0
-      label("tool", ellipsis([show.tool, show.from].filter(Boolean).join(" · "), w - shape - 10, SMALL), 0, y, w - shape - 10, { size: SMALL, color: colors.mute })
+      // Room for the X after the tool's name at the farthest zoom this line is drawn at.
+      const room = w - shape - 10 - (show.tool ? UNTOOL_ROOM : 0)
+      const said = ellipsis([show.tool, show.from].filter(Boolean).join(" · "), room, SMALL)
+      label("tool", said, 0, y, room, { size: SMALL, color: colors.mute })
+      if (show.tool) this.untool.at = { x: width(said, SMALL), y: y + SMALL * 0.68 }
       if (shape) label("shape", ellipsis(show.shape, shape, SMALL), w - shape, y, shape, { size: SMALL, color: colors.mute })
       y += SMALL * 1.35 + 2
     }
@@ -487,6 +505,26 @@ export class CardView {
     sprite.position.set(body.x + (body.w - sprite.width) / 2, body.y + (body.h - sprite.height) / 2)
   }
 
+  /** The X beside the tool, kept its size on screen as the canvas zooms: a scale and a place, no redraw of the card. */
+  pin(zoom: number) {
+    const area = this.parts.get("untool")!, at = this.untool.at
+    if (!at || !this.input?.node.view.asset?.tool) { area.visible = false; this.drawn.parts.delete("untool"); return }
+    const unit = 1 / Math.max(zoom * this.root.scale.x, 0.0001)
+    if (this.untool.inked !== this.untool.color) {
+      this.untool.inked = this.untool.color
+      const half = UNTOOL_GLYPH / 2, glyph = this.untool.glyph
+      glyph.clear().moveTo(-half, -half).lineTo(half, half).moveTo(half, -half).lineTo(-half, half).stroke({ width: 1.5, color: this.untool.color, cap: "round" })
+    }
+    area.visible = true
+    area.scale.set(unit)
+    area.position.set(at.x + (UNTOOL_GAP + UNTOOL_HIT / 2) * unit, at.y)
+    const box = { x: area.x - (UNTOOL_HIT / 2) * unit, y: at.y - (UNTOOL_HIT / 2) * unit, w: UNTOOL_HIT * unit, h: UNTOOL_HIT * unit }
+    this.drawn.parts.set("untool", box)
+    const control = this.drawn.controls.find((one) => one.part === "untool")
+    if (control) control.box = box
+    else this.drawn.controls.push({ part: "untool", box })
+  }
+
   /** What's held over a box that takes it (app.css .card.hot): an ember outline 2px off it, in a soft 6px ember halo. The selection and the
    *  hover are the scene's (Scene.rings), in screen pixels over every card. */
   private hot(node: SceneNode, body: Box, colors: Palette) {
@@ -553,7 +591,7 @@ export class CardView {
     const rect = area.hitArea as Rectangle
     rect.x = box.x; rect.y = box.y; rect.width = box.w; rect.height = box.h
     this.drawn.parts.set(part, box)
-    if (part === "delete" || part === "cancel") this.drawn.controls.push({ part, box })
+    if (part === "delete" || part === "cancel" || part === "untool") this.drawn.controls.push({ part, box })
   }
 
   private corners(graphics: Graphics, box: Box, color: number, alpha = 0.65) {
