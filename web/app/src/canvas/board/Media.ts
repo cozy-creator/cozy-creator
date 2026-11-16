@@ -248,6 +248,8 @@ export class Media {
   }
 
   private async load(entry: Entry) {
+    let at = performance.now()
+    const step = (name: string) => { try { performance.measure(name, { start: at, end: performance.now() }) } catch { /* probe */ } at = performance.now() }
     const loading = (entry.loading = new AbortController())
     this.active++
     const live = () => !this.stopped && this.visible && !loading.signal.aborted && this.entries.get(entry.key) === entry && entry.pins > 0
@@ -267,6 +269,7 @@ export class Media {
         } finally { image.removeAttribute("src") }
       } else {
         const response = await this.o.client.transport.fetch(this.path(source), { signal: loading.signal })
+        step("cozy.thumb.fetch")
         if (response.status === 202 && sha256) {
           // Calcifer is still making it: waited for, not a failure, and no try spent.
           await response.body?.cancel()
@@ -278,6 +281,7 @@ export class Media {
         }
         if (!response.ok || response.status === 202) { await response.body?.cancel(); throw new Error("unavailable") }
         const blob = await response.blob()
+        step("cozy.thumb.body")
         if (!live()) return
         // An original may be a camera's JPEG, turned by its EXIF as it's decoded: its header's size isn't the picture's.
         const size = source.kind === "file" ? null : naturalSize(new Uint8Array(await blob.slice(0, 256 * 1024).arrayBuffer()))
@@ -285,6 +289,7 @@ export class Media {
         if (size) {
           entry.aspect = size.width / size.height
           bitmap = await createImageBitmap(blob, this.fit(size.width, size.height, width))
+          step("cozy.thumb.decode")
         } else {
           // An original, or a format whose header isn't read here: decoded whole for its size, then made the size drawn.
           const whole = await createImageBitmap(blob)
@@ -296,6 +301,7 @@ export class Media {
       }
       if (!live()) return
       entry.texture = Texture.from(bitmap, true)
+      step("cozy.thumb.texture")
       entry.bytes = bitmap.width * bitmap.height * 4
       this.bytes += entry.bytes
       bitmap = undefined

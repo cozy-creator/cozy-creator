@@ -165,14 +165,18 @@ export function Stage(props: StageProps) {
           const hidden = new Set<string>()
           const focus = store.focusedName.get()
           if (focus && !store.focusEntering.get()) hidden.add(store.resolveName(focus))
+          const updateFrom = performance.now()
           const result = scene.update({ camera: board.camera.getViewport(), width, height, dpr: devicePixelRatio || 1, settled: !board.camera.isMoving, theme: theme.get() === "dark" ? "dark" : "paper", now: performance.now(), hidden, offering: element.closest(".stage")?.hasAttribute("data-offering") ?? false })
+          try { performance.measure("cozy.canvas.update", { start: updateFrom, end: performance.now() }) } catch { /* probe */ }
           animating = result.animating
           clearTimeout(wakeTimer)
           if (result.wake !== null) wakeTimer = setTimeout(invalidate, result.wake)
         } catch (error) { console.error("Scene:", error) }
       }
       // A frame always presents, whatever a card did: the canvas never freezes.
+      const renderFrom = performance.now()
       renderer.render(stage)
+      try { performance.measure("cozy.canvas.render", { start: renderFrom, end: performance.now() }) } catch { /* probe */ }
       frames++
       try { scene.didRender() } catch (error) { console.error("Seen:", error) }
       if (!board.camera.hasDrawn && ((store.hasRead && store.empty) || [...scene.views()].length > 0)) board.camera.markDrawn()
@@ -181,12 +185,14 @@ export function Stage(props: StageProps) {
     ticker.add(tick)
 
     const ready = async () => {
+      performance.mark("cozy.canvas.mount")
       const taken = early
       early = null
       const made = await (taken ?? startRenderer(width, height)).catch((error) => { if (!taken) throw error; return startRenderer(width, height) })
       if (stopped) { made.destroy({ removeView: true }); return }
       if (taken) made.resize(Math.max(1, width), Math.max(1, height), devicePixelRatio || 1)
       renderer = made
+      performance.mark("cozy.canvas.renderer")
       software.value = softwareOf(made)
       // No global move walks every card on every pointer move: Interaction listens to the window while it holds a press.
       made.events.features.globalMove = false

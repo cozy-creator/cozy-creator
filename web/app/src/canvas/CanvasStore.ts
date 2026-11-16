@@ -786,6 +786,7 @@ export class CanvasStore {
 
   applyState(state: Project) {
     if (this.retired) return
+    performance.mark("cozy.state")
     this.state = state
     this.began = state.began ?? 0
     const ahead = state.board?.ahead ?? []
@@ -900,6 +901,8 @@ export class CanvasStore {
   }
 
   private reconcile() {
+    const reconcileFrom = performance.now()
+    queueMicrotask(() => { try { performance.measure("cozy.reconcile", { start: reconcileFrom, end: performance.now() }) } catch { /* probe */ } })
     if (!this.drawn.get()) requestAnimationFrame(() => setTimeout(() => this.drawn.set(true)))
     const state = this.state!
     const rows = this.rows!
