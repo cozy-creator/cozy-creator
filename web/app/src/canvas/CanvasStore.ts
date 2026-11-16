@@ -2678,7 +2678,7 @@ export class CanvasStore {
     const slot = fields.find((field) => field.type === "slot" && (field.multiple || !this.valueOf(key, field.field)))
     if (!slot) return
     const wrong = given.find((name) => slot.accept && this.kindOf(name, key) !== slot.accept)
-    if (wrong) return void say(`${slot.label} takes ${slot.accept === "image" ? "a picture" : slot.accept === "video" ? "a video" : "a sound"}, and ${wrong} isn't one`)
+    if (wrong) return void say(`${slot.label} takes ${slot.accept === "image" ? "an image" : slot.accept === "video" ? "a video" : "audio"}, and ${wrong} isn't ${slot.accept === "audio" ? "audio" : "one"}`)
     const held = this.valueOf(key, slot.field)
     void this.setFields(key, { [slot.field]: slot.multiple ? [...(Array.isArray(held) ? held : []), ...tags] : tags.at(-1) })
   }
