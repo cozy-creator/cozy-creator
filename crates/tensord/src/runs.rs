@@ -961,7 +961,8 @@ impl Runs {
             let hardware = self.service.gpu().map(|gpu| gpu.hardware(gpu.width() as u32)).unwrap_or_default();
             let (stage, saving) = (format!("downloading {}", choice.model), format!("saving {}", choice.model));
             let wait = crate::activity::wait(crate::activity::Kind::Download, &choice.model, &self.service.engine.caller_id(id));
-            let (named, landed) = publisher.download(&self.service, hub_access()?, named, &hardware, structure, self.order(id, spec, 0), stop, &|done, total| {
+            let room = |absent| self.service.room_for(id, absent);
+            let (named, landed) = publisher.download(&self.service, hub_access()?, named, &hardware, structure, self.order(id, spec, 0), stop, &room, &|done, total| {
                 // Every byte is here (a total this small is still only the header's): what is left is the disk's,
                 // and a slow one has held a run at 100% for over a minute with no word (tfs-143).
                 let now = if total >= 1 << 20 && done >= total { &saving } else { &stage };

@@ -484,7 +484,7 @@ impl Service {
                 return Ok(());
             }
         };
-        let idle: BTreeSet<u32> = self.pool().map(|pool| pool.idle_executors().into_iter().map(|(pid, _)| pid).collect()).unwrap_or_default();
+        let idle: BTreeSet<u32> = self.pool().map(|pool| pool.idle_executors().into_iter().flat_map(|(pids, _)| pids).collect()).unwrap_or_default();
         let evictable = room.freed(|lane| lane.holders.iter().all(|pid| idle.contains(pid)));
         // A disk below its reserve lacks that too, as the store judges each admit.
         let (now, below) = crate::reclaim::measure(store.root()).map_or((0, 0), |disk| (disk.free(), disk.reserve().saturating_sub(disk.available)));
@@ -537,15 +537,16 @@ impl Service {
         let freed = |ended: &BTreeSet<u32>| room.freed(|lane| lane.holders.iter().all(|pid| ended.contains(pid)));
         let (mut ended, mut names) = (BTreeSet::new(), vec![]);
         let mut can = freed(&ended);
-        for (pid, _) in idle {
+        for (pids, _) in idle {
             if can >= need {
                 break;
             }
             let mut with = ended.clone();
-            with.insert(pid);
+            with.extend(pids.iter().copied());
             let more = freed(&with);
-            if more > can && pool.end_idle_executor(pid) {
-                names.extend(room.lanes.iter().filter(|lane| lane.holders.contains(&pid)).map(|lane| lane.name.clone()));
+            // The leader's end ends its whole group.
+            if more > can && pool.end_idle_executor(pids[0]) {
+                names.extend(room.lanes.iter().filter(|lane| pids.iter().any(|pid| lane.holders.contains(pid))).map(|lane| lane.name.clone()));
                 (ended, can) = (with, more);
             }
         }

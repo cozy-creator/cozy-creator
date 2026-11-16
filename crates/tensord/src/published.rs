@@ -689,7 +689,7 @@ impl Publisher {
     /// components' walk found them). Whatever is here moves nothing.
     #[allow(clippy::too_many_arguments)]
     fn pull(&self, source: &hub::Source, named: &Named, components: Option<&[String]>, order: u64, stop: Option<&Stop>,
-        bytes: &(dyn Fn(u64, u64) + Sync)) -> Result<Landed, Failure> {
+        room: Option<&dyn Fn(u64) -> Result<(), String>>, bytes: &(dyn Fn(u64, u64) + Sync)) -> Result<Landed, Failure> {
         let _inventory = crate::held_models::ModelChange;
         let header = named.header()?;
         let remote = origin::remote(&self.machine, source).map_err(|e| unsigned(source, refused("model_download_failed", e.clone()), &e))?;
@@ -724,10 +724,16 @@ impl Publisher {
         let pulled = Pulled { model: named.model.clone(), release: named.release.clone(), lane: named.lane.clone(), tree: tree.clone() };
         pulled.record(&self.store).map_err(io_failure)?;
         // Held open while it lands: the store never evicts a checkpoint a pull is fetching.
-        let _held = self.store.at_checkpoint(&tree).map_err(|e| io_failure(storage::io_error(e)))?;
+        let held = self.store.at_checkpoint(&tree).map_err(|e| io_failure(storage::io_error(e)))?;
         if components == Some(&[]) {
             logged(&structure);
             return Ok(structure.landed);
+        }
+        // Room for all it lacks first, the machine's own way: one object's at a time freed only a bake or a LoRA, never an
+        // idle executor's models, and parallel admissions took it before the next (derived-disk 43857521603).
+        if let Some(room) = room {
+            let absent: u64 = storage::chunks(&held, components.unwrap_or(&[])).iter().filter(|o| !self.store.holds(o)).map(|o| o.length).sum();
+            room(absent).map_err(|why| ("machine_disk_full", why.trim_start_matches("machine_disk_full: ").to_owned()))?;
         }
         let progress = Arc::new(Counted::default());
         let pulled = origin::watched(&progress, bytes, || {
@@ -743,14 +749,14 @@ impl Publisher {
     /// whole (an adapter).
     fn ensure(&self, source: &hub::Source, named: &Named, order: u64, stop: Option<&Stop>,
         bytes: &(dyn Fn(u64, u64) + Sync)) -> Result<Landed, Failure> {
-        self.pull(source, named, None, order, stop, bytes)
+        self.pull(source, named, None, order, stop, None, bytes)
     }
 
     /// A Hub checkpoint's header, landed at once: which of its chunks come, and when, its calls
     /// direct (`access`). A held header asks the Hub nothing.
     fn structure(&self, source: &hub::Source, named: &Named, job: &Job) -> Result<(), Failure> {
         job.stage(format!("resolving {}", named.shown()));
-        self.pull(source, named, Some(&[]), job.order, job.stop.as_ref(), &|_, _| ()).map(drop)
+        self.pull(source, named, Some(&[]), job.order, job.stop.as_ref(), None, &|_, _| ()).map(drop)
     }
 
     /// The checkpoint `named` is: one by hash as given, a name as the Hub resolves its release and
@@ -884,8 +890,9 @@ impl Publisher {
 
     /// A Hub checkpoint resolved (`resolve`) and downloaded into the store at `order` (a warm run's
     /// model choice: `cozy model download`): whole, or its header and tree alone (`structure`: a
-    /// composition's base, whose components stay the Hub's). Answers what the Hub named and its
-    /// bytes by where they came from (`pull`).
+    /// composition's base, whose components stay the Hub's). `room` is asked for the bytes absent
+    /// before any is fetched, as a run's weights are (`Service::room_for`). Answers what the Hub
+    /// named and its bytes by where they came from (`pull`).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn download(
         &self,
@@ -896,13 +903,14 @@ impl Publisher {
         structure: bool,
         order: u64,
         stop: Option<&Stop>,
+        room: &dyn Fn(u64) -> Result<(), String>,
         bytes: &(dyn Fn(u64, u64) + Sync),
     ) -> Result<(Named, Landed), Refused> {
         let failed = |(code, message)| Refused { code, message };
         let named = self.resolve(service, source, named, hardware, order).map_err(failed)?;
         // Held payload bytes move nothing; resolve already checked capability-backed authority.
         let components = structure.then_some(&[][..]);
-        let moved = self.pull(source, &named, components, order, stop, bytes).map_err(failed)?;
+        let moved = self.pull(source, &named, components, order, stop, Some(room), bytes).map_err(failed)?;
         Ok((named, moved))
     }
 

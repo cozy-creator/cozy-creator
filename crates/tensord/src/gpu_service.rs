@@ -910,6 +910,8 @@ pub(crate) struct Foreign {
 
 /// What a GPU uses with nothing on it (the driver's own reserve) stays under this.
 const IDLE_USE: u64 = 1 << 30;
+/// The most an executor ended for disk is waited on to exit (a rank's CUDA teardown took 14.5 s on an A40).
+const EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Whether `pid`, as this machine sees it, is a Cozy executor of an earlier run of it: a Runtime
 /// executor or trampoline that doesn't descend from this run.
@@ -1850,26 +1852,55 @@ impl Pool {
             }
         }
     }
-    /// Each idle executor's process and when it last came back idle, least recently used first:
-    /// what a full disk may end to let the models it holds open go (`Service::room_for`).
-    pub(crate) fn idle_executors(&self) -> Vec<(u32, Instant)> {
-        let mut idle: Vec<(u32, Instant)> = self.sessions.lock().unwrap().values().map(|s| (s.executor.birth.pid, s.used)).collect();
-        idle.extend(self.deviceless.lock().unwrap().iter().map(|s| (s.executor.birth.pid, s.used)));
+    /// Each idle executor's processes, its leader first, and when it last came back idle, least
+    /// recently used first: what a full disk may end to let the models they hold open go
+    /// (`Service::room_for`). Each rank of a group opens what it loads under its own pid
+    /// (Runtime's `_follower_load`), so its followers' holds are the group's.
+    pub(crate) fn idle_executors(&self) -> Vec<(Vec<u32>, Instant)> {
+        let each = |s: &Session| {
+            let mut pids = vec![s.executor.birth.pid];
+            for birth in executor_births(&s.executor.birth, &s.followers) {
+                if !pids.contains(&birth.pid) {
+                    pids.push(birth.pid);
+                }
+            }
+            (pids, s.used)
+        };
+        let mut idle: Vec<(Vec<u32>, Instant)> = self.sessions.lock().unwrap().values().map(each).collect();
+        idle.extend(self.deviceless.lock().unwrap().iter().map(each));
         idle.sort_by_key(|(_, used)| *used);
         idle
     }
-    /// Ends the idle executor of process `pid` and observes its exit; whether one was.
+    /// Ends the idle executor of process `pid` and waits, as long as `EXIT_WAIT`, for every process of it to exit: what
+    /// they hold open goes only then (pod-session 43861913736: H3's group ended, its model still held a moment later, and
+    /// the install was refused). Whether one was.
     pub(crate) fn end_idle_executor(&self, pid: u32) -> bool {
+        let of = |s: &Session| (s.executor.birth.pid == pid).then(|| executor_births(&s.executor.birth, &s.followers));
+        let births = self.sessions.lock().unwrap().values().find_map(of);
+        let births = births.or_else(|| self.deviceless.lock().unwrap().iter().find_map(of)).unwrap_or_default();
         let key = self.sessions.lock().unwrap().iter().find(|(_, s)| s.executor.birth.pid == pid).map(|(key, s)| (key.clone(), s.start, s.degree));
-        if let Some((key, start, degree)) = key {
-            let Some(permit) = self.allocations.upkeep(start..start + degree as usize) else {
-                return false;
-            };
-            let ended = self.end_session(&key);
-            drop(permit);
-            return ended;
+        let ended = match key {
+            Some((key, start, degree)) => {
+                let Some(permit) = self.allocations.upkeep(start..start + degree as usize) else {
+                    return false;
+                };
+                let ended = self.end_session(&key);
+                drop(permit);
+                ended
+            }
+            None => self.end_idle_deviceless(|s| s.executor.birth.pid == pid),
+        };
+        if ended {
+            let deadline = Instant::now() + EXIT_WAIT;
+            for birth in &births {
+                let Ok(Some(process)) = platform::process::Exact::open(birth) else { continue };
+                if !process.wait_for(deadline.saturating_duration_since(Instant::now())).unwrap_or(true) {
+                    tracing::warn!("pid {} hadn't exited {} s after its executor ended: what it holds stays", birth.pid, EXIT_WAIT.as_secs());
+                    break;
+                }
+            }
         }
-        self.end_idle_deviceless(|s| s.executor.birth.pid == pid)
+        ended
     }
     /// Every idle executor `which` names ends.
     fn end_idle_executors(&self, which: impl Fn(&Session) -> bool) {
