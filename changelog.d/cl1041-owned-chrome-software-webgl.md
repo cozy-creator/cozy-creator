@@ -1,0 +1,1 @@
+The canvas draws in `cozy open`'s own Chrome on a machine with no usable GPU (a VM, remote desktop, a blocklisted driver), where it used to show no boxes (cl-1041). That Chrome may now fall back to software WebGL (SwiftShader), the first fallback in cl-1041's order (software WebGL, then canvas2D); a machine with a GPU still uses it.

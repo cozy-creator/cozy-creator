@@ -185,7 +185,10 @@ impl OwnedBrowser {
             let display = std::path::PathBuf::from(display);
             command.env("WAYLAND_DISPLAY", if display.is_absolute() { display } else { runtime.join(display) });
         }
-        command.args(["--incognito", "--remote-debugging-pipe", "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--disable-background-networking", "--disable-sync", "--disable-component-update", "--disable-crash-reporter", "--disable-breakpad", "--disable-crashpad", "--noerrdialogs", "--no-startup-window", "--disable-session-crashed-bubble"])
+        // With no usable GPU (a VM, remote desktop, a blocklisted driver, a CI runner), Chrome no longer falls back to software WebGL on
+        // its own: the canvas (cl-991) then draws nothing. SwiftShader is allowed as that fallback, the first of cl-1041's (software WebGL,
+        // then canvas2D); a machine with a GPU still uses it. This window shows only Calcifer's own page.
+        command.args(["--incognito", "--remote-debugging-pipe", "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--disable-background-networking", "--disable-sync", "--disable-component-update", "--disable-crash-reporter", "--disable-breakpad", "--disable-crashpad", "--noerrdialogs", "--no-startup-window", "--disable-session-crashed-bubble", "--enable-unsafe-swiftshader"])
             .arg(format!("--user-data-dir={}", profile.path().display()))
             .arg(format!("--disk-cache-dir={}", profile.path().join("cache").display()))
             .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())

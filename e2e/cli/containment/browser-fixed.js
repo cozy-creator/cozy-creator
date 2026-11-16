@@ -73,7 +73,10 @@ async function containmentProof(input) {
       if (x === null) {
         // No press point: is the box drawn at all, and is the page drawing?
         const frame = await new Promise((done) => { const late = setTimeout(() => done(false), 500); requestAnimationFrame(() => { clearTimeout(late); done(true); }); });
-        Object.assign(cover, { node_hidden: !here && !inspection?.card(input.asset)?.rendered, visible: document.visibilityState === 'visible', has_focus: document.hasFocus(), animation_frame: frame });
+        // And whether the canvas could draw at all: a WebGL context in this browser, and the canvas's own in-place refusal.
+        const gl = document.createElement('canvas');
+        Object.assign(cover, { node_hidden: !here && !inspection?.card(input.asset)?.rendered, visible: document.visibilityState === 'visible', has_focus: document.hasFocus(), animation_frame: frame,
+          webgl: Boolean(gl.getContext('webgl2') ?? gl.getContext('webgl')), canvas_refused: Boolean(root?.querySelector('[role=alert]')) });
       }
       return { found: x !== null, x, y, hit_target: x !== null && hits(x, y), hit_node: x !== null && hits(x, y), ...cover };
     }
