@@ -1606,7 +1606,7 @@ impl Publisher {
                 if !installation.generation.is_empty() {
                     opens_views(service, installation, choice)?;
                 }
-                warnings.extend(apply_adapters(self, request.source.as_ref(), &resolve, choice, &mut grant, &runs, &request.providers, job)?);
+                warnings.extend(apply_adapters(self, request.source.as_ref(), &resolve, choice, &mut grant, &runs, &slot_reads(slot), &request.providers, job)?);
             }
             Ok((grant, warnings))
         };
@@ -1690,6 +1690,19 @@ fn slot_components(slot: &Value) -> Vec<String> {
     (slot["components"].as_array())
         .map(|names| names.iter().filter_map(|n| n.as_str().map(str::to_owned)).collect())
         .unwrap_or_default()
+}
+
+/// The components a call loads of a slot's checkpoint, as `prepare_root` binds them: those declared (`components=`), else
+/// every one its methods use (`component_use`); none: all of them.
+fn slot_reads(slot: &Value) -> Vec<String> {
+    if slot["components"].is_array() {
+        return slot_components(slot);
+    }
+    let used: BTreeSet<String> = (slot["component_use"].as_object().into_iter().flat_map(|uses| uses.values()))
+        .flat_map(|components| components.as_array().into_iter().flatten())
+        .filter_map(|component| component.as_str().map(str::to_owned))
+        .collect();
+    used.into_iter().collect()
 }
 
 /// Whether a held answer read at `read_ms` is older than `FRESH`.
@@ -1900,7 +1913,7 @@ fn opens_views(service: &Service, installation: &Installation, choice: &stored::
 
 /// A slot's caller adapters applied to its resolved base: each adapter downloaded, then one
 /// adapter view composed (`adapter::compose`) over the components the call `runs`; the grant
-/// then names the view.
+/// then names the view. Of the base, only the components the slot `reads` come (none: all).
 #[allow(clippy::too_many_arguments)]
 fn apply_adapters(
     publisher: &Publisher,
@@ -1909,6 +1922,7 @@ fn apply_adapters(
     choice: &stored::ModelChoice,
     grant: &mut ModelGrant,
     runs: &[String],
+    reads: &[String],
     providers: &Providers,
     job: &Job,
 ) -> Result<Vec<String>, Failure> {
@@ -1974,10 +1988,13 @@ fn apply_adapters(
             runs: runs.to_vec(),
         });
     }
-    // The view reads the base's own chunks, from this store: they come first.
+    // The view reads the base's own chunks, from this store: those of the components its slot reads come first, never the
+    // rest of its checkpoint (tfs-300, LAB2-47829: a LoRA on Noct Q's transformer waited for its 9.9 GiB text encoder too).
+    // One it lacks is `prepare_root`'s to refuse, by name.
     let base = object(&grant.manifest)?;
     if let (Some(pulled), Some(source)) = (publisher.pulled(&base).map_err(io_failure)?, source) {
-        publisher.ensure(source, &pulled, job.order, job.stop.as_ref(), &|d, t| job.bytes(d, t))?;
+        let components: Option<Vec<String>> = (!reads.is_empty()).then(|| reads.iter().filter(|c| grant.components.contains(c)).cloned().collect());
+        publisher.pull(source, &pulled, components.as_deref(), job.order, job.stop.as_ref(), &|d, t| job.bytes(d, t))?;
     }
     // The view is composed by reference and kept in memory, never written; Load sends its bytes.
     let composed = crate::adapter::compose(store, &base, &selections)
