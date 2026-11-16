@@ -165,6 +165,9 @@ export const reshapes = (view: ElementView) => makes(view) && (Boolean(view.here
 /** The shape it will make: the one set, else what its tool takes with none. */
 const madeShape = (view: ElementView) => ratioOf(valueIn(view, "aspect_ratio")) ?? view.auto
 
+/** The shape its frame is while what it makes is on its way, and its take's tile with it (cl-1072): the one being set or set, else Auto's. */
+export const makingShape = (view: ElementView) => ratioOf(view.shape) ?? madeShape(view)
+
 /** The shape of the picture a mention of it sends: version `number`'s, else its state's, else, with none yet, the one it will make. */
 export function sentShape(view: ElementView, number?: number): number | undefined {
   const asset = view.asset
@@ -176,7 +179,7 @@ export function sentShape(view: ElementView, number?: number): number | undefine
 }
 
 export function aspectOf(view: ElementView): number {
-  const made = reshapes(view) ? (ratioOf(view.shape) ?? madeShape(view)) : undefined
+  const made = reshapes(view) ? makingShape(view) : undefined
   if (made) return made
   // Showing a take, its own shape, whatever the last one measured was. A take just landed and not measured yet (its file on its way here)
   // keeps the shape of the newest one that is: a box never changes size because a render landed (cl-936).
