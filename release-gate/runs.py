@@ -88,10 +88,22 @@ class Fill(TypedDict, total=False):
 
 
 class Flow(TypedDict, total=False):
-    """What moved one way in a request (`stats.moved[origin]`), or its bakes (`moved.bake`: device_ns)."""
+    """What moved one way in a request (`stats.moved[origin]`), or its bakes (`moved.bake`: device_ns, blocks)."""
     bytes: int
     ns: int
     device_ns: int
+    fills: int
+    blocks: int
+
+
+class BakedPages(TypedDict, total=False):
+    """The host tier's facts (`stats.baked_pages`, TensorFS's pages): pages kept, derived pages written this process, of
+    them from a copy the tier could not keep and of those outside varena's books (tfs-299), and the room at its last look."""
+    pages: int
+    persisted: int
+    persisted_unkept: int
+    unkept_degraded: int
+    room: int
 
 
 Moved: TypeAlias = dict[str, Flow]  # by origin (store, derived, kept, leased), and `bake`
@@ -147,6 +159,7 @@ class VarenaStats(TypedDict, total=False):
     retries: int | None
     retained_bytes: int | None
     escaped: list[EscapedLoop] | None
+    baked_pages: BakedPages | None
 
 
 class VarenaRow(TypedDict, total=False):

@@ -8,6 +8,10 @@
 #   warm-sdxl        the next call: a graph must serve it (check.py)
 #   co-*             all three again on one card: what does not fit is evicted and refilled
 #   reload-*         after an unload (a restart ends every executor), each model back from page cache or disk
+#   lora-*           (> 8 GB card) a turbo LoRA's bake on a host whose tier idle models fill (tfs-299: Flux-2 Turbo kept
+#                    no bake and baked 250 blocks in every request): with SDXL, Klein and H3 idle on their pages and
+#                    Qwen-Image-2's executor started, the host held to LORA_GIB available (hostfill.py), Qwen-Image-2 Turbo
+#                    twice, then request 1's again after a restart
 #   s8-* s6-* s3-*   under 8, 6 and 3 GiB software caps; at 6 GiB SDXL and Klein alternate three times
 #   (≤ 8 GB card)    cold, co and reload only: the driver's own out-of-memory paths (a capped card never fills)
 #   h3-8gb           (≤ 8 GB card) H3 Turbo 15 s, the 8 GB tier's product shape
@@ -97,6 +101,27 @@ if [ "$(grep -oE '· [0-9]+ GiB ·' machine.txt | head -1 | grep -oE '[0-9]+')" 
   return 0
 fi
 h3 reload-h3 9 5 "A slow pan follows the action."
+# lora-* (check.py `lora`): request 1 keeps or writes what it bakes, request 2 and the restart's bake nothing, and the
+# restart's reads its pages from disk and makes request 1's picture. lora-0 (no LoRA) starts Qwen-Image-2's executor first;
+# LORA_GIB then leaves its tier no room, so only the idle models' pages or a write make the bake last.
+QWEN_TURBO=$(pkg qwen-image-2 generate_turbo) LORA_GIB=${LORA_GIB:-1.5}
+lora_pod() { timeout 900 "$CLI" machine ssh "$M" "$1" < /dev/null; }
+lora() { vcell "$1" "$QWEN_TURBO" prompt="$OBJECT on a windowsill, morning light, photo" seed:=$((R + $2)) megapixels:=1 prompt_upsampling:=false "${@:3}"; }
+vcell lora-0 "$(pkg qwen-image-2 generate)" prompt="$SCENE, fine architectural detail" seed:=$((R + 60)) megapixels:=1 prompt_upsampling:=false
+lora_pod "echo $(base64 -w0 "$V/hostfill.py") | base64 -d > /var/tmp/varena-hostfill.py && rm -f /var/tmp/varena-hostfill.ready &&
+  (setsid nohup python3 /var/tmp/varena-hostfill.py $LORA_GIB /var/tmp/varena-hostfill.ready > /var/tmp/varena-hostfill.out 2>&1 < /dev/null &) &&
+  i=0; while [ ! -s /var/tmp/varena-hostfill.ready ] && [ \$i -lt 300 ]; do sleep 1; i=\$((i + 1)); done;
+  cat /var/tmp/varena-hostfill.ready 2>/dev/null || tail -c 300 /var/tmp/varena-hostfill.out" > lora-hold.txt 2>&1
+read -r _ held left _ < <(tail -1 lora-hold.txt)
+if [[ ${held:-x} =~ ^[0-9]+$ ]]; then log "lora: host held $((held >> 30)) GiB, $((left >> 30)) GiB left available"
+else expect lora-hold FAIL "the host was not held: $(tr '\n\r' '  ' < lora-hold.txt | tail -c 300)"; fi
+lora lora-1 61
+lora lora-2 62
+cap off  # a restart: no executor and none of its host pages stays
+# Request 1's computation again: the lane it was served, asked (the memo keys an asked lane, never lora_mode).
+LORA_LANE=$(jq -r '[.measurements.models[]? | select(.slot == "model") | .lane][0] // empty' lora-1.json 2>/dev/null)
+lora lora-3 61 ${LORA_LANE:+--lane "$LORA_LANE"}
+lora_pod "pkill -f /var/tmp/varena-hostfill.py" > /dev/null 2>&1
 cap 8GiB
 vcell s8-sdxl "$SDXL" prompt="$OBJECT in a museum display case, photo" seed:=$((R + 11))
 vcell s8-klein "$KLEIN" prompt="$SCENE, watercolor" seed:=$((R + 12))

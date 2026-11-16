@@ -281,9 +281,43 @@ pub(super) struct Tier {
     persisted_bytes: AtomicU64,
     persist_skipped: AtomicU64,
     persist_failed: AtomicU64,
+    /// Of `persisted`, those written from their own copy (`Persisting::own`); and of the copies,
+    /// those made with no room in varena's books, one at a time (`Tier::unkept`).
+    persisted_unkept: AtomicU64,
+    unkept_degraded: AtomicU64,
+    /// The one copy made outside the books is on its way to disk; and the fill waiting for it.
+    degraded: Mutex<bool>,
+    degraded_done: Condvar,
 }
 
-/// A derived page the tier keeps, `len` bytes of `set`, to write to disk as page `key` of `slot`.
+/// A copy of a derived page the tier had no room to keep, to write to disk from: staging in varena's
+/// books while it lives, else the tier's one copy outside them (`Tier::unkept`).
+pub(super) struct Unkept {
+    page: Option<Page>,
+    tier: Arc<Tier>,
+    staged: bool,
+}
+
+impl Unkept {
+    pub(super) fn ptr(&self) -> *mut u8 {
+        self.page.as_ref().map_or(std::ptr::null_mut(), |page| page.ptr)
+    }
+}
+
+impl Drop for Unkept {
+    fn drop(&mut self) {
+        let len = self.page.take().map_or(0, |page| page.len);
+        if self.staged {
+            self.tier.unstage(len);
+        } else {
+            *self.tier.degraded.lock().unwrap_or_else(|error| error.into_inner()) = false;
+            self.tier.degraded_done.notify_one();
+        }
+    }
+}
+
+/// A derived page, `len` bytes of `set`, to write to disk as page `key` of `slot`: the tier's kept
+/// page, else `own`, a copy made for the write alone where the tier had no room to keep it.
 pub(super) struct Persisting {
     pub(super) checkpoint: tensorfs::Checkpoint,
     pub(super) slot: String,
@@ -291,6 +325,7 @@ pub(super) struct Persisting {
     pub(super) set: String,
     pub(super) len: usize,
     pub(super) source: Weak<Inner>,
+    pub(super) own: Option<Unkept>,
 }
 
 /// A key being read ahead: no longer once this drops, however the read ended.
@@ -366,6 +401,8 @@ impl Tier {
             stores: Mutex::default(), objects: Mutex::default(), reader: OnceLock::new(), persists: OnceLock::new(),
             persisted: AtomicU64::new(0), persisted_bytes: AtomicU64::new(0),
             persist_skipped: AtomicU64::new(0), persist_failed: AtomicU64::new(0),
+            persisted_unkept: AtomicU64::new(0), unkept_degraded: AtomicU64::new(0), degraded: Mutex::new(false),
+            degraded_done: Condvar::new(),
         });
         tier.look(&mut tier.state(), &budget());
         super::host::join(Arc::downgrade(&tier), shared);
@@ -727,6 +764,68 @@ impl Tier {
         page
     }
 
+    /// A page for a derive's bytes (a LoRA baked into a block), which a later fill would otherwise
+    /// make again: a demand on the tier. Where `reserve` finds no room it sheds this tier's idle
+    /// pages, those of sets this request has not used, least recently used first (never one in
+    /// use), then asks idle processes for theirs, and tries again: a host holding idle models' pages
+    /// keeps the bake (tfs-299: Flux-2 Turbo kept none and baked 250 blocks in every request). Shed
+    /// only where that makes it fit. None: no room even so; the caller writes it from a copy.
+    pub(super) fn reserve_derived(&self, key: &str, set: &str, len: usize) -> PyResult<Option<Page>> {
+        if let Some(page) = self.reserve(key, set, len, false)? {
+            return Ok(Some(page));
+        }
+        let (gone, short) = {
+            let mut state = self.state();
+            if state.kept.contains_key(key) || state.off.is_some() {
+                return Ok(None);
+            }
+            let gone = self.shed_idle(&mut state, len as i64);
+            (gone, (len as i64 + state.headroom - state.room).max(len as i64) as u64)
+        };
+        let shed = !gone.pages.is_empty();
+        drop(gone); // Unregistering waits on the device: never under the lock.
+        if shed {
+            if let Some(page) = self.reserve(key, set, len, false)? {
+                return Ok(Some(page));
+            }
+        }
+        // What the room is short of, from processes in no request, which give pages back: asked
+        // whatever the room's sign (a tier's own look asks only while it is not over).
+        if super::host::peers_idle() && super::host::ask_idle(short) {
+            self.relook();
+            return self.reserve(key, set, len, false);
+        }
+        Ok(None)
+    }
+
+    /// This tier's pages of sets with no pass this request, least recently used first, let go until
+    /// `bytes` fit: none where letting all of them go would not.
+    fn shed_idle(&self, state: &mut State, bytes: i64) -> Gone {
+        let mut gone = self.trim(state);
+        let mut idle: Vec<(u64, String, i64)> = state.kept.iter()
+            .filter(|(_, kept)| !state.passes.contains_key(&kept.set))
+            .map(|(key, kept)| (kept.last, key.clone(), kept.page.len as i64))
+            .collect();
+        let all: i64 = idle.iter().map(|(_, _, len)| len).sum();
+        let fits_after = |freed: i64| {
+            !state.pressed && state.bytes as i64 - freed + bytes <= self.cap as i64 && state.room + freed - bytes >= state.headroom
+        };
+        if idle.is_empty() || !fits_after(all) {
+            return gone;
+        }
+        idle.sort_unstable();
+        for (_, key, _) in idle {
+            if self.fits(state, bytes) {
+                break;
+            }
+            if let Some(kept) = state.remove(&key, "shed") {
+                state.room += kept.page.len as i64;
+                gone.push(kept);
+            }
+        }
+        gone
+    }
+
     /// A page of `len` bytes, registered, faulted in first if `populate`. None: the driver refused,
     /// and the tier is off.
     fn registered(&self, len: usize, populate: bool) -> PyResult<Option<Page>> {
@@ -941,9 +1040,39 @@ impl Tier {
         }
     }
 
-    /// Write a derived page the tier keeps to disk behind the fills: a later process reads it
-    /// there (`Checkpoint::keep_derived`). The writer takes it from the tier when its turn comes;
-    /// one the tier let go by then is made again, and written then.
+    /// A host page of `len` bytes to copy a derived page the tier could not keep into, and write it
+    /// to disk from (`Persisting::own`), so no later fill, request or process makes it again (tfs-299:
+    /// with no room the tier kept nothing and wrote nothing, and Flux-2 Turbo baked 250 blocks in
+    /// every request). Taken from varena's books as staging, from free room only: kept weight pages
+    /// are worth more than a write's copy. Refused, it is the tier's one copy outside the books: the
+    /// fill waits for the last such copy to reach disk, so they are never more than one page. The
+    /// caller holds no lock, nor the interpreter.
+    pub(super) fn unkept(self: &Arc<Self>, len: usize) -> Option<Unkept> {
+        let (making, gone) = self.room_for(len, false);
+        drop(gone); // Unregistering waits on the device: never under the lock.
+        if let Some(making) = making {
+            let page = Page::new(len).ok()?;
+            self.state().staging += len as u64;
+            drop(making);
+            return Some(Unkept { page: Some(page), tier: Arc::clone(self), staged: true });
+        }
+        let mut busy = self.degraded.lock().unwrap_or_else(|error| error.into_inner());
+        while *busy {
+            busy = self.degraded_done.wait(busy).unwrap_or_else(|error| error.into_inner());
+        }
+        *busy = true;
+        drop(busy);
+        self.unkept_degraded.fetch_add(1, Ordering::Relaxed);
+        // A failed allocation gives the claim back as its guard drops.
+        let page = Page::new(len).ok();
+        let unkept = Unkept { page, tier: Arc::clone(self), staged: false };
+        unkept.page.is_some().then_some(unkept)
+    }
+
+    /// Write a derived page to disk behind the fills: a later fill or process reads it there
+    /// (`Checkpoint::keep_derived`). The writer takes a kept page from the tier when its turn comes;
+    /// one the tier let go by then is made again, and written then. A page with its own copy is
+    /// written from it.
     pub(super) fn persist(self: &Arc<Self>, job: Persisting) {
         let sender = self.persists.get_or_init(|| {
             let (sender, jobs) = std::sync::mpsc::channel::<Persisting>();
@@ -961,39 +1090,55 @@ impl Tier {
 
     /// The writer: what is queued, up to `PERSIST_BATCH` pages under one sync, a checkpoint's at a time.
     fn persist_behind(&self, jobs: std::sync::mpsc::Receiver<Persisting>) {
+        /// A page on its way: what names it on disk, and its bytes, a kept page or its own copy.
+        struct Writing {
+            slot: String,
+            key: String,
+            source: Weak<Inner>,
+            kept: Option<Arc<Page>>,
+            own: Option<Unkept>,
+            len: usize,
+        }
         while let Ok(first) = jobs.recv() {
             let mut batch = vec![first];
             while batch.len() < PERSIST_BATCH {
                 let Ok(job) = jobs.try_recv() else { break };
                 batch.push(job);
             }
-            let mut groups: Vec<(tensorfs::Checkpoint, Vec<(Persisting, Arc<Page>)>)> = Vec::new();
+            let mut groups: Vec<(tensorfs::Checkpoint, Vec<Writing>)> = Vec::new();
             for job in batch {
-                let Some(page) = self.take(&job.key, &job.set, job.len, false) else {
+                let Persisting { checkpoint, slot, key, set, len, source, own } = job;
+                let kept = if own.is_none() { self.take(&key, &set, len, false) } else { None };
+                if kept.is_none() && own.is_none() {
                     self.persist_skipped.fetch_add(1, Ordering::Relaxed);
                     continue;
-                };
-                match groups.iter_mut().find(|(checkpoint, _)| checkpoint.id() == job.checkpoint.id()) {
-                    Some((_, pages)) => pages.push((job, page)),
-                    None => groups.push((job.checkpoint.clone(), vec![(job, page)])),
+                }
+                let writing = Writing { slot, key, source, kept, own, len };
+                match groups.iter_mut().find(|(known, _)| known.id() == checkpoint.id()) {
+                    Some((_, pages)) => pages.push(writing),
+                    None => groups.push((checkpoint, vec![writing])),
                 }
             }
             for (checkpoint, pages) in groups {
-                let written: Vec<(&str, &str, &[u8])> = pages.iter().map(|(job, page)| {
-                    // SAFETY: a kept page's bytes were written before it was shared, and `pages` holds it.
-                    let bytes = unsafe { std::slice::from_raw_parts(page.ptr.cast_const(), page.len) };
-                    (job.slot.as_str(), job.key.as_str(), bytes)
+                let written: Vec<(&str, &str, &[u8])> = pages.iter().map(|writing| {
+                    let ptr = writing.kept.as_ref().map_or_else(|| writing.own.as_ref().map_or(std::ptr::null_mut(), Unkept::ptr), |page| page.ptr);
+                    // SAFETY: either holds `len` bytes, written before it was queued, and `pages` holds it.
+                    let bytes = unsafe { std::slice::from_raw_parts(ptr.cast_const(), writing.len) };
+                    (writing.slot.as_str(), writing.key.as_str(), bytes)
                 }).collect();
                 match checkpoint.keep_derived(&written) {
                     Ok(kept) => {
-                        for ((job, page), object) in pages.iter().zip(kept) {
+                        for (writing, object) in pages.iter().zip(kept) {
                             if object.is_none() {
                                 self.persist_skipped.fetch_add(1, Ordering::Relaxed);
                                 continue;
                             }
                             self.persisted.fetch_add(1, Ordering::Relaxed);
-                            self.persisted_bytes.fetch_add(page.len as u64, Ordering::Relaxed);
-                            if let Some(source) = job.source.upgrade() {
+                            self.persisted_bytes.fetch_add(writing.len as u64, Ordering::Relaxed);
+                            if writing.own.is_some() {
+                                self.persisted_unkept.fetch_add(1, Ordering::Relaxed);
+                            }
+                            if let Some(source) = writing.source.upgrade() {
                                 source.persisted();
                             }
                         }
@@ -1317,11 +1462,13 @@ impl PyPages {
         row.set_item("read_ahead", read_ahead_pages)?;
         row.set_item("read_ahead_bytes", read_ahead_bytes)?;
         row.set_item("read_ahead_refused", read_ahead_refused)?;
-        row.set_item("persisted_scope", "derived pages written to disk this process, skipped, failed")?;
+        row.set_item("persisted_scope", "derived pages written to disk this process, skipped, failed, of them written from a copy the tier could not keep, and of those copies the ones made outside varena's books")?;
         row.set_item("persisted", self.tier.persisted.load(Ordering::Relaxed))?;
         row.set_item("persisted_bytes", self.tier.persisted_bytes.load(Ordering::Relaxed))?;
         row.set_item("persist_skipped", self.tier.persist_skipped.load(Ordering::Relaxed))?;
         row.set_item("persist_failed", self.tier.persist_failed.load(Ordering::Relaxed))?;
+        row.set_item("persisted_unkept", self.tier.persisted_unkept.load(Ordering::Relaxed))?;
+        row.set_item("unkept_degraded", self.tier.unkept_degraded.load(Ordering::Relaxed))?;
         Ok(row)
     }
 }

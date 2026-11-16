@@ -11,14 +11,19 @@ kernels, time and VRAM against the last pass.
   - no cell ends with varena backing that holds no page (resident - ready): a canceled prefetch's pages go back with it;
   - a graph served each cell of WARM. Falling back to eager is fine for a call and never an error, so nothing else would
     say that a model stopped using graphs: SDXL's steady step went from 0.08 s to 0.27 s with every rule and fault passing.
+  - lora (`lora-1..3`, tfs-299): a turbo LoRA on a host whose tier idle models fill: request 1 keeps or writes to disk what it
+    bakes, request 2 and the request after a restart bake nothing, that one reads its pages from disk, and its picture is
+    request 1's (the bench's same-seed rule, suites/bench/media.py).
     check.py <gate dir> <SKU>     the same verdict alone"""
 import json, os, re, subprocess, sys
 from collections.abc import Iterator
 from typing import Literal, TypeAlias, TypedDict, cast, overload
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'bench'))
+import media  # noqa: E402  (suites/bench/media.py: the same-seed rule)
 import record  # noqa: E402  (release-gate/record.py: varena's own figures, 0.30's and 0.32's alike)
-from runs import Baseline, GateHistory, GateRuns, KnownFailing, Memory, Run  # noqa: E402
+from runs import BakedPages, Baseline, GateHistory, GateRuns, KnownFailing, Memory, Run  # noqa: E402
 
 GIB = 1 << 30
 CHURN = 0.25
@@ -211,12 +216,57 @@ def warm(recs: dict[str, Run]) -> Verdict:
     return fails, notes
 
 
+def flows(run: Run) -> tuple[int, int, BakedPages]:
+    """A run's blocks baked, its fills read from derived pages on disk, and its host tier's facts at its end."""
+    baked = derived = 0
+    tier: BakedPages = {}
+    for memory in memories(run):
+        for row in (memory.get('stats') or {}).get('varena') or []:
+            stats = row.get('stats') or {}
+            moved = stats.get('moved') or {}
+            baked += (moved.get('bake') or {}).get('blocks', 0)
+            derived += (moved.get('derived') or {}).get('fills', 0)
+            tier = stats.get('baked_pages') or tier
+    return baked, derived, tier
+
+
+def lora(recs: dict[str, Run]) -> Verdict:
+    fails: list[str] = []
+    notes: list[str] = []
+    one, two, again = recs.get('lora-1'), recs.get('lora-2'), recs.get('lora-3')
+    for name, run in (('lora-1', one), ('lora-2', two), ('lora-3', again)):
+        if run is not None and run.memoized:
+            fails.append(f'{name}: run {run.number} was answered from the memo: it baked and read nothing')
+    if one is not None:
+        baked, _, tier = flows(one)
+        notes.append(f"lora-1: baked {baked} blocks; kept {tier.get('pages', 0)} pages, wrote {tier.get('persisted', 0)} "
+                     f"({tier.get('persisted_unkept', 0)} from a copy, {tier.get('unkept_degraded', 0)} outside varena's books), "
+                     f"room {tier.get('room', 0) / GIB:.1f} GiB")
+        if baked and not tier.get('pages') and not tier.get('persisted'):
+            fails.append(f'lora-1: run {one.number} kept and wrote none of its {baked} baked blocks: each request bakes them again')
+    for name, run in (('lora-2', two), ('lora-3', again)):
+        if run is None:
+            continue
+        baked, derived, _ = flows(run)
+        if baked:
+            fails.append(f'{name}: run {run.number} baked {baked} blocks again')
+        if name == 'lora-3' and not derived:
+            fails.append(f'lora-3: run {run.number} read no baked page from disk after the restart')
+    if one is not None and again is not None:
+        first, later = one.files(*media.IMAGE), again.files(*media.IMAGE)
+        if first and later:
+            fails += [f'lora-3: {why}' for why in media.differs(media.pair(first[-1], later[-1]), "lora-1's output (same request and seed)")]
+        else:
+            fails.append("lora-3: no picture to hold against lora-1's")
+    return fails, notes
+
+
 def check(gate: VarenaGate) -> Verdict:
     recs, sku = gate['runs'], gate.get('sku', '')
     fails: list[str] = []
     notes: list[str] = []
     for f, n in (bandwidth(recs, gate.setdefault('baseline', {})), caps(gate['out'], recs), host(recs), videos(recs),
-                 unowned(recs), warm(recs)):
+                 unowned(recs), warm(recs), lora(recs)):
         fails += f; notes += n
     known: list[KnownFailing] = json.load(open(os.path.join(HERE, '..', '..', 'known-failing.json')))
     parked = [c for k in known if k['sku'] in (sku, '*') for c in k.get('cells', [])]
