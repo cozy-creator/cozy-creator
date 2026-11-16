@@ -38,6 +38,12 @@ const PROBE: Duration = Duration::from_secs(5);
 /// trusting the webpki roots and each DER certificate in `extra`. A caller adds only what is its own: its
 /// redirects, [`STALL`] where an answer is one exchange, a pinned verifier.
 pub fn http(extra: &[&[u8]]) -> Result<reqwest::ClientBuilder> {
+    Ok(http_patient(extra)?.connect_timeout(CONNECT))
+}
+
+/// [`http`] with no connect bound, for a client whose every call [`STALL`] bounds whole (`api::hub::http`): a reconnect through
+/// a link a download fills, seconds a round trip, is not cut at 5 s (th-378). The kernel still ends a refused connect at once.
+pub fn http_patient(extra: &[&[u8]]) -> Result<reqwest::ClientBuilder> {
     let mut roots = rustls::RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     for der in extra {
@@ -50,7 +56,6 @@ pub fn http(extra: &[&[u8]]) -> Result<reqwest::ClientBuilder> {
         .with_no_client_auth();
     Ok(reqwest::Client::builder()
         .user_agent(concat!("tensorfs/", env!("CARGO_PKG_VERSION")))
-        .connect_timeout(CONNECT)
         .tcp_keepalive(PROBE * 6)
         .tcp_keepalive_interval(PROBE)
         .tcp_keepalive_retries(6)

@@ -27,7 +27,7 @@ use futures_util::stream::{FuturesUnordered, TryStreamExt};
 
 pub(crate) use endpoint::streaming_writer;
 pub use endpoint::{upload_checkpoint, Endpoint, Hardware, Payload, Resolved, Stream, UploadControl, Uploaded};
-pub use net::{http, pem_roots, shown, Client, STALL};
+pub use net::{http, http_patient, pem_roots, shown, Client, STALL};
 pub(crate) use net::GetError;
 pub use origin::{Boxed, Location, Origin};
 pub use policy::{declare_local, is_local, local_origins, SourcePolicy};

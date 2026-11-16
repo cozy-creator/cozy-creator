@@ -1,0 +1,1 @@
+A rented machine reconnects to the Hub through a link its own download fills: Hub calls no longer give up after 5 s connecting (each round trip there can take seconds), so its check-ins resume after a dropped connection instead of stopping until the download ends, which could get a working pod released as silent.
