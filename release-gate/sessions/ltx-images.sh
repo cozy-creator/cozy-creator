@@ -8,11 +8,14 @@
 #   last        now: last_frame=<teapot>
 #   first-last  now: first_frame=<lighthouse>, last_frame=<lantern> (the lighthouse's lantern room, cropped from it)
 #   was-ref     was: <pearl> mentioned in the prompt: the box says the mention is unused, the run carries a mention_unused note
-#   ref         now: <pearl> mentioned: the Ingredients reference sheet; the box keeps the mention (no `unused`)
-#   ref-first   now: <pearl> mentioned and first_frame=<teapot> (a combination Ingredients was not trained on)
+#   ref         now: <pearl> mentioned: Licon MSR's subject (the default for pictures, coordinator 11-16); the model reads
+#               `Image 1: pearl.`; the box keeps the mention (no `unused`)
+#   ref-sheet   the same with references=sheet: Lightricks' Ingredients reference sheet (`Reference sheet: Center: pearl.`),
+#               held against ref same-seed to choose the default for pictures alone
+#   ref-first   now: <pearl> mentioned and first_frame=<teapot>
 #   sound       now: <beat> mentioned, a synthetic two-beats-a-second drum: the soundtrack, returned as given
 #   pickup      now: text's take picked up at frame 72: the take's first 72 frames kept, 96 new (5 s less the 25 carried)
-#   text-up, first-up, ref-up   text, first and ref with prompt_upsampling on (Lightricks' Gemma 4 E2B enhancer)
+#   text-up, first-up, ref-up, ref-sheet-up   text, first, ref and ref-sheet with prompt_upsampling on (Gemma 4 E2B)
 #   video       now: <clip> (was-text's take, else text's) mentioned: the Union Control reference, by its depth (the
 #               default); the output's edges held against the clip's (ffmpeg edgedetect, SSIM) beside text's, which had none
 #   video-edges the same by the clip's edges
@@ -42,6 +45,9 @@ for t in "$WAS" "$NOW"; do [ -f "$t/pyproject.toml" ] || fail "no packages_refs 
 grep -q 'last_frame' "$NOW/ltx_2_5/__init__.py" || fail "now's ltx-2.5 takes no last_frame"
 for c in ref ref-up ref-first sound pickup text-up first-up video video-edges motion keys; do
   [[ ",$CELLS," != *",$c,"* ]] || grep -q 'prompt: Prompt\[Image' "$NOW/ltx_2_5/__init__.py" || fail "now's ltx-2.5 is older than references (cell $c)"
+done
+for c in ref ref-up ref-first voice ref-sheet ref-sheet-up; do
+  [[ ",$CELLS," != *",$c,"* ]] || grep -q 'speakers(' "$NOW/ltx_2_5/__init__.py" || fail "now's ltx-2.5 has no MSR subjects (cell $c)"
 done
 for c in t2a:sound retake:retake retake-sound:retake voice:generate; do
   [[ ",$CELLS," != *",${c%%:*},"* ]] || grep -q "^def ${c#*:}(" "$NOW/ltx_2_5/__init__.py" || fail "now's ltx-2.5 has no ${c#*:} tool (cell ${c%%:*})"
@@ -168,12 +174,26 @@ if has was-ref; then
   J '.asset.unused | any(.mention == "pearl")' "$OUT/runs/was-ref-asset.json" || { say "MISS was-ref: the box doesn't say <pearl> is unused"; bad+=(was-ref-unused); }
 fi
 REFP="<pearl> walks slowly through a sunlit outdoor market, turns her head toward the camera and smiles. A medium shot, the camera tracks beside her. Market chatter and distant gulls."
-for c in ref ref-up; do
+for c in ref ref-up ref-sheet ref-sheet-up; do
   has "$c" || continue
-  cell "$c" "$NOW" "$(now "$REFP" "${c#ref-}")" "$OUT/pearl.jpg"
+  case $c in
+    ref) fields=$(now "$REFP") ;;
+    ref-up) fields=$(now "$REFP" up) ;;
+    ref-sheet) fields=$(now "$REFP" | jq -c '. + {references: "sheet"}') ;;
+    ref-sheet-up) fields=$(now "$REFP" up | jq -c '. + {references: "sheet"}') ;;
+  esac
+  cell "$c" "$NOW" "$fields" "$OUT/pearl.jpg"
   J '(.asset.unused // []) | any(.mention == "pearl") | not' "$OUT/runs/$c-asset.json" || { say "MISS $c: the box says <pearl> is unused"; bad+=("$c-unused"); }
-  grep -q '^Reference sheet: Center: pearl\.' "$OUT/sheets/$c.txt" || { say "MISS $c: the model read no reference sheet"; bad+=("$c-sheet"); }
+  if [[ $c == ref-sheet* ]]; then
+    grep -q '^Reference sheet: Center: pearl\.' "$OUT/sheets/$c.txt" || { say "MISS $c: the model read no reference sheet"; bad+=("$c-sheet"); }
+  else
+    grep -q '^Image 1: pearl\.' "$OUT/sheets/$c.txt" || { say "MISS $c: the model read no MSR subject"; bad+=("$c-subject"); }
+  fi
 done
+if has ref && has ref-sheet && [ -s "$OUT/videos/ref.mp4" ] && [ -s "$OUT/videos/ref-sheet.mp4" ]; then
+  ffmpeg -v error -y -i "$OUT/sheets/ref.jpg" -i "$OUT/sheets/ref-sheet.jpg" -filter_complex vstack "$OUT/sheets/ref-vs-sheet.jpg" || true
+  say "ref (MSR) vs ref-sheet (Ingredients), same seed: $OUT/sheets/ref-vs-sheet.jpg"
+fi
 has ref-first && cell ref-first "$NOW" "$(now "<pearl> sits down at the café table by the rainy window and pours tea from the teapot, then looks up at the camera. Rain patters on the glass." | jq -c '. + {first_frame: "<teapot>"}')" "$OUT/teapot.jpg"
 if has sound; then
   cell sound "$NOW" "$(now "<beat> A drummer in a dim rehearsal room strikes a large bass drum, one hit on every beat, the drum skin shaking with each hit. A medium shot, the camera remains static.")"
