@@ -641,8 +641,13 @@ async function nameUnderPointer(page, name) {
   }
   const point = await partPoint(page, name, 'title');
   const rest = await page.evaluate((name) => document.querySelector('.canvas-root').canvasInspection.card(name)?.rendered?.labels?.title ?? null, name);
-  await page.mouse.move(point.x, point.y);
+  // Hovered first, then the pointer on its title, as a person reads a name (hoverBox rests on the body).
   await hoverBox(page, name);
+  await page.mouse.move(point.x, point.y);
+  await expect.poll(() => page.evaluate((name) => {
+    const state = document.querySelector('.canvas-root').canvasInspection.interaction?.()?.state?.();
+    return !state || (state.hover?.name === name && state.hover?.part === 'title');
+  }, name), { message: `${name}'s title under the pointer` }).toBe(true);
   // The canvas redraws a hovered title whole on its next frame: read it after two.
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   return page.evaluate(({ name, point, rest }) => {

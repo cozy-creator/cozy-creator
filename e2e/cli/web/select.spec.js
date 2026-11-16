@@ -36,8 +36,10 @@ function hoverCoverage(read, body, color, dpr, zoom = 1, withoutOutline = null, 
       const residual=Math.max(...observed.map((value,c)=>Math.abs(value-background[c]-alpha*toward[c])));
       const uncertainty=square?noise*toward.reduce((sum,value)=>sum+Math.abs(value),0)/square:Infinity;
       const delta=Math.max(...observed.map((value,c)=>Math.abs(value-background[c])));
-      const valid=delta<3 || (Number.isFinite(alpha) && alpha>0 && alpha<=1+uncertainty && residual<=noise && background.every(value=>value>=0 && value<=255));
-      if(delta>=3)visible=true;
+      // Paper within its noise: a pixel the stroke only grazes, which an aliased (software) stroke leaves unpainted.
+      const paper=Number.isFinite(alpha) && Math.abs(alpha)<=uncertainty && residual<=noise;
+      const valid=delta<3 || paper || (Number.isFinite(alpha) && alpha>0 && alpha<=1+uncertainty && residual<=noise && background.every(value=>value>=0 && value<=255));
+      if(delta>=3 && !paper)visible=true;
       samples.push({coordinate,observed,background,delta,geometricArea:expected,coverage:Number.isFinite(alpha)?alpha:null,residual:Number.isFinite(residual)?residual:null,uncertainty:Number.isFinite(uncertainty)?uncertainty:null,valid});
     }
     const valid=visible && samples.length>0 && samples.every(sample=>sample.valid);
