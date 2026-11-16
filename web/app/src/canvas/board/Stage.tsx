@@ -95,6 +95,8 @@ export function Stage(props: StageProps) {
   latest.current = props
   const live = useRef({ invalidate: () => {}, enable: () => {} })
   const [failed, setFailed] = useState<string | null>(null)
+  const [lostGraphics, setLostGraphics] = useState(false)
+  const [said, setSaid] = useState("")
   const [overlays, setOverlays] = useState<{ name: string; draft?: string; asking?: NonNullable<ReturnType<CanvasStore["get"]>>["asking"]; box: { x: number; y: number; w: number; under: number } }[]>([])
   const [cards, setCards] = useState<{ name: string; label: string; selected: boolean; cancel: boolean }[]>([])
   const focused = useSignal(store.focusedName)
@@ -179,7 +181,7 @@ export function Stage(props: StageProps) {
           const hidden = new Set<string>()
           const focus = store.focusedName.get()
           if (focus && !store.focusEntering.get()) hidden.add(store.resolveName(focus))
-          const result = scene.update({ camera: board.camera.getViewport(), width, height, dpr: devicePixelRatio || 1, settled: !board.camera.isMoving, theme: theme.get() === "dark" ? "dark" : "paper", now: performance.now(), hidden, offering: element.closest(".stage")?.hasAttribute("data-offering") ?? false })
+          const result = scene.update({ moving: board.camera.isMoving, camera: board.camera.getViewport(), width, height, dpr: devicePixelRatio || 1, settled: !board.camera.isMoving, theme: theme.get() === "dark" ? "dark" : "paper", now: performance.now(), hidden, offering: element.closest(".stage")?.hasAttribute("data-offering") ?? false })
           animating = result.animating
           clearTimeout(wakeTimer)
           if (result.wake !== null) wakeTimer = setTimeout(invalidate, result.wake)
@@ -206,8 +208,8 @@ export function Stage(props: StageProps) {
       made.events.features.globalMove = false
       made.canvas.className = "canvas-pixels canvas-pane"
       element.prepend(made.canvas)
-      const contextLost = (event: Event) => { event.preventDefault(); lost = true; enable() }
-      const contextRestored = () => { lost = false; enable(); scene?.redrawAll(); invalidate() }
+      const contextLost = (event: Event) => { event.preventDefault(); lost = true; setLostGraphics(true); enable() }
+      const contextRestored = () => { lost = false; setLostGraphics(false); enable(); scene?.redrawAll(); invalidate() }
       made.canvas.addEventListener("webglcontextlost", contextLost)
       made.canvas.addEventListener("webglcontextrestored", contextRestored)
       stops.push(() => { made.canvas.removeEventListener("webglcontextlost", contextLost); made.canvas.removeEventListener("webglcontextrestored", contextRestored) })
@@ -287,7 +289,13 @@ export function Stage(props: StageProps) {
     const announce = () => {
       const nodes = board.getNodes().filter((node) => node.selected)
       const key = nodes.map((node) => node.id).join(" ")
-      if (key !== announced) { announced = key; latest.current.onSelectionChange({ nodes }) }
+      if (key !== announced) {
+        announced = key
+        latest.current.onSelectionChange({ nodes })
+        // The selected box, said by name to a screen reader as the arrows walk the boxes.
+        const first = nodes[0]
+        setSaid(first ? store.get(first.data.name)?.name ?? first.data.name : "")
+      }
     }
     stops.push(
       board.subscribeNodes(() => { announce(); publishDom(); invalidate() }),
@@ -363,6 +371,8 @@ export function Stage(props: StageProps) {
       }}>Cancel</button>)}
     </div>
     <span id={helpId} className="sr-only">Use arrow keys to select a box, Enter to open it, and Escape to return. Drag empty space to pan; Shift-drag selects a rectangle.</span>
+    <span className="sr-only" aria-live="polite">{said}</span>
+    {lostGraphics && <div className="empty-canvas" role="alert"><p>Graphics context lost; waiting for the browser to restore it.</p></div>}
     {failed && <div className="empty-canvas" role="alert"><p>This browser couldn't draw the canvas ({failed}). Turn on hardware acceleration in its settings, or open this page in another browser.</p></div>}
   </div>
 }

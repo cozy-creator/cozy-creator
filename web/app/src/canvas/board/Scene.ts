@@ -12,7 +12,7 @@ import type { Media } from "./Media"
 import { present, type Presentation, type RunContext, type SceneNode, type ScenePicture } from "./presentation"
 import { fontEpoch } from "./text"
 
-export interface Frame { camera: Viewport; width: number; height: number; dpr: number; settled: boolean; theme: string; now: number; hidden: ReadonlySet<string>; offering: boolean }
+export interface Frame { moving: boolean; camera: Viewport; width: number; height: number; dpr: number; settled: boolean; theme: string; now: number; hidden: ReadonlySet<string>; offering: boolean }
 interface Held { view: CardView; node?: SceneNode; show?: Presentation; key?: unknown[]; glide?: { from: { x: number; y: number }; began: number }; landing?: number; seen?: number }
 
 const MARGIN = 160
@@ -96,7 +96,7 @@ export class Scene {
     const band = bandOf(zoom)
     return {
       palette: this.palette!.colors, theme: frame.theme, zoom, band, titleSize: Math.max(TITLE, BODY * nameZoomOf(zoom)), ring: 2 ** Math.ceil(Math.log2(zoom)),
-      resolution: this.resolution, epoch: fontEpoch(), media: this.o.media, reduced: matchMedia("(prefers-reduced-motion: reduce)").matches, software: this.o.software,
+      resolution: this.resolution, epoch: fontEpoch(), moving: frame.moving, media: this.o.media, reduced: matchMedia("(prefers-reduced-motion: reduce)").matches, software: this.o.software,
       invalidate: this.o.invalidate,
       request: (picture, width) => this.request(picture, width, frame.dpr),
       onRevealed: (name, aspect, local) => {
@@ -154,7 +154,7 @@ export class Scene {
     card.root.scale.set(scale)
     card.root.position.set(x + node.bounds.w * (1 - scale) / 2, y + node.bounds.h * (1 - scale) / 2)
     card.root.alpha = alpha
-    card.root.zIndex = dragging ? 2 : node.selected ? 1 : 0
+    card.root.zIndex = dragging ? 3 : state.hover ? 2 : node.selected ? 1 : 0
     card.root.visible = !frame.hidden.has(name)
     return card.animate(now, env) || animating
   }
