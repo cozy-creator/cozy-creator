@@ -66,7 +66,7 @@ ballast() {  # ballast <bytes>: the file that takes the disk, at that size
 # this disk can make free, and its refusal names what the models no call holds would give: at least the bakes, at most the store.
 ballast $((free - reserve - (10 << 30)))
 cd "$TREE" || fail "no $TREE"
-step ltx run ./ltx-2.5/video prompt="waves on a pebble beach at dusk, the sound of the surf" seed:=1081 --on "$NAME"
+step ltx run ./ltx-2.5/generate prompt="waves on a pebble beach at dusk, the sound of the surf" seed:=1081 --on "$NAME"
 N=$(runno ltx); cd "$RUN_PROJECT" || fail "no $RUN_PROJECT"
 [ -z "$N" ] || cozy run watch "$N" --once --json --full > "$OUT/ltx.json" 2>/dev/null
 cd "$OUT" || fail "no $OUT"
