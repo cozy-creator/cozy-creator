@@ -76,7 +76,7 @@ export class CardView {
   update(node: SceneNode, show: Presentation, state: CardState, env: CardEnv) {
     this.input = { node, show, state, env }
     if (node.name !== this.name) { this.name = node.name; for (const [part, area] of this.parts) hits.set(area, { name: node.name, part }) }
-    const signature = [node.box.w, node.box.h, node.selected, state.hover, state.resizing, state.dropTarget, state.broken, env.theme, env.band,
+    const signature = [node.box.w, node.box.h, node.selected, node.view.draft !== undefined, state.hover, state.resizing, state.dropTarget, state.broken, env.theme, env.band,
       env.titleSize, env.ring, env.resolution, env.epoch].join("|")
     if (signature === this.signature && this.shown === show) return
     this.signature = signature
@@ -172,16 +172,18 @@ export class CardView {
     const size = env.titleSize
     const y = HEAD - 10 - size * 1.2
     let left = 2
-    if (show.state) {
+    const naming = node.view.draft !== undefined
+    if (show.state && !naming) {
       const dot = Math.max(8, size * 0.42)
       this.ink.circle(2 + dot / 2, y + size * 0.62, dot / 2).fill(colors[show.state])
       this.drawn.dot = { x: 2, y: y + size * 0.62 - dot / 2, w: dot, h: dot }
       left = dot + 8
     }
-    const control = !far && (node.view.asset || node.view.landed || node.view.placing)
-    const version = !far && show.version ? width(show.version, SMALL) + 10 : 0
+    const control = !far && !naming && (node.view.asset || node.view.landed || node.view.placing)
+    const version = !far && !naming && show.version ? width(show.version, SMALL) + 10 : 0
     const room = w - left - (control ? 32 : 0) - version
-    const title = label("title", ellipsis(show.title, room, size, true, true), left, y, room, { size, color: colors.ink, mono: true, bold: true })
+    // While its name is being typed, the field over it (Stage) is the name.
+    const title = naming ? null : label("title", ellipsis(show.title, room, size, true, true), left, y, room, { size, color: colors.ink, mono: true, bold: true })
     this.drawn.full.set("title", show.title)
     this.area("title", title ? { x: left, y, w: Math.max(16, width(this.texts.get("title")!.value, size, true, true)), h: size * 1.25 } : null)
     if (version) label("version", show.version!, w - (control ? 32 : 0) - version, HEAD - 10 - SMALL * 1.25, version, { size: SMALL, color: colors.mute })
