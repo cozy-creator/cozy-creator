@@ -244,7 +244,7 @@ case $key in
   cli:idle) needs='packages downloads' ;;
   cli:ondemand) needs='packages birefnet downloads' ;;
   # pagebox's 1.6 GB (`spare`) beside the install (cl-1007).
-  cli:ondemand-share | cli:ondemand-police | cli:ondemand-police128 | cli:ondemand-open | cli:ondemand-sealed) needs='packages birefnet downloads spare' ;;
+  cli:ondemand-share | cli:ondemand-police | cli:ondemand-police128 | cli:ondemand-change | cli:ondemand-open | cli:ondemand-sealed) needs='packages birefnet downloads spare' ;;
   cli:ondemand-ramp) needs='packages spare' ;;
   cli:link-trickle) needs='' ;;
   cli:disk) needs='packages disk' ;;

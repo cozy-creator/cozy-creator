@@ -301,11 +301,29 @@ began=$(date -u +%s%3N)
 submitted() { local t0; t0=$(date +%s%3N); run_submit "$OUT" "$1" run "$dir/$2/caller/built" --on local > /dev/null; echo "$t0 $(date +%s%3N)" > "$dir/install-$2.ms"; }
 submitted share-a a
 run_wait "$OUT" share-a || check "ondemand-share: share-a did not end: $(tail -c 300 "$OUT/share-a.ndjson")"
-submitted share-c c &
-local installing=$!
-for _ in $(seq 300); do grep -qs 'installing' "$OUT/share-c.err" "$OUT/share-c.ndjson" && break; sleep 0.2; done
-run_submit "$OUT" share-weights model install lilylilith/pagebox --on local > /dev/null
-wait "$installing"
+if [ -n "${SHARE_CHANGE:-}" ]; then
+  # tfs-300: the link slows under a running download, then an install starts. The weights start at 600 Mbit, the link drops to
+  # 60 Mbit once 500 MB came, and the install is asked 3 s later.
+  local got=0
+  sudo tc qdisc change dev lo parent 1:3 handle 30: tbf rate 600mbit burst 1mb latency 200ms
+  run_submit "$OUT" share-weights model install lilylilith/pagebox --on local > /dev/null
+  for _ in $(seq 600); do
+    got=$(tail -1 "$dir/samples.txt" | awk '{print $2 + 0}')
+    [ "${got:-0}" -lt 500000000 ] || break
+    sleep 0.1
+  done
+  sudo tc qdisc change dev lo parent 1:3 handle 30: tbf rate 60mbit burst 1mb latency 200ms
+  date +%s%3N > "$dir/cut.ms"
+  echo "ondemand-change: the link cut to 60 Mbit at $got weights bytes"
+  sleep 3
+  submitted share-c c
+else
+  submitted share-c c &
+  local installing=$!
+  for _ in $(seq 300); do grep -qs 'installing' "$OUT/share-c.err" "$OUT/share-c.ndjson" && break; sleep 0.2; done
+  run_submit "$OUT" share-weights model install lilylilith/pagebox --on local > /dev/null
+  wait "$installing"
+fi
 for name in share-c share-weights; do
   run_wait "$OUT" "$name" || check "ondemand-share: $name did not end: $(tail -c 300 "$OUT/$name.ndjson")"
 done
@@ -364,7 +382,7 @@ for line in (out / "ondemand-share.tensord.log").read_text(errors="replace").spl
         paths["precise" if "link shared" in line else "blind" if "can't be read" in line else "whole"] += 1
 moved = sum(w for t, w, _ in rates if w_first <= t <= w_last)
 series = [[t - began, round(w / 1e6, 2), round(i / 1e6, 2)] for t, w, i in rates]
-summary = {"mode": MODE, "burst": os.environ.get("SHARE_BURST", "1mb") if MODE == "police" else None, "netlink": os.environ.get("SHARE_NETLINK", "open"), "share_paths": paths,
+summary = {"mode": MODE, "changed": bool(os.environ.get("SHARE_CHANGE")), "burst": os.environ.get("SHARE_BURST", "1mb") if MODE == "police" else None, "netlink": os.environ.get("SHARE_NETLINK", "open"), "share_paths": paths,
            "weights_mb_s_first_to_last": round(moved / max(1, len(weights)) / 1e6, 2), "zero_5s_from_s": [z / 1e3 for z in zeros],
            "link_mb_s": REF / 1e6, "install_alone_s": (a1 - a0) / 1e3, "install_with_weights_s": (c1 - c0) / 1e3,
            "weights_asked_s": (w0 - began) / 1e3, "weights_first_s": (w_first - began) / 1e3, "weights_last_s": (w_last - began) / 1e3,
