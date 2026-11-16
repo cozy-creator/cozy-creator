@@ -80,8 +80,6 @@ pub(crate) struct MachineIdentity {
     pub torch: crate::published::layer::Torch,
     /// The TensorDs before this one that can't exit, each until it does (cl-977).
     pub stuck: Arc<crate::machine::stuck::Before>,
-    /// Why nothing can run here (cl-977).
-    pub broken: Option<api::machine::Broken>,
 }
 
 pub(crate) async fn serve(

@@ -71,7 +71,7 @@ grep -qE '"stage": *"waiting silently"' "$OUT/working.ndjson" || fail "working: 
 N=$(jq -r 'select(.run?.number) | .run.number' "$OUT/working.ndjson" | tail -1)
 [ -n "$N" ] || fail "working: the run names no number: $(tail -c 300 "$OUT/working.ndjson")"
 T0=$(date +%s)
-# The CLI stops following a run that says nothing for 10 min (it keeps running), so the run's own state and its machine's are read:
+# The run's own state and its machine's are read, apart from its follower:
 # the machine ready throughout, and the run completed once its silence ends.
 status=''
 while [ $(($(date +%s) - T0)) -le $((LONG + 300)) ]; do

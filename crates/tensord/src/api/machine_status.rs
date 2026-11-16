@@ -383,7 +383,7 @@ fn picture(identity: &MachineIdentity, held: Held, resident: Vec<v1::Resident>) 
                 ..Default::default()
             }))
             .collect(),
-        broken: identity.broken.clone(),
+        broken: identity.lifecycle.broken_now(),
         heat: crate::slowed::heat(),
         runtime_kernels: crate::slowed::runtime_kernels(),
         queue: Some(queue),

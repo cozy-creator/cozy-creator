@@ -880,6 +880,8 @@ pub(crate) struct Pool {
     unreported: Mutex<Vec<(usize, String)>>,
     /// GPUs out of service, by the killed executor stuck in the kernel that holds their memory (cl-935).
     lost: Mutex<BTreeMap<u32, Lost>>,
+    /// Told once stuck executors hold every GPU: the machine is broken (cl-977).
+    broken: std::sync::OnceLock<Broken>,
     /// GPUs out of service, by envelope index: in use at this run's start by processes it doesn't own (cl-935).
     foreign: Mutex<BTreeMap<usize, Foreign>>,
     /// The host's ledger, supervised: an executor's exit is told to it, as to each GPU's.
@@ -888,6 +890,9 @@ pub(crate) struct Pool {
     // Drop session/resource custody before ending the actual spawning thread.
     launcher: crate::child_launcher::ChildLauncher,
 }
+/// What is told why the machine is broken.
+type Broken = Box<dyn Fn(&str) + Send + Sync>;
+
 /// A killed executor process stuck in the kernel and the GPUs whose memory it holds (cl-935): they
 /// are out of service until it exits.
 #[derive(Clone, Debug)]
@@ -1132,6 +1137,7 @@ impl Pool {
                 lanes: Mutex::default(),
                 unreported: Mutex::default(),
                 lost: Mutex::default(),
+                broken: Default::default(),
                 foreign: Mutex::default(),
                 #[cfg(target_os = "linux")]
                 host_ledger: Default::default(),
@@ -1534,8 +1540,15 @@ impl Pool {
         tracing::warn!("{} out of service: pid {pid} ({}) holds that memory, killed and stuck in the kernel; \
             back once it exits", shown.join(", "), stuck.command);
         self.notes.note(serde_json::json!({"event": "gpu_lost", "pid": pid, "wchan": stuck.wchan, "gpus": gpus}));
-        self.lost.lock().unwrap().insert(pid, Lost { stuck, gpus });
+        self.lost.lock().unwrap().insert(pid, Lost { stuck: stuck.clone(), gpus });
         self.refresh_out();
+        let held: std::collections::BTreeSet<u32> = self.lost.lock().unwrap().values().flat_map(|l| l.gpus.iter().map(|(gpu, _)| *gpu)).collect();
+        if (0..self.devices.len()).all(|d| held.contains(&self.index(d))) {
+            if let Some(broken) = self.broken.get() {
+                broken(&format!("every GPU is held by an executor killed and stuck in the kernel (pid {pid}, {}, at {})",
+                    stuck.command, stuck.wchan));
+            }
+        }
         let exact = match tenant.and_then(|(_, exact)| exact.ok()) {
             Some(exact) => Some(exact),
             None => Birth::of(pid).ok().and_then(|birth| Exact::open(&birth).ok().flatten()),
@@ -1548,6 +1561,11 @@ impl Pool {
             },
         }
         self.found(pid);
+    }
+
+    /// What is told once stuck executors hold every GPU (`lose`).
+    pub(crate) fn on_broken(&self, broken: impl Fn(&str) + Send + Sync + 'static) {
+        let _ = self.broken.set(Box::new(broken));
     }
 
     /// `pid` exited: the GPUs no other stuck process holds are back in service.
