@@ -2,16 +2,18 @@
 # dropped, and bakes were cached in their model's lane, so a model in use kept the bake of every LoRA stack it ran with:
 # kamitsure's in-use H3 held 61 GB of bakes on a full 200 GB disk, and its store freed nothing for 3 h.
 # Here: Qwen3.5 0.8B lands and stays idle; SDXL runs bare and then with four LoRA stacks (cl-683's), each a bake of its own;
-# a file then leaves the disk half of Qwen-Image 2.1 int8 short past its reserve, and that model is installed. It must land
-# with every earlier model still installed, the store's log naming derived pages freed and no model evicted. Before the fix
-# the store evicted a model to make the room (or refused). params:
+# with 10 GiB free past the reserve, LTX-2.5 bf16 is refused naming what the models no call holds would free, the bakes counted
+# once (at least them, at most the store); a file then leaves the disk half of Qwen-Image 2.1 int8 short past its reserve, and
+# that model is installed. It must land with every earlier model still installed, the store's log naming derived pages
+# freed and no model evicted. Before the fix the store evicted a model to make the room (session 43845669841: Qwen3.5 and
+# SDXL evicted beside 13.2 GiB of bakes). params:
 #   tree       the packages_refs checkout SDXL runs from (default rc)
 #   runtime    a cozy-runtime rc-dev or dev-build run id: the pod's Runtime (the open RC's needs this session's cozy)
 #   tensorfs   artifact:<cozy-creator run id>/<artifact>: the pod's TensorFS wheel
 #   need_s     seconds the guard must buy (default 2700)
 . "$(dirname "$0")/lib.sh"
 TREE=$PACKAGES/$(param tree rc)
-[ -d "$TREE/sdxl" ] || fail "no $TREE/sdxl"
+[ -d "$TREE/sdxl" ] && [ -d "$TREE/ltx-2.5" ] || fail "no $TREE/sdxl or $TREE/ltx-2.5"
 wheel() {  # wheel <kind> <source>: the manylinux x86_64 wheel, fetched before renting
   local d=$OUT/wheels/$1; mkdir -p "$d"
   case $2 in
@@ -23,7 +25,7 @@ wheel() {  # wheel <kind> <source>: the manylinux x86_64 wheel, fetched before r
 RT=$(wheel runtime "$(param runtime)") && [ -n "$RT" ] || fail "no Runtime wheel from $(param runtime)"
 TF=$(wheel tensorfs "$(param tensorfs)") && [ -n "$TF" ] || fail "no TensorFS wheel from $(param tensorfs)"
 say "Runtime ${RT##*/}, TensorFS ${TF##*/}, TensorD $(cozy --version)"
-kernels "$TREE/sdxl"
+kernels "$TREE/sdxl"; kernels "$TREE/ltx-2.5"
 # ssh for the ballast file (`cozy machine ssh` needs a key the rental carries)
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh
@@ -53,12 +55,29 @@ say "installed: $before; store $((store >> 20)) MiB, $((listed >> 20)) MiB of it
 reserve=$((total / 50)); [ "$reserve" -ge $((1 << 30)) ] || reserve=$((1 << 30)); [ "$reserve" -le $((10 << 30)) ] || reserve=$((10 << 30))
 need=$((6 << 30))
 [ "$derived" -gt $((need + (1 << 30))) ] || fail "setup: $((derived >> 20)) MiB of bakes, fewer than the $((need >> 20)) MiB the install must take from them"
-ballast=$((free - reserve - need))
-if [ "$ballast" -gt 0 ]; then
-  cozy machine ssh "$NAME" "fallocate -l $ballast /var/lib/cozy/cl1081-ballast && df -B1 --output=avail /var/lib/cozy | tail -1" > "$OUT/ballast.txt" 2>&1 ||
+ballast() {  # ballast <bytes>: the file that takes the disk, at that size
+  [ "$1" -gt 0 ] || return 0
+  cozy machine ssh "$NAME" "fallocate -l $1 /var/lib/cozy/cl1081-ballast && df -B1 --output=avail /var/lib/cozy | tail -1" > "$OUT/ballast.txt" 2>&1 ||
     fail "the ballast: $(tail -c 300 "$OUT/ballast.txt")"
-fi
-say "ballast $((ballast >> 20)) MiB: free now $(( $(show | jq -r .status.disk_free_bytes) >> 20 )) MiB, reserve $((reserve >> 20)) MiB"
+  say "ballast $(($1 >> 20)) MiB: free now $(( $(show | jq -r .status.disk_free_bytes) >> 20 )) MiB, reserve $((reserve >> 20)) MiB"
+}
+# The room TensorD judges a run by counts each bake once: one no reader has open as spare, one an idle executor has open in its
+# model's lane, freed with it (cl-1076's read of #3511). With 10 GiB free past the reserve, LTX-2.5 (71.5 GB bf16) is more than
+# this disk can make free, and its refusal names what the models no call holds would give: at least the bakes, at most the store.
+ballast $((free - reserve - (10 << 30)))
+cd "$TREE" || fail "no $TREE"
+step ltx run ./ltx-2.5/video prompt="waves on a pebble beach at dusk, the sound of the surf" seed:=1081 --on "$NAME"
+N=$(runno ltx); cd "$RUN_PROJECT" || fail "no $RUN_PROJECT"
+[ -z "$N" ] || cozy run watch "$N" --once --json --full > "$OUT/ltx.json" 2>/dev/null
+cd "$OUT" || fail "no $OUT"
+said=$(jq -r '[.reason.code // "", .reason.message // ""] | join(": ")' "$OUT/ltx.json" 2>/dev/null)
+held=$(grep -oE '[0-9.]+ (GiB|MiB) in models no queued or running job holds' <<< "$said" | awk '{printf "%d", $1 * ($2 == "GiB" ? 1073741824 : 1048576)}')
+say "LTX-2.5: ${said:0:500}"
+[[ $said == machine_disk_full* ]] && [ -n "$held" ] || fail "LTX-2.5 was not refused machine_disk_full naming what the models free: ${said:0:300}"
+[ "$held" -ge $((derived - (1 << 30))) ] && [ "$held" -le $((store + (1 << 30))) ] ||
+  fail "the refusal counts $((held >> 20)) MiB in models no call holds: want at least the $((derived >> 20)) MiB of bakes, at most the store's $((store >> 20)) MiB"
+free=$(show | jq -r .status.disk_free_bytes)
+ballast $(( $(cozy machine ssh "$NAME" "stat -c %s /var/lib/cozy/cl1081-ballast" 2> /dev/null | tail -1) + free - reserve - need ))
 step big model install qwen/qwen-image-2.1 --lane int8 --on "$NAME" -y; landed=$?
 after=$(installed)
 cozy machine logs "$NAME" tensord -n 0 > "$OUT/tensord.log" 2>&1
