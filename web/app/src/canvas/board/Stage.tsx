@@ -197,6 +197,11 @@ export function Stage(props: StageProps) {
       const contextRestored = () => { lost = false; setLostGraphics(false); enable(); scene?.redrawAll(); invalidate() }
       made.canvas.addEventListener("webglcontextlost", contextLost)
       made.canvas.addEventListener("webglcontextrestored", contextRestored)
+      // Probe (cl-1018): a page going for good lets its GL context go now, not in a teardown the browser runs a second later inside the next
+      // page's first frame. One kept for back/forward (persisted) keeps it, and comes back drawing.
+      const leaving = (event: PageTransitionEvent) => { if (!event.persisted && "gl" in made) (made as unknown as { gl: WebGLRenderingContext }).gl.getExtension("WEBGL_lose_context")?.loseContext() }
+      addEventListener("pagehide", leaving)
+      stops.push(() => removeEventListener("pagehide", leaving))
       stops.push(() => { made.canvas.removeEventListener("webglcontextlost", contextLost); made.canvas.removeEventListener("webglcontextrestored", contextRestored) })
       viewport = new PixiViewport({ screenWidth: width, screenHeight: height, events: made.events, noTicker: true, passiveWheel: false, ignoreWheelFromOtherElements: true, disableOnContextMenu: true })
       viewport.enableRenderGroup()

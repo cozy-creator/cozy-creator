@@ -84,6 +84,11 @@ async function start(width: number, height: number): Promise<Chosen> {
  *  60–90 ms past its state): the first canvas takes it. It holds nothing of any project until then. */
 let early: Promise<Chosen> | null = start(innerWidth, innerHeight)
 early.catch(() => {})
+// Probe (cl-1018): never taken (a page with no canvas), it lets its context go as the page goes for good.
+addEventListener("pagehide", (event) => {
+  if (event.persisted || !early) return
+  void early.then((chosen) => { if (early && "gl" in chosen.renderer) (chosen.renderer as unknown as { gl: WebGLRenderingContext }).gl.getExtension("WEBGL_lose_context")?.loseContext() }, () => {})
+})
 
 /** The page's early renderer the first time, sized to the canvas; a new one after that, or if the early one failed. */
 export async function takeRenderer(width: number, height: number): Promise<Chosen> {
