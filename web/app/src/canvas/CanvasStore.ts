@@ -2219,6 +2219,8 @@ export class CanvasStore {
       this.hereRenamed(to)
     }
     if (this.focusedName.get() === from) this.focusedName.set(to)
+    // What's kept of its words for a reload goes under the name Calcifer has for it now.
+    this.keepWords(id)
     this.notify(to)
     this.viewport?.updateNode(id, (node) => ({ data: { ...node.data, name: to } }))
   }
@@ -3258,7 +3260,10 @@ export class CanvasStore {
             // goes again, still in its turn, under the name the stream says it has now, and gone, there's nothing to do. Its own rename on
             // its way, or refused twice under one name, the refusal stands.
             const unknown = error instanceof ApiError && error.status === 404 && error.body.code === "asset_unknown"
-            if (!unknown || refusedAs === served || this.namesById.get(id) !== served) throw error
+            if (!unknown) throw error
+            // The stream told of it while this try was on its way: it goes again at once, under the name it has now.
+            if (!this.namesById.has(id) || this.served.get(id) !== served) continue
+            if (refusedAs === served || this.namesById.get(id) !== served) throw error
             refusedAs = served
             await this.heardOf(id, served, once, error)
           }
@@ -3609,6 +3614,7 @@ export class CanvasStore {
       done: () => {
         this.served.set(id, free)
         this.renamedAt.set(from, nextProjectOrder())
+        this.keepWords(id)
       },
       // A try whose answer was lost: its first did it.
       landed: (error) => (error.status === 404 ? { from, to: free, versions: 0 } : undefined),

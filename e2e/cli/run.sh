@@ -454,6 +454,7 @@ WEB_2=(
   live
   delete-undo
   canvas-nav
+  resize
 )
 WEB_3=(
   focus
@@ -463,6 +464,7 @@ WEB_3=(
   instant
   select
   move
+  svg
 )
 # The `@engines` cells in Firefox, and the vault (`@vault`), which needs the filesystem driver.
 WEB_ENGINES=(
@@ -538,6 +540,7 @@ case $SHARD in
     hostile_media
     egress
     hostile_inputs
+    private_weights
     unseen
     machine_checkout
     local_edits
@@ -621,6 +624,7 @@ case $SHARD in
     hostile_media
     egress
     hostile_inputs
+    private_weights
     machine_show_runs
     writes_once
     project_stream
@@ -677,6 +681,7 @@ case $SHARD in
     old_takes
     db_migrate
     db_legacy
+    db_remote_custody
     db_opens
     db_migrate_large
     db_waits
@@ -688,6 +693,8 @@ case $SHARD in
   projectdb-deleted) parts="db_deleted_gc logs" ;;
   projectdb-purged) parts="db_purged logs" ;;
   projectdb-closes) parts="db_closes logs" ;;
+  # cl-1000: a runner with no FUSE (e2e.yaml installs no vault driver for it).
+  projectvault-nofuse) parts="vault_no_fuse logs" ;;
   projectvault) parts="
     vault_times
     shared_scratch
@@ -708,6 +715,8 @@ case $SHARD in
   projectdb-migrate) parts="db_migrate logs" ;;
   # cozy status's legacy history and cozy doctor's old runs by folder, over a 0.24.0 store fenced here (cl-984).
   projectdb-legacy) parts="db_legacy logs" ;;
+  # Old runs an ended rental made import as the project's own, and the project takes new work (cl-1003).
+  projectdb-remote-custody) parts="db_remote_custody logs" ;;
   # A 5,000-box project of schema 3 opened here: migrated with nothing lost, its rows read (cl-885).
   projectdb-migrate-large) parts="db_migrate_large logs" ;;
   # project.db held by another program while a run begins, within Calcifer's wait and past it (cl-885).

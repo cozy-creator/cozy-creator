@@ -376,7 +376,7 @@ project_stream() {
 # machine, a comment when nothing happens, and the routes it replaced gone.
 event_stream() {
 step "a project: GET /v1/events"
-local R=$OUT/stream log=$OUT/events.sse other=$OUT/events-unrelated.sse stream other_stream id code state n seen boxes
+local R=$OUT/stream log=$OUT/events.sse other=$OUT/events-unrelated.sse runs=$OUT/events-runs.sse stream other_stream runs_stream id code state n seen boxes
 starter_project "$R" > /dev/null || check "stream: project new"
 state=$(status "$R") || fail "stream: project state unavailable"
 id=$(jq -er .id <<< "$state") && code=$(jq -er .code <<< "$state") || fail "stream: project identity or link code unavailable"
@@ -385,6 +385,9 @@ curl -sSN -H "Authorization: Bearer $TOKEN" -H 'cozy-project-storage: 3' "http:/
 show_events "$log" "$code" || check "stream: project interest not held: $(head -c 300 "$log"; cat "$OUT/events.err")"
 curl -sSN -H "Authorization: Bearer $TOKEN" -H 'cozy-project-storage: 3' "http://$ADDR/v1/events" > "$other" 2> "$OUT/events-unrelated.err" & other_stream=$!
 soon told "$other" '.type == "hello"' || check "stream: no hello on unrelated connection"
+# The CLI's runs-only stream hears every run (cl-973).
+curl -sSN -H "Authorization: Bearer $TOKEN" -H 'cozy-project-storage: 3' "http://$ADDR/v1/events?scope=runs" > "$runs" 2> "$OUT/events-runs.err" & runs_stream=$!
+soon told "$runs" '.type == "hello"' || check "stream: no hello on the runs-only connection"
 sse "$log" | sed -n 1p | J --arg v "$(fixture_calcifer | jq -r .calcifer.version)" '.type == "hello" and .version == $v' || check "stream: its first event: $(sse "$log" | sed -n 1p)"
 
 seen=$(revs "$log" "$id" | wc -l)
@@ -400,7 +403,8 @@ n=$(cd "$R" && in_project "$R" --json run ls --limit 1 | jq -r '.runs[0].number'
 soon told_more "$log" "$id" "$seen" || check "stream: a landing's lock told nothing"
 soon told "$log" ".type == \"run.updated\" and .run.number == $n and .run.status == \"completed\" and .run.project_id == \"$id\"" \
   || check "stream: no run.updated says run $n completed in $id: $(sse "$log" | jq -c 'select(.type == "run.updated") | [.run.number, .run.status, .run.project_id]' | tail -5)"
-soon told "$other" ".type == \"run.updated\" and .run.number == $n and .run.status == \"completed\"" || check "stream: a connection with no projects missed the global run"
+soon told "$runs" ".type == \"run.updated\" and .run.number == $n and .run.status == \"completed\" and .run.project_id == \"$id\"" \
+  || check "stream: the runs-only connection (?scope=runs, the CLI's) missed run $n: $(sse "$runs" | jq -c 'select(.type == "run.updated") | [.run.number, .run.status]' | tail -5)"
 # Another program's change (xs-189: Calcifer watches the folder, it no longer looks): a file leaving files/, as a sync tool's would,
 # and coming back.
 local kept aside=$OUT/stream-aside
@@ -412,12 +416,15 @@ seen=$(revs "$log" "$id" | wc -l)
 [ -z "$kept" ] || mv "$aside" "$kept"
 soon told_more "$log" "$id" "$seen" || check "stream: a file back in files/ told nothing"
 [ -z "$(revs "$other" "$id")" ] || check "stream: project changes reached a connection with no interest"
+# A project's runs are its own (cl-973): a page showing no project hears none of them.
+[ "$(sse "$other" | jq -R -c --arg id "$id" 'fromjson? | select(.type == "run.updated" and .run.project_id == $id)' | wc -l)" = 0 ] \
+  || check "stream: a connection showing no project heard $id's run $n"
 soon told "$log" '.type == "machine.updated" and .machine.name == "local"' || check "stream: a run on local moved no machine.updated"
 [ -z "$(revs "$log" "$id" | sort | uniq -d)" ] || check "stream: a rev told twice: $(revs "$log" "$id" | sort | uniq -d)"
 
 soon grep -q '^:' "$log" || check "stream: no comment after 20 s"
 kill -0 "$stream" 2> /dev/null || check "stream: it ended: $(cat "$OUT/events.err")"
-kill "$stream" "$other_stream" 2> /dev/null || true
+kill "$stream" "$other_stream" "$runs_stream" 2> /dev/null || true
 for route in runs machines "projects/$id"; do
   [ "$(api -o /dev/null -w '%{http_code}' "http://$ADDR/v1/$route/events")" = 404 ] || check "stream: /v1/$route/events still answers"
 done

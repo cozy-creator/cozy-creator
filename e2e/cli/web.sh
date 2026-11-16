@@ -23,7 +23,7 @@ web_chrome() {
 # native (one at a time, as it holds `@solo` tests), or a cell's own name (by hand: whichever project takes it, one at a time).
 web_suite() {
   local lane=$1 pw=$OUT/playwright-test chrome cell engine code line web=$OUT/web xvfb=
-  local projects=() workers=() filters=() display=()
+  local projects=() workers=() filters=()
   shift
   [ $# -gt 0 ] || { echo "web-$lane: no cells written yet"; return 0; }
   step "web-$lane: $*"
@@ -46,7 +46,6 @@ web_suite() {
       # Headless Firefox makes no WebGL context on Linux, so the canvas can't start: it runs on a virtual display, with Mesa's GL (config).
       if [ "$(uname -s)" = Linux ] && command -v Xvfb > /dev/null; then
         Xvfb :97 -screen 0 1920x1080x24 -nolisten tcp > "$OUT/web-xvfb.log" 2>&1 & xvfb=$!
-        display=(FIREFOX_DISPLAY=:97)
       fi ;;
     solo) projects=(solo) workers=(--workers=1) ;;
     # Native and by hand, one test at a time: a `@solo` test stops the Calcifer the others share.
@@ -67,7 +66,8 @@ web_suite() {
     until grep -q '^ready' "$OUT/web-busy.out" 2> /dev/null; do kill -0 "$busy" 2> /dev/null || { check "web-$lane: busy.js ended: $(tail -c 300 "$OUT/web-busy.out")"; return; }; sleep 0.2; done
   fi
   {
-    env ${display[@]+"${display[@]}"} HOLDER=$(web_path "$HOME/.cozy/calcifer/calcifer.lock.holder") COZY=$(web_path "$COZY") CHROME=$chrome OUT=$(web_path "$OUT") ARGV_LOG=$(web_path "$OUT/argv.log") \
+    [ -z "$xvfb" ] || export FIREFOX_DISPLAY=:97
+    HOLDER=$(web_path "$HOME/.cozy/calcifer/calcifer.lock.holder") COZY=$(web_path "$COZY") CHROME=$chrome OUT=$(web_path "$OUT") ARGV_LOG=$(web_path "$OUT/argv.log") \
       NODE_PATH=$(web_path "$pw/node_modules") node "$(web_path "$pw/node_modules/@playwright/test/cli.js")" test -c "$(web_path "$here/web/playwright.config.js")" \
       "${projects[@]/#/--project=}" ${workers[@]+"${workers[@]}"} "${filters[@]}" 2>&1 && echo 0 > "$web/$lane.code" || echo $? > "$web/$lane.code"
   } | tee "$web/$lane.log"

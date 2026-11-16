@@ -94,7 +94,7 @@ enum Destination<'a,'b> {
 impl Destination<'_,'_> {
     fn project_id(&self)->&str { match self { Self::Open(store)=>store.project_id(),Self::Sealing(store)=>store.project_id() } }
     fn execution_scope(&self)->(&str,&Path) { match self { Self::Open(store)=>store.execution_scope(),Self::Sealing(store)=>store.execution_scope() } }
-    fn legacy_worker_pending(&self)->Result<bool> {self.read(|conn|Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE owner=?1 AND custody='legacy_pending')",[self.project_id()],|row|row.get(0))?))}
+    fn legacy_worker_pending(&self)->Result<bool> {self.read(|conn|Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE owner=?1 AND custody='legacy_pending' AND machine='local')",[self.project_id()],|row|row.get(0))?))}
     fn input_root(&self)->Result<PathBuf> { match self { Self::Open(store)=>store.input_root(),Self::Sealing(store)=>store.input_root() } }
     fn read<T>(&self, f:impl FnOnce(&Connection)->Result<T>)->Result<T> { match self { Self::Open(store)=>store.read(f),Self::Sealing(store)=>store.read(f) } }
     fn write<T>(&self, f:impl FnOnce(&Transaction<'_>)->Result<T>)->Result<T> { match self { Self::Open(store)=>store.write(f),Self::Sealing(store)=>store.write(f) } }
@@ -110,7 +110,7 @@ impl Store {
         self.verified_legacy_requests(Destination::Sealing(project))
     }
     fn verified_legacy_requests(&self,project:Destination<'_,'_>)->Result<Vec<(String,String,Option<u64>)>> {
-        let pending=project.read(|conn| {let mut stmt=conn.prepare("SELECT id,machine,machine_number FROM runs WHERE owner=?1 AND custody='legacy_pending' ORDER BY number")?;Ok(stmt.query_map([project.project_id()],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,Option<i64>>(2)?.map(|number|number as u64))))?.collect::<rusqlite::Result<Vec<_>>>()?)})?;
+        let pending=project.read(|conn| {let mut stmt=conn.prepare("SELECT id,machine,machine_number FROM runs WHERE owner=?1 AND custody='legacy_pending' AND machine='local' ORDER BY number")?;Ok(stmt.query_map([project.project_id()],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,Option<i64>>(2)?.map(|number|number as u64))))?.collect::<rusqlite::Result<Vec<_>>>()?)})?;
         if pending.is_empty() {return Ok(vec![]);}
         self.read(|source| {
             if !table_exists(source,"legacy_project_runs")? && !pending.is_empty() {return Err(StoreError::Protected("legacy_worker_source_missing".into()));}
@@ -160,6 +160,7 @@ impl Store {
     }
 
     fn migrate_into(&self, project: Destination<'_,'_>, inputs: &Path) -> Result<()> {
+        own_remote_legacy(&project)?;
         // Found by the owner index under a read: a project the legacy store holds nothing of never takes the writer for it.
         if !self.project_migration_required(project.execution_scope().1, project.project_id())? {
             return self.migrate_legacy_files(&project);
@@ -201,7 +202,9 @@ impl Store {
             for field in ["spec","outcome","target","warnings","inputs","reason_code","reason","job"] {
                 runs.open(0,field,|_| Ok(run_context(&id,field)))?;
             }
-            let worker_run=!matches!(&runs.values[0][runs.column("machine")?],Value::Null) && text(&runs.values[0][runs.column("kind")?])?!="here";
+            // Only this computer's own worker holds an acceptance to verify (`legacy_worker`): a run on any other machine is owned once
+            // imported, so an ended rental's run never holds up the project's new work (cl-1003).
+            let worker_run=matches!(&runs.values[0][runs.column("machine")?],Value::Text(machine) if machine=="local") && text(&runs.values[0][runs.column("kind")?])?!="here";
             let verified=project.read(|conn|Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM journal_migrations WHERE source=?1)",[format!("worker-custody:{id}")],|row|row.get::<_,bool>(0))?))?;
             let pending_worker=worker_run&&!verified;
             runs.columns.push("custody".into());runs.values[0].push(Value::Text(if pending_worker {"legacy_pending"} else {"owned"}.into()));
@@ -256,6 +259,8 @@ impl Store {
             project.write(|tx| {
                 let prior:Option<String>=tx.query_row("SELECT digest FROM journal_migrations WHERE source=?1",[&receipt],|row|row.get(0)).optional()?;
                 if prior.as_ref().is_some_and(|prior| prior!=&source_digest) { return Err(StoreError::Protected("project_migration_source_changed".into())); }
+                // An earlier import left a remote run pending custody that can never come: it is owned now, as imported again.
+                if !pending_worker { tx.execute("UPDATE runs SET custody='owned' WHERE id=?1 AND custody='legacy_pending'",[&id])?; }
                 runs.insert_verified(tx,"runs")?; outputs.insert_verified(tx,"outputs")?; logs.insert_verified(tx,"run_logs")?; asks.insert_verified(tx,"asks")?;
                 if let Some(after)=&after { after.insert_verified(tx,"after_steps")?; }
                 if let Some((step,_))=&after_file {
@@ -418,6 +423,14 @@ impl Store {
         if !left { self.settled.lock().unwrap_or_else(|error|error.into_inner()).insert(project.project_id().to_owned()); }
         Ok(())
     }
+}
+
+/// A run an earlier import left pending custody on a machine other than this computer's (an ended rental's) is owned: its
+/// custody only `local` could ever verify, and it held up all of the project's new work (cl-1003, lab on rc/0.26.0).
+fn own_remote_legacy(project:&Destination<'_,'_>)->Result<()> {
+    const REMOTE:&str="owner=?1 AND custody='legacy_pending' AND machine IS NOT 'local'";
+    if !project.read(|conn|Ok(conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM runs WHERE {REMOTE})"),[project.project_id()],|row|row.get::<_,bool>(0))?))? {return Ok(());}
+    project.write(|tx|{tx.execute(&format!("UPDATE runs SET custody='owned' WHERE {REMOTE}"),[project.project_id()])?;Ok(())})
 }
 
 fn legacy_input_source(root:&Path,inputs:&Path,digest:&Digest,length:u64)->Result<PathBuf> {

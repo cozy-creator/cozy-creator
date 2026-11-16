@@ -64,9 +64,9 @@ pub(crate) struct SealingStore<'a> {
 impl SealingStore<'_> {
     pub(crate) fn keep_worker_migration_receipt(&self,machine:&str,receipt:&api::machine::ProjectExecutionMigrationReceipt)->store::Result<usize> {self.write(|tx|keep_worker_receipt(tx,self.project_id(),machine,receipt))}
     pub(crate) fn owner_id(&self)->Option<&str> {Some(&self.project.id)}
-    pub(crate) fn legacy_worker_pending(&self)->store::Result<bool> { self.read(|conn|Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE owner=?1 AND custody='legacy_pending')",[self.project_id()],|row|row.get(0))?)) }
+    pub(crate) fn legacy_worker_pending(&self)->store::Result<bool> { self.read(|conn|Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE owner=?1 AND custody='legacy_pending' AND machine='local')",[self.project_id()],|row|row.get(0))?)) }
     pub(crate) fn legacy_worker_requests(&self)->store::Result<Vec<(String,String,Option<u64>)>> {
-        self.read(|conn| {let mut stmt=conn.prepare("SELECT id,machine,machine_number FROM runs WHERE owner=?1 AND custody='legacy_pending' ORDER BY number")?;Ok(stmt.query_map([self.project_id()],|row|Ok((row.get(0)?,row.get(1)?,row.get::<_,Option<i64>>(2)?.map(|value|value as u64))))?.collect::<rusqlite::Result<_>>()?)})
+        self.read(|conn| {let mut stmt=conn.prepare("SELECT id,machine,machine_number FROM runs WHERE owner=?1 AND custody='legacy_pending' AND machine='local' ORDER BY number")?;Ok(stmt.query_map([self.project_id()],|row|Ok((row.get(0)?,row.get(1)?,row.get::<_,Option<i64>>(2)?.map(|value|value as u64))))?.collect::<rusqlite::Result<_>>()?)})
     }
     pub(crate) fn project_id(&self) -> &str { &self.project.id }
     pub(crate) fn execution_scope(&self) -> (&str,&std::path::Path) { (&self.project.id,&self.project.root) }
@@ -170,7 +170,11 @@ impl Projects {
                 }
             }
         }
-        let fresh=api.calcifer.attach_project(&store).map_err(|_| Error::new(api::error::Kind::Unavailable, "project_journal", "the project journal is unavailable"))?;
+        // A lock revokes the view without the gate: one that lands while this reads says so (409), not that the journal is gone.
+        let fresh=api.calcifer.attach_project(&store).map_err(|error| match error {
+            StoreError::Locked(code) => Error::new(api::error::Kind::Conflict, code, "the project was locked, or its view changed, while it was read"),
+            _ => Error::new(api::error::Kind::Unavailable, "project_journal", "the project journal is unavailable"),
+        })?;
         if fresh {
             tokio::spawn(crate::hub::jobs::resume_project(api.clone(),store.project_id().into()));
             if store.resume_allowed().map_err(|_|Error::new(api::error::Kind::Conflict,"project_journal","the project journal is unavailable"))? && store.project.folder.lock()?.owes() { super::walk(api,&store.project); }
@@ -201,9 +205,9 @@ impl ProjectStore {
     pub(crate) fn admit_new_work(&self)->store::Result<()> {self.project.require_view().map_err(project_error)?;if self.legacy_worker_pending()? {return Err(StoreError::Protected("legacy_worker_custody_pending".into()));} Ok(())}
     pub(crate) fn owner_id(&self)->Option<&str> {Some(&self.project.id)}
     pub(crate) fn resume_allowed(&self)->store::Result<bool> { if self.legacy_worker_pending()? {return Ok(false);} self.read(|conn|Ok(!conn.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE owner<>?1)",[self.project_id()],|row|row.get::<_,bool>(0))?)) }
-    pub(crate) fn legacy_worker_pending(&self)->store::Result<bool> { self.read(|conn|Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE owner=?1 AND custody='legacy_pending')",[self.project_id()],|row|row.get(0))?)) }
+    pub(crate) fn legacy_worker_pending(&self)->store::Result<bool> { self.read(|conn|Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE owner=?1 AND custody='legacy_pending' AND machine='local')",[self.project_id()],|row|row.get(0))?)) }
     pub(crate) fn legacy_worker_requests(&self)->store::Result<Vec<(String,String,Option<u64>)>> {
-        self.read(|conn| {let mut stmt=conn.prepare("SELECT id,machine,machine_number FROM runs WHERE owner=?1 AND custody='legacy_pending' ORDER BY number")?;Ok(stmt.query_map([self.project_id()],|row|Ok((row.get(0)?,row.get(1)?,row.get::<_,Option<i64>>(2)?.map(|value|value as u64))))?.collect::<rusqlite::Result<_>>()?)})
+        self.read(|conn| {let mut stmt=conn.prepare("SELECT id,machine,machine_number FROM runs WHERE owner=?1 AND custody='legacy_pending' AND machine='local' ORDER BY number")?;Ok(stmt.query_map([self.project_id()],|row|Ok((row.get(0)?,row.get(1)?,row.get::<_,Option<i64>>(2)?.map(|value|value as u64))))?.collect::<rusqlite::Result<_>>()?)})
     }
     pub(crate) fn project_id(&self) -> &str { &self.project.id }
     pub(crate) fn owner(&self) -> RunOwner { RunOwner { project: self.project.clone(), controller: self.controller.clone() } }
