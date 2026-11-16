@@ -35,6 +35,19 @@ async function unpainted(page) {
 const lost = (page) => page.getByRole('region', { name: 'Project canvas' }).getByRole('alert');
 
 test('glloss', { tag: '@engines' }, async ({ page, project }) => {
+  // This cell is about WebGL itself. A runner has no GPU, and the canvas draws in 2D when WebGL is only software (cl-1048), so the browser's
+  // software WebGL is named as a hardware one: the canvas then takes its WebGL path, still drawn by the runner's software GL.
+  await page.addInitScript(() => {
+    for (const Context of [globalThis.WebGLRenderingContext, globalThis.WebGL2RenderingContext].filter(Boolean)) {
+      const read = Context.prototype.getParameter;
+      Context.prototype.getParameter = function (name) {
+        // RENDERER, and WEBGL_debug_renderer_info's UNMASKED_RENDERER_WEBGL.
+        if (name === 0x1f01 || name === 0x9246) return 'Test GPU (hardware, for web/glloss.spec.js)';
+        return read.call(this, name);
+      };
+    }
+  });
+  await page.reload();
   for (const [i, [name, colour]] of Object.entries(PICTURES).entries()) {
     await project.import(png(0, 320, 200, false, () => colour), { name, at: { x: (i % 4) * 300, y: Math.floor(i / 4) * 300 } });
   }
