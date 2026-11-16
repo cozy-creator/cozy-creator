@@ -6,7 +6,9 @@
 // it's open is drawn soon after it lands. Zoomed out from 100%, every box in the new view is drawn in each frame of the zoom. Opened in turn
 // ten times by its tab and panned whole, what it holds of pictures comes to rest at the same (cl-1048 row 27).
 // `@solo`: its times are held to bars and it clears the thumbnail cache, so it has the job to itself; that job has the filesystem driver
-// its encrypted copy needs.
+// its encrypted copy needs. Linux runs it in 2D (web-2d-solo), the path of a computer with no GPU; a Mac runs it on real GL (web-native),
+// the WebGL path most people open on, also held to React Flow's numbers there. Windows has neither: its runner's GL has a performance
+// caveat, so it would repeat Linux's 2D path on a slower runner.
 const { createHash, randomBytes } = require('crypto');
 const { readdirSync, rmSync } = require('fs');
 const { homedir } = require('os');
@@ -20,11 +22,15 @@ const PICTURES = 50;
 const SIDE = 1200;
 const COLUMNS = 10;
 const [W, DX, DY] = [240, 280, 320];
-/** Long enough for the old build's stall to show whole, short enough that the cell ends. */
-const WAIT_MS = 75_000;
+/** Long enough for the old build's stall to show whole, short enough that the cell ends; above every bar. A Mac's runner makes thumbnails
+ *  slowly at rc (agent a92b210), so its wait is shorter, to leave the frames time to be judged. */
+const WAIT_MS = process.platform === 'darwin' ? 15_000 : 75_000;
 const VIEWPORT = { width: 1600, height: 1000 };
 // What Paul asked (11-13), on the fast hosted runners; each is held times this runner's speed against those (speed.js).
 const BARS = { frames_first_ms: 100, frames_all_ms: 100, previews_cold_ms: 2000, previews_warm_ms: 1000, landed_ms: 2000 };
+// React Flow on a Mac (e2e 43793283804, macos-15, its runner 2.3 times the reference): every open's frames drawn by 20-126 ms of its state,
+// the middle open at 96 ms. On a Mac the canvas is held to these too, times this runner's speed against that one's; within 5% is a tie.
+const REACT_FLOW_MAC = { factor: 2.3, middle_ms: 96, slowest_ms: 126 };
 const soft = expect.configure({ soft: true });
 
 /** A real picture of a few MB: a gradient under noise, `i` telling one from another, as a PNG. */
@@ -272,6 +278,8 @@ test.use({ trace: { mode: 'retain-on-failure', snapshots: false } });
 test.use({ launchOptions: { executablePath: process.env.CHROME, args: chromeArgs(...(gpuless ? ['--disable-gpu-compositing'] : [])) } });
 
 test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signIn }, testInfo) => {
+  test.skip(process.platform === 'win32', "a Windows runner's GL has a performance caveat: the 2D path is Linux's (web-2d-solo)");
+  test.slow(process.platform === 'darwin', "a Mac's runner makes thumbnails slowly at rc (agent a92b210): each wait runs out before the frames are judged");
   const speed = runnerSpeed();
   const BAR = Object.fromEntries(Object.entries(BARS).map(([name, ms]) => [name, Math.round(ms * speed.factor)]));
   testInfo.annotations.push({ type: 'runner', description: JSON.stringify({ ...speed, bars: BAR }) });
@@ -475,6 +483,7 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
     // Which renderer this was measured on, so no number is read against another's bar (coordinator, 11-16).
     result.renderer = await page.evaluate(() => { const g = document.querySelector('.canvas-root')?.canvasInspection?.resources()?.graphics; return g ? [g.backend ?? 'webgl', g.why, g.software ? 'software' : null].filter(Boolean).join(' ') : 'unknown'; });
     seen[label] = result;
+    await testInfo.attach(`opens-${label}`, { body: JSON.stringify(result), contentType: 'application/json' });
     const said = (what) => `${label}: ${what}: ${JSON.stringify({ ...result, trace: undefined, preview_times_ms: undefined })}`;
     expect.soft(result.pulsed_while_waiting, said('every box waiting for its preview pulses')).toBe(result.waited_for_preview);
     if (!bars) {
@@ -533,8 +542,9 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
     });
   }
 
-  // An old project's thumbnails, none stored: each made in the background as it's asked for, its box pulsing until it's drawn.
-  for (const theme of ['paper', 'dark']) {
+  // An old project's thumbnails, none stored: each made in the background as it's asked for, its box pulsing until it's drawn. Judged on
+  // Linux: a Mac's runner makes them slowly at rc (agent a92b210), and its stored ones are judged above.
+  for (const theme of process.platform === 'darwin' ? [] : ['paper', 'dark']) {
     await test.step(`${theme}: none stored, each box pulses while its preview is made`, async () => {
       const one = projects.plain;
       rmSync(join(one.view, '.thumbs'), { recursive: true, force: true });
@@ -554,6 +564,11 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
     seen.frames = { each_ms: framed, median_ms: sorted[sorted.length >> 1] ?? null };
     expect.soft(sorted.length > 0 && sorted[sorted.length >> 1] <= BAR.frames_all_ms, `the middle open: ${JSON.stringify(seen.frames)}`).toBe(true);
     expect.soft(sorted.length > 0 && sorted.at(-1) <= 3 * BAR.frames_all_ms, `every open: ${JSON.stringify(seen.frames)}`).toBe(true);
+    if (process.platform !== 'darwin') return;
+    const scale = 1.05 * speed.factor / REACT_FLOW_MAC.factor;
+    seen.frames.react_flow_mac = { middle_ms: Math.round(REACT_FLOW_MAC.middle_ms * scale), slowest_ms: Math.round(REACT_FLOW_MAC.slowest_ms * scale) };
+    expect.soft(sorted.length > 0 && sorted[sorted.length >> 1] <= seen.frames.react_flow_mac.middle_ms, `cl-1018: the middle open no slower than React Flow's on a Mac: ${JSON.stringify(seen.frames)}`).toBe(true);
+    expect.soft(sorted.length > 0 && sorted.at(-1) <= seen.frames.react_flow_mac.slowest_ms, `cl-1018: every open no slower than React Flow's slowest on a Mac: ${JSON.stringify(seen.frames)}`).toBe(true);
   });
 
   // Three tabs opening it at once, none of its thumbnails stored (as tabs reopen after Calcifer restarts on a new build): each is made in

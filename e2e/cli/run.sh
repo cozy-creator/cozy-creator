@@ -545,8 +545,9 @@ WEB_2D_SOLO=(
   opens
 )
 # macOS and Windows (the nightly): the `@engines` cells, WebKit's too on a Mac, layout, and what the old native cells durable, see and undo
-# checked (instant, canvas-nav, delete-undo).
+# checked (instant, canvas-nav, delete-undo), and opens on a Mac's real GL (Windows skips it).
 WEB_NATIVE=(
+  opens
   layout
   # offline: its step 5 renders on local, which macOS and Windows don't run (lib.sh's LOCAL)
   canvas-nav
