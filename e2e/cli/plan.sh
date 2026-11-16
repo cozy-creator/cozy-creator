@@ -135,6 +135,38 @@ for at in 1 2 3; do
 done
 }
 
+# plan_fetch (cl-1071; Paul 11-16, a 65 GiB quote where 22 landed: "why would it take 15 mins to download?"): a run's quoted download is
+# what it then fetches. composed.py reads a transformer and a VAE as raw weights, and has a slot it fetches only on demand and never
+# reads; its box takes e2e/composed-tune (its own transformer on e2e/composed-base's VAE) for the transformer. On stand-c, which holds
+# none of them, the run is quoted the tune's transformer and the base's VAE once (64 MiB), not each named checkpoint whole and the
+# unread on-demand one (160 MiB); and what lands in stand-c's store is that, within 5%.
+plan_fetch() {
+step "plan (cl-1071): a run's quoted download is what it fetches"
+[ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "plan: its stand-in is another user of a fresh GitHub runner"; return; }
+local P=$OUT/plan-fetch tool=$here/project/composed.py/composed r=$RANDOM store=/home/cozy-stand-c/.cache/tensorfs before after job run placed quoted landed
+cozy --json machine show local > "$OUT/set-local.json" || { check "plan fetch: machine show local"; return; }
+stand_in stand-c || return
+cozy --json new --unencrypted "$P" > "$OUT/plan-fetch-new.json" 2>&1 || { check "plan fetch: new: $(tail -c 300 "$OUT/plan-fetch-new.json")"; return; }
+jq -n --arg t "$tool" --arg r "$r" '[{name: "fetched", tool: $t, kind: "image",
+  fields: {instructions: "A tune on a base, \($r).", models: {model: {ref: "e2e/composed-tune@0.1.0"}}}}]' | boxes_in "$P" || return
+before=$(sudo du -sb "$store" 2> /dev/null | cut -f1)
+coming_go fetched '["stand-c"]'
+coming_done fetched 900
+after=$(sudo du -sb "$store" 2> /dev/null | cut -f1)
+job=$(status "$P" | jq -c '[.board.jobs[]? | select(.asset == "fetched")] | last // empty')
+run=$(jq -r '.run // empty' <<< "${job:-null}")
+[ -n "$run" ] && J '.state == "done"' <<< "$job" || { check "plan fetch: its run didn't end done: ${job:-no job}"; return; }
+echo "$P" > "$OUT/plan-fetch.at"
+run_show "$OUT" plan-fetch "$run"
+placed=$(jq -c '.placed // empty' "$OUT/plan-fetch.json" 2> /dev/null)
+quoted=$(jq -r '.fetch_bytes // 0' <<< "${placed:-null}")
+landed=$(( ${after:-0} - ${before:-0} ))
+echo "plan fetch: run $run on stand-c quoted $((quoted >> 20)) MiB to fetch ($placed); $((landed >> 20)) MiB landed in its store"
+[ "$quoted" -gt 0 ] && [ "$landed" -gt 0 ] || { check "plan fetch: nothing quoted ($quoted) or landed ($landed)"; return; }
+[ $(( (quoted > landed ? quoted - landed : landed - quoted) * 20 )) -le "$landed" ] \
+  || check "plan fetch: quoted $((quoted >> 20)) MiB to fetch, but $((landed >> 20)) MiB landed"
+}
+
 # prepare_ahead (phase c): BiRefNet, as its Hub publishes it, on a still that takes 4 min, can't start before it: unstarted work,
 # planned where BiRefNet's weights are. stand-v, a new stand-in that holds nothing, has nothing planned and runs nothing, is told to
 # prepare its function with no job (`PUT /v1/prepare`): it installs BiRefNet's environment and holds its weights while that box
