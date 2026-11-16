@@ -135,7 +135,7 @@ step() {
     sleep 1; t=$((t + 1))
     if [ "$FLOOR_MBS" != 0 ] && [ -n "$kinds" ] && [ "$t" -ge "$FLOOR_AFTER" ] && [ $((t % 2)) = 0 ]; then
       if [ -z "$slow" ] && slow=$(floor "$OUT/$n.txt" "$kinds"); then
-        say "$n: host too slow: $slow on $NAME ($RID)"; [[ $slow == *downloading* ]] && say "$n: its download goes on to the Hub's speed report"
+        say "$n: host too slow: $slow on $NAME ($RID)"; [[ $slow == *downloading* ]] && say "$n: its download goes on until the pod's log shows its speed report (checked every 30 s)"
       fi
       if [ -n "$slow" ] && { [ $((t % 30)) = 0 ] || [[ $slow != *downloading* ]]; } && heard "$slow"; then
         kill "$p"; fail "host too slow: $(floor "$OUT/$n.txt" "$kinds" || echo "$slow") on $NAME ($RID): $HEARD"
