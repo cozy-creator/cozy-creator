@@ -452,6 +452,23 @@ fi
 [ "$(row "$RUN_PROJECT" described .fields.description)" = '"An orange card."' ] || check "descriptions: the stored one is now $(row "$RUN_PROJECT" described .fields)"
 }
 
+# se-138 (Paul's clamp-and-warn rule): a size or count that isn't one of a choice's values runs at the nearest one and says
+# so, never at a default larger than asked (cr-299's `to: 768p` ran at 1440p); a word that names none goes as its default.
+choice_clamp() {
+step "a choice given a value it doesn't offer: the nearest, said"
+# `to=768p` is typed by `cozy run` as a resolution (runs/bind.rs `tiers`); a word it doesn't offer is refused there, so `mode` goes as JSON.
+if cell choice "$here/project/choice.py/size" to=768p megapixels:=3 'mode:="slow"'; then
+  grep -q 'to=1080p megapixels=2 mode=full' "$OUT/choice.ndjson" \
+    || check "choice: 768p and 3 didn't run as 1080p and 2, or slow not as full: $(grep -oE '"given": *"[^"]*"' "$OUT/choice.ndjson" | head -1)"
+  cozy --json --full run watch "$(cat "$OUT/choice.number")" --once > "$OUT/choice.json" 2>&1
+  local said
+  for said in "\"768p\" isn't one of 1080p, 1440p, 2160p, so it's \"1080p\"" "3 isn't one of 2, 4, so it's 2" "\"slow\" isn't one of fast, full, so it's its default"; do
+    grep -qF "$(jq -Rr '@json' <<< "$said" | sed 's/^"//; s/"$//')" "$OUT/choice.json" "$OUT/choice.ndjson" "$OUT/choice.err" 2> /dev/null \
+      || grep -qF "$said" "$OUT/choice.err" 2> /dev/null || check "choice: the run didn't say: $said"
+  done
+fi
+}
+
 # cl-883: an orbit mentioned by angle. A dropped video, turned to an orbit as its box's Orbit switch does (PATCH its version's
 # metadata), reaches a function as the frame at an angle, a picture, and as the frames turned between two, a clip:
 # `floor(angle / 360 × 48)`, wrapping past 360° and across 0°. Its frames are greys, frame n at 5n, so the function says which

@@ -42,25 +42,51 @@ product_minimax_h3() {
     prompt="<$name> $motion" seed:=$H3_SEED duration_s:=15
   ONLY=$SAVED
   CLIP=$(output h3 mp4)
-  # Above 768p a take is re-rendered whole by Regenerate-2K (UPSCALE.md) with its soundtrack, from its frames and the
-  # description of the box it is in.
-  [[ $ONLY == *",h3-1080p,"* || $ONLY == *",h3-1440p,"* ]] && ONLY="$ONLY,h3-5s,"
+  # Above 768p a take is re-rendered whole by Regenerate-2K (UPSCALE.md) with its soundtrack. A file of a box has no
+  # latents and no text (a mention's description is off, cl-900): it goes from its frames and the prompt given, else
+  # from no text, with a warning (se-138).
+  [[ $ONLY == *",h3-1080p,"* || $ONLY == *",h3-1440p,"* || $ONLY == *",h3-notext-1080p,"* || $ONLY == *",h3-take-1080p,"* ]] && ONLY="$ONLY,h3-5s,"
   cell h3-5s "$(pkg minimax-h3 generate)" prompt="$p" seed:=$((R + 16)) duration_s:=5
   ONLY=$SAVED
   v=$(box h3_5s "$(output h3-5s mp4)" "$p")
   for r in 1080 1440; do
-    cell "h3-${r}p" "$(pkg minimax-h3 upscale)" video="$v" to=${r}p
+    cell "h3-${r}p" "$(pkg minimax-h3 upscale)" video="$v" to=${r}p prompt="$p"
     av "h3-${r}p" $r
   done
+  cell h3-notext-1080p "$(pkg minimax-h3 upscale)" video="$v" to=1080p
+  av h3-notext-1080p 1080
+  if [ -f "h3-notext-1080p${TWIN:-}.number" ]; then
+    r=$(run_get "$OUT" "h3-notext-1080p${TWIN:-}" '[.result.warnings[]? | select(startswith("no text to guide"))] | first')
+    expect "h3-notext-1080p${TWIN:-}-warns" "$([ -n "$r" ] && echo PASS || echo FAIL)" "${r:-no warning of missing text}"
+  fi
+  h3_take
   # The largest one forward takes: Regenerate-2K over the whole 15 s shot at 1440p, one window from 24 GB up
   # (`regenerate.windows`). 5 s cells never reach it: whole Q, K and V ran a 32 GB card out of memory on nvfp4 (run 28696,
   # cr-259). About 11 min and $0.22 on a 5090 (run 28788), about 18 min and $0.30 on a 4090, past the shot it starts from.
-  cell regen-1440p-15s "$(pkg minimax-h3 upscale)" video="$(box h3_15s "$CLIP" "$who. $motion")" to=1440p
+  cell regen-1440p-15s "$(pkg minimax-h3 upscale)" video="$(box h3_15s "$CLIP" "$who. $motion")" to=1440p prompt="$who. $motion"
   av regen-1440p-15s 1440
   if [ -f "regen-1440p-15s${TWIN:-}.number" ]; then
     r=$(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/frames.py" regen "$CLIP" "$(output "regen-1440p-15s${TWIN:-}" mp4)" 2>&1 | tail -1)
     expect "regen-1440p-15s${TWIN:-}-frames" "$(jq -r 'if .structure_psnr >= 18 and .structure_ssim >= 0.5 and .flicker <= 2 and .corr >= 0.95 then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "$r"
   fi
+}
+# h3_take: h3-5s's request as a box's take (made as the page makes one, so it keeps its latents; its segment is h3-5s's,
+# memoized), upscaled with no prompt: from the latents and the text they carry, with no warning of missing text (se-138).
+h3_take() {
+  [ -z "${TWIN:-}" ] || return 0
+  [ -z "$ONLY" ] || [[ $ONLY == *",h3-take-1080p,"* || $ONLY == *",minimax-h3,"* ]] || return 0
+  local tool r
+  tool=$(pkg minimax-h3 generate); [[ $tool != ./* ]] || tool=$OUT/${tool#./}
+  run_page add h3_take --tool "$tool" --fields "$(jq -cn --arg d "$SCENE, slow push-in, ambient sound" --argjson s $((R + 16)) \
+    '{seed: $s, beats: [{duration: 5, description: $d}]}')" > h3-take.add.json 2> h3-take.err &&
+    run_page render --on "$M" h3_take > h3-take.render.ndjson 2>> h3-take.err ||
+    { expect h3-take-1080p FAIL "the take: $(tail -c 300 h3-take.err)"; return; }
+  cell h3-take-1080p "$(pkg minimax-h3 upscale)" video='<h3_take>' to=1080p
+  av h3-take-1080p 1080
+  [ -f h3-take-1080p.number ] || return 0
+  r=$(run_get "$OUT" h3-take-1080p '{latents: .request.input.video.latents, warnings: [.result.warnings[]?]} | tostring')
+  expect h3-take-1080p-text "$(jq -r 'if (.latents // "" | startswith("sha256:")) and ([.warnings[] | select(startswith("no text"))] | length) == 0
+    then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "${r:-no record}"
 }
 product_seedvr2() {
   local src=${CLIP:-$(ls "$B/ref-$SKU-clip.mp4" 2>/dev/null)}

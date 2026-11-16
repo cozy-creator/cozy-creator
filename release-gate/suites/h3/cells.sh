@@ -1,5 +1,5 @@
 # Suite `h3`: minimax-h3's generate, edit and upscale at their edges, from the package users get (or a --packages checkout's).
-# - Regenerate-2K (`upscale`, the shot a described box) at 1080p, 1440p and 2160p, each against the 768p shot it starts from: its
+# - Regenerate-2K (`upscale`, the shot a box with its text as the prompt) at 1080p, 1440p and 2160p, each against the 768p shot it starts from: its
 #   layout at 112x64 (frames.py), since regenerated texture rightly differs, and that it moves as the original does (no
 #   flicker: a refine window off the latent chunk grid flickers at every chunk, run 22567).
 # - SeedVR2 (its own package) at 2160p on the same shot, its lane the one an empty card gives.
@@ -40,7 +40,7 @@ cell regen-768p "$SHOT" prompt="$P" seed:=$((R + 70)) duration_s:=5
 ONLY=$SAVED
 REGEN_BOX=$(box regen_768p "$(video_of regen-768p)" "$P")
 for r in 1080 1440 2160; do
-  cell "regen-${r}p" "$UP" video="$REGEN_BOX" to=${r}p
+  cell "regen-${r}p" "$UP" video="$REGEN_BOX" to=${r}p prompt="$P"
   av "regen-${r}p" $r
   judge "regen-${r}p-frames" "regen-${r}p" ".structure_psnr >= 18 and .structure_ssim >= 0.5 and .flicker <= 2 and .lag_ms != null and (.lag_ms | $ABS) <= 10 and .corr >= 0.95" \
     regen "$(video_of regen-768p)"
@@ -59,7 +59,7 @@ if [[ $ONLY == *",regen-2160p-15s,"* ]]; then
   SAVED=$ONLY; ONLY="$ONLY,regen-768p-15s,"
   cell regen-768p-15s "$SHOT" prompt="$P15" seed:=$((R + 72)) duration_s:=15
   ONLY=$SAVED
-  cell regen-2160p-15s "$UP" video="$(box regen_768p_15s "$(video_of regen-768p-15s)" "$P15")" to=2160p
+  cell regen-2160p-15s "$UP" video="$(box regen_768p_15s "$(video_of regen-768p-15s)" "$P15")" to=2160p prompt="$P15"
   av regen-2160p-15s 2160
   judge regen-2160p-15s-frames regen-2160p-15s ".structure_psnr >= 18 and .structure_ssim >= 0.5 and .flicker <= 2 and (.lag_ms | $ABS) <= 10 and .corr >= 0.95" \
     regen "$(video_of regen-768p-15s)"
