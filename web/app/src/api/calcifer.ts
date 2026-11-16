@@ -3268,13 +3268,10 @@ lock?: string | null, };
 
 /**
  * A take of an asset that hasn't landed, by its id, from the render that asked it to its version (`VersionPrefix::id`): queued
- * until its turn, then sent, with its run once that has a number (cl-945); or one that failed, with why (cl-954).
+ * until its turn, then sent, with its run once that has a number (cl-945). One that fails is gone: its failure is its asset's, said
+ * once as it happens (cl-1070).
  */
-export type TakeNow = { id: string, queued?: boolean, run?: number | null,
-/**
- * It ended with no version, and why: listed until it's dismissed (`Cancel::takes`), as it failed (cl-954).
- */
-failure?: ErrorBody | null, };
+export type TakeNow = { id: string, queued?: boolean, run?: number | null, };
 
 /**
  * Bytes make_room took of one class (F, O, S, N, D, W, P).
