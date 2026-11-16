@@ -452,7 +452,7 @@ impl Calcifer {
             }
             // Its project closed: the exporter ends, and the project's next opening starts another.
             Err(StoreError::Locked(code)) if code != "project_busy" => {
-                warn!(run = %id, "its exporter ends with its outputs owed: {code}");
+                warn!("an exporter ends with its outputs owed: {code}");
                 drop(runs.remove(id));
                 lock(&self.exports.seen).remove(id);
                 lock(&self.exports.tasks).remove(id);
@@ -1068,6 +1068,8 @@ async fn fetch_tree(
     let (stage, manifest) = (suffixed(dest, ".part"), suffixed(dest, ".manifest.part"));
     let unwritable =
         |e: std::io::Error| Failure::Again(format!("cannot write {}: {e}", stage.display()));
+    // A write into the project, as each batch is: never into a view a lock has, nor after a lock dropped what it left (cl-1060).
+    let preparing = batch(gate).await.map_err(Failure::Again)?;
     let prepared = blocking({
         let (stage, manifest, length) = (stage.clone(), manifest.clone(), item.length);
         move || {
@@ -1078,6 +1080,7 @@ async fn fetch_tree(
         }
     });
     prepared.await.map_err(unwritable)?;
+    drop(preparing);
     fetch(link, target, item.rev, &[], item.length, &manifest, None, moved, gate).await?;
     check(&manifest, item.length, &item.digest).await?;
     let listed = std::fs::read(&manifest).map_err(unwritable)?;

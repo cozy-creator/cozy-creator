@@ -246,7 +246,7 @@ impl Calcifer {
             bar.basis,
             likely(&causes)
         );
-        self.say_slow(id, message);
+        self.say_slow(id, message, crate::project::vault::encrypted_within(&row.out_dir));
     }
 
     /// As it ends with `outcome`, before it settles (what lands of it carries its warnings): far past its bar, it says so with what
@@ -285,18 +285,20 @@ impl Calcifer {
             bar.basis,
             likely(&causes)
         );
-        self.say_slow(id, message);
+        self.say_slow(id, message, crate::project::vault::encrypted_within(&row.out_dir));
     }
 
-    fn say_slow(&self, id: &RunId, message: String) {
+    /// Said on the run's own record; logged too unless it's an encrypted project's, whose runs no log outside it names (cl-1060).
+    fn say_slow(&self, id: &RunId, message: String, private: bool) {
         if let Some(live) = lock(&self.live).get_mut(id) {
             live.slow_said = true;
         }
-        tracing::warn!(run = %id, "{message}");
+        if !private { tracing::warn!(run = %id, "{message}"); }
         let warning = Warning { code: SLOW_RUN.into(), message };
         match self.with_run_store(id.as_str(), |store| store.warn(id.as_str(), &warning)) {
             Ok(events) => self.publish(id, events),
-            Err(error) => tracing::warn!(run = %id, "{SLOW_RUN} not kept: {error}"),
+            Err(error) if !private => tracing::warn!(run = %id, "{SLOW_RUN} not kept: {error}"),
+            Err(error) => tracing::warn!("{SLOW_RUN} not kept: {error}"),
         }
     }
 
