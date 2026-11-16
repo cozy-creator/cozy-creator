@@ -184,8 +184,9 @@ impl Machines {
             }
         }
         // A machine held off the RC by hand counts the RC's build too: refused, it names the update that moves it there.
-        // A local machine below this cozy's Runtime minor can always move to this cozy's own Runtime, as a project's run needs
-        // (cl-1055). Nothing else becomes takeable, and a machine on the minor sees no change.
+        // `local` below this cozy's Runtime minor can always move to this cozy's own Runtime (cl-1055), for any run there, a project's
+        // or not: a plain run whose package needs a newer Runtime moves it to the minor, not to an older minor's release. On the
+        // minor, and on every other machine, nothing changes.
         runtimes.extend(self.own_runtime(name, frame).await);
         if rc || self.rc_machine(name, frame) {
             if let Ok(sums) = self.rc.now().await {
@@ -215,9 +216,9 @@ impl Machines {
         (!runtimes.is_empty()).then_some(api::release::Newer { cozy, runtimes, major })
     }
 
-    /// The Runtime `name` (on `frame`) moves to for a project's run when it is `local` below this cozy's Runtime minor (cl-1055):
-    /// this cozy's own, the RC's newest build for an RC or dev build of cozy, else its Hub's pin for this release. None on the
-    /// minor, for any other machine, or when it can't be had now (offline; the Hub names none of the minor).
+    /// The Runtime `name` (on `frame`) can move to, for any run, when it is `local` below this cozy's Runtime minor (cl-1055): this
+    /// cozy's own, the RC's newest build for an RC or dev build of cozy, else its Hub's pin for this release. None on the minor,
+    /// for any other machine, or when it can't be had now (offline; the Hub names none of the minor).
     pub(crate) async fn own_runtime(&self, name: &str, frame: &api::machine::StatusFrame) -> Option<String> {
         let local = self.named(name).ok().flatten().is_some_and(|row| row.kind == MachineKind::Local);
         if !local || api::release::on_runtime_minor(&frame.runtime) {

@@ -897,10 +897,11 @@ machine_ready
 
 # cl-952: a machine runs only a package release its Runtime can run. Publishing refused isolated.sh's e2e-lies, whose floor
 # cozy-runtime>=0.44 lacks the `call` it imports (minimax-h3 0.12.0rc3 declared 0.45 and imported the RC's `preview`: run
-# 47791). e2e-floor 0.2.0 needs cozy-runtime>=0.45.1: local held on 0.45.0 by hand refuses it, naming `cozy machine update
-# local`, and still does after Calcifer restarts (the hold is kept in its store); it runs 0.1.0 named; with nothing named, `cozy machine update local` moves it to its Hub's pin (0.45.0, this shard's
-# isolated Hub: e2e.yaml), which holds nothing, and the unversioned run then moves local to the newest 0.45 release and runs
-# 0.2.0, saying so. e2e-capped 0.2.0 (<0.45.1) then runs as 0.1.0: a machine moves only up.
+# 47791). A project's run on local also needs this cozy's Runtime minor (cl-1055). Held on 0.45.0 by hand, local refuses
+# e2e-floor 0.2.0 (cozy-runtime>=0.45.1) and 0.1.0 alike, naming `cozy machine update local`, and still does after Calcifer
+# restarts (the hold is kept in its store); with nothing named, `cozy machine update local` moves it to its Hub's pin (0.45.0, this
+# shard's isolated Hub: e2e.yaml), which holds nothing, and a project's run then moves it to this cozy's own Runtime, saying so.
+# Held on a release of the minor, a cap binds: e2e-capped 0.2.0 (<0.47.0.dev0) runs as 0.1.0, as a machine moves only up.
 runtime_floor() {
 step "a package release runs on a Runtime that meets its floor: publishing refuses a dishonest one; a held machine refuses, another upgrades (cl-952)"
 [ -n "$LOCAL" ] || return 0
@@ -1014,11 +1015,68 @@ jq -e '.status.runtime | test("^0\\.4[7-9]\\.")' "$OUT/machine.json" > /dev/null
   || check "runtime floor: after its upgrade local runs $(jq -r .status.runtime "$OUT/machine.json"), not this cozy's Runtime minor"
 # On the minor, e2e-floor 0.2.0 (cozy-runtime>=0.45.1) runs as it is.
 cell floor-on-minor "$E2E_FLOOR/relay" "text=on the minor" || true
-# e2e-capped 0.2.0 needs cozy-runtime<0.45.1: local never moves down, so it runs 0.1.0 and says why.
+# A cap binds only on a release: a dev build meets every cap (api::release::runs; the RC's builds run packages capped below its
+# minor, cl-922), and until a release of this minor is on PyPI every Runtime a project's run can take is a dev build. So local is held
+# by hand on the candidate's Runtime as a release of the minor (minor_release). There a named older release its Runtime admits runs
+# (e2e-floor 0.1.0); e2e-capped 0.2.0 (cozy-runtime<0.47.0.dev0) can't run, and local never moves down, so the run takes 0.1.0 and
+# says why; and off the RC, an unversioned run never takes a prerelease (e2e-held 0.1.0, never 0.2.0rc1: se-128).
+local release
+release=$(minor_release) || { check "runtime floor: no release of the minor to hold local on: $release"; return; }
+cozy --json machine update local --runtime "$release" -y > "$OUT/floor-release.json" 2>&1 \
+  || { check "runtime floor: local refused the candidate's Runtime as a release ($release): $(tail -c 300 "$OUT/floor-release.json")"; return; }
+machine_ready
+jq -e '.status.runtime | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")' "$OUT/machine.json" > /dev/null \
+  || check "runtime floor: held on $release, local runs $(jq -r .status.runtime "$OUT/machine.json"), not a release"
+if cell floor-release-older "$E2E_FLOOR/relay@0.1.0" "text=held, asked 0.1.0"; then
+  grep -q 'relay@0\.1\.0"' "$OUT/floor-release-older.ndjson" \
+    || check "runtime floor: held on a release of the minor, e2e-floor 0.1.0 named didn't run as 0.1.0: $(grep -o '"target": *"[^"]*"' "$OUT/floor-release-older.ndjson" | head -1)"
+fi
 in_project "$RUN_PROJECT" run "$E2E_CAPPED/relay" text=capped --on local > "$OUT/floor-capped.out" 2> "$OUT/floor-capped.err" \
   || check "runtime floor: the unversioned e2e-capped run failed: $(tail -c 400 "$OUT/floor-capped.err")"
 grep -q "e2e-capped 0.2.0 needs cozy-runtime.*no Runtime it can take does: this run takes 0.1.0" "$OUT/floor-capped.err" \
-  || check "runtime floor: e2e-capped didn't say it takes 0.1.0 for 0.2.0's cap: $(tail -c 400 "$OUT/floor-capped.err")"
+  || check "runtime floor: on a release of the minor, e2e-capped didn't say it takes 0.1.0 for 0.2.0's cap: $(tail -c 400 "$OUT/floor-capped.err")"
+if cell floor-release-held "$E2E_HELD/relay" "text=off the RC"; then
+  grep -q 'relay@0\.1\.0"' "$OUT/floor-release-held.ndjson" && ! grep -q '0\.2\.0rc' "$OUT/floor-release-held.ndjson" \
+    || check "runtime floor: off the RC on a release of the minor, the unversioned e2e-held run didn't take 0.1.0: $(grep -o '"target": *"[^"]*"' "$OUT/floor-release-held.ndjson" | head -1)"
+fi
+}
+
+# minor_release: the candidate's Runtime wheel as a release of its minor (0.47.0.dev0+dev.g… as 0.47.0), for a cell that needs a cap
+# to bind; made once, its path said. Fails, saying why, without a candidate wheel.
+minor_release() {
+  local dir=$OUT/minor-release made
+  [ -f "${CAND_RT:-}" ] || { echo "no candidate Runtime wheel (${CAND_RT:-none})"; return 1; }
+  made=$(find "$dir" -name '*.whl' -print -quit 2> /dev/null) || made=
+  [ -n "$made" ] || made=$(mkdir -p "$dir" && python3 -I - "$CAND_RT" "$dir" <<'PY'
+import base64, hashlib, re, sys, zipfile
+from pathlib import Path
+source, out = Path(sys.argv[1]), Path(sys.argv[2])
+name, version, rest = source.name.split("-", 2)
+release = re.match(r"\d+(?:\.\d+)*", version).group(0)
+target = out / f"{name}-{release}-{rest}"
+with zipfile.ZipFile(source) as wheel:
+    info = next(n for n in wheel.namelist() if n.endswith(".dist-info/METADATA")).rsplit("/", 1)[0]
+    renamed = f"{name}-{release}.dist-info"
+    record = []
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as made:
+        for item in wheel.infolist():
+            if item.filename == f"{info}/RECORD":
+                continue
+            data = wheel.read(item)
+            path = renamed + item.filename[len(info):] if item.filename.startswith(info + "/") else item.filename
+            if path == f"{renamed}/METADATA":
+                data = re.sub(rb"(?m)^Version: .*$", b"Version: " + release.encode(), data, count=1)
+            entry = zipfile.ZipInfo(path, item.date_time)
+            entry.external_attr, entry.compress_type = item.external_attr, zipfile.ZIP_DEFLATED
+            made.writestr(entry, data)
+            digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+            record.append(f"{path},sha256={digest},{len(data)}")
+        record.append(f"{renamed}/RECORD,,")
+        made.writestr(f"{renamed}/RECORD", "\n".join(record) + "\n")
+print(target)
+PY
+) || { echo "the candidate's wheel $CAND_RT didn't repack as a release"; return 1; }
+  echo "$made"
 }
 
 # cr-276: a package calling another package's function whose result holds a `Latents` field, as orbit calls minimax-h3's
