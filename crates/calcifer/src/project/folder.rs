@@ -951,8 +951,6 @@ struct Shared {
 struct JournalReaders {
     idle: Vec<rusqlite::Connection>,
     reading: usize,
-    /// project.db was opened here (and migrated) once: a reader needs no more.
-    opened: bool,
 }
 
 /// A journal read's turn: counted from its start until it's dropped, on unwind too (a read that panicked left `reading` up, so the
@@ -1644,17 +1642,21 @@ impl Folder {
     pub(crate) fn journal_read<T>(&self, read: impl FnOnce(&rusqlite::Connection) -> crate::store::Result<T>) -> crate::store::Result<T> {
         let protected = |error: Error| crate::store::StoreError::Protected(error.code.to_string());
         if !self.db().is_file() { return Err(protected(Self::not_a_project(&self.dir))); }
-        // Opened once as its reader opens it, migrated: a journal reader after that is a read-only file open (`db::reader`).
-        if !self.shared.journal.lock().unwrap_or_else(|e| e.into_inner()).opened {
-            drop(self.held().map_err(protected)?);
-            self.shared.journal.lock().unwrap_or_else(|e| e.into_inner()).opened = true;
-        }
         let mut reader = JournalReader::take(&self.shared);
-        let conn = match reader.conn.take().map_or_else(|| db::reader(&self.db()), Ok) {
-            Ok(conn) => reader.conn.insert(conn),
-            Err(error) => return Err(protected(error)),
+        let conn = match reader.conn.take() {
+            Some(conn) => conn,
+            // A journal reader is a file open of a current project.db, never a wait on the document's load (a start's purge loads
+            // every project's: a run list waited on it, 1.1 s on Paul's laptop, cl-1010). One not yet current is opened as its
+            // reader opens it, migrating it, first.
+            None => match db::reader(&self.db()) {
+                Ok(conn) => conn,
+                Err(_) => {
+                    drop(self.held().map_err(protected)?);
+                    db::reader(&self.db()).map_err(protected)?
+                }
+            },
         };
-        read(conn)
+        read(reader.conn.insert(conn))
     }
 
     /// Whether this thread is inside one of this project's acts: its writer is this thread's until the act commits.
