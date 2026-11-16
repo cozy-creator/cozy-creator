@@ -4,8 +4,8 @@ import "./Unsupported.css"
 const FILES = ["image", "video", "audio"]
 
 /** Whether a box's `field` can use a mention of a box of `kind`, by the rule Calcifer strikes the rest through by (binder.rs `unusable`):
- *  words take a text box's words only; a prompt those and the files it declares (all of them when `takes` is unset), every file when it
- *  takes `file`. Words of no tool's (a Text box's) take anything. What's offered to mention is only what's usable (Paul, 11-16). */
+ *  words take words only (a Text box's, or a version of words', xs-204); a prompt those and the files it declares (all of them when `takes` is
+ *  unset), every file when it takes `file`. Words of no tool's (a Text box's) take anything. What's offered to mention is only what's usable (Paul, 11-16). */
 export function usable(field: ToolField | undefined, kind: string | undefined): boolean {
   if (!field || !kind || kind === "text") return true
   if (field.type !== "prompt") return false

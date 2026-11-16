@@ -1,5 +1,6 @@
 //! The one binder: a box's written fields, by its tool's types, as the call its function gets. The browser's Render and `cozy run`
-//! all use it. A prompt goes as its text, each mention spelled as its box is, with what that text mentions; a slot takes only what's
+//! all use it. A prompt goes as its text, each mention spelled as its box is, with what that text mentions, and words as words: a Text
+//! box's (put in by `Doc::inline`) and a version of words' (its file's, xs-204), read as a picture's version is; a slot takes only what's
 //! written in it; a pickup comes only from the gesture. What's past a bound is clamped and said. It knows no model. A mention its tool
 //! can't use where it's written is never sent: `unusable` is the one rule, and the page strikes it through with the same reason (cl-944).
 use std::collections::BTreeSet;
@@ -14,7 +15,7 @@ use serde_json::{Map, Value, json};
 
 use super::{
     folder::{self, Files, Lock},
-    format::{Doc, Standing},
+    format::{Doc, Standing, TEXT},
     graph::{self, SELF, Span, mentions, mentions_replaced, name_key},
 };
 use crate::runs::clip::Range;
@@ -188,7 +189,7 @@ impl Binder<'_> {
         Ok(())
     }
 
-    /// Why a mention of `kind`, written where `takes` is what's taken, isn't used: None, it is. Words take a text box's words; a slot
+    /// Why a mention of `kind`, written where `takes` is what's taken, isn't used: None, it is. Words take words (`text`); a slot
     /// of `file` takes any file. What's said names the tool, and `here` when another of its fields would take it (Paul, 11-16: "does
     /// not support this reference": `SDXL doesn't support reference images`). The page's `<` offers only what this uses (Unsupported.tsx
     /// `usable`, the same rule).
@@ -276,24 +277,34 @@ impl Binder<'_> {
         Ok(out)
     }
 
-    /// Words: each text box is in them already, a tag stays, and any other box goes as its name, left out.
+    /// Words: each text box is in them already, a version of words goes as its words, a tag stays, and any other box goes as its name, left out.
     fn words(&mut self, at: &str, text: &str) -> String {
-        mentions_replaced(text, &mut |inner| {
+        let mut said = vec![];
+        let text = mentions_replaced(text, &mut |inner| {
             if self.tag(inner) {
                 return None;
             }
             let mention = self.mention_of(inner)?;
             let kind = self.kind_of(&mention)?;
+            if self.text_box(&mention) {
+                return None;
+            }
             if let Some(why) = self.unusable(&["text"], &kind) {
                 self.left_out(at, inner, why);
                 return Some(mention.name.to_owned());
             }
-            None
-        })
+            let words = self.named(&mention).flatten().filter(|named| named.kind == TEXT).and_then(|named| self.words_of(&named));
+            if words.is_none() {
+                said.push(self.no_file(at, inner));
+            }
+            Some(words.unwrap_or_else(|| mention.name.to_owned()))
+        });
+        said.into_iter().for_each(|line| self.warn(line));
+        text
     }
 
-    /// A prompt: its text, each mention spelled as its box spells itself, and each box it mentions, once, in the order first mentioned. What
-    /// it can't use goes as its name, left out.
+    /// A prompt: its text, each mention spelled as its box spells itself, and each box it mentions, once, in the order first mentioned; a
+    /// version of words goes in place, as its words. What it can't use goes as its name, left out.
     fn prompt(&mut self, at: &str, kinds: &[String], text: &str) -> Value {
         let takes: Vec<&str> = kinds.iter().map(String::as_str).chain(["text"]).collect();
         let (mut references, mut keys, mut said, mut nothing) = (vec![], BTreeSet::new(), vec![], vec![]);
@@ -306,7 +317,7 @@ impl Binder<'_> {
                 nothing.push(inner.to_owned());
                 return None;
             };
-            if kind == "text" {
+            if self.text_box(&mention) {
                 return None;
             }
             if let Some(why) = self.unusable(&takes, &kind) {
@@ -314,13 +325,20 @@ impl Binder<'_> {
                 return Some(mention.name.to_owned());
             }
             let Some(named) = self.named(&mention).flatten() else {
-                said.push(format!("{}'s {at}: <{inner}> has no file on this computer, so Cozy sends its name instead.", self.call.name));
+                said.push(self.no_file(at, inner));
                 return Some(mention.name.to_owned());
             };
             // A part that couldn't be cut is sent whole, which may be a kind this can't use.
             if let Some(why) = self.unusable(&takes, &named.kind) {
                 self.left_out(at, inner, why);
                 return Some(mention.name.to_owned());
+            }
+            if named.kind == TEXT {
+                let words = self.words_of(&named);
+                if words.is_none() {
+                    said.push(self.no_file(at, inner));
+                }
+                return Some(words.unwrap_or_else(|| mention.name.to_owned()));
             }
             if keys.insert(named.key.clone()) {
                 let mut reference = json!({"key": named.key, "type": named.kind, "file": named.file, "description": OFF});
@@ -334,6 +352,16 @@ impl Binder<'_> {
         said.into_iter().for_each(|line| self.warn(line));
         self.nothing.extend(nothing);
         json!({"text": text, "references": references})
+    }
+
+    /// What's said of `<inner>`, written at `at`, whose file isn't here: its name goes instead.
+    fn no_file(&self, at: &str, inner: &str) -> String {
+        format!("{}'s {at}: <{inner}> has no file on this computer, so Cozy sends its name instead.", self.call.name)
+    }
+
+    /// The words a version of words holds (xs-204): what a mention of it says in place, as a Text box's do. None: its file isn't here.
+    fn words_of(&self, named: &Named) -> Option<String> {
+        self.call.doc.words(self.call.lock.files.get(&named.file)?)
     }
 
     /// The box `mention` names: None, nothing.
@@ -352,7 +380,7 @@ impl Binder<'_> {
         }
     }
 
-    /// Whether `mention` is a text box's: one left in by a cycle stays as written.
+    /// Whether `mention` is a Text box's: its words are in already (`Doc::inline`), and one left in by a cycle stays as written.
     fn text_box(&self, mention: &graph::Mention) -> bool {
         self.box_of(mention).is_some_and(|j| self.call.doc.assets[j].text.is_some())
     }
