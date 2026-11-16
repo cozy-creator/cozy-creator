@@ -3,11 +3,11 @@
 an ordinary file of its take inside the project, on the one export path, and purge already handles its lifetime"; Paul: a project's
 files live in its folder.
 
-In a plain project and an encrypted one: a box of project/kept.py's `shot` renders on local, once with small latents and once with
-large ones (how much longer the large one takes is said); its latents are in its project's files/. Then the project's machine store is
-aged past its TTL and grace, the local machine restarts and a render writes to that store (its upkeep collects what nothing holds): a
-run naming the take's latents by their hash still reads them whole, from files/. Deleted, the take's latents file leaves files/ when its undo window
-ends (Calcifer runs with a short one here)."""
+In a plain project and an encrypted one, boxes of project/kept.py's `shot` render on local, with small latents and with large ones
+(both renders timed, and how long the large latents take to land); the latents are in the project's files/. Then the project's machine
+store is aged past its TTL and grace, the local machine restarts and a render writes to that store, so its upkeep collects what nothing
+holds: a run naming the take's latents by their hash still reads them whole, from files/. Deleted, a take nothing read loses its latents
+file from files/ when its undo window ends (Calcifer runs with a short one here)."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ import signal
 import subprocess
 import sys
 import time
+from typing import cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from project_http import project_path, request  # noqa: E402
@@ -36,7 +37,7 @@ def cozy(cli: Path, *words: str, cwd: Path | None = None, out: Path | None = Non
 
 
 def api(project: Path, suffix: str, method: str = "GET", body: dict[str, object] | None = None) -> dict[str, object]:
-    return json.loads(request(project_path(project, suffix), method, body))
+    return cast(dict[str, object], json.loads(request(project_path(project, suffix), method, body)))  # cast: Calcifer's JSON
 
 
 def take_files(project: Path, box: str) -> dict[str, object]:
@@ -83,16 +84,33 @@ def restart_machine(cli: Path) -> None:
     raise AssertionError("the local machine did not start again")
 
 
+def landed(folder: Path, hex_digest: str, began: float, seconds: float = 60) -> float | None:
+    """Seconds from `began` until `folder` has the bytes named `hex_digest`; none if they don't come within `seconds`."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if held(folder, hex_digest):
+            return round(time.monotonic() - began, 2)
+        time.sleep(0.2)
+    return None
+
+
 def project_case(cli: Path, out: Path, project: Path, view: Path) -> dict[str, object]:
     facts: dict[str, object] = {}
-    # A box per render, each its own request, so each runs: the first installs its environment, the next two are measured.
-    for box, size in (("warm", 64), ("small", 65), ("large", LARGE), ("after", 66)):
+    # A box per render, each its own request, so each runs: the first installs its environment, the next are measured. `gone` is
+    # the take deleted at the end, which nothing else reads.
+    for box, size in (("warm", 64), ("small", 65), ("large", LARGE), ("gone", 67), ("after", 66)):
         api(project, "/assets", "POST", {"name": box, "tool": f"{KEPT}/shot", "kind": "video", "exact": True, "fields": {"size": size}})
     render(cli, project, out, "warm")
     facts["small_s"] = round(render(cli, project, out, "small"), 2)
+    began = time.monotonic()
     facts["large_s"] = round(render(cli, project, out, "large"), 2)
     latents = digest(take_files(project, "large")["latents"])
+    # The render answers once its take is; its latents land in files/ as its other outputs do, and this says when.
+    facts["large_latents_landed_s"] = landed(view / "files", latents, began)
     facts["latents_in_files"] = [str(path) for path in held(view / "files", latents)]
+    render(cli, project, out, "gone")
+    doomed = digest(take_files(project, "gone")["latents"])
+    facts["gone_latents_landed"] = landed(view / "files", doomed, time.monotonic()) is not None
     store = view / ".vault-machine" / "objects"
 
     # Aged past the TTL and grace, the machine restarted, and its upkeep run by a render that writes to the store.
@@ -112,14 +130,14 @@ def project_case(cli: Path, out: Path, project: Path, view: Path) -> dict[str, o
     if not facts["read_latents"]:
         facts["read_failed"] = (read.stdout[-300:] + read.stderr[-300:]).decode(errors="replace")
 
-    # Deleted: its latents file leaves files/ once its undo window ends.
-    deleted = cozy(cli, "--json", "delete", "large", cwd=project, out=out, name=f"delete-{project.name}")
+    # Deleted: a take nothing else read; its latents file leaves files/ once its undo window ends.
+    deleted = cozy(cli, "--json", "delete", "gone", cwd=project, out=out, name=f"delete-{project.name}")
     facts["deleted"] = deleted.returncode == 0
     for _ in range(90):
-        if not held(view / "files", latents):
+        if not held(view / "files", doomed):
             break
         time.sleep(2)
-    facts["latents_after_delete"] = [str(path) for path in held(view / "files", latents)]
+    facts["latents_after_delete"] = [str(path) for path in held(view / "files", doomed)]
     return facts
 
 
@@ -153,6 +171,7 @@ def main() -> None:
         assert case["latents_in_files"], f"{kind}: a local run's latents aren't in its project's files/"
         assert not case["store_copies_after_upkeep"], f"{kind}: the machine store kept its copy past upkeep, so nothing here proves files/ serves it"
         assert case["read_latents"], f"{kind}: the take's latents weren't read after the store's copy went: {case.get('read_failed', '')}"
+        assert case["gone_latents_landed"], f"{kind}: the take to delete kept no latents in files/, so its going proves nothing"
         assert case["deleted"] and not case["latents_after_delete"], f"{kind}: the deleted take's latents stayed in files/: {case['latents_after_delete']}"
 
 
