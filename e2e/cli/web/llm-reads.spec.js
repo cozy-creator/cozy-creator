@@ -122,7 +122,8 @@ test('llm-reads', async ({ page, project, api }) => {
   await test.step("reply's prompt: its mention a chip, with no picture under it", async () => {
     const shown = async () => {
       const region = await focus(page, 'reply');
-      const typed = region.locator('.in-frame .mention-text[data-field="instructions"]');
+      // A box of words shows its answer in the frame, and its prompt under it.
+      const typed = region.locator('.mention-text[data-field="instructions"]').first();
       await expect(typed.locator('.chip[data-mention="answer"]'), 'a chip').toBeVisible();
       await expect.soft(typed.locator('.chip[data-mention="answer"]'), 'that its tool uses').not.toHaveClass(/\bunsupported\b/);
       await expect.soft(region.locator('.mention-thumb'), 'words have no picture').toHaveCount(0);
