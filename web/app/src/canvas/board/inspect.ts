@@ -73,7 +73,10 @@ export function inspection(o: Sources) {
     const renderer = o.renderer()
     if (!renderer) return null
     const rect = renderer.canvas.getBoundingClientRect()
-    const target = renderer.events.rootBoundary.hitTest(point.x - rect.left, point.y - rect.top)
+    const boundary = renderer.events.rootBoundary
+    if (!renderer.lastObjectRendered) return null
+    boundary.rootTarget = renderer.lastObjectRendered
+    const target = boundary.hitTest(point.x - rect.left, point.y - rect.top)
     return hitOf(target)
   }
   const idleNow = () => {
