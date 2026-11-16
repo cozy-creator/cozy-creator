@@ -103,10 +103,9 @@ export function Stage(props: StageProps) {
         pace += (Math.min(took, 500) - pace) * 0.1
         slow = slow ? pace > SLOW_FRAME_MS / 2 : pace > SLOW_FRAME_MS
       }
-      // The camera's glides and coasting run in real time: a slow frame moves them on by all it took, never stretching a glide out.
-      const delta = Math.min(1000, Math.max(0, took))
+      const delta = Math.min(100, Math.max(0, took))
       last = time
-      tick(delta)
+      tick(delta, Math.min(1000, Math.max(0, took)))
       if (running && !stopped) frame = requestAnimationFrame(loop)
     }
     const start = () => { if (running) return; running = true; last = performance.now(); paced = 0; frame = requestAnimationFrame(loop) }
@@ -167,13 +166,19 @@ export function Stage(props: StageProps) {
       if (world.current) world.current.style.transform = `translate(${view.x}px,${view.y}px) scale(${view.zoom})`
     }
 
-    const tick = (delta: number) => {
+    const tick = (delta: number, took = delta) => {
       if (stopped || !renderer || !viewport || !scene) return
       if (!visible()) { stop(); return }
       const began = performance.now()
       if (open.read < 0 && store.hasRead) open.read = frames
       let moving = false
-      try { viewport.update(delta); moving = board.camera.sync() } catch (error) { console.error("Camera:", error) }
+      try {
+        viewport.update(delta)
+        // A glide (a zoom step, a fit) runs in real time where frames are slow: the rest of a long frame moves it on, never stretching it
+        // out. Coasting keeps the 100 ms step, so a flick never jumps.
+        if (took > delta) (viewport.plugins.get("animate") as { update(elapsed: number): void } | null)?.update(took - delta)
+        moving = board.camera.sync()
+      } catch (error) { console.error("Camera:", error) }
       if (moving) placeWorld()
       if (dirty || moving || animating) {
         dirty = false
