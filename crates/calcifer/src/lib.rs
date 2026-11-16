@@ -1540,7 +1540,7 @@ impl Calcifer {
             return Some((ms, v1::Basis::Prior));
         }
         let machines = self.machines()?;
-        crate::placement::references(&machines.hubs, &[target.to_owned()]).time(target, gpu, size).map(|ms| (ms, v1::Basis::Reference))
+        crate::placement::references(&machines.hubs, &[target.to_owned()]).time(target, gpu, size)
     }
 
     /// What a run of `target` like `input` takes on one GPU of each card it ran on away from this computer, by those runs: each card's
