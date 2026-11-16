@@ -34,6 +34,7 @@ pub(crate) mod legacy_worker;
 mod view;
 pub(crate) mod model;
 mod nodes;
+pub(crate) mod numbers;
 mod remote;
 mod thumbs;
 mod binder;
@@ -823,20 +824,21 @@ fn identify(api: &Api, dir: &FsPath) -> Result<Identified, Error> {
     let kept = db::identity(&conn);
     let code = db::meta(&conn, "code");
     let keys = db::keys(&conn);
-    identify_with(api, dir, kept, code, keys, |keep| match keep {
+    let review = db::key_review(&conn);
+    identify_with(api, dir, kept, code, keys, review, |keep| match keep {
         Keep::Identity { id, name, code } => db::set_identity(&mut conn, &path, id, name, Some(code)),
         Keep::Key { key, fresh } => db::set_key_now(&conn, &path, key, fresh).map(drop),
     })
 }
 
 fn identify_loaded(api: &Api, dir: &FsPath, folder: &Folder) -> Result<Identified, Error> {
-    identify_with(api, dir, folder.canonical_identity()?, folder.public_code()?, folder.keys()?, |keep| match keep {
+    identify_with(api, dir, folder.canonical_identity()?, folder.public_code()?, folder.keys()?, folder.key_review()?, |keep| match keep {
         Keep::Identity { id, name, code } => folder.set_identity(id, name, code),
         Keep::Key { key, fresh } => folder.set_key_now(key, fresh).map(drop),
     })
 }
 
-fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_code: Option<String>, kept_keys: Vec<String>, mut keep: impl FnMut(Keep<'_>) -> Result<(), Error>) -> Result<Identified, Error> {
+fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_code: Option<String>, kept_keys: Vec<String>, review: bool, mut keep: impl FnMut(Keep<'_>) -> Result<(), Error>) -> Result<Identified, Error> {
     let store = api.calcifer.store();
     let logical = vault::logical(dir);
     refuse_own_folder(&logical)?;
@@ -880,9 +882,9 @@ fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_c
     }
     // A copy's keys are its original's.
     let kept_keys = if kept.as_ref().is_some_and(|(held, _)| held == &id) { kept_keys } else { vec![] };
-    let key = key::keyed(api, &id, &name, &kept_keys)?;
-    if kept_keys.last() != Some(&key) {
-        keep(Keep::Key { key: &key, fresh: kept_keys.is_empty() })?;
+    let (key, rekeyed) = key::keyed(api, &id, &name, &logical, &kept_keys, review)?;
+    if kept_keys.last() != Some(&key) || review {
+        keep(Keep::Key { key: &key, fresh: kept_keys.is_empty() || rekeyed })?;
     }
     vault::register_plain_root(&logical, &id)?;
     Ok(Identified { id, name, code, key })

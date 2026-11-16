@@ -89,6 +89,11 @@ impl SealingStore<'_> {
         self.transition.validate(&self.project).map_err(project_error)?;
         self.project.folder.journal_write(write)
     }
+    /// `write` of what the project's held rows keep too (`Folder::journal_write_held`).
+    pub(crate) fn write_held<T>(&self, write: impl FnOnce(&Transaction<'_>) -> store::Result<T>) -> store::Result<T> {
+        self.transition.validate(&self.project).map_err(project_error)?;
+        self.project.folder.journal_write_held(write)
+    }
     pub(crate) fn admit_submission(&self, _new: &store::NewRun) -> store::Result<()> {
         Err(StoreError::Locked("project_transition".into()))
     }
@@ -261,6 +266,12 @@ impl ProjectStore {
     pub(crate) fn write<T>(&self, write: impl FnOnce(&Transaction<'_>) -> store::Result<T>) -> store::Result<T> {
         self.validate()?;
         self.project.folder.journal_write(write)
+    }
+
+    /// `write` of what the project's held rows keep too (`Folder::journal_write_held`).
+    pub(crate) fn write_held<T>(&self, write: impl FnOnce(&Transaction<'_>) -> store::Result<T>) -> store::Result<T> {
+        self.validate()?;
+        self.project.folder.journal_write_held(write)
     }
 
     /// Whether this thread is inside one of the project's own edits, which holds its writer until it commits.

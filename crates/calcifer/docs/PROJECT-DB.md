@@ -130,8 +130,11 @@ stands, and is answered in `kept` as it is. This is checked in the transaction, 
 
 ## Current-format opening
 
-Schema 6 databases with the current native Automerge storage format are opened; 2 to 5 are migrated in one transaction, a 2, 3
-or 4 as it was kept beside it once as `project.db.pre-schema6` (never read). 5 → 6 adds `project_keys`, and nothing else. 3 → 4 is additive: `boxes.id` and the `meta` keys
+Schema 7 databases with the current native Automerge storage format are opened; 2 to 5 are migrated to 6 in one transaction, then 6 to
+7 in another, the project as it was before either changes it kept beside it once as `project.db.pre-schema7` (never read). 6 → 7
+(cl-1075) numbers its runs 1..n in the order made when they aren't, moves each number the project keeps of them with them (`versions`,
+`lock_runs`, `run_files`, `walk`, `lock_assets`), drops `request_keys`, and checks it before it commits; one that doesn't hold is
+rolled back and read as the 6 it is, and Calcifer says why once (`runs_not_renumbered`). 5 → 6 adds `project_keys`, and nothing else. 3 → 4 is additive: `boxes.id` and the `meta` keys
 `rows_at` and `conflicts`; no row 3 has is changed. 4 → 5 adds the project's run journal (`runs`, `outputs`, `run_logs`, …). A 4
 that already holds a journal is an unreleased candidate's, refused as it is.
 `db::open` opens an existing file only. Read-only SQLite inspection validates schema and native

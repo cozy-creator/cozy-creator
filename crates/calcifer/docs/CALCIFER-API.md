@@ -73,7 +73,7 @@ These hold for every resource. A route that cannot follow one says why in its se
 **Naming.** Paths are `/v1/<resources>[/{id}[/<sub-resource>]]`, plural and kebab-case (`/v1/rental-quotes`).
 An action on a resource is a POST to a sub-resource named for it (`/v1/runs/{id}/cancel`,
 `/v1/projects/{id}/approve`). JSON fields are snake_case. Ids are strings with a kind prefix (`run-…`,
-`project-…`); a run's `number` is its project's and is accepted wherever its id is, in that project. A run's `name` is
+`project-…`); a run's `number` is its project's, 1 for its first (cl-1075), and is accepted wherever its id is, in that project. A run's `name` is
 `KEY-N` (cl-987), its project's key and its number there, `COZY-N` for Calcifer's own runs; it is accepted wherever its id is,
 in any scope, as is a key the project had. A locked project's keys are in no index of Calcifer's, only its `project.db`, and are
 registered again as it opens: its runs' names are unknown here until then (`404 run_not_found`). Times are Unix milliseconds in
@@ -665,7 +665,8 @@ read settles and on `approve`, reading each asset's state, else its newest versi
   it is back by its id, under its name, or `<name>_2` if another took it.
 - `GET|PUT /v1/projects/{id}/key` (`{key}`): `{key, former}`, the key its runs are named by and the keys it had here, which still name
   them. A key is 2 to 10 letters and digits, a letter first, unique among this computer's projects, proposed from the project's name
-  as it first opens here and kept in its `project.db`. `409 project_key_taken` (another project's, now or before, or `COZY`),
+  as it first opens here (its digits kept, `lab3_2` is `LAB32`; one taken lengthened with letters; never another known folder's name's
+  first key, cl-1075) and kept in its `project.db`. `409 project_key_taken` (another project's, now or before, or `COZY`),
   `400 project_key_invalid`.
 - `GET /v1/projects/{id}/address`: the index's `{id, code, key, gone?}` for a registered project. It resolves browser links while the project is locked without opening its content. One whose folder went is still answered, by what it was known by, with `gone`: where it was (cl-980); a link to it says so, and nothing of it reads.
 - `GET /v1/projects/{id}` (`?assets=false`: all but its assets; `unsent`: what kept its last render from reaching a machine, each error once, until another is asked): worked out once per revision, so another read costs only its answer. `{id, path, board?, assets, queue?: [{name, running, run?}], missing, stale: [{name, why}], orphans: [{name, kind, versions, bytes, renamed_to?}], busy,

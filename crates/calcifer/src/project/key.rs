@@ -16,31 +16,51 @@ use axum::{
 use super::Project;
 use crate::api::{Api, Refusal};
 
-/// The keys `name` proposes, best first: its words' initials (`Teams in Space` is `TIS`), a one-word name's first three letters
-/// (`Marketing` is `MAR`); then a letter more of its last word each (`TISP`, `MARK`), then numbered (`TIS2`).
+/// The keys `name` proposes, best first (cl-1075): its words' initials (`Teams in Space` is `TIS`), a one-word name's first three
+/// letters (`Marketing` is `MAR`), each followed by the name's digits (`lab2` is `LAB2`, `lab3_2` is `LAB32`); then a letter more of its
+/// last word each (`TISP`, `MARK`), then letters after it (`LAB32A`, `LAB32B`, … `LAB32AA`). Never a digit more than the name has, so a
+/// key taken twice never reads as another name.
 pub(crate) fn proposed(name: &str) -> impl Iterator<Item = String> {
     let words: Vec<Vec<u8>> = name.split(|c: char| !c.is_ascii_alphabetic()).filter(|word| !word.is_empty()).map(|word| word.to_ascii_uppercase().into_bytes()).collect();
+    let digits: Vec<u8> = name.bytes().filter(u8::is_ascii_digit).collect();
     let (mut base, more): (Vec<u8>, Vec<u8>) = match words.as_slice() {
         [] => (b"PROJ".to_vec(), vec![]),
         [word] => (word[..word.len().min(3)].to_vec(), word[word.len().min(3)..].to_vec()),
         [.., last] => (words.iter().take(10).map(|word| word[0]).collect(), last[1..].to_vec()),
     };
     let mut more = more.into_iter();
-    while base.len() < 2 {
+    while base.len() + digits.len() < 2 {
         base.push(more.next().unwrap_or(b'X'));
     }
-    let longer: Vec<String> = std::iter::successors(Some(base.clone()), |held| {
+    // A stem, then as many of the digits as fit, then `tail` whole: a key of ten at most.
+    let keyed = move |stem: &[u8], tail: &[u8]| -> String {
+        let room = 10 - tail.len();
+        let stem = &stem[..stem.len().min(room).max(1)];
+        let digits = &digits[..digits.len().min(room - stem.len())];
+        String::from_utf8([stem, digits, tail].concat()).expect("ASCII")
+    };
+    let longer: Vec<Vec<u8>> = std::iter::successors(Some(base.clone()), |held| {
         let next = more.next().filter(|_| held.len() < 10)?;
         Some([held.as_slice(), &[next]].concat())
     })
-    .map(|key| String::from_utf8(key).expect("ASCII"))
     .collect();
-    let stem = String::from_utf8(base).expect("ASCII");
-    let numbered = (2u32..).map(move |n| {
-        let n = n.to_string();
-        format!("{}{n}", &stem[..stem.len().min(10 - n.len())])
+    // A, …, Z, AA, …: n in base 26.
+    let lettered = (1u64..).map(|mut n| {
+        let mut tail = vec![];
+        while n > 0 {
+            n -= 1;
+            tail.insert(0, b'A' + (n % 26) as u8);
+            n /= 26;
+        }
+        tail
     });
-    longer.into_iter().chain(numbered)
+    let first = keyed.clone();
+    longer.into_iter().map(move |stem| first(&stem, &[])).chain(lettered.map(move |tail| keyed(&base, &tail)))
+}
+
+/// What a project named `name`, or in a folder named so, is proposed first: its name's own key.
+pub(crate) fn name_key(name: &str) -> String {
+    proposed(name).next().expect("a name proposes a key")
 }
 
 impl Project {
@@ -56,9 +76,13 @@ fn store_error(error: crate::store::StoreError) -> Error {
     }
 }
 
-/// The key project `id`, called `name`, goes by here, given the keys its project.db keeps (`held`, its key now last).
-pub(super) fn keyed(api: &Api, id: &str, name: &str, held: &[String]) -> Result<String, Error> {
-    api.calcifer.store().project_keyed(id, held, proposed(name)).map_err(store_error)
+/// The key project `id`, called `name`, in `dir`, goes by here, given the keys its project.db keeps (`held`, its key now last), and
+/// whether those wait to be looked at again (`review`, cl-1075): one another known folder's name proposes first, and its own name
+/// doesn't, goes then. True: it goes by a new key alone, nothing names it by those it had.
+pub(super) fn keyed(api: &Api, id: &str, name: &str, dir: &std::path::Path, held: &[String], review: bool) -> Result<(String, bool), Error> {
+    let own = [Some(name_key(name)), dir.file_name().map(|folder| name_key(&folder.to_string_lossy()))];
+    let own: Vec<String> = own.into_iter().flatten().collect();
+    api.calcifer.store().project_keyed(id, dir, held, &own, review, proposed(name)).map_err(store_error)
 }
 
 fn answer(api: &Api, project: &Project) -> Result<Key, Error> {
