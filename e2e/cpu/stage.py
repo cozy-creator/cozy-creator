@@ -57,14 +57,14 @@ for name, siblings in closure.items():
     project.write_text(text)
 
 
-def published(name: str) -> list[Version]:
+def published(name: str) -> list[Version] | None:
     """Its versions on production's index. One it can't read is taken as published: the lock check then runs and says why."""
     try:
         with urllib.request.urlopen(f"{INDEX}/simple/{name}/", timeout=30) as page:
             html = page.read().decode()
     except OSError as error:
         print(f"stage.py: {name} on {INDEX}: {error}", file=sys.stderr)
-        return [Version("9999")]
+        return None
     found = []
     for version in set(re.findall(rf'href="/v1/index/_/{re.escape(name)}/([^/"]+)/', html)):
         try:
@@ -75,7 +75,11 @@ def published(name: str) -> list[Version]:
 
 
 wanted = {canonicalize_name(Requirement(r).name): Requirement(r) for r in tomllib.loads((packages / package / "pyproject.toml").read_text())["project"].get("dependencies", [])}
-unmet = [key for key in closure[package] if canonicalize_name(key) in wanted
-         and not any(wanted[canonicalize_name(key)].specifier.contains(v, prereleases=True) for v in published(key))]
-(dest / "unpublished.txt").write_text("".join(f"{key}\n" for key in unmet))
+def unmet(key: str) -> bool:
+    versions = published(key)
+    return versions is not None and not any(wanted[canonicalize_name(key)].specifier.contains(v, prereleases=True) for v in versions)
+
+
+unpublished = [key for key in closure[package] if canonicalize_name(key) in wanted and unmet(key)]
+(dest / "unpublished.txt").write_text("".join(f"{key}\n" for key in unpublished))
 print(dest / package)
