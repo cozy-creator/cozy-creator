@@ -6,13 +6,26 @@
 #   red    the TensorD of dev-build `red` (the RC without the fix): H3's group is never ended, the install is refused
 #   green  the session's cozy: the group ends, H3 is evicted, LTX 2.5 lands
 # params:
-#   red      a cozy-creator dev-build run id: red's TensorD
-#   need_s   seconds the guard must buy (default 3600)
-# Dispatch: sku=a40 disk=150 cap=4 runtime_ref=rc/0.26.0 cozy=<the fix's dev-build run id> params='{"red": "<run id>"}'
+#   red       a cozy-creator dev-build run id: red's TensorD
+#   runtime   a cozy-runtime rc-dev or dev-build run id: the pod's Runtime, its manylinux wheel (the pure one has no kernels)
+#   tensorfs  artifact:<cozy-creator run id>/<artifact>: the pod's TensorFS wheel
+#   need_s    seconds the guard must buy (default 3600)
+# Dispatch: sku=a40 disk=150 cap=4 cozy=<the fix's dev-build run id> params='{"red": "<run id>", "runtime": "<run id>",
+#   "tensorfs": "artifact:<run id>/tensorfs-wheel-<sha>"}'
 . "$(dirname "$0")/lib.sh"
 gh run download "$(param red)" -R cozy-creator/cozy-creator -p 'cozy-*' -D "$OUT/red" > /dev/null 2>&1 \
   && install -m 0755 "$OUT"/red/cozy-*/cozy-linux-x86_64 "$OUT/red-cozy" || fail "no cozy from dev-build $(param red)"
-say "red $("$OUT/red-cozy" --version), green $(cozy --version)"
+wheel() {  # wheel <kind> <source>: the manylinux x86_64 wheel, fetched before renting
+  local d=$OUT/wheels/$1; mkdir -p "$d"
+  case $2 in
+    artifact:*/*) local a=${2#artifact:}; gh run download "${a%%/*}" -R cozy-creator/cozy-creator -n "${a#*/}" -D "$d" > /dev/null 2>&1 || return 1 ;;
+    *) gh run download "$2" -R cozy-creator/cozy-runtime -p 'cozy-runtime-*' -D "$d" > /dev/null 2>&1 || return 1 ;;
+  esac
+  find "$d" -name '*manylinux*x86_64*.whl' | head -1
+}
+RT=$(wheel runtime "$(param runtime)") && [ -n "$RT" ] || fail "no Runtime wheel from $(param runtime)"
+TF=$(wheel tensorfs "$(param tensorfs)") && [ -n "$TF" ] || fail "no TensorFS wheel from $(param tensorfs)"
+say "red $("$OUT/red-cozy" --version), green $(cozy --version); Runtime ${RT##*/}, TensorFS ${TF##*/}"
 # ssh for the ballast file (`cozy machine ssh` needs a key the rental carries)
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS="--ssh --gpus 2"
@@ -22,13 +35,13 @@ rent
 show() { cozy machine show "$NAME" --json 2> /dev/null; }
 installed() { show | jq -r '[.status.models[] | select(any(.checkpoints[]; .complete)) | .repository] | sort | join(" ")'; }
 for i in $(seq 1 20); do cozy machine ssh "$NAME" true < /dev/null > /dev/null 2>&1 && break; [ "$i" = 20 ] && fail "no SSH into $NAME"; sleep 15; done
+gpus=$(show | jq '.status.gpus | length'); [ "$gpus" = 2 ] || fail "$NAME has $gpus GPUs, not 2"
 
 # phase <name> <tensord>: H3 over both GPUs, then the install that needs its room. Sets LANDED (0: landed) and ENDED (log lines
 # naming H3's idle executors ended).
 phase() {
   local p=$1 free total reserve ballast
-  local rt=(); [ -z "${RUNTIME_WHEEL:-}" ] || rt=(--runtime "$RUNTIME_WHEEL")
-  step "$p-update" machine update "$NAME" --tensord "$2" "${rt[@]}" -y || fail "$p: the update"
+  step "$p-update" machine update "$NAME" --tensord "$2" --runtime "$RT" --tensorfs "$TF" -y || fail "$p: the update: $(tail -c 300 "$OUT/$p-update.txt")"
   jq -n --argjson s "$RANDOM$RANDOM" '{summary: {references: [], text: "A steady tracking shot of a courier cycling a cargo bike through a narrow cobbled street after rain, past cafe tables and a flower stall, into a sunlit square."},
     beats: [{duration: 15, description: {references: [], text: "The courier rings the bell at the flower stall and rolls down the slope into the square."}}],
     soundscape: {references: [], text: "Tires hissing on wet cobbles, a bicycle bell, cafe chatter."}, seed: $s}' > "$OUT/$p-h3.req.json"
