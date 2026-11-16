@@ -454,6 +454,7 @@ WEB_2=(
   live
   delete-undo
   canvas-nav
+  resize
 )
 WEB_3=(
   focus
@@ -463,6 +464,7 @@ WEB_3=(
   instant
   select
   move
+  svg
 )
 # The `@engines` cells in Firefox, and the vault (`@vault`), which needs the filesystem driver.
 WEB_ENGINES=(
