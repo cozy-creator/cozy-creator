@@ -1633,6 +1633,8 @@ impl Calcifer {
 
     /// Starts the run's driver unless it has one.
     fn drive(self: &Arc<Self>, id: RunId) {
+        // Closed, no driver is recorded: one left recorded would hold an encrypted project open as work (#3454).
+        if self.closed() { return; }
         let wake = {
             let mut drivers = lock(&self.drivers);
             if drivers.contains_key(&id) {
@@ -1644,7 +1646,11 @@ impl Calcifer {
         };
         let me = self.clone();
         let mut tasks = lock(&self.tasks);
-        if self.closed() { return; }
+        // Closed meanwhile (asked under the lock `close` aborts under): its entry goes too.
+        if self.closed() {
+            lock(&self.drivers).remove(&id);
+            return;
+        }
         while tasks.try_join_next().is_some() {}
         tasks.spawn(async move {
             let scope=match me.run_scope_when_ready(id.as_str(),&wake).await { Ok(scope)=>scope,Err(error)=>{ let _=me.fail(&id,Reason {code:error.code,message:error.message,..Default::default()}); me.driver_done(&id); return; } };
