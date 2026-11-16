@@ -325,6 +325,20 @@ shared_scratch() (
     --out "$work/proof" --cli "$COZY" 2> "$work/proof.err" || { cat "$work/proof.err"; check "shared scratch: $(tail -n 1 "$work/proof.err" | cut -c1-400)"; }
 )
 
+# A project deleted (its folder removed) or locked leaves nothing of it outside its folder: no id, name, prompt or digest of
+# its files in the cozy home, the machine's stores or the TensorFS store (cl-1031; e2e/cli/project_traces.py).
+project_traces() (
+  step "a deleted or a locked project leaves nothing of it outside its folder (cl-1031)"
+  [ -n "$LOCAL" ] || exit 0
+  [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "project traces: Linux runners only"; exit 0; }
+  local work secrets
+  work=$(mktemp -d "$OUT/project-traces.XXXXXX") secrets=$(mktemp -d "$OUT/project-traces-credentials.XXXXXX")
+  trap 'rm -rf -- "$secrets"' EXIT
+  printf '%s\n' 'synthetic project traces passphrase' > "$secrets/passphrase" && chmod 600 "$secrets/passphrase"
+  python3 "$E2E/cli/project_traces.py" --work "$work" --passphrase "$secrets/passphrase" --image "$(picture dog1.jpg)" \
+    --out "$work/proof" --cli "$COZY" 2> "$work/proof.err" || { cat "$work/proof.err"; check "project traces: $(tail -n 1 "$work/proof.err" | cut -c1-600)"; }
+)
+
 vault_leftovers() (
   step "encryption leaves nothing behind: an interrupted conversion recovers; no leftover is listed; no plaintext outside the vault"
   [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "vault leftovers: Linux runners only"; return 0; }

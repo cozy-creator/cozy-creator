@@ -706,6 +706,7 @@ case $SHARD in
     idle_vault
     vault_times
     shared_scratch
+    project_traces
     open_unlocks
     projectvault
     vault_leftovers
