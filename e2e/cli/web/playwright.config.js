@@ -11,7 +11,9 @@ const out = join(process.env.OUT || tmpdir(), 'web');
 // A runner has no GPU, so each browser draws WebGL in software. The canvas asks for a context without a major performance caveat
 // (CanvasSurface.tsx); Chrome's SwiftShader is named so it never rests on Chrome's deprecated automatic fallback, and Firefox is told to
 // give its software context without the caveat, as Chrome's does. The browser's setting, not the page's: each cell's bars stand.
-const chrome = { browserName: 'chromium', launchOptions: { executablePath: process.env.CHROME, args: ['--enable-unsafe-swiftshader'] } };
+// On Linux and Windows runners (no GPU) ANGLE draws on SwiftShader as its device, so a context has no major performance caveat; a Mac's
+// runner has a GPU of its own.
+const chrome = { browserName: 'chromium', launchOptions: { executablePath: process.env.CHROME, args: process.platform === 'darwin' ? [] : ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] } };
 // Headless Firefox makes no WebGL context on Linux; web.sh gives it a virtual display (FIREFOX_DISPLAY) and Mesa's software GL there.
 const firefox = {
   browserName: 'firefox',

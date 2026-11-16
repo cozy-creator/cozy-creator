@@ -445,7 +445,7 @@ const SHOWN = `(inspection, key) => {
   const title = inspection.card(key)?.rendered?.labels?.title?.title;
   if (title) return title;
   // Mounted under the pointer, its card says the name it's drawn under (Card.tsx data-asset is the view's name).
-  const native = inspection.interaction().nativeHover === key && document.querySelector('.canvas-node .card[data-asset]');
+  const native = inspection.interaction().nativeHover === key ? document.querySelector('.canvas-node .card[data-asset]') : null;
   return native?.dataset.asset || key;
 }`;
 const KEY = `(inspection, name) => inspection.card(name) ? name : inspection.names().find((key) => key.startsWith('placing:') && (${SHOWN})(inspection, key) === name)`;
