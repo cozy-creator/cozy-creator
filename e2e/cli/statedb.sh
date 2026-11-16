@@ -186,10 +186,15 @@ echo "restart: store $(cat "$S/fill.json")"
 mkdir -p "${dropin%/*}" && printf '[Service]\nEnvironment=LD_PRELOAD=%s\nEnvironment=BUSY_DISK_LOG=%s\n' "$S/busy-disk.so" "$S/busy-disk.log" > "$dropin"
 systemctl --user daemon-reload && systemctl --user start cozy-calcifer || check "restart: systemctl --user start cozy-calcifer failed"
 python3 "$here/restart_store.py" measure --holder "$holder" --old-pid "$pid" --project "$id" --log "$HOME/.cozy/calcifer/health.log" \
+  --run "$(jq -r '.unsettled[0]' "$S/fill.json")" \
   --timed "$S/timed.json" --seconds 6 --budget-ms 200 > "$S/latency.ndjson" 2>&1 \
   || check "restart: routes over 200 ms, or said slow, as Calcifer restarted on 40,000 runs: $(tail -n 1 "$S/latency.ndjson" | jq -c '{over, slow: (.slow_requests // [] | .[:3]), steps}' 2> /dev/null || tail -c 600 "$S/latency.ndjson")"
 cat "$S/latency.ndjson"
 [ -s "$S/busy-disk.log" ] || check "restart: no read of state.db was slowed: the cell proves nothing"
+# Resume took up the runs an earlier Calcifer left going: each settles, as the machine has none of them.
+local going
+for _ in $(seq 120); do going=$(state1 "SELECT count(*) FROM runs WHERE id LIKE 'run-cl1010u%' AND state <> 'settled'") && [ "$going" = 0 ] && break; sleep 0.5; done
+[ "$going" = 0 ] || check "restart: $going of the runs left going weren't taken up 60 s after the restart"
 echo "restart: reads slowed $(tail -1 "$S/busy-disk.log" 2> /dev/null)"
 # Kept 90 days (Paul 11-15): a new run of no project, here the candidates again, takes out 16 runs and 16 ended machines past them.
 local cut old_runs old_machines runs_after machines_after

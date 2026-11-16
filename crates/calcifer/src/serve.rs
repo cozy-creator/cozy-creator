@@ -391,7 +391,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     // What an earlier Calcifer left is taken up beside the answers, never ahead of them: a big store's reads take what they
     // take on a cold, busy disk (cl-1010).
     let resuming = calcifer.clone();
-    tokio::spawn(async move {
+    calcifer.spawn_task(async move {
         let began = Instant::now();
         match tokio::task::spawn_blocking(move || resuming.resume()).await {
             Ok(Ok(_)) => info!(target: "cozy.service_health", step = "resume", ms = began.elapsed().as_millis() as u64, "started"),

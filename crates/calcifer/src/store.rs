@@ -579,6 +579,8 @@ const ANSWERS: &str = "
 const KEPT_FOR_MS: i64 = 90 * 24 * 3600 * 1000;
 /// How many of each a prune takes: more than are recorded meanwhile, few enough to hold the writer briefly.
 const PRUNED_EACH: i64 = 16;
+/// A run this much older than the measurements kept, still not settled, never will be: `drop_measurements` goes past it.
+const GIVEN_UP_MS: i64 = 30 * 24 * 3600 * 1000;
 /// The newest run number whose measurements `drop_measurements` has gone past.
 const MEASUREMENTS_DROPPED: &str = "CREATE TABLE IF NOT EXISTS measurements_dropped (through INTEGER NOT NULL) STRICT;";
 /// How long an answer is kept for its write's retries.
@@ -1574,63 +1576,6 @@ macro_rules! journal_methods {
         })
     }
 
-    /// Drops the measurements of the next runs that settled before `before_ms`, past the last one done (kept, so a start never
-    /// reads the old ones again: cl-1010), in one short write. False: no run past it is that old.
-    pub(crate) fn drop_measurements(&self, before_ms: i64) -> Result<bool> {
-        self.write(|tx| {
-            let after: i64 = tx.query_row("SELECT coalesce(max(through), 0) FROM measurements_dropped", [], |row| row.get(0))?;
-            let mut next = tx.prepare("SELECT number, created_at FROM runs WHERE number > ?1 ORDER BY number LIMIT 64")?;
-            let next = next
-                .query_map([after], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            // A run that settled before then was created before then, and numbers go up with time.
-            let Some(through) = next.iter().take_while(|(_, created)| *created < before_ms).last().map(|(n, _)| *n) else {
-                return Ok(false);
-            };
-            let ids: Vec<String> = {
-                let mut rows = tx.prepare("SELECT id FROM runs WHERE number > ?1 AND number <= ?2 AND settled_at < ?3")?;
-                rows.query_map(params![after, through, before_ms], |row| row.get(0))?
-                    .collect::<rusqlite::Result<_>>()?
-            };
-            for id in ids {
-                let outcome: Option<Vec<u8>> = tx.query_row("SELECT outcome FROM runs WHERE id = ?1", [&id], |row| row.get(0))?;
-                if let Some(bytes) = outcome {
-                    if let Some(plain) = vault::open_payload(&run_context(&id, "outcome"), &bytes).map_err(private_error)? {
-                        if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&plain) {
-                            if value.as_object_mut().is_some_and(|value| value.remove("measurements").is_some()) {
-                                let bytes = seal_run(
-                                    tx,
-                                    &id,
-                                    &run_context(&id, "outcome"),
-                                    &serde_json::to_vec(&value).expect("serializes"),
-                                )?;
-                                tx.execute("UPDATE runs SET outcome = ?2 WHERE id = ?1", params![id, bytes])?;
-                            }
-                        }
-                    }
-                }
-                let calls: Vec<(i64, String)> = {
-                    let mut rows = tx.prepare("SELECT seq, text FROM run_logs WHERE run = ?1 AND level = 'call'")?;
-                    rows.query_map([&id], |row| Ok((row.get(0)?, row.get(1)?)))?
-                        .collect::<rusqlite::Result<_>>()?
-                };
-                for (seq, text) in calls {
-                    let context = log_context(&id, seq as u64);
-                    if let Some(plain) = vault::open_payload(&context, text.as_bytes()).map_err(private_error)? {
-                        if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&plain) {
-                            if value.as_object_mut().is_some_and(|value| value.remove("measurements").is_some()) {
-                                let text = seal_run_text(tx, &id, &context, &value.to_string())?;
-                                tx.execute("UPDATE run_logs SET text = ?3 WHERE run = ?1 AND seq = ?2", params![id, seq, text])?;
-                            }
-                        }
-                    }
-                }
-            }
-            tx.execute("DELETE FROM measurements_dropped", [])?;
-            tx.execute("INSERT INTO measurements_dropped (through) VALUES (?1)", [through])?;
-            Ok(true)
-        })
-    }
 
     /// Places an unplaced run on `machine`.
     pub(crate) fn place(&self, id: &str, machine: &str) -> Result<bool> {
@@ -2133,6 +2078,66 @@ impl Store {
     journal_methods!();
 
     fn owner_id(&self)->Option<&str> { None }
+
+    /// Calcifer's own journal only: its table is in state.db. Drops the measurements of the next runs that settled before `before_ms`, past the last one done (kept, so a start never
+    /// reads the old ones again: cl-1010), in one short write. False: no run past it is that old.
+    pub(crate) fn drop_measurements(&self, before_ms: i64) -> Result<bool> {
+        self.write(|tx| {
+            let after: i64 = tx.query_row("SELECT coalesce(max(through), 0) FROM measurements_dropped", [], |row| row.get(0))?;
+            let mut next = tx.prepare("SELECT number, created_at, state = 'settled' AND settled_at < ?2 FROM runs WHERE number > ?1 ORDER BY number LIMIT 64")?;
+            let next = next
+                .query_map([after, before_ms], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, bool>(2)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            // A run that settled before then was created before then, and numbers go up with time. The walk keeps its place before a
+            // run still going (or settled since), to drop its measurements once it's old too; one a month older still never will be.
+            let past = |(_, created, done): &&(i64, i64, bool)| *created < before_ms && (*done || *created < before_ms - GIVEN_UP_MS);
+            let Some(through) = next.iter().take_while(past).last().map(|(n, ..)| *n) else {
+                return Ok(false);
+            };
+            let ids: Vec<String> = {
+                let mut rows = tx.prepare("SELECT id FROM runs WHERE number > ?1 AND number <= ?2 AND settled_at < ?3")?;
+                rows.query_map(params![after, through, before_ms], |row| row.get(0))?
+                    .collect::<rusqlite::Result<_>>()?
+            };
+            for id in ids {
+                let outcome: Option<Vec<u8>> = tx.query_row("SELECT outcome FROM runs WHERE id = ?1", [&id], |row| row.get(0))?;
+                if let Some(bytes) = outcome {
+                    if let Some(plain) = vault::open_payload(&run_context(&id, "outcome"), &bytes).map_err(private_error)? {
+                        if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&plain) {
+                            if value.as_object_mut().is_some_and(|value| value.remove("measurements").is_some()) {
+                                let bytes = seal_run(
+                                    tx,
+                                    &id,
+                                    &run_context(&id, "outcome"),
+                                    &serde_json::to_vec(&value).expect("serializes"),
+                                )?;
+                                tx.execute("UPDATE runs SET outcome = ?2 WHERE id = ?1", params![id, bytes])?;
+                            }
+                        }
+                    }
+                }
+                let calls: Vec<(i64, String)> = {
+                    let mut rows = tx.prepare("SELECT seq, text FROM run_logs WHERE run = ?1 AND level = 'call'")?;
+                    rows.query_map([&id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                        .collect::<rusqlite::Result<_>>()?
+                };
+                for (seq, text) in calls {
+                    let context = log_context(&id, seq as u64);
+                    if let Some(plain) = vault::open_payload(&context, text.as_bytes()).map_err(private_error)? {
+                        if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&plain) {
+                            if value.as_object_mut().is_some_and(|value| value.remove("measurements").is_some()) {
+                                let text = seal_run_text(tx, &id, &context, &value.to_string())?;
+                                tx.execute("UPDATE run_logs SET text = ?3 WHERE run = ?1 AND seq = ?2", params![id, seq, text])?;
+                            }
+                        }
+                    }
+                }
+            }
+            tx.execute("DELETE FROM measurements_dropped", [])?;
+            tx.execute("INSERT INTO measurements_dropped (through) VALUES (?1)", [through])?;
+            Ok(true)
+        })
+    }
     fn admit_submission(&self, new: &NewRun) -> Result<()> {
         if new.project.is_some() { return Err(StoreError::Protected("project_store_required".into())); }
         Ok(())
