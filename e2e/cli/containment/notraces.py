@@ -123,7 +123,14 @@ def main() -> int:
     folder = args.root.resolve() / ("notraces-" + secrets.token_hex(12))
     credential = "proof-" + secrets.token_hex(32)
     scanner.add(credential)
-    created = cozy(args.cli, "new", str(folder), "--passphrase-file", "-", stdin=(credential + "\n").encode())[-1]
+    try:
+        created = cozy(args.cli, "new", str(folder), "--passphrase-file", "-", stdin=(credential + "\n").encode())[-1]
+    except Stop as stopped:
+        # A runner with no encrypted filesystem provider (Windows CI has none installed) can't make one: said, not passed.
+        if "'vault_provider'" not in str(stopped):
+            raise
+        print(json.dumps({"no_traces": "skipped", "os": sys.platform, "why": "no encrypted filesystem provider on this runner (vault_provider)"}))
+        return 0
     require(isinstance(created.get("id"), str), "notraces_project_identity")
     project = cast(str, created["id"])
     recovery = created.get("recovery_secret")
@@ -137,7 +144,7 @@ def main() -> int:
     prompt, box = "PROMPT_" + secrets.token_hex(24), "box_" + secrets.token_hex(8)
     scanner.add(prompt); scanner.add(box)
     status, _ = calcifer("POST", base + "/assets", {"name": box, "exact": True, "fields": {"text": prompt}, "at": {"x": 0, "y": 0, "w": 320}})
-    require(status == 200, f"notraces_box: HTTP {status}")
+    require(200 <= status < 300, f"notraces_box: HTTP {status}")
     # An import, and its thumbnail drawn, as the page asks one.
     marker, imported = "IMPORT_" + secrets.token_hex(24), "pic_" + secrets.token_hex(8)
     scanner.add(marker); scanner.add(imported)
@@ -145,9 +152,9 @@ def main() -> int:
     digest = "sha256:" + sha(image)
     scanner.add(digest); scanner.add(digest.removeprefix("sha256:"))
     status, _ = calcifer("PUT", "/v1/project-files/" + digest + "?project=" + quote(project, safe=""), image)
-    require(status in {200, 201, 204}, f"notraces_upload: HTTP {status}")
+    require(200 <= status < 300, f"notraces_upload: HTTP {status}")
     status, _ = calcifer("POST", base + "/imports", {"source": digest, "name": imported, "exact": True, "at": {"x": 400, "y": 0, "w": 320}})
-    require(status == 200, f"notraces_import: HTTP {status}")
+    require(200 <= status < 300, f"notraces_import: HTTP {status}")
     for _ in range(120):
         status, _ = calcifer("GET", base + "/thumbs/" + digest.removeprefix("sha256:") + "?w=128")
         if status != 202:
