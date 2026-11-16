@@ -1,16 +1,20 @@
 # h3-upscale (se-138): minimax-h3's Upscale on one rental as the page renders it (e2e/page.py), from the 15 s reference shot
-# (the gate's Skater request, H3_SEED, as a box so its take keeps its latents), every upscale at `to`:
+# (the gate's Skater request, H3_SEED, as a box so its take keeps its latents), every upscale at `to`. First, on the pod's own
+# 0.25.0 machine, minimax-h3@0.12.0's take and its upscale in the executor that made it (`old`). Then, on the candidates:
 #   was, now       the take with no prompt, from packages_refs checkouts `was` and `now`: the same text and seed, so the same
-#                  video (decoded frames compared)
+#                  video (sha256, framemd5 and per-frame PSNR kept)
+#   clip_bare      the take's file as a box (no latents: an uploaded video) with no text at 0.7: it runs, warns, and holds the
+#                  source (frames.py regen, the gate's bar)
+#   clip_prompt    the same file with the shot's words as the prompt
 #   prompt, p909   the take with `prompt` replacing its text, at 0.7 and 0.909: they differ from `now`
-#   clip_prompt    the take's file as a box (no latents: an uploaded video) with the shot's words as the prompt
-#   clip_bare      the same with no text at 0.7: it runs and warns, and holds the source (frames.py regen, the gate's bar)
-# Each upscale is held against the shot by frames.py regen; frames 72 and 288 of each, side by side, in $OUT/frames. params:
+# After each take: each process on GPU 0 (nvidia-smi over SSH) and varena's split at the take's end. The candidates' upscales
+# start in a fresh TensorD (session 43777750768: one in the executor that rendered the take ran out of memory on a 4090).
+# Each upscale is held against its shot by frames.py regen; frames 72 and 288, side by side, in $OUT/frames. params:
 #   to        1080p (default), 1440p or 2160p
 #   prompt    the overriding prompt
 #   runtime   the Runtime's manylinux wheel, https://…#sha256=<hex> (a pure wheel has none of its kernels)
 #   tensorfs  optional: TensorFS's wheel, the same way
-#   fresh     false: the upscales share the executor that rendered the take (default true: TensorD restarts first)
+#   old       false: no 0.25.0 take and upscale first
 . "$(dirname "$0")/lib.sh"
 TO=$(param to 1080p)
 OVERRIDE=$(param prompt "A grandmother in a bright red tracksuit and round sunglasses rides a skateboard in a concrete skate park at night, in heavy falling snow under orange floodlights.")
@@ -36,7 +40,6 @@ J() { jq -e "$@" > /dev/null; }
 bad=()
 check() { local what=$1; shift; if "$@"; then say "PASS $what"; else say "MISS $what"; bad+=("$what"); fi; }
 mkdir -p "$OUT/frames"
-render() { say "render $1 on $NAME"; run_page render --on "$NAME" "$1" > "$OUT/render-$1.txt" 2>&1 || fail "$1: $(tail -c 500 "$OUT/render-$1.txt")"; }
 newest_run() { run_page asset "$1" | jq -r '.versions[-1].runs[-1]'; }
 record() { (cd "$RUN_PROJECT" && cozy --json --full run watch "$(newest_run "$1")" --once); }
 file_of() {
@@ -46,17 +49,50 @@ file_of() {
   until [ -s "$RUN_PROJECT/$f" ] || [ "$t" -ge 600 ]; do sleep 2; t=$((t + 2)); done
   echo "$RUN_PROJECT/$f"
 }
-# up <box> <tree dir> <fields json>: an Upscale box reading what the fields say, rendered; its record in $OUT/<box>.json.
+GIB='/ 1073741824 * 100 | floor / 100'
+# memory <record>: each GPU call's peak (allocated, driver) and varena's allocated/reserved at its end, GiB.
+memory() { jq -c "[.calls[]? | select(.measurements.memory? != null) | .measurements.memory as \$m | {function, status,
+  peak_allocated: ((\$m.peak_allocated_bytes // 0) $GIB), driver_before: ([\$m.driver[]?.before_bytes] | max // 0 $GIB),
+  driver_peak: ([\$m.driver[]?.peak_bytes] | max // 0 $GIB), varena_allocated: ((\$m.stats.varena[0].stats.allocated // 0) $GIB),
+  varena_reserved: ((\$m.stats.varena[0].stats.reserved // 0) $GIB), error: .error.message}]" "$1" 2>&1; }
+# snapshot <label> <take box>: what holds GPU 0 now, each process, and the take's GPU call's memory at its end.
+snapshot() {
+  say "$1 GPU now: $(timeout 60 cozy machine ssh "$NAME" "nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader; nvidia-smi --query-gpu=memory.used,memory.free --format=csv,noheader" 2>&1 | grep -v '^Warning: Permanently added' | paste -sd';')"
+  cozy machine show "$NAME" --json > "$OUT/$1-show.json" 2>&1
+  record "$2" > "$OUT/$2.json"; say "$1 the take's call: $(memory "$OUT/$2.json")"
+}
+# up <box> <tool> <fields json> <shot box> [soft]: an Upscale box reading what the fields say, rendered; its record in
+# $OUT/<box>.json, held against the shot's video. `soft`: a failed render is said and returns 1.
 up() {
-  run_page add "$1" --tool "$2/upscale" --fields "$3" > "$OUT/add-$1.txt" 2>&1 || fail "add $1: $(cat "$OUT/add-$1.txt")"
-  render "$1"
-  record "$1" > "$OUT/$1.json" || fail "$1's record"
+  run_page add "$1" --tool "$2" --fields "$3" > "$OUT/add-$1.txt" 2>&1 || fail "add $1: $(cat "$OUT/add-$1.txt")"
+  say "render $1 on $NAME"
+  local ok=0; run_page render --on "$NAME" "$1" > "$OUT/render-$1.txt" 2>&1 || ok=1
+  record "$1" > "$OUT/$1.json" 2>&1
   local n; n=$(newest_run "$1")
-  (cd "$RUN_PROJECT" && cozy --full run watch "$n" --once) > "$OUT/$1.log" 2>&1
+  [ -z "$n" ] || [ "$n" = null ] || (cd "$RUN_PROJECT" && cozy --full run watch "$n" --once) > "$OUT/$1.log" 2>&1
+  if [ "$ok" != 0 ]; then
+    say "$1 failed: $(grep -o '"failure": {[^}]*}' "$OUT/render-$1.txt" | tail -1 | cut -c1-500); memory $(memory "$OUT/$1.json")"
+    [ "${5:-}" = soft ] && return 1
+    fail "$1"
+  fi
   local v; v=$(file_of "$1") || fail "$1 made no video"; cp "$v" "$OUT/$1.mp4" || fail "$1's video"
   say "$1: run $n $(ffprobe -v error -select_streams v:0 -show_entries stream=width,height,nb_frames -of csv=p=0 "$OUT/$1.mp4"), $(grep -o 'text=[a-z]*' "$OUT/$1.log" | head -1), \
 regenerate memoized=$(jq -r '[.calls[]? | select((.function // "") | test("regenerate")) | .memoized] | first' "$OUT/$1.json"), warnings $(jq -c '.result.warnings // []' "$OUT/$1.json")"
-  say "$1 against the shot: $("${FR[@]}" regen "$OUT/take.mp4" "$OUT/$1.mp4" 2>&1 | tail -1 | tee "$OUT/$1.regen.json")"
+  say "$1 memory: $(memory "$OUT/$1.json")"
+  say "$1 against $4: $("${FR[@]}" regen "$OUT/$4.mp4" "$OUT/$1.mp4" 2>&1 | tail -1 | tee "$OUT/$1.regen.json")"
+}
+# shot <box> <generate tool> [soft]: the gate's Skater request (15 s, seed 2026102801) as a box of that tool, rendered; its
+# video in $OUT/<box>.mp4.
+shot() {
+  say "the shot $1: the gate's Skater request (15 s, seed 2026102801) from $2"
+  run_page add "$1" --tool "$2" --fields "$(jq -cn --arg d "<$HERO> $MOTION" '{seed: 2026102801, beats: [{duration: 15, description: $d}]}')" \
+    > "$OUT/add-$1.txt" 2>&1 || fail "add $1: $(cat "$OUT/add-$1.txt")"
+  if ! run_page render --on "$NAME" "$1" > "$OUT/render-$1.txt" 2>&1; then
+    say "$1 failed: $(tail -c 500 "$OUT/render-$1.txt")"; [ "${3:-}" = soft ] && return 1; fail "$1"
+  fi
+  cp "$(file_of "$1")" "$OUT/$1.mp4" || fail "$1 made no video"
+  J '.versions[-1].files.latents.sha256' <<< "$(run_page asset "$1")" || fail "$1 kept no latents"
+  say "$1: $(ffprobe -v error -select_streams v:0 -show_entries stream=width,height,nb_frames -of csv=p=0 "$OUT/$1.mp4")"
 }
 # same <a> <b>: the two videos' bytes, else every decoded frame: each one's framemd5 (both streams) and the video's mean
 # PSNR, all kept in $OUT (<a>-<b>.psnr.log, each frame's).
@@ -82,46 +118,50 @@ sheet() {
 kernels "$WAS"; kernels "$NOW"
 cp "$REF/seed.jpg" "$OUT/skater.jpg"
 run_page import "$OUT/skater.jpg" --name "$HERO" > "$OUT/import.txt" 2>&1 || fail "import: $(cat "$OUT/import.txt")"
-quote 5400
+RENT_ARGS=--ssh  # nvidia-smi from the pod's root shell
+quote 6000
 rent
+pod() { say "pod $(cozy machine show "$NAME" --json | jq -c '{v: .status.version, rt: .status.runtime, tfs: .status.tensorfs, gpu: .status.gpus[0].name}')"; }
+pod
+if [ "$(param old true)" = true ]; then
+  say "0.25.0: minimax-h3@0.12.0 on the pod's own machine, the take then its upscale in the executor that made it"
+  if shot take25 minimax-h3/generate@0.12.0 soft; then
+    snapshot old take25
+    up up25 minimax-h3/upscale@0.12.0 "{\"video\": \"<take25>\", \"to\": \"$TO\"}" take25 soft || true
+  fi
+fi
 step update machine update "$NAME" --tensord "$(command -v cozy)" "${UPDATE[@]}" -y || fail "update"
-say "pod $(cozy machine show "$NAME" --json | jq -c '{v: .status.version, rt: .status.runtime, tfs: .status.tensorfs, gpu: .status.gpus[0].name}')"
-
-say "the shot: the gate's Skater request (15 s, seed 2026102801) from was, as a box"
-run_page add take --tool "$WAS/generate" --fields "$(jq -cn --arg d "<$HERO> $MOTION" '{seed: 2026102801, beats: [{duration: 15, description: $d}]}')" \
-  > "$OUT/add-take.txt" 2>&1 || fail "add take: $(cat "$OUT/add-take.txt")"
-render take
-cp "$(file_of take)" "$OUT/take.mp4" || fail "the take made no video"
-J '.versions[-1].files.latents.sha256' <<< "$(run_page asset take)" || fail "the take kept no latents"
-say "take: $(ffprobe -v error -select_streams v:0 -show_entries stream=width,height,nb_frames -of csv=p=0 "$OUT/take.mp4")"
-# The upscales start in fresh executors: on 0.26.0's candidates a 1080p upscale in the executor that just rendered the take ran
-# out of memory on a 4090 (session 43777750768: 19.2 GiB live, every evictable byte offered). A settings-only update drains
-# and restarts TensorD (`--gpu-memory-limit off`, the default). `fresh: false` keeps them in it.
-[ "$(param fresh true)" = false ] || step fresh machine update "$NAME" --gpu-memory-limit off -y || fail "the restart"
+pod
+shot take "$WAS/generate"
+snapshot new take
+# A settings-only update drains and restarts TensorD (`--gpu-memory-limit off`, the default), so the upscales start in a
+# fresh executor.
+step fresh machine update "$NAME" --gpu-memory-limit off -y || fail "the restart"
 
 say "no prompt, was then now: the take's own text, the same request"
-up was "$WAS" "{\"video\": \"<take>\", \"to\": \"$TO\"}"
-up now "$NOW" "{\"video\": \"<take>\", \"to\": \"$TO\"}"
+up was "$WAS/upscale" "{\"video\": \"<take>\", \"to\": \"$TO\"}" take
+up now "$NOW/upscale" "{\"video\": \"<take>\", \"to\": \"$TO\"}" take
 check "now: the take's latents, no prompt sent: $(jq -c '{latents: .request.input.video.latents, prompt: .request.input.prompt}' "$OUT/now.json")" \
   J '(.request.input.video.latents // "" | startswith("sha256:")) and (.request.input | has("prompt") | not)' "$OUT/now.json"
 check "now: no warning of missing text" J '[.result.warnings[]? | select(startswith("no text"))] | length == 0' "$OUT/now.json"
 s=$(same was now); check "was = now: $s" [ "${s%%:*}" != differ ]
 
-say "the take with an overriding prompt, at 0.7 and 0.909"
-P=$(jq -cn --arg p "$OVERRIDE" --arg to "$TO" '{video: "<take>", to: $to, prompt: $p}')
-up prompt "$NOW" "$P"
-up p909 "$NOW" "$(jq -c '. + {strength: 0.909}' <<< "$P")"
-check "the prompt reached the call: $(jq -c .request.input.prompt "$OUT/prompt.json")" J --arg p "$OVERRIDE" '.request.input.prompt.text == $p' "$OUT/prompt.json"
-s=$(same now prompt); check "prompt differs from now: $s" [ "${s%%:*}" = differ ]
-
-say "the take's file as a box (an uploaded video: no latents), with the shot's words and with no text at 0.7"
+say "the take's file as a box (an uploaded video: no latents), with no text at 0.7 and with the shot's words"
 run_page import "$OUT/take.mp4" --name clip > "$OUT/import-clip.txt" 2>&1 || fail "import clip: $(cat "$OUT/import-clip.txt")"
-up clip_prompt "$NOW" "$(jq -cn --arg p "$WHO. $MOTION" --arg to "$TO" '{video: "<clip>", to: $to, prompt: $p}')"
+up clip_bare "$NOW/upscale" "{\"video\": \"<clip>\", \"to\": \"$TO\", \"strength\": 0.7}" take
+check "clip_bare: no latents sent, and it warns: $(jq -c '.result.warnings' "$OUT/clip_bare.json")" \
+  J '(.request.input.video.latents == null) and ([.result.warnings[]? | select(startswith("no text to guide"))] | length == 1)' "$OUT/clip_bare.json"
+check "clip_bare holds the source (the gate's regen bar)" J '.structure_psnr >= 18 and .structure_ssim >= 0.5 and .flicker <= 2 and .corr >= 0.95' "$OUT/clip_bare.regen.json"
+up clip_prompt "$NOW/upscale" "$(jq -cn --arg p "$WHO. $MOTION" --arg to "$TO" '{video: "<clip>", to: $to, prompt: $p}')" take
 check "clip_prompt: no latents, no warning of missing text" \
   J '(.request.input.video.latents == null) and ([.result.warnings[]? | select(startswith("no text"))] | length == 0)' "$OUT/clip_prompt.json"
-up clip_bare "$NOW" "{\"video\": \"<clip>\", \"to\": \"$TO\", \"strength\": 0.7}"
-check "clip_bare warns: $(jq -c .result.warnings "$OUT/clip_bare.json")" J '[.result.warnings[]? | select(startswith("no text to guide"))] | length == 1' "$OUT/clip_bare.json"
-check "clip_bare holds the source (the gate's regen bar)" J '.structure_psnr >= 18 and .structure_ssim >= 0.5 and .flicker <= 2 and .corr >= 0.95' "$OUT/clip_bare.regen.json"
+
+say "the take with an overriding prompt, at 0.7 and 0.909"
+P=$(jq -cn --arg p "$OVERRIDE" --arg to "$TO" '{video: "<take>", to: $to, prompt: $p}')
+up prompt "$NOW/upscale" "$P" take
+check "the prompt reached the call: $(jq -c .request.input.prompt "$OUT/prompt.json")" J --arg p "$OVERRIDE" '.request.input.prompt.text == $p' "$OUT/prompt.json"
+s=$(same now prompt); check "prompt differs from now: $s" [ "${s%%:*}" = differ ]
+up p909 "$NOW/upscale" "$(jq -c '. + {strength: 0.909}' <<< "$P")" take
 
 for f in 72 288; do
   sheet take-was-now-prompt-p909 "$f" take was now prompt p909
