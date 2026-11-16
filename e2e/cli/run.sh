@@ -47,6 +47,7 @@ parse "$@"
 . "$(dirname "$0")/rentalself.sh"
 . "$(dirname "$0")/reports.sh"
 . "$(dirname "$0")/endedlogs.sh"
+. "$(dirname "$0")/fresh.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
@@ -682,6 +683,8 @@ case $SHARD in
   " ;;
   # Calcifer restarted on a large store, its disk slow (cl-1010).
   restart) parts="state_restart logs" ;;
+  # What cozy needs is on the computer once its installer is done (cl-1030): Linux, macOS and Windows.
+  fresh) parts="fresh_install logs" ;;
   web-1) web_cells=(${WEB_1[@]+"${WEB_1[@]}"}); parts="web_lane logs" ;;
   web-2) web_cells=(${WEB_2[@]+"${WEB_2[@]}"}); parts="web_lane logs" ;;
   web-3) web_cells=(${WEB_3[@]+"${WEB_3[@]}"}); parts="web_lane logs" ;;
@@ -838,7 +841,7 @@ esac
 # is the same lane there.
 if [ -z "$LOCAL" ] && [ "$parts" != "web_lane logs" ]; then
   case $SHARD in
-    entrypoints | projectvault | web-serves | notraces) ;;
+    entrypoints | projectvault | web-serves | notraces | fresh) ;;
     web-*) parts="web_alone logs" ;;
     *) parts="
       entrypoints

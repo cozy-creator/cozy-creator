@@ -595,6 +595,7 @@ dependencies = [
  "api",
  "base64",
  "bytes",
+ "calcifer",
  "clap",
  "clap_complete",
  "comfy-table",

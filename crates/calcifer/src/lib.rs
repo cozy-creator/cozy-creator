@@ -33,6 +33,7 @@ mod local;
 mod loopback;
 mod local_code;
 mod tools;
+pub use tools::{Say, prefetch};
 mod machines;
 mod machine_client;
 mod outputs;

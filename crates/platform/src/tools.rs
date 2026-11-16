@@ -95,6 +95,39 @@ pub const TOOLS: &[Tool] = &[
         probe: |tools, path| ffmpeg(tools, path).map(|(ffmpeg, _)| ffmpeg),
     },
     Tool {
+        name: "fuse3",
+        side: Side::Computer,
+        class: Class::Optional,
+        cost: "encrypted projects can't be created or opened (no fusermount3)",
+        install: Install::System("fuse3"),
+        probe: |_, path| on_path("fusermount3", path).or_else(|| on_path("fusermount3", &system_bin())),
+    },
+    Tool {
+        // The bundled securefs links libfuse 2 until cl-1000 links libfuse 3 into it.
+        name: "libfuse2",
+        side: Side::Computer,
+        class: Class::Optional,
+        cost: "encrypted projects can't be created or opened (no libfuse.so.2)",
+        install: Install::System("libfuse2"),
+        probe: |_, _| library("libfuse.so.2"),
+    },
+    Tool {
+        name: "winfsp",
+        side: Side::Computer,
+        class: Class::Optional,
+        cost: "encrypted projects can't be created or opened",
+        install: Install::System("winfsp"),
+        probe: |_, _| winfsp(),
+    },
+    Tool {
+        name: "vcruntime",
+        side: Side::Computer,
+        class: Class::Optional,
+        cost: "encrypted projects can't be created or opened (no Visual C++ runtime)",
+        install: Install::System("vcruntime"),
+        probe: |_, _| vcruntime(),
+    },
+    Tool {
         name: "systemctl",
         side: Side::Computer,
         class: Class::Optional,
@@ -145,9 +178,14 @@ pub const TOOLS: &[Tool] = &[
 ];
 
 /// Whether this OS uses `tool`: macOS and Windows start Calcifer at login with their own built-ins,
-/// so systemctl is Linux's alone.
+/// so systemctl is Linux's alone; encrypted projects mount through FUSE on Linux, WinFsp on Windows
+/// and hdiutil, built in, on macOS.
 pub fn used_here(tool: &Tool) -> bool {
-    cfg!(target_os = "linux") || tool.name != "systemctl"
+    match tool.name {
+        "systemctl" | "fuse3" | "libfuse2" => cfg!(target_os = "linux"),
+        "winfsp" | "vcruntime" => cfg!(windows),
+        _ => true,
+    }
 }
 
 /// The table's entry for `name`.
@@ -444,6 +482,7 @@ pub fn system_install(package: &str, path: &[PathBuf]) -> Option<String> {
             ("apt-get", "sudo apt-get install -y"),
             ("dnf", "sudo dnf install -y"),
             ("pacman", "sudo pacman -S --noconfirm"),
+            ("zypper", "sudo zypper --non-interactive install"),
         ],
         "macos" => &[("brew", "brew install")],
         "windows" => &[("winget", "winget install --exact --id")],
@@ -452,14 +491,87 @@ pub fn system_install(package: &str, path: &[PathBuf]) -> Option<String> {
     let (manager, command) = managers
         .iter()
         .find(|(program, _)| on_path(program, path).is_some())?;
-    let name = match (*manager, package) {
+    Some(format!("{command} {}", package_name(manager, package)))
+}
+
+/// What `manager` calls `package`.
+pub fn package_name<'a>(manager: &str, package: &'a str) -> &'a str {
+    match (manager, package) {
         ("winget", "ffmpeg") => "Gyan.FFmpeg",
         ("winget", "git") => "Git.Git",
+        ("winget", "winfsp") => "WinFsp.WinFsp",
+        ("winget", "vcruntime") => "Microsoft.VCRedist.2015+.x64",
         ("apt-get" | "dnf", "ninja") => "ninja-build",
+        // Ubuntu 24.04 and Debian 13 renamed it for the 64-bit time_t transition.
+        ("apt-get", "libfuse2") if t64() => "libfuse2t64",
+        ("dnf", "libfuse2") => "fuse-libs",
+        ("pacman", "libfuse2") => "fuse2",
         _ => package,
-    };
-    Some(format!("{command} {name}"))
+    }
 }
+
+/// The first package manager this computer has, of those cozy installs through.
+pub fn package_manager(path: &[PathBuf]) -> Option<&'static str> {
+    let managers: &[&str] = match std::env::consts::OS {
+        "linux" => &["apt-get", "dnf", "pacman", "zypper"],
+        "windows" => &["winget"],
+        _ => &[],
+    };
+    managers.iter().copied().find(|program| on_path(program, path).or_else(|| on_path(program, &system_bin())).is_some())
+}
+
+/// Whether this Debian-family system names its 64-bit time_t libraries `…t64` (Ubuntu 24.04+, Debian 13+).
+fn t64() -> bool {
+    let release = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
+    let field = |key: &str| release.lines().find_map(|line| line.strip_prefix(key)?.strip_prefix('=')).map(|v| v.trim_matches('"').to_owned());
+    let version = |v: Option<String>| v.and_then(|v| v.split('.').next()?.parse::<u32>().ok());
+    match field("ID").as_deref() {
+        Some("ubuntu") => version(field("VERSION_ID")).is_some_and(|major| major >= 24),
+        Some("debian") => version(field("VERSION_ID")).is_none_or(|major| major >= 13),
+        _ => field("UBUNTU_CODENAME").is_some_and(|name| !["focal", "jammy", "kinetic", "lunar", "mantic"].contains(&name.as_str())),
+    }
+}
+
+/// The system's own program directories, which a service's PATH may lack.
+fn system_bin() -> Vec<PathBuf> {
+    ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"].iter().map(PathBuf::from).collect()
+}
+
+/// A shared library the dynamic loader finds in a system directory.
+fn library(name: &str) -> Option<Found> {
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => "x86_64-linux-gnu",
+        "aarch64" => "aarch64-linux-gnu",
+        other => other,
+    };
+    [format!("/usr/lib/{arch}"), format!("/lib/{arch}"), "/usr/lib64".into(), "/lib64".into(), "/usr/lib".into(), "/lib".into()]
+        .into_iter()
+        .map(|dir| PathBuf::from(dir).join(name))
+        .find(|file| file.exists())
+        .map(|path| Found { path, version: String::new() })
+}
+
+/// WinFsp's driver library, where its installer puts it.
+fn winfsp() -> Option<Found> {
+    let base = std::env::var_os("ProgramFiles(x86)").or_else(|| std::env::var_os("ProgramFiles"))?;
+    let dll = if std::env::consts::ARCH == "aarch64" { "winfsp-a64.dll" } else { "winfsp-x64.dll" };
+    let path = PathBuf::from(base).join("WinFsp").join("bin").join(dll);
+    path.is_file().then_some(Found { path, version: String::new() })
+}
+
+/// The Visual C++ runtime a Visual C++ program loads from System32.
+fn vcruntime() -> Option<Found> {
+    let system = PathBuf::from(std::env::var_os("SystemRoot")?).join("System32");
+    ["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"]
+        .iter()
+        .all(|dll| system.join(dll).is_file())
+        .then(|| Found { path: system.join("vcruntime140.dll"), version: String::new() })
+}
+
+/// WinFsp's installer, pinned, for a Windows with no winget.
+pub const WINFSP_MSI: (&str, &str) = (WINFSP_URL, WINFSP_SHA256);
+const WINFSP_URL: &str = "https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi";
+const WINFSP_SHA256: &str = "073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a";
 
 /// A file this process may run.
 fn executable(file: &Path) -> bool {
