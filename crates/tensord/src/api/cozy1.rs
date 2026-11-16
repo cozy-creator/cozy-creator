@@ -937,13 +937,19 @@ async fn serve_in(
         true => None,
         false => {
             let signer = actor_id(actor);
-            let open = tokio::task::spawn_blocking(move || crate::private_io::opened(&project, generation, &signer)).await;
-            let Ok(Some(scope)) = open else {
-                let shut = Error::unavailable("project_not_open", "the link's project isn't open on this computer as it was when the link was made");
-                let _ = work.send(Work::Stop { number: target.number, message: source_error(&target.id, &shut) });
-                return;
-            };
-            Some(scope)
+            match tokio::task::spawn_blocking(move || crate::private_io::opened(&project, generation, &signer)).await {
+                Ok(Ok(scope)) => Some(scope),
+                open => {
+                    let shut = match open {
+                        Ok(Err(crate::private_io::Unopened::Changed)) => {
+                            Error::forbidden("project_changed", "the link's project was encrypted or rekeyed since the link was made")
+                        }
+                        _ => Error::unavailable("project_not_open", "the run's project isn't open on this computer"),
+                    };
+                    let _ = work.send(Work::Stop { number: target.number, message: source_error(&target.id, &shut) });
+                    return;
+                }
+            }
         }
     };
     match get {

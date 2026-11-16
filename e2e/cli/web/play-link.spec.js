@@ -4,8 +4,8 @@
 // project run's link was refused `project_play_unavailable`; allowed alone, the machine answered `not_found`: it looked for the run
 // outside the project's workspace, where a project's run on this computer is kept.
 // `@vault` (web-engines, with the filesystem driver): a link made while the project is plaintext plays no more once it is encrypted,
-// though it is unlocked (#3569 review): the machine reads only an unencrypted workspace at the generation the link names. A new link
-// is refused `project_play_encrypted`.
+// though it is unlocked (#3569 review): the machine reads only an unencrypted workspace at the generation the link names, and says a
+// changed one `scope` ("This link does not grant this output."). A new link is refused `project_play_encrypted`.
 const { mkdtempSync, readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
 const { test, expect, fixtureTool } = require('./fixtures');
@@ -81,12 +81,18 @@ test('play-link, encrypted since', { tag: '@vault' }, async ({ page, project, ap
   writeFileSync(join(secrets, 'passphrase'), 'play-link-encrypted-since\n', { mode: 0o600 });
   const encrypted = await cli('--json', 'vault', 'encrypt', '--passphrase-file', join(secrets, 'passphrase'), '--recovery-out', join(secrets, 'recovery'), '--idle', '0');
   expect(encrypted.code, `cozy vault encrypt: ${encrypted.stderr.slice(-400)}`).toBe(0);
-  expect(await api.get(project.at('/vault')), 'encrypted and unlocked').toMatchObject({ encrypted: true, state: 'unlocked' });
-
-  const after = await stream(page, play.url, landed.length);
-  expect(after.failed, 'the link made while plaintext is refused by the machine').toMatch(/^unavailable: .*as it was when the link was made/);
-  expect(after.got, 'and nothing of the output came').toBe(0);
-  const again = await mint(project, api, run, item);
-  expect(again.status, `a new link: ${JSON.stringify(again.play)}`).toBe(403);
-  expect(again.play.error?.code).toBe('project_play_encrypted');
+  try {
+    expect(await api.get(project.at('/vault')), 'encrypted and unlocked').toMatchObject({ encrypted: true, state: 'unlocked' });
+    // Refused as no longer granted (`scope`: the workspace is encrypted, or at another generation), or as not open here: never read.
+    const after = await stream(page, play.url, landed.length);
+    expect(after.failed, 'the link made while plaintext is refused by the machine').toMatch(/^(scope|unavailable): /);
+    expect(after.got, 'and nothing of the output came').toBe(0);
+    const again = await mint(project, api, run, item);
+    expect(again.status, `a new link: ${JSON.stringify(again.play)}`).toBe(403);
+    expect(again.play.error?.code).toBe('project_play_encrypted');
+  } finally {
+    // Locked, its folder can go with the cell.
+    const locked = await cli('--json', 'vault', 'lock');
+    expect.soft(locked.code, `cozy vault lock: ${locked.stderr.slice(-300)}`).toBe(0);
+  }
 });

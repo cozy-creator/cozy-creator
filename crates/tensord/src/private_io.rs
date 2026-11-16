@@ -149,12 +149,20 @@ pub(crate) fn resolve(descriptor: &LocalPrivateStorage) -> io::Result<LocalPriva
     Ok(verified_scope(descriptor)?.descriptor.clone())
 }
 
+/// Why a link's workspace can't be read: not open here now, or no longer what the link was made for.
+pub(crate) enum Unopened {
+    Closed,
+    Changed,
+}
+
 /// `project_id`'s workspace as `actor` opened it, unencrypted and still at `generation`: where a capability `actor` signed for that
 /// project's run reads (cl-1066). An encrypted one, or one encrypted or rekeyed since, is never one.
-pub(crate) fn opened(project_id: &str, generation: u64, actor: &str) -> Option<LocalPrivateStorage> {
-    let held = VERIFIED.lock().unwrap().get(project_id).cloned()?;
-    let same = held.actor == actor && held.descriptor.ordinary && held.descriptor.generation == generation;
-    same.then(|| verified_scope(&held.descriptor).ok()).flatten().map(|scope| scope.descriptor.clone())
+pub(crate) fn opened(project_id: &str, generation: u64, actor: &str) -> Result<LocalPrivateStorage, Unopened> {
+    let held = VERIFIED.lock().unwrap().get(project_id).cloned().filter(|held| held.actor == actor).ok_or(Unopened::Closed)?;
+    if !held.descriptor.ordinary || held.descriptor.generation != generation {
+        return Err(Unopened::Changed);
+    }
+    verified_scope(&held.descriptor).map(|scope| scope.descriptor.clone()).map_err(|_| Unopened::Closed)
 }
 
 /// Conservative metadata classification for generation/import/JIT probes. It grants
