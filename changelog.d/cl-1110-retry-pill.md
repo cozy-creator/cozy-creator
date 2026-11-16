@@ -1,0 +1,1 @@
+A lock in one project no longer leaves another tab saying "Trying again" for ever: a read cancelled while it waited to retry clears its pill, and a project's lock cancels only its own tool reads (cl-1110).

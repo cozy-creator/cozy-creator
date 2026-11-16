@@ -546,6 +546,7 @@ WEB_ENGINES=(
   move
   open
   vault
+  tool-retry
   glloss
   keyboard
   input
