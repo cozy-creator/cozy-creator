@@ -265,6 +265,18 @@ rows=$(sql "$P" "SELECT count(*) FROM run_files WHERE sha256 = '$pic'" | jq -r '
 drop_folder "$P"
 }
 
+# cl-1093 (#3567's review 5): a render the user asked for reads what it was asked with, through a delete and the purge after it: one
+# that picks up from a take deleted while it waits, past the take's window, still goes, and the take's files go once it has (pickup_kept.py).
+db_pickup_kept() {
+step "a render asked for still picks up from a take deleted while it waits, past the take's window (cl-1093)"
+local lock=$HOME/.cozy/calcifer/calcifer.lock.holder
+undo_window "$lock" 20
+COZY=$COZY python3 "$here/pickup_kept.py" "$OUT/pickup-kept" "$OUT" > "$OUT/pickup-kept.json" 2> "$OUT/pickup-kept.err" \
+  || check "pickup kept: $(jq -c '{failures, render: .seen.render.err[-400:], next: .seen.next_version}' "$OUT/pickup-kept.json" 2> /dev/null || tail -c 600 "$OUT/pickup-kept.err")"
+cat "$OUT/pickup-kept.json" 2> /dev/null || true
+undo_window "$lock" ''
+}
+
 # cl-823: Calcifer closes a project nothing reads. Projects of 200 boxes each, made by `cozy apply`, opened by the CLI and shown by a
 # page's stream (`PUT /v1/events/{stream}`): each is open while a call or a stream holds it (its project.db among Calcifer's open files),
 # and closes once the call has answered and once the stream shows another. Calcifer's heap is back within a tenth of where it stood after

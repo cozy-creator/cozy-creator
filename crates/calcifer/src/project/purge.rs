@@ -232,7 +232,18 @@ pub(super) fn purge(folder: &Folder, now: i64, caches: &[PathBuf]) -> Result<Opt
     let lock = folder.lock()?;
     let set_aside = |key: &str| key.contains(TOMBSTONE);
     let ended = |held: &super::folder::Asset| held.files().next().is_some() && held.lapsed(now);
-    let gone: Vec<String> = lock.assets.iter().filter(|(key, held)| set_aside(key) && ended(held)).map(|(key, _)| key.clone()).collect();
+    // A render asked for may still read what's set aside, as it was asked (a pickup from a take deleted since, a mention of a box deleted
+    // since): while renders wait or go, nothing set aside goes, and the walk's end looks again (`opened`), so no purge fails a render.
+    let rendering = !lock.walk.asks.is_empty() || !lock.pending.is_empty();
+    let gone: Vec<String> = match rendering {
+        true => vec![],
+        false => lock.assets.iter().filter(|(key, held)| set_aside(key) && ended(held)).map(|(key, _)| key.clone()).collect(),
+    };
+    // What's due while renders go waits for their end, a try later at the latest: never due now, which would look again at once.
+    let after_renders = |next: Option<i64>| match rendering {
+        true => next.map(|at| at.max(now + AGAIN.as_millis() as i64)),
+        false => next,
+    };
     // Its history read only for a box emptied, already or now: a start looks at every project. One emptied now is forgotten only once the
     // history no longer reaches it, so its Undo still says it can't come back.
     let emptied = |held: &super::folder::Asset| held.files().next().is_none() && held.deleted_ms.is_some();
@@ -256,7 +267,7 @@ pub(super) fn purge(folder: &Folder, now: i64, caches: &[PathBuf]) -> Result<Opt
         if sweep {
             folder.late_rows_swept_now()?;
         }
-        return Ok(next_due(&lock, window));
+        return Ok(after_renders(next_due(&lock, window)));
     }
     let doc = Doc::load(folder)?;
     let kept = kept(&doc, &lock, &gone, &stray, now);
@@ -294,7 +305,7 @@ pub(super) fn purge(folder: &Folder, now: i64, caches: &[PathBuf]) -> Result<Opt
             let _ = std::fs::remove_file(film);
         }
     }
-    Ok(next_due(&folder.lock()?, window))
+    Ok(after_renders(next_due(&folder.lock()?, window)))
 }
 
 /// A delete before cl-919 (0.24's) said no time: a row set aside with none, or an imported picture's file on record only as a run's

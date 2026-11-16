@@ -916,6 +916,18 @@ impl Lock {
         latest(!id.is_empty()).or_else(|| latest(false))
     }
 
+    /// The row a delete of box `id` set aside under `name`, the latest; none for a box with no id (nothing says it's the same box).
+    pub(crate) fn set_aside_of(&self, name: &str, id: &str) -> Option<&Asset> {
+        if id.is_empty() {
+            return None;
+        }
+        let prefix = format!("{}{TOMBSTONE}", name_key(name));
+        (self.assets.iter())
+            .filter(|(at, held)| at.starts_with(&prefix) && held.id == id)
+            .max_by_key(|(at, _)| at[prefix.len()..].parse::<u32>().unwrap_or(0))
+            .map(|(_, held)| held)
+    }
+
     /// Whether `name` is a box deleted from the project that Undo can still bring back.
     pub(crate) fn was_deleted(&self, name: &str, now: i64) -> bool {
         self.deleted_box(name, "").is_some_and(|held| !held.lapsed(now) && held.files().next().is_some())
