@@ -47,7 +47,7 @@ function Row({ doing, boxes, to }: { doing: Doing; boxes: Map<number, string>; t
     return (
       <li className="doing">
         <MarkOf mark="up" />
-        <b>Booting</b>
+        <b>Starting up</b>
         <span className="said">{doing.words}</span>
       </li>
     )
@@ -70,9 +70,9 @@ function Row({ doing, boxes, to }: { doing: Doing; boxes: Map<number, string>; t
   const fraction = run.progress?.done_fraction
   const going = working(run, on)
   const said = on
-    ? `Waits on the ${on.kind} of ${operationName(on)}`
+    ? `Waiting for ${operationName(on)} to ${on.kind === "download" ? "download" : "install"}`
     : waits(run)
-      ? (run.waiting ?? (run.queue_position ? `Queued, ${run.queue_position} in line` : "Queued"))
+      ? (run.waiting ?? (run.queue_position ? `Queued, number ${run.queue_position} in line` : "Queued"))
       : workWords(run) || run.waiting
   return (
     <li className="doing" data-doing="run" data-run={run.number}>
@@ -137,7 +137,7 @@ function Activity({ machine, doing, boxes, to, chip, close }: { machine: Machine
           ))}
         </ul>
       ) : (
-        <p className="said">Nothing to do</p>
+        <p className="said">Idle</p>
       )}
     </div>
   )
@@ -179,7 +179,7 @@ export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; 
               data-machine={machine.name}
               data-slow={slowWords(machine).length ? "" : undefined}
               aria-expanded={open?.name === machine.name}
-              title={[`${gpusWords(machine)}, ${stateWords(machine, Date.now())}`, ...slowWords(machine)].join("\n")}
+              title={[[gpusWords(machine), stateWords(machine, Date.now())].filter(Boolean).join(" · "), ...slowWords(machine)].join("\n")}
               onClick={(event) => {
                 const chip = event.currentTarget
                 setOpen((now) => (now?.name === machine.name ? null : { name: machine.name, chip }))

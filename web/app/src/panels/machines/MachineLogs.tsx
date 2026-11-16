@@ -49,7 +49,7 @@ function Followed({ machine, log }: { machine: Machine; log: MachineLogName }) {
     <>
       <LogView text={text} empty="Nothing yet." />
       {note && <p className="muted">{note}</p>}
-      {following.state === "refused" && <Failure error={following.error} lead="Couldn't read its log" />}
+      {following.state === "refused" && <Failure error={following.error} lead="Couldn't load the log" />}
     </>
   )
 }
@@ -63,7 +63,7 @@ export function MachineLogs({ machine }: { machine: Machine }) {
       <summary>Logs</summary>
       {open && (
         <>
-          <select className="field small logs" aria-label="Which log" value={log} onChange={(event) => setLog(event.target.value as MachineLogName)}>
+          <select className="field small logs" aria-label="Log" value={log} onChange={(event) => setLog(event.target.value as MachineLogName)}>
             <option value="tensord">TensorD</option>
             <option value="tensorfs">TensorFS</option>
             <option value="memory">Memory</option>

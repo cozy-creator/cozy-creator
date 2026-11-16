@@ -24,11 +24,11 @@ function MachineRow({ machine, now, here }: { machine: Machine; now: number; her
           {machine.running ?? 0} running, {machine.queued ?? 0} queued
         </small>
       )}
-      {trying && machine.attempt && <small className="under">Still trying, attempt {machine.attempt.number}</small>}
+      {trying && machine.attempt && <small className="under">Starting up, attempt {machine.attempt.number}</small>}
       {machine.state === "ready" && machine.kind === "rental" && <small className="under">{endsWords(machine, now)}</small>}
-      {machine.end_failed && <small className="under warn">Not shut down, may still be billing: {machine.end_failed}</small>}
-      {machine.end_unconfirmed && <small className="under warn">Not confirmed gone: {machine.end_unconfirmed}</small>}
-      {machine.state === "ending" && !machine.end_unconfirmed && <small className="under warn">{machine.ending ? `Waiting to end it: ${machine.ending}` : "Bills until its Hub affirms it gone"}</small>}
+      {machine.end_failed && <small className="under warn">Didn't shut down and may still cost money: {machine.end_failed}</small>}
+      {machine.end_unconfirmed && <small className="under warn">The Hub hasn't confirmed it has ended: {machine.end_unconfirmed}</small>}
+      {machine.state === "ending" && !machine.end_unconfirmed && <small className="under warn">{machine.ending ? `Ending once this finishes: ${machine.ending}` : "Costs money until the Hub confirms it has ended"}</small>}
       <Checks machine={machine}>
         <Link className="more" to={to(`machines/${encodeURIComponent(stableName(machine))}`)}>
           Details
@@ -72,7 +72,7 @@ function AddMachine() {
         </label>
         <label>
           Fingerprint
-          <input className="field" spellCheck={false} placeholder="sha256:… from `cozy machine show local` there" value={fingerprint} onChange={(event) => setFingerprint(event.target.value)} />
+          <input className="field" spellCheck={false} placeholder="sha256:… (ask that computer's owner)" value={fingerprint} onChange={(event) => setFingerprint(event.target.value)} />
         </label>
         <div className="row end">
           <button type="submit" className="tb" disabled={ask.busy || !name.trim() || !address.trim() || !fingerprint.trim()}>
@@ -80,7 +80,7 @@ function AddMachine() {
           </button>
         </div>
       </form>
-      <Failure error={ask.error} lead="Couldn't add it" />
+      <Failure error={ask.error} lead="Couldn't add that computer" />
     </details>
   )
 }
@@ -122,18 +122,18 @@ export function Machines() {
 
   return (
     <DrawerFrame title="Machines">
-      <Failure error={error} lead="Couldn't list the machines" />
+      <Failure error={error} lead="Couldn't load your machines" />
       {rentals.length > 0 && (
         <p className="muted">
-          {rentals.length} rented, {usd(hourly)}/h. Each ends after 15 minutes idle.
+          {rentals.length} {rentals.length === 1 ? "rental" : "rentals"}, {usd(hourly)}/h in all. Each ends after 15 minutes idle.
         </p>
       )}
       {data?.unanswered?.map((problem) => (
         <p className="warn" key={problem.hub}>
-          {problem.hub} didn't answer: {problem.message}. Its rentals may still be billing.
+          {problem.hub} didn't respond ({problem.message}). Its rentals may still be costing money.
         </p>
       ))}
-      {project && data && !chosen.length && <p className="muted">Nothing checked: this project's renders are placed automatically. Check machines to keep them there.</p>}
+      {project && data && !chosen.length && <p className="muted">Cozy picks where this project renders. Check Prefer on a machine to render there.</p>}
       <ul className="rows">
         {mine.map((machine) => (
           <MachineRow key={machine.name} machine={machine} now={now} here={chosen.includes(machine.name)} />
@@ -142,9 +142,9 @@ export function Machines() {
           <li key={name} className="runrow machine render-here" data-machine={name}>
             <div className="spec">
               <b>{name}</b>
-              <span>not up</span>
+              <span>Not running</span>
             </div>
-            <small className="under warn">This project's renders wait for it or another checked machine</small>
+            <small className="under warn">This project's renders wait for it or another preferred machine.</small>
             <div className="checks">
               <RenderCheck name={name} />
               <Link className="more" to={to(`machines/${encodeURIComponent(name)}`)}>
@@ -157,7 +157,7 @@ export function Machines() {
       {others.length > 0 && (
         <details className="sect">
           <summary>
-            {others.length} rented from other computers, {usd(hourlyOf(others))}/h
+            {others.length} rented by your other computers, {usd(hourlyOf(others))}/h
           </summary>
           <ul className="rows">
             {others.map((machine) => (
@@ -168,7 +168,7 @@ export function Machines() {
       )}
       {data && !machines.length && (
         <p className="muted">
-          Renders run on a machine.{" "}
+          No machines yet.{" "}
           {!signedIn && renting && (
             <Link className="more" to={to("account")}>
               Sign in to rent one
