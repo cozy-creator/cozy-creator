@@ -542,6 +542,20 @@ pub(crate) struct RunFile {
     pub sha256: String,
 }
 
+impl RunFile {
+    /// Whether `version` is this row's run's: by the run's id when both say one (its number is only a label), else by its number.
+    pub(crate) fn of(&self, version: &Version) -> bool {
+        match (&self.run_id, &version.run_id) {
+            (Some(row), Some(version)) => row == version,
+            (None, None) => version.run == Some(self.run),
+            _ => false,
+        }
+    }
+}
+
+/// project.db's `meta` key saying a purge swept the loose rows a take's run left before cl-1093.
+const LATE_ROWS_SWEPT: &str = "late_rows_swept";
+
 impl Default for Lock {
     fn default() -> Self {
         Self { format: FORMAT, files: BTreeMap::new(), assets: BTreeMap::new(), pending: BTreeMap::new(), runs: vec![], reserved: BTreeMap::new(), makes: BTreeMap::new(), releases: BTreeMap::new(), walk: Owed::default() }
@@ -1578,6 +1592,24 @@ impl Folder {
         done
     }
 
+    /// Whether a purge swept the loose rows a take's run left before cl-1093 (`purge::sweep_late`).
+    pub(super) fn late_rows_swept(&self) -> Result<bool, Error> {
+        self.reading_db(|conn| db::meta(conn, LATE_ROWS_SWEPT).is_some())
+    }
+
+    /// A purge swept them.
+    pub(super) fn late_rows_swept_now(&self) -> Result<(), Error> {
+        self.write_past(|conn| db::set_meta(conn, &self.db(), LATE_ROWS_SWEPT, Some("1")))
+    }
+
+    /// Whether run `id` is a take's: sent by the project's walk, under its key (`walker::owed_key`). Not one when its journal can't say.
+    pub(crate) fn take_run(&self, id: &api::ids::RunId) -> bool {
+        use rusqlite::OptionalExtension as _;
+        let key: crate::store::Result<Option<String>> =
+            self.journal_read(|conn| Ok(conn.query_row("SELECT idempotency_key FROM runs WHERE id = ?1", [id.as_str()], |row| row.get(0)).optional()?));
+        key.ok().flatten().is_some_and(|key| super::walker::is_owed_key(&key))
+    }
+
     /// Every history row, oldest first.
     pub(super) fn ops(&self) -> Result<Vec<db::OpRow>, Error> {
         self.loaded()?.ops()
@@ -1985,8 +2017,17 @@ impl Folder {
     /// of that output was, which goes if nothing else names it. So a file here is a file measured.
     /// Unsupported folders are refused before their files are changed; a current project's write
     /// contention can still leave a measured file awaiting its listing.
-    pub(crate) fn adopt(&self, dest: &Path, digest: &str, made: RunFile, measured: Option<&File>) -> Result<(PathBuf, Option<Error>), Error> {
+    pub(crate) fn adopt(&self, dest: &Path, digest: &str, made: RunFile, measured: Option<&File>, take: bool) -> Result<(PathBuf, Option<Error>), Error> {
         drop(self.held()?);
+        // A take's run that no version on record is of, and none the walk has on its way: its take was deleted and purged before this
+        // landed (an export that resumed late, cl-1093), so nothing of the project is its and nothing keeps it here. While a run is being
+        // sent (a pending one with no number yet) the walk can't say whose it is: it lands as before.
+        let unclaimed = |walk: &WalkFile| !walk.walk.runs.contains_key(&made.run) && !walk.pending.values().any(|pending| pending.run == 0 || pending.run == made.run);
+        if take && self.reading_walk(unclaimed)?
+            && !self.reading_lock(|lock| lock.assets.values().flat_map(Asset::on_record).any(|version| made.of(version)))?
+        {
+            return Ok((dest.to_owned(), None));
+        }
         let (path, old, unlisted) = {
             let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
             let path = file_of(digest, dest);
@@ -2043,7 +2084,14 @@ impl Folder {
                     }
                     _ => self.update_lock(|lock| {
                         here(lock);
-                        listed(&mut lock.runs);
+                        // Its run arrived already and its version lists this file: that version's, as `arrived` makes what landed before
+                        // it, never a loose row (cl-1093: a local run's latents land after the rest, and such a row kept them past their
+                        // take's purge).
+                        let versioned = lock.assets.values().flat_map(Asset::on_record)
+                            .any(|version| made.of(version) && version.files.values().any(|file| file.as_str() == digest));
+                        if !versioned {
+                            listed(&mut lock.runs);
+                        }
                     }),
                 }),
             };

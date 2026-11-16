@@ -16,7 +16,7 @@ use tracing::warn;
 
 use super::{
     Doc, cut_name,
-    folder::{Folder, Lock, TOMBSTONE},
+    folder::{Folder, Lock, RunFile, TOMBSTONE},
     history, now_ms, vault,
 };
 use crate::api::Api;
@@ -91,7 +91,8 @@ pub(crate) fn forget(store: &crate::store::Store, id: &str) {
 pub(crate) fn opened(id: &str, folder: &Folder) {
     let legacy = |row: &super::folder::RunFile| row.run == 0 && row.output == "deleted";
     let set_aside = folder.reading_lock(|lock| lock.assets.keys().any(|key| key.contains(TOMBSTONE)) || lock.runs.iter().any(legacy));
-    if !matches!(set_aside, Ok(false)) {
+    // Its loose rows of a take's run not swept yet (cl-1093): one pass, once.
+    if !matches!(set_aside, Ok(false)) || !folder.late_rows_swept().unwrap_or(true) {
         due(id, now_ms());
     }
 }
@@ -241,12 +242,26 @@ pub(super) fn purge(folder: &Folder, now: i64, caches: &[PathBuf]) -> Result<Opt
     };
     let forgotten = |held: &super::folder::Asset| emptied(held) && held.deleted_ms.is_some_and(|at| at < oldest);
     let stubs = lock.assets.iter().any(|(key, held)| set_aside(key) && forgotten(held));
-    if gone.is_empty() && !stubs {
+    // Run rows that keep nothing (cl-1093): a file of a take's run landed after its run arrived was listed as a loose row, which kept
+    // it past its take's purge. Such a row of a purged version's run goes with it; and once a project, every loose row of a take's run
+    // goes (one a version still lists stays that version's), as the takes purged before the fix left them with nothing else to.
+    let gone_versions: Vec<&super::folder::Version> = gone.iter().flat_map(|key| lock.assets[key].on_record()).collect();
+    let late = |row: &RunFile| gone_versions.iter().any(|version| row.of(version) && version.files.values().any(|file| *file == row.sha256));
+    // Not while a run is being sent: the walk can't say yet whose a row of it is.
+    let sweep = !folder.late_rows_swept()? && !lock.pending.values().any(|pending| pending.run == 0);
+    let take_rows = |row: &RunFile| sweep && row.run_id.as_ref().is_some_and(|id| folder.take_run(id));
+    let on_its_way = |row: &RunFile| lock.walk.runs.contains_key(&row.run) || lock.pending.values().any(|pending| pending.run == row.run);
+    let stray: BTreeSet<RowKey> = lock.runs.iter().filter(|row| !on_its_way(row) && (late(row) || take_rows(row))).map(row_key).collect();
+    if gone.is_empty() && !stubs && stray.is_empty() {
+        if sweep {
+            folder.late_rows_swept_now()?;
+        }
         return Ok(next_due(&lock, window));
     }
     let doc = Doc::load(folder)?;
-    let kept = kept(&doc, &lock, &gone, now);
-    let freed: BTreeSet<String> = gone.iter().flat_map(|key| lock.assets[key].files().cloned()).filter(|sha256| !kept.contains(sha256)).collect();
+    let kept = kept(&doc, &lock, &gone, &stray, now);
+    let strays = lock.runs.iter().filter(|row| stray.contains(&row_key(row))).map(|row| row.sha256.clone());
+    let freed: BTreeSet<String> = gone.iter().flat_map(|key| lock.assets[key].files().cloned()).chain(strays).filter(|sha256| !kept.contains(sha256)).collect();
     let paths: Vec<PathBuf> = freed.iter().filter_map(|sha256| lock.files.get(sha256)).map(|file| folder.path(&file.path)).collect();
     let films: Vec<String> = gone.iter().map(|key| &lock.assets[key]).filter(|held| held.versions.iter().any(|version| !version.clips.is_empty())).map(|held| cut_name(&held.name)).collect();
     folder.update_lock(|lock| {
@@ -259,8 +274,12 @@ pub(super) fn purge(folder: &Folder, now: i64, caches: &[PathBuf]) -> Result<Opt
             }
         }
         lock.assets.retain(|key, held| !(set_aside(key) && forgotten(held)));
+        lock.runs.retain(|row| !stray.contains(&row_key(row)));
         lock.files.retain(|sha256, _| !freed.contains(sha256));
     })?;
+    if sweep {
+        folder.late_rows_swept_now()?;
+    }
     // What's made of them first, so once a file is gone, all of it is.
     forget_derived(&folder.dir, &freed, caches);
     for path in &paths {
@@ -304,7 +323,14 @@ fn dated(folder: &Folder, now: i64) -> Result<(), Error> {
 
 /// Every file something still in the project holds: its boxes' versions, discarded too, their pins and a cut's clips, what's on its way,
 /// a run's outputs, and what a box Undo can still bring back holds.
-fn kept(doc: &Doc, lock: &Lock, gone: &[String], now: i64) -> BTreeSet<String> {
+/// A run row, by its run (id and number) and its file.
+type RowKey = (Option<String>, u64, String);
+
+fn row_key(row: &RunFile) -> RowKey {
+    (row.run_id.as_ref().map(|id| id.as_str().to_owned()), row.run, row.sha256.clone())
+}
+
+fn kept(doc: &Doc, lock: &Lock, gone: &[String], stray: &BTreeSet<RowKey>, now: i64) -> BTreeSet<String> {
     let live = |key: &str| doc.find(key).is_some();
     let mut kept: BTreeSet<String> = lock.named(live).into_iter().map(str::to_owned).collect();
     kept.extend(doc.assets.iter().filter_map(|asset| asset.pin.clone()));
@@ -315,7 +341,9 @@ fn kept(doc: &Doc, lock: &Lock, gone: &[String], now: i64) -> BTreeSet<String> {
             kept.extend(held.on_record().flat_map(|version| &version.clips).filter_map(|clip| clip.sha256.clone()));
         }
     }
-    kept.extend(lock.runs.iter().map(|row| row.sha256.clone()));
+    kept.extend(lock.runs.iter().filter(|row| !stray.contains(&row_key(row))).map(|row| row.sha256.clone()));
+    // What a run on its way landed already.
+    kept.extend(lock.walk.landing.iter().map(|row| row.sha256.clone()));
     kept
 }
 

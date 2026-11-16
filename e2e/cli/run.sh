@@ -822,6 +822,7 @@ case $SHARD in
     retry_elsewhere
     db_deleted_gc
     db_purged
+    db_purged_late
     db_closes
     old_takes
     db_migrate
@@ -840,6 +841,10 @@ case $SHARD in
   # Deleted boxes' files after the undo window, Undo after the purge (cl-919), and a project closed once nothing reads it (cl-823).
   projectdb-deleted) parts="db_deleted_gc logs" ;;
   projectdb-purged) parts="db_purged logs" ;;
+  # A late-landed run row lets a purged version's file go (cl-1093).
+  projectdb-purged-late) parts="db_purged_late logs" ;;
+  # A local run's latents, landed after its run arrived, are its take's and go with it (cl-1046, cl-1093). Named projectvault-* for its driver.
+  projectvault-kept-latents) parts="kept_latents logs" ;;
   projectdb-closes) parts="db_closes logs" ;;
   # cl-1000: a runner with no FUSE (e2e.yaml installs no vault driver for it).
   projectvault-nofuse) parts="vault_no_fuse logs" ;;
