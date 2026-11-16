@@ -390,11 +390,11 @@ PY
 }
 # cut_collect_late: a kept old run collected after the machine journal's cut (cl-1035), as a run outside a project #3410 keeps to
 # resume is: plain's still (held by its hold of the old landing folder, so its run is kept; cl-1036), before plain's open copies it
-# in and the store lets its copy go, its result copies swept as an idle machine sweeps them, recorded again in Calcifer's store as going and
-# landing outside any project. Calcifer collects it from the machine: it completes with the still's bytes, with no word of its prompt
-# and the one note saying its words were cleared.
+# in and the store lets its copy go, its result copies swept as an idle machine sweeps them, recorded again in Calcifer's store as going
+# outside any project. Calcifer collects it from the machine: it completes with no word of its prompt and the one note saying its words
+# were cleared, and, a job of Calcifer's since every run belongs to a project (cl-1028), lands nothing here, not even a part.
 cut_collect_late() {
-  local run exec want state i out=$home/collected engine=$home/.cozy/machine/var/lib/cozy/tensord/execution
+  local run exec state i out=$home/collected engine=$home/.cozy/machine/var/lib/cozy/tensord/execution
   run=$(sudo python3 -I - "$OUT/cut-store-before.db" "$P/.runs" <<'PY'
 import sqlite3, sys
 db = sqlite3.connect(f"file:{sys.argv[1]}?immutable=1", uri=True)
@@ -416,7 +416,6 @@ print(row[0] if row else "")
 PY
 )
   [ -n "$exec" ] || { check "hard cut: the machine kept no run $run of plain's still"; return; }
-  want=$(jq -r '.card.image.sha256 | sub("^sha256:"; "")' "$OUT/cut-plain-before.json")
   sudo pkill -KILL -u "$CUT_USER" || true
   while pgrep -u "$CUT_USER" > /dev/null; do sleep 0.2; done
   # Swept as an idle machine sweeps a settled run's result copies: only its made outcome and its retained outputs name its files now.
@@ -446,8 +445,7 @@ PY
   done
   echo "hard cut: the old run $run collected after the cut: $state"
   [ "$state" = "settled completed" ] || { check "hard cut: a kept old run whose result copies were swept, collected after the cut, is $state: $(cut_wal_sql "SELECT coalesce(reason_code, '') || ': ' || coalesce(reason, '') FROM runs WHERE id = '$run'")"; return; }
-  [ -n "$(sudo find "$out" -type f -exec sha256sum {} + | awk -v want="$want" '$1 == want')" ] \
-    || check "hard cut: the late collection's files aren't the still's bytes: $(sudo find "$out" -type f -exec sha256sum {} + | tr '\n' ' ')"
+  [ -z "$(sudo find "$out" -type f)" ] || check "hard cut: the late collection landed files outside any project: $(sudo find "$out" -type f | tr '\n' ' ')"
   sudo -u "$CUT_USER" python3 -I - "$home/.cozy/calcifer/state.db" "$run" "$CUT_PROMPT_MARK" <<'PY' || check "hard cut: the late collection's words"
 import sqlite3, sys
 db = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
