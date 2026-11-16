@@ -199,6 +199,52 @@ function textPixels(read, labels, ink, dpr) {
   }).map(label => `${label.name ?? 'making'}:${label.key ?? 'cancel'}`);
 }
 
+// Diagnostic only, never merged: what the canvas said each poll while a zoom never came to rest, and how this browser draws.
+async function diagIdle(page, what) {
+  const seen = [];
+  let previous, still = 0;
+  const started = Date.now();
+  try {
+    await expect.poll(async () => {
+      const t0 = Date.now();
+      const state = await page.evaluate(() => {
+        const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+        const res = inspection?.resources();
+        return { frames: res?.frames ?? null, scheduled: res?.scheduledFrame ?? null, camera: inspection?.camera(), interaction: inspection?.interaction(), moving: Boolean(document.querySelector('.stage[data-moving]')), entering: Boolean(document.querySelector('[data-focused-asset][data-entering]')) };
+      });
+      const took = Date.now() - t0;
+      const current = JSON.stringify(state.camera);
+      const i = state.interaction ?? {};
+      const busy = !state.frames || state.moving || state.entering || !state.camera || i.locked || i.pointerDown || i.dragging || i.marquee;
+      still = !busy && current === previous ? still + 1 : 0;
+      previous = current;
+      const cam = state.camera ? ['x', 'y', 'zoom'].map((k) => Math.round(state.camera[k] * 1000) / 1000).join(',') : null;
+      seen.push(`${Date.now() - started}ms eval=${took} frames=${state.frames} sched=${state.scheduled} moving=${state.moving} entering=${state.entering} cam=${cam} locked=${i.locked} down=${i.pointerDown} drag=${i.dragging} marquee=${i.marquee}`);
+      return still >= 3;
+    }, { message: `${what}: the canvas is still`, intervals: [100] }).toBe(true);
+  } catch {
+    throw new Error(`DIAG ${what}: never still after ${Date.now() - started} ms; ${seen.length} polls; first: ${seen.slice(0, 3).join(' | ')}; last: ${seen.slice(-10).join(' | ')}`);
+  }
+}
+
+async function diagEnv(page) {
+  return page.evaluate(async () => {
+    const c = document.createElement('canvas');
+    const gl = c.getContext('webgl2') || c.getContext('webgl');
+    const ext = gl?.getExtension('WEBGL_debug_renderer_info');
+    const renderer = gl ? String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)) : 'no webgl';
+    const gaps = [];
+    let last = performance.now();
+    await new Promise((done) => {
+      const end = last + 3000;
+      const step = (now) => { gaps.push(now - last); last = now; if (now < end) requestAnimationFrame(step); else done(); };
+      requestAnimationFrame(step);
+    });
+    gaps.sort((a, b) => a - b);
+    return { renderer, dpr: devicePixelRatio, cores: navigator.hardwareConcurrency, size: `${innerWidth}x${innerHeight}`, frames3s: gaps.length, medianGapMs: Math.round(gaps[gaps.length >> 1]), maxGapMs: Math.round(gaps.at(-1)) };
+  });
+}
+
 async function passive(page) {
   // On open canvas, so no box is under the pointer at any zoom and none mounts its card; in Focus the canvas takes no hover.
   const { x, y } = (await page.locator('[data-focused-asset]').count()) ? { x: 2, y: 500 } : await openPoint(page);
@@ -254,7 +300,7 @@ test('layout', async ({ page, project, api }) => {
     const zoomMenu = async (item) => {
       await zoomButton.click();
       await page.getByRole('menuitem', { name: new RegExp(`^${item}`) }).click();
-      await canvasIdle(page);
+      await diagIdle(page, item);
     };
     /** Looked at once what animates has finished: every finding, said whole. */
     const looked = async (what, focused = false) => {
@@ -297,6 +343,7 @@ test('layout', async ({ page, project, api }) => {
     };
 
     await test.step('view at 0.25, 0.5, 1 and 2', async () => {
+      expect.soft(await diagEnv(page), 'DIAG-ENV before the zooms').toEqual({});
       await zoomMenu('Zoom to fit');
       await zoomMenu('Zoom to 50%');
       for (let i = 0; i < 2; i++) await page.getByRole('button', { name: 'Zoom out', exact: true }).click();
