@@ -108,17 +108,23 @@ pub(crate) enum Supervised {
 /// linked file counts no byte), and its group is killed when `stop` is canceled. The second is
 /// resolution, never a verdict.
 pub(crate) fn supervise(child: &mut Child, stop: Option<&crate::stop::Stop>, wrote: &dyn Fn(u64)) -> io::Result<Supervised> {
-    watch(child, stop, wrote, None)
+    watch(child, stop, wrote, None, false)
+}
+
+/// `supervise` for an install's step (uv): each second, what its group's own sockets received goes to TensorFS
+/// (`tensorfs::fetch::install_received`), whose weights leave the link to it while it downloads (cl-1007).
+pub(crate) fn supervise_install(child: &mut Child, stop: Option<&crate::stop::Stop>, wrote: &dyn Fn(u64)) -> io::Result<Supervised> {
+    watch(child, stop, wrote, None, true)
 }
 
 /// `supervise` for work no run waits on, an update's staging (cl-977): its group is also killed once it shows no progress at
 /// all (no CPU used or owed, no byte read or written: `platform::process::meter`) for `platform::contain::STALL`, answered as a
 /// `TimedOut` error saying so. An update never hangs on a resolver or an install that stopped moving.
 pub(crate) fn supervise_progressing(child: &mut Child, stop: Option<&crate::stop::Stop>) -> io::Result<Supervised> {
-    watch(child, stop, &|_| (), Some(platform::contain::STALL))
+    watch(child, stop, &|_| (), Some(platform::contain::STALL), false)
 }
 
-fn watch(child: &mut Child, stop: Option<&crate::stop::Stop>, wrote: &dyn Fn(u64), stall: Option<Duration>) -> io::Result<Supervised> {
+fn watch(child: &mut Child, stop: Option<&crate::stop::Stop>, wrote: &dyn Fn(u64), stall: Option<Duration>, install: bool) -> io::Result<Supervised> {
     let exact = match Birth::of(child.id()).map_err(io::Error::from) {
         Ok(birth) => Exact::open(&birth)?,
         Err(error) if gone(&error) => None,
@@ -132,6 +138,7 @@ fn watch(child: &mut Child, stop: Option<&crate::stop::Stop>, wrote: &dyn Fn(u64
     let mut writes = std::collections::HashMap::new();
     // What the group showed of progress, and since when it showed nothing new (`stall` only).
     let (mut shown, mut still) = (std::collections::HashMap::new(), std::time::Instant::now());
+    let mut received = platform::net::Received::default();
     while !exact.wait_for(Duration::from_secs(1))? {
         if canceled {
             continue;
@@ -142,6 +149,9 @@ fn watch(child: &mut Child, stop: Option<&crate::stop::Stop>, wrote: &dyn Fn(u64
             *held = (*held).max(bytes);
         }
         wrote(writes.values().sum());
+        if install {
+            tensorfs::fetch::install_received(received.read(&group));
+        }
         if let Some(stall) = stall {
             // A member whose meter can't be read decides nothing: it counts as moving.
             let mut moved = false;
