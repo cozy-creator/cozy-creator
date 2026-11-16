@@ -2,7 +2,8 @@
 # `cozy-runtime>=0.47.0.dev0` only the open RC's Runtime meets, to the rental frosch as it booted on the 0.25.0 image's Runtime
 # 0.46.0: refused `runtime_floor_unmet` at 07:04:14Z, and Calcifer moved frosch to the RC 2 s later (COZY-48658). Paul (11-16):
 # "It should be a standing rule that we allow version skew"; "if the remote machine is out of date … when it starts up, it
-# should check for an upgraded version and upgrade to that automatically".
+# should check for an upgraded version and upgrade to that automatically"; "I should be able to send jobs and it just works.
+# Either the remote machine or my local machine falls through and catches it."
 # A dev home (`dev = true`) on the session's RC cozy (pod-session `cozy`: a dev-build run of rc/<x>), one rental of $SKU:
 #   boot  local code with such a floor (fixtures/rc-floor) run `--on new:$SKU`, so its install is sent as the rental boots from
 #         the release image: it waits for the rental's move to the RC and completes on the RC's Runtime, never refused
@@ -10,6 +11,9 @@
 #   held  the rental put back by hand on the release image's Runtime and TensorFS (a hold), the same code `--on` it: refused
 #         `runtime_held`, naming the update, before any install; before the fix the install went and was refused
 #         `runtime_floor_unmet`.
+#   refused  let go (off the dev home, so nothing moves), busy on the release Runtime with another package's call, back in the
+#         dev home: the code `--on any` is refused there `runtime_floor_unmet` (no send foresees it), and Calcifer moves the
+#         rental and sends it again, once: it completes on the RC's Runtime. Before the fix it fails as refused.
 # Params: floor (the code's `cozy-runtime` requirement; default the open RC's Runtime minor, `>=0.47.0.dev0`), runtime and
 # tensorfs (the release pair `held` puts back; default the 0.25.0 image's 0.46.0 and 0.25.1).
 . "$(dirname "$0")/lib.sh"
@@ -74,5 +78,39 @@ elif refused runtime_held held; then say "held PASS: refused runtime_held before
 elif refused runtime_floor_unmet held || refused runtime_floor_unmet held-runs; then check "held: the install went to $NAME and was refused runtime_floor_unmet, not runtime_held before it"
 else check "held: refused otherwise: $(tail -c 400 "$OUT/held.txt")"
 fi
-[ "$RC" != 0 ] || say "PASS: the rental moved to the RC before its first work, and held by hand it refused the code by name"
+
+# refused: what no send can foresee is caught where it's refused. Let go off the dev home (nothing moves, the hold goes), the rental
+# stays on the release Runtime; busy with another package, then a dev home again, it isn't moved before its work: the code `--on any`
+# (no machine named, so no move before its install) is refused there `runtime_floor_unmet`; Calcifer moves it and sends it again.
+REL=$OUT/release-floor
+cp -r "$CODE" "$REL" && sed -i -e "s/\"cozy-runtime[^\"]*\"/\"cozy-runtime>=${RUNTIME%.*}\"/" -e 's/^name = "rc-floor"/name = "release-floor"/' "$REL/pyproject.toml" || fail "no release-floor copy"
+grep -v '^dev *=' "$cfg" > "$cfg.new"; mv "$cfg.new" "$cfg"
+cozy restart > "$OUT/restart.txt" 2>&1 || fail "cozy restart off the dev home: $(tail -c 300 "$OUT/restart.txt")"
+step letgo machine update "$NAME" -y || fail "letgo: $(tail -3 "$OUT/letgo.txt")"
+cozy machine show "$NAME" --json > "$OUT/letgo.json"
+jq -e --arg r "$RUNTIME" '.held == null and .status.runtime == $r' "$OUT/letgo.json" > /dev/null || fail "letgo: $NAME is $(jq -c '{held, runtime: .status.runtime}' "$OUT/letgo.json")"
+(cd "$RUN_PROJECT" && cozy run "$REL/wait" seconds:=240 --on "$NAME" > "$OUT/busy.txt" 2>&1) 9>&- & BG="$BG $!"
+for _ in $(seq 60); do
+  (cd "$RUN_PROJECT" && cozy --json run ls --all --on "$NAME" --limit 0) 2> /dev/null | jq -e '.runs[] | select(.status == "in_progress" and (.target | test("wait")))' > /dev/null && break
+  sleep 5
+done || true
+(cd "$RUN_PROJECT" && cozy --json run ls --all --on "$NAME" --limit 0) 2> /dev/null | jq -e '.runs[] | select(.status == "in_progress" and (.target | test("wait")))' > /dev/null ||
+  fail "busy: the wait isn't running on $NAME: $(tail -3 "$OUT/busy.txt")"
+{ echo 'dev = true'; cat "$cfg"; } > "$cfg.new" && mv "$cfg.new" "$cfg"
+cozy restart > "$OUT/restart.txt" 2>&1 || fail "cozy restart into the dev home: $(tail -c 300 "$OUT/restart.txt")"
+t0=$(date +%s%3N)
+step refused run "$CODE/runtime" --on any --yes text=refused; refused_rc=$?
+runs refused-runs
+ran=$( (cd "$RUN_PROJECT" && cozy --json run watch "$(runno refused)" --once --full) | jq -r '.result.runtime // empty')
+# Each run since on it, as `run watch` tells it: the line its resend logged.
+for n in $(jq -r --argjson t "$t0" '.runs[] | select(.kind != "update" and .created_at_ms >= $t) | .number' "$OUT/refused-runs.json" 2> /dev/null); do
+  (cd "$RUN_PROJECT" && cozy run watch "$n" --once)
+done > "$OUT/refused-watch.txt" 2>&1
+caught=$(grep -h 'refused on .*runtime_floor_unmet.*sent again there' "$OUT/refused.txt" "$OUT/refused-watch.txt" | head -1)
+if [ "$refused_rc" != 0 ]; then check "refused: the code failed on $NAME: $(tail -3 "$OUT/refused.txt")"
+elif [ -z "$caught" ]; then check "refused: no refusal was caught: $NAME moved before the send, so this proves nothing (runs: $(jq -c '[.runs[] | {number, kind, status}]' "$OUT/refused-runs.json"))"
+elif [[ $ran != *.dev* ]]; then check "refused: sent again, the code ran on Runtime ${ran:-?}, not the RC's"
+else say "refused PASS: ran on Runtime $ran after:$caught"
+fi
+[ "$RC" != 0 ] || say "PASS: the rental moved to the RC before its first work; held by hand it refused the code by name; a refusal no send foresaw moved it and the code ran"
 exit "$RC"

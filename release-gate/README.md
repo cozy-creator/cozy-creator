@@ -235,7 +235,8 @@ the pod's idle window: its release goes unaccepted, and it ends itself at its pr
 that pair misses takes its own Runtime in its own environment, and the machine's pair stays.
 `rental-boot-first` (cl-1069, LAB2-47826; one cheap GPU pod) runs local code whose Runtime floor only the open RC meets
 `--on new` in a dev home on the session's RC cozy (`cozy=<dev-build run>`): the rental moves to the RC before it takes the code,
-which runs on the RC's Runtime; held by hand on the release pair, the code is refused `runtime_held` before any install.
+which runs on the RC's Runtime; held by hand on the release pair, the code is refused `runtime_held` before any install; let go and
+busy on that pair, the code `--on any` is refused there `runtime_floor_unmet`, and Calcifer moves the rental and sends it again.
 `machine-end` (cl-946, `pods` cheap pods, 3 by default) ends each with `cozy machine end <name>`: what it printed must be its
 Hub's record of the rental (`released` or `failed`, with an end time, only once its provider holds no pod) and Calcifer's.
 
