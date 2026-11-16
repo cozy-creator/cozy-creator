@@ -129,8 +129,9 @@ export class CardView {
       const failed = this.pictures.get("main")
       const unavailable = Boolean(failed?.handle?.failed && !failed.handle.texture)
       const sentence = unavailable ? "Selected image unavailable" : show.error ?? show.note
-      if (sentence) label(unavailable ? "unavailable" : "note", sentence, body.x + 12, body.y + Math.max(8, body.h / 2 - BODY * 1.25), body.w - 24, { size: BODY, color: show.error ? colors.failed : colors.mute }, 2)
-      if (show.words && (!show.picture || node.view.asset?.standing === "making")) this.words(show, body, colors, used, env)
+      // Far out a box is its picture and its name: words too small to read aren't drawn (look-at-your-own-ui).
+      if (sentence && !far) label(unavailable ? "unavailable" : "note", sentence, body.x + 12, body.y + Math.max(8, body.h / 2 - BODY * 1.25), body.w - 24, { size: BODY, color: show.error ? colors.failed : colors.mute }, 2)
+      if (!far && show.words && (!show.picture || node.view.asset?.standing === "making")) this.words(show, body, colors, used, env)
       if (show.duration && !far) {
         const room = width(show.duration, SMALL, true, true) + 12
         this.ink.roundRect(body.x + body.w - room - 6, body.y + body.h - SMALL * 1.5 - 6, room, SMALL * 1.5, 4).fill({ color: 0x000000, alpha: 0.55 })
@@ -138,7 +139,7 @@ export class CardView {
       }
       if (show.progress?.phase === "local") {
         this.ink.rect(body.x, body.y, body.w * (show.progress.fraction ?? 0), body.h).fill({ color: colors.running, alpha: 0.2 })
-        label("progress", show.progress.state, body.x + 12, body.y + body.h / 2 - BODY / 2, body.w - 24, { size: BODY, color: colors.ink, bold: true })
+        if (!far) label("progress", show.progress.state, body.x + 12, body.y + body.h / 2 - BODY / 2, body.w - 24, { size: BODY, color: colors.ink, bold: true })
       }
       this.header(show, node, state, w, far, colors, label, env)
       if (!far) this.under(show, body, w, colors, label)
