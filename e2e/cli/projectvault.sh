@@ -490,7 +490,8 @@ vault_restart() (
   # Views mounted under the fixture, live or dead.
   mounts() { awk '$0 ~ / - fuse\.securefs / {print $5}' /proc/self/mountinfo | grep -F -- "$work/" || true; }
   mounted() { mounts | grep -qxF -- "$1"; }
-  dead() { stat -- "$1" 2>&1 | grep -q 'not connected'; }
+  # statfs asks the provider; a stat can be answered from cached attributes for a while.
+  dead() { stat -f -- "$1" 2>&1 | grep -q 'not connected'; }
   # A dead mount left at the end would break the artifact upload.
   trap 'in_project "$P" --json vault lock > /dev/null 2>&1 || true; rm -rf -- "$secrets"
     mounts | while IFS= read -r m; do fusermount3 -uz "$m" 2> /dev/null || fusermount -uz "$m" 2> /dev/null || true; done' EXIT
@@ -541,6 +542,11 @@ vault_restart() (
   [ ! -e "$u_runtime" ] || check "vault restart: the unknown folder's runtime folder stays: $u_runtime"
   state=$(jq -r .state "$work/after.json" 2> /dev/null)
   [ "$state" = locked ] || check "vault restart: the project is $state after Calcifer's restart, not locked"
+  # A lock on the project whose session Calcifer lost leaves no view of it mounted, or refuses; never says locked with one left.
+  if in_project "$P" --json vault lock > "$work/lost-lock.json" 2> "$work/lost-lock.err"; then
+    [ -z "$(mounts | grep -F -- "$P/.vault-runtime/")" ] \
+      || check "vault restart: lock said $(jq -r '.vault.state' "$work/lost-lock.json") with a view left: $(mounts | grep -F -- "$P/.vault-runtime/" | tr '\n' ' ')"
+  fi
 
   # It unlocks again, and reads what it wrote before the kill.
   in_project "$P" --json vault unlock --passphrase-file "$secrets/pass" --idle 0 > "$work/reunlocked.json" 2>&1 \
