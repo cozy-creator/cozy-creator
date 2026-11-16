@@ -36,10 +36,19 @@ use tensorfs::{
 /// Where `header`, a checkpoint this machine pulled from a Hub (`held_models::Pulled`), comes
 /// from: `source`'s Hub. None for one never pulled (local).
 pub(crate) fn remote(machine: &Machine, source: &hub::Source, header: &ObjectRef) -> io::Result<Option<Remote>> {
-    if Pulled::of(machine.store(), header)?.is_none() {
+    if hub_pull(machine.store(), header)?.is_none() {
         return Ok(None);
     }
     origin::remote(machine, source).map(Some).map_err(io::Error::other)
+}
+
+/// The Hub checkpoint `header` is, as this machine pulled it; a view's (its LoRAs composed on a base, `adapter::compose`) is
+/// its base's, whose chunks it reads. None for one never pulled (local).
+pub(crate) fn hub_pull(store: &Store, header: &ObjectRef) -> io::Result<Option<Pulled>> {
+    match storage::view(&header.sha256) {
+        Some(view) => Pulled::of(store, &storage::held(store, &view.recipe.base)?),
+        None => Pulled::of(store, header),
+    }
 }
 
 /// The checkpoint `id` (`sha256:<hex>`), its structure here.
@@ -90,9 +99,12 @@ pub(crate) fn whole(store: &Store, header: &str, components: &[String]) -> bool 
     whole
 }
 
-/// Bytes as GiB to a tenth, for people.
+/// What a queued run waits on while the models it needs download (`waiting_on` says how far).
+pub(crate) const WAITING_FOR_MODELS: &str = "waiting for the models to download";
+
+/// Bytes for people (`reclaim::size`).
 fn gib(bytes: u64) -> String {
-    format!("{:.1} GiB", bytes as f64 / (1u64 << 30) as f64)
+    crate::reclaim::size(bytes)
 }
 
 /// A Unix ms instant as its UTC clock time, `HH:MM:SSZ`.
@@ -103,11 +115,20 @@ fn clock(unix_ms: u64) -> String {
 
 pub(crate) fn failed(refusal: Refusal) -> io::Error {
     let failure = match refusal.code {
-        Code::CAPACITY_EXHAUSTED => format!("machine_disk_full: {refusal}"),
-        Code::CREDENTIAL_REQUIRED => format!("hub_credential_refused: {}", refusal.detail),
-        _ => format!("model_fetch_failed: {refusal}"),
+        Code::CAPACITY_EXHAUSTED => format!("machine_disk_full: This machine's disk is full ({}).", refusal.detail),
+        Code::CREDENTIAL_REQUIRED => format!("hub_credential_refused: The Hub refused access to a private model ({}).", refusal.detail),
+        _ => format!("model_fetch_failed: Couldn't download the model ({refusal})."),
     };
     io::Error::other(failure)
+}
+
+/// A failure as `failed` words it: its code (a full disk, else a failed fetch) and what it says.
+pub(crate) fn code_of(failure: &str) -> (&'static str, &str) {
+    let words = |code: &str| failure.strip_prefix(code).and_then(|rest| rest.strip_prefix(": "));
+    match words("machine_disk_full") {
+        Some(why) => ("machine_disk_full", why),
+        None => ("model_fetch_failed", ["model_fetch_failed", "hub_credential_refused"].into_iter().find_map(words).unwrap_or(failure)),
+    }
 }
 
 /// Only upfront required inputs gate GPU admission; on-demand ones come when a stage reads them.
@@ -435,7 +456,7 @@ impl Fetch {
         let each: Vec<String> = wants.into_iter().map(|(label, remote, objects)| {
             let absent: Vec<ObjectRef> = objects.iter().filter(|o| !self.store().holds(o)).cloned().collect();
             if absent.is_empty() {
-                return format!("{label}: all {} chunks on disk, not yet bound (its want is unanswered)", objects.len());
+                return format!("{label} is downloaded and being set up ({} pieces on disk)", objects.len());
             }
             let states = self.machine.fetching(&remote, &absent);
             let mut by_phase: Vec<(String, usize)> = vec![];
@@ -453,18 +474,18 @@ impl Fetch {
                 hedged += state.map_or(0, |s| s.hedged);
             }
             let phases: Vec<String> = by_phase.iter().map(|(p, n)| format!("{n} {p}")).collect();
-            let last = if moved == 0 { String::new() } else { format!(", last moved {}", clock(moved)) };
+            let last = if moved == 0 { String::new() } else { format!("; last moved at {}", clock(moved)) };
             let attempt = match unanswered {
                 0 => String::new(),
-                unanswered => format!(", {unanswered} attempts in a row moved nothing (of {})", tensorfs::fetch::ATTEMPTS),
+                unanswered => format!("; {unanswered} of {} tries in a row got nothing", tensorfs::fetch::ATTEMPTS),
             };
             let hedges = match hedged {
                 0 => String::new(),
-                1 => ", 1 slow request asked again on another connection".to_owned(),
-                hedged => format!(", {hedged} slow requests asked again on another connection"),
+                1 => "; 1 slow request tried again on another connection".to_owned(),
+                hedged => format!("; {hedged} slow requests tried again on another connection"),
             };
-            format!("{label}: {} of {} chunks to fetch, {} of their {} received ({}){last}{attempt}{hedges}",
-                absent.len(), objects.len(), gib(reached), gib(length), phases.join(", "))
+            format!("{label}, {} of {} ({} of {} pieces left: {}{last}{attempt}{hedges})",
+                gib(reached), gib(length), absent.len(), objects.len(), phases.join(", "))
         }).collect();
         Some(each.join("; "))
     }
@@ -489,7 +510,7 @@ impl Fetch {
                 self.held.lock().unwrap().push(checkpoint);
                 continue;
             }
-            let pulled = Pulled::of(self.store(), checkpoint.id())?;
+            let pulled = hub_pull(self.store(), checkpoint.id())?;
             let model = pulled.as_ref().map_or_else(|| header.clone(), |p| p.model.clone());
             let (mut absent_all, mut here_all) = (vec![], 0);
             for component in components {
@@ -546,7 +567,7 @@ impl Fetch {
             for (header, components) in set {
                 let checkpoint = checkpoint(self.store(), header)?;
                 if let Some(remote) = self.source(checkpoint.id())? {
-                    let model = Pulled::of(self.store(), checkpoint.id())?.map_or_else(|| header.clone(), |p| p.model);
+                    let model = hub_pull(self.store(), checkpoint.id())?.map_or_else(|| header.clone(), |p| p.model);
                     let each: Vec<Vec<String>> = match components.is_empty() {
                         true => vec![vec![]],
                         false => components.iter().map(|component| vec![component.clone()]).collect(),
@@ -567,7 +588,7 @@ impl Fetch {
                 .map(|o| o.length)
                 .sum();
             if let Some(name) = guessed.filter(|_| taken + absent > free) {
-                lined.held_back.push(format!("{name}: weights of {} aren't fetched ahead, {} free beside what comes first", gib(absent), gib(free.saturating_sub(taken))));
+                lined.held_back.push(format!("{name} ({}) isn't downloaded ahead of time: only {} of disk is free beside what's needed first", gib(absent), gib(free.saturating_sub(taken))));
                 continue;
             }
             taken += absent;
@@ -813,10 +834,10 @@ pub(crate) fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
                     // The log line's state is its phases and counts: bytes and times change it not.
                     let state = phases(on);
                     if state != said {
-                        tracing::info!("run {id}: waiting for required model inputs: {on}");
+                        tracing::info!("run {id}: {WAITING_FOR_MODELS}: {on}");
                         said = state;
                     }
-                    if let Err(error) = engine.waiting(&id, Some(format!("waiting for required model inputs: {on}"))) {
+                    if let Err(error) = engine.waiting(&id, Some(format!("{WAITING_FOR_MODELS}: {on}"))) {
                         tracing::warn!("run {id}: what it waits on: {error}");
                     }
                 }

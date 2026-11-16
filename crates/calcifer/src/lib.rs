@@ -91,7 +91,7 @@ pub(crate) enum Error {
     Store(#[from] StoreError),
     #[error("{0}")]
     Invalid(String),
-    #[error("cannot stage input {path}: {message}")]
+    #[error("Cozy couldn't prepare the input {path}: {message}")]
     Input { path: PathBuf, message: String },
     /// Refused at submit, before anything is recorded.
     #[error("{0}")]
@@ -111,6 +111,8 @@ pub(crate) struct Calcifer {
     drivers: Mutex<HashMap<RunId, Arc<Notify>>>,
     /// Runs told to cancel whose request is still to be kept: a project's edit held its writer when it asked.
     canceling: Mutex<HashSet<String>>,
+    /// Queued runs told to cancel on their machine to go to another that finishes them sooner (cl-1073), by id: where each goes.
+    moving: Mutex<HashMap<RunId, String>>,
     machines: Mutex<HashMap<String, Machine>>,
     tasks: Mutex<JoinSet<()>>,
     /// Orders staging a run's inputs against deleting a settled run's.
@@ -182,6 +184,8 @@ impl Drop for Canceling {
 #[derive(Default)]
 struct Live {
     waiting: Option<String>,
+    /// Its place in its machine's line while it waits there, as the machine says it (1 next).
+    place: Option<u32>,
     progress: Option<Progress>,
     moving: (String, VecDeque<(Instant, u64)>),
     clock: Option<eta::Clock>,
@@ -197,6 +201,8 @@ struct Live {
     width: u32,
     slow_said: bool,
     slow_asked: Option<Instant>,
+    /// The last wait its machine named that its log kept (`wait_said`).
+    said_wait: Option<String>,
 }
 
 /// A log line at a level its followers are warned at, as `cozy run` says it.
@@ -260,7 +266,7 @@ impl From<LinkError> for Stop {
             }
             LinkError::Released(message) => Stop::Released(message),
             LinkError::NoRun => Stop::Lost,
-            LinkError::NotFound => Stop::Unanswered("the machine does not know the run".into()),
+            LinkError::NotFound => Stop::Unanswered("the machine has no record of this run".into()),
             LinkError::Unreachable(message) => Stop::Unreachable(message),
             LinkError::Unauthorized(message) => Stop::Unauthorized(message),
             e @ LinkError::Unanswered(_) => Stop::Unanswered(e.to_string()),
@@ -271,7 +277,7 @@ impl From<LinkError> for Stop {
 
 impl From<StoreError> for Stop {
     fn from(e: StoreError) -> Self {
-        Stop::Waiting(format!("Calcifer cannot record it: {e}"))
+        Stop::Waiting(format!("Cozy couldn't save this run's progress: {e}"))
     }
 }
 
@@ -303,6 +309,7 @@ impl Calcifer {
             live: Mutex::default(),
             drivers: Mutex::default(),
             canceling: Mutex::default(),
+            moving: Mutex::default(),
             machines: Mutex::default(),
             tasks: Mutex::default(),
             staging: Mutex::default(),
@@ -394,13 +401,12 @@ impl Calcifer {
         Ok(Submitted { run: self.record(&row)?, replay: !fresh, notes: vec![], preparing: false, lock: None })
     }
 
-    /// Carries out Calcifer's own run `id` again, as an earlier Calcifer left it (`hub::jobs::resume`): said in its log.
+    /// Carries out Calcifer's own run `id` again, as an earlier Calcifer left it (`hub::jobs::resume`).
     pub(crate) fn here_again<F, Fut>(self: &Arc<Self>, id: RunId, work: F)
     where
         F: FnOnce(Here) -> Fut + Send + 'static,
         Fut: Future<Output = Result<serde_json::Value, ::api::error::Error>> + Send + 'static,
     {
-        Here { calcifer: self.clone(), id: id.clone() }.say("Calcifer restarted under this; it starts again");
         self.start_here(id, work);
     }
 
@@ -636,9 +642,9 @@ impl Calcifer {
     /// What names `row` to a person (cl-987): `KEY-N`, its project's key and its number there, `COZY-N` for Calcifer's own; its
     /// number alone while its project isn't open. Naming a run never opens its project (a lock may be closing it).
     pub(crate) fn run_name(&self,row:&RunRow)->String {
-        let Some(root)=&row.project_root else { return format!("{}-{}", ::api::calcifer::project::MACHINE_KEY, row.number) };
+        let Some(root)=&row.project_root else { return ::api::calcifer::project::run_label(::api::calcifer::project::MACHINE_KEY, row.number) };
         match self.live_owners().into_iter().find(|owner| owner.root()==root) {
-            Some(owner) => format!("{}-{}", owner.key(), row.number),
+            Some(owner) => ::api::calcifer::project::run_label(&owner.key(), row.number),
             None => row.number.to_string(),
         }
     }
@@ -647,9 +653,9 @@ impl Calcifer {
     }
 
     fn run_scope(&self,id:&str)->Result<Option<private_io::Scope>,::api::error::Error> {
-        let owner=lock(&self.run_owners).get(id).cloned().ok_or_else(||::api::error::Error::new(::api::error::Kind::Conflict,"run_owner_required","the run's storage owner is unavailable"))?;
+        let owner=lock(&self.run_owners).get(id).cloned().ok_or_else(||::api::error::Error::new(::api::error::Kind::Conflict,"run_owner_required","The project this run belongs to isn't open right now. Try again in a moment."))?;
         owner.map(|owner| {
-            let _admission=owner.store().map_err(|error|match error {StoreError::Locked(code)=>::api::error::Error::new(::api::error::Kind::Conflict,code,"the project storage is changing"),error=>api::Refusal::from(Error::from(error)).0})?;
+            let _admission=owner.store().map_err(|error|match error {StoreError::Locked(code)=>::api::error::Error::new(::api::error::Kind::Conflict,code,"The project is being updated right now. Try again in a moment."),error=>api::Refusal::from(Error::from(error)).0})?;
             private_io::scope_for_project(owner.project_id(),owner.root())
         }).transpose()
     }
@@ -707,12 +713,31 @@ impl Calcifer {
         Ok(values)
     }
 
+    /// The machine a run recorded under `name` is now (cl-1089): the one so named, else the one whose former name (the handle a
+    /// rental has until its Hub names its host) or rental id it is. A project's run keeps the name it was sent to, which a rename
+    /// doesn't reach. None: nothing here was ever so named. `local` is always itself.
+    pub(crate) fn machine_now(&self, name: &str) -> store::Result<Option<MachineRow>> {
+        if name == "local" {
+            return self.store.machine(name);
+        }
+        if let Some(row) = self.store.machine(name)? {
+            return Ok(Some(row));
+        }
+        let rows = self.store.machines_named(name)?;
+        Ok(rows.iter().find(|row| row.state != ::api::calcifer::MachineState::Ended).or(rows.first()).cloned())
+    }
+
+    /// `name` as a run's machine is called now (`machine_now`): itself when nothing else names it.
+    pub(crate) fn machine_name_now(&self, name: &str) -> String {
+        self.machine_now(name).ok().flatten().map_or_else(|| name.to_owned(), |row| row.name)
+    }
+
     /// Each machine's function runs (accepted, waiting) across Calcifer's journal and every open project's: counts only.
     pub(crate) fn machine_load(&self) -> store::Result<HashMap<String, (u32, u32)>> {
         let mut load = HashMap::new();
         for journal in self.each_store(|store| store.machine_load())? {
             for (machine, (running, queued)) in journal {
-                let sum: &mut (u32, u32) = load.entry(machine).or_default();
+                let sum: &mut (u32, u32) = load.entry(self.machine_name_now(&machine)).or_default();
                 *sum = (sum.0 + running, sum.1 + queued);
             }
         }
@@ -857,8 +882,8 @@ impl Calcifer {
                 || submit.out.is_some() || !submit.inputs.is_empty() || !submit.spec.inputs.is_empty()
                 || submit.spec.payload.is_some() || local_source))
         {
-            return Err(Error::Refused(::api::error::Error::new(::api::error::Kind::Validation, "project_required", "function calls and project-owned data require an explicit project")
-                .remedy("cd into a project folder, or create one with cozy new").next("cozy new")));
+            return Err(Error::Refused(::api::error::Error::new(::api::error::Kind::Validation, "project_required", "Running a function needs a project.")
+                .remedy("Run this from a project folder, or create a project first.").next("cozy new")));
         }
         Ok(store::RunStore::Maintenance(self.maintenance_store()))
     }
@@ -887,7 +912,7 @@ impl Calcifer {
         if let Some(project)=submit.project.as_deref() {
             let (id,root)={ let store=self.project_store(project)?; let(id,root)=store.execution_scope(); (id.to_owned(),root.to_owned()) };
             submit.on=private_io::check_project_placement(&id,&root,&[submit.on]).map_err(Error::Refused)?.into_iter().next()
-                .ok_or_else(||Error::Invalid("project_execution_unavailable".into()))?;
+                .ok_or_else(||Error::Invalid("None of this project's machines can take this run right now.".into()))?;
         }
         if submit
             .spec
@@ -896,7 +921,7 @@ impl Calcifer {
             .is_some_and(|options| !options.token.is_empty())
         {
             return Err(Error::Invalid(
-                "a stored submission cannot contain a TensorFS token; omit tensorfs options to use this computer's Hub sign-in at send time".into(),
+                "A saved run can't include a TensorFS token. Leave out the tensorfs options, and Cozy uses this computer's Hub sign-in when it sends the run.".into(),
             ));
         }
         // A LoRA given without a strength runs at its recommended one: here, the one place every run is recorded.
@@ -966,7 +991,7 @@ impl Calcifer {
                 &row.id,
                 match &row.machine {
                     Some(machine) => format!("sending to {machine}"),
-                    None => "waiting for a machine to be chosen".into(),
+                    None => "waiting for Cozy to pick a machine".into(),
                 },
             );
             let created = self.run_store(row.id.as_str())?.events_after(row.id.as_str(), 0)?;
@@ -1012,10 +1037,45 @@ impl Calcifer {
         }
     }
 
+    /// Moves run `id`, waiting for its machine, to `machine`, which finishes it sooner (cl-1073): one held here (its machine updating)
+    /// goes there now; one in its machine's queue is canceled there before it starts and sent again, the same run, there
+    /// (`Store::moved`). Whether it goes: one that started, is canceled, or reads a file only its machine keeps, stays.
+    pub(crate) fn move_to(self: &Arc<Self>, id: &RunId, machine: &str) -> bool {
+        let Ok(Some(row)) = self.with_run_store(id.as_str(), |store| store.run(id.as_str())) else { return false };
+        if !matches!(row.state, State::Queued | State::Accepted) || row.cancel_requested || row.started_at_ms.is_some() || row.machine.as_deref() == Some(machine) {
+            return false;
+        }
+        let kept_there = |input: &v1::InputFile| !row.inputs.iter().any(|(digest, _)| digest.to_string() == input.digest);
+        if row.spec.inputs.iter().any(kept_there) {
+            return false;
+        }
+        if row.state == State::Queued {
+            return match self.with_run_store(id.as_str(), |store| store.moved(id.as_str(), machine)) {
+                Ok(Some(events)) => {
+                    self.publish(id, events);
+                    self.wake(id);
+                    true
+                }
+                _ => false,
+            };
+        }
+        if lock(&self.moving).insert(id.clone(), machine.to_owned()).is_some() {
+            return false;
+        }
+        self.stop_at_machine(id);
+        true
+    }
+
+    /// Whether run `id` is going to another machine (`move_to`).
+    pub(crate) fn moving(&self, id: &RunId) -> bool {
+        lock(&self.moving).contains_key(id)
+    }
+
     /// Asks run `id`'s machine to cancel it, by the link its driver uses; what it answers is the driver's to record.
     async fn tell_cancel(self: &Arc<Self>, id: &RunId) {
         let Ok(Some(row)) = self.with_run_store(id.as_str(), |store| store.run(id.as_str())) else { return };
         let (Some(machine), true) = (row.machine.clone(), matches!(row.state, State::Sent | State::Accepted)) else { return };
+        let machine = self.machine_name_now(&machine);
         let Ok(Some(link)) = self.link(&machine) else { return };
         let scope = match self.run_store(id.as_str()) {
             Ok(store::RunStore::Project(store)) => Some((store.project_id().to_owned(), store.execution_scope().1.to_owned())),
@@ -1035,13 +1095,16 @@ impl Calcifer {
     pub(crate) fn record(&self, row: &RunRow) -> Result<Run, Error> {
         let journal=self.row_store(row)?;
         let mut run=journal.record(row)?;
+        if let Some(machine) = &run.machine { run.machine = Some(self.machine_name_now(machine)); }
         let owned=match &journal {store::RunStore::Project(store)=>row.owner==store.project_id(),store::RunStore::Maintenance(_)=>true};
         if let Some((id, name)) = project_of(row) {
             (run.project_id, run.project) = (Some(id), Some(name));
         }
         if owned { self.live_gpu(&mut run); }
+        let mut place = None;
         if let Some(live) = lock(&self.live).get(&row.id).filter(|_| owned) {
             run.waiting.clone_from(&live.waiting);
+            place = live.place;
             run.progress.clone_from(&live.progress);
             let said: Vec<Warning> = (live.warned.iter())
                 .filter(|text| !run.warnings.iter().any(|warning| warning.message == **text))
@@ -1055,16 +1118,14 @@ impl Calcifer {
         }
         if queued(&run) {
             // Its machine's count, else the runs waiting ahead of it for that machine.
-            let told = (run.waiting.as_deref())
-                .and_then(|w| w.split("position ").nth(1)?.split(' ').next()?.parse().ok());
-            run.queue_position = match told {
+            run.queue_position = match place {
                 Some(place) => Some(place),
                 None => Some(journal.queued_ahead(run.machine.as_deref(),run.number)?+1),
             };
         }
         run.stalled=owned.then(||self.stalled(&run)).flatten();
-        if row.custody_pending && row.state!=State::Settled {run.stalled=None;run.waiting=Some("legacy worker custody must be verified before this execution can resume".into());run.progress=None;run.queue_position=None;}
-        if !owned && row.state!=State::Settled {run.waiting=Some("copied history; this execution is not resumed".into());run.progress=None;run.queue_position=None;}
+        if row.custody_pending && row.state!=State::Settled {run.stalled=None;run.waiting=Some("waiting to confirm the old worker has let go of this run before it resumes".into());run.progress=None;run.queue_position=None;}
+        if !owned && row.state!=State::Settled {run.waiting=Some("copied from another project's history, so it won't resume here".into());run.progress=None;run.queue_position=None;}
         Ok(run)
     }
 
@@ -1106,13 +1167,13 @@ impl Calcifer {
             if run.warnings.iter().any(|warning| warning.code == "no_progress") {
                 continue;
             }
-            let rate = stalled.usd_micros_per_hour.map_or(String::new(), |micros| format!(", which costs ${:.2} an hour", micros as f64 / 1e6));
+            let rate = stalled.usd_micros_per_hour.map_or(String::new(), |micros| format!(", which costs ${:.2}/h", micros as f64 / 1e6));
             let minutes = (store::now_ms() - stalled.since_ms) / 60_000;
             let warning = Warning {
                 code: "no_progress".into(),
                 message: format!(
-                    "run {} has made no progress for {minutes} min on {}{rate}. It keeps running until you end it: cozy run cancel {}",
-                    run.name, stalled.machine, run.name
+                    "Run {} hasn't made progress for {minutes}m on {}{rate}. It keeps running until you cancel it.",
+                    run.name, stalled.machine
                 ),
             };
             warn!(run = %id, "{}", warning.message);
@@ -1172,7 +1233,16 @@ impl Calcifer {
     pub(crate) fn machine_ended(&self, name: &str, reason: &str) -> Result<(), Error> {
         let mut events = self.store.machine_ended(name, reason)?;
         let served = self.store.machine(name)?.is_some_and(|machine| machine.served);
-        for owner in self.owners() { if let Ok(store) = owner.store() { events.extend(store.runs_on_ended_machine(name, served, reason)?); } }
+        // A project's runs sent to it by its former name keep that name (cl-1089).
+        let alias = self.store.alias(name)?;
+        let names: Vec<&str> = std::iter::once(name).chain(alias.as_deref()).collect();
+        for owner in self.owners() {
+            if let Ok(store) = owner.store() {
+                for name in &names {
+                    events.extend(store.runs_on_ended_machine(name, served, reason)?);
+                }
+            }
+        }
         let mut woken = HashSet::new();
         for (id, event) in events {
             self.publish(&id, vec![event]);
@@ -1286,7 +1356,7 @@ impl Calcifer {
             names.sort();
             names.dedup();
             let rest: u64 = ahead.iter().map(|op| op.bytes_total.saturating_sub(op.bytes_done)).sum();
-            behind.insert(run.clone(), format!("waiting for {}'s download ({} ahead)", names.join(" and "), bytes(rest as f64)));
+            behind.insert(run.clone(), format!("waiting for {} to finish downloading ({} to go)", names.join(" and "), bytes(rest as f64)));
         }
         let was = lock(&self.behind).insert(machine.to_owned(), behind.clone()).unwrap_or_default();
         for (id, reason) in was.into_iter().filter(|(id, _)| !behind.contains_key(id)) {
@@ -1370,6 +1440,18 @@ impl Calcifer {
             entry.waiting = Some(reason.clone());
             let _ = self.events.send((id.clone(), Event::Waiting { reason }));
         }
+    }
+
+    /// A wait its machine names, kept in the run's log once as it begins, at the machine's time: whether it is news there
+    /// (cl-1086: a wait no line names was a hang to whoever read the logs).
+    fn wait_said(&self, id: &RunId, reason: &str) -> bool {
+        let mut live = lock(&self.live);
+        let said = &mut live.entry(id.clone()).or_default().said_wait;
+        let news = said.as_deref() != Some(reason);
+        if news {
+            *said = Some(reason.to_owned());
+        }
+        news
     }
 
     /// Records the run's progress, with how far it is, at what rate its bytes move and its time
@@ -1517,6 +1599,13 @@ impl Calcifer {
         if let Err(error) = self.project_store(project).and_then(|store| store.record_placement(id, placed)) {
             tracing::warn!("run {id}: where it was placed isn't kept: {error}");
         }
+    }
+
+    /// Run `id`'s time left on its machine as its clock says it now (cl-1073): what a quote of that machine counts of it. None: no clock,
+    /// or one with nothing to go on.
+    pub(crate) fn left_there(&self, id: &str) -> Option<::api::estimate::Left> {
+        let id = RunId::try_from(id.to_owned()).ok()?;
+        lock(&self.live).get(&id)?.clock.as_ref()?.left_there(store::now_ms() as f64)
     }
 
     pub(crate) fn quoted(&self, id: &RunId, quoted: eta::Quoted) {
@@ -1683,17 +1772,43 @@ impl Calcifer {
                 // A rental ordered for it says what it rents (`Rentals::rent_for`) until it is named.
                 let renting = lock(&self.live).get(id).and_then(|live| live.waiting.as_deref()).is_some_and(|w| w.starts_with("renting "));
                 if run.wants != "any" && !renting {
-                    self.waiting(id, "waiting for a machine to be chosen".into());
+                    self.waiting(id, "waiting for Cozy to pick a machine".into());
                 }
                 wake.notified().await;
                 continue;
             };
+            // Sent to a rental by its handle before its Hub named its host, a project's run keeps the handle (cl-1089): it follows the
+            // machine to its name now; with nothing so named, it settles as on an ended machine, never waits for one.
+            match self.machine_now(&name) {
+                Ok(Some(machine)) if machine.name != name => {
+                    match self.with_run_store(id.as_str(), |store| store.repoint(id.as_str(), &name, &machine.name)) {
+                        Ok(events) => self.publish(id, events),
+                        Err(e) => warn!(run = %id, "{e}"),
+                    }
+                    continue;
+                }
+                Ok(None) => {
+                    let gone = format!("{name} is no machine here");
+                    match self.with_run_store(id.as_str(), |store| store.runs_on_ended_machine(&name, true, &gone)) {
+                        Ok(events) => {
+                            for (settled, event) in events {
+                                self.publish(&settled, vec![event]);
+                                self.wake(&settled);
+                            }
+                        }
+                        Err(e) => warn!(run = %id, "{e}"),
+                    }
+                    pause.wait(wake, None).await;
+                    continue;
+                }
+                _ => {}
+            }
             // Sent now, it would run on what the machine is leaving, or go as it restarts. An update already with the machine
             // finishes what it has first, and what's held here goes to what it became.
             if run.state == State::Queued && run.kind != ::api::calcifer::Kind::Update {
                 let mut settled = self.machine_watch(&name);
                 if self.store.updating(&name).unwrap_or_default() {
-                    self.waiting(id, format!("getting {name} ready"));
+                    self.waiting(id, format!("waiting for {name} to finish updating"));
                     tokio::select! {
                         _ = settled.changed() => {}
                         _ = wake.notified() => {}
@@ -1708,13 +1823,13 @@ impl Calcifer {
                 && let Some(machines) = self.machines()
                 && let Err(e) = {
                     if !machines.local_runs() {
-                        self.waiting(id, "waiting for local to start".into());
+                        self.waiting(id, "waiting for this computer's machine to start".into());
                     }
                     machines.local_up().await
                 }
             {
                 if run.state != State::Queued {
-                    self.waiting(id, format!("local cannot start: {}", e.message));
+                    self.waiting(id, format!("this computer's machine can't start: {}", e.message));
                     pause.wait(wake, None).await;
                 } else {
                     // Not answering (cl-977): an `any` run goes to another machine, as from one offline.
@@ -1740,7 +1855,7 @@ impl Calcifer {
                 }
             };
             if machine.state == ::api::calcifer::MachineState::Ended {
-                let reason = machine.reason.unwrap_or_else(|| "it ended".into());
+                let reason = machine.reason.unwrap_or_else(|| "the machine ended".into());
                 if let Err(e) = self.machine_ended(&name, &reason) {
                     warn!(run = %id, "{e}");
                     pause.wait(wake, None).await;
@@ -1751,7 +1866,7 @@ impl Calcifer {
             // again, any other fails), and a sent one waits for it to come back or end. Nothing
             // dials it meanwhile.
             if let Some(reason) = self.offline(&name) {
-                let message = format!("{name} is offline: {reason}");
+                let message = format!("{name} is offline ({reason}).");
                 if run.state == State::Queued {
                     let left = match (run.pinned, run.wants.as_str()) {
                         (false, "any") => self.with_run_store(id.as_str(), |store| store.unplace(id.as_str())),
@@ -1783,7 +1898,7 @@ impl Calcifer {
                     (false, "any") => self.with_run_store(id.as_str(), |store| store.unplace(id.as_str())),
                     _ => self.with_run_store(id.as_str(), |store| store.fail(id.as_str(), Reason {
                         code: "machine_broken".into(),
-                        message: format!("{name} is broken: {}", broken.message),
+                        message: format!("{name} isn't working ({}). Run it on another machine, or rent a new one.", broken.message),
                         next: vec![format!("cozy run {} … --on new", run.target)],
                         ..Default::default()
                     })),
@@ -1795,14 +1910,14 @@ impl Calcifer {
                 continue;
             }
             let Some(link) = link else {
-                self.waiting(id, format!("waiting for {name} to start"));
+                self.waiting(id, format!("waiting for {name} to start up"));
                 tokio::select! {
                     _ = changed.changed() => {}
                     _ = wake.notified() => {}
                 }
                 continue;
             };
-            // Work goes only to a machine on this cozy's minor: one on another is updated first, or the run fails saying how.
+            // Work goes to a machine of any version; one on an older minor this computer may move is updated first (cl-1069).
             if run.state == State::Queued
                 && run.kind != ::api::calcifer::Kind::Update
                 && let Some(machines) = self.machines()
@@ -1811,25 +1926,17 @@ impl Calcifer {
                 match machines.current(&name).await {
                     Ok(None) => {}
                     Ok(Some(update)) => {
-                        self.waiting(id, format!("updating {name} first (run {}: {})", update.name, update.target));
+                        self.waiting(id, format!("updating {name} first (run {}, {})", update.name, update.target));
                         tokio::select! {
                             _ = settled.changed() => {}
                             _ = wake.notified() => {}
                         }
                         continue;
                     }
-                    Err(e) if e.code == crate::update::OTHER_MINOR => {
-                        let reason = Reason { code: e.code, message: e.message, next: e.next, ..Default::default() };
-                        match self.with_run_store(id.as_str(), |store| store.fail(id.as_str(), reason)) {
-                            Ok(events) => self.publish(id, events),
-                            Err(e) => warn!(run = %id, "{e}"),
-                        }
-                        continue;
-                    }
-                    // Not known yet (its status unread, a link down): asked again.
+                    // Not known yet (booting, its status unread, a link down): asked again once it says more.
                     Err(e) => {
                         self.waiting(id, e.message);
-                        pause.wait(wake, None).await;
+                        pause.wait(wake, Some(&mut settled)).await;
                         continue;
                     }
                 }
@@ -1842,7 +1949,7 @@ impl Calcifer {
                 Err(Stop::Unreachable(message)) => {
                     let reason = match self.machines() {
                         Some(machines) => machines.unanswered(&name, &message),
-                        None => format!("{name} is unreachable: {message}"),
+                        None => format!("can't reach {name}: {message}"),
                     };
                     self.waiting(id, reason);
                     pause.wait(wake, Some(&mut changed)).await;
@@ -1852,7 +1959,7 @@ impl Calcifer {
                 Err(Stop::Unanswered(message)) => {
                     if let Some(age) = pause.failed() {
                         let age = ::api::calcifer::clock(age.as_millis() as i64);
-                        self.waiting(id, format!("no answer from {name} yet ({age}): {message}"));
+                        self.waiting(id, format!("{name} hasn't answered for {age}: {message}"));
                         pause.wait(wake, Some(&mut changed)).await;
                     }
                 }
@@ -1873,7 +1980,7 @@ impl Calcifer {
                     *asked = asked.saturating_add(1);
                     let wait = BROKEN_ASKED_FIRST.saturating_mul(1u32 << (*asked - 1).min(5)).min(BROKEN_ASKED_MOST);
                     let age = ::api::calcifer::clock(since.elapsed().as_millis() as i64);
-                    self.waiting(id, format!("{name} fails when asked about this run ({age}), asked again in {} s: {code}: {message}", wait.as_secs()));
+                    self.waiting(id, format!("{name} has been failing to report on this run for {age}; asking again in {}s ({code}: {message})", wait.as_secs()));
                     tokio::select! {
                         () = tokio::time::sleep(wait) => {}
                         () = wake.notified() => {}
@@ -1889,7 +1996,7 @@ impl Calcifer {
                 Err(Stop::Unauthorized(message)) => {
                     let key = self.machines().and_then(|m| m.controller_key().ok()).unwrap_or_default();
                     let said = format!(
-                        "{name} does not admit this controller's key ({message}): on {name}, cozy machine authorize {key}"
+                        "{name} doesn't accept this computer's key ({message}). Authorize this computer's key on {name}."
                     );
                     if run.state == State::Accepted {
                         self.waiting(id, said);
@@ -1899,6 +2006,7 @@ impl Calcifer {
                             code: "machine_unauthorized".into(),
                             message: said,
                             origin: "machine".into(),
+                            next: vec![format!("cozy machine authorize {key}")],
                             ..Default::default()
                         };
                         match self.with_run_store(id.as_str(), |store| store.fail(id.as_str(), reason)) {
@@ -1913,7 +2021,7 @@ impl Calcifer {
                     self.waiting(
                         id,
                         format!(
-                            "{name} refused to attach ({}): {}",
+                            "{name} won't reconnect to this run ({}): {}",
                             reason.code, reason.message
                         ),
                     );
@@ -1928,7 +2036,7 @@ impl Calcifer {
                 }
                 // This computer's machine exiting idle as the run came: it starts again.
                 Err(Stop::Released(message)) if name == "local" => {
-                    self.waiting(id, format!("local is restarting: {message}"));
+                    self.waiting(id, format!("this computer's machine is restarting: {message}"));
                     pause.wait(wake, Some(&mut changed)).await;
                 }
                 // A rental's word that it released itself is not its end: its Hub's is (cl-977, as for a releasing Status). Until
@@ -1944,9 +2052,8 @@ impl Calcifer {
                         let left = match (run.pinned, run.wants.as_str()) {
                             (false, "any") => self.with_run_store(id.as_str(), |store| store.unplace(id.as_str())),
                             _ => self.with_run_store(id.as_str(), |store| store.fail(id.as_str(), Reason {
-                                code: "machine_released".into(),
-                                message: format!("{name} released itself before it took the run: {message}"),
-                                next: vec![format!("cozy run {} … --on new", run.target)],
+                                code: ::api::calcifer::MACHINE_LOST.into(),
+                                message: format!("{name} shut itself down before it started {}: {message}", self.run_name(&run)),
                                 ..Default::default()
                             })),
                         };
@@ -1955,7 +2062,7 @@ impl Calcifer {
                             Err(e) => warn!(run = %id, "{e}"),
                         }
                     } else {
-                        self.waiting(id, format!("{name} released itself; waiting for its Hub to confirm it ended: {message}"));
+                        self.waiting(id, format!("{name} shut itself down; waiting for the Hub to confirm the rental ended: {message}"));
                         pause.wait(wake, Some(&mut changed)).await;
                     }
                 }
@@ -2000,7 +2107,7 @@ impl Calcifer {
         let changed = entry.changed.subscribe();
         let row = match self.store.machine(name) {
             Ok(Some(row)) => row,
-            Ok(None) => return Err(format!("no machine named {name}")),
+            Ok(None) => return Err(format!("there's no machine named {name}")),
             Err(e) => return Err(e.to_string()),
         };
         let link = match &row.endpoint {
@@ -2078,7 +2185,7 @@ impl Calcifer {
                     // machine's disk: the same spec sent again brings it, and it prepares on.
                     Ok((state, events)) if state.state == "needs_access" => {
                         // Said in the run's own log: Calcifer's diagnostics hold no run ids.
-                        let said = format!("{machine} restarted while it prepared and kept it as needs_access: its access sent again");
+                        let said = format!("{machine} restarted while it was preparing this run, so Cozy sent the run's access again");
                         if let Ok(noted) = self.with_run_store(run.id.as_str(), |store| store.note(run.id.as_str(), "info", &said)) {
                             self.publish(&run.id, noted);
                         }
@@ -2171,14 +2278,6 @@ impl Calcifer {
                     false => continue,
                 }
             }
-            // Which RC builds it runs on, said with the run once (cl-922).
-            if row.state == State::Queued
-                && row.kind != ::api::calcifer::Kind::Update
-                && let Some(line) = self.machines().and_then(|machines| machines.rc_line(machine))
-                && let Ok(events) = self.row_store(&row)?.note(row.id.as_str(), "machine", &line)
-            {
-                self.publish(&row.id, events);
-            }
             sent.push((own, v1::RunRequest { id: row.sent_id(), spec }));
         }
         let at = sent.iter().position(|(own, _)| *own).expect("its own run is sent");
@@ -2223,8 +2322,8 @@ impl Calcifer {
         // Why its machine says a finished run's outcome isn't sent, when it says (cl-806).
         let mut unsent = String::new();
         let unsent_said = |state_now: &str, unsent: &str| match unsent.is_empty() {
-            true => format!("it says the run {state_now}, and sends no outcome"),
-            false => format!("it says the run {state_now}, and sends no outcome: {unsent}"),
+            true => format!("the machine says the run {state_now} but hasn't sent its result"),
+            false => format!("the machine says the run {state_now} but hasn't sent its result: {unsent}"),
         };
         let mut ticks = tokio::time::interval(ETA_EVERY);
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -2277,7 +2376,7 @@ impl Calcifer {
                 None if frames > 0 => return self.record_batch(id, &mut batch),
                 None => {
                     return Err(Stop::Unanswered(
-                        "the machine closed the run's stream".into(),
+                        "the machine closed its connection for this run".into(),
                     ));
                 }
             };
@@ -2333,7 +2432,11 @@ impl Calcifer {
                         Ok(Some(holder)) => format!("run {}", self.run_name(&holder)),
                         _ => "another run".to_owned(),
                     };
-                    self.waiting(id, format!("waiting for {gpus}, held by {holder}"));
+                    let reason = format!("waiting for {gpus}, held by {holder}");
+                    if self.wait_said(id, &reason) {
+                        batch.logs.push((frame.at_ms, "stage".into(), reason.clone()));
+                    }
+                    self.waiting(id, reason);
                 }
                 Frame::Gpu(gpu) => {
                     if gpu.state == "grant" {
@@ -2354,6 +2457,7 @@ impl Calcifer {
                 }
                 Frame::State(state) => {
                     state_now.clone_from(&state.state);
+                    lock(&self.live).entry(id.clone()).or_default().place = state.place;
                     if finished(&state.state) {
                         unsent.clone_from(&state.waiting);
                     }
@@ -2365,8 +2469,11 @@ impl Calcifer {
                             batch.logs.push((frame.at_ms, "stage".into(), stage));
                         }
                         self.not_waiting(id);
-                    } else {
-                        self.machine_waiting(id, state.clone());
+                    } else if let Some(reason) = self.machine_waiting(id, state.clone())
+                        && self.wait_said(id, &reason)
+                    {
+                        // What it waits for, kept with the run as its stages are: `cozy run show` and its cells read when it began.
+                        batch.logs.push((frame.at_ms, "stage".into(), reason));
                     }
                     if state.started_at_ms > 0 {
                         batch.started_at_ms = Some(state.started_at_ms as i64);
@@ -2378,6 +2485,22 @@ impl Calcifer {
                     continue;
                 }
                 Frame::Outcome(mut outcome) => {
+                    if let Some(reason) = outcome.reason.as_mut() {
+                        reason.message = self.runs_named(&reason.message);
+                    }
+                    // Canceled there to go where it finishes sooner (`move_to`): sent again, there.
+                    let moving = lock(&self.moving).remove(id);
+                    if let Some(to) = moving.filter(|_| outcome.status == "canceled") {
+                        self.record_batch(id, &mut batch)?;
+                        if let Some(events) = self.with_run_store(id.as_str(), |store| store.moved(id.as_str(), &to))? {
+                            // Its clock is made again for where it goes, from that machine's quote (`quoted`).
+                            if let Some(live) = lock(&self.live).get_mut(id) {
+                                live.clock = None;
+                            }
+                            self.publish(id, events);
+                            return Ok(());
+                        }
+                    }
                     // What its ask does once the machine completed it, before it settles.
                     self.after(id, &mut outcome).await;
                     if let Ok(Some(row)) = self.with_run_store(id.as_str(), |store| store.run(id.as_str()))
@@ -2402,6 +2525,23 @@ impl Calcifer {
                         (Some(machines), Some(row)) => machines.verified(&row, outcome).await,
                         _ => outcome,
                     };
+                    // Refused for its machine's Runtime: the machine moves, and the run goes again instead of failing (cl-1069). Boxed:
+                    // inline, its update's future grew every driver's past a dev build's 16 MiB stack.
+                    if let Some(machines) = self.machines()
+                        && let Ok(Some(row)) = self.with_run_store(id.as_str(), |store| store.run(id.as_str()))
+                        && let Some(refloor) = Box::pin(machines.refloored(&row, &outcome)).await
+                    {
+                        let on = row.machine.as_deref().unwrap_or_default();
+                        let (elsewhere, said) = match refloor {
+                            crate::floor::Refloor::Moved(note) => (false, format!("refused on {on} (runtime_floor_unmet): {note}; sent again there")),
+                            crate::floor::Refloor::Elsewhere(why) => (true, format!("refused on {on} (runtime_floor_unmet): {why}; placed again")),
+                        };
+                        let events = self.with_run_store(id.as_str(), |store| store.resend(id.as_str(), elsewhere, &said))?;
+                        if !events.is_empty() {
+                            self.publish(id, events);
+                            return Ok(());
+                        }
+                    }
                     // Far slower than its function is known to take: said before it settles, so what lands of it says so too.
                     self.slow_at_end(id, &outcome);
                     let prior_batch_ms = received.elapsed().as_secs_f64() * 1000.0;
@@ -2422,16 +2562,47 @@ impl Calcifer {
         }
     }
 
-    /// What the run waits on by its machine's word. A reason that only repeats the machine's
-    /// state (`preparing`) says nothing more.
-    fn machine_waiting(&self, id: &RunId, mut state: v1::RunState) {
+    /// What the run waits on by its machine's word, each run it names as people know them; its state (queued, preparing) is
+    /// its status's to say, and a reason that only repeats it says nothing more.
+    fn machine_waiting(&self, id: &RunId, mut state: v1::RunState) -> Option<String> {
         if let Some(waiting) = self.waiting_for(&state.waiting_for) {
             state.waiting = waiting;
         }
         match state.waiting.as_str() {
-            waiting if waiting.is_empty() || waiting == state.state => self.not_waiting(id),
-            waiting => self.waiting(id, format!("{}: {waiting}", state.state)),
+            waiting if waiting.is_empty() || waiting == state.state => {
+                self.not_waiting(id);
+                None
+            }
+            waiting => {
+                let reason = self.runs_named(waiting);
+                self.waiting(id, reason.clone());
+                Some(reason)
+            }
         }
+    }
+
+    /// `text` from a machine with each run id this computer sent (`run-<hex>`, `~<attempt>` a resend's) as people name that run
+    /// (`LAB2-12`); one it doesn't know (another computer's) is "another render" (cl-1084).
+    pub(crate) fn runs_named(&self, text: &str) -> String {
+        let (mut named, mut rest) = (String::with_capacity(text.len()), text);
+        while let Some(at) = rest.find("run-") {
+            named.push_str(&rest[..at]);
+            let token = &rest[at..];
+            let id = &token[..token.find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '~')).unwrap_or(token.len())];
+            let hex = id["run-".len()..].split('~').next().unwrap_or_default();
+            let word = rest[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '-' || c == '_');
+            if word || hex.len() < 8 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+                named.push_str(id);
+            } else {
+                match self.active_run(store::calcifer_id(id)) {
+                    Some(row) => named.push_str(&self.run_name(&row)),
+                    None if named.trim_end().is_empty() || named.trim_end().ends_with('.') => named.push_str("Another render"),
+                    None => named.push_str("another render"),
+                }
+            }
+            rest = &token[id.len()..];
+        }
+        named + rest
     }
 
     /// `answer`, saying while it is outstanding how long its machine has not answered: a busy
@@ -2444,7 +2615,7 @@ impl Calcifer {
                 answered = &mut answer => return answered,
                 () = tokio::time::sleep(RESAID) => {
                     let age = ::api::calcifer::clock(asked.elapsed().as_millis() as i64);
-                    self.waiting(id, format!("no answer from {machine} yet ({age})"));
+                    self.waiting(id, format!("{machine} hasn't answered for {age}"));
                 }
             }
         }
@@ -2493,7 +2664,7 @@ impl Calcifer {
             fields.sort_unstable();
             let size = bytes(reused.iter().map(|(_, length)| *length).sum::<u64>() as f64);
             let text = format!(
-                "reused {} ({size}): {machine} already holds them",
+                "reused {} ({size}) already on {machine}",
                 fields.join(", ")
             );
             let events = self.with_run_store(run.id.as_str(), |store| store.note(run.id.as_str(), "inputs", &text))?;
@@ -2528,7 +2699,7 @@ impl Calcifer {
             let written = link
                 .write(digest, *length, &path, held, |done, rate| {
                     let mut reason = format!(
-                        "uploading {name}: {}/{}",
+                        "uploading {name}, {} of {}",
                         bytes(done as f64),
                         bytes(*length as f64)
                     );
@@ -2765,13 +2936,13 @@ fn stage(
         objects.push((source.digest, source.length));
     }
     for input in &spec.inputs {
-        let invalid = |message: String| Error::Invalid(format!("input {}: {message}", input.field));
+        let invalid = |message: String| Error::Invalid(format!("Input {}: {message}", input.field));
         let digest: Digest = input.digest.parse().map_err(|e: &str| invalid(e.into()))?;
         if held.contains(&digest) {
             continue;
         }
         if !inputs.join(hex::encode(digest.bytes())).exists() {
-            return Err(invalid(format!("no file was given for {digest}")));
+            return Err(invalid(format!("no file was given for {digest}.")));
         }
         objects.push((digest, input.length));
     }
@@ -2801,7 +2972,7 @@ fn copy_checked(inputs: &Path, source: &StagedInput, target: &Path) -> Result<()
     let got = Digest::from_bytes(hasher.finalize().into());
     if got != source.digest || length != source.length {
         return Err(failed(format!(
-            "it holds {length} bytes with digest {got}, not {} with {}",
+            "the file changed while Cozy read it: it has {length} bytes with digest {got}, not {} with {}",
             source.length, source.digest
         )));
     }
@@ -2862,19 +3033,19 @@ impl Pause {
     }
 }
 
-/// A byte count for people: `1.5 MiB`.
+/// A byte count for people, decimal as Paul writes it: `2.1GB`, `340MB`, `4GB`.
 pub(crate) fn bytes(n: f64) -> String {
     let (mut value, mut unit) = (n, "B");
-    for next in ["KiB", "MiB", "GiB"] {
-        if value < 1024.0 {
+    for next in ["KB", "MB", "GB", "TB"] {
+        if value < 1000.0 {
             break;
         }
-        (value, unit) = (value / 1024.0, next);
+        (value, unit) = (value / 1000.0, next);
     }
-    if unit == "B" {
-        format!("{value:.0} B")
-    } else {
-        format!("{value:.1} {unit}")
+    let tenths = format!("{value:.1}");
+    match value < 10.0 && unit != "B" {
+        true => format!("{}{unit}", tenths.trim_end_matches(".0")),
+        false => format!("{value:.0}{unit}"),
     }
 }
 

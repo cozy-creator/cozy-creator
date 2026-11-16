@@ -87,7 +87,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         None => match api::calcifer::local_usable("local") {
             Ok(()) => Some("local".to_owned()),
             Err(off) => {
-                checks.push(Check::ok("machine", format!("{}; {}", off.message, off.remedy.unwrap_or_default())));
+                checks.push(Check::ok("machine", [off.message, off.remedy.unwrap_or_default()].join(" ").trim_end().to_owned()));
                 None
             }
         },
@@ -196,15 +196,7 @@ async fn calcifer(ctx: &Context) -> Vec<Check> {
     let mut checks = vec![];
     // What it needs, and why.
     let (stop, why) = match client.lock_state() {
-        Lock::Free { stale } => {
-            if stale {
-                checks.push(Check::ok(
-                    "lock record",
-                    "named a Calcifer killed before it let go; the next one replaces it",
-                ));
-            }
-            (false, "not running".to_owned())
-        }
+        Lock::Free => (false, "not running".to_owned()),
         Lock::Captive => match captive(ctx, &mut checks, None) {
             Some(why) => (false, why),
             None => return checks,

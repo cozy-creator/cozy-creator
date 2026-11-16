@@ -26,7 +26,7 @@ import { useConnection } from "./Connection"
 import { projectPath, rememberProject, useProjectId, useTo } from "./project"
 export { useProjectId, useTo } from "./project"
 
-/** A few tries in, it isn't a blip. Nothing restarts Calcifer on Windows, and `cozy open` does anywhere. */
+/** A few tries in, it isn't a blip. Nothing restarts Calcifer on Windows, and starting Cozy again does anywhere. */
 const SAYS_HOW = 5
 /** How long before an unlock's deadline its status is asked again. */
 const EXPIRY_ASK_MS = 2000
@@ -43,24 +43,19 @@ function Connectivity() {
     <>
       {health.state === "reconnecting" ? (
         <span className="pill warn" role="status">
-          Calcifer offline{owed.count > 0 && `: ${changes} waiting`}
-          {health.attempt >= SAYS_HOW && (
-            <>
-              {" "}
-              · run <code>cozy open</code>
-            </>
-          )}
+          Cozy is offline{owed.count > 0 && `, ${changes} waiting`}
+          {health.attempt >= SAYS_HOW && ". Restart it"}
         </span>
       ) : owed.count > 0 && owed.slow ? (
         <span className="pill warn" role="status">
-          {owed.held ? `Not saved: ${noHash(owed.held)}: ${changes} waiting` : `Saving ${changes}`}
+          {owed.held ? `Can't save: ${noHash(owed.held)}. ${changes} waiting` : `Saving ${changes}…`}
         </span>
       ) : (
-        trying > 0 && <span className="pill warn">Trying again, attempt {trying}/{TRIES}{owed.count > 0 && ` · ${changes} waiting`}</span>
+        trying > 0 && <span className="pill warn">Trying again, attempt {trying}/{TRIES}{owed.count > 0 && `, ${changes} waiting`}</span>
       )}
       {version && (
         <button type="button" className="pill warn" onClick={() => location.reload()}>
-          Calcifer is now {version}: Reload
+          Cozy updated to {version}. Reload
         </button>
       )}
     </>
@@ -168,7 +163,7 @@ function ProjectTabs({ id, readable, children }: { id: string | null; readable: 
             key={tab.id}
             className={`ptab ${tab.id === id ? "on" : ""}`}
             to={projectPath(tab)}
-            title={tab.id === id ? `${tab.path}\nProjects, and a new one` : tab.path}
+            title={tab.id === id ? `${tab.path}\nClick to see all projects or start a new one` : tab.path}
             aria-current={tab.id === id ? "page" : undefined}
             onClick={(event) => {
               if (tab.id !== id) return
@@ -529,7 +524,7 @@ export function Shell() {
         // A first drop waiting on its project holds the canvas still: its box keeps its name field for when the project is made.
         : heldCanvas && <div hidden={!readable} inert={!readable || making?.by === "drop"} style={{ display: readable ? "contents" : "none" }}><CanvasHost key={hostKey} projectId={id} active={readable} slot={readable ? slot : null} history={readable ? history : null} onAdopt={adopt} /></div>}
       {making && !id && <NewProject />}
-      {!readable && id && !between && (checking || !checked || uncertain ? <main className="gate"><p>{vault.isError ? "Project protection could not be checked." : "Checking project protection…"}</p>{vault.isError && <button className="tb" type="button" onClick={() => void vault.refetch()}>Try again</button>}</main> : location.pathname.endsWith("/vault") ? <main className="gate"><p>Project protection</p></main> : <ProjectLocked id={id} />)}
+      {!readable && id && !between && (checking || !checked || uncertain ? <main className="gate">{vault.isError && <><p>Couldn't check whether this project is locked.</p><button className="tb" type="button" onClick={() => void vault.refetch()}>Try again</button></>}</main> : location.pathname.endsWith("/vault") ? <main className="gate"><p>Encryption</p></main> : <ProjectLocked id={id} />)}
       {handle?.drawer && (heldCanvas || drawerReadable) && (
         <aside ref={drawer} className="drawer" hidden={!drawerReadable} inert={!drawerReadable} style={drawerReadable ? undefined : { display: "none" }}>
           <Outlet key={drawerEpoch} />

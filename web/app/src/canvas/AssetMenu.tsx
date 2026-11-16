@@ -48,8 +48,8 @@ function EditSettings({ name }: { name: string }) {
           void store.setFields(name, { fps: to, ...(timeline ? { timeline: retimed(timeline, fps, to) } : {}) })
         }}
       />
-      <Setting label="Aspect ratio" value={store.valueOf(name, "aspect_ratio")} options={STANDARD_RATIOS} unset="Its first clip's" onPick={(picked) => void store.setField(name, "aspect_ratio", picked)} />
-      <Setting label="Resolution" value={store.valueOf(name, "resolution")} options={RESOLUTIONS} unset="Its first clip's" onPick={(picked) => void store.setField(name, "resolution", picked)} />
+      <Setting label="Aspect ratio" value={store.valueOf(name, "aspect_ratio")} options={STANDARD_RATIOS} unset="Same as the first clip" onPick={(picked) => void store.setField(name, "aspect_ratio", picked)} />
+      <Setting label="Resolution" value={store.valueOf(name, "resolution")} options={RESOLUTIONS} unset="Same as the first clip" onPick={(picked) => void store.setField(name, "resolution", picked)} />
     </>
   )
 }

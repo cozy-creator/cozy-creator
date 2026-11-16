@@ -11,6 +11,51 @@ entrypoints() {
     || check "entrypoints: see $OUT/entrypoints/results.json"
 }
 
+# cl-1063, the release coordinator: "`cozy open` must fail with a typed error when its browser doesn't start, carrying Chrome's
+# exit code and its first stderr line". A google-chrome that exits at once, ahead of the real one on Calcifer's PATH.
+open_fails() {
+step "cozy open fails, saying why, when Cozy's Chrome exits as it starts"
+[ "$RUNNER_OS" = Linux ] || return 0
+local stub=/usr/local/bin/google-chrome code=0
+[ ! -e "$stub" ] || { check "open_fails: $stub already exists"; return; }
+printf '#!/bin/sh\necho "e2e stub: this Chrome exits as it starts" >&2\nexit 7\n' | sudo tee "$stub" > /dev/null && sudo chmod 755 "$stub"
+in_project "$OUT/project" open > "$OUT/open-fails.out" 2> "$OUT/open-fails.err" || code=$?
+sudo rm -f "$stub"
+local said; said=$(tail -c 400 "$OUT/open-fails.err")
+[ "$code" != 0 ] && grep -q '^error\[private_browser_failed\]' "$OUT/open-fails.err" \
+  || check "cozy open: exit $code, not private_browser_failed, though Cozy's Chrome exited as it started: $said"
+grep -q 'exited with code 7' "$OUT/open-fails.err" || check "cozy open: doesn't name Chrome's exit code 7: $said"
+grep -q 'e2e stub: this Chrome exits as it starts' "$OUT/open-fails.err" || check "cozy open: doesn't name Chrome's stderr line: $said"
+grep -qE '^cause: browser_[a-z_]+$' "$OUT/open-fails.err" || check "cozy open: doesn't name the launch step that failed: $said"
+}
+
+# cl-1063: a cold Chrome start (10.4 s seen on a runner) is waited on while Chrome lives. A google-chrome that sleeps 12 s, then
+# runs the real one on its own display: `cozy open` opens Cozy's private browser. It then lives on: Chrome's parent-death
+# signal follows the thread that forked it, and Calcifer's store reads hand tokio threads on to the blocking pool, which ends
+# them after 10 s idle.
+open_slow() {
+step "cozy open waits for a slow Chrome start, and the browser lives on"
+[ "$RUNNER_OS" = Linux ] || return 0
+local stub=/usr/local/bin/google-chrome code=0 xvfb took leader
+[ ! -e "$stub" ] || { check "open_slow: $stub already exists"; return; }
+Xvfb :98 -screen 0 1280x800x24 -nolisten tcp > "$OUT/open-slow-xvfb.log" 2>&1 & xvfb=$!
+printf '#!/bin/sh\nsleep 12\nDISPLAY=:98 exec /usr/bin/google-chrome "$@"\n' | sudo tee "$stub" > /dev/null && sudo chmod 755 "$stub"
+SECONDS=0
+in_project "$OUT/project" open > "$OUT/open-slow.out" 2> "$OUT/open-slow.err" || code=$?
+took=$SECONDS
+sudo rm -f "$stub"
+[ "$code" = 0 ] && grep -q 'private: true' "$OUT/open-slow.out" \
+  || check "cozy open: a 12 s Chrome start didn't open Cozy's private browser (exit $code after ${took}s): $(tail -c 400 "$OUT/open-slow.err")"
+leader=$(pgrep -o -f -- '--user-data-dir=[^ ]*cozy-private-' || true)
+if [ -n "$leader" ]; then
+  for _ in $(seq 20); do cozy --json status > /dev/null || true; in_project "$OUT/project" --json run ls > /dev/null || true; done
+  sleep 25
+  kill -0 "$leader" 2> /dev/null || check "Cozy's Chrome (pid $leader) died within 25 s of opening, with nothing closing it"
+fi
+# Its display gone, Cozy's Chrome exits and Calcifer retires it.
+kill "$xvfb" 2> /dev/null || true; wait "$xvfb" 2> /dev/null || true
+}
+
 # What needs no machine: Calcifer, the Hub setting, signing out, the Hub's packages and models.
 catalog() {
 step status
@@ -136,6 +181,34 @@ J --arg lane "$lane" 'any(.models[]; .model == "zhengpeng7/birefnet" and .lane =
 grep -q e2e-birefnet "$OUT/models.json" || check "model ls --on local: the local/e2e-birefnet alias is not listed"
 }
 
+# cl-1076 (Paul, 11-16, a rental's disk full with LTX 2.5's 71.5 GB unused): "The CLI can remove a model from a rental. `cozy model
+# uninstall` only works on this computer; give it `--on <machine>`." On local through the route a rental takes: while ondemand.py's
+# `hold` holds with e2e/uninstall bound, its uninstall is refused naming that run; once the run ends, it goes, its bytes freed.
+uninstall_on() {
+step "a model uninstalled from a named machine, refused while a run reads it (cl-1076)"
+[ -n "$LOCAL" ] || return 0
+local run
+cozy --json model install e2e/uninstall --on local > "$OUT/uninstall-on-install.ndjson" 2>&1 \
+  || { check "uninstall --on: model install e2e/uninstall failed: $(tail -c 300 "$OUT/uninstall-on-install.ndjson")"; return; }
+[ -n "$(run_submit "$OUT" uninstall-on-hold run "$here/script/ondemand.py/hold" seconds:=20 --model extra=e2e/uninstall --on local)" ] \
+  || { check "uninstall --on: the holding run was not made: $(tail -c 300 "$OUT/uninstall-on-hold.err")"; return; }
+run=$(cat "$OUT/uninstall-on-hold.id")
+for _ in $(seq 900); do grep -q '"holding"' "$OUT/uninstall-on-hold.ndjson" 2> /dev/null && break; sleep 0.2; done
+grep -q '"holding"' "$OUT/uninstall-on-hold.ndjson" || { check "uninstall --on: run $run never held: $(tail -c 300 "$OUT/uninstall-on-hold.ndjson")"; return; }
+cozy --json model uninstall e2e/uninstall --on local > "$OUT/uninstall-on-held.json" 2> "$OUT/uninstall-on-held.err" \
+  && check "uninstall --on: e2e/uninstall went while run $run held it"
+J --arg run "$run" '.error.cause == "model_in_use" and (.error.message | contains($run)) and .error.next == ["cozy run watch \($run)"]' "$OUT/uninstall-on-held.json" \
+  || check "uninstall --on: not refused naming run $run: $(head -c 400 "$OUT/uninstall-on-held.json") $(tail -c 200 "$OUT/uninstall-on-held.err")"
+run_wait "$OUT" uninstall-on-hold && [ "$(run_get "$OUT" uninstall-on-hold .status)" = completed ] \
+  || { check "uninstall --on: run $run did not complete: $(tail -c 300 "$OUT/uninstall-on-hold.ndjson")"; return; }
+cozy --json model uninstall e2e/uninstall --on local > "$OUT/uninstall-on.json" 2> "$OUT/uninstall-on.err" \
+  && J '.model == "e2e/uninstall" and .removed and .cache_bytes_removed > 0' "$OUT/uninstall-on.json" \
+  || check "uninstall --on local: e2e/uninstall not removed, or no bytes freed: $(head -c 400 "$OUT/uninstall-on.json") $(tail -c 200 "$OUT/uninstall-on.err")"
+cozy --json model ls --on local > "$OUT/uninstall-on-models.json" && J 'all(.models[]; .model != "e2e/uninstall")' "$OUT/uninstall-on-models.json" \
+  || check "uninstall --on local: model ls --on local still lists e2e/uninstall"
+echo "uninstall --on: $(jq -c . "$OUT/uninstall-on.json")"
+}
+
 # xs-190: a model of one component (e2e/parts-vae, uploaded as `<file>:vae` by e2e/isolated.sh), composed at run time with another
 # model's other components. Its card and install hold its `vae` alone; a run whose `vae` slot names it reads the default
 # pipeline's transformer and its VAE, and its stored picture differs from the default's. xs-192: an unversioned pick of
@@ -176,6 +249,30 @@ was=$(output parts-default png) is=$(output parts-composed png)
 { [ -n "$was" ] && [ -n "$is" ] && ! cmp -s "$was" "$is"; } || check "parts: the composed run's stored picture is not another than the default's (${was:-none}, ${is:-none})"
 }
 
+# tfs-300, LAB2-47829 (Paul 11-16: "we don't need all components of a model to be on the critical path; that's just creating
+# unnecessary latency for the end-user who is waiting on models to download"; "I think this is a failure in terms of our download
+# planner"): a LoRA on qwen-image-2's `model`, which reads Noct Q's transformer alone, pulled all of Noct Q, its 9.9 GiB text
+# encoder too, before the call could start. script/lora.py's `model` reads e2e/lora-base's 256 KiB transformer beside its 16 MiB
+# text encoder: cold, with e2e/lora-proj on it, the call completes, the LoRA changes what the transformer makes, and the machine
+# holds the transformer alone.
+lora_reads() {
+step "a LoRA'd slot downloads only the components it reads of its model (tfs-300)"
+[ -n "$LOCAL" ] || return 0
+local script=$here/script/lora.py held stage
+cell lora-adapted "$script" --lora model=e2e/lora-proj || return 0
+stage=$(grep '^{' "$OUT/lora-adapted.ndjson" | jq -s '[.[] | select(.type == "run.progress") | .progress | select(.stage | startswith("preparing model adapters")) | .bytes_total] | max // 0')
+cozy --json model ls --on local > "$OUT/lora-held.json" || { check "lora reads: model ls --on local failed"; return; }
+held=$(jq -c '[.models[]? | select(.model == "e2e/lora-base") | {complete, bytes}]' "$OUT/lora-held.json")
+J '[.models[] | select(.model == "e2e/lora-base")] | length == 1 and .[0].complete == false and .[0].bytes >= 262144 and .[0].bytes < 4194304' "$OUT/lora-held.json" \
+  || check "lora reads: the LoRA'd call left more of e2e/lora-base here than its 256 KiB transformer (its text encoder is 16 MiB): $held"
+J '[.measurements.models[] | select(.slot == "model") | .adapters | length] == [1]' "$OUT/lora-adapted.json" \
+  || check "lora reads: its record names no LoRA on model: $(jq -c '.measurements.models' "$OUT/lora-adapted.json")"
+cell lora-plain "$script" || return 0
+J --slurpfile plain "$OUT/lora-plain.json" '.result.sum != $plain[0].result.sum' "$OUT/lora-adapted.json" \
+  || check "lora reads: the LoRA changed nothing: $(jq -c .result "$OUT/lora-adapted.json") as without it"
+echo "lora reads: e2e/lora-base here after the LoRA'd call $held; its adapter stage moved ${stage} bytes; sums $(jq .result.sum "$OUT/lora-adapted.json") with, $(jq .result.sum "$OUT/lora-plain.json") without"
+}
+
 # Paul's rule (11-13, cl-984): "1. project data is private 2. models / packages installed are machine-specific (not project
 # specific)". After component_models ran parts.py (a script package on e2e/parts, ~4 MiB) in the suite's project, a second
 # project's first run of it downloads nothing, builds no environment and adds no weights anywhere, and the first project's
@@ -193,7 +290,7 @@ after=$(envs_in "$HOME/.cozy")
 # Nothing downloaded or installed: no `downloading` stage moved a byte, none installed dependencies.
 grep '^{' "$OUT/second-parts.ndjson" | jq -e -s '[.[] | select(.type == "run.progress") | .progress
     | select(((.stage | test("downloading")) and ((.stage | test("the result")) | not) and ((.bytes_done // 0) > 0))
-      or (.stage | test("installing its dependencies|installing this machine")))] | length == 0' > /dev/null \
+      or (.stage | test("installing dependencies|installing this machine")))] | length == 0' > /dev/null \
   || check "second project: its first run downloaded or installed: $(grep '^{' "$OUT/second-parts.ndjson" | jq -r 'select(.type == "run.progress") | .progress.stage' | sort -u | grep -E 'download|install' | head -3 | paste -sd';' -)"
 [ "$before" = "$after" ] || check "second project: the machine gained environments: $(comm -13 <(echo "$before") <(echo "$after") | sed "s#$HOME/##" | paste -sd' ' - | cut -c1-400)"
 # Its own area holds no environment, PyTorch, uv cache, Python or weights: those are the machine's.
@@ -276,7 +373,7 @@ safetensors_file "$OUT/refused.safetensors"
 refused() {  # refused <name> <cozy args...>
   local name=$1 code=0; shift
   cozy --json "$@" > "$OUT/refused-$name.json" 2> "$OUT/refused-$name.err" || code=$?
-  [ "$code" = 1 ] && J '.error.code == "local_unavailable" and (.error.remedy | contains("--on new"))' "$OUT/refused-$name.json" \
+  [ "$code" = 1 ] && J '.error.code == "local_unavailable" and (.error.next | any(contains("--on new")))' "$OUT/refused-$name.json" \
     || check "cozy $*: exit $code, not refused local_unavailable: $(head -c 300 "$OUT/refused-$name.json") $(head -c 200 "$OUT/refused-$name.err")"
 }
 refused run run birefnet/remove_background --file "image=$dog"
@@ -304,14 +401,14 @@ refused logs machine logs local --lines 5
 refused authorize machine authorize "$key"
 refused doctor doctor --on local
 cozy run birefnet/remove_background --file "image=$dog" > "$OUT/refused.txt" 2>&1 && check "a local run without --on was not refused"
-grep -q "local runs aren't available on" "$OUT/refused.txt" && grep -q -- '--on new' "$OUT/refused.txt" \
-  || check "the refusal does not say local runs aren't available and --on new: $(head -c 300 "$OUT/refused.txt")"
+grep -q "This computer can't run models on" "$OUT/refused.txt" && grep -q -- '--on new' "$OUT/refused.txt" \
+  || check "the refusal does not say this computer can't run models and --on new: $(head -c 300 "$OUT/refused.txt")"
 
 step "no local machine"
 cozy --json machine ls > "$OUT/machines.json" && J '.machines | all(.name != "local")' "$OUT/machines.json" || check "machine ls: a local machine is listed"
-cozy machine ls > "$OUT/machines.txt" 2>&1 && grep -q "local runs aren't available on" "$OUT/machines.txt" || check "machine ls does not say local runs aren't available"
+cozy machine ls > "$OUT/machines.txt" 2>&1 && grep -q "This computer can't run models on" "$OUT/machines.txt" || check "machine ls does not say this computer can't run models"
 fixture_calcifer > "$OUT/status.txt" && J '.calcifer.local_usable == false' "$OUT/status.txt" || check "status does not say local runs aren't available"
-cozy --json doctor > "$OUT/doctor-gated.json" && J '.healthy and (.checks | any(.check == "machine" and (.state | contains("aren'"'"'t available"))))' "$OUT/doctor-gated.json" \
+cozy --json doctor > "$OUT/doctor-gated.json" && J '.healthy and (.checks | any(.check == "machine" and (.state | contains("can'"'"'t run models"))))' "$OUT/doctor-gated.json" \
   || check "doctor: not healthy, or no line that local runs aren't available: $(jq -c .checks "$OUT/doctor-gated.json")"
 cozy machine logs local calcifer --lines 5 > "$OUT/log-calcifer.txt" && [ -s "$OUT/log-calcifer.txt" ] || check "machine logs local calcifer: no Calcifer log"
 cozy --json package ls --on all > "$OUT/packages.json" || check "package ls --on all failed"
@@ -462,7 +559,7 @@ if cell choice "$here/project/choice.py/size" to=768p megapixels:=3 'mode:="slow
     || check "choice: 768p and 3 didn't run as 1080p and 2, or slow not as full: $(grep -oE '"given": *"[^"]*"' "$OUT/choice.ndjson" | head -1)"
   cozy --json --full run watch "$(cat "$OUT/choice.number")" --once > "$OUT/choice.json" 2>&1
   local said
-  for said in "\"768p\" isn't one of 1080p, 1440p, 2160p, so it's \"1080p\"" "3 isn't one of 2, 4, so it's 2" "\"slow\" isn't one of fast, full, so it's its default"; do
+  for said in "takes 1080p, 1440p or 2160p, not 768p, so Cozy used 1080p." "takes 2 or 4, not 3, so Cozy used 2." "takes fast or full, not slow, so Cozy used the default."; do
     grep -qF "$(jq -Rr '@json' <<< "$said" | sed 's/^"//; s/"$//')" "$OUT/choice.json" "$OUT/choice.ndjson" "$OUT/choice.err" 2> /dev/null \
       || grep -qF "$said" "$OUT/choice.err" 2> /dev/null || check "choice: the run didn't say: $said"
   done
@@ -493,7 +590,7 @@ if cell angles "$here/project/angles.py/angles" 'pictures:=["<angles_spin:120deg
 fi
 before=$(cozy --json run ls --limit 0 | jq '.runs | length')
 in_project "$RUN_PROJECT" --json run "$here/project/angles.py/angles" 'pictures:=["<angles_plain:120deg>"]' --on local > "$OUT/angles-plain.json" 2>&1 || code=$?
-{ [ "$code" != 0 ] && grep -q mention_not_orbit "$OUT/angles-plain.json" && grep -q 'turn on Orbit' "$OUT/angles-plain.json" \
+{ [ "$code" != 0 ] && grep -q mention_not_orbit "$OUT/angles-plain.json" && grep -q 'Turn on Orbit' "$OUT/angles-plain.json" \
   && [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ]; } \
   || check "angles: an angle of a video that isn't an orbit was not refused mention_not_orbit before any run (exit $code): $(tail -c 300 "$OUT/angles-plain.json")"
 }
@@ -865,10 +962,10 @@ fi
 # 0.10.0rc1 failed to import on 0.45.0, 47170). Holding e2e-newer 0.1.0 (asked by name), an unversioned run takes 0.1.1
 # and says it's newer (47617 stayed on minimax-h3 0.11.1 after 0.12.0rc2).
 held_prerelease() {
-step "an unversioned run takes the newest release its machine runs; off the RC never a prerelease (cl-952, se-128)"
+step "an unversioned run takes the newest release its machine runs; held below this cozy's Runtime minor, a project's run is refused (cl-952, se-128, cl-1055)"
 [ -n "$LOCAL" ] || return 0
 [ -n "${E2E_HELD:-}" ] || { check "held prerelease: isolated.sh published no e2e-held: ${E2E_HELD_REFUSED:-not seeded}"; return; }
-local released=${HELD_RUNTIME:-0.45.1} was
+local released=${HELD_RUNTIME:-0.45.1} was code=0
 machine_ready
 case $(jq -r '.status.runtime // empty' "$OUT/machine.json") in *+dev*) ;; *) echo "held prerelease: local isn't on an RC build"; return 0 ;; esac
 was=${CAND_RT:-$(jq -r '.status.runtime // empty' "$OUT/machine.json")}
@@ -876,20 +973,22 @@ if cell held-prerelease-rc "$E2E_HELD/relay" "text=on the RC"; then
   grep -q '0\.2\.0rc1' "$OUT/held-prerelease-rc.ndjson" \
     || check "held prerelease: local on an RC build didn't take 0.2.0rc1: $(grep -o '"target": *"[^"]*"' "$OUT/held-prerelease-rc.ndjson" | head -1)"
 fi
-cozy --json machine update local --runtime "$released" -y > "$OUT/held-update.json" 2>&1 \
-  || { check "held prerelease: local refused Runtime $released: $(tail -c 300 "$OUT/held-update.json")"; return; }
-machine_ready
-if cell held-prerelease "$E2E_HELD/relay" "text=off the RC"; then
-  grep -q 'relay@0\.1\.0"' "$OUT/held-prerelease.ndjson" && ! grep -q '0\.2\.0rc' "$OUT/held-prerelease.ndjson" \
-    || check "held prerelease: local on Runtime $released didn't run e2e-held 0.1.0: $(grep -o '"target": *"[^"]*"' "$OUT/held-prerelease.ndjson" | head -1)"
-fi
-# Unversioned, in words as a person reads it: the run says what it moved to.
+# Unversioned, in words as a person reads it: the run says what it moved to. On the RC's Runtime: a project's run needs this cozy's
+# Runtime minor (cl-1055).
 if cell held-newer-old "$E2E_NEWER/relay@0.1.0" "text=asked 0.1.0"; then
   in_project "$RUN_PROJECT" run "$E2E_NEWER/relay" text=newer --on local > "$OUT/held-newer.out" 2> "$OUT/held-newer.err" \
     || check "held prerelease: the unversioned e2e-newer run failed: $(tail -c 300 "$OUT/held-newer.err")"
-  grep -q 'e2e-newer 0.1.1, newer than local.s 0.1.0' "$OUT/held-newer.err" \
+  grep -q 'e2e-newer 0.1.1, newer than the 0.1.0 on local' "$OUT/held-newer.err" \
     || check "held prerelease: holding e2e-newer 0.1.0, the run didn't say it takes 0.1.1: $(tail -c 300 "$OUT/held-newer.err")"
 fi
+cozy --json machine update local --runtime "$released" -y > "$OUT/held-update.json" 2>&1 \
+  || { check "held prerelease: local refused Runtime $released: $(tail -c 300 "$OUT/held-update.json")"; return; }
+machine_ready
+# Held on a release below this cozy's Runtime minor, off the RC: a project's run is refused naming the update, and runs nothing.
+in_project "$RUN_PROJECT" --json run "$E2E_HELD/relay" "text=off the RC" --on local > "$OUT/held-prerelease.ndjson" 2> "$OUT/held-prerelease.err" || code=$?
+[ "$code" != 0 ] && grep -q '"runtime_held"' "$OUT/held-prerelease.ndjson" "$OUT/held-prerelease.err" \
+  && grep -q 'cozy machine update local' "$OUT/held-prerelease.ndjson" "$OUT/held-prerelease.err" \
+  || check "held prerelease: held on Runtime $released, a project's e2e-held run wasn't refused runtime_held naming cozy machine update local: exit $code $(tail -c 300 "$OUT/held-prerelease.ndjson") $(tail -c 300 "$OUT/held-prerelease.err")"
 cozy --json machine update local --runtime "$was" -y > "$OUT/held-back.json" 2>&1 \
   || check "held prerelease: local refused Runtime $was again: $(tail -c 300 "$OUT/held-back.json")"
 machine_ready
@@ -897,10 +996,11 @@ machine_ready
 
 # cl-952: a machine runs only a package release its Runtime can run. Publishing refused isolated.sh's e2e-lies, whose floor
 # cozy-runtime>=0.44 lacks the `call` it imports (minimax-h3 0.12.0rc3 declared 0.45 and imported the RC's `preview`: run
-# 47791). e2e-floor 0.2.0 needs cozy-runtime>=0.45.1: local held on 0.45.0 by hand refuses it, naming `cozy machine update
-# local`, and still does after Calcifer restarts (the hold is kept in its store); it runs 0.1.0 named; with nothing named, `cozy machine update local` moves it to its Hub's pin (0.45.0, this shard's
-# isolated Hub: e2e.yaml), which holds nothing, and the unversioned run then moves local to the newest 0.45 release and runs
-# 0.2.0, saying so. e2e-capped 0.2.0 (<0.45.1) then runs as 0.1.0: a machine moves only up.
+# 47791). A project's run on local also needs this cozy's Runtime minor (cl-1055). Held on 0.45.0 by hand, local refuses
+# e2e-floor 0.2.0 (cozy-runtime>=0.45.1) and 0.1.0 alike, naming `cozy machine update local`, and still does after Calcifer
+# restarts (the hold is kept in its store); with nothing named, `cozy machine update local` moves it to its Hub's pin (0.45.0, this
+# shard's isolated Hub: e2e.yaml), which holds nothing, and a project's run then moves it to this cozy's own Runtime, saying so.
+# Held on a release of the minor, a cap binds: e2e-capped 0.2.0 (<0.47.0.dev0) runs as 0.1.0, as a machine moves only up.
 runtime_floor() {
 step "a package release runs on a Runtime that meets its floor: publishing refuses a dishonest one; a held machine refuses, another upgrades (cl-952)"
 [ -n "$LOCAL" ] || return 0
@@ -947,7 +1047,19 @@ in_project "$RUN_PROJECT" --json run "$E2E_FLOOR/relay" text=held-again --on loc
   || check "runtime floor: after a Calcifer restart, local held on 0.45.0 wasn't refused runtime_held: exit $code $(tail -c 300 "$OUT/floor-held-again.ndjson")"
 jq -e '.status.runtime == "0.45.0"' "$OUT/machine.json" > /dev/null \
   || check "runtime floor: after a Calcifer restart, held local runs $(jq -r .status.runtime "$OUT/machine.json"), not 0.45.0"
-cell floor-held-older "$E2E_FLOOR/relay@0.1.0" "text=asked 0.1.0" || true
+# A project's run on this computer needs this cozy's Runtime minor (cl-1055): held below it, even a release its own floor admits
+# (e2e-floor 0.1.0) is refused naming the update, and e2e-scratch's probe runs nowhere: no file of it outside its project.
+code=0
+in_project "$RUN_PROJECT" --json run "$E2E_FLOOR/relay@0.1.0" "text=asked 0.1.0" --on local > "$OUT/floor-held-older.ndjson" 2> "$OUT/floor-held-older.err" || code=$?
+[ "$code" != 0 ] && grep -q '"runtime_held"' "$OUT/floor-held-older.ndjson" "$OUT/floor-held-older.err" && grep -q 'cozy machine update local' "$OUT/floor-held-older.ndjson" "$OUT/floor-held-older.err" \
+  || check "runtime floor: held on 0.45.0, e2e-floor 0.1.0 in a project wasn't refused runtime_held naming cozy machine update local: exit $code $(tail -c 300 "$OUT/floor-held-older.ndjson") $(tail -c 300 "$OUT/floor-held-older.err")"
+local marker=CL1055_HELD_$RANDOM$RANDOM
+code=0
+in_project "$RUN_PROJECT" --json run e2e-scratch/probe "marker=$marker" --on local > "$OUT/floor-held-probe.ndjson" 2> "$OUT/floor-held-probe.err" || code=$?
+[ "$code" != 0 ] && grep -q '"runtime_held"' "$OUT/floor-held-probe.ndjson" "$OUT/floor-held-probe.err" \
+  || check "runtime floor: held on 0.45.0, e2e-scratch's probe in a project wasn't refused runtime_held: exit $code $(tail -c 300 "$OUT/floor-held-probe.ndjson")"
+! grep -rqs "$marker" "$HOME/.cozy/machine" "$RUN_PROJECT/.vault-machine" \
+  || check "runtime floor: the refused probe wrote its marker: $(grep -rls "$marker" "$HOME/.cozy/machine" "$RUN_PROJECT/.vault-machine" | head -3)"
 cozy --json machine update local -y > "$OUT/floor-unhold.json" 2>&1 \
   || { check "runtime floor: cozy machine update local (its Hub's pin) failed: $(tail -c 300 "$OUT/floor-unhold.json")"; return; }
 machine_ready
@@ -985,18 +1097,85 @@ if [ -n "$td" ]; then
 else
   echo "runtime floor: rc-$rc holds no cozy for linux x86_64: an RC pin isn't asked here"
 fi
-in_project "$RUN_PROJECT" run "$E2E_FLOOR/relay" text=upgrade --on local > "$OUT/floor-upgrade.out" 2> "$OUT/floor-upgrade.err" \
-  || check "runtime floor: the unversioned e2e-floor run on local (0.45.0, not held) failed: $(tail -c 400 "$OUT/floor-upgrade.err")"
-grep -q "upgrading local.s Runtime 0.45.0 → 0.45.[1-9][0-9]* for .*e2e-floor 0.2.0" "$OUT/floor-upgrade.err" \
-  || check "runtime floor: the run didn't say it upgrades local's Runtime for e2e-floor 0.2.0: $(tail -c 400 "$OUT/floor-upgrade.err")"
+# Not held, on the Hub's 0.45.0: a project's run moves local up to this cozy's Runtime minor first, saying so (cl-1055), and its
+# call's temporary file is in its project's scratch.
+in_project "$RUN_PROJECT" run e2e-scratch/probe "marker=CL1055_MOVED_$RANDOM" --on local > "$OUT/floor-upgrade.out" 2> "$OUT/floor-upgrade.err" \
+  || check "runtime floor: a project's probe run on local (0.45.0, not held) failed: $(tail -c 400 "$OUT/floor-upgrade.err")"
+grep -q "Updating local.s Runtime from 0.45.0 to 0.4[7-9][^ ]* for this project" "$OUT/floor-upgrade.err" \
+  || check "runtime floor: the run didn't say it upgrades local's Runtime for this project: $(tail -c 400 "$OUT/floor-upgrade.err")"
+local temporary
+temporary=$(awk '$1 == "temporary" { print $2 }' "$OUT/floor-upgrade.out" | tail -1)
+case $temporary in
+  "$(realpath "$RUN_PROJECT")"/.vault-machine/scratch/*) ;;
+  *) check "runtime floor: the moved run's temporary file was ${temporary:-nowhere said}, not in its project's scratch" ;;
+esac
 machine_ready
-jq -e '.status.runtime | test("^0\\.45\\.([1-9]|[1-9][0-9])$")' "$OUT/machine.json" > /dev/null \
-  || check "runtime floor: after its upgrade local runs $(jq -r .status.runtime "$OUT/machine.json"), not a 0.45 release from 0.45.1"
-# e2e-capped 0.2.0 needs cozy-runtime<0.45.1: local never moves down, so it runs 0.1.0 and says why.
+jq -e '.status.runtime | test("^0\\.4[7-9]\\.")' "$OUT/machine.json" > /dev/null \
+  || check "runtime floor: after its upgrade local runs $(jq -r .status.runtime "$OUT/machine.json"), not this cozy's Runtime minor"
+# On the minor, e2e-floor 0.2.0 (cozy-runtime>=0.45.1) runs as it is.
+cell floor-on-minor "$E2E_FLOOR/relay" "text=on the minor" || true
+# A cap binds only on a release: a dev build meets every cap (api::release::runs; the RC's builds run packages capped below its
+# minor, cl-922), and until a release of this minor is on PyPI every Runtime a project's run can take is a dev build. So local is held
+# by hand on the candidate's Runtime as a release of the minor (minor_release). There a named older release its Runtime admits runs
+# (e2e-floor 0.1.0); e2e-capped 0.2.0 (cozy-runtime<0.47.0.dev0) can't run, and local never moves down, so the run takes 0.1.0 and
+# says why; and off the RC, an unversioned run never takes a prerelease (e2e-held 0.1.0, never 0.2.0rc1: se-128).
+local release
+release=$(minor_release) || { check "runtime floor: no release of the minor to hold local on: $release"; return; }
+cozy --json machine update local --runtime "$release" -y > "$OUT/floor-release.json" 2>&1 \
+  || { check "runtime floor: local refused the candidate's Runtime as a release ($release): $(tail -c 300 "$OUT/floor-release.json")"; return; }
+machine_ready
+jq -e '.status.runtime | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")' "$OUT/machine.json" > /dev/null \
+  || check "runtime floor: held on $release, local runs $(jq -r .status.runtime "$OUT/machine.json"), not a release"
+if cell floor-release-older "$E2E_FLOOR/relay@0.1.0" "text=held, asked 0.1.0"; then
+  grep -q 'relay@0\.1\.0"' "$OUT/floor-release-older.ndjson" \
+    || check "runtime floor: held on a release of the minor, e2e-floor 0.1.0 named didn't run as 0.1.0: $(grep -o '"target": *"[^"]*"' "$OUT/floor-release-older.ndjson" | head -1)"
+fi
 in_project "$RUN_PROJECT" run "$E2E_CAPPED/relay" text=capped --on local > "$OUT/floor-capped.out" 2> "$OUT/floor-capped.err" \
   || check "runtime floor: the unversioned e2e-capped run failed: $(tail -c 400 "$OUT/floor-capped.err")"
-grep -q "e2e-capped 0.2.0 needs cozy-runtime.*no Runtime it can take does: this run takes 0.1.0" "$OUT/floor-capped.err" \
-  || check "runtime floor: e2e-capped didn't say it takes 0.1.0 for 0.2.0's cap: $(tail -c 400 "$OUT/floor-capped.err")"
+grep -q "e2e-capped 0.2.0 needs cozy-runtime.*no Runtime it can move to does, so this run uses 0.1.0" "$OUT/floor-capped.err" \
+  || check "runtime floor: on a release of the minor, e2e-capped didn't say it takes 0.1.0 for 0.2.0's cap: $(tail -c 400 "$OUT/floor-capped.err")"
+if cell floor-release-held "$E2E_HELD/relay" "text=off the RC"; then
+  grep -q 'relay@0\.1\.0"' "$OUT/floor-release-held.ndjson" && ! grep -q '0\.2\.0rc' "$OUT/floor-release-held.ndjson" \
+    || check "runtime floor: off the RC on a release of the minor, the unversioned e2e-held run didn't take 0.1.0: $(grep -o '"target": *"[^"]*"' "$OUT/floor-release-held.ndjson" | head -1)"
+fi
+}
+
+# minor_release: the candidate's Runtime wheel as a release of its minor (0.47.0.dev0+dev.g… as 0.47.0), for a cell that needs a cap
+# to bind; made once, its path said. Fails, saying why, without a candidate wheel.
+minor_release() {
+  local dir=$OUT/minor-release made
+  [ -f "${CAND_RT:-}" ] || { echo "no candidate Runtime wheel (${CAND_RT:-none})"; return 1; }
+  made=$(find "$dir" -name '*.whl' -print -quit 2> /dev/null) || made=
+  [ -n "$made" ] || made=$(mkdir -p "$dir" && python3 -I - "$CAND_RT" "$dir" <<'PY'
+import base64, hashlib, re, sys, zipfile
+from pathlib import Path
+source, out = Path(sys.argv[1]), Path(sys.argv[2])
+name, version, rest = source.name.split("-", 2)
+release = re.match(r"\d+(?:\.\d+)*", version).group(0)
+target = out / f"{name}-{release}-{rest}"
+with zipfile.ZipFile(source) as wheel:
+    info = next(n for n in wheel.namelist() if n.endswith(".dist-info/METADATA")).rsplit("/", 1)[0]
+    renamed = f"{name}-{release}.dist-info"
+    record = []
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as made:
+        for item in wheel.infolist():
+            if item.filename == f"{info}/RECORD":
+                continue
+            data = wheel.read(item)
+            path = renamed + item.filename[len(info):] if item.filename.startswith(info + "/") else item.filename
+            if path == f"{renamed}/METADATA":
+                data = re.sub(rb"(?m)^Version: .*$", b"Version: " + release.encode(), data, count=1)
+            entry = zipfile.ZipInfo(path, item.date_time)
+            entry.external_attr, entry.compress_type = item.external_attr, zipfile.ZIP_DEFLATED
+            made.writestr(entry, data)
+            digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+            record.append(f"{path},sha256={digest},{len(data)}")
+        record.append(f"{renamed}/RECORD,,")
+        made.writestr(f"{renamed}/RECORD", "\n".join(record) + "\n")
+print(target)
+PY
+) || { echo "the candidate's wheel $CAND_RT didn't repack as a release"; return 1; }
+  echo "$made"
 }
 
 # cr-276: a package calling another package's function whose result holds a `Latents` field, as orbit calls minimax-h3's

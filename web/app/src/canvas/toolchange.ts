@@ -1,6 +1,6 @@
 import type { Asset, Tool } from "../api/calcifer"
 import { addOnsOf, type Carried, modelsOf, takenOff, wordOf } from "./checkpoints"
-import { mainText, OWN, startingFields } from "./controls"
+import { mainText, OWN, startingFields, TEXT_TOOL } from "./controls"
 import { toolName } from "./shown"
 import { toolFitsNode } from "./palette"
 
@@ -110,8 +110,10 @@ export function comingOff(asset: Asset, fields: Fields): ToolStep {
   return { row: { tool: undefined, kind: "text", noun: "version", standing: "current", fields: { ...own, text: words ? fields[words] : "" } }, tool: "", fields: {}, back: { ...back, fields: { ...back.fields, text: null } }, lost: [] }
 }
 
-/** Why `tool` can't go on `asset`, or null when it can: a tool goes only on a box of the kind it makes (tools §9). */
+/** Why `tool` can't go on `asset`, or null when it can: a tool goes on any box of the kind it makes (tools §9). One that can't read the picture
+ *  goes on all the same, and what it can't use is struck through, saying why (Paul, 11-16: "you can attach an image tool to any image"). */
 export function wontGoOn(tool: Tool, asset: Asset, name: string): string | null {
+  if (tool.id === TEXT_TOOL.id) return "Text is a box of its own: let it go on open canvas"
   if (toolFitsNode(tool, asset)) return null
   if (tool.makes === asset.kind) return `${toolName(tool)} can't go on ${name}`
   const made = tool.makes === "image" ? "images" : tool.makes

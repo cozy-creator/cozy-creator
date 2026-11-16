@@ -105,6 +105,11 @@ pub fn key(text: &str) -> Option<String> {
     ((2..=10).contains(&key.len()) && spelled && key.starts_with(|c: char| c.is_ascii_uppercase())).then_some(key)
 }
 
+/// What names run `number` of the project keyed `key` (cl-987, cl-1075): `KEY-N`, N its number there, counted from 1.
+pub fn run_label(key: &str, number: u64) -> String {
+    format!("{key}-{number}")
+}
+
 /// A run's name, `KEY-N` in any case: its project's key and its number there.
 pub fn run_name(text: &str) -> Option<(String, u64)> {
     let (key, number) = text.trim().rsplit_once('-')?;
@@ -124,7 +129,7 @@ pub struct Key {
 
 /// A request in no project, which needs one.
 pub fn unnamed() -> Error {
-    Error::new(crate::error::Kind::Usage, "not_in_a_project", "run this command from an existing project directory. Use cozy new to create one")
+    Error::new(crate::error::Kind::Usage, "not_in_a_project", "Run this from inside a project folder, or create a project first.").next("cozy new")
         .next("cozy new")
 }
 
@@ -169,6 +174,14 @@ pub struct Asked {
     pub board: Board,
 }
 
+/// `POST /v1/projects/{id}/runs/{run}/retry` (cl-1085): a box's take rendered again, answered as its render is, or another run asked again.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Retried {
+    Render(Box<Asked>),
+    Run(Box<crate::calcifer::Submitted>),
+}
+
 /// One thing an ask queued, and the names ahead of it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -189,8 +202,7 @@ pub struct Queued {
     pub run: Option<u64>,
 }
 
-/// `POST /v1/projects/{id}/cancel`: these assets' queued work dropped and their runs canceled, or `all`; and these takes, by id: one
-/// that failed is dismissed.
+/// `POST /v1/projects/{id}/cancel`: these assets' queued work dropped and their runs canceled, or `all`; and these takes, by id.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Cancel {
     #[serde(default)]
@@ -200,7 +212,8 @@ pub struct Cancel {
 }
 
 /// A take of an asset that hasn't landed, by its id, from the render that asked it to its version (`VersionPrefix::id`): queued
-/// until its turn, then sent, with its run once that has a number (cl-945); or one that failed, with why (cl-954).
+/// until its turn, then sent, with its run once that has a number (cl-945). One that fails is gone: its failure is its asset's, said
+/// once as it happens (cl-1070).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct TakeNow {
@@ -209,9 +222,6 @@ pub struct TakeNow {
     pub queued: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<u64>,
-    /// It ended with no version, and why: listed until it's dismissed (`Cancel::takes`), as it failed (cl-954).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failure: Option<Error>,
 }
 
 /// What a cancel did: the names dropped from the queue, and the runs asked to stop.
@@ -383,14 +393,14 @@ pub struct Unused {
     pub mention: String,
     /// Where: `instructions`, `beats.0.description`.
     pub at: String,
-    /// For people: `Moss Image can't use images`.
+    /// For people: `MOSS-Image doesn't support reference images`.
     pub why: String,
 }
 
 impl Unused {
     /// The one line said of it for `of`, a box or a run.
     pub fn line(&self, of: &str) -> String {
-        format!("{of}: <{}> is left out: {}", self.mention, self.why)
+        format!("{of}: <{}> was left out because {}", self.mention, self.why)
     }
 }
 

@@ -18,7 +18,6 @@ use platform::{
     paths::Home,
     process::{self, Detached},
     service::{ServiceSpec, Services},
-    tools,
 };
 use api::{
     calcifer::{
@@ -68,8 +67,8 @@ enum Ask {
 
 /// This home's Calcifer lock as `cozy doctor` reads it.
 pub(crate) enum Lock {
-    /// Nobody holds the home; `stale`: a record names a Calcifer killed before it erased it.
-    Free { stale: bool },
+    /// Nobody holds the home.
+    Free,
     /// A Calcifer holds the home and its record names it, alive.
     Held(Holder),
     /// The home's lock is held, but by no live Calcifer its record names: a process another one
@@ -190,7 +189,7 @@ impl Client {
             process::Birth::of(pid).and_then(|birth| birth.state()).is_ok_and(|s| s != process::State::Gone)
         };
         match (free, raw.map(|raw| serde_json::from_slice::<Holder>(&raw))) {
-            (true, record) => Lock::Free { stale: record.is_some() },
+            (true, _) => Lock::Free,
             (false, Some(Ok(holder))) if alive(holder.pid) => Lock::Held(holder),
             (false, _) => Lock::Captive,
         }
@@ -388,9 +387,6 @@ impl Client {
             let request = c.head(format!("{base}{path}"));
             match project { Some(project) => request.query(&[("project", project)]), None => request }
         }).await?;
-        if project.is_some() && answer.status() == StatusCode::NOT_FOUND && !answer.headers().contains_key(HELD) {
-            return Err(Error::new(Kind::Unavailable, "project_upload_unsupported", "Calcifer does not support protected project uploads; update it before sending private files"));
-        }
         let ranges = || answer.headers().get(HELD).and_then(|v| v.to_str().ok()).and_then(parse_held).unwrap_or_default();
         // 200: held whole; 404: none of it, or the ranges `Cozy-Held` says.
         match answer.status() {
@@ -839,10 +835,8 @@ impl Client {
 
     /// Stops `holder`'s Calcifer and starts the installed cozy's in its place.
     async fn replace(&self, holder: Holder) -> Result<Holder, Error> {
-        self.say(&format!("Calcifer runs cozy {}; restarting it on {}", holder.version, ::api::VERSION));
-        if let Err(e) = self.down(&holder).await {
-            self.say(&format!("Calcifer did not stop cleanly ({}); starting the installed one", e.message));
-        }
+        // One that didn't stop cleanly is replaced all the same.
+        let _ = self.down(&holder).await;
         self.start().await
     }
 
@@ -903,17 +897,6 @@ impl Client {
         let exe = std::env::current_exe().and_then(|exe| exe.canonicalize());
         let ours = matches!((exe, installed.canonicalize()), (Ok(exe), Ok(it)) if exe == it);
         let managed = services.available() && (ours || services.current(&spec));
-        // Started detached for want of systemctl: no login starts it again. A pod has no login.
-        let path: Vec<_> =
-            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
-        if !managed
-            && cfg!(target_os = "linux")
-            && !api::config::image_machine()
-            && tools::on_path("systemctl", &path).is_none()
-            && let Some(warning) = tools::warn_once("systemctl")
-        {
-            output::warn(&warning);
-        }
         if managed && ours {
             services.ensure(&spec).map_err(failed)?;
         }
@@ -1537,7 +1520,6 @@ fn unreachable(error: reqwest::Error) -> Error {
         "calcifer_unreachable",
         format!("Calcifer stopped answering: {error}"),
     )
-    .remedy("Run the command again")
 }
 
 fn vault_uncertain(error: Error) -> Error {

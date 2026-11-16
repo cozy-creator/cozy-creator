@@ -65,12 +65,12 @@ before=$(df -B1 --output=used "$mnt" | tail -1 | tr -d ' ')
 ALLOW=machine_disk_full cell disk-big "$script" --model "weights=e2e/disk-big@0.1.0" text=big || true
 said=$(run_get "$OUT" disk-big '.reason.message')
 echo "disk-big: $(run_get "$OUT" disk-big .status): ${said:0:400}"
-{ [ -f "$OUT/disk-big.refused" ] && grep -qE '[0-9.]+ (GiB|MiB)' <<< "$said"; } \
+{ [ -f "$OUT/disk-big.refused" ] && grep -qE '[0-9.]+(GB|MB)' <<< "$said"; } \
   || check "disk: e2e/disk-big (2 GiB on a 2.5 GiB disk) was not refused machine_disk_full naming the sizes: ${said:0:300}"
 [ "$(df -B1 --output=used "$mnt" | tail -1 | tr -d ' ')" -le $((before + (64 << 20))) ] || check "disk: the refused e2e/disk-big left bytes on the disk"
 df -B1 --output=used,avail "$mnt" | tail -1 | sed "s/^/after: used, free: /"
 cozy machine logs local --lines 0 --since 1h > "$OUT/disk.tensord.log" 2>&1 || check "disk: machine logs local failed"
-grep -E "evicted|freed|fetch refused .*CAPACITY|disk is full|making room|disk was short|ended the idle|doesn't fit|held it" "$OUT/disk.tensord.log" | cut -c1-300 | head -60 || true
+grep -E "evicted|freed|fetch refused .*CAPACITY|disk is full|making room|short for this render|ended the idle|doesn't fit|held it" "$OUT/disk.tensord.log" | cut -c1-300 | head -60 || true
 for name in disk-4 disk-5 disk-6 disk-1-again; do
   jq -r --arg n "$name" '.warnings[]? | "\($n) warning: \(.message)"' "$OUT/$name.json" 2> /dev/null | cut -c1-300 || true
   ! jq -e '[.warnings[]?.message] | any(test("model data is in use"))' "$OUT/$name.json" > /dev/null 2>&1 \
@@ -78,4 +78,34 @@ for name in disk-4 disk-5 disk-6 disk-1-again; do
 done
 grep "making room in $mnt waited" "$OUT/disk.tensord.log" | cut -c1-200 \
   || check "disk: the machine's room for the runs' weights never waited for the reader"
+disk_below_reserve
+}
+
+# cl-1076 (11-16): kamitsure's disk sat at its reserve for an hour while an idle LTX executor held 71.5 GB open, and its
+# outputs went instead. Below its reserve the machine ended idle executors only for the bytes coming in, never for the
+# reserve too: it ended one, whose model alone couldn't make the room, and so evicted nothing. Here four idle executors
+# (one script each) hold a 384 MiB model apiece on a fresh 4 GiB store disk (1 GiB reserve), the disk 576 MiB below its
+# reserve. A run of a fifth model completes: the idle executors it needs end, their models evicted.
+disk_below_reserve() {
+local script=$here/script/disk.py img=$RUNNER_TEMP/tfs-reserve.img mnt=/mnt/tfs-reserve dir=$OUT/cl1076 i avail size reserve
+step "cl-1076: a disk below its reserve evicts as many idle executors' models as it lacks"
+truncate -s 4096M "$img" && mkfs.ext4 -q -F -m 0 "$img" && sudo mkdir -p "$mnt" && sudo mount -o loop "$img" "$mnt" \
+  && sudo chown "$(id -u):$(id -g)" "$mnt" || { check "disk: the 4 GiB disk was not made"; return 0; }
+disk_store "$HOME/.cozy/config.toml" "$mnt"
+machine_stop || check "disk: the local machine did not stop"
+machine_ready
+mkdir -p "$dir"
+cell reserve-1 "$script" --model "weights=e2e/disk-1@0.1.0" text=1 || return 0
+for i in 2 3 4; do
+  sed "s/disk filler/disk filler $i/" "$script" > "$dir/disk$i.py"
+  cell "reserve-$i" "$dir/disk$i.py" --model "weights=e2e/disk-$i@0.1.0" text=$i || return 0
+done
+read -r size avail < <(df -B1 --output=size,avail "$mnt" | tail -1)
+reserve=$((size / 50)); [ "$reserve" -ge $((1 << 30)) ] || reserve=$((1 << 30))
+fallocate -l $((avail - reserve + (576 << 20))) "$mnt/cl-1076-filler" || { check "disk: the filler was not made"; return 0; }
+df -B1 --output=used,avail "$mnt" | tail -1 | sed "s/^/below the reserve: used, free: /"
+cell reserve-5 "$script" --model "weights=e2e/disk-5@0.1.0" text=5 || true
+jq -r '.warnings[]?.message' "$OUT/reserve-5.json" 2> /dev/null | cut -c1-300 || true
+cozy machine logs local --lines 0 --since 15m 2>&1 | grep -E "ended the idle|evicted|doesn't fit" | cut -c1-300 | tail -8 || true
+rm -f "$mnt/cl-1076-filler"
 }

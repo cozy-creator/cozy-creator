@@ -1,7 +1,10 @@
 //! What a model's checkpoints hold, from their headers alone (`cozy model show`, xs-183): each lane's components with their
 //! classes, configs, run data and tensor counts, and what the header records of where it came from. Only header objects are
 //! read, never a weight. [`lanes`] and [`header`] are how Calcifer reads the headers a reference names, lane by lane.
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::{Arc, LazyLock, Mutex},
+};
 
 use axum::{
     Json,
@@ -10,7 +13,7 @@ use axum::{
 use futures_util::{StreamExt as _, stream};
 use ::api::hub::types;
 use api::{
-    calcifer::hub::{ComponentHeader, LaneHeader, LoraModules, ModelHeaders},
+    calcifer::hub::{ComponentHeader, LaneHeader, LoraModules, ModelHeaders, ResolvedLane},
     error::{Error, Kind},
     model_ref::{ModelId, ReleaseVisibility},
 };
@@ -18,6 +21,7 @@ use serde::Deserialize;
 use tensorfs::{
     Endpoint,
     family::Facts,
+    fetch::Hardware,
     format::{ClassRef, Component, Header, ObjectRef},
 };
 
@@ -39,6 +43,10 @@ pub(super) struct Ask {
     /// Each component's config itself, not only its keys.
     #[serde(default)]
     full: bool,
+    /// Compute capabilities, `,`-separated: show the lane a machine with these GPUs resolves (dev-only `--gpu`).
+    gpus: Option<String>,
+    /// With `gpus`, the components a slot reads, `,`-separated.
+    components: Option<String>,
 }
 
 /// One lane's checkpoint on a card.
@@ -73,7 +81,7 @@ pub(crate) fn lanes<'c>(
                 None => match card.checkpoints.iter().find(|held| held.id == checkpoint) {
                     Some(held) => (None, vec![Lane { lane: held.lane.clone(), checkpoint: held.id.clone(), header: held.header.clone() }]),
                     None => {
-                        return Err(Error::not_found("model_checkpoint_not_found", format!("{model} has no checkpoint {checkpoint} you can read"))
+                        return Err(Error::not_found("model_checkpoint_not_found", format!("{model} has no checkpoint {checkpoint} that you can use."))
                             .next(format!("cozy model show {model}")));
                     }
                 },
@@ -82,7 +90,7 @@ pub(crate) fn lanes<'c>(
         (Some(version), None) => match card.releases.iter().find(|r| r.version == version) {
             Some(release) => (Some(release), of(release)),
             None => {
-                return Err(Error::not_found("model_release_not_found", format!("{model} has no release {version:?}"))
+                return Err(Error::not_found("model_release_not_found", format!("There's no release {version} of {model}."))
                     .next(format!("cozy model ls {model}")));
             }
         },
@@ -97,7 +105,7 @@ pub(crate) fn lanes<'c>(
                         .map(|held| Lane { lane: held.lane.clone(), checkpoint: held.id.clone(), header: held.header.clone() })
                         .collect();
                     if held.is_empty() {
-                        return Err(Error::not_found("model_unreleased", format!("{model} has no release or checkpoint you can read"))
+                        return Err(Error::not_found("model_unreleased", format!("{model} has no release or checkpoint that you can use."))
                             .next(format!("cozy model ls {model}")));
                     }
                     (None, held)
@@ -121,8 +129,31 @@ pub(crate) fn lanes<'c>(
 pub(crate) async fn header(endpoint: &Endpoint, object: &types::ObjectRef) -> Result<Header, Error> {
     let object = ObjectRef { sha256: object.sha256.clone(), length: object.length.max(0) as u64 };
     let bytes = (endpoint.document(&object).await)
-        .map_err(|why| Error::unavailable("header_unreadable", format!("header {}: {}", object.id(), why.detail)))?;
-    Header::from_cbor(&bytes).map_err(|why| Error::new(Kind::Unavailable, "header_invalid", format!("header {}: {why}", object.id())).next("cozy update"))
+        .map_err(|why| Error::unavailable("header_unreadable", format!("Couldn't read the model's header {} ({}).", object.id(), why.detail)))?;
+    Header::from_cbor(&bytes).map_err(|why| Error::new(Kind::Unavailable, "header_invalid", format!("This version of Cozy can't read the model's header {} ({why}). Update Cozy.", object.id())).next("cozy update"))
+}
+
+/// The chunks a slot's checkpoint is fetched as, by Hub, header and components: content-addressed, so read once and kept.
+type Wanted = HashMap<(String, String, Vec<String>), Arc<Vec<ObjectRef>>>;
+static WANTED: LazyLock<Mutex<Wanted>> = LazyLock::new(Mutex::default);
+
+/// The chunks and assets `components` of the checkpoint `header` read (every one when empty), each once (cl-1071): what a machine that
+/// holds none of it fetches for a slot, as TensorD fetches it (`tensorfs::fetch::wanted`). Only the header is read, as `cozy model show`
+/// reads it. None: it can't be read, or names no such component.
+pub(crate) async fn wanted(api: &Api, hub: &str, header: &types::ObjectRef, components: &[String]) -> Option<Arc<Vec<ObjectRef>>> {
+    let hub = origin(api, Some(hub)).ok()?;
+    let key = (hub.to_string(), header.sha256.clone(), components.to_vec());
+    if let Some(held) = WANTED.lock().expect("wanted lock").get(&key) {
+        return Some(held.clone());
+    }
+    let endpoint = distribution(&reader(api, &hub).ok()?, &hub).await.ok()?;
+    let read = self::header(&endpoint, header).await.inspect_err(|why| tracing::debug!("{}", why.message)).ok()?;
+    let chunks = tensorfs::fetch::wanted(&read, (!components.is_empty()).then_some(components))
+        .inspect_err(|why| tracing::debug!("header {}: {}", header.sha256, why.detail))
+        .ok()?;
+    let chunks = Arc::new(chunks);
+    WANTED.lock().expect("wanted lock").insert(key, chunks.clone());
+    Some(chunks)
 }
 
 fn class(class: &ClassRef) -> [String; 3] {
@@ -194,8 +225,18 @@ pub(super) async fn show(
     let model = ModelId::parse(&format!("{org}/{name}")).map_err(Refusal)?;
     let client = reader(&api, &hub)?;
     let card = (client.get_model(&model.org, &model.name).await).map_err(|e| refusal(&hub, e))?;
-    let (release, lanes) = lanes(&card, &model, ask.release.as_deref(), ask.checkpoint.as_deref(), ask.lane.as_deref()).map_err(Refusal)?;
     let endpoint = distribution(&client, &hub).await?;
+    let resolved = match ask.gpus.as_deref() {
+        Some(gpus) => Some(resolve(&endpoint, &model, &ask, gpus).await?),
+        None => None,
+    };
+    // The resolved lane alone: its release's, else (a model with no release) its checkpoint.
+    let (release, checkpoint, lane) = match &resolved {
+        Some((release, resolved)) if !release.is_empty() => (Some(release.as_str()), None, Some(resolved.lane.as_str())),
+        Some((_, resolved)) => (None, Some(resolved.checkpoint.as_str()), None),
+        None => (ask.release.as_deref(), ask.checkpoint.as_deref(), ask.lane.as_deref()),
+    };
+    let (release, lanes) = lanes(&card, &model, release, checkpoint, lane).map_err(Refusal)?;
     let (endpoint, full) = (&endpoint, ask.full);
     let reads = lanes.into_iter().map(|lane| async move { header(endpoint, &lane.header).await.map(|held| shown(&lane, &held, full)) });
     let read: Vec<Result<LaneHeader, Error>> = stream::iter(reads).buffered(READS).collect().await;
@@ -207,6 +248,31 @@ pub(super) async fn show(
         release: release.map(|r| r.version.clone()),
         visibility: release.map(|r| r.visibility),
         resolves_to: release.and_then(|r| api::release::newest_fix(&r.version, public, false)).map(str::to_owned),
+        resolved: resolved.map(|(_, resolved)| resolved),
         lanes,
+    }))
+}
+
+/// The release and lane `gpus` resolve the asked release (none named: the newest) to, through the Hub's resolve TensorD asks
+/// for a slot that takes encoded weights: its GPUs' capability and the components it reads, memory unasked (cl-1076).
+async fn resolve(endpoint: &Endpoint, model: &ModelId, ask: &Ask, gpus: &str) -> Result<(String, ResolvedLane), Refusal> {
+    if ask.checkpoint.is_some() {
+        return Err(Refusal(Error::new(Kind::Usage, "gpus_with_checkpoint", "a checkpoint is one lane already: --gpu resolves a release")
+            .next(format!("cozy model show {model} --gpu {gpus}"))));
+    }
+    let list = |text: &str| text.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect::<Vec<_>>();
+    let hardware = Hardware { gpus: list(gpus), components: list(ask.components.as_deref().unwrap_or_default()), ..Hardware::default() };
+    let resolved = (endpoint.resolve(&model.to_string(), ask.release.as_deref(), ask.lane.as_deref(), &hardware).await).map_err(|why| {
+        Refusal(match why.kind {
+            tensorfs::Kind::Network => Error::unavailable("model_resolution_failed", why.detail),
+            _ => Error::not_found("model_resolution_failed", why.detail),
+        })
+    })?;
+    Ok((resolved.release, ResolvedLane {
+        gpus: hardware.gpus,
+        components: hardware.components,
+        lane: resolved.lane,
+        checkpoint: format!("sha256:{}", resolved.checkpoint.sha256),
+        reasons: resolved.reasons,
     }))
 }

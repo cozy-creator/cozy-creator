@@ -1,11 +1,10 @@
 import { useQueryClient } from "@tanstack/react-query"
 import { useConnection } from "../../app/Connection"
 import type { Machine, MachineList } from "../../api/calcifer"
-import { Copyable } from "../../ui/Copyable"
 import { say } from "../../ui/notes"
 import { Confirm, Failure, useAsk } from "../common"
 import { usd } from "../format"
-import { called, handle, stableName } from "./words"
+import { called, stableName } from "./words"
 
 /** Puts what an ask answered into the list at once; the stream says the same a moment later. */
 function useKeepInList() {
@@ -14,7 +13,7 @@ function useKeepInList() {
     queries.setQueryData<MachineList>(["machines"], (list) => list && { ...list, machines: list.machines.map((held) => (held.name === machine.name ? machine : held)) })
 }
 
-/** Ends it: what it waits for, then until the Hub affirms the pod gone. Nothing here says it's gone until the Hub has. */
+/** Ends it: what it waits for, then until the Hub confirms it has ended. Nothing here says it's gone until the Hub has. */
 export function End({ machine }: { machine: Machine }) {
   const { client } = useConnection()
   const keep = useKeepInList()
@@ -28,7 +27,7 @@ export function End({ machine }: { machine: Machine }) {
     void ask.run(async () => {
       const ended = await client.endMachine(id, force)
       keep(ended.machine)
-      if (ended.abandoned?.length) say(`Gave up outputs that had not landed: ${ended.abandoned.join(", ")}`)
+      if (ended.abandoned?.length) say(`Ended without downloading these results: ${ended.abandoned.join(", ")}`)
     })
 
   if (machine.kind === "local" || machine.state === "ended") return null
@@ -38,11 +37,11 @@ export function End({ machine }: { machine: Machine }) {
         <Confirm
           label="Remove"
           disabled={ask.busy}
-          says={`Remove ${machine.name} from this computer's machines? It goes on running, and its own computer keeps what it holds.`}
-          yes="Remove it"
+          says={`Remove ${machine.name} from your machines? It keeps running, and nothing on it is deleted.`}
+          yes="Remove"
           onYes={() => end(false)}
         />
-        <Failure error={ask.error} lead="Couldn't remove it" />
+        <Failure error={ask.error} lead={`Couldn't remove ${machine.name}`} />
       </>
     )
   }
@@ -52,11 +51,11 @@ export function End({ machine }: { machine: Machine }) {
         <Confirm
           label="End"
           disabled={ask.busy}
-          says={`End ${it}? Another computer rented it, and whatever it's doing for that computer stops.${hourly ? ` It bills ${hourly}/h until the Hub affirms it gone.` : ""}`}
-          yes="End it"
+          says={`End ${it}? Another computer rented it, and anything it's doing for that computer will stop.${hourly ? ` It costs ${hourly}/h until the Hub confirms it has ended.` : ""}`}
+          yes="End rental"
           onYes={() => end(false)}
         />
-        <Failure error={ask.error} lead="Couldn't end it" />
+        <Failure error={ask.error} lead="Couldn't end the rental" />
       </>
     )
   }
@@ -70,36 +69,35 @@ export function End({ machine }: { machine: Machine }) {
           disabled={ask.busy}
           says={
             order
-              ? `Stop ${machine.placeholder ? "this order" : `the order for ${machine.name}`}? It buys nothing more, and anything it already placed is ended.`
-              : `End ${it}? Outputs of its runs that haven't landed here land first, then it shuts down. Its files on the pod go.${hourly ? ` It bills ${hourly}/h until the Hub affirms it gone.` : ""}`
+              ? `Cancel ${machine.placeholder ? "this order" : `the order for ${machine.name}`}? Nothing more will be rented, and anything it already rented will be ended.`
+              : `End ${it}? Cozy downloads any results still on it first, then shuts it down and deletes its files.${hourly ? ` It costs ${hourly}/h until the Hub confirms it has ended.` : ""}`
           }
-          yes="End it"
+          yes={order ? "Cancel order" : "End rental"}
           onYes={() => end(false)}
         />
       )}
       {machine.state === "ending" && machine.ending && (
         <>
-          <p>Waiting to end it: {machine.ending}</p>
+          <p>Ending once this finishes: {machine.ending}</p>
           <Confirm
             label="End now"
             disabled={ask.busy}
-            says={`End ${it} now? Outputs of its runs that haven't landed here are given up for good.`}
-            yes="End it and give them up"
+            says={`End ${it} now? Results that haven't downloaded yet will be lost.`}
+            yes="End now and lose them"
             onYes={() => end(true)}
           />
         </>
       )}
       {machine.state === "ending" && !machine.ending && (
-        <p>Shutting down.{order ? " It buys nothing more, and leaves this list once its Hub answers." : ` It bills${hourly ? ` ${hourly}/h` : ""} until its Hub affirms the pod gone, which this page shows when it does.`}</p>
+        <p>Shutting down.{order ? " Nothing more will be rented, and it leaves this list once the Hub confirms." : ` It costs money${hourly ? ` (${hourly}/h)` : ""} until the Hub confirms it has ended. This page shows when it does.`}</p>
       )}
       {machine.end_failed && (
         <div className="failure" role="alert">
-          <span>{called(machine)} was not shut down: {machine.end_failed}</span>
-          <span className="remedy">Nothing was ended, and it may still be billing. End it again to ask again.</span>
-          <Copyable text={`cozy machine end ${handle(machine)}`} />
+          <span>{called(machine)} didn't shut down: {machine.end_failed}</span>
+          <span className="remedy">It may still be costing money. Press End to try again.</span>
         </div>
       )}
-      <Failure error={ask.error} lead="Couldn't end it" />
+      <Failure error={ask.error} lead={order ? "Couldn't cancel the order" : "Couldn't end the rental"} />
     </>
   )
 }

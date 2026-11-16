@@ -6,7 +6,7 @@
 # hubcheck's --keep, hears one request of one run, the second, and keeps it. Off and on again, a third run's report goes under a new ID.
 
 # kept_reports: every run report hubcheck kept, the one hub_away started again after it included.
-kept_reports() { cat "$OUT/hub-kept.jsonl" "$OUT"/*/hub-kept.jsonl 2> /dev/null || true; }
+kept_reports() { cat "$OUT/hub-kept.jsonl" "$OUT"/*/hub-kept.jsonl 2> /dev/null | grep -F '"operation":"POST /v1/run-reports"' || true; }
 
 # reported_after <count> <file>: waits up to a minute for a report past the first <count>, and keeps the new ones in <file>.
 reported_after() {

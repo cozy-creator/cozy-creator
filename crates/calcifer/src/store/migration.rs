@@ -98,6 +98,7 @@ impl Destination<'_,'_> {
     fn input_root(&self)->Result<PathBuf> { match self { Self::Open(store)=>store.input_root(),Self::Sealing(store)=>store.input_root() } }
     fn read<T>(&self, f:impl FnOnce(&Connection)->Result<T>)->Result<T> { match self { Self::Open(store)=>store.read(f),Self::Sealing(store)=>store.read(f) } }
     fn write<T>(&self, f:impl FnOnce(&Transaction<'_>)->Result<T>)->Result<T> { match self { Self::Open(store)=>store.write(f),Self::Sealing(store)=>store.write(f) } }
+    fn write_held<T>(&self, f:impl FnOnce(&Transaction<'_>)->Result<T>)->Result<T> { match self { Self::Open(store)=>store.write_held(f),Self::Sealing(store)=>store.write_held(f) } }
 }
 
 impl Store {
@@ -256,11 +257,19 @@ impl Store {
                     .map_err(|_| StoreError::Protected("project_input_migration_pending".into()))?;
             }
             let receipt=format!("controller-v7:run:{id}");
-            project.write(|tx| {
+            project.write_held(|tx| {
                 let prior:Option<String>=tx.query_row("SELECT digest FROM journal_migrations WHERE source=?1",[&receipt],|row|row.get(0)).optional()?;
                 if prior.as_ref().is_some_and(|prior| prior!=&source_digest) { return Err(StoreError::Protected("project_migration_source_changed".into())); }
                 // An earlier import left a remote run pending custody that can never come: it is owned now, as imported again.
                 if !pending_worker { tx.execute("UPDATE runs SET custody='owned' WHERE id=?1 AND custody='legacy_pending'",[&id])?; }
+                // The project's next number, in the order its old runs were made (cl-1075); one imported before keeps its own. Each number
+                // project.db keeps of it moves with it.
+                let number=runs.column("number")?;
+                let old=integer(&runs.values[0][number])?;
+                let kept:Option<i64>=tx.query_row("SELECT number FROM runs WHERE id=?1",[&id],|row|row.get(0)).optional()?;
+                let new=match kept { Some(kept)=>kept, None=>tx.query_row("SELECT COALESCE(MAX(number),0)+1 FROM runs",[],|row|row.get(0))? };
+                runs.values[0][number]=Value::Integer(new);
+                crate::project::numbers::imported(tx,&id,old,new).map_err(|_|StoreError::Protected("project_run_numbers".into()))?;
                 runs.insert_verified(tx,"runs")?; outputs.insert_verified(tx,"outputs")?; logs.insert_verified(tx,"run_logs")?; asks.insert_verified(tx,"asks")?;
                 if let Some(after)=&after { after.insert_verified(tx,"after_steps")?; }
                 if let Some((step,_))=&after_file {
@@ -459,4 +468,21 @@ fn verify_file(path:&Path,digest:Digest,length:u64)->Result<()> {
     let size=std::io::copy(&mut file,&mut hash).map_err(|_|StoreError::Protected("project_input_retirement_pending".into()))?;
     if size!=length || Digest::from_bytes(hash.finalize().into())!=digest { return Err(StoreError::Protected("project_input_source_changed".into())); }
     Ok(())
+}
+
+/// A project's legacy history not imported (cl-1003): said once in the health log by its code, never by anything the project holds.
+/// It stays in Calcifer's store as it was, for the hard cut; the project opens and runs all the same.
+pub(crate) fn legacy_not_imported(during: &'static str, error: &StoreError) {
+    let named = |text: &str, kind: &'static str| match !text.is_empty() && text.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_') {
+        true => text.to_owned(),
+        false => kind.to_owned(),
+    };
+    let code = match error {
+        StoreError::Protected(text) => named(text, "protected"),
+        StoreError::Locked(text) => named(text, "locked"),
+        StoreError::Corrupt(_) => "corrupt".into(),
+        StoreError::Sqlite(_) => "sqlite".into(),
+        _ => "other".into(),
+    };
+    tracing::warn!(target: "cozy.service_health", during, code = %code, "a project's legacy history was not imported; the project opens without it");
 }

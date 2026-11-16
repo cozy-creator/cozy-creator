@@ -76,7 +76,7 @@ export function ModelPicker({ name, onClose }: { name: string; onClose(): void }
   const tool = tools.get(view?.asset?.tool ?? "")
   const qwen = tool?.package.split("/").at(-1) === "qwen-image-2"
   const funAcc = Boolean(qwen && slotsOf(tool).some((slot) => slot.slot === "turbo_lora" && (slot.class?.split(".").at(-1) === "FunAccLoRA" || identityOf(slot.default ?? "") === "alibaba-pai/qwen-image-2.1-fun-acc")))
-  const imageEdit = view?.operation === "edit_image" || store.mentionedPictures(name).length > 0
+  const imageEdit = store.mentionedPictures(name).length > 0
   const helper = imageEdit ? "rewriter" : "expander"
   const slots = slotsOf(tool).filter((slot) => !qwen || (slot.slot !== "expander" && slot.slot !== "rewriter") || slot.slot === helper)
   if (qwen) {

@@ -30,6 +30,7 @@ parse "$@"
 . "$(dirname "$0")/machineset.sh"
 . "$(dirname "$0")/rental.sh"
 . "$(dirname "$0")/fallback.sh"
+. "$(dirname "$0")/retry.sh"
 . "$(dirname "$0")/previews.sh"
 . "$(dirname "$0")/released.sh"
 . "$(dirname "$0")/installed.sh"
@@ -51,6 +52,8 @@ parse "$@"
 . "$(dirname "$0")/endedlogs.sh"
 . "$(dirname "$0")/fresh.sh"
 . "$(dirname "$0")/typedcalls.sh"
+. "$(dirname "$0")/harness.sh"
+. "$(dirname "$0")/devstart.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
@@ -181,7 +184,7 @@ done
 # What a function doesn't take is said, and the run goes on: these are no input of `ImageRequest`.
 if cell ratio-unknown "$ratio" "prompt=ratio $RANDOM" negative_prompt=blurry guidance:=3 prompt_upsampling:=true; then
   for field in guidance negative_prompt prompt_upsampling; do
-    grep -q "reads no input $field" "$OUT/ratio-unknown.ndjson" "$OUT/ratio-unknown.err" \
+    grep -q "has no input $field" "$OUT/ratio-unknown.ndjson" "$OUT/ratio-unknown.err" \
       || check "ratio-unknown: $field, which it doesn't take, isn't said"
   done
 fi
@@ -400,10 +403,13 @@ local follower=$!
 for _ in $(seq 120); do n=$(grep -oE '^run [A-Z][A-Z0-9]*-[0-9]+ ' "$OUT/across.txt" | head -1 | cut -d' ' -f2) && [ -n "$n" ] && break; sleep 0.5; done
 [ -n "$n" ] || check "across: the run never began"
 systemctl --user restart cozy-calcifer || check "systemctl --user restart cozy-calcifer failed"
+# Still following once the restarted Calcifer serves, then to the run's end: it says nothing of the restart itself (cl-1066).
+local through=1
+sleep 2; kill -0 "$follower" 2> /dev/null && through=0
 wait "$follower" || true
 code=$(cat "$OUT/across.code" 2>/dev/null) || code=
-{ [ "$code" = 0 ] && grep -q "Calcifer restarted; following run $n again" "$OUT/across.txt"; } \
-  || check "across: the follow of run ${n:-?} did not go on past the restart (exit $code): $(tail -c 300 "$OUT/across.txt")"
+{ [ "$through" = 0 ] && [ "$code" = 0 ] && grep -qw completed "$OUT/across.txt"; } \
+  || check "across: the follow of run ${n:-?} did not go on past the restart (alive after it: $through, exit $code): $(tail -c 300 "$OUT/across.txt")"
 cozy --json run watch "$n" --once | J '.status == "completed"' || check "across: run $n did not complete"
 
 step "a burst of Calcifer restarts past systemd's start limit"
@@ -495,12 +501,14 @@ WEB_2=(
   isolation
   input
   hover
+  fullscreen
 )
 WEB_3=(
   focus
   create
   project-name
   takes
+  run-tiles
   no-overlap
   instant
   select
@@ -534,6 +542,7 @@ WEB_ENGINES=(
   glloss
   keyboard
   input
+  fullscreen
 )
 # What stops, restarts or re-points Calcifer, or needs the job to itself (`@solo`), one at a time, with the filesystem driver.
 WEB_SOLO=(
@@ -570,6 +579,8 @@ case $SHARD in
   '') parts="
     uv_at_once
     entrypoints
+    open_fails
+    open_slow
     weightless
     script_package
     one_name_two_paths
@@ -583,7 +594,9 @@ case $SHARD in
     kept_preparing
     catalog
     basics
+    uninstall_on
     component_models
+    lora_reads
     second_project
     lock_platforms
     yaml_requests
@@ -607,6 +620,7 @@ case $SHARD in
     old_runtime
     hostile_media
     egress
+    token_scope
     hostile_inputs
     private_weights
     unseen
@@ -627,6 +641,7 @@ case $SHARD in
     local_idle
     machine_set
     fall_back
+    retry_elsewhere
     coming_machine
     slow_runs
     completions
@@ -671,7 +686,15 @@ case $SHARD in
   # A second project's first install and run against the first's (cl-984): by dispatch, as it builds seven environments.
   env-cost) parts="env_cost logs" ;;
   # What a call may read on demand, on a cold machine (cl-966).
-  ondemand) parts="ondemand_ahead ondemand_need logs" ;;
+  ondemand) parts="
+    ondemand_ahead
+    ondemand_need
+    ondemand_progress
+    ondemand_calls
+    ondemand_adapted
+    ondemand_order
+    logs
+  " ;;
   # The install's share of the link beside 1.6 GB of weights (cl-1007): about 8 min on its own, so its own shard.
   ondemand-share) parts="ondemand_share logs" ;;
   # A model's weights alone through the 60 Mbit link, timed, with the streams the ramp settled at (th-378).
@@ -679,13 +702,17 @@ case $SHARD in
   # A small disk full of idle models' weights makes room for the next runs' (tfs-150).
   disk) parts="disk_full logs" ;;
   # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.
-  plan) parts="estimate_line plan_picks plan_published prepare_ahead logs" ;;
+  plan) parts="estimate_line plan_picks plan_published plan_update plan_fetch prepare_ahead logs" ;;
   entrypoints) parts="entrypoints" ;;
   commands) parts="
     entrypoints
+    open_fails
+    open_slow
     catalog
     basics
+    uninstall_on
     component_models
+    lora_reads
     second_project
     lock_platforms
     yaml_requests
@@ -701,6 +728,7 @@ case $SHARD in
     old_runtime
     hostile_media
     egress
+    token_scope
     hostile_inputs
     private_weights
     machine_show_runs
@@ -711,8 +739,11 @@ case $SHARD in
     orbit_metadata
     web_serves
     install_retries
+    harness_abort
     logs
   " ;;
+  # A part that ends on a shell error fails its shard (cl-1079), alone.
+  harness) parts="harness_abort" ;;
   project-stream) parts="project_stream logs" ;;
   # A run is never silently slow (cl-913): a hot host's recorded GPU readings through the real path.
   slow) parts="
@@ -722,6 +753,10 @@ case $SHARD in
   " ;;
   # Calcifer restarted on a large store, its disk slow (cl-1010).
   restart) parts="state_restart logs" ;;
+  # A project's run sent to a rental by its handle follows its Hub's name for the host (cl-1089).
+  rental-rename) parts="rental_rename logs" ;;
+  # A dev build's Calcifer at the stack size it ships resumes a render walk and answers /fit (cl-1069: E2E_DEV_COZY, e2e.yaml).
+  dev-start) parts="dev_start logs" ;;
   # What cozy needs is on the computer once its installer is done (cl-1030): Linux, macOS and Windows.
   fresh) parts="fresh_install logs" ;;
   web-1) web_cells=(${WEB_1[@]+"${WEB_1[@]}"}); parts="web_lane logs" ;;
@@ -766,12 +801,15 @@ case $SHARD in
     local_idle
     machine_set
     fall_back
+    retry_elsewhere
     db_deleted_gc
     db_purged
     db_closes
     old_takes
     db_migrate
     db_legacy
+    db_numbered
+    db_keys
     db_remote_custody
     db_opens
     db_migrate_large
@@ -780,6 +818,8 @@ case $SHARD in
     agent_render
     logs
   " ;;
+  # A run a machine's end cut short, retried elsewhere from the CLI and the page's toast (cl-1085), alone.
+  projectdb-retry) parts="retry_elsewhere logs" ;;
   # Deleted boxes' files after the undo window, Undo after the purge (cl-919), and a project closed once nothing reads it (cl-823).
   projectdb-deleted) parts="db_deleted_gc logs" ;;
   projectdb-purged) parts="db_purged logs" ;;
@@ -818,8 +858,9 @@ case $SHARD in
   projectdb-render) parts="agent_render logs" ;;
   # A project 0.24.0 made, opened here (cl-904, schema 3).
   projectdb-migrate) parts="db_migrate logs" ;;
-  # cozy status's legacy history and cozy doctor's old runs by folder, over a 0.24.0 store fenced here (cl-984).
-  projectdb-legacy) parts="db_legacy logs" ;;
+  # cozy status's legacy history and cozy doctor's old runs by folder, over a 0.24.0 store fenced here (cl-984); a project's runs
+  # numbered from 1, and a run's key its own project's (cl-1075).
+  projectdb-legacy) parts="db_legacy db_numbered db_keys logs" ;;
   # A lock passing over a release no rental can install (cl-1011).
   lock-platforms) parts="lock_platforms logs" ;;
   # Old runs an ended rental made import as the project's own, and the project takes new work (cl-1003).
@@ -856,6 +897,7 @@ case $SHARD in
     from_source
     rental_end
     rental_end_again
+    rental_rename
     logs
   " ;;
   # Stops, restarts, updates and starts past a TensorD that can't exit, and a start that hangs, then a rental's own end against a
@@ -871,9 +913,14 @@ case $SHARD in
   typed-calls) parts="typed_calls logs" ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
   coming) parts="coming_machine logs" ;;
-  # `cozy update`, its own runner, as it replaces this computer's cozy: the Latest updating to the candidate, then cozy updating
-  # itself for a package that needs a newer cozy (cl-978).
-  selfupdate) parts="self_forward self_update logs" ;;
+  # `cozy update`, its own runner, as it replaces this computer's cozy: a newer release offered at a terminal (cl-1069), the Latest
+  # updating to the candidate, then cozy updating itself for a package that needs a newer cozy (cl-978).
+  selfupdate) parts="
+    update_offer
+    self_forward
+    self_update
+    logs
+  " ;;
   # By hand: the control-plane audit's cells alone (control.sh).
   control) parts="
     machine_show_runs
@@ -919,6 +966,6 @@ if [ -n "$PACKAGES" ]; then
   PACKAGES=$(cd "$PACKAGES" && pwd) || fail "package checkout is unavailable"
 fi
 cd "$RUN_PROJECT" || fail "project directory is unavailable"
-for part in $parts; do $part; done
+run_parts $parts
 [ -n "$SHARD" ] || [ -z "$LOCAL" ] || { step coverage; coverage "$OUT/cozy-under-test" pr; }
 finish "cli${SHARD:+ $SHARD}"

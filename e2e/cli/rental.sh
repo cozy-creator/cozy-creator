@@ -60,6 +60,10 @@ kill -KILL "$pid" 2> /dev/null || true
 wait "$pid" 2> /dev/null || true
 [ -n "$rental" ] || { check "rental_end: machine rent cpu: no rental accepted: $(tail -c 400 "$OUT/rental-rent.ndjson") $(tail -c 300 "$OUT/rental-rent.err")"; cozy --json logout > /dev/null 2>&1 || true; return; }
 echo "rented $rental"
+# cl-1076, Paul 11-16: "300GB worker discs by default". A rent that names no disk asks its Hub for 300 GB: the quote it
+# made first, as hubcheck keeps it (this Hub's cpu product would be bought at its image's own 512 GB either way).
+grep -F '"operation":"POST /v1/rental-quotes"' "$OUT/hub-kept.jsonl" 2> /dev/null | jq -se 'last.body.container_disk_gb == 300' > /dev/null \
+  || check "rental_end: machine rent cpu didn't ask for 300 GB: $(grep -F rental-quotes "$OUT/hub-kept.jsonl" 2> /dev/null | tail -1 | head -c 300)"
 
 step "a rental says what it rents until its Hub names its host, then the host's word (cl-888, Paul 11-12)"
 # One host, one name: the Hub names a pod by its host once it's placed there, and until then the rental is "Renting a CPU…",
@@ -129,7 +133,7 @@ step "machine end, holding a key the Hub revoked"
 install -m 600 "$held/laptop-key.json" "$key"
 cozy --json whoami > "$OUT/rental-whoami-refused.json" 2> "$OUT/rental-whoami-refused.err" && J '.logged_in == false and .key_refused == true' "$OUT/rental-whoami-refused.json" \
   || check "whoami with a revoked key: not 'no longer accepted': $(tail -c 300 "$OUT/rental-whoami-refused.json")"
-end_refused key-refused 'hub_credential'
+end_refused key-refused 'sign in to the Hub again'
 
 step "machine end, signed in again"
 cozy --json logout > /dev/null 2>&1 || true
@@ -150,7 +154,7 @@ step "logout forgets a key installed from a file, and revokes none another compu
 # The 11-11 copy, done again: this computer's key installed from its file (as on a pod), then signed out there.
 cp "$key" "$held/laptop-key-2.json"
 cozy --json login --key "$held/laptop-key-2.json" > "$OUT/rental-install.json" 2> "$OUT/rental-install.err" || check "login --key with a copy of this computer's key failed: $(tail -c 300 "$OUT/rental-install.json")"
-cozy --json logout > "$OUT/rental-logout-installed.json" 2> "$OUT/rental-logout-installed.err" && J '.status == "signed out" and any(.notes[]?; test("not revoked"))' "$OUT/rental-logout-installed.json" \
+cozy --json logout > "$OUT/rental-logout-installed.json" 2> "$OUT/rental-logout-installed.err" && J '.status == "signed out" and any(.notes[]?; test("didn.t revoke it"))' "$OUT/rental-logout-installed.json" \
   || check "logout of an installed key: not forgotten without revoking: $(tail -c 300 "$OUT/rental-logout-installed.json")"
 # The computer it was copied from is still signed in.
 cozy --json login --key "$held/laptop-key-2.json" > /dev/null 2>&1 || true
@@ -201,5 +205,71 @@ for _ in $(seq 90); do [ -z "$(docker ps -aq --filter label=com.cozy.tensorhub.p
 [ -z "$(docker ps -aq --filter label=com.cozy.tensorhub.provider=docker)" ] \
   || { check "rental_end_again: the Hub still runs its container"; docker ps -aq --filter label=com.cozy.tensorhub.provider=docker | xargs -r docker rm -f > /dev/null; }
 [ -z "$ended" ] || echo "rental_end_again: $rental ended by Calcifer's own second ask, $(($(date +%s) - at)) s after sign-in"
+cozy --json logout > /dev/null 2>&1 || true
+}
+
+# rental_rename (cl-1089): a project's run sent to a rental by its `rent-…` handle, before its Hub names the host, follows the name:
+# cl-1069's pod sessions (43849240267, 43850691690) waited on "no machine named rent-…" until cut, as the rename moves only the
+# machine store's runs. The run says the host's name, never that wait, and once the rental ends it settles. This Hub's docker
+# rental never gets ready, so the run is never sent: where it stands is the cell.
+rename_here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+rental_rename() {
+step "a project's run sent to a rental by its handle follows its Hub's name for the host, and settles when it ends (cl-1089)"
+[ -n "${E2E_HUB_LOG:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] || { check "rental_rename: e2e/isolated.sh named no Hub log or email to sign in with"; return; }
+local pid rental='' handle number='' name='' w=$OUT/rename-watch.json
+signin "$E2E_HUB_EMAIL" > "$OUT/rename-login.json" || { check "rental_rename: cozy login failed: $(tail -c 300 "$OUT/rename-login.json")"; return; }
+cozy --json machine rent cpu -y > "$OUT/rename-rent.ndjson" 2> "$OUT/rename-rent.err" & pid=$!
+for _ in $(seq 180); do
+  rental=$(jq -r 'select(.type? == "rental.accepted") | .rental_id // empty' "$OUT/rename-rent.ndjson" 2> /dev/null | tail -1 || true)
+  [ -n "$rental" ] || ! kill -0 "$pid" 2> /dev/null || { sleep 1; continue; }
+  break
+done
+kill -KILL "$pid" 2> /dev/null || true
+wait "$pid" 2> /dev/null || true
+handle=$(jq -r 'select(.type? == "rental.accepted") | .name // empty' "$OUT/rename-rent.ndjson" 2> /dev/null | tail -1 || true)
+[ -n "$rental" ] && [[ $handle == rent-* ]] || { check "rental_rename: no rental accepted with a handle: $(tail -c 400 "$OUT/rename-rent.ndjson")"; cozy --json logout > /dev/null 2>&1 || true; return; }
+# The project's run, to it by its handle before its host is named: it waits for the rental. Its install is the run that waits, which
+# the CLI follows before it says any run as JSON: the project's first run made since.
+local t0; t0=$(($(date +%s) * 1000))
+(cd "$RUN_PROJECT" && cozy --json run "$rename_here/weightless/reverse" "text=renamed$RANDOM" --on "$handle" > "$OUT/rename-run.ndjson" 2>&1) & pid=$!
+# Its first local code here locks the package first: minutes on a cold runner.
+for _ in $(seq 120); do
+  number=$( (cd "$RUN_PROJECT" && cozy --json run ls --limit 10) 2> /dev/null | jq -r --argjson t "$t0" '[.runs[] | select(.created_at_ms >= $t)] | min_by(.created_at_ms) | .number // empty' 2> /dev/null || true)
+  [ -z "$number" ] || break
+  sleep 5
+done
+kill "$pid" 2> /dev/null || true
+wait "$pid" 2> /dev/null || true
+if [ -z "$number" ]; then
+  check "rental_rename: the run to $handle wasn't made: $(tail -c 400 "$OUT/rename-run.ndjson")"
+else
+  for _ in $(seq 120); do
+    name=$(cozy --json machine ls 2> /dev/null | jq -r --arg r "$rental" '.machines[] | select(.rental_id == $r and .placeholder == null) | .name' 2> /dev/null || true)
+    [ -n "$name" ] && [[ $name != rent-* ]] && break
+    sleep 1
+  done
+  if [ -z "$name" ] || [[ $name == rent-* ]]; then
+    check "rental_rename: its Hub never named $rental's host in 2 min"
+  else
+    for _ in $(seq 60); do
+      (cd "$RUN_PROJECT" && cozy --json run watch "$number" --once) > "$w" 2>&1 || true
+      jq -e --arg n "$name" '.machine == $n' "$w" > /dev/null 2>&1 && break
+      sleep 2
+    done
+    echo "rental_rename: run $number, sent to $handle, after its host was named $name: $(jq -c '{machine, status, waiting}' "$w" 2> /dev/null)"
+    jq -e --arg n "$name" '.machine == $n' "$w" > /dev/null 2>&1 || check "rental_rename: the run stayed on $handle after its host was named $name: $(jq -c '{machine, waiting}' "$w" 2> /dev/null)"
+    ! jq -e '(.waiting // "") | test("no machine named")' "$w" > /dev/null 2>&1 || check "rental_rename: the run waits on $(jq -r .waiting "$w")"
+  fi
+fi
+# Ended, the rental settles the run, whichever name it was sent by.
+cozy --json machine end "$rental" -y > "$OUT/rename-end.json" 2>&1 || check "rental_rename: machine end $rental: $(tail -c 300 "$OUT/rename-end.json")"
+if [ -n "$number" ]; then
+  for _ in $(seq 90); do
+    (cd "$RUN_PROJECT" && cozy --json run watch "$number" --once) > "$w" 2>&1 || true
+    jq -e '.status == "failed" or .status == "canceled"' "$w" > /dev/null 2>&1 && break
+    sleep 2
+  done
+  jq -e '.status == "failed" or .status == "canceled"' "$w" > /dev/null 2>&1 || check "rental_rename: the run didn't settle when $rental ended: $(jq -c '{machine, status, waiting}' "$w" 2> /dev/null)"
+fi
 cozy --json logout > /dev/null 2>&1 || true
 }

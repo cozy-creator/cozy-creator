@@ -13,5 +13,5 @@ export const newFolder = signal("")
 export function giveUp() {
   const ask = asked.get()
   asked.set(null)
-  if (ask?.by === "drop") ask.reject(new Error("Project creation was canceled"))
+  if (ask?.by === "drop") ask.reject(new Error("You canceled the new project, so this file wasn't added"))
 }

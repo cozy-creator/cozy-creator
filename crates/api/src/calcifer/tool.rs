@@ -85,7 +85,7 @@ pub struct Tool {
     pub name: String,
     /// What it does within its package: `Image`, `Edit`, `Upscale`.
     pub label: String,
-    /// Its package in words, as the tool list heads its tools: `Qwen Image 2`, `SDXL`.
+    /// Its package in words, as its description writes its name (`MiniMax H3`, `Qwen-Image-2.1`), else as `title` spells it (`SDXL`).
     #[serde(default)]
     pub package_title: String,
     /// What a box of it is: `image`, `video`, `audio` or `text`, by its result's first such field.
@@ -291,13 +291,14 @@ pub(crate) fn makes(callable: &Callable) -> Option<&str> {
     output_kind(callable).or_else(text)
 }
 
-/// Every tool of a package's interface: each public function that declares `@app.tool`.
-pub fn tools_of(package: &str, release: &str, interface: &Interface) -> Vec<Tool> {
+/// Every tool of a package's interface: each public function that declares `@app.tool`. `summary` is what the package does in a line, its
+/// pyproject's description, which spells its name (`title`).
+pub fn tools_of(package: &str, release: &str, interface: &Interface, summary: &str) -> Vec<Tool> {
     let callables = interface.public().into_iter().filter_map(|name| interface.callables.iter().find(|c| c.name == name));
-    callables.filter_map(|callable| tool_of(package, release, interface, callable)).collect()
+    callables.filter_map(|callable| tool_of(package, release, interface, callable, summary)).collect()
 }
 
-fn tool_of(package: &str, release: &str, interface: &Interface, callable: &Callable) -> Option<Tool> {
+fn tool_of(package: &str, release: &str, interface: &Interface, callable: &Callable, summary: &str) -> Option<Tool> {
     let declared = callable.tool.as_ref()?;
     let makes = makes(callable)?;
     let package = shown(package);
@@ -313,7 +314,7 @@ fn tool_of(package: &str, release: &str, interface: &Interface, callable: &Calla
         id: format!("{package}/{}", callable.name),
         name: box_name(&package, callable),
         label: if declared.label.is_empty() { capitalized(&words(&callable.name)) } else { declared.label.clone() },
-        package_title: title(&package),
+        package_title: title(&package, summary),
         package,
         function: callable.name.clone(),
         release: release.to_owned(),
@@ -363,14 +364,64 @@ pub fn first_of(word: &str) -> String {
     format!("{word}_1")
 }
 
-/// A package in words, its last part's: `qwen-image-2` is `Qwen Image 2`, and a word with no vowel is upper case, `sdxl` SDXL and `h3` H3.
-pub fn title(package: &str) -> String {
-    let words = package_word(package).split(['-', '_']).filter(|word| !word.is_empty());
+/// A package in words: its name as its own description (`summary`) writes it, `minimax-h3`'s "MiniMax H3 video with sound…" MiniMax H3 and
+/// `qwen-image-2`'s "…using Qwen-Image-2.1" Qwen-Image-2.1. One whose description doesn't name it: its last part's words, `krea-2` Krea 2,
+/// and a word with no vowel upper case, `sdxl` SDXL.
+pub fn title(package: &str, summary: &str) -> String {
+    let name = package_word(package);
+    if let Some(written) = written_in(name, summary) {
+        return written.to_owned();
+    }
+    let words = name.split(['-', '_']).filter(|word| !word.is_empty());
     let word = |word: &str| match word.chars().any(|c| "aeiouAEIOU".contains(c)) {
         true => capitalized(word),
         false => word.to_uppercase(),
     };
     words.map(word).collect::<Vec<_>>().join(" ")
+}
+
+/// `name` where `text` first writes it: its letters and digits in any case, from the start of a word to the end of one, each `-`, `_`, `.`
+/// or space of it written as any one of those or none, and a version after a last number (`qwen-image-2` as Qwen-Image-2.1).
+fn written_in<'a>(name: &str, text: &'a str) -> Option<&'a str> {
+    const GAPS: [char; 4] = ['-', '_', '.', ' '];
+    let wanted: Vec<char> = name.chars().collect();
+    if wanted.iter().all(|c| GAPS.contains(c)) {
+        return None;
+    }
+    let starts = text.char_indices().map(|(at, _)| at).filter(|&at| text[..at].chars().next_back().is_none_or(|before| !before.is_alphanumeric()));
+    'start: for start in starts {
+        let mut rest = text[start..].chars().peekable();
+        let mut end = start;
+        for want in wanted.iter().copied() {
+            if GAPS.contains(&want) {
+                if let Some(gap) = rest.next_if(|next| GAPS.contains(next)) {
+                    end += gap.len_utf8();
+                }
+                continue;
+            }
+            match rest.next() {
+                Some(next) if next.eq_ignore_ascii_case(&want) => end += next.len_utf8(),
+                _ => continue 'start,
+            }
+        }
+        if wanted.last().is_some_and(|last| last.is_ascii_digit()) {
+            loop {
+                let mut ahead = rest.clone();
+                if !(ahead.next() == Some('.') && ahead.next().is_some_and(|digit| digit.is_ascii_digit())) {
+                    break;
+                }
+                rest.next();
+                end += 1;
+                while rest.next_if(|digit| digit.is_ascii_digit()).is_some() {
+                    end += 1;
+                }
+            }
+        }
+        if rest.peek().is_none_or(|next| !next.is_alphanumeric()) {
+            return Some(&text[start..end]);
+        }
+    }
+    None
 }
 
 fn capitalized(text: &str) -> String {
@@ -470,6 +521,29 @@ fn field_of(field: &Field, default: Option<Value>) -> Option<ToolField> {
         _ => return None,
     }
     Some(out)
+}
+
+/// What a box asks of a required `field` it has nothing in, in the words the box draws it with: the step (`choose`, `write`, …), its
+/// label, and a choice's options as it shows them, `Character swap, Head swap or Style transfer`.
+pub fn asked(field: &Field) -> (&'static str, String, Option<String>) {
+    let Some(drawn) = field_of(field, None) else { return ("write", capitalized(&words(&field.name)), None) };
+    let step = match drawn.ty {
+        FieldType::Choice => "choose",
+        FieldType::Slot => "add",
+        FieldType::Number | FieldType::Toggle | FieldType::Shape | FieldType::Seed => "set",
+        FieldType::Group => "fill in",
+        FieldType::Words | FieldType::Prompt | FieldType::Timeline => "write",
+    };
+    let key = |value: &Value| value.as_str().map_or_else(|| value.to_string(), str::to_owned);
+    let shown: Vec<String> = (drawn.options.iter().flatten())
+        .map(|value| drawn.words.as_ref().and_then(|words| words.get(&key(value))).cloned().unwrap_or_else(|| key(value)))
+        .collect();
+    let options = match shown.split_last() {
+        None => None,
+        Some((only, [])) => Some(only.clone()),
+        Some((last, rest)) => Some(format!("{} or {last}", rest.join(", "))),
+    };
+    (step, drawn.label, options)
 }
 
 /// A group's members as the box draws them.

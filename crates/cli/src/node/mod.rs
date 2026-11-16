@@ -186,16 +186,15 @@ async fn list(ctx: &Context, project: &Project) -> Result<ExitCode, Error> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Its newest take's state: what's going, else what failed, else its newest version, done.
+/// Its newest take's state: what's going, else its last try failed, else its newest version, done.
 fn latest(asset: &Asset) -> Option<String> {
     if asset.kind == "text" && asset.tool.is_none() {
         return None;
     }
-    let going = asset.takes.iter().rev().find(|take| take.failure.is_none());
-    if let Some(take) = going {
+    if let Some(take) = asset.takes.last() {
         return Some(if take.queued { "queued".to_owned() } else { "running".to_owned() });
     }
-    if asset.takes.iter().any(|take| take.failure.is_some()) {
+    if asset.failure.is_some() {
         return Some("failed".to_owned());
     }
     asset.prefixes.iter().map(|prefix| prefix.number).max().map(|number| format!("{number} done"))
@@ -203,7 +202,7 @@ fn latest(asset: &Asset) -> Option<String> {
 
 pub(crate) async fn explain(ctx: &Context, args: Explain) -> Result<ExitCode, Error> {
     let calcifer = ctx.calcifer().await?;
-    let project = crate::project::identity(ctx).await.ok().map(|address| address.id);
+    let project = crate::project::address(ctx).await.ok().map(|address| address.id);
     let tools = listed(&calcifer, project.as_deref(), None).await?;
     let Some(asked) = args.path.as_deref().map(str::trim).filter(|asked| !asked.is_empty()) else {
         match args.schema {

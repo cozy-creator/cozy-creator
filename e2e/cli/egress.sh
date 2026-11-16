@@ -9,6 +9,8 @@
 #   private_weights A model the local machine just uploaded, private, read by a run (cl-1009, the release gate's qwen-lora flow):
 #                   its run capability puts its executor on TensorD's own Hub gateway (cl-675), an origin TensorD declares
 #                   local for its executors and nothing a run or Hub answer names. 0.26.0 refused it at the model's load.
+#   token_scope     The token `tensorfs.configure` was given reaches the default endpoint's origin and no other (xs-202, the
+#                   11-15 design audit: TensorFS 0.25.1 sent it to whatever endpoint a call named). The candidate TensorFS, no machine.
 # TensorD is asked as any client holding the machine's authorization asks it (egress.py, a key `machine authorize` admits).
 
 # redirector_start <log>: E2E_REDIRECT, which lib.sh declared local, answering /missing… 404 and anything else with a
@@ -98,6 +100,25 @@ redirector_stop
 leaked=$({ grep -lsI "$secret" "$dir"/import-*.json; jq -c '.presigned' "$dir/machine.json" | grep -l "$secret"; grep -rlsI --include='*.log*' "$secret" "$HOME/.cozy"; } 2> /dev/null | head -3 || true)
 [ -z "$leaked" ] || check "egress: the presigned query is in $leaked"
 echo "egress: $(jq -c 'map_values(.refusal.code // .outcome.status)' "$dir/machine.json" 2> /dev/null || true)"
+}
+
+token_scope() {
+step "a configured TensorFS token reaches its own endpoint only (xs-202)"
+local dir=$OUT/token-scope with mode
+[ -n "${CAND_TFS:-}" ] || { echo "token scope: skipped, this run names no TensorFS"; return 0; }
+if [ -f "$CAND_TFS" ]; then with=$CAND_TFS; else with=tensorfs==${CAND_TFS#v}; fi
+rm -rf "$dir"; mkdir -p "$dir"
+for mode in configured environment; do
+  uv run -q --no-project --with "$with" python -I "$here/token_scope.py" "$mode" > "$dir/$mode.json" 2> "$dir/$mode.err" \
+    || { check "token scope ($mode): $(tail -c 300 "$dir/$mode.err")"; continue; }
+  J '(.default | length > 0 and all(. == "Bearer token-a")) and (.named | length > 0 and all(. == "Bearer token-a"))' "$dir/$mode.json" \
+    || check "token scope ($mode): the default endpoint did not get the configured token: $(cat "$dir/$mode.json")"
+  J '.other | length > 0 and all(. == null)' "$dir/$mode.json" \
+    || check "token scope ($mode): another origin got the configured token, or was never asked: $(cat "$dir/$mode.json")"
+  J '.other_own | length > 0 and all(. == "Bearer token-b")' "$dir/$mode.json" \
+    || check "token scope ($mode): another origin did not get the call's own token: $(cat "$dir/$mode.json")"
+  echo "token scope ($mode): $(cat "$dir/$mode.json")"
+done
 }
 
 hostile_inputs() {

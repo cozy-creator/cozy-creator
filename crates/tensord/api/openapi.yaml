@@ -124,26 +124,6 @@ paths:
         '503':
           description: '`log_follow_unsupported`: this machine''s OS cannot follow'
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
-  /v1/models/remove:
-    post:
-      summary: Remove a repository from this computer's ordinary local model cache.
-      description: >-
-        Requires machine-scoped access on a local machine. Removes unreferenced cached objects
-        for the requested repository.
-      operationId: remove_model
-      requestBody:
-        required: true
-        content: {application/json: {schema: {$ref: '#/components/schemas/RemoveModel'}}}
-      responses:
-        '200':
-          description: The normalized repository name and the cache removal result.
-          content: {application/json: {schema: {$ref: '#/components/schemas/RemovedModel'}}}
-        '400':
-          description: '`invalid_request` or `model_ref_invalid`'
-          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
-        '403':
-          description: '`capability_scope` or `model_remove_local_only`'
-          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
   /v1/objects/held:
     post:
       summary: >-
@@ -208,10 +188,11 @@ paths:
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
   /v1/models/remove:
     post:
-      summary: Remove a repository's locally cached model copies.
+      summary: Remove a repository's downloaded copies from this machine.
       description: >-
-        Requires machine scope and the ordinary local cache. Removes cached releases and lanes while
-        preserving active readers and content shared with other models. The origin is unchanged.
+        Requires machine scope, on any machine. Removes cached releases and lanes while preserving
+        active readers and content shared with other models. The origin is unchanged. A repository
+        a run here not ended reads is refused `model_in_use`, naming the run.
       operationId: remove_model
       requestBody:
         required: true
@@ -224,7 +205,10 @@ paths:
           description: '`invalid_request` or `model_ref_invalid`'
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
         '403':
-          description: '`capability_scope` or `model_remove_local_only`'
+          description: '`capability_scope` or `model_remove_scoped`'
+          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+        '409':
+          description: '`model_in_use`: a run here not ended reads it'
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
         '500':
           description: '`model_remove_failed`'

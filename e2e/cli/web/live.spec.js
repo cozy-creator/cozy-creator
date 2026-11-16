@@ -252,8 +252,8 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
     await rowOf(run.number).getByRole('link').click();
     // Named as a person names it from any folder: KEY-N (cl-987).
     await expect(drawer.locator('.drawer-head')).toContainText(`Run ${run.name}`);
-    await expect(head).toContainText('running', { timeout: 120_000 });
-    await expect.soft(head, 'its end, live').toContainText('completed', { timeout: 120_000 });
+    await expect(head).toContainText('Running', { timeout: 120_000 });
+    await expect.soft(head, 'its end, live').toContainText('Completed', { timeout: 120_000 });
     await expect.soft(log, 'its log, to its end').toContainText('completed');
     expect.soft((await first).code, 'the CLI followed it to its end').toBe(0);
     expect.soft((await api.get(project.at(`/runs/${encodeURIComponent(run.id)}`))).status).toBe('completed');
@@ -267,19 +267,19 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
       await drawer.getByRole('link', { name: 'Back' }).click();
       await expect(rowOf(long.number)).toBeVisible({ timeout: 30_000 });
       await rowOf(long.number).getByRole('link').click();
-      await expect(head).toContainText('running', { timeout: 120_000 });
+      await expect(head).toContainText('Running', { timeout: 120_000 });
       const cancel = drawer.locator('.drawer-head').getByRole('button', { name: 'Cancel', exact: true });
       const asking = drawer.locator('.confirm');
       await cancel.click();
       await expect.soft(cancel).toHaveAttribute('aria-expanded', 'true');
-      await expect.soft(asking.locator('.says'), 'Cancel asks there, inline').toHaveText(`Cancel run ${long.name}? What it hasn't finished is lost. Its machine goes on.`);
+      await expect.soft(asking.locator('.says'), 'Cancel asks there, inline').toHaveText(`Cancel run ${long.name}? Any unfinished work is lost. The machine keeps running.`);
       expect.soft(await status(), 'nothing done before its yes').toMatchObject({ status: 'in_progress', cancel_requested: false });
       await asking.getByRole('button', { name: 'Not now' }).click();
       await expect.soft(asking).toHaveCount(0);
-      await expect.soft(head).toContainText('running');
+      await expect.soft(head).toContainText('Running');
       await cancel.click();
-      await asking.getByRole('button', { name: 'Cancel it' }).click();
-      await expect.soft(head, 'canceled, live').toContainText('canceled', { timeout: 60_000 });
+      await asking.getByRole('button', { name: 'Cancel run' }).click();
+      await expect.soft(head, 'canceled, live').toContainText('Canceled', { timeout: 60_000 });
       await softly.poll(async () => (await status()).status, { message: 'the run canceled' }).toBe('canceled');
       await second;
     } finally {

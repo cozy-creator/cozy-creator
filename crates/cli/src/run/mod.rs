@@ -38,7 +38,7 @@ Repeat --model for multiple slots. For the same slot, the last flag overrides ea
 model.<slot>= inputs and the request file.";
 
 #[derive(clap::Args, Debug)]
-#[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true, arg_required_else_help = true, subcommand_value_name = "ls|watch|cancel", after_help = EXAMPLES)]
+#[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true, arg_required_else_help = true, subcommand_value_name = "ls|watch|cancel|retry", after_help = EXAMPLES)]
 pub(crate) struct Args {
     #[command(subcommand)]
     verb: Option<Verb>,
@@ -168,6 +168,11 @@ enum Verb {
         /// The run's name (`SE-5`, from any folder), its number in this project, or its id.
         run: String,
     },
+    /// Run one that failed again, where it finishes soonest now: a box's take on its inputs and seed.
+    Retry {
+        /// The run's name (`SE-5`, from any folder), its number in this project, or its id.
+        run: String,
+    },
 }
 
 /// A state `run ls` filters on, in any case, with its plain synonyms.
@@ -208,7 +213,40 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             follow::record(ctx, &run);
             Ok(ExitCode::SUCCESS)
         }
+        Some(Verb::Retry { run }) => retry(ctx, &run).await,
         None => run(ctx, *args.run).await,
+    }
+}
+
+/// `cozy run retry` (cl-1085): a run that failed asked again, placed as a run naming no machine is, so never on one that ended. A box's
+/// take is followed as `cozy render` follows it; another run as `cozy run` follows it.
+async fn retry(ctx: &Context, run: &str) -> Result<ExitCode, Error> {
+    let calcifer = ctx.calcifer().await?;
+    let held = calcifer.run(&crate::calcifer_client::RunAddress::current(ctx, run).await?).await?;
+    let Some(project) = held.project_id.clone() else {
+        return Err(Error::new(Kind::Usage, "retry_no_project", format!("{} is Calcifer's own work, not a run to retry", held.name)));
+    };
+    let id = held.id.to_string();
+    let at = crate::calcifer_client::path(&["v1", "projects", &project, "runs", &id, "retry"]);
+    // The project's stream, from before the ask: a take it renders is followed with nothing missed.
+    let watching = crate::render::Watching::begin(ctx, &project).await?;
+    loop {
+        let retried: api::calcifer::project::Retried = calcifer.post(&at, &serde_json::json!({}), Some(&mint_key())).await?;
+        match retried {
+            api::calcifer::project::Retried::Render(asked) => return watching.follow(*asked).await,
+            // Its package made ready first, then asked again under a key of its own.
+            api::calcifer::project::Retried::Run(submitted) if submitted.preparing => {
+                let install = follow::settle(ctx, submitted.run).await?;
+                if !settled(&install) {
+                    return Ok(exit_code(&install));
+                }
+            }
+            api::calcifer::project::Retried::Run(submitted) => {
+                let run = follow(ctx, submitted.run).await?;
+                paste(ctx, &run);
+                return Ok(exit_code(&run));
+            }
+        }
     }
 }
 
@@ -429,6 +467,14 @@ pub(crate) async fn previewed(ctx: &Context, run: Run, previews: Option<&Path>) 
 async fn describe(ctx: &Context, raw: &str, code: Option<&LocalCode>, on: Option<&str>, project: Option<&str>) -> Result<ExitCode, Error> {
     let target = target(ctx, raw, code, on, project).await?;
     match (&target.contract, &target.request) {
+        // With --full, its package's interface document too, as a package's functions carry it (`print_functions`).
+        (Some(_), Some(request)) if ctx.json && ctx.full => {
+            let mut request = request.clone();
+            if let Some(fields) = request.as_object_mut() {
+                fields.insert("interface".into(), target.interface.clone());
+            }
+            output::json(&request)
+        }
         (Some(_), Some(request)) if ctx.json => output::json(request),
         (Some(contract), _) => anstream::print!("{contract}"),
         _ => print_functions(ctx, &target),

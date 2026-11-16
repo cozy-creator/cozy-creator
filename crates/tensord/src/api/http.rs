@@ -436,12 +436,13 @@ async fn keepalive(State(m): State<Machine>, headers: HeaderMap) -> Answer {
     Ok(json(StatusCode::OK, &frame))
 }
 
-/// Removes a local cached repository without stopping any work or changing its origin.
+/// Removes a model's downloaded copies from this machine's store, never its origin. One a run here not ended reads is refused,
+/// naming the run: its weights never go from under a call.
 async fn remove_model(State(m): State<Machine>, headers: HeaderMap, body: Bytes) -> Answer {
     let caller = m.caller(&headers)?;
     caller.machine()?;
-    if !m.identity.lifecycle.is_local() || crate::private_io::current().is_some() {
-        return Err(Error::forbidden("model_remove_local_only", "Model removal is available only in this computer's ordinary local cache").into());
+    if crate::private_io::current().is_some() {
+        return Err(Error::forbidden("model_remove_scoped", "a model leaves the machine's store, never a project's").into());
     }
     let asked: v1::RemoveModel = serde_json::from_slice(&body)
         .map_err(|e| Error::validation("invalid_request", format!("Cannot read model removal request: {e}")))?;
@@ -451,6 +452,11 @@ async fn remove_model(State(m): State<Machine>, headers: HeaderMap, body: Bytes)
     }
     let admitted = m.admit()?;
     let removed = m.call(move |runs| {
+        let reading = runs.reading(&model)?;
+        if let Some(first) = reading.first() {
+            let message = format!("{model} is being used by {}. Remove it once that finishes.", reading.join(" and "));
+            return Err(Error::conflict("model_in_use", message).next(format!("cozy run watch {first}")));
+        }
         let result = runs.service.engine.store.remove_cached_model(&model)
             .map_err(|e| Error::internal("model_remove_failed", e.to_string()))?;
         if result.removed {

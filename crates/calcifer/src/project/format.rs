@@ -40,7 +40,7 @@ pub(super) fn node_kind(value: Option<&Value>) -> Result<Option<&str>, Error> {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(kind)) if kind == "video_edit" => Ok(Some("video")),
         Some(Value::String(kind)) if matches!(kind.as_str(), "text" | "image" | "video" | "audio") => Ok(Some(kind)),
-        _ => Err(invalid("node_kind", "node_kind must be text, image, video or audio".into())),
+        _ => Err(invalid("node_kind", "node_kind must be text, image, video or audio.".into())),
     }
 }
 
@@ -48,7 +48,7 @@ pub(super) fn selected_version(value: Option<&Value>) -> Result<Option<u32>, Err
     match value {
         None | Some(Value::Null) => Ok(None),
         Some(value) => value.as_u64().and_then(|number| u32::try_from(number).ok()).filter(|number| *number > 0)
-            .map(Some).ok_or_else(|| invalid(SELECTED_VERSION, "selected_version must be a positive version number".into())),
+            .map(Some).ok_or_else(|| invalid(SELECTED_VERSION, "selected_version must be a version number above 0.".into())),
     }
 }
 
@@ -262,13 +262,13 @@ impl Doc {
         let mut defaults = Map::new();
         for (section, value) in top.get("defaults").and_then(Value::as_object).unwrap_or(&empty) {
             if !KINDS.contains(&section.as_str()) {
-                warnings.push(Warning::of_project(format!("defaults.{section}: the only keys are image, video and audio; it is ignored")));
+                warnings.push(Warning::of_project(format!("defaults.{section} was ignored: the only keys allowed are image, video and audio.")));
                 continue;
             }
             let mut filled = value.as_object().cloned().unwrap_or_default();
             for word in PLATFORM.iter().filter(|word| !MADE.contains(word)) {
                 if filled.remove(*word).is_some() {
-                    warnings.push(Warning::of_project(format!("defaults.{section}.{word}: defaults fill a node's inputs: it is ignored")));
+                    warnings.push(Warning::of_project(format!("defaults.{section}.{word} was ignored: defaults only fill in a box's inputs.")));
                 }
             }
             defaults.insert(section.clone(), Value::Object(filled));
@@ -294,7 +294,7 @@ impl Doc {
             let shown = read_as(name);
             if shown != *name {
                 doc.dotted.insert(name_key(name), doc.assets.len());
-                doc.warn(&shown, format!("{name}: a name holds no `.`, so it reads as {shown}: rename it {shown}"));
+                doc.warn(&shown, format!("{name}: names can't contain `.`, so Cozy reads it as {shown}. Rename it {shown}."));
             }
             doc.declare(&shown, written, &defaults, folder, lock);
         }
@@ -313,13 +313,13 @@ impl Doc {
     fn declare(&mut self, name: &str, written: &Value, defaults: &Map<String, Value>, folder: &Folder, lock: &Lock) {
         let key = name_key(name);
         if key == ALL {
-            self.warn(name, format!("{name} is named `{ALL}`: rendering `{ALL}` means everything, and makes it with the rest"));
+            self.warn(name, format!("{name} is called `{ALL}`, which means every box when you render, so it renders along with everything else."));
         }
         let mut body = match written {
             Value::Object(body) => body.clone(),
             Value::Null => Map::new(),
             _ => {
-                self.warn(name, format!("{name} is no mapping of keys: it is empty"));
+                self.warn(name, format!("{name} is empty: it has no fields."));
                 Map::new()
             }
         };
@@ -334,7 +334,7 @@ impl Doc {
             Some(value) => match file_named(&text_of(Some(value)), lock) {
                 Ok(sha256) => {
                     if !lock.files.get(&sha256).is_some_and(|file| file.here) {
-                        self.warn(name, format!("{name}'s approved: {} is not on this computer; download it in the browser opened by cozy open", folder::prefix_of(&sha256)));
+                        self.warn(name, format!("{name}'s approved file {} isn't on this computer. Open the project in the browser to download it.", folder::prefix_of(&sha256)));
                     }
                     pin = Some(sha256);
                 }
@@ -351,7 +351,7 @@ impl Doc {
         let kind = said.unwrap_or("image").to_owned();
         let description = text_of(body.get("description")).trim().to_owned();
         for mention in mentions(&description) {
-            self.warn(name, format!("{name}'s description says <{mention}>: a description is words, so it stays as text and nothing is read"));
+            self.warn(name, format!("{name}'s description mentions <{mention}>, but a description is only words, so it stays as text and nothing is read."));
         }
         let own: BTreeSet<String> = body.keys().filter(|key| !PLATFORM.contains(&key.as_str())).cloned().collect();
         let (mut made, mut inputs) = (Map::new(), Map::new());
@@ -376,7 +376,7 @@ impl Doc {
         inputs.retain(|_, value| !value.is_null());
         made.retain(|_, value| !value.is_null());
         if tool.as_deref() == Some(EDIT) && inputs.get("tracks").and_then(Value::as_array).is_some_and(|tracks| tracks.len() > 1) {
-            self.warn(name, format!("{name}: an edit has one track for now: the others are left out"));
+            self.warn(name, format!("{name}: an edit uses only one track for now, so Cozy left out the others."));
         }
         let hollow = body.is_empty() || tool.as_deref().is_none_or(|tool| made_here(tool) && kind_made_here(tool).is_none());
         self.index.insert(key, self.assets.len());
@@ -429,7 +429,7 @@ impl Doc {
             let &j = texts.get(&name_key(mention)).filter(|_| !is_tag(tags, mention))?;
             let name = &self.assets[j].name;
             if inside.contains(&j) {
-                let line = Warning::of(name, format!("{name} mentions itself, through what it mentions: that mention stays plain text"));
+                let line = Warning::of(name, format!("{name} mentions itself through what it mentions, so that mention stays plain text."));
                 if !said.contains(&line) {
                     said.push(line);
                 }
@@ -453,14 +453,14 @@ impl Doc {
         let mut unread = vec![];
         for asset in self.assets.iter().filter(|asset| asset.text.is_some()) {
             if let Some((tool, _)) = self.reserved.iter().find(|(_, tags)| is_tag(tags, &asset.name)) {
-                said.push(Warning::of(&asset.name, format!("{0} is a tag of {tool}, so a text asset can't go by it: rename {0} in the browser opened by cozy open", asset.name)));
+                said.push(Warning::of(&asset.name, format!("{0} is a tag of {tool}, so a text box can't use that name. Rename {0}.", asset.name)));
             }
         }
         for i in 0..n {
             let asset = &self.assets[i];
             let tags = self.tags(i);
             for tag in tags.into_iter().flatten().filter(|tag| self.find(tag).is_some()) {
-                let line = Warning::of(&asset.name, format!("{tag} is also a tag of {}: <{tag}> in its text is that tag, not this: rename {tag} in the browser opened by cozy open", self.target(i)));
+                let line = Warning::of(&asset.name, format!("{tag} is also a tag of {}, so <{tag}> in its text means that tag, not this box. Rename {tag}.", self.target(i)));
                 if !said.contains(&line) {
                     said.push(line);
                 }
@@ -499,7 +499,7 @@ impl Doc {
         let graph = Graph::new(upstream, &fixed);
         for &(reader, read) in &graph.closing {
             reads[reader].retain(|held| held.asset != read || held.number.is_some());
-            said.push(Warning::of(&self.assets[reader].name, format!("{} mentions {}, which is made from it: that mention stays plain text", self.assets[reader].name, self.assets[read].name)));
+            said.push(Warning::of(&self.assets[reader].name, format!("{} mentions {}, which is made from it, so that mention stays plain text.", self.assets[reader].name, self.assets[read].name)));
         }
         for (asset, reads) in self.assets.iter_mut().zip(reads) {
             asset.reads = reads;
@@ -633,7 +633,7 @@ impl Doc {
             return format!("<{name}> was deleted");
         }
         match self.near(named, tags).map(|close| format!("{close}{}", &name[named.len()..])) {
-            Some(close) => format!("<{name}> is no longer in the project: did you mean <{close}>?"),
+            Some(close) => format!("<{name}> is no longer in the project (did you mean <{close}>?)"),
             None => format!("<{name}> is no longer in the project"),
         }
     }
@@ -674,7 +674,7 @@ impl Doc {
             let listed: Vec<String> = held.into_iter().flat_map(|held| &held.versions).map(|version| version.number.to_string()).collect();
             let said = &read.said;
             let why = match (deleted, listed.as_slice()) {
-                (true, _) => format!("<{said}> was deleted: the browser history lists it, and Undo brings {}'s {number} back", of.name),
+                (true, _) => format!("<{said}> was deleted. It's in the project's history, and Undo brings back {}'s {number}", of.name),
                 (_, []) => format!("<{said}>: {} has no versions yet", of.name),
                 (_, listed) => format!("<{said}>: {} has no version {number}, only {}", of.name, listed.join(", ")),
             };
@@ -725,9 +725,9 @@ impl Doc {
     pub(crate) fn nothing_to_make(&self, i: usize) -> String {
         let asset = &self.assets[i];
         match asset.tool.as_deref() {
-            None if asset.own.is_empty() => format!("{} says nothing: it has nothing to make", asset.name),
-            None => format!("{} has no `tool`: it has nothing to make", asset.name),
-            Some(tool) => format!("{}: {COZY} makes {EDIT} and {FRAME}, not {tool}: it has nothing to make", asset.name),
+            None if asset.own.is_empty() => format!("{} is empty, so there's nothing to make.", asset.name),
+            None => format!("{} has no tool, so there's nothing to make.", asset.name),
+            Some(tool) => format!("{}: {COZY} makes {EDIT} and {FRAME}, not {tool}, so there's nothing to make.", asset.name),
         }
     }
 
@@ -806,7 +806,7 @@ impl Doc {
                 read.and_then(|read| lock.files.get(folder::main_of(&read.files)?)).is_some_and(|file| self.dir.join(&file.path).is_file())
             };
             match version.without.iter().find(|left| left.absent && here(&left.piece)) {
-                Some(left) => Some(format!("{} is here now", left.piece)),
+                Some(left) => Some(format!("{} is on this computer now", left.piece)),
                 None => super::tools::film_off(&asset.inputs, &reads, lock, version),
             }
         };
@@ -1046,11 +1046,11 @@ pub(crate) fn named(name: &str) -> Result<(), Error> {
         return Ok(());
     }
     let why = match name.contains([' ', ',']) {
-        true => "names can't hold spaces or commas",
-        false if name.contains('.') => "names hold no `.`: `<name.2>` is a version of a box, and `<name.word>` an extra of it",
-        false => "names hold only letters, digits, `_` and `-`",
+        true => "names can't contain spaces or commas",
+        false if name.contains('.') => "names can't contain `.`, because `<name.2>` means a version of a box and `<name.word>` one of its extras",
+        false => "names can only contain letters, digits, `_` and `-`",
     };
-    Err(invalid("project_name", format!("`{name}`: {why}; use `{}`", as_name(name))))
+    Err(invalid("project_name", format!("`{name}` won't work: {why}. Use `{}` instead.", as_name(name))))
 }
 
 /// Whether something new can go by `name`, a person having typed it.
@@ -1058,12 +1058,12 @@ pub(crate) fn new_name(name: &str) -> Result<(), Error> {
     named(name)?;
     match can_take(name) {
         true => Ok(()),
-        false => Err(invalid("project_name", format!("`{name}` is what a box calls itself in its own text: use `{name}_2`"))),
+        false => Err(invalid("project_name", format!("`{name}` is what a box calls itself in its own text. Use `{name}_2` instead."))),
     }
 }
 
 fn no_bare_self(said: &str) -> String {
-    format!("<{said}> would read its own newest version, which every render changes: write <self.1>, the version to start from")
+    format!("<{said}> would read its own newest version, which changes with every render. Write <self.1> to name the version to start from.")
 }
 
 /// The sha256 a box's `approved` names, as its Doc reads it: none where it names none, or none that reads.
@@ -1083,12 +1083,12 @@ pub(super) fn can_initialize_approval(folder: &Folder, name: &str) -> Result<boo
 /// The sha256 a file pin's value names, or how it fails, to follow "{name}'s {field}".
 fn file_named(written: &str, lock: &Lock) -> Result<String, String> {
     if written.is_empty() || !written.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(format!(" is not a hash: {written} is not read: import {} in the browser opened by `cozy open`", quoted(written)));
+        return Err(format!(" isn't a file hash, so Cozy ignored {written}. Import {} in the browser instead.", quoted(written)));
     }
     match lock.matching(&written.to_ascii_lowercase()).as_slice() {
         [file] => Ok(file.sha256.clone()),
-        [] => Err(format!(": no file's hash starts with {written}: import a file in the browser opened by `cozy open`")),
-        several => Err(format!(": {written} fits {} files: approve the version you mean again", several.len())),
+        [] => Err(format!(": no file's hash starts with {written}. Import the file in the browser.")),
+        several => Err(format!(": {written} matches {} files. Approve the version you mean again.", several.len())),
     }
 }
 
@@ -1125,13 +1125,13 @@ pub(super) fn free_of(holds: impl Fn(&str) -> bool, lock: &Lock, wanted: &str) -
 /// What a person who typed `name` is told when the project has it.
 pub(crate) fn name_taken(doc: &Doc, name: &str) -> Error {
     let there = doc.find(name).map_or(name, |i| doc.assets[i].name.as_str());
-    Error::new(Kind::Conflict, "asset_exists", format!("{there} is in the project already")).remedy(format!("use another name, or edit {there} in the browser opened by cozy open"))
+    Error::new(Kind::Conflict, "asset_exists", format!("There's already a box called {there} in this project.")).remedy(format!("Use another name, or edit {there} instead."))
 }
 
 /// Whether a text asset can go by `name`: not a tag of a package this project uses.
 pub(crate) fn refuse_tag(lock: &Lock, name: &str) -> Result<(), Error> {
     match lock.reserved.iter().find(|(_, tags)| is_tag(tags, name)) {
-        Some((tool, _)) => Err(Error::new(Kind::Validation, "asset_name_reserved", format!("{name} is a tag of {tool}: <{name}> in a prompt means that")).remedy("call it something else")),
+        Some((tool, _)) => Err(Error::new(Kind::Validation, "asset_name_reserved", format!("{name} is a tag of {tool}, so <{name}> in a prompt means that tag.")).remedy("Call it something else.")),
         None => Ok(()),
     }
 }
@@ -1172,8 +1172,8 @@ fn each_text(value: &mut Value, with: &mut dyn FnMut(&mut String)) {
 
 /// `first` and `second` as the project spells them: one name, as names match by `name_key`.
 fn one_name_twice(first: &str, second: &str) -> Error {
-    let said = format!("{first} and {second} are one name: a name matches in any case, with `_` and `-` alike");
-    invalid("project_name_twice", said).remedy(format!("rename {second}"))
+    let said = format!("{first} and {second} count as the same name, because names ignore case and treat `_` and `-` alike.");
+    invalid("project_name_twice", said).remedy(format!("Rename {second}."))
 }
 
 fn own_part(key: &str) -> &str {

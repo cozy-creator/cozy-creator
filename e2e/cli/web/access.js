@@ -1,7 +1,9 @@
 // Who may talk to Calcifer, with no sessions (design/calcifer-access.md, cl-985), on Linux: Calcifer's own page works in two tabs and
 // through a kill -9 with nothing minted; another site's and another port's fetch, <img> and WebSocket are refused, a framed page
 // doesn't render, a rebinding Host is turned away on the page and /v1, another OS account is refused (curl, and a real Chrome of its
-// own that shows only "No project open here"), and in dev mode the page and its hot reload come from Vite through Calcifer alone.
+// own that shows only "No project open here"), and in dev mode the page and its hot reload come from Vite through Calcifer alone;
+// with Vite stopped, the page built into cozy stands in (cl-1087, Paul 11-16: "fall back to the built-in page with a warning": "yeah
+// sure").
 //   node access.js: by web.sh's web_proof, as `web-access`
 // $PLAYWRIGHT, $CHROME, $HOLDER (Calcifer's lock record), $RESTART (kill -9 of Calcifer, then back), $COZY, $LAST_LOOK. Prints what it
 // saw as JSON and exits 1 if anything failed.
@@ -348,6 +350,17 @@ async function devMode(context, base, project, token) {
     }
     const lock = curl(`/@fs${homedir()}/.cozy/calcifer/calcifer.lock.holder`, { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'no-cors' });
     check('dev_lock_record_not_served', !lock.body.includes(token) && !lock.body.includes(holderToken()), lock.status);
+
+    // Vite stops: the page built into this cozy stands in, with its own files, on the page and a client route (cl-1087).
+    try { process.kill(-vite.pid, 'SIGKILL'); } catch { /* gone */ }
+    await until('Vite is gone', () => fetch('http://127.0.0.1:5173/@vite/client').then((r) => r.status, () => 0), (status) => status === 0, STEP_MS);
+    const standIn = curl('/');
+    const script = standIn.body.match(/\/assets\/[^"']+\.js/)?.[0];
+    // A built bundle is past spawnSync's 1 MiB stdout buffer, which `curl` here reads it through: fetched directly instead.
+    const loaded = script ? await fetch(`${calcifer()}${script}`).then((r) => ({ status: r.status }), () => ({ status: 0 })) : { status: 0 };
+    const route = curl(`/p/${project.code}`);
+    check('dev_vite_down_built_page', standIn.status === 200 && !standIn.body.includes('/@vite/client') && loaded.status === 200 && route.status === 200,
+      { page: standIn.status, vite: standIn.body.includes('/@vite/client'), script, loaded: loaded.status, route: route.status });
   } catch (error) {
     check('dev_mode', false, String(error));
   } finally {

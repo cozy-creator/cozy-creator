@@ -747,7 +747,8 @@ jobs:
         # remain available.
         # ondemand (ondemand-share its install's share of the link), plan, coming, lines, disk and selfupdate guard features Paul asked
         # for (xs-199): each on every RC run, as any cell.
-        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-2d","web-2d-solo","web-engines","web-solo","projectdb","projectvault","projectvault-nofuse","projectvault-static","local-code","ondemand","ondemand-share","plan","coming","lines","disk","selfupdate","typed-calls"]') }}
+        # dev-start builds the change's cozy as a dev home does and starts it on a render walk (cl-1069: a dev build overflowed 2 MiB).
+        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-2d","web-2d-solo","web-engines","web-solo","projectdb","projectvault","projectvault-nofuse","projectvault-static","local-code","ondemand","ondemand-share","plan","coming","lines","disk","selfupdate","typed-calls","dev-start"]') }}
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time. A web lane runs in under 10 min.
@@ -840,6 +841,24 @@ jobs:
         env:
           CARGO_INCREMENTAL: "0"
         run: echo "E2E_COZY_BEFORE=$(bash .creator/e2e/candidates/build.sh cozy-before .before "$RUNNER_TEMP/before")" >> "$GITHUB_ENV"
+      # dev-start (cl-1069): the change's cozy built as scripts/dev-local.sh builds a dev home's, the dev profile (E2E_DEV_COZY).
+      - if: (matrix.shard == 'dev-start' || startsWith(matrix.shard, 'dev-start@'))
+        uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/cozy-creator
+          ref: ${{ needs.affected.outputs.repo == 'cozy-creator' && needs.affected.outputs.ref || needs.affected.outputs.stack }}
+          path: .dev
+      - if: (matrix.shard == 'dev-start' || startsWith(matrix.shard, 'dev-start@'))
+        working-directory: .dev
+        env:
+          CARGO_INCREMENTAL: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+        run: |
+          toolchain=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$toolchain" --profile minimal
+          COZY_COMMIT=$(git rev-parse HEAD) cargo "+$toolchain" build --locked -p cozy --bin cozy --target-dir "$RUNNER_TEMP/dev"
+          "$RUNNER_TEMP/dev/debug/cozy" --version
+          echo "E2E_DEV_COZY=$RUNNER_TEMP/dev/debug/cozy" >> "$GITHUB_ENV"
       - name: cli suite
         env:
           GH_TOKEN: ${{ github.token }}

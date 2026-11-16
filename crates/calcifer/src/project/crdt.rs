@@ -322,7 +322,7 @@ impl Document {
         }
         let mut now = self.doc.clone();
         let mut then = now.fork_at(&heads).map_err(|_| {
-            Error::new(Kind::Conflict, "project_heads_unknown", "this edit was made on a project this Calcifer doesn't hold").remedy("read the project again")
+            Error::new(Kind::Conflict, "project_heads_unknown", "This edit was made on a version of the project Cozy doesn't have.").remedy("Reload the project and try again.")
         })?;
         if let Some(text) = text_of(&then, id, field)? {
             for splice in splices {

@@ -94,7 +94,7 @@ fn said(status: StatusCode, body: Box<dyn Fn(u64, &[String]) -> Vec<u8> + Send>)
 /// The project a write's route names (`{id}`), if it names one this Calcifer knows.
 async fn project_of(api: &Arc<Api>, parts: &mut axum::http::request::Parts) -> Result<Option<Arc<super::Project>>, Refusal> {
     if parts.uri.path() == "/v1/projects" { return Ok(None); }
-    let params = RawPathParams::from_request_parts(parts, api).await.map_err(|_| Refusal(Error::new(Kind::Validation, "project_context_required", "the project route is invalid")))?;
+    let params = RawPathParams::from_request_parts(parts, api).await.map_err(|_| Refusal(Error::new(Kind::Validation, "project_context_required", "This isn't a valid project address.")))?;
     let Some(named) = params.iter().find(|(key, _)| *key == "id").map(|(_, value)| value.to_owned()) else { return Ok(None) };
     api.projects.get(api, &named).map(Some)
 }
@@ -136,7 +136,7 @@ pub(super) async fn answered(State(api): State<Arc<Api>>, mut request: Request, 
 async fn keyed(api: Arc<Api>, key: String, request: Request, next: Next) -> Response {
     let (mut parts, body) = request.into_parts();
     let Ok(bytes) = to_bytes(body, MOST).await else {
-        return Refusal(Error::new(Kind::Validation, "body_too_large", format!("a write is at most {MOST} bytes"))).into_response();
+        return Refusal(Error::new(Kind::Validation, "body_too_large", format!("A write can be at most {MOST} bytes."))).into_response();
     };
     let mut hasher = Sha256::new();
     hasher.update(parts.method.as_str());
@@ -190,7 +190,7 @@ async fn keyed(api: Arc<Api>, key: String, request: Request, next: Next) -> Resp
 async fn creation(api:&Arc<Api>,bytes:&[u8],key:&str,digest:&str)->Result<Creation,Refusal> {
     let ask:api::calcifer::project::Open=crate::api::parse(bytes)?;
     if !ask.unencrypted || !ask.path.is_absolute() {return Ok(Creation::Fresh);}
-    let pending=||Refusal(Error::new(Kind::Conflict,"project_creation_pending","the original project or creation stage must be available before this retry can be resolved"));
+    let pending=||Refusal(Error::new(Kind::Conflict,"project_creation_pending","Cozy can't answer this retry until the original project, or the folder it was being made in, is back."));
     let path=ask.path;
     if path.try_exists().map_err(|_|pending())? {
         if path.join(format!("{}.new",super::db::DB)).try_exists().map_err(|_|pending())? {return Err(pending());}
@@ -198,7 +198,7 @@ async fn creation(api:&Arc<Api>,bytes:&[u8],key:&str,digest:&str)->Result<Creati
             let store=api.projects.store(api,&path.to_string_lossy()).await.map_err(Refusal)?;
             let found=store.read(|conn|Ok(conn.query_row("SELECT digest FROM request_keys WHERE key=?1",[key],|row|row.get::<_,String>(0)).optional()?))?;
             if let Some(found)=found {
-                if found!=digest {return Err(Refusal(Error::new(Kind::Conflict,"idempotency_conflict","this key already names another project creation")));}
+                if found!=digest {return Err(Refusal(Error::new(Kind::Conflict,"idempotency_conflict","This Idempotency-Key was already used to make a different project.")));}
                 if let Some(answer)=store.answer(key)? {return Ok(Creation::Replay(replay(Some((answer.status,answer.content_type,answer.body)))));}
                 return Ok(Creation::Resume(CreationRetry(path)));
             }
@@ -213,7 +213,7 @@ async fn creation(api:&Arc<Api>,bytes:&[u8],key:&str,digest:&str)->Result<Creati
 }
 
 fn conflict(key: &str) -> Response {
-    Refusal(Error::new(Kind::Conflict, "idempotency_conflict", format!("Idempotency-Key {key} asked another write already"))).into_response()
+    Refusal(Error::new(Kind::Conflict, "idempotency_conflict", format!("Idempotency-Key {key} was already used for a different write."))).into_response()
 }
 
 /// A project write's answer, kept on its key's row: when it succeeded, or when its effect committed under the key whatever it answered.

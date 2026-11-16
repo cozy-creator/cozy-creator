@@ -16,7 +16,7 @@ if [ -z "$ONLY" ] || [[ $ONLY == *",crash-report,"* ]]; then
   m=$(run_get "$OUT" crash-report .reason.message) d=$(run_get "$OUT" crash-report .reason.detail)
   core=$("$CLI" machine logs "$M" tensord -n 0 2>/dev/null | grep -o 'an executor left its core at [^ ]*' | tail -1 || true)
   ok=FAIL
-  [ "$s" = failed ] && [ "$c" = executor_crashed ] && [[ $m == "executor crashed: SIGSEGV in "* ]] \
+  [ "$s" = failed ] && [ "$c" = executor_crashed ] && [[ $m == "The process running this crashed (SIGSEGV in "* ]] \
     && grep -q '#0 ' <<< "$d" && grep -q 'answering: ' <<< "$d" && ok=PASS
   expect crash-report "$ok" "run $(cat crash-report.number 2>/dev/null) $s $c: $m; ${core:-no core kept}; detail: $(tr '\n' '|' <<< "$d" | head -c 700)"
 fi

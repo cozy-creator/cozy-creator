@@ -54,7 +54,6 @@ pub(crate) async fn submit_request(ctx: &Context, ask: &RunRequest, key: &str) -
             NoteLevel::Warning => output::warn(&note.message),
         }
     }
-    replayed(ctx, &submitted);
     Ok(submitted)
 }
 
@@ -90,19 +89,6 @@ pub(crate) async fn done<T: serde::de::DeserializeOwned>(ctx: &Context, run: Run
             Error::new(Kind::Unavailable, "run_failed", format!("{}: {}", run.target, reason.message)).next(&show)
         })),
         _ => Err(Error::new(Kind::Unavailable, "run_unfollowed", format!("Stopped watching run {}; it is still running", handle(&run))).next(&show)),
-    }
-}
-
-/// Says that the key named a run submitted before.
-fn replayed(ctx: &Context, submitted: &Submitted) {
-    if submitted.replay {
-        output::say(
-            ctx,
-            &format!(
-                "this key names run {}, submitted before",
-                handle(&submitted.run)
-            ),
-        );
     }
 }
 
@@ -313,7 +299,6 @@ async fn watch(
                 return Err(error);
             }
             Some(Ok(event)) if events.restarted() && !events_out => {
-                view.line(&format!("  Calcifer restarted; following run {} again", view.number));
                 let before = view.machine.clone();
                 view.on(&event);
                 if let Some(name) = view.machine.as_deref().filter(|_| view.machine != before) {
@@ -402,8 +387,10 @@ pub(crate) fn record(ctx: &Context, run: &Run) {
 /// The failure's suggested actions, followed by full diagnostics when space permits.
 fn failure_next(run: &Run) -> Vec<String> {
     let mut next = Vec::new();
-    for command in run.reason.iter().flat_map(|reason| &reason.next)
-        .cloned().chain([format!("cozy run watch {} --full", handle(&run))])
+    // Its machine shut down under it (cl-1085): asked again where it finishes soonest now.
+    let retry = run.reason.as_ref().filter(|reason| reason.code == api::calcifer::MACHINE_LOST).map(|_| format!("cozy run retry {}", handle(run)));
+    for command in retry.into_iter().chain(run.reason.iter().flat_map(|reason| reason.next.iter().cloned()))
+        .chain([format!("cozy run watch {} --full", handle(&run))])
     {
         if !command.trim().is_empty() && !next.contains(&command) {
             next.push(command);

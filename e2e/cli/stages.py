@@ -2,7 +2,7 @@
 
 `python stages.py <run.ndjson> [stages.json]`, on a run followed with `cozy --json run`: every part of every stage it went through is
 in the map; a count the map calls steps is only where a stage denoises (`phase: working`); its executor's start or load is said before its work;
-an install says its steps in words (`…: creating its environment (2 of 5)`); a stage the map counts in bytes
+an install says its steps in words (`…: creating the environment (2 of 5)`); a stage the map counts in bytes
 had bytes; while bytes move at a known rate, it has a time left (at least theirs). Prints the run's phases in order, in the page's words, with when each began. Exits 1 on the first list of problems.
 """
 

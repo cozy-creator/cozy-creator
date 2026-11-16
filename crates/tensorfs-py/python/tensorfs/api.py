@@ -7,6 +7,7 @@ import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
+from urllib.parse import urlsplit
 
 from . import _ext
 
@@ -42,8 +43,28 @@ def _endpoint(endpoint=None):
     return endpoint or _settings.get("endpoint")
 
 
+def _origin(endpoint):
+    try:
+        url = urlsplit(endpoint)
+        if url.scheme in ("http", "https"):
+            return url.scheme, url.hostname, url.port or (443 if url.scheme == "https" else 80)
+    except ValueError:  # the native client says what is wrong with it
+        pass
+    return endpoint
+
+
+# The configured token is the default endpoint's (configure's, else the native one): a call that names
+# another origin sends its own, or none.
+def _token(endpoint=None, token=None):
+    if token is not None:
+        return token
+    if endpoint and _origin(endpoint) != _origin(_settings.get("endpoint") or _ext._default_endpoint()):
+        return None
+    return _settings.get("token")
+
+
 def _client(cache_dir=None, endpoint=None, token=None, *, configured_token=True):
-    credential = token if token is not None else _settings.get("token") if configured_token else None
+    credential = _token(endpoint, token) if configured_token else token
     return _ext._Client(_cache(cache_dir), endpoint=_endpoint(endpoint), token=credential, ca_der=_settings.get("ca_der"))
 
 
@@ -184,7 +205,7 @@ class ComponentWriter:
 
 class Writer:
     def __init__(self, dest=None, *, base=None, resume=None, model_id=None, lane=None, repo_id=None, endpoint=None, token=None, cache_dir=None):
-        self._native = _ext.Writer(dest, base=base, resume=resume, cache_dir=_cache(cache_dir), model_id=_model_id(model_id, repo_id, required=False), lane=lane, endpoint=_endpoint(endpoint), token=token if token is not None else _settings.get("token"), ca_der=_settings.get("ca_der"))
+        self._native = _ext.Writer(dest, base=base, resume=resume, cache_dir=_cache(cache_dir), model_id=_model_id(model_id, repo_id, required=False), lane=lane, endpoint=_endpoint(endpoint), token=_token(endpoint, token), ca_der=_settings.get("ca_der"))
         self._resume = resume
         self._committed = None
         self.local_checkpoint = None

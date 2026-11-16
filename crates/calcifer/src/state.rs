@@ -245,12 +245,21 @@ impl Store {
         })
     }
 
-    /// The key project `id` goes by here (cl-987), given `held`, the keys its project.db keeps, its key now last: that one when no other
-    /// project here has it, else the one this index gave it, else the first free of `proposed`. Each other held key free here names it
-    /// too.
-    pub(crate) fn project_keyed(&self, id: &str, held: &[String], mut proposed: impl Iterator<Item = String>) -> Result<String> {
+    /// The key project `id`, in `path`, goes by here (cl-987), given `held`, the keys its project.db keeps, its key now last: that one
+    /// when no other project here has it, else the one this index gave it, else the first free of `proposed` that no other folder here
+    /// proposes first by its name, a locked one's too (`key::name_key`): a run's `KEY-N` never reads as another project's (cl-1075).
+    /// `review`: a key it holds that another folder's name proposes first, and none of `own` (its own name's and folder's), goes, with
+    /// every key it had: true. Each other held key free here names it too.
+    pub(crate) fn project_keyed(&self, id: &str, path: &Path, held: &[String], own: &[String], review: bool, mut proposed: impl Iterator<Item = String>) -> Result<(String, bool)> {
         self.write(|tx| {
-            for key in held.iter().filter(|key| api::calcifer::project::key(key).as_ref() == Some(*key)) {
+            let mut statement = tx.prepare("SELECT path FROM projects WHERE id <> ?1")?;
+            let paths = statement.query_map([id], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(statement);
+            let others: std::collections::HashSet<String> = paths.iter().map(Path::new).filter(|other| *other != path)
+                .filter_map(Path::file_name).map(|folder| crate::project::key::name_key(&folder.to_string_lossy()))
+                .filter(|key| !own.contains(key)).collect();
+            let goes = |key: &String| review && others.contains(key);
+            for key in held.iter().filter(|key| api::calcifer::project::key(key).as_ref() == Some(*key) && !goes(*key)) {
                 if key_free(tx, id, key)? { key_kept(tx, id, key, false)?; }
             }
             let mine = |key: &String| tx.query_row("SELECT EXISTS (SELECT 1 FROM project_keys WHERE key = ?1 AND id = ?2)", [key, id], |row| row.get::<_, bool>(0));
@@ -259,15 +268,19 @@ impl Store {
                 _ => tx.query_row("SELECT key FROM project_keys WHERE id = ?1 AND current = 1", [id], |row| row.get(0)).optional()?
                     .filter(|key: &String| key_free(tx, id, key).unwrap_or(false)),
             };
-            let key = match wanted {
+            let rekeyed = wanted.as_ref().is_some_and(goes) || held.last().is_some_and(goes);
+            if rekeyed {
+                tx.execute("DELETE FROM project_keys WHERE id = ?1", [id])?;
+            }
+            let key = match wanted.filter(|_| !rekeyed) {
                 Some(key) => key,
                 None => loop {
                     let key = proposed.next().ok_or_else(|| StoreError::ProjectKey("no free project key".into()))?;
-                    if key_free(tx, id, &key)? { break key; }
+                    if !others.contains(&key) && key_free(tx, id, &key)? { break key; }
                 },
             };
             key_kept(tx, id, &key, true)?;
-            Ok(key)
+            Ok((key, rekeyed))
         })
     }
 

@@ -2,8 +2,8 @@ import { useQuery } from "@tanstack/react-query"
 import { machinesQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
 import type { Machine, Operation, Run } from "../../api/calcifer"
-import { bytes, leftWords } from "../format"
-import { target } from "../runs/words"
+import { leftWords } from "../format"
+import { rateWords, size, target } from "../runs/words"
 
 /** One thing a machine is doing: a package installing, weights arriving, a run, or the machine coming up. */
 export type Doing =
@@ -60,12 +60,12 @@ export function doingOf(machine: Machine, runs: Run[], project: string | null): 
 /** What a run's row is called: its box, where the open project has it, else what it runs. */
 export const runName = (run: Run, boxes: Map<number, string>) => (run.project_id ? boxes.get(run.number) : undefined) ?? target(run)
 
-/** How far a download is: `6.6 GiB / 9.4 GiB · 29 MiB/s · 3 min left · 8.8 GiB already here`. */
+/** How far a download is, as the run face says it (cl-1074): `6.6GB / 9.4GB · 29MB/s · 3 min left · 8.8GB already here`. */
 export function fetchedWords(operation: Operation): string {
-  const parts = [operation.bytes_total ? `${bytes(operation.bytes_done)} / ${bytes(operation.bytes_total)}` : bytes(operation.bytes_done)]
-  if (operation.bytes_per_s) parts.push(`${bytes(operation.bytes_per_s)}/s`)
+  const parts = [operation.bytes_total ? `${size(operation.bytes_done)} of ${size(operation.bytes_total)}` : size(operation.bytes_done)]
+  if (operation.bytes_per_s) parts.push(rateWords(operation.bytes_per_s))
   if (operation.eta_s != null) parts.push(leftWords(operation.eta_s))
-  if (operation.bytes_here) parts.push(`${bytes(operation.bytes_here)} already here`)
+  if (operation.bytes_here) parts.push(`${size(operation.bytes_here)} already on this machine`)
   return parts.join(" · ")
 }
 

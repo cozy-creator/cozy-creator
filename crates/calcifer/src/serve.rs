@@ -176,7 +176,11 @@ fn runtime(_loaded: &Loaded) -> Result<tokio::runtime::Runtime, Error> {
         std::env::set_current_dir(directory)
             .map_err(|e| Error::new(Kind::Internal, "calcifer_working_directory", e.to_string()))?;
     }
+    // Its threads' stacks (workers' and the blocking pool's): a render walk's poll nests large futures, about 9.4 MiB deep in a dev
+    // build (scripts/dev-local.sh) and a `/fit` estimate up to 1.8 MiB in a release, measured from frame prologues (cl-1069).
+    // Tokio's 2 MiB default crashed dev homes. Pages are committed only as touched.
     tokio::runtime::Builder::new_multi_thread()
+        .thread_stack_size(32 << 20)
         .enable_all()
         .on_thread_park(platform::heap::parked)
         .build()

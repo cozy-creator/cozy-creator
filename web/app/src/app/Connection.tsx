@@ -359,10 +359,10 @@ export async function connect(): Promise<Boot> {
     canvases.delete(id)
     forgetProjectView(id)
     revokeProjectMedia(id)
-    // Its protection status stays: it is what the locked page shows. Dropped, it is asked again, and the lock it
-    // answers retires the project again, and again.
+    // Its protection status and its address stay: they are what the locked page shows. Dropped, they are asked again, and the lock
+    // they answer retires the project again, and again (a locked project opened from the list reloaded for ever, Paul 11-16).
     const privateData = ({ queryKey: [kind, project] }: { queryKey: readonly unknown[] }) =>
-      (project === id && kind !== "project-vault" && (["canvas", "history"].includes(String(kind)) || String(kind).startsWith("project")))
+      (project === id && kind !== "project-vault" && kind !== "project-reference" && (["canvas", "history"].includes(String(kind)) || String(kind).startsWith("project")))
       || kind === "tools"
     void queries.cancelQueries({ predicate: privateData })
     void queries.resetQueries({ predicate: privateData })

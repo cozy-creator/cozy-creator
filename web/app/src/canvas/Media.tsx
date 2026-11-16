@@ -13,7 +13,7 @@ import type { ElementView } from "./CanvasStore"
 import { fieldsOf } from "./controls"
 import { Icon, type IconName } from "../ui/Icon"
 import { tabShown, useSignal } from "../ui/signal"
-import { aspectOf, faceOf, failureOf, hexOf, makes, makingRun, type Shown, shownOf, valueIn, valuesOf, watched } from "./shown"
+import { aspectOf, faceOf, hexOf, makes, makingRun, type Shown, shownOf, valueIn, valuesOf, watched } from "./shown"
 import { chipWords, clock, lineOf, mentionsIn, withMentions } from "./text"
 import { isSelf } from "./versions"
 import { OrbitView, orbitOf } from "./Orbit"
@@ -21,7 +21,7 @@ import { BufferedImage } from "./BufferedImage"
 import type { VideoPlayback } from "./timeline/Player"
 import { FPS } from "./ranges"
 import { useArriving } from "./RunFace"
-import { bodyText, CopyError } from "../ui/CopyError"
+import { UNSUPPORTED } from "./Unsupported"
 
 const STRIP_FRAMES = 8
 /** How long the pointer rests on a video before its preview plays: one passing over on its way somewhere starts nothing. */
@@ -373,7 +373,8 @@ export function viewable(view: ElementView | undefined): boolean {
 }
 
 /** Played on click, or at once with `auto`, one of the two live ones across tabs: a file Calcifer serves, by its API path, or one straight from a machine. */
-/** `controller`: in Focus, the one transport and track drive it (cl-965), so it has no controls of its own. */
+/** `controller`: in Focus, the one transport and track drive it (cl-965), so it has no controls of its own, and a file opens at once to show
+ *  its own frame at its own size, not the poster's small one stretched over it (cl-1080; Paul, 11-16). */
 export function Player({ field, path, machine, seek, auto, from, onTime, controller }: { field: string; path?: string; machine?: { project: string; run: number; output: string }; seek?: ElementView["seek"]; auto?: boolean; from?: number; onTime?(seconds: number): void; controller?: VideoPlayback }) {
   const { client, stream } = useConnection()
   const [state, setState] = useState<"idle" | "waiting" | "playing" | "unplayable">("idle")
@@ -382,6 +383,10 @@ export function Player({ field, path, machine, seek, auto, from, onTime, control
   const stopRef = useRef<() => void>(() => {})
   const wanted = useRef<number | null>(from ?? null)
   const asked = useRef(seek?.ask ?? 0)
+  const shows = Boolean(controller) && path !== undefined
+  // Opened only to show its frame, until a play or a seek is asked.
+  const onlyShown = useRef(shows && !auto)
+  const [drawn, setDrawn] = useState(false)
 
   useEffect(() => () => stopRef.current(), [])
   // Closed, it drives nothing.
@@ -391,7 +396,10 @@ export function Player({ field, path, machine, seek, auto, from, onTime, control
   // Its transport opens it: to play, or to show the frame a scrub asked for.
   useEffect(() => {
     if (!controller) return
-    controller.start = () => setState((now) => (now === "idle" ? "waiting" : now))
+    controller.start = () => {
+      onlyShown.current = false
+      setState((now) => (now === "idle" ? "waiting" : now))
+    }
     return () => {
       controller.start = () => {}
       controller.attach(null)
@@ -399,8 +407,15 @@ export function Player({ field, path, machine, seek, auto, from, onTime, control
   }, [controller])
   // Asked to play at once: once it's there, so React's second mount in development doesn't stop it.
   useEffect(() => {
-    if (auto) setState("waiting")
+    if (auto) {
+      onlyShown.current = false
+      setState("waiting")
+    }
   }, [auto])
+  // In Focus, at once, to show its frame: so too.
+  useEffect(() => {
+    if (shows) setState((now) => (now === "idle" ? "waiting" : now))
+  }, [shows])
 
   // Calcifer came back: what was playing reloads where it was.
   useEffect(
@@ -420,6 +435,7 @@ export function Player({ field, path, machine, seek, auto, from, onTime, control
   useEffect(() => {
     if (!seek || seek.ask === asked.current) return
     asked.current = seek.ask
+    onlyShown.current = false
     wanted.current = seek.at
     if (element.current) element.current.currentTime = seek.at
     setState((now) => (now === "idle" ? "waiting" : now))
@@ -455,8 +471,8 @@ export function Player({ field, path, machine, seek, auto, from, onTime, control
         setState("playing")
         if (wanted.current !== null) el.currentTime = wanted.current
         wanted.current = null
-        // Opened by a scrub, it shows that frame and waits.
-        if (controller?.attach(el)) return
+        // Opened by a scrub, or to show its frame, it shows that frame and waits.
+        if (controller?.attach(el) || onlyShown.current) return
         el.play().catch(() => {})
       })
       .catch((error: unknown) => {
@@ -482,7 +498,10 @@ export function Player({ field, path, machine, seek, auto, from, onTime, control
         className={`live canvas-control ${field}`}
         controls={!controller}
         playsInline={field === "video"}
-        preload="none"
+        preload={shows ? "auto" : "none"}
+        data-drawn={drawn || undefined}
+        onLoadedData={() => setDrawn(true)}
+        onEmptied={() => setDrawn(false)}
         onTimeUpdate={(event) => onTime?.(event.currentTarget.currentTime)}
         onSeeked={(event) => onTime?.(event.currentTarget.currentTime)}
         onClick={field === "video" && controller ? (event) => { event.stopPropagation(); controller.toggle() } : undefined}
@@ -616,7 +635,7 @@ function Said({ words, view, name }: { words: string; view: ElementView; name: s
   const chipOf = (mention: string) => {
     const gone = view.asset?.missing?.includes(mention) || (store.mentionOf(mention, name)?.gone ?? isSelf(mention))
     const unused = gone ? undefined : view.asset?.unused?.find((one) => one.mention === mention)?.why
-    return { className: `chip ${gone ? "missing" : unused ? "unused" : ""}`, title: unused }
+    return { className: `chip ${gone ? "missing" : unused ? UNSUPPORTED : ""}`, title: unused }
   }
   return (
     <p className="words">
@@ -824,9 +843,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children, 
   const open = Boolean(view.here && !view.hereWords)
   const shown = shownOf(view)
   const watch = watched(view)
-  // The take looked at failed: its error in its frame, nothing of it on its way (cl-954).
-  const failedTake = failureOf(view)
-  const pendingImage = asset?.kind === "image" && Boolean(watch && watch.number === undefined) && !failedTake
+  const pendingImage = asset?.kind === "image" && Boolean(watch && watch.number === undefined)
   // Drawn: only the take shown, as its takes and label say, once its file is here; never another in its place (cl-942). Its neighbours,
   // or those of what showed before a take was asked for, stay decoded.
   const nearImage = asset?.kind === "image" ? shown ?? shownOf({ ...view, watch: undefined }) : null
@@ -837,7 +854,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children, 
   const source = sourceOf(view, shown)
   const making = asset?.standing === "making"
   const onItsWay = making || Boolean(view.queued) || view.asked !== undefined
-  const busy = onItsWay && (Boolean(watch && watch.number === undefined) || !shown) && !failedTake
+  const busy = onItsWay && (Boolean(watch && watch.number === undefined) || !shown)
   // Made, with its file still on its way here: it says so, as a render on its way does.
   const arriving = useArriving(view)
   const run = onItsWay ? makingRun(view) : arriving
@@ -875,14 +892,12 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children, 
   // Its take being made, with nothing of it yet: what its words mention is behind its face.
   // An image or video being made at rest says what it's made from, in its frame (cl-940, cl-947), over what it shows; an image too, open on
   // a take of it being made (cl-945).
-  const makingMedia = !failedTake && (!view.here || (asset?.kind === "image" && Boolean(watch && watch.number === undefined) && !view.hereWords)) && (asset?.kind === "image" || asset?.kind === "video") && !asset.timeline && onItsWay && asset.rendering == null && makes(view)
+  const makingMedia = (!view.here || (asset?.kind === "image" && Boolean(watch && watch.number === undefined) && !view.hereWords)) && (asset?.kind === "image" || asset?.kind === "video") && !asset.timeline && onItsWay && asset.rendering == null && makes(view)
   const madeFrom = blank && busy && makes(view) && !asset?.timeline && !view.hereWords && view.viewed === undefined && !glimpse && !makingMedia
   const glyph = blank && !words && !clips && faceOf(view) === "edit" && !making && field ? GLYPHS[field] : undefined
   // On its way, its face says so whole, unless a take is looked at, a glimpse of what it's making shows or its words are being written:
   // then along its bottom.
   const full = (busy || arriving !== undefined) && view.viewed === undefined && !glimpse && !(view.here && view.hereWords)
-  // What stopped its last try, in place: an approved box looked at shows nothing wrong (Card's dot).
-  const failed = !busy && !placing && Boolean(asset?.failure) && view.viewed === undefined && !(asset?.pinned && faceOf(view) === "media")
   return (
     <div className={`media ${glimpsed ? "glimpsed" : ""} ${asset?.kind === "image" ? "image-asset" : ""} ${pendingImage ? "pending-image" : ""} ${asset?.kind === "image" && view.hereWords ? "image-editing" : ""} ${view.here && view.hereWords ? "writing" : ""} ${shown?.alpha ? "alpha" : ""} ${slid ? "slid" : ""} ${blank ? "blank" : ""}`} style={{ aspectRatio: aspectOf(view) }} onAnimationEnd={() => slid && store.patch(name, { slid: undefined })} {...hover}>
       <div className="media-pixels" data-image-reference={asset?.kind === "image" && shown && !view.hereWords ? "" : undefined}>
@@ -897,14 +912,15 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children, 
             }}
           />
         )}
-        {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.here ? view.scrub : undefined} previewing={previewing} />}
+        {/* In Focus its frame is the video's own (Player): no strip's small frames under it. */}
+        {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.here && !focused ? view.scrub : undefined} previewing={previewing} />}
         {nearImage && field === "image" && !own && <BufferedImage sha256={drawnImage?.sha256 ?? null} originalPath={drawnImage?.path} neighborPaths={neighborPaths} neighbors={nearImage.absent || nearImage === drawnImage ? neighbors : [nearImage.sha256, ...neighbors]} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
         {here && field !== "video" && field !== "image" && <FramePicture key={here.sha256} sha256={here.sha256} open={Boolean(view.here)} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
-        {shown?.absent && arriving === undefined && <span className="media-note">{shown.machine ? `Kept on ${shown.machine}` : "Kept on another computer"}</span>}
+        {shown?.absent && arriving === undefined && <span className="media-note">{shown.machine ? `Stored on ${shown.machine}` : "Stored on another computer"}</span>}
         {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}
       </div>
       {blank && words && !madeFrom && !makingMedia && <Said words={words} view={view} name={name} />}
-      {blank && !words && clips && <span className="media-note">Drag videos and stills here</span>}
+      {blank && !words && clips && <span className="media-note">Drag videos and images here</span>}
       {blank && !words && field === "file" && <span className="media-note">A file</span>}
       {glyph && (
         <span className="blank-glyph">
@@ -918,12 +934,11 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children, 
       {/* At rest it keeps its size (cl-936): what's being made fades in over it, unless what it shows is approved; an image's covers its references (cl-940). */}
       {(busy || (!view.here && making && (!asset?.pinned || makingMedia))) && run !== undefined && view.viewed === undefined && !glimpse && <LatentPreview view={view} number={run} />}
       {busy && asset?.rendering != null && <Progress fraction={asset.rendering} says={`Rendering ${Math.round(asset.rendering * 100)}%`} rendering />}
-      {failedTake ? <FailedHere whole message={failedTake.message.replace(`${name}: `, "")} copy={bodyText(failedTake, watch?.run, undefined)} /> : failed && <FailedHere message={asset!.failure!.message.replace(`${name}: `, "")} copy={bodyText(asset!.failure!, view.run?.number, view.run?.machine)} />}
       {/* What it can do is in Focus: at rest a box is its name, its picture, its tool and shape, and how its render goes (cl-932). */}
       {view.here && asset?.kind === "image" && asset.tool && !view.hereWords && !pendingImage && shown && <button type="button" className="image-edit-action canvas-control" aria-label="Edit image" onClick={(event) => { event.stopPropagation(); store.beginImageEdit(name) }}>Edit</button>}
       {turning && here && <OrbitView key={here.sha256} path={turning.path} shown={here} orbit={turning.orbit} />}
       {orbit && here && !open && !busy && (
-        <span className="orbit-badge" title="An orbit: open it and drag to turn">
+        <span className="orbit-badge" title="An orbit. Open it, then drag to turn it.">
           <Icon name="orbit" />
         </span>
       )}
@@ -941,18 +956,6 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children, 
         />
       )}
       {children}
-    </div>
-  )
-}
-
-/** Why its last render failed, along its bottom, until it's tried again. */
-function FailedHere({ message, copy, whole = false }: { message: string; copy: string; whole?: boolean }) {
-  return (
-    <div className={`run-face lines failed ${whole ? "whole" : ""}`} data-phase="failed">
-      <p className="face-state error-text canvas-control">
-        <b title={message}><span className="face-words">Didn't render: {message}</span></b>
-        <CopyError text={copy} />
-      </p>
     </div>
   )
 }
@@ -1019,7 +1022,9 @@ function Glimpse({ glimpse, failed, open, playhead, controller }: { glimpse: Non
     }
   }, [controller, drawn])
   const heard = (el: HTMLVideoElement) => {
-    playhead.current = open && !el.paused ? { run: glimpse.number, at: el.currentTime } : null
+    // While a newer revision loads, its element is paused at 0 s: it is where and as it was, and a take landing then plays on from there.
+    const now = resume.current ?? { at: el.currentTime, playing: !el.paused }
+    playhead.current = open && now.playing ? { run: glimpse.number, at: now.at } : null
     if (el.readyState >= 1 && !resume.current) glimpsedAt.set(key, { rev: playing.current, at: el.currentTime, playing: !el.paused })
   }
   return (

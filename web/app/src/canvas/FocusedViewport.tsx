@@ -6,7 +6,7 @@ import { LET_GO, type LetGo } from "./carry"
 import type { CarriedFile } from "./CanvasStore"
 import { caretToEnd } from "./MentionText"
 import { NameField } from "./NameField"
-import { failureOf, makingRun, shownOf, watched } from "./shown"
+import { makingRun, shownOf, watched } from "./shown"
 import { RunDone, RunFace, useArriving } from "./RunFace"
 import { StateDot, viewState } from "./StateDot"
 import { noHash } from "./text"
@@ -14,8 +14,8 @@ import { useSignal } from "../ui/signal"
 import { pressBeganOutside } from "../ui/press"
 import "./FocusedViewport.css"
 
-/** What's on a focused item rather than its background. */
-const OWN = ".media, .tl, .tl-player, .tl-transport, .focus-heading, .focus-warnings, .run-face, .here-side, .here-under, .image-controls, .focus-image-zoom, button, input, textarea, select, [contenteditable]"
+/** What's on a focused item rather than its background: full screen, all of it (cl-1080). */
+const OWN = ".focus-viewer[data-full], .media, .tl, .tl-player, .tl-transport, .focus-heading, .focus-warnings, .run-face, .here-side, .here-under, .image-controls, .focus-image-zoom, button, input, textarea, select, [contenteditable]"
 const own = (element: Element) => Boolean(element.closest(OWN))
 
 /** A workspace for one item. The Wander camera stays behind it, unchanged. */
@@ -71,14 +71,14 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
       // (Paul, 11-12). Over its background, Wander behind, it's copied there.
       else if (load.take && own(event.target as Element)) event.stopPropagation()
       else if (load.take) { event.stopPropagation(); onCopyVersion(load.take, x, y) }
-      else if (load.tool) { event.stopPropagation(); store.putTool(name, load.tool, load.operation) }
+      else if (load.tool) { event.stopPropagation(); store.putTool(name, load.tool) }
     }
     held.addEventListener(LET_GO, drop)
     return () => held.removeEventListener(LET_GO, drop)
   }, [name, store, onCopyVersion])
   // Made, its file still on its way here: it says so as a render on its way does.
   const arriving = useArriving(view)
-  // The run its render's row last spoke of: once its take lands the row stays, saying so (Paul, 11-12).
+  // The run its render's row last spoke of: once its take lands the row stays, saying so (Paul, 11-12); one that made none goes (cl-1070).
   const going = view?.asset && (view.asset.standing === "making" || Boolean(view.queued) || view.asked !== undefined) ? makingRun(view) : arriving
   const [spoke, setSpoke] = useState<{ name: string; run: number } | null>(null)
   useEffect(() => {
@@ -107,7 +107,7 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
         <button type="button" className="tb" aria-label="Back to canvas" onClick={onClose}><Icon name="back" />Back to canvas</button>
         <div className="focus-title">
           {view.draft === undefined && <StateDot state={viewState(view)} unseen={view.asset?.unseen?.length ?? 0} noun={view.asset?.noun ?? "take"} />}
-          {view.draft !== undefined ? <NameField name={name} draft={view.draft} onCancel={() => store.patch(name, { draft: undefined })} /> : <button type="button" className="focus-name" aria-label="Rename node" title="Rename" onClick={() => store.openName(name)}>{view.name}</button>}
+          {view.draft !== undefined ? <NameField name={name} draft={view.draft} onCancel={() => store.patch(name, { draft: undefined })} /> : <button type="button" className="focus-name" aria-label="Rename box" title="Rename" onClick={() => store.openName(name)}>{view.name}</button>}
           {/* Which take it is, a picture's or a video's: being written, "New take", unmistakably; none with no takes (cl-925). */}
           {(view.asset?.kind === "image" || view.asset?.kind === "video") && (version !== undefined || Boolean(view.asset.prefixes?.length) || Boolean(view.asset.sha256) || Boolean(view.asset.making?.length)) && <span className={`focus-version-label ${writing ? "writing" : ""}`} aria-label="Take">{writing ? "New take" : version === undefined ? "Rendering" : `v${version}`}</span>}
           {warnings.length > 0 && (
@@ -118,7 +118,7 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
         </div>
         <button type="button" className="iconb" aria-label="Close focus" title="Close focus" onClick={onClose}><Icon name="close" /></button>
       </header>
-      {view.asset?.rendering == null && !view.asset?.timeline && !failureOf(view) && (onItsWay || arriving !== undefined ? <RunFace view={view} name={name} number={onItsWay ? makingRun(view) : arriving} full above /> : spoke?.name === name && <RunDone view={view} number={spoke.run} />)}
+      {view.asset?.rendering == null && !view.asset?.timeline && (onItsWay || arriving !== undefined ? <RunFace view={view} name={name} number={onItsWay ? makingRun(view) : arriving} full above /> : spoke?.name === name && view.asset?.prefixes?.some((held) => held.run === spoke.run) && <RunDone view={view} number={spoke.run} />)}
       {view.warned && warnings.length > 0 && (
         <div className="warned-lines focus-warnings">
           {warnings.map((warning) => (

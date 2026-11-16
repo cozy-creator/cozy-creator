@@ -82,7 +82,7 @@ pub(crate) async fn released() -> Result<Arc<Vec<Released>>, Error> {
         }
     }
     let read = async {
-        let failed = |e: reqwest::Error| Error::new(Kind::Unavailable, "release_unreachable", format!("PyPI's cozy-runtime releases: {e}"));
+        let failed = |e: reqwest::Error| Error::new(Kind::Unavailable, "release_unreachable", format!("Couldn't read cozy-runtime's releases on PyPI: {e}"));
         let answer = http()?.get("https://pypi.org/pypi/cozy-runtime/json").send().await.and_then(reqwest::Response::error_for_status).map_err(failed)?;
         let project: Project = answer.json().await.map_err(failed)?;
         let released: Vec<Released> = (project.releases.into_iter())
@@ -145,7 +145,7 @@ impl Upgrade {
     /// The line the run says: `upgrading vanitas's Runtime 0.45.1 → 0.47.0.dev2260 for minimax-h3 0.12.0rc3`.
     pub(crate) fn note(&self) -> Note {
         let (from, to) = (prerelease::shown(&self.from), prerelease::shown(&self.to));
-        Note { level: NoteLevel::Info, message: format!("upgrading {}'s Runtime {from} → {to} for {}", self.machine, self.release) }
+        Note { level: NoteLevel::Info, message: format!("Updating {}'s Runtime from {from} to {to} for {}.", self.machine, self.release) }
     }
 }
 
@@ -184,6 +184,10 @@ impl Machines {
             }
         }
         // A machine held off the RC by hand counts the RC's build too: refused, it names the update that moves it there.
+        // `local` below this cozy's Runtime minor can always move to this cozy's own Runtime (cl-1055), for any run there, a project's
+        // or not: a plain run whose package needs a newer Runtime moves it to the minor, not to an older minor's release. On the
+        // minor, and on every other machine, nothing changes.
+        runtimes.extend(self.own_runtime(name, frame).await);
         if rc || self.rc_machine(name, frame) {
             if let Ok(sums) = self.rc.now().await {
                 runtimes.extend(sums.build("runtime", &frame.platform).map(|(build, _)| build.version));
@@ -210,6 +214,21 @@ impl Machines {
             .collect();
         let major = crate::cozy::major(&cozy) != crate::cozy::major(crate::update::this_release());
         (!runtimes.is_empty()).then_some(api::release::Newer { cozy, runtimes, major })
+    }
+
+    /// The Runtime `name` (on `frame`) can move to, for any run, when it is `local` below this cozy's Runtime minor (cl-1055): this
+    /// cozy's own, the RC's newest build for an RC or dev build of cozy, else its Hub's pin for this release. None on the minor,
+    /// for any other machine, or when it can't be had now (offline; the Hub names none of the minor).
+    pub(crate) async fn own_runtime(&self, name: &str, frame: &api::machine::StatusFrame) -> Option<String> {
+        let local = self.named(name).ok().flatten().is_some_and(|row| row.kind == MachineKind::Local);
+        if !local || api::release::on_runtime_minor(&frame.runtime) {
+            return None;
+        }
+        let own = match crate::update::dev_build() || crate::update::rc_version() {
+            true => self.rc.now().await.ok().and_then(|sums| sums.build("runtime", &frame.platform).map(|(build, _)| build.version)),
+            false => self.software().await.map(|software| software.runtime.clone()),
+        };
+        own.filter(|runtime| api::release::of_runtime_minor(runtime))
     }
 
     /// This home's Hub's software (`/v1/software`), read at most once a [`FRESH`]; as last read when it doesn't answer.
@@ -244,17 +263,17 @@ impl Machines {
     /// Runtime: its run, none once it finished; one that failed is refused with what happened.
     pub(crate) async fn upgrade(self: &Arc<Self>, upgrade: &Upgrade) -> Result<Option<Run>, Error> {
         let name = upgrade.machine.as_str();
-        let frame = self.frame(name).ok_or_else(|| Error::new(Kind::Unavailable, "machine_unanswered", format!("{name} hasn't said what it runs")))?;
+        let frame = self.frame(name).ok_or_else(|| Error::new(Kind::Unavailable, "machine_unanswered", format!("{name} hasn't reported what it runs yet.")))?;
         let id = self.named(name).ok().flatten().and_then(|row| row.rental_id).unwrap_or_else(|| name.to_owned());
         let key = format!("{FLOOR}{id}-{}-{}", frame.boot_id, upgrade.to);
         let refused = |why: String| {
-            Error::new(Kind::Conflict, "runtime_upgrade_failed", format!("{name}'s Runtime {} → {} for {}: {why}", upgrade.from, upgrade.to, upgrade.release))
+            Error::new(Kind::Conflict, "runtime_upgrade_failed", format!("Couldn't update {name}'s Runtime from {} to {} for {}: {why}", upgrade.from, upgrade.to, upgrade.release))
                 .next(format!("cozy machine update {name} --runtime {}", upgrade.to))
         };
         if let Some(row) = self.store().keyed(&key).map_err(crate::machines::internal)? {
             let run = self.calcifer.record(&row).map_err(|e| Refusal::from(e).0)?;
             return match run.status {
-                Status::Failed | Status::Canceled => Err(refused(run.reason.map_or_else(|| "its update didn't finish".to_owned(), |reason| reason.message))),
+                Status::Failed | Status::Canceled => Err(refused(run.reason.map_or_else(|| "the update didn't finish".to_owned(), |reason| reason.message))),
                 // What it says it runs may be from before its restart: TensorD holds the release to its floor as ever.
                 Status::Completed => Ok(None),
                 _ => Ok(Some(run)),
@@ -275,6 +294,55 @@ impl Machines {
         let (updating, _) = self.update(&key, name, ask).await.map_err(|e| refused(e.message))?;
         Ok(updating.run)
     }
+
+    /// A run `row` its machine refused because its Runtime is older than the package needs (`runtime_floor_unmet`; Paul 11-16: "I
+    /// should be able to send jobs and it just works"), however the send missed it: the machine moves to the newest Runtime it can
+    /// take that meets the package's `cozy-runtime` requirement (its card's, or what Calcifer read of local code), as before a send
+    /// (`upgrade`), and the run goes there again. One that can't move: an `any` run is placed again; any other fails as refused.
+    /// A machine that meets it already moves for nothing, so a second refusal there fails.
+    pub(crate) async fn refloored(self: &Arc<Self>, row: &crate::store::RunRow, outcome: &api::machine::Outcome) -> Option<Refloor> {
+        let refused = outcome.reason.as_ref().is_some_and(|reason| reason.code == "runtime_floor_unmet");
+        if !refused || outcome.status != "failed" || row.cancel_requested || !matches!(row.kind, api::calcifer::Kind::Call | api::calcifer::Kind::Warm) {
+            return None;
+        }
+        let name = row.machine.as_deref()?;
+        let (package, needs) = match row.spec.source.as_ref()? {
+            api::machine::Source::Release(release) => {
+                let hub = row.hub.as_ref()?.as_str();
+                let card = ::api::hub::cards::card_requiring(|| self.hubs.reader(hub), self.hubs.home().root(), hub, &release.package, &release.release).await.ok()?;
+                (format!("{} {}", release.package, release.release), api::release::required(card.requirements().unwrap_or_default(), "cozy-runtime")?)
+            }
+            api::machine::Source::Local(local) => (row.target.clone(), crate::local_code::needs_of(&local.manifest)?),
+            api::machine::Source::Installation(_) => return None,
+        };
+        let elsewhere = |why: String| (!row.pinned && row.wants == "any").then_some(Refloor::Elsewhere(why));
+        let frame = self.frame(name).filter(|frame| !frame.runtime.is_empty())?;
+        // Whether it takes the RC's build reads what the RC's prereleases last named: read once, if never yet.
+        if self.dev && let Err(e) = self.rc.now().await {
+            tracing::warn!(machine = name, "the open RC's builds: {}", e.message);
+        }
+        let rc = self.takes_rc(name, &api::calcifer::On::Machine(name.to_owned()));
+        let (runtimes, moves, newer) = self.runtimes(name, &frame, rc).await;
+        let machine = api::release::Machine { runtime: &frame.runtime, runtimes: &runtimes, moves, newer: newer.as_ref() };
+        let to = match api::release::takes(&needs, &machine) {
+            api::release::Takes::Moves(to) => to,
+            api::release::Takes::Runs => return None,
+            _ => return elsewhere(format!("{package} needs cozy-runtime{needs}, which {name} can't move to")),
+        };
+        let upgrade = Upgrade { machine: name.to_owned(), from: frame.runtime.clone(), to, release: package };
+        match self.upgrade(&upgrade).await {
+            Ok(_) => Some(Refloor::Moved(upgrade.note().message)),
+            Err(e) => elsewhere(e.message),
+        }
+    }
+}
+
+/// What a run its machine refused for its Runtime does next (`Machines::refloored`), and the line it says.
+pub(crate) enum Refloor {
+    /// Its machine moves first, then the run goes there again.
+    Moved(String),
+    /// An `any` run its machine can't move for: placed again.
+    Elsewhere(String),
 }
 
 /// Reads which `cozy_runtime` names a package wheel imports that a Runtime wheel lacks.
@@ -288,7 +356,7 @@ pub(crate) struct Wheel {
 }
 
 /// `src`'s `cozy-runtime` requirement, as its pyproject.toml declares it: None when it names no version.
-fn requirement_of(src: &Path) -> Option<VersionSpecifiers> {
+pub(crate) fn requirement_of(src: &Path) -> Option<VersionSpecifiers> {
     let pyproject: toml::Value = std::fs::read_to_string(src.join("pyproject.toml")).ok().and_then(|text| toml::from_str(&text).ok())?;
     let dependencies = pyproject.get("project").and_then(|p| p.get("dependencies")).and_then(toml::Value::as_array);
     api::release::required(dependencies.into_iter().flatten().filter_map(toml::Value::as_str), "cozy-runtime")
@@ -358,7 +426,7 @@ fn locked(lock: &str) -> Option<Wheel> {
 
 /// `wheel` fetched into `dir`, held to its sha256.
 async fn fetched(wheel: &Wheel, dir: &Path) -> Result<PathBuf, Error> {
-    let failed = |why: String| Error::new(Kind::Unavailable, "runtime_unfetched", format!("cozy-runtime {} ({}): {why}", wheel.version, wheel.url));
+    let failed = |why: String| Error::new(Kind::Unavailable, "runtime_unfetched", format!("Couldn't download cozy-runtime {} from {}: {why}", wheel.version, wheel.url));
     // A selected wheel may be at the same private origin uv trusts (the isolated Hub's ingress).
     // Match TensorD's wheel fetch: this trust applies to package bytes, not Hub clients or release discovery.
     let roots = api::config::environment().get("SSL_CERT_FILE")
@@ -370,7 +438,7 @@ async fn fetched(wheel: &Wheel, dir: &Path) -> Result<PathBuf, Error> {
     let bytes = answer.bytes().await.map_err(|e| failed(e.to_string()))?;
     let found = hex::encode(Sha256::digest(&bytes));
     if !wheel.sha256.is_empty() && found != wheel.sha256 {
-        return Err(failed(format!("its sha256 is {found}, not {}", wheel.sha256)));
+        return Err(failed(format!("the file's sha256 is {found}, not {}", wheel.sha256)));
     }
     let path = dir.join(format!("cozy-runtime-{}.whl", &found[..16]));
     tokio::fs::write(&path, &bytes).await.map_err(|e| failed(e.to_string()))?;
@@ -390,7 +458,7 @@ fn lacks(uv: &Path, dir: &Path, python: &str, runtime: &Path, package: &Path) ->
     let mut command = crate::local_code::uv(uv, dir);
     command.args(["run", "--no-project", "--no-config", "--python", python, "python", "-I", "-c", READER]).arg(runtime).arg(package);
     let said = tokio::task::block_in_place(|| crate::local_code::run(&mut command, "runtime_floor_unread", "the Runtime floor check"))?;
-    let read: Read = serde_json::from_str(said.trim()).map_err(|e| Error::new(Kind::Unavailable, "runtime_floor_unread", format!("the Runtime floor check: {e}")))?;
+    let read: Read = serde_json::from_str(said.trim()).map_err(|e| Error::new(Kind::Unavailable, "runtime_floor_unread", format!("Couldn't read the check of the package's Runtime: {e}")))?;
     Ok(read.missing)
 }
 
@@ -412,7 +480,7 @@ pub(crate) async fn check(api: &Arc<Api>, uv: &Path, python: &str, src: &Path, p
                 .filter(|(version, _)| requirement.contains(version))
                 .min_by(|(a, _), (b, _)| a.cmp(b));
             let Some((_, release)) = oldest else {
-                return Err(refuse("runtime_floor_unreleased", format!("no cozy-runtime release, nor the open RC's newest build, meets {label}'s cozy-runtime{requirement}")));
+                return Err(refuse("runtime_floor_unreleased", format!("{label} needs cozy-runtime{requirement}, and no release or release-candidate build meets it.")));
             };
             let Some((url, sha256)) = release.pure.clone() else { return Ok(()) };
             Wheel { version: release.version.clone(), url, sha256 }

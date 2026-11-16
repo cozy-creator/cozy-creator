@@ -147,7 +147,7 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
   await test.step('Calcifer stopped with SIGTERM, and kept down', async () => {
     away = true;
     await calciferControl.stop();
-    await expect(status(page)).toHaveText(/^Calcifer offline/);
+    await expect(status(page)).toHaveText(/^Cozy is offline/);
     atStop = held(project.path);
   });
 
@@ -212,7 +212,7 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
     await expect.configure({ soft: true }).poll(() => canvasLabel(page, 'shot', 'version'), { message: 'and the approval' }).toBe(`v${approve}`);
     // The person's changes: two saves, the moves as one, the rename, the approval, the file, the file on a box, the delete and its undo.
     // What the page keeps of its own view (what's selected, where the canvas is) is no change of theirs.
-    await expect.soft(status(page), 'every edit counted in the top bar, and only those').toHaveText(/^Calcifer offline: 9 changes waiting/);
+    await expect.soft(status(page), 'every edit counted in the top bar, and only those').toHaveText(/^Cozy is offline, 9 changes waiting/);
     await expect.soft(page.getByRole('dialog'), 'nothing over the canvas').toHaveCount(0);
     await expect.soft(page.getByRole('alertdialog')).toHaveCount(0);
     await expect.soft(page.locator('main.gate')).toHaveCount(0);
@@ -284,7 +284,7 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
     await back();
     await expect.soft(text, 'every character shown').toHaveText(BEFORE + AFTER);
     await leave(page, region);
-    expect.soft(await page.evaluate(() => window.barSaid), 'it said Calcifer was offline').toContainEqual(expect.stringMatching(/^Calcifer offline/));
+    expect.soft(await page.evaluate(() => window.barSaid), 'it said Cozy was offline').toContainEqual(expect.stringMatching(/^Cozy is offline/));
     expect.soft(await page.evaluate(() => window.unreloaded), 'no reload').toBe(true);
     await expect.soft(page.getByRole('heading', { name: 'No project open here' }), 'no gate: the page keeps no session, so nothing to sign in again').toHaveCount(0);
     await expect.poll(async () => (await project.asset('words'))?.fields?.text, { message: 'every character saved, once', timeout: 30_000 }).toBe(BEFORE + AFTER);
@@ -317,7 +317,7 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
 
     await page.locator('summary[aria-label="Menu"]').click();
     await page.getByRole('link', { name: 'Machines', exact: true }).click();
-    await expect.soft(page.getByRole('alert').filter({ hasText: "The Hub didn't list its machines" }), 'Rent says the Hub listed none').toBeVisible({ timeout: 30_000 });
+    await expect.soft(page.getByRole('alert').filter({ hasText: "Couldn't get the machines for rent from the Hub" }), 'Rent says the Hub listed none').toBeVisible({ timeout: 30_000 });
 
     away = true;
     await calciferControl.hub();

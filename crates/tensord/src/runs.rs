@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 use crate::stop::Stop;
 use tensorfs::format::ObjectRef;
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     io,
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -166,6 +166,16 @@ fn fetches_ahead(spec: &Spec) -> bool {
     spec.warm && !spec.entrypoint.is_empty() && spec.set.is_none() && !matches!(spec.source, Source::Models)
 }
 
+/// A call's place in the download line (cl-1077), as the GPU queue offers it (`queue::job`): one sharing a GPU an ancestor
+/// holds (its family's) goes ahead of every queued run's; any other, an orchestrator's, takes its root's place in job order, so a
+/// later run's call never goes ahead of an earlier run about to start.
+fn call_order(record: &Execution) -> u64 {
+    match record.invocation.family.is_empty() {
+        false => crate::origin::priority::STARTED,
+        true => record.root_seq(),
+    }
+}
+
 /// A choice for the run's own slots: a bare parameter, or one under its own name.
 fn own_choice(choice: &stored::ModelChoice, entrypoint: &str) -> bool {
     match choice.parameter.split_once(".models.") {
@@ -187,15 +197,28 @@ fn addressed(parameter: &str, package: &str, interface: &Value) -> Option<String
         .then(|| path.to_string())
 }
 
-/// `installation`'s internal functions that construct a model: what a function loading none
-/// itself calls.
-fn internal_models(installation: &Installation) -> Result<Vec<String>, Refused> {
+/// `installation`'s internal functions that construct a model and that `entrypoint`, loading none itself, calls: those its
+/// `calls` name (the Runtime's static reading, through its own helpers), and theirs in turn, in its package's order (cl-1077:
+/// H3's `edit` brought `upscale`'s upscaler). One that declares no `calls` may call any of them.
+fn internal_models(installation: &Installation, entrypoint: &str) -> Result<Vec<String>, Refused> {
     let interface: Value = serde_json::from_slice(&installation.interface)
         .map_err(|_| refused("package_interface_invalid", "held interface is corrupt"))?;
     let constructs = |entry: &Value| api::interface::models(entry).iter().any(crate::gpu_service::constructed);
+    let reached = api::interface::entrypoint(&interface, entrypoint).filter(|entry| entry.get("calls").is_some()).map(|root| {
+        let (mut reached, mut pending) = (BTreeSet::new(), vec![root]);
+        while let Some(entry) = pending.pop() {
+            for called in entry["calls"].as_array().into_iter().flatten().filter_map(|call| call["function"].as_str()) {
+                if reached.insert(called.to_owned()) {
+                    pending.extend(api::interface::entrypoint(&interface, called));
+                }
+            }
+        }
+        reached
+    });
     Ok(api::interface::entrypoints(&interface)
         .filter(|entry| api::interface::internal(entry) && constructs(entry))
         .filter_map(|entry| api::interface::name(entry).map(str::to_owned))
+        .filter(|name| reached.as_ref().is_none_or(|reached| reached.contains(name)))
         .collect())
 }
 
@@ -366,7 +389,7 @@ impl Runs {
     fn place(&self, id: &str, ahead: bool, rank: u32) -> u64 {
         use crate::origin::priority;
         match self.service.engine.get(id) {
-            Ok(record) if !record.invocation.parent.is_empty() => priority::next(priority::STARTED, rank),
+            Ok(record) if !record.invocation.parent.is_empty() => priority::next(call_order(&record), rank),
             Ok(record) if ahead && self.service.engine.caller_id(id).starts_with(crate::ahead::PREPARE) => {
                 priority::prepare(record.root_seq(), rank)
             }
@@ -381,9 +404,9 @@ impl Runs {
     }
 
     /// What run `id` reads of `installation`, whose environment need not be built yet (cl-966): what its function reads up
-    /// front; for one that loads no model itself (an orchestrator), what its package's internal functions that construct one
-    /// all read up front (sure), then each one's own (guesses), in its package's order, each resolved at once. One that
-    /// doesn't resolve is left out.
+    /// front; for one that loads no model itself (an orchestrator), what the internal functions it calls that construct one
+    /// (`internal_models`) all read up front (sure), then each one's own (guesses), in its package's order, each resolved at
+    /// once. One that doesn't resolve is left out.
     #[allow(clippy::too_many_arguments)]
     fn reads(
         &self, id: &str, installation: &Installation, hub: Option<hub::Source>, asker: &Asker, entrypoint: &str,
@@ -399,7 +422,7 @@ impl Runs {
             let (sure, possible) = predicted(entrypoint)?;
             return Ok(crate::access::Reads { sure, guesses: guessed(possible) });
         }
-        let callees = internal_models(installation)?;
+        let callees = internal_models(installation, entrypoint)?;
         let private = crate::private_io::current();
         let each: Vec<_> = std::thread::scope(|scope| {
             let each: Vec<_> = callees.iter().map(|callee| scope.spawn(|| crate::private_io::within(private.clone(), || predicted(callee)))).collect();
@@ -874,7 +897,7 @@ impl Runs {
         let hub = spec.hub.clone().or_else(|| self.own_hub.clone());
         let hub_access = || {
             hub.as_ref().ok_or_else(|| {
-                refused("hub_access_absent", "this needs the run's Hub access, and it carries none: `cozy login <email>` on the computer that sent it, then run it again")
+                refused("hub_access_absent", "This run uses the Hub, and the computer that sent it isn't signed in. Sign in to the Hub there, then run it again.")
             })
         };
         let folder = model_folder::prepare(self, actor, spec, choice, stoppable)?;
@@ -905,7 +928,7 @@ impl Runs {
             let local = crate::storage::local(publisher.store(), &choice.model)
                 .map_err(|e| refused("checkpoint_absent", e.to_string()))?
                 .filter(|local| publisher.store().holds(&local.header))
-                .ok_or_else(|| refused("checkpoint_absent", format!("this machine holds no local/{name}: `cozy model download <source> local/{name} --on <machine>` puts it there")))?;
+                .ok_or_else(|| refused("checkpoint_absent", format!("This machine doesn't have the model local/{name}. Download it to this machine as local/{name} first.")))?;
             let row = json!({"parameter": choice.parameter,
                 "repository": choice.model, "checkpoint": local.header.id()});
             (local.header, Some(local.tree), row)
@@ -916,7 +939,7 @@ impl Runs {
             })?;
             let sha256 = tensorfs::sha256::hex(&header.digest);
             let held = crate::storage::held(publisher.store(), &sha256)
-                .map_err(|_| refused("checkpoint_absent", format!("this machine holds no checkpoint sha256:{sha256}: run what made it on this machine, or name a model of the Hub's")))?;
+                .map_err(|_| refused("checkpoint_absent", format!("This machine doesn't have the model sha256:{sha256}. Run what made it on this machine, or choose a model from the Hub.")))?;
             publisher.held_for(&self.service, hub_access().ok(), &held, self.order(id, spec, 0)).map_err(|(code, message)| refused(code, message))?;
             let row = json!({"parameter": choice.parameter, "checkpoint": format!("sha256:{sha256}")});
             (held, None, row)
@@ -938,7 +961,8 @@ impl Runs {
             let hardware = self.service.gpu().map(|gpu| gpu.hardware(gpu.width() as u32)).unwrap_or_default();
             let (stage, saving) = (format!("downloading {}", choice.model), format!("saving {}", choice.model));
             let wait = crate::activity::wait(crate::activity::Kind::Download, &choice.model, &self.service.engine.caller_id(id));
-            let (named, landed) = publisher.download(&self.service, hub_access()?, named, &hardware, structure, self.order(id, spec, 0), stop, &|done, total| {
+            let room = |absent| self.service.room_for(id, absent);
+            let (named, landed) = publisher.download(&self.service, hub_access()?, named, &hardware, structure, self.order(id, spec, 0), stop, &room, &|done, total| {
                 // Every byte is here (a total this small is still only the header's): what is left is the disk's,
                 // and a slow one has held a run at 100% for over a minute with no word (tfs-143).
                 let now = if total >= 1 << 20 && done >= total { &saving } else { &stage };
@@ -1112,7 +1136,7 @@ impl Runs {
             ahead = plan.as_ref().map(|plan| {
                 let order = self.service.engine.get(id).map_or(u64::MAX, |record| match record.invocation.parent.is_empty() {
                     true => record.root_seq(),
-                    false => crate::origin::priority::STARTED,
+                    false => call_order(&record),
                 });
                 let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub.clone(), order);
                 let room = |missing| self.service.room_for(id, missing);
@@ -1128,7 +1152,7 @@ impl Runs {
                 fetch
             });
             // An orchestrator's internal functions' weights come while it starts and imports (cl-905), if not already.
-            if plan.is_none() && spec.parent.is_empty() && internal_models(&installation).is_ok_and(|internal| !internal.is_empty()) {
+            if plan.is_none() && spec.parent.is_empty() && internal_models(&installation, &spec.entrypoint).is_ok_and(|internal| !internal.is_empty()) {
                 ahead = Some(early.take().unwrap_or_else(|| self.fetch_internal(id, &installation, hub.clone(), &spec)));
             }
             // A call wants what it reads now: its caller's guesses at it end, and their room is free.
@@ -1161,7 +1185,7 @@ impl Runs {
         if declared.is_none() && !install_only {
             return Err(refused(
                 "invalid_entrypoint",
-                format!("{0} declares no entrypoint {1:?}: `cozy run {0}` lists its functions", installation.package, spec.entrypoint),
+                format!("{} has no function called {:?}.", installation.package, spec.entrypoint),
             ));
         }
         if spec.parent.is_empty() {
@@ -1178,7 +1202,7 @@ impl Runs {
                 });
             if !declared {
                 let warning = format!(
-                    "model choice {:?} names no model slot of this function or the packages it calls; it is ignored",
+                    "The model choice {:?} doesn't match a model slot of this function or the packages it calls, so Cozy ignored it.",
                     choice.parameter
                 );
                 if let Err(error) = self.service.engine.append_warning(id, &warning) {
@@ -1192,7 +1216,7 @@ impl Runs {
                 observe("importing it", 0, 0);
             }
             if let Some((code, said)) = self.service.gpu().filter(|_| install_only).and_then(|gpu| gpu.import_verdict(&generation, &stoppable.stop)) {
-                let warning = format!("{code}: {said}. Its calls will fail the same way");
+                let warning = format!("{} can't be imported ({code}: {said}). Running it will fail the same way.", installation.package);
                 if let Err(error) = self.service.engine.append_warning(id, &warning) {
                     crate::private_io::warning(&self.service.engine, id, format_args!("{warning} ({error})"));
                 }
@@ -1220,7 +1244,8 @@ impl Runs {
                 let fits = |absent: u64| {
                     let free = crate::reclaim::Disk::measure(self.publisher.store().root())?.free();
                     match absent > free {
-                        true => Err(refused("machine_disk_full", format!("its weights' {absent} bytes don't fit in the {free} free"))),
+                        true => Err(refused("machine_disk_full", format!("This render's models ({}) don't fit in the {} free on this machine's disk.{}",
+                            crate::reclaim::size(absent), crate::reclaim::size(free), crate::reclaim::advice(self.publisher.store().root(), absent)))),
                         false => Ok(()),
                     }
                 };
@@ -1346,12 +1371,12 @@ impl Runs {
             observe("downloading its weights", done, total)
         };
         fetch.download(lined, &caller, &stoppable.stop, &report).map_err(|e| match stoppable.stop.is_cancelled() {
-            true => refused(crate::published::CANCELED, "the run was canceled while it downloaded"),
+            true => refused(crate::published::CANCELED, "The run was canceled while its models downloaded."),
             false => {
                 let text = e.to_string();
-                match text.starts_with("machine_disk_full") {
-                    true => refused("machine_disk_full", text + &crate::reclaim::advice(self.publisher.store().root(), 0)),
-                    false => refused("model_fetch_failed", text),
+                match crate::access::code_of(&text) {
+                    ("machine_disk_full", why) => refused("machine_disk_full", crate::reclaim::advised(why, self.publisher.store().root(), 0)),
+                    (code, why) => refused(code, why),
                 }
             }
         })
@@ -1419,11 +1444,12 @@ impl Runs {
         let sure = fetch.absent(&reads.sure)?;
         let free = || crate::reclaim::Disk::measure(self.publisher.store().root()).map(|disk| disk.free());
         match ahead {
-            false => self.service.room_for(id, sure).map_err(|why| refused("machine_disk_full", why))?,
+            false => self.service.room_for(id, sure).map_err(|why| refused("machine_disk_full", why.trim_start_matches("machine_disk_full: ")))?,
             true => {
                 let free = free()?;
                 if sure > free {
-                    return Err(refused("machine_disk_full", format!("its weights' {sure} bytes don't fit in the {free} free")));
+                    return Err(refused("machine_disk_full", format!("This render's models ({}) don't fit in the {} free on this machine's disk.{}",
+                        crate::reclaim::size(sure), crate::reclaim::size(free), crate::reclaim::advice(self.publisher.store().root(), sure))));
                 }
             }
         }
@@ -1555,23 +1581,22 @@ impl Runs {
             if item.level > Level::Installed && !declares(&installation, &item.entrypoint)? {
                 return Err(refused(
                     "invalid_entrypoint",
-                    format!("{0} declares no entrypoint {1:?}: `cozy run {0}` lists its functions", installation.package, item.entrypoint),
+                    format!("{} has no function called {:?}.", installation.package, item.entrypoint),
                 ));
             }
             // A request prepares a function's own GPU model; one with none warms what it calls, as ever.
             let unbound = item.payload.is_some() && plan.is_none();
             if unbound {
-                let warning = format!("{} binds no GPU model of its own: its inputs are not warmed, only the models it calls", item.entrypoint);
+                let warning = format!("{} loads no GPU model of its own, so Cozy warmed only the models it calls, not its inputs.", item.entrypoint);
                 if let Err(error) = self.service.engine.append_warning(id, &warning) {
                     crate::private_io::warning(&self.service.engine, id, format_args!("{warning} ({error})"));
                 }
             }
-            // A function that loads no model itself (an orchestrator) runs on the ones it calls.
-            // The interface names no call graph, and internal functions exist only to be called:
-            // it brings its package's internal functions' models, each a member of its own.
+            // A function that loads no model itself (an orchestrator) runs on the ones it calls: it brings the models of the
+            // internal functions it calls, each a member of its own.
             let mut plans = vec![plan];
             if item.level > Level::Installed && plans[0].is_none() {
-                for callee in internal_models(&installation)? {
+                for callee in internal_models(&installation, &item.entrypoint)? {
                     let own: Vec<_> = item.models.iter().filter(|c| own_choice(c, &callee)).cloned().collect();
                     let report = observe.clone();
                     let (_, plan, _) = self.resolve(
@@ -1943,9 +1968,10 @@ impl Runs {
                     match runs.service.catalog.resolve(&installation.generation)
                         .and_then(|held| held.application(&application)) {
                         Ok(held) => {
-                            // A started run's, under the child's access: ahead of every queued run's.
+                            // Its call's place (`call_order`), under the child's access.
                             let hub = spec.hub.clone().or_else(|| runs.own_hub.clone());
-                            let fetch = crate::access::Fetch::new(runs.publisher.machine().clone(), hub, crate::origin::priority::STARTED);
+                            let order = if family.is_some() { crate::origin::priority::STARTED } else { root };
+                            let fetch = crate::access::Fetch::new(runs.publisher.machine().clone(), hub, order);
                             gpu.prefetch(&runs.service.engine, held, plan, (root, family.clone()), owner.clone(), fetch)
                         }
                         Err(error) => {
@@ -1977,11 +2003,42 @@ impl Runs {
         let Some(hub) = self.hub(id).filter(|_| !absent.is_empty()) else { return Ok(()) };
         let machine = self.publisher.machine();
         let Some(remote) = crate::access::remote(machine, &hub, checkpoint.id())? else { return Ok(()) };
-        let model = crate::held_models::Pulled::of(store, checkpoint.id())?.map_or_else(|| manifest.to_string(), |pulled| pulled.model);
+        let model = crate::access::hub_pull(store, checkpoint.id())?.map_or_else(|| manifest.to_string(), |pulled| pulled.model);
         let (engine, bytes, began) = (&self.service.engine, absent.iter().map(|object| object.length).sum::<u64>(), std::time::Instant::now());
         crate::private_io::info(engine, id, format_args!("emergency: {model} is read now, before every other download: {bytes} bytes"));
-        machine.objects(&remote, &absent, crate::origin::priority::EMERGENCY, &Stop::default())
-            .map_err(|refusal| refused("model_fetch_failed", format!("{model}: {refusal}")))?;
+        // What it waits on shows on its run and its root's, as a run's own weights do, while it lands (tfs-300, LAB2-47829: an
+        // edit's prompt enhancer, 10 GiB on demand, showed as its stage with no progress for 2 minutes).
+        let landing = std::sync::atomic::AtomicBool::new(true);
+        let fetched = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let wait = crate::activity::wait(crate::activity::Kind::Download, &model, &engine.caller_id(id));
+                let root = engine.get(id).ok().map(|record| record.invocation.root).filter(|root| !root.is_empty() && root.as_str() != id);
+                let tell = |weights: Option<crate::journal::Weights>| {
+                    for run in root.iter().map(String::as_str).chain([id]) {
+                        if let Err(error) = engine.observe_weights(run, weights.clone()) {
+                            tracing::warn!("run {run}: its on-demand weights' progress: {error}");
+                        }
+                    }
+                };
+                while landing.load(std::sync::atomic::Ordering::Acquire) {
+                    let states = machine.fetching(&remote, &absent);
+                    let done: u64 = (absent.iter().zip(states))
+                        .map(|(object, state)| match store.holds(object) {
+                            true => object.length,
+                            false => state.map_or(0, |state| state.reached.min(object.length)),
+                        })
+                        .sum();
+                    wait.moved("", done, bytes);
+                    tell(Some(crate::journal::Weights { models: model.clone(), done, total: bytes }));
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                }
+                tell(None);
+            });
+            let fetched = machine.objects(&remote, &absent, crate::origin::priority::EMERGENCY, &Stop::default());
+            landing.store(false, std::sync::atomic::Ordering::Release);
+            fetched
+        });
+        fetched.map_err(|refusal| refused("model_fetch_failed", format!("{model}: {refusal}")))?;
         let seconds = began.elapsed().as_secs_f64();
         crate::private_io::info(engine, id, format_args!("emergency: {model} is here: {bytes} bytes in {seconds:.1} s"));
         Ok(())

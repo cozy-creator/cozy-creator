@@ -1,36 +1,30 @@
-import { useQuery } from "@tanstack/react-query"
-import { useCanvasViewport } from "./viewportContext"
+import { useBoard } from "./board/context"
 import { type CSSProperties, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useRef, useState } from "react"
 import { flushSync } from "react-dom"
-import { runQuery } from "../api/queries"
-import { useConnection } from "../app/Connection"
-import { useWaitsOn } from "../panels/machines/activity"
 import type { MainFile, Tool, ToolField } from "../api/calcifer"
 import { Icon } from "../ui/Icon"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
 import { AssetEdit, InFrame, RenderButton, TextAsset } from "./AssetEdit"
-import type { CanvasStore, CarriedFile, ElementNode, ElementView } from "./CanvasStore"
+import type { CanvasStore, CarriedFile, ElementView } from "./CanvasStore"
 import { carryOnMove } from "./carry"
 import { useCanvasStore, useElement } from "./context"
 import { fieldsOf, shapeNear } from "./controls"
 import { useDragScroll } from "./dragScroll"
-import { downloadable, Media, Preview, Thumb, usePreview, type PreviewHover } from "./Media"
+import { downloadable, Media, Preview, Thumb, usePreview } from "./Media"
 import { caretToEnd } from "./MentionText"
 import { NameField } from "./NameField"
-import { ORBIT, orbitOf } from "./Orbit"
 import { ratioWords } from "./ratios"
-import { bare, beingMade, ContinueFrom, LeadIn, Segments, VideoTransport } from "./Segments"
-import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, makes, makingRun, NARROWEST, paints, ratioOf, reshapes, shownOf, takingOf, toolName, valuesOf, watched, widthFor } from "./shown"
+import { ContinueFrom, LeadIn, Segments, VideoTransport } from "./Segments"
+import { aspectOf, bodyBox, bodyWidth, faceOf, isPicture, madeHere, makes, makingShape, NARROWEST, paints, ratioOf, reshapes, shownOf, takingOf, valuesOf, watched, widthFor } from "./shown"
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { VideoEditor } from "./timeline/VideoEditor"
-import { AddOns } from "./AddOns"
 import { ToolLine } from "./ToolLine"
 import { FocusFrame, useFocusResize } from "./FocusFrame"
 import { Asking } from "./Asking"
 import { SlowNotice } from "./RenderTime"
-import { RunFace, RunMeter, useArriving } from "./RunFace"
 import { StateDot, viewState } from "./StateDot"
+import { TakeProgress } from "./TakeProgress"
 
 const WIDEST = 1600
 const LOWEST = 90
@@ -44,43 +38,6 @@ function kindOf(view: ElementView): string {
   if (madeHere(asset.tool)) return asset.kind === "video" ? "edit" : "frame"
   if (asset.field && !asset.tool) return asset.kind
   return asset.kind === "video" ? "shot" : asset.kind
-}
-
-/** How far a take being made is: its package installing or its weights arriving show as such, never as its own percentage. */
-function TakeProgress({ view, run }: { view: ElementView; run: number }) {
-  // Its own run, each tile (cl-945): the box follows only the one its frame is on.
-  const { client } = useConnection()
-  const project = useCanvasStore().projectId
-  const framed = view.run?.number === run
-  const { data } = useQuery({ ...runQuery(client, project ?? "", run), enabled: Boolean(project) && !framed })
-  const mine = framed ? view.run : data
-  const on = useWaitsOn(mine)
-  if (on) return <Icon name={on.kind === "download" ? "download" : "package"} />
-  const fraction = mine?.progress?.done_fraction
-  const said = fraction == null ? "…" : `${Math.round(fraction * 100)}%`
-  // What it has made so far plays on its tile, silent (cl-907): a pick of the tile plays it with its sound.
-  const glimpse = view.glimpse?.media === "video" && view.glimpse.number === run ? view.glimpse : undefined
-  return glimpse ? <TileGlimpse glimpse={glimpse} said={said} /> : <>{said}</>
-}
-
-function TileGlimpse({ glimpse, said }: { glimpse: NonNullable<ElementView["glimpse"]>; said: string }) {
-  const { client } = useConnection()
-  const store = useCanvasStore()
-  const [src, setSrc] = useState<string>()
-  useEffect(() => {
-    if (!store.projectId) { setSrc(undefined); return }
-    let live = true
-    void client.transport.src(client.output({ project: store.projectId, run: glimpse.run }, glimpse.output, glimpse.index, glimpse.rev)).then((url) => live && setSrc(url))
-    return () => {
-      live = false
-    }
-  }, [client, store.projectId, glimpse.run, glimpse.output, glimpse.index, glimpse.rev])
-  return (
-    <>
-      {src && <video className="take-glimpse" src={src} muted loop autoPlay playsInline preload="metadata" />}
-      <span className="take-said">{said}</span>
-    </>
-  )
 }
 
 /** A button on a card does its one thing, and a field takes the click: neither selects it. */
@@ -208,6 +165,11 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
   const pending = takingOf(view)
   const making = (asset.making ?? []).filter((run) => !pending.some((take) => take.run === run))
   const waiting = !pending.length && !making.length && (view.queued || view.asked !== undefined)
+  // A picture's tile is its shape at a height of 100; one on its way is the shape its frame is (cl-1072), else its newest's.
+  const tileOf = (ratio: number) => ({ height: 100, width: Math.min(220, 100 * ratio), aspectRatio: "auto" })
+  const measured = versions.find((version) => version.main?.width && version.main.height)?.main
+  const coming = asset.kind === "image" ? makingShape(view) ?? (measured ? measured.width! / measured.height! : undefined) : undefined
+  const comingTile = coming ? tileOf(coming) : undefined
   const next = nextTake(store, view, name, tools)
   if (!next.adds && !versions.length && !view.joining && !pending.length && !making.length && !waiting) return null
   const pick = (number: number) => {
@@ -225,39 +187,27 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
       {next.adds && !focused && <NewTake next={next} />}
       {waiting && (
         <span className="take-at">
-          <button type="button" className="take making" title="Queued">
-            …
+          <button type="button" className="take making" title="Queued" style={comingTile}>
+            <TakeProgress view={view} />
           </button>
           <button type="button" className="take-off" aria-label="Cancel what's queued" title="Cancel what's queued" onClick={() => store.cancelRender(name)}>
             <Icon name="trash" />
           </button>
         </span>
       )}
-      {pending.map((take) => {
-        // One that failed stays, red, its error a click away, until it's deleted (cl-954).
-        const failed = take.failure ? take.failure.message.replace(`${name}: `, "") : undefined
-        const state = failed !== undefined ? "failed" : take.run !== undefined ? "running" : "queued"
-        return (
-          <span key={take.id} className="take-at">
-            <button type="button" className={`take making ${state === "failed" ? "failed" : ""} ${watch?.id === take.id ? "on" : ""}`} data-take-id={take.id} data-run={take.run} data-state={state} title={failed !== undefined ? `Didn't render: ${failed}` : take.run !== undefined ? `Run ${store.runName(take.run)}` : "Queued"} onClick={() => store.watchTake(name, take.id)}>
-              <span className={`state-dot ${state}`} role="img" aria-label={state === "failed" ? "Failed" : state === "running" ? "Rendering" : "Queued"} />
-              {failed !== undefined ? <span className="take-failed">Failed</span> : take.run !== undefined ? <TakeProgress view={view} run={take.run} /> : "…"}
-            </button>
-            {failed !== undefined ? (
-              <button type="button" className="take-off" aria-label="Delete this failed take" title="Delete" onClick={() => store.cancelTake(name, take)}>
-                <Icon name="trash" />
-              </button>
-            ) : (
-              <button type="button" className="take-off" aria-label={take.run !== undefined ? `Cancel run ${store.runName(take.run)}` : "Cancel what's queued"} title={take.run !== undefined ? `Cancel run ${store.runName(take.run)}` : "Cancel this take"} onClick={() => store.cancelTake(name, take)}>
-                <Icon name="close" />
-              </button>
-            )}
-          </span>
-        )
-      })}
+      {pending.map((take) => (
+        <span key={take.id} className="take-at">
+          <button type="button" className={`take making ${watch?.id === take.id ? "on" : ""}`} data-take-id={take.id} data-run={take.run} title={take.run !== undefined ? `Run ${store.runName(take.run)}` : "Queued"} style={comingTile} onClick={() => store.watchTake(name, take.id)}>
+            <TakeProgress view={view} run={take.run} />
+          </button>
+          <button type="button" className="take-off" aria-label={take.run !== undefined ? `Cancel run ${store.runName(take.run)}` : "Cancel what's queued"} title={take.run !== undefined ? `Cancel run ${store.runName(take.run)}` : "Cancel this take"} onClick={() => store.cancelTake(name, take)}>
+            <Icon name="close" />
+          </button>
+        </span>
+      ))}
       {making.map((run) => (
         <span key={run} className="take-at">
-          <button type="button" className="take making" data-run={run} title={`Run ${store.runName(run)}`}>
+          <button type="button" className="take making" data-run={run} title={`Run ${store.runName(run)}`} style={comingTile}>
             <TakeProgress view={view} run={run} />
           </button>
           <button type="button" className="take-off" aria-label={`Cancel run ${store.runName(run)}`} title={`Cancel run ${store.runName(run)}`} onClick={() => store.cancelTake(name, { id: "", run })}>
@@ -277,7 +227,7 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
             title={[`${asset.noun} ${version.number}`, version.execution_ms ? took(version.execution_ms) : "", version.pickup ? `picked up from ${version.pickup.take.slice(1, -1)} at frame ${version.pickup.out_frame}` : "", version.number === asset.approved ? "approved" : "", asset.unseen?.includes(version.number) ? "not looked at yet" : ""].filter(Boolean).join(", ")}
             data-take={version.number}
             data-take-id={version.id || undefined}
-            style={asset.kind === "image" ? { height: 100, width: Math.min(220, 100 * (version.main?.width && version.main.height ? version.main.width / version.main.height : 1.5)), aspectRatio: "auto" } : undefined}
+            style={asset.kind === "image" ? tileOf(version.main?.width && version.main.height ? version.main.width / version.main.height : 1.5) : undefined}
             onClick={() => pick(version.number)}
             onDoubleClick={() => store.toggleApproved(name, version.number)}
             onContextMenu={(event) => {
@@ -310,38 +260,6 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
     </div>
   ) : (
     row
-  )
-}
-
-/** Orbit viewing for the take shown, as its file says or as a person turns it on (Paul, 11-11): on, a drag turns the video and no play
- *  button plays it. It's what the file says of itself, kept with the take, so it's undone like any edit and puts nothing out of date. */
-function OrbitToggle({ view, name }: { view: ElementView; name: string }) {
-  const store = useCanvasStore()
-  const shown = shownOf(view)
-  // Being made, its row is there already, to set once the take lands: nothing moves when it does (Paul, 11-12).
-  if (beingMade(view) && !view.hereWords) {
-    return (
-      <label className="row orbit-toggle">
-        <input className="canvas-control" type="checkbox" role="switch" aria-label="Orbit: drag to turn" checked={false} disabled />
-        <span>Orbit</span>
-        <span className="muted">Plays</span>
-      </label>
-    )
-  }
-  if (!shown || shown.field !== "video" || view.hereWords || !view.asset) return null
-  const on = Boolean(orbitOf(shown))
-  const which = shown.number === undefined ? name : `${view.asset.noun} ${shown.number} of ${name}`
-  const flip = (want: boolean) => {
-    const rest = Object.fromEntries(Object.entries(shown.metadata ?? {}).filter(([key]) => key !== "orbit"))
-    const metadata = want ? { ...rest, orbit: ORBIT } : rest
-    store.setMetadata(name, shown.number, metadata, `Turned ${want ? "on" : "off"} orbit viewing for ${which}`)
-  }
-  return (
-    <label className="row orbit-toggle">
-      <input className="canvas-control" type="checkbox" role="switch" aria-label="Orbit: drag to turn" checked={on} onChange={(event) => flip(event.target.checked)} />
-      <span>Orbit</span>
-      <span className="muted">{on ? "Drag to turn" : "Plays"}</span>
-    </label>
   )
 }
 
@@ -437,7 +355,7 @@ function Status({ view, name }: { view: ElementView; name: string }) {
 function Corner({ name, view, width, focused = false }: { name: string; view: ElementView; width: number; focused?: boolean }) {
   const store = useCanvasStore()
   const focusResize = useFocusResize()
-  const flow = useCanvasViewport()
+  const flow = useBoard()
   const tools = useSignal(store.tools)
   const control = view.asset && reshapes(view) ? fieldsOf(view.asset, tools).find((held) => held.type === "shape") : undefined
   const validRatio = (ratio: unknown): ratio is string => typeof ratio === "string" && ratio.split(":").length === 2 && ratio.split(":").map(Number).every((value) => value > 0 && Number.isFinite(value))
@@ -578,73 +496,7 @@ function ShapeLine({ name, view }: { name: string; view: ElementView }) {
   )
 }
 
-/** The shape it makes as set, else the one its picture was asked for, else its picture's, else what its tool makes unset (Auto): what a tile
- *  says under its picture (cl-932), as people say it (Paul, 11-13: H3's 16:9 is 1344×768 and says 16:9). */
-function useShapeSaid(view: ElementView, name: string): string | null {
-  const store = useCanvasStore()
-  const tools = useSignal(store.tools)
-  if (!view.asset || view.shape) return null
-  const field = fieldsOf(view.asset, tools).find((held) => held.type === "shape")
-  const held = field ? store.valueOf(name, field.field) : undefined
-  if (typeof held === "string" && ratioOf(held)) return ratioWords(held)
-  const shown = shownOf(view)
-  const asked = view.asset.prefixes?.find((version) => version.number === shown?.number)?.aspect_ratio
-  if (asked && ratioOf(asked)) return ratioWords(asked)
-  if (shown?.width && shown.height) return ratioWords(shown.width / shown.height)
-  if (!field) return null
-  return field.auto ? autoWords(view) : ratioWords(shapeFallback(field))
-}
-
-/** Under a box at rest, as Paul drew it (cl-932, 11-12): its tool and its shape; then, while it renders, cl-898's two lines with Cancel and
- *  the whole job's meter. Nothing else: what it can do is in Focus. It hangs under it, in the room it keeps clear (`underOf`). */
-/** The run a box at rest says how goes, while it's on its way or its result is: `going`, and the run's number once there is one. */
-function useGoing(view: ElementView): { going: boolean; number?: number } {
-  const arriving = useArriving(view)
-  const asset = view.asset
-  const onItsWay = asset?.standing === "making" || Boolean(view.queued) || view.asked !== undefined
-  return { going: Boolean(asset && !view.placing && (onItsWay || arriving !== undefined) && asset.rendering == null), number: onItsWay ? makingRun(view) : arriving }
-}
-
-function Under({ view, name, lite }: { view: ElementView; name: string; lite: boolean }) {
-  const store = useCanvasStore()
-  const tools = useSignal(store.tools)
-  const { going, number } = useGoing(view)
-  const shape = useShapeSaid(view, name)
-  const asset = view.asset
-  if (!asset || view.placing) return null
-  const tool = asset.tool ? tools.get(asset.tool) : undefined
-  // What makes it (Paul, 11-12: "I want to see what tools are attached"): once, here, as "MiniMax H3 · Shot".
-  const named = asset.tool ? (tool ? toolName(tool) : asset.tool) : null
-  // A take that went on from another box's says which (cl-951).
-  const shown = shownOf(view)
-  const made = asset.prefixes?.find((version) => version.number === shown?.number)?.pickup
-  const of = made ? store.mentionOf(bare(made.take), name) : null
-  const source = of && of.name !== store.resolveName(name) ? of.name : null
-  const line = !lite && (named || shape || source)
-  if (!line && !going) return null
-  return (
-    <div className="tile-under">
-      {line && (
-        <div className="tile-line">
-          {named && <span className="node-tool" title={tool?.source ? `${asset.tool}, from source: ${tool.source}` : asset.tool!}>{named}</span>}
-          {source && <span className="continues-rest" title={`Continues ${made!.take}`}>from {source}</span>}
-          <span className="sp" />
-          {shape && <span className="ratio-rest">{shape}</span>}
-        </div>
-      )}
-      {going && <RunFace view={view} name={name} number={number} />}
-    </div>
-  )
-}
-
-/** Along the top of a box at rest, how far its whole job is (Paul, 11-12). */
-function TileMeter({ view }: { view: ElementView }) {
-  const { going, number } = useGoing(view)
-  return going ? <RunMeter view={view} number={number} /> : null
-}
-
-
-const CardBody = memo(function CardBody({ name, width, focused = false, snapshot, selected, previewHover }: { name: string; width: number; focused?: boolean; snapshot?: ElementView; selected?: boolean; previewHover?: PreviewHover }) {
+const CardBody = memo(function CardBody({ name, width, focused = false, snapshot, selected }: { name: string; width: number; focused?: boolean; snapshot?: ElementView; selected?: boolean }) {
   const store = useCanvasStore()
   const live = useElement(name)
   const view = snapshot ?? live
@@ -779,7 +631,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
       )}
       {focused && !view.placing && !cut && <FocusActions view={view} name={name} />}
       {cut ? <VideoEditor name={name} /> : <FocusFrame enabled={focused} aspect={aspectOf(view)} fitted={asset?.kind !== "text"} zooms={!plays} under={plays ? <VideoTransport name={name} view={view} /> : undefined}>
-        <Media view={view} name={name} cardWidth={here ? HERE_THUMB : bodyWidth(view, width)} restWidth={width} previewHover={previewHover}>
+        <Media view={view} name={name} cardWidth={here ? HERE_THUMB : bodyWidth(view, width)} restWidth={width}>
           {here && (asset?.kind === "text" && !asset.tool ? <TextAsset name={name} view={view} /> : <InFrame name={name} view={view} />)}
           {here && editing && view.continuing && <LeadIn name={name} view={view} />}
           {here && !focused && !view.hereWords && asset && shownVersion?.main && (
@@ -796,12 +648,8 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
       </FocusFrame>}
       {plays && <Segments name={name} view={view} />}
       {rendering && <span className="render-wave" data-state={viewState(view) ?? undefined} aria-hidden="true" />}
-      {/* Watched, not written: orbit viewing turns on and off here too (xs-180), as in a take being written. */}
-      {focused && asset?.kind === "video" && !asset.timeline && !editing && <OrbitToggle view={view} name={name} />}
       {here && !lite && asset?.tool && !view.placing && <ToolLine name={name} view={view} width={width} />}
       {here && !lite && asset && asset.kind !== "image" && !view.hereWords && !view.placing && !looking && <ShapeLine name={name} view={view} />}
-      {drawn && !here && !focused && <Under view={view} name={name} lite={lite} />}
-      {drawn && !here && !focused && <TileMeter view={view} />}
       {view.refused && <div className="refused-line">{view.refused}</div>}
       {!here && view.asking && (
         <div className="rest-asking canvas-control">
@@ -824,7 +672,6 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
               {/* Slow here, opened from Render's row: in Focus first under the frame, else right under Render (cl-1004). */}
               {focused && <SlowNotice name={name} view={view} />}
               {editing && asset.kind === "video" && !asset.timeline && <ContinueFrom name={name} view={view} />}
-              {asset.kind !== "image" && !asset.timeline && <OrbitToggle view={view} name={name} />}
               {asset.kind !== "image" && !editing && <Bar view={view} name={name} />}
               {/* Looking at a take an image tool made, only its description: its tool and words are the next take's, behind its +. */}
               {/* With no tool, a picture or a video asks nothing and has nothing to render (Paul, 11-12). */}
@@ -846,25 +693,6 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
     </div>
   )
 })
-
-/** Native interaction overlay: identity and body width come from one geometry publication. */
-export function Card({ data, selected, previewHover }: Pick<ElementNode, "data" | "selected"> & { previewHover?: PreviewHover }) {
-  const store = useCanvasStore()
-  const focused = useSignal(store.focusedName)
-  const entering = useSignal(store.focusEntering)
-  const view = useElement(data.name)
-  const resting = useRef(view)
-  if (focused !== data.name) resting.current = view
-  if (focused === data.name && !entering) return <div className="focus-placeholder" style={{ width: view ? bodyWidth(view, data.width) : data.width, height: view ? heightFor(view, data.width) : 1 }} />
-  // While the canvas draws in on it, the box as it rested: the open box is Focus's alone.
-  const atRest = focused === data.name && entering && resting.current ? { ...resting.current, here: undefined, hereWords: undefined } : undefined
-  return (
-    <>
-      <CardBody name={data.name} width={data.width} snapshot={atRest} selected={selected} previewHover={previewHover} />
-      <AddOns name={data.name} />
-    </>
-  )
-}
 
 export function FocusedCard({ name }: { name: string }) {
   const store = useCanvasStore()

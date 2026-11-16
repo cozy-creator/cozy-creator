@@ -108,10 +108,10 @@ export function FileRow({ file, label, onRemove, children }: { file: Dropped; la
   const state = file.failed
     ? file.failed
     : file.moving
-      ? `${file.moving.stage === "reading" ? "Reading" : "Sending"} ${Math.round(file.moving.done * 100)}%${file.attempt ? ` · attempt ${file.attempt}/5` : ""}`
+      ? `${file.moving.stage === "reading" ? "Reading" : "Uploading"}, ${Math.round(file.moving.done * 100)}%${file.attempt ? `, attempt ${file.attempt}/5` : ""}`
       : file.digest
         ? ""
-        : "Waiting"
+        : "Waiting to upload"
   return (
     <div className={`filerow ${file.failed ? "bad" : ""}`}>
       {label && <code>{label}</code>}
@@ -120,7 +120,7 @@ export function FileRow({ file, label, onRemove, children }: { file: Dropped; la
       <small>{state}</small>
       {children}
       <span className="sp" />
-      <button type="button" className="iconb" aria-label={`Take out ${file.name}`} onClick={onRemove}>
+      <button type="button" className="iconb" aria-label={`Remove ${file.name}`} onClick={onRemove}>
         ×
       </button>
     </div>

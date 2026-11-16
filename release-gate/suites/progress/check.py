@@ -121,7 +121,7 @@ def read(path: str, stages: Stages) -> tuple[list[Event], list[Seen]]:
             reason = str(e['reason'])
             stage = re.sub(r'^(queued|preparing|running): ', '', reason)
             what = 'renting' if stage.startswith('renting ') else 'uploading' if re.match(r'(uploading|waiting for .* to upload)', stage) \
-                else 'downloading' if 'waiting for required model inputs' in stage else 'queued'
+                else 'downloading' if 'waiting for the models to download' in stage else 'queued'
             seen.append(Seen(what, stage, None))
         elif kind == 'run.log' and e.get('level') == 'stage':
             stage = str(e.get('text') or '')

@@ -206,26 +206,9 @@ pub(crate) async fn held_cozy(build: &Build, url: &str) -> Result<DevBuild, Erro
     Ok(held)
 }
 
-/// Whether an update's words (`runtime 0.45.0 (prerelease), mode dedicated`) read as software named by hand: a component
-/// not marked `(RC)` or `(Hub)`, as one with nothing named moves it. Only a store from before holds were kept reads words
-/// this way (`hold_of`); an update now says whether it named anything (`mind_hold`).
-fn by_hand(target: &str) -> bool {
-    target.split(", ").any(|named| software(named) && !named.ends_with("(RC)") && !named.ends_with("(Hub)"))
-}
-
 /// Whether an update under `key` is one Calcifer made itself: to the RC, to this cozy's minor, for a package's floor.
 fn calcifers(key: &str) -> bool {
     ["rc-", "minor-", FLOOR].iter().any(|prefix| key.starts_with(prefix))
-}
-
-/// The hold a completed update (under `key`, named `target`) leaves its machine: its words when it named software by hand, none
-/// when it named software otherwise, and nothing to say when it named none. What a store from before holds were kept reads
-/// its machines' holds from (`store::held_column`).
-pub(crate) fn hold_of(key: &str, target: &str) -> Option<Option<String>> {
-    if calcifers(key) || !target.split(", ").any(software) {
-        return None;
-    }
-    Some(by_hand(target).then(|| target.to_owned()))
 }
 
 /// Whether an update's named component is software (`runtime 0.45.0`), not a mode or a GPU memory limit.
@@ -265,6 +248,15 @@ impl Machines {
         let rental = row.kind == MachineKind::Rental && row.state == MachineState::Ready && self.ordered(&row);
         let local = row.kind == MachineKind::Local && crate::checkout::configured();
         (self.dev && (rental || local)).then_some(row)
+    }
+
+    /// Whether `name` is a rental that follows the RC and hasn't said it's ready (cl-1069): it moves to the RC at boot, before it
+    /// takes work, and until it is ready it can't be told behind or not. Work sent now would run on its image's software
+    /// (LAB2-47826: a checkout package needing the RC's Runtime, refused on the 0.25.0 image's 0.46.0).
+    pub(crate) fn booting_for_rc(&self, name: &str) -> bool {
+        self.follows(name).is_some_and(|row| row.kind == MachineKind::Rental)
+            && self.held_by_hand(name).is_none()
+            && self.frame(name).is_none_or(|frame| frame.phase == "booting")
     }
 
     /// Moves `name` to the open RC's builds when it follows the RC, is behind it, isn't held by hand and has no work going (nor,
@@ -400,14 +392,4 @@ impl Machines {
         prerelease::dev(&frame.runtime) || self.follows(name).is_some()
     }
 
-    /// The line a run on `name` says when it runs dev builds: `RC: Runtime 0.47.0.dev2260 · cozy 1a2b3c4d`.
-    pub(crate) fn rc_line(&self, name: &str) -> Option<String> {
-        let frame = self.frame(name)?;
-        let built: Vec<String> = [("Runtime", &frame.runtime), ("TensorFS", &frame.tensorfs), ("cozy", &frame.version)]
-            .into_iter()
-            .filter(|(_, version)| prerelease::dev(version))
-            .map(|(label, version)| format!("{label} {}", prerelease::shown(version)))
-            .collect();
-        (!built.is_empty()).then(|| format!("{name} runs RC builds: {}", built.join(" · ")))
-    }
 }

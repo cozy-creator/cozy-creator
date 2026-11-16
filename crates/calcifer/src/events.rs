@@ -364,7 +364,7 @@ pub(crate) async fn show(
     body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
 ) -> Result<axum::Json<ProjectShowReply>, crate::api::Refusal> {
     let shown: Shown = crate::api::parse(&body?)?;
-    let gone = || crate::api::Refusal(Error::new(api::error::Kind::NotFound, "stream_unknown", format!("no stream {stream} is open: it ended")));
+    let gone = || crate::api::Refusal(Error::new(api::error::Kind::NotFound, "stream_unknown", format!("The stream {stream} has ended.")));
     if !SHOWN.lock().expect("shown lock").contains_key(&stream) {
         return Err(gone());
     }

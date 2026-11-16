@@ -4,6 +4,7 @@ import QRCode from "react-qr-code"
 import { ApiError, type Client, type VaultAsk, type VaultProgress } from "../api/client"
 import { useConnection } from "../app/Connection"
 import { useProjectId } from "../app/Shell"
+import { CopyButton } from "../ui/Copyable"
 import { useSignal } from "../ui/signal"
 import { DrawerFrame } from "./Drawer"
 import { Failure, useAsk } from "./common"
@@ -27,31 +28,29 @@ type Pending = { action: string; event: VaultProgress | null }
 function pendingLine(pending: Pending | null): string {
   if (!pending) return "Working…"
   const action: Record<string, string> = {
-    encrypt: "Encryption", decrypt: "Decryption", rotate: "Key rotation", unlock: "Unlock",
-    lock: "Lock", passphrase: "Passphrase update", recovery: "Recovery update",
+    encrypt: "Encrypting the project", decrypt: "Decrypting the project", rotate: "Re-encrypting the project", unlock: "Unlocking the project",
+    lock: "Locking the project", passphrase: "Changing the passphrase", recovery: "Making a new recovery secret",
   }
-  const name = action[pending.action] ?? "Project change"
-  if (!pending.event) return `${name}: sending request…`
-  if (pending.event.type === "accepted") return `${name} request accepted…`
+  if (!pending.event || pending.event.type === "accepted") return `${action[pending.action] ?? "Working"}…`
   const phase: Record<string, string> = {
-    preparing: "Preparing project storage", validating: "Checking project storage", mounting: "Opening encrypted storage",
-    copying: pending.action === "decrypt" ? "Decrypting project files" : "Encrypting project files",
-    verifying: "Verifying project files", committing: "Saving project changes", opening: "Opening project",
-    cleaning_up: "Finishing cleanup", waiting: "Waiting for project work to finish",
-    protecting_history: "Encrypting project history", compacting_history: "Compacting local history",
-    updating_project_storage: "Updating project storage", finishing_storage_change: "Finishing the storage change",
+    preparing: "Getting the project ready", validating: "Checking the project's files", mounting: "Opening the encrypted files",
+    copying: pending.action === "decrypt" ? "Decrypting files" : "Encrypting files",
+    verifying: "Checking the new copy", committing: "Saving the change", opening: "Opening the project",
+    cleaning_up: "Cleaning up", waiting: "Waiting for the project's work to finish",
+    protecting_history: "Encrypting the project's history", compacting_history: "Compacting the project's history",
+    updating_project_storage: "Updating the project's files", finishing_storage_change: "Finishing up",
   }
   const event = pending.event
   const counts = [
-    ...(event.files_total > 0 ? [`${event.files_done.toLocaleString()} / ${event.files_total.toLocaleString()} files`] : event.files_done > 0 ? [`${event.files_done.toLocaleString()} files done`] : []),
-    ...(event.bytes_total > 0 ? [`${bytes(event.bytes_done)} / ${bytes(event.bytes_total)}`] : event.bytes_done > 0 ? [`${bytes(event.bytes_done)} copied`] : []),
+    ...(event.files_total > 0 ? [`${event.files_done.toLocaleString()} of ${event.files_total.toLocaleString()} files`] : event.files_done > 0 ? [`${event.files_done.toLocaleString()} files so far`] : []),
+    ...(event.bytes_total > 0 ? [`${bytes(event.bytes_done)} of ${bytes(event.bytes_total)}`] : event.bytes_done > 0 ? [`${bytes(event.bytes_done)} so far`] : []),
   ]
-  return `${phase[event.phase] ?? "Working on project storage"}…${counts.length ? ` ${counts.join(" · ")}` : ""}`
+  const said = phase[event.phase] ?? "Working"
+  return counts.length ? `${said}, ${counts.join(", ")}` : `${said}…`
 }
 
 export function Recovery({ secret, onDone, disabled = false }: { secret: string; onDone: () => void; disabled?: boolean }) {
   const [saved, setSaved] = useState(false)
-  const [copied, setCopied] = useState(false)
   const download = () => {
     const url = URL.createObjectURL(new Blob([`${secret}\n`], { type: "text/plain;charset=utf-8" }))
     const link = document.createElement("a")
@@ -67,7 +66,7 @@ export function Recovery({ secret, onDone, disabled = false }: { secret: string;
     const title = paper.document.createElement("h1")
     title.textContent = "Project recovery secret"
     const hint = paper.document.createElement("p")
-    hint.textContent = "Store this away from the computer that holds your project."
+    hint.textContent = "Keep this somewhere away from the computer your project is on."
     const code = paper.document.createElement("pre")
     code.style.whiteSpace = "pre-wrap"
     code.style.overflowWrap = "anywhere"
@@ -79,11 +78,11 @@ export function Recovery({ secret, onDone, disabled = false }: { secret: string;
   return (
     <section className="sect" aria-label="Save recovery secret">
       <h3>Save your recovery secret</h3>
-      <p>Save this somewhere safe: it opens the project if the passphrase is lost, and it's shown only now. Keep it on your phone, in a password manager, or on paper away from this computer. TensorHub does not receive it.</p>
+      <p>Save this somewhere safe. It unlocks the project if you lose your passphrase, and this is the only time you'll see it. Keep it on your phone, in a password manager, or on paper, away from this computer. The Hub never gets a copy.</p>
       <pre className="yaml" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{secret}</pre>
-      <QRCode value={secret} size={180} title="Recovery secret for transfer to your own device" />
+      <QRCode value={secret} size={180} title="Scan to save the recovery secret on your phone or another device" />
       <div className="row">
-        <button className="tb" type="button" onClick={() => void navigator.clipboard.writeText(secret).then(() => setCopied(true))}>{copied ? "Copied" : "Copy"}</button>
+        <CopyButton text={secret} title="Copy the recovery secret" />
         <button className="tb" type="button" onClick={download}>Download</button>
         <button className="tb" type="button" onClick={print}>Print</button>
       </div>
@@ -192,9 +191,9 @@ function VaultBody({ id }: { id: string }) {
   }
   const timeoutControls = (
     <details className="sect">
-      <summary>Lock timing</summary>
-      <label>Lock after inactivity (seconds; 0 disables)<input className="field" type="number" min="0" max="604800" required value={idle} onChange={(event) => setIdle(event.target.value)} /></label>
-      <label>Maximum unlock duration (seconds; 0 disables)<input className="field" type="number" min="0" max="604800" required value={maximum} onChange={(event) => setMaximum(event.target.value)} /></label>
+      <summary>When to lock again</summary>
+      <label>Lock after this many seconds with no activity (0 for never)<input className="field" type="number" min="0" max="604800" required value={idle} onChange={(event) => setIdle(event.target.value)} /></label>
+      <label>Lock after this many seconds unlocked, even if in use (0 for never)<input className="field" type="number" min="0" max="604800" required value={maximum} onChange={(event) => setMaximum(event.target.value)} /></label>
     </details>
   )
   const passwordControls = (
@@ -204,48 +203,47 @@ function VaultBody({ id }: { id: string }) {
     </>
   )
 
-  if (client.transport.channel) return <p>Open this project on its computer to manage local encryption.</p>
-  if (!status) return <><p>Checking project protection…</p><Failure error={error} /><button className="tb" type="button" onClick={() => void refetch()}>Try again</button></>
+  if (client.transport.channel) return <p>You can only change a project's encryption on the computer it's on. Open the project there.</p>
+  if (!status) return <><p>Checking whether this project is locked…</p><Failure error={error} /><button className="tb" type="button" onClick={() => void refetch()}>Try again</button></>
   const unlocked = status.state === "unlocked"
-  const updating = status.state === "storage_update_required"
   return (
     <div className="stack" data-vault-state={status.state}>
-      <p>{updating ? "Project storage still needs a verified update. Protection cannot be confirmed until it finishes." : !status.encrypted ? "Encryption is off. This project uses ordinary local storage." : unlocked ? "This project is unlocked." : status.state === "locking" ? "Locking: another application is still using a file. Close it and try again." : "This project is locked."}</p>
+      <p>{!status.encrypted ? "This project isn't encrypted. Its files are ordinary files on this computer." : unlocked ? "This project is unlocked." : status.state === "locking" ? "Couldn't lock the project yet: another app still has one of its files open. Close that app, then try again." : "This project is locked."}</p>
       <Failure error={ask.error} plain />
-      {sourceRemoved && !error && status.encrypted && unlocked && <p>The unencrypted project was removed.</p>}
-      {ended.length > 0 && <p className="muted">Locking ended the project's runs {ended.join(", ")}.</p>}
+      {sourceRemoved && !error && status.encrypted && unlocked && <p>The unencrypted copy of the project was removed.</p>}
+      {ended.length > 0 && <p className="muted">Locking the project canceled {ended.length === 1 ? "run" : "runs"} {ended.join(", ")}.</p>}
       {skipped.length > 0 && !error && (!status.encrypted || unlocked) && <div className="warn">
-        <p>The operation finished, but these missing files were skipped:</p>
+        <p>Done, but these files were missing, so Cozy skipped them:</p>
         <ul>{skipped.map((file, at) => <li key={`${at}:${file}`}><code>{file}</code></li>)}</ul>
       </div>}
       {newRecovery && status.encrypted && unlocked && <Recovery secret={newRecovery} onDone={() => setNewRecovery(null)} />}
       {!status.encrypted ? (
         <form className="stack" onSubmit={(event) => submit(event, "encrypt")}>
-          <p className="warn">Encryption removes the unencrypted project once its encrypted copy is verified. Earlier independent plaintext copies, backups, and shared cache copies aren't erased; protect or remove them separately.</p>
+          <p className="warn">Once the encrypted copy is verified, Cozy removes the unencrypted project. Other unencrypted copies made earlier, backups and shared cache copies aren't erased. Remove or secure those yourself.</p>
           {passwordControls}
           {timeoutControls}
-          <button className="tb primary" type="submit" disabled={ask.busy || !passphrase || passphrase !== confirmation || pending.count > 0}>Enable encryption</button>
+          <button className="tb primary" type="submit" disabled={ask.busy || !passphrase || passphrase !== confirmation || pending.count > 0}>Encrypt project</button>
         </form>
       ) : status.state === "locking" ? (
-        <button className="tb" type="button" disabled={ask.busy} onClick={() => void change("lock")}>Try lock again</button>
+        <button className="tb" type="button" disabled={ask.busy} onClick={() => void change("lock")}>Try locking again</button>
       ) : !unlocked ? (
         <form className="stack" onSubmit={(event) => submit(event, "unlock")}>
-          <label>Unlock with<select className="field" value={credential} onChange={(event) => { setCredential(event.target.value as "passphrase" | "recovery"); setPassphrase(""); setRecovery("") }}><option value="passphrase">Passphrase</option><option value="recovery">Saved recovery secret</option></select></label>
+          <label>Unlock with<select className="field" value={credential} onChange={(event) => { setCredential(event.target.value as "passphrase" | "recovery"); setPassphrase(""); setRecovery("") }}><option value="passphrase">Passphrase</option><option value="recovery">Recovery secret</option></select></label>
           {credential === "passphrase"
             ? <label>Passphrase<input className="field" type="password" maxLength={4096} autoComplete="current-password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} /></label>
             : <label>Recovery secret<input className="field" type="password" maxLength={4096} autoComplete="off" spellCheck={false} value={recovery} onChange={(event) => setRecovery(event.target.value)} /></label>}
           {timeoutControls}
-          <button className="tb primary" type="submit" disabled={ask.busy || !(credential === "recovery" ? recovery : passphrase)}>{updating ? "Unlock and update storage" : "Unlock project"}</button>
+          <button className="tb primary" type="submit" disabled={ask.busy || !(credential === "recovery" ? recovery : passphrase)}>Unlock project</button>
         </form>
       ) : (
         <>
-          {status.view && <p>Readable folder: <code>{status.view}</code></p>}
-          {pending.count > 0 && <p className="muted">Wait for pending edits and uploads to finish before locking.</p>}
+          {status.view && <p>The unlocked files are in <code>{status.view}</code></p>}
+          {pending.count > 0 && <p className="muted">Wait for your edits and uploads to finish saving, then lock it.</p>}
           <button className="tb" type="button" disabled={ask.busy || pending.count > 0} onClick={() => void change("lock")}>Lock project</button>
           <details className="sect"><summary>Change passphrase</summary><form className="stack" onSubmit={(event) => submit(event, "passphrase")}>{passwordControls}<button className="tb" type="submit" disabled={ask.busy || !passphrase || passphrase !== confirmation}>Save passphrase</button></form></details>
-          <details className="sect"><summary>Replace recovery secret</summary><p>The old secret may still open previously copied keybags.</p><button className="tb" type="button" disabled={ask.busy} onClick={() => void change("recovery")}>Create replacement recovery secret</button></details>
-          <details className="sect"><summary>Decrypt project</summary><p>Convert this project folder to ordinary, unencrypted storage. Its files and history stay in the same project. Close files and shells using the readable folder first.</p><button className="tb" type="button" disabled={ask.busy || pending.count > 0} onClick={() => void change("decrypt")}>Decrypt project</button></details>
-          <details className="sect"><summary>Rotate project key</summary><p>Re-encrypt all retained files and history. This can take time and temporary disk space.</p><form className="stack" onSubmit={(event) => submit(event, "rotate")}>{passwordControls}<button className="tb" type="submit" disabled={ask.busy || !passphrase || passphrase !== confirmation || pending.count > 0}>Re-encrypt project</button></form></details>
+          <details className="sect"><summary>Replace recovery secret</summary><p>The old recovery secret may still unlock copies of this project's keys made before you replace it.</p><button className="tb" type="button" disabled={ask.busy} onClick={() => void change("recovery")}>Make a new recovery secret</button></details>
+          <details className="sect"><summary>Decrypt project</summary><p>This turns the project back into ordinary, unencrypted files. The project keeps all its files and history. First close any files or terminals that use the unlocked folder.</p><button className="tb" type="button" disabled={ask.busy || pending.count > 0} onClick={() => void change("decrypt")}>Decrypt project</button></details>
+          <details className="sect"><summary>Change the encryption key</summary><p>Cozy re-encrypts every file the project keeps, and its history, with a new key. This can take a while and needs some free disk space while it runs.</p><form className="stack" onSubmit={(event) => submit(event, "rotate")}>{passwordControls}<button className="tb" type="submit" disabled={ask.busy || !passphrase || passphrase !== confirmation || pending.count > 0}>Re-encrypt project</button></form></details>
         </>
       )}
       {ask.busy && <p role="status">{pendingLine(operation)}</p>}
@@ -255,9 +253,9 @@ function VaultBody({ id }: { id: string }) {
 
 export function ProjectVault() {
   const id = useProjectId()
-  return <DrawerFrame title="Project encryption">{id ? <VaultBody key={id} id={id} /> : <p>Open a project first.</p>}</DrawerFrame>
+  return <DrawerFrame title="Project encryption">{id ? <VaultBody key={id} id={id} /> : <p>Open a project to see its encryption.</p>}</DrawerFrame>
 }
 
 export function ProjectLocked({ id }: { id: string }) {
-  return <main className="gate"><section style={{ maxWidth: 520, width: "100%", textAlign: "left" }}><h1>Project protection</h1><VaultBody key={id} id={id} /></section></main>
+  return <main className="gate"><section style={{ maxWidth: 520, width: "100%", textAlign: "left" }}><h1>Encrypted project</h1><VaultBody key={id} id={id} /></section></main>
 }

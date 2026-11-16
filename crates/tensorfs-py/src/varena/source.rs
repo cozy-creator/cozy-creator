@@ -399,8 +399,11 @@ impl Inner {
         let began = Instant::now();
         let control = Arc::new(ReadControl::default());
         *self.reading.lock().unwrap_or_else(|e| e.into_inner()) = Some(control.clone());
-        let mode = if fill.target().refilled() { Mode::Buffered } else { Mode::Cache };
-        let source = if ahead { &stored.local } else { &stored.fetching };
+        let refilled = fill.target().refilled();
+        let mode = if refilled { Mode::Buffered } else { Mode::Cache };
+        // A page-in reads this disk: its bytes landed for the first read and the checkpoint's hold
+        // keeps them, so a refill never asks the network (cl-1081). Only a first read may fetch.
+        let source = if ahead || refilled { &stored.local } else { &stored.fetching };
         // SAFETY: the Fill is exclusive; `abort` drains before a failed fill's pages are released.
         let read = unsafe { source.read_placements_cancelable(&placements, READERS, mode, &IoTally::default(), &control) };
         *self.reading.lock().unwrap_or_else(|e| e.into_inner()) = None;

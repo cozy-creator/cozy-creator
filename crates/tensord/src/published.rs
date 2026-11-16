@@ -127,7 +127,7 @@ pub(crate) struct Request {
 impl Request {
     /// The run's Hub, for `what`: refused when the run carries no Hub access.
     fn hub(&self, what: &str) -> Result<&hub::Source, Failure> {
-        let absent = || ("hub_access_absent", format!("{what} needs the run's Hub access, and this run carries none: `cozy login <email>` on the computer that sent it, then run it again"));
+        let absent = || ("hub_access_absent", format!("This run uses {what}, and the computer that sent it isn't signed in to the Hub. Sign in to the Hub there, then run it again."));
         self.source.as_ref().ok_or_else(absent)
     }
 
@@ -282,7 +282,7 @@ pub(crate) fn named_source(source: &str) -> Result<(), Failure> {
 /// A preparation its run's cancel stopped.
 pub(crate) const CANCELED: &str = "preparation_canceled";
 fn canceled() -> Failure {
-    (CANCELED, "the run was canceled while it prepared".into())
+    (CANCELED, "The run was canceled while it was getting ready.".into())
 }
 
 /// A lookup the network could not answer for now: no name resolution, a link refused, reset or
@@ -301,8 +301,9 @@ pub(crate) fn patiently<T>(job: &Job, mut prepare: impl FnMut() -> Result<T, Fai
             Err((UNREACHABLE, why)) => why,
             answered => return answered,
         };
-        let Some((wait, said)) = backoff.again(&format!("unreachable: {why}"), false, None) else {
-            return Err((UNREACHABLE, format!("{}. Nothing else is wrong with this run: send it again once that answers", backoff.spent(&format!("no answer: {why}")))));
+        let Some((wait, said)) = backoff.again(&format!("can't connect: {why}"), false, None) else {
+            let spent = backoff.spent(&format!("Couldn't connect ({why})"));
+            return Err((UNREACHABLE, format!("{spent}. Nothing else is wrong with this run, so run it again once the connection is back.")));
         };
         tracing::warn!(run = %job.caller, "{said}");
         job.stage(said.clone());
@@ -351,6 +352,9 @@ pub(crate) struct Publisher {
 /// before the run that uses it has it read again, in the background: a publish, yank or new lane
 /// reaches this machine within it, and a warm run never waits on the Hub (minimal-submit-path).
 const FRESH: Duration = Duration::from_secs(10 * 60);
+
+/// The rule held answers and the preparations made of them were resolved under: one moved makes them again.
+const RESOLVE: &str = "resolve-v6";
 
 /// A name as its Hub resolved it, with the hardware it was asked for: read again, it is asked as
 /// it was then (free VRAM moves; the first answer's stands).
@@ -549,7 +553,7 @@ impl Publisher {
         };
         // A disk that can't hold it says what fills it and what would.
         patiently(&job, || self.work(service, actor, request, &job)).map_err(|(code, why)| match code {
-            "machine_disk_full" if !why.contains("--disk-gb") => (code, format!("{why}{}", crate::reclaim::advice(self.store.root(), 0))),
+            "machine_disk_full" => (code, crate::reclaim::advised(&why, self.store.root(), 0)),
             _ => (code, why),
         })
     }
@@ -686,7 +690,7 @@ impl Publisher {
     /// components' walk found them). Whatever is here moves nothing.
     #[allow(clippy::too_many_arguments)]
     fn pull(&self, source: &hub::Source, named: &Named, components: Option<&[String]>, order: u64, stop: Option<&Stop>,
-        bytes: &(dyn Fn(u64, u64) + Sync)) -> Result<Landed, Failure> {
+        room: Option<&dyn Fn(u64) -> Result<(), String>>, bytes: &(dyn Fn(u64, u64) + Sync)) -> Result<Landed, Failure> {
         let _inventory = crate::held_models::ModelChange;
         let header = named.header()?;
         let remote = origin::remote(&self.machine, source).map_err(|e| unsigned(source, refused("model_download_failed", e.clone()), &e))?;
@@ -721,10 +725,16 @@ impl Publisher {
         let pulled = Pulled { model: named.model.clone(), release: named.release.clone(), lane: named.lane.clone(), tree: tree.clone() };
         pulled.record(&self.store).map_err(io_failure)?;
         // Held open while it lands: the store never evicts a checkpoint a pull is fetching.
-        let _held = self.store.at_checkpoint(&tree).map_err(|e| io_failure(storage::io_error(e)))?;
+        let held = self.store.at_checkpoint(&tree).map_err(|e| io_failure(storage::io_error(e)))?;
         if components == Some(&[]) {
             logged(&structure);
             return Ok(structure.landed);
+        }
+        // Room for all it lacks first, the machine's own way: one object's at a time freed only a bake or a LoRA, never an
+        // idle executor's models, and parallel admissions took it before the next (derived-disk 43857521603).
+        if let Some(room) = room {
+            let absent: u64 = storage::chunks(&held, components.unwrap_or(&[])).iter().filter(|o| !self.store.holds(o)).map(|o| o.length).sum();
+            room(absent).map_err(|why| ("machine_disk_full", why.trim_start_matches("machine_disk_full: ").to_owned()))?;
         }
         let progress = Arc::new(Counted::default());
         let pulled = origin::watched(&progress, bytes, || {
@@ -740,27 +750,14 @@ impl Publisher {
     /// whole (an adapter).
     fn ensure(&self, source: &hub::Source, named: &Named, order: u64, stop: Option<&Stop>,
         bytes: &(dyn Fn(u64, u64) + Sync)) -> Result<Landed, Failure> {
-        self.pull(source, named, None, order, stop, bytes)
-    }
-
-    /// The Hub checkpoint `header` is, as this machine pulled it (`Pulled`); none for one never
-    /// pulled (local).
-    fn pulled(&self, header: &ObjectRef) -> io::Result<Option<Named>> {
-        Ok(Pulled::of(&self.store, header)?.map(|p| Named {
-            model: p.model,
-            release: p.release,
-            lane: p.lane,
-            tree: Some(p.tree),
-            header: Some(header.clone()),
-            reasons: vec![],
-        }))
+        self.pull(source, named, None, order, stop, None, bytes)
     }
 
     /// A Hub checkpoint's header, landed at once: which of its chunks come, and when, its calls
     /// direct (`access`). A held header asks the Hub nothing.
     fn structure(&self, source: &hub::Source, named: &Named, job: &Job) -> Result<(), Failure> {
         job.stage(format!("resolving {}", named.shown()));
-        self.pull(source, named, Some(&[]), job.order, job.stop.as_ref(), &|_, _| ()).map(drop)
+        self.pull(source, named, Some(&[]), job.order, job.stop.as_ref(), None, &|_, _| ()).map(drop)
     }
 
     /// The checkpoint `named` is: one by hash as given, a name as the Hub resolves its release and
@@ -777,12 +774,10 @@ impl Publisher {
             Answer::ask(&self.machine, source, &named, hardware)?
         } else {
             let origin = hub::origin_key(&source.origin).unwrap_or_default();
-            // v4 could hold a private version under a public key. Only anonymous reads fill v5.
-            // A slot that reads only some components has an answer of its own (xs-191); one that reads all keeps its key.
-            let mut key = json!(["resolve-v5", origin, named.model, named.release, named.lane, hardware.gpus, hardware.plain]);
-            if !hardware.components.is_empty() {
-                key.as_array_mut().expect("an array").push(json!(hardware.components));
-            }
+            // Only anonymous reads fill it. v5 held lanes free memory lowered (cl-1076); a 4-bit floor's answer, which
+            // memory still picks, and a slot's that reads only some components (xs-191) are each their own.
+            let key = json!([RESOLVE, origin, named.model, named.release, named.lane, hardware.gpus, hardware.plain,
+                hardware.components, hardware.free_vram.is_some()]);
             let name = key.to_string();
             let held = service.engine.with_journal(|j| j.named(&name)).map_err(io_failure)?;
             match held.and_then(|(answer, read)| Some((serde_json::from_str::<Answer>(&answer).ok()?, read))) {
@@ -896,8 +891,9 @@ impl Publisher {
 
     /// A Hub checkpoint resolved (`resolve`) and downloaded into the store at `order` (a warm run's
     /// model choice: `cozy model download`): whole, or its header and tree alone (`structure`: a
-    /// composition's base, whose components stay the Hub's). Answers what the Hub named and its
-    /// bytes by where they came from (`pull`).
+    /// composition's base, whose components stay the Hub's). `room` is asked for the bytes absent
+    /// before any is fetched, as a run's weights are (`Service::room_for`). Answers what the Hub
+    /// named and its bytes by where they came from (`pull`).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn download(
         &self,
@@ -908,13 +904,14 @@ impl Publisher {
         structure: bool,
         order: u64,
         stop: Option<&Stop>,
+        room: &dyn Fn(u64) -> Result<(), String>,
         bytes: &(dyn Fn(u64, u64) + Sync),
     ) -> Result<(Named, Landed), Refused> {
         let failed = |(code, message)| Refused { code, message };
         let named = self.resolve(service, source, named, hardware, order).map_err(failed)?;
         // Held payload bytes move nothing; resolve already checked capability-backed authority.
         let components = structure.then_some(&[][..]);
-        let moved = self.pull(source, &named, components, order, stop, bytes).map_err(failed)?;
+        let moved = self.pull(source, &named, components, order, stop, Some(room), bytes).map_err(failed)?;
         Ok((named, moved))
     }
 
@@ -1022,7 +1019,7 @@ impl Publisher {
         let package = request.installed.as_ref().map(|i| i.package.as_str()).unwrap_or(&request.package);
         let release = request.installed.as_ref().map(|i| i.release.as_str()).unwrap_or(&request.release);
         let capability = request.source.as_ref().is_some_and(|source| source.capability.is_some());
-        let key = json!({"installation":alias,"package":package,"release":release,"hub":origin,"owner":request.owner,"capability":capability,"catalog":catalog,"entrypoint":request.entrypoint,"choices":choices,"row":gpus,"gpus":request.gpus,"lane":request.lane});
+        let key = json!({"rule":RESOLVE,"installation":alias,"package":package,"release":release,"hub":origin,"owner":request.owner,"capability":capability,"catalog":catalog,"entrypoint":request.entrypoint,"choices":choices,"row":gpus,"gpus":request.gpus,"lane":request.lane});
         Ok(format!("hub-{}", sha256::hex_digest(key.to_string().as_bytes())))
     }
 
@@ -1290,8 +1287,8 @@ impl Publisher {
         if lock.try_lock().is_err() {
             let holder = self.building.lock().unwrap().get(identity).cloned();
             job.waiting(Some(match holder {
-                Some(run) => format!("waiting for run {run} to install {package} {release}"),
-                None => format!("waiting for another run's install of {package} {release}"),
+                Some(run) => format!("waiting for {run} to install {package} {release}"),
+                None => format!("waiting for another render to install {package} {release}"),
             }));
             let _install = crate::activity::wait(crate::activity::Kind::Install, package, &job.caller);
             lock.lock().map_err(io_failure)?;
@@ -1569,9 +1566,11 @@ impl Publisher {
                 named.lane = request.lane.clone();
             }
             // A class that takes no encoded leaves, or raw weights read as data, takes plain lanes only; a lane fits on the
-            // components the slot reads (xs-191: a `vae` slot sized as its whole checkpoint).
+            // components the slot reads (xs-191: a `vae` slot sized as its whole checkpoint). Free memory lowers only a
+            // 4-bit floor's lane: H3's int8 on a 5090 was served nvfp4 for not fitting its free bytes (cl-1076).
             let plain = slot["encoded_leaves"] != "accept" || slot["weights"] == true;
-            let hardware = tensorfs::fetch::Hardware { plain, components: slot_components(slot), ..hardware.clone() };
+            let free_vram = (slot["min_bits"] == 4).then(|| gpu.free_vram(degree)).flatten();
+            let hardware = tensorfs::fetch::Hardware { plain, components: slot_components(slot), free_vram, ..hardware.clone() };
             let named = self.resolve(service, request.hub(&format!("the model for {path}"))?, named, &hardware, job.order)?;
             let warnings = named.reasons.iter().map(|why| format!("{}: {why}", named.model)).collect();
             let grant = ModelGrant {
@@ -1854,11 +1853,12 @@ fn private(source: &hub::Source, named: &Named, failure: Failure, refusal: &tens
 /// network left unanswered (TensorFS's `network` kind) is [`UNREACHABLE`].
 fn refused(code: &'static str, refusal: tensorfs::err::Refusal) -> Failure {
     match refusal.code {
-        tensorfs::err::Code::CAPACITY_EXHAUSTED => ("machine_disk_full", refusal.to_string()),
+        tensorfs::err::Code::CAPACITY_EXHAUSTED => ("machine_disk_full", format!("This machine's disk is full ({}).", refusal.detail)),
         // The run's capability was refused (expired); without one a private object is absent.
         tensorfs::err::Code::CREDENTIAL_REQUIRED => ("hub_credential_refused", refusal.detail),
         // A provider's own answer to a token it wants, or one it refused.
-        tensorfs::err::Code::PERMISSION_DENIED => (code, format!("{refusal}: a gated or private source reads with your token there, HF_TOKEN or CIVITAI_TOKEN (or `huggingface_token`, `civitai_token` in cozy's config) on the computer that sent it")),
+        tensorfs::err::Code::PERMISSION_DENIED => (code, format!("The model's source refused the download ({refusal}). A gated or private model needs your \
+            Hugging Face or Civitai token on the computer that sent the render: set HF_TOKEN or CIVITAI_TOKEN there, or huggingface_token or civitai_token in Cozy's config.")),
         _ if tensorfs::Failure::from(refusal.clone()).kind == tensorfs::Kind::Network => (UNREACHABLE, refusal.to_string()),
         _ => (code, refusal.to_string()),
     }
@@ -1869,8 +1869,8 @@ fn refused(code: &'static str, refusal: tensorfs::err::Refusal) -> Failure {
 fn held_local(store: &Store, model: &str) -> Result<storage::Local, Failure> {
     let held = storage::local(store, model).map_err(io_failure)?.filter(|local| store.holds(&local.header));
     held.ok_or_else(|| ("checkpoint_absent", format!(
-        "this machine holds no {model}: a local/ name is a model downloaded to the machine that runs it; \
-         download it there first (`cozy model download <source> {model} --on <machine>`)")))
+        "This machine doesn't have the model {model}. A local/ model lives on the machine that runs it, so download it to this \
+         machine as {model} first.")))
 }
 
 /// The oldest Runtime and TensorFS whose executors open an adapter view from Load's bytes
@@ -1900,7 +1900,7 @@ fn opens_views(service: &Service, installation: &Installation, choice: &stored::
 
 /// A slot's caller adapters applied to its resolved base: each adapter downloaded, then one
 /// adapter view composed (`adapter::compose`) over the components the call `runs`; the grant
-/// then names the view.
+/// then names the view, whose base chunks come with the call's other weights.
 #[allow(clippy::too_many_arguments)]
 fn apply_adapters(
     publisher: &Publisher,
@@ -1974,11 +1974,10 @@ fn apply_adapters(
             runs: runs.to_vec(),
         });
     }
-    // The view reads the base's own chunks, from this store: they come first.
+    // The view reads the base's own chunks, from this store. Those of the components its call reads come with the call's other
+    // weights, in its one download line from the base's Hub (`access::hub_pull`), never pulled here first: H3's turbo LoRA
+    // waited behind its LoRA'd base's pull (cl-1077). One the base lacks is `prepare_root`'s to refuse, by name.
     let base = object(&grant.manifest)?;
-    if let (Some(pulled), Some(source)) = (publisher.pulled(&base).map_err(io_failure)?, source) {
-        publisher.ensure(source, &pulled, job.order, job.stop.as_ref(), &|d, t| job.bytes(d, t))?;
-    }
     // The view is composed by reference and kept in memory, never written; Load sends its bytes.
     let composed = crate::adapter::compose(store, &base, &selections)
         .map_err(|e| ("model_adapter_refused", e.to_string()))?;
@@ -2184,7 +2183,7 @@ impl HubFile {
 /// next ask. Answers the blob's path.
 pub(crate) fn io_failure(error: io::Error) -> Failure {
     match error.kind() {
-        io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded => ("machine_disk_full", error.to_string()),
+        io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded => ("machine_disk_full", format!("This machine's disk is full ({error}).")),
         _ => ("release_root_preparation_failed", error.to_string()),
     }
 }

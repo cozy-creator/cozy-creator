@@ -166,11 +166,8 @@ fn overlaid(row: &mut Row, key: &str, rendering: &BTreeMap<String, f64>, making:
     }
     // Sent and its run not numbered yet, as while it binds, installs or fetches weights, it's being made all the same (cl-945).
     if let Some(takes) = takes.get(&name_key(&row.name)) {
-        // What's on its way, then what failed of it (the row's own), each once: one just failed is the failed one.
-        let failed: Vec<TakeNow> = std::mem::take(&mut row.takes);
-        let ended: std::collections::HashSet<String> = failed.iter().map(|take| take.id.clone()).collect();
-        row.takes = takes.iter().filter(|take| !ended.contains(&take.id)).cloned().chain(failed).collect();
-        if takes.iter().any(|take| !take.queued && !row.takes.iter().any(|held| held.id == take.id && held.failure.is_some())) {
+        row.takes.clone_from(takes);
+        if takes.iter().any(|take| !take.queued) {
             row.standing = RowStanding::Making;
         }
     }
@@ -179,8 +176,8 @@ fn overlaid(row: &mut Row, key: &str, rendering: &BTreeMap<String, f64>, making:
         row.standing = RowStanding::Making;
         row.failure = None;
         row.status = match runs.as_slice() {
-            [run] => format!("making (run {key}-{run})"),
-            runs => format!("making (runs {})", runs.iter().map(|run| format!("{key}-{run}")).collect::<Vec<_>>().join(", ")),
+            [run] => format!("rendering (run {})", ::api::calcifer::project::run_label(key, *run)),
+            runs => format!("rendering (runs {})", runs.iter().map(|run| ::api::calcifer::project::run_label(key, *run)).collect::<Vec<_>>().join(", ")),
         };
     }
 }

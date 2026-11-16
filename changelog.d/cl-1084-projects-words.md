@@ -1,0 +1,1 @@
+The page's words for projects, encryption, the account and sign-in, and the connection read as plain English: "Cozy is offline, 3 changes waiting" instead of "Calcifer offline: 3 changes waiting", and the page no longer shows `cozy …` commands to copy; it says what to do instead.

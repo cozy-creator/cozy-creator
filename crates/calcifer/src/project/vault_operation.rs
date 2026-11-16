@@ -68,7 +68,7 @@ pub(super) fn expire() {
 
 fn expired_result() -> VaultEvent {
     VaultEvent::Failed { error: Error::new(Kind::Conflict, "vault_operation_result_expired",
-        "this private operation reply is no longer available; check the vault status before starting another operation")
+        "The answer to this lock operation is no longer available. Check the project's lock status before starting another.")
         .next("cozy vault status") }
 }
 
@@ -90,7 +90,7 @@ pub(super) fn revoke(root: &std::path::Path) {
 pub(super) async fn acknowledge(Path((named, id)): Path<(String, String)>) -> Result<Response, Refusal> {
     let mut operations = OPERATIONS.lock().expect("vault operations");
     if let Some(operation) = operations.get(&id) {
-        if operation.named != named { return Err(Refusal(Error::new(Kind::Conflict, "vault_operation_conflict", "the operation belongs to another project"))); }
+        if operation.named != named { return Err(Refusal(Error::new(Kind::Conflict, "vault_operation_conflict", "This operation belongs to another project."))); }
         if operation.finished.lock().expect("vault result age").is_some() {
             retire(operation);
             operations.remove(&id);
@@ -100,10 +100,10 @@ pub(super) async fn acknowledge(Path((named, id)): Path<(String, String)>) -> Re
 }
 
 pub(super) async fn write(State(api): State<Arc<Api>>, Path((named, id)): Path<(String, String)>, Extension(lease): Extension<crate::api::MutationLease>, body: Result<Bytes, BytesRejection>) -> Result<Response, Refusal> {
-    if !valid_id(&id) { return Err(Refusal(Error::new(Kind::Usage, "vault_operation_id", "use a unique operation ID of 16 to 128 letters, numbers, dashes or underscores"))); }
+    if !valid_id(&id) { return Err(Refusal(Error::new(Kind::Usage, "vault_operation_id", "Use a unique operation ID of 16 to 128 letters, numbers, dashes or underscores."))); }
     let ask: VaultAsk = parse(&body?)?;
     if !matches!(ask.action.as_str(), "encrypt" | "unlock" | "lock" | "decrypt" | "passphrase" | "recovery" | "rotate") {
-        return Err(Refusal(Error::new(Kind::Usage, "vault_action", "unknown local vault action")));
+        return Err(Refusal(Error::new(Kind::Usage, "vault_action", "Cozy doesn't know that lock action.")));
     }
     // Path resolution and even admission fsync can block on storage. Acknowledge
     // receipt first; the worker records admission durably before any mutation.
@@ -113,7 +113,7 @@ pub(super) async fn write(State(api): State<Arc<Api>>, Path((named, id)): Path<(
     let (operation, fresh) = {
         let mut operations = OPERATIONS.lock().expect("vault operations");
         match operations.get(&id) {
-            Some(operation) if operation.binding != binding => return Err(Refusal(Error::new(Kind::Conflict, "vault_operation_conflict", "this operation ID already names another request"))),
+            Some(operation) if operation.binding != binding => return Err(Refusal(Error::new(Kind::Conflict, "vault_operation_conflict", "This operation ID was already used for a different request."))),
             Some(operation) => (operation.clone(), false),
             None => {
                 let (events, _) = watch::channel(accepted.clone());
@@ -134,7 +134,7 @@ pub(super) async fn write(State(api): State<Arc<Api>>, Path((named, id)): Path<(
             let mut event = match result {
                 Ok(Ok(changed)) => VaultEvent::Completed { changed },
                 Ok(Err(error)) => VaultEvent::Failed { error },
-                Err(_) => VaultEvent::Failed { error: Error::new(Kind::Internal, "vault_operation_failed", "the vault operation stopped unexpectedly; check its status before retrying") },
+                Err(_) => VaultEvent::Failed { error: Error::new(Kind::Internal, "vault_operation_failed", "The lock operation stopped unexpectedly. Check its status before trying again.") },
             };
             // Publish under the same short critical section as lock/expiry/ACK.
             // A late worker must not reinstall a secret after it was revoked.
@@ -203,7 +203,7 @@ fn sanitize(event: &mut VaultEvent, operation: &Operation) {
             changed.vault.view = None;
             changed.skipped_files.clear();
         } else {
-            *event = VaultEvent::Failed { error: Error::new(Kind::Conflict, "project_locked", "the project was locked before its private result was read").next("cozy vault unlock") };
+            *event = VaultEvent::Failed { error: Error::new(Kind::Conflict, "project_locked", "The project was locked before its private result could be read. Unlock it to see the result.").next("cozy vault unlock") };
         }
     }
 }
@@ -250,18 +250,18 @@ impl Progress {
             tx.execute("INSERT INTO project_vault_operations(id,binding,state) VALUES(?1,?2,'accepted')", rusqlite::params![id,binding])?;
             Ok(())
         }).map_err(|error| match error {
-            crate::store::StoreError::Protected(code) if code.starts_with("vault_operation_") => Error::new(Kind::Conflict, code, "this operation was already admitted; inspect the vault status before starting another mutation").next("cozy vault status"),
-            _ => Error::new(Kind::Unavailable, "vault_operation_receipt", "the project's operation receipt is unavailable"),
+            crate::store::StoreError::Protected(code) if code.starts_with("vault_operation_") => Error::new(Kind::Conflict, code, "This operation has already started. Check the project's lock status before starting another change.").next("cozy vault status"),
+            _ => Error::new(Kind::Unavailable, "vault_operation_receipt", "Cozy couldn't read the record of this project's operation."),
         })
     }
     pub(super) fn finish_receipt(&self, store: &super::journal::SealingStore<'_>, state: &str) -> Result<(), Error> {
         let Some((id, binding)) = &self.operation else { return Ok(()) };
-        if !matches!(state, "completed" | "failed") { return Err(Error::new(Kind::Internal, "vault_operation_state", "invalid project receipt state")); }
+        if !matches!(state, "completed" | "failed") { return Err(Error::new(Kind::Internal, "vault_operation_state", "The record of this project's operation is in an unknown state.")); }
         store.write(|tx| {
             let changed = tx.execute("UPDATE project_vault_operations SET state=?3 WHERE id=?1 AND binding=?2", rusqlite::params![id,binding,state])?;
             if changed != 1 { return Err(crate::store::StoreError::Protected("vault_operation_receipt_missing".into())); }
             Ok(())
-        }).map_err(|_| Error::new(Kind::Unavailable, "vault_operation_receipt", "the project operation receipt could not be saved"))
+        }).map_err(|_| Error::new(Kind::Unavailable, "vault_operation_receipt", "Cozy couldn't save the record of this project's operation."))
     }
     pub(super) fn begin_inventory(&mut self) { self.files_total = 0; self.bytes_total = 0; }
     pub(super) fn plan_file(&mut self, bytes: u64) { self.files_total += 1; self.bytes_total = self.bytes_total.saturating_add(bytes); }

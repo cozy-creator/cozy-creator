@@ -276,17 +276,17 @@ for _ in $(seq 80); do
   [ -n "$n1" ] && [ -n "$n2" ] && break
   sleep 0.25
 done
-behind="waiting for run COZY-$n1's download ("
+behind="waiting for run COZY-$n1 to finish downloading ("
 # A download is the machine's own run, not this project's: its number is read outside any project.
 for _ in $(seq 240); do
   (cd / && cozy --json run watch "${n2:-0}" --once) > "$OUT/queued-show.json" 2> /dev/null || true
   said=$(jq -r '.waiting // empty' "$OUT/queued-show.json" 2> /dev/null) || said=
-  [[ $said == "$behind"*" ahead)" ]] && break
+  [[ $said == "$behind"*" to go)" ]] && break
   J '.status == "completed"' "$OUT/queued-show.json" 2> /dev/null && break
   sleep 0.25
 done
 echo "queued: run ${n2:-?} said: ${said:-nothing}"
-[[ $said == "$behind"*" ahead)" ]] || check "queued: run ${n2:-?} never said it waits for run ${n1:-?}'s download: ${said:-nothing}"
+[[ $said == "$behind"*" to go)" ]] || check "queued: run ${n2:-?} never said it waits for run ${n1:-?}'s download: ${said:-nothing}"
 J '.stalled == null' "$OUT/queued-show.json" || check "queued: run ${n2:-?} reads stalled while it waits"
 
 # A machine's jobs are its function runs, its GPUs' work (Paul 11-11, cl-889): beside the downloads, local counts the one

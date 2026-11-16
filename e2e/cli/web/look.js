@@ -276,7 +276,7 @@ async function died(why) {
       await post(`${at}/runs`, { names: ['fresh'], on: ['local'] });
       await until('fresh\'s next take unseen', () => assetOf('fresh'), (row) => row.versions === 2 && row.unseen?.length > 0, FIRST_RUN_MS);
     });
-    await toastShot('toast-finished', 'fresh finished');
+    await toastShot('toast-finished', 'of fresh is ready');
     await tryStep('broken fails', async () => {
       await post(`${at}/runs`, { names: ['broken'], on: ['local'] });
       await until('broken failed', () => assetOf('broken'), (row) => row?.failure, FIRST_RUN_MS);
@@ -428,6 +428,7 @@ async function died(why) {
   if (failedRun) await shoot('drawer-run-failed', { open: (page) => goto(page, `${projectPath}/runs/${failedRun}`) });
   await shoot('drawer-files', { open: (page) => goto(page, `${projectPath}/files`) });
   await shoot('drawer-account', { open: (page) => goto(page, `${projectPath}/account`) });
+  await shoot('drawer-vault', { open: (page) => goto(page, `${projectPath}/vault`) });
   await shoot('drawer-projects-open', { open: (page) => goto(page, `${projectPath}/projects`) });
   // The open project's own tab: Projects, ready for a new one's name (cl-958: the bar's one + is Add files).
   await shoot('drawer-projects-from-tab', {

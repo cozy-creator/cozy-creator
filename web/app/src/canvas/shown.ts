@@ -1,4 +1,4 @@
-import type { ErrorBody, MainFile, Tool } from "../api/calcifer"
+import type { MainFile, Tool } from "../api/calcifer"
 import type { ElementView } from "./CanvasStore"
 import type { Box } from "./graph"
 
@@ -88,8 +88,12 @@ export const SUB_ROW = 136
 /** What a tool makes, once it's run, as anything on the canvas is. */
 export const makes = (view: ElementView | undefined) => Boolean(view?.asset?.tool) && (!madeHere(view?.asset?.tool) || Boolean(view?.asset?.timeline))
 
-/** A tool named away from its package's heading: `Qwen Image 2 · Image`. */
-export const toolName = (tool: Tool) => (tool.package_title && tool.package_title !== tool.label ? `${tool.package_title} · ${tool.label}` : tool.label)
+/** A label that says its package's name already (packages#940: MiniMax H3 Edit), which is then said once. */
+export const namesItsPackage = (tool: Tool) => Boolean(tool.package_title) && tool.label.toLowerCase().includes(tool.package_title.toLowerCase())
+
+/** A tool named away from its package's heading: `Qwen-Image-2.1 · Image`, and its label alone where that names its package already,
+ *  `MiniMax H3 Edit`, never `MiniMax H3 · MiniMax H3 Edit`. */
+export const toolName = (tool: Tool) => (namesItsPackage(tool) || !tool.package_title ? tool.label : `${tool.package_title} · ${tool.label}`)
 
 /** What Calcifer makes itself, free, with no machine. */
 export const madeHere = (tool?: string | null) => tool === "cozy" || Boolean(tool?.startsWith("cozy/"))
@@ -134,22 +138,14 @@ export interface Taking {
   id: string
   run?: number
   queued?: boolean
-  /** It failed, and why: listed until it's deleted (cl-954). */
-  failure?: ErrorBody
 }
 
 /** Its takes not landed, in the order they were asked: a take is listed from the click to its version, and is never another's. */
 export function takingOf(view: ElementView): Taking[] {
   const landed = new Set([...(view.asset?.prefixes ?? []).map((held) => held.id).filter(Boolean), ...(view.gone ?? [])])
-  const listed = (view.asset?.takes ?? []).filter((take) => !landed.has(take.id)).map((take) => ({ id: take.id, run: take.run ?? undefined, queued: take.queued, failure: take.failure ?? undefined }))
+  const listed = (view.asset?.takes ?? []).filter((take) => !landed.has(take.id)).map((take) => ({ id: take.id, run: take.run ?? undefined, queued: take.queued }))
   const known = new Set(listed.map((take) => take.id))
   return [...listed, ...(view.taking ?? []).filter((take) => !known.has(take.id) && !landed.has(take.id)).map((take) => ({ id: take.id, queued: true }))]
-}
-
-/** Why the take its frame looks at failed, when it did (cl-954): what the frame shows in its place. */
-export function failureOf(view: ElementView): ErrorBody | undefined {
-  const watch = watched(view)
-  return watch ? takingOf(view).find((take) => take.id === watch.id)?.failure : undefined
 }
 
 /** A take's id, made where it's asked for, as Calcifer makes one: `project-` and 32 hex digits. */
@@ -173,6 +169,9 @@ export const reshapes = (view: ElementView) => makes(view) && (Boolean(view.here
 /** The shape it will make: the one set, else what its tool takes with none. */
 const madeShape = (view: ElementView) => ratioOf(valueIn(view, "aspect_ratio")) ?? view.auto
 
+/** The shape its frame is while what it makes is on its way, and its take's tile with it (cl-1072): the one being set or set, else Auto's. */
+export const makingShape = (view: ElementView) => ratioOf(view.shape) ?? madeShape(view)
+
 /** The shape of the picture a mention of it sends: version `number`'s, else its state's, else, with none yet, the one it will make. */
 export function sentShape(view: ElementView, number?: number): number | undefined {
   const asset = view.asset
@@ -184,7 +183,7 @@ export function sentShape(view: ElementView, number?: number): number | undefine
 }
 
 export function aspectOf(view: ElementView): number {
-  const made = reshapes(view) ? (ratioOf(view.shape) ?? madeShape(view)) : undefined
+  const made = reshapes(view) ? makingShape(view) : undefined
   if (made) return made
   // Showing a take, its own shape, whatever the last one measured was. A take just landed and not measured yet (its file on its way here)
   // keeps the shape of the newest one that is: a box never changes size because a render landed (cl-936).

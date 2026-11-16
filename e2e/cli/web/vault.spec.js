@@ -366,6 +366,25 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
     await privateRetired(page);
   });
 
+  // cl-1066 (Paul, 11-16: "I was on a project, then pushed 'lab' and then this is just glitching out"): retiring a locked project's view
+  // dropped its own address, so its page, opened from the list, reloaded for ever on "Opening project…".
+  await test.step('opened from the list while locked: Unlock shows, and the page is still', async () => {
+    const listed = (await api.get('/v1/projects?limit=1000')).projects.find((row) => row.path === made.path);
+    expect(listed?.id, 'listed under its locked handle').toMatch(/^locked-/);
+    // Refused on purpose, as under its id above: what the tab asks of it before it has read that it's locked.
+    guards.allow(new RegExp(`status of 409\\b.*/v1/projects/${listed.id}\\b`));
+    const tab = await page.context().newPage();
+    let asked = 0;
+    tab.on('request', (request) => { if (new URL(request.url()).pathname.startsWith('/v1/')) asked++; });
+    await tab.goto(`${api.origin}/projects/${listed.id}`);
+    await expect(tab.getByText('This project is locked.', { exact: true }), 'it says it is locked').toBeVisible({ timeout: 30_000 });
+    await expect(tab.getByRole('button', { name: 'Unlock project', exact: true }), 'Unlock is offered').toBeVisible();
+    const before = asked;
+    await tab.waitForTimeout(3000);
+    expect.soft(asked - before, 'it asks nothing more once it shows').toBeLessThan(6);
+    await tab.close();
+  });
+
   await test.step('unlocked with the recovery secret, then decrypted', async () => {
     const drawer = page.locator('.drawer');
     await drawer.getByLabel('Unlock with').selectOption('recovery');

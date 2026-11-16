@@ -105,10 +105,10 @@ impl Status {
     /// names the runs (`waiting_on`) by its own numbers.
     pub(crate) fn waits(&self) -> String {
         match (self.state.as_str(), self.waiting_on.len()) {
-            ("waiting_activation", 0) => "waiting for the submits in flight".into(),
-            ("waiting_activation", 1) => "waiting for a run in flight to end".into(),
-            ("waiting_activation", n) => format!("waiting for {n} runs in flight to end"),
-            ("queued", _) => "waiting for the machine's start or the update in progress to end".into(),
+            ("waiting_activation", 0) => "waiting for the runs still arriving".into(),
+            ("waiting_activation", 1) => "waiting for a run to finish".into(),
+            ("waiting_activation", n) => format!("waiting for {n} runs to finish"),
+            ("queued", _) => "waiting for this machine to start or finish its current update".into(),
             ("installing_torch", _) if self.bytes == 0 => "installing this machine's PyTorch".into(),
             ("installing_torch", _) => format!("installing this machine's PyTorch, {} so far", crate::reclaim::size(self.bytes)),
             _ => String::new(),

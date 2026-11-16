@@ -52,13 +52,13 @@ echo "estimate line: Qwen had $((left >> 20)) MiB to come; BiRefNet quoted to fi
 plan_machine() { status "$P" | jq -r --arg a "$1" '[.board.jobs[]? | select(.asset == $a) | .machine // empty] | last // empty'; }
 
 # plan_picks (phase b): this computer's machine and a stand-in (another user's cozy on this runner) both ran the weighted tool, so its
-# time is measured on each; then stand-w's copy of BiRefNet's weights, which it reads, goes. A render that may go to either goes to
-# local, where nothing downloads: on a tie a rental would go first, so only the download's time sends it there. (A machine busy for
+# time is measured on each; then stand-w's copy of BiRefNet's weights, which it reads, goes, and its machine restarts so no warm executor
+# holds them in memory either. A render that may go to either goes to local, where nothing downloads: on a tie a rental would go first, so only the download's time sends it there. (A machine busy for
 # longer than a download is the GPU proof's: on a runner's CPU, runs go side by side.)
 plan_picks() {
 step "plan (cl-967): a job goes where its weights are"
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "plan: its stand-in is another user of a fresh GitHub runner"; return; }
-local P=$OUT/plan tool=$here/project/weighted.py/weighted r=$RANDOM went
+local P=$OUT/plan tool=$here/project/weighted.py/weighted r=$RANDOM went stand_holder stand_pid
 cozy --json machine show local > "$OUT/set-local.json" || { check "plan: machine show local"; return; }
 stand_in stand-w || return
 cozy --json new --unencrypted "$P" > "$OUT/plan-new.json" 2>&1 || { check "plan: new: $(tail -c 300 "$OUT/plan-new.json")"; return; }
@@ -70,8 +70,26 @@ coming_go warm_w '["stand-w"]'
 coming_done warm_w 900
 coming_go warm_l '["local"]'
 coming_done warm_l 900
-# stand-w's copy goes (its user's cozy, whose machine it is): a job there downloads BiRefNet again.
+# stand-w's copy goes (its user's cozy, whose machine it is): a job there downloads BiRefNet again. Its machine stops first, as
+# machine_stop stops local, and its user's cozy starts it again: warm_w's executor would still hold BiRefNet, in memory and on its disk,
+# so the uninstall would keep its bytes (rc-e2e 43807131201: near quoted 5 s on both, a tie that isn't local's). near waits until this
+# computer sees stand-w holding BiRefNet nowhere and missing its bytes.
+stand_holder=$(sudo find "/home/cozy-stand-w/.cozy/machine" -name agent.lock.holder 2> /dev/null | head -1)
+stand_pid=$([ -z "$stand_holder" ] || sudo grep -o '"pid": *[0-9]*' "$stand_holder" | grep -o '[0-9]*$' || true)
+[ -n "$stand_pid" ] || { check "plan: stand-w's machine has no lock holder"; return; }
+sudo kill "$stand_pid"
+for _ in $(seq 60); do case $(ps -o stat= -p "$stand_pid" 2> /dev/null || true) in '' | Z*) break ;; esac; sleep 1; done
+stand_as stand-w --json machine show local > "$OUT/plan-stand-w-again.json" || { check "plan: stand-w didn't start again: $(tail -c 300 "$OUT/stand-w.err")"; return; }
 stand_as stand-w --json model uninstall zhengpeng7/birefnet > "$OUT/plan-uninstall.json" || { check "plan: stand-w's model uninstall: $(tail -c 300 "$OUT/stand-w.err")"; return; }
+for _ in $(seq 120); do
+  cozy --json machine show stand-w > "$OUT/plan-stand-w.json" 2> /dev/null || true
+  J '.state == "ready" and ([.status.resident[]?.checkpoints[]?] | length) == 0
+     and ([.status.models[]? | select(.repository == "zhengpeng7/birefnet")] | length) == 0
+     and ([.status.times[]?.reads[]? | select(.model == "zhengpeng7/birefnet") | .missing] | length == 0 or max > 0)' "$OUT/plan-stand-w.json" && break
+  sleep 1
+done
+echo "plan: stand-w after the uninstall: $(jq -c '{uninstall: input, state, resident: [.status.resident[]?.checkpoints[]?] | length, reads: [.status.times[]?.reads[]? | select(.model == "zhengpeng7/birefnet") | {bytes, missing}]}' "$OUT/plan-stand-w.json" "$OUT/plan-uninstall.json" 2> /dev/null)"
+J '.state == "ready"' "$OUT/plan-stand-w.json" || { check "plan: stand-w isn't ready again: $(jq -c '{state, resident: .status.resident}' "$OUT/plan-stand-w.json")"; return; }
 in_project "$P" --json machine use "local,stand-w" > "$OUT/plan-use.json" 2>&1 || { check "plan: machine use: $(tail -c 300 "$OUT/plan-use.json")"; return; }
 
 coming_go near '["local","stand-w"]'
@@ -115,6 +133,110 @@ for at in 1 2 3; do
   key=${keys[$((at - 1))]}
   ! grep -qF "$key isn't planned: " "$OUT/plan-published.log" || check "plan: cut_$at wasn't planned: $(grep -F "$key isn't planned: " "$OUT/plan-published.log" | head -1)"
 done
+}
+
+# plan_fetch (cl-1071; Paul 11-16, a 65 GiB quote where 22 landed: "why would it take 15 mins to download?"): a run's quoted download is
+# what its machine fetches. composed.py builds a transformer and a VAE, and a third model on demand that it never reads; its box takes
+# e2e/composed-tune (its own transformer on e2e/composed-base's VAE) for the transformer. On stand-c, which holds none of them, the run
+# is quoted the tune's transformer and the base's VAE once (64 MiB) to fetch before it starts, not each named checkpoint whole and the
+# on-demand one (160 MiB); and that is what stand-c then holds of the two, within 5%. The on-demand model, which a quote can't know a
+# run reads, is quoted besides ("plus up to" its 32 MiB, `on_demand_bytes`); its machine fetches it beside the run, and it is that,
+# within 5%: the gap measured, never silent.
+# plan_fetch_held: stand-c's own listing of what it holds; and how much of `$1` it holds, `$2` the other model whose parts it shares
+# (`total_bytes` of one, `unique_bytes` of the other: their objects once).
+plan_fetch_held() {
+  stand_as stand-c --json machine show local > "$OUT/plan-fetch-held.json" 2>> "$OUT/stand-c.err" || true
+  jq -r --arg a "$1" --arg b "${2:-}" '[.status.models[]? | select(.repository == $a) | .total_bytes] + [.status.models[]? | select(.repository == $b) | .unique_bytes]
+    | add // 0' "$OUT/plan-fetch-held.json" 2> /dev/null || echo 0
+}
+
+plan_fetch() {
+step "plan (cl-1071): a run's quoted download is what its machine fetches"
+[ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "plan: its stand-in is another user of a fresh GitHub runner"; return; }
+local P=$OUT/plan-fetch tool=$here/project/composed.py/composed r=$RANDOM job run placed quoted demand landed extra=0
+cozy --json machine show local > "$OUT/set-local.json" || { check "plan fetch: machine show local"; return; }
+stand_in stand-c || return
+cozy --json new --unencrypted "$P" > "$OUT/plan-fetch-new.json" 2>&1 || { check "plan fetch: new: $(tail -c 300 "$OUT/plan-fetch-new.json")"; return; }
+jq -n --arg t "$tool" --arg r "$r" '[{name: "fetched", tool: $t, kind: "image",
+  fields: {instructions: "A tune on a base, \($r).", models: {model: {ref: "e2e/composed-tune@0.1.0"}}}}]' | boxes_in "$P" || return
+coming_go fetched '["stand-c"]'
+coming_done fetched 900
+job=$(status "$P" | jq -c '[.board.jobs[]? | select(.asset == "fetched")] | last // empty')
+run=$(jq -r '.run // empty' <<< "${job:-null}")
+[ -n "$run" ] && J '.state == "done"' <<< "$job" || { check "plan fetch: its run didn't end done: ${job:-no job}"; return; }
+echo "$P" > "$OUT/plan-fetch.at"
+run_show "$OUT" plan-fetch "$run"
+placed=$(jq -c '.placed // empty' "$OUT/plan-fetch.json" 2> /dev/null)
+quoted=$(jq -r '.fetch_bytes // 0' <<< "${placed:-null}") demand=$(jq -r '.on_demand_bytes // 0' <<< "${placed:-null}")
+landed=$(plan_fetch_held e2e/composed-tune e2e/composed-base)
+# The on-demand model comes beside the run, after it may have ended.
+for _ in $(seq 120); do
+  extra=$(plan_fetch_held e2e/composed-extra)
+  J '[.status.models[]? | select(.repository == "e2e/composed-extra") | .checkpoints[]?.complete] | any' "$OUT/plan-fetch-held.json" && break
+  sleep 1
+done
+echo "plan fetch: run $run on stand-c quoted $((quoted >> 20)) MiB to fetch, plus up to $((demand >> 20)) MiB on demand ($placed);" \
+  "stand-c holds $((landed >> 20)) MiB of the tune and the base, and $((extra >> 20)) MiB of the on-demand model"
+echo "plan fetch: stand-c holds $(jq -c '[.status.models[]? | select(.repository | startswith("e2e/composed")) | {repository, total_bytes, unique_bytes, complete: [.checkpoints[]?.complete]}]' "$OUT/plan-fetch-held.json" 2> /dev/null)"
+[ "$landed" -gt 0 ] && [ $(( (quoted > landed ? quoted - landed : landed - quoted) * 20 )) -le "$landed" ] \
+  || check "plan fetch: quoted $((quoted >> 20)) MiB to fetch before it starts, but stand-c holds $((landed >> 20)) MiB of what it waits for"
+[ "$extra" -gt 0 ] && [ $(( (demand > extra ? demand - extra : extra - demand) * 20 )) -le "$extra" ] \
+  || check "plan fetch: quoted up to $((demand >> 20)) MiB on demand, but stand-c fetched $((extra >> 20)) MiB of its on-demand model"
+}
+
+# plan_update (phase b3), cl-1073 (Paul, 11-16): "I had an idle more powerful machine, with another machine that already had heavy
+# load on it, and instead it assigned the work to the old machine rather than the newer one. This is stupid." chartreux's update waited
+# for its runs to end and held each run sent after it (LAB2-47846, "getting chartreux ready" for 20 minutes), and placement quoted
+# chartreux as if it took them at once. Here stand-w holds BiRefNet's weights and local doesn't, so stand-w finishes a weighted still
+# first, until an update of stand-w waits behind a minute's still there: then local, which downloads them, finishes it first.
+plan_update() {
+step "plan (cl-1073): a machine whose update waits for its runs isn't quoted as free"
+[ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "plan update: its stand-in is another user of a fresh GitHub runner"; return; }
+local P=$OUT/plan weighted=$here/project/weighted.py/weighted wait=$here/project/waits.py/wait r=$RANDOM updating began went
+jq -n --arg w "$weighted" --arg h "$wait" --arg r "$r" '[
+  {name: "hold_w", tool: $h, kind: "image", fields: {instructions: "A minute on stand-w, \($r).", megapixels: 0.25, seconds: 60}},
+  {name: "past_update", tool: $w, kind: "image", fields: {instructions: "Where it finishes first, \($r).", seconds: 5}}]' | boxes_in "$P" || return
+# local's copy of BiRefNet goes, its machine stopped first so no executor holds it: a job there downloads it.
+machine_stop || { check "plan update: the local machine did not stop"; return; }
+machine_ready
+cozy --json model uninstall zhengpeng7/birefnet > "$OUT/update-uninstall.json" 2>&1 || { check "plan update: model uninstall: $(tail -c 300 "$OUT/update-uninstall.json")"; return; }
+cozy --json machine show stand-w > "$OUT/update-stand-w-held.json" 2> /dev/null || true
+J '[.status.models[]? | select(.repository == "zhengpeng7/birefnet")] | length > 0' "$OUT/update-stand-w-held.json" \
+  || { check "plan update: stand-w holds no BiRefNet: $(jq -c '[.status.models[]?.repository]' "$OUT/update-stand-w-held.json")"; return; }
+coming_go hold_w '["stand-w"]'
+for _ in $(seq 240); do
+  cozy --json machine show stand-w > "$OUT/update-stand-w-hold.json" 2> /dev/null || true
+  J '[.status.runs[]? | select(.state == "running")] | length > 0' "$OUT/update-stand-w-hold.json" && break
+  sleep 0.5
+done
+J '[.status.runs[]? | select(.state == "running")] | length > 0' "$OUT/update-stand-w-hold.json" \
+  || { check "plan update: hold_w never ran on stand-w: $(jq -c '[.status.runs[]? | {state, waiting}]' "$OUT/update-stand-w-hold.json")"; return; }
+# stand-w's own cozy updates it (a setting, so a restart): it waits for hold_w to end, and holds what comes after.
+(stand_as stand-w --json machine update local --gpu-memory-limit off -y > "$OUT/update-stand-w.json"; echo $? > "$OUT/update-stand-w.code") &
+updating=$!
+for _ in $(seq 60); do
+  cozy --json machine show stand-w > "$OUT/update-stand-w-show.json" 2> /dev/null || true
+  J '(.status.update // "") | test("wait")' "$OUT/update-stand-w-show.json" && break
+  sleep 1
+done
+J '(.status.update // "") | test("wait")' "$OUT/update-stand-w-show.json" \
+  || check "plan update: stand-w's update never waited for hold_w: $(jq -c '.status.update' "$OUT/update-stand-w-show.json")"
+began=$(date +%s)
+coming_go past_update '["local","stand-w"]'
+coming_done past_update 300
+went=$(plan_machine past_update)
+echo "plan update: past_update went to ${went:-nowhere}, done in $(($(date +%s) - began)) s; stand-w's update: $(jq -c '.status.update' "$OUT/update-stand-w-show.json")"
+[ "$went" = local ] || check "plan update: past_update went to ${went:-nowhere}, whose update waited for its run, not to local, which was free"
+# stand-w as the next cell takes it: its update done, ready again.
+coming_done hold_w 300
+for _ in $(seq 240); do kill -0 "$updating" 2> /dev/null || break; sleep 1; done
+[ "$(cat "$OUT/update-stand-w.code" 2> /dev/null)" = 0 ] || check "plan update: stand-w's update: $(tail -c 300 "$OUT/update-stand-w.json")"
+for _ in $(seq 180); do
+  cozy --json machine show stand-w > "$OUT/update-stand-w-after.json" 2> /dev/null || true
+  J '.state == "ready" and (.status.update // "") == ""' "$OUT/update-stand-w-after.json" && break
+  sleep 1
+done
+J '.state == "ready"' "$OUT/update-stand-w-after.json" || check "plan update: stand-w isn't ready after its update: $(jq -c '{state, update: .status.update}' "$OUT/update-stand-w-after.json")"
 }
 
 # prepare_ahead (phase c): BiRefNet, as its Hub publishes it, on a still that takes 4 min, can't start before it: unstarted work,

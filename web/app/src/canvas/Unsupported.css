@@ -1,0 +1,21 @@
+/* What its tool can't use: crossed out in red, on paper and dark alike (Unsupported.tsx). */
+.chip.unsupported {
+  background: color-mix(in srgb, var(--bad) 12%, transparent);
+  color: var(--bad);
+  text-decoration: line-through 2px var(--bad);
+}
+.unsupported-note {
+  flex-basis: 100%;
+  margin: 4px 0 0;
+  color: var(--bad);
+  font-size: var(--small);
+}
+/* In the frame, under its words' box and lined up with it, readable over the picture behind. */
+.in-frame .unsupported-note {
+  flex: none;
+  align-self: flex-start;
+  margin: -8px 14px 8px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel) 84%, transparent);
+}

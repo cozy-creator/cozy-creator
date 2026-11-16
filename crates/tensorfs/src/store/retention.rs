@@ -339,7 +339,10 @@ impl Store {
     /// drop the least recently used. False when `incoming` still does not fit: skip the write.
     /// An origin's handle runs none. A handle collects once at a time: an admit that finds one
     /// collecting waits for it, judges the disk again and, still short, collects for its own bytes.
-    /// Short, the machine's garbage goes first (`on_short`), then the store's own.
+    /// Short, in this order (cl-1081): the machine's garbage (`on_short`, which also ends idle executors
+    /// whose open models alone keep the room), then what cut fetches kept, then derived pages least
+    /// recently used first (`drop_derived`), then the least recently used models no queued or running
+    /// call holds (`collect_locked`); only then is the write refused.
     pub fn maintain(&self, incoming: u64) -> Result<bool> {
         if !self.cache {
             return Ok(true);
@@ -399,6 +402,21 @@ impl Store {
         Ok(short()? == 0)
     }
 
+    /// Room for a derived page of `incoming` bytes: free space, else older derived pages, never a
+    /// model or an executor (`maintain` drops lanes and ends idle executors for bytes a download
+    /// brings; a bake is cheaper to make again than either). False: no room, and nothing is kept.
+    pub(super) fn room_for_derived(&self, incoming: u64) -> Result<bool> {
+        let short = || shortfall(&self.root, incoming);
+        if !self.cache || short()? == 0 {
+            return Ok(true);
+        }
+        let _collections = self.collections.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(_fence) = collect_fence(self)? {
+            self.drop_derived(&short)?;
+        }
+        Ok(short()? == 0)
+    }
+
     /// Frees room for `incoming` bytes now, as an admit that finds the disk short would: what cut
     /// fetches kept, then the least recently used lanes nothing holds, until it fits. What it
     /// dropped, for people. Never from inside `on_short`'s reclaim, which a collection runs.
@@ -418,6 +436,10 @@ impl Store {
         let mut all = Collected::default();
         if short()? > 0 {
             self.drop_partials()?;
+        }
+        // A bake is made again from what is on this disk: derived pages go before any model.
+        if short()? > 0 {
+            self.drop_derived(&short)?;
         }
         loop {
             let need = short()?;
@@ -448,8 +470,15 @@ impl Store {
         let lanes = super::gc::lanes(&uses);
         let count = super::gc::keepers(&lanes);
         let kept: BTreeSet<&str> = count.keys().copied().collect();
+        // Derived pages go first whatever lane keeps them (`drop_derived`): one no reader has open is spare,
+        // counted once and out of its lane; one a reader has open stays in its lane, freed when its reader ends.
+        let derived: BTreeSet<String> = self.derived_pages()?.into_iter().filter_map(|(_, object)| object).map(|o| o.sha256).collect();
+        let unheld: BTreeSet<&str> = derived.iter()
+            .filter(|sha| objects.contains_key(*sha) && self.blob(sha).ok().and_then(|blob| File::open(blob).ok()).is_some_and(|f| f.try_lock().is_ok()))
+            .map(String::as_str).collect();
         let mut spare: u64 = objects.iter()
-            .filter(|(sha, (_, modified))| *modified < cutoff && !kept.contains(sha.as_str()) && !roots.contains(*sha))
+            .filter(|(sha, (_, modified))| unheld.contains(sha.as_str())
+                || (*modified < cutoff && !kept.contains(sha.as_str()) && !roots.contains(*sha)))
             .map(|(_, (length, _))| length).sum();
         for entry in list(&self.root.join("tmp"))? {
             if entry.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("partial-")) {
@@ -462,7 +491,7 @@ impl Store {
                 .unwrap_or_else(|| format!("cache entry {}", &lane.uses[0].name[..12])),
             used: lane.used,
             holders: holders.iter().filter(|(digest, _)| lane.held_by(digest, &count)).flat_map(|(_, pids)| pids.iter().copied()).collect(),
-            digests: lane.digests.iter().map(|d| d.to_string()).collect(),
+            digests: lane.digests.iter().filter(|d| !unheld.contains(**d)).map(|d| d.to_string()).collect(),
         }).collect();
         let lengths = objects.into_iter().map(|(sha, (length, _))| (sha, length)).collect();
         Ok(Room { lanes, spare, lengths })
@@ -487,9 +516,13 @@ impl Store {
             self.sweep_writers(TTL)?;
             self.collect_locked(u64::MAX, TTL)?;
         }
-        // What a cut fetch kept can be asked for again, so it goes before any model.
+        // What a cut fetch kept can be asked for again, and a bake made again from what is on this
+        // disk: both go before any model.
         if short()? > 0 {
             self.drop_partials()?;
+        }
+        if short()? > 0 {
+            self.drop_derived(short)?;
         }
         loop {
             let need = short()?;

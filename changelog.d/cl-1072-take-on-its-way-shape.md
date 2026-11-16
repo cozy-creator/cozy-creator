@@ -1,0 +1,1 @@
+In Focus on a picture, a take queued or rendering is drawn in its takes column at the shape it will be: the aspect ratio set, else what Auto makes (the tool's default, else the picture it edits or references), else the newest take's.

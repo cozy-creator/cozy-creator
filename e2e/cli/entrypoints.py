@@ -111,7 +111,7 @@ def main() -> None:
             run(f"removed {command}", [command, "--help"], code=2)
         run("account help", ["whoami", "--help"])
         run_help = run("run help", ["run", "--help"]).stdout
-        assert "cozy run <ls|watch|cancel>" in run_help, "run usage does not name its subcommands"
+        assert "cozy run <ls|watch|cancel|retry>" in run_help, "run usage does not name its subcommands"
         assert "<COMMAND>" not in run_help, "run usage still uses the unexplained COMMAND placeholder"
         run("nested cancellation", ["run", "cancel", "--help"])
         assert "Usage: cozy run watch" in run("watch help", ["run", "watch", "--help"]).stdout

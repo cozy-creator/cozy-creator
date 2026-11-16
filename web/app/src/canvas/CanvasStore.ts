@@ -1,4 +1,5 @@
-import type { CanvasController, CanvasNode, Viewport } from "./viewport"
+import type { Board, CanvasNode } from "./board/Board"
+import type { Viewport } from "./board/Camera"
 import { ApiError, type Client, type Write } from "../api/client"
 import { type Action, keepLastWord, type LastWord, lastWordsOf, lost, type OutboxPort } from "../api/outbox"
 import { nextProjectOrder } from "../api/projectOrder"
@@ -12,6 +13,7 @@ import type {
   AssetPatched,
   Asset,
   BoxEstimate,
+  ErrorBody,
   HistoryStepped,
   MainFile,
   Pickup,
@@ -39,7 +41,6 @@ import { mentionsIn, rowsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { PageHistory, type Target } from "./history"
 import { comingOff, goingOn, holdsPictures, type ToolStep, wontGoOn } from "./toolchange"
-import type { Operation } from "./palette"
 import { isSelf, mentionFrom, numbersOf, SELF, versionIn, versionOf } from "./versions"
 import { mergeValue, same, spliceOf, wordsChanged } from "./words"
 import { plainProject } from "../app/view"
@@ -71,8 +72,6 @@ export interface Placing {
 /** Everything a card shows that isn't a position. Culling unmounts cards, so a card holds none of it. */
 export interface ElementView {
   name: string
-  /** The operation chosen on this page; a model can support both image creation and editing. */
-  operation?: Operation
   asset?: Asset
   entity?: Entity
   /** An entity's: how the assets it links stand, the worst of them. */
@@ -220,7 +219,8 @@ const NOT_YET = Number.POSITIVE_INFINITY
 
 /** What goes with one render: a pickup, and its take's id, made at the click (cl-945). */
 type Also = { pickup?: Pickup; take?: string }
-export const UNDO_MS = 10_000
+/** A box's failure when its machine shut down under its run (Calcifer's `MACHINE_LOST`, cl-1085): its note offers Retry. */
+const MACHINE_LOST = "machine_lost"
 const TYPING_PAUSE_MS = 300
 /** Whether a write can go on past the page (`keepalive`): a browser keeps at most 64 KiB of them on their way. */
 const lasts = (body: AssetPatch) => JSON.stringify(body).length < 48_000
@@ -270,7 +270,7 @@ export class CanvasStore {
   private retired = false
   projectId: string | null
   private client: Client
-  private viewport: CanvasController | null = null
+  private viewport: Board | null = null
   private views = new Map<string, ElementView>()
   private playbacks = new Map<string, VideoPlayback>()
   private aliases = new Map<string, string>()
@@ -476,7 +476,7 @@ export class CanvasStore {
   }
 
   /** A canvas drawn for it, the first or again: back on a project, its boxes are as it left them, whatever's still on its way to Calcifer. */
-  attach(viewport: CanvasController) {
+  attach(viewport: Board) {
     if (this.retired) return
     this.viewport = viewport
     if (this.state && this.rows) this.reconcile()
@@ -884,8 +884,8 @@ export class CanvasStore {
     const owner = this.owners.get(run.number) ?? [...this.views].find(([, view]) => watched(view)?.run === run.number)?.[0]
     if (!owner) return
     const viewed = this.get(owner)
-    // A take looked at that's canceled is gone; one that failed stays looked at, its error in its frame (cl-954).
-    if (viewed && watched(viewed)?.run === run.number && run.status === "canceled") this.patch(owner, { watch: undefined })
+    // A take looked at that failed or is canceled is gone: the frame goes back to what it showed (cl-1070).
+    if (viewed && watched(viewed)?.run === run.number && (run.status === "failed" || run.status === "canceled")) this.patch(owner, { watch: undefined })
     // The run its frame is on: the take looked at (cl-945), else the first going. Another's progress is its own tile's.
     const making = this.get(owner)?.asset?.making ?? []
     const view = this.get(owner)
@@ -941,7 +941,7 @@ export class CanvasStore {
     for (const failure of state.unsent ?? []) {
       if (this.unsentSaid.has(failure.message)) continue
       this.unsentSaid.add(failure.message)
-      say(failure.message, new ApiError(0, failure), { stays: true })
+      say(failure.message, new ApiError(0, failure))
     }
     // Queued: its turn not come, as the walk's queue says, or a take of it not sent yet, as its row lists it (cl-945).
     const queued = new Set([...(state.queue ?? []).filter((item) => !item.running).map((item) => item.name), ...state.assets.filter((asset) => asset.takes?.some((take) => take.queued)).map((asset) => asset.name)])
@@ -963,11 +963,11 @@ export class CanvasStore {
         // What a take's run warned of, once it made the take, is the box's to show (its Warnings), never a note: a handled fallback
         // is no error (Paul, 11-12: a burst of "CUDA graph" notes over a picture that came out fine).
         // A render that fails says so as it fails, wherever the person is looking, the same failure again too once this page asked for it,
-        // in one note that stays until it's dismissed. One that failed before this page opened is the box's to show.
+        // in a note that goes by itself (Paul, 11-16). One that failed before this page opened is the box's to show.
         const answered = view.asked !== undefined && view.asked < this.began
-        if (asset.failure && this.hasRead && (answered || asset.failure.message !== view.asset?.failure?.message)) say(`${asset.name} didn't render`, new ApiError(0, { ...asset.failure, message: asset.failure.message.replace(`${asset.name}: `, "") }), { stays: true })
+        if (asset.failure && this.hasRead && (answered || asset.failure.message !== view.asset?.failure?.message)) this.failed(asset.name, asset.failure)
         if (Boolean(view.queued) !== queued.has(asset.name)) change.queued = queued.has(asset.name)
-        if (view.canceling && !asset.making?.length && !asset.takes?.some((take) => !take.failure) && !queued.has(asset.name)) change.canceling = undefined
+        if (view.canceling && !asset.making?.length && !asset.takes?.length && !queued.has(asset.name)) change.canceling = undefined
         if (view.pending !== undefined && view.pending < this.began) change.pending = undefined
         if (answered) change.asked = undefined
         // Its own takes (cl-945): each listed from the click until Calcifer lists it, as a take or as its version, or a read begun after
@@ -997,7 +997,7 @@ export class CanvasStore {
           const watching = watched({ ...view, asset })
           const seen = watching && madeHere(asset.tool) && (newest ?? 0) > (view.asset?.prefixes?.at(-1)?.number ?? 0) ? { ...watching, number: newest } : watching
           const still =(id: string) => listed.has(id) || Boolean(taking?.some((take) => take.id === id))
-          if (!view.here && view.watch !== undefined && !asset.takes?.some((take) => !take.failure) && !taking?.length && !queued.has(asset.name) && ("asked" in change ? change.asked : view.asked) === undefined) change.watch = undefined
+          if (!view.here && view.watch !== undefined && !asset.takes?.length && !taking?.length && !queued.has(asset.name) && ("asked" in change ? change.asked : view.asked) === undefined) change.watch = undefined
           else if (seen?.number !== undefined) Object.assign(change, { watch: undefined, viewed: seen.number === asset.version ? undefined : seen.number, ...(asset.kind === "video" ? { hereWords: undefined, continuing: undefined, continuingFps: undefined } : {}) })
           // Ended with no version (failed, canceled): nothing of it to look at.
           else if (view.watch !== undefined && !still(view.watch)) change.watch = undefined
@@ -1074,7 +1074,7 @@ export class CanvasStore {
       readSeq = read.seq
       cards = read.cards
     } catch (error) {
-      if (!lost(error)) say("Couldn't read where things sit", error)
+      if (!lost(error)) say("Couldn't load where the boxes are", error)
     }
     const rows = this.rows!
     const state = this.state!
@@ -1418,7 +1418,7 @@ export class CanvasStore {
     this.patch(key, { viewed: undefined, watch: undefined, ...(asset.kind === "image" ? { hereWords: undefined } : {}) })
     if (asset.pinned && asset.approved === number) return
     const edit = this.step(`Selected version ${number} of ${key}`, [key])
-    this.over(key, { pinned: true, approved: number, version: number }, (served, write) => this.client.approve(this.projectId!, served, String(number), write), "select version", edit)
+    this.over(key, { pinned: true, approved: number, version: number }, (served, write) => this.client.approve(this.projectId!, served, String(number), write), "select that version of", edit)
     if (view?.hereWords && asset.tool) {
       const field = this.promptOf(asset.tool)
       const words = this.valueOf(key, field)
@@ -1481,7 +1481,7 @@ export class CanvasStore {
     const last = framesIn(file.duration_ms, fps)
     // H3's takes end on its grid: one that doesn't goes on from the grid's last frame in it.
     const end = pickupAt(last, last, snap)
-    if (end === null) return say(`${from}'s take ${number} is shorter than this tool picks up from`)
+    if (end === null) return say(`Take ${number} of ${from} is too short for this tool to continue from`)
     this.patch(key, { hereWords: true, watch: undefined, continuing: { take: `<${mentionFrom(key, from, number)}>`, out_frame: end, beats_from: 0 }, continuingFps: fps })
     this.openHere(key)
   }
@@ -1582,6 +1582,26 @@ export class CanvasStore {
     })
   }
 
+  /** `name`'s render failed, said. One its machine's shutdown stopped offers Retry (Paul, 11-16, cl-1085): "you push the retry button and
+   *  we'll try to place that run on a different machine". */
+  private failed(name: string, failure: ErrorBody) {
+    if (failure.code !== MACHINE_LOST) return void say(`${name} didn't render`, new ApiError(0, { ...failure, message: failure.message.replace(`${name}: `, "") }))
+    say(failure.message, new ApiError(0, failure), { action: { label: "Retry", run: () => this.retry(name) } })
+  }
+
+  /** Its render again, as Render asks one: placed where it finishes soonest on the machines up now, which the one that shut down isn't.
+   *  With none up it waits for one, and says so, with Rent. */
+  retry(name: string) {
+    const key = this.resolveName(name)
+    if (!this.views.get(key)?.asset) return
+    if (!this.machines().length) {
+      this.patch(key, { waiting: {}, asking: undefined })
+      say(`No machine is up to render ${name} on: rent one, and it renders there`, undefined, { action: { label: "Rent", run: () => this.rent() } })
+      return
+    }
+    this.run(key)
+  }
+
   /** An Edit's film joined here, free, from its cut as it stands now, as `cozy render` would: its next version, unless that cut has one. What's
    *  looked at stays as it is (cl-957). */
   join(name: string) {
@@ -1600,7 +1620,7 @@ export class CanvasStore {
       },
       refused: (error) => {
         settle()
-        say(`Couldn't join ${name}`, error)
+        say(`Couldn't put ${name}'s video together`, error)
       },
     })
   }
@@ -1782,7 +1802,7 @@ export class CanvasStore {
           this.own.set(held.name, (this.own.get(held.name) ?? new Set()).add(answer.etag))
           this.patch(held.name, { known: answer.etag })
         }
-        if (answer.stale?.length) say(`That puts ${answer.stale.join(", ")} out of date`)
+        if (answer.stale?.length) say(`${answer.stale.join(", ")} ${answer.stale.length === 1 ? "is" : "are"} now out of date`)
         then?.done?.(answer)
       },
       refused: (error) => {
@@ -1810,22 +1830,10 @@ export class CanvasStore {
     const edit = this.step(`Discarded ${asset.noun} ${number} of ${key}`, [key])
     let note = 0
     this.dropTake(key, number, edit, () => dismiss(note))
-    const stands = asset.approved === number ? ` It was approved: ${name} now shows its newest.` : ""
+    const stands = asset.approved === number ? ` It was the approved one, so ${name} now shows its newest.` : ""
     const readers = (this.state?.assets ?? []).filter((other) => other.name !== key && other.reads?.some((read) => read.name === key && read.version === number)).map((other) => other.name)
-    const read = readers.length ? ` ${readers.join(", ")} ${readers.length === 1 ? "reads" : "read"} it, and can't render until it's back.` : ""
+    const read = readers.length ? ` ${readers.join(", ")} ${readers.length === 1 ? "uses" : "use"} it and can't render until it's back.` : ""
     note = this.offer(edit, `Discarded ${asset.noun} ${number} of ${name}.${stands}${read}`)
-  }
-
-  /** What take or version `number` of `name` says of its file, whole, at once: orbit viewing on for any video, or off. With no number, the
-   *  file a box with no version shows, which Calcifer numbers first. A note offers Undo. */
-  setMetadata(name: string, number: number | undefined, metadata: Record<string, unknown>, words: string) {
-    const key = this.resolveName(name)
-    const asset = this.views.get(key)?.asset
-    if (!asset) return
-    const prefixes = asset.prefixes?.map((version) => (version.number === number && version.main ? { ...version, main: { ...version.main, metadata } } : version))
-    const edit = this.step(words, [key])
-    this.over(key, number === undefined || !prefixes ? {} : { prefixes }, (served, write) => this.client.patchVersion(this.projectId!, served, number ?? 0, metadata, write).then(() => ({})), `change ${asset.noun} ${number ?? ""} of`, edit)
-    this.offer(edit, words)
   }
 
   /** Take `number` off its box, in its turn, under `edit`: what's approved going leaves it following its inputs. */
@@ -1870,10 +1878,10 @@ export class CanvasStore {
     this.joinStep(edit, [key, ...readers.map((one) => one.name)])
     let note = 0
     this.dropTake(key, number, edit, () => dismiss(note))
-    for (const one of readers) void this.write(one.name, one.next, `set ${one.name}'s words`, { edit })
-    const stands = asset.pinned && asset.approved === number ? ` It was approved: ${from} now follows its inputs.` : ""
-    const read = readers.length ? ` ${readers.map((one) => one.name).join(", ")} ${readers.length === 1 ? "names" : "name"} ${to} now.` : ""
-    note = this.offer(edit, `Moved ${asset.noun} ${number} of ${from} out as ${to}.${stands}${read}`)
+    for (const one of readers) void this.write(one.name, one.next, `update the prompt in ${one.name}`, { edit })
+    const stands = asset.pinned && asset.approved === number ? ` It was the approved one, so ${from} now follows its inputs.` : ""
+    const read = readers.length ? ` ${readers.map((one) => one.name).join(", ")} now ${readers.length === 1 ? "uses" : "use"} ${to}.` : ""
+    note = this.offer(edit, `Moved ${asset.noun} ${number} of ${from} into its own box, ${to}.${stands}${read}`)
   }
   /** Whether a picture dropped here joins it: a box of pictures with no tool. */
   joins(name: string): boolean {
@@ -1898,7 +1906,7 @@ export class CanvasStore {
     if (!asset) return false
     const next = nextVersion(asset, file)
     if (!next) {
-      say(`${name} has that picture already`)
+      say(`${name} already has that image`)
       return false
     }
     const edit = merged ?? this.step(`Added ${what} to ${key}`, [key])
@@ -1911,7 +1919,7 @@ export class CanvasStore {
       refused: () => dismiss(note),
     })
     this.view(key, next.number)
-    if (merged === undefined) note = this.offer(edit, `${what} joined ${name}`)
+    if (merged === undefined) note = this.offer(edit, `Added ${what} to ${name}`)
     return true
   }
 
@@ -1939,12 +1947,12 @@ export class CanvasStore {
         const view = this.views.get(this.namesById.get(id ?? "") ?? "")
         const next = view?.asset && nextVersion(view.asset, { sha256: source.slice("sha256:".length), field })
         if (!view || !next) {
-          if (view) say(`${view.name} has that picture already`)
+          if (view) say(`${view.name} already has that image`)
           return null
         }
         show(next.row)
         this.view(view.name, next.number)
-        note = this.offer(edit, `${what} joined ${view.name}`)
+        note = this.offer(edit, `Added ${what} to ${view.name}`)
         asked = source
       }
       return this.client.addVersion(this.projectId!, served, asked, write)
@@ -1967,7 +1975,7 @@ export class CanvasStore {
     const asset = this.views.get(key)?.asset
     if (!asset || asset.timeline || madeHere(asset.tool)) return false
     if (!asset.tool && asset.kind !== file.field) {
-      say(`${key} is a ${asset.kind} node and cannot take ${file.field}`)
+      say(`${key} is ${an(asset.kind)} ${asset.kind} box, so it can't take ${an(file.field)} ${file.field}`)
       return true
     }
     const own = file.from !== undefined && nameKey(file.from) === nameKey(key)
@@ -1987,21 +1995,17 @@ export class CanvasStore {
   // What makes a box
 
   /** `tool` goes on it, or takes the place of the one there. What it can't take is said, with Undo. A tool of another kind changes nothing and
-   *  says why (tools §9). `operation`: the palette's row it came from. */
-  putTool(name: string, tool: Tool, operation?: Operation) {
+   *  says why (tools §9). */
+  putTool(name: string, tool: Tool) {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view?.asset) return
-    if (view.asset.tool === tool.id) {
-      if (operation) this.patch(key, { operation })
-      return
-    }
+    if (view.asset.tool === tool.id) return
     const wont = wontGoOn(tool, view.asset, key)
     if (wont) return void say(wont)
     void this.save(key)
     const step = goingOn(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }, this.tools.get().get(view.asset.tool ?? ""), tool, view.viewed)
-    this.retool(key, step, step.lost.length ? `${name} runs ${toolName(tool)} now, which can't take ${step.lost.join(" or ")}` : undefined)
-    if (operation) this.patch(key, { operation })
+    this.retool(key, step, step.lost.length ? `${name} now uses ${toolName(tool)}, which doesn't take ${step.lost.join(" or ")}` : undefined)
     if (tool.makes === "image" && holdsPictures(view.asset)) this.patch(key, { hereWords: undefined })
   }
 
@@ -2012,15 +2016,15 @@ export class CanvasStore {
     if (!view?.asset) return
     void this.save(key)
     const known = this.tools.get().get(view.asset.tool ?? "")
-    const word = known ? toolName(known) : "Its tool"
-    const words = holdsPictures(view.asset) ? `Its pictures stay.` : `It stays a ${view.asset.kind} node.`
-    this.retool(key, comingOff(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }), `${word} is off ${name}. ${words}`)
+    const word = known ? toolName(known) : "the tool"
+    const words = holdsPictures(view.asset) ? "Its images stay." : `It's still ${an(view.asset.kind)} ${view.asset.kind} box.`
+    this.retool(key, comingOff(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }), `Took ${word} off ${name}. ${words}`)
   }
 
   private retool(key: string, step: ToolStep, said?: string) {
-    const edit = this.step(said ?? `Changed what makes ${key}`, [key])
+    const edit = this.step(said ?? `Changed ${key}'s tool`, [key])
     let note = 0
-    this.over(key, step.row, (served, write) => this.client.patchAsset(this.projectId!, served, { tool: step.tool, fields: step.fields }, write), "change what makes", edit, {
+    this.over(key, step.row, (served, write) => this.client.patchAsset(this.projectId!, served, { tool: step.tool, fields: step.fields }, write), "change the tool on", edit, {
       done: (answer) => answer.warnings?.forEach((line) => say(line)),
       refused: () => dismiss(note),
     })
@@ -2069,7 +2073,7 @@ export class CanvasStore {
   markSeen(name: string, number: number) {
     const asset = this.get(name)?.asset
     if (!asset?.unseen?.includes(number)) return
-    this.over(name, { unseen: asset.unseen.filter((held) => held !== number) }, (served, write) => this.client.seen(this.projectId!, served, number, write).then(() => ({})), `mark ${asset.noun} ${number} seen on`, undefined)
+    this.over(name, { unseen: asset.unseen.filter((held) => held !== number) }, (served, write) => this.client.seen(this.projectId!, served, number, write).then(() => ({})), `mark ${asset.noun} ${number} as seen on`, undefined)
   }
 
   /** Takes landed and not said yet: said together once none has landed for a moment (cl-937). */
@@ -2099,9 +2103,9 @@ export class CanvasStore {
       this.openHere(name)
       this.pickTake(name, this.get(name)?.asset?.prefixes?.find((held) => id && held.id === id)?.number ?? number)
     } }
-    if (landed.length > 1) return void say(`${landed.length} renders finished: ${[...new Set(landed.map((one) => one.name))].join(", ")}`, undefined, { action: view, ms: 10_000 })
+    if (landed.length > 1) return void say(`${landed.length} renders are ready: ${[...new Set(landed.map((one) => one.name))].join(", ")}`, undefined, { action: view })
     const noun = this.get(name)?.asset?.noun ?? "take"
-    say(`${name} finished: ${noun} ${number}`, undefined, { action: view, ms: 10_000, picture: sha256 && this.projectId ? this.client.thumb(this.projectId, sha256) : undefined })
+    say(`${noun.charAt(0).toUpperCase()}${noun.slice(1)} ${number} of ${name} is ready`, undefined, { action: view, picture: sha256 && this.projectId ? this.client.thumb(this.projectId, sha256) : undefined })
   }
 
   /** Stops one of its takes, by its id (cl-945), gone from the box at once, and its others go on: one sent, its run; one queued, that take. */
@@ -2116,10 +2120,9 @@ export class CanvasStore {
     if (take.id) this.patch(name, { gone: [...(view.gone ?? []), take.id] })
     // One with an id is off by it (`gone`), and what's listed after stays as read; a run no take names is off its runs until a read.
     const making = take.id ? {} : { making: asset.making?.filter((number) => number !== take.run) }
-    // One that failed is deleted by its id (cl-954); one sent, its run is stopped; one queued is dropped by its id.
-    const run = take.failure ? undefined : take.run
+    const run = take.run
     const send = run !== undefined ? (_: string, write: Write) => this.client.cancelRun({ project, run }, write.once).then(() => ({})) : (_: string, write: Write) => this.client.cancelTakes(project, [take.id], write.once).then(() => ({}))
-    this.over(name, making, send, take.failure ? "delete a failed take of" : run !== undefined ? `cancel run ${this.runName(run)} of` : "cancel a take of", undefined)
+    this.over(name, making, send, run !== undefined ? `cancel run ${this.runName(run)} of` : "cancel a take of", undefined)
   }
 
   /** Its render stops, wherever it is: what's queued leaves, its runs are canceled (as `cozy run cancel`), and it says Cancelling… until
@@ -2129,7 +2132,7 @@ export class CanvasStore {
     this.patch(name, { asked: undefined, taking: undefined, canceling: busy || undefined, ...(this.get(name)?.asset?.kind === "image" ? { watch: undefined } : {}) })
     this.act(name, {
       send: (served, write) => this.client.cancelRender(this.projectId!, [served], write.once),
-      done: () => say(`Canceled ${name}'s render`, undefined, { action: { label: "Undo", run: () => this.run(name) }, ms: 8_000 }),
+      done: () => say(`Canceled ${name}'s render`, undefined, { action: { label: "Undo", run: () => this.run(name) } }),
       refused: (error) => {
         this.patch(name, { canceling: undefined })
         say(`Couldn't cancel ${name}`, error)
@@ -2385,7 +2388,7 @@ export class CanvasStore {
         done: () => keepLastWord(project, null, word.action),
         refused: (error) => {
           keepLastWord(project, null, word.action)
-          say(`Couldn't save what was typed in ${word.name}`, error)
+          say(`Couldn't save what you typed in ${word.name}`, error)
         },
       })
     }
@@ -2502,7 +2505,7 @@ export class CanvasStore {
     const known = this.tools.get().get(tool)
     const label = known ? toolName(known) : tool.split(/[/\\]/).at(-1)
     const edit = this.step(`Switched ${key} to ${label}`, [key])
-    this.over(key, { tool }, (served, write) => this.client.patchAsset(this.projectId!, served, { tool }, write), "change what makes", edit, { done: (answer) => answer.warnings?.forEach((line) => say(line)) })
+    this.over(key, { tool }, (served, write) => this.client.patchAsset(this.projectId!, served, { tool }, write), "change the tool on", edit, { done: (answer) => answer.warnings?.forEach((line) => say(line)) })
     this.reshape(key)
   }
 
@@ -2677,7 +2680,7 @@ export class CanvasStore {
     if (asset.timeline) {
       const clips = asset.timeline.tracks[0]?.clips ?? []
       const taken = given.flatMap((name) => clipOf(this, name, asset.timeline?.fps ?? 24) ?? [])
-      if (taken.length < given.length) say("Only video and stills go in an Edit for now")
+      if (taken.length < given.length) say("Only videos and images can go in an Edit for now")
       if (!taken.length) return
       void this.setFields(key, { timeline: wire([...clips, ...taken]) })
       // The cut changed: its film joined after the write, as the editor does (cl-957).
@@ -2697,7 +2700,7 @@ export class CanvasStore {
     const slot = fields.find((field) => field.type === "slot" && (field.multiple || !this.valueOf(key, field.field)))
     if (!slot) return
     const wrong = given.find((name) => slot.accept && this.kindOf(name, key) !== slot.accept)
-    if (wrong) return void say(`${slot.label} takes ${slot.accept === "image" ? "a picture" : slot.accept === "video" ? "a video" : "a sound"}, and ${wrong} isn't one`)
+    if (wrong) return void say(`${slot.label} takes ${slot.accept === "image" ? "an image" : slot.accept === "video" ? "a video" : "audio"}, and ${wrong} isn't ${slot.accept === "audio" ? "audio" : "one"}`)
     const held = this.valueOf(key, slot.field)
     void this.setFields(key, { [slot.field]: slot.multiple ? [...(Array.isArray(held) ? held : []), ...tags] : tags.at(-1) })
   }
@@ -2719,7 +2722,7 @@ export class CanvasStore {
     const going = names.map((name) => this.resolveName(name)).filter((name) => (this.views.get(name)?.asset || this.views.get(name)?.landed) && !this.views.get(name)?.placing)
     if (!going.length) return
     const readers = this.readers(going)
-    const what = going.length === 1 ? going[0] : `${going.length} assets`
+    const what = going.length === 1 ? going[0] : `${going.length} boxes`
     const edit = merged?.edit ?? this.step(`Deleted ${what}`, going)
     let note = 0
     for (const name of going) {
@@ -2751,7 +2754,7 @@ export class CanvasStore {
         },
       })
     }
-    const said = readers.length ? ` ${readers.join(", ")} ${readers.length === 1 ? "reads" : "read"} this and ${readers.length === 1 ? "isn't" : "aren't"} approved yet.` : ""
+    const said = readers.length ? ` ${readers.join(", ")} ${readers.length === 1 ? "uses" : "use"} it and ${readers.length === 1 ? "isn't" : "aren't"} approved yet.` : ""
     note = this.offer(edit, merged ? `${what} merged into ${merged.into}.${said}` : `Deleted ${what}.${said}`)
   }
 
@@ -2792,7 +2795,7 @@ export class CanvasStore {
   /** A note saying what `edit` did, its Undo the history's: one that's undone goes. */
   private offer(edit: string, message: string): number {
     if (!this.history.kept.get()) return say(message)
-    const note = say(message, undefined, { action: { label: "Undo", run: () => this.undo({ edit }) }, ms: UNDO_MS })
+    const note = say(message, undefined, { action: { label: "Undo", run: () => this.undo({ edit }) } })
     this.offers.set(edit, note)
     return note
   }
@@ -2844,7 +2847,7 @@ export class CanvasStore {
         shown.forEach((one) => one.settle())
         if (answer.lost?.length) {
           dismiss(note)
-          this.stepped = say(`${back ? "Undone" : "Redone"}: ${taken.length} ${taken.length === 1 ? "edit" : "edits"}. ${lostSaid(answer.lost)}`, undefined, { ms: UNDO_MS })
+          this.stepped = say(`${back ? "Undone" : "Redone"}: ${taken.length} ${taken.length === 1 ? "edit" : "edits"}. ${lostSaid(answer.lost)}`)
         }
         if (answer.stopped) say(`Couldn't ${verb} them all`, new ApiError(409, answer.stopped))
         this.history.read()
@@ -2869,7 +2872,7 @@ export class CanvasStore {
     const verb = back ? "undo" : "redo"
     for (const edit of this.history.editsOf(target)) dismiss(this.offers.get(edit) ?? 0)
     dismiss(this.stepped)
-    const note = say(`${back ? "Undone" : "Redone"}: ${words}`, undefined, { action: { label: back ? "Redo" : "Undo", run: () => (back ? this.redo(target) : this.undo(target)) }, ms: UNDO_MS })
+    const note = say(`${back ? "Undone" : "Redone"}: ${words}`, undefined, { action: { label: back ? "Redo" : "Undo", run: () => (back ? this.redo(target) : this.undo(target)) } })
     this.stepped = note
     this.outbox.add<HistoryStepped>({
       send: (once, action) => this.client[verb](id, target, { once, action }),
@@ -2878,7 +2881,7 @@ export class CanvasStore {
         // A box whose undo window ended comes back without its files: said, with the same Redo or Undo (cl-919).
         if (answer.lost?.length) {
           dismiss(note)
-          this.stepped = say(`${back ? "Undone" : "Redone"}: ${words}. ${lostSaid(answer.lost)}`, undefined, { action: { label: back ? "Redo" : "Undo", run: () => (back ? this.redo(target) : this.undo(target)) }, ms: UNDO_MS })
+          this.stepped = say(`${back ? "Undone" : "Redone"}: ${words}. ${lostSaid(answer.lost)}`, undefined, { action: { label: back ? "Redo" : "Undo", run: () => (back ? this.redo(target) : this.undo(target)) } })
         }
         this.history.read()
       },
@@ -3210,6 +3213,17 @@ export class CanvasStore {
     this.gesture = null
     this.reshape(key)
     this.unsettle(key, "grown")
+  }
+
+  /** A pull let go of with Escape: its width and shape as they were, what it pushed aside back where it is, and nothing kept. */
+  cancelPull(name: string, width: number) {
+    const key = this.resolveName(name)
+    this.patch(key, { shape: undefined })
+    const before = this.position(key)
+    if (before) { this.rememberPose(key, { ...before, w: width }); this.paintPose(key) }
+    this.letBack(new Map())
+    if (this.pulling?.name === key) this.pulling = null
+    this.reshape(key)
   }
 
   /** What the pull pushed aside and no longer does goes back where it is. */
@@ -3559,7 +3573,7 @@ export class CanvasStore {
       },
       refused: (error) => {
         this.movesOwed = false
-        say("A move didn't save", error)
+        say("Couldn't save that move", error)
         for (const id of sent.keys()) {
           this.moving.delete(id)
           this.movingFrom.delete(id)
@@ -3629,4 +3643,9 @@ export class CanvasStore {
       },
     })
   }
+}
+
+/** `a` or `an`, as `kind` is said. */
+function an(kind: string): string {
+  return /^[aeiou]/i.test(kind) ? "an" : "a"
 }

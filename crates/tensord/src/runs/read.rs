@@ -151,6 +151,35 @@ impl Runs {
         let records = (self.service.engine.actor_page(Some(&own), 0, 0, false, &LIVE.map(String::from), usize::MAX)).map_err(problem)?;
         records.iter().filter(|record| scope_allows(record)).map(|record| self.state_of(record).map(|state| state.id)).collect()
     }
+    /// The runs here not ended that read `model` (org/name), each once by the id its sender gave it: one downloading it now, and
+    /// one whose plan binds it (a child by its root's).
+    pub(crate) fn reading(&self, model: &str) -> Result<Vec<String>, Error> {
+        let engine = &self.service.engine;
+        let named = |name: &str| name.eq_ignore_ascii_case(model);
+        let mut runs: Vec<String> = crate::activity::downloading().into_iter()
+            .filter(|(_, models)| models.iter().any(|m| named(m)))
+            .map(|(run, _)| run)
+            .collect();
+        for record in engine.nonterminal(usize::MAX).map_err(problem)? {
+            let Some(submission) = record.submission.as_ref().filter(|s| !s.preparation_id.is_empty()) else { continue };
+            // A closed project's runs run nothing now.
+            let Ok(scope) = engine.private_storage(&record.id) else { continue };
+            let preparation = crate::private_io::within(scope, || engine.preparation(&submission.actor, &submission.preparation_id))
+                .map_err(problem)?;
+            let Some(plan) = preparation.map(|p| crate::gpu_service::Plan::of(&p)).transpose().map_err(problem)? else { continue };
+            let reads = plan.models().iter().any(|row| {
+                let adapters = row["adapters"].as_array().into_iter().flatten().map(|adapter| &adapter["model"]);
+                std::iter::once(&row["repository"]).chain(adapters).filter_map(|name| name.as_str()).any(named)
+            });
+            if reads {
+                let root = if record.invocation.root.is_empty() { &record.id } else { &record.invocation.root };
+                runs.push(engine.caller_id(root));
+            }
+        }
+        runs.sort();
+        runs.dedup();
+        Ok(runs)
+    }
     /// Cancels `actor`'s run `id`; an id this machine never received is recorded canceled.
     pub(crate) fn cancel(&self, actor: VerifiedActor, id: &str) -> Result<v1::RunState, Error> {
         match self.service.engine.get_public(reader(actor).as_deref(), id) {
@@ -762,10 +791,11 @@ impl Runs {
             // A run preparing inside itself (`runs`) shows its stage and bytes as progress.
             let preparing = record.state == State::Queued
                 && record.waiting_reason.as_deref() == Some(crate::journal::PREPARING);
-            // What a queued run waits for (another run's install, its place in the queue) is its state,
+            // What a queued run waits for (another run's install, a GPU) and its place in line are its state,
             // until its weights arrive meanwhile: then their bytes are its progress, the client
             // saying both.
             let waiting = record.waiting.clone().filter(|_| record.state == State::Queued);
+            let place = record.place.filter(|_| waiting.is_some());
             let payload = record.progress.as_ref().map(|progress| {
                 serde_json::from_str::<Value>(progress)
                     .ok()
@@ -788,7 +818,7 @@ impl Runs {
             } else {
                 // Every cursor up to the head is answered, or a waiting client would spin.
                 let waiting = waiting.or_else(|| record.waiting_reason.clone()).or(starting);
-                events.push(event(record.revision, "state", &json!({"state":state_name(&record),"completed_units":record.completed_units,"waiting_reason":waiting}))?);
+                events.push(event(record.revision, "state", &json!({"state":state_name(&record),"completed_units":record.completed_units,"waiting_reason":waiting,"place":place}))?);
             }
         }
         events.sort_by_key(|event| event.sequence);
@@ -1094,6 +1124,7 @@ impl Log {
                     sequence: event.sequence,
                     attempt: event.attempt_ordinal as u32,
                     waiting: body["waiting_reason"].as_str().unwrap_or_default().into(),
+                    place: body["place"].as_u64().map(|place| place as u32),
                     ..Default::default()
                 })
             }

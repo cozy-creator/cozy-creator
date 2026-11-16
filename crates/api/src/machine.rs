@@ -736,8 +736,12 @@ pub struct RunState {
     /// The log's head.
     pub sequence: u64,
     pub attempt: u32,
-    /// Why a queued run waits, for people.
+    /// Why a queued run waits, for people. A run another of this machine's clients sent is named by its id there
+    /// (`run-<hex>`), which its client names as people know it.
     pub waiting: String,
+    /// Its place in this machine's line while it waits there, 1 next.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub place: Option<u32>,
     /// The runs it waits for, by id (an update waits for those in flight).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub waiting_for: Vec<String>,
@@ -1012,6 +1016,10 @@ pub struct EstimateJob {
     /// is then Measured. 0: runs elsewhere.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub prior_runs: u32,
+    /// Of its weights fetched only when the function first reads them (on demand), the most it may download, beside those it waits for
+    /// before it starts: in no time, as a quote can't know which it reads (cl-1071).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub on_demand_bytes: u64,
     /// The soonest it can start, ms from now: when what it reads is made.
     #[serde(skip_serializing_if = "is_zero")]
     pub after_ms: u64,

@@ -124,11 +124,11 @@ export class Outbox {
 
   add<T>(action: Action<T>) {
     if (this.frozen) {
-      action.refused?.(new ApiError(409, { kind: "conflict", code: "browser_closing", message: "The Cozy browser is saving its edits before closing" }))
+      action.refused?.(new ApiError(409, { kind: "conflict", code: "browser_closing", message: "Cozy is saving your edits before the page closes" }))
       return
     }
     if (action.project && this.blocked.has(action.project)) {
-      action.refused?.(new ApiError(423, { kind: "conflict", code: "project_locked", message: "Unlock the project before saving this change" }))
+      action.refused?.(new ApiError(423, { kind: "conflict", code: "project_locked", message: "Unlock the project to save this change" }))
       return
     }
     if (action.view) this.queue = this.queue.filter((held) => held.view !== action.view || this.active.has(held))

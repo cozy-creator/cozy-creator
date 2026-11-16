@@ -50,7 +50,7 @@ pub(crate) async fn submit(
     let ask: RunRequest = parse(&body)?;
     if ask.project.is_some() || (ask.warm.is_none() && !crate::hub::jobs::is(&ask.target)) {
         if !crate::api::speaks_project_storage(&headers) { return Err(crate::api::project_storage_protocol_required()); }
-        return Err(Refusal(Error::new(Kind::Usage, "project_context_required", "use the explicit project run-submission route")));
+        return Err(Refusal(Error::new(Kind::Usage, "project_context_required", "Send this run through its project.")));
     }
     let project = ask.project.clone();
     vault::project_reply(&api, project.as_deref(), async {
@@ -71,7 +71,7 @@ pub(crate) async fn submit_project(
     let mut raw:serde_json::Value=parse(&bytes)?;
     let legacy_on=raw.get("on").is_some_and(serde_json::Value::is_string);
     if legacy_on {let value=raw.get("on").cloned().expect("checked on");raw["on"]=serde_json::json!([value]);}
-    let mut ask:RunRequest=serde_json::from_value(raw).map_err(|_|Refusal(Error::new(Kind::Validation,"invalid_run_request","the run request is invalid")))?;
+    let mut ask:RunRequest=serde_json::from_value(raw).map_err(|_|Refusal(Error::new(Kind::Validation,"invalid_run_request","Cozy couldn't read this run request.")))?;
     let (id,recorded) = { let store = api.projects.store(&api, &project).await.map_err(Refusal)?; (store.project_id().to_owned(),store.recorded(&key)?) };
     // A migrated retry keeps its exact original body digest. Its old locator
     // may have moved; the existing row inside this admitted owner is authority.
@@ -81,10 +81,10 @@ pub(crate) async fn submit_project(
             Ok((StatusCode::OK,Json(Submitted {run:api.calcifer.record(&row)?,replay:true,notes:vec![],preparing:false,lock:None})))
         }).await;
     }
-    if legacy_on {return Err(Refusal(Error::new(Kind::Usage,"legacy_run_request","legacy request encoding is supported only for an existing migrated retry")));}
+    if legacy_on {return Err(Refusal(Error::new(Kind::Usage,"legacy_run_request","This old request format only works to retry a run moved from an older Cozy.")));}
     if let Some(named) = ask.project.as_deref() {
         let actual = { let store = api.projects.store(&api, named).await.map_err(Refusal)?; store.project_id().to_owned() };
-        if actual != id { return Err(Refusal(Error::new(Kind::Validation, "project_scope_mismatch", "the route and request name different projects"))); }
+        if actual != id { return Err(Refusal(Error::new(Kind::Validation, "project_scope_mismatch", "The request names a different project from the one it was sent to."))); }
     }
     if ask.project.is_none() {ask.project = Some(id);}
     vault::project_reply(&api, Some(&project), async {
@@ -185,14 +185,14 @@ async fn estimate_asked(api: &Arc<Api>, key: &str, ask: &RunRequest, copies: Cop
         Prepared::Run { submit, notes, offers } => (submit, notes, offers),
     };
     if copies.count.is_some_and(|asked| asked != count) {
-        notes.push(Note { level: NoteLevel::Warning, message: format!("count is 1 to {COPIES}: {count} copies quoted") });
+        notes.push(Note { level: NoteLevel::Warning, message: format!("You can render 1 to {COPIES} copies, so this estimate is for {count}.") });
     }
     let now = crate::store::now_ms();
     let shown = offers.iter().enumerate().flat_map(|(job, offers)| offers.iter().map(move |offer| MachineEstimate { job: job as u32, ..offer.shown(now) }));
     let mut machines: Vec<MachineEstimate> = shown.collect();
     machines.sort_by_key(|machine| (machine.job, !machine.fits, machine.finish_ms));
     if machines.is_empty() {
-        notes.push(Note { level: NoteLevel::Warning, message: format!("{} quotes nothing: only a machine up or on its way does", submit.on) });
+        notes.push(Note { level: NoteLevel::Warning, message: format!("There's no estimate for {}, because only a machine that's running or starting can give one.", submit.on) });
     }
     // Where it would go, if that machine can run it at all.
     let soonest = match &submit.on {
@@ -278,9 +278,9 @@ fn prebuilt(body: &[u8]) -> Result<(), Refusal> {
         Error::new(
             Kind::Usage,
             "client_outdated",
-            format!("this cozy sent a run its own way, as cozy before {version} did; Calcifer runs cozy {version}, which binds runs itself"),
+            format!("This cozy is older than {version} and sent the run in an old format. Cozy on this computer runs {version}."),
         )
-        .remedy(format!("run the installed cozy (~/.cozy/bin/cozy), or update this one to {version}")),
+        .remedy(format!("Use the installed cozy (~/.cozy/bin/cozy), or update this one to {version}.")),
     ))
 }
 
@@ -334,7 +334,6 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Resul
                 // The machine placement chose went as it was sent (a pod releasing itself that second, cl-920): placed again, once.
                 Err(e) if ask.on.len() != 1 && crate::project::GONE.contains(&e.code.as_str()) => {
                     let Prepared::Run { submit, .. } = prepare(api, key, &ask, For::Run).await? else { return Err(e) };
-                    notes.push(Note { level: NoteLevel::Warning, message: format!("{}: placed again on {}", e.message, submit.on) });
                     offer = None;
                     calcifer.submit_under(key, &digest, submit).await.map_err(refused)?
                 }
@@ -355,7 +354,7 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Resul
                     }).await.map_err(|e| Error::internal("keep_given", e.to_string()))?;
                     notes.extend(kept?.into_iter().map(|message| Note { level: NoteLevel::Warning, message }));
                 } else {
-                    notes.push(Note { level: NoteLevel::Warning, message: "the run was accepted, but its private inputs could not be added to project history while the view was closing".into() });
+                    notes.push(Note { level: NoteLevel::Warning, message: "The run started, but Cozy couldn't add its private inputs to the project's history because the project was closing.".into() });
                 }
             }
             Ok(Submitted { notes, lock, ..submitted })
@@ -445,7 +444,7 @@ enum Prepared {
 /// What a client following `run` before its ask goes again is told, when it is its machine's update to this cozy's minor.
 fn updating(run: &api::calcifer::Run) -> Option<Note> {
     let machine = run.machine.as_deref().filter(|_| run.kind == RunKind::Update)?;
-    Some(Note { level: NoteLevel::Warning, message: format!("{machine} runs another minor than this cozy: updating it to {} first", crate::update::this_release()) })
+    Some(Note { level: NoteLevel::Info, message: format!("Updating {machine} to cozy {} first.", crate::update::this_release()) })
 }
 
 /// What a prepared ask is for.
@@ -491,14 +490,12 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
         crate::private_io::check_project_placement(&project, &root, &set)?
     } else { set };
     let mut on = set.first().cloned().unwrap_or_else(|| default_on(api));
-    // Only to a machine on this cozy's minor: one on another is updated first, which the client follows, then asks again. Before
+    // A machine on an older minor this computer may move is updated first, which the client follows, then asks again (cl-1069). Before
     // anything is resolved there, local code's install too. Of several, placement does this for each.
     if let (On::Machine(machine), For::Run, 1) = (&on, purpose, set.len()) {
-        match api.machines.current(&machine).await {
-            Ok(Some(update)) => return Ok(Prepared::Install(update)),
-            Err(e) if e.code == crate::update::OTHER_MINOR => return Err(e),
-            // Not known yet: its driver asks again before it sends.
-            _ => {}
+        // Not known yet: its driver asks again before it sends.
+        if let Ok(Some(update)) = api.machines.current(&machine).await {
+            return Ok(Prepared::Install(update));
         }
     }
     // Local code installs as it resolves. A package answers for itself first: one named without a
@@ -519,7 +516,7 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
             let (run, note) = crate::cozy::update(api, wanted).await?;
             return Ok(Prepared::Cozy(run, note));
         }
-        Resolved::Release { cozy: Some(wanted), .. } => Some(Note { level: NoteLevel::Warning, message: wanted.said() }),
+        Resolved::Release { cozy: Some(wanted), .. } => Some(Note { level: NoteLevel::Info, message: wanted.said() }),
         _ => None,
     };
     let (package, function, code) = match &resolved {
@@ -527,6 +524,7 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
             let code = Code {
                 package,
                 interface: &card.interface,
+                summary: card.summary(),
                 release: Some(&card.release),
                 source: spec::Source::Release(Some(&card.release), card.digest().unwrap_or_default()),
                 files: &[],
@@ -542,6 +540,7 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
             let code = Code {
                 package: &local.package,
                 interface,
+                summary: local.from.as_ref().map_or("", |from| from.summary.as_str()),
                 release: None,
                 source: spec::Source::Local { source: &local.source, installation: local.installation.as_deref() },
                 files: &local.files,
@@ -567,7 +566,7 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     }
     let (gpu, needs_gpu) = (code.interface.gpu(callable), code.interface.needs_gpu(callable));
     let named = format!("{package}/{}", callable.name);
-    let (interface, release) = (code.interface, code.release);
+    let (interface, release, summary) = (code.interface, code.release, code.summary);
     let (mut submit, mut notes) = Box::pin(call(api, code, callable, ask, key, &hub)).await?;
     if let Resolved::Local { local, .. } = &resolved
         && let Some(from) = &local.from
@@ -587,7 +586,10 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     match &resolved {
         Resolved::Release { package, card, .. } if set.len() > 1 || estimates => {
             let (chosen, offered, said) = crate::project::run_on(api, &set, &hub, package, &card.release, &callable.name, size, gpus, needs_gpu, count, !estimates).await;
-            notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Warning, message }));
+            // Why a machine quoted nothing is an estimate's answer; a run goes to the one that finishes soonest, and says nothing of the others.
+            if estimates {
+                notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Info, message }));
+            }
             if set.len() > 1 {
                 on = match chosen {
                     Ok(chosen) => chosen,
@@ -631,18 +633,15 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     // A GPU this computer would run it poorly on, said as a render's box says it, never asked (cl-897).
     if submit.on.is_local() && gpu && ask.warm.is_none() {
         let input: serde_json::Map<String, serde_json::Value> = submit.spec.payload.as_ref().and_then(|payload| serde_json::from_str(payload.get()).ok()).unwrap_or_default();
-        if let Some(line) = crate::project::fit::here_now(api, &hub, package, release, &callable.name, interface, &input) {
-            notes.push(Note { level: NoteLevel::Warning, message: format!("{line} `--on new` rents a GPU: cozy run {named} … --on new") });
+        if let Some(line) = crate::project::fit::here_now(api, &hub, package, release, &callable.name, interface, summary, &input) {
+            notes.push(Note { level: NoteLevel::Warning, message: format!("{line} Rent a GPU to run it faster.") });
         }
     }
-    // The machine placement chose, on this cozy's minor likewise.
-    if let (On::Machine(machine), For::Run, true) = (&submit.on, purpose, placed) {
-        match api.machines.current(machine).await {
-            Ok(Some(update)) => return Ok(Prepared::Install(update)),
-            Err(e) if e.code == crate::update::OTHER_MINOR => return Err(e),
-            // Not known yet: its driver asks again before it sends.
-            _ => {}
-        }
+    // The machine placement chose, likewise.
+    if let (On::Machine(machine), For::Run, true) = (&submit.on, purpose, placed)
+        && let Ok(Some(update)) = api.machines.current(machine).await
+    {
+        return Ok(Prepared::Install(update));
     }
     if let Resolved::Release { moved: Some(moved), .. } = &resolved {
         notes.push(moved.clone());
@@ -696,8 +695,8 @@ async fn instead_of_renting(api: &Arc<Api>, run: Weighed<'_>) -> Option<(On, Str
     let (here, there) = (crate::placement::within(offer.finish_at_ms - now), crate::placement::within(new_finish - now));
     let card = rental.card.to_uppercase();
     let said = match offer.waits_for(now) {
-        Some(waits) => format!("{chosen}, on its way, finishes it {here}, a new {card} {there}: it {waits}, and nothing is rented"),
-        None => format!("{chosen} finishes it {here}, a new {card} {there}: it goes there, and nothing is rented"),
+        Some(waits) => format!("{chosen} is on its way and would finish it {here}, sooner than a new {card} ({there}). The run {waits}, and nothing new is rented."),
+        None => format!("{chosen} would finish it {here}, sooner than a new {card} ({there}), so the run goes there and nothing new is rented."),
     };
     Some((chosen, said, offers))
 }
@@ -750,6 +749,8 @@ pub(crate) fn hub(api: &Api, asked: &str) -> String {
 struct Code<'a> {
     package: &'a str,
     interface: &'a Interface,
+    /// What its package does in a line (its card's, or its checkout's), which spells its name (`tool::title`).
+    summary: &'a str,
     /// The release its inputs bind against; none for local code.
     release: Option<&'a str>,
     source: spec::Source<'a>,
@@ -822,7 +823,7 @@ async fn call(
     let (spec, bound, out) = match ask.warm {
         Some(level) => {
             if ask.gpus.is_some() {
-                notes.push(Note { level: NoteLevel::Warning, message: "GPU count applies to a run and is ignored when warming".into() });
+                notes.push(Note { level: NoteLevel::Warning, message: "The GPU count only applies to a run, so Cozy ignored it while warming up.".into() });
             }
             let (models, payload) = bind::warm_choices(
                 &target, code.release, code.interface, callable, &terms, level == WarmLevel::Gpu, &mut notes,
@@ -831,7 +832,7 @@ async fn call(
             (call.warm(level, &models, payload)?, None, None)
         }
         None => {
-            let mut bound = bind::bind(&target, code.release, code.interface, callable, &terms).await?;
+            let mut bound = bind::bind(&target, code.release, code.summary, code.interface, callable, &terms).await?;
             notes.append(&mut bound.notes);
             notes.extend(bound.cut.iter().map(|cut| Note { level: NoteLevel::Warning, message: cut.clone() }));
             if let Some(warning) = bound.warning(&target) {
@@ -863,7 +864,7 @@ async fn gpuless(api: &Api, on: &On, gpu: bool, target: &str) -> Option<String> 
     let machine = api.machines.show(name).await.ok()?;
     (machine.status.as_ref()).is_some_and(|s| s.phase == "ready" && s.gpus.is_empty()).then(|| {
         format!(
-            "{name} has no supported GPU, so {target} runs on its CPU, slowly, or not at all if it loads a model; `--on new` rents one: cozy run {target} … --on new"
+            "{name} has no supported GPU, so {target} runs on its CPU: slowly, or not at all if it loads a model. Rent a GPU to run it properly."
         )
     })
 }
@@ -879,24 +880,24 @@ pub(crate) fn callable<'a>(package: &str, interface: &'a Interface, asked: &str)
         Some(callable) if callable.internal => Err(Error::new(
             Kind::NotFound,
             "callable_internal",
-            format!("{package}/{} is an internal function", callable.name),
+            format!("{package}/{} is an internal function.", callable.name),
         )
-        .remedy("call a public function of the package")),
+        .remedy("Run one of the package's public functions.")),
         Some(callable) => Ok(callable),
         None => {
             if let Some((name, why)) = interface.unavailable.iter().find(|(name, _)| fold(name) == fold(asked)) {
                 return Err(Error::new(
                     Kind::Unavailable,
                     "callable_unreadable",
-                    format!("{package}/{name} is not readable by this cozy: {why}"),
+                    format!("This cozy can't read {package}/{name}: {why}."),
                 )
-                .remedy("update cozy, or call another function of the package")
+                .remedy("Update cozy, or run another function of the package.")
                 .next("cozy update"));
             }
             let public = interface.public();
             let mut error =
-                Error::new(Kind::NotFound, "callable_unknown", format!("{package} has no function {asked:?}"))
-                    .remedy(format!("its functions: {}", public.join(", ")));
+                Error::new(Kind::NotFound, "callable_unknown", format!("{package} has no function {asked:?}."))
+                    .remedy(format!("Its functions are {}.", public.join(", ")));
             for name in public.iter().take(2) {
                 error = error.next(format!("cozy run {package}/{name}"));
             }
@@ -914,9 +915,9 @@ pub(crate) fn recipes(package: &str, interface: &Interface) -> Error {
     let mut error = Error::new(
         Kind::Usage,
         "callable_recipe",
-        format!("{package}/{} runs its recipes", api::interface::RECIPES),
+        format!("{package}/{} runs the package's recipes, which run through model quantize.", api::interface::RECIPES),
     )
-    .remedy(format!("its recipes: {}", flags.join(", ")));
+    .remedy(format!("Its recipes are {}.", flags.join(", ")));
     for flag in flags.iter().take(2) {
         error = error.next(format!("cozy model quantize <model> {flag} --package {package}"));
     }
@@ -927,8 +928,8 @@ pub(crate) fn recipes(package: &str, interface: &Interface) -> Error {
 /// first two functions with them; without, its functions (`GET /v1/targets` lists them).
 fn unnamed(package: &str, release: Option<&str>, interface: &Interface, ask: &RunRequest) -> Error {
     let public = interface.public();
-    let mut error = Error::new(Kind::Usage, "function_unnamed", format!("name the function of {package} to run"))
-        .remedy(format!("its functions: {}", public.join(", ")));
+    let mut error = Error::new(Kind::Usage, "function_unnamed", format!("Pick which function of {package} to run."))
+        .remedy(format!("Its functions are {}.", public.join(", ")));
     let inputs: String = ask.terms.iter().map(|i| format!(" {}", quoted(i))).collect();
     let release = release.map(|r| format!("@{r}")).unwrap_or_default();
     for name in public.iter().take(2) {

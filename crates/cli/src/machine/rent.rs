@@ -20,7 +20,7 @@ pub(crate) struct Rent {
     /// Number of GPUs.
     #[arg(long, requires = "sku", value_parser = clap::value_parser!(u32).range(1..))]
     gpus: Option<u32>,
-    /// Minimum disk space in GB. Defaults to 100.
+    /// Minimum disk space in GB. Defaults to 300 (a host that offers less gives its largest).
     #[arg(long, requires = "sku", value_parser = clap::value_parser!(u32).range(1..))]
     disk_gb: Option<u32>,
     /// SSH public key file. Omit the path to use your default key.
@@ -102,9 +102,6 @@ pub(crate) async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
             "the Hub plans a {} GB disk, below the {asked} GB asked",
             rented.quote.disk_gb
         ));
-    }
-    if rented.replay {
-        output::say(ctx, "this order was placed already; following it");
     }
     let machine = match follow(ctx, rented.machine.clone(), notices).await? {
         Followed::Ready(machine) => machine,
