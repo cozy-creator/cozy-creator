@@ -23,6 +23,8 @@ interface Options {
   store: CanvasStore
   client: Client
   invalidate(): void
+  /** Drawn on the CPU: each frame is the whole canvas rastered in software, so nothing animates by the frame that needn't. */
+  software?: boolean
 }
 
 const TITLE = 15.5 * 1.35
@@ -777,14 +779,16 @@ export class PixiScene {
       if (loading) {
         const body = pictureBox(drawn.node)
         const phase = Math.max(0, now - loading.began) % 2800 / 1400
-        loading.alpha = this.reducedMotion.matches ? 0.04 : 0.08 * ease(phase <= 1 ? phase : 2 - phase, 0.42, 0, 0.58, 1)
+        // In software, a pulse would redraw the whole canvas each frame and starve the very loads it waits on: it holds still, as reduced motion has it.
+        const still = this.reducedMotion.matches || this.options.software
+        loading.alpha = still ? 0.04 : 0.08 * ease(phase <= 1 ? phase : 2 - phase, 0.42, 0, 0.58, 1)
         const shape = `${body.w}:${body.h}:${this.palette!.colors.ink}`
         if (loading.shape !== shape) {
           loading.shape = shape
           loading.graphics.clear().rect(body.x - drawn.node.box.x, body.y - drawn.node.box.y, body.w, body.h).fill(this.palette!.colors.ink)
         }
         loading.graphics.alpha = loading.alpha
-        if (!this.reducedMotion.matches) animated = true
+        if (!still) animated = true
       }
       const wave = drawn.wave
       if (!wave) continue

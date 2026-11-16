@@ -8,7 +8,9 @@ export const MIN_TEXTURE_WIDTH = 256
 const MIB = 1024 * 1024
 const CACHE_BYTES = 768 * MIB
 const UNUSED_BYTES = 64 * MIB
-const LOADS = 6
+/** Every picture in view is asked for at once (cl-982): the browser queues them on its own connections, and a slot is held only until its
+ *  texture is made. A bound still, so a 5,000-card view doesn't hold thousands of decodes at once. */
+const LOADS = 64
 const span = (name: string, start: number) => { try { performance.measure(name, { start, end: performance.now() }) } catch { /* diagnostics only */ } }
 
 export interface MediaRequest {
@@ -186,7 +188,9 @@ export class MediaCache {
         this.sourceBytes += blobBytes
         this.fetchedBytes += blobBytes
         stage = "decode"
-        raw = await createImageBitmap(blob)
+        // A thumbnail is at most THUMB_SOURCE_WIDTH wide: one wanted narrower is decoded at its width in the same step.
+        const narrower = request.sha256 && request.width < THUMB_SOURCE_WIDTH ? Math.max(MIN_TEXTURE_WIDTH, request.width) : 0
+        raw = await (narrower ? createImageBitmap(blob, { resizeWidth: narrower, resizeQuality: "high" }) : createImageBitmap(blob))
         step("cozy.thumb.decode")
       }
       if (!live()) return
