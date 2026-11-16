@@ -536,8 +536,9 @@ pub(crate) struct ProgressSnapshot {
     pub at_ms: u64,
 }
 
-/// What a machine had of what a call loads and what it fetches for it, in bytes (cl-1102, `access::Needs`): `has`, what of its needs
-/// was here; `needs`, what wasn't, all its call waits on; `extras`, what comes besides in the background, which nothing waits on.
+/// What a machine had of what a call loads and what it waits for, in bytes (cl-1102, `access::Needs`): `has`, what of its needs
+/// was here; `needs`, what wasn't, all its call waits on (it comes once: an earlier run's download may be what brings it, so runs'
+/// needs don't sum to what a machine downloaded); `extras`, what comes besides in the background, which nothing waits on.
 /// Read as a run's measurements' `weights` (`cozy run watch --full`, the release gate's cells).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct Account {

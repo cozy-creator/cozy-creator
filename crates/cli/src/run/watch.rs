@@ -140,8 +140,9 @@ pub(crate) async fn exec(
     Ok(follow::exit_code(&run))
 }
 
-/// What the run's machine had of the weights it loads and what it downloaded for it, as its measurements say (`weights`, cl-1102):
-/// only what wasn't there is downloaded before it starts; extras come in the background, and it never waits for them.
+/// What the run's machine had of the weights it loads and what it waited for, as its measurements say (`weights`, cl-1102): only
+/// what wasn't there comes before it starts, once, whichever run's download brings it; extras come in the background, and it
+/// never waits for them.
 fn weights(run: &Run) -> Option<String> {
     let weights = run.measurements.as_ref()?.get("weights")?;
     let bytes = |key: &str| weights.get(key).and_then(serde_json::Value::as_u64).unwrap_or(0);
@@ -149,8 +150,8 @@ fn weights(run: &Run) -> Option<String> {
     let mut words = match (needs, has) {
         (0, 0) => return None,
         (0, has) => format!("all {} already on this machine", output::bytes(has)),
-        (needs, 0) => format!("downloaded {}", output::bytes(needs)),
-        (needs, has) => format!("downloaded {}; {} already on this machine", output::bytes(needs), output::bytes(has)),
+        (needs, 0) => format!("waited for {} to download", output::bytes(needs)),
+        (needs, has) => format!("waited for {} to download; {} already on this machine", output::bytes(needs), output::bytes(has)),
     };
     if extras > 0 {
         words += &format!("; {} more in the background, not waited for", output::bytes(extras));
