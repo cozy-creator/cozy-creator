@@ -436,7 +436,7 @@ while read -r why; do check "ondemand-need: $why"; done < "$OUT/ondemand-need.fa
 
 # cl-1101 (Paul, 11-16): "We can download extras (Z) in the background, in anticipation of maybe needing them, but they aren't in
 # the critical path of inference (user request) so they shouldn't be waited on." A call's on-demand models are its guesses, wanted
-# with its needs, and the downloader started them beside its needs: each range took its share of the link. enhance.py's `plain`
+# with its needs, and the downloader started them beside its needs: each range took its share of the link. enhance.py's `behind`
 # needs its model (16 MiB: 1.7 s alone over this 10 MB/s link) and guesses two prompt enhancers (96 MiB each) it never reads: its
 # model took 6.5 s and its function started 5 s late (run 43955873288). No guess starts while a need of any run is under way.
 ondemand_behind() {
@@ -445,7 +445,7 @@ step "a call's guesses never take the link from its needs (cl-1101)"
 local began
 slow_store ondemand-behind 80mbit || return 0
 began=$(date -u +%s%3N)
-cell ondemand-behind "$here/script/enhance.py/plain" prompt_upsampling:=false seconds:=6 || :
+cell ondemand-behind "$here/script/enhance.py/behind" prompt_upsampling:=false seconds:=6 || :
 sudo tc qdisc del dev lo root || check "ondemand-behind: the store's link wasn't restored"
 cozy machine logs local --lines 0 --since 1h > "$OUT/ondemand-behind.tensord.log" 2>&1 || check "ondemand-behind: machine logs local failed"
 python3 - "$OUT" "$began" <<'JUDGE' > "$OUT/ondemand-behind.timeline.json" 2> "$OUT/ondemand-behind.failed" || true
@@ -490,8 +490,8 @@ while read -r why; do check "ondemand-behind: $why"; done < "$OUT/ondemand-behin
 }
 
 # cl-1101 (Paul, 11-16): "the same goes for qwen image 2.1 image's prompt enhancer; it has two (T2I and I2I) but we only need one
-# when we get a request." Qwen Image 2.1's `expander` (a prompt of words) and `rewriter` (one with pictures) are both on demand,
-# and a request reads at most one, as its first stage. enhance.py is that function three times, each with a model (16 MiB) and two
+# when we get a request." Qwen Image 2.1's `expander` (a prompt of words) and `rewriter` (one with pictures) are each needed by a
+# rule over the request (cl-1103), and a request reads at most one, as its first stage. enhance.py is that function three times, each with a model (16 MiB) and two
 # enhancers (96 MiB each) of its own, so each request starts cold, over a 10 MB/s link: `words` reads its expander, `edit` its
 # rewriter, `plain` (prompt_upsampling off) neither. A request fetches the enhancer it reads with its other weights, before its
 # function starts, and nothing of the other. ondemand-enhancers.json keeps what each fetched, at which order of the download

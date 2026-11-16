@@ -721,7 +721,7 @@ case $SHARD in
   ondemand-share) parts="ondemand_share logs" ;;
   # A model's weights alone through the 60 Mbit link, timed, with the streams the ramp settled at (th-378).
   ondemand-ramp) parts="ondemand_ramp logs" ;;
-  # What a request with two on-demand prompt enhancers fetches, and when (cl-1101): by dispatch until a request says which it reads.
+  # What a request with two prompt enhancers fetches, and when (cl-1101): the one its function's rule names (cl-1103).
   ondemand-enhancers) parts="ondemand_enhancers logs" ;;
   # A small disk full of idle models' weights makes room for the next runs' (tfs-150).
   disk) parts="disk_full logs" ;;
