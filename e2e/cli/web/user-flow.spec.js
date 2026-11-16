@@ -161,6 +161,7 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
   const runs = new Map(), machines = new Map(), last = new Map(), waiters = new Set(), watching = new Set();
   let heard = 0;
   const mine = (run) => run.project_id === project.id || run.project === project.name;
+  const ourMachine = (one) => Object.values(flow.machines).some((m) => (m.name && m.name === one.name) || (m.rental_id && m.rental_id === one.rental_id));
   const watch = (run) => {
     // Each run's own events, by the CLI, from its first sight: its progress frames aren't in its log after.
     const name = run.name || String(run.number);
@@ -183,7 +184,7 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
         Object.assign(m, { left_at: at, left_state: was?.state ?? null });
         keep();
       }
-      for (const waiter of waiters) waiter.moved();
+      for (const waiter of waiters) waiter.moved(ourMachine({ name: event.id, rental_id: was?.rental_id }));
       return;
     }
     const key = event.run ? `run ${event.run.id}` : event.machine ? `machine ${event.machine.name}` : null;
@@ -195,18 +196,20 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
       runs.set(event.run.id, { ...event.run, seen_at: runs.get(event.run.id)?.seen_at ?? at });
       if (mine(event.run) && event.run.kind === 'call') watch(event.run);
     } else machines.set(event.machine.name, event.machine);
-    for (const waiter of waiters) waiter.moved();
+    // The account's other machines and other projects' runs are on this stream too: only ours say this flow is still moving.
+    for (const waiter of waiters) waiter.moved(event.run ? mine(event.run) : ourMachine(event.machine));
   });
   await context.exposeBinding('__flowSeen', (source, at, key, text) => appendFileSync(join(FLOW, 'seen.ndjson'), `${JSON.stringify({ at, key, text })}\n`));
   await context.addInitScript(recorders);
 
-  /** Until `holds()` answers, each time what the page reads changes; fails once nothing has for QUIET_MS, or after STEP_MS. */
+  /** Until `holds()` answers, each time what the page reads changes; fails once nothing of ours (this project's runs, the machines it
+   *  rented) has for QUIET_MS, or after STEP_MS. */
   const until = (what, holds) => new Promise((done, fail) => {
     const began = Date.now();
     let moved = began;
     const waiter = {
-      moved() {
-        moved = Date.now();
+      moved(ours = true) {
+        if (ours) moved = Date.now();
         try { const got = holds(); if (got) { stop(); done(got); } } catch (error) { stop(); fail(error); }
       },
     };
@@ -529,16 +532,19 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
     await test.step('every take lands in the project and shows', async () => {
       // Focus stays on the Shot (two takes, one per machine when placed well) until both land, then on the plate's edit.
       const takes = async (name) => (await project.asset(name))?.versions ?? 0;
-      const want = { [SHOT]: 3, plate: 2 };
+      // A take for each run that completed, beside the plate's own file: a run that failed lands none, and nothing waits for one.
+      const held = { [SHOT]: 0, plate: 1 };
       for (const name of [SHOT, 'plate']) {
         await look(name);
-        await until(`${name}'s takes`, () => {
+        const ended = await until(`${name}'s takes`, () => {
           const mineNow = flow.sent.filter((sent) => sent.box === name && sent.run).map((sent) => runs.get(sent.run));
           return mineNow.every((run) => run && settled(run)) ? mineNow : null;
         });
         await shot(`${name}-settled`);
+        const made = ended.filter((run) => run.status === 'completed').length;
         try {
-          await expect.poll(() => takes(name), { message: `${name}'s takes landed`, timeout: 900_000, intervals: [5_000] }).toBeGreaterThanOrEqual(want[name]);
+          if (made < ended.length) throw new Error(`${made} of its ${ended.length} runs completed: ${ended.map((run) => `${run.name} ${run.status}${run.reason?.code ? ` (${run.reason.code})` : ''}`).join(', ')}`);
+          await expect.poll(() => takes(name), { message: `${name}'s takes landed`, timeout: 900_000, intervals: [5_000] }).toBeGreaterThanOrEqual(held[name] + made);
           mark(`${name}'s takes landed`);
         } catch (error) {
           failed(`${name}'s takes landed`, error);
