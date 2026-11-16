@@ -194,7 +194,8 @@ case $shard in
 esac
 case $key in
   cli:entrypoints | cli:executors | cli:projectdb-cancel | cli:local-wake | cli:containment | cli:containment-web | cli:projectvault-static | cli:projectvault-static-distros) needs='' ;;
-  cli:selfupdate) needs='next' ;;
+  # forward's run that moves local's Runtime for its project (cl-1055).
+  cli:selfupdate) needs='next scratch' ;;
   cli:runs) needs='packages birefnet' ;;
   # project_runtime's probe (cl-1055).
   cli:local-code) needs='packages birefnet scratch' ;;
@@ -301,8 +302,13 @@ if [ "$suite" = imports ]; then
   log "imports locks verified against the owned Hub; authoritative checkout unchanged"
 fi
 
-if [ "$needs" = next ]; then
+if [[ " $needs " == *" next "* ]]; then
   next
+  needs=${needs/next/} && needs=${needs# }
+fi
+# The probe alone (selfupdate's forward, cl-1055), without the first-party packages.
+if [ "$needs" = scratch ]; then
+  publish "$here/cli/scratch"
   needs=''
 fi
 if [ -n "$needs" ]; then

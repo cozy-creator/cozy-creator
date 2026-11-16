@@ -362,6 +362,17 @@ async fn release_of(api: &Arc<Api>, hub: &str, package: &str, release: Option<&s
             format!("{shown} {release} needs cozy-runtime{needs}, and {machine} is held on Runtime {} by hand: `cozy machine update {machine}` lets it move", held.runtime),
         )
         .next(format!("cozy machine update {machine}")),
+        // Below this cozy's minor with this cozy's Runtime not to be had now (offline, none named for this cozy): the update names it.
+        api::release::Refused::Unmet { .. }
+            if project && !api::release::on_runtime_minor(&held.runtime) && !held.runtimes.iter().any(|runtime| api::release::on_runtime_minor(runtime)) =>
+        {
+            Error::new(
+                Kind::Unavailable,
+                "runtime_outdated",
+                format!("{machine} runs Runtime {}, below this cozy's, and this cozy's Runtime can't be had for it now: `cozy machine update {machine}` moves it", held.runtime),
+            )
+            .next(format!("cozy machine update {machine}"))
+        }
         api::release::Refused::Unmet { release, needs } => Error::new(
             Kind::Conflict,
             "runtime_unmet",

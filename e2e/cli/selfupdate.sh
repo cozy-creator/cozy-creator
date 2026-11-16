@@ -92,6 +92,22 @@ for _ in $(seq 36); do
   sleep 5
 done
 [ -n "$listed" ] || check "forward update: cozy $latest's run $id isn't listed completed on $candidate: $(tail -c 300 "$OUT/fw-runs.json")"
+# The upgrade a person meets (cl-1055): local still on the Latest's Runtime, below the candidate's minor. A project's run moves it to
+# the candidate's own Runtime first, saying so, completes, and its call's temporary file is in its project's scratch.
+local moved_from temporary
+(machine_ready) || return 0
+moved_from=$(jq -r '.status.runtime' "$OUT/machine.json")
+in_project "$P" run e2e-scratch/probe "marker=FW_MOVED_$RANDOM" --on local > "$OUT/fw-moved.out" 2> "$OUT/fw-moved.err" \
+  || check "forward update: a project's probe on local (Runtime $moved_from) failed on $candidate: $(tail -c 400 "$OUT/fw-moved.err")"
+grep -q "upgrading local.s Runtime $moved_from → [^ ]* for this project" "$OUT/fw-moved.err" \
+  || check "forward update: the run didn't say it upgrades local's Runtime $moved_from for this project: $(tail -c 400 "$OUT/fw-moved.err")"
+temporary=$(grep -o '"temporary": *"[^"]*"' "$OUT/fw-moved.out" | tail -1 | sed 's/.*: *"//; s/"$//') || temporary=
+case $temporary in
+  "$(realpath "$P")"/.vault-machine/scratch/*) ;;
+  *) check "forward update: the moved run's temporary file was ${temporary:-nowhere said}, not in its project's scratch" ;;
+esac
+(machine_ready) || return 0
+echo "forward update: a project's run moved local from Runtime $moved_from to $(jq -r .status.runtime "$OUT/machine.json")"
 # The candidate set on local, as the suite's start puts it: a dev build is no release for the update to move it to.
 [ ! -f "${CAND_COZY:-}" ] || up+=(--tensord "$CAND_COZY")
 [ -z "$CAND_TFS" ] || up+=(--tensorfs "$CAND_TFS")

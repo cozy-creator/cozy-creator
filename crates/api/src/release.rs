@@ -63,6 +63,15 @@ pub fn for_project(needs: Option<VersionSpecifiers>) -> VersionSpecifiers {
     needs.iter().flat_map(|needs| needs.iter().cloned()).chain(floor.iter().cloned()).collect()
 }
 
+/// Whether a Runtime `version` is of this cozy's minor itself (`RUNTIME_MINOR`'s major and minor): what a machine below the minor may
+/// move to, never a later minor's.
+pub fn of_runtime_minor(version: &str) -> bool {
+    let floor = VersionSpecifiers::from_str(RUNTIME_MINOR).expect("RUNTIME_MINOR is a specifier");
+    let minor = |version: &Version| (version.release().first().copied().unwrap_or(0), version.release().get(1).copied().unwrap_or(0));
+    let ours = floor.iter().next().map(|specifier| minor(specifier.version()));
+    Version::from_str(version).is_ok_and(|version| Some(minor(&version)) == ours)
+}
+
 /// Whether a Runtime `version` is on this cozy's minor (`RUNTIME_MINOR`), so it keeps a project's call in its project. A version
 /// that doesn't read isn't.
 pub fn on_runtime_minor(version: &str) -> bool {

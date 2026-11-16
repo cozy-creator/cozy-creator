@@ -844,10 +844,10 @@ fi
 # 0.10.0rc1 failed to import on 0.45.0, 47170). Holding e2e-newer 0.1.0 (asked by name), an unversioned run takes 0.1.1
 # and says it's newer (47617 stayed on minimax-h3 0.11.1 after 0.12.0rc2).
 held_prerelease() {
-step "an unversioned run takes the newest release its machine runs; off the RC never a prerelease (cl-952, se-128)"
+step "an unversioned run takes the newest release its machine runs; held below this cozy's Runtime minor, a project's run is refused (cl-952, se-128, cl-1055)"
 [ -n "$LOCAL" ] || return 0
 [ -n "${E2E_HELD:-}" ] || { check "held prerelease: isolated.sh published no e2e-held: ${E2E_HELD_REFUSED:-not seeded}"; return; }
-local released=${HELD_RUNTIME:-0.45.1} was
+local released=${HELD_RUNTIME:-0.45.1} was code=0
 machine_ready
 case $(jq -r '.status.runtime // empty' "$OUT/machine.json") in *+dev*) ;; *) echo "held prerelease: local isn't on an RC build"; return 0 ;; esac
 was=${CAND_RT:-$(jq -r '.status.runtime // empty' "$OUT/machine.json")}
@@ -855,20 +855,22 @@ if cell held-prerelease-rc "$E2E_HELD/relay" "text=on the RC"; then
   grep -q '0\.2\.0rc1' "$OUT/held-prerelease-rc.ndjson" \
     || check "held prerelease: local on an RC build didn't take 0.2.0rc1: $(grep -o '"target": *"[^"]*"' "$OUT/held-prerelease-rc.ndjson" | head -1)"
 fi
-cozy --json machine update local --runtime "$released" -y > "$OUT/held-update.json" 2>&1 \
-  || { check "held prerelease: local refused Runtime $released: $(tail -c 300 "$OUT/held-update.json")"; return; }
-machine_ready
-if cell held-prerelease "$E2E_HELD/relay" "text=off the RC"; then
-  grep -q 'relay@0\.1\.0"' "$OUT/held-prerelease.ndjson" && ! grep -q '0\.2\.0rc' "$OUT/held-prerelease.ndjson" \
-    || check "held prerelease: local on Runtime $released didn't run e2e-held 0.1.0: $(grep -o '"target": *"[^"]*"' "$OUT/held-prerelease.ndjson" | head -1)"
-fi
-# Unversioned, in words as a person reads it: the run says what it moved to.
+# Unversioned, in words as a person reads it: the run says what it moved to. On the RC's Runtime: a project's run needs this cozy's
+# Runtime minor (cl-1055).
 if cell held-newer-old "$E2E_NEWER/relay@0.1.0" "text=asked 0.1.0"; then
   in_project "$RUN_PROJECT" run "$E2E_NEWER/relay" text=newer --on local > "$OUT/held-newer.out" 2> "$OUT/held-newer.err" \
     || check "held prerelease: the unversioned e2e-newer run failed: $(tail -c 300 "$OUT/held-newer.err")"
   grep -q 'e2e-newer 0.1.1, newer than local.s 0.1.0' "$OUT/held-newer.err" \
     || check "held prerelease: holding e2e-newer 0.1.0, the run didn't say it takes 0.1.1: $(tail -c 300 "$OUT/held-newer.err")"
 fi
+cozy --json machine update local --runtime "$released" -y > "$OUT/held-update.json" 2>&1 \
+  || { check "held prerelease: local refused Runtime $released: $(tail -c 300 "$OUT/held-update.json")"; return; }
+machine_ready
+# Held on a release below this cozy's Runtime minor, off the RC: a project's run is refused naming the update, and runs nothing.
+in_project "$RUN_PROJECT" --json run "$E2E_HELD/relay" "text=off the RC" --on local > "$OUT/held-prerelease.ndjson" 2> "$OUT/held-prerelease.err" || code=$?
+[ "$code" != 0 ] && grep -q '"runtime_held"' "$OUT/held-prerelease.ndjson" "$OUT/held-prerelease.err" \
+  && grep -q 'cozy machine update local' "$OUT/held-prerelease.ndjson" "$OUT/held-prerelease.err" \
+  || check "held prerelease: held on Runtime $released, a project's e2e-held run wasn't refused runtime_held naming cozy machine update local: exit $code $(tail -c 300 "$OUT/held-prerelease.ndjson") $(tail -c 300 "$OUT/held-prerelease.err")"
 cozy --json machine update local --runtime "$was" -y > "$OUT/held-back.json" 2>&1 \
   || check "held prerelease: local refused Runtime $was again: $(tail -c 300 "$OUT/held-back.json")"
 machine_ready
@@ -983,7 +985,7 @@ in_project "$RUN_PROJECT" run e2e-scratch/probe "marker=CL1055_MOVED_$RANDOM" --
 grep -q "upgrading local.s Runtime 0.45.0 → 0.4[7-9][^ ]* for this project" "$OUT/floor-upgrade.err" \
   || check "runtime floor: the run didn't say it upgrades local's Runtime for this project: $(tail -c 400 "$OUT/floor-upgrade.err")"
 local temporary
-temporary=$(grep -o '"temporary": *"[^"]*"' "$OUT/floor-upgrade.out" | tail -1 | sed 's/.*: *"//; s/"$//')
+temporary=$(grep -o '"temporary": *"[^"]*"' "$OUT/floor-upgrade.out" | tail -1 | sed 's/.*: *"//; s/"$//') || temporary=
 case $temporary in
   "$(realpath "$RUN_PROJECT")"/.vault-machine/scratch/*) ;;
   *) check "runtime floor: the moved run's temporary file was ${temporary:-nowhere said}, not in its project's scratch" ;;
