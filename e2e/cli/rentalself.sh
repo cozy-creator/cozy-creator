@@ -60,7 +60,7 @@ rental_self_case() {
 rental_queue() {
   [ "$RUNNER_OS" = Linux ] || return 0
   step "a rental's check-ins come back through a link a download fills, after its Hub connection drops (th-378)"
-  local dir=$OUT/rentalqueue standin pid hub provider ca port bulk www cut rtt tsq curls=() i
+  local dir=$OUT/rentalqueue standin pid hub provider ca port bulk www cut rtt tsq rmem wmem curls=() i
   rm -rf "$dir" && mkdir -p "$dir/home/.cozy" "$dir/root" "$dir/www"
   printf '[machine]\nidle_seconds = 3600\n' > "$dir/home/.cozy/config.toml"
   python3 "$here_rentalself/rentalself/standin.py" serve "$dir" queue > "$dir/standin.log" 2>&1 & standin=$!
@@ -80,10 +80,12 @@ rental_queue() {
     bulk=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
     python3 -m http.server "$bulk" --bind 127.0.0.1 --directory "$dir/www" > "$dir/bulk.log" 2>&1 & www=$!
     sleep 1
-    # TCP small queues keep each socket's own share of a local qdisc to a few hundred KB, which a router's queue on a pod's path
-    # isn't: raised here, so the loopback FIFO fills as that one does.
-    tsq=$(sysctl -n net.ipv4.tcp_limit_output_bytes)
-    if sudo sysctl -qw net.ipv4.tcp_limit_output_bytes=16777216 && sudo ip link set dev lo mtu 1500 && sudo tc qdisc add dev lo root handle 1: prio \
+    # TCP small queues keep each socket's own share of a local qdisc to a few hundred KB, and buffer autotuning sizes each
+    # stream's window to the round trip it has seen, neither of which holds a router's queue on a pod's path down: both raised
+    # here, so the loopback FIFO fills as that one does.
+    tsq=$(sysctl -n net.ipv4.tcp_limit_output_bytes) rmem=$(sysctl -n net.ipv4.tcp_rmem) wmem=$(sysctl -n net.ipv4.tcp_wmem)
+    if sudo sysctl -qw net.ipv4.tcp_limit_output_bytes=16777216 net.ipv4.tcp_rmem="4096 8388608 16777216" \
+      net.ipv4.tcp_wmem="4096 8388608 16777216" && sudo ip link set dev lo mtu 1500 && sudo tc qdisc add dev lo root handle 1: prio \
       && sudo tc qdisc add dev lo parent 1:3 handle 30: tbf rate 8mbit burst 32kb limit 4mb \
       && sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport "$hub" 0xffff flowid 1:3 \
       && sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport "$bulk" 0xffff flowid 1:3; then
@@ -106,8 +108,9 @@ after = [e["at"] - cut for e in map(json.loads, open(events)) if e["kind"] == "c
 print(f"rental_queue: a round trip through the queue {rtt} s; {len(after)} check-ins in the 100 s after the cut, the first at "
       f"{after[0]:.1f} s" if after else f"rental_queue: a round trip through the queue {rtt} s; no check-in in the 100 s after the cut",
       file=sys.stderr)
-if not rtt or float(rtt) < 3:
-    print(f"the queue's round trip was {rtt or 'unmeasured'} s, under the 3 s a deep queue gives: the cell did not make the link it means to")
+if not rtt or float(rtt) < 5:
+    print(f"a request through the queue took {rtt or 'unmeasured'} s, under the 5 s that makes a connect and its TLS overrun 5 s: "
+          "the cell did not make the link it means to")
 elif running < started:
     print(f"the download ended before the cell did ({running} of {started} streams still running): the link wasn't full throughout")
 elif not after:
@@ -118,7 +121,7 @@ PY
     else
       check "rental_queue: the bottleneck wasn't made"
     fi
-    sudo tc qdisc del dev lo root 2> /dev/null; sudo ip link set dev lo mtu 65536; sudo sysctl -qw net.ipv4.tcp_limit_output_bytes="$tsq"
+    sudo tc qdisc del dev lo root 2> /dev/null; sudo ip link set dev lo mtu 65536; sudo sysctl -qw net.ipv4.tcp_limit_output_bytes="$tsq" net.ipv4.tcp_rmem="$rmem" net.ipv4.tcp_wmem="$wmem"
     kill "$www" 2> /dev/null
   fi
   kill -KILL -- "-$pid" 2> /dev/null || true
