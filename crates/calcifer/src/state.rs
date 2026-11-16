@@ -252,6 +252,20 @@ impl Store {
 
     /// `id`, called `name`, in `path`, opened at `used_at_ms` (none: when it was last, or now if it's new here); whether it was walking stands.
     pub(crate) fn project_opened(&self, id: &str, _name: &str, path: &Path, _used_at_ms: Option<i64>, preferred: Option<&str>) -> Result<String> {
+        // Already so, as at nearly every open: read, the writer untouched (cl-1010: each open wrote it, and waited on whatever held the writer).
+        let kept = self.read(|conn| {
+            let kept = conn.query_row(
+                "SELECT code FROM projects WHERE id = ?1 AND path = ?2 AND code <> ''
+                   AND NOT EXISTS (SELECT 1 FROM projects WHERE path = ?2 AND id <> ?1)
+                   AND NOT EXISTS (SELECT 1 FROM projects_gone WHERE id = ?1 OR path = ?2)",
+                params![id, path.to_string_lossy()],
+                |row| row.get::<_, String>(0),
+            );
+            Ok(kept.optional()?)
+        })?;
+        if let Some(code) = kept.filter(|code| preferred.is_none_or(|preferred| preferred == code)) {
+            return Ok(code);
+        }
         self.write(|tx| {
             tx.execute("DELETE FROM projects WHERE path = ?2 AND id <> ?1", params![id, path.to_string_lossy()])?;
             tx.execute("DELETE FROM projects_gone WHERE id = ?1 OR path = ?2", params![id, path.to_string_lossy()])?;
@@ -267,6 +281,23 @@ impl Store {
     /// `review`: a key it holds that another folder's name proposes first, and none of `own` (its own name's and folder's), goes, with
     /// every key it had: true. Each other held key free here names it too.
     pub(crate) fn project_keyed(&self, id: &str, path: &Path, held: &[String], own: &[String], review: bool, mut proposed: impl Iterator<Item = String>) -> Result<(String, bool)> {
+        // Already so, as at nearly every open (one not under review): its key now is its project.db's, and each other key it keeps names
+        // it or another project here. Read, the writer untouched (cl-1010).
+        let kept = if review { None } else {
+            self.read(|conn| {
+                let Some(last) = held.last() else { return Ok(None) };
+                let ours = |key: &str, current: bool| {
+                    conn.query_row("SELECT EXISTS (SELECT 1 FROM project_keys WHERE key = ?1 AND id = ?2 AND current >= ?3)", params![key, id, current], |row| row.get::<_, bool>(0))
+                };
+                for key in held.iter().filter(|key| api::calcifer::project::key(key).as_ref() == Some(*key)) {
+                    if !ours(key, false)? && key_free(conn, id, key)? { return Ok(None); }
+                }
+                Ok(ours(last, true)?.then(|| last.clone()))
+            })?
+        };
+        if let Some(key) = kept {
+            return Ok((key, false));
+        }
         self.write(|tx| {
             let mut statement = tx.prepare("SELECT path FROM projects WHERE id <> ?1")?;
             let paths = statement.query_map([id], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;

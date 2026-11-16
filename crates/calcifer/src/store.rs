@@ -559,6 +559,33 @@ impl Drop for Reader<'_> {
 /// Group commit. A commit only writes the WAL, under the writer lock; one flush of the WAL then
 /// makes every commit before it durable. Writes waiting together share a flush, so on a disk
 /// whose flush takes seconds a write waits one or two of them, not one per write queued ahead.
+/// The WAL's pages that start a checkpoint beside the writer: SQLite's own autocheckpoint size.
+const CHECKPOINT_PAGES: std::ffi::c_int = 1000;
+
+/// Checkpoints run beside the writer, never in a commit: once `writer`'s commit leaves CHECKPOINT_PAGES in the WAL, a passive one of
+/// `path` runs on a thread and a connection of its own, one at a time (the hook replaces SQLite's autocheckpoint). SQLite's own ran in
+/// whichever commit filled the WAL, holding the writer: one after a prune's deletions held it 1.4 s, and every request that wrote waited
+/// (cl-1010).
+fn checkpoint_beside(writer: &mut Connection, path: &Path) -> rusqlite::Result<()> {
+    let (path, going) = (path.to_owned(), std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
+    writer.wal_hook(Some(move |_: &mut rusqlite::hooks::Wal, pages: std::ffi::c_int| {
+        if pages >= CHECKPOINT_PAGES && !going.swap(true, Ordering::AcqRel) {
+            let (path, going) = (path.clone(), going.clone());
+            std::thread::spawn(move || {
+                let done = Connection::open(&path).and_then(|conn| {
+                    register_owner(&conn, None)?;
+                    conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()))
+                });
+                if let Err(e) = done {
+                    tracing::warn!("state.db: a checkpoint beside the writer: {e}");
+                }
+                going.store(false, Ordering::Release);
+            });
+        }
+        Ok(())
+    }))
+}
+
 struct Durable {
     /// None: SQLite syncs each commit itself (not in WAL mode).
     wal: Option<PathBuf>,
@@ -1871,6 +1898,7 @@ impl Store {
         said("store_readers", rest);
         let mut journal = path.as_os_str().to_owned();
         journal.push("-wal");
+        if wal { checkpoint_beside(&mut writer, path)?; }
         Ok(Self {
             writer: Mutex::new(writer),
             readers,

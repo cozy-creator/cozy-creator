@@ -36,19 +36,35 @@ static WAKE: Notify = Notify::const_new();
 static DUE: Mutex<BTreeMap<String, i64>> = Mutex::new(BTreeMap::new());
 /// Calcifer, whose store keeps the due times.
 static KEPT: OnceLock<std::sync::Weak<crate::Calcifer>> = OnceLock::new();
+/// What state.db holds of them: a keep of what's there already writes nothing (a purge of a project with nothing deleted keeps none).
+static PERSISTED: Mutex<BTreeMap<String, i64>> = Mutex::new(BTreeMap::new());
 
 /// `id`'s next due time as `DUE` now holds it, kept for the next start if it's a plaintext project's, and none kept of any other; a
 /// store that can't keep it is said, and an open looks again.
 fn keep(id: &str) {
+    let due = DUE.lock().expect("purge due lock").get(id).copied();
+    let mut persisted = PERSISTED.lock().expect("purge persisted lock");
+    if persisted.get(id).copied() == due {
+        return;
+    }
     let Some(calcifer) = KEPT.get().and_then(std::sync::Weak::upgrade) else { return };
     let store = calcifer.store();
     let at = match store.known_project(id) {
-        Ok(Some(project)) if !vault::encrypted(&project.path) => DUE.lock().expect("purge due lock").get(id).copied(),
+        Ok(Some(project)) if !vault::encrypted(&project.path) => due,
         Ok(_) => None,
         Err(e) => return warn!("a project's next purge isn't kept: {e}"),
     };
-    if let Err(e) = store.keep_purge_due(id, at) {
-        warn!("a project's next purge isn't kept: {e}");
+    if persisted.get(id).copied() == at {
+        return;
+    }
+    match store.keep_purge_due(id, at) {
+        Ok(()) => {
+            let _ = match at {
+                Some(at) => persisted.insert(id.to_owned(), at),
+                None => persisted.remove(id),
+            };
+        }
+        Err(e) => warn!("a project's next purge isn't kept: {e}"),
     }
 }
 
@@ -56,8 +72,25 @@ fn keep(id: &str) {
 /// reads them again.
 pub(crate) fn forget(store: &crate::store::Store, id: &str) {
     DUE.lock().expect("purge due lock").remove(id);
-    if let Err(e) = store.keep_purge_due(id, None) {
-        warn!("a project let go keeps its next purge: {e}");
+    let mut persisted = PERSISTED.lock().expect("purge persisted lock");
+    if persisted.contains_key(id) {
+        match store.keep_purge_due(id, None) {
+            Ok(()) => {
+                persisted.remove(id);
+            }
+            Err(e) => warn!("a project let go keeps its next purge: {e}"),
+        }
+    }
+}
+
+/// Project `id` opened, its document read: looked at now if a box of it is set aside (one set aside before cl-919 counts from now), else
+/// not. An open of a project with nothing deleted asks for no purge (cl-1010: each open asked for one, and a project a run list opens
+/// closes again after it, so each ask loaded it again for a purge).
+pub(crate) fn opened(id: &str, folder: &Folder) {
+    let legacy = |row: &super::folder::RunFile| row.run == 0 && row.output == "deleted";
+    let set_aside = folder.reading_lock(|lock| lock.assets.keys().any(|key| key.contains(TOMBSTONE)) || lock.runs.iter().any(legacy));
+    if !matches!(set_aside, Ok(false)) {
+        due(id, now_ms());
     }
 }
 
@@ -116,7 +149,10 @@ fn settled(id: &str, was_ms: i64, next: Option<i64>) {
 pub(crate) fn start(api: Arc<Api>) {
     let _ = KEPT.set(Arc::downgrade(&api.calcifer));
     match api.calcifer.store().purge_due() {
-        Ok(kept) => kept.into_iter().for_each(|(id, at)| due(&id, at)),
+        Ok(kept) => {
+            PERSISTED.lock().expect("purge persisted lock").extend(kept.iter().cloned());
+            kept.into_iter().for_each(|(id, at)| due(&id, at));
+        }
         Err(e) => warn!("the projects' next purges: {e}"),
     }
     tokio::spawn(async move {
