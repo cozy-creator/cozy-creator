@@ -81,6 +81,12 @@ async function containmentProof(input) {
           webgl: Boolean(gl.getContext('webgl2') ?? gl.getContext('webgl')), canvas_refused: Boolean(root?.querySelector('[role=alert]')),
           renderer_webgl: backend.includes('webgl'), renderer_canvas: backend.includes('canvas'), renderer_software: Boolean(graphics?.software),
           cards_drawn: inspection?.resources?.()?.visibleCards ?? -1 });
+        // Its renderer's state and why, and why it refused, as closed names (aa315b64, 11-16).
+        const state = String(graphics?.state ?? ''), why = String(graphics?.why ?? ''), refused = String(graphics?.refused ?? ''), failed = state === 'failed';
+        const null2d = failed && /imageSmoothingEnabled|null|getContext/.test(refused), imported = failed && /dynamically imported|Failed to fetch|Importing a module|import/.test(refused);
+        Object.assign(cover, { renderer_starting: state === 'starting', renderer_ready: state === 'ready', renderer_failed: failed,
+          why_no_webgl: why === 'no-webgl', why_software_webgl: why === 'software-webgl', why_webgl_failed: why === 'webgl-failed', why_hardware: why === 'hardware',
+          refused_null_2d: null2d, refused_import: imported, refused_other: failed && !null2d && !imported });
       }
       return { found: x !== null, x, y, hit_target: x !== null && hits(x, y), hit_node: x !== null && hits(x, y), ...cover };
     }
