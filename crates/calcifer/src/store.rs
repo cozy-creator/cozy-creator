@@ -2857,11 +2857,6 @@ impl Store {
         })
     }
 
-    /// The name `name` had before its Hub named its host: a rental's handle (cl-1089).
-    pub(crate) fn alias(&self, name: &str) -> Result<Option<String>> {
-        self.read(|conn| Ok(conn.query_row("SELECT alias FROM machines WHERE name = ?1", [name], |r| r.get(0)).optional()?.flatten()))
-    }
-
     /// The update by hand that holds `name` on its software, in its words (cl-952).
     pub(crate) fn held(&self, name: &str) -> Result<Option<String>> {
         self.read(|conn| {
