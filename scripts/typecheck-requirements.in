@@ -5,7 +5,7 @@ mypy
 cryptography
 h2
 # The Runtime of the open RC with the author API the fixtures use: its pure wheel, built from this commit.
-cozy-runtime @ https://github.com/cozy-creator/cozy-runtime/archive/11a6ec533f8dd1cf9687016f533f9ee6d26b0a73.tar.gz
+cozy-runtime @ https://github.com/cozy-creator/cozy-runtime/archive/a68f06a4c4badd1ac3da85cf117dee6e41f78033.tar.gz
 msgspec
 numpy
 pillow
