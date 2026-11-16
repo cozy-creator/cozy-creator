@@ -1649,6 +1649,7 @@ macro_rules! journal_methods {
             };
             let mut events = vec![];
             for (at_ms, level, text) in batch.logs {
+                let text = kept_call(&level, text);
                 let seq = next_seq(tx, id)?;
                 tx.execute(
                     "INSERT INTO run_logs (run, seq, at_ms, level, text) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -1736,7 +1737,7 @@ macro_rules! journal_methods {
                         tx,
                         id,
                         &run_context(id, "outcome"),
-                        &serde_json::to_vec(outcome).expect("serializes")
+                        &kept_outcome(outcome)
                     )?
                 ],
             )?;
@@ -3460,6 +3461,28 @@ impl From<&MachineRow> for Machine {
             end_unconfirmed: None,
             rc: None,
         }
+    }
+}
+
+/// What a run keeps of its outcome: its measurements without the raw bind trace (`runs::report::kept`).
+fn kept_outcome(outcome: &v1::Outcome) -> Vec<u8> {
+    let mut value = serde_json::to_value(outcome).expect("serializes");
+    if let Some(measurements) = value.get_mut("measurements") {
+        crate::runs::report::kept(measurements);
+    }
+    serde_json::to_vec(&value).expect("serializes")
+}
+
+/// A settled call's line as kept: its measurements as a run's are (`kept_outcome`).
+fn kept_call(level: &str, text: String) -> String {
+    if level != "call" { return text; }
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&text) else { return text };
+    match value.get_mut("measurements") {
+        Some(measurements) => {
+            crate::runs::report::kept(measurements);
+            value.to_string()
+        }
+        None => text,
     }
 }
 

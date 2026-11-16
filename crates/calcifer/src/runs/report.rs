@@ -126,7 +126,7 @@ struct ResidencyStats {
     allocator_scope: String,
     trace_scope: String,
     moved: Moved,
-    trace: Vec<Reference>,
+    trace_steps: Vec<TraceStep>,
     steps: Vec<MemoryStep>,
     stall_ns: u64,
     evicted: [u64; 7],
@@ -147,6 +147,41 @@ struct Moved { kept: Fills, leased: Fills, store: Fills, derived: Fills }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct Reference { step: u32, bytes: u64, origin: String, speculative: bool }
+
+/// A plan step's binds by where their bytes came from, as a run keeps them (`kept`).
+#[derive(Debug, Default, Deserialize, serde::Serialize)]
+#[serde(default)]
+struct TraceStep { step: u32, hit: u64, kept: u64, store: u64, derived: u64, prefetched: u64 }
+
+/// What a run keeps of its measurements: all but each GPU's raw bind trace (every bind of the run, megabytes on a long one: 1.85 GB of
+/// one laptop's store, cl-1010), which becomes the per-step table its report reads (`steps`). A fill-order trace is no plan step's
+/// and goes. Applied as a run or a call settles.
+pub(crate) fn kept(measurements: &mut serde_json::Value) {
+    let Some(gpus) = measurements.pointer_mut("/memory/stats/varena").and_then(serde_json::Value::as_array_mut) else { return };
+    for gpu in gpus {
+        let Some(stats) = gpu.get_mut("stats").and_then(serde_json::Value::as_object_mut) else { continue };
+        let Some(trace) = stats.remove("trace") else { continue };
+        if stats.get("trace_scope").and_then(serde_json::Value::as_str) == Some("fills") {
+            continue;
+        }
+        let mut by_step: BTreeMap<u32, TraceStep> = BTreeMap::new();
+        for r in Vec::<Reference>::deserialize(trace).unwrap_or_default() {
+            let cell = by_step.entry(r.step).or_insert_with(|| TraceStep { step: r.step, ..Default::default() });
+            let at = match r.origin.as_str() {
+                "hit" => &mut cell.hit,
+                "kept" => &mut cell.kept,
+                "store" => &mut cell.store,
+                "derived" => &mut cell.derived,
+                _ => continue,
+            };
+            *at += r.bytes;
+            if r.speculative {
+                cell.prefetched += r.bytes;
+            }
+        }
+        stats.insert("trace_steps".into(), serde_json::to_value(by_step.into_values().collect::<Vec<_>>()).expect("serializes"));
+    }
+}
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
@@ -523,21 +558,8 @@ fn steps(measured: &Measured) -> Vec<report::Step> {
             // Fill order is not an execution plan step. Totals remain in the memory table.
             continue;
         }
-        let mut by_step: BTreeMap<u32, [u64; 5]> = BTreeMap::new();
-        for r in &g.stats.trace {
-            let cell = by_step.entry(r.step).or_default();
-            let at = match r.origin.as_str() {
-                "hit" => 0,
-                "kept" => 1,
-                "store" => 2,
-                "derived" => 3,
-                _ => continue,
-            };
-            cell[at] += r.bytes;
-            if r.speculative {
-                cell[4] += r.bytes;
-            }
-        }
+        let mut by_step: BTreeMap<u32, [u64; 5]> =
+            g.stats.trace_steps.iter().map(|s| (s.step, [s.hit, s.kept, s.store, s.derived, s.prefetched])).collect();
         for step in 0..g.stats.steps.len() as u32 {
             by_step.entry(step).or_default();
         }
