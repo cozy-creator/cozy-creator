@@ -725,3 +725,21 @@ vault_reattach() (
     || { cat "$work/proof.err"; check "vault reattach: $(tail -n 1 "$work/proof.err" | cut -c1-900)"; }
   in_project "$project" --json vault lock > /dev/null 2>&1 || true
 )
+
+# A run its machine hasn't begun never holds a vault past its maximum: it fails vault_locked and the vault locks (cl-1082; coordinator
+# 11-16: "a vault past its maximum is the privacy promise"). The local machine is stopped meanwhile (e2e/cli/vault_unstarted.py).
+vault_unstarted() (
+  step "a run its machine hasn't begun never holds a vault past its maximum (cl-1082)"
+  [ -n "$LOCAL" ] || exit 0
+  [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "vault unstarted: Linux runners only"; exit 0; }
+  local work secrets project
+  work=$(mktemp -d "$OUT/vault-unstarted.XXXXXX") secrets=$(mktemp -d "$OUT/vault-unstarted-credentials.XXXXXX")
+  trap 'pid=$(jq -r ".pid // empty" "$HOME/.cozy/machine/var/lib/cozy/machine/agent.lock.holder" 2> /dev/null) || pid=; [ -z "$pid" ] || kill -CONT "$pid" 2> /dev/null; rm -rf -- "$secrets"' EXIT
+  printf '%s\n' 'synthetic vault unstarted passphrase' > "$secrets/passphrase" && chmod 600 "$secrets/passphrase"
+  project=$work/unstarted-$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')
+  cozy --json new "$project" --passphrase-file "$secrets/passphrase" --recovery-out "$secrets/recovery" > "$work/new.json" \
+    || { check "vault unstarted: cozy new: $(tail -c 300 "$work/new.json")"; exit 0; }
+  python3 "$E2E/cli/vault_unstarted.py" --project "$project" --passphrase-file "$secrets/passphrase" --out "$work/proof" --cli "$COZY" 2> "$work/proof.err" \
+    || { cat "$work/proof.err"; check "vault unstarted: $(tail -n 1 "$work/proof.err" | cut -c1-900)"; }
+  in_project "$project" --json vault lock > /dev/null 2>&1 || true
+)
