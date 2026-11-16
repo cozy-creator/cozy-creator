@@ -100,6 +100,16 @@ fn transition(view: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
     held
 }
 
+impl Error {
+    /// What a failed provider said on stderr, for a log: never shown whole to a person.
+    pub fn provider_detail(&self) -> Option<&str> {
+        match self {
+            Error::Provider { detail, .. } if !detail.is_empty() => Some(detail),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(
@@ -125,11 +135,16 @@ pub enum Error {
     #[error("encrypted project is still in use; close programs using {} and try locking again", .0.display())]
     Busy(PathBuf),
     #[error(
-        "filesystem provider {operation} failed ({code:?}); check that {requirements} is installed and available"
+        "filesystem provider {operation} failed ({code:?}){}; check that {requirements} is installed and available",
+        if .said.is_empty() { String::new() } else { format!(": {}", .said) }
     )]
     Provider {
         operation: &'static str,
         code: Option<i32>,
+        /// Its last line on stderr, the cause in its words; empty when it said nothing.
+        said: String,
+        /// Everything it said on stderr before it failed, its last `TAIL` bytes: for Calcifer's log.
+        detail: String,
         requirements: &'static str,
     },
     #[error(
@@ -423,9 +438,11 @@ impl Provider {
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(io_error("create encrypted filesystem"))?;
+        // A create's words are about an empty backing: never a project file's name.
+        let said = child.stderr.take().map(tail_of);
         let sent = child
             .stdin
             .take()
@@ -439,10 +456,11 @@ impl Provider {
         let status = child
             .wait()
             .map_err(io_error("wait for encrypted filesystem creation"))?;
+        let said = said.map(|reader| reader.join().unwrap_or_default()).unwrap_or_default();
         if status.success() {
             Ok(())
         } else {
-            Err(self.failure("create", status))
+            Err(self.failure_said("create", status, &said))
         }
     }
 
@@ -550,10 +568,12 @@ impl Provider {
                 command.arg0(&launch.path);
             }
         }
+        // Its stderr is read only if it fails before the view is acknowledged: then it says why (its own error, and securefs's
+        // words before the mount, which name no project file). After, it stays unread.
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(io_error("start encrypted filesystem supervisor"))?;
         let mut input = child
@@ -620,7 +640,8 @@ impl Provider {
                         .try_wait()
                         .map_err(io_error("read filesystem supervisor status"))?
                 {
-                    return Err(self.failure("mount", status));
+                    let said = mounted.child.stderr.take().map(|stderr| said_within(stderr, CONTROL_ACK)).unwrap_or_default();
+                    return Err(self.failure_said("mount", status, &said));
                 }
                 return Err(Error::Invalid(
                     "provider failed to acknowledge its owned mount",
@@ -715,11 +736,16 @@ impl Provider {
     }
 
     fn failure(&self, operation: &'static str, status: ExitStatus) -> Error {
-        Error::Provider {
-            operation,
-            code: status.code(),
-            requirements: requirements(),
-        }
+        self.failure_said(operation, status, &[])
+    }
+
+    /// A provider's failure with what it said on stderr: its last line in the error, all of it (its tail) for the log.
+    fn failure_said(&self, operation: &'static str, status: ExitStatus, stderr: &[u8]) -> Error {
+        let text = String::from_utf8_lossy(stderr);
+        let detail = text.trim().to_owned();
+        let said = detail.lines().rev().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default();
+        let said = if said.chars().count() > 240 { format!("{}…", said.chars().take(240).collect::<String>()) } else { said.to_owned() };
+        Error::Provider { operation, code: status.code(), said, detail, requirements: requirements() }
     }
 
     fn unmount(&self, view: &Path) -> Result<()> {
@@ -976,8 +1002,22 @@ pub fn run_supervisor() -> Option<i32> {
     }
     Some(match supervise(&arguments[2..]) {
         Ok(()) => 0,
+        // Its stderr is read by the mount that started it, and only when it fails: securefs's words, then the cause on one line.
+        // Written, never `eprintln!`: once its mount has returned no one reads this pipe, and a closed one must not panic.
         Err(error) => {
-            eprintln!("encrypted filesystem provider: {error}");
+            let mut stderr = io::stderr().lock();
+            let _ = match &error {
+                Error::Provider { operation, code, said, detail, .. } => {
+                    if !detail.is_empty() {
+                        let _ = writeln!(stderr, "{detail}");
+                    }
+                    match said.is_empty() {
+                        true => writeln!(stderr, "securefs {operation} failed ({code:?})"),
+                        false => writeln!(stderr, "securefs {operation} failed ({code:?}): {said}"),
+                    }
+                }
+                other => writeln!(stderr, "{other}"),
+            };
             1
         }
     })
@@ -1047,7 +1087,7 @@ fn supervise(arguments: &[OsString]) -> Result<()> {
         child: command
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .stderr(provider_stderr()?)
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(io_error("start securefs"))?,
         provider: provider.clone(),
@@ -1064,6 +1104,9 @@ fn supervise(arguments: &[OsString]) -> Result<()> {
         .map_err(io_error("unlock securefs"))?;
     drop(provider_input);
     drop(secret);
+    // What securefs says before its view is mounted is its cause if the mount fails (a driver, a path, a DLL): kept till then.
+    // After, a filesystem error can name a project's file, so nothing it says is kept.
+    let words = child.child.stderr.take().map(Words::listen);
     let (heard, mounts) = listen(input, parent, Some(child.child.id()))?;
     let mut sealed = false;
     loop {
@@ -1075,7 +1118,11 @@ fn supervise(arguments: &[OsString]) -> Result<()> {
             if status.success() {
                 return Ok(());
             }
-            return Err(provider.failure("mount", status));
+            let said = match (&words, sealed) {
+                (Some(words), false) => words.said(),
+                _ => Vec::new(),
+            };
+            return Err(provider.failure_said("mount", status, &said));
         }
         if !sealed && provider.is_mounted(&view).unwrap_or(false) {
             #[cfg(not(target_os = "macos"))]
@@ -1084,6 +1131,9 @@ fn supervise(arguments: &[OsString]) -> Result<()> {
             }
             guard.seal()?;
             sealed = true;
+            if let Some(words) = &words {
+                words.forget();
+            }
             acknowledge()?;
         }
         // Where no mount event comes (Windows), the view is sampled until it's mounted.
@@ -1196,10 +1246,62 @@ fn clean_command(program: &Path) -> Command {
     command
 }
 
-fn provider_stderr() -> Result<Stdio> {
-    // A native filesystem error can include project filenames. Even a debug
-    // environment variable must not redirect those bytes into an outside file.
-    Ok(Stdio::null())
+/// How much of a provider's stderr a failure keeps: its last bytes, where the cause is.
+const TAIL: usize = 4096;
+
+/// `stream` read to its end on a thread of its own, its last `TAIL` bytes kept.
+fn tail_of(mut stream: impl Read + Send + 'static) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let (mut kept, mut chunk) = (Vec::new(), [0u8; 1024]);
+        while let Ok(read) = stream.read(&mut chunk) {
+            if read == 0 { break; }
+            kept.extend_from_slice(&chunk[..read]);
+            if kept.len() > TAIL { kept.drain(..kept.len() - TAIL); }
+        }
+        kept
+    })
+}
+
+/// What an exited supervisor said on stderr, waited for at most `budget`: a grandchild still holding the pipe never stalls a refusal.
+fn said_within(stderr: impl Read + Send + 'static, budget: Duration) -> Vec<u8> {
+    let (tell, heard) = mpsc::channel();
+    let reader = tail_of(stderr);
+    thread::spawn(move || { let _ = tell.send(reader.join().unwrap_or_default()); });
+    heard.recv_timeout(budget).unwrap_or_default()
+}
+
+/// securefs's stderr as a supervisor reads it: drained always, so securefs never blocks on it, and kept only until `forget`.
+struct Words {
+    kept: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+}
+
+impl Words {
+    fn listen(mut stream: std::process::ChildStderr) -> Self {
+        let kept = std::sync::Arc::new(std::sync::Mutex::new(Some(Vec::new())));
+        let into = kept.clone();
+        thread::spawn(move || {
+            let mut chunk = [0u8; 1024];
+            while let Ok(read) = stream.read(&mut chunk) {
+                if read == 0 { break; }
+                if let Some(kept) = into.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_mut() {
+                    kept.extend_from_slice(&chunk[..read]);
+                    if kept.len() > TAIL { kept.drain(..kept.len() - TAIL); }
+                }
+            }
+        });
+        Self { kept }
+    }
+
+    /// What it said so far: given a moment for its last words to arrive.
+    fn said(&self) -> Vec<u8> {
+        thread::sleep(Duration::from_millis(200));
+        self.kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or_default()
+    }
+
+    /// The view is mounted: nothing it says from now on is kept.
+    fn forget(&self) {
+        *self.kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
 }
 
 fn control_status(
