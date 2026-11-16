@@ -108,9 +108,12 @@ const centre = (page, dx = 0) => page.evaluate((dx) => {
 const armDrop = (page) => page.evaluate(() => {
   const names = () => {
     const scene = document.querySelector('.canvas-root')?.canvasInspection;
+    // A box's name is its drawn title, or, while it's being named, the name field over it (the new layer draws no title under it).
+    const fields = [...document.querySelectorAll('input.nm-field')].filter(field => field.checkVisibility()).map(field => field.getBoundingClientRect());
+    const over = (bounds) => bounds && fields.some(r => r.x + r.width / 2 >= bounds.x && r.x + r.width / 2 <= bounds.x + bounds.width && r.y + r.height / 2 >= bounds.y && r.y + r.height / 2 <= bounds.y + bounds.height);
     const retained = scene?.names().filter(name => {
-      const shown = scene.card(name)?.rendered;
-      return shown && shown.transform.alpha > 0 && shown.labels.title;
+      const card = scene.card(name), shown = card?.rendered;
+      return shown && shown.transform.alpha > 0 && (shown.labels.title || over(card.bounds));
     }) ?? [];
     const native = [...document.querySelectorAll('.canvas-node .card[data-asset]')].filter(card => card.checkVisibility()).map(card => card.dataset.asset);
     return [...new Set([...retained, ...native])];
@@ -128,7 +131,10 @@ const shownNames = (page) => page.evaluate(() => window.__instantNames());
 async function titlePixels(page, name) {
   const rect = await page.evaluate(name => {
     const native = document.querySelector(`.canvas-node .card[data-asset=${JSON.stringify(name)}] .nm`);
-    const r = native?.getBoundingClientRect() ?? document.querySelector('.canvas-root')?.canvasInspection?.card(name)?.rendered?.labels.title;
+    const card = document.querySelector('.canvas-root')?.canvasInspection?.card(name), b = card?.bounds;
+    // The new layer's name field over the box while it's named, its title otherwise.
+    const field = b && [...document.querySelectorAll('input.nm-field')].find(el => { const f = el.getBoundingClientRect(); return el.checkVisibility() && f.x + f.width / 2 >= b.x && f.x + f.width / 2 <= b.x + b.width && f.y + f.height / 2 >= b.y && f.y + f.height / 2 <= b.y + b.height; });
+    const r = native?.getBoundingClientRect() ?? card?.rendered?.labels.title ?? field?.getBoundingClientRect();
     return r && { x: r.x, y: r.y, width: r.width, height: r.height };
   }, name);
   expect(rect, `${name}'s presented title geometry`).toBeTruthy();
