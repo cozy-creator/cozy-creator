@@ -501,8 +501,11 @@ export class CardView {
     let label = this.texts.get(key)
     const value = lines > 1 ? wrap(text, room, style.size, lines).join("\n") : text
     if (!value || room <= 0) { if (label) label.view.visible = false; return null }
+    // Far out, where thousands of names show at once, a name is drawn from one shared glyph atlas, not a texture of its own.
+    const bitmap = key === "title" && env.band === 2
+    if (label && label.bitmap !== bitmap) { label.view.destroy(); this.texts.delete(key); label = undefined }
     if (!label) {
-      label = new Label(false)
+      label = new Label(bitmap)
       this.texts.set(key, label)
       this.labels.addChild(label.view)
     }
