@@ -748,7 +748,9 @@ fn drain_saves(api: &Arc<Api>, root: &FsPath, mut saving: impl FnMut()) -> Resul
 
 /// Every unlocked vault's pages send what they typed, before a stop closes them all.
 pub(crate) async fn save_open() {
-    let ids: Vec<String> = SESSIONS.lock().expect("vault sessions").keys().filter_map(|root| project_id(root)).collect();
+    // `project_id` takes SESSIONS itself: the roots are read first.
+    let roots: Vec<PathBuf> = SESSIONS.lock().expect("vault sessions").keys().cloned().collect();
+    let ids: Vec<String> = roots.iter().filter_map(|root| project_id(root)).collect();
     let unanswered = crate::events::save_first(&ids, LOCK_DRAIN).await;
     if unanswered > 0 { tracing::warn!("stopping: {unanswered} page(s) didn't say they sent what was typed in {} s", LOCK_DRAIN.as_secs()); }
 }
