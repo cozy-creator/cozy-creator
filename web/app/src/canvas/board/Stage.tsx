@@ -352,8 +352,9 @@ export function Stage(props: StageProps) {
       const locked = signedOut.get() || store.projectId === null || (project !== null && bridge.projectEpoch(project) !== projectEpoch)
       if (renderer && chosen && !locked) parkRenderer(chosen)
       else {
-        const gl = renderer && "gl" in renderer ? (renderer as unknown as { gl: WebGLRenderingContext }).gl : null
-        if (gl && !gl.isContextLost()) gl.getExtension("WEBGL_lose_context")?.loseContext()
+        // Pixi's destroy loses the GL context itself; one already lost isn't lost again (WebKit logs that as an error).
+        const gl = renderer && "gl" in renderer ? (renderer as unknown as { gl: WebGLRenderingContext; context: { extensions: { loseContext?: unknown } } }) : null
+        if (gl?.gl.isContextLost()) gl.context.extensions.loseContext = undefined
         renderer?.destroy({ removeView: true })
       }
       forgetMeasurements()
