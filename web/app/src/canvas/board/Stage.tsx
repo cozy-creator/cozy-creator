@@ -280,9 +280,11 @@ export function Stage(props: StageProps) {
     let listKey = ""
     const publishDom = () => {
       const next: typeof overlays = []
+      // The box open in Focus has its fields there; the canvas draws none over it.
+      const focus = store.focusedName.get(), focused = focus ? store.resolveName(focus) : null
       for (const node of board.getNodes()) {
         const view = store.get(node.data.name)
-        if (!view) continue
+        if (!view || node.data.name === focused) continue
         const body = pictureBox({ id: node.id, name: node.data.name, box: node.bounds, view, selected: Boolean(node.selected) })
         const box = { x: node.bounds.x, y: node.bounds.y, w: node.bounds.w, under: body.y + body.h - node.bounds.y }
         if (view.draft !== undefined || (view.asking && !view.here)) next.push({ name: node.data.name, draft: view.draft, asking: view.here ? undefined : view.asking, box })
@@ -321,7 +323,7 @@ export function Stage(props: StageProps) {
       })(),
       board.camera.subscribeCameraEnd((view) => { latest.current.onMoveEnd(null, view); invalidate() }),
       store.sceneRevision.subscribe(() => { publishDom(); invalidate() }),
-      store.tools.subscribe(invalidate), store.names.subscribe(invalidate), theme.subscribe(invalidate), carried.subscribe(invalidate),
+      store.tools.subscribe(invalidate), store.names.subscribe(invalidate), store.focusedName.subscribe(() => publishDom()), theme.subscribe(invalidate), carried.subscribe(invalidate),
       tabShown.subscribe(() => { enable(); invalidate() }),
       onFontsLoaded(() => { scene?.redrawAll(); invalidate() }),
       queries.getQueryCache().subscribe((event) => {
