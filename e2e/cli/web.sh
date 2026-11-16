@@ -67,8 +67,8 @@ web_suite() {
     until grep -q '^ready' "$OUT/web-busy.out" 2> /dev/null; do kill -0 "$busy" 2> /dev/null || { check "web-$lane: busy.js ended: $(tail -c 300 "$OUT/web-busy.out")"; return; }; sleep 0.2; done
   fi
   {
-    env ${display[@]+"${display[@]}"} HOLDER=$(web_path "$HOME/.cozy/calcifer/calcifer.lock.holder") COZY=$(web_path "$COZY") CHROME=$chrome OUT=$(web_path "$OUT") ARGV_LOG=$(web_path "$OUT/argv.log") \
-      NODE_PATH=$(web_path "$pw/node_modules") node "$(web_path "$pw/node_modules/@playwright/test/cli.js")" test -c "$(web_path "$here/web/playwright.config.js")" \
+    env ${display[@]+"${display[@]}"} HOLDER="$(web_path "$HOME/.cozy/calcifer/calcifer.lock.holder")" COZY="$(web_path "$COZY")" CHROME="$chrome" OUT="$(web_path "$OUT")" ARGV_LOG="$(web_path "$OUT/argv.log")" \
+      NODE_PATH="$(web_path "$pw/node_modules")" node "$(web_path "$pw/node_modules/@playwright/test/cli.js")" test -c "$(web_path "$here/web/playwright.config.js")" \
       "${projects[@]/#/--project=}" ${workers[@]+"${workers[@]}"} "${filters[@]}" 2>&1 && echo 0 > "$web/$lane.code" || echo $? > "$web/$lane.code"
   } | tee "$web/$lane.log"
   code=$(cat "$web/$lane.code")
