@@ -820,12 +820,15 @@ case $SHARD in
     hard_cut
     vault_leftovers
     kept_latents
+    vault_purge_due
     vault_swapped
     ended_logs
     logs
   " ;;
   # An ended machine's own lines still read; a locked project's run nowhere outside it (cl-1012). Named projectvault-* for its driver.
   projectvault-ended-logs) parts="ended_logs logs" ;;
+  # A deleted box's next purge kept for a plaintext project only, never an encrypted one's (cl-1010). Named projectvault-* for its driver.
+  projectvault-purge-due) parts="vault_purge_due logs" ;;
   projectdb-latency) parts="db_latency logs" ;;
   # A keyed write cut off mid-request, sent again (cl-885).
   projectdb-keyed) parts="db_keyed logs" ;;

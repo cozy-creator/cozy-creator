@@ -8,7 +8,9 @@
 #                  the first read of each page of state.db slow as on a busy disk's cold cache (busy-disk.c), PyPI and the Hub 3 s
 #                  late (slow_proxy.py): every route a client asks answers in 200 ms while it takes up what it left, and none is
 #                  said slow in health.log, nor the start's purge (cl-1010)
-# Uses project.sh's `api` and projectdb.sh's `kill9`, `db_calcifer` and `calcifer_halt`.
+#   vault_purge_due a deleted box's next purge is in state.db for a plaintext project only: an encrypted one's never, unlocked or
+#                  locked, and it's still purged once its window ended and it's unlocked again (cl-1010)
+# Uses project.sh's `api` and projectdb.sh's `kill9`, `db_calcifer`, `calcifer_halt` and `undo_window`.
 
 # state <query>: what state.db holds, read only, one JSON row a line.
 state() {
@@ -249,3 +251,68 @@ calcifer_halt || return
 python3 "$here/restart_store.py" empty "$db" || check "restart: the store's rows weren't taken out"
 cozy --json machine ls > /dev/null || check "restart: Calcifer didn't start again"
 }
+
+# cl-1010: a start opens only the projects whose deleted boxes are due, by the times state.db keeps (`purge_due`). Of a locked encrypted
+# project Calcifer keeps only its folder (Paul's no-traces rule): a row saying something was deleted in it, and when, is kept for none.
+# An encrypted project's due time is held only while it's unlocked, and its unlock's open reads it again from its own project.db.
+vault_purge_due() (
+  step "a deleted box's next purge: in state.db for a plaintext project, never for an encrypted one; purged after its unlock (cl-1010)"
+  [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "vault purge due: Linux runners only"; exit 0; }
+  local work secrets P plain view id plain_id pic deleted_at rows lock=$HOME/.cozy/calcifer/calcifer.lock.holder
+  work=$(mktemp -d "$OUT/vault-purge-due.XXXXXX") secrets=$(mktemp -d "$OUT/vault-purge-due-credentials.XXXXXX")
+  P=$work/encrypted plain=$work/plain
+  trap 'in_project "$P" --json vault lock > /dev/null 2>&1 || true; undo_window "$lock" ""; rm -rf -- "$secrets"' EXIT
+  printf '%s\n' 'synthetic purge-due passphrase' > "$secrets/pass" && chmod 600 "$secrets/pass"
+  # due_rows <id>: how many purge_due rows state.db holds of that project.
+  due_rows() { state "SELECT count(*) FROM purge_due WHERE project = '$1'" | jq -r '.[0]'; }
+  python3 -c '
+import struct, sys, zlib
+def chunk(kind: bytes, data: bytes) -> bytes:
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+raw = b"".join(b"\x00" + bytes((200, 30, 30)) * 64 for _ in range(48))
+head = struct.pack(">IIBBBBB", 64, 48, 8, 2, 0, 0, 0)
+open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", head) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+' "$work/red.png" || fail "vault purge due: no picture"
+  # A short undo window before any project opens: Calcifer restarts for it, which would lock an open encrypted project.
+  undo_window "$lock" 20
+  step "vault purge due: a plaintext project's deleted box is due in state.db"
+  cozy --json new --unencrypted "$plain" > "$work/plain-new.json" 2>&1 || fail "vault purge due: new plaintext project: $(tail -c 300 "$work/plain-new.json")"
+  project_import "$plain" "$work/red.png" pic > /dev/null && project_api "$plain" /assets/pic -X DELETE > /dev/null \
+    || fail "vault purge due: the plaintext project's box wasn't made and deleted"
+  plain_id=$(id_of "$plain")
+  rows=$(due_rows "$plain_id")
+  [ "$rows" = 1 ] || check "vault purge due: the plaintext project's deleted box isn't due in state.db ($rows rows)"
+  step "vault purge due: an encrypted project's deleted box is due nowhere outside it, unlocked or locked"
+  cozy --json new "$P" --passphrase-file "$secrets/pass" --recovery-out "$secrets/recovery" > "$work/new.json" 2> "$work/new.err" \
+    || fail "vault purge due: new encrypted project: $(tail -c 300 "$work/new.err")"
+  view=$(jq -r '.view // empty' "$work/new.json")
+  [ -n "$view" ] && [ -d "$view" ] || fail "vault purge due: the encrypted project has no unlocked view: $(head -c 300 "$work/new.json")"
+  project_import "$P" "$work/red.png" pic > /dev/null || fail "vault purge due: the encrypted project's picture wasn't imported"
+  id=$(id_of "$P") pic=$(asset_of "$P" pic | jq -r '.sha256 // empty')
+  [ -n "$id" ] && [ -n "$pic" ] && in_files "$view" "$pic" || fail "vault purge due: the encrypted project's picture isn't in its files/"
+  project_api "$P" /assets/pic -X DELETE > /dev/null || fail "vault purge due: the encrypted project's box wasn't deleted"
+  deleted_at=$(date +%s)
+  rows=$(due_rows "$id")
+  [ "$rows" = 0 ] || check "vault purge due: state.db holds the unlocked encrypted project's next purge ($rows rows)"
+  in_project "$P" --json vault lock > "$work/lock.json" || fail "vault purge due: lock: $(head -c 300 "$work/lock.json")"
+  rows=$(due_rows "$id")
+  [ "$rows" = 0 ] || check "vault purge due: state.db holds the locked encrypted project's next purge ($rows rows)"
+  # Its window ends while it's locked: nothing can read it then.
+  while [ $(($(date +%s) - deleted_at)) -le 22 ]; do sleep 1; done
+  rows=$(due_rows "$id")
+  [ "$rows" = 0 ] || check "vault purge due: past its window, state.db holds the locked encrypted project's next purge ($rows rows)"
+  step "vault purge due: unlocked past its window, the deleted box's file goes"
+  in_project "$P" --json vault unlock --passphrase-file "$secrets/pass" --idle 0 > "$work/unlock.json" 2> "$work/unlock.err" \
+    || fail "vault purge due: unlock: $(head -c 300 "$work/unlock.json") $(tail -c 200 "$work/unlock.err")"
+  view=$(jq -r '.vault.view // empty' "$work/unlock.json")
+  [ -n "$view" ] && [ -d "$view" ] || fail "vault purge due: unlocked with no view: $(head -c 300 "$work/unlock.json")"
+  for _ in $(seq 150); do in_files "$view" "$pic" || break; sleep 0.2; done
+  ! in_files "$view" "$pic" || check "vault purge due: unlocked past its window, the encrypted project's deleted box kept its file"
+  rows=$(due_rows "$id")
+  [ "$rows" = 0 ] || check "vault purge due: after its purge, state.db holds the encrypted project's next purge ($rows rows)"
+  in_project "$P" --json vault lock > "$work/relock.json" || check "vault purge due: lock after the purge: $(head -c 300 "$work/relock.json")"
+  trap - EXIT
+  undo_window "$lock" ""
+  rm -rf -- "$secrets" "$P"
+  drop_folder "$plain"
+)

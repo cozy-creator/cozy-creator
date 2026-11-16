@@ -1837,11 +1837,16 @@ impl Store {
         writer.execute_batch(crate::project::journal::PLACEMENTS)?;
         writer.execute_batch(crate::maintenance_source::TABLES)?;
         writer.execute_batch(crate::project::vault_operation::TABLES)?;
-        // The purger's due times are kept from this start on: this once, every known project is due, as each was at every start before.
+        // The purger's due times are kept from this start on: this once, every known plaintext project is due, as each was at every
+        // start before. An encrypted one's never is (`project::purge`).
         let first_due = !has_table(&writer, "purge_due")?;
         writer.execute_batch(crate::state::TABLES)?;
         if first_due {
-            writer.execute("INSERT OR IGNORE INTO purge_due (project, at_ms) SELECT id, 0 FROM projects", [])?;
+            let known: Vec<(String, String)> =
+                writer.prepare("SELECT id, path FROM projects")?.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+            for (id, _) in known.iter().filter(|(_, path)| !vault::encrypted(Path::new(path))) {
+                writer.execute("INSERT OR IGNORE INTO purge_due (project, at_ms) VALUES (?1, 0)", [id])?;
+            }
         }
         writer.execute_batch(MACHINE_LOGS)?;
         // The store step's parts, in the closed health log: a slow start names its slow part (cl-1010).

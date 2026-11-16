@@ -28,20 +28,36 @@ const AGAIN: Duration = Duration::from_secs(10 * 60);
 
 static WINDOW: OnceLock<Duration> = OnceLock::new();
 static WAKE: Notify = Notify::const_new();
-/// When each project's deleted boxes are next due, by id. A deletion's and each purge's next are kept in state.db (`purge_due`), and a
-/// start takes up only those: it opens no project with nothing due (cl-1010: a start opened every known project and loaded its
-/// document, 5 s on Paul's laptop, each request for a project waiting on its load). An open looks again, in memory only.
+/// When each project's deleted boxes are next due, by id. A plaintext project's, from a deletion or a purge, is kept in state.db
+/// (`purge_due`), and a start takes up only those: it opens no project with nothing due (cl-1010: a start opened every known project
+/// and loaded its document, 5 s on Paul's laptop, each request for a project waiting on its load). An encrypted project's is held only
+/// while it's unlocked: of a locked one Calcifer keeps only its folder (Paul's no-traces rule), a start finds every one locked, and
+/// its unlock's open reads it again from its own project.db. An open looks again, in memory only.
 static DUE: Mutex<BTreeMap<String, i64>> = Mutex::new(BTreeMap::new());
 /// Calcifer, whose store keeps the due times.
 static KEPT: OnceLock<std::sync::Weak<crate::Calcifer>> = OnceLock::new();
 
-/// `id`'s next due time as `DUE` now holds it, kept for the next start; a store that can't keep it is said, and an open looks again.
+/// `id`'s next due time as `DUE` now holds it, kept for the next start if it's a plaintext project's, and none kept of any other; a
+/// store that can't keep it is said, and an open looks again.
 fn keep(id: &str) {
-    let at = DUE.lock().expect("purge due lock").get(id).copied();
-    if let Some(calcifer) = KEPT.get().and_then(std::sync::Weak::upgrade)
-        && let Err(e) = calcifer.store().keep_purge_due(id, at)
-    {
+    let Some(calcifer) = KEPT.get().and_then(std::sync::Weak::upgrade) else { return };
+    let store = calcifer.store();
+    let at = match store.known_project(id) {
+        Ok(Some(project)) if !vault::encrypted(&project.path) => DUE.lock().expect("purge due lock").get(id).copied(),
+        Ok(_) => None,
+        Err(e) => return warn!("a project's next purge isn't kept: {e}"),
+    };
+    if let Err(e) = store.keep_purge_due(id, at) {
         warn!("a project's next purge isn't kept: {e}");
+    }
+}
+
+/// Project `id` let go (locked, its folder gone, its storage converted): nothing of its deleted boxes is held for it. Its next open
+/// reads them again.
+pub(crate) fn forget(store: &crate::store::Store, id: &str) {
+    DUE.lock().expect("purge due lock").remove(id);
+    if let Err(e) = store.keep_purge_due(id, None) {
+        warn!("a project let go keeps its next purge: {e}");
     }
 }
 
@@ -109,13 +125,31 @@ pub(crate) fn start(api: Arc<Api>) {
             let ready: Vec<(String, i64)> = DUE.lock().expect("purge due lock").iter().filter(|(_, at)| **at <= now).map(|(id, at)| (id.clone(), *at)).collect();
             let took = crate::took::Took::new("purge");
             for (id, was) in ready {
+                let again = Some(now + AGAIN.as_millis() as i64);
                 let next = match api.calcifer.store().known_project(&id) {
-                    Ok(Some(project)) => {
-                        let (held, path) = (api.clone(), project.path);
-                        tokio::task::spawn_blocking(move || purged(&held, &path)).await.unwrap_or(Some(now + AGAIN.as_millis() as i64))
-                    }
+                    Ok(Some(project)) if !vault::logical(&project.path).exists() => None,
+                    // Locked: nothing can read it, and nothing of it is held until its unlock's open looks again.
+                    Ok(Some(project)) if vault::locked_now(&project.path) => None,
+                    // Held as any reader's: a lock or a move of the project waits for it.
+                    Ok(Some(project)) => match vault::try_admit_root(&project.path) {
+                        Ok(access) => {
+                            let (held, path) = (api.clone(), project.path);
+                            tokio::task::spawn_blocking(move || purged(&held, &path, access)).await.unwrap_or(again)
+                        }
+                        // Its storage changing now (an unlock's own open asks for this purge, cl-1010): looked at again once it's done.
+                        Err(error) if error.code == "project_busy" => {
+                            let (path, id) = (project.path, id.clone());
+                            tokio::spawn(async move {
+                                if vault::admit_root(&path).await.is_ok() {
+                                    due(&id, now_ms());
+                                }
+                            });
+                            again
+                        }
+                        Err(_) => again,
+                    },
                     Ok(None) => None,
-                    Err(_) => Some(now + AGAIN.as_millis() as i64),
+                    Err(_) => again,
                 };
                 settled(&id, was, next);
             }
@@ -127,14 +161,9 @@ pub(crate) fn start(api: Arc<Api>) {
     });
 }
 
-/// The project at `path` purged: when its next deleted box is due, if any is. Its folder gone, none; unreadable now, a try later.
-fn purged(api: &Api, path: &Path) -> Option<i64> {
-    if !vault::logical(path).exists() {
-        return None;
-    }
+/// The project at `path`, admitted (`_access`), purged: when its next deleted box is due, if any is; unreadable now, a try later.
+fn purged(api: &Api, path: &Path, _access: tokio::sync::OwnedRwLockReadGuard<()>) -> Option<i64> {
     let again = || Some(now_ms() + AGAIN.as_millis() as i64);
-    // Held as any reader's: a lock or a move of the project waits for it, and one going now means later.
-    let Ok(_access) = vault::try_admit_root(path) else { return again() };
     let Ok(dir) = vault::resolve_path(path) else { return again() };
     let home = api.machines.hubs.home();
     let caches = [home.root().join("cache").join("clips")];
