@@ -1,4 +1,4 @@
-# no_traces: Paul's invariant on this runner's OS (cl-984). An encrypted project made, run with a marker prompt and locked leaves
+# no_traces: Paul's invariant on this runner's OS (cl-984). An encrypted project made, given a box with a marker prompt and an import (and a run of the prompt where this computer runs tools), then locked, leaves
 # nothing of itself outside its folder (containment/notraces.py): containment's lock scans, portable to macOS and Windows.
 notraces_here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 no_traces() {

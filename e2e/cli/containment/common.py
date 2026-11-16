@@ -9,7 +9,6 @@ from http.client import HTTPConnection
 import json
 import os
 from pathlib import Path
-import pwd
 import re
 import secrets
 import signal
@@ -512,6 +511,7 @@ print(json.dumps(found))
 class OtherAccount:
     """A fresh Unix account on this computer, made for one access check and removed after it."""
     def __init__(self) -> None:
+        import pwd  # POSIX's alone: scan.py imports this module on Windows too (notraces.py)
         self.user = "cozy-other-" + secrets.token_hex(5)
         try:
             pwd.getpwnam(self.user)
@@ -533,6 +533,7 @@ class OtherAccount:
         return cast(list[dict[str, object]], found)  # cast: ASK's JSON list, checked above
 
     def remove(self) -> bool:
+        import pwd
         subprocess.run(["sudo", "-n", "userdel", "-r", self.user], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd="/")
         try:
             pwd.getpwnam(self.user)
