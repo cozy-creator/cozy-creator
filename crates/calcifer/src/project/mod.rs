@@ -105,8 +105,8 @@ pub(crate) use thumbs::previews;
 #[derive(Default)]
 pub(crate) struct Projects {
     open: Mutex<HashMap<String, Weak<Project>>>,
-    /// Plaintext projects a request used, held until `LINGER` after the last, by id.
-    lingering: Mutex<HashMap<String, (Arc<Project>, Instant)>>,
+    /// Plaintext projects a request used, held until `LINGER` after the last, by id, with their project.db's file as it was then.
+    lingering: Mutex<HashMap<String, Lingering>>,
     /// What was last heard of each published package projects name, by `with`.
     heard: Mutex<HashMap<String, Heard>>,
     /// How many times that changed: what a read said of them is good until then.
@@ -337,23 +337,35 @@ impl Projects {
         Ok(project)
     }
 
+    /// A project lingering in `dir` whose project.db isn't the file it was (its folder deleted and made again), let go: what opens there
+    /// now reads the new file, never the old one's connections and document a lingering project would keep shared.
+    fn let_go_replaced(&self, dir: &FsPath) {
+        let now = db_file(dir);
+        let mut lingering = self.lingering.lock().expect("lingering lock");
+        let stale: Vec<String> = lingering.iter().filter(|(_, held)| held.project.folder.dir == dir && held.file != now).map(|(id, _)| id.clone()).collect();
+        let gone: Vec<Lingering> = stale.iter().filter_map(|id| lingering.remove(id)).collect();
+        drop(lingering);
+        drop(gone);
+    }
+
     /// `project`, a plaintext one a request used, held open until `LINGER` after this, its last use: one task a project lets it go.
     fn linger(&self, api: &Arc<Api>, project: &Arc<Project>) {
         if vault::encrypted(&project.root) {
             return;
         }
         let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
-        let fresh = self.lingering.lock().expect("lingering lock").insert(project.id.clone(), (project.clone(), Instant::now() + LINGER)).is_none();
+        let held = Lingering { project: project.clone(), until: Instant::now() + LINGER, file: db_file(&project.folder.dir) };
+        let fresh = self.lingering.lock().expect("lingering lock").insert(project.id.clone(), held).is_none();
         if !fresh {
             return;
         }
         let (api, id) = (api.clone(), project.id.clone());
         runtime.spawn(async move {
             loop {
-                let Some(until) = api.projects.lingering.lock().expect("lingering lock").get(&id).map(|(_, until)| *until) else { return };
+                let Some(until) = api.projects.lingering.lock().expect("lingering lock").get(&id).map(|held| held.until) else { return };
                 tokio::time::sleep_until(until.into()).await;
                 let mut lingering = api.projects.lingering.lock().expect("lingering lock");
-                if lingering.get(&id).is_some_and(|(_, until)| *until <= Instant::now()) {
+                if lingering.get(&id).is_some_and(|held| held.until <= Instant::now()) {
                     let gone = lingering.remove(&id);
                     drop(lingering);
                     drop(gone);
@@ -375,6 +387,7 @@ impl Projects {
         let mount_id = vault::mount_identity(&root);
         let physical = current_view(&root)?;
         let dir = physical.as_path();
+        self.let_go_replaced(dir);
         let (folder, Identified { id, name, code, key }) = tokio::task::block_in_place(|| Folder::open_with(dir, api.machines.hubs.home(), |folder| {
             let identified = identify_loaded(api, dir, folder)?;
             let id = &identified.id;
@@ -472,6 +485,27 @@ const HEARD_FOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 /// call), it isn't loaded again (cl-1010: each run list of a 3,000-box project loaded its whole document, 50–60 ms, 200 four at once).
 /// An encrypted one closes with its request, as every project did.
 const LINGER: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A project held open after a request (`Projects::linger`).
+struct Lingering {
+    project: Arc<Project>,
+    until: Instant,
+    file: Option<(u64, u64)>,
+}
+
+/// Which file `dir`'s project.db is: its device and inode. Elsewhere none: Windows can't delete a database a process has open.
+fn db_file(dir: &FsPath) -> Option<(u64, u64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(dir.join("project.db")).ok().map(|meta| (meta.dev(), meta.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        None
+    }
+}
 
 /// Where a run of the project in `dir` lands its outputs.
 pub(crate) fn landing(dir: &FsPath) -> PathBuf {
