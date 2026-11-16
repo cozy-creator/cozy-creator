@@ -362,7 +362,6 @@ impl LocalSources {
                 fs::copy(self.objects.store()?.path(&object).map_err(crate::storage::io_error)?, carried.join(&wheel.name))?;
             }
             let built = published::patiently(job, || self.publisher.build(&environment, &environment::Project {
-                managed_calls: false,
                 dir: &project,
                 python: &self.publisher.sdk.python,
                 locked: locked.as_ref(),
@@ -378,10 +377,6 @@ impl LocalSources {
             fs::write(&ready, serde_json::to_vec(&built).map_err(std::io::Error::other)?)?;
             // Compiled once for every project's run of it: the generation that names it is a project's (cl-984).
             environment::compile_bytecode(&platform::paths::venv_python(&environment));
-            let managed = platform::paths::venv_python(&environment::managed_calls_env(&environment));
-            if managed.is_file() {
-                environment::compile_bytecode(&managed);
-            }
         }
         let built: environment::Built = serde_json::from_slice(&fs::read(&ready)?).map_err(std::io::Error::other)?;
         // One generation per environment, tree and project: a run of code unchanged since reads it as it is. Its project names

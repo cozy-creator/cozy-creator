@@ -1277,7 +1277,6 @@ impl Publisher {
         let fetch = || self.fetch_hub(&files, source, &dir, job).map(drop);
         let (env, wheels, label) = (dir.join("env"), dir.join("wheels"), format!("{package} {release}"));
         let built = self.build(&env, &environment::Project {
-                managed_calls: false,
             dir: &project,
             python: &card.python,
             locked: Some(locked),
@@ -2231,8 +2230,6 @@ pub(crate) fn declares_models(installation: &Installation, entrypoint: &str) -> 
 /// run's Hub hosts (each one wheel, moved by TensorFS), and every package it names.
 #[derive(Debug, Default)]
 pub(crate) struct Locked {
-    /// Default project dependency closure, including requested extras but excluding cozy-calls.
-    caller_packages: BTreeSet<String>,
     distribution: String,
     git: Vec<String>,
     local: Vec<String>,
@@ -2322,25 +2319,6 @@ pub(crate) fn read_lock(pyproject: &str, lock: &str, source: Option<&hub::Source
         }
         seen
     };
-    // Follow exactly the extras ordinary requirements activate. A managed-only edge is
-    // wheel metadata too, but its cozy-calls extra is not active in the caller environment.
-    let mut todo = vec![(normalized(&locked.distribution), None::<String>)];
-    let mut visited = BTreeSet::new();
-    while let Some((name, extra)) = todo.pop() {
-        if !visited.insert((name.clone(), extra.clone())) { continue; }
-        for row in rows.iter().filter(|row| normalized(&row.name) == name) {
-            let dependencies = match &extra {
-                None => row.dependencies.as_slice(),
-                Some(extra) => row.optional.get(extra).map(Vec::as_slice).unwrap_or_default(),
-            };
-            for dependency in dependencies {
-                let name = normalized(&dependency.name);
-                todo.push((name.clone(), None));
-                todo.extend(dependency.extra.iter().map(|extra| (name.clone(), Some(extra.clone()))));
-            }
-        }
-    }
-    locked.caller_packages = visited.into_iter().map(|(name, _)| name).collect();
     let other = reach(roots, &layer::ROOTS);
     locked.torch = reach(layer::ROOTS.map(String::from).to_vec(), &[]).into_iter()
         .filter(|name| layer::provides(name) && !other.contains(name)).collect();
