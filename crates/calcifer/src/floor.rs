@@ -184,6 +184,10 @@ impl Machines {
             }
         }
         // A machine held off the RC by hand counts the RC's build too: refused, it names the update that moves it there.
+        // `local` below this cozy's Runtime minor can always move to this cozy's own Runtime (cl-1055), for any run there, a project's
+        // or not: a plain run whose package needs a newer Runtime moves it to the minor, not to an older minor's release. On the
+        // minor, and on every other machine, nothing changes.
+        runtimes.extend(self.own_runtime(name, frame).await);
         if rc || self.rc_machine(name, frame) {
             if let Ok(sums) = self.rc.now().await {
                 runtimes.extend(sums.build("runtime", &frame.platform).map(|(build, _)| build.version));
@@ -210,6 +214,21 @@ impl Machines {
             .collect();
         let major = crate::cozy::major(&cozy) != crate::cozy::major(crate::update::this_release());
         (!runtimes.is_empty()).then_some(api::release::Newer { cozy, runtimes, major })
+    }
+
+    /// The Runtime `name` (on `frame`) can move to, for any run, when it is `local` below this cozy's Runtime minor (cl-1055): this
+    /// cozy's own, the RC's newest build for an RC or dev build of cozy, else its Hub's pin for this release. None on the minor,
+    /// for any other machine, or when it can't be had now (offline; the Hub names none of the minor).
+    pub(crate) async fn own_runtime(&self, name: &str, frame: &api::machine::StatusFrame) -> Option<String> {
+        let local = self.named(name).ok().flatten().is_some_and(|row| row.kind == MachineKind::Local);
+        if !local || api::release::on_runtime_minor(&frame.runtime) {
+            return None;
+        }
+        let own = match crate::update::dev_build() || crate::update::rc_version() {
+            true => self.rc.now().await.ok().and_then(|sums| sums.build("runtime", &frame.platform).map(|(build, _)| build.version)),
+            false => self.software().await.map(|software| software.runtime.clone()),
+        };
+        own.filter(|runtime| api::release::of_runtime_minor(runtime))
     }
 
     /// This home's Hub's software (`/v1/software`), read at most once a [`FRESH`]; as last read when it doesn't answer.

@@ -206,26 +206,9 @@ pub(crate) async fn held_cozy(build: &Build, url: &str) -> Result<DevBuild, Erro
     Ok(held)
 }
 
-/// Whether an update's words (`runtime 0.45.0 (prerelease), mode dedicated`) read as software named by hand: a component
-/// not marked `(RC)` or `(Hub)`, as one with nothing named moves it. Only a store from before holds were kept reads words
-/// this way (`hold_of`); an update now says whether it named anything (`mind_hold`).
-fn by_hand(target: &str) -> bool {
-    target.split(", ").any(|named| software(named) && !named.ends_with("(RC)") && !named.ends_with("(Hub)"))
-}
-
 /// Whether an update under `key` is one Calcifer made itself: to the RC, to this cozy's minor, for a package's floor.
 fn calcifers(key: &str) -> bool {
     ["rc-", "minor-", FLOOR].iter().any(|prefix| key.starts_with(prefix))
-}
-
-/// The hold a completed update (under `key`, named `target`) leaves its machine: its words when it named software by hand, none
-/// when it named software otherwise, and nothing to say when it named none. What a store from before holds were kept reads
-/// its machines' holds from (`store::held_column`).
-pub(crate) fn hold_of(key: &str, target: &str) -> Option<Option<String>> {
-    if calcifers(key) || !target.split(", ").any(software) {
-        return None;
-    }
-    Some(by_hand(target).then(|| target.to_owned()))
 }
 
 /// Whether an update's named component is software (`runtime 0.45.0`), not a mode or a GPU memory limit.

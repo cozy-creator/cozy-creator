@@ -460,3 +460,20 @@ fn verify_file(path:&Path,digest:Digest,length:u64)->Result<()> {
     if size!=length || Digest::from_bytes(hash.finalize().into())!=digest { return Err(StoreError::Protected("project_input_source_changed".into())); }
     Ok(())
 }
+
+/// A project's legacy history not imported (cl-1003): said once in the health log by its code, never by anything the project holds.
+/// It stays in Calcifer's store as it was, for the hard cut; the project opens and runs all the same.
+pub(crate) fn legacy_not_imported(during: &'static str, error: &StoreError) {
+    let named = |text: &str, kind: &'static str| match !text.is_empty() && text.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_') {
+        true => text.to_owned(),
+        false => kind.to_owned(),
+    };
+    let code = match error {
+        StoreError::Protected(text) => named(text, "protected"),
+        StoreError::Locked(text) => named(text, "locked"),
+        StoreError::Corrupt(_) => "corrupt".into(),
+        StoreError::Sqlite(_) => "sqlite".into(),
+        _ => "other".into(),
+    };
+    tracing::warn!(target: "cozy.service_health", during, code = %code, "a project's legacy history was not imported; the project opens without it");
+}

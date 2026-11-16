@@ -1,6 +1,7 @@
 //! Real Chrome startup stderr, anonymous RAM only. Seal before any credential injection so
-//! later page/project output cannot enter it. Only closed observations leave this module.
-use std::{fs::File, io, os::unix::fs::FileExt as _, process::Stdio};
+//! later page/project output cannot enter it. Only closed observations and, for a failed start,
+//! Chrome's one telling line leave this module.
+use std::{fs::File, io, os::unix::fs::FileExt as _, path::Path, process::Stdio};
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 
@@ -17,6 +18,17 @@ impl Capture {
     pub(super) fn seal(&self) -> io::Result<()> {
         use rustix::fs::SealFlags;
         rustix::fs::fcntl_add_seals(&self.0, SealFlags::WRITE | SealFlags::GROW | SealFlags::SHRINK | SealFlags::SEAL).map_err(Into::into)
+    }
+
+    /// Chrome's first fatal line, else its first error line, else its first line: what a failed start says.
+    /// The profile reads `<profile>`; at most 300 characters.
+    pub(super) fn line(&self, profile: &Path) -> Option<String> {
+        let mut bytes = vec![0u8; 64 << 10];
+        let length = self.0.read_at(&mut bytes, 0).ok()?;
+        let text = String::from_utf8_lossy(&bytes[..length]).replace(&*profile.to_string_lossy(), "<profile>");
+        let lines = || text.lines().map(str::trim).filter(|line| !line.is_empty());
+        let line = lines().find(|line| line.contains(":FATAL:")).or_else(|| lines().find(|line| line.contains(":ERROR:"))).or_else(|| lines().next())?;
+        Some(line.chars().filter(|c| !c.is_control()).take(300).collect())
     }
 
     pub(super) fn facts(&self) -> Map<String, Value> {

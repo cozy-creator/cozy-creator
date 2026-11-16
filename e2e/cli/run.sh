@@ -541,6 +541,8 @@ case $SHARD in
   '') parts="
     uv_at_once
     entrypoints
+    open_fails
+    open_slow
     weightless
     script_package
     one_name_two_paths
@@ -661,6 +663,8 @@ case $SHARD in
   entrypoints) parts="entrypoints" ;;
   commands) parts="
     entrypoints
+    open_fails
+    open_slow
     catalog
     basics
     component_models
