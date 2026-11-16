@@ -1,4 +1,4 @@
-import type { Machine } from "../../api/calcifer"
+import type { GpuHeat, Machine, MachineStatus } from "../../api/calcifer"
 import { bytes, span, usd } from "../format"
 
 /** What `name` in a route means: a machine's name, former name or rental id. */
@@ -62,16 +62,21 @@ export function brokenWords(machine: Machine): string {
   return `This machine can't run anything right now: ${broken.message.replace(/\.$/, "")}. ${then}`
 }
 
+/** How a GPU was held back for heat (cl-913): `for 64% of its last run (89 °C, 1400 of 2520 MHz)`. */
+export const heatWords = (hot: GpuHeat) =>
+  `for ${Math.round(hot.share * 100)}% of its last run (${hot.temperature_max_c} °C, ${hot.sm_mhz_mean} of ${hot.sm_mhz_limit} MHz)${hot.replayed ? " (replayed readings)" : ""}`
+
+/** Its Runtime serves its GPUs none of its fast kernels: runs there are slower. */
+export const kernelsWords = (status: MachineStatus) =>
+  status.runtime_kernels ? `Runtime ${status.runtime} is missing its fast GPU kernels, so runs here are slower: ${status.runtime_kernels}` : ""
+
 /** What makes its runs slow now (cl-913): a GPU throttled for heat, a Runtime without its kernels. Red wherever it shows. */
 export function slowWords(machine: Machine): string[] {
   const status = machine.status
   if (!status || machine.state === "ended") return []
-  const heat = (status.heat ?? []).map(
-    (hot) =>
-      `GPU ${hot.gpu} slowed down from heat for ${Math.round(hot.share * 100)}% of its last run (${hot.temperature_max_c} °C, ${hot.sm_mhz_mean} of ${hot.sm_mhz_limit} MHz)${hot.replayed ? " (replayed readings)" : ""}`,
-  )
-  const kernels = status.runtime_kernels ? [`Runtime ${status.runtime} is missing its fast GPU kernels, so runs here are slower: ${status.runtime_kernels}`] : []
-  return [...heat, ...kernels]
+  const heat = (status.heat ?? []).map((hot) => `GPU ${hot.gpu} slowed down from heat ${heatWords(hot)}`)
+  const kernels = kernelsWords(status)
+  return kernels ? [...heat, kernels] : heat
 }
 
 export const stateClass = (machine: Machine) =>

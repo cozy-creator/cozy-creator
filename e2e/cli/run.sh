@@ -531,6 +531,7 @@ WEB_ENGINES=(
 WEB_SOLO=(
   opens
   open
+  machine-details
   account-rent
   machine-tabs
   offline
