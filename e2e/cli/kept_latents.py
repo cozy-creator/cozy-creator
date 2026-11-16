@@ -111,7 +111,9 @@ def run_of(view: Path, box: str) -> tuple[int, str]:
 def left_unswept(view: Path, run: int, run_id: str, hex_digest: str, saved: Path) -> None:
     """As a take purged before cl-1093 left its project: its latents in files/, a loose run row of its run naming them, and the
     project not swept yet. Written as another program writes project.db."""
-    shutil.copy2(saved, view / "files" / saved.name)
+    # Still there (the fix missing), it stays as it is: sealed, it can't be written over.
+    if not (view / "files" / saved.name).exists():
+        shutil.copy2(saved, view / "files" / saved.name)
     db = sqlite3.connect(str(view / "project.db"), timeout=30, isolation_level=None)
     try:
         db.execute("BEGIN IMMEDIATE")
