@@ -3,8 +3,9 @@
 # dependencies = ["cozy-runtime>=0.45", "msgspec>=0.19"]
 # ///
 """The cli suite's rule holders (cl-1103): `pick` has two models, each needed by a rule over its request, as Qwen Image 2's two
-prompt enhancers are (one with pictures, one without), and reads the one its request needs; with `wrong`, the other, which its rule
-ruled out. `route` loads no model and calls `left` or `right` by rule, as H3's `generate` calls one segment function or the other."""
+prompt enhancers are (one with pictures, one without), and reads the one its request needs. `route` loads no model and calls `left`
+or `right` by rule, as H3's `generate` calls one segment function or the other. `stray` has `left`'s and `right`'s models under
+the same rules and reads the one its rule rules out: a rule wrong for its request."""
 
 import asyncio
 
@@ -25,7 +26,6 @@ class Extra(Model[object]):
 class Ask(msgspec.Struct, kw_only=True):
     words: list[str] = []
     upsample: bool = True
-    wrong: bool = False
     seconds: float = 0
 
 
@@ -42,13 +42,12 @@ _WORDS = "size(request.words) > 0"
     needs={"worded": f"request.upsample && {_WORDS}", "plain": f"request.upsample && !({_WORDS})"},
 )
 def pick(payload: Ask, worded: Extra, plain: Extra, tel: Telemetry) -> Said:
-    """Reads the model its rules say the request needs; with `wrong`, the other one."""
+    """Reads the model its rules say the request needs."""
     if not payload.upsample:
         return Said(used="")
-    first = bool(payload.words) != payload.wrong
     with tel.stage("reading it"):
-        _ = (worded if first else plain).graph
-    return Said(used="e2e/rules-worded" if first else "e2e/rules-plain")
+        _ = (worded if payload.words else plain).graph
+    return Said(used="e2e/rules-worded" if payload.words else "e2e/rules-plain")
 
 
 @app.entrypoint(private=True, accelerator=False, defaults={"extra": "e2e/rules-left@0.1.0"})
@@ -59,6 +58,18 @@ def left(payload: Ask, extra: Extra) -> Said:
 @app.entrypoint(private=True, accelerator=False, defaults={"extra": "e2e/rules-right@0.1.0"})
 def right(payload: Ask, extra: Extra) -> Said:
     return Said(used="e2e/rules-right")
+
+
+@app.entrypoint(
+    accelerator=False,
+    defaults={"named": "e2e/rules-left@0.1.0", "other": "e2e/rules-right@0.1.0"},
+    needs={"named": _WORDS, "other": f"!({_WORDS})"},
+)
+def stray(payload: Ask, named: Extra, other: Extra, tel: Telemetry) -> Said:
+    """Reads the model its rules say the request doesn't need."""
+    with tel.stage("reading it"):
+        _ = (other if payload.words else named).graph
+    return Said(used="e2e/rules-right" if payload.words else "e2e/rules-left")
 
 
 @app.entrypoint(accelerator=False, needs={"left": _WORDS, "right": f"!({_WORDS})"})
