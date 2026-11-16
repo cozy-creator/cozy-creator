@@ -103,15 +103,6 @@ pub const TOOLS: &[Tool] = &[
         probe: |_, path| on_path("fusermount3", path).or_else(|| on_path("fusermount3", &system_bin())),
     },
     Tool {
-        // The bundled securefs links libfuse 2 until cl-1000 links libfuse 3 into it.
-        name: "libfuse2",
-        side: Side::Computer,
-        class: Class::Optional,
-        cost: "encrypted projects can't be created or opened (no libfuse.so.2)",
-        install: Install::System("libfuse2"),
-        probe: |_, _| library("libfuse.so.2"),
-    },
-    Tool {
         name: "winfsp",
         side: Side::Computer,
         class: Class::Optional,
@@ -182,7 +173,7 @@ pub const TOOLS: &[Tool] = &[
 /// and hdiutil, built in, on macOS.
 pub fn used_here(tool: &Tool) -> bool {
     match tool.name {
-        "systemctl" | "fuse3" | "libfuse2" => cfg!(target_os = "linux"),
+        "systemctl" | "fuse3" => cfg!(target_os = "linux"),
         "winfsp" | "vcruntime" => cfg!(windows),
         _ => true,
     }
@@ -502,10 +493,6 @@ pub fn package_name<'a>(manager: &str, package: &'a str) -> &'a str {
         ("winget", "winfsp") => "WinFsp.WinFsp",
         ("winget", "vcruntime") => "Microsoft.VCRedist.2015+.x64",
         ("apt-get" | "dnf", "ninja") => "ninja-build",
-        // Ubuntu 24.04 and Debian 13 renamed it for the 64-bit time_t transition.
-        ("apt-get", "libfuse2") if t64() => "libfuse2t64",
-        ("dnf", "libfuse2") => "fuse-libs",
-        ("pacman", "libfuse2") => "fuse2",
         _ => package,
     }
 }
@@ -520,35 +507,9 @@ pub fn package_manager(path: &[PathBuf]) -> Option<&'static str> {
     managers.iter().copied().find(|program| on_path(program, path).or_else(|| on_path(program, &system_bin())).is_some())
 }
 
-/// Whether this Debian-family system names its 64-bit time_t libraries `…t64` (Ubuntu 24.04+, Debian 13+).
-fn t64() -> bool {
-    let release = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
-    let field = |key: &str| release.lines().find_map(|line| line.strip_prefix(key)?.strip_prefix('=')).map(|v| v.trim_matches('"').to_owned());
-    let version = |v: Option<String>| v.and_then(|v| v.split('.').next()?.parse::<u32>().ok());
-    match field("ID").as_deref() {
-        Some("ubuntu") => version(field("VERSION_ID")).is_some_and(|major| major >= 24),
-        Some("debian") => version(field("VERSION_ID")).is_none_or(|major| major >= 13),
-        _ => field("UBUNTU_CODENAME").is_some_and(|name| !["focal", "jammy", "kinetic", "lunar", "mantic"].contains(&name.as_str())),
-    }
-}
-
 /// The system's own program directories, which a service's PATH may lack.
 fn system_bin() -> Vec<PathBuf> {
     ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"].iter().map(PathBuf::from).collect()
-}
-
-/// A shared library the dynamic loader finds in a system directory.
-fn library(name: &str) -> Option<Found> {
-    let arch = match std::env::consts::ARCH {
-        "x86_64" => "x86_64-linux-gnu",
-        "aarch64" => "aarch64-linux-gnu",
-        other => other,
-    };
-    [format!("/usr/lib/{arch}"), format!("/lib/{arch}"), "/usr/lib64".into(), "/lib64".into(), "/usr/lib".into(), "/lib".into()]
-        .into_iter()
-        .map(|dir| PathBuf::from(dir).join(name))
-        .find(|file| file.exists())
-        .map(|path| Found { path, version: String::new() })
 }
 
 /// WinFsp's driver library, where its installer puts it.
