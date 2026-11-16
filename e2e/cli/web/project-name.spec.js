@@ -1,0 +1,44 @@
+// Name a real project before creation; the folder remains editable and neither invalid nor empty names create a directory.
+const { randomBytes } = require('crypto');
+const { dirname, join, sep } = require('path');
+const { test, expect } = require('./fixtures');
+
+test('project-name', async ({ page, project, api, removeAfter }) => {
+  const parent = dirname(project.path), name = `web-named-${randomBytes(6).toString('hex')}`, folder = join(parent, name);
+  removeAfter(folder);
+  await page.getByRole('button', { name: 'New project', exact: true }).click();
+  const nameField = page.getByLabel("New project's name", { exact: true });
+  const folderField = page.getByLabel("New project's folder", { exact: true });
+  const create = page.getByRole('button', { name: 'Create project', exact: true });
+  await expect(nameField).toBeFocused();
+  await folderField.fill(join(parent, 'web-before-name') + sep);
+  await expect(nameField).toHaveValue('web-before-name');
+  await page.getByLabel('Create without encryption').check();
+  await expect(create).toBeEnabled();
+  const writes = [];
+  page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname === '/v1/projects') writes.push(request); });
+  await nameField.fill('not/a/name');
+  await expect(nameField).toHaveAttribute('aria-invalid', 'true');
+  await expect(create).toBeDisabled();
+  await nameField.press('Enter');
+  await nameField.fill('');
+  await expect(create).toBeDisabled();
+  await nameField.press('Enter');
+  expect(writes, 'invalid and empty names create no project').toHaveLength(0);
+  await nameField.fill(name);
+  await expect(folderField).toHaveValue(folder);
+  await expect(create).toBeEnabled();
+  await page.screenshot({ path: test.info().outputPath('named-project-form.png') });
+  const answer = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === '/v1/projects');
+  await create.click();
+  const response = await answer, created = await response.json();
+  expect(response.ok()).toBe(true);
+  expect(created.name).toBe(name);
+  expect(created.path).toBe(folder);
+  await expect(page).toHaveURL(new RegExp(`/p/${created.code}$`));
+  const current = page.getByRole('navigation', { name: 'Projects' }).getByRole('link', { name, exact: true });
+  await expect(current).toBeVisible();
+  await page.reload();
+  await expect(current).toBeVisible();
+  expect((await api.get('/v1/projects')).projects.find(held => held.id === created.id)?.name).toBe(name);
+});
