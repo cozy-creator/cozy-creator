@@ -351,7 +351,8 @@ async function devMode(context, base, project, token) {
     await until('Vite is gone', () => fetch('http://127.0.0.1:5173/@vite/client').then((r) => r.status, () => 0), (status) => status === 0, STEP_MS);
     const standIn = curl('/');
     const script = standIn.body.match(/\/assets\/[^"']+\.js/)?.[0];
-    const loaded = script ? curl(script) : { status: 0 };
+    // A built bundle is past spawnSync's 1 MiB stdout buffer, which `curl` here reads it through: fetched directly instead.
+    const loaded = script ? await fetch(`${calcifer()}${script}`).then((r) => ({ status: r.status }), () => ({ status: 0 })) : { status: 0 };
     const route = curl(`/p/${project.code}`);
     check('dev_vite_down_built_page', standIn.status === 200 && !standIn.body.includes('/@vite/client') && loaded.status === 200 && route.status === 200,
       { page: standIn.status, vite: standIn.body.includes('/@vite/client'), script, loaded: loaded.status, route: route.status });
