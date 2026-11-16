@@ -84,7 +84,7 @@ export function Runs() {
           <option value="">Any status</option>
           {STATUSES.map((word) => (
             <option key={word} value={word}>
-              {word === "in_progress" ? "running" : word}
+              {word === "in_progress" ? "Running" : word.charAt(0).toUpperCase() + word.slice(1)}
             </option>
           ))}
         </select>
@@ -97,7 +97,7 @@ export function Runs() {
           ))}
         </select>
       </div>
-      <Failure error={error} lead="Couldn't list the runs" />
+      <Failure error={error} lead="Couldn't load runs" />
       <ul className="rows">
         {runs.map((run) => (
           <RunRow key={run.id} run={run} now={now} box={run.project_id === id ? boxes.get(run.number) : undefined} />
@@ -105,7 +105,7 @@ export function Runs() {
       </ul>
       {data && !runs.length && (
         <p className="muted">
-          {status || machine ? "No runs match." : !id ? "No runs yet." : "No runs in this project yet."}
+          {status || machine ? "No runs match these filters." : !id ? "No runs yet." : "No runs in this project yet."}
           {id && !status && !machine && (
             <>
               {" "}
@@ -118,12 +118,12 @@ export function Runs() {
       )}
       {data?.unreadable?.map((line) => (
         <p className="muted" key={line}>
-          Left out {line}
+          Couldn't read {line}
         </p>
       ))}
       {Boolean(data?.older) && (
         <button type="button" className="tb" onClick={() => setLimit(Math.min(1000, limit + 200))}>
-          {data?.older} older
+          Show {data?.older} older
         </button>
       )}
     </DrawerFrame>
