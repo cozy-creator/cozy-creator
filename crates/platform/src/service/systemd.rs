@@ -92,8 +92,10 @@ fn render(spec: &ServiceSpec) -> String {
         let log = log.to_string_lossy().replace('%', "%%");
         format!("StandardOutput=append:{log}\nStandardError=append:{log}\n")
     });
-    // Calcifer must checkpoint and close its encrypted views before its owned
-    // filesystem guardians receive a signal. The final timeout still kills the group.
+    // A stop sends SIGTERM to Calcifer alone, which closes its encrypted views first (`vault::close_all`). The moment it
+    // exits, or at the stop timeout (systemd's default, 90 s), systemd SIGKILLs everything left in the cgroup, the vault
+    // supervisors and securefs included: a Calcifer that ends any other way (a crash, a kill, a close that never
+    // finishes) leaves its views mounted dead, with no key, until its next start detaches them (cl-1057).
     let kill_mode = if spec.name == "calcifer" { "KillMode=mixed\n" } else { "" };
     format!(
         "[Unit]\nDescription=cozy {}\n\n[Service]\nExecStart={exec}\nRestart=on-failure\n{kill_mode}{log}\n\

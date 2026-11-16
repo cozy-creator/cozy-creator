@@ -962,15 +962,87 @@ impl Drop for Mounted {
     }
 }
 
-/// Detaches a view an earlier, ended process left mounted, so its runtime folder can go. Only the
-/// mount table is read: a dead provider's endpoint can hang any probe of the view itself.
-pub fn detach_stale(view: &Path) {
+/// Detaches a view an earlier, ended process left mounted, so its runtime folder can go: only a dead one, whose provider is
+/// gone ([`dead`]). A view that answers, whoever serves it, is never touched. Whether nothing is mounted there now.
+pub fn detach_stale(view: &Path) -> bool {
     #[cfg(target_os = "linux")]
-    if linux_identity(view).is_ok_and(|identity| identity.is_some()) {
-        let _ = unix_unmount(view, true, CONTROL_ACK);
+    {
+        match linux_identity(view) {
+            Ok(None) => true,
+            Ok(Some(_)) if dead(view) => {
+                let _ = unix_unmount(view, true, CONTROL_ACK);
+                linux_identity(view).is_ok_and(|identity| identity.is_none())
+            }
+            _ => false,
+        }
     }
     #[cfg(not(target_os = "linux"))]
-    let _ = view;
+    {
+        let _ = view;
+        true
+    }
+}
+
+/// This user's dead encrypted views anywhere, a project Calcifer knows or not (cl-1057): a `fuse.securefs` mount at
+/// `…/.vault-runtime/<id>/view` whose provider is gone ([`dead`]), which a killed Calcifer leaves (its unit SIGKILLs the
+/// supervisor and securefs with it). Each is detached lazily; the views it detached. A view that answers is never touched.
+pub fn detach_dead_views() -> Vec<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        let user = platform::process::user_id();
+        let ours = |view: &Path| {
+            let runtime = view.parent();
+            view.file_name().is_some_and(|name| name == "view")
+                && runtime.and_then(Path::file_name).and_then(|id| id.to_str())
+                    .is_some_and(|id| id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                && runtime.and_then(Path::parent).and_then(Path::file_name).is_some_and(|name| name == ".vault-runtime")
+        };
+        let Ok(mounts) = securefs_mounts() else { return Vec::new() };
+        mounts.into_iter()
+            .filter(|mount| mount.user == Some(user) && ours(&mount.view) && dead(&mount.view))
+            .filter_map(|mount| {
+                let _ = unix_unmount(&mount.view, true, CONTROL_ACK);
+                linux_identity(&mount.view).is_ok_and(|identity| identity.is_none()).then_some(mount.view)
+            })
+            .collect()
+    }
+    #[cfg(not(target_os = "linux"))]
+    Vec::new()
+}
+
+/// Our view with no session left to lock it (a lock, a recovery, a stage's removal): a dead one detached lazily, a live one
+/// unmounted, which ends its provider. One still mounted after that refuses (`Busy`): it's never left serving and called gone.
+pub fn detach(view: &Path) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        if linux_identity(view)?.is_none() {
+            return Ok(());
+        }
+        let _ = unix_unmount(view, dead(view), CONTROL_ACK);
+        if linux_identity(view)?.is_some() {
+            return Err(Error::Busy(view.to_path_buf()));
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = view;
+        Ok(())
+    }
+}
+
+/// Whether a view's provider is gone: the kernel answers its root "transport endpoint is not connected". A read of the folder,
+/// which always asks the provider (a stat can be answered from cached attributes for a while). Probed on a thread of its own,
+/// since a provider that's alive but stuck never answers: no answer in time is never dead.
+#[cfg(target_os = "linux")]
+fn dead(view: &Path) -> bool {
+    let (tell, heard) = mpsc::channel();
+    let probe = view.to_path_buf();
+    thread::spawn(move || {
+        let read = fs::read_dir(&probe).and_then(|mut entries| entries.next().transpose());
+        let _ = tell.send(read.err().map(|error| error.kind()));
+    });
+    matches!(heard.recv_timeout(Duration::from_secs(2)), Ok(Some(io::ErrorKind::NotConnected)))
 }
 
 /// A Unix private directory view, or an unused Windows drive root. Drive mounts disappear on
@@ -1423,7 +1495,6 @@ fn linux_mounted(view: &Path) -> Result<bool> {
 
 #[cfg(target_os = "linux")]
 fn linux_identity(view: &Path) -> Result<Option<String>> {
-    use std::os::unix::ffi::OsStrExt;
     // Canonicalize only the parent: probing the mounted root can issue FUSE operations and
     // accidentally renew its idle timeout. The parent remains the private ordinary directory.
     let view = view
@@ -1431,6 +1502,23 @@ fn linux_identity(view: &Path) -> Result<Option<String>> {
         .and_then(|parent| fs::canonicalize(parent).ok())
         .zip(view.file_name())
         .map_or_else(|| view.to_path_buf(), |(parent, name)| parent.join(name));
+    Ok(securefs_mounts()?.into_iter().find(|mount| mount.view == view).map(|mount| mount.identity))
+}
+
+/// A `fuse.securefs` mount in this process's mount table.
+#[cfg(target_os = "linux")]
+struct SecurefsMount {
+    view: PathBuf,
+    /// Its mount id and device, which a new mount at the same path doesn't share.
+    identity: String,
+    /// The user that mounted it (FUSE's `user_id=`).
+    user: Option<u32>,
+}
+
+#[cfg(target_os = "linux")]
+fn securefs_mounts() -> Result<Vec<SecurefsMount>> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut found = Vec::new();
     let table = fs::read("/proc/self/mountinfo").map_err(io_error("read kernel mount state"))?;
     for line in table.split(|byte| *byte == b'\n') {
         let fields: Vec<_> = line.split(|byte| *byte == b' ').collect();
@@ -1462,15 +1550,17 @@ fn linux_identity(view: &Path) -> Result<Option<String>> {
                 at += 1;
             }
         }
-        if decoded == view.as_os_str().as_bytes() {
-            return Ok(Some(format!(
-                "{}:{}",
-                String::from_utf8_lossy(fields[0]),
-                String::from_utf8_lossy(fields[2])
-            )));
-        }
+        let user = fields.get(separator + 3).and_then(|options| {
+            options.split(|byte| *byte == b',').find_map(|option| option.strip_prefix(b"user_id="))
+                .and_then(|id| std::str::from_utf8(id).ok()).and_then(|id| id.parse().ok())
+        });
+        found.push(SecurefsMount {
+            view: PathBuf::from(std::ffi::OsStr::from_bytes(&decoded)),
+            identity: format!("{}:{}", String::from_utf8_lossy(fields[0]), String::from_utf8_lossy(fields[2])),
+            user,
+        });
     }
-    Ok(None)
+    Ok(found)
 }
 
 #[cfg(unix)]

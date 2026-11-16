@@ -535,10 +535,19 @@ fn retire_runtime(runtime: &FsPath) -> Result<(), Error> {
     }
 }
 
-/// A project with no session holds no key or live view: a dead Calcifer's mount supervisor
-/// unmounted and ended its provider when that exact process ended (`project_mount::supervise`).
-/// Detach any view that outlived it and retire its runtime folder.
-fn retire_orphaned_views(root: &FsPath) -> Result<(), Error> {
+/// Which views [`retire_orphaned_views`] takes.
+#[derive(Clone, Copy)]
+enum Views {
+    /// Only a dead one (a killed Calcifer's, whose unit SIGKILLed the supervisor and securefs with it), detached with its folder;
+    /// one that answers is left as it is: before an unlock, which mounts a fresh view beside it.
+    Dead,
+    /// Every one: a dead one detached, a live one unmounted, else `project_busy` naming it. A lock or a storage change never
+    /// reports done with a view of the project still serving (cl-1057).
+    All,
+}
+
+/// The project's runtime folders but `keep` (its open session's), each with its view, as `views` says.
+fn retire_orphaned_views(root: &FsPath, keep: Option<&FsPath>, views: Views) -> Result<(), Error> {
     let base = root.join(RUNTIME_DIR);
     match fs::symlink_metadata(&base) {
         Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
@@ -552,11 +561,36 @@ fn retire_orphaned_views(root: &FsPath) -> Result<(), Error> {
     }
     for entry in fs::read_dir(&base).map_err(io)? {
         let entry = entry.map_err(io)?;
-        if !entry.file_type().map_err(io)?.is_dir() { continue; }
-        project_mount::detach_stale(&project_mount::view_path(&entry.path()).map_err(provider)?);
+        if !entry.file_type().map_err(io)?.is_dir() || keep.is_some_and(|keep| keep == entry.path()) { continue; }
+        let view = project_mount::view_path(&entry.path()).map_err(provider)?;
+        match views {
+            Views::Dead => if !project_mount::detach_stale(&view) { continue; },
+            Views::All => project_mount::detach(&view).map_err(|why| match why {
+                project_mount::Error::Busy(_) => Error::new(Kind::Conflict, "project_busy",
+                    format!("an earlier view of this project is still in use at {}; close what uses it, then retry", view.display())),
+                other => provider(other),
+            })?,
+        }
         retire_runtime(&entry.path())?;
     }
     Ok(())
+}
+
+/// Before an unlock: the project's dead views go, and a failure to retire them never stops it.
+fn retire_dead_views(root: &FsPath) {
+    if let Err(e) = retire_orphaned_views(root, None, Views::Dead) {
+        tracing::warn!("{}: an earlier Calcifer's view stays: {}", root.display(), e.message);
+    }
+}
+
+/// At Calcifer's start: this user's dead encrypted views, a known project's or not, detached, with their empty runtime folders
+/// (cl-1057). A view that answers is never touched.
+pub(crate) fn detach_dead_views() {
+    for view in project_mount::detach_dead_views() {
+        let _ = fs::remove_dir(&view);
+        if let Some(runtime) = view.parent() { let _ = fs::remove_dir(runtime); }
+        tracing::info!("detached a dead encrypted view an ended Calcifer left: {}", view.display());
+    }
 }
 
 /// Retire only empty, detached runtime folders from earlier Calcifer versions.
@@ -597,6 +631,7 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     if KEY_ROOTS.lock().expect("vault project roots").get(&keybag.info().project_id).is_some_and(|known| known != root && held(known).is_some()) {
         return Err(Error::new(Kind::Conflict, "vault_project_copy", "another location of this encrypted project is unlocked"));
     }
+    retire_dead_views(root);
     let runtime = project_runtime(root)?;
     let view = project_mount::view_path(&runtime).map_err(provider)?;
     let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(unusable)?;
@@ -694,6 +729,10 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser:
     if let Some(session) = held(root) {
         let mut session = session.lock().expect("vault session");
         mark_closing(&mut session);
+        let own = session.runtime.clone();
+        drop(session);
+        // Every other view of it goes first, or the lock refuses with its session as it was.
+        retire_orphaned_views(root, Some(&own), Views::All)?;
     }
     vault_operation::revoke(root);
     // Existing accepted work may drain while the key is retained, but no new viewing stream can read it.
@@ -1138,7 +1177,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
         "lock" => {
             if !encrypted(root) { return Err(Error::new(Kind::Usage, "project_plain", "unencrypted projects cannot be locked")); }
             // Locking a locked project is a no-op, after retiring what a dead Calcifer's views left.
-            if held(root).is_some() { close(api, root, transition, browser)?; } else { retire_orphaned_views(root)?; }
+            if held(root).is_some() { close(api, root, transition, browser)?; } else { retire_orphaned_views(root, None, Views::All)?; }
         }
         "passphrase" | "recovery" => {
             let session = held(root).ok_or_else(|| locked(root))?;
@@ -1500,7 +1539,7 @@ fn recover_under_guards(root: &FsPath) -> Result<(), Error> {
     let _converting = Converting(root.to_owned());
     if record.internal {
         // No session: any view of this root is a dead Calcifer's.
-        if held(root).is_none() { retire_orphaned_views(root)?; }
+        if held(root).is_none() { retire_orphaned_views(root, None, Views::All)?; }
         return recover_internal(&record);
     }
     verify_owned_directories(&record)?;
@@ -1549,7 +1588,7 @@ fn finish_conversion(root: &FsPath) -> Result<(), Error> {
 /// stage: detach it first, or removing the stage fails on it.
 fn remove_stage(staged: &FsPath) -> Result<(), Error> {
     if !exists(staged)? { return Ok(()); }
-    retire_orphaned_views(staged)?;
+    retire_orphaned_views(staged, None, Views::All)?;
     fs::remove_dir_all(staged).map_err(io)
 }
 
