@@ -13,8 +13,10 @@
 #   sound       now: <beat> mentioned, a synthetic two-beats-a-second drum: the soundtrack, returned as given
 #   pickup      now: text's take picked up at frame 72: the take's first 72 frames kept, 96 new (5 s less the 25 carried)
 #   text-up, first-up, ref-up   text, first and ref with prompt_upsampling on (Lightricks' Gemma 4 E2B enhancer)
-#   video       now: <clip> (was-text's take, else text's) mentioned: the Union Control reference, by its edges; the
-#               output's edges held against the clip's (ffmpeg edgedetect, SSIM) beside text's, which had none
+#   video       now: <clip> (was-text's take, else text's) mentioned: the Union Control reference, by its depth (the
+#               default); the output's edges held against the clip's (ffmpeg edgedetect, SSIM) beside text's, which had none
+#   video-edges the same by the clip's edges
+#   motion      motion transfer (Paul 11-16): first_frame=<pearl>, "moves the way <clip> does", control=pose
 #   keys        now: first_frame=<lighthouse>, a keyframe <lantern> at 2.5 s (frame 60): it lands on frame 60
 # The `now` cells render with prompt_upsampling off unless named `-up`; each keeps the text the model read
 # ($OUT/sheets/<cell>.txt, the result's `prompt`) beside its sheet.
@@ -31,7 +33,7 @@ RAM=$(param ram_gb 96) NEED=$(param need_s 5400)
 WAS=$PACKAGES/was/ltx-2.5 NOW=$PACKAGES/now/ltx-2.5 FIX=$(cd "$(dirname "$0")" && pwd)/fixtures/ltx-images
 for t in "$WAS" "$NOW"; do [ -f "$t/pyproject.toml" ] || fail "no packages_refs checkout ${t#"$PACKAGES"/}"; done
 grep -q 'last_frame' "$NOW/ltx_2_5/__init__.py" || fail "now's ltx-2.5 takes no last_frame"
-for c in ref ref-up ref-first sound pickup text-up first-up video keys; do
+for c in ref ref-up ref-first sound pickup text-up first-up video video-edges motion keys; do
   [[ ",$CELLS," != *",$c,"* ]] || grep -q 'prompt: Prompt\[Image' "$NOW/ltx_2_5/__init__.py" || fail "now's ltx-2.5 is older than references (cell $c)"
 done
 [ -f "$FIX/pearl.jpg" ] && [ -f "$FIX/teapot.jpg" ] && [ -f "$REF/seed.jpg" ] || fail "no fixtures"
@@ -180,17 +182,25 @@ edge_ssim() {
   ffmpeg -v error -i "$OUT/edges-$(basename "$1")" -i "$OUT/edges-$(basename "$2")" -lavfi "[0:v]setpts=N/FRAME_RATE/TB[a];[1:v]setpts=N/FRAME_RATE/TB,scale=640:-2[b];[a][b]ssim=stats_file=$OUT/ssim-edges.txt" -f null - &&
     awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^All:/) { s += substr($i, 5); n++ } } END { printf "%.4f", s / n }' "$OUT/ssim-edges.txt"
 }
-if has video; then
+if has video || has video-edges || has motion; then
   src=$OUT/videos/was-text.mp4; [ -s "$src" ] || src=$OUT/videos/text.mp4
   if [ -s "$src" ]; then
     cp "$src" "$OUT/clip.mp4"
     run_page import "$OUT/clip.mp4" --name clip > "$OUT/import-clip.txt" 2>&1 || fail "import clip: $(cat "$OUT/import-clip.txt")"
-    cell video "$NOW" "$(now "A watercolor painting comes to life: a fox in a red scarf walks through an autumn forest the way <clip> moves, turns its head toward the camera. Rustling leaves.")"
-    if [ -s "$OUT/videos/video.mp4" ]; then
-      edged "$OUT/clip.mp4" 121; edged "$OUT/videos/video.mp4" 121; edged "$OUT/videos/text.mp4" 121
-      say "video: edges against the clip's, SSIM $(edge_ssim "$OUT/videos/video.mp4" "$OUT/clip.mp4"); text's (no reference) $(edge_ssim "$OUT/videos/text.mp4" "$OUT/clip.mp4")"
-      ffmpeg -v error -y -i "$OUT/clip.mp4" -i "$OUT/videos/video.mp4" -filter_complex "[0:v]select='eq(n,0)+eq(n,60)+eq(n,120)',scale=-2:256,tile=3x1[a];[1:v]select='eq(n,0)+eq(n,60)+eq(n,120)',scale=-2:256,tile=3x1[b];[a][b]vstack" -frames:v 1 "$OUT/sheets/video-vs-clip.jpg" || true
-    fi
+    edged "$OUT/clip.mp4" 121; [ -s "$OUT/videos/text.mp4" ] && edged "$OUT/videos/text.mp4" 121
+    FOX="A watercolor painting comes to life: a fox in a red scarf walks through an autumn forest the way <clip> moves, turns its head toward the camera. Rustling leaves."
+    for c in video video-edges motion; do
+      has "$c" || continue
+      case $c in
+        video) cell "$c" "$NOW" "$(now "$FOX")" ;;
+        video-edges) cell "$c" "$NOW" "$(now "$FOX" | jq -c '. + {control: "edges"}')" ;;
+        motion) cell "$c" "$NOW" "$(now "The girl in the painting walks slowly through a sunlit outdoor market and turns her head toward the camera, moving the way <clip> does. Market chatter." | jq -c '. + {control: "pose", first_frame: "<pearl>"}')" "$OUT/pearl.jpg" ;;
+      esac
+      [ -s "$OUT/videos/$c.mp4" ] || continue
+      edged "$OUT/videos/$c.mp4" 121
+      say "$c: edges against the clip's, SSIM $(edge_ssim "$OUT/videos/$c.mp4" "$OUT/clip.mp4"); text's (no reference) $([ -s "$OUT/videos/text.mp4" ] && edge_ssim "$OUT/videos/text.mp4" "$OUT/clip.mp4")"
+      ffmpeg -v error -y -i "$OUT/clip.mp4" -i "$OUT/videos/$c.mp4" -filter_complex "[0:v]select='eq(n,0)+eq(n,60)+eq(n,120)',scale=-2:256,tile=3x1[a];[1:v]select='eq(n,0)+eq(n,60)+eq(n,120)',scale=-2:256,tile=3x1[b];[a][b]vstack" -frames:v 1 "$OUT/sheets/$c-vs-clip.jpg" || true
+    done
   else
     say "MISS video: no take to reference"; bad+=(video)
   fi
