@@ -324,7 +324,7 @@ test('render', async ({ page, project, api, cli }) => {
     expect.soft(dots.indexOf('Rendering', queued), 'then Rendering').toBeGreaterThan(queued);
     const faces = sayings.map((look) => look.face).filter(Boolean);
     expect.soft(faces[0], 'its face says Queued first').toMatch(/^Queued/);
-    expect.soft(faces.some((words) => /^Denoising/.test(words)), `then its stage: ${faces.join(' | ')}`).toBe(true);
+    expect.soft(faces.some((words) => /^Rendering/.test(words)), `then its stage: ${faces.join(' | ')}`).toBe(true);
     const faded = sayings.map((look) => look.preview).filter((opacity) => opacity !== null);
     expect.soft(faded.length, 'a preview of its latents shows as it renders').toBeGreaterThan(0);
     expect.soft(faded.every((opacity) => opacity > 0 && opacity < 1), `faded: ${faded.join(' ')}`).toBe(true);
