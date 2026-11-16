@@ -207,11 +207,13 @@ function paletteOf(): Palette {
   const read = (name: string, fallback: string) => new Color(css.getPropertyValue(name).trim() || fallback)
   const num = (name: string, fallback: string) => read(name, fallback).toNumber()
   const glow = read("--select-glow", "#3d8bff66"), edge = read("--box-edge", "#ffffff40"), shade = read("--box-shade", "#0000008c")
+  const mark = read("--mark", "#ffffff38"), mark2 = read("--mark2", "#ffffff70")
   return {
     card: num("--card", "#17181b"), well: num("--well", "#0a0a0b"), line: num("--line", "#2b2d32"), ink: num("--ink", "#e8e6e1"), mute: num("--mute", "#a3a5ac"),
     select: num("--select", "#3d8bff"), gap: num("--select-gap", "#0b0b0c"), glow: glow.toNumber(), glowAlpha: glow.alpha,
     queued: num("--state-queued", "#9a9ca3"), running: num("--state-running", "#5aa9ff"), unseen: num("--state-unseen", "#4ade80"), failed: num("--state-failed", "#f0625d"),
     ember: num("--ember", "#ff8a3d"), ember2: num("--ember2", "#ffb37d"),
+    line2: num("--line2", "#3a3d44"), mark: mark.toNumber(), markAlpha: mark.alpha, mark2: mark2.toNumber(), mark2Alpha: mark2.alpha,
     box: num("--box", "#202226"), edge: edge.toNumber(), edgeAlpha: edge.alpha, shade: shade.toNumber(), shadeAlpha: shade.alpha,
     check: css.getPropertyValue("--check").trim() || "#fbfbfb", check2: css.getPropertyValue("--check2").trim() || "#e8e8e8",
   }
