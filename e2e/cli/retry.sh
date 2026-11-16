@@ -51,9 +51,10 @@ kill "$pid" 2> /dev/null && check "retry elsewhere: cozy render cut still follow
 wait "$pid" 2> /dev/null || true
 project_api "$P" "/runs/$cut?detail=full" > "$OUT/retry-cut-run.json" 2>&1
 name=$(jq -r '.name // empty' "$OUT/retry-cut-run.json")
-J --arg n "$name" '.status == "failed" and .reason.code == "machine_lost" and .reason.message == "stand-r shut down, so \($n) stopped" and (.reason.next | index("cozy run retry \($n)"))' "$OUT/retry-cut-run.json" \
+J --arg n "$name" '.status == "failed" and .reason.code == "machine_lost" and .reason.message == "stand-r shut down, so \($n) stopped"' "$OUT/retry-cut-run.json" \
   || check "retry elsewhere: cut's run didn't fail as its machine shut down: $(jq -c '{name, status, reason}' "$OUT/retry-cut-run.json")"
-grep -q 'stand-r shut down' "$OUT/retry-cut.ndjson" "$OUT/retry-cut.err" || check "retry elsewhere: cozy render cut didn't say stand-r shut down: $(tail -c 300 "$OUT/retry-cut.err")"
+grep -q 'stand-r shut down' "$OUT/retry-cut.ndjson" "$OUT/retry-cut.err" && grep -q "cozy run retry $name" "$OUT/retry-cut.ndjson" "$OUT/retry-cut.err" \
+  || check "retry elsewhere: cozy render cut didn't say stand-r shut down and to run cozy run retry $name: $(tail -c 300 "$OUT/retry-cut.err") $(tail -c 300 "$OUT/retry-cut.ndjson")"
 row "$P" cut '.failure' | J --arg n "$name" '.code == "machine_lost" and .message == "cut: stand-r shut down, so \($n) stopped"' \
   || check "retry elsewhere: cut's failure: $(row "$P" cut '.failure')"
 in_project "$P" --json run retry "$name" > "$OUT/retry-cli.ndjson" 2> "$OUT/retry-cli.err" \

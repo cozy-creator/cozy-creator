@@ -1944,9 +1944,7 @@ impl Calcifer {
                             (false, "any") => self.with_run_store(id.as_str(), |store| store.unplace(id.as_str())),
                             _ => self.with_run_store(id.as_str(), |store| store.fail(id.as_str(), Reason {
                                 code: ::api::calcifer::MACHINE_LOST.into(),
-                                message: format!("{name} released itself before it took {}", self.run_name(&run)),
-                                detail: message.clone(),
-                                next: vec![format!("cozy run retry {}", self.run_name(&run))],
+                                message: format!("{name} released itself before it took {}: {message}", self.run_name(&run)),
                                 ..Default::default()
                             })),
                         };

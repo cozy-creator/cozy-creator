@@ -5652,7 +5652,8 @@ impl Walk {
                 _ if lost => api::calcifer::MACHINE_LOST,
                 _ => "version_failed",
             };
-            let next = run.reason.iter().flat_map(|reason| reason.next.iter().cloned()).chain([format!("cozy run watch {}", run.number)]);
+            let retry = lost.then(|| format!("cozy run retry {}", run.name));
+            let next = retry.into_iter().chain(run.reason.iter().flat_map(|reason| reason.next.iter().cloned())).chain([format!("cozy run watch {}", run.number)]);
             return Err(next.fold(Error::new(Kind::Unavailable, code, said), Error::next));
         }
         let mut version = pending.version.clone();
