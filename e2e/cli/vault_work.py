@@ -5,7 +5,8 @@ In an unlocked synthetic vault on this computer's machine, through the installed
 1. A run that outlives the idle window holds the vault open, and the idle clock starts when it ends.
 2. An explicit lock mid-run ends the run first, says so, and locks.
 3. A run that outlives a short maximum unlock (cl-882, owner 11-11: "runs count as activity") goes on with the vault
-   unlocked, finishes and lands its file, and then the vault locks.
+   unlocked, finishes and lands its file, and then the vault locks. Its file is video-sized (cl-1060): saved into the project
+   after its call ends, past the maximum, which the vault waits for; a lock then cut the save off at the run's end.
 The caller owns the vault before and after: it is left unlocked with no idle limit, as it was found.
 """
 from __future__ import annotations
@@ -51,6 +52,8 @@ class Run(TypedDict, total=False):
 IDLE = 20
 OUTLIVES = 50
 MAXIMUM = 15
+# The maximum's run's file, in MB: a save into the project that takes a while after its call ends (cl-1060).
+VIDEO_MB = 128
 
 
 def cli(args: argparse.Namespace, name: str, *words: str, fails: bool = False) -> object:
@@ -87,9 +90,10 @@ def locked_within(args: argparse.Namespace, seconds: float) -> float:
     raise AssertionError(f"the vault did not lock within {seconds} s")
 
 
-def start(args: argparse.Namespace, name: str, script: Path, seconds: int, mark: str = "") -> tuple[subprocess.Popen[bytes], Path]:
+def start(args: argparse.Namespace, name: str, script: Path, seconds: int, mark: str = "", size: int = 0) -> tuple[subprocess.Popen[bytes], Path]:
     stdout = args.out / f"{name}.ndjson"
-    words = [str(args.cli), "--json", "run", str(script), f"seconds:={seconds}", *([f"mark={mark}"] if mark else []), "--on", "local"]
+    words = [str(args.cli), "--json", "run", str(script), f"seconds:={seconds}", *([f"mark={mark}"] if mark else []),
+             *([f"size:={size}"] if size else []), "--on", "local"]
     process = subprocess.Popen(words,
                                cwd=args.project, stdout=stdout.open("wb"), stderr=(args.out / f"{name}.stderr").open("wb"))
     return process, stdout
@@ -104,6 +108,44 @@ def run_of(stdout: Path) -> Run:
         if isinstance(event, dict) and isinstance(event.get("run"), dict):
             return cast(Run, event["run"])
     return {}
+
+
+def after_failure(args: argparse.Namespace, number: object, mark: str) -> str:
+    """What a save cut off by the lock left (cl-1060): the vault locked, unlocked again, and the run watched until it settles."""
+    try:
+        locked = f"locked {locked_within(args, 60):.0f} s after"
+    except AssertionError:
+        locked = "not locked within 60 s"
+    try:
+        unlock(args, "unlock-after-failure", 0)
+    except AssertionError as error:
+        return f"{locked}; it did not unlock again: {error}"
+    began, status, stage = time.monotonic(), "", ""
+    while time.monotonic() - began < 120:
+        done = subprocess.run([str(args.cli), "--json", "run", "watch", str(number), "--once"], cwd=args.project, capture_output=True)
+        (args.out / "after-failure-watch.json").write_bytes(done.stdout)
+        lines = [line for line in done.stdout.splitlines() if line.strip()]
+        try:
+            watched: object = json.loads(lines[-1]) if lines else {}
+        except ValueError:
+            watched = {}
+        if isinstance(watched, dict) and isinstance(watched.get("run"), dict):
+            watched = watched["run"]
+        if isinstance(watched, dict):
+            status = str(watched.get("status", ""))
+            progress = watched.get("progress")
+            stage = str(progress.get("stage", "")) if isinstance(progress, dict) else ""
+        if status in ("completed", "failed", "canceled"):
+            break
+        time.sleep(2)
+    fetched = args.out / "after-failure.out"
+    subprocess.run([str(args.cli), "run", "watch", str(number), "--once", "-o", str(fetched)], cwd=args.project, capture_output=True)
+    kept = [path for path in fetched.rglob("*") if path.is_file() and mark.encode() in path.read_bytes()[:200]]
+    for path in fetched.rglob("*"):
+        if path.is_file():
+            path.unlink()
+    return (f"{locked}; at the next unlock run {number} was {status or 'unread'} ({stage or 'no stage'}) after "
+            f"{time.monotonic() - began:.0f} s, and its file {'came back from the project' if kept else 'did not come back'}")
 
 
 def main() -> None:
@@ -126,6 +168,7 @@ def main() -> None:
 # requires-python = ">=3.12"
 # dependencies = ["cozy-runtime>=0.43.1", "msgspec>=0.19"]
 # ///
+import os
 import time
 import msgspec
 from cozy_runtime.author import App, Outputs
@@ -134,6 +177,7 @@ app = App()
 class Request(msgspec.Struct, forbid_unknown_fields=True):
     seconds: int
     mark: str = ""
+    size: int = 0
 class Answer(msgspec.Struct):
     slept: int
     file: File
@@ -141,7 +185,7 @@ class Answer(msgspec.Struct):
 def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
     time.sleep(payload.seconds)
     target = out.temporary_file(".txt")
-    target.write_text(f"{payload.mark} slept {payload.seconds}")
+    target.write_bytes(f"{payload.mark} slept {payload.seconds}\n".encode() + os.urandom(payload.size << 20))
     return Answer(payload.seconds, out.save_file(target, media_type="text/plain"))
 ''')
     # Its environment installed first, so the timed run below is the sleep, not an install.
@@ -187,7 +231,7 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
     script = unlock(args, "unlock-maximum", 0, MAXIMUM) / "vault-work-proof" / "sleeper.py"
     # Not `token`: TensorD refuses a field of that name as a credential.
     mark = f"cl882-{time.time_ns()}"
-    process, stdout = start(args, "past-maximum", script, OUTLIVES, mark)
+    process, stdout = start(args, "past-maximum", script, OUTLIVES, mark, VIDEO_MB)
     # Each state as read by then (wall ms, Calcifer's clock too): the vault may lock as soon as the run settles.
     samples: list[tuple[float, str]] = []
     while process.poll() is None:
@@ -195,6 +239,9 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
         samples.append((time.time() * 1000, read))
         time.sleep(2)
     run = run_of(stdout)
+    if process.returncode != 0 or run.get("status") != "completed":
+        # Whether its output is owed or lost: the next unlock finishes the save, or not.
+        print(f"vault work: after the maximum's failure: {after_failure(args, run.get('number'), mark)}", flush=True)
     assert process.returncode == 0, f"the run outliving the maximum failed: {run}"
     assert run.get("status") == "completed", f"the run outliving the maximum is {run.get('status')}"
     settled_ms = run["settled_at_ms"]
@@ -210,11 +257,16 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
     fetched = args.out / "past-maximum.out"
     done = subprocess.run([str(args.cli), "run", "watch", str(run.get("number")), "--once", "-o", str(fetched)], cwd=args.project, capture_output=True)
     (args.out / "past-maximum.fetch.stderr").write_bytes(done.stderr)
-    kept = [path for path in fetched.rglob("*") if path.is_file() and mark.encode() in path.read_bytes()]
+    kept = [path for path in fetched.rglob("*") if path.is_file() and mark.encode() in path.read_bytes()[:200]]
     assert kept, f"run {run.get('number')}'s file did not come back from the project: exit {done.returncode} {done.stderr[-600:]!r}"
+    sizes = [path.stat().st_size for path in kept]
+    for path in fetched.rglob("*"):
+        if path.is_file():
+            path.unlink()  # 128 MB: not an artifact
+    assert max(sizes) >= VIDEO_MB << 20, f"run {run.get('number')}'s file came back {max(sizes)} bytes, not {VIDEO_MB} MB"
     receipt["outlived_maximum"] = {"run": run.get("number"), "status": run.get("status"), "maximum_s": MAXIMUM,
                                    "unlocked_past_maximum_s": round((settled_ms - deadline_ms) / 1000), "unlocked_reads_past_maximum": len(past),
-                                   "locked_after_end_s": round(max_lock_s, 1), "fetched": kept[0].name}
+                                   "locked_after_end_s": round(max_lock_s, 1), "fetched": kept[0].name, "file_mb": VIDEO_MB}
     receipt["synthetic_only"] = True
     (args.out / "receipt.json").write_text(json.dumps(receipt, indent=2))
     print(f"vault work: {json.dumps(receipt)}", flush=True)
