@@ -70,7 +70,7 @@ const FIT = { x: 70, y: 90, zoom: 0.45 };
 /** Each frame, from the page's start: when each box is first drawn, when its preview is, and whether it pulses while it's on its way. */
 const SAMPLER = () => {
   try { performance.setResourceTimingBufferSize(10_000); } catch {}
-  const seen = { nodes: {}, frames: 0, misses: [], long: [] };
+  const seen = { nodes: {}, frames: 0, misses: [], long: [], ticks: [] };
   window.__opens = seen;
   // What held the page's thread: what a first frame waits behind.
   try {
@@ -105,6 +105,7 @@ const SAMPLER = () => {
   const tick = () => {
     const now = performance.now();
     seen.frames++;
+    if (now < 8000) seen.ticks.push(Math.round(now));
     const inspection = document.querySelector('.canvas-root')?.canvasInspection;
     for (const name of inspection?.resources()?.frames ? inspection.names() : []) {
       if (seen.nodes[name]?.preview != null) continue;
@@ -421,6 +422,8 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
         trace: {
           reads: api.map((entry) => [`${path(entry).replace(/project-[0-9a-f]+/, 'P')}${new URL(entry.name).search}`, Math.round(entry.startTime), Math.round(entry.responseEnd)]).sort((a, b) => a[2] - b[2]).slice(0, 24),
           long: (opens?.long ?? []).filter(({ at }) => at < 3000),
+          ticks: opens?.ticks ?? [],
+          user: performance.getEntries().filter((entry) => entry.name.startsWith('cozy.') && (entry.entryType === 'mark' || entry.entryType === 'measure')).map((entry) => [entry.name, Math.round(entry.startTime * 10) / 10, Math.round(entry.duration * 10) / 10]),
         },
         waiting: rows.filter(([, row]) => row.waiting > 0).length,
         pulsing: rows.filter(([, row]) => row.waiting > 0 && row.pulsing === row.waiting).length,
@@ -488,7 +491,9 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
     await test.step(`${kind}: opened cold, then warm, then fitted`, async () => {
       const one = projects[kind];
       const { context, wire, first } = await fresh();
+      await context.browser().startTracing(first, { path: testInfo.outputPath(`${kind}_cold-chrome-trace.json`), categories: ['devtools.timeline', 'disabled-by-default-devtools.timeline', 'disabled-by-default-devtools.timeline.frame', 'blink.user_timing', 'gpu', 'toplevel', 'v8.execute'] });
       await opening(`${kind}_cold`, first, wire, one, { cold: true });
+      await context.browser().stopTracing();
       await opening(`${kind}_warm`, first, wire, one, { cold: false, reload: true });
       // All of it in view: each of the 50 read from its store (an encrypted one's from its encrypted store, never the browser's cache).
       const fitting = await first.evaluate(() => performance.now());
