@@ -62,7 +62,8 @@ test('mention', async ({ page, project, api, cli }) => {
     await focus(page, 'still');
     await expect(words).toBeFocused();
     await page.keyboard.type('A sheet of <am');
-    const offered = page.getByRole('listbox');
+    // The names it offers: the prompt's own list, not the canvas's hidden list of every box (.canvas-cards).
+    const offered = page.locator('[role=listbox]:not(.canvas-cards)');
     await expect(offered.getByRole('option')).toHaveText(['amy']);
     await page.keyboard.press('Enter');
     await expect(words.locator('.chip[data-mention="amy"]')).toHaveText('<Amy>');
