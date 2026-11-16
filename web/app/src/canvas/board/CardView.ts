@@ -18,7 +18,7 @@ export interface Palette {
 }
 export interface CardState { hover: Part | null; dragging: boolean; offering: boolean; resizing: string | null; dropTarget: boolean; broken: boolean }
 export interface CardEnv {
-  palette: Palette; theme: string; zoom: number; band: 0 | 1 | 2; titleSize: number; ring: number; resolution: number; epoch: number
+  palette: Palette; theme: string; zoom: number; band: 0 | 1 | 2; titleSize: number; ring: number; resolution: number; epoch: number; moving: boolean
   media: Media; reduced: boolean; software: boolean; invalidate(): void
   request(picture: ScenePicture, width: number): { source: MediaSource; width: number; local: boolean } | null
   onRevealed(name: string, aspect: number | undefined, local: boolean): void
@@ -76,6 +76,9 @@ export class CardView {
   }
 
   get picture() { return this.pictures.get("main") }
+  get referencesShown() {
+    return [...this.pictures].filter(([key]) => key.startsWith("ref-")).map(([key, picture]) => ({ key, ready: picture.sprite.visible, box: { x: picture.sprite.x, y: picture.sprite.y, w: picture.sprite.width, h: picture.sprite.height }, sha: JSON.parse(picture.key || "[{}]")[0]?.sha256 as string | undefined }))
+  }
   get latentShown() { const latent = this.latent; return latent?.handle.texture ? { width: latent.handle.texture.width, opacity: latent.sprite.alpha } : null }
   get previewing() { return this.video ? { active: true, ready: Boolean(this.video.handle.texture), muted: true, loop: true } : null }
 
@@ -194,11 +197,18 @@ export class CardView {
       this.drawn.dot = { x: 2, y: y + size * 0.62 - dot / 2, w: dot, h: dot }
       left = dot + 8
     }
-    const control = !far && !naming && (node.view.asset || node.view.landed || node.view.placing)
-    const version = !far && !naming && show.version ? width(show.version, SMALL) + 10 : 0
-    const room = w - left - (control ? 32 : 0) - version
+    const hasControl = !far && !naming && (node.view.asset || node.view.landed || node.view.placing)
+    const hasVersion = !far && !naming && show.version ? width(show.version, SMALL) + 10 : 0
+    const room = w - left - (hasControl ? 32 : 0) - hasVersion
+    // A cut name under the pointer is read whole, over its own version and trash.
+    const spills = state.hover === "title" && width(show.title, size, true, true) > room
+    const control = hasControl && !spills
+    const version = spills ? 0 : hasVersion
     // While its name is being typed, the field over it (Stage) is the name.
-    const title = naming ? null : label("title", ellipsis(show.title, room, size, true, true), left, y, room, { size, color: colors.ink, mono: true, bold: true })
+    // Under the pointer a cut name reads whole, on the card's colour over whatever it runs past (zoom-never-moves-nodes).
+    const whole = spills
+    if (whole && !naming) this.ink.roundRect(left - 4, y - 2, width(show.title, size, true, true) + 8, size * 1.25 + 4, 4).fill({ color: colors.card, alpha: 0.96 })
+    const title = naming ? null : label("title", whole ? show.title : ellipsis(show.title, room, size, true, true), left, y, whole ? Infinity : room, { size, color: colors.ink, mono: true, bold: true })
     this.drawn.full.set("title", show.title)
     this.area("title", title ? { x: left, y, w: Math.max(16, width(this.texts.get("title")!.value, size, true, true)), h: size * 1.25 } : null)
     if (version) label("version", show.version!, w - (control ? 32 : 0) - version, HEAD - 10 - SMALL * 1.25, version, { size: SMALL, color: colors.mute })
@@ -442,7 +452,8 @@ export class CardView {
   /** A video's preview plays over its poster on hover; the poster stays until its first frame. */
   private syncVideo(state: CardState, env: CardEnv) {
     const { node, show } = this.input!
-    const sha = state.hover === "body" && show.picture?.kind === "video" && show.picture.sha256 && env.band === 0 ? hexOf(show.picture.sha256) : undefined
+    // A preview plays only while the canvas holds still under the pointer: a pan stops it, its poster drawn.
+    const sha = state.hover === "body" && !env.moving && show.picture?.kind === "video" && show.picture.sha256 && env.band === 0 ? hexOf(show.picture.sha256) : undefined
     if (this.video && this.video.sha !== sha) { this.video.handle.release(); this.video.sprite.destroy(); this.video = undefined }
     if (sha && !this.video && !node.dragging) {
       const sprite = new Sprite({ texture: Texture.EMPTY, eventMode: "none" })
@@ -478,7 +489,7 @@ export class CardView {
     } else if (node.view.hot) {
       // What's held over a box that takes it (app.css .card.hot): an ember outline 2px off it, in a soft 6px ember halo.
       const edge = node.view.refused ? colors.failed : colors.ember
-      this.ink.rect(body.x - 3, body.y - 3, body.w + 6, body.h + 6).stroke({ width: 6, color: colors.ember, alpha: 0.22, alignment: 0.5 })
+      this.ink.rect(body.x - 4, body.y - 4, body.w + 8, body.h + 8).stroke({ width: 8, color: colors.ember, alpha: 0.22, alignment: 0.5 })
       this.ink.rect(body.x - 3, body.y - 3, body.w + 6, body.h + 6).stroke({ width: 2, color: edge, alignment: 0.5 })
     } else if (state.hover && (show.picture || show.note || show.error || show.references.length)) {
       // The page's hover: a 1px --line2 outline 2px off the picture (app.css .card:hover > .media).
