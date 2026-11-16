@@ -15,6 +15,7 @@
 #   runtime   the Runtime's manylinux wheel, https://…#sha256=<hex> (a pure wheel has none of its kernels)
 #   tensorfs  optional: TensorFS's wheel, the same way
 #   old       false: no 0.25.0 take and upscale first
+#   need_s    seconds the cap must buy (5400)
 . "$(dirname "$0")/lib.sh"
 TO=$(param to 1080p)
 OVERRIDE=$(param prompt "A grandmother in a bright red tracksuit and round sunglasses rides a skateboard in a concrete skate park at night, in heavy falling snow under orange floodlights.")
@@ -119,7 +120,7 @@ kernels "$WAS"; kernels "$NOW"
 cp "$REF/seed.jpg" "$OUT/skater.jpg"
 run_page import "$OUT/skater.jpg" --name "$HERO" > "$OUT/import.txt" 2>&1 || fail "import: $(cat "$OUT/import.txt")"
 RENT_ARGS=--ssh  # nvidia-smi from the pod's root shell
-quote 6000
+quote "$(param need_s 5400)"
 rent
 pod() { say "pod $(cozy machine show "$NAME" --json | jq -c '{v: .status.version, rt: .status.runtime, tfs: .status.tensorfs, gpu: .status.gpus[0].name}')"; }
 pod
