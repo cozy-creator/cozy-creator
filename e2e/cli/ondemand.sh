@@ -170,7 +170,7 @@ while read -r why; do check "ondemand-need: $why"; done < "$OUT/ondemand-need.fa
 # bottleneck's queue, where a paced flow's one or two in flight lose to drop-tail and wait out TCP's retransmission timer; a
 # real link's are 1500 bytes, as here for the cell.
 # SHARE_LINK (tfs-300's variants of the shipped behaviour, by shard): `queue` (the default) the 60 Mbit FIFO above; `police` the
-# same rate and burst as one token bucket that drops what it can't pass, no queue (a provider's policer); `open` no limit (TensorFS's
+# same rate and burst (SHARE_BURST, 1mb) as one token bucket that drops what it can't pass, no queue (a provider's policer); `open` no limit (TensorFS's
 # fast-link gate). SHARE_NETLINK=closed: Calcifer, and TensorD its child, start with netlink refused (systemd
 # RestrictAddressFamilies, as a seccomp sandbox does), so an install's socket bytes can't be read.
 share_link() {
@@ -181,7 +181,7 @@ case ${SHARE_LINK:-queue} in
       && sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport "$minio" 0xffff flowid 1:3 \
       && sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport "$wheels" 0xffff flowid 1:3 || { share_unlink; check "ondemand-share: the shared link wasn't made"; return 1; } ;;
   police)
-    sudo ip link set dev lo mtu 1500 && sudo tc qdisc add dev lo root handle 1: prio && sudo tc actions add action police rate 60mbit burst 1mb drop index 1 \
+    sudo ip link set dev lo mtu 1500 && sudo tc qdisc add dev lo root handle 1: prio && sudo tc actions add action police rate 60mbit burst "${SHARE_BURST:-1mb}" drop index 1 \
       || { share_unlink; check "ondemand-share: the policed link wasn't made"; return 1; }
     for port in "$minio" "$wheels"; do
       sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport "$port" 0xffff flowid 1:3 action police index 1 \
@@ -364,7 +364,7 @@ for line in (out / "ondemand-share.tensord.log").read_text(errors="replace").spl
         paths["precise" if "link shared" in line else "blind" if "can't be read" in line else "whole"] += 1
 moved = sum(w for t, w, _ in rates if w_first <= t <= w_last)
 series = [[t - began, round(w / 1e6, 2), round(i / 1e6, 2)] for t, w, i in rates]
-summary = {"mode": MODE, "netlink": os.environ.get("SHARE_NETLINK", "open"), "share_paths": paths,
+summary = {"mode": MODE, "burst": os.environ.get("SHARE_BURST", "1mb") if MODE == "police" else None, "netlink": os.environ.get("SHARE_NETLINK", "open"), "share_paths": paths,
            "weights_mb_s_first_to_last": round(moved / max(1, len(weights)) / 1e6, 2), "zero_5s_from_s": [z / 1e3 for z in zeros],
            "link_mb_s": REF / 1e6, "install_alone_s": (a1 - a0) / 1e3, "install_with_weights_s": (c1 - c0) / 1e3,
            "weights_asked_s": (w0 - began) / 1e3, "weights_first_s": (w_first - began) / 1e3, "weights_last_s": (w_last - began) / 1e3,

@@ -649,6 +649,7 @@ case $SHARD in
   ondemand-share) parts="ondemand_share logs" ;;
   # tfs-300: the same cell on a policed link, an open one, and with netlink refused (an install's socket bytes unreadable).
   ondemand-police) export SHARE_LINK=police; parts="ondemand_share logs" ;;
+  ondemand-police128) export SHARE_LINK=police SHARE_BURST=128k; parts="ondemand_share logs" ;;
   ondemand-open) export SHARE_LINK=open; parts="ondemand_share logs" ;;
   ondemand-sealed) export SHARE_NETLINK=closed; parts="ondemand_share logs" ;;
   # tfs-300's measurements: a window-clamped trickle beside a saturating flow; each package install's third-party bytes.
