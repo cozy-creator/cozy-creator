@@ -529,9 +529,9 @@ function Canvas({
   /** Where the last zoom of the buttons or keys is going, so a second press steps on from there, not from part of the way. */
   const aim = useRef<Viewport | null>(null)
   const aimed = useCallback(() => aim.current ?? flow.getViewport(), [flow])
-  // A hand's pan or zoom moves the camera out from under an aim.
+  // A hand's pan or zoom on the canvas moves the camera out from under an aim; a press on the zoom buttons doesn't.
   useEffect(() => {
-    const element = stage.current
+    const element = stage.current?.querySelector<HTMLElement>(".canvas-root")
     if (!element) return
     const drop = () => { aim.current = null }
     element.addEventListener("wheel", drop, { passive: true, capture: true })
