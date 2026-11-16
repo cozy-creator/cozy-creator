@@ -638,7 +638,7 @@ fn forget(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Resu
         if !store.unsettled().map_err(|_| error("project_journal", "the project journal could not be checked"))?.is_empty()
             || !store.unsettled_here().map_err(|_| error("project_journal", "the project journal could not be checked"))?.is_empty()
             // A finished call's outputs still being saved into it (cl-1060).
-            || api.calcifer.writing_into(&project.id)
+            || api.calcifer.writing_into(&project.id).is_some()
         {
             return Err(Error::new(Kind::Conflict, "project_busy", "the project's work is still stopping; retry after it settles"));
         }
@@ -685,6 +685,31 @@ fn prepare_browser(api: &Arc<Api>) -> Result<Option<crate::browser::PreparedBrow
     tokio::runtime::Handle::current().block_on(api.browser.prepare_close()).map(Some).map_err(|error| error.0)
 }
 
+/// A run still writing into the project, as a lock refuses on it: named, with what to do (cl-1060).
+fn saving(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Option<Error> {
+    let projects = api.projects.now_open();
+    let project = projects.iter().find(|project| project.root == root)?;
+    let id = api.calcifer.writing_into(&project.id)?;
+    let number = api.projects.transition_store(api, &project.id, transition).ok()
+        .and_then(|store| store.run(id.as_str()).ok().flatten()).map(|row| row.number);
+    Some(saving_refusal(project, &id, number))
+}
+
+/// A run whose exporter moves its outputs into the project now, before a lock has the project's turn (an explicit lock's first look).
+fn saving_outputs(api: &Arc<Api>, root: &FsPath) -> Option<Error> {
+    let projects = api.projects.now_open();
+    let project = projects.iter().find(|project| project.root == root)?;
+    let id = api.calcifer.saving_into(&project.id)?;
+    let number = api.calcifer.run_store(id.as_str()).ok().and_then(|store| store.run(id.as_str()).ok().flatten()).map(|row| row.number);
+    Some(saving_refusal(project, &id, number))
+}
+
+fn saving_refusal(project: &super::Project, id: &crate::RunId, number: Option<u64>) -> Error {
+    let run = number.map_or_else(|| "a run".to_owned(), |number| format!("{}-{number}", project.key()));
+    Error::new(Kind::Conflict, "project_busy", format!("{run} is saving its outputs; lock again when it finishes, or cancel the run"))
+        .next(format!("cozy run cancel {}", number.map_or_else(|| id.to_string(), |number| number.to_string())))
+}
+
 fn retire_browser(api: &Arc<Api>, browser: &mut Option<crate::browser::PreparedBrowserClose>) -> Result<(), Error> {
     if let Some(prepared) = browser.take() {
         tokio::runtime::Handle::current().block_on(api.browser.close(prepared)).map_err(|error| error.0)?;
@@ -693,6 +718,9 @@ fn retire_browser(api: &Arc<Api>, browser: &mut Option<crate::browser::PreparedB
 }
 
 fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser: &mut Option<crate::browser::PreparedBrowserClose>) -> Result<(), Error> {
+    // Under the project's turn and before anything is revoked: a run still writing into it (settling, saving its outputs) goes on,
+    // and the lock refuses as while it runs (cl-1060).
+    if let Some(error) = saving(api, root, transition) { return Err(error); }
     if let Some(session) = held(root) {
         let mut session = session.lock().expect("vault session");
         mark_closing(&mut session);
@@ -872,12 +900,7 @@ fn lock_lapsed(api: &Arc<Api>, root: &FsPath, due: Instant, forced: bool) {
         lapsed(&session)
     });
     if !still_needs { return; }
-    // A run that settled since the clock looked still saves its outputs first (cl-1060): the view stays open to it.
-    if project_id(root).is_some_and(|id| api.calcifer.writing_into(&id)) {
-        say(root, "writes", || "locking waits for a run's outputs still being saved".into());
-        return;
-    }
-    if let Some(session) = held(root) { mark_closing(&mut session.lock().expect("vault session")); }
+    // The project's turn first, then `close` looks whether a run still writes into it before it revokes anything (cl-1060).
     let Ok(transition) = exclusive(root) else {
         say(root, "gate", || "locking waits for a request still holding the project".into());
         return;
@@ -922,6 +945,9 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
     let op = operation(&root); let _guard = op.lock().expect("vault operation");
     let mut ended = vec![];
     if ask.action == "lock" {
+        // A run saving its outputs into it: the lock refuses, naming it, before anything is revoked or ended (cl-1060). A run
+        // still going is ended below, as an explicit lock ends work.
+        if let Some(error) = saving_outputs(api, root) { return Err(error); }
         // A lock that found the project busy already revoked its view: this one finishes it, and admits no receipt into
         // a view that can no longer be opened.
         let revoked = held(root).is_some_and(|session| lapsed(&session.lock().expect("vault session")));
@@ -1189,7 +1215,7 @@ fn working(api: &Arc<Api>, root: &FsPath) -> Option<Work> {
     let projects = api.projects.now_open();
     let project = projects.iter().find(|project| project.root == root)?;
     // A finished call still owes the project its settling and outputs, saved after its row settles (cl-1060).
-    if api.calcifer.writing_into(&project.id) { return untold("a run's writes still owed: its outputs being saved"); }
+    if api.calcifer.writing_into(&project.id).is_some() { return untold("a run's writes still owed: its outputs being saved"); }
     if *project.walking.lock().expect("walking lock") { return told("a render"); }
     if project.moving.try_lock().is_err() || project.cutting.try_lock().is_err() { return untold("a move or cut"); }
     let Ok(transition) = exclusive(root) else { return untold("a reader holding the project") };
