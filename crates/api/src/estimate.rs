@@ -594,7 +594,11 @@ pub fn quote(frame: &StatusFrame, now_ms: i64, jobs: &[EstimateJob]) -> Vec<Quot
         // Warm: a job of its function goes before it here, or an idle executor holds its model; else its first call's cold time.
         let hot = !function.is_empty() && (warm.contains(&function) || warm_there(frame, &job.models));
         let (time, widths) = machine.timed(&function, &job.size, job.prior_ms as f64, widths, hot);
-        quote.basis = time.basis;
+        // This machine's own runs, which its frame doesn't time (a project's, cl-1047), measure it all the same.
+        quote.basis = match (time.basis, job.prior_runs) {
+            (Basis::Prior, 1..) => Basis::Measured,
+            (basis, _) => basis,
+        };
         quote.warm = hot && machine.times.get(&function).is_some_and(|runs| runs.iter().any(|run| !run.cold));
         // A machine with no GPU runs it on its CPU, as its run then says (clamp and warn): its time is its runs' there. GPUs out of
         // service (cl-935) leave too few for it: another machine runs it.

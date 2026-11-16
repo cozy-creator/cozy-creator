@@ -295,9 +295,9 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
         await expect.soft(page.getByRole('region', { name: 'Focused asset' }).getByRole('note', { name: 'Render time' })).toBeVisible({ timeout: 30_000 });
       };
       // This computer's runs are its project's own (xs-160), so its machine times none of them: the estimate stands on the
-      // project's run here (`prior`).
+      // project's run here, a measurement of this machine all the same (`measured`, cl-1047).
       const ran = (await api.post(project.at('/fit'), { names: ['slow'] })).estimates?.[0];
-      expect.soft(ran, "by this project's run here").toMatchObject({ machine: 'local', basis: 'prior' });
+      expect.soft(ran, "by this project's run here").toMatchObject({ machine: 'local', basis: 'measured' });
       expect.soft(ran?.run_ms, 'its run here, about its 24 s').toBeGreaterThanOrEqual(20_000);
       await look('slow', timed);
       await leave();
@@ -307,7 +307,7 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await region.getByRole('button', { name: 'Render', exact: true }).click();
       await expect.poll(async () => (await project.asset('quick')).versions ?? 0, { message: "quick's first take", timeout: 120_000 }).toBe(1);
       const quick = (await api.post(project.at('/fit'), { names: ['quick'] })).estimates?.[0];
-      expect.soft({ basis: quick?.basis, fast: (quick?.run_ms ?? 0) > 0 && (quick?.run_ms ?? 0) < 15_000 }, 'the fast box, timed and short').toEqual({ basis: 'prior', fast: true });
+      expect.soft({ basis: quick?.basis, fast: (quick?.run_ms ?? 0) > 0 && (quick?.run_ms ?? 0) < 15_000 }, 'the fast box, timed and short').toEqual({ basis: 'measured', fast: true });
       await expect.soft(region.getByRole('note', { name: 'Render time' }), 'a short render says no time').toHaveCount(0);
       await expect.soft(region.getByRole('button', { name: 'Slow here' })).toHaveCount(0);
       await leave();

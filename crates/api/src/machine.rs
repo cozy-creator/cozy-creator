@@ -1005,12 +1005,20 @@ pub struct EstimateJob {
     /// The caller's time for it on one GPU of this kind, from runs elsewhere; 0: none. Used when
     /// this machine has measured none of the function.
     pub prior_ms: u64,
+    /// How many of this machine's own runs `prior_ms` is, which its frame doesn't time (a project's private runs, cl-1047): its quote
+    /// is then Measured. 0: runs elsewhere.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub prior_runs: u32,
     /// The soonest it can start, ms from now: when what it reads is made.
     #[serde(skip_serializing_if = "is_zero")]
     pub after_ms: u64,
 }
 
 fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+fn is_zero_u32(n: &u32) -> bool {
     *n == 0
 }
 

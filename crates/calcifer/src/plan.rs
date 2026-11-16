@@ -26,7 +26,7 @@ pub(crate) struct Job {
     /// What it asks of a machine; its `prior_ms` and `after_ms` are set here.
     pub ask: v1::EstimateJob,
     /// Its time on one GPU of each picture's kind from runs elsewhere, by picture.
-    pub priors: Vec<u64>,
+    pub priors: Vec<crate::placement::Prior>,
     /// The pictures it may go to.
     pub machines: Vec<usize>,
     /// The jobs of this plan whose output it reads.
@@ -133,8 +133,8 @@ fn after_ms(job: &Job, ends: &[Option<i64>], now: i64) -> u64 {
 }
 
 fn ask(job: &Job, picture: usize, after_ms: u64) -> v1::EstimateJob {
-    let prior_ms = job.machines.iter().position(|&m| m == picture).and_then(|at| job.priors.get(at)).copied().unwrap_or(0);
-    v1::EstimateJob { prior_ms, after_ms, ..job.ask.clone() }
+    let prior = job.machines.iter().position(|&m| m == picture).and_then(|at| job.priors.get(at)).copied().unwrap_or_default();
+    v1::EstimateJob { prior_ms: prior.ms, prior_runs: prior.runs, after_ms, ..job.ask.clone() }
 }
 
 /// Each job's picture and offer with `assigned`, and the plan's (latest, summed) finish: each machine's jobs in dependency order,

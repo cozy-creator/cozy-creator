@@ -309,10 +309,22 @@ impl Prior {
 /// estimate's `prior_ms`, used where that machine ran none of it. Its media's seconds, frames and tokens scale it from what those
 /// runs asked (cl-1004: a 5 s shot after 15 s ones).
 pub(crate) fn one_gpu_ms(history: &[Took], machine: &str, gpu: &str, size: &JobSize) -> Option<f64> {
+    one_gpu(history, machine, gpu, size).map(|(ms, _)| ms)
+}
+
+/// `one_gpu_ms`, and how many of `machine`'s own runs it stands on (cl-1047): those it took by `machine`'s name, every one on `gpu`, the
+/// card it has now (a run's record names its machine and GPU, nothing more: a rental's name is used again, and `local` changes card or
+/// moves with its project's folder). 0: other machines' of its GPU, or any of its own on another card.
+pub(crate) fn one_gpu(history: &[Took], machine: &str, gpu: &str, size: &JobSize) -> Option<(f64, u32)> {
     let one: Vec<Took> = history.iter().filter(|took| took.width <= 1).cloned().collect();
     let prior = Prior::of(&one, machine, gpu, size.megapixels)?;
     let asked = JobSize { seconds: size.seconds, frames: size.frames, tokens: size.tokens, ..JobSize::default() };
-    Some(prior.clone().with_steps(size.steps).total_ms(size.steps) * asked.ratio(&prior.extent))
+    let mine: Vec<&Took> = one.iter().filter(|took| took.machine == machine).take(RECENT).collect();
+    let here = match prior.basis == EtaBasis::Machine && mine.iter().all(|took| took.gpu == gpu) {
+        true => mine.len() as u32,
+        false => 0,
+    };
+    Some((prior.clone().with_steps(size.steps).total_ms(size.steps) * asked.ratio(&prior.extent), here))
 }
 
 /// Whether a GPU's name as its machine says it (`NVIDIA GeForce RTX 4090`) is the card a Hub sells (`RTX 4090`, `rtx-4090`): their
