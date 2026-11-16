@@ -10,6 +10,7 @@
 #   db_deleted_gc   a deleted box resolves nowhere; Undo in the window; its files and thumbnails gone after it, across a stopped Calcifer too
 #   db_purged       Undo past the 3-hour purge brings each box back where it was without its files, saying so
 #   db_closes       a project closes once no call, stream or render reads it; Calcifer's heap comes back; a reopen is as quick
+#   db_remote_custody  old runs an ended rental made import as the project's own, and the project takes new work (cl-1003)
 # Uses project.sh's `api`, `status`, `held` and `sha`.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # project.db's schema (db.rs VERSION): what a project this cozy opens holds, and what its copy before a migration is named after.
@@ -1152,6 +1153,90 @@ J --arg gone "$G" '.legacy == {existing: [], gone: [{path: $gone, runs: 2}], unr
   || check "legacy: doctor after the open: $(jq -c .legacy "$OUT/legacy-doctor-after.json" 2> /dev/null)"
 echo "legacy: $(jq -r .legacy_history "$OUT/legacy-status.json"); store after: $(jq -c .legacy "$OUT/legacy-doctor-after.json")"
 in_cozy "$now" || check "legacy: this cozy back on its own store"
+}
+
+# db_remote_custody (cl-1003): a project's old runs an ended rental made import as its own, and it takes new work. On rc/0.26.0 Paul's
+# lab took none: its 3 imported runs, made on a rental now ended, stayed pending a custody only `local` can verify, and every render
+# was refused `legacy_worker_custody_pending`. Both states: a first import here, and one an earlier import left pending (the runs in
+# project.db pending, their old rows still in Calcifer's store), as lab's is.
+db_remote_custody() {
+step "legacy custody: old runs of an ended rental import as the project's own, and the project takes new work (cl-1003)"
+local D=$OUT/remote-custody now=$OUT/cozy-now old P pid ids
+old=$(cozy_0240) || { check "remote custody: 0.24.0's archive"; return; }
+[ -f "$now" ] || cp "$COZY" "$now"
+in_cozy "$old" && [ "$(cozy --version)" = "cozy 0.24.0" ] || { check "remote custody: 0.24.0 in this cozy's place: $(cozy --version)"; in_cozy "$now"; return; }
+P=$D/here
+mkdir -p "$P"
+boxes_in "$P" <<< '[{"name": "notes", "fields": {"text": "A project a rental ran for."}}]' || { check "remote custody: 0.24.0 made no project"; in_cozy "$now"; return; }
+pid=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder" 2> /dev/null) || pid=''
+[ -z "$pid" ] || term_calcifer "$pid" || { in_cozy "$now"; return; }
+ids=$(python3 - "$HOME/.cozy/calcifer/state.db" "$P" <<'PY'
+import json, sqlite3, sys
+path, here = sys.argv[1:3]
+db = sqlite3.connect(path, isolation_level=None)
+assert db.execute("PRAGMA user_version").fetchone()[0] == 7, "not a 0.24 store"
+db.execute("INSERT INTO machines (name, kind, key, state, created_at) VALUES ('gone-rental', 'rental', '', 'ended', 1700000000000)")
+done = json.dumps({"status": "succeeded", "result": {}, "outputs": [], "execution_ms": 1000, "measurements": {"observations": []}})
+first = (db.execute("SELECT max(number) FROM runs").fetchone()[0] or 0) + 1
+ids = []
+for i in range(2):
+    ids.append(f"run-rental{i:020d}")
+    db.execute("INSERT INTO runs (id, number, idempotency_key, digest, hub, kind, target, machine, pinned, spec, out_dir, state, status, outcome, created_at, settled_at) "
+               "VALUES (?, ?, ?, 'sha256:00', 'http://127.0.0.1:1', 'call', 'legacy/runs', 'gone-rental', 0, X'7B7D', ?, 'settled', 'completed', CAST(? AS BLOB), ?, ?)",
+               (ids[-1], first + i, f"rental-{i}", here + "/.runs", done, 1700000000000 + i, 1700000000000 + i))
+db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+print(json.dumps(ids))
+PY
+) || { check "remote custody: runs into 0.24.0's store"; in_cozy "$now"; return; }
+# This cozy fences that store at its first start. Its old rows of the project, as they are before any import, kept aside.
+cp "$now" "$COZY.new" && chmod +x "$COZY.new" && mv -f "$COZY.new" "$COZY" && cozy --json machine ls > /dev/null && db_calcifer \
+  || { check "remote custody: this cozy on 0.24.0's store"; in_cozy "$now"; return; }
+pid=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder") && term_calcifer "$pid" || { in_cozy "$now"; return; }
+python3 - "$HOME/.cozy/calcifer/state.db" "$D/source.db" "$ids" <<'PY' || { check "remote custody: its fenced rows"; in_cozy "$now"; return; }
+import json, sqlite3, sys
+db = sqlite3.connect(sys.argv[1], isolation_level=None)
+db.execute("ATTACH ? AS kept", (sys.argv[2],))
+ids = json.dumps(json.loads(sys.argv[3]))
+for table in ["legacy_project_runs", "legacy_run_owners"]:
+    db.execute(f"CREATE TABLE kept.{table} AS SELECT * FROM main.{table} WHERE id IN (SELECT value FROM json_each(?))", (ids,))
+    n = db.execute(f"SELECT count(*) FROM kept.{table}").fetchone()[0]
+    assert n == 2, f"{table}: {n} fenced rows of the project, not 2"
+# Its old index row too, which a first import retires once nothing of it is pending (lab's is still there).
+db.execute("CREATE TABLE kept.legacy_project_projects AS SELECT * FROM main.legacy_project_projects")
+assert db.execute("SELECT count(*) FROM kept.legacy_project_projects").fetchone()[0] == 1, "not the project's one old index row"
+PY
+remote_custody_admits() {
+  in_project "$P" --json status > "$OUT/remote-custody-$1-status.json" 2> "$OUT/remote-custody-$1-status.err" \
+    || check "remote custody ($1): status: $(tail -c 300 "$OUT/remote-custody-$1-status.err")"
+  J '.legacy_history == "2 runs imported, 0 pending"' "$OUT/remote-custody-$1-status.json" \
+    || check "remote custody ($1): status says $(jq -c .legacy_history "$OUT/remote-custody-$1-status.json" 2> /dev/null)"
+  [ "$(sql1 "$P" "SELECT count(*) FROM runs WHERE machine = 'gone-rental' AND custody = 'owned'")" = 2 ] \
+    || check "remote custody ($1): the rental's runs in project.db: $(sql "$P" "SELECT id, custody FROM runs WHERE machine = 'gone-rental'" | tr '\n' ' ')"
+  in_project "$P" --json run minimax-h3-tools/echo "text=after the rental $1" > "$OUT/remote-custody-$1-run.ndjson" 2> "$OUT/remote-custody-$1-run.err" \
+    || check "remote custody ($1): a new run refused: $(tail -c 300 "$OUT/remote-custody-$1-run.ndjson") $(tail -c 300 "$OUT/remote-custody-$1-run.err")"
+}
+cozy --json machine ls > /dev/null && db_calcifer || { check "remote custody: this cozy again"; in_cozy "$now"; return; }
+remote_custody_admits first
+# As an earlier import left lab: the runs pending custody in project.db, their old rows and the project's old index row still
+# in Calcifer's store.
+pid=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder") && term_calcifer "$pid" || { in_cozy "$now"; return; }
+python3 - "$P/project.db" "$HOME/.cozy/calcifer/state.db" "$D/source.db" <<'PY' || { check "remote custody: lab's state"; in_cozy "$now"; return; }
+import sqlite3, sys
+project = sqlite3.connect(sys.argv[1], isolation_level=None)
+assert project.execute("UPDATE runs SET custody = 'legacy_pending' WHERE machine = 'gone-rental'").rowcount == 2
+project.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+store = sqlite3.connect(sys.argv[2], isolation_level=None)
+store.execute("ATTACH ? AS kept", (sys.argv[3],))
+store.execute("BEGIN")
+for table in ["legacy_project_runs", "legacy_run_owners", "legacy_project_projects"]:
+    store.execute(f"INSERT OR IGNORE INTO main.{table} SELECT * FROM kept.{table}")
+store.execute("COMMIT")
+store.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+PY
+cozy --json machine ls > /dev/null && db_calcifer || { check "remote custody: this cozy on lab's state"; in_cozy "$now"; return; }
+remote_custody_admits again
+echo "remote custody: $(jq -r .legacy_history "$OUT/remote-custody-again-status.json" 2> /dev/null)"
+in_cozy "$now" || check "remote custody: this cozy back on its own store"
 }
 
 db_migrate_large() {

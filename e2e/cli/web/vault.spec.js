@@ -1,6 +1,6 @@
 // vault (cl-973 core cell 22): a project encrypted from the page (a folder with anything in it said beside the field, cl-980), its recovery
 // secret said once, saved, then a picture dropped and downloaded; outside
-// its mount the folder holds no plaintext copy of it. `cozy` locks it while a second tab is open: every tab is covered at once, and neither
+// its mount the folder holds no plaintext copy of it. `cozy` locks it while a second tab is open and reading it: every tab is covered at once, and neither
 // the DOM, Web Storage, Cache Storage nor IndexedDB keeps a name or a picture. Unlocked with the passphrase and locked from the page, then
 // unlocked with the recovery secret, each time the canvas back with no reload; decrypted, its files and history are kept. A first drop on an
 // unowned canvas asks for a project and sends nothing until it's made and its secret saved; its draft shows once the project's lock is read.
@@ -276,8 +276,53 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
     await expect.poll(() => canvasVisible(second, picture), { timeout: 60_000 }).toBe(true);
     await rememberPrivate(page, made, picture);
     await rememberPrivate(second, made, picture);
-    const said = await cli('--json', 'vault', '--directory', made.path, 'lock');
-    // Run 43401337115: refused `project_busy` while the second tab's reads held the project, though its view was revoked and it locked.
+    // Reads of the project, each asked again as it answers, until the lock has answered (cl-1025): four from the second tab, and
+    // twelve from Calcifer's other clients (a CLI, more tabs), so some read holds the project at any moment. Refused once it's
+    // locking, each waits a moment before asking again.
+    const paths = ['', '/view', '/canvas', '/history?limit=50'];
+    await second.evaluate(({ id, paths }) => {
+      const reads = window.__reads = { asked: 0, answered: 0, stop: false, said: {} };
+      for (const path of paths) {
+        (async () => {
+          while (!reads.stop) {
+            reads.asked += 1;
+            const answer = await fetch(`/v1/projects/${id}${path}`, { cache: 'no-store', headers: { 'cozy-project-storage': '3' } }).catch(() => null);
+            const body = await answer?.text().catch(() => '') ?? '';
+            const heard = `${answer?.status ?? 'failed'} ${answer?.ok ? '' : body.match(/"code":"([a-z_]+)"/)?.[1] ?? ''}`.trim();
+            reads.said[heard] = (reads.said[heard] ?? 0) + 1;
+            if (answer?.ok) reads.answered += 1;
+            else await new Promise((wait) => setTimeout(wait, 20));
+          }
+        })();
+      }
+    }, { id: made.id, paths });
+    const others = { asked: 0, stop: false, said: {} };
+    const reading = Array.from({ length: 12 }, async (_, i) => {
+      while (!others.stop) {
+        others.asked += 1;
+        const answer = await api.raw('GET', at(paths[i % paths.length])).catch(() => null);
+        const body = await answer?.text().catch(() => '') ?? '';
+        const heard = `${answer?.status ?? 'failed'} ${answer?.ok ? '' : body.match(/"code":"([a-z_]+)"/)?.[1] ?? ''}`.trim();
+        others.said[heard] = (others.said[heard] ?? 0) + 1;
+        if (!answer?.ok) await new Promise((wait) => setTimeout(wait, 20));
+      }
+    });
+    await expect.poll(() => second.evaluate(() => window.__reads.answered), { message: 'the second tab reads the project' }).toBeGreaterThan(40);
+    const before = await second.evaluate(() => window.__reads.asked) + others.asked;
+    let said;
+    try {
+      said = await cli('--json', 'vault', '--directory', made.path, 'lock');
+    } finally {
+      others.stop = true;
+    }
+    const during = await second.evaluate(() => { window.__reads.stop = true; return window.__reads.asked; }) + others.asked - before;
+    await Promise.all(reading);
+    // How the reads were answered, by status and code: a test's diagnostics say what refused them.
+    const heard = await second.evaluate(() => window.__reads.said);
+    test.info().annotations.push({ type: 'lock_reads', description: `the tab's ${JSON.stringify(heard)}, the clients' ${JSON.stringify(others.said)}` });
+    expect.soft(during, 'reads went on while cozy locked it').toBeGreaterThan(16);
+    // Runs 43401337115 and 43751040408: refused `project_busy` while the second tab's reads held the project, though its view was
+    // revoked and it locked. The lock polled for the project's gate, and lost to the reads (cl-1025).
     expect.soft(said.code, `cozy vault lock: ${said.stdout.slice(-300)} ${said.stderr.slice(-300)}`).toBe(0);
     expect.soft(said.code === 0 ? JSON.parse(said.stdout).vault?.state : said.stdout.slice(-300), 'cozy says it locked').toBe('locked');
     await expect.poll(async () => (await vault()).state, { message: 'the project locked', timeout: 60_000 }).toBe('locked');

@@ -192,9 +192,9 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
   });
 
   await test.step('a typed save on its way as the API renames its box: it goes again under the new name, and nothing is refused', async () => {
-    // More typed in cli_typed, its save held, as a slow network holds it, until the API's rename has returned: it reaches Calcifer under the
-    // old name, which 404s (this cell's doing, as is the page's read of that name after it). The page hears the rename and sends the same
-    // words under the new name, in their turn, with nothing more typed and nothing said to have failed.
+    // More typed in cli_typed, its save held, as a slow network holds it, until the page has heard the API's rename: it reaches Calcifer under
+    // the old name, which 404s (this cell's doing, as is the page's read of that name after it). The page, which already knows the new name,
+    // sends the same words under it, in their turn, with nothing more typed and nothing said to have failed (B5: this order lost them).
     guards.allow(/status of 404\b.*\/v1\/projects\/[^/ ]+\/assets\/cli_typed$/);
     await page.evaluate(recordNotes);
     const saved = [];
@@ -211,6 +211,7 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
     await page.keyboard.type(' IN-THE-WINDOW');
     await expect.poll(() => saves.calls.length, { message: 'its words sent at the pause, and held' }).toBe(1);
     await api.post(project.at('/rename'), { from: 'cli_typed', to: 'cli_raced' });
+    await expect(region, 'the page hears the rename while its save is held').toHaveAttribute('data-focused-asset', 'cli_raced', { timeout: 15_000 });
     await saves.release();
     const typed = 'Second CLI words TYPED-MEANWHILE IN-THE-WINDOW';
     // Still in the words, nothing more typed: the save goes on by itself.
