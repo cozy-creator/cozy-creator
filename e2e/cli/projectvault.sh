@@ -373,14 +373,15 @@ vault_distros() (
   trap 'for c in "${containers[@]}"; do docker rm -f "$c" > /dev/null 2>&1 || true; done' EXIT
   # distro <name> <image> <install>: the probe's mount mode in that image, as uid $uid.
   distro() {
-    local name=$1 image=$2 install=$3 c=cozy-vault-$1-$$ as fusermount fusermount3 shim
+    local name=$1 image=$2 install=$3 c=cozy-vault-$1-$$ as fusermount fusermount3 shim home
     containers+=("$c")
     as=(docker exec --user "$uid:$gid" -e HOME=/home/prover -e COZY_VAULT_PROVIDER_DIAGNOSTICS=/home/prover/provider.log -w /home/prover "$c")
-    # Its home on the runner's disk, as a computer's is (run 43785258153: on the container's overlay, the read back was refused).
-    mkdir -p "$work/$name-home"
+    # Its home on the runner's disk, as a computer's is (run 43785258153: on the container's overlay, the read back was refused), and
+    # outside $OUT: a locked view's underlay is sealed (mode 000), which the publish step can't walk (run 43793704152).
+    home=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/vault-distro-$name.XXXXXX")
     # Privileged: Docker's own sandbox (seccomp, AppArmor, capabilities) refused the mount or its read back in runs 43785258153 and
     # 43787853550, where the runner itself passes; the probe mounts and reads in one process, as one user.
-    docker run -d --name "$c" --privileged --device /dev/fuse -v "$work/$name-home:/home/prover" \
+    docker run -d --name "$c" --privileged --device /dev/fuse -v "$home:/home/prover" \
       -v "$VAULT_PROBE:/usr/local/bin/vault-provider:ro" -v "$helper:/opt/securefs/securefs:ro" "$image" sleep 3600 > "$work/$name-run.log" 2>&1 \
       || { check "vault $name: $image did not start: $(tail -c 300 "$work/$name-run.log")"; return; }
     timeout 900 docker exec "$c" sh -c "$install" > "$work/$name-install.log" 2>&1 || { check "vault $name: $install: $(tail -c 400 "$work/$name-install.log")"; return; }
@@ -394,12 +395,13 @@ vault_distros() (
     # Mount, write, fsync, lock: no read back. Inside Docker it's refused (EACCES) right after a write, privileged or not, while the
     # runner itself reads back (vault_fuse3, projectvault): Docker's FUSE sandbox; a real Fedora reads back at the release gate.
     timeout 900 "${as[@]}" /usr/local/bin/vault-provider mount /opt/securefs/securefs /home/prover/proof > "$work/$name.out" 2> "$work/$name.err" \
-      || { check "vault $name: the probe's mount as uid $uid (home $(docker exec "$c" stat -c %u:%g /home/prover 2>&1)): $(tail -c 500 "$work/$name.err") provider: $(tail -c 800 "$work/$name-home/provider.log" 2> /dev/null)"; return; }
+      || { check "vault $name: the probe's mount as uid $uid (home $(docker exec "$c" stat -c %u:%g /home/prover 2>&1)): $(tail -c 500 "$work/$name.err") provider: $(tail -c 800 "$home/provider.log" 2> /dev/null)"; return; }
     shim=$(docker exec "$c" readlink /home/prover/proof/tools/securefs/2.0.0/bin/fusermount 2> /dev/null || true)
     [ -n "$fusermount" ] || [[ $shim == */fusermount3 ]] || { check "vault $name: no fusermount, and the provider made no fusermount link to fusermount3 (${shim:-none})"; return; }
     tail -n 1 "$work/$name.out" | jq -c --arg image "$image" --arg fusermount "$fusermount" --arg fusermount3 "$fusermount3" --arg shim "$shim" \
       '{image: $image, result: .result, wrote: .wrote, fusermount: $fusermount, fusermount3: $fusermount3, shim: $shim, libfuse_so_2: false}' \
       | tee "$OUT/vault-distro-$name.json" | sed "s/^/vault $name: /" || check "vault $name: the probe printed no result: $(tail -c 300 "$work/$name.out")"
+    cp "$home/provider.log" "$work/$name-provider.log" 2> /dev/null || true
     docker rm -f "$c" > /dev/null 2>&1 || true
   }
   distro ubuntu ubuntu:24.04 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends fuse3'
