@@ -43,13 +43,15 @@ GUARD_ALSO=own guard
 runs() { (cd "$RUN_PROJECT" && cozy --json run ls --all --on "$NAME" --limit 0) > "$OUT/$1.json" 2>&1; }
 refused() { grep -qs -- "$1" "$OUT/$2.txt" "$OUT/$2.json"; }
 
-# A project's run rents nothing itself: the rental is ordered, and the code sent to it by the name it has while it boots (its
-# runs move with it once its Hub names its host).
+# A project's run rents nothing itself: the rental is ordered, and the code sent to it once its Hub names its host, while it boots. A
+# project's run sent by the name it had before stays on that name (43849240267: "no machine named rent-…"; the rename moves the
+# machine store's runs, not a project's).
 order
-for _ in $(seq 30); do
-  first=$(cozy machine show "$RID" --json 2> /dev/null | jq -r '.name // empty'); [ -z "$first" ] || break; sleep 1
+for _ in $(seq 900); do
+  first=$(cozy machine show "$RID" --json 2> /dev/null | jq -r 'select(.placeholder == null and .state != "ended") | .name // empty'); [ -z "$first" ] || break
+  sleep 1
 done
-[ -n "$first" ] || fail "boot: $RID has no machine here"
+[ -n "$first" ] || fail "boot: $RID was named no host in 15 min"
 say "boot: the code sent to $first ($RID, $(state "$RID")) as it boots"
 step boot run "$CODE/runtime" --on "$first" text=boot; boot=$?
 ready
