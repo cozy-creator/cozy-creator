@@ -38,8 +38,11 @@ function hoverCoverage(read, body, color, dpr, zoom = 1, withoutOutline = null, 
       const delta=Math.max(...observed.map((value,c)=>Math.abs(value-background[c])));
       // Paper within its noise: a pixel the stroke only grazes, which an aliased (software) stroke leaves unpainted.
       const paper=Number.isFinite(alpha) && Math.abs(alpha)<=uncertainty && residual<=noise;
-      const valid=delta<3 || paper || (Number.isFinite(alpha) && alpha>0 && alpha<=1+uncertainty && residual<=noise && background.every(value=>value>=0 && value<=255));
-      if(delta>=3 && !paper)visible=true;
+      // A pixel the picture reaches into (zoomed out, the stroke sits under a device pixel off it): its colour mixes the picture in, so
+      // it's neither judged nor counted as the ring.
+      const underpaint=withoutOutline===null && (inward===1 ? coordinate+1>edge*dpr : coordinate<edge*dpr);
+      const valid=delta<3 || paper || underpaint || (Number.isFinite(alpha) && alpha>0 && alpha<=1+uncertainty && residual<=noise && background.every(value=>value>=0 && value<=255));
+      if(delta>=3 && !paper && !underpaint)visible=true;
       samples.push({coordinate,observed,background,delta,geometricArea:expected,coverage:Number.isFinite(alpha)?alpha:null,residual:Number.isFinite(residual)?residual:null,uncertainty:Number.isFinite(uncertainty)?uncertainty:null,valid});
     }
     const valid=visible && samples.length>0 && samples.every(sample=>sample.valid);
