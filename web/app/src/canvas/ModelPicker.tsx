@@ -110,6 +110,10 @@ export function ModelPicker({ name, onClose }: { name: string; onClose(): void }
     const away = (event: PointerEvent) => {
       const target = event.target as Element | null
       if (!target || dialog.current?.contains(target) || target.closest(".image-models, .name-menu")) return
+      // The press that closes the picker does only that: its click doesn't also act on what's under it (Focus's background closes Focus).
+      const swallow = (click: Event) => { click.stopPropagation(); click.preventDefault() }
+      window.addEventListener("click", swallow, { capture: true, once: true })
+      window.addEventListener("pointerup", () => setTimeout(() => window.removeEventListener("click", swallow, { capture: true })), { capture: true, once: true })
       close.current()
     }
     window.addEventListener("keydown", key, true)

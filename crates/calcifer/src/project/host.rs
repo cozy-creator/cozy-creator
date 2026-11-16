@@ -290,7 +290,7 @@ impl Host {
         if let Some(found) = local_code::target(with, Some(folder), &home) {
             let (path, named) = found?;
             let on = on.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
-            let prepared = self.ready(&path, &on, hub, wait).await?;
+            let prepared = crate::stages::stage("local code", self.ready(&path, &on, hub, wait)).await?;
             let Some(document) = prepared.interface else {
                 let said = format!("{with} is not described on {on:?} yet: its first render installs it");
                 return Err(Error::new(Kind::Unavailable, "renderer_not_described", said));
@@ -340,7 +340,7 @@ impl Host {
         }
         // As `cozy run` resolves it.
         let hub = crate::runs::hub(&self.api, hub);
-        let Resolved::Release { package, function, card, mut moved, upgrade, cozy, .. } = target::published(&self.api, &hub, with, on, true).await? else {
+        let Resolved::Release { package, function, card, mut moved, upgrade, cozy, .. } = crate::stages::stage("release", target::published(&self.api, &hub, with, on, true)).await? else {
             unreachable!("a published target resolves to a release");
         };
         // cozy updates itself first for a release only a newer cozy's line runs (cl-978): the render waits behind it, and Calcifer
@@ -361,7 +361,7 @@ impl Host {
         }
         // Its machine's Runtime moves first to one that runs the release (cl-952): the render waits behind that update.
         if let Some(upgrade) = &upgrade
-            && self.api.machines.upgrade(upgrade).await?.is_some()
+            && crate::stages::stage("runtime move", self.api.machines.upgrade(upgrade)).await?.is_some()
         {
             moved = Some(upgrade.note());
         }

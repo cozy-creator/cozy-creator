@@ -359,7 +359,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y fuse libfuse2t64 ffmpeg
+          sudo apt-get install -y fuse3 ffmpeg
           sudo modprobe fuse || test -e /dev/fuse
       - name: Install macOS media tool (native encrypted APFS needs no driver)
         if: runner.os == 'macOS'
@@ -469,7 +469,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y fuse libfuse2t64 ffmpeg
+          sudo apt-get install -y fuse3 ffmpeg
           sudo modprobe fuse || test -e /dev/fuse
       - name: Install macOS media tool (system encrypted APFS needs no driver)
         if: runner.os == 'macOS'
