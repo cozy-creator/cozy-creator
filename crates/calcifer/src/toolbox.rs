@@ -464,16 +464,17 @@ impl Listing {
             return (kept.tools, None);
         }
         // An older list is the answer at once, its read going behind it: a list waits on the Hub only when it has none (cl-1010).
-        if let Some(age) = kept.age() {
-            let failed = kept.failed.as_ref().filter(|(at, _)| at.elapsed() < ASK_AGAIN).map(|(_, why)| why.clone());
-            if failed.is_none() && self.begin_asking(&key) {
+        // It is the list, said as nothing less: the Hub's next answer replaces it.
+        if kept.age().is_some() {
+            let failed = kept.failed.as_ref().is_some_and(|(at, _)| at.elapsed() < ASK_AGAIN);
+            if !failed && self.begin_asking(&key) {
                 let (api, origin) = (api.clone(), hub.to_owned());
                 tokio::spawn(async move {
                     let read = every_tool(&api, &origin).await;
                     api.listing.keep(&origin, read.map_err(|why| format!("the Hub said {}", why.message)));
                 });
             }
-            return (kept.tools, failed.map(|why| format!("the Hub's tools as read {} s ago: {why}", age.as_secs())));
+            return (kept.tools, None);
         }
         let why = match &kept.failed {
             Some((at, why)) if at.elapsed() < ASK_AGAIN => why.clone(),
@@ -496,10 +497,7 @@ impl Listing {
                 }
             }
         };
-        match kept.age() {
-            Some(age) => (kept.tools, Some(format!("the Hub's tools as read {} s ago: {why}", age.as_secs()))),
-            None => (kept.tools, Some(format!("only what's installed: {why}"))),
-        }
+        (kept.tools, Some(format!("only what's installed: {why}")))
     }
 
     fn keep(&self, hub: &str, read: Result<Arc<Vec<Offered>>, String>) {

@@ -484,10 +484,6 @@ signed_in: boolean,
  */
 heap_bytes: number,
 /**
- * Whether the encrypted-creation protocol is supported. Native driver requirements still apply; older controllers omit this.
- */
-encrypted_project_creation: boolean,
-/**
  * This person's home folder on Calcifer's computer: where the page's New suggests a first project's folder (cl-980).
  */
 home: string, };
@@ -3638,7 +3634,7 @@ export type Updating = { machine: Machine, run?: Run | null,
 /**
  * What it asks for, in words: `runtime 0.33.1 (prerelease), cozy 0.16.2 (installed)`.
  */
-target: string, warnings?: Array<string>, };
+target: string, };
 
 /**
  * POST /v1/projects/{id}/vault. Credentials are deliberately not Debug; neither the request nor its response is cached in history.

@@ -529,7 +529,7 @@ export function Shell() {
         // A first drop waiting on its project holds the canvas still: its box keeps its name field for when the project is made.
         : heldCanvas && <div hidden={!readable} inert={!readable || making?.by === "drop"} style={{ display: readable ? "contents" : "none" }}><CanvasHost key={hostKey} projectId={id} active={readable} slot={readable ? slot : null} history={readable ? history : null} onAdopt={adopt} /></div>}
       {making && !id && <NewProject />}
-      {!readable && id && !between && (checking || !checked || uncertain ? <main className="gate"><p>{vault.isError ? "Project protection could not be checked." : "Checking project protection…"}</p>{vault.isError && <button className="tb" type="button" onClick={() => void vault.refetch()}>Try again</button>}</main> : location.pathname.endsWith("/vault") ? <main className="gate"><p>Project protection</p></main> : <ProjectLocked id={id} />)}
+      {!readable && id && !between && (checking || !checked || uncertain ? <main className="gate">{vault.isError && <><p>Couldn't read whether this project is locked.</p><button className="tb" type="button" onClick={() => void vault.refetch()}>Try again</button></>}</main> : location.pathname.endsWith("/vault") ? <main className="gate"><p>Encryption</p></main> : <ProjectLocked id={id} />)}
       {handle?.drawer && (heldCanvas || drawerReadable) && (
         <aside ref={drawer} className="drawer" hidden={!drawerReadable} inert={!drawerReadable} style={drawerReadable ? undefined : { display: "none" }}>
           <Outlet key={drawerEpoch} />

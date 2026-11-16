@@ -1,13 +1,11 @@
 //! The tools cozy uses when present and never bundles: where each is found, whether a run or a
 //! command needs it, what its absence costs, and how it is installed. `cozy doctor` lists them; a
-//! missing optional tool is one warning (`warn_once`) and the work goes on without it; a missing
+//! missing optional tool is said there and the work goes on without it; a missing
 //! essential one is a refusal naming its install. Probes read no environment: the caller hands in
 //! PATH.
 use std::{
-    collections::BTreeSet,
     path::{Path, PathBuf},
     process::Command,
-    sync::{Mutex, PoisonError},
 };
 
 use crate::paths::exe;
@@ -185,21 +183,6 @@ pub fn tool(name: &str) -> &'static Tool {
         .iter()
         .find(|t| t.name == name)
         .unwrap_or_else(|| panic!("{name} is not in the tool table"))
-}
-
-/// The one warning a missing optional tool gets in this process: its name, what its absence
-/// costs, and `cozy doctor`. None once it was given, so a caller prints only what it gets, the way
-/// it prints (a terminal line, a log record, a run's warning).
-pub fn warn_once(name: &str) -> Option<String> {
-    static WARNED: Mutex<BTreeSet<&'static str>> = Mutex::new(BTreeSet::new());
-    let tool = tool(name);
-    let mut warned = WARNED.lock().unwrap_or_else(PoisonError::into_inner);
-    warned.insert(tool.name).then(|| warning(tool))
-}
-
-/// What a missing tool's warning says.
-pub(crate) fn warning(tool: &Tool) -> String {
-    format!("{} not found: {}; see `cozy doctor`", tool.name, tool.cost)
 }
 
 /// `name` on `path`, the first match in order; only looked for, never run.

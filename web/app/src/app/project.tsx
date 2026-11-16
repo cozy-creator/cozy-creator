@@ -1,5 +1,5 @@
 import { type QueryClient, skipToken, useQuery, useQueryClient } from "@tanstack/react-query"
-import { createContext, type ReactNode, useCallback, useContext, useLayoutEffect, useRef } from "react"
+import { createContext, type ReactNode, useCallback, useContext, useEffect, useLayoutEffect, useRef } from "react"
 import { useLocation, useMatch, useNavigate } from "react-router-dom"
 import { ApiError, type Client } from "../api/client"
 import type { ProjectAddress } from "../api/calcifer"
@@ -56,11 +56,13 @@ export function ProjectRoute({ children }: { children: ReactNode }) {
   const compact = useMatch("/p/:code/*")
   const legacy = useMatch("/projects/:id/*")
   const reference = compact?.params.code ?? legacy?.params.id ?? ""
-  const { client } = useConnection()
+  const { client, stream } = useConnection()
   const queries = useQueryClient()
   const location = useLocation()
   const navigate = useNavigate()
-  const { data, error } = useQuery({ ...referenceQuery(client, reference), enabled: Boolean(reference) })
+  const { data, error, refetch } = useQuery({ ...referenceQuery(client, reference), enabled: Boolean(reference) })
+  // A read that failed is asked again once Calcifer is back, never left standing until a reload.
+  useEffect(() => (error ? stream.subscribe((event) => { if (event.type === "hello") void refetch() }) : undefined), [error, stream, refetch])
 
   useLayoutEffect(() => {
     if (!data || !reference) return

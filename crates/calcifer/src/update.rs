@@ -150,7 +150,7 @@ impl Machines {
         if let Some(row) = self.store().keyed(key).map_err(internal)? {
             let run = self.calcifer.record(&row).map_err(|e| Refusal::from(e).0)?;
             let machine = self.show(row.machine.as_deref().unwrap_or(text)).await?;
-            return Ok((Updating { machine, run: Some(run), target: row.target, warnings: vec![] }, false));
+            return Ok((Updating { machine, run: Some(run), target: row.target }, false));
         }
         let mut asked = vec![];
         for (member, distribution, component) in [
@@ -217,7 +217,7 @@ impl Machines {
             if flagless {
                 self.mind_hold(&m.name, key, "", true);
             }
-            return Ok((Updating { machine: m, run: None, target: String::new(), warnings: vec![] }, true));
+            return Ok((Updating { machine: m, run: None, target: String::new() }, true));
         }
         rc_pairing(&m, &asked, placed.as_deref())?;
         let platform = m.status.as_ref().map(|s| s.platform.clone()).unwrap_or_default();
@@ -308,7 +308,6 @@ impl Machines {
             });
             payload.insert("torch".into(), version.into());
         }
-        let restarts = payload.contains_key("tensord") || payload.contains_key("cozy");
         if let Some(limit) = ask.gpu_memory_limit {
             named.push(match limit {
                 0 => "no GPU memory limit".into(),
@@ -319,19 +318,6 @@ impl Machines {
         if let Some(mode) = ask.mode {
             named.push(format!("mode {}", mode.name()));
             payload.insert("mode".into(), mode.name().into());
-        }
-        let mut warnings = vec![];
-        // A dev build says the release it was built from, so `--tensord` naming that looks like no
-        // change. It replaces the dev build, and says so.
-        if let Some(status) = m.status.as_ref().filter(|status| status.dev)
-            && let Some(release) = payload.get("tensord").and_then(Value::as_str).filter(|_| !inputs.iter().any(|input: &v1::InputFile| input.field == "tensord"))
-        {
-            warnings.push(format!("{} runs a dev build of cozy {}: `--tensord {release}` replaces it with the release; without `--tensord` it stays", m.name, status.version));
-        }
-        // Binary, limit and mode changes all use the ordinary drain and restart.
-        let warm = m.status.as_ref().is_some_and(|s| s.warm.iter().any(|w| !w.level.is_empty()));
-        if (restarts || ask.gpu_memory_limit.is_some() || ask.mode.is_some()) && warm {
-            warnings.push(format!("{}'s warm models reload after it restarts", m.name));
         }
         let target = named.join(", ");
         let submit = SubmitRun { project: None,
@@ -357,7 +343,7 @@ impl Machines {
         if !submitted.replay {
             self.mind_hold(&m.name, key, &target, flagless);
         }
-        let updating = Updating { machine: m, run: Some(submitted.run), target, warnings };
+        let updating = Updating { machine: m, run: Some(submitted.run), target };
         Ok((updating, !submitted.replay))
     }
 

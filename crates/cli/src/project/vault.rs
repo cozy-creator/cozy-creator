@@ -131,6 +131,13 @@ pub(super) fn show_recovery(ctx: &Context, secret: &str) {
     output::say(ctx, secret);
 }
 
+/// Whether the current folder's project is an encrypted one that is locked now: what a verb unlocks at a terminal before it goes on.
+/// Busy (a lock or a conversion going) is not locked.
+pub(crate) async fn locked(ctx: &Context) -> bool {
+    let (Ok(path), Ok(client)) = (vault_path(None), ctx.calcifer().await) else { return false };
+    client.get::<VaultStatus>(&path).await.is_ok_and(|status| status.encrypted && status.state == "locked")
+}
+
 fn vault_path(directory: Option<PathBuf>) -> Result<String, Error> {
     // A locked project has no readable state yet. Address the vault by directory.
     let directory = match directory {

@@ -52,6 +52,8 @@ parse "$@"
 . "$(dirname "$0")/endedlogs.sh"
 . "$(dirname "$0")/fresh.sh"
 . "$(dirname "$0")/typedcalls.sh"
+. "$(dirname "$0")/harness.sh"
+. "$(dirname "$0")/devstart.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
@@ -401,10 +403,13 @@ local follower=$!
 for _ in $(seq 120); do n=$(grep -oE '^run [A-Z][A-Z0-9]*-[0-9]+ ' "$OUT/across.txt" | head -1 | cut -d' ' -f2) && [ -n "$n" ] && break; sleep 0.5; done
 [ -n "$n" ] || check "across: the run never began"
 systemctl --user restart cozy-calcifer || check "systemctl --user restart cozy-calcifer failed"
+# Still following once the restarted Calcifer serves, then to the run's end: it says nothing of the restart itself (cl-1066).
+local through=1
+sleep 2; kill -0 "$follower" 2> /dev/null && through=0
 wait "$follower" || true
 code=$(cat "$OUT/across.code" 2>/dev/null) || code=
-{ [ "$code" = 0 ] && grep -q "Calcifer restarted; following run $n again" "$OUT/across.txt"; } \
-  || check "across: the follow of run ${n:-?} did not go on past the restart (exit $code): $(tail -c 300 "$OUT/across.txt")"
+{ [ "$through" = 0 ] && [ "$code" = 0 ] && grep -qw completed "$OUT/across.txt"; } \
+  || check "across: the follow of run ${n:-?} did not go on past the restart (alive after it: $through, exit $code): $(tail -c 300 "$OUT/across.txt")"
 cozy --json run watch "$n" --once | J '.status == "completed"' || check "across: run $n did not complete"
 
 step "a burst of Calcifer restarts past systemd's start limit"
@@ -691,8 +696,11 @@ case $SHARD in
     orbit_metadata
     web_serves
     install_retries
+    harness_abort
     logs
   " ;;
+  # A part that ends on a shell error fails its shard (cl-1079), alone.
+  harness) parts="harness_abort" ;;
   project-stream) parts="project_stream logs" ;;
   # A run is never silently slow (cl-913): a hot host's recorded GPU readings through the real path.
   slow) parts="
@@ -702,6 +710,8 @@ case $SHARD in
   " ;;
   # Calcifer restarted on a large store, its disk slow (cl-1010).
   restart) parts="state_restart logs" ;;
+  # A dev build's Calcifer at the stack size it ships resumes a render walk and answers /fit (cl-1069: E2E_DEV_COZY, e2e.yaml).
+  dev-start) parts="dev_start logs" ;;
   # What cozy needs is on the computer once its installer is done (cl-1030): Linux, macOS and Windows.
   fresh) parts="fresh_install logs" ;;
   web-1) web_cells=(${WEB_1[@]+"${WEB_1[@]}"}); parts="web_lane logs" ;;
@@ -905,6 +915,6 @@ if [ -n "$PACKAGES" ]; then
   PACKAGES=$(cd "$PACKAGES" && pwd) || fail "package checkout is unavailable"
 fi
 cd "$RUN_PROJECT" || fail "project directory is unavailable"
-for part in $parts; do $part; done
+run_parts $parts
 [ -n "$SHARD" ] || [ -z "$LOCAL" ] || { step coverage; coverage "$OUT/cozy-under-test" pr; }
 finish "cli${SHARD:+ $SHARD}"

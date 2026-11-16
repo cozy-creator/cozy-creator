@@ -202,7 +202,7 @@ fn latest(asset: &Asset) -> Option<String> {
 
 pub(crate) async fn explain(ctx: &Context, args: Explain) -> Result<ExitCode, Error> {
     let calcifer = ctx.calcifer().await?;
-    let project = crate::project::identity(ctx).await.ok().map(|address| address.id);
+    let project = crate::project::address(ctx).await.ok().map(|address| address.id);
     let tools = listed(&calcifer, project.as_deref(), None).await?;
     let Some(asked) = args.path.as_deref().map(str::trim).filter(|asked| !asked.is_empty()) else {
         match args.schema {

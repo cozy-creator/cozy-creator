@@ -460,7 +460,7 @@ async fn unversioned(api: &Arc<Api>, hub: &str, package: &str, held: &Held) -> R
     // What it holds that the Hub still has: an older one is said; a yanked one is said as moved off.
     let had = held.newest(holds.iter().copied().filter(|release| read.released.contains(*release) && *release != newest));
     let said = had.filter(|_| !holds.contains(&newest.as_str())).map(|had| match read.yanked.contains(had) {
-        true => Note { level: NoteLevel::Warning, message: format!("{shown}@{had} on {machine} is yanked: this run moves it to {newest}, the newest") },
+        true => Note { level: NoteLevel::Info, message: format!("{shown}@{had} on {machine} is yanked: this run moves it to {newest}, the newest") },
         false => Note { level: NoteLevel::Info, message: format!("{shown} {newest}, newer than {machine}'s {had}") },
     });
     Ok(Err(Unversioned { candidates, said }))

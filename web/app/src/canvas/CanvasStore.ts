@@ -1,4 +1,5 @@
-import type { CanvasController, CanvasNode, Viewport } from "./viewport"
+import type { Board, CanvasNode } from "./board/Board"
+import type { Viewport } from "./board/Camera"
 import { ApiError, type Client, type Write } from "../api/client"
 import { type Action, keepLastWord, type LastWord, lastWordsOf, lost, type OutboxPort } from "../api/outbox"
 import { nextProjectOrder } from "../api/projectOrder"
@@ -269,7 +270,7 @@ export class CanvasStore {
   private retired = false
   projectId: string | null
   private client: Client
-  private viewport: CanvasController | null = null
+  private viewport: Board | null = null
   private views = new Map<string, ElementView>()
   private playbacks = new Map<string, VideoPlayback>()
   private aliases = new Map<string, string>()
@@ -475,7 +476,7 @@ export class CanvasStore {
   }
 
   /** A canvas drawn for it, the first or again: back on a project, its boxes are as it left them, whatever's still on its way to Calcifer. */
-  attach(viewport: CanvasController) {
+  attach(viewport: Board) {
     if (this.retired) return
     this.viewport = viewport
     if (this.state && this.rows) this.reconcile()
@@ -3212,6 +3213,17 @@ export class CanvasStore {
     this.gesture = null
     this.reshape(key)
     this.unsettle(key, "grown")
+  }
+
+  /** A pull let go of with Escape: its width and shape as they were, what it pushed aside back where it is, and nothing kept. */
+  cancelPull(name: string, width: number) {
+    const key = this.resolveName(name)
+    this.patch(key, { shape: undefined })
+    const before = this.position(key)
+    if (before) { this.rememberPose(key, { ...before, w: width }); this.paintPose(key) }
+    this.letBack(new Map())
+    if (this.pulling?.name === key) this.pulling = null
+    this.reshape(key)
   }
 
   /** What the pull pushed aside and no longer does goes back where it is. */

@@ -334,7 +334,6 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Resul
                 // The machine placement chose went as it was sent (a pod releasing itself that second, cl-920): placed again, once.
                 Err(e) if ask.on.len() != 1 && crate::project::GONE.contains(&e.code.as_str()) => {
                     let Prepared::Run { submit, .. } = prepare(api, key, &ask, For::Run).await? else { return Err(e) };
-                    notes.push(Note { level: NoteLevel::Warning, message: format!("{}: placed again on {}", e.message, submit.on) });
                     offer = None;
                     calcifer.submit_under(key, &digest, submit).await.map_err(refused)?
                 }
@@ -445,7 +444,7 @@ enum Prepared {
 /// What a client following `run` before its ask goes again is told, when it is its machine's update to this cozy's minor.
 fn updating(run: &api::calcifer::Run) -> Option<Note> {
     let machine = run.machine.as_deref().filter(|_| run.kind == RunKind::Update)?;
-    Some(Note { level: NoteLevel::Warning, message: format!("{machine} runs another minor than this cozy: updating it to {} first", crate::update::this_release()) })
+    Some(Note { level: NoteLevel::Info, message: format!("updating {machine} to cozy {} first", crate::update::this_release()) })
 }
 
 /// What a prepared ask is for.
@@ -519,7 +518,7 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
             let (run, note) = crate::cozy::update(api, wanted).await?;
             return Ok(Prepared::Cozy(run, note));
         }
-        Resolved::Release { cozy: Some(wanted), .. } => Some(Note { level: NoteLevel::Warning, message: wanted.said() }),
+        Resolved::Release { cozy: Some(wanted), .. } => Some(Note { level: NoteLevel::Info, message: wanted.said() }),
         _ => None,
     };
     let (package, function, code) = match &resolved {
@@ -587,7 +586,10 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     match &resolved {
         Resolved::Release { package, card, .. } if set.len() > 1 || estimates => {
             let (chosen, offered, said) = crate::project::run_on(api, &set, &hub, package, &card.release, &callable.name, size, gpus, needs_gpu, count, !estimates).await;
-            notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Warning, message }));
+            // Why a machine quoted nothing is an estimate's answer; a run goes to the one that finishes soonest, and says nothing of the others.
+            if estimates {
+                notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Info, message }));
+            }
             if set.len() > 1 {
                 on = match chosen {
                     Ok(chosen) => chosen,

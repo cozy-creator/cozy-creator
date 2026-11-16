@@ -383,14 +383,4 @@ impl Machines {
         prerelease::dev(&frame.runtime) || self.follows(name).is_some()
     }
 
-    /// The line a run on `name` says when it runs dev builds: `RC: Runtime 0.47.0.dev2260 · cozy 1a2b3c4d`.
-    pub(crate) fn rc_line(&self, name: &str) -> Option<String> {
-        let frame = self.frame(name)?;
-        let built: Vec<String> = [("Runtime", &frame.runtime), ("TensorFS", &frame.tensorfs), ("cozy", &frame.version)]
-            .into_iter()
-            .filter(|(_, version)| prerelease::dev(version))
-            .map(|(label, version)| format!("{label} {}", prerelease::shown(version)))
-            .collect();
-        (!built.is_empty()).then(|| format!("{name} runs RC builds: {}", built.join(" · ")))
-    }
 }

@@ -218,7 +218,6 @@ done
 [ -n "$N" ] || fail "c: the run from A's $OLD Calcifer never started: $(sh "$A" 'tail -3 /root/inflight.txt')"
 say "c: run $N from A's Calcifer on $OLD is running on B; the next command on A"
 on "$A" c-restart 'cozy machine ls' || fail "c: the first command after the update"
-grep -q "restarting it on $NEW" "$OUT/c-restart.txt" || fail "c: the command did not restart Calcifer: $(head -3 "$OUT/c-restart.txt")"
 [ "$(calcifer_on "$A")" = "$NEW" ] || fail "c: A's Calcifer runs $(calcifer_on "$A") after the restart, not $NEW"
 on "$A" c-inflight "cd /root/session && cozy run watch $N"
 s=$(sh "$A" "cd /root/session && cozy run watch $N --once --json --full" | jq -r .status)
