@@ -62,7 +62,7 @@ function picture(i) {
 const HOLE = 45;
 const slotOf = (i) => (i === PICTURES ? HOLE : i < HOLE ? i : i + 1);
 const placeOf = (i) => ({ x: (slotOf(i) % COLUMNS) * DX, y: Math.floor(slotOf(i) / COLUMNS) * DY, w: W });
-const named = (i) => `pic_${i}`;
+const named = (i, kind = 'plain') => `${kind === 'sealed' && process.platform === 'darwin' ? 'alt' : 'pic'}_${i}`; // probe: distinct names on a Mac
 // The whole grid in view.
 const FIT = { x: 70, y: 90, zoom: 0.45 };
 
@@ -142,7 +142,7 @@ const FRAMES = (ms) => new Promise((done) => {
 });
 
 /** Previews drawn in a page, of the 50. */
-const previewsDrawn = (page) => page.evaluate((n) => Object.entries(window.__opens?.nodes ?? {}).filter(([name, row]) => /^pic_\d+$/.test(name) && Number(name.slice(4)) < n && row.preview !== null).length, PICTURES);
+const previewsDrawn = (page) => page.evaluate((n) => Object.entries(window.__opens?.nodes ?? {}).filter(([name, row]) => /^(pic|alt)_\d+$/.test(name) && Number(name.split('_')[1]) < n && row.preview !== null).length, PICTURES);
 
 /** Each file a thumbnail is kept as under `dirs`: what's made while a project opens. */
 function thumbnails(dirs) {
@@ -301,7 +301,7 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
     const importing = Date.now();
     for (const [kind, one] of Object.entries(projects)) {
       const cards = {};
-      for (let i = 0; i < PICTURES; i++) cards[(await importInto(one, pictures[i], named(i))).name] = placeOf(i);
+      for (let i = 0; i < PICTURES; i++) cards[(await importInto(one, pictures[i], named(i, kind))).name] = placeOf(i);
       await api.patch(at(one, '/canvas'), { cards });
       // Its view kept in it, as the page keeps one: the whole grid.
       await api.patch(at(one, '/view'), { viewport: FIT });
@@ -349,7 +349,7 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
       const resources = performance.getEntriesByType('resource');
       const stateRead = resources.filter((entry) => path(entry) === `/v1/projects/${encodeURIComponent(id)}` && !new URL(entry.name).search).at(-1);
       const canvasRead = resources.filter((entry) => path(entry) === `/v1/projects/${encodeURIComponent(id)}/canvas`).at(-1);
-      const rows = Object.entries(opens?.nodes ?? {}).filter(([name]) => /^pic_\d+$/.test(name) && Number(name.slice(4)) < pictures);
+      const rows = Object.entries(opens?.nodes ?? {}).filter(([name]) => /^(pic|alt)_\d+$/.test(name) && Number(name.split('_')[1]) < pictures);
       const shown = rows.filter(([, row]) => row.onScreen);
       const api = resources.filter((entry) => path(entry).startsWith('/v1/') && !path(entry).includes('/thumbs/') && entry.startTime < 3000);
       return {
@@ -455,7 +455,7 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
       await first.keyboard.press('f');
       let fitted = null;
       await soft.poll(async () => (fitted = await first.evaluate((n) => {
-        const times = Object.entries(window.__opens?.nodes ?? {}).filter(([name]) => /^pic_\d+$/.test(name) && Number(name.slice(4)) < n).map(([, row]) => row.preview);
+        const times = Object.entries(window.__opens?.nodes ?? {}).filter(([name]) => /^(pic|alt)_\d+$/.test(name) && Number(name.split('_')[1]) < n).map(([, row]) => row.preview);
         return times.length >= n && times.every((at) => at !== null) ? Math.max(...times) : null;
       }, PICTURES)) !== null, { message: `${kind}: fitted, all ${PICTURES} previews drawn`, timeout: WAIT_MS, intervals: [100] }).toBe(true);
       seen[`${kind}_fitted`] = { all_previews_ms: fitted === null ? null : Math.max(0, Math.round(fitted - fitting)) };
