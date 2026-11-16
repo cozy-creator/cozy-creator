@@ -58,6 +58,9 @@ static SIZED: LazyLock<Mutex<HashMap<String, (Instant, Option<(String, u64)>)>>>
 struct Placed {
     slots: Vec<(String, String, u64)>,
     pick: Option<RentFor>,
+    /// Each machine of one GPU the Hub rents that holds it, its card as `card` says it, with its price: what's recommended instead is
+    /// one of these (`recommended`).
+    offers: Vec<RentFor>,
     /// Each card that holds it on one GPU, by its name as `RentFor::card` says it, and the Hub's speed for it there.
     speeds: BTreeMap<String, f64>,
 }
@@ -205,28 +208,27 @@ async fn estimate(api: &Arc<Api>, dir: &FsPath, hub: &str, asked: Boxed, on: Vec
     Some(BoxEstimate { name, machine: chosen.machine.to_string(), card: card(&gpu), run_ms, basis: chosen.basis, faster })
 }
 
-/// The tool's recommended GPU (the Hub's pick for its release) when it runs `job` far faster than `machine`, whose `gpu` (empty: none)
-/// takes `run_ms` (0: unknown), as `said` judges slow here (cl-897), or when `machine` has no GPU for a job that loads a model on one.
-/// Its time there is what's typical there (`Calcifer::typical_ms`). None: local code, which the Hub places on nothing, or no pick.
+/// The card to rent instead when `machine`, whose `gpu` (empty: none) takes `run_ms` (0: unknown), runs `job` far slower than a rented
+/// one would (`recommended`), or has no GPU for a job that loads a model on one: its time there, both times and its cost a render in a
+/// line, and the rent. None: local code, which the Hub places on nothing, or no measured card qualifies.
 async fn faster(api: &Arc<Api>, hub: &str, job: &placement::Job, machine: &On, gpu: &str, run_ms: u64) -> Option<Faster> {
     let (path, release) = job.target.split_once('@')?;
     let (package, function) = path.rsplit_once('/')?;
-    let pick = placed(api, hub, package, release, function).await?.pick?;
-    let (away, _) = api.calcifer.typical_ms(&job.target, &pick.card, &job.size)?;
-    let here = run_ms as f64;
     let cpu = gpu.is_empty() && job.gpu;
-    let slow = run_ms > 0 && here > SLOWER * away && here - away > LONGER_S * 1e3;
-    if !cpu && !slow {
+    if !cpu && run_ms == 0 {
         return None;
     }
-    let there = format!("a rented {}, {}", pick.card, about(away / 1e3));
+    let placed = placed(api, hub, package, release, function).await?;
+    let here = run_ms as f64;
+    let (rent, away) = recommended(api, &job.target, &job.size, &placed.offers, (!cpu).then_some(here))?;
+    let there = format!("a rented {}, {} and {} a render", rent.card, about(away / 1e3), per_render(rent.usd_micros_per_hour, away));
     let line = match (cpu, machine.is_local()) {
         (true, true) => format!("This computer has no GPU, so this would run on its CPU, slowly. On {there}."),
         (true, false) => format!("{machine} has no GPU, so this would run on its CPU, slowly. On {there}."),
         (false, true) => format!("On this computer's {} this takes {}; on {there}.", card(gpu), about(here / 1e3)),
         (false, false) => format!("On {machine}'s {} this takes {}; on {there}.", card(gpu), about(here / 1e3)),
     };
-    let rent = RentFor { line: format!("A rented {} runs it for ${:.2}/h.", pick.card, pick.usd_micros_per_hour as f64 / 1e6), ..pick };
+    let rent = RentFor { line: format!("A rented {} runs it for ${:.2}/h.", rent.card, rent.usd_micros_per_hour as f64 / 1e6), ..rent };
     Some(Faster { run_ms: away as u64, line, rent })
 }
 
@@ -300,17 +302,17 @@ pub(crate) fn card(model: &str) -> String {
     model.trim_start_matches("NVIDIA ").trim_start_matches("GeForce ").to_owned()
 }
 
-/// What a rented card takes for `target` (`org/pkg/fn@release`, local code `pkg/fn`) like `made`, in seconds, and the card: the Hub's
-/// pick by what's typical there (`Calcifer::typical_ms`: this computer's runs on it, our measurement of it, else another card's scaled
-/// by the Hub's speeds, cl-1004); with no pick, the fastest card it ran on. None: nothing says.
-fn away(api: &Api, target: &str, made: &Map<String, Value>, placed: Option<&Placed>) -> Option<(String, f64)> {
-    let Some(pick) = placed.and_then(|placed| placed.pick.as_ref()) else {
+/// What a rented card takes for `target` (`org/pkg/fn@release`, local code `pkg/fn`) like `made`, in seconds, and the card: the one
+/// `recommended` against `took_s` here (cl-1024); with no placement (local code), the fastest card it ran on away from here. None:
+/// nothing qualifies.
+fn away(api: &Api, target: &str, made: &Map<String, Value>, placed: Option<&Placed>, took_s: Option<f64>) -> Option<(String, f64)> {
+    let Some(placed) = placed else {
         let base = target.split('@').next().unwrap_or(target);
         let ran = api.calcifer.away_ms(base, made).into_iter().map(|(gpu, ms)| (card(&gpu), ms / 1e3));
         return ran.min_by(|a, b| a.1.total_cmp(&b.1));
     };
-    let (ms, _) = api.calcifer.typical_ms(target, &pick.card, &size_of(made))?;
-    Some((pick.card.clone(), ms / 1e3))
+    let (rent, ms) = recommended(api, target, &size_of(made), &placed.offers, took_s.map(|s| s * 1e3))?;
+    Some((rent.card, ms / 1e3))
 }
 
 /// What this computer's GPU typically takes for `target` like `made`, in seconds, where it hasn't run it (cl-1004). None: no GPU, or
@@ -372,7 +374,7 @@ async fn need_of(api: &Arc<Api>, hub: &str, dir: &FsPath, target: &str, tool: &s
         .or_else(|| Host::new(api).last_took(&measured, "local"))
         .or_else(|| typical_here(api, &full, made));
     let placed = (!local_code).then(|| placed_now(hub, &found.package, &found.release, &function)).flatten();
-    let away = away(api, &full, made, placed.as_ref());
+    let away = away(api, &full, made, placed.as_ref(), took_s);
     Some(Need { tool: tool.to_owned(), label, bytes, pick, took_s, away })
 }
 
@@ -413,13 +415,14 @@ pub(crate) fn here_now(api: &Api, hub: &str, package: &str, release: Option<&str
     };
     let placed = (!local_code).then(|| placed_now(hub, package, release, function)).flatten();
     let label = tool::tools_of(package, release, interface).into_iter().find(|tool| tool.function == function).map_or_else(|| base.clone(), |tool| tool.package_title);
+    let took_s = api.calcifer.here_ms(&base, made).map(|ms| ms / 1e3).or_else(|| typical_here(api, &full, made));
     let need = Need {
         tool: base.clone(),
         label,
         bytes,
         pick: placed.as_ref().and_then(|placed| placed.pick.clone()),
-        took_s: api.calcifer.here_ms(&base, made).map(|ms| ms / 1e3).or_else(|| typical_here(api, &full, made)),
-        away: away(api, &full, made, placed.as_ref()),
+        took_s,
+        away: away(api, &full, made, placed.as_ref(), took_s),
     };
     said(&need, gpus.iter().map(|gpu| gpu.1).max(), gpus.iter().any(|gpu| gpu.2))
 }
@@ -499,7 +502,7 @@ fn sized_now(hub: &str, written: &str, lane: Option<&str>) -> Option<u64> {
     SIZED.lock().expect("sized lock").get(&format!("{hub}\n{written}\n{}", lane.unwrap_or_default())).and_then(|(_, held)| held.as_ref().map(|(_, bytes)| *bytes))
 }
 
-/// The Hub's last word on each card's speed for `target` (`org/pkg/fn@release`), however long ago: what `Calcifer::scaled_ms` scales
+/// The Hub's last word on each card's speed for `target` (`org/pkg/fn@release`), however long ago: what `estimate::References` scales
 /// another card's time by (cl-1004). None: it hasn't said, or `target` is local code.
 pub(crate) fn speeds_now(hub: &str, target: &str) -> Option<BTreeMap<String, f64>> {
     let (path, release) = target.split_once('@')?;
@@ -537,17 +540,44 @@ async fn placed_by(hubs: &crate::rentals::Hubs, hub: &str, package: &str, releas
         slots: (placement.weights.iter())
             .map(|slot| (slot.slot.rsplit(".models.").next().unwrap_or_default().to_owned(), slot.lane.clone(), slot.bytes.max(0) as u64))
             .collect(),
-        pick: placement.machines.first().map(|machine| RentFor {
-            sku: machine.name.clone(),
-            gpus: machine.accelerator_count.max(1) as u32,
-            card: card(&machine.accelerator_model),
-            vram_gb: machine.vram_gb,
-            usd_micros_per_hour: machine.price_usd_micros_per_hour,
-            line: String::new(),
-        }),
+        pick: placement.machines.first().map(rent_for),
+        offers: placement.machines.iter().filter(|machine| machine.accelerator_count <= 1).map(rent_for).collect(),
     });
     PLACED.lock().expect("placed lock").insert(key, (Instant::now(), placed.clone()));
     placed
+}
+
+fn rent_for(machine: &::api::hub::types::RentalPlacementMachine) -> RentFor {
+    RentFor {
+        sku: machine.name.clone(),
+        gpus: machine.accelerator_count.max(1) as u32,
+        card: card(&machine.accelerator_model),
+        vram_gb: machine.vram_gb,
+        usd_micros_per_hour: machine.price_usd_micros_per_hour,
+        line: String::new(),
+    }
+}
+
+/// The card to rent for `target` instead (cl-1024, Paul 11-15: "the cheapest card whose benchmark is meaningfully faster"): of `offers`,
+/// the cards the Hub rents that hold it on one GPU, those its release measured (`References::measured`, never a speed-scaled guess)
+/// that run it in under a third of `here_ms` and a minute sooner (with no GPU here, `None`: any), the cheapest a render (its price
+/// times its time there); of those as cheap, the faster. And its time there, ms.
+fn recommended(api: &Api, target: &str, size: &JobSize, offers: &[RentFor], here_ms: Option<f64>) -> Option<(RentFor, f64)> {
+    let references = crate::placement::references(&api.machines.hubs, &[target.to_owned()]);
+    let cost = |(offer, ms): &(&RentFor, f64)| offer.usd_micros_per_hour as f64 * ms;
+    (offers.iter())
+        .filter_map(|offer| Some((offer, references.measured(target, &offer.card, size)?.0)))
+        .filter(|(_, ms)| here_ms.is_none_or(|here| here > SLOWER * ms && here - ms > LONGER_S * 1e3))
+        .min_by(|a, b| cost(a).total_cmp(&cost(b)).then(a.1.total_cmp(&b.1)))
+        .map(|(offer, ms)| (offer.clone(), ms))
+}
+
+/// A render's cost at `usd_micros_per_hour` for `ms`, as a person reads it: `about $0.08`, `under $0.01`.
+fn per_render(usd_micros_per_hour: i64, ms: f64) -> String {
+    match usd_micros_per_hour as f64 * ms / 3.6e6 / 1e6 {
+        usd if usd < 0.01 => "under $0.01".into(),
+        usd => format!("about ${usd:.2}"),
+    }
 }
 
 /// A checkpoint's bytes in `lane`, else its least: a Hub model's release or checkpoint, by its card, kept a while. None: the Hub doesn't say.

@@ -1,0 +1,389 @@
+{
+  "minimax-h3": [
+    {
+      "function": "generate",
+      "gpu": "NVIDIA GeForce RTX 5090",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "seconds": 15.0
+      },
+      "warm_ms": 230000,
+      "note": "pod-session 43455948344 (0.26.0 candidate)"
+    },
+    {
+      "function": "generate",
+      "gpu": "NVIDIA GeForce RTX 4090",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "seconds": 15.0
+      },
+      "warm_ms": 335100,
+      "note": "release-gate 43211705140 (0.25.0, host RAM 30.46 GiB)"
+    },
+    {
+      "function": "generate",
+      "gpu": "NVIDIA GeForce RTX 4070",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "seconds": 15.0
+      },
+      "warm_ms": 872800,
+      "note": "release-gate 43032341163 (0.24.0)"
+    },
+    {
+      "function": "generate",
+      "gpu": "NVIDIA GeForce RTX 3090",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "seconds": 15.0
+      },
+      "warm_ms": 744900,
+      "note": "release-gate 43027199393 (0.24.0)"
+    },
+    {
+      "function": "generate",
+      "gpu": "NVIDIA RTX PRO 6000 Blackwell",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "seconds": 15.0
+      },
+      "warm_ms": 217500,
+      "note": "release-gate 43039533939 (0.24.0)"
+    },
+    {
+      "function": "generate",
+      "gpu": "NVIDIA H100 80GB HBM3",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "seconds": 15.0
+      },
+      "warm_ms": 246900,
+      "note": "BENCHMARKS.md 4x H100 SXM, one GPU (0.24.0 candidate)"
+    }
+  ],
+  "sdxl": [
+    {
+      "function": "generate",
+      "gpu": "NVIDIA GeForce RTX 5090",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "megapixels": 1.0,
+        "steps": 20
+      },
+      "warm_ms": 1580,
+      "note": "release-gate 43014082571 (0.24.0)"
+    },
+    {
+      "function": "generate",
+      "gpu": "NVIDIA GeForce RTX 4090",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "megapixels": 1.0,
+        "steps": 20
+      },
+      "warm_ms": 2180,
+      "note": "release-gate 43013605532 (0.24.0)"
+    },
+    {
+      "function": "generate",
+      "gpu": "NVIDIA GeForce RTX 4070",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "megapixels": 1.0,
+        "steps": 20
+      },
+      "warm_ms": 7790,
+      "note": "release-gate 43032341163 (0.24.0)"
+    },
+    {
+      "function": "generate",
+      "gpu": "NVIDIA GeForce RTX 3090",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "megapixels": 1.0,
+        "steps": 20
+      },
+      "warm_ms": 3940,
+      "note": "release-gate 43027199393 (0.24.0)"
+    },
+    {
+      "function": "generate",
+      "gpu": "NVIDIA RTX PRO 6000 Blackwell",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "megapixels": 1.0,
+        "steps": 20
+      },
+      "warm_ms": 1620,
+      "note": "release-gate 43039533939 (0.24.0)"
+    }
+  ],
+  "anima": [
+    {
+      "function": "generate",
+      "gpu": "NVIDIA GeForce RTX 5090",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "megapixels": 2.25,
+        "steps": 30
+      },
+      "warm_ms": 10800,
+      "note": "release-gate 43014082571 (0.24.0)"
+    },
+    {
+      "function": "generate",
+      "gpu": "NVIDIA GeForce RTX 4090",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "megapixels": 2.25,
+        "steps": 30
+      },
+      "warm_ms": 14500,
+      "note": "release-gate 43013605532 (0.24.0)"
+    },
+    {
+      "function": "generate",
+      "gpu": "NVIDIA GeForce RTX 4070",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "megapixels": 2.25,
+        "steps": 30
+      },
+      "warm_ms": 36600,
+      "note": "release-gate 43032341163 (0.24.0)"
+    },
+    {
+      "function": "generate",
+      "gpu": "NVIDIA GeForce RTX 3090",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "megapixels": 2.25,
+        "steps": 30
+      },
+      "warm_ms": 29000,
+      "note": "release-gate 43027199393 (0.24.0)"
+    },
+    {
+      "function": "generate",
+      "gpu": "NVIDIA RTX PRO 6000 Blackwell",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "megapixels": 2.25,
+        "steps": 30
+      },
+      "warm_ms": 8100,
+      "note": "release-gate 43039533939 (0.24.0)"
+    }
+  ],
+  "moss-image": [
+    {
+      "function": "generate",
+      "gpu": "NVIDIA GeForce RTX 5090",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "megapixels": 4.0,
+        "steps": 50
+      },
+      "warm_ms": 59800,
+      "note": "release-gate 43014082571 (0.24.0)"
+    },
+    {
+      "function": "generate",
+      "gpu": "NVIDIA GeForce RTX 4090",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "megapixels": 4.0,
+        "steps": 50
+      },
+      "warm_ms": 79400,
+      "note": "release-gate 43013605532 (0.24.0)"
+    },
+    {
+      "function": "generate",
+      "gpu": "NVIDIA GeForce RTX 4070",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "megapixels": 4.0,
+        "steps": 50
+      },
+      "warm_ms": 187400,
+      "note": "release-gate 43032341163 (0.24.0)"
+    },
+    {
+      "function": "generate",
+      "gpu": "NVIDIA GeForce RTX 3090",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "megapixels": 4.0,
+        "steps": 50
+      },
+      "warm_ms": 156700,
+      "note": "release-gate 43027199393 (0.24.0)"
+    },
+    {
+      "function": "generate",
+      "gpu": "NVIDIA RTX PRO 6000 Blackwell",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "megapixels": 4.0,
+        "steps": 50
+      },
+      "warm_ms": 52600,
+      "note": "release-gate 43039533939 (0.24.0)"
+    }
+  ],
+  "qwen-image-2": [
+    {
+      "function": "generate",
+      "gpu": "NVIDIA GeForce RTX 5090",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "megapixels": 4.0
+      },
+      "warm_ms": 29200,
+      "note": "release-gate 43014082571 (0.24.0)"
+    },
+    {
+      "function": "generate",
+      "gpu": "NVIDIA GeForce RTX 4090",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "megapixels": 4.0
+      },
+      "warm_ms": 42100,
+      "note": "release-gate 43013605532 (0.24.0)"
+    },
+    {
+      "function": "generate",
+      "gpu": "NVIDIA GeForce RTX 4070",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "megapixels": 4.0
+      },
+      "warm_ms": 97600,
+      "note": "release-gate 43032341163 (0.24.0)"
+    },
+    {
+      "function": "generate",
+      "gpu": "NVIDIA GeForce RTX 3090",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "megapixels": 4.0
+      },
+      "warm_ms": 79000,
+      "note": "release-gate 43027199393 (0.24.0)"
+    },
+    {
+      "function": "generate",
+      "gpu": "NVIDIA RTX PRO 6000 Blackwell",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "megapixels": 4.0
+      },
+      "warm_ms": 26200,
+      "note": "release-gate 43039533939 (0.24.0)"
+    }
+  ],
+  "krea-2": [
+    {
+      "function": "generate_turbo",
+      "gpu": "NVIDIA GeForce RTX 5090",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "megapixels": 4.0,
+        "steps": 8
+      },
+      "warm_ms": 13400,
+      "note": "release-gate 43014082571 (0.24.0)"
+    },
+    {
+      "function": "generate_turbo",
+      "gpu": "NVIDIA GeForce RTX 4090",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "megapixels": 4.0,
+        "steps": 8
+      },
+      "warm_ms": 19900,
+      "note": "release-gate 43013605532 (0.24.0)"
+    },
+    {
+      "function": "generate_turbo",
+      "gpu": "NVIDIA GeForce RTX 4070",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "megapixels": 4.0,
+        "steps": 8
+      },
+      "warm_ms": 52600,
+      "note": "release-gate 43032341163 (0.24.0)"
+    },
+    {
+      "function": "generate_turbo",
+      "gpu": "NVIDIA GeForce RTX 3090",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "megapixels": 4.0,
+        "steps": 8
+      },
+      "warm_ms": 38300,
+      "note": "release-gate 43027199393 (0.24.0)"
+    },
+    {
+      "function": "generate_turbo",
+      "gpu": "NVIDIA RTX PRO 6000 Blackwell",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "megapixels": 4.0,
+        "steps": 8
+      },
+      "warm_ms": 9800,
+      "note": "release-gate 43039533939 (0.24.0)"
+    }
+  ],
+  "ideogram-4": [
+    {
+      "function": "generate",
+      "gpu": "NVIDIA GeForce RTX 4090",
+      "gpus": 1,
+      "request": {
+        "refs": 0,
+        "megapixels": 1.0,
+        "steps": 48
+      },
+      "warm_ms": 40000,
+      "note": "pod-session 43314998395 (0.26.0 int8 lane)"
+    }
+  ]
+}

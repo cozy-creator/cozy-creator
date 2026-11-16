@@ -16,7 +16,7 @@ use std::{
 
 use futures_util::{StreamExt as _, TryStreamExt as _};
 use platform::paths::Home;
-use ::api::hub::types::{PackageDeclaredFile, PackageFileGrant, PresignedUpload};
+use ::api::hub::types::{PackageBenchmark, PackageDeclaredFile, PackageFileGrant, PresignedUpload};
 use api::{
     config::Origin,
     error::{Error, Kind},
@@ -471,9 +471,14 @@ pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask:
     let declared: Vec<PackageDeclaredFile> = (files.iter())
         .map(|f| PackageDeclaredFile { digest: f.digest.clone(), length: f.length, path: f.path.clone() })
         .collect();
+    let interface = files.iter().find(|f| f.path == INTERFACE).ok_or_else(|| refuse("package_interface_missing", "the build described nothing"))?;
+    let benchmarks = blocking(|| benchmarks(&project.root, &interface.local))?;
+    if !benchmarks.is_empty() {
+        say(&format!("with {} benchmarks from {BENCHMARKS}", benchmarks.len()));
+    }
     let (org, name, release) = (&account, &project.name, &project.version);
-    let grants = client.begin_package_release(org, name, release, &declared).await.map_err(hub_error)?;
-    let declaration = Declaration { hub, client: &client, org, name, release, files: &declared };
+    let grants = client.begin_package_release(org, name, release, &declared, &benchmarks).await.map_err(hub_error)?;
+    let declaration = Declaration { hub, client: &client, org, name, release, files: &declared, benchmarks: &benchmarks };
     result.uploaded_bytes = upload(&files, &grants.files, &declaration, say).await?;
     let mut state = (client.finalize_package_release(org, name, release, &grants.publication_id, &python.full).await)
         .map_err(hub_error)?;
@@ -568,7 +573,7 @@ fn built(
     let mut files = vec![
         File::new(named("artifacts/project/", &wheel), wheel.clone())?,
         File::new(named("artifacts/source/", &sdist), sdist.clone())?,
-        File::new("metadata/package-interface.json".into(), interface_path)?,
+        File::new(INTERFACE.into(), interface_path)?,
     ];
     for document in ["pyproject.toml", "uv.lock"] {
         files.push(File::new(document.into(), stage.src.join(document))?);
@@ -594,6 +599,44 @@ fn unmet(error: Error, pins: &BTreeMap<String, String>, account: &str, hub: &Ori
     }
 }
 
+/// Where a release's package interface goes.
+const INTERFACE: &str = "metadata/package-interface.json";
+/// The package's benchmarks, beside its pyproject.toml (cl-1024): optional, written by `cozy package benchmarks` or a release's gate.
+pub(crate) const BENCHMARKS: &str = "benchmarks.json";
+
+/// The benchmarks a release of the package at `root` declares (cl-1024): its `benchmarks.json`, every row whole and naming a function
+/// of its interface (`interface`, as the build described it), refused by row before anything uploads. None without the file.
+fn benchmarks(root: &Path, interface: &Path) -> Result<Vec<PackageBenchmark>, Error> {
+    let path = root.join(BENCHMARKS);
+    let Ok(text) = fs::read(&path) else { return Ok(vec![]) };
+    let wrong = |why: String| refuse("benchmarks_invalid", format!("{BENCHMARKS}: {why}"));
+    let mut unknown = vec![];
+    let rows: Vec<PackageBenchmark> = serde_ignored::deserialize(&mut serde_json::Deserializer::from_slice(&text), |at| unknown.push(at.to_string()))
+        .map_err(|e| wrong(format!("not a list of benchmarks: {e}")))?;
+    if let Some(at) = unknown.first() {
+        return Err(wrong(format!("{at} is no field of a benchmark")));
+    }
+    let document: serde_json::Value = serde_json::from_slice(&fs::read(interface).map_err(|e| refuse("package_interface_unreadable", e))?)
+        .map_err(|e| refuse("package_interface_unreadable", e))?;
+    let callables = ::api::interface::Interface::parse(&document).map_err(|e| refuse("package_interface_unreadable", e.to_string()))?.callables;
+    if rows.len() > 512 {
+        return Err(wrong(format!("{} rows, at most 512", rows.len())));
+    }
+    for (at, row) in rows.iter().enumerate() {
+        let why = match row {
+            row if !callables.iter().any(|callable| callable.name == row.function) => Some(format!("{:?} is no function of this package", row.function)),
+            row if row.gpu.is_empty() || row.gpu.len() > 128 => Some("its gpu is empty or longer than 128 bytes".into()),
+            row if !(1..=8).contains(&row.gpus) => Some(format!("gpus {} is not 1 to 8", row.gpus)),
+            row if row.warm_ms == 0 || row.warm_ms > 86_400_000 => Some(format!("warm_ms {} is not 1 ms to a day", row.warm_ms)),
+            _ => None,
+        };
+        if let Some(why) = why {
+            return Err(wrong(format!("row {at}: {why}")));
+        }
+    }
+    Ok(rows)
+}
+
 /// A release's file declaration, which the Hub answers with a grant for each file it lacks: declared
 /// again (the same declaration is the same publication), it grants anew.
 struct Declaration<'a> {
@@ -603,12 +646,13 @@ struct Declaration<'a> {
     name: &'a str,
     release: &'a str,
     files: &'a [PackageDeclaredFile],
+    benchmarks: &'a [PackageBenchmark],
 }
 
 impl Declaration<'_> {
     /// A new grant for the file at `path`; none once the Hub holds its bytes.
     async fn regrant(&self, path: &str) -> Result<Option<PresignedUpload>, Error> {
-        let grants = (self.client.begin_package_release(self.org, self.name, self.release, self.files).await)
+        let grants = (self.client.begin_package_release(self.org, self.name, self.release, self.files, self.benchmarks).await)
             .map_err(|e| refusal(self.hub, e).0)?;
         let grant = grants.files.into_iter().find(|g| g.path == path)
             .ok_or_else(|| refuse("release_grant_invalid", format!("the Hub granted nothing for {path}")))?;

@@ -1056,7 +1056,7 @@ pub struct JobSize {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seconds: Option<f64>,
     /// The pictures and videos it reads, where its caller counted them (a box's mentions and slots): no unit of its time, but which
-    /// measured request it is most like (`estimate::reference`).
+    /// measured request it is most like (`estimate::References`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refs: Option<u32>,
 }
@@ -1141,7 +1141,8 @@ pub enum Basis {
     Measured,
     /// The caller's `prior_ms`.
     Prior,
-    /// Our measurement of it on this card (`estimate::reference`), scaled to its size.
+    /// Its release's benchmarks (`estimate::References`, cl-1024): of this card, else another's scaled by the Hub's speeds; scaled to
+    /// its size.
     Reference,
     /// Nothing: a minute is assumed.
     #[default]

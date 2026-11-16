@@ -1,6 +1,7 @@
 // account-rent (cl-973 core cell 24, solo): the account and renting, as a person does them in the page. On the stand-in too, render-time
 // (cl-1004): beside Render, how long a box takes where it would go, from 15 s (a slow box once it ran, none for a fast one), and Slow here
-// on an H3 shot this computer, which has no GPU, would run on its CPU: our measurement of the stand-in's rtx-4090, and Rent with it. Signed out by Account's inline
+// on an H3 shot this computer, which has no GPU, would run on its CPU: its release's benchmark of the stand-in's rtx-4090, what a render
+// there costs, and Rent with it. Signed out by Account's inline
 // confirm, Rent says to sign in; a wrong code stays in the form in plain words, the code the isolated Hub logs signs in, and nothing of
 // the Hub's is in the browser. On localfit's GPU stand-in (a proxy in front of the isolated Hub that sells an rtx-4090 and places runs on
 // it), a box this computer would render poorly asks on itself, Rent a GPU first: Run here anyway renders here and is kept (canceled as it
@@ -317,7 +318,7 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       region = await focus(page, 'shot');
       const shot = await answered;
       expect.soft(shot, 'H3 on this computer, which has no GPU').toMatchObject({ machine: 'local', card: '', faster: { rent: { sku: CARD.name, card: 'RTX 4090' } } });
-      // release-gate 43211705140: 335.1 s for the 15 s shot on one RTX 4090 (api::estimate's references.tsv).
+      // release-gate 43211705140: 335.1 s for the 15 s shot on one RTX 4090, its release's benchmark as the isolated Hub serves it.
       expect.soft(shot?.faster?.run_ms, 'the 15 s shot on a rented RTX 4090, as we measured it').toBe(335_100);
       const slowHere = region.getByRole('button', { name: 'Slow here', exact: true });
       await expect(slowHere, 'Slow here beside Render').toBeVisible();
@@ -337,7 +338,8 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await slowHere.click();
       await expect(notice, 'it opens under the box').toBeVisible();
       await expect.soft(notice, 'in view, next to Render').toBeInViewport();
-      await expect.soft(notice.locator('p').first()).toHaveText('This computer has no GPU, so this would run on its CPU, slowly. On a rented RTX 4090, about 6 min.');
+      // Its release's benchmark of the RTX 4090 (benchmarks-seed.json, published with it by isolated.sh), at the stand-in's $0.69/h.
+      await expect.soft(notice.locator('p').first()).toHaveText('This computer has no GPU, so this would run on its CPU, slowly. On a rented RTX 4090, about 6 min and about $0.06 a render.');
       await expect.soft(notice.locator('p').nth(1)).toHaveText('A rented RTX 4090 runs it for $0.69/h.');
       await look('shot-notice', opened);
       // A press that begins inside and ends outside leaves it open; a click outside closes it; Slow here opens it again.

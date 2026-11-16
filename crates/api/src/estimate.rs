@@ -5,12 +5,11 @@
 //! from younger ones. As each starts it takes its width in the plan that ends all that waits soonest, of those capping every job at
 //! one width; within 2% the wider plan wins, its first results coming sooner. So a lone job runs wide and several queued jobs one
 //! GPU each. A machine's downloads and installs each go one at a time in job order (Paul 11-12), so a job's weights come after
-//! those of the jobs ahead of it. A function none of whose runs it knows is timed by the caller's prior, else by our measurement of it
-//! on that card (`reference`, cl-1004), else a minute.
-use std::{
-    collections::{BTreeMap, HashMap, HashSet},
-    sync::LazyLock,
-};
+//! those of the jobs ahead of it. A function none of whose runs it knows is timed by the caller's prior, else by its release's
+//! benchmarks (`References`, cl-1024), else a minute.
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+use serde::{Deserialize, Serialize};
 
 use crate::machine::{self as v1, Basis, EstimateJob, JobSize, Queued, Quote, StatusFrame, TimedRun};
 
@@ -202,40 +201,130 @@ fn known(function: &str, card: &str, nvlink: bool) -> Vec<(u32, f64)> {
         .collect()
 }
 
-/// One of our measurements of a function on one GPU of a card (cl-1004, Paul 11-15: "a typical inference time for that model + type
-/// of request on the GPU it'll land on"): what a machine that never ran it is quoted, scaled to the request's size. Each row names its
-/// gate run (`estimate/references.tsv`, written by `release-gate/bench.py references` from a release's gate).
-#[derive(Clone, Debug, PartialEq)]
-pub struct Reference {
-    /// `package/function`, the package without its org.
+/// One of a release's benchmarks (cl-1024, Paul 11-15: "for estimates … use package-author benchmarks + our own benchmarks as
+/// authoritative"): its publisher's measurement of one of its functions on a GPU, the request it ran and how long it took. A release
+/// declares them when it is published, the Hub serves them with it, and they never change. What a machine that never ran the function
+/// is quoted by, and what a package page lists.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Benchmark {
+    /// A callable of the release.
     pub function: String,
-    /// As its driver names it, the vendor's words aside: `RTX 4090`.
-    pub card: String,
-    /// The request measured; its `refs` the pictures and videos it read.
-    pub size: JobSize,
-    /// Its warm time, ms.
-    pub ms: f64,
-    pub proof: String,
+    /// As its driver names it: `NVIDIA GeForce RTX 4090`.
+    pub gpu: String,
+    pub gpus: u32,
+    pub request: JobSize,
+    /// A warm run's time: the model loaded, its plan compiled.
+    pub warm_ms: u64,
+    /// The function's first run on the machine.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cold_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ran_on: Option<BenchmarkRanOn>,
+    /// Where it was measured, such as a gate run.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub note: String,
 }
 
-static REFERENCES: LazyLock<Vec<Reference>> = LazyLock::new(|| {
-    let number = |field: &str| field.parse::<f64>().ok().filter(|n| *n > 0.0);
-    (include_str!("estimate/references.tsv").lines())
-        .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
-        .filter_map(|line| {
-            let [function, card, refs, megapixels, frames, steps, seconds, warm, proof] = line.split('\t').collect::<Vec<_>>()[..] else { return None };
-            let size = JobSize {
-                megapixels: number(megapixels),
-                frames: number(frames).map(|n| n as u64),
-                steps: number(steps).map(|n| n as u64),
-                tokens: None,
-                seconds: number(seconds),
-                refs: refs.parse().ok(),
-            };
-            Some(Reference { function: function.into(), card: card.into(), size, ms: number(warm)? * 1e3, proof: proof.into() })
-        })
-        .collect()
-});
+/// The software a benchmark ran on.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BenchmarkRanOn {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub cozy: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub runtime: String,
+}
+
+/// The benchmarks a quote stands on where a function's runs don't (cl-1024): each function's release's rows, and the Hub's per-card
+/// speeds, which scale a row to a card none measured. Calcifer's, from the release cards it keeps; a machine packing its own queue has
+/// none.
+#[derive(Clone, Debug, Default)]
+pub struct References {
+    /// By function as `package/function` (no org, no release): its release's rows.
+    pub rows: HashMap<String, Vec<Benchmark>>,
+    /// By function, as `rows`: each card the Hub sells for it, as the Hub names it, and its speed at its lane. A time on one card
+    /// times its speed over another's is the other's.
+    pub speeds: HashMap<String, BTreeMap<String, f64>>,
+}
+
+/// `[org/]package/function[@release]` as `References` keys it: `package/function`.
+pub fn reference_key(function: &str) -> String {
+    let path = function.split('@').next().unwrap_or_default();
+    let mut parts = path.rsplitn(3, '/');
+    match (parts.next(), parts.next()) {
+        (Some(callable), Some(package)) => format!("{package}/{callable}"),
+        _ => path.to_owned(),
+    }
+}
+
+impl References {
+    /// A release's rows of each of its functions (`package` as `[org/]name`), beside those held.
+    pub fn add(&mut self, package: &str, rows: &[Benchmark]) {
+        let name = package.rsplit('/').next().unwrap_or(package);
+        for row in rows {
+            let held = self.rows.entry(format!("{name}/{}", row.function)).or_default();
+            if !held.contains(row) {
+                held.push(row.clone());
+            }
+        }
+    }
+
+    /// `function`'s per-card speeds as its Hub sells cards for it.
+    pub fn add_speeds(&mut self, function: &str, speeds: BTreeMap<String, f64>) {
+        self.speeds.entry(reference_key(function)).or_default().extend(speeds);
+    }
+
+    fn of(&self, function: &str) -> &[Benchmark] {
+        self.rows.get(&reference_key(function)).map_or(&[], Vec::as_slice)
+    }
+
+    /// `function`'s time on one GPU of `gpu` at `size`, by its row of that card most like `size`, scaled to it; and the row. None:
+    /// no row of that card.
+    pub fn measured(&self, function: &str, gpu: &str, size: &JobSize) -> Option<(f64, &Benchmark)> {
+        nearest(self.of(function).iter().filter(|row| row.gpus == 1 && is_card(gpu, &row.gpu)), size).map(|(row, ms)| (ms, row))
+    }
+
+    /// `function`'s time on one GPU of `gpu` at `size`: `measured`, else `scaled`.
+    pub fn time(&self, function: &str, gpu: &str, size: &JobSize) -> Option<f64> {
+        self.measured(function, gpu, size).map(|(ms, _)| ms).or_else(|| self.scaled(function, gpu, size))
+    }
+
+    /// `function`'s time on one GPU of `gpu` at `size` where no row measured that card: a row of another card times its speed over this
+    /// card's, of the cards with a row the one nearest this in speed. A guess: never what a rental is recommended by. None: no row, or no
+    /// speed for this card or any measured one.
+    pub fn scaled(&self, function: &str, gpu: &str, size: &JobSize) -> Option<f64> {
+        if gpu.is_empty() {
+            return None;
+        }
+        let speeds = self.speeds.get(&reference_key(function))?;
+        let speed = |card: &str| speeds.iter().find(|(sold, _)| is_card(card, sold)).map(|(_, speed)| *speed).filter(|speed| *speed > 0.0);
+        let to = speed(gpu)?;
+        let mut cards: Vec<&str> = self.of(function).iter().filter(|row| row.gpus == 1).map(|row| row.gpu.as_str()).collect();
+        cards.sort_unstable();
+        cards.dedup();
+        (cards.into_iter())
+            .filter_map(|card| {
+                let from = speed(card)?;
+                let (ms, _) = self.measured(function, card, size)?;
+                Some(((from / to).ln().abs(), ms * from / to))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, ms)| ms)
+    }
+
+    /// How `function` goes faster with GPUs on `gpu`, by its rows of that card at one GPU and the widest more: that width and its
+    /// speed-up, at the size the two share. None: no such pair.
+    fn speedup(&self, function: &str, gpu: &str) -> Option<(u32, f64)> {
+        let rows: Vec<&Benchmark> = self.of(function).iter().filter(|row| is_card(gpu, &row.gpu)).collect();
+        (rows.iter().filter(|wide| wide.gpus > 1))
+            .filter_map(|wide| {
+                let one = rows.iter().find(|one| one.gpus == 1 && one.request == wide.request)?;
+                Some((wide.gpus, one.warm_ms as f64 / wide.warm_ms.max(1) as f64))
+            })
+            .max_by_key(|(width, _)| *width)
+    }
+}
 
 /// A card's name as words: lower case, the vendor's words and punctuation aside (`NVIDIA GeForce RTX 4090`, `rtx-4090`: `rtx 4090`).
 fn words(card: &str) -> Vec<String> {
@@ -244,8 +333,8 @@ fn words(card: &str) -> Vec<String> {
     spaced.split_whitespace().filter(|word| !matches!(*word, "nvidia" | "geforce")).map(str::to_owned).collect()
 }
 
-/// Whether `gpu`, as its driver or a Hub names it, is a row's `card`: its words begin with the card's, and what follows them names no
-/// other model of it (`RTX 4070 Ti` is no `RTX 4070`; `H100 80GB HBM3 SXM` is an `H100 80GB HBM3`).
+/// Whether `gpu`, as its driver or a Hub names it, is the card `card` names: its words begin with the card's, and what follows them
+/// names no other model of it (`RTX 4070 Ti` is no `RTX 4070`; `H100 80GB HBM3 SXM` is an `H100 80GB HBM3`).
 pub fn is_card(gpu: &str, card: &str) -> bool {
     let (gpu, card) = (words(gpu), words(card));
     !card.is_empty()
@@ -253,27 +342,15 @@ pub fn is_card(gpu: &str, card: &str) -> bool {
         && !gpu.get(card.len()).is_some_and(|next| matches!(next.as_str(), "ti" | "super" | "d" | "laptop" | "mobile" | "max"))
 }
 
-/// Our rows of `function` (`org/package/function`, `package/function`, either with `@release`), every card's.
-pub fn references(function: &str) -> impl Iterator<Item = &'static Reference> {
-    let function = function.split('@').next().unwrap_or_default().to_owned();
-    REFERENCES.iter().filter(move |row| function == row.function || function.ends_with(&format!("/{}", row.function)))
-}
-
-/// Of `rows`, the one most like `size`: the nearest `refs`, then the nearest size; and its time scaled to `size`.
-pub fn nearest<'r>(rows: impl Iterator<Item = &'r Reference>, size: &JobSize) -> Option<(&'r Reference, f64)> {
+/// Of `rows`, the one most like `size`: the nearest pictures read, then the nearest size; and its warm time scaled to `size`.
+fn nearest<'r>(rows: impl Iterator<Item = &'r Benchmark>, size: &JobSize) -> Option<(&'r Benchmark, f64)> {
     let refs = size.refs.unwrap_or(0);
-    let unlike = |row: &Reference| (row.size.refs.unwrap_or(0).abs_diff(refs), size.ratio(&row.size).ln().abs());
+    let unlike = |row: &Benchmark| (row.request.refs.unwrap_or(0).abs_diff(refs), size.ratio(&row.request).ln().abs());
     let row = rows.min_by(|a, b| {
         let (a, b) = (unlike(a), unlike(b));
         a.0.cmp(&b.0).then(a.1.total_cmp(&b.1))
     })?;
-    Some((row, row.ms * size.ratio(&row.size)))
-}
-
-/// `function`'s time on one GPU of `gpu` (as its driver names it) at `size`, by our row of that card most like it. None: we measured
-/// none of it there.
-pub fn reference(function: &str, gpu: &str, size: &JobSize) -> Option<f64> {
-    nearest(references(function).filter(|row| is_card(gpu, &row.card)), size).map(|(_, ms)| ms)
+    Some((row, row.warm_ms as f64 * size.ratio(&row.request)))
 }
 
 /// A function's time on a machine: its compute on one GPU, how it scales, its load onto the GPUs, and what they stand on.
@@ -347,8 +424,8 @@ fn median(values: &[f64]) -> f64 {
     }
 }
 
-/// What a machine's jobs are timed and packed by: its GPUs, link, card and runs.
-pub struct Machine {
+/// What a machine's jobs are timed and packed by: its GPUs, link, card and runs, and the benchmarks of what it never ran.
+pub struct Machine<'r> {
     /// The most GPUs side by side in service.
     pub gpus: usize,
     /// Bytes a millisecond its weights arrive at.
@@ -359,6 +436,8 @@ pub struct Machine {
     pub times: HashMap<String, Vec<TimedRun>>,
     /// Its clock now, Unix ms.
     pub now_ms: i64,
+    /// What a function none of whose runs it knows is timed by (cl-1024); none: a minute.
+    pub references: Option<&'r References>,
 }
 
 /// The download line: when it ends, ms from now, and when each repository in it lands.
@@ -385,9 +464,9 @@ impl Line {
     }
 }
 
-impl Machine {
-    /// As `frame` pictures it, at `now_ms` on its clock.
-    pub fn of(frame: &StatusFrame, now_ms: i64) -> Self {
+impl<'r> Machine<'r> {
+    /// As `frame` pictures it, at `now_ms` on its clock, what it never ran timed by `references`.
+    pub fn of(frame: &StatusFrame, now_ms: i64, references: &'r References) -> Self {
         let times = frame.times.iter().flatten().map(|timed| (timed.function.clone(), timed.runs.clone())).collect();
         Machine {
             gpus: frame.serving_gpus as usize,
@@ -399,23 +478,29 @@ impl Machine {
             nvlink: frame.nvlink,
             times,
             now_ms,
+            references: Some(references),
         }
     }
 
-    /// `function` timed here (else by the caller's prior, else by our `reference` for this card), scaling as `KNOWN` says for this card
-    /// and link until two widths ran here; and of `widths`, those it
-    /// may run at: one GPU, and a wider one only once timed faster than one GPU here or known faster here (cr-268: never wider than
-    /// proven). A count asked for (one width) passes as it is.
+    /// `function` timed here (else by the caller's prior, else by its release's benchmarks for this card, `References::time`),
+    /// scaling as its benchmarks at more GPUs on this card say, else as `KNOWN` says for this card and link, until two widths ran here;
+    /// and of `widths`, those it may run at: one GPU, and a wider one only once timed faster than one GPU here or known faster here
+    /// (cr-268: never wider than proven). A count asked for (one width) passes as it is.
     pub fn timed(&self, function: &str, size: &JobSize, prior_ms: f64, widths: Vec<u32>, warm: bool) -> (Time, Vec<u32>) {
-        let known = known(function, &self.card, self.nvlink);
+        let mut known = known(function, &self.card, self.nvlink);
+        known.extend(self.references.and_then(|references| references.speedup(function, &self.card)));
         let scaling = known.iter().max_by_key(|(width, _)| *width).map(|(width, speedup)| Scaling::of((1, *speedup), (*width, 1.0)));
         let runs = self.times.get(function).map_or(&[][..], Vec::as_slice);
         let mut time = time(runs, size, prior_ms, scaling, warm);
-        // Nothing of it timed here and no prior: our measurement of it on this card (cl-1004).
+        // Nothing of it timed here and no prior: its release's benchmark of this card (cl-1024), else one scaled from another card.
         if time.basis == Basis::None
-            && let Some(ms) = reference(function, &self.card, size)
+            && let Some(references) = self.references
         {
-            time = Time { one_ms: ms, basis: Basis::Reference, ..time };
+            if let Some((ms, _)) = references.measured(function, &self.card, size) {
+                time = Time { one_ms: ms, basis: Basis::Reference, ..time };
+            } else if let Some(ms) = references.scaled(function, &self.card, size) {
+                time = Time { one_ms: ms, basis: Basis::Reference, ..time };
+            }
         }
         let widths = match widths.len() {
             0 | 1 => widths,
@@ -563,8 +648,8 @@ fn refused(code: &str, message: String) -> Option<v1::Reason> {
 /// queue: each one's install after those ahead of it, its absent weights' download after those ahead of it, then their load,
 /// unless an idle executor holds them or a run of the same function goes before it there; packed on its GPUs as its scheduler packs
 /// them.
-pub fn quote(frame: &StatusFrame, now_ms: i64, jobs: &[EstimateJob]) -> Vec<Quote> {
-    let machine = Machine::of(frame, now_ms);
+pub fn quote(frame: &StatusFrame, now_ms: i64, jobs: &[EstimateJob], references: &References) -> Vec<Quote> {
+    let machine = Machine::of(frame, now_ms, references);
     let queue = frame.queue.as_deref().unwrap_or_default();
     let (mut packed, mut line) = machine.queue(queue);
     let mut warm: HashSet<String> = queue.iter().map(|root| root.function.clone()).filter(|function| !function.is_empty()).collect();

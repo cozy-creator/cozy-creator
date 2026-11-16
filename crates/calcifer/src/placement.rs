@@ -11,6 +11,8 @@ use std::sync::Arc;
 use api::{
     calcifer::{MachineEstimate, On},
     error::{Error, Kind},
+    estimate::References,
+    hub::cards,
     machine::{self as v1, Basis, JobSize},
 };
 
@@ -126,6 +128,43 @@ pub(crate) struct Picture {
     pub ready_at_ms: Option<i64>,
     /// What waits there that its frame doesn't list yet, as jobs ahead of any asked: every run sent to one on its way.
     pub ahead: Vec<v1::EstimateJob>,
+    /// The benchmarks its quotes stand on where a function's runs don't (cl-1024): those of every job quoted with it (`benched`).
+    pub references: Arc<References>,
+}
+
+/// The benchmarks a quote of `named` functions stands on (cl-1024): each one's release's (`org/pkg/fn@release`), as its kept card has
+/// them, else its package's newest kept release's (a root queued on a machine names no release); and, for each, the Hub's per-card
+/// speeds as its placement answer last said them. Read here, never asked: a card is kept when its release is first read.
+pub(crate) fn references(hubs: &crate::rentals::Hubs, named: &[String]) -> References {
+    let (root, hub) = (hubs.home().root(), hubs.default_origin());
+    let mut references = References::default();
+    for target in named.iter().filter(|target| !target.starts_with("sha256:")) {
+        let (path, release) = target.split_once('@').map_or((target.as_str(), None), |(path, release)| (path, Some(release)));
+        let Some((package, _)) = path.rsplit_once('/').filter(|(package, _)| package.contains('/')) else { continue };
+        let release = release.map(str::to_owned).or_else(|| tensorfs::format::newest_by(cards::kept_releases(root, &hub, package), |r| r));
+        if let Some(card) = release.and_then(|release| cards::kept(root, &hub, package, &release)) {
+            references.add(package, &card.benchmarks());
+        }
+        if let Some(speeds) = crate::project::fit::speeds_now(&hub, target) {
+            references.add_speeds(target, speeds);
+        }
+    }
+    references
+}
+
+/// Each of `pictures` with the benchmarks its quotes stand on (`references`): those of `targets` and of each function queued or ahead
+/// on any of them.
+pub(crate) fn benched<'t, 'p>(api: &Api, targets: impl IntoIterator<Item = &'t str>, pictures: impl IntoIterator<Item = &'p mut Picture>) {
+    let mut pictures: Vec<&mut Picture> = pictures.into_iter().collect();
+    let mut named: Vec<String> = targets.into_iter().map(str::to_owned).collect();
+    for picture in &pictures {
+        named.extend(picture.frame.queue.iter().flatten().map(|root| root.function.clone()));
+        named.extend(picture.ahead.iter().map(|job| job.function.clone()));
+    }
+    named.sort();
+    named.dedup();
+    let references = Arc::new(references(&api.machines.hubs, &named));
+    pictures.iter_mut().for_each(|picture| picture.references = references.clone());
 }
 
 /// The machines of `jobs`, each named once, in the order they name them.
@@ -218,7 +257,7 @@ pub(crate) fn quote(picture: &Picture, jobs: &[v1::EstimateJob], now: i64) -> Ve
     let asks: Vec<v1::EstimateJob> = (picture.ahead.iter().chain(jobs))
         .map(|job| v1::EstimateJob { after_ms: job.after_ms.max(ready), ..job.clone() })
         .collect();
-    let quotes = api::estimate::quote(&picture.frame, now, &asks);
+    let quotes = api::estimate::quote(&picture.frame, now, &asks, &picture.references);
     let at = |ms: u64| now + ms as i64;
     (quotes.into_iter().skip(picture.ahead.len()))
         .map(|quote| Offer {
@@ -244,7 +283,8 @@ pub(crate) fn quote(picture: &Picture, jobs: &[v1::EstimateJob], now: i64) -> Ve
 pub(crate) async fn offers(api: &Arc<Api>, jobs: &[Job], update: bool) -> (Vec<Vec<Offer>>, Vec<String>) {
     let now = now_ms();
     let machines = machines_of(jobs);
-    let pictured = pictures(api, &machines, update, now).await;
+    let mut pictured = pictures(api, &machines, update, now).await;
+    benched(api, jobs.iter().map(|job| job.target.as_str()), pictured.iter_mut().flatten());
     offered(api, jobs, &machines, &pictured, now).await
 }
 
@@ -268,6 +308,7 @@ pub(crate) async fn offers_now(api: &Arc<Api>, jobs: &[Job]) -> (Vec<Vec<Offer>>
             _ => Err("it isn't rented yet".into()),
         });
     }
+    benched(api, jobs.iter().map(|job| job.target.as_str()), pictured.iter_mut().flatten());
     let (offers, _) = offered(api, jobs, &machines, &pictured, now).await;
     (offers, pictured)
 }
@@ -281,7 +322,7 @@ fn last_picture(api: &Arc<Api>, on: &On, name: &str) -> Result<Picture, String> 
     if !same_minor(&frame.version, this_release()) && !rc_version() {
         return Err(format!("it runs cozy {}, another minor than this cozy's", frame.version));
     }
-    Ok(Picture { on: on.clone(), name: name.to_owned(), frame, ready_at_ms: None, ahead: vec![] })
+    Ok(Picture { on: on.clone(), name: name.to_owned(), frame, ready_at_ms: None, ahead: vec![], references: Arc::default() })
 }
 
 /// Each job quoted on each of `machines` as `pictured`.
@@ -388,7 +429,7 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
             Some(run) => return Err(format!("updating it to cozy {own} first (run {})", run.name)),
         }
     }
-    Ok(Picture { on: on.clone(), name: row.name, frame, ready_at_ms: None, ahead: vec![] })
+    Ok(Picture { on: on.clone(), name: row.name, frame, ready_at_ms: None, ahead: vec![], references: Arc::default() })
 }
 
 /// An offer in a line of the log: `stand-c finishes in 480 s (Measured, warm)`, `pluto finishes in 390 s (None; 120 s preparing,

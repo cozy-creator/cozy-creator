@@ -684,8 +684,9 @@ async fn instead_of_renting(api: &Arc<Api>, run: Weighed<'_>) -> Option<(On, Str
     let offer = offers.first()?.iter().find(|offer| offer.machine == chosen && offer.fits)?.clone();
     let rental = api.machines.new_rental(run.hub, run.spec).await.ok()?;
     let way = crate::rentals::OnItsWay { ready_at_ms: 0, card: rental.card.clone(), gpus: rental.gpus };
-    let target = format!("{}/{}", run.package, run.function);
-    let (one_ms, _) = crate::coming::card_time(api, &way, &target, &run.size);
+    // Its time on that card: this computer's runs there, else its release's benchmarks (cl-1024), else a minute.
+    let target = format!("{}/{}@{}", run.package, run.function, run.release);
+    let one_ms = api.calcifer.typical_ms(&target, &way.card, &run.size).map_or(api::estimate::UNKNOWN_MS, |(ms, _)| ms);
     let prepare_ms = api::estimate::prepare_ms(false, rental.weight_bytes, api::estimate::LINK, 0.0);
     let now = crate::store::now_ms();
     let new_finish = now + rental.boot_ms + (prepare_ms + one_ms) as i64;

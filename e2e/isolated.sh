@@ -33,10 +33,12 @@ log() { echo "$(date -u +%H:%M:%SZ) isolated Hub: $*"; }
 cozy() { "$cozy_bin" "$@"; }
 J() { jq -e "$@" > /dev/null; }
 
-# publish <dir>: a package's own directory published at the root, from a copy (publication writes its lock).
+# publish <dir>: a package's own directory published at the root, from a copy (publication writes its lock), with its benchmarks
+# from release-gate's seed when it has any, as a promotion's carry the gate's (cl-1024).
 publish() {
   local copy=$seed/packages/${1##*/}
   rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$1" "$copy"
+  jq -e --arg p "${1##*/}" '.[$p] // empty' "$here/../release-gate/benchmarks-seed.json" > "$copy/benchmarks.json" 2> /dev/null || rm -f "$copy/benchmarks.json"
   (cd "$copy" && cozy --json package publish --root -y) > "$seed/publish-${1##*/}.json" 2>&1 \
     || { echo "publishing ${1##*/} at the isolated Hub's root failed: $(tail -c 600 "$seed/publish-${1##*/}.json")" >&2; return 1; }
   log "published ${1##*/} $(sed -n 's/^version = "\(.*\)"$/\1/p' "$copy/pyproject.toml" | head -1) at the root"

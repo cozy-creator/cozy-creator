@@ -11,6 +11,7 @@ mod canvas;
 pub(crate) mod code;
 mod db;
 mod crdt;
+mod benchmarks;
 pub(crate) mod fit;
 mod folder;
 mod format;
@@ -224,6 +225,7 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/runs/{run}/preview", get(crate::previews::serve))
         .route("/v1/projects/{id}/fit", post(fit::fit))
         .route("/v1/projects/{id}/fit/here", post(fit::here))
+        .route("/v1/projects/{id}/benchmarks", get(benchmarks::benchmarks))
         .route("/v1/projects/{id}/cancel", post(cancel))
         .route("/v1/projects/{id}/approve", post(approve))
         .route("/v1/projects/{id}/unpin", post(unpin))
@@ -4183,6 +4185,9 @@ impl Walk {
                 pictures[m].ahead.push(placement::asked(job, prior));
             }
         }
+        // What each function never ran on a machine is timed by its release's benchmarks there (cl-1024).
+        let targets: Vec<String> = jobs.iter().map(|(_, job)| job.target.clone()).chain(ahead.iter().map(|(_, job)| job.target.clone())).collect();
+        placement::benched(&api, targets.iter().map(String::as_str), pictures.iter_mut());
         let position: HashMap<usize, usize> = jobs.iter().enumerate().map(|(at, (unsent_at, _))| (unsent[*unsent_at].id, at)).collect();
         let mut planned = vec![];
         for (at, job) in &jobs {

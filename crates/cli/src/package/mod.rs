@@ -63,6 +63,15 @@ enum Command {
         #[arg(long)]
         root: bool,
     },
+    /// Write benchmarks.json from this project's warm runs of the package, for its next release to carry.
+    #[command(hide = true)]
+    Benchmarks {
+        /// [org/]name (default: the package in the current directory).
+        package: Option<String>,
+        /// Where to write them (default: benchmarks.json here).
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+    },
     /// Permanently delete your package and all its releases from the Hub.
     Delete {
         /// [org/]name.
@@ -108,6 +117,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             machine::uninstall(ctx, &names, placement.on()?, project).await
         }
         Command::Publish { root } => author::publish(ctx, root).await,
+        Command::Benchmarks { package, out } => author::benchmarks(ctx, package, out).await,
         Command::Delete { package } => author::delete(ctx, &PackageRef::parse(&package)?).await,
         Command::Yank { release, undo } => {
             author::yank(ctx, &PackageRef::parse(&release)?, undo).await
