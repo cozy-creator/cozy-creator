@@ -721,6 +721,9 @@ impl Machines {
                     Some(n) if n > 1 => format!("renting {n}× {card}"),
                     _ => format!("renting {card}"),
                 });
+                // The placement's disk is sized for the run's weights; a run whose price nobody agreed to gets at least the
+                // default. One agreed to a price keeps the disk that price was quoted at: more would be refused as dearer.
+                let disk_gb = disk_gb.map(|gb| if run.agreed.is_none() { gb.max(DISK_GB) } else { gb });
                 let shape = Shape {
                     gpus,
                     disk_gb,
@@ -1935,6 +1938,10 @@ pub(crate) struct Shape {
     pub ssh_key: Option<String>,
 }
 
+/// The disk a rental asks for when its renter names none (Paul, 11-16: "300GB worker discs by default"). Asked for, it is
+/// bought whatever it adds to the price; a host that offers less gets its largest, which the quote says.
+pub(crate) const DISK_GB: u32 = 300;
+
 /// What an order's name begins with: a handle Calcifer mints, shown as its [`placeholder`] until its Hub names the host.
 const HANDLE: &str = "rent-";
 
@@ -1946,7 +1953,7 @@ fn request(sku: &str, shape: Shape) -> (types::RentalRequest, String, SigningKey
     let signer = SigningKey::from_bytes(random[36..].try_into().expect("32 bytes"));
     let request = types::RentalRequest {
         accelerator_count: shape.gpus.map(i64::from),
-        container_disk_gb: shape.disk_gb.map(i64::from),
+        container_disk_gb: Some(i64::from(shape.disk_gb.unwrap_or(DISK_GB))),
         creator_public_key: URL_SAFE_NO_PAD.encode(signer.verifying_key().to_bytes()),
         fallbacks: shape.fallbacks,
         legacy_image: None,

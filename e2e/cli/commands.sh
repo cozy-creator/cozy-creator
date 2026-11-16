@@ -146,6 +146,10 @@ cozy machine rent > "$OUT/rent-catalog.txt" 2>&1 && grep -q -E '^NAME +GPU +GPUS
   || check "machine rent: no catalog table: $(head -c 300 "$OUT/rent-catalog.txt")"
 cozy --json machine rent > "$OUT/rent-catalog.json" 2> "$OUT/rent-catalog.err" && J 'type == "array" and all(.[]; .name | length > 0)' "$OUT/rent-catalog.json" \
   || check "machine rent --json: no catalog array: $(head -c 300 "$OUT/rent-catalog.json") $(head -c 200 "$OUT/rent-catalog.err")"
+# cl-1076, Paul 11-16: "300GB worker discs by default". A quote (public, nothing rented) that names no disk asks for 300 GB.
+cozy --json machine rent rtx-4090 > "$OUT/rent-quote.json" 2> "$OUT/rent-quote.err" || true
+grep -q sku_out_of_stock "$OUT/rent-quote.json" || jq -se 'any(.[]; .quote.container_disk_gb? >= 300)' "$OUT/rent-quote.json" > /dev/null \
+  || check "machine rent rtx-4090: the quote's disk is not 300 GB: $(head -c 300 "$OUT/rent-quote.json") $(head -c 200 "$OUT/rent-quote.err")"
 # Pinned to the checkout's release: an RC-only package (a prerelease, xs-196 C) is refused package_rc_only before the sign-in check.
 bir=birefnet/remove_background; v=$(sed -n 's/^version = "\(.*\)"$/\1/p' "${PACKAGES:-/nonexistent}/birefnet/pyproject.toml" 2>/dev/null | head -1)
 [ -z "$v" ] || bir="birefnet/remove_background@$v"
