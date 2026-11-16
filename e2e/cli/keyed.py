@@ -196,7 +196,6 @@ def main() -> int:
     kept_with("machines", "PUT", "/machines", {"machines": []}, 200, None, True)
     kept_with("view", "PATCH", "/view", {"viewport": {"x": 0, "y": 0, "zoom": 1}}, 200, None, True)
     kept_with("fit", "POST", "/fit", {"names": ["keyed_note"]}, 200, None, False)
-    kept_with("fit_here", "POST", "/fit/here", {"names": ["keyed_note"]}, 200, None, False)
     kept_with("cancel", "POST", "/cancel", {"names": ["keyed_note"]}, 200, None, True)
     kept_with("reclaim", "POST", "/reclaim", {"yes": True}, 200, "deleted", True)
     # Another picture, a version of its own, then off it again.

@@ -6,7 +6,6 @@ import { nextProjectOrder } from "../api/projectOrder"
 import type {
   Ahead,
   ToolField as BoxField,
-  Fit,
   Imported,
   AssetDeleted,
   AssetPatch,
@@ -118,8 +117,6 @@ export interface ElementView {
   known?: string
   /** Its render waits for a machine, with its pickup and its take's id. */
   waiting?: Also
-  /** This computer would render it poorly, so it asks before it does, with its pickup and its take's id. */
-  asking?: { fit: Fit; also?: Also }
   /** Its Slow here notice is open, under its fields (cl-1004). */
   slowOpen?: boolean
   /** Seconds into a video, scrubbed to. */
@@ -242,11 +239,8 @@ const SHAPING = ["asset", "drafts", "sent", "aspect"] as const
 
 const samePlace = (a: { x: number; y: number }, b: { x: number; y: number }) => a.x === b.x && a.y === b.y
 
-/** Only this computer can take it: what it would do poorly is asked first. */
-const onlyHere = (on: string[]) => on.length === 1 && on[0] === "local"
 /** What an Undo or Redo brought back without its files, as Calcifer says it (cl-919). */
 const lostSaid = (lost: string[]) => lost.map((said) => `${said}.`).join(" ")
-const unsaid = (fit: Fit | null): fit is Fit => Boolean(fit?.tools.some((tool) => !tool.here))
 
 /** What the state says of one element: an asset, or an entity. */
 type Placed = Pick<ElementView, "name" | "asset" | "entity" | "linked" | "queued" | "warnings">
@@ -341,8 +335,6 @@ export class CanvasStore {
   askMachine: () => void = () => {}
   /** Opens Rent, with a GPU that holds it chosen when one is known. */
   rent: (pick?: RentFor | null) => void = () => {}
-  /** What Render all asks first, on its own control, once for every tool this computer would do poorly. */
-  readonly allAsking = signal<{ fit: Fit } | null>(null)
   /** Each open box's typical render time where it would go now, by name, as Calcifer last said (cl-1004). */
   readonly estimates = signal<ReadonlyMap<string, BoxEstimate>>(new Map())
   /** The machines a render may go to, as text: an estimate is asked again when they change. */
@@ -545,7 +537,7 @@ export class CanvasStore {
     this.early.clear(); this.offers.clear(); this.dropTargets.clear(); this.carets.clear(); this.ids.clear(); this.namesById.clear(); this.served.clear()
     this.poses.clear(); this.owners.clear(); this.deleting.clear(); this.own.clear(); this.landings.clear(); this.masks.clear(); this.unsettled.clear()
     this.movedAt.clear(); this.moving.clear(); this.movingFrom.clear(); this.movingEdits.clear(); this.movingSince.clear(); this.renames.clear(); this.renamedAt.clear()
-    this.selected.clear(); this.moreOpen.clear(); this.tools.set(new Map()); this.allAsking.set(null)
+    this.selected.clear(); this.moreOpen.clear(); this.tools.set(new Map())
     for (const listeners of this.subscribers.values()) for (const listener of listeners) listener()
     for (const told of [...this.hearing]) told()
     this.subscribers.clear(); this.named.clear(); this.hearing.clear()
@@ -1518,6 +1510,13 @@ export class CanvasStore {
     this.patch(name, { hereWords: words || undefined, viewed: undefined, watch: take, glimpse: undefined, ...(run !== undefined && this.runs.has(run) ? { run: this.runs.get(run) } : {}) })
   }
 
+  /** What a render of `name` leaves out of what its box mentions, in one note (Paul, 11-16, of a character in LTX-2.5's words-only prompt:
+   *  "it did not do anything with the character … complete fail"). His input ignored is no handled fallback: it's said. */
+  private sayLeftOut(name: string, asset: Asset) {
+    const lines = new Set((asset.unused ?? []).map((one) => one.why))
+    if (lines.size) say(`${name}: ${[...lines].join("; ")}`)
+  }
+
   seek(name: string, at: number) {
     const held = this.get(name)
     if (held) this.patch(name, { seek: { at, ask: (held.seek?.ask ?? 0) + 1 } })
@@ -1527,11 +1526,13 @@ export class CanvasStore {
    * A new take or version: the box says Queued now, and anything typed goes first. What Calcifer runs itself needs no machine; with none up for the rest, it asks
    * for one and goes when one is. Its key is made here, once, so however often this is tried it asks one render.
    */
-  run(name: string, also: Also = {}, here = false) {
+  run(name: string, also: Also = {}) {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     const asset = view?.asset
     if (!asset) return
+    // What its words mention that its tool can't use: said as Render is pressed, once, not only struck through (cl-1066).
+    if (!also.take) this.sayLeftOut(key, asset)
     if (!also.pickup && view.continuing) also = { ...also, pickup: view.continuing }
     // Its take has its id from the click, and is listed under it at once (cl-945). However often this goes on, after a question or a
     // machine coming up, it's that take.
@@ -1542,18 +1543,12 @@ export class CanvasStore {
     if (!view.taking?.some((held) => held.id === take)) this.patch(key, { taking: [...(view.taking ?? []), { id: take, until: NOT_YET }] })
     const tool = this.tools.get().get(asset.tool ?? "")
     if (tool?.package.split("/").at(-1) === "minimax-h3" && tool.fields.some((field) => field.field === "turbo")) this.setDraft(key, "turbo", true)
-    const local = here || madeHere(asset.tool)
+    const local = madeHere(asset.tool)
     const on = local ? ["local"] : this.machines()
     const saved = this.save(key)
     if (!on.length) {
-      this.patch(key, { waiting: also, asking: undefined })
+      this.patch(key, { waiting: also })
       this.askMachine()
-      return
-    }
-    // Queued from the click on, as any render, until Calcifer says whether to ask first.
-    if (!here && !madeHere(asset.tool) && onlyHere(on)) {
-      this.patch(key, { waiting: undefined, asking: undefined, asked: NOT_YET })
-      void this.askFirst(key, also, saved)
       return
     }
     // From an image tool's words, the box looks at the take being made, and its + goes back to them. Not before it goes: what it waits
@@ -1561,7 +1556,7 @@ export class CanvasStore {
     const aimed = !id || this.aims.get(id) === take
     if (aimed && id) this.aims.delete(id)
     if (aimed && (asset.kind === "image" || asset.kind === "video")) this.watchTake(key, take, asset.kind === "video")
-    this.patch(key, { waiting: undefined, asking: undefined, scrub: undefined, glimpse: undefined, asked: NOT_YET })
+    this.patch(key, { waiting: undefined, scrub: undefined, glimpse: undefined, asked: NOT_YET })
     // Answered, its take is Calcifer's to list from a read begun after; not sent, it's no take.
     const settle = (asked?: number) => {
       this.patchId(id, { asked })
@@ -1595,7 +1590,7 @@ export class CanvasStore {
     const key = this.resolveName(name)
     if (!this.views.get(key)?.asset) return
     if (!this.machines().length) {
-      this.patch(key, { waiting: {}, asking: undefined })
+      this.patch(key, { waiting: {} })
       say(`No machine is up to render ${name} on: rent one, and it renders there`, undefined, { action: { label: "Rent", run: () => this.rent() } })
       return
     }
@@ -1642,24 +1637,6 @@ export class CanvasStore {
     this.estimates.set(next)
   }
 
-  /** How this computer would do it, by Calcifer, once what's typed is in: poorly, and nothing said for that, the box asks; else it renders. */
-  private async askFirst(key: string, also: Also, saved: Promise<boolean>) {
-    const id = this.ids.get(key)
-    if (!id) return
-    if (!(await saved) || !this.projectId) {
-      this.untake(id, also.take)
-      return this.patchId(id, { asked: undefined })
-    }
-    const fit = await this.client.fit(this.projectId, [this.served.get(id) ?? key]).catch(() => null)
-    const name = this.namesById.get(id)
-    if (!name) return
-    // Asked first, nothing goes: no take until it's answered, and that answer renders a take of its own.
-    if (unsaid(fit)) {
-      this.untake(id, also.take)
-      this.patchId(id, { asked: undefined, asking: { fit, also: { pickup: also.pickup } } })
-    } else this.run(name, also, true)
-  }
-
   /** Its take `take`, asked from this page: Calcifer's to list from a read begun after `until`; with none, it was never sent, and it goes. */
   private untake(id: string | undefined, take: string | undefined, until?: number) {
     const name = id && this.namesById.get(id)
@@ -1669,40 +1646,23 @@ export class CanvasStore {
     this.patch(name, { taking: left.length ? left : undefined, ...(until === undefined && this.views.get(name)?.watch === take ? { watch: undefined } : {}) })
   }
 
-  /** Render here: kept for its tools on this computer, so it isn't asked again, and it renders. */
-  renderHere(name: string) {
-    const key = this.resolveName(name)
-    const asking = this.views.get(key)?.asking
-    this.act(key, { send: (served) => this.client.renderHere(this.projectId!, [served]), refused: (error) => say("Couldn't keep that", error) })
-    this.run(key, asking?.also, true)
-  }
-
-  /** Rent a GPU: Rent opens with one that holds it, and the box waits for a machine; nothing renders here. */
-  rentInstead(name: string) {
-    const asking = this.get(name)?.asking
-    this.patch(name, { asking: undefined, waiting: asking?.also ?? {} })
-    this.rent(asking?.fit.rent)
-  }
-
   /** A machine came up: each render that waited for one goes. */
   machineUp() {
     for (const [name, view] of this.views) if (view.waiting) this.run(name, view.waiting)
   }
 
   /** Render all. What's approved stays. */
-  runAll(here = false) {
+  runAll() {
     const candidates = [...this.views].filter(([, view]) => view.asset?.tool && (view.asset.kind === "image" || view.asset.tool === "cozy/edit" || (!madeHere(view.asset.tool) && !view.asset.pinned)))
-    const local = here || (candidates.length > 0 && candidates.every(([, view]) => madeHere(view.asset!.tool)))
+    const local = candidates.length > 0 && candidates.every(([, view]) => madeHere(view.asset!.tool))
     const on = local ? ["local"] : this.machines()
     const id = this.projectId
     if (!id) return
-    this.allAsking.set(null)
     if (!on.length) return this.askMachine()
     const saved = [...this.views.keys()].map((name) => this.save(name))
     const going = candidates.map(([name]) => this.ids.get(name))
     for (const box of going) this.patchId(box, { asked: NOT_YET })
     const settle = (asked?: number) => going.forEach((box) => this.patchId(box, { asked }))
-    if (!here && onlyHere(on)) return void this.askAllFirst(id, saved, settle)
     const once = `all-${crypto.randomUUID()}`
     this.outbox.add({
       send: async (signal) => ((await Promise.all(saved)).every(Boolean) ? this.client.render(id, ["all"], local ? on : [], once, {}, signal) : null),
@@ -1715,32 +1675,6 @@ export class CanvasStore {
         say("Couldn't render them", error)
       },
     })
-  }
-
-  /** Render all's question, asked once on its control for every tool of it this computer would do poorly; else it renders. */
-  private async askAllFirst(id: string, saved: Promise<boolean>[], settle: () => void) {
-    if (!(await Promise.all(saved)).every(Boolean)) return settle()
-    const fit = await this.client.fit(id, ["all"]).catch(() => null)
-    if (this.projectId !== id) return
-    if (!unsaid(fit)) return this.runAll(true)
-    settle()
-    this.allAsking.set({ fit })
-  }
-
-  /** Render here, for all of them: kept for each tool on this computer, and they render. */
-  renderAllHere() {
-    const asking = this.allAsking.get()
-    const id = this.projectId
-    if (!asking || !id) return
-    this.outbox.add({ send: () => this.client.renderHere(id, ["all"]), refused: (error) => say("Couldn't keep that", error) })
-    this.runAll(true)
-  }
-
-  /** Rent a GPU, for all of them: Rent opens with one that holds them all, and nothing renders. */
-  rentForAll() {
-    const asking = this.allAsking.get()
-    this.allAsking.set(null)
-    this.rent(asking?.fit.rent)
   }
 
   /**

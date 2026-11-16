@@ -1258,7 +1258,7 @@ import sqlite3, sys
 db = sqlite3.connect(sys.argv[1], isolation_level=None)
 db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 journal = ["outputs", "run_logs", "asks", "runs", "project_view", "project_diagnostics", "journal_migrations", "after_steps",
-    "project_headers", "project_rendered_here", "project_vault_operations", "project_keys"]
+    "project_headers", "project_vault_operations", "project_keys"]
 db.executescript("BEGIN; ALTER TABLE boxes DROP COLUMN id; DELETE FROM meta WHERE key IN ('rows_at', 'conflicts'); "
     + "".join(f"DROP TABLE {table}; " for table in journal) + "PRAGMA user_version = 3; COMMIT;")
 PY

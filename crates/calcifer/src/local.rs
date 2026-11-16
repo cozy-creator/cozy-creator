@@ -207,14 +207,25 @@ impl Local {
         let woke = wait.woke.clone();
         wait._watch = Some(self.watch(move || woke.notify_one()).map_err(|e| failed(e.message))?);
         let began = Instant::now();
-        let served = tokio::time::timeout(START, wait.served()).await;
+        // Slow is no hang (runs never stuck, Paul 11-15; cl-1066): past `START`, it is waited for while it moves (CPU or I/O since the
+        // last look), and judged silent only once a whole window passes with none, or when its progress can't be read.
+        let mut moved = progress(pid);
+        let served = loop {
+            match tokio::time::timeout(START, wait.served()).await {
+                Err(_) => match progress(pid) {
+                    now @ Some(_) if now != moved => moved = now,
+                    _ => break Err(()),
+                },
+                served => break served.map_err(drop),
+            }
+        };
         match served {
             Ok(Ok(endpoint)) => {
                 info!(ms = began.elapsed().as_millis() as u64, "this computer's machine serves");
                 Ok(endpoint)
             }
             Ok(Err(why)) => Err(failed(why)),
-            Err(_) => {
+            Err(()) => {
                 let stuck = self.stuck(Some(pid));
                 let refusal = not_answering(began, &stuck);
                 warn!("{}", refusal.message);
@@ -259,6 +270,12 @@ impl Answer {
             self.woke.notified().await;
         }
     }
+}
+
+/// What a start's processes have done so far: CPU time and bytes moved, summed over its tree. None: unreadable here.
+fn progress(pid: u32) -> Option<(u64, u64)> {
+    let each: Vec<(u64, u64)> = platform::process::tree(pid).iter().filter_map(|member| platform::process::meter(member.birth().pid)).collect();
+    (!each.is_empty()).then(|| each.iter().fold((0, 0), |(cpu, io), (c, i)| (cpu + c, io + i)))
 }
 
 /// `machine_not_answering`: how long since it started, what is stuck, and the next command.

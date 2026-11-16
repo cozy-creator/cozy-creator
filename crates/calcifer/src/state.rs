@@ -41,12 +41,6 @@ pub(crate) const TABLES: &str = "
         ord INTEGER PRIMARY KEY,
         tool TEXT NOT NULL UNIQUE
     ) STRICT;
-    CREATE TABLE IF NOT EXISTS rendered_here (
-        tool TEXT NOT NULL,
-        machine TEXT NOT NULL,
-        bytes INTEGER NOT NULL,
-        PRIMARY KEY (tool, machine)
-    ) STRICT, WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS headers (
         hub TEXT NOT NULL,
         sha256 TEXT NOT NULL,
@@ -356,26 +350,6 @@ impl Store {
                 tx.execute("INSERT OR IGNORE INTO tools_off (tool) VALUES (?1)", [tool])?;
             }
             tool_list_in(tx)
-        })
-    }
-
-    /// Each tool kept as rendered on `machine`, by the weights it was said for.
-    pub(crate) fn rendered_here(&self, machine: &str) -> Result<HashMap<String, u64>> {
-        self.read(|conn| {
-            let mut statement = conn.prepare("SELECT tool, bytes FROM rendered_here WHERE machine = ?1")?;
-            let rows = statement.query_map([machine], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?.max(0) as u64)))?;
-            Ok(rows.collect::<rusqlite::Result<_>>()?)
-        })
-    }
-
-    /// Each of `tools` kept as rendered on `machine`, for the weights it has now.
-    pub(crate) fn keep_rendered_here(&self, machine: &str, tools: &[(String, u64)]) -> Result<()> {
-        self.write(|tx| {
-            let mut statement = tx.prepare("INSERT OR REPLACE INTO rendered_here (tool, machine, bytes) VALUES (?1, ?2, ?3)")?;
-            for (tool, bytes) in tools {
-                statement.execute(params![tool, machine, *bytes as i64])?;
-            }
-            Ok(())
         })
     }
 

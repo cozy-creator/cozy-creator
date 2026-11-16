@@ -440,15 +440,15 @@ pub(crate) fn soonest(offers: &[Offer], now: i64) -> Option<&Offer> {
 }
 
 /// Where a job goes that no machine of `on` quoted a finish for. A run named to one place goes there, which refuses it as it does;
-/// of several machines, the first, a rental before this computer, that can take a run at all (one booting or updating waits there),
-/// else it is refused naming each and why: never another machine (cl-873).
-pub(crate) async fn takes(api: &Arc<Api>, on: &[On], offers: &[Offer]) -> Result<On, Error> {
+/// of several machines, the first, a rental before this computer, that can take a run at all (one booting or updating waits there).
+/// With none of them, where a run naming none would go, said once (fix, don't refuse; cl-1066): refused only when nothing can take it.
+pub(crate) async fn takes(api: &Arc<Api>, on: &[On], offers: &[Offer]) -> Result<(On, Option<String>), Error> {
     let names: Vec<&str> = on.iter().filter_map(|on| match on {
         On::Machine(name) => Some(name.as_str()),
         _ => None,
     }).collect();
     if on.len() < 2 || names.len() < on.len() {
-        return Ok(on.iter().find(|machine| !machine.is_local()).or(on.first()).cloned().unwrap_or(On::Any));
+        return Ok((on.iter().find(|machine| !machine.is_local()).or(on.first()).cloned().unwrap_or(On::Any), None));
     }
     let mut why = vec![];
     for name in names.iter().filter(|name| **name != "local").chain(names.iter().filter(|name| **name == "local")) {
@@ -456,12 +456,19 @@ pub(crate) async fn takes(api: &Arc<Api>, on: &[On], offers: &[Offer]) -> Result
         match offers.iter().find(|offer| offer.machine == machine) {
             Some(offer) => why.push(format!("{name} can't run it ({})", offer.refusal.as_ref().map_or("no reason given", |reason| reason.message.as_str()))),
             None => match api.machines.reach(name).await {
-                Ok(_) => return Ok(machine),
+                Ok(_) => return Ok((machine, None)),
                 Err(e) => why.push(e.message),
             },
         }
     }
     let said = format!("None of {} can take this run: {}.", names.join(", "), why.join("; "));
+    // Where a render naming none goes, this computer and this account's rentals alone, never a rental it would buy: the first there now.
+    for other in api.machines.fallback().into_iter().filter(|other| !on.contains(other)) {
+        let On::Machine(name) = &other else { continue };
+        if api.machines.reach(name).await.is_ok() {
+            return Ok((other.clone(), Some(format!("{said} It goes to {name}."))));
+        }
+    }
     Err(Error::new(Kind::Unavailable, "machines_unavailable", said).remedy("Bring one of them back, or pick other machines.").next("cozy machine ls"))
 }
 

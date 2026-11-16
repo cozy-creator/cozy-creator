@@ -227,7 +227,6 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/runs/{run}/play", get(crate::play::play))
         .route("/v1/projects/{id}/runs/{run}/preview", get(crate::previews::serve))
         .route("/v1/projects/{id}/fit", post(fit::fit))
-        .route("/v1/projects/{id}/fit/here", post(fit::here))
         .route("/v1/projects/{id}/benchmarks", get(benchmarks::benchmarks))
         .route("/v1/projects/{id}/cancel", post(cancel))
         .route("/v1/projects/{id}/approve", post(approve))
@@ -1649,11 +1648,40 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, retry:Option<axum
     Ok(if open.unencrypted { response } else { vault::private(response) })
 }
 
-/// What's said of a project folder other accounts on this computer may open: one line, and what to do.
+/// A project folder other accounts on this computer may open, shut to them (fix, don't warn; cl-1066): what's said only when that
+/// fails, in one line. On Windows, where an access list reaches into all the folder holds, it's done once per folder on a thread of its
+/// own, off this read's path; a failure is said at the next read.
 pub(crate) fn loosened(dir: &FsPath) -> Option<String> {
-    platform::durable::others_may_open(dir).ok()?.then(|| {
-        format!("Other accounts on this computer can open {}. To keep it private, give only your account access to it.", dir.display())
-    })
+    if !platform::durable::open_to_others(dir).ok()? {
+        return None;
+    }
+    let said = |e: &dyn std::fmt::Display| format!("Other accounts on this computer can open {}, and Cozy couldn't shut them out: {e}", dir.display());
+    if !cfg!(windows) {
+        return platform::durable::shut_to_others(dir).err().map(|e| said(&e));
+    }
+    // A folder being shut: None; one that couldn't be: why, said once, then tried again. One shut leaves, so it's shut again if reopened.
+    static SHUTTING: std::sync::LazyLock<Mutex<HashMap<PathBuf, Option<String>>>> = std::sync::LazyLock::new(Mutex::default);
+    let mut shutting = SHUTTING.lock().expect("shutting lock");
+    match shutting.get(dir) {
+        Some(None) => return None,
+        Some(Some(e)) => {
+            let line = said(e);
+            shutting.remove(dir);
+            return Some(line);
+        }
+        None => {}
+    }
+    shutting.insert(dir.to_owned(), None);
+    let dir = dir.to_owned();
+    std::thread::spawn(move || {
+        let done = platform::durable::shut_to_others(&dir).err().map(|e| e.to_string());
+        let mut shutting = SHUTTING.lock().expect("shutting lock");
+        match done {
+            Some(e) => shutting.insert(dir, Some(e)),
+            None => shutting.remove(&dir),
+        };
+    });
+    None
 }
 
 /// A folder that can't be made, in a person's words: no permission there, or why not.
@@ -3900,7 +3928,7 @@ impl Walk {
             return on.iter().filter(|on| !matches!(on, On::Machine(name) if api.machines.gone(name).is_some())).cloned().collect();
         }
         // The set a render naming none takes, under this project's storage policy. `any` alone is a rental, which never comes uninvited.
-        let automatic = crate::private_io::check_project_placement(&self.project.id, &self.project.root, &api.machines.automatic()).unwrap_or_default();
+        let automatic = crate::private_io::check_project_placement(&self.project.id, &self.project.root, &api.machines.fallback()).unwrap_or_default();
         if self.fell_back.lock().expect("fell back lock").insert(ask.to_owned()) {
             let set = automatic.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
             let gone: Vec<&str> = gone.iter().map(|said| inner(said)).collect();
@@ -4673,7 +4701,11 @@ impl Walk {
         let placed = self.project.walker.lock().expect("walker lock").placed.get(job).cloned();
         let planned = placed.as_ref().map(|placed| placed.soonest.clone()).filter(|offer| on.contains(&offer.machine));
         let offers: Vec<Offer> = placed.map(|placed| placed.offers).unwrap_or_default().into_iter().filter(|offer| on.contains(&offer.machine)).collect();
-        pick(&self.host.api(), on, &offers, planned.as_ref(), hub, Some(package), &renderer.function, &asset.made).await
+        let (chosen, offer, said) = pick(&self.host.api(), on, &offers, planned.as_ref(), hub, Some(package), &renderer.function, &asset.made).await?;
+        if let Some(message) = said {
+            self.say(Told::Warning { message, name: Some(asset.name.clone()) });
+        }
+        Ok((chosen, offer))
     }
 
     /// Takes in what was asked since: said once, and what can't be read ends there.
@@ -5620,10 +5652,9 @@ impl Walk {
             }
             _ => soonest,
         };
-        // Sent here alone, as `cozy render --on local`, which asks nothing: said as a box asks it, unless Render here was said (cl-897).
+        // Sent here alone, which asks nothing (cl-1066): said once, as the box's render goes (cl-897).
         if placed.is_local() && on.len() == 1 {
-            let tool = asset.tool.clone().unwrap_or_else(|| asset.target.clone());
-            if let Some(line) = fit::told_here(&self.host.api(), &hub, package, &renderer.function, &asset.made, &tool) {
+            if let Some(line) = fit::told_here(&self.host.api(), &hub, package, &renderer.function, &asset.made) {
                 self.say(Told::Said { message: format!("{name}: {line}"), name: Some(name.clone()) });
             }
         }
@@ -6527,12 +6558,13 @@ fn find(doc: &Doc, name: &str) -> Result<usize, Error> {
 /// Of `on`, where a job goes (cl-816): the soonest finish its machines quoted (`offers`), a rental before this computer on a tie, and not
 /// this computer when it would run `function` poorly (`fit`) and no quote of its own runs says it ends it first (Paul, 11-05: a rented
 /// GPU is for using), nor when its GPU draws the screen, which a render makes lag (cl-897). With no quote that fits, the first of `on`
-/// that can take it (`placement::takes`).
+/// that can take it, else where a job naming none goes, said (`placement::takes`).
 #[allow(clippy::too_many_arguments)]
-async fn pick(api: &Arc<Api>, on: &[On], offers: &[Offer], planned: Option<&Offer>, hub: &str, package: Option<&Package>, function: &str, made: &Map<String, Value>) -> Result<(On, Option<Offer>), Error> {
+async fn pick(api: &Arc<Api>, on: &[On], offers: &[Offer], planned: Option<&Offer>, hub: &str, package: Option<&Package>, function: &str, made: &Map<String, Value>) -> Result<(On, Option<Offer>, Option<String>), Error> {
     let now = now_ms();
     let Some(soonest) = planned.filter(|offer| offer.fits).or_else(|| placement::soonest(offers, now)) else {
-        return Ok((placement::takes(api, on, offers).await?, None));
+        let (taken, said) = placement::takes(api, on, offers).await?;
+        return Ok((taken, None, said));
     };
     let poorly = soonest.machine.is_local()
         && (fit::draws_screen(api) || (soonest.basis != v1::Basis::Measured && package.is_some_and(|package| fit::poorly_now(api, hub, package, function, made))));
@@ -6541,13 +6573,13 @@ async fn pick(api: &Arc<Api>, on: &[On], offers: &[Offer], planned: Option<&Offe
         true => placement::soonest(&others, now).unwrap_or(soonest),
         false => soonest,
     };
-    Ok((chosen.machine.clone(), Some(chosen.clone())))
+    Ok((chosen.machine.clone(), Some(chosen.clone()), None))
 }
 
 /// Where `cozy run` of `function` goes among `set` (Paul, 11-06): as a render's job does (`pick`), each machine asked once, for `count`
 /// copies of it as if sent at once. Also each copy's offers, and a line for each machine that didn't answer.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str, release: &str, function: &str, size: v1::JobSize, gpus: u32, gpu: bool, count: u32, update: bool) -> (Result<On, Error>, Vec<Vec<Offer>>, Vec<String>) {
+pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str, release: &str, function: &str, size: v1::JobSize, gpus: u32, gpu: bool, count: u32, update: bool) -> (Result<(On, Option<String>), Error>, Vec<Vec<Offer>>, Vec<String>) {
     let host = Host::new(api);
     let read = host.published(hub, &format!("{package}@{release}"), set.first()).await.ok();
     let fetched = match &read {
@@ -6560,16 +6592,18 @@ pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str,
         .collect();
     let (offers, said) = placement::offers(api, &jobs, update).await;
     let chosen = pick(api, set, offers.first().map_or(&[][..], Vec::as_slice), None, hub, read.as_ref(), function, &Map::new()).await;
-    (chosen.map(|(chosen, _)| chosen), offers, said)
+    (chosen.map(|(chosen, _, fell_back)| (chosen, fell_back)), offers, said)
 }
 
 /// The machines the project `named` pins its runs to (cl-873), those that ended left out (cl-920); none: wherever they finish soonest.
-/// With every one of them gone now (ending, or offline by its Hub's word), wherever they finish soonest too.
+/// With every one of them gone now (ending, or offline by its Hub's word), this computer and this account's rentals: never an added
+/// machine the project didn't name (cl-1066).
 pub(crate) fn machines_of(api: &Arc<Api>, named: &str) -> Result<Vec<On>, Error> {
     let project = api.projects.get(api, named).map_err(|Refusal(e)| e)?;
     let pinned = chosen(api, &project.folder);
     match pinned.iter().all(|name| api.machines.gone(name).is_some()) {
-        true => Ok(vec![]),
+        true if pinned.is_empty() => Ok(vec![]),
+        true => Ok(api.machines.fallback()),
         false => Ok(pinned.into_iter().map(On::Machine).collect()),
     }
 }
