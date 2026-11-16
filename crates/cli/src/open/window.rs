@@ -57,10 +57,29 @@ fn display() -> bool {
     std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some()
 }
 
-/// What `program` prints, when it answers.
+/// What `program` prints, when it answers well within 2 s: `xdg-settings` can hang on a dead D-Bus.
 fn output(program: &str, args: &[&str]) -> Option<String> {
-    let done = Command::new(program).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
-    done.status.success().then(|| String::from_utf8_lossy(&done.stdout).into_owned())
+    let mut child = Command::new(program).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let reading = std::thread::spawn(move || {
+        let mut said = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut stdout, &mut said);
+        said
+    });
+    let until = Instant::now() + Duration::from_secs(2);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < until => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    let said = reading.join().ok()?;
+    status.success().then(|| String::from_utf8_lossy(&said).into_owned())
 }
 
 /// The default browser's family first (`xdg-settings`), then the others on PATH. None without a display.

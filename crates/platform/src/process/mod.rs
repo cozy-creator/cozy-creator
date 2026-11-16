@@ -483,7 +483,8 @@ pub fn spawn(mut command: Command) -> Result<Tree> {
 /// A process that outlives its spawner: its own session (Unix); no console, out of the spawner's
 /// job when allowed (Windows). It reads null and appends stdout and stderr to `log` (null without
 /// one), and inherits nothing else: a caller reading the spawner's output to its end, as
-/// `out=$(cozy status)` does, gets that end when the spawner exits.
+/// `out=$(cozy status)` does, gets that end when the spawner exits. It starts in the home folder,
+/// never the one its spawner was in, which it would hold (on Windows, as a folder no one can rename).
 pub fn detach(program: &Path, args: &[OsString], log: Option<&Path>) -> Result<Detached> {
     let log = log
         .map(|path| {
@@ -491,7 +492,8 @@ pub fn detach(program: &Path, args: &[OsString], log: Option<&Path>) -> Result<D
             opened.map_err(Error::io("open log", path))
         })
         .transpose()?;
-    let child = tree::detach(program, args, log).map_err(Error::os("spawn"))?;
+    let home = std::env::home_dir().filter(|home| home.is_dir()).unwrap_or_else(std::env::temp_dir);
+    let child = tree::detach(program, args, log, &home).map_err(Error::os("spawn"))?;
     Ok(Detached(child))
 }
 

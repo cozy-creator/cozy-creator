@@ -91,9 +91,9 @@ impl Detached {
 }
 
 /// A session of its own: no terminal's hangup reaches it, and it leads its own group.
-pub(super) fn detach(program: &Path, args: &[OsString], log: Option<File>) -> io::Result<Detached> {
+pub(super) fn detach(program: &Path, args: &[OsString], log: Option<File>, dir: &Path) -> io::Result<Detached> {
     let mut command = Command::new(program);
-    command.args(args).stdin(Stdio::null());
+    command.args(args).current_dir(dir).stdin(Stdio::null());
     match log {
         Some(log) => command.stdout(log.try_clone()?).stderr(log),
         None => command.stdout(Stdio::null()).stderr(Stdio::null()),
