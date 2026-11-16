@@ -32,10 +32,10 @@ const VOLUME_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// run's needs in job order (acceptance, as its GPU work queues), then what jobs waiting on another's
 /// output will read, then guesses, then warm sets. The downloader finishes one before the next.
 pub(crate) mod priority {
-    /// What a started call's function reads now and isn't here yet (`ModelNeed`): before every weight (cl-966).
-    pub(crate) const EMERGENCY: u64 = tensorfs::fetch::EMERGENCY;
-    /// Software, no job's weights: the machine's update, a package's files as it installs. Weights yield to it (cl-1007).
-    pub(crate) const SOFTWARE: u64 = tensorfs::fetch::SOFTWARE;
+    /// What a started call's function reads now and isn't here yet (`ModelNeed`): before everything (cl-966).
+    pub(crate) const EMERGENCY: u64 = 0;
+    /// What the machine itself is blocked on (its update), no job's.
+    pub(crate) const NOW: u64 = 1;
     /// The run a started run's fetches are ordered as (its calls' weights): ahead of every queued
     /// root, whose order is its acceptance, from 1.
     pub(crate) const STARTED: u64 = 0;
@@ -136,6 +136,12 @@ impl Machine {
     /// Told as each fetch returns: what `received` says may have moved.
     pub(crate) fn returned(&self) -> Arc<tokio::sync::Notify> {
         self.returned.clone()
+    }
+
+    /// Until they drop, what comes after `order` waits in every fetcher (`Fetcher::give_way`): one
+    /// started meanwhile isn't held, and there is one, made by the first pull.
+    pub(crate) fn give_way(&self, order: u64) -> Vec<tensorfs::fetch::GiveWay> {
+        self.fetchers.lock().unwrap().iter().map(|(_, fetcher)| fetcher.give_way(order)).collect()
     }
 
     /// The bytes every fetcher received from its origin, and the time any of them was arriving.

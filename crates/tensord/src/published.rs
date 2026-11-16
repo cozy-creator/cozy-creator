@@ -1386,7 +1386,7 @@ impl Publisher {
                 .iter()
                 .map(|file| {
                     scope.spawn(|| -> Result<PathBuf, Failure> {
-                        let path = self.hub_wheel(file, source, &wheels, job.stop.as_ref())?;
+                        let path = self.hub_wheel(file, source, &wheels, job.order, job.stop.as_ref())?;
                         let landed = moved.fetch_add(file.length, std::sync::atomic::Ordering::Relaxed);
                         job.bytes(landed + file.length, total);
                         Ok(path)
@@ -1405,12 +1405,11 @@ impl Publisher {
         file.length > 0 && self.store.holds(&ObjectRef { sha256: file.sha256.clone(), length: file.length })
     }
 
-    /// One Hub file as software (cl-1001: at its job's order it waited behind that job's 11 GB of weights, lined first).
-    fn hub_wheel(&self, file: &HubFile, source: &hub::Source, wheels: &Path, stop: Option<&Stop>) -> Result<PathBuf, Failure> {
+    fn hub_wheel(&self, file: &HubFile, source: &hub::Source, wheels: &Path, order: u64, stop: Option<&Stop>) -> Result<PathBuf, Failure> {
         let stop = stop.cloned().unwrap_or_default();
         let trust = source.ca_der.as_deref().map(|der| hub::pem(der).into_bytes());
         let length = (file.length > 0).then_some(file.length);
-        let blob = crate::machine::pypi::object_at(&self.machine, &file.url, &file.sha256, length, trust, crate::origin::priority::SOFTWARE, &stop)
+        let blob = crate::machine::pypi::object_at(&self.machine, &file.url, &file.sha256, length, trust, order, &stop)
             .map_err(|e| match stop.is_cancelled() {
                 true => canceled(),
                 // Named by its file: a plan's URL is presigned, its query a credential.

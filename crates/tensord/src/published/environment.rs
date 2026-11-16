@@ -93,9 +93,6 @@ impl Publisher {
         // One build at a time, in job order (cl-905): its tools' downloads and disk don't split with another's.
         let said = |reason: Option<String>| job.waiting(reason);
         let _turn = crate::line::INSTALLS.turn(job.order, &job.caller, project.label, job.stop.as_ref(), &said).ok_or_else(super::canceled)?;
-        // uv's downloads come from their own index, outside the downloader, and a full link of weights starved them (run
-        // 43316018343: 1080 s at 100-450 KiB/s): while they move, the weights leave them the link but a share (cl-1007).
-        let _installing = tensorfs::fetch::installing();
         let layer = self.layer(job, None)?;
         let missed = match self.build_on(env, project, job, layer.as_deref(), &[]) {
             Err((TORCH_MISSED, missed)) => missed,
@@ -130,6 +127,9 @@ impl Publisher {
             next("fetching its files");
             fetch()?;
         }
+        // uv's downloads come from their own index, outside the downloader, and its many requests starve them (run
+        // 43316018343: 1080 s at 100-450 KiB/s): what comes after this install waits until it is built (cl-966).
+        let _aside = self.machine.give_way(job.order);
         let carried = carried(project.wheels).map_err(io_failure)?;
         if env.exists() {
             fs::remove_dir_all(env).map_err(io_failure)?;
@@ -465,7 +465,7 @@ impl Publisher {
     }
 
     /// uv as the machine runs it (`machine::uv`). `job` hears the bytes it writes about once a
-    /// second, and TensorFS what its sockets receive; its process group is killed when the run is canceled (`process::supervise_install`).
+    /// second; its process group is killed when the run is canceled (`process::supervise`).
     /// Linux tags the builder and its descendants before exec, so a new machine sweeps an
     /// interrupted builder before reusing its environment, even after SIGKILL.
     pub(crate) fn uv(&self, args: &[&str], env: &[(&str, &std::ffi::OsStr)], job: &Job) -> Result<(), Failure> {
@@ -516,7 +516,7 @@ fn run_builder(command: &mut Command, namespace: &str, stop: Option<&crate::stop
             let _ = stderr.read_to_end(&mut kept);
             kept
         });
-        let ended = crate::process::supervise_install(&mut child, stop, wrote)
+        let ended = crate::process::supervise(&mut child, stop, wrote)
             .map_err(|error| ("package_installation_uv_failed", format!("uv: {error}")));
         // A build backend can outlive uv and keep its stderr open. End it before waiting on
         // that pipe, including when supervision failed or the run was canceled.
