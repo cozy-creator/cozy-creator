@@ -19,6 +19,7 @@ parse "$@"
 . "$(dirname "$0")/asleep.sh"
 . "$(dirname "$0")/lines.sh"
 . "$(dirname "$0")/ondemand.sh"
+. "$(dirname "$0")/linkprobe.sh"
 . "$(dirname "$0")/disk.sh"
 . "$(dirname "$0")/control.sh"
 . "$(dirname "$0")/project.sh"
@@ -648,6 +649,9 @@ case $SHARD in
   ondemand-police) export SHARE_LINK=police; parts="ondemand_share logs" ;;
   ondemand-open) export SHARE_LINK=open; parts="ondemand_share logs" ;;
   ondemand-sealed) export SHARE_NETLINK=closed; parts="ondemand_share logs" ;;
+  # tfs-300's measurements: a window-clamped trickle beside a saturating flow; each package install's third-party bytes.
+  link-trickle) parts="link_trickle" ;;
+  install-bytes) parts="install_bytes logs" ;;
   # A model's weights alone through the 60 Mbit link, timed, with the streams the ramp settled at (th-378).
   ondemand-ramp) parts="ondemand_ramp logs" ;;
   # A small disk full of idle models' weights makes room for the next runs' (tfs-150).

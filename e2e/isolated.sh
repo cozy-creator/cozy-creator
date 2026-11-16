@@ -243,6 +243,7 @@ case $key in
   # pagebox's 1.6 GB (`spare`) beside the install (cl-1007).
   cli:ondemand-share | cli:ondemand-police | cli:ondemand-open | cli:ondemand-sealed) needs='packages birefnet downloads spare' ;;
   cli:ondemand-ramp) needs='packages spare' ;;
+  cli:link-trickle) needs='' ;;
   cli:disk) needs='packages disk' ;;
   # H3's Models & LoRAs, Qwen's VAE slot and heavy.py's BiRefNet; macOS and Windows run no models.
   cli:web-suite) needs='packages birefnet loras vaes'; [ "${RUNNER_OS:-Linux}" = Linux ] || needs='packages' ;;
