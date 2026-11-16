@@ -3445,6 +3445,7 @@ impl From<&MachineRow> for Machine {
             end_failed: None,
             end_unconfirmed: None,
             rc: None,
+            held: None,
         }
     }
 }

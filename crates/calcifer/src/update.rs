@@ -460,9 +460,40 @@ fn rc_pairing(m: &Machine, asked: &[(&str, &str, Component)], placed: Option<&st
 /// `cozy update` renamed over its launch path, which it moves to at its next update.
 async fn placed(machines: &Machines, m: &Machine) -> Option<String> {
     let running = m.status.as_ref().filter(|_| m.kind == MachineKind::Local)?.version.clone();
-    let installed = machines.home.launcher()?;
-    let version = tokio::task::spawn_blocking(move || says(&installed)).await.ok()??;
-    (version != running).then_some(version)
+    installed(machines).await.filter(|version| *version != running)
+}
+
+/// The release this computer's installed `cozy` says it is: what `local` runs (xs-195).
+pub(crate) async fn installed(machines: &Machines) -> Option<String> {
+    let binary = machines.home.launcher()?;
+    tokio::task::spawn_blocking(move || said_by(&binary)).await.ok()?
+}
+
+/// What the installed `cozy` last said it is, without asking it: None until asked, or once its binary changed.
+pub(crate) fn installed_known(machines: &Machines) -> Option<String> {
+    let binary = machines.home.launcher()?;
+    let stamp = stamp(&binary)?;
+    SAID.lock().expect("said lock").as_ref().filter(|(at, _)| *at == stamp).map(|(_, said)| said.clone())
+}
+
+type Stamp = (std::path::PathBuf, u64, std::time::SystemTime);
+/// The installed `cozy`'s release as it said it, by its binary's path, size and time: asked again only once an install replaced it.
+static SAID: std::sync::Mutex<Option<(Stamp, String)>> = std::sync::Mutex::new(None);
+
+fn stamp(binary: &Path) -> Option<Stamp> {
+    let meta = std::fs::metadata(binary).ok()?;
+    Some((binary.to_owned(), meta.len(), meta.modified().ok()?))
+}
+
+/// The release the `cozy` at `binary` says it is, asked once each time it changes.
+fn said_by(binary: &Path) -> Option<String> {
+    let at = stamp(binary)?;
+    if let Some((_, said)) = SAID.lock().expect("said lock").as_ref().filter(|(was, _)| *was == at) {
+        return Some(said.clone());
+    }
+    let said = says(binary)?;
+    *SAID.lock().expect("said lock") = Some((at, said.clone()));
+    Some(said)
 }
 
 /// The release this computer's installed `cozy` says it is.
