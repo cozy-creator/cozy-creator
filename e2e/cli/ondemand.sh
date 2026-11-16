@@ -272,6 +272,63 @@ cat "$OUT/ondemand-need.timeline.json"
 while read -r why; do check "ondemand-need: $why"; done < "$OUT/ondemand-need.failed"
 }
 
+# tfs-300, LAB2-47829 (Paul, 11-16): "we don't need all components of a model to be on the critical path; that's just creating
+# unnecessary latency for the end-user who is waiting on models to download and install". An edit's prompt rewriter (10 GiB, on
+# demand) came when its stage first read it, in one fetch that said nothing: the run showed "upsampling prompt · no progress for
+# 1m47s". ondemand.py's `read_now` reads e2e/ondemand-read (512 MiB, on demand) as it starts, on this cold machine over the 30 MB/s
+# link: while it lands, the run's progress (`cozy run watch --json`'s events, as `cozy run` follows it) says "downloading
+# e2e/ondemand-read weights" with its bytes rising toward their total, and once it's here, the run's own stage again.
+ondemand_progress() {
+[ "$RUNNER_OS" = Linux ] || return 0
+step "a call's read of a model not here shows its download on the run, then clears (tfs-300)"
+slow_store ondemand-progress || return 0
+cell ondemand-progress "$here/script/ondemand.py/read_now" seconds:=3 || :
+sudo tc qdisc del dev lo root || check "ondemand-progress: the store's link wasn't restored"
+python3 - "$OUT" <<'JUDGE' > "$OUT/ondemand-progress.timeline.json" 2> "$OUT/ondemand-progress.failed" || true
+import json, sys
+from pathlib import Path
+out, model = Path(sys.argv[1]), "e2e/ondemand-read"
+said = []
+for line in (out / "ondemand-progress.ndjson").read_text(errors="replace").splitlines():
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if isinstance(event, dict) and event.get("type") == "run.progress":
+        p = event.get("progress") or {}
+        said.append((p.get("stage") or "", p.get("bytes_done") or 0, p.get("bytes_total") or 0))
+landing = [i for i, (stage, _, _) in enumerate(said) if f"downloading {model} weights" in stage]
+samples = [said[i][1:] for i in landing]
+after = [stage for stage, _, _ in said[landing[-1] + 1:]] if landing else []
+try:
+    record = json.loads((out / "ondemand-progress.json").read_text())
+except (OSError, ValueError):
+    record = {}
+ended = (record.get("progress") or {}).get("stage") or ""
+print(json.dumps({"run": {k: record.get(k) for k in ("number", "status")}, "stages": list(dict.fromkeys(s for s, _, _ in said)),
+                  "download_samples": len(samples), "first": samples[:3], "last": samples[-3:],
+                  "stages_after": list(dict.fromkeys(after)), "record_stage": ended}, indent=1))
+fail = lambda why: print(why, file=sys.stderr)
+if not samples:
+    fail(f"its progress never said {model} was downloading while the call read it: {list(dict.fromkeys(s for s, _, _ in said))}")
+else:
+    done = [d for d, _ in samples]
+    totals = {t for _, t in samples}
+    if len(totals) != 1 or not 0 < max(totals) <= (512 << 20) + (1 << 20):
+        fail(f"its download's total isn't the model's absent bytes: {sorted(totals)}")
+    if any(d > t for d, t in samples):
+        fail(f"its download said more bytes done than its total: {samples}")
+    if len(set(done)) < 2 or max(done[1:], default=0) <= done[0]:
+        fail(f"its download's bytes never rose: {samples}")
+    if not any(f"downloading {model}" not in stage for stage in after):
+        fail(f"its progress still said {model} was downloading after it landed: {after[-3:]}")
+if f"downloading {model}" in ended:
+    fail(f"its record ended saying {model} was downloading: {ended}")
+JUDGE
+cat "$OUT/ondemand-progress.timeline.json"
+while read -r why; do check "ondemand-progress: $why"; done < "$OUT/ondemand-progress.failed"
+}
+
 # cl-1007 (Paul, 11-15): "instead of pausing the download, wouldn't it be better to just leave extra room while another install is
 # happening … you can saturate the bandwidth as needed when an install isn't in progress"; his worry: "some long package install (say 2
 # or 3 minutes) might pause all model downloads unnecessarily". One 60 Mbit bottleneck: tc on the loopback, one FIFO for the isolated

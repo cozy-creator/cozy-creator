@@ -448,6 +448,10 @@ if [ -n "$needs" ]; then
       mirror "$seed/calls.safetensors" "e2e/calls-$name" bf16 0.1.0 "$page" --source-format as-is
       rm -f "$seed/calls.safetensors"
     done
+    # ondemand_progress' (tfs-300): read on demand as its call starts, 512 MiB, about 17 s over the 30 MB/s link.
+    random_weights "$seed/calls.safetensors" 512 ondemand-read
+    mirror "$seed/calls.safetensors" e2e/ondemand-read bf16 0.1.0 "$page" --source-format as-is
+    rm -f "$seed/calls.safetensors"
     # And ondemand_adapted's, as lora_reads' (tfs-300): e2e/calls-base, a 16 MiB text encoder (e2e/calls-te's) with a 256 MiB
     # transformer put on it, one linear `proj` [8192, 8192]; and e2e/calls-lora, a rank-4 LoRA of `proj` in PEFT's names.
     part_weights "$seed/calls-te.safetensors" text_encoder 8 4194304
