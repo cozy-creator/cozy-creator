@@ -315,6 +315,8 @@ struct Share {
     connection: AtomicU64,
     /// What the downloaders moved unpaced, bytes/s (f64 bits): th-364's sample (`Stats`), where a share starts from.
     unpaced: AtomicU64,
+    /// A downloader's ramp has settled unpaced: the link's speed is a measured number, and only then is a share taken of it.
+    measured: AtomicBool,
     /// The install under way, as it says what it received.
     install: Mutex<Install>,
     judged: Mutex<Measured>,
@@ -503,6 +505,12 @@ impl Share {
             judged.downloading = false;
             drop(judged);
             return self.whole("no install under way");
+        }
+        // Half, or a sixteenth, of a speed nothing has measured is no share: until a ramp settles unpaced, the weights take
+        // the link (tfs-300: paced from their first second, they measured only their own pace, 0.28 MB/s of 7.5).
+        if !self.measured.load(Ordering::Acquire) {
+            judged.downloading = false;
+            return;
         }
         // Its sockets can't be read here: half the link while it runs, so neither starves the other.
         if readable != Some(true) {
@@ -1236,6 +1244,11 @@ impl Shared {
         // latency (th-378: cale's ramp doubled on 0 MB/s, then again on anything against that, to 64 streams on 28 MB/s).
         let measured = rate > 0.0 && pace.flowing;
         pace.flowing = rate > 0.0;
+        // Settled (two windows after a doubling that grew the rate less than `GAIN`) or at every place it may have, unpaced:
+        // what the link carries is measured, and a share may be taken of it.
+        if measured && (pace.settled || pace.level >= pace.max) && !SHARE.paced() {
+            SHARE.measured.store(true, Ordering::Release);
+        }
         if !(waiting || tail) || pace.settled || pace.level >= pace.max || !measured {
             return false;
         }
