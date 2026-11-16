@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime>=0.46", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime>=0.46,<0.47", "msgspec>=0.19"]
 # ///
 """gpu-queue's functions (cl-1077): `hold` keeps the pod's one GPU busy, `early` is a plain GPU run, and `late` (on the CPU) calls
 `late_call` on the GPU at once, as H3's `edit` calls its segment. Each GPU function builds a model of its own (BiRefNet, a VAE, a
@@ -49,4 +49,5 @@ def late_call(payload: Ask, extra: Extra) -> Said:
 
 @app.entrypoint(accelerator=False)
 async def late(payload: Ask) -> Said:
-    return await call(late_call, Ask())
+    # The image's Runtime (0.46) names a call's arguments.
+    return await call(late_call, payload=Ask())
