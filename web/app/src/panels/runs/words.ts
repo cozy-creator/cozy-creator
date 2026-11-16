@@ -7,7 +7,8 @@ export const settled = (run: Run) => run.status === "completed" || run.status ==
 /** What names it anywhere (cl-987): `SE-5`, its project's key and its number there. */
 export const runName = (run: Run) => run.name || String(run.number)
 
-export const target = (run: Run) => (run.kind === "call" ? shown(run.target) : `${run.kind} ${shown(run.target)}`)
+/** A job's target says what it does (`install …`, `remove …`, a download's `file → model`), but an update's names only its parts. */
+export const target = (run: Run) => (run.kind === "update" ? `update ${shown(run.target)}` : shown(run.target))
 
 /** `Canceling` once a cancel is asked; a waiting run's place in its line. */
 export function statusWord(run: Run): string {

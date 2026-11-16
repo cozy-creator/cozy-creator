@@ -53,7 +53,7 @@ value=$(jq -c '.result.value | if type == "string" then fromjson else . end' "$O
 launch=$(jq -r '.launch // empty' <<< "$value" 2> /dev/null) st=$(jq -r '.state // empty' <<< "$value" 2> /dev/null)
 [ -n "$launch" ] && [ -n "$st" ] || fail "no launcher: $(head -c 300 "$OUT/game-write.json")"
 edit pressure
-cozy --json run "$T" --on "$NAME" --lane int8 --input "$OUT/pressure.req.json" -p "$RUN_PROJECT" > "$OUT/pressure.ndjson" 2> "$OUT/pressure.err" &
+(cd "$RUN_PROJECT" && exec cozy --json run "$T" --on "$NAME" --lane int8 --input "$OUT/pressure.req.json") > "$OUT/pressure.ndjson" 2> "$OUT/pressure.err" &
 RUNP=$! started=''
 while kill -0 "$RUNP" 2> /dev/null; do
   if [ -z "$started" ] && jq -e 'select(.progress.stage == "generating image" and (.progress.completed // 0) >= 2)' "$OUT/pressure.ndjson" > /dev/null 2>&1; then
@@ -62,7 +62,7 @@ while kill -0 "$RUNP" 2> /dev/null; do
   fi
   sleep 0.2
 done
-N=$(jq -r 'select(.run.number) | .run.number' "$OUT/pressure.ndjson" | head -1)
+N=$(handle "$OUT/pressure.ndjson")
 cozy run watch "$N" --once --json --full > "$OUT/pressure.json" 2>&1
 cozy machine ssh "$NAME" "cat $st" > "$OUT/game.json" 2>&1
 say "game: $(jq -c '{phase, alloc_s, reached, fails, held_mib, at_trigger: .nvml_at_trigger}' "$OUT/game.json" 2> /dev/null)"

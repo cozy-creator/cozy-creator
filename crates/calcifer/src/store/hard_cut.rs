@@ -9,10 +9,11 @@
 //! after.
 use super::*;
 
-/// What is filtered here, or left behind: the run tables, machines, retry answers, the index, an old store's caches, and the
-/// measurement cursor, whose old run number would pass over the new store's first runs (it starts again at zero).
-const NOT_COPIED: [&str; 13] = ["runs", "outputs", "run_logs", "asks", "run_placements", "after_steps", "machines", "answers", "projects",
-    "unseen", "sessions", "session_codes", "measurements_dropped"];
+/// What is filtered here, or left behind: the run tables, machines, retry answers, the index, an old store's caches, the
+/// measurement cursor, whose old run number would pass over the new store's first runs (it starts again at zero), and the ended jobs
+/// kept (cl-1028), whose runs stay behind.
+const NOT_COPIED: [&str; 14] = ["runs", "outputs", "run_logs", "asks", "run_placements", "after_steps", "machines", "answers", "projects",
+    "unseen", "sessions", "session_codes", "measurements_dropped", "ended_jobs"];
 /// A version 7 store's caches of its own shape, made again empty.
 const OLD_CACHES: [&str; 3] = ["headers", "rendered_here", "vault_operations"];
 

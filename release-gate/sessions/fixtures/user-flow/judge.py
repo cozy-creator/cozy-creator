@@ -177,7 +177,7 @@ by_name = {m.name: label for label, m in machines.items() if m.name}
 
 
 def gone_at(m: Machine) -> float | None:
-    """When it left by itself: gone from the page's list with End never pressed (a rental idle 15 min releases itself)."""
+    """When it left with End never pressed: gone from the page's list (a rental idle 15 min releases itself; or ended elsewhere)."""
     if m.record.get('end_pressed_at'):
         return None
     return num(m.record.get('left_at')) or removed.get(m.name)
@@ -269,6 +269,18 @@ for s in map(obj, arr(flow.get('sent'))):
             waiting = (where, at)
     if waiting and timeline:
         row.waits.append((waiting[0], waiting[1], timeline[-1][0]))
+    # Held before it was sent, with no run on the stream yet (green 43961722220: request 4, placed on A at its Render, was sent 244 s
+    # later): from its Render to its first sight, on the machine it then went to. Waits a moment apart on one machine are one wait.
+    first_on = next((text(one.get('machine')) for _, one in timeline if one.get('machine')), '')
+    if timeline and first_on and timeline[0][0] - row.sent_at > 5_000:
+        row.waits.insert(0, (first_on, row.sent_at, timeline[0][0]))
+    joined: list[tuple[str, float, float]] = []
+    for where, since, until in row.waits:
+        if joined and joined[-1][0] == where and since - joined[-1][2] <= 60_000:
+            joined[-1] = (where, joined[-1][1], max(joined[-1][2], until))
+        else:
+            joined.append((where, since, until))
+    row.waits = joined
     placed = next((at for at, one in timeline if one.get('machine')), None)
     row.placed_s = secs(row.sent_at, placed)
     downloads = [(at, obj(one.get('progress'))) for at, one in timeline if phase(one) == 'downloading']
@@ -409,8 +421,9 @@ for label, m in sorted(machines.items()):
         if went:
             idle_from = max([r.settled_at or 0.0 for r in ran_here] + [num(m.record.get('ready_at')) or 0.0])
             check(f'{label} ended through the page', None,
-                  f"it ended by itself at {datetime.fromtimestamp(went / 1000, timezone.utc):%H:%M:%S}, before End was pressed, {fmt(secs(idle_from, went), ' s')} after "
-                  + (f"its last run settled (requests {[r.request for r in ran_here]})" if ran_here else 'it was ready: no request ran on it') + '; a rental idle 15 min releases itself')
+                  f"gone from the list at {datetime.fromtimestamp(went / 1000, timezone.utc):%H:%M:%S}, before End was pressed, {fmt(secs(idle_from, went), ' s')} after "
+                  + (f"its last run settled (requests {[r.request for r in ran_here]})" if ran_here else 'it was ready: no request ran on it')
+                  + ': a rental idle 15 min releases itself, or it was ended from another computer')
         elif pressed:
             check(f'{label} ended through the page', bool(ended), f"gone from the list {fmt(secs(pressed, ended), ' s')} after End" if ended else 'End pressed, never gone from the list')
 
@@ -510,20 +523,28 @@ def held_on(name: str, at: float, but: int = 0) -> list[tuple[Row, float]]:
 
 
 def request_of(d: Decision) -> int:
-    """The request a decision is about: placed (or moved) where it says within a minute of it."""
+    """The request a decision is about. A first placement follows its Render within a minute (its run may come to the stream minutes
+    later, held before it's sent); a move is told by the run that came to that machine within a minute of it."""
+    asked = [(d.at - o.sent_at, o.request) for o in rows if not d.moved_from and -1_000 <= d.at - o.sent_at <= 60_000]
+    if asked:
+        return min(asked)[1]
     near = [(abs(since - d.at), o.request) for o in rows for where, since, _ in o.spans if where == d.to and abs(since - d.at) <= 60_000]
     return min(near)[1] if near else 0
 
 
+# A machine's update (a dev home's move to the RC's builds), as the page's stream has it: a run sent to it says "waiting for <machine>
+# to finish updating", and the machine says another Runtime or TensorFS when it's back. Calcifer's log keeps no line of it.
 updates: list[tuple[str, float, float | None]] = []  # (machine, began, ready again)
-for line in read_text('calcifer.log').splitlines():
-    if 'to the open RC' not in line:
-        continue
-    began, who = iso_ms(line), re.search(r'machine="?([^"\s]+)', line)
-    if began is None or not who:
-        continue
-    after = [t for t, one in machine_events.get(who.group(1), []) if t >= began and '.dev' in text(one.get('runtime'))]
-    updates.append((who.group(1), began, min(after) if after else None))
+held_for: dict[str, float] = {}
+for timeline_ in run_events.values():
+    for at, one in timeline_:
+        said_ = re.search(r'waiting for (\S+) to finish updating', text(one.get('waiting')))
+        if said_:
+            held_for[said_.group(1)] = min(at, held_for.get(said_.group(1), at))
+for name_, began_ in held_for.items():
+    software = [(t, (text(one.get('runtime')), text(one.get('tensorfs')))) for t, one in machine_events.get(name_, [])]
+    was = next((v for t, v in reversed(software) if t <= began_ and any(v)), ('', ''))
+    updates.append((name_, began_, next((t for t, v in software if t > began_ and any(v) and v != was), None)))
 
 if renting:
     done = [r for r in rows if r.started_at and r.settled_at]
@@ -533,16 +554,23 @@ if renting:
     check('the walk said where it placed each take (walk.log)', bool(decisions), f"{len(decisions)} decisions" if decisions else 'no walk.log decisions read')
 
     # A busy machine's quote counts what its runs ahead still take: never "all but done" (cause 1: 6 s quoted, 528 s left).
+    # Where the request then ran on the machine quoted, the quote less its own work there is what it left for the runs ahead, and the
+    # time to its own GPU lease is what they took (green 43961722220: A quoted 294 s for request 4, whose own work is 247 s, and its
+    # lease came 423 s later). Elsewhere: the quote against how long the runs ahead held the machine.
     short, judged = [], 0
     for d in decisions:
+        asked_by = next((o for o in rows if o.request == request_of(d)), None)
         for name, quoted in d.offers.items():
             ahead = held_on(name, d.at, request_of(d))
             if quoted is None or not ahead or name not in name_of:
                 continue
             judged += 1
-            left = (max(until for _, until in ahead) - d.at) / 1000
-            if quoted < 0.5 * left and left - quoted > 120:
-                short.append(f"{datetime.fromtimestamp(d.at / 1000, timezone.utc):%H:%M:%S} {d.key}: {name} quoted {quoted:.0f} s, its runs ahead held it {left:.0f} s more")
+            there = asked_by if asked_by and asked_by.machine == name and asked_by.lease and asked_by.work_s else None
+            left = ((there.lease[0] if there and there.lease else max(until for _, until in ahead)) - d.at) / 1000
+            for_ahead = max(quoted - (there.work_s or 0.0), 0.0) if there else quoted
+            if for_ahead < 0.5 * left and left - for_ahead > 120:
+                short.append(f"{datetime.fromtimestamp(d.at / 1000, timezone.utc):%H:%M:%S} request {request_of(d) or '?'}: {name} quoted {quoted:.0f} s"
+                             + (f", {for_ahead:.0f} s of it before its own work, which began {left:.0f} s later" if there else f", its runs ahead held it {left:.0f} s more"))
     check("a busy machine's quote counts its runs' time left (cl-1073)", (not short) if judged else None,
           '; '.join(short[:3]) or (f"{judged} quotes of a busy machine, each at least half its runs' real time left" if judged else 'no quote of a busy machine to judge'))
 
@@ -652,7 +680,7 @@ fails = [v for v in verdict if v.startswith('FAIL')]
 out = [f"### user-flow: {'PASS' if not fails else 'FAIL'} ({len(fails)} of {sum(1 for v in verdict if not v.startswith('NOTE'))} checks failed)\n",
        f"cozy {text(flow.get('cozy')) or '?'}; A {text(flow.get('sku'))} x1, B {text(flow.get('sku_b'))} x{flow.get('gpus_b')}; tools {tools}; billed ${spent:.2f} ({each})\n",
        '\n#### Each run\n',
-       '| # | run | box | function | machine | sent → placed | downloaded | waited (queue, GPU) | to step 1 | dense / sparse step (stored) | own work (stored cold / warm) | sent → done | lanes | GEMM | GPUs | VRAM peak | status |',
+       '| # | run | box | function | machine | sent → placed | downloaded | waited (unsent, queue, GPU) | to step 1 | dense / sparse step (stored) | own work (stored cold / warm) | sent → done | lanes | GEMM | GPUs | VRAM peak | status |',
        '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
 for r in rows:
     dl = f"{r.dl_bytes / GB:.1f} GB in {fmt(r.dl_s, ' s')}" if r.dl_bytes else '-'
@@ -679,8 +707,8 @@ out += ["\n#### Download events: each request's weights, then each machine's fet
         '| machine | what | fetched | already there | started | stage | rate |', '|---|---|---|---|---|---|---|']
 for r in rows:
     if r.dl_bytes:
-        began = r.first.get('downloading')
-        clock = datetime.fromtimestamp(began / 1000, timezone.utc).strftime('%H:%M:%S') if began else '?'
+        dl_began = r.first.get('downloading')
+        clock = datetime.fromtimestamp(dl_began / 1000, timezone.utc).strftime('%H:%M:%S') if dl_began else '?'
         out.append(f"| {r.label} | request {r.request}'s weights ({r.target.split('/')[-1] or '?'}) | {r.dl_bytes / GB:.2f} GB in {fmt(r.dl_s, ' s')} | - | {clock} | | "
                    f"{fmt(r.dl_bytes / r.dl_s / 1e6 if r.dl_s else None, ' MB/s')} |")
 for h in held_rows:

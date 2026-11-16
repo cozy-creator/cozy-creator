@@ -743,16 +743,16 @@ jobs:
       fail-fast: false
       matrix:
         # projectdb covers project.db and state.db; the older projectdb-* aliases repeat its calls.
-        # web-1, web-2, web-3, web-engines and web-solo are the web suite's lanes (cl-973), each its cells at once. Manual shard selections
+        # web-1, web-2, web-3, web-2d and web-2d-solo (the canvas in 2D, as with no GPU), web-engines and web-solo are the web suite's lanes (cl-973), each its cells at once. Manual shard selections
         # remain available.
         # ondemand (ondemand-share its install's share of the link), plan, prefetch, coming, lines, disk and selfupdate guard features
         # Paul asked for (xs-199): each on every RC run, as any cell.
         # dev-start builds the change's cozy as a dev home does and starts it on a render walk (cl-1069: a dev build overflowed 2 MiB).
-        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-engines","web-solo","projectdb","projectvault","projectvault-nofuse","projectvault-static","local-code","ondemand","ondemand-share","plan","prefetch","coming","lines","disk","selfupdate","typed-calls","dev-start"]') }}
+        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-2d","web-2d-solo","web-engines","web-solo","projectdb","projectvault","projectvault-nofuse","projectvault-static","local-code","ondemand","ondemand-share","plan","prefetch","coming","lines","disk","selfupdate","typed-calls","dev-start"]') }}
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time. A web lane runs in under 10 min.
-    timeout-minutes: ${{ contains(fromJSON('["web-1","web-2","web-3","web-engines","web-solo"]'), matrix.shard) && 20 || 90 }}
+    timeout-minutes: ${{ contains(fromJSON('["web-1","web-2","web-3","web-2d","web-engines","web-solo"]'), matrix.shard) && 20 || matrix.shard == 'web-2d-solo' && 30 || 90 }}
     defaults:
       run:
         shell: bash
@@ -780,7 +780,15 @@ jobs:
       # The project part's fixtures and probes (e2e/cli/project.sh) and llm_write's clip (xs-204); Calcifer, a service, fetches its own.
       - if: (matrix.shard == 'commands' || startsWith(matrix.shard, 'commands@')) || (matrix.shard == 'runs' || startsWith(matrix.shard, 'runs@')) || (matrix.shard == 'web' || startsWith(matrix.shard, 'web@')) || startsWith(matrix.shard, 'web-') || (matrix.shard == 'local-code' || startsWith(matrix.shard, 'local-code@')) || (matrix.shard == 'coming' || startsWith(matrix.shard, 'coming@')) || (matrix.shard == 'control' || startsWith(matrix.shard, 'control@')) || startsWith(matrix.shard, 'projectvault') || startsWith(matrix.shard, 'projectdb') || startsWith(matrix.shard, 'project-stream')
         uses: AnimMouse/setup-ffmpeg@v1
-      # The HMR fixtures: containment's, and web-access's dev mode through Calcifer (web/access.js).
+      # The HMR fixtures: containment's, and web-access's dev mode through Calcifer (web/access.js). Their Vite serves the web of the
+      # cozy under test (the candidate's own commit), never the harness's: a harness from another commit would test another page.
+      - if: startsWith(matrix.shard, 'containment') || (matrix.shard == 'web-access' || startsWith(matrix.shard, 'web-access@'))
+        uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/cozy-creator
+          ref: ${{ needs.affected.outputs.repo == 'cozy-creator' && needs.affected.outputs.ref || needs.affected.outputs.stack }}
+          path: .web-src
+          sparse-checkout: web
       - if: startsWith(matrix.shard, 'containment') || (matrix.shard == 'web-access' || startsWith(matrix.shard, 'web-access@'))
         uses: actions/setup-node@v4
         with:
@@ -788,14 +796,14 @@ jobs:
       - if: startsWith(matrix.shard, 'containment') || (matrix.shard == 'web-access' || startsWith(matrix.shard, 'web-access@'))
         uses: pnpm/setup@v1
         with:
-          package-json-file: .creator/web/app/package.json
+          package-json-file: .web-src/web/app/package.json
           install: false
       - name: Install source dependencies for the actual HMR fixture
         if: startsWith(matrix.shard, 'containment') || (matrix.shard == 'web-access' || startsWith(matrix.shard, 'web-access@'))
-        working-directory: .creator/web/app
+        working-directory: .web-src/web/app
         run: pnpm install --frozen-lockfile
       - name: Install the optional project-encryption filesystem driver
-        if: (startsWith(matrix.shard, 'projectvault') && !startsWith(matrix.shard, 'projectvault-nofuse') && !startsWith(matrix.shard, 'projectvault-static')) || startsWith(matrix.shard, 'hardcut') || (matrix.shard == 'web-engines' || startsWith(matrix.shard, 'web-engines@')) || (matrix.shard == 'web-vault' || startsWith(matrix.shard, 'web-vault@')) || (matrix.shard == 'web-solo' || startsWith(matrix.shard, 'web-solo@')) || startsWith(matrix.shard, 'containment') || startsWith(matrix.shard, 'web-opens')
+        if: (startsWith(matrix.shard, 'projectvault') && !startsWith(matrix.shard, 'projectvault-nofuse') && !startsWith(matrix.shard, 'projectvault-static')) || startsWith(matrix.shard, 'hardcut') || (matrix.shard == 'web-engines' || startsWith(matrix.shard, 'web-engines@')) || (matrix.shard == 'web-vault' || startsWith(matrix.shard, 'web-vault@')) || (matrix.shard == 'web-solo' || startsWith(matrix.shard, 'web-solo@')) || startsWith(matrix.shard, 'web-2d-solo') || startsWith(matrix.shard, 'containment') || startsWith(matrix.shard, 'web-opens')
         run: bash .creator/e2e/cli/install-vault-driver.sh
       # cl-1000: the provider probe (e2e/vault-provider) projectvault-static's cells run, not embedding the provider, and FUSE 3 beside
       # libfuse.so.2, which the glibc securefs build it times the static one against loads.
@@ -855,6 +863,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           MODEL: ${{ contains(fromJSON(needs.affected.outputs.selection).suites, 'model') && '--model' || '' }}
+          COZY_WEB_SOURCE: ${{ (startsWith(matrix.shard, 'containment') || startsWith(matrix.shard, 'web-access')) && format('{0}/.web-src', github.workspace) || '' }}
         # Against its own isolated Hub, which e2e/isolated.sh seeds with what the shard reads from one. BiRefNet: a pin,
         # the change's packages, or packages master (the set's own).
         run: |

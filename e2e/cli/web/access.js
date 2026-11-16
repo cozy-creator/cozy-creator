@@ -25,7 +25,8 @@ function check(name, ok, detail) {
 const OTHER = 'cozy-access-other';
 const HMR = '/__cozy_hmr';
 const UPGRADE = { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==', 'Sec-WebSocket-Protocol': 'vite-hmr' };
-const REPO = resolve(__dirname, '../../..');
+// Dev mode's Vite serves the web of the cozy under test (CI checks its commit out apart, $COZY_WEB_SOURCE), else this harness's own.
+const REPO = resolve(process.env.COZY_WEB_SOURCE || join(__dirname, '../../..'));
 const WEB = join(REPO, 'web/app');
 const CONFIG = join(homedir(), '.cozy/config.toml');
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
@@ -296,6 +297,10 @@ async function otherChrome(base, project) {
 
 async function devMode(context, base, project, token) {
   if (!existsSync(join(WEB, 'node_modules/.bin/vite'))) { check('dev_vite_installed', false, WEB); return; }
+  // The page under test is the candidate's own web: the commit Vite serves, and the one cozy was built from.
+  seen.web_commit = execFileSync('git', ['-C', REPO, 'rev-parse', 'HEAD']).toString().trim();
+  const built = /\+g([0-9a-f]{7,40})\b/.exec(execFileSync(process.env.COZY, ['--version']).toString());
+  check('dev_web_is_candidate', !built || seen.web_commit.startsWith(built[1]), { web_commit: seen.web_commit, cozy: built?.[1] });
   const original = existsSync(CONFIG) ? readFileSync(CONFIG, 'utf8') : null;
   const vite = spawn(join(WEB, 'node_modules/.bin/vite'), ['--host', '127.0.0.1', '--port', '5173', '--strictPort'], { cwd: WEB, detached: true, stdio: 'ignore' });
   const tokens = join(WEB, 'src/ui/tokens.css');

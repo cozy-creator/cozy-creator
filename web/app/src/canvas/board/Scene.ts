@@ -4,7 +4,7 @@ import type { CanvasStore } from "../CanvasStore"
 import { carried } from "../checkpoints"
 import { GLIDE_MS } from "../clear"
 import type { Box } from "../graph"
-import { bandOf, hexOf, nameZoomOf, shownOf } from "../shown"
+import { bandOf, hexOf, nameZoomOf } from "../shown"
 import type { Board, CanvasNode } from "./Board"
 import type { Viewport } from "./Camera"
 import { BODY, CardView, type CardEnv, type CardState, type Hit, type Palette, TITLE } from "./CardView"
@@ -13,7 +13,7 @@ import { pictureBox, present, type Presentation, type RunContext, type SceneNode
 import { fontEpoch } from "./text"
 
 export interface Frame { moving: boolean; slow: boolean; camera: Viewport; width: number; height: number; dpr: number; settled: boolean; theme: string; now: number; hidden: ReadonlySet<string>; offering: boolean }
-interface Held { view: CardView; node?: SceneNode; show?: Presentation; key?: unknown[]; glide?: { from: { x: number; y: number }; began: number }; landing?: number; seen?: number; decoding?: number; waits?: boolean }
+interface Held { view: CardView; node?: SceneNode; show?: Presentation; key?: unknown[]; glide?: { from: { x: number; y: number }; began: number }; landing?: number; decoding?: number; waits?: boolean }
 
 const MARGIN = 160
 /** How long a file dropped waits, at most, to be first drawn with its picture. */
@@ -230,21 +230,6 @@ export class Scene {
     const sha256 = hexOf(picture.sha256)
     if (size > 512 && picture.kind === "image" && picture.path) return { source: { kind: "file" as const, sha256, path: picture.path }, width: size, local: false }
     return { source: { kind: "thumb" as const, sha256 }, width: Math.min(size, 512), local: false }
-  }
-
-  /** After a frame is presented: what a person has now seen loses its unseen dot (cl-928). */
-  didRender() {
-    const store = this.o.store
-    if (!store.active) return
-    for (const held of this.held.values()) {
-      const node = held.node, view = node?.view
-      const unseen = view?.asset?.unseen
-      if (!node || !view || !unseen?.length || !held.view.root.visible || store.get(node.name) !== view) continue
-      const shown = shownOf(view)
-      if (shown?.number === undefined || !unseen.includes(shown.number) || held.seen === shown.number) continue
-      const ready = held.view.picture?.sprite.visible || (shown.field === "text" && Boolean(held.show?.words))
-      if (ready) { held.seen = shown.number; store.markSeen(node.name, shown.number) }
-    }
   }
 
   /** Context restored: every resident card draws again at once. */

@@ -228,7 +228,7 @@ PY
 # The web suite's jobs (cl-973) and one of its cells by hand (web-<cell>, web/<cell>.spec.js) take one seed.
 key=$suite:$shard
 case $shard in
-  web-1 | web-2 | web-3 | web-engines | web-solo | web-native | web-opens-busy) key=cli:web-suite ;;
+  web-1 | web-2 | web-3 | web-2d | web-2d-solo | web-engines | web-solo | web-native | web-opens-busy) key=cli:web-suite ;;
   web-*) [ ! -f "$here/cli/web/${shard#web-}.spec.js" ] || key=cli:web-suite ;;
 esac
 case $key in
@@ -245,10 +245,11 @@ case $key in
   cli:follow) needs='packages downloads' ;;
   cli:lines) needs='packages birefnet downloads' ;;
   cli:idle) needs='packages downloads' ;;
-  cli:ondemand) needs='packages birefnet downloads calls' ;;
+  cli:ondemand) needs='packages birefnet downloads calls enhancer' ;;
   # pagebox's 1.6 GB (`spare`) beside the install (cl-1007).
   cli:ondemand-share) needs='packages birefnet downloads spare' ;;
   cli:ondemand-ramp) needs='packages spare' ;;
+  cli:ondemand-enhancers) needs='packages enhancer enhancers' ;;
   cli:disk) needs='packages disk' ;;
   # H3's Models & LoRAs, Qwen's VAE slot and heavy.py's BiRefNet; macOS and Windows run no models.
   cli:web-suite) needs='packages birefnet loras vaes'; [ "${RUNNER_OS:-Linux}" = Linux ] || needs='packages' ;;
@@ -413,7 +414,7 @@ if [ -n "$needs" ]; then
       rc_floor ;;
   esac
   if [[ " $needs " == *" birefnet "* || " $needs " == *" qwen "* || " $needs " == *" downloads "* || " $needs " == *" loras "* || " $needs " == *" parts "* \
-    || " $needs " == *" disk "* || " $needs " == *" lorabase "* || " $needs " == *" ltxlora "* ]]; then
+    || " $needs " == *" disk "* || " $needs " == *" lorabase "* || " $needs " == *" ltxlora "* || " $needs " == *" enhancer "* ]]; then
     update=()
     [ -z "$runtime" ] || update+=(--runtime "$runtime")
     [ -z "$tensorfs" ] || update+=(--tensorfs "$tensorfs")
@@ -510,6 +511,19 @@ PYCALLS
     export E2E_CALLS_SEED=${E2E_CALLS_SEED:-}
     log "published e2e/calls-used, -unused, -other, -early, -late, -base and e2e/calls-lora${E2E_CALLS_SEED:+ (not all: $E2E_CALLS_SEED)}"
     rm -f "$seed"/calls-*.safetensors
+  fi
+  if [[ " $needs " == *" enhancer "* ]]; then
+    # enhance.py's (cl-1101): each request's own model (16 MiB) and two prompt enhancers (96 MiB each), none sharing a chunk.
+    # `plain`'s are ondemand_behind's; ondemand_enhancers runs all three.
+    requests=plain
+    [[ " $needs " != *" enhancers "* ]] || requests='words edit plain'
+    for request in $requests; do
+      for slot in model:16 expander:96 rewriter:96; do
+        random_weights "$seed/enhance.safetensors" "${slot#*:}" "enhance-$request-${slot%:*}"
+        mirror "$seed/enhance.safetensors" "e2e/enhance-$request-${slot%:*}" bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is
+        rm -f "$seed/enhance.safetensors"
+      done
+    done
   fi
   if [[ " $needs " == *" uninstall "* ]]; then
     # uninstall_on's model (cl-1076): 32 MiB no other cell reads, so removing it takes nothing from them.

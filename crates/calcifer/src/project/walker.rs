@@ -550,7 +550,14 @@ impl Graph {
 
 /// What a render owes of the asset with this name key goes under one key, restart or not.
 pub(crate) fn owed_key(ask: &str, name_key: &str) -> String {
-    format!("project-{}", &hex::encode(Sha256::digest(format!("{ask}\n{name_key}")))[..32])
+    format!("{OWED}{}", &hex::encode(Sha256::digest(format!("{ask}\n{name_key}")))[..32])
+}
+
+const OWED: &str = "project-";
+
+/// Whether a run's key is a walk's (`owed_key`): the run of a take.
+pub(crate) fn is_owed_key(key: &str) -> bool {
+    key.starts_with(OWED)
 }
 
 fn merged<'a>(lists: impl Iterator<Item = &'a Vec<usize>>) -> Vec<usize> {

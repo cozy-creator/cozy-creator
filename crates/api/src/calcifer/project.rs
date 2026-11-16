@@ -93,10 +93,8 @@ pub struct Opened {
 /// CLI project commands resolve their current directory and send its absolute path.
 pub const NAMED_BY: &str = "a project's name, id or public code, or its folder on Calcifer's computer by its absolute path";
 
-/// What Calcifer's own runs (an update, an install, a download) are named by: `COZY-12` (cl-987). No project takes it.
-pub const MACHINE_KEY: &str = "COZY";
-/// Keys no project takes: the machine's, and `RUN`, as a run's id starts `run-`.
-pub const RESERVED_KEYS: &[&str] = &[MACHINE_KEY, "RUN"];
+/// Keys no project takes: `RUN`, as a run's id starts `run-`.
+pub const RESERVED_KEYS: &[&str] = &["RUN"];
 
 /// A project key as written, in any case (cl-987, as Jira's): A–Z and 0–9, a letter first, 2 to 10 long. Upper case.
 pub fn key(text: &str) -> Option<String> {
@@ -127,10 +125,9 @@ pub struct Key {
     pub former: Vec<String>,
 }
 
-/// A request in no project, which needs one.
+/// A run asked in no project (cl-1028): every run is kept in its project.
 pub fn unnamed() -> Error {
     Error::new(crate::error::Kind::Usage, "not_in_a_project", "Run this from inside a project folder, or create a project first.").next("cozy new")
-        .next("cozy new")
 }
 
 /// Where a card sits on a project's canvas: one row of its canvas.
@@ -626,8 +623,11 @@ pub struct MainFile {
     pub output: String,
     pub path: String,
     pub sha256: String,
-    /// The field that names one of its type: `image`, `video`, `audio`.
+    /// The field that names one of its type: `image`, `video`, `audio`, `text`.
     pub field: String,
+    /// A box of words' version: its words, as its file holds them (xs-204).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub width: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -876,6 +876,10 @@ pub struct NewAsset {
     /// What the tool makes, or image/video/audio for an empty-tool container. Calcifer persists this as reserved `fields.node_kind`; intrinsic cozy/edit uses video_edit. Absent: infer the tool or text kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+    /// A box of another kind its tool was let go on (xs-204): its mention goes where the tool reads that kind, its first required slot of it,
+    /// else the start of its first prompt that takes it. Refused where the tool can't read that kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reads: Option<String>,
     /// What its drop pushed aside, written with it, each only if no other client wrote it after the revision in `placed`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub moves: BTreeMap<String, Card>,

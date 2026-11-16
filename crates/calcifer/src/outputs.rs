@@ -375,6 +375,13 @@ impl Calcifer {
                     continue;
                 }
             };
+            // A job of Calcifer's lands nothing on this computer (cl-1028): what it made stays where it went (a checkpoint, the Hub).
+            if run.project_root.is_none() {
+                for item in &items {
+                    let _ = self.with_run_store(id.as_str(), |store| store.export_failed(id.as_str(), &item.name, item.index, item.rev, "a job lands nothing here"));
+                }
+                continue;
+            }
             // Outputs left on this computer's machine after it exited idle: it starts for them.
             if run.machine.as_deref() == Some("local")
                 && let Some(machines) = self.machines()
@@ -932,31 +939,6 @@ async fn folder(dir: &Path, member: Option<&str>, number: &str, name: &str, head
     };
     let len = file.metadata().map(|m| m.len()).unwrap_or(0);
     crate::files::send(file, len, &media_type, &etag, headers).map_err(|e| api::refuse(Kind::Internal, "output_unreadable", e.to_string()))
-}
-
-/// Where a run that names no directory puts its outputs: its package's folder, `<org>-<name>` as
-/// the Go CLI named it (`fidika-minimax-h3`, `local-my-script`), from a target
-/// `<org>/<name>/<function>[@release]` (a root package's: `<name>`); the outputs folder itself for
-/// any other target.
-pub(crate) fn package_outputs(outputs: &Path, target: &str) -> PathBuf {
-    let named = |part: &&str| {
-        !part.is_empty()
-            && !part.starts_with('.')
-            && part
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-    };
-    match target.split('/').collect::<Vec<_>>().as_slice() {
-        [org, name, function]
-            if *org == ::api::names::ROOT && named(name) && !function.is_empty() =>
-        {
-            outputs.join(name)
-        }
-        [org, name, function] if named(org) && named(name) && !function.is_empty() => {
-            outputs.join(format!("{org}-{name}"))
-        }
-        _ => outputs.to_owned(),
-    }
 }
 
 /// The item's name in its run's output directory (`api::calcifer::output_file_name`).

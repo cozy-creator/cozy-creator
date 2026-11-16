@@ -79,7 +79,7 @@ function Remove({ name }: { name: string }) {
           void ask.run(async () => {
             const { run } = await client.job("cozy/package_remove", { packages: [name], on: [on] }, key)
             asked.current = null
-            navigate(to(`runs/${run.number}`))
+            navigate(to(`machines/${run.machine ?? on}`))
           })
         }}
       />
@@ -144,7 +144,7 @@ export function PackageDrawer() {
           label="Install"
           quote={(body) => client.jobQuote("cozy/package_install", body)}
           ask={(body, key) => client.job("cozy/package_install", body, key)}
-          onDone={({ run }) => navigate(to(`runs/${run.number}`))}
+          onDone={({ run }) => navigate(to(run.project_id ? `runs/${run.number}` : `machines/${run.machine ?? "local"}`))}
         >
           <select className="field releasepick" aria-label="Release" value={release} onChange={(event) => setRelease(event.target.value)}>
             <option value="">Newest release</option>

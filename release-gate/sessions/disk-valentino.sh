@@ -12,8 +12,8 @@
 # params:
 #   need_s      seconds the guard must buy (default 2700)
 . "$(dirname "$0")/lib.sh"
-# A step's run: its follower's first line is `run <n> · <target>`, and only a completed run's ends with a bare `run <n>`.
-rn() { awk '$1 == "run" && $2 ~ /^[0-9]+$/ {print $2; exit}' "$OUT/$1.txt" 2>/dev/null; }
+# A step's run: its follower's first line is `run <KEY-N> · <target>`, and only a completed run's ends with a bare `run <KEY-N>`.
+rn() { awk '$1 == "run" && $2 ~ /^[A-Z][A-Z0-9]*-[0-9]+$/ {print $2; exit}' "$OUT/$1.txt" 2>/dev/null; }
 status() { cozy run watch "$(rn "$1")" --once --json --full > "$OUT/$1.json" 2>&1; jq -r '.status // empty' "$OUT/$1.json"; }
 reason() { jq -r '[.reason.code // "", .reason.message // ""] | join(": ")' "$OUT/$1.json" | cut -c1-500; }
 # What a run warned of, its calls' too (a call's lines are on its root's log): any string of its record, or what its

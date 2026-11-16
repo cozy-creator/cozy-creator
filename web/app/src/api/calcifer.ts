@@ -926,6 +926,17 @@ run: string, at_unix_ms: number,
 replayed: boolean, };
 
 /**
+ * One GPU's reading: the share of its last sample period a kernel ran (`nvidia-smi`'s GPU-Util), and its memory in use, every
+ * process's.
+ */
+export type GpuReading = { index: number, busy_percent: number, memory_used_bytes: number, };
+
+/**
+ * What a machine's NVIDIA GPUs are doing now (`path::GPUS`, cl-1100): one reading each; none from a machine without one.
+ */
+export type GpuUse = { at_unix_ms: number, gpus: Array<GpuReading>, };
+
+/**
  * What the machine holds of each object asked, in the order asked; a stored object is held
  * whole, and asking renews it, as a `HEAD` does.
  */
@@ -1322,6 +1333,14 @@ attempt?: Attempt | null,
  */
 running: number, queued: number,
 /**
+ * Calcifer's jobs on it (an install, a download, an upload, a quantization, an update, a removal; on `local` also its own:
+ * a lock, a publication, cozy's update), cl-1028: those going, and the last that ended of each job type (install, download,
+ * upload, quantize, warm, remove, update, lock, publish) and outcome (completed, failed, canceled). They are no project's runs: none is
+ * listed with runs, and an ended one is kept until a newer one of its type and outcome ends here a minute or more after it, or its
+ * machine goes.
+ */
+jobs?: Array<Run>,
+/**
  * False: a rental another client of this account ordered. This controller reaches it as its
  * own (the Hub grants it every device the account signed in on), but places no run on it unasked.
  */
@@ -1529,9 +1548,13 @@ export type MainFile = {
  */
 output: string, path: string, sha256: string,
 /**
- * The field that names one of its type: `image`, `video`, `audio`.
+ * The field that names one of its type: `image`, `video`, `audio`, `text`.
  */
-field: string, width?: number | null, height?: number | null, duration_ms?: number | null,
+field: string,
+/**
+ * A box of words' version: its words, as its file holds them (xs-204).
+ */
+text?: string | null, width?: number | null, height?: number | null, duration_ms?: number | null,
 /**
  * A video's frames per second, for timecode.
  */
@@ -1902,6 +1925,11 @@ exact?: boolean,
  * What the tool makes, or image/video/audio for an empty-tool container. Calcifer persists this as reserved `fields.node_kind`; intrinsic cozy/edit uses video_edit. Absent: infer the tool or text kind.
  */
 kind?: string | null,
+/**
+ * A box of another kind its tool was let go on (xs-204): its mention goes where the tool reads that kind, its first required slot of it,
+ * else the start of its first prompt that takes it. Refused where the tool can't read that kind.
+ */
+reads?: string | null,
 /**
  * What its drop pushed aside, written with it, each only if no other client wrote it after the revision in `placed`.
  */
@@ -2841,8 +2869,8 @@ id: RunId,
  */
 number: number,
 /**
- * What names it to a person from any folder (cl-987): `KEY-N`, its project's key and its number there, `COZY-N` for Calcifer's
- * own; its id for one another client sent.
+ * What names it to a person from any folder (cl-987): `KEY-N`, its project's key and its number there; empty for one of
+ * Calcifer's jobs (cl-1028) or one another client sent, which its id names.
  */
 name: string,
 /**

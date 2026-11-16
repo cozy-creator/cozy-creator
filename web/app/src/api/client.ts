@@ -33,8 +33,6 @@ import type {
   Keepalive,
   Machine,
   MachineList,
-  MachineModels,
-  MachinePackages,
   MachineUpdate,
   ModelDetail,
   ModelEdit,
@@ -170,7 +168,7 @@ export interface Hooks {
 
 const project = (id: string) => `/v1/projects/${encodeURIComponent(id)}`
 const vaultOperation = (id: string, operation: string) => `/v1/projects/${encodeURIComponent(id)}/vault/operations/${operation}`
-const maintenanceRun = (id: string | number) => `/v1/runs/${encodeURIComponent(id)}`
+const namedRun = (name: string) => `/v1/runs/${encodeURIComponent(name)}`
 export type ProjectRun = { project: string; run: string | number }
 const run = (address: ProjectRun) => `/v1/projects/${encodeURIComponent(address.project)}/runs/${encodeURIComponent(address.run)}`
 const machine = (name: string) => `/v1/machines/${encodeURIComponent(name)}`
@@ -661,12 +659,6 @@ export class Client {
     return this.json(`${project(id)}/runs?${query}`, { signal })
   }
 
-  maintenanceRuns(filter: RunFilter, limit: number, signal?: AbortSignal): Promise<RunList> {
-    const query = new URLSearchParams({ limit: String(limit) })
-    for (const [name, value] of Object.entries(filter)) if (value) query.set(name, value)
-    return this.json(`/v1/runs?${query}`, { signal })
-  }
-
   run(address: ProjectRun, signal?: AbortSignal): Promise<Run> {
     return this.json(run(address), { signal })
   }
@@ -702,29 +694,9 @@ export class Client {
     return this.json(`${run(address)}/play?output=${output}`)
   }
 
-  maintenanceRun(id: string | number, signal?: AbortSignal): Promise<Run> {
-    return this.json(maintenanceRun(id), { signal })
-  }
-
-  maintenanceRunFull(id: string | number, signal?: AbortSignal): Promise<Run> {
-    return this.json(`${maintenanceRun(id)}?detail=full`, { signal })
-  }
-
-  cancelMaintenanceRun(id: string, once?: AbortSignal): Promise<Run> {
-    return this.write("POST", `${maintenanceRun(id)}/cancel`, {}, undefined, { once })
-  }
-
-  maintenanceRunEvents(id: string, after: number, signal: AbortSignal): Promise<Response> {
-    return this.opened(`${maintenanceRun(id)}/events${after ? `?starting_after=${after}` : ""}`, signal)
-  }
-
-  maintenanceOutput(id: string, name: string, index: number): string {
-    return `${maintenanceRun(id)}/outputs/${encodeURIComponent(name)}${index ? `?index=${index}` : ""}`
-  }
-
-  maintenancePlay(id: string, name: string, index: number): Promise<Play> {
-    const output = encodeURIComponent(index ? `${name}/${index}` : name)
-    return this.json(`${maintenanceRun(id)}/play?output=${output}`)
+  /** A run by its name, `SE-5`, from any scope (cl-987): Calcifer finds its project. */
+  namedRun(name: string, signal?: AbortSignal): Promise<Run> {
+    return this.json(namedRun(name), { signal })
   }
 
   /** What a run of `target` would call: a package's functions, and a named function's request. Runs nothing. */
@@ -747,7 +719,7 @@ export class Client {
   }
 
   job(target: string, asked: object, key: string): Promise<Submitted> {
-    return this.maintenanceSubmit(this.jobRequest(target, asked as Record<string, unknown>), key)
+    return this.submitJob(this.jobRequest(target, asked as Record<string, unknown>), key)
   }
 
   submit(id: string, request: RunRequest, key: string): Promise<Submitted> {
@@ -755,7 +727,8 @@ export class Client {
     return this.write("POST", `${project(id)}/runs/submit`, { ...request, project: id }, key)
   }
 
-  maintenanceSubmit(request: RunRequest, key: string): Promise<Submitted> {
+  /** One of Calcifer's jobs (an install, a download, an upload, a quantization: cl-1028), no project's run. */
+  submitJob(request: RunRequest, key: string): Promise<Submitted> {
     if (request.project != null) throw new Error("Project runs require their project's route")
     return this.write("POST", "/v1/runs", request, key)
   }
@@ -792,12 +765,9 @@ export class Client {
     return this.opened(`${machine(name)}/logs/${log}?lines=${lines}${place}`, signal)
   }
 
-  machinePackages(name: string, signal?: AbortSignal): Promise<MachinePackages> {
-    return this.json(`${machine(name)}/packages`, { signal })
-  }
-
-  machineModels(name: string, signal?: AbortSignal): Promise<MachineModels> {
-    return this.json(`${machine(name)}/models`, { signal })
+  /** Its GPUs' use, a reading each second while the stream is read (cl-1100). */
+  machineGpuEvents(name: string, signal: AbortSignal): Promise<Response> {
+    return this.opened(`${machine(name)}/gpus`, signal)
   }
 
   // Packages

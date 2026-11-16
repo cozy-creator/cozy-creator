@@ -4,7 +4,7 @@ import { Files } from "../panels/Files"
 import { ModelDrawer, Models } from "../panels/library/Models"
 import { PackageDrawer, Packages } from "../panels/library/Packages"
 import { MachineDrawer } from "../panels/machines/MachineDrawer"
-import { Machines } from "../panels/machines/Machines"
+import { Machines, NewMachine } from "../panels/machines/Machines"
 import { NewRun } from "../panels/newrun/NewRun"
 import { Projects } from "../panels/Projects"
 import { ProjectVault } from "../panels/ProjectVault"
@@ -37,6 +37,7 @@ const drawers: RouteObject[] = [
   drawer("runs/:number", <RunDrawer />),
   drawer("machines", <Machines />),
   drawer("machines/:name", <MachineDrawer />),
+  drawer("machines/new", <NewMachine />),
   drawer("packages", <Packages />, "wide"),
   drawer("packages/:name", <PackageDrawer />, "wide"),
   drawer("models", <Models />, "wide"),

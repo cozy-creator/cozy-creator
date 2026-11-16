@@ -6,12 +6,10 @@ import { pictureBox, type Presentation, type SceneNode, type ScenePicture } from
 import type { LatentHandle, Media, MediaHandle, MediaSource, VideoHandle } from "./Media"
 import { ellipsis, Label, type LabelStyle, width, wrap } from "./text"
 
-export type Part = "body" | "title" | "delete" | "cancel" | "corner" | "untool"
+export type Part = "body" | "title" | "delete" | "cancel" | "corner" | "untool" | "dot"
 export interface Hit { name: string; part: Part }
 /** The X beside a box's tool, in screen pixels: its glyph, its hit area, and the gap after the tool's name. */
 const UNTOOL_GLYPH = 8, UNTOOL_HIT = 18, UNTOOL_GAP = 3
-/** What the tool's name leaves for its X, in canvas units: its gap and hit area where the line is drawn farthest out (0.45). */
-const UNTOOL_ROOM = Math.ceil((UNTOOL_GAP + UNTOOL_HIT) / 0.45)
 
 /** Every colour comes from the page's tokens (tokens.css), read once per theme. */
 export interface Palette {
@@ -55,7 +53,7 @@ export class CardView {
   private parts = new Map<Part, Container>()
   /** The X beside a box's tool that takes it off (Paul, 11-16: "You are not deleting anything; you are closing it"): drawn in screen
    *  pixels, an 8 px glyph in an 18 px hit area at every zoom, where it sits after the tool's name. */
-  private untool = { glyph: new Graphics(), at: null as { x: number; y: number } | null, color: -1, inked: -1 }
+  private untool = { glyph: new Graphics(), at: null as { x: number; y: number } | null, limit: 0, color: -1, inked: -1 }
   private texts = new Map<string, Label>()
   private pictures = new Map<string, Picture>()
   private checker?: TilingSprite
@@ -68,16 +66,16 @@ export class CardView {
   private began = performance.now()
   private pulsing = false
   /** For inspection: each label's full text, the chips and controls as drawn, in card-local units. */
-  readonly drawn = { full: new Map<string, string>(), chips: [] as { text: string; struck: boolean; box: Box }[], controls: [] as { part: Part; box: Box }[], parts: new Map<Part, Box>(), meter: null as Box | null, dot: null as Box | null }
+  readonly drawn = { full: new Map<string, string>(), chips: [] as { text: string; struck: boolean; box: Box }[], controls: [] as { part: Part; box: Box }[], parts: new Map<Part, Box>(), meter: null as Box | null, dot: null as Box | null, unseen: null as Box | null }
 
   constructor() {
     this.pulse.eventMode = this.ground.eventMode = this.ink.eventMode = "none"
     this.pixels.eventMode = this.labels.eventMode = "none"
     this.root.addChild(this.pulse, this.ground, this.pixels, this.ink, this.labels)
-    for (const part of ["body", "title", "delete", "cancel", "corner", "untool"] as Part[]) {
+    for (const part of ["body", "title", "delete", "cancel", "corner", "untool", "dot"] as Part[]) {
       const area = new Container({ eventMode: "static" })
       area.hitArea = new Rectangle(0, 0, 0, 0)
-      area.cursor = part === "corner" ? "nwse-resize" : part === "body" ? "default" : "pointer"
+      area.cursor = part === "corner" ? "nwse-resize" : part === "body" || part === "dot" ? "default" : "pointer"
       area.visible = false
       this.parts.set(part, area)
       this.root.addChild(area)
@@ -139,7 +137,7 @@ export class CardView {
     body.x -= node.box.x; body.y -= node.box.y
     const used = new Set<string>(), pictures = new Set<string>()
     this.ground.clear(); this.ink.clear()
-    this.drawn.chips = []; this.drawn.controls = []; this.drawn.parts.clear(); this.drawn.meter = null; this.drawn.dot = null
+    this.drawn.chips = []; this.drawn.controls = []; this.drawn.parts.clear(); this.drawn.meter = null; this.drawn.dot = null; this.drawn.unseen = null
     for (const area of this.parts.values()) area.visible = false
     const label = (key: string, text: string, x: number, y: number, room: number, style: LabelStyle, lines = 1) => { used.add(key); return this.label(key, text, x, y, room, style, env, lines) }
     this.untool.at = null
@@ -180,7 +178,7 @@ export class CardView {
         if (!far) label("progress", show.progress.state, body.x + 12, body.y + body.h / 2 - BODY / 2, body.w - 24, { size: BODY, color: colors.ink, bold: true })
       }
       this.header(show, node, state, w, far, colors, label, env)
-      if (!far) this.under(show, body, w, colors, label, 6)
+      if (!far) this.under(show, body, w, colors, label, 6, env.zoom)
     }
     if (show.progress?.fraction !== undefined && !node.view.canceling) {
       const meter = { x: body.x, y: body.y, w: body.w * Math.min(0.99, show.progress.fraction), h: Math.min(body.h, 3 / env.zoom) }
@@ -215,12 +213,18 @@ export class CardView {
     const y = HEAD - 10 - size * 1.2
     let left = 2
     const naming = node.view.draft !== undefined
-    if (show.state && !naming) {
-      const dot = Math.max(8, size * 0.42)
-      this.ink.circle(2 + dot / 2, y + size * 0.62, dot / 2).fill(colors[show.state])
-      this.drawn.dot = { x: 2, y: y + size * 0.62 - dot / 2, w: dot, h: dot }
-      left = dot + 8
-    }
+    // Green first, at its top left, while a version is unseen (cl-1105); a run's queued, running or failed dot beside it.
+    const dots = naming ? [] : [show.unseen ? colors.unseen : -1, show.state && show.state !== "unseen" ? colors[show.state] : -1].filter((color) => color >= 0)
+    if (dots.length) {
+      // As tall as the name's capitals, and apart by half of one, so two read as two at a fitted zoom (look-at-your-own-ui).
+      const dot = Math.max(12, size * 0.6), gap = dot / 2, cy = y + size * 0.62
+      dots.forEach((color, i) => this.ink.circle(2 + dot / 2 + i * (dot + gap), cy, dot / 2).fill(color))
+      const span = dots.length * dot + (dots.length - 1) * gap
+      this.drawn.dot = { x: 2, y: cy - dot / 2, w: span, h: dot }
+      if (show.unseen) this.drawn.unseen = { x: 2, y: cy - dot / 2, w: dot, h: dot }
+      this.area("dot", { x: 0, y: cy - dot, w: span + 4, h: dot * 2 })
+      left = span + 8
+    } else this.area("dot", null)
     const hasControl = !far && !naming && (node.view.asset || node.view.landed || node.view.placing)
     const hasVersion = !far && !naming && show.version ? width(show.version, SMALL) + 10 : 0
     const room = w - left - (hasControl ? 32 : 0) - hasVersion
@@ -251,12 +255,14 @@ export class CardView {
   }
 
   /** Under a box at rest (cl-932, cl-898): its tool and shape; while it renders, where and how long, then what it's doing with Cancel. */
-  private under(show: Presentation, body: Box, w: number, colors: Palette, label: LabelFn, gap: number) {
+  private under(show: Presentation, body: Box, w: number, colors: Palette, label: LabelFn, gap: number, zoom: number) {
     let y = body.y + body.h + gap
     if (show.tool || show.shape || show.from) {
       const shape = show.shape ? Math.min(w * 0.5, width(show.shape, SMALL)) : 0
       // Room for the X after the tool's name at the farthest zoom this line is drawn at.
-      const room = w - shape - 10 - (show.tool ? UNTOOL_ROOM : 0)
+      // The tool's name leaves its X the room it takes on screen at this zoom (the line isn't drawn under 45%).
+      const room = w - shape - 10 - (show.tool ? (UNTOOL_GAP + UNTOOL_HIT) / Math.max(zoom, 0.45) : 0)
+      this.untool.limit = w - shape - 10
       const said = ellipsis([show.tool, show.from].filter(Boolean).join(" · "), room, SMALL)
       label("tool", said, 0, y, room, { size: SMALL, color: colors.mute })
       if (show.tool) this.untool.at = { x: width(said, SMALL), y: y + SMALL * 0.68 }
@@ -286,7 +292,9 @@ export class CardView {
   /** Words with their mentions as chips; a mention the tool can't use, or that's gone, is struck through (Paul, 11-12). */
   private words(show: Presentation, body: Box, colors: Palette, used: Set<string>, env: CardEnv) {
     const x0 = body.x + 12, y0 = body.y + 12, room = body.w - 24
-    const lines = Math.max(1, Math.floor(Math.min(body.h - 16, BODY * 1.35 * 4) / (BODY * 1.35)))
+    // Over a picture, four lines; a box of words is its words, as many lines as it holds (xs-204: an LLM's answer, readable at rest).
+    const over = show.picture || show.references.length
+    const lines = Math.max(1, Math.floor(Math.min(body.h - 16, over ? BODY * 1.35 * 4 : Infinity) / (BODY * 1.35)))
     if (show.picture || show.references.length) this.ink.roundRect(body.x + 6, y0 - 6, body.w - 12, lines * BODY * 1.35 + 12, 5).fill({ color: colors.card, alpha: 0.86 })
     const runs: { text: string; chip: boolean; struck: boolean; x: number; row: number }[] = []
     let row = 0, cursor = 0, cut = false
@@ -526,7 +534,8 @@ export class CardView {
     }
     area.visible = true
     area.scale.set(unit)
-    area.position.set(at.x + (UNTOOL_GAP + UNTOOL_HIT / 2) * unit, at.y)
+    // After the tool's name, never into the shape beside it.
+    area.position.set(Math.min(at.x + (UNTOOL_GAP + UNTOOL_HIT / 2) * unit, this.untool.limit - (UNTOOL_HIT / 2) * unit), at.y)
     const box = { x: area.x - (UNTOOL_HIT / 2) * unit, y: at.y - (UNTOOL_HIT / 2) * unit, w: UNTOOL_HIT * unit, h: UNTOOL_HIT * unit }
     this.drawn.parts.set("untool", box)
     const control = this.drawn.controls.find((one) => one.part === "untool")

@@ -63,7 +63,7 @@ export function RunLog({ run, project }: { run: Run; project: string | null }) {
     setText("")
     void follow(
       stop.signal,
-      () => project ? client.runEvents({ project, run: run.id }, after, stop.signal) : client.maintenanceRunEvents(run.id, after, stop.signal),
+      () => client.runEvents({ project: project ?? "", run: run.id }, after, stop.signal),
       (data) => {
         const event = JSON.parse(data) as RunEvent
         if ("sequence_number" in event) {

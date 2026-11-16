@@ -352,7 +352,7 @@ impl Machines {
             out: None,
             warnings: vec![],
         };
-        let submitted = self.calcifer.submit(key, submit).await.map_err(|e| Refusal::from(e).0)?;
+        let submitted = self.calcifer.submit(key, submit, crate::store::Task::Update).await.map_err(|e| Refusal::from(e).0)?;
         // Software named by hand holds the machine on it, across restarts, until an update names nothing (cl-952).
         if !submitted.replay {
             self.mind_hold(&m.name, key, &target, flagless);

@@ -1,4 +1,5 @@
-//! Unseen box versions (cl-928), retained only in their owning project's existing journal.
+//! Versions and takes not looked at yet (cl-928, cl-1105): each one that lands, until Focus shows it. Kept in the project's own journal,
+//! so a locked project leaves no trace of it elsewhere.
 use std::{collections::{BTreeMap, BTreeSet},sync::Arc};
 use axum::{extract::{Path,State},http::StatusCode};
 use api::error::{Error,Kind};
@@ -30,10 +31,10 @@ pub(super) fn refresh(project:&Project)->Result<(),Error> {
     Ok(())
 }
 
-/// Version `number` of `name` landed unapproved beside an approved one: unseen until it's looked at. Kept as its landing is, with no
-/// admission of its own: a nested try of the project refuses while a lock is queued, and the mark was lost (cl-1025).
+/// Version `number` of `name` landed: unseen until it's looked at, approved or not. Kept as its landing is, with no admission of its
+/// own: a nested try of the project refuses while a lock is queued, and the mark was lost (cl-1025).
 pub(super) fn landed(project:&Project,name:&str,number:u32) {
-    let held=project.folder.reading_boxes(|written|written.get(name).filter(|held|held.get("approved").is_some_and(|value|!value.is_null())).map(id_of));
+    let held=project.folder.reading_boxes(|written|written.get(name).map(id_of));
     let Ok(Some(held))=held else {return};
     match keep(project,&held,number,false) {
         Ok(true)=>crate::events::project_settled(&project.folder.dir),

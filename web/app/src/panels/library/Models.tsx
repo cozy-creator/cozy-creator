@@ -12,11 +12,11 @@ import { bytes, shown, stamp } from "../format"
 import { OnMachine } from "../machines/OnMachine"
 import { LibraryFrame } from "./Library"
 
-/** Follows the run the ask became. A Hub checkpoint is only recorded there: Calcifer's own run, on no machine. */
+/** Follows what the ask became: a project's run (an upload of its run's output), else a job, which its machine shows (cl-1028). */
 function useFollowRun() {
   const navigate = useNavigate()
   const to = useTo()
-  return ({ run }: Submitted) => navigate(to(`runs/${run.number}`))
+  return ({ run }: Submitted) => navigate(to(run.project_id ? `runs/${run.number}` : `machines/${run.machine ?? "local"}`))
 }
 
 /** A dropped file becomes a private checkpoint of a model, on a machine that makes and uploads it. */

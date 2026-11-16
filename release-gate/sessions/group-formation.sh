@@ -50,7 +50,7 @@ h3() {
     beats: [{duration: 15, description: {references: [], text: "The courier rings the bell at the flower stall and rolls down the slope into the square."}}],
     soundscape: {references: [], text: "Tires hissing on wet cobbles, a bicycle bell, cafe chatter."}, seed: $s}' > "$OUT/$1.req.json"
   step "$1" run minimax-h3/generate --input "$OUT/$1.req.json" --gpus 2 --on "$NAME" --output "$OUT/$1"
-  N=$(grep -m1 -oE '^run [0-9]+' "$OUT/$1.txt" | awk '{print $2}')  # a failed run prints no summary for runno
+  N=$(grep -m1 -oE '^run [A-Z][A-Z0-9]*-[0-9]+' "$OUT/$1.txt" | awk '{print $2}')  # a failed run prints no summary for runno
   cozy run watch "$N" --once --json --full > "$OUT/$1.json" 2>&1
   S=$(jq '(.execution_ms // ((.settled_at_ms // 0) - (.accepted_at_ms // 0))) / 1000 | floor' "$OUT/$1.json")
 }

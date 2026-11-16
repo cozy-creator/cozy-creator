@@ -142,7 +142,8 @@ held=$(sha256sum "$OUT/tiny-c.safetensors" | cut -c1-64) addr=$(jq -r .address ~
 curl -fsS -o /dev/null -X PUT -H "Authorization: Bearer $token" --data-binary "@$OUT/tiny-c.safetensors" "http://$addr/v1/files/sha256:$held" || check "PUT the held model file failed"
 curl -sS -X POST -H "Authorization: Bearer $token" -H "Idempotency-Key: held-$run" \
   -d "$(jq -n --arg s "sha256:$held" --arg d "$model" --arg o "$ON" '{target: "cozy/model_upload", on: [$o], input: {source: $s, destination: $d, lane: "f16", source_format: "as-is"}}')" "http://$addr/v1/runs" > "$OUT/upload-held.json"
-held_run=$(jq -r '.run.number // empty' "$OUT/upload-held.json")
+# A job of Calcifer's, no project's run (cl-1028): its id names it.
+held_run=$(jq -r '.run.id // empty' "$OUT/upload-held.json")
 if [ -n "$held_run" ]; then
   cozy --json run watch "$held_run" > /dev/null 2>&1 || true
   cozy --json run watch "$held_run" 2> /dev/null | J '.status == "completed"' || check "model upload of a held file: run $held_run did not complete"

@@ -29,8 +29,9 @@ step install package install ./hub-outage --on "$NAME" -y || fail "install"
 sh 'cp /etc/resolv.conf /root/resolv.conf.cl708 && printf "nameserver 127.0.0.9\n" > /etc/resolv.conf && ! getent hosts tensorhub.com' \
   || fail "the resolver did not break"
 say "the pod's resolver is broken"
-cozy run -p "$RUN_PROJECT" ./hub-outage/pieces --on "$NAME" models:="[\"$MODEL\",\"$MODEL\",\"$ABSENT\"]" pause_s:=10 > "$OUT/run.txt" 2>&1 & follower=$!
-for _ in $(seq 120); do RUN=$(awk '$1=="run" && $2 ~ /^[0-9]+$/ && /\/pieces/ {print $2}' "$OUT/run.txt" | tail -1); [ -n "$RUN" ] && break; sleep 1; done
+pieces=$PWD/hub-outage/pieces
+(cd "$RUN_PROJECT" && exec cozy run "$pieces" --on "$NAME" models:="[\"$MODEL\",\"$MODEL\",\"$ABSENT\"]" pause_s:=10) > "$OUT/run.txt" 2>&1 & follower=$!
+for _ in $(seq 120); do RUN=$(awk '$1=="run" && $2 ~ /^[A-Z][A-Z0-9]*-[0-9]+$/ && /\/pieces/ {print $2}' "$OUT/run.txt" | tail -1); [ -n "$RUN" ] && break; sleep 1; done
 [ -n "$RUN" ] || fail "no run: $(tail -3 "$OUT/run.txt")"
 seen=0 mended=0 t0=$(date +%s)
 while kill -0 "$follower" 2>/dev/null; do

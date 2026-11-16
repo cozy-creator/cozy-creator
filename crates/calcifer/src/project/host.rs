@@ -80,16 +80,16 @@ impl Package {
             return self.function(function).ok();
         }
         let interface = self.interface();
-        let makes = |name: &&str| interface.callables.iter().find(|callable| callable.name == **name).and_then(tool::output_kind) == Some(kind);
+        let makes = |name: &&str| interface.callables.iter().find(|callable| callable.name == **name).and_then(tool::makes) == Some(kind);
         let first = interface.public().into_iter().find(makes)?;
         self.function(first).ok()
     }
 
-    /// What its named function makes: `image`, `video` or `audio`. None: it names none, or its output says no media.
+    /// What its named function makes: `image`, `video`, `audio` or `text`. None: it names none, or its output says none of those.
     pub(crate) fn named_kind(&self) -> Option<String> {
         let interface = self.interface();
         let callable = interface.callables.iter().find(|callable| Some(&callable.name) == self.named.as_ref())?;
-        tool::output_kind(callable).map(str::to_owned)
+        tool::makes(callable).map(str::to_owned)
     }
 
     /// The typed inputs of `function`.
@@ -389,7 +389,7 @@ impl Host {
 
     /// Sends `run` under `key`: one key is one run, however often it is sent.
     pub(crate) async fn submit(&self, key: &str, run: SubmitRun) -> Result<Run, Error> {
-        Ok(self.api.calcifer.submit(key, run).await.map_err(refused)?.run)
+        Ok(self.api.calcifer.submit(key, run, crate::store::Task::None).await.map_err(refused)?.run)
     }
 
     /// Runs a turn of its walk sends `on` one machine: they go together (`Together`).

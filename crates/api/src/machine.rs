@@ -156,6 +156,8 @@ pub mod path {
     pub const PREPARE: &str = "/v1/prepare";
     /// Remove one repository's locally cached model copies; never changes its origin.
     pub const MODELS_REMOVE: &str = "/v1/models/remove";
+    /// `GET` as SSE: `gpus` events, a [`super::GpuUse`] each second while the caller stays, its GPUs read only then (cl-1100).
+    pub const GPUS: &str = "/v1/gpus";
 }
 
 /// A preview's step, `<position>/<total>` (`path::PREVIEW`).
@@ -1569,6 +1571,26 @@ pub struct Gpu {
     /// machine's start by processes it doesn't run. Empty: in service.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub out_of_service: String,
+}
+
+/// What a machine's NVIDIA GPUs are doing now (`path::GPUS`, cl-1100): one reading each; none from a machine without one.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(default)]
+pub struct GpuUse {
+    pub at_unix_ms: i64,
+    pub gpus: Vec<GpuReading>,
+}
+
+/// One GPU's reading: the share of its last sample period a kernel ran (`nvidia-smi`'s GPU-Util), and its memory in use, every
+/// process's.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(default)]
+pub struct GpuReading {
+    pub index: u32,
+    pub busy_percent: u32,
+    pub memory_used_bytes: u64,
 }
 
 /// A GPU's page accounting, as its memory manager holds it now.

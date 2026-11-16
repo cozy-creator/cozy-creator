@@ -17,7 +17,8 @@ from common import Birth, Failure, birth, alive, require
 class Development:
     def __init__(self) -> None:
         require(os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted", "development_hosted_only")
-        self.repo = Path(__file__).resolve().parents[3]
+        # The web of the cozy under test (CI checks its commit out apart), else this harness's own checkout.
+        self.repo = Path(os.environ.get("COZY_WEB_SOURCE") or Path(__file__).resolve().parents[3]).resolve()
         self.config = Path.home() / ".cozy/config.toml"
         self.module = self.repo / "web/app/src/__cozy_hmr_proof.ts"
         require(not self.config.is_symlink() and not self.module.exists(), "development_owned_paths")
@@ -26,6 +27,10 @@ class Development:
         self.identity: tuple[int, int] | None = None
         self.process: subprocess.Popen[bytes] | None = None
         self.birth: Birth | None = None
+
+    def commit(self) -> str:
+        """The commit whose web this Vite serves."""
+        return subprocess.run(["git", "-C", str(self.repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
 
     def start(self) -> None:
         """Vite and the probe, with `[calcifer] development_web` alone: Calcifer ignores it until `enable`."""

@@ -55,12 +55,12 @@ cat "$OUT/cell.txt" >> "$R"
 tiny "$OUT/c.safetensors"
 step upload-c model upload "$OUT/c.safetensors" "$MC" --lane f32 --source-format as-is || fail "upload from the runner"
 CC=$(made upload-c)
-cozy --json run -p "$RUN_PROJECT" "$CELL/probe.py" "model.weights=$MC@$CC" "ref=$MC@$CC" "hub=${COZY_HUB_URL:-https://tensorhub.com}" \
-  "seconds=$PROBE_S" --on "$NAME" > "$OUT/probe.ndjson" 2> "$OUT/probe.err" & PP=$!
+(cd "$RUN_PROJECT" && exec cozy --json run "$CELL/probe.py" "model.weights=$MC@$CC" "ref=$MC@$CC" "hub=${COZY_HUB_URL:-https://tensorhub.com}" \
+  "seconds=$PROBE_S" --on "$NAME") > "$OUT/probe.ndjson" 2> "$OUT/probe.err" & PP=$!
 until grep -q '"machine_state":"running"' "$OUT/probe.ndjson" 2>/dev/null; do
   kill -0 $PP 2>/dev/null || fail "the probe ended before it ran: $(tail -c 300 "$OUT/probe.ndjson")"; sleep 2
 done
-N=$(jq -r 'select(.run.number?) | .run.number' "$OUT/probe.ndjson" | head -1)
+N=$(handle "$OUT/probe.ndjson")
 # Its follow ends first: a cozy waiting on Calcifer starts it again. No cozy runs until the window ends.
 kill $PP 2>/dev/null; wait $PP 2>/dev/null
 systemctl --user stop cozy-calcifer; T=$(systemctl --user show cozy-calcifer -p ActiveEnterTimestampMonotonic --value)
@@ -73,7 +73,7 @@ say "the runner's Calcifer stayed stopped ${OFF_S}s"
 systemctl --user start cozy-calcifer; say "the runner's Calcifer: $(systemctl --user is-active cozy-calcifer) again"
 # The run's record: all of the output when it had settled, else the last line after the events it followed.
 cozy --json --full run watch "$N" > "$OUT/probe-show.json" 2> "$OUT/probe-show.err"
-P=$(jq -sc --argjson n "$N" 'map(select(.number? == $n)) | last' "$OUT/probe-show.json")
+P=$(jq -sc --arg n "$N" 'map(select(.name? == $n)) | last' "$OUT/probe-show.json")
 say "probe: $(jq -c '{status, result, reason}' <<<"$P")"
 cozy machine logs "$NAME" -n 0 > "$OUT/tensord.log" 2>&1
 grep -E "redeemed the run capability|refused the run capability|through the gateway" "$OUT/tensord.log" | tail -10 | sed 's/^/    /' >> "$R"

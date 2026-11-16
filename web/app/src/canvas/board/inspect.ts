@@ -50,7 +50,7 @@ export function inspection(o: Sources) {
       progress: held.show.progress ? { ...held.show.progress } : null,
       chips: card.drawn.chips.map((chip) => ({ text: chip.text, missing: chip.struck, struck: chip.struck, ...screen(chip.box, origin, scale)! })),
       controls: card.drawn.controls.map((control) => ({ part: control.part, ...screen(control.box, origin, scale)! })),
-      stateDot: screen(card.drawn.dot, origin, scale), meter: screen(card.drawn.meter, origin, scale),
+      stateDot: screen(card.drawn.dot, origin, scale), unseenDot: screen(card.drawn.unseen, origin, scale), meter: screen(card.drawn.meter, origin, scale),
       parts: Object.fromEntries([...card.drawn.parts].map(([part, box]) => [part, { ...screen(box, origin, scale)!, ...(part === "delete" ? { icon: "trash" } : part === "cancel" && held.node!.view.placing ? { icon: "close" } : {}) }])),
       ring: o.scene()?.ringOf(name) ?? null,
       preview: card.previewing, latent: card.latentShown,

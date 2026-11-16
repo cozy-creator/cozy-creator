@@ -115,12 +115,15 @@ pub(crate) struct Projects {
     /// Held while a project is made: two first uses of one folder (two `cozy new`s, a page and the CLI) make one.
     making: Mutex<()>,
     requests:Mutex<HashMap<PathBuf,usize>>,
+    /// Run submissions being answered, apart from `requests`: one waits for its run's machine, which a vault's maximum doesn't (cl-1082).
+    submits:Mutex<HashMap<PathBuf,usize>>,
 }
 
-pub(super) struct RequestActivity {api:Arc<Api>,root:PathBuf}
+pub(super) struct RequestActivity {api:Arc<Api>,root:PathBuf,submit:bool}
 impl Drop for RequestActivity {
     fn drop(&mut self) {
-        let mut requests=self.api.projects.requests.lock().expect("project requests");
+        let projects=&self.api.projects;
+        let mut requests=if self.submit { projects.submits.lock() } else { projects.requests.lock() }.expect("project requests");
         let Some(count)=requests.get_mut(&self.root) else { return };
         *count-=1;
         if *count==0 { requests.remove(&self.root); drop(requests); vault::work_ended(&self.root); }
@@ -130,10 +133,20 @@ impl Projects {
     pub(crate) fn active_requests(&self,root:&FsPath)->bool {
         self.requests.lock().expect("project requests").get(&vault::logical(root)).is_some_and(|count|*count>0)
     }
+    /// Whether a run submission to the project is being answered (`track_submit`).
+    pub(crate) fn submitting(&self,root:&FsPath)->bool {
+        self.submits.lock().expect("project requests").get(&vault::logical(root)).is_some_and(|count|*count>0)
+    }
     fn track_request(&self,api:&Arc<Api>,root:&FsPath)->RequestActivity {
         let root=vault::logical(root);
         *self.requests.lock().expect("project requests").entry(root.clone()).or_default()+=1;
-        RequestActivity {api:api.clone(),root}
+        RequestActivity {api:api.clone(),root,submit:false}
+    }
+    /// A run submission being answered: it may wait for its run's machine, so it's no request a vault's lock waits for (cl-1082).
+    fn track_submit(&self,api:&Arc<Api>,root:&FsPath)->RequestActivity {
+        let root=vault::logical(root);
+        *self.submits.lock().expect("project requests").entry(root.clone()).or_default()+=1;
+        RequestActivity {api:api.clone(),root,submit:true}
     }
 }
 
@@ -642,10 +655,29 @@ fn backfill_code(store: &crate::store::Store, entry: &crate::state::KnownProject
 }
 
 /// The project the index knows by `text`, its id, public code or its name (in any case).
+/// A locked project's row as the project it is now (cl-1090): unlocked since, it's the project its own keybag names in that folder, so a
+/// page that opened it by its handle goes on to its own address. Any other row as it is.
+fn unlocked(entry: crate::state::KnownProject) -> crate::state::KnownProject {
+    if !entry.id.starts_with("locked-") || vault::require_path(&entry.path).is_err() { return entry; }
+    match vault::kept_in_keybag(&entry.path) {
+        Some((id, code)) => crate::state::KnownProject { id, code, ..entry },
+        None => entry,
+    }
+}
+
 fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
     let mut indexed = indexed(api)?;
     if let Some(at) = indexed.iter().position(|entry| entry.id == text) {
-        return Ok(indexed.swap_remove(at));
+        return Ok(unlocked(indexed.swap_remove(at)));
+    }
+    // A locked project's handle, the project opened since by its own id (cl-1090): the project now in that folder, until its next lock,
+    // and only while that folder holds an unlocked encrypted project: never a plain one moved in, never a locked one.
+    if text.starts_with("locked-") {
+        let path = api.calcifer.store().handle_path(text).map_err(|e| Error::internal("calcifer_store", e.to_string()))?
+            .filter(|path| vault::encrypted(path) && vault::require_path(path).is_ok());
+        if let Some(at) = path.and_then(|path| indexed.iter().position(|entry| entry.path == path && !entry.id.starts_with("locked-"))) {
+            return Ok(indexed.swap_remove(at));
+        }
     }
     // A locked project's id and code are no longer in the index (cl-984), only its folder: both are read from its own keybag.
     let code = code::parse(text);
@@ -847,7 +879,8 @@ pub(crate) fn landed(project: &FsPath, made: &Landed, dest: &FsPath) -> Result<(
     };
     let row = folder::RunFile { run: made.run, run_id: Some(made.run_id.clone()), function: made.target.to_owned(), output, sha256: made.digest.to_owned(), ..Default::default() };
     let folder = Folder::at(project);
-    let (kept, unlisted) = folder.adopt(dest, made.digest, row, made.measured).map_err(|e| e.message)?;
+    let take = folder.take_run(made.run_id);
+    let (kept, unlisted) = folder.adopt(dest, made.digest, row, made.measured, take).map_err(|e| e.message)?;
     // The file is in `files/` now. An output that grows reads its next revision whole, with nothing here to extend.
     let _ = std::fs::remove_file(dest);
     let said = unlisted.map(|why| format!("{} is saved in files/, but Cozy couldn't add it to the project: {}.", made.output, inner(&why.message)));
@@ -1905,6 +1938,7 @@ async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<J
     let older = known.len().saturating_sub(limit) as u64;
     let open: HashMap<String, Arc<Project>> = api.projects.now_open().into_iter().map(|project| (project.id.clone(), project)).collect();
     let projects = (known.into_iter().take(limit))
+        .map(unlocked)
         .map(|entry| Known {
             name: entry.name,
             busy: open.get(&entry.id).is_some_and(|project| *project.walking.lock().expect("walking lock")),
@@ -2225,10 +2259,18 @@ fn whereabouts(file: &folder::File) -> (bool, Option<String>) {
     (absent, (absent && file.stays()).then(|| file.machine.clone()))
 }
 
+/// The most of a box of words' version a read of it says: the rest is in its file.
+const WORDS_MAX: usize = 64 * 1024;
+
 /// The file people mean by `files`, as a version lists it.
-fn main_file(lock: &Lock, version: &Version) -> Option<MainFile> {
+fn main_file(folder: &Folder, lock: &Lock, version: &Version) -> Option<MainFile> {
     let sha256 = version.main()?;
     let file = lock.files.get(sha256)?;
+    let text = (file.field() == format::TEXT && file.here).then(|| {
+        let words = std::fs::read(folder.path(&file.path)).ok()?;
+        let cut = String::from_utf8_lossy(&words[..words.len().min(WORDS_MAX)]).into_owned();
+        Some(cut)
+    }).flatten();
     let output = version.main_output()?.clone();
     let metadata = version.metadata.get(&output).cloned().unwrap_or_default();
     let (absent, machine) = whereabouts(file);
@@ -2238,6 +2280,7 @@ fn main_file(lock: &Lock, version: &Version) -> Option<MainFile> {
         path: file.path.clone(),
         sha256: sha256.clone(),
         field: file.field().to_owned(),
+        text,
         width: measured(file.width),
         height: measured(file.height),
         duration_ms: measured(file.lasts_ms()),
@@ -2379,7 +2422,7 @@ fn row(reading: &Reading, i: usize) -> Row {
                     latents: version.files.get("latents").and_then(|sha256| lock.files.get(sha256)).filter(|file| file.stays()).map(|file| file.machine.clone()),
                     execution_ms: (version.execution_ms > 0).then_some(version.execution_ms),
                     run: version.run,
-                    main: main_file(lock, version),
+                    main: main_file(folder, lock, version),
                     aspect_ratio: version.fields.as_ref().and_then(|fields| fields.get("aspect_ratio")?.as_str()).map(str::to_owned),
                     from: cut_from(lock, version),
                     without: version.without.iter().map(folder::Without::said).collect(),
@@ -5548,7 +5591,8 @@ impl Walk {
                 number.set(*last);
             })?;
             version.number = number.get();
-            let pending = Pending { job: key.clone(), kind: asset.kind.clone(), ask: ask.id.clone(), asset: name.clone(), version, run: 0, approve, unpin: next.unpin.then(|| asset.kind.clone()), target: target.clone() };
+            let words = (asset.kind == format::TEXT).then(|| api::calcifer::tool::text_field(&callable).map(str::to_owned)).flatten();
+            let pending = Pending { job: key.clone(), kind: asset.kind.clone(), ask: ask.id.clone(), asset: name.clone(), version, run: 0, approve, unpin: next.unpin.then(|| asset.kind.clone()), words, target: target.clone() };
             let settling = |walk: &mut folder::WalkFile| settle(&mut walk.walk);
             if now.asset(&name).is_some_and(|held| held.failed.is_some()) {
                 self.folder().update_lock(|lock| {
@@ -6127,6 +6171,10 @@ impl Walk {
             };
             saved.insert(file, sha256);
         }
+        // A box of words keeps what its tool answered as its version's file, as a picture is kept (xs-204).
+        if let Some(words) = pending.words.as_deref().zip(run.result.as_ref()).and_then(|(field, result)| api::calcifer::tool::text_in(result, field)) {
+            saved.insert(format::TEXT.to_owned(), folder.keep_words(&words)?);
+        }
         if saved.is_empty() && version.files.is_empty() {
             let said = format!("{name}: run {} finished without saving a file.", run.number);
             return Err(Error::new(Kind::Unavailable, "version_unsaved", said).next(format!("cozy run watch {}", run.number)));
@@ -6505,7 +6553,7 @@ impl Walk {
             }
             Ok(())
         })?;
-        self.landed_unseen(name, number, approve);
+        unseen::landed(&self.project, name, number);
         self.say_landed(name, &version, noun, number)
     }
 
@@ -6544,15 +6592,8 @@ impl Walk {
             }
             tally.execution_ms += version.execution_ms;
         }
-        self.landed_unseen(name, number.get(), approve);
+        unseen::landed(&self.project, name, number.get());
         self.say_landed(name, &version, noun, number.get())
-    }
-
-    /// A version that lands beside an approved one, which the box goes on showing, is unseen until it's looked at (cl-928).
-    fn landed_unseen(&self, name: &str, number: u32, approve: bool) {
-        if !approve {
-            unseen::landed(&self.project, name, number);
-        }
     }
 
     fn say_landed(&self, name: &str, version: &Version, noun: &str, number: u32) -> Result<(), Error> {

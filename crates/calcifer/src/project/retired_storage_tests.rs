@@ -27,7 +27,7 @@ async fn bound_calls_require_readable_current_native_storage() {
     let home = platform::paths::Home::under(&directory.path().join("controller"));
     home.open().unwrap();
     std::fs::create_dir_all(home.calcifer()).unwrap();
-    let calcifer = crate::Calcifer::open(&home.calcifer(), &home.outputs()).unwrap();
+    let calcifer = crate::Calcifer::open(&home.calcifer()).unwrap();
     let clips = crate::runs::clip::Clips { dir: directory.path().join("clips"), home };
     let callable: api::interface::Callable = serde_json::from_value(json!({"name": "call", "request": {}})).unwrap();
     for kind in ["schema1", "corrupt", "current"] {

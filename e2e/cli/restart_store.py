@@ -134,7 +134,7 @@ def measure(args: argparse.Namespace) -> None:
     host, port = str(holder["address"]).rsplit(":", 1)
     headers = {"Authorization": f"Bearer {holder['token']}", "cozy-project-storage": "3"}
     routes = [("GET", "/v1/machines"), ("GET", "/v1/tools"), ("POST", "/v1/machines/local/keepalive"),
-              ("GET", f"/v1/projects/{args.project}/address"), ("GET", "/v1/runs?limit=50"), ("GET", "/v1/events"),
+              ("GET", f"/v1/projects/{args.project}/address"), ("GET", "/v1/events"),
               ("GET", f"/v1/projects/{args.project}/runs?limit=50"), ("GET", f"/v1/runs/{args.run}")]
     # Projects of a real size: each's run list, and the tools a page lists for one's local code, which reads its document.
     large = [p for p in args.large.split(",") if p]

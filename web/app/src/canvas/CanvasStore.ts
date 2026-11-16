@@ -32,14 +32,14 @@ import { signal } from "../ui/signal"
 import { carriedFile } from "./carry"
 import { Field, fit, type Give, GLIDE_MS, pushAside } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
-import { fieldsOf, fullRows, heldTo, mainText } from "./controls"
+import { fieldsOf, fullRows, heldTo, mainText, startingFields } from "./controls"
 import { angleOf, baseOf, FPS, framesIn, pickupAt } from "./ranges"
 import { asName, freeName, nameKey } from "./names"
 import { bodyBox, bodyWidth, canvasBox, faceOf, heightFor, hexOf, madeHere, makes, NARROWEST, paints, ratioOf, reshapes, selectedOf, sentShape, type Shown, shownOf, toolName, newTakeId, type Taking, takingOf, underOf, valueIn, valuesOf, watched, widthFor } from "./shown"
 import { mentionsIn, rowsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { PageHistory, type Target } from "./history"
-import { comingOff, goingOn, holdsPictures, type ToolStep, wontGoOn } from "./toolchange"
+import { comingOff, goingOn, holdsPictures, readsBox, startsFrom, type ToolStep, wontGoOn } from "./toolchange"
 import { isSelf, mentionFrom, numbersOf, SELF, versionIn, versionOf } from "./versions"
 import { mergeValue, same, spliceOf, wordsChanged } from "./words"
 import { plainProject } from "../app/view"
@@ -210,6 +210,8 @@ function nextVersion(asset: Asset, file: Pick<MainFile, "sha256" | "field"> & Pa
 }
 
 export const CARD_WIDTH = 240
+/** How far right of a box one made from it goes. */
+const GAP_BESIDE = 48
 
 const NOT_THERE = Symbol("the box went before its turn came")
 const NOT_YET = Number.POSITIVE_INFINITY
@@ -1928,8 +1930,8 @@ export class CanvasStore {
 
   // What makes a box
 
-  /** `tool` goes on it, or takes the place of the one there. What it can't take is said, with Undo. A tool of another kind changes nothing and
-   *  says why (tools §9). */
+  /** `tool` goes on it, or takes the place of the one there. What it can't take is said, with Undo. A tool of another kind that reads it makes a
+   *  new box from it (`madeFrom`); one that can't changes nothing and says why (tools §9). */
   putTool(name: string, tool: Tool) {
     const key = this.resolveName(name)
     const view = this.views.get(key)
@@ -1937,10 +1939,32 @@ export class CanvasStore {
     if (view.asset.tool === tool.id) return
     const wont = wontGoOn(tool, view.asset, key)
     if (wont) return void say(wont)
+    if (readsBox(tool, view.asset)) return void this.madeFrom(key, view.asset, tool)
     void this.save(key)
     const step = goingOn(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }, this.tools.get().get(view.asset.tool ?? ""), tool, view.viewed)
     this.retool(key, step, step.lost.length ? `${name} now uses ${toolName(tool)}, which doesn't take ${step.lost.join(" or ")}` : undefined)
     if (tool.makes === "image" && holdsPictures(view.asset)) this.patch(key, { hereWords: undefined })
+  }
+
+  /** `tool` let go on box `from` of another kind it reads (xs-204, Paul 11-16: "attach an LLM … to an image node … and ask it to produce a
+   *  caption"): a new box of what it makes, right of it, reading it where Calcifer says (`reads`), opened on its words so the caret is there to
+   *  ask. One step: Undo takes it away. */
+  private madeFrom(from: string, asset: Asset, tool: Tool) {
+    const pose = this.poseOf(from)
+    const project = this.projectId
+    if (!pose || !project) return
+    const starting = { ...startingFields(tool), node_kind: tool.makes }
+    // Its mention as Calcifer writes it (`reads`), sent too: it writes none twice.
+    const fields = { ...starting, ...startsFrom(tool, asset.kind, starting, `<${from}>`, true) }
+    const row: Asset = { name: "", standing: "missing", kind: tool.makes, noun: tool.makes === "video" ? "take" : "version", tool: tool.id, versions: 0, status: "", fields }
+    const at = { x: Math.round(pose.x + pose.w + GAP_BESIDE), y: Math.round(pose.y) }
+    const once = `asset-${crypto.randomUUID()}`
+    const name = this.place(asName(tool.name || tool.label), { asset: row }, at, (clear, write, pushes) =>
+      this.client.newAsset(project, once, { tool: tool.id, name: asName(tool.name || tool.label), fields, kind: tool.makes, reads: from, at: clear, moves: pushes.moves, placed: pushes.placed }, write),
+    (error) => say(`Couldn't make a box from ${from}`, error))
+    // In Focus the canvas isn't there to open it on: it's said instead.
+    if (this.focusedName.get()) say(`Made ${name} from ${from}`)
+    else this.openHere(name)
   }
 
   /** Its tool's X leaves a typed container and its words. A note offers Undo for a while. */

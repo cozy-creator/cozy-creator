@@ -237,8 +237,8 @@ pub(crate) async fn keepalive(ctx: &Context, name: &str) -> Result<ExitCode, Err
 /// restart (`POST /v1/machines/{name}/update`): each named as a release version, or a local path,
 /// a dev build sent from here (a wheel or a project to build here; a `cozy` binary or the
 /// cozy-creator checkout to build here). With none named, each moves to its Hub's target. The
-/// update is a numbered run, followed like any run; Calcifer fails it unless the machine then
-/// runs what it asked for.
+/// update is a job of the machine's (cl-1028), followed as it goes; Calcifer fails it unless the
+/// machine then runs what it asked for.
 pub(crate) async fn update(
     ctx: &Context,
     name: &str,
@@ -294,12 +294,12 @@ pub(crate) async fn update(
 }
 
 /// Asks `local` to move to cozy `version`, the release `cozy update` just installed, once its
-/// runs in flight end: an update naming it, submitted and not followed. Its number; none when
-/// `local` runs it already.
-pub(crate) async fn activate(ctx: &Context, version: &str) -> Result<Option<u64>, Error> {
+/// runs in flight end: an update naming it, submitted and not followed (a job of `local`'s, cl-1028).
+/// False when `local` runs it already.
+pub(crate) async fn activate(ctx: &Context, version: &str) -> Result<bool, Error> {
     let m = machine(ctx, "local").await?;
     if m.status.as_ref().is_some_and(|s| s.version == version) {
-        return Ok(None);
+        return Ok(false);
     }
     let ask = MachineUpdate {
         tensord: Some(Component::Version(version.into())),
@@ -308,7 +308,7 @@ pub(crate) async fn activate(ctx: &Context, version: &str) -> Result<Option<u64>
     };
     let path = format!("{}/update", route("local")?);
     let updating: Updating = ctx.calcifer().await?.post(&path, &ask, Some(&mint_key())).await?;
-    Ok(updating.run.map(|run| run.number))
+    Ok(updating.run.is_some())
 }
 
 /// Asks `local` for its own PyTorch base at its Hub's version, installed now as an ordinary update run followed here rather

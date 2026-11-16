@@ -164,7 +164,9 @@ impl Written {
             }
         };
         match (tool.is_empty(), holds) {
-            (true, None) if !media => LEADS.iter().rev().find(|field| held.contains_key(**field)).into_iter().for_each(|field| moved(fields, field, TEXT)),
+            // A box of words is its words, whatever versions a tool wrote on it (xs-204).
+            (true, _) if !media => LEADS.iter().rev().find(|field| held.contains_key(**field)).into_iter().for_each(|field| moved(fields, field, TEXT)),
+            (false, _) if !media => moved(fields, TEXT, INSTRUCTIONS),
             (false, None) => moved(fields, TEXT, INSTRUCTIONS),
             (false, Some(number)) if !said && !held.contains_key(TOOL) => {
                 let own = format!("<self.{number}>");

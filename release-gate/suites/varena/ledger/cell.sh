@@ -10,7 +10,7 @@
 set -uo pipefail
 M=$1 D=$2 CELL=${3:-all} LEAVE=${4:-} HERE=$(cd "$(dirname "$0")" && pwd) R=$RANDOM
 mkdir -p "$D" && cd "$D" || exit 1
-[ -d project ] || cozy project new project >/dev/null || exit 1
+[ -f project/project.db ] || cozy new --unencrypted project >/dev/null || exit 1
 cd project || exit 1
 log() { echo "$(date -u +%T) $*" | tee -a "$D/cell.log"; }
 pod() { cozy machine ssh "$M" "$@"; }
