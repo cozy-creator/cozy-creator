@@ -61,19 +61,34 @@ fn answer(body: &'static [u8], media_type: &'static str) -> Response {
 }
 
 async fn index(State(api): State<Arc<Api>>, request: Request) -> Result<Response, Refusal> {
-    if let Some(address) = api.development_web.get() { return development::http(&api, *address, request, true).await; }
-    let (_, body, media_type) = FILES.iter().find(|(name, ..)| *name == "index.html").ok_or_else(not_built)?;
+    let built = FILES.iter().find(|(name, ..)| *name == "index.html");
+    if let Some(address) = api.development_web.get() {
+        // Vite not answering: the page built into this cozy stands in, said once (cl-1087; Paul 11-16).
+        match development::http(&api, *address, request, true).await {
+            Err(refusal) if development::down(&refusal) && built.is_some() => development::fell_back(*address),
+            answered => {
+                if answered.is_ok() {
+                    development::answered();
+                }
+                return answered;
+            }
+        }
+    }
+    let (_, body, media_type) = built.ok_or_else(not_built)?;
     Ok(answer(body, media_type))
 }
 
-/// A file Vite names by its hash.
+/// A file Vite names by its hash: the built page's when this cozy holds it (the built page standing in for Vite, cl-1087), else
+/// in dev mode Vite's.
 async fn asset(State(api): State<Arc<Api>>, Path(file): Path<String>, request: Request) -> Result<Response, Refusal> {
-    if let Some(address) = api.development_web.get() { return development::http(&api, *address, request, false).await; }
+    let name = format!("assets/{file}");
+    let found = FILES.iter().find(|(known, ..)| *known == name);
+    if let (None, Some(address)) = (found, api.development_web.get()) {
+        return development::http(&api, *address, request, false).await;
+    }
     if FILES.is_empty() {
         return Err(not_built());
     }
-    let name = format!("assets/{file}");
-    let found = FILES.iter().find(|(known, ..)| *known == name);
     let (_, body, media_type) = found.ok_or_else(|| refuse(Kind::NotFound, "asset_not_found", format!("the page has no {name}")))?;
     let mut response = answer(body, media_type);
     response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static(IMMUTABLE));
