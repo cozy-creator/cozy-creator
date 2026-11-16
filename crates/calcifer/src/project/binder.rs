@@ -150,8 +150,11 @@ pub(crate) fn bind(call: &Call) -> Result<Bound, Error> {
             return Err(Error::new(Kind::Unavailable, "tool_input_unknown", said).next("cozy update"));
         }
         if !matches!(field.ty.plain(), Type::Model | Type::Tree) {
-            let said = format!("{} can't run: {} needs its {}", call.name, call.tool, field.name);
-            return Err(Error::new(Kind::Usage, "tool_input_missing", said).remedy(format!("write {}'s {}", call.name, field.name)));
+            // As the box asks it: "choose its Edit (Character swap, Head swap or Style transfer)", never its wire name.
+            let (step, label, options) = api::calcifer::tool::asked(field);
+            let options = options.map(|options| format!(" ({options})")).unwrap_or_default();
+            let said = format!("{} can't run: {step} its {label}{options}", call.name);
+            return Err(Error::new(Kind::Usage, "tool_input_missing", said).remedy(format!("{step} {}'s {label}", call.name)));
         }
     }
     binder.bound.warnings.dedup();
