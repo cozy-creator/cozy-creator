@@ -113,6 +113,10 @@ pub(crate) async fn fix(ctx: &Context) {
             Err(why) => say(&format!("{name}: not fetched now ({why}); cozy fetches it when a feature first needs it")),
         }
     }
+    // This computer's machine holds its PyTorch before its first run (cl-1030).
+    if platform::Os::CURRENT.local_inference() {
+        say(&crate::machine::torch(ctx).await);
+    }
 }
 
 /// Why `tool` is wanted, as the one question says it.
