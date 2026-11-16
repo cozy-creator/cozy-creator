@@ -82,9 +82,8 @@ test('unseen', async ({ page, project, api }) => {
   });
 
   await test.step('its green dot, at its top left, through a pan, a zoom and a reload', async () => {
-    await expect.poll(async () => (await dots(page, 'grey'))?.dot ?? null, { message: 'the green dot drawn' }).not.toBeNull();
+    await expect.poll(async () => { const now = await dots(page, 'grey'); return now?.dot ? now.unseen : 0; }, { message: 'the green dot drawn, counting 3' }).toBe(3);
     const drawn = await dots(page, 'grey');
-    expect.soft(drawn.unseen, 'it counts 3').toBe(3);
     // The box's top left: at its left edge, in its name's row above the picture, before the name.
     const middle = drawn.dot.y + drawn.dot.height / 2;
     expect.soft(Math.abs(drawn.dot.x - drawn.bounds.x), `at its left edge: ${JSON.stringify(drawn)}`).toBeLessThan(drawn.dot.width);
