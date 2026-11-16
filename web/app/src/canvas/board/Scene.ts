@@ -31,6 +31,8 @@ export class Scene {
   private resolution = 1
   private settledZoom = 1
   private landed = new Set<string>()
+  /** After the last update: boxes in view, those built, those with a picture to show, and those whose picture is drawn or said unavailable. */
+  coverage = { inView: 0, built: 0, wanting: 0, pictured: 0 }
   env?: CardEnv
 
   constructor(private o: { world: Container; board: Board; store: CanvasStore; client: Client; media: Media; software: boolean; invalidate(): void; contextOf(view: SceneNode["view"]): RunContext | undefined }) {
@@ -89,6 +91,14 @@ export class Scene {
     // A card still gliding toward a place out of view keeps drawing until it has left.
     for (const [id, held] of this.held) if (!live.has(id) && held.glide && now - held.glide.began < GLIDE_MS) { const node = this.o.board.getNode(id); if (node) visit(node) }
     for (const [id, held] of this.held) if (!live.has(id)) this.release(id, held)
+    let wanting = 0, pictured = 0
+    for (const held of this.held.values()) {
+      if (!held.show?.picture) continue
+      wanting++
+      const handle = held.view.picture?.handle
+      if (handle?.texture || handle?.failed) pictured++
+    }
+    this.coverage = { inView: live.size, built: this.held.size, wanting, pictured }
     return { animating, wake }
   }
 

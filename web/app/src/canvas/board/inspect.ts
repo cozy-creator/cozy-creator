@@ -12,7 +12,7 @@ interface Sources {
   board: Board; store: CanvasStore; media: Media
   scene(): Scene | null; renderer(): Renderer | null
   interaction(): { state(): { pointerDown: boolean; dragging: boolean; marquee: boolean; resizing: string | null; hover: { name: string; part: Part } | null; locked: boolean } } | null
-  frames(): number; ticking(): boolean; software(): boolean
+  frames(): number; open(): { read: number; cards: number; previews: number; log: number[][] }; ticking(): boolean; software(): boolean
 }
 
 /** The canvas as tests read it, in screen pixels and by meaning: what each card says, where its parts are, whether the canvas is still. */
@@ -117,7 +117,7 @@ export function inspection(o: Sources) {
       const scene = o.scene()
       const views = scene ? [...scene.views()] : []
       const renderer = o.renderer()
-      return { ...o.media.stats(), frames: o.frames(), scheduledFrame: o.ticking(), automaticTicker: false, totalCards: o.board.getNodes().length, visibleCards: views.length,
+      return { ...o.media.stats(), frames: o.frames(), open: o.open(), scheduledFrame: o.ticking(), automaticTicker: false, totalCards: o.board.getNodes().length, visibleCards: views.length,
         loadedCards: views.filter(([, held]) => held.view.picture?.handle?.texture).length,
         graphics: renderer ? { backend: "gl" in renderer ? "webgl" : "canvas", software: o.software() } : null }
     },
