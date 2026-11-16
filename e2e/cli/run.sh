@@ -502,6 +502,7 @@ WEB_3=(
   create
   project-name
   takes
+  run-tiles
   no-overlap
   instant
   select
