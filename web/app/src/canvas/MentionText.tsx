@@ -11,6 +11,7 @@ import { Thumb } from "./Media"
 import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, retext, timecode } from "./ranges"
 import { chipWords, mentionsIn, withMentions } from "./text"
 import { paintTriggers, takesWords, typedIn, unpaint, useTriggers } from "./triggers"
+import { UNSUPPORTED, UnsupportedNote } from "./Unsupported"
 import { isSelf, mentionFrom, NO_BARE_SELF } from "./versions"
 
 /** What a chip says: its name in its brackets, a range of a video as timecode, and an orbit's angle in degrees. */
@@ -30,7 +31,7 @@ const leftOut = (unused: Unused[], name: string): string | null => unused.find((
 /** A name as a chip: one gone is struck through, saying whether it was deleted, and so is one its tool can't use here, `unused`, saying why. */
 function chip(name: string, words: string, missing: boolean, unused: string | null, deleted = false): HTMLElement {
   const el = document.createElement("span")
-  el.className = missing ? "chip missing" : unused ? "chip unused" : "chip"
+  el.className = missing ? "chip missing" : unused ? `chip ${UNSUPPORTED}` : "chip"
   el.contentEditable = "false"
   el.dataset.mention = name
   el.textContent = words
@@ -560,6 +561,7 @@ export function MentionText({
           onSave()
         }}
       />
+      <UnsupportedNote unused={unused} />
     </>
   )
 }

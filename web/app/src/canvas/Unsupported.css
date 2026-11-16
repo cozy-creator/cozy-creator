@@ -1,0 +1,12 @@
+/* What its tool can't use: crossed out in red, on paper and dark alike (Unsupported.tsx). */
+.chip.unsupported {
+  background: color-mix(in srgb, var(--bad) 12%, transparent);
+  color: var(--bad);
+  text-decoration: line-through 2px var(--bad);
+}
+.unsupported-note {
+  flex-basis: 100%;
+  margin: 4px 0 0;
+  color: var(--bad);
+  font-size: var(--small);
+}

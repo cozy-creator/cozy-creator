@@ -5,7 +5,6 @@ import { say } from "../ui/notes"
 import type { Asset, Imported, Card, Tool, Opened } from "../api/calcifer"
 import { CARD_WIDTH, type CanvasStore, type CarriedFile, type MediaKind, type Pushes, type Stage, UNDO_MS } from "./CanvasStore"
 import { startingFields, TEXT_TOOL } from "./controls"
-import type { BasicNodeKind } from "./palette"
 import { type CopiedBox, copyOf } from "./copy"
 import { asName, nameKey, stemName } from "./names"
 import { pictureSize } from "./pictureSize"
@@ -101,16 +100,9 @@ export class Placer {
    *  (a checkpoint dropped is on it). Dropping keeps the current canvas interaction mode. */
   addTool(tool: Tool, point: { x: number; y: number }, fields?: Record<string, unknown>) {
     const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
-    const text = tool === TEXT_TOOL
+    const text = tool.id === TEXT_TOOL.id
     const timeline = tool.fields.some((field) => field.type === "timeline") ? { fps: 24, tracks: [{ clips: [] }] } : undefined
     this.box(asName(tool.name ?? tool.label), { kind: tool.makes, tool: text ? undefined : tool.id, fields: text ? { text: "", node_kind: "text" } : { ...startingFields(tool), ...fields, node_kind: tool.makes }, timeline }, at, `Couldn't place ${tool.label}`)
-  }
-
-  /** Basic media nodes retain their type before a model or file is assigned. */
-  addNode(kind: BasicNodeKind, point: { x: number; y: number }) {
-    if (kind === "text") return this.addTool(TEXT_TOOL, point)
-    const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
-    this.box(kind, { kind, fields: { node_kind: kind } }, at, `Couldn't add ${an(kind)} ${kind} box`)
   }
 
   /** An asset that holds these, there at once, with nothing made yet. */

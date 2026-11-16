@@ -637,8 +637,7 @@ function Canvas({
         store.setHot(null)
         return
       }
-      if (load.node) placer.addNode(load.node, point)
-      else if (load.tool) placer.addTool(load.tool, point, load.fields)
+      if (load.tool) placer.addTool(load.tool, point, load.fields)
       if (load.take && !(under && store.takePicture(under, load.take))) placer.addFile(load.take, point)
     },
     [placer, flow, store],

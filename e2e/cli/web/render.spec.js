@@ -11,6 +11,7 @@
 const { writeFileSync } = require('fs');
 const { join } = require('path');
 const { test, expect, canvasIdle, focus, middle, openPoint, fixtureTool, png, canvasCard, hoverBox, screenshotPixels } = require('./fixtures');
+const { toolRow } = require('./hands');
 
 const TOOL = fixtureTool('tool.py');
 const STILL = `${TOOL}/still`;
@@ -245,12 +246,8 @@ test('render', async ({ page, project, api, cli }) => {
   let first;
 
   await test.step('"A still" from the palette, typed in and rendered by Render; another box by Ctrl+Enter', async () => {
-    const tools = page.getByRole('complementary', { name: 'Tools' });
-    const image = tools.locator('button[data-operation="image"]');
-    await image.click();
-    await expect(image).toHaveAttribute('aria-expanded', 'true');
-    const still = tools.locator(`li[data-implementation][data-tool-operation="image"][data-tool=${JSON.stringify(STILL)}]`);
-    await expect(still).toBeVisible();
+    const still = await toolRow(page, 'Image', STILL);
+    await expect(still).toHaveAttribute('data-tool-operation', 'image');
     await carry(page, still, await openPoint(page));
     const fresh = async () => (await project.assets()).filter((asset) => asset.tool === STILL && !before.has(asset.name)).map((asset) => asset.name);
     await expect.poll(fresh, { message: 'a box of A still, dropped' }).toHaveLength(1);
