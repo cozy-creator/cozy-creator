@@ -134,6 +134,8 @@ cut_check "$Q" plain2
 # it shares, and it copies them in when it opens there again.
 sudo test -f "$twinblob" || check "hard cut: the plain projects' copies let go of latents a project away from its folder still needs"
 sudo mv "$R.away" "$R" || check "hard cut: the third plain project not put back"
+# Its TensorD stopped, as at an unlock: only the cut's holds keep what it shares.
+cut_tensord_stopped
 cut_check "$R" plain3
 sudo test ! -e "$twinblob" || check "hard cut: the store still has what the plain projects alone share, all three copied in"
 
