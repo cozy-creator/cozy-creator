@@ -3,9 +3,11 @@
 // faded preview of its latents until its take replaces it, and its finish note's View opens it. Render all: a box waiting on another says
 // so and shows none of the other's progress; the other's whole job's meter rises as it renders; Cancel stops one waiting and one
 // rendering, and their takes go.
-// A failed take stays red, its error with Copy, through a reload, until its trash deletes it. The take watched in Focus is the one drawn
+// A failed render is said once, as a toast, and its take is gone: nothing in the column to pick or delete, the frame back on the take it
+// showed, through a reload (cl-1070). The take watched in Focus is the one drawn
 // when it lands, through a reload; its run's warnings are the box's, never a note. Two boxes rendered at once: the one whose tool is warm
-// starts before the other's install ends.
+// starts before the other's install ends. A picture's take on its way is, in its takes column, the shape it will be: the one set, else
+// Auto's from the picture it edits (cl-1072).
 const { writeFileSync } = require('fs');
 const { join } = require('path');
 const { test, expect, canvasIdle, focus, middle, newCanvas, openPoint, partPoint, fixtureTool, png, canvasCard, hoverBox, screenshotPixels } = require('./fixtures');
@@ -13,7 +15,6 @@ const { test, expect, canvasIdle, focus, middle, newCanvas, openPoint, partPoint
 const TOOL = fixtureTool('tool.py');
 const STILL = `${TOOL}/still`;
 const LATENTS = `${fixtureTool('latents.py')}/latents`;
-const CRASH = `${fixtureTool('shots.py')}/crash`;
 const BROKEN = 'the crash tool fails, as the render cell asks';
 const WARNED = 'a handled fallback, as the render cell asks';
 // A run whose result warns, as a handled fallback does: no fixture tool's does. Its dependencies are tool.py's.
@@ -21,7 +22,7 @@ const WARNS = `# /// script
 # requires-python = ">=3.12"
 # dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19"]
 # ///
-"""The render cell's tool: a still of one colour whose result warns."""
+"""The render cell's tools: a still of one colour whose result warns, and one that fails."""
 
 import os
 
@@ -49,6 +50,12 @@ def warned(payload: Drawing) -> Warned:
     """A still of one colour, and a warning."""
     image = ImageFile.from_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png")
     return Warned(image, payload.instructions.text, ["${WARNED}"])
+
+
+@app.tool(label="Crashes", named="crashes", accelerator=False)
+def crashes(payload: Drawing) -> Warned:
+    """Fails."""
+    raise RuntimeError("${BROKEN}")
 `;
 // A tool of an environment of its own (tool.py's and tomli-w): its first render installs it.
 const INSTALLS = `# /// script
@@ -391,37 +398,42 @@ test('render', async ({ page, project, api, cli }) => {
   });
 
   await test.step('Render the crash tool', async () => {
-    await project.add({ name: 'broken', tool: CRASH, kind: 'video', fields: { crash: BROKEN }, at: { x: 0, y: 420 } });
-    await expect.poll(() => project.asset('broken')).toBeTruthy();
+    // cl-1070 (Paul, 11-16): "do not keep failed runs around as if they were takes I can select"; "an error, when it happens, is a toast
+    // notification, and the take disappears". It's said once, its take leaves the column with nothing to delete, and the frame that
+    // watched it goes back to the take it showed.
+    await project.add({ name: 'broken', tool: `${warns}/crashes`, kind: 'image', fields: { instructions: 'A still that fails.' }, at: { x: 0, y: 420 } });
+    await api.post(project.at('/assets/broken/versions'), { source: await project.upload(png(60, 16, 16)) });
+    await api.post(project.at('/unpin'), { name: 'broken' });
+    await expect.poll(async () => { const held = await project.asset('broken'); return { versions: held?.versions, pinned: Boolean(held?.pinned) }; })
+      .toEqual({ versions: 1, pinned: false });
+    const v1 = shaOf(await project.asset('broken'), 1);
     await fit(page);
     let region = await focus(page, 'broken');
+    await expect(region.getByLabel('Take', { exact: true })).toHaveText('v1');
+    await expect.poll(() => drawn(region.locator('.focus-viewer')), { message: 'v1 drawn' }).toBe(v1);
+    await recordTakes(page, 'broken');
     await region.getByRole('button', { name: 'Render', exact: true }).click();
-    await expect.poll(async () => (await project.asset('broken'))?.takes?.filter((take) => take.failure).length, { message: 'its take failed', timeout: 120_000 }).toBe(1);
-    const failed = region.locator('.here-side .take.making[data-state="failed"]');
-    const error = region.locator('.focus-viewer .run-face.failed');
-    const red = async (when) => {
-      await expect.soft(failed, `${when}: listed, saying so`).toHaveText('Failed');
-      await expect.soft(failed.getByRole('img', { name: 'Failed', exact: true }), `${when}: its red dot`).toBeVisible();
-      await expect.soft(error, `${when}: its error in the frame`).toContainText(BROKEN);
-      await expect.soft(error.getByRole('button', { name: 'Copy', exact: true }), `${when}: Copy`).toBeVisible();
+    await expect.poll(async () => (await project.asset('broken'))?.failure?.message ?? '', { message: 'it failed', timeout: 120_000 }).toContain(BROKEN);
+    expect.soft((await page.evaluate(() => window.__takes.log)).some((look) => look.making.length > 0), 'its take listed while it rendered').toBe(true);
+    const toast = page.locator('[data-note]').filter({ hasText: "broken didn't render" });
+    await expect.soft(toast, 'a toast says it').toHaveCount(1);
+    await expect.soft(toast).toContainText(BROKEN);
+    await softly.poll(async () => (await project.asset('broken'))?.takes ?? [], { message: 'no failed take kept', timeout: 15_000 }).toEqual([]);
+    const gone = async (when) => {
+      await expect.soft(region.locator('.here-side .take.making'), `${when}: no take of it in the column, nothing to delete`).toHaveCount(0);
+      await expect.soft(region.getByLabel('Take', { exact: true }), `${when}: the frame back on the take it showed`).toHaveText('v1');
+      await softly.poll(() => drawn(region.locator('.focus-viewer')), { message: `${when}: v1 drawn again` }).toBe(v1);
     };
-    await red('failed');
+    await gone('failed');
+    await notesOver(page, 2000);
+    await expect.soft(toast, 'said once').toHaveCount(1);
     await pull();
     await page.reload();
     region = focused(page);
     await expect(region).toHaveAttribute('data-focused-asset', 'broken');
     await canvasIdle(page);
-    await failed.click();
-    await red('after a reload');
-    await region.getByRole('button', { name: 'Delete this failed take', exact: true }).click();
-    await expect.poll(async () => (await project.asset('broken'))?.takes?.length ?? 0, { message: 'its take deleted' }).toBe(0);
-    await expect.soft(failed).toHaveCount(0);
-    await pull();
-    await page.reload();
-    await expect(focused(page)).toHaveAttribute('data-focused-asset', 'broken');
-    await canvasIdle(page);
-    await expect.soft(failed, 'deleted, through a reload').toHaveCount(0);
-    expect.soft((await project.asset('broken')).takes ?? [], 'deleted for good').toEqual([]);
+    await gone('after a reload');
+    await expect.soft(toast, 'not said again after a reload').toHaveCount(0);
     await back(page);
   });
 
@@ -491,4 +503,39 @@ test('render', async ({ page, project, api, cli }) => {
     expect.soft([install, eager, fresh].map((run) => run?.status), `fresh's install, eager's call, fresh's call: ${said}`).toEqual(['completed', 'completed', 'completed']);
     expect.soft(eager?.started_at_ms < install?.settled_at_ms, `eager's call starts before fresh's install ends: ${said}`).toBe(true);
   });
+});
+
+// cl-1072 (Paul, 11-16): "the aspect ratio of the preview should be equal to what we expect it to be like of the final generated image";
+// "if it's non-deterministic (i.e., 'auto' is set and there is no default) then just go with whatever aspect ratio the other reference
+// images are". A 16:9 set, and an edit with Auto of a 32×18 picture (`still` takes 1:1 or 16:9): its queued and rendering tile is 16:9.
+test('a picture on its way has the shape it will be in its takes column', async ({ page, project, api }) => {
+  await project.add({ name: 'wide', tool: STILL, kind: 'image', fields: { instructions: 'A wide still.', aspect_ratio: '16:9' }, at: { x: 0, y: 0 } });
+  await project.add({ name: 'edited', tool: STILL, kind: 'image', fields: { instructions: 'Warmer.' }, at: { x: 360, y: 0 } });
+  await api.post(project.at('/assets/edited/versions'), { source: await project.upload(png(120, 32, 18)) });
+  await expect.poll(async () => (await project.asset('edited'))?.versions).toBe(1);
+  await expect.poll(async () => (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`)).tools.map((tool) => tool.id), { message: 'the local tool listed', timeout: 120_000 })
+    .toContain(STILL);
+  await page.reload();
+  await expect(page.locator('.stage')).toBeVisible();
+  await fit(page);
+  for (const [name, edit] of [['wide', false], ['edited', true]]) {
+    const region = await focus(page, name);
+    if (edit) await region.getByRole('button', { name: 'Edit image', exact: true }).click();
+    await page.evaluate((name) => {
+      const looks = (window.__tiles = []);
+      new MutationObserver(() => {
+        for (const tile of document.querySelectorAll(`[data-focused-asset="${CSS.escape(name)}"] .here-side .take.making`)) {
+          const look = { width: tile.offsetWidth, height: tile.offsetHeight };
+          if (!looks.some((held) => held.width === look.width && held.height === look.height)) looks.push(look);
+        }
+      }).observe(document.body, { subtree: true, childList: true, attributes: true });
+    }, name);
+    const before = (await project.asset(name))?.versions ?? 0;
+    await region.getByRole('button', { name: 'Render', exact: true }).click();
+    await expect.poll(async () => (await project.asset(name))?.versions, { message: `${name}'s take`, timeout: 120_000 }).toBe(before + 1);
+    if (edit) expect.soft((await project.asset(name))?.fields?.instructions, 'an edit of its take 1').toContain('<self.1>');
+    const looks = await page.evaluate(() => window.__tiles);
+    expect.soft(looks.length > 0 && looks.every(({ width, height }) => Math.abs(width - height * 16 / 9) <= 1), `${name}'s tile on its way is 16:9: ${JSON.stringify(looks)}`).toBe(true);
+    await back(page);
+  }
 });

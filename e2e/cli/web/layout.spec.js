@@ -244,10 +244,7 @@ test('layout', async ({ page, project, api }) => {
   try {
     if (renders) {
       await render('failed');
-      await expect.poll(async () => {
-        const held = await project.asset('failed');
-        return Boolean(held?.failure || held?.takes?.some((take) => take.failure));
-      }, { message: 'failed fails', timeout: 60_000 }).toBe(true);
+      await expect.poll(async () => Boolean((await project.asset('failed'))?.failure), { message: 'failed fails', timeout: 60_000 }).toBe(true);
       await render('making');
       await expect.poll(async () => Boolean((await canvasCard(page, 'making'))?.rendered?.progress), { message: 'making is being made on the canvas', timeout: 60_000 }).toBe(true);
     }
