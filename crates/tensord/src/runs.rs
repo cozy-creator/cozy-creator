@@ -166,9 +166,9 @@ fn fetches_ahead(spec: &Spec) -> bool {
     spec.warm && !spec.entrypoint.is_empty() && spec.set.is_none() && !matches!(spec.source, Source::Models)
 }
 
-/// A call's place in the download line (cl-1077): one sharing a GPU an ancestor holds (its family's) goes ahead of every queued
-/// run's; any other, an orchestrator's, takes its root's place in job order, so a later run's call never goes ahead of an earlier
-/// run about to start.
+/// A call's place in the download line (cl-1077), as the GPU queue offers it (`queue::job`): one sharing a GPU an ancestor
+/// holds (its family's) goes ahead of every queued run's; any other, an orchestrator's, takes its root's place in job order, so a
+/// later run's call never goes ahead of an earlier run about to start.
 fn call_order(record: &Execution) -> u64 {
     match record.invocation.family.is_empty() {
         false => crate::origin::priority::STARTED,

@@ -707,7 +707,7 @@ impl Service {
             let width = widths.get(&record.id).copied();
             if !(held && root || invocation.degree > 0 && gpu_fenced) && admit()?
                 && self.offer(&pool, &record, width, &mut claims, calls.clone(), admit)? {
-                if root {
+                if crate::queue::job(&record) {
                     self.queue.lock().unwrap().started(&record);
                 }
                 self.went(&record);
