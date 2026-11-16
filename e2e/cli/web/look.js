@@ -271,7 +271,7 @@ async function died(why) {
       await post(`${at}/runs`, { names: ['fresh'], on: ['local'] });
       await until('fresh\'s next take unseen', () => assetOf('fresh'), (row) => row.versions === 2 && row.unseen?.length > 0, FIRST_RUN_MS);
     });
-    await toastShot('toast-finished', 'fresh finished');
+    await toastShot('toast-finished', 'of fresh is ready');
     await tryStep('broken fails', async () => {
       await post(`${at}/runs`, { names: ['broken'], on: ['local'] });
       await until('broken failed', () => assetOf('broken'), (row) => row?.failure, FIRST_RUN_MS);

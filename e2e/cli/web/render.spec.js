@@ -340,7 +340,7 @@ test('render', async ({ page, project, api, cli }) => {
     await canvasIdle(page);
     await expect.soft(region.getByLabel('Take', { exact: true })).toHaveText('v1');
     await back(page);
-    expect.soft(notes.concat(await page.evaluate(() => window.__notes)).filter((text) => text.includes(`${first} finished`)), 'a take landing where it is looked at says nothing').toEqual([]);
+    expect.soft(notes.concat(await page.evaluate(() => window.__notes)).filter((text) => text.includes(`of ${first} is ready`)), 'a take landing where it is looked at says nothing').toEqual([]);
   });
 
   await test.step('Render all, on a slow box that mentions the first', async () => {
