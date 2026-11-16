@@ -999,11 +999,12 @@ fn remove(path: &Path) {
 /// reached (`machine_unreached`); else `output_not_saved`.
 fn lost_code(reason: &str) -> &'static str {
     match reason {
-        r if r.starts_with("the machine no longer holds it") => "output_gone",
-        r if r.starts_with("the machine refused it") => "output_refused",
-        r if r.starts_with("read ") => "output_unreadable",
-        r if r.starts_with("its machine ") => "machine_ended",
+        r if r.starts_with("the machine no longer has it") => "output_gone",
+        r if r.starts_with("the machine refused to send it") => "output_refused",
+        r if r.starts_with("Cozy tried ") => "output_unreadable",
         r if r.starts_with("the run never reached a machine") => "machine_unreached",
+        // `{name} ended ({reason})`: the machine's name first.
+        r if r.contains(" ended (") => "machine_ended",
         _ => "output_not_saved",
     }
 }
