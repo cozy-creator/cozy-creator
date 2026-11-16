@@ -19,8 +19,12 @@ class Read(msgspec.Struct):
     checkpoint: str
 
 
+class ReadInput(msgspec.Struct):
+    pass
+
+
 @app.entrypoint(private=True, accelerator=False)
-async def piece(ctx: Context, *, model: Weights) -> Read:
+async def piece(ctx: Context, payload: ReadInput, *, model: Weights) -> Read:
     """The checkpoint its model resolved to."""
     return Read(model.checkpoint_ref)
 
@@ -51,7 +55,7 @@ async def pieces(ctx: Context, payload: Pieces) -> Report:
             await asyncio.sleep(payload.pause_s)
         started = time.monotonic()
         try:
-            read = await call(piece, model=ModelChoice(ref=ref))
+            read = await call(piece, ReadInput(), models={"model": ModelChoice(ref=ref)})
             done.append(Piece(ref, round(time.monotonic() - started, 2), checkpoint=read.checkpoint))
         except ChildCallError as refused:
             done.append(Piece(ref, round(time.monotonic() - started, 2), code=refused.code))

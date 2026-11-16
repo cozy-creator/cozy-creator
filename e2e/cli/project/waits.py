@@ -13,6 +13,7 @@ from cozy_runtime.author import Adjustments, App, ImageFrame, Outputs, Seed
 from cozy_runtime.fields import AspectRatio, Image, Prompt, Range
 from cozy_runtime.image import ImageRequest, ImageResult, Sizes
 from cozy_runtime.media import VideoFile
+from cozy_runtime.media import ImageFile
 
 app = App()
 SIZES = Sizes((0.25, 4.0), (64, 8192), 16, "the still's 0.25-4 MP")
@@ -27,11 +28,11 @@ class Waiting(msgspec.Struct, kw_only=True):
 
 
 @app.tool(label="Wait, then draw", named="waiting")
-def wait(payload: Waiting, adj: Adjustments, out: Outputs) -> ImageResult:
+def wait(payload: Waiting, adj: Adjustments) -> ImageResult:
     time.sleep(payload.seconds)
     asked = ImageRequest(payload.instructions.text, payload.aspect_ratio, payload.megapixels, payload.seed)
     width, height = asked.size(adj, None, SIZES, megapixels=0.25)
-    image = out.save_image(ImageFrame(width, height, os.urandom(3) * (width * height)), format="png")
+    image = ImageFile.from_image(ImageFrame(width, height, os.urandom(3) * (width * height)), format="png")
     return ImageResult(image, width, height, payload.seed or 0, payload.instructions.text)
 
 

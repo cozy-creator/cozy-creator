@@ -50,6 +50,7 @@ parse "$@"
 . "$(dirname "$0")/thumbs.sh"
 . "$(dirname "$0")/endedlogs.sh"
 . "$(dirname "$0")/fresh.sh"
+. "$(dirname "$0")/typedcalls.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
@@ -834,6 +835,8 @@ case $SHARD in
   " ;;
   # A call asleep past Calcifer's 10-minute "no progress", followed by `cozy run` to its end (cl-977): by dispatch, 12 min.
   asleep) parts="asleep logs" ;;
+  # Typed package composition on the candidate cohort, with tiny local CPU inputs only.
+  typed-calls) parts="typed_calls logs" ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
   coming) parts="coming_machine logs" ;;
   # `cozy update`, its own runner, as it replaces this computer's cozy: the Latest updating to the candidate, then cozy updating
@@ -863,7 +866,7 @@ esac
 # is the same lane there.
 if [ -z "$LOCAL" ] && [ "$parts" != "web_lane logs" ]; then
   case $SHARD in
-    entrypoints | projectvault | projectvault-native | web-serves | notraces | fresh | thumbs) ;;
+    entrypoints | projectvault | projectvault-native | web-serves | notraces | fresh | thumbs | typed-calls) ;;
     web-*) parts="web_alone logs" ;;
     *) parts="
       entrypoints

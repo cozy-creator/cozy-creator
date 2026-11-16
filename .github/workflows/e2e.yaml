@@ -747,7 +747,7 @@ jobs:
         # remain available.
         # ondemand (ondemand-share its install's share of the link), plan, coming, lines, disk and selfupdate guard features Paul asked
         # for (xs-199): each on every RC run, as any cell.
-        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-engines","web-solo","projectdb","projectvault","projectvault-nofuse","projectvault-static","local-code","ondemand","ondemand-share","plan","coming","lines","disk","selfupdate"]') }}
+        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-engines","web-solo","projectdb","projectvault","projectvault-nofuse","projectvault-static","local-code","ondemand","ondemand-share","plan","coming","lines","disk","selfupdate","typed-calls"]') }}
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time. A web lane runs in under 10 min.
@@ -766,6 +766,8 @@ jobs:
       - uses: ./.creator/e2e/candidates
         with:
           packages_ref: ${{ needs.affected.outputs.packages }}
+          runtime_ref: ${{ needs.affected.outputs.runtime }}
+          stack_ref: ${{ needs.affected.outputs.stack }}
           repo: ${{ needs.affected.outputs.repo }}
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
@@ -1121,6 +1123,8 @@ jobs:
       - uses: ./.creator/e2e/candidates
         with:
           packages_ref: ${{ needs.affected.outputs.packages }}
+          runtime_ref: ${{ needs.affected.outputs.runtime }}
+          stack_ref: ${{ needs.affected.outputs.stack }}
           repo: ${{ needs.affected.outputs.repo }}
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
@@ -1182,6 +1186,8 @@ jobs:
       - uses: ./.creator/e2e/candidates
         with:
           packages_ref: ${{ needs.affected.outputs.packages }}
+          runtime_ref: ${{ needs.affected.outputs.runtime }}
+          stack_ref: ${{ needs.affected.outputs.stack }}
           repo: ${{ needs.affected.outputs.repo }}
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}

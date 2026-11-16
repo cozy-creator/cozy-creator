@@ -16,7 +16,7 @@ P=$home/old-takes Q=$OUT/old-takes
 mkdir -p "$OUT/cozy-old"
 curl -fsSL --retry 3 -o "$OUT/cozy-old.tgz" "https://github.com/cozy-creator/cozy-creator/releases/download/v$OLD_RELEASE/cozy-x86_64-unknown-linux-gnu.tar.gz" \
   && tar -xzf "$OUT/cozy-old.tgz" -C "$OUT/cozy-old" || { check "old takes: no cozy $OLD_RELEASE"; return; }
-sudo install -D -m 755 "$OUT/cozy-old/cozy-x86_64-unknown-linux-gnu/cozy" /opt/cozy-old/cozy && sudo install -D -m 644 "$here/project/draw.py" /opt/cozy-old/draw.py \
+sudo install -D -m 755 "$OUT/cozy-old/cozy-x86_64-unknown-linux-gnu/cozy" /opt/cozy-old/cozy && sudo install -D -m 644 "$here/project/draw_runtime_045.py" /opt/cozy-old/draw.py \
   || { check "old takes: not installed for its user"; return; }
 [ "$(old --version)" = "cozy $OLD_RELEASE" ] || { check "old takes: it says $(old --version)"; return; }
 old --json machine show local > "$OUT/old-local.json" || { check "old takes: machine show local: $(tail -c 300 "$OUT/cozy-old.err")"; return; }

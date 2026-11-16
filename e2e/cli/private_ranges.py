@@ -131,7 +131,7 @@ class Still(msgspec.Struct):
 
 @app.tool(label="A still shown first")
 def first(payload: Box, out: Outputs) -> Still:
-    image = out.save_image(ImageFrame(16, 16, os.urandom(3) * 256), format="png")
+    image = ImageFile.from_image(ImageFrame(16, 16, os.urandom(3) * 256), format="png")
     out.publish("image", image)
     time.sleep(payload.seconds)
     return Still(image)

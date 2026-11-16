@@ -46,7 +46,11 @@ else
   line FAIL - upload "$(said "$cli/describe.json")"
 fi
 
-if python3 "$(dirname "$0")/../package-lock.py" --cozy "$COZY" "$cli/src/$p" > "$cli/lock.json" 2> "$cli/lock.err"; then
+if [ -s "$OUT/staged/unpublished.txt" ]; then
+  # A first-party dependency production's index can't meet yet (run.sh's stage.py): no committed lock can name it until promotion
+  # publishes it and the publish cascade relocks this one. The check comes back once production meets it.
+  line SKIP - lock "unpublished first-party dependency $(paste -sd, "$OUT/staged/unpublished.txt"); the publish cascade relocks it"
+elif python3 "$(dirname "$0")/../package-lock.py" --cozy "$COZY" "$cli/src/$p" > "$cli/lock.json" 2> "$cli/lock.err"; then
   # Locked on this suite's Hub: a Hub index's URLs and wheels are this Hub's (lock_same.py), every other byte the same.
   if stale=$(python3 -I "$(dirname "$0")/lock_same.py" "$PKG/uv.lock" "$cli/src/$p/uv.lock" "${COZY_TEST_HUB_ORIGIN:-}"); then
     line PASS - lock

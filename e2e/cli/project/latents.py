@@ -11,7 +11,7 @@ from typing import Annotated
 import msgspec
 import torch
 # The pinned typecheck Runtime (0.45.0) predates `preview`: drop the ignore when the pin moves past it.
-from cozy_runtime.author import App, Context, ImageFrame, Outputs, Telemetry, preview  # type: ignore[attr-defined]
+from cozy_runtime.author import App, Context, ImageFrame, Telemetry, preview
 from cozy_runtime.fields import Image, Prompt, Range
 from cozy_runtime.media import ImageFile
 
@@ -32,7 +32,7 @@ class Picture(msgspec.Struct):
 
 
 @app.tool(label="A denoised still", named="latents")
-def latents(ctx: Context, payload: LatentsBox, out: Outputs, tel: Telemetry) -> Picture:
+def latents(ctx: Context, payload: LatentsBox, tel: Telemetry) -> Picture:
     """A still whose latents come out of noise over `steps`, `seconds` each, each step's estimate shown."""
     generator = torch.Generator().manual_seed(282)
     clean = torch.randn(1, 4, SIDE, SIDE, generator=generator)
@@ -44,4 +44,4 @@ def latents(ctx: Context, payload: LatentsBox, out: Outputs, tel: Telemetry) -> 
             preview(lambda: clean + sigma * (noise - clean) / 2, "sdxl")
             ctx.progress(i, payload.steps)
     pixels = ((clean[0, :3].clamp(-1, 1) + 1) * 127.5).to(torch.uint8).permute(1, 2, 0).contiguous()
-    return Picture(out.save_image(ImageFrame(SIDE, SIDE, pixels.numpy().tobytes()), format="png"), payload.instructions.text)
+    return Picture(ImageFile.from_image(ImageFrame(SIDE, SIDE, pixels.numpy().tobytes()), format="png"), payload.instructions.text)

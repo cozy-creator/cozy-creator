@@ -18,10 +18,10 @@ SIZES = Sizes((0.25, 4.0), (64, 8192), 16, "the still's 0.25-4 MP")
 
 
 @app.entrypoint()
-def draw(payload: ImageRequest, adj: Adjustments, out: Outputs) -> ImageResult:
+def draw(payload: ImageRequest, adj: Adjustments) -> ImageResult:
     width, height = payload.size(adj, None, SIZES, megapixels=1.0, ratio="16:9")
     rgb = hashlib.sha256(payload.prompt.encode()).digest()[:3]
-    image = out.save_image(ImageFrame(width, height, rgb * (width * height)), format="png")
+    image = ImageFile.from_image(ImageFrame(width, height, rgb * (width * height)), format="png")
     return ImageResult(image, width, height, payload.seed or 0, payload.prompt)
 
 

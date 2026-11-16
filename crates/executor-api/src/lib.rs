@@ -255,7 +255,8 @@ pub struct Invoke {
     /// and `stderr.log` there; `work/`, `tmp/` and `home/` go after it. None: the executor's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scratch: Option<PathBuf>,
-    /// The TensorFS store of this call's own checkpoints (its sources and weights outputs); none: the executor's.
+    /// The TensorFS store this call writes its weights outputs to; none: the executor's. Its sources are read from the
+    /// machine's model store.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub store: Option<PathBuf>,
 }

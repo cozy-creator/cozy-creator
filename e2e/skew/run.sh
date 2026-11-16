@@ -99,7 +99,7 @@ HUB=http://127.0.0.1:$HUB_PORT S3=http://127.0.0.1:$S3_PORT S3KEY=skew S3SECRET=
 MINIO=RELEASE.2025-09-07T16-13-09Z  # the archived repository's last release; its source still builds
 # Canonical: the Hub refuses a scratch path that isn't clean, and macOS's $TMPDIR ends in a slash.
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cozy-hub-fixture.XXXXXX") && WORK=$(cd "$WORK" && pwd -P) || exit 1
-PG_NAME=cozy-skew-pg-$$-$RANDOM PG_BIN=''
+PG_NAME=cozy-skew-pg-$$-$RANDOM PG_BIN='' SEED_CA_MANAGER='' SEED_CA_PREVIOUS=''
 cleanup() {
   local status=$?
   [ ! -s "$WORK/hub.pid" ] || HUBPID=$(cat "$WORK/hub.pid")
@@ -109,12 +109,29 @@ cleanup() {
   if [ "$OS" = Linux ]; then docker rm -f "$PG_NAME" >/dev/null 2>&1 || true
   elif [ -n "$PG_BIN" ]; then "$PG_BIN/pg_ctl" -D "$(native "$WORK/pg")" -m immediate stop >/dev/null 2>&1 || true; fi
   [ ! -f "$WORK/requests.jsonl" ] || cp "$WORK/requests.jsonl" "$OUT/hub-requests.jsonl"
+  case $SEED_CA_MANAGER in
+    systemd)
+      if [ -n "$SEED_CA_PREVIOUS" ]; then systemctl --user set-environment "SSL_CERT_FILE=$SEED_CA_PREVIOUS"
+      else systemctl --user unset-environment SSL_CERT_FILE; fi ;;
+    launchd)
+      if [ -n "$SEED_CA_PREVIOUS" ]; then launchctl setenv SSL_CERT_FILE "$SEED_CA_PREVIOUS"
+      else launchctl unsetenv SSL_CERT_FILE; fi ;;
+  esac
   rm -rf "$WORK"
   return "$status"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+# The exact selected SDK is available from this fixture's existing ingress for the
+# lifetime of seeding and the cells. Never resolve a rolling RC in this layer.
+if [ -n "$COMMAND" ] && [ -n "${RT:-${E2E_SEED_RUNTIME:-}}" ]; then
+  uv run -q --no-project "$E2E/seed_sdk.py" prepare \
+    --runtime "${RT:-$E2E_SEED_RUNTIME}" --tensorfs "${TF:-${E2E_SEED_TENSORFS:-}}" --directory "$WORK" \
+    > "$OUT/seed-sdk-prepare.log" 2>&1 || die cohort "the selected SDK could not be staged: $(tail -c 500 "$OUT/seed-sdk-prepare.log")"
+  export COZY_TEST_SEED_SDK=$WORK/seed-sdk.json
+fi
 
 # The store, the database, the Hub.
 TOOLS=${SKEW_TOOLS:-$OUT/tools}
@@ -209,6 +226,28 @@ export COZY_TEST_HUB_ORIGIN=$ORIGIN
 require_test_hub "$HUB" || die isolation "the fixture Hub did not verify as local"
 export COZY_TEST_HUB_CA=$WORK/ca.pem
 export COZY_TEST_HUB_REQUEST_LOG=$WORK/requests.jsonl
+if [ -n "${COZY_TEST_SEED_SDK:-}" ]; then
+  # Keep the normal public roots while adding the already-owned fixture's root.
+  python3 - "$WORK/ca.pem" "$WORK/seed-ca.pem" <<'PY'
+from pathlib import Path
+import ssl, sys
+roots = ''.join(ssl.DER_cert_to_PEM_cert(root) for root in ssl.create_default_context().get_ca_certs(binary_form=True))
+Path(sys.argv[2]).write_text(roots + Path(sys.argv[1]).read_text())
+PY
+  export SSL_CERT_FILE=$(native "$WORK/seed-ca.pem")
+  # Login starts Calcifer through the OS manager, which does not inherit this shell's
+  # environment. Its uv reader and floor fetch must trust the same fixture as the cells.
+  if [ "$OS" = Linux ] && systemctl --user show-environment > /dev/null 2>&1; then
+    SEED_CA_PREVIOUS=$(systemctl --user show-environment | python3 -c 'import shlex,sys; print(next((shlex.split(line)[0].split("=", 1)[1] for line in sys.stdin if line.startswith("SSL_CERT_FILE=")), ""))')
+    systemctl --user set-environment "SSL_CERT_FILE=$SSL_CERT_FILE" || die cohort "could not give Calcifer the fixture CA"
+    SEED_CA_MANAGER=systemd
+  elif [ "$OS" = macOS ]; then
+    SEED_CA_PREVIOUS=$(launchctl getenv SSL_CERT_FILE || true)
+    launchctl setenv SSL_CERT_FILE "$SSL_CERT_FILE" || die cohort "could not give Calcifer the fixture CA"
+    SEED_CA_MANAGER=launchd
+  fi
+  cp "$COZY_TEST_SEED_SDK" "$OUT/seed-sdk.json"
+fi
 
 # The client, as its release installs it; every cozy process reads config.toml's hub_url. Its ingress and store are on
 # loopback too: declared local (`local_origins`), as no URL a run or a Hub answer names ever is.
