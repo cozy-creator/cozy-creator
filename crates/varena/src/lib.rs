@@ -395,6 +395,10 @@ impl State {
             return (reclaim::HIGH, entry.last_use);
         }
         if entry.prefetched {
+            // Probe (cr-302): an unused fill this phase uses next ranks as the plan's next regions do.
+            if let Some((0, position)) = order.next_use(id) {
+                return (reclaim::PHASE_NEXT, u64::MAX - position);
+            }
             // Of unused fills, what the plan needs last goes first: the nearest is about to be used.
             let next = order.next_use(id).map_or(0, |(phases, position)| phases << 32 | position);
             return (reclaim::PREFETCHED, u64::MAX - next);
