@@ -3408,14 +3408,15 @@ async fn job_read(host: &Host, dir: &FsPath, key: String, on: Vec<On>, hub: &str
         Ok(None) => return Err(Unquotable::Not(format!("{with} names no function"))),
         Err(e) => return Err(Unquotable::Not(format!("{with}: {}", e.message))),
     };
-    let models = crate::stages::stage("models", fit::checkpoints(&api, hub, &package, &renderer.function, &made)).await;
+    let fetched = crate::stages::stage("models", fit::checkpoints(&api, hub, &package, &renderer.function, &made)).await;
     let size = v1::JobSize::of(&Value::Object(made));
     let gpu = api::interface::Interface::parse(package.document()).ok().is_some_and(|interface| {
         interface.callables.iter().find(|callable| callable.name == renderer.function).is_some_and(|callable| interface.needs_gpu(callable))
     });
     let scope = crate::private_io::of_path(dir).ok().flatten();
     let source = package.local.clone().filter(|dir| dir.is_dir());
-    Ok(Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on, scope, source }))
+    let (models, on_demand_bytes) = (fetched.models, fetched.on_demand_bytes);
+    Ok(Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on, scope, source, on_demand_bytes }))
 }
 
 /// Why the plan placed no machine for ready job `key`, said when that changes: it goes to the first of its machines that takes it.
@@ -6215,13 +6216,13 @@ async fn pick(api: &Arc<Api>, on: &[On], offers: &[Offer], planned: Option<&Offe
 pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str, release: &str, function: &str, size: v1::JobSize, gpus: u32, gpu: bool, count: u32, update: bool) -> (Result<On, Error>, Vec<Vec<Offer>>, Vec<String>) {
     let host = Host::new(api);
     let read = host.published(hub, &format!("{package}@{release}"), set.first()).await.ok();
-    let models = match &read {
+    let fetched = match &read {
         Some(read) => fit::checkpoints(api, hub, read, function, &Map::new()).await,
-        None => vec![],
+        None => fit::Fetched::default(),
     };
     let named = format!("{package}/{function}@{release}");
     let jobs: Vec<placement::Job> = (0..count.max(1))
-        .map(|copy| placement::Job { key: copy.to_string(), target: named.clone(), function: named.clone(), models: models.clone(), size, gpus, gpu, on: set.to_vec(), scope: None, source: None })
+        .map(|copy| placement::Job { key: copy.to_string(), target: named.clone(), function: named.clone(), models: fetched.models.clone(), size, gpus, gpu, on: set.to_vec(), scope: None, source: None, on_demand_bytes: fetched.on_demand_bytes })
         .collect();
     let (offers, said) = placement::offers(api, &jobs, update).await;
     let chosen = pick(api, set, offers.first().map_or(&[][..], Vec::as_slice), None, hub, read.as_ref(), function, &Map::new()).await;
