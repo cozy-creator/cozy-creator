@@ -572,7 +572,7 @@ pub(super) fn deleted(api: &Arc<Api>, project: &Arc<Project>, id: &str, name: &s
     let gone = gone.map_err(Refusal)?;
     project.walker.lock().expect("walker lock").readings.values_mut().for_each(|reading| reading.moved(&gone.name));
     project.asked.notify_one();
-    super::purge::due(&project.id, super::now_ms() + super::purge::window_ms());
+    super::purge::deleted(&project.id, super::now_ms() + super::purge::window_ms());
     Ok(gone)
 }
 

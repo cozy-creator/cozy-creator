@@ -2972,7 +2972,7 @@ async fn render(api: &Arc<Api>, id: &str, mut asked: Runs) -> Result<Asked, Refu
     }))
     .map_err(Refusal)?;
     if lost.get() {
-        purge::due(&project.id, now_ms() + purge::window_ms());
+        purge::deleted(&project.id, now_ms() + purge::window_ms());
     }
     project.join(&project.folder.lock().map_err(Refusal)?);
     let queued = queued_now(&project, &ask.id);

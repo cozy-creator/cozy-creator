@@ -33,6 +33,10 @@ pub(crate) const TABLES: &str = "
     ) STRICT;
     DROP TABLE IF EXISTS sessions;
     DROP TABLE IF EXISTS session_codes;
+    CREATE TABLE IF NOT EXISTS purge_due (
+        project TEXT PRIMARY KEY,
+        at_ms INTEGER NOT NULL
+    ) STRICT;
     CREATE TABLE IF NOT EXISTS tool_list (
         ord INTEGER PRIMARY KEY,
         package TEXT NOT NULL UNIQUE
@@ -194,6 +198,26 @@ impl Store {
         self.read(|conn| Ok(conn.query_row(&format!("{KNOWN} WHERE id = ?1"), [id], known).optional()?))
     }
 
+    /// When each project's deleted boxes are next due (`project::purge`), kept so a start opens only those: a project with none has
+    /// nothing to purge until a box of it is deleted, or it opens (cl-1010).
+    pub(crate) fn purge_due(&self) -> Result<Vec<(String, i64)>> {
+        self.read(|conn| {
+            let mut statement = conn.prepare("SELECT project, at_ms FROM purge_due")?;
+            Ok(statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// `project`'s next due time as the purger keeps it: the time, or none to take it out.
+    pub(crate) fn keep_purge_due(&self, project: &str, at_ms: Option<i64>) -> Result<()> {
+        self.write(|tx| {
+            match at_ms {
+                Some(at) => tx.execute("INSERT INTO purge_due (project, at_ms) VALUES (?1, ?2) ON CONFLICT (project) DO UPDATE SET at_ms = ?2", params![project, at])?,
+                None => tx.execute("DELETE FROM purge_due WHERE project = ?1", [project])?,
+            };
+            Ok(())
+        })
+    }
+
     /// Every project opened here, last used first.
     pub(crate) fn known_projects(&self) -> Result<Vec<KnownProject>> {
         self.read(|conn| {
@@ -217,6 +241,7 @@ impl Store {
                 tx.execute("INSERT INTO projects_gone (id, code, path) VALUES (?1, '', ?2)", params![format!("gone-{}", hex::encode(bytes)), path])?;
                 tx.execute("DELETE FROM projects WHERE id = ?1", [id])?;
                 tx.execute("DELETE FROM project_keys WHERE id = ?1", [id])?;
+                tx.execute("DELETE FROM purge_due WHERE project = ?1", [id])?;
             }
             Ok(())
         })?;

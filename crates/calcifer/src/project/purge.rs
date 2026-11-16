@@ -28,9 +28,22 @@ const AGAIN: Duration = Duration::from_secs(10 * 60);
 
 static WINDOW: OnceLock<Duration> = OnceLock::new();
 static WAKE: Notify = Notify::const_new();
-/// When each project's deleted boxes are next due, by id. In memory only: the global index keeps just the project reference, and a
-/// start looks at every project it knows once.
+/// When each project's deleted boxes are next due, by id. A deletion's and each purge's next are kept in state.db (`purge_due`), and a
+/// start takes up only those: it opens no project with nothing due (cl-1010: a start opened every known project and loaded its
+/// document, 5 s on Paul's laptop, each request for a project waiting on its load). An open looks again, in memory only.
 static DUE: Mutex<BTreeMap<String, i64>> = Mutex::new(BTreeMap::new());
+/// Calcifer, whose store keeps the due times.
+static KEPT: OnceLock<std::sync::Weak<crate::Calcifer>> = OnceLock::new();
+
+/// `id`'s next due time as `DUE` now holds it, kept for the next start; a store that can't keep it is said, and an open looks again.
+fn keep(id: &str) {
+    let at = DUE.lock().expect("purge due lock").get(id).copied();
+    if let Some(calcifer) = KEPT.get().and_then(std::sync::Weak::upgrade)
+        && let Err(e) = calcifer.store().keep_purge_due(id, at)
+    {
+        warn!("a project's next purge isn't kept: {e}");
+    }
+}
 
 /// The window this Calcifer keeps: `calcifer.undo_seconds` (tests only), else `UNDO_WINDOW`.
 pub(crate) fn set_window(seconds: Option<u32>) {
@@ -50,6 +63,12 @@ pub(crate) fn window_said() -> String {
         s => (s, "second"),
     };
     format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
+}
+
+/// Project `id` has a box deleted now, whose files may go at `at_ms`: Calcifer looks then, this Calcifer or the next.
+pub(crate) fn deleted(id: &str, at_ms: i64) {
+    due(id, at_ms);
+    keep(id);
 }
 
 /// Project `id` has deleted boxes whose files may go at `at_ms`: Calcifer looks then.
@@ -72,14 +91,17 @@ fn settled(id: &str, was_ms: i64, next: Option<i64>) {
         Some(at) => due.insert(id.to_owned(), at),
         None => due.remove(id),
     };
+    drop(due);
+    keep(id);
 }
 
 /// Calcifer's purger: each project whose deleted boxes' windows have ended, purged, in the background, then asleep until the next is due.
 /// A Calcifer that was stopped catches up as it starts.
 pub(crate) fn start(api: Arc<Api>) {
-    let now = now_ms();
-    for project in api.calcifer.store().known_projects().unwrap_or_default() {
-        due(&project.id, now);
+    let _ = KEPT.set(Arc::downgrade(&api.calcifer));
+    match api.calcifer.store().purge_due() {
+        Ok(kept) => kept.into_iter().for_each(|(id, at)| due(&id, at)),
+        Err(e) => warn!("the projects' next purges: {e}"),
     }
     tokio::spawn(async move {
         loop {

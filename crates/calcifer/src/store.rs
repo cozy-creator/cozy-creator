@@ -1837,7 +1837,12 @@ impl Store {
         writer.execute_batch(crate::project::journal::PLACEMENTS)?;
         writer.execute_batch(crate::maintenance_source::TABLES)?;
         writer.execute_batch(crate::project::vault_operation::TABLES)?;
+        // The purger's due times are kept from this start on: this once, every known project is due, as each was at every start before.
+        let first_due = !has_table(&writer, "purge_due")?;
         writer.execute_batch(crate::state::TABLES)?;
+        if first_due {
+            writer.execute("INSERT OR IGNORE INTO purge_due (project, at_ms) SELECT id, 0 FROM projects", [])?;
+        }
         writer.execute_batch(MACHINE_LOGS)?;
         // The store step's parts, in the closed health log: a slow start names its slow part (cl-1010).
         let said = |part: &'static str, since: std::time::Instant| tracing::info!(target: "cozy.service_health", step = part, ms = since.elapsed().as_millis() as u64, "started");
