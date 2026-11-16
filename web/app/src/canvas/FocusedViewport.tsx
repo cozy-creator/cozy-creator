@@ -71,7 +71,7 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
       // (Paul, 11-12). Over its background, Wander behind, it's copied there.
       else if (load.take && own(event.target as Element)) event.stopPropagation()
       else if (load.take) { event.stopPropagation(); onCopyVersion(load.take, x, y) }
-      else if (load.tool) { event.stopPropagation(); store.putTool(name, load.tool, load.operation) }
+      else if (load.tool) { event.stopPropagation(); store.putTool(name, load.tool) }
     }
     held.addEventListener(LET_GO, drop)
     return () => held.removeEventListener(LET_GO, drop)

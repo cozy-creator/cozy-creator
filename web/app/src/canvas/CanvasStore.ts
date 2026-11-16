@@ -39,7 +39,6 @@ import { mentionsIn, rowsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { PageHistory, type Target } from "./history"
 import { comingOff, goingOn, holdsPictures, type ToolStep, wontGoOn } from "./toolchange"
-import type { Operation } from "./palette"
 import { isSelf, mentionFrom, numbersOf, SELF, versionIn, versionOf } from "./versions"
 import { mergeValue, same, spliceOf, wordsChanged } from "./words"
 import { plainProject } from "../app/view"
@@ -71,8 +70,6 @@ export interface Placing {
 /** Everything a card shows that isn't a position. Culling unmounts cards, so a card holds none of it. */
 export interface ElementView {
   name: string
-  /** The operation chosen on this page; a model can support both image creation and editing. */
-  operation?: Operation
   asset?: Asset
   entity?: Entity
   /** An entity's: how the assets it links stand, the worst of them. */
@@ -1987,21 +1984,17 @@ export class CanvasStore {
   // What makes a box
 
   /** `tool` goes on it, or takes the place of the one there. What it can't take is said, with Undo. A tool of another kind changes nothing and
-   *  says why (tools §9). `operation`: the palette's row it came from. */
-  putTool(name: string, tool: Tool, operation?: Operation) {
+   *  says why (tools §9). */
+  putTool(name: string, tool: Tool) {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view?.asset) return
-    if (view.asset.tool === tool.id) {
-      if (operation) this.patch(key, { operation })
-      return
-    }
+    if (view.asset.tool === tool.id) return
     const wont = wontGoOn(tool, view.asset, key)
     if (wont) return void say(wont)
     void this.save(key)
     const step = goingOn(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }, this.tools.get().get(view.asset.tool ?? ""), tool, view.viewed)
     this.retool(key, step, step.lost.length ? `${name} runs ${toolName(tool)} now, which can't take ${step.lost.join(" or ")}` : undefined)
-    if (operation) this.patch(key, { operation })
     if (tool.makes === "image" && holdsPictures(view.asset)) this.patch(key, { hereWords: undefined })
   }
 
