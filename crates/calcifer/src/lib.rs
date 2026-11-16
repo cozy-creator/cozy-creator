@@ -565,6 +565,17 @@ impl Calcifer {
 
     /// A project run that settled and owes no output stops holding its project open: its route goes, and the project closes
     /// once nothing else holds it (a later run, request or view opens it again).
+    /// Whether a run of `project` still writes into it (cl-1060): its driver (settling, its log and journal rows) or its exporter
+    /// (its outputs, latents among them, landing in the project) is going. Its route lasts as long, and the project's vault clock
+    /// and its lock wait for it.
+    pub(crate) fn writing_into(&self, project: &str) -> bool {
+        let ids: Vec<String> = lock(&self.run_owners).iter()
+            .filter(|(_, owner)| owner.as_ref().is_some_and(|owner| owner.project_id() == project))
+            .map(|(id, _)| id.clone()).collect();
+        ids.into_iter().filter_map(|id| RunId::try_from(id).ok())
+            .any(|id| lock(&self.drivers).contains_key(&id) || self.exporting(&id))
+    }
+
     pub(crate) fn release_run(&self, id: &RunId) {
         if lock(&self.drivers).contains_key(id) || self.exporting(id) { return; }
         let Some(Some(owner)) = lock(&self.run_owners).get(id.as_str()).cloned() else { return };
