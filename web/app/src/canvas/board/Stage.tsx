@@ -99,7 +99,7 @@ export function Stage(props: StageProps) {
     }
     live.current = { invalidate, enable }
     /** The renderer chosen and why, or why none started: what inspection reports. */
-    let graphics: Omit<Chosen, "renderer"> | null = null, refused = ""
+    let chosen: Chosen | null = null, refused = ""
 
     // Run context for a card's progress line: its machine, what it waits on, an install for its tool (RunFace's inputs).
     const asked = new Set<number>()
@@ -180,11 +180,11 @@ export function Stage(props: StageProps) {
     ticker.add(tick)
 
     const ready = async () => {
-      const chosen = await takeRenderer(width, height)
-      const made = chosen.renderer
+      const taken = await takeRenderer(width, height)
+      const made = taken.renderer
       if (stopped) { made.destroy({ removeView: true }); return }
       renderer = made
-      graphics = { backend: chosen.backend, why: chosen.why, gpu: chosen.gpu }
+      chosen = taken
       // No global move walks every card on every pointer move: Interaction listens to the window while it holds a press.
       made.events.features.globalMove = false
       made.canvas.className = "canvas-pixels canvas-pane"
@@ -204,7 +204,7 @@ export function Stage(props: StageProps) {
       stage.addChild(viewport)
       const layer = new Container({ eventMode: "passive" })
       viewport.addChild(layer)
-      scene = new Scene({ world: layer, board, store, client, media, software: chosen.backend === "canvas", invalidate, contextOf })
+      scene = new Scene({ world: layer, board, store, client, media, software: taken.backend === "canvas", invalidate, contextOf })
       board.camera.wake = invalidate
       stops.push(board.camera.bind(element, viewport), () => { board.camera.wake = () => {} })
       interaction = createInteraction({
@@ -321,7 +321,7 @@ export function Stage(props: StageProps) {
     stops.push(() => { store.canvasAt = () => null })
     Object.defineProperty(element, "canvasInspection", {
       configurable: true,
-      value: inspection({ board, store, scene: () => scene, interaction: () => interaction, media, frames: () => frames, open: () => open, ticking: () => ticker.started, renderer: () => renderer, graphics: () => graphics ? { ...graphics, state: "ready" as const } : { backend: "none" as const, state: refused ? "failed" as const : "starting" as const, refused }, retired: () => stopped }),
+      value: inspection({ board, store, scene: () => scene, interaction: () => interaction, media, frames: () => frames, open: () => open, ticking: () => ticker.started, renderer: () => renderer, graphics: () => chosen ? { backend: chosen.backend, why: chosen.why, gpu: chosen.gpu, state: "ready" as const } : { backend: "none" as const, state: refused ? "failed" as const : "starting" as const, refused }, retired: () => stopped }),
     })
     return () => {
       stopped = true
