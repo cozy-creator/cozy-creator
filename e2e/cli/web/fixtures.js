@@ -498,7 +498,7 @@ async function canvasPoint(page, name, part = 'body') {
     point = await page.evaluate(({ name, part }) => {
       const root = document.querySelector('.canvas-root'), inspection = root?.canvasInspection, card = inspection?.card(name);
       const nativeTitle = part === 'title' && document.querySelector(`.canvas-node .card[data-asset=${JSON.stringify(name)}] .head .nm`);
-      // The new canvas (cl-1028) says where each of a card's parts is drawn; the old one, its title label and its body.
+      // The new canvas (cl-1048) says where each of a card's parts is drawn; the old one, its title label and its body.
       const rect = card?.rendered?.parts?.[part] ?? (part === 'title' ? nativeTitle?.getBoundingClientRect() ?? card?.rendered?.labels.title ?? card?.title : card?.[part]);
       if (!rect || !rect.width || !rect.height) return null;
       const point = { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
@@ -510,7 +510,7 @@ async function canvasPoint(page, name, part = 'body') {
   return point;
 }
 
-/** Whether the page draws the new canvas (cl-1028): every card drawn by the scene, none mounted as a DOM card under the pointer. */
+/** Whether the page draws the new canvas (cl-1048): every card drawn by the scene, none mounted as a DOM card under the pointer. */
 const newCanvas = (page) => page.evaluate(() => typeof document.querySelector('.canvas-root')?.canvasInspection?.cards === 'function');
 
 /** The pointer on a box. The old canvas mounts its DOM card there (returned); the new draws it hovered, and has no DOM card: act on it with

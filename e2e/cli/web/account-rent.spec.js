@@ -428,7 +428,7 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await region.getByRole('button', { name: 'Render', exact: true }).click();
       await expect(asking, 'it asks on the box itself').toBeVisible({ timeout: 60_000 });
       expect.soft(await asking.getByRole('button').allInnerTexts(), 'Rent a GPU first, Run here anyway second').toEqual(['Rent an RTX 4090', 'Run here anyway']);
-      // At rest too (cl-1028 acceptance row 17): out of Focus with nothing under the pointer, the box still asks, not only on the card a hover
+      // At rest too (cl-1048 acceptance row 17): out of Focus with nothing under the pointer, the box still asks, not only on the card a hover
       // mounts: drawn on its tile (its words, whatever role the canvas files them under), or the new canvas's asking under its box at rest.
       await region.getByRole('button', { name: 'Back to canvas', exact: true }).click();
       await expect(region).toHaveCount(0);

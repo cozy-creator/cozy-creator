@@ -4,7 +4,7 @@
 // connections to Calcifer at once; with one tab and with two more of the same Calcifer open. A box whose preview is on its way pulses,
 // faintly, paper and dark. Its thumbnails are stored in the project as its files land: an open makes none, and one for a file added while
 // it's open is drawn soon after it lands. Zoomed out from 100%, every box in the new view is drawn in each frame of the zoom. Opened in turn
-// ten times by its tab and panned whole, what it holds of pictures comes to rest at the same (cl-1028 row 27).
+// ten times by its tab and panned whole, what it holds of pictures comes to rest at the same (cl-1048 row 27).
 // `@solo`: its times are held to bars and it clears the thumbnail cache, so it has the job to itself; that job has the filesystem driver
 // its encrypted copy needs.
 const { createHash, randomBytes } = require('crypto');
@@ -630,7 +630,7 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
   });
 
   await test.step('opened in turn ten times by its tab, panned whole twice each: what it holds of pictures comes to rest at the same', async () => {
-    // cl-1028 acceptance row 27: repeated opens and whole-scene pans reach a bounded texture count. Bounded: after the first two cycles'
+    // cl-1048 acceptance row 27: repeated opens and whole-scene pans reach a bounded texture count. Bounded: after the first two cycles'
     // warm-up, no later cycle at rest holds more than the most cycles 2 to 6 held (measured, not a number chosen here), and what isn't on
     // screen stays within the cache's own stated allowance (resources().unusedTargetBytes). The vault cell already proves a lock retires
     // every texture and label.

@@ -2,7 +2,7 @@
 // the API put it, looked at 0.25, 0.5, 1 and 2, then one open in Focus. No box or label lies on another; nothing is cut off, nothing that floats
 // over the canvas lies on another, and Focus is under none of it; no scrollbar anywhere. Words read at 10 px or more (a box's at 100%: they're
 // drawn at the canvas's scale, cl-890); a prompt over a picture is bold, 4.5:1 or more against its surface (cl-901). A render's Cancel shows at
-// 1 and at 0.5, and the Focus frame fits the window. A name cut at rest says itself whole under the pointer (cl-1028 row 18). Each finding
+// 1 and at 0.5, and the Focus frame fits the window. A name cut at rest says itself whole under the pointer (cl-1048 row 18). Each finding
 // names its rule, where, and what (layout.js's rules, measured).
 const { randomUUID } = require('crypto');
 const { test, expect, canvasCard, canvasNames, canvasIdle, hoverBox, focus, fixtureTool, middle, nameUnderPointer, newCanvas, observeStill, openPoint, screenshotPixels, MP4, png } = require('./fixtures');
@@ -322,7 +322,7 @@ test('layout', async ({ page, project, api }) => {
     });
 
     await test.step('a name cut at rest says itself whole under the pointer, and nothing else moves', async () => {
-      // cl-1028 acceptance row 18 (Paul's): the long name, cut with an ellipsis where its box ends at rest; hovered, the whole of it.
+      // cl-1048 acceptance row 18 (Paul's): the long name, cut with an ellipsis where its box ends at rest; hovered, the whole of it.
       await zoomMenu('Zoom to fit');
       await passive(page);
       const label = (await canvasCard(page, LONG))?.rendered?.labels?.title;

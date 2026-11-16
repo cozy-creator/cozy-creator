@@ -3,7 +3,7 @@
 // it. Tab reaches it, a named region whose description says its keys; arrows select every box in one order, each brought into view and said
 // by name in a live region; Enter opens Focus and Esc comes back with the box still selected and the keys still on the canvas; Delete
 // deletes it and Ctrl+Z restores it; the menu key opens the box's menu, whose items take the keys; Rename is reachable by Tab in Focus. What
-// a screen reader is given is kept as a11y.json, and the canvas lists its boxes in a named listbox, selected as on the canvas (cl-1028 row 34).
+// a screen reader is given is kept as a11y.json, and the canvas lists its boxes in a named listbox, selected as on the canvas (cl-1048 row 34).
 const { writeFileSync } = require('fs');
 const { test, expect, canvasIdle, canvasNames, canvasPoint, canvasVisible, selectedNames, png } = require('./fixtures');
 
@@ -147,7 +147,7 @@ test('keyboard', { tag: '@engines' }, async ({ page, project }, testInfo) => {
   });
 
   await test.step('the canvas lists its boxes for a screen reader: a named list, one option a box by its name, selected as on the canvas', async () => {
-    // cl-1028 acceptance row 34: the GPU picture has no DOM for its boxes, so a visually hidden list mirrors them. Red until the new canvas
+    // cl-1048 acceptance row 34: the GPU picture has no DOM for its boxes, so a visually hidden list mirrors them. Red until the new canvas
     // layer adds it (today's canvas offers only the region and its live name).
     const list = page.locator('ul.canvas-cards[role="listbox"]');
     await expect.soft(list, 'the canvas has a list of its boxes (ul.canvas-cards, role listbox): not on this canvas yet').toHaveCount(1);

@@ -2,7 +2,7 @@
 // takes and approval, the same files by digest and no bytes copied, a mention between them naming the copy; one Undo takes both back (cl-924).
 // Ctrl+D, an Alt-drag and the menu's Duplicate each make a copy; Ctrl+V in a box's words pastes words only. Star is the API's and leads Files
 // with a ★ through Undo and Redo (cl-892); Rename renames the box, its mentions and the API's. Download saves a box's shown take as its name,
-// and a take as its own (cl-891). A picture held over a box that takes it outlines that box as the canvas draws it (cl-1028 row 17).
+// and a take as its own (cl-891). A picture held over a box that takes it outlines that box as the canvas draws it (cl-1048 row 17).
 const { createHash } = require('crypto');
 const { readdirSync, readFileSync } = require('fs');
 const { join } = require('path');
@@ -190,7 +190,7 @@ test('box-actions', async ({ page, project, api }) => {
   });
 
   await test.step('a picture held over a box that takes it: that box outlined on the canvas, and Esc lets go of nothing', async () => {
-    // cl-1028 acceptance row 17: the drop target's outline is drawn by the canvas itself, not only on a card a hover mounts. hei (BiRefNet)
+    // cl-1048 acceptance row 17: the drop target's outline is drawn by the canvas itself, not only on a card a hover mounts. hei (BiRefNet)
     // takes a picture; harbour (other, renamed above) is one. The ring is measured where it goes, a few pixels outside hei's picture on every
     // side: those pixels change once harbour is held over hei, against the same pixels before (no colour assumed: the page's tokens pick it).
     await page.getByRole('button', { name: /more zoom options$/ }).click();
