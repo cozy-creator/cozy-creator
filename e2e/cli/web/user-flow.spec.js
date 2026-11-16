@@ -3,7 +3,7 @@
 // is roughly as fast and efficient as it can be." Run by release-gate/sessions/user-flow.sh (pod-session), on tensorhub.com with real
 // rentals, through Calcifer's own page as a person uses it:
 //   an encrypted project, locked, opened from the Projects list and unlocked with its passphrase; a plate (a video) dropped on the canvas;
-//   H3's Shot dragged from Tools › Video onto open canvas and its words typed; H3's Edit from Tools › Edit Video dropped on the plate, VFX
+//   H3's Shot dragged from Tools › Video onto open canvas and its words typed; H3's Edit from Tools › Video dropped on the plate, VFX
 //   edit chosen, its beat as long as the plate; machine A rented through the Machines panel ($SKU, one GPU) and preferred; the Shot
 //   rendered; the plate's edit rendered, behind it on A; machine B rented ($SKU_B, $GPUS_B GPUs) and preferred as it boots (Paul had both
 //   preferred); the Shot rendered again while B boots, and once more when B is ready. Calcifer places each (no machine is named): cl-1073's
@@ -388,9 +388,9 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
       mark('shot made', { name: SHOT });
     });
 
-    await test.step("H3's Edit from Tools › Edit Video dropped on the plate: VFX edit, its beat as long as the plate", async () => {
+    await test.step("H3's Edit from Tools › Video dropped on the plate: VFX edit, its beat as long as the plate", async () => {
       await fit(page);
-      const row = await toolRow(page, 'Edit Video', edit.id);
+      const row = await toolRow(page, 'Video', edit.id);
       await carry(page, row, await canvasPoint(page, 'plate'));
       await expect.poll(async () => (await project.asset('plate'))?.tool ?? null, { message: 'the plate takes the Edit tool', timeout: 60_000 }).toBe(edit.id);
       const r = await look('plate');
