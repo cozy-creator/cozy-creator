@@ -2245,13 +2245,14 @@ impl Runs {
                 format!("uploading to {destination} takes the run's TensorFS endpoint, and it carries none")))?;
             (destination, options, context.hub.clone())
         };
-        let store = self.publisher.store();
-        let tree = crate::storage::held(store, tree).map_err(|e| refused("checkpoint_absent", format!("{tree}: {e}")))?;
+        // The Runtime wrote it where the run writes: a project's run in its project's own store (`store_for`), not the machine's.
+        let store = self.service.engine.store_for(id).map_err(|e| refused("checkpoint_absent", e.to_string()))?;
+        let tree = crate::storage::held(&store, tree).map_err(|e| refused("checkpoint_absent", format!("{tree}: {e}")))?;
         let parsed = store.tree(&tree).map_err(|e| refused("checkpoint_invalid", e.to_string()))?;
         let header = parsed.header().map_err(|e| refused("checkpoint_invalid", e.to_string()))?.1.clone();
         let files = parsed.repo_files().map(|(p, r)| (p.to_owned(), r.clone())).collect();
         let control = tensorfs::fetch::UploadControl { cancelled: &|| false, progress: &|_, _| {}, retrying: &|_| {}, commit: &|| true };
-        let uploaded = upload(&options, hub.as_ref(), &destination, lane, &header, &files, store, &control)?;
+        let uploaded = upload(&options, hub.as_ref(), &destination, lane, &header, &files, &store, &control)?;
         Ok(Some((destination, uploaded.checkpoint)))
     }
 

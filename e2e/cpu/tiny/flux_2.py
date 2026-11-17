@@ -2,7 +2,7 @@
 guidance, a bf16 VAE), each a Diffusers folder of the pipeline's real classes at a few channels, with Qwen's tokenizer
 and a byte-level Mistral one. The text encoders keep the depth the conditioning taps (30 and 27 layers) at 32 wide.
 
-`generate` runs [dev]; `generate_turbo` and the `image` tool are bound to the [klein] (`model=`), which runs distilled
+`generate` runs [dev]; `generate_turbo` and the `image` tool pick the [klein] (`model=`), which runs distilled
 (4 steps) or as Base (CFG), and `generate_turbo` once to [dev] with fal's Turbo LoRA, laid out as its 0.2.0 is (xs-183):
 one `transformer` component of PEFT factors, its adapter config at the root, its sites the stored factors' shapes."""
 
@@ -19,7 +19,7 @@ from transformers import AutoModelForImageTextToText, Mistral3Config, Qwen3Confi
 from cell import NARROW, Cell, Json, module, qwen_tokenizer, save, size
 from tiny import _shared
 
-DEV, KLEIN, TURBO = "black-forest-labs/flux-2-dev@0.1.0", "tiny/flux-2-klein", "fal/flux-2-dev-turbo@0.2.0"
+DEV, KLEIN, TURBO = "black-forest-labs/flux-2-dev@0.1.0", "black-forest-labs/flux-2-klein@0.1.0", "fal/flux-2-dev-turbo@0.2.0"
 #: 128² px: the smallest canvas a test reads, on the 16 px grid.
 MEGAPIXELS = 128 * 128 / (1 << 20)
 TEXT_WIDTH = 32
@@ -117,8 +117,7 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
     _dev(root / "dev")
     torch.manual_seed(1)
     _klein(root / "klein")
-    klein = root / "klein"
-    return {DEV: root / "dev", TURBO: _turbo(store), "generate_turbo.models.model": klein, "image.models.model": klein}
+    return {DEV: root / "dev", TURBO: _turbo(store), KLEIN: root / "klein"}
 
 
 def _prompt(text: str, *keys: str) -> dict[str, Json]:
@@ -143,13 +142,16 @@ CELLS: list[Cell] = [
     {"entry": "generate", "name": "upsampled-reference",
      "payload": {"prompt": _prompt("the fox from <fox> in snow", "fox"), "steps": 2, "prompt_upsampling": True, **_SMALL},
      "files": {"prompt.references.0.file": _FOX}},
-    {"entry": "generate_turbo", "name": "klein", "payload": {"prompt": _prompt("a red fox"), **_SMALL}, "check": size(128, 128)},
+    {"entry": "generate_turbo", "name": "klein", "payload": {"prompt": _prompt("a red fox"), **_SMALL},
+     "models": {"generate_turbo.models.model": KLEIN}, "check": size(128, 128)},
     {"entry": "generate_turbo", "name": "klein-reference",
-     "payload": {"prompt": _prompt("the fox from <fox> in snow", "fox"), **_SMALL}, "files": {"prompt.references.0.file": _FOX}},
+     "payload": {"prompt": _prompt("the fox from <fox> in snow", "fox"), **_SMALL}, "files": {"prompt.references.0.file": _FOX},
+     "models": {"generate_turbo.models.model": KLEIN}},
     {"entry": "image", "name": "klein-turbo", "payload": {"instructions": _prompt("a red fox"), "seed": 7},
-     "check": size(1024, 1024)},
+     "models": {"image.models.model": KLEIN}, "check": size(1024, 1024)},
     {"entry": "image", "name": "klein-base", "payload": {"instructions": _prompt("a red fox"), "seed": 7, "turbo": False,
-                                                         "prompt_upsampling": False}, "check": size(1024, 1024)},
+                                                         "prompt_upsampling": False},
+     "models": {"image.models.model": KLEIN}, "check": size(1024, 1024)},
     {"entry": "generate_turbo", "name": "dev-turbo-lora", "payload": {"prompt": _prompt("a red fox"), **_SMALL},
      "models": {"generate_turbo.models.model": DEV}, "check": size(128, 128)},
     {"entry": "quantize", "name": "lanes", "payload": {}, "skip": NARROW},

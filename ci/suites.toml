@@ -5,10 +5,10 @@
 # inside one directory, `**` spans directories.
 # Tokens:
 #   cli, imports, gpu, gpu-datacenter        suites
-#   cpu                                     every package through the candidate Runtime's executor on the CPU, tiny
-#                                           random weights, and uploaded, locked and bound through the candidate cozy
-#                                           (e2e/cpu): what the Runtime, TensorFS, varena, TensorD's frames, Calcifer's
-#                                           describe, lock and binder, or a package decide
+#   cpu                                     every package run as a person runs it on the CPU (cozy run --on local, real
+#                                           TensorD), tiny random weights mirrored on the owned Hub, and uploaded and
+#                                           locked through the candidate cozy (e2e/cpu): what the Runtime, TensorFS,
+#                                           varena, TensorD, Calcifer's describe, lock and binder, or a package decide
 #   skew-candidate                          the candidate cozy against a Hub of tensorhub master, production's line (the
 #                                           Hub suite's cells, e2e/skew/run.sh), while the suites' Hub is tensorhub's RC
 #   cli-release                             cozy's signed-in commands (e2e/release/run.sh): a release only, with the CI key

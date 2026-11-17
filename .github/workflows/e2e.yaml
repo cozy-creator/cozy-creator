@@ -1241,12 +1241,18 @@ jobs:
           path: ${{ runner.temp }}/e2e
           retention-days: 14
 
-  # The free CPU test (e2e/cpu): every package's entry points through the candidate Runtime's real executor with tiny
-  # random weights, one and two ranks, outputs against stored references; each package uploaded, locked and its
-  # requests bound through the candidate cozy and its owned Hub. No GPU or rental.
+  # The free CPU test (e2e/cpu): every package's entry points on tiny random weights, as a person runs them (cozy run --on
+  # local, real TensorD, its models mirrored on the owned Hub), outputs against stored references; each package uploaded and
+  # locked through the candidate cozy. In shards of every Nth package, slowest first (run.sh --shard K/N): minimax-h3's
+  # stand-in cells alone fill a runner's lane for ~50 min. No GPU or rental.
   cpu:
+    name: cpu ${{ matrix.shard }}/${{ strategy.job-total }}
     needs: [affected, candidate, hub]
     if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cpu')
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal.
     timeout-minutes: 120
@@ -1307,7 +1313,7 @@ jobs:
           export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
           bash .creator/e2e/skew/run.sh --hub-bin "$RUNNER_TEMP/fixture-hub" --candidates "$CANDIDATES" --admin --out "$RUNNER_TEMP/e2e/hub" \
             --command .creator/e2e/isolated.sh -- cpu \
-            --out "$RUNNER_TEMP/e2e" --envs "$RUNNER_TEMP/envs" "${cpu_args[@]}" $CANDIDATES \
+            --out "$RUNNER_TEMP/e2e" --envs "$RUNNER_TEMP/envs" --shard ${{ matrix.shard }}/${{ strategy.job-total }} "${cpu_args[@]}" $CANDIDATES \
             $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
 
       - if: always()
@@ -1315,7 +1321,8 @@ jobs:
       - if: always()
         uses: ./.creator/e2e/publish
         with:
-          name: e2e-cpu
+          # Shard 1 (minimax-h3's) keeps the name h3-artifact-compare.yaml reads.
+          name: e2e-cpu${{ matrix.shard > 1 && format('-{0}', matrix.shard) || '' }}
           path: ${{ runner.temp }}/e2e
           retention-days: 14
 

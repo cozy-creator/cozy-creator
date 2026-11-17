@@ -350,8 +350,8 @@ print(" ".join(sorted(folders.get(name, name) for name in named)))
 PY
 }
 
-# CPU's author/binder cells use the already-installed candidate and authenticated fixture.
-# Its ordinary executor cells remain unchanged and use the package checkout and its locks.
+# CPU's cells run through the installed candidate, signed in as this Hub's admin: each package's tiny models are mirrored
+# here under its default refs and its functions run on the local machine (cpu/real.py).
 if [ "$suite" = cpu ]; then
   project=$seed/project
   mkdir -p "$project"
