@@ -570,9 +570,14 @@ impl Service {
             with.extend(pids.iter().copied());
             let more = freed(&with, &released);
             // The leader's end ends its whole group.
-            if more > can && pool.end_idle_executor(pids[0]) {
-                names.extend(room.lanes.iter().filter(|lane| pids.iter().any(|pid| lane.holders.contains(pid))).map(|lane| lane.name.clone()));
-                (ended, can) = (with, more);
+            if more > can {
+                if pool.end_idle_executor(pids[0]) {
+                    names.extend(room.lanes.iter().filter(|lane| pids.iter().any(|pid| lane.holders.contains(pid))).map(|lane| lane.name.clone()));
+                    (ended, can) = (with, more);
+                } else {
+                    // Taken for a call as it was listed idle (e2e 44063971753): it lets go below instead.
+                    tracing::info!("executor {} was taken for a call before it could end: it lets go of what that call doesn't read", pids[0]);
+                }
             }
         }
         for (pid, models) in busy.iter().filter(|(pid, _)| !ended.contains(*pid)) {
