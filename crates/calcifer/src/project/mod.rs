@@ -1254,17 +1254,25 @@ fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_c
         } else { kept_identity(&known.path).is_some_and(|(held, _)| held == id) }
     });
     let copied = |id: &str| original(id).is_some();
+    // An encrypted copy unlocked under an id of its own (cl-1066, `vault::copy_of`): its key file names it, its database still the
+    // original's, which another folder holds. It takes that id as a plain copy takes a fresh one.
+    let mut rekeyed = None;
     if encrypted {
         let keybag = project_vault::Keybag::load(&logical.join(project_vault::KEYBAG_FILE))
             .map_err(|_| Error::new(Kind::Conflict, "vault_identity", "Cozy can't read this locked project's key file."))?;
-        if kept.as_ref().is_none_or(|(id, _)| id != &keybag.info().project_id) {
-            return Err(Error::new(Kind::Conflict, "vault_identity", "This locked project's id doesn't match its key file."));
-        }
-        if copied(&keybag.info().project_id) {
-            return Err(Error::new(Kind::Conflict, "vault_copy", "Another folder already holds this locked project. Open that one, or move its folder here instead."));
+        let own = keybag.info().project_id;
+        match &kept {
+            Some((id, _)) if id != &own && copied(id) => rekeyed = Some(own),
+            Some((id, _)) if id == &own => {
+                if copied(&own) {
+                    return Err(Error::new(Kind::Conflict, "vault_copy", "Another folder already holds this locked project. Open that one, or move its folder here instead."));
+                }
+            }
+            _ => return Err(Error::new(Kind::Conflict, "vault_identity", "This locked project's id doesn't match its key file.")),
         }
     }
     let (id, copy_of) = match &kept {
+        Some((id, _)) if rekeyed.is_some() => (rekeyed.clone().expect("checked"), original(id)),
         Some((id, _)) => match original(id) {
             None => (id.clone(), None),
             Some(original) => (fresh_id(), Some(original)),

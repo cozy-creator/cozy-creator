@@ -602,6 +602,18 @@ pub(crate) fn sweep_runtime(calcifer: &FsPath) -> bool {
     clean
 }
 
+/// Where the project `root`'s key file names lives too, when `root` is a copy of it: its original's folder, registered by that id
+/// and holding a key file of the same id, or another location of it unlocked now. A copy is never mounted under that id.
+fn copy_of(api: &Api, root: &FsPath, keybag: &Keybag) -> Result<Option<PathBuf>, Error> {
+    let id = keybag.info().project_id;
+    if let Some(known) = api.calcifer.maintenance_store().known_project(&id).map_err(|e| error("vault_journal", e))? {
+        if known.path != root && Keybag::load(&known.path.join(KEYBAG_FILE)).is_ok_and(|other| other.info().project_id == id) {
+            return Ok(Some(known.path));
+        }
+    }
+    Ok(KEY_ROOTS.lock().expect("vault project roots").get(&id).filter(|known| *known != root && held(known).is_some()).cloned())
+}
+
 fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &VaultAsk) -> Result<(), Error> {
     if let Some(known) = api.calcifer.maintenance_store().known_project(&keybag.info().project_id).map_err(|e| error("vault_journal", e))? {
         if known.path != root && Keybag::load(&known.path.join(KEYBAG_FILE)).is_ok_and(|other| other.info().project_id == keybag.info().project_id) {
@@ -1169,10 +1181,30 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
             progress.phase("opening");
             if !encrypted(root) { return Err(Error::new(Kind::Usage, "project_plain", "this project is not encrypted")); }
             let keybag = Keybag::load(&root.join(KEYBAG_FILE)).map_err(key)?;
+            let original = copy_of(api, root, &keybag)?;
+            // A copy's own passphrase rides beside the recovery secret that unlocks it: its new key is wrapped with one.
+            let (credential, passphrase) = match (ask.passphrase.take(), ask.recovery_secret.take()) {
+                (Some(pass), Some(recovery)) if original.is_some() && !pass.is_empty() && !recovery.is_empty() =>
+                    (Credential::Recovery(SecretString::from(recovery)), Some(pass)),
+                (pass, recovery) => {
+                    let mut one = VaultAsk { passphrase: pass.clone(), recovery_secret: recovery, ..ask.clone() };
+                    (credential(&mut one)?, pass)
+                }
+            };
             let took = crate::took::Took::new("vault keys");
-            let secret = keybag.unlock(credential(ask)?).map_err(key)?;
+            let secret = keybag.unlock(credential).map_err(key)?;
             drop(took);
-            if let Some(session) = held(root) {
+            if let Some(original) = original {
+                // A copy of an encrypted project gets an id of its own (cl-1066, fix, don't refuse): re-encrypted under a fresh key, as a
+                // rotate does, never mounted under the original's id. Its passphrase is the one it was unlocked with, or one given beside
+                // its recovery secret; its new recovery secret is said once.
+                let passphrase = passphrase.filter(|pass| !pass.is_empty()).ok_or_else(|| Error::new(Kind::Usage, "vault_copy_passphrase",
+                    format!("{} is a copy of {}: give it a passphrase of its own beside its recovery secret.", root.display(), original.display()))
+                    .next("cozy vault unlock --recovery-file <file> --passphrase-file <file>"))?;
+                let created = Keybag::create(&super::fresh_id(), SecretString::from(passphrase)).map_err(key)?;
+                recovery_secret = Some(created.recovery_secret.expose().to_owned());
+                convert_from(api, root, created.keybag, created.secret, Some(secret), ask, progress, transition)?;
+            } else if let Some(session) = held(root) {
                 let mut session = session.lock().expect("vault session");
                 if session.mount.is_mounted().map_err(provider)? {
                     if session.keybag.info().key_id != keybag.info().key_id { return Err(error("vault_key", "the active keybag was replaced; close this mount before recovery")); }
@@ -1920,21 +1952,43 @@ fn no_nested(api: &Api, root: &FsPath) -> Result<(), Error> {
 }
 
 fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &VaultAsk, progress: &mut Progress, transition: &ProjectTransition) -> Result<PathBuf, Error> {
-    let source = view(root)?;
+    convert_from(api, root, keybag, secret, None, ask, progress, transition)
+}
+
+/// [`convert`], from `copy` when `root` is a copy's storage, unlocked with its original's key (cl-1066): read through a read-only
+/// mount of its own, never a session or a registration under the original's id.
+#[allow(clippy::too_many_arguments)]
+fn convert_from(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret, copy: Option<ProjectSecret>, ask: &VaultAsk, progress: &mut Progress, transition: &ProjectTransition) -> Result<PathBuf, Error> {
+    let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(unusable)?;
+    let copying = copy.is_some();
+    let mut source_mount = None;
+    let mut source_runtime = None;
+    let source = match &copy {
+        Some(old) => {
+            let runtime = project_runtime(root)?;
+            let view = project_mount::view_path(&runtime).map_err(provider)?;
+            let mounted = old.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: !cfg!(windows) })).map_err(mounting)?;
+            let path = mounted.view().to_owned();
+            source_mount = Some(mounted);
+            source_runtime = Some(runtime);
+            path
+        }
+        None => view(root)?,
+    };
     // A child project has its own activity, connections and transition gate. Never move/delete
     // its live storage as an incidental part of converting its parent.
     no_nested(api, root)?;
     progress.phase("validating");
     let managed = managed_tree(&source)?;
-    let old_secret = held(root).map(|session| session.lock().expect("vault session").secret.duplicate());
-    if old_secret.is_none() && plain_generation_for_encrypt(root, &keybag.info().project_id)? != keybag.info().generation {
+    let old_secret = if copying { None } else { held(root).map(|session| session.lock().expect("vault session").secret.duplicate()) };
+    if !copying && old_secret.is_none() && plain_generation_for_encrypt(root, &keybag.info().project_id)? != keybag.info().generation {
         return Err(error("vault_key", "the plaintext execution generation changed before encryption"));
     }
     let target_keybag = keybag.clone();
     if !CONVERTING.lock().expect("vault conversions").insert(root.to_owned()) { return Err(error("vault_busy", "the project is already being converted")); }
     let _converting = Converting(root.to_owned());
     forget(api, root, transition)?;
-    if old_secret.is_none() {
+    if !copying && old_secret.is_none() {
         tokio::runtime::Handle::current().block_on(crate::private_io::close_private_project(api, root))?;
         crate::runs::files::release_private(root)?;
     }
@@ -1957,7 +2011,6 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
         source_key: Keybag::load(&root.join(KEYBAG_FILE)).ok().map(|bag| bag.info().key_id),
         backing_id: None, plain: None };
     save_conversion(&receipt)?;
-    let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(unusable)?;
     secret.with_bytes(|bytes| engine.create(&staged.join(BACKING), bytes)).map_err(mounting)?;
     keybag.save(&staged.join(KEYBAG_FILE)).map_err(key)?;
     receipt.backing_id = Some(directory_id(&staged.join(BACKING))?);
@@ -1966,8 +2019,6 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     // must release its stale handles (Busy refuses). The replacement source mount is never
     // published to apps. Windows lacks a qualified read-only provider: do not browse conversion
     // drives while this runs; Linux/macOS enforce a read-only source volume.
-    let mut source_mount = None;
-    let mut source_runtime = None;
     let source = if let Some(old) = &old_secret {
         close(api, root, transition)?;
         let runtime = project_runtime(root)?;

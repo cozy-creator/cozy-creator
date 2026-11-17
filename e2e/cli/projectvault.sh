@@ -56,6 +56,23 @@ projectvault() (
   jq -e '.encrypted == true and .state == "unlocked"' "$work/born-status.json" > /dev/null || fail "new --passphrase-file made no unlocked encrypted project: $(cat "$work/born-status.json")"
   [ -s "$secrets/born-recovery" ] || fail "new --recovery-out saved no recovery secret"
   in_project "$work/born" --json vault lock > "$work/born-lock.json" || fail "the new encrypted project doesn't lock: $(jq -c '.error | {code, message}' "$work/born-lock.json" 2> /dev/null)"
+  step "a copy of an encrypted project, unlocked, gets an id and a key of its own (cl-1066)"
+  # Before, it was refused `vault_project_copy` ("this encrypted project's original location still exists") while the original was there.
+  cp -a "$work/born" "$work/born-copy"
+  cozy --json vault --directory "$work/born-copy" unlock --passphrase-file "$secrets/initial" > "$work/copy-unlock.json" 2> "$work/copy-unlock.err" \
+    || fail "an encrypted project's copy didn't unlock: $(tail -c 300 "$work/copy-unlock.json") $(tail -c 300 "$work/copy-unlock.err")"
+  jq -e '.vault.encrypted == true and .vault.state == "unlocked" and (.recovery_secret | type == "string")' "$work/copy-unlock.json" > /dev/null \
+    || fail "the copy unlocked without its own recovery secret: $(jq -c '{vault: .vault.state, recovery: (.recovery_secret | type)}' "$work/copy-unlock.json")"
+  project_api "$work/born-copy" '' > "$work/copy-state.json" || fail "the unlocked copy didn't open"
+  J --arg i "$(jq -r .id "$work/born.json")" '.id != $i and ((.warnings // []) | any(.message | contains("is a copy of")))' "$work/copy-state.json" \
+    || fail "the encrypted copy took no id of its own, or didn't say so: $(jq -c '{id, warnings}' "$work/copy-state.json")"
+  # The original unlocks as itself beside it, with its own passphrase.
+  cozy --json vault --directory "$work/born" unlock --passphrase-file "$secrets/initial" > "$work/born-again.json" 2>&1 \
+    || fail "the original didn't unlock beside its copy: $(tail -c 300 "$work/born-again.json")"
+  project_api "$work/born" '' > "$work/born-state.json" || fail "the original didn't open beside its copy"
+  J --arg i "$(jq -r .id "$work/born.json")" '.id == $i' "$work/born-state.json" || fail "the original lost its id to its copy: $(jq -c .id "$work/born-state.json")"
+  in_project "$work/born-copy" --json vault lock > /dev/null 2>&1 || fail "the copy didn't lock"
+  in_project "$work/born" --json vault lock > /dev/null 2>&1 || fail "the original didn't lock again"
   cozy --json new --unencrypted "$P" > "$work/created.json"
   boxes_of "$P" > "$work/before.json"
   mkdir -p "$P/files"

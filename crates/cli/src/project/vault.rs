@@ -21,8 +21,8 @@ struct Encrypt {
 
 #[derive(clap::Args, Debug)]
 struct Unlock {
-    /// Read the passphrase from this file instead of prompting. Use - for stdin.
-    #[arg(long, value_name = "FILE", conflicts_with = "recovery_file")]
+    /// Read the passphrase from this file instead of prompting. Use - for stdin. With --recovery-file, a copy's own new passphrase.
+    #[arg(long, value_name = "FILE")]
     passphrase_file: Option<PathBuf>,
     /// Use a saved recovery secret from this file. Use - for stdin.
     #[arg(long, value_name = "FILE")]
@@ -201,7 +201,13 @@ async fn request_vault(ctx: &Context, client: &crate::calcifer_client::Client, p
     for attempt in 1..=3 {
         let typed = credential(None, "Project passphrase or recovery secret: ", false)?;
         if recovery_shaped(&typed) { prompted.recovery_secret = Some(typed); } else { prompted.passphrase = Some(typed); }
-        let result = request_once(ctx, client, path, &prompted).await;
+        let mut result = request_once(ctx, client, path, &prompted).await;
+        // A copy unlocked by its recovery secret gets an id and a key of its own: they're wrapped with a passphrase it's given now.
+        if result.as_ref().is_err_and(|error| error.code == "vault_copy_passphrase") && prompted.recovery_secret.is_some() {
+            if let Err(error) = &result { output::say(ctx, &error.message); }
+            prompted.passphrase = Some(credential(None, "A passphrase for this copy: ", true)?);
+            result = request_once(ctx, client, path, &prompted).await;
+        }
         (prompted.passphrase, prompted.recovery_secret) = (None, None);
         match result {
             Err(error) if error.kind == Kind::Credential && error.code == "vault_unlock_failed" && attempt < 3 => {
@@ -280,8 +286,9 @@ async fn encrypt(ctx: &Context, path: &str, args: Encrypt) -> Result<ExitCode, E
 
 async fn unlock(ctx: &Context, path: &str, args: Unlock) -> Result<ExitCode, Error> {
     let mut request = ask("unlock");
+    // Both: a copy of an encrypted project unlocked by its recovery secret, given a passphrase of its own (cl-1066).
     if let Some(path) = &args.recovery_file { request.recovery_secret = Some(credential(Some(path), "Recovery secret: ", false)?); }
-    else if let Some(path) = &args.passphrase_file { request.passphrase = Some(credential(Some(path), "Project passphrase: ", false)?); }
+    if let Some(path) = &args.passphrase_file { request.passphrase = Some(credential(Some(path), "Project passphrase: ", false)?); }
     request.idle_timeout_s = Some(args.idle);
     request.max_duration_s = Some(args.max_duration);
     change(ctx, path, request, None).await

@@ -1,0 +1,1 @@
+A copy of an encrypted project unlocks as a project of its own: Cozy re-encrypts it under a fresh id and key, with the passphrase it was unlocked with (or, unlocked by its recovery secret, one it asks for), says once its new recovery secret, and opens it beside the original, as a plain copy opens. Before, it was refused `vault_project_copy` while the original's folder was there.
