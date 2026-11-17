@@ -6,7 +6,10 @@
 //! Only on a dedicated machine (a rental, or a computer its owner gave to Cozy: `machine.mode`), one load at a time, and only into
 //! room no one else's model holds: free memory, or what idle executors of the same actor and project hold that no listed item
 //! loaded, which varena's own order then takes. A real call yields it at once (`yield_to`): a load of another model ends, its
-//! executor with it; a load of the same model goes on, and the call takes what it made. A list that drops an item loading lets the
+//! executor killed and its GPU's call slot given back with the kill, not once the executor has exited (5.1 s on an A40,
+//! 44050923094): a load runs no code of a package's and starts no kernel a call could meet, and what the dying executor holds
+//! comes back at its exit through varena's ledger, as any peer's does. A load of the same model goes on, and the call takes what
+//! it made. A list that drops an item loading lets the
 //! load finish, as a render of it may have just been asked. It is no run: it never counts as a job, so a rental's idle clock never
 //! sees it.
 use super::*;
@@ -47,8 +50,8 @@ struct Item {
 struct ItemState {
     /// Why it isn't loading now.
     held_back: String,
-    /// Once loaded: its executor, and what that held on its first GPU then.
-    loaded: Option<(u32, u64)>,
+    /// Once loaded: its executor.
+    loaded: Option<u32>,
     /// Its load failed: it isn't tried again until it comes anew.
     failed: bool,
 }
@@ -58,6 +61,8 @@ struct Loading {
     caller: String,
     construction: String,
     stop: Arc<Stoppable>,
+    /// Its lane's call slots, until it ends or a real call ends it.
+    permit: Option<Permit>,
     /// When a real call ended it.
     halted: Option<Instant>,
 }
@@ -133,14 +138,19 @@ impl Pool {
     /// The calls left waiting for a GPU this dispatch pass, by construction: a load of any other ends now; one of theirs goes on,
     /// and the call takes its executor.
     pub(crate) fn yield_to(&self, waiting: &[String]) {
-        let stop = {
+        let (stop, permit) = {
             let mut loading = self.ahead.loading.lock().unwrap();
             let other = |loading: &&mut Loading| loading.halted.is_none() && waiting.iter().any(|construction| *construction != loading.construction);
             let Some(loading) = loading.as_mut().filter(other) else { return };
             loading.halted = Some(Instant::now());
-            loading.stop.clone()
+            (loading.stop.clone(), loading.permit.take())
         };
+        // Killed first (or at its birth, if it has none yet): then its slot is the call's.
         stop.halt();
+        if let Some(permit) = permit {
+            drop(permit);
+            tracing::info!(run = %stop.id(), "load ahead: its GPU went to a run waiting for it");
+        }
     }
 
     /// How ready the machine is for `actor`'s item `caller` beyond its weights: `loading`, `loaded` or `evicted`; else `ready`
@@ -163,7 +173,8 @@ impl Pool {
     }
 
     /// Whether `item`'s models are on a GPU (an executor holds its construction there): None if not; false once a run took that
-    /// memory from the executor its load left idle, as varena's ledger shows.
+    /// memory from the executor its load left idle, as varena's ledger shows: what it holds there under 90% of its weights. An
+    /// idle executor says what it holds only once asked for memory, as a run's ask takes it: before, it holds them.
     fn on_gpu(&self, item: &Item) -> Option<bool> {
         let construction = &item.predicted.plan.construction;
         let (start, pid) = {
@@ -171,13 +182,13 @@ impl Pool {
             let (key, (_, _, birth)) = levels.iter().find(|(key, (_, level, _))| key.split('@').next() == Some(construction.as_str()) && *level == Level::Gpu)?;
             (key.split_once('@').and_then(|(_, start)| start.parse().ok()).unwrap_or(0usize), birth.pid)
         };
-        let Some((loaded, held)) = item.state.lock().unwrap().loaded else { return Some(true) };
+        let Some(loaded) = item.state.lock().unwrap().loaded else { return Some(true) };
         // A call or a warm set made it, or a call has it now: the pool's own account stands.
         let idle = self.sessions.lock().unwrap().values().any(|session| session.executor.birth.pid == pid);
         if loaded != pid || !idle {
             return Some(true);
         }
-        Some(self.holdings(start, pid).is_none_or(|(now, _)| now.saturating_mul(10) >= held.saturating_mul(9)))
+        Some(self.holdings(start, pid).is_none_or(|(held, _)| held == 0 || held.saturating_mul(10) >= item.need.saturating_mul(9)))
     }
 
     /// What process `pid` holds on GPU `device`, and of it what is idle, as varena's ledger says.
@@ -264,6 +275,7 @@ impl Pool {
             caller: item.predicted.caller.clone(),
             construction: plan.construction.clone(),
             stop: stop.clone(),
+            permit: None,
             halted: None,
         });
         let placed = fits.iter().find_map(|&start| self.place(plan, (None, None), Some(start..start + degree), &mut vec![None; self.width()]));
@@ -271,24 +283,38 @@ impl Pool {
             self.ahead.loading.lock().unwrap().take();
             return Err(("a run holds the GPU".into(), true));
         };
+        // Its slot is the load's to give back from here: a call that came while it was placed has it at once.
+        let mut loading = self.ahead.loading.lock().unwrap();
+        match loading.as_mut().filter(|loading| loading.halted.is_none()) {
+            Some(loading) => loading.permit = Some(permit),
+            None => {
+                *loading = None;
+                drop(loading);
+                drop(permit);
+                return Err(("a run is waiting for the GPU".into(), true));
+            }
+        }
+        drop(loading);
         let lane = start..start + degree;
         item.hold_back("");
         engine.notify_activity();
         let began = Instant::now();
         let free = self.free(&lane);
         let result = self.load_item(engine, item, start, &stop);
-        drop(permit);
-        let halted = self.ahead.loading.lock().unwrap().take().and_then(|loading| loading.halted);
+        // Its slot, unless a call took it.
+        let loading = self.ahead.loading.lock().unwrap().take();
+        let halted = loading.as_ref().and_then(|loading| loading.halted);
+        drop(loading);
         drop(stop);
         let (caller, construction) = (&item.predicted.caller, &plan.construction);
         let gpus = self.lane_devices(start, plan.degree).unwrap_or_default();
         let ms = began.elapsed().as_millis() as u64;
         if let Some(halted) = halted {
-            // From the halt to its GPU back: what a real call waited on it.
-            let yield_ms = halted.elapsed().as_millis() as u64;
-            tracing::info!(run = %caller, "load ahead: ended for a run, GPU {gpus} free {yield_ms} ms later ({ms} ms after it began)");
+            // Its slot went to the call with the kill (`yield_to`); this is how long its executor took to exit after it.
+            let exit_ms = halted.elapsed().as_millis() as u64;
+            tracing::info!(run = %caller, "load ahead: ended for a run {ms} ms after it began; its executor exited {exit_ms} ms after the GPU went to the run");
             self.notes.note(serde_json::json!({"event": "load_ahead_yield", "run": caller, "plan": construction, "gpus": gpus,
-                "yield_ms": yield_ms, "loading_ms": ms}));
+                "exit_ms": exit_ms, "loading_ms": ms}));
             item.hold_back("a run took the GPU; it loads again once the GPU is idle");
         }
         match result {
@@ -297,7 +323,7 @@ impl Pool {
                 if let Some(session) = self.sessions.lock().unwrap().get_mut(&session_key(&plan.executor, start)) {
                     session.user = Some(item.scope());
                 }
-                item.state.lock().unwrap().loaded = Some((pid, held));
+                item.state.lock().unwrap().loaded = Some(pid);
                 tracing::info!(run = %caller, "load ahead: its models are on GPU {gpus} in {ms} ms ({} held, {} free before)",
                     gib(held), free.map_or("?".into(), gib));
                 self.notes.note(serde_json::json!({"event": "load_ahead", "run": caller, "plan": construction, "gpus": gpus,
@@ -337,9 +363,10 @@ impl Pool {
         sessions.get(&session_key(&plan.executor, start)).map(|session| session.executor.birth.pid).ok_or_else(|| "its executor ended".into())
     }
 
-    /// Whether `item` fits on `lane` now, else why not. It needs its weights and a context on each GPU: free there, or what idle
-    /// executors there hold when every one served its own actor and project last and holds no listed item, so that what varena
-    /// takes for it (idle first, oldest use first) is theirs. Another's model, or another listed item's, is never taken.
+    /// Whether `item` fits on `lane` now, else why not. It needs its weights and a context on each GPU: free there, or, on a card
+    /// that holds them, what idle executors there hold when every one served its own actor and project last and holds no listed
+    /// or warm item, so that what varena takes for it (idle first, oldest use first) is theirs. Another's model, or another listed
+    /// item's, is never taken.
     fn room(&self, item: &Item, lane: std::ops::Range<usize>, listed: &BTreeSet<String>) -> Result<(), String> {
         let need = item.need + IDLE_USE;
         let scope = item.scope();
@@ -357,14 +384,14 @@ impl Pool {
             let holders: Vec<&Session> = sessions.values().filter(|session| session.degree != 0 && session.lane().contains(&device)).collect();
             let theirs = holders.iter().any(|session| session.user.as_ref().is_some_and(|user| *user != scope));
             let kept = holders.iter().any(|session| session.loaded.keys().any(|loaded| loaded != own && (listed.contains(loaded) || warm.contains(loaded))));
-            let reclaimable: u64 = holders.iter()
-                .flat_map(|session| executor_births(&session.executor.birth, &session.followers))
-                .filter_map(|birth| self.holdings(device, birth.pid)).map(|(held, _)| held).sum();
+            // Every idle one there is the item's to take (an idle executor says what it holds only once asked): what the card
+            // holds bounds it.
+            let card = self.devices.get(device).and_then(|d| self.inventory(&d.entry)).map_or(0, |gpu| gpu.memory_bytes);
             let short = format!("no spare GPU memory: {} free of the {} it needs", gib(free), gib(need));
             match () {
                 () if theirs => return Err(format!("{short}; another project's model holds the rest")),
                 () if kept => return Err(format!("{short}; another predicted request or a warm set holds the rest")),
-                () if free + reclaimable < need => return Err(short),
+                () if holders.is_empty() || card < need => return Err(short),
                 () => {}
             }
         }
