@@ -361,12 +361,30 @@ pub(crate) struct RunRow {
 }
 
 impl RunRow {
-    /// The id its machine knows it by: its own, then `<id>~<attempt>` for each time it is sent again.
-    pub(crate) fn sent_id(&self) -> String {
-        match self.attempt {
+    /// The id its machine knows it by: its own, then `<id>~<attempt>` for each time it is sent again (moved, retried).
+    pub(crate) fn sent_id(&self) -> Sent {
+        Sent(match self.attempt {
             0 | 1 => self.id.to_string(),
             attempt => format!("{}~{attempt}", self.id),
-        }
+        })
+    }
+}
+
+/// A run as its machine knows it, made only by `RunRow::sent_id`: every word Calcifer says to a machine about a run (send, events,
+/// cancel, preview, play, output reads) names it so. A bare run id names no run there once it was sent again (cl-1116: a moved H3
+/// take's output read as `run_not_found` and was lost).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct Sent(String);
+
+impl Sent {
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for Sent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
 }
 

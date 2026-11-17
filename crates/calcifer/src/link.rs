@@ -148,20 +148,21 @@ impl Link {
 
     /// Sends `runs` as one admission (`POST /v1/runs/batch`; one run is a batch of one): each one's state, the machine's acceptance,
     /// in their order. The same id and spec again answer the run as it is; another spec is `run_id_conflict`.
-    pub(crate) async fn admit(&self, runs: Vec<v1::RunRequest>) -> Result<Vec<Result<v1::RunState, LinkError>>, LinkError> {
+    pub(crate) async fn admit(&self, runs: Vec<(store::Sent, v1::RunSpec)>) -> Result<Vec<Result<v1::RunState, LinkError>>, LinkError> {
+        let runs = runs.into_iter().map(|(id, spec)| v1::RunRequest { id: id.as_str().to_owned(), spec }).collect();
         let answers = self.machine.submit_batch(&v1::RunBatch { runs }).await?;
         Ok(answers.into_iter().map(|answer| answer.map_err(LinkError::from)).collect())
     }
 
     /// Sends an update (`POST /v1/runs`): what every TensorD takes, as it reaches a machine on another minor (`Machines::current`).
-    pub(crate) async fn update(&self, run: v1::RunRequest) -> Result<v1::RunState, LinkError> {
-        Ok(self.machine.submit(&run).await?)
+    pub(crate) async fn update(&self, id: store::Sent, spec: v1::RunSpec) -> Result<v1::RunState, LinkError> {
+        Ok(self.machine.submit(&v1::RunRequest { id: id.as_str().to_owned(), spec }).await?)
     }
 
     /// The run's log after `after`: its state first, then its events until its outcome. Closing
     /// it never cancels.
-    pub(crate) async fn events(&self, id: &str, after: u64) -> Result<Live<v1::RunEvent>, LinkError> {
-        Ok(Box::pin(self.machine.events(id, after).await?.map_err(LinkError::from)))
+    pub(crate) async fn events(&self, id: &store::Sent, after: u64) -> Result<Live<v1::RunEvent>, LinkError> {
+        Ok(Box::pin(self.machine.events(id.as_str(), after).await?.map_err(LinkError::from)))
     }
 
     /// This key's upcoming jobs there, nearest first (cl-967).
@@ -183,7 +184,7 @@ impl Link {
     /// never received it.
     pub(crate) async fn attach(
         &self,
-        id: &str,
+        id: &store::Sent,
         after: u64,
     ) -> Result<(v1::RunState, Live<v1::RunEvent>), LinkError> {
         let mut events = self.events(id, after).await?;
@@ -248,14 +249,14 @@ impl Link {
     }
 
     /// The run's newest preview; none while it has none. Asking keeps the machine making them.
-    pub(crate) async fn preview(&self, id: &str) -> Result<Option<crate::machine_client::Preview>, LinkError> {
-        Ok(self.machine.preview(id).await?)
+    pub(crate) async fn preview(&self, id: &store::Sent) -> Result<Option<crate::machine_client::Preview>, LinkError> {
+        Ok(self.machine.preview(id.as_str()).await?)
     }
 
     /// Asks the machine to cancel the run. A machine that never received it records it canceled,
     /// so a late send of it is answered with that.
-    pub(crate) async fn cancel(&self, id: &str) -> Result<v1::RunState, LinkError> {
-        Ok(self.machine.cancel(id).await?)
+    pub(crate) async fn cancel(&self, id: &store::Sent) -> Result<v1::RunState, LinkError> {
+        Ok(self.machine.cancel(id.as_str()).await?)
     }
 
     /// How many bytes of the object the machine holds for this signer.

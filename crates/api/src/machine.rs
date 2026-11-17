@@ -238,17 +238,6 @@ pub fn missing(ranges: &[(u64, u64)], length: u64) -> Ranges {
     gaps
 }
 
-/// One output of a run, as `GET /v1/runs/{id}/outputs/{output}?index=&member=` names it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub struct OutputTarget {
-    pub run: String,
-    pub output: String,
-    /// A list item's 1-based index; 0 for a single output.
-    pub index: u32,
-    /// One file of a tree output, by its manifest path; empty: the manifest.
-    pub member: String,
-}
-
 /// `POST /v1/objects/held`: which of these objects (`sha256:<hex>`) the machine holds for this
 /// signer. Calcifer's `POST /v1/files/held` and `/v1/project-files/held` take it too.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
