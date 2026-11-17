@@ -275,7 +275,11 @@ jobs:
         with:
           path: creator
       - run: |
-          gh release download "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" -D dist
+          # dist/ holds only the distributions SHA256SUMS names: PyPI's upload refuses any other file (its sigstore bundle).
+          gh release download "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" -D dist -p SHA256SUMS
+          names=()
+          while read -r _ name; do names+=(-p "${name#\*}"); done < dist/SHA256SUMS
+          gh release download "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" -D dist "${names[@]}"
           cd dist && sha256sum --check --strict SHA256SUMS && rm SHA256SUMS && ls -l
           case $GATE in
             https://*) echo "gated by hand, recorded at $GATE" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0 ;;

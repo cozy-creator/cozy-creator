@@ -4,7 +4,7 @@
 #   upload    its code, with an empty file (0.22.1 refused one: file_length_required), sent by content and described
 #             (`cozy run <package dir> --describe`): the functions and fields the executor's interface has
 #   lock      Calcifer's private lock API leaves the committed uv.lock as it is (a Hub index's URLs and wheels are this
-#             suite's Hub's: lock_same.py)
+#             suite's Hub's: lock_same.py); not under run.sh's --lock fresh, which locked it before its run
 #   bind      every cell's request (drive.py's <out>/requests/<request>.json, its input files) bound by Calcifer's binder
 #             against the staged local code (the private estimate API; 0.22.1 refused `aspect_ratio=1:1`), a prompt's
 #             reference images named as the run's own `references`
@@ -46,7 +46,9 @@ else
   line FAIL - upload "$(said "$cli/describe.json")"
 fi
 
-if [ -s "$OUT/staged/unpublished.txt" ]; then
+if [ "${LOCK:-}" = fresh ]; then
+  :
+elif [ -s "$OUT/staged/unpublished.txt" ]; then
   # A first-party dependency production's index can't meet yet (run.sh's stage.py): no committed lock can name it until promotion
   # publishes it and the publish cascade relocks this one. The check comes back once production meets it.
   line SKIP - lock "unpublished first-party dependency $(paste -sd, "$OUT/staged/unpublished.txt"); the publish cascade relocks it"

@@ -410,11 +410,18 @@ pub(crate) async fn offers_now(api: &Arc<Api>, jobs: &[Job]) -> (Vec<Vec<Offer>>
 
 /// `on` as its last Status pictured it, however long ago; none for one that never said, or is broken.
 fn last_picture(api: &Arc<Api>, on: &On, name: &str) -> Result<Picture, String> {
-    let frame = api.machines.frame(name).ok_or("it hasn't reported what it has yet")?;
+    let frame = api.machines.frame(name).filter(whole).ok_or("it hasn't reported what it has yet")?;
     if let Some(broken) = &frame.broken {
         return Err(format!("it's broken: {}", broken.message));
     }
     Ok(Picture { on: on.clone(), name: name.to_owned(), frame: linked(api, name, frame), ready_at_ms: None, ahead: vec![], references: Arc::default() })
+}
+
+/// Whether `frame` is its machine's whole picture: TensorD answers its status while it starts with its identity and boot step alone
+/// (`booting`), no GPUs, queue or installs (cl-1107, the user-flow: cibo, starting at 01:38:15 and again at 01:46:46 for an update, was
+/// quoted from that as a machine with no GPU and nothing held, a minute of work, and took request 3, then request 4's move).
+fn whole(frame: &v1::StatusFrame) -> bool {
+    frame.booting.is_none() && !frame.phase.is_empty()
 }
 
 /// `frame` with the link its machine would download at where it hasn't measured one: what this account's rentals beside it measured
@@ -526,6 +533,9 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
         Some(frame) => frame,
         None => machines.status_read(&row.name, &link).await?,
     };
+    if !whole(&frame) {
+        return Err("it's starting".into());
+    }
     if let Some(broken) = &frame.broken {
         return Err(format!("it isn't working ({})", broken.message));
     }

@@ -4,10 +4,13 @@
 #
 #   e2e/cpu/run.sh --out DIR --packages DIR --runtime R --tensorfs T [--cozy BIN --project DIR --stage-code BIN] [--envs DIR]
 #                  [--only pkg,...] [--cells entry/cell,...] [--jobs N] [--refs DIR] [--helpers pkg,...] [--record] [--keep]
+#                  [--lock fresh]
 # R and T: a wheel, a source dir (the Runtime), an exact release version, or `lock` (what each package's lock pins).
 # --cozy: a cozy whose Calcifer is up, and --project a project folder of it: each package's code is also uploaded,
 # locked and its cells' requests bound through it (cli.sh), and each slot's default lane resolved per GPU family first
 # (lanes.py; `--cells lanes` alone); without it those cells are not run.
+# --lock fresh (a release's smoke, promote.sh; needs --cozy, and R and T release versions): that cozy locks each package
+# first and it runs from that lock, which must pin R and T from PyPI. Its committed lock isn't compared.
 # --keep keeps each package's tiny weights, inputs and outputs (else only logs and replies stay);
 # --refs reads (and --record writes) references elsewhere than refs/; --helpers installs those packages from the
 # checkout over the releases the locks pin (a helper not yet published). e2e/lib.sh's other candidate flags are ignored.
@@ -16,12 +19,13 @@
 # One line per cell: PASS|FAIL|SKIP <package> <entry> <cell> <seconds>s[: first error line]; the summary last.
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-OUT='' PACKAGES='' RUNTIME='' TENSORFS='' ENVS=${XDG_CACHE_HOME:-$HOME/.cache}/cozy-e2e-cpu ONLY='' CELLS='' JOBS=2 RECORD='' REFS='' HELPERS='' KEEP='' COZY='' PROJECT=''
+OUT='' PACKAGES='' RUNTIME='' TENSORFS='' ENVS=${XDG_CACHE_HOME:-$HOME/.cache}/cozy-e2e-cpu ONLY='' CELLS='' JOBS=2 RECORD='' REFS='' HELPERS='' KEEP='' COZY='' PROJECT='' LOCK=''
 RUN_CODE_STAGE=${RUN_CODE_STAGE:-}
 while [ $# -gt 0 ]; do
   case $1 in
     --out) OUT=$2 ;; --packages) PACKAGES=$2 ;; --runtime) RUNTIME=$2 ;; --tensorfs) TENSORFS=$2 ;;
     --envs) ENVS=$2 ;; --cozy) COZY=$2 ;; --project) PROJECT=$2 ;; --stage-code) RUN_CODE_STAGE=$2 ;; --only) ONLY=$2 ;; --cells) CELLS=$2 ;; --jobs) JOBS=$2 ;; --refs) REFS=$2 ;; --helpers) HELPERS=$2 ;;
+    --lock) LOCK=$2 ;;
     --record) RECORD=--record; shift; continue ;;
     --keep) KEEP=1; shift; continue ;;
     --tensord | --pod-tensord | --release) ;;
@@ -32,6 +36,9 @@ done
 [ -n "$OUT" ] && [ -d "$PACKAGES" ] && [ -n "$RUNTIME" ] && [ -n "$TENSORFS" ] \
   || { echo "usage: run.sh --out DIR --packages DIR --runtime R --tensorfs T" >&2; exit 2; }
 [ -z "$COZY" ] || [ -n "$PROJECT" ] || { echo "--cozy needs --project" >&2; exit 2; }
+release() { [[ $1 =~ ^[0-9][0-9a-z.]*$ ]] && [ ! -e "$1" ]; }
+[ -z "$LOCK" ] || { [ "$LOCK" = fresh ] && [ -n "$COZY" ] && release "$RUNTIME" && release "$TENSORFS"; } \
+  || { echo "--lock fresh needs --cozy, and --runtime and --tensorfs release versions" >&2; exit 2; }
 abs() { if [ -e "$1" ]; then (cd "$(dirname "$1")" && echo "$PWD/$(basename "$1")"); else echo "$1"; fi; }
 OUT=$(mkdir -p "$OUT" && cd "$OUT" && pwd) PACKAGES=$(cd "$PACKAGES" && pwd) RUNTIME=$(abs "$RUNTIME") TENSORFS=$(abs "$TENSORFS")
 if [ -n "$COZY" ]; then
@@ -55,7 +62,7 @@ fi
 NEEDS_ANSWERS=$(abs "$NEEDS_ANSWERS")
 mkdir -p "$ENVS"
 REFS=$(mkdir -p "${REFS:-$HERE/refs}" && cd "${REFS:-$HERE/refs}" && pwd)
-export PACKAGES RUNTIME TENSORFS ENVS OUT RECORD CELLS HERE REFS HELPERS KEEP COZY PROJECT RUN_CODE_STAGE NEEDS_ANSWERS
+export PACKAGES RUNTIME TENSORFS ENVS OUT RECORD CELLS HERE REFS HELPERS KEEP COZY PROJECT RUN_CODE_STAGE NEEDS_ANSWERS LOCK
 
 # A package's fixture is tiny/<its name, - and . as _>.py. Every package in the checkout runs, or --only's.
 fixture() { local f=${1//-/_}; echo "$HERE/tiny/${f//./_}.py"; }
@@ -76,6 +83,18 @@ one() {
   local p=$1 out=$OUT/$1 env=$ENVS/$1 t
   rm -rf "$out"; mkdir -p "$out"
   if [ ! -f "$(fixture "$p")" ]; then echo "FAIL $p - fixture 0s: no tiny/$(basename "$(fixture "$p")")"; return 1; fi
+  local pkg=$PACKAGES/$p runtime=$RUNTIME tensorfs=$TENSORFS pinned
+  if [ "$LOCK" = fresh ]; then
+    # A release's question (promote.sh): the cozy under test locks it, from a copy, and it runs from that lock.
+    t=$SECONDS pkg=$out/locked/$p runtime=lock tensorfs=lock
+    mkdir -p "$out/locked" && cp -r "$PACKAGES/$p" "$pkg" && rm -rf "$pkg/.venv"
+    if ! python3 "$HERE/../package-lock.py" --cozy "$COZY" "$pkg" > "$out/lock.json" 2> "$out/lock.err"; then
+      echo "FAIL $p - lock $((SECONDS - t))s: $(tail -c 300 "$out/lock.err" | tr '\n' ' ')"; return 1
+    elif ! pinned=$(python3 -I "$HERE/lock_pins.py" "$pkg/uv.lock" "cozy-runtime==$RUNTIME" "tensorfs==$TENSORFS"); then
+      echo "FAIL $p - lock $((SECONDS - t))s: $pinned"; return 1
+    fi
+    echo "PASS $p - lock $((SECONDS - t))s: $pinned"
+  fi
   t=$SECONDS
   local helpers=() h
   for h in ${HELPERS//,/ }; do grep -q "^name = \"$h\"$" "$PACKAGES/$p/uv.lock" && helpers+=("$PACKAGES/$h"); done
@@ -85,7 +104,7 @@ one() {
     [[ " ${helpers[*]} " == *" $PACKAGES/$h "* ]] || helpers+=("$PACKAGES/$h")
   done
   local made=1
-  "$HERE/env.sh" "$PACKAGES/$p" "$env" "$RUNTIME" "$TENSORFS" "${helpers[@]}" > "$out/env.log" 2>&1 || made=''
+  "$HERE/env.sh" "$pkg" "$env" "$runtime" "$tensorfs" "${helpers[@]}" > "$out/env.log" 2>&1 || made=''
   if [ -z "$made" ]; then
     echo "FAIL $p - environment $((SECONDS - t))s: $(grep -m1 -iE 'error|failed' "$out/env.log" || tail -n1 "$out/env.log")"
     return 1

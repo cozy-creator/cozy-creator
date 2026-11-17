@@ -162,6 +162,8 @@ ondemand-share = ["crates/tensorfs/src/fetch/**", "crates/tensord/src/machine/uv
 ondemand-enhancers = ["crates/needs/**", "crates/tensord/src/ahead.rs", "crates/tensord/src/held_models.rs", "e2e/cli/ondemand.sh"]
 plan = ["crates/calcifer/src/plan.rs", "crates/calcifer/src/placement.rs", "crates/calcifer/src/eta.rs", "crates/calcifer/src/took.rs",
   "crates/calcifer/src/machines.rs", "crates/tensord/src/estimate.rs", "e2e/cli/plan.sh", "e2e/cli/plan.py", "e2e/cli/machineset.sh"]
+queue = ["crates/calcifer/src/placement.rs", "crates/calcifer/src/machines.rs", "crates/tensord/src/estimate.rs", "e2e/cli/plan.sh",
+  "e2e/cli/fakemachine.py"]
 prefetch = ["crates/calcifer/src/prefetch.rs", "crates/calcifer/src/plan.rs", "crates/calcifer/src/placement.rs",
   "crates/tensord/src/ahead.rs", "e2e/cli/prefetch.sh"]
 coming = ["crates/calcifer/src/coming.rs", "crates/calcifer/src/plan.rs", "crates/calcifer/src/rentals.rs", "e2e/cli/coming.sh"]
