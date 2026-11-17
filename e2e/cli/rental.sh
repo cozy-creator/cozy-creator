@@ -7,6 +7,8 @@
 #                the default key, and `machine ssh` says what stands in the way: not ready yet, or signed out (not "not
 #                a rental"). `logout` revokes a key this computer enrolled, never one installed with `login --key`,
 #                which another computer may hold; a pod signs in with a key of its own (`login --export`).
+#   hub_blob_reads  th-382: a weight download's range reads answer with Postgres nearly out of connections: the fixture Hub
+#                restarted, a few connections left free, 400 range GETs of 20 public objects 80 at once each answer a redirect.
 #   rental_end_again  cl-977: an end that failed (signed out) is asked again by Calcifer itself, paced: signed in again, the
 #                rental ends with no second `machine end`, and its container goes.
 
@@ -396,3 +398,48 @@ fi
 project_api "$P" /cancel -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: rename-cancel-$RANDOM$RANDOM" -d '{"names":["asked"]}' > "$OUT/rename-cancel-asked.json" 2>&1 || true
 cozy --json logout > /dev/null 2>&1 || true
 }
+
+# th-382: one pod's weight download (106 objects in 16 MiB ranges) took production's Postgres past its connections (53300) for a
+# minute: each range read ran two queries, and a workload GET spent its DPoP proof with an INSERT. The fixture Hub is restarted (its
+# pools empty), Postgres is left a few free connections, and 400 range GETs of 20 public objects go 80 at once: each answers its
+# redirect, none a 5xx.
+hub_blob_reads() (
+  step "a weight download's range reads answer with Postgres nearly out of connections (th-382)"
+  [ -n "${COZY_TEST_HUB_COMMAND_FILE:-}" ] && [ -n "${COZY_HUB_URL:-}" ] || fail "hub blob reads: e2e/isolated.sh named no Hub command or URL"
+  local S=$OUT/hub-blob-reads free=${HUB_BLOB_READS_FREE:-6} db port container max used hold shas codes
+  mkdir -p "$S"
+  db=$(tr '\0' '\n' < "$COZY_TEST_HUB_COMMAND_FILE" | grep -o 'postgres://[^" ]*' | head -1 || true)
+  [ -n "$db" ] || fail "hub blob reads: the Hub's command names no database"
+  port=$(sed -E 's#.*@[^:/]+:([0-9]+)/.*#\1#' <<< "$db")
+  container=$(docker ps --filter "publish=$port" --format '{{.Names}}' 2> /dev/null | head -1 || true)
+  [ -n "$container" ] || fail "hub blob reads: no Postgres container publishes $port"
+  sql() { docker exec -i -e PGAPPNAME=th382 "$container" psql -v ON_ERROR_STOP=1 -qtA -U postgres "$@"; }
+  release() { sql -c "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE application_name IN ('th382-hold')" > /dev/null 2>&1 || true; }
+  trap release EXIT
+  shas=$(sql -c "SELECT substr(object_id, 8) FROM hub_v2.verified_objects WHERE storage_domain = 'repo_cas' AND custody_scope = 'shared'
+    AND public ORDER BY object_id LIMIT 20" 2> "$S/shas.err") || fail "hub blob reads: listing public objects: $(tail -c 300 "$S/shas.err")"
+  [ "$(grep -c . <<< "$shas")" -ge 4 ] || fail "hub blob reads: the fixture Hub holds $(grep -c . <<< "$shas") public objects, not 4 or more"
+  # Its pools empty, as a replica's are at a start, so each connection a read takes is a new one Postgres must admit.
+  bash "$here/../skew/rehub.sh" > "$S/rehub.log" 2>&1 || fail "hub blob reads: restarting the Hub: $(tail -c 300 "$S/rehub.log")"
+  sleep 3
+  max=$(sql -c "SHOW max_connections") used=$(sql -c "SELECT count(*) FROM pg_stat_activity")
+  hold=$((max - used - free - 1))
+  sql -c "CREATE EXTENSION IF NOT EXISTS dblink" > /dev/null || fail "hub blob reads: no dblink in the fixture's Postgres"
+  docker exec -i -e PGAPPNAME=th382-hold "$container" psql -qtA -U postgres -v n="$hold" > "$S/hold.out" 2>&1 <<'SQL' &
+SELECT count(dblink_connect('hold' || i, 'dbname=postgres user=postgres application_name=th382-hold')) FROM generate_series(1, :n) i;
+SELECT pg_sleep(600);
+SQL
+  for _ in $(seq 60); do
+    [ "$(sql -c "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'th382-hold'" 2> /dev/null || echo 0)" -ge "$hold" ] && break
+    sleep 0.5
+  done
+  echo "hub blob reads: Postgres max_connections $max, $used used after the Hub's restart, $hold more held: $free free; $(grep -c . <<< "$shas") public objects"
+  # 400 range GETs, 20 per object, 80 at once, as TensorFS reads a closure.
+  for _ in $(seq 20); do printf '%s\n' $shas; done > "$S/reads.txt"
+  xargs -P 80 -I{} curl -s -o /dev/null -w '%{http_code}\n' -m 60 -H 'Range: bytes=0-1023' \
+    "$COZY_HUB_URL/blobs/{}" < <(sed -E 's#^(..)(..)(.*)$#\1/\2/\1\2\3#' "$S/reads.txt") > "$S/codes.txt" 2>&1 || true
+  release
+  codes=$(sort "$S/codes.txt" | uniq -c | awk '{printf "%s×%s ", $2, $1}')
+  echo "hub blob reads: 400 range GETs answered $codes"
+  ! grep -qv '^30[27]$' "$S/codes.txt" || check "hub blob reads: with $free connections free, 400 range GETs answered $codes(not all redirects); the Hub logged $(grep -c '53300' "$COZY_TEST_HUB_SERVE_LOG" 2> /dev/null || echo 0) 53300s"
+)
