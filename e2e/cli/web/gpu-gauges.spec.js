@@ -130,7 +130,8 @@ test('gpu-gauges', { tag: '@solo' }, async ({ page, project, calcifer, cli, calc
   const section = page.locator('.drawer section.sect').filter({ has: page.locator('h3 > span', { hasText: /^GPUs$/ }) });
   await test.step("its drawer: each GPU's gauges, a row each", async () => {
     await page.setViewportSize({ width: 1440, height: 900 });
-    await page.goto(project.url('machines/local'));
+    // Opened from its row, as a person does: the minute the page heard is the drawer's trace too.
+    await row.getByRole('link', { name: 'Details' }).click();
     const gpu0 = section.locator('li.gpu[data-gpu="0"]');
     await expect(gpu0.getByRole('meter', { name: 'GPU 0 busy' })).toBeVisible({ timeout: 60_000 });
     await expect(gpu0.getByRole('meter', { name: 'GPU 0 memory in use' })).toBeVisible();
@@ -184,6 +185,14 @@ test('gpu-gauges: a rental under a render', { tag: '@gpu' }, async ({ page, proj
     await page.setViewportSize({ width: 1440, height: 900 });
     await project.look(null);
   };
+  // Its drawer, from its row and back, as a person goes: the page keeps the minute it heard.
+  const drawer = async (label) => {
+    await row.getByRole('link', { name: 'Details' }).click();
+    await expect(page.locator('.drawer li.gpu[data-gpu="0"]').getByRole('meter', { name: 'GPU 0 busy' })).toBeVisible({ timeout: 60_000 });
+    await page.screenshot({ path: test.info().outputPath(`gauges-${label}-drawer-1440x900-paper.png`) });
+    await page.locator('.drawer').getByRole('link', { name: 'Back' }).click();
+    await expect(busy).toBeVisible({ timeout: 60_000 });
+  };
   try {
     await page.goto(project.url('machines'));
     await expect(busy, `${name}'s row shows GPU 0's busy share`).toBeVisible({ timeout: 120_000 });
@@ -191,19 +200,13 @@ test('gpu-gauges: a rental under a render', { tag: '@gpu' }, async ({ page, proj
     await expect.poll(async () => Number(await busy.getAttribute('aria-valuenow')), { message: 'busy during the renders', timeout: 600_000, intervals: [500] }).toBeGreaterThanOrEqual(50);
     phase = 'during';
     await shoot('during');
-    await page.goto(project.url(`machines/${encodeURIComponent(name)}`));
-    await expect(page.locator('.drawer li.gpu[data-gpu="0"]').getByRole('meter', { name: 'GPU 0 busy' })).toBeVisible({ timeout: 60_000 });
-    await page.screenshot({ path: test.info().outputPath('gauges-during-drawer-1440x900-paper.png') });
-    await page.goto(project.url('machines'));
-    await expect(busy).toBeVisible({ timeout: 60_000 });
+    await drawer('during');
     phase = 'falling';
     await expect.poll(async () => Number(await busy.getAttribute('aria-valuenow')), { message: 'idle after the renders', timeout: 900_000, intervals: [500] }).toBeLessThanOrEqual(10);
     phase = 'after';
     await page.waitForTimeout(10_000);
     await shoot('after');
-    await page.goto(project.url(`machines/${encodeURIComponent(name)}`));
-    await expect(page.locator('.drawer li.gpu[data-gpu="0"]').getByRole('meter', { name: 'GPU 0 busy' })).toBeVisible({ timeout: 60_000 });
-    await page.screenshot({ path: test.info().outputPath('gauges-after-drawer-1440x900-paper.png') });
+    await drawer('after');
   } finally {
     clearInterval(looks);
     if (process.env.GAUGE_LOG) writeFileSync(process.env.GAUGE_LOG, log.map((look) => JSON.stringify(look)).join('\n') + '\n');
