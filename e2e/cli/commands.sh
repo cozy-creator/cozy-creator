@@ -1559,6 +1559,33 @@ if [ -z "$n" ]; then check "the waiting run never got a number"; else
   J '.status == "canceled"' "$OUT/canceled.json" || check "run cancel: run $n is $(jq -r '.status, .reason.code? // empty' "$OUT/canceled.json" | paste -sd' ' -), not canceled"
 fi
 
+# cl-1154 (the release coordinator, from xs-208's runs stopped at step 3: "a run canceled mid-call has no measurements and no
+# report"; "a cancel stops the call at its next cancellation point and keeps the executor (warm weights)"): canceled at its
+# step 3, a call stops at its next step, and its record keeps what it measured: its steps, in `--json` and in what
+# `cozy run watch --full` shows. Its executor stays, as after a failure: the next call there finds it started.
+step "a run canceled mid-steps keeps its measurements (cl-1154)"
+(cd "$here" && in_project "$RUN_PROJECT" --json run "$here/weightless/steps" steps:=40 seconds:=0.5 --on local > "$OUT/stopped.ndjson" 2>&1) &
+stopping=$! stopped=''
+until stopped=$(run_number "$OUT/stopped.ndjson"); [ -n "$stopped" ] || ! kill -0 "$stopping" 2> /dev/null; do sleep 0.2; done
+until grep '"type":"run.progress"' "$OUT/stopped.ndjson" 2> /dev/null | jq -se 'any(.[].progress; .completed >= 3)' > /dev/null 2>&1 \
+  || ! kill -0 "$stopping" 2> /dev/null; do sleep 0.2; done
+if [ -z "$stopped" ]; then check "the stepping run never got a number"; else
+  cozy --json run cancel "$stopped" > "$OUT/stopped-cancel.json" || check "run cancel $stopped failed"
+  wait "$stopping" || true
+  cozy --json --full run watch "$stopped" --once > "$OUT/stopped.json" 2>&1 || true
+  J '.status == "canceled" and .measurements != null
+    and ([.report.measured[]?.stages[]? | select(.name == "denoise") | .steps.count] | (length > 0 and all(. >= 3 and . < 10)))' "$OUT/stopped.json" \
+    || check "canceled at step 3, run $stopped kept no steps: $(jq -c '{status, measured: (.measurements != null), stages: [.report.measured[]?.stages[]? | {name, steps}]}' "$OUT/stopped.json" 2>&1 | head -c 600)"
+  cozy --full run watch "$stopped" --once > "$OUT/stopped.txt" 2>&1 || true
+  grep -q denoise "$OUT/stopped.txt" || check "cozy run watch --full $stopped doesn't show its steps: $(head -c 600 "$OUT/stopped.txt")"
+  (cd "$here" && in_project "$RUN_PROJECT" --json run "$here/weightless/steps" steps:=2 seconds:=0.1 --on local > "$OUT/stopped-next.ndjson" 2>&1) \
+    || check "the call after the canceled one failed: $(tail -c 300 "$OUT/stopped-next.ndjson")"
+  cozy --json --full run watch "$(run_number "$OUT/stopped-next.ndjson")" --once > "$OUT/stopped-next.json" 2>&1 || true
+  jq -se '.[0].measurements.execution.executor.started_unix_ms as $was | $was != null and .[1].measurements.execution.executor.started_unix_ms == $was' \
+    "$OUT/stopped.json" "$OUT/stopped-next.json" > /dev/null \
+    || check "after the canceled run $stopped, the next call started another executor: $(jq -c '.measurements.execution.executor' "$OUT/stopped.json" "$OUT/stopped-next.json" 2>&1 | head -c 400)"
+fi
+
 step "run ls filters"
 cozy --json run ls --state canceled > "$OUT/canceled.json" && J --argjson n "${n:-0}" '(.runs | length > 0) and all(.runs[]; .status == "canceled") and any(.runs[]; .number == $n)' "$OUT/canceled.json" \
   || check "run ls --state canceled: wrong runs"

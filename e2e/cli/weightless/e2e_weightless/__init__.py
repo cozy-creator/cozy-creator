@@ -5,7 +5,7 @@ import time
 
 import msgspec
 
-from cozy_runtime.author import App, Telemetry
+from cozy_runtime.author import App, Context, Telemetry
 from cozy_runtime.media import File, Files
 
 app = App()
@@ -37,6 +37,20 @@ def wait(payload: Wait) -> Waited:
     """A run that stays in progress: followed, snapshotted and canceled by the suite."""
     time.sleep(payload.seconds)
     return Waited(seconds=payload.seconds)
+
+
+class Steps(msgspec.Struct, forbid_unknown_fields=True):
+    steps: int
+    seconds: float
+
+
+@app.entrypoint(accelerator=False)
+def steps(ctx: Context, payload: Steps) -> Waited:
+    """`steps` steps of `seconds` each: canceled mid-steps, it stops at the next and keeps what it measured (cl-1154)."""
+    for step in range(payload.steps):
+        time.sleep(payload.seconds)
+        ctx.progress(step, payload.steps)
+    return Waited(seconds=payload.steps * payload.seconds)
 
 
 @app.entrypoint(accelerator=False)
