@@ -892,7 +892,8 @@ fn end_if_gone(api: &Arc<Api>, root: &FsPath) -> bool {
     crate::events::project_vault(&id, "locked");
     CLOSED.notify_waiters();
     // Its view let go, what Calcifer kept in the folder goes too (`.vault-runtime`), so the delete under way finishes on its next pass.
-    let runtime = session.lock().expect("vault session").runtime.clone();
+    // Where its runtime folder is now: a folder moved away (to the Trash) took it along.
+    let runtime = { let session = session.lock().expect("vault session"); session.mount.view_now().and_then(|view| view.parent().map(FsPath::to_path_buf)).unwrap_or_else(|| session.runtime.clone()) };
     let _ = std::thread::Builder::new().name("vault-let-go".into()).spawn(move || {
         drop(session);
         let began = Instant::now();

@@ -843,6 +843,13 @@ impl Mounted {
     pub fn provider_pid(&self) -> u32 {
         self.child.id()
     }
+    /// Where its view's directory is now, wherever its folder moved (Linux, macOS): None where that can't be known.
+    pub fn view_now(&self) -> Option<PathBuf> {
+        #[cfg(unix)]
+        return platform::durable::path_now(&self.guard.directory);
+        #[cfg(not(unix))]
+        None
+    }
     /// The supervisor, whose exit is the mount's end: a lock, its provider dying, an unmount from outside.
     pub fn supervisor(&self) -> Result<platform::process::Exact> {
         Ok(self.owner.try_clone()?)
