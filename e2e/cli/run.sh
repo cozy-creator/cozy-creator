@@ -48,6 +48,7 @@ parse "$@"
 . "$(dirname "$0")/egress.sh"
 . "$(dirname "$0")/stuck.sh"
 . "$(dirname "$0")/rentalself.sh"
+. "$(dirname "$0")/holdwins.sh"
 . "$(dirname "$0")/reports.sh"
 . "$(dirname "$0")/thumbs.sh"
 . "$(dirname "$0")/endedlogs.sh"
@@ -853,6 +854,8 @@ case $SHARD in
   thumb-arriving) parts="thumb_arriving logs" ;;
   # A dev build's Calcifer at the stack size it ships resumes a render walk and answers /fit (cl-1069: E2E_DEV_COZY, e2e.yaml).
   dev-start) parts="dev_start logs" ;;
+  # A hand update supersedes the RC update queued at a rental's boot, and machine show says what it runs (cl-1196).
+  hold-wins) parts="hold_wins logs" ;;
   # What cozy needs is on the computer once its installer is done (cl-1030): Linux, macOS and Windows.
   fresh) parts="fresh_install logs" ;;
   web-1) web_cells=(${WEB_1[@]+"${WEB_1[@]}"}); parts="web_lane logs" ;;

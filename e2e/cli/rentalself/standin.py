@@ -6,7 +6,10 @@ e2e/cli/rentalself.sh (cl-977). Each request is one line of <dir>/events.jsonl.
 
 The Hub answers the machine's key reads with a 4 s lease (a check-in every 2 s) and refuses its release with worker.ended, so the
 machine must end itself. The provider refuses the end twice (503), then takes the pod: it kills the machine's process group
-(<dir>/machine.pid, its group leader), as a provider ending the container does."""
+(<dir>/machine.pid, its group leader), as a provider ending the container does.
+
+Case `held` (e2e/cli/holdwins.sh, cl-1196): a rental this computer ordered, whose lease grants the keys in <dir>/keys (one a line),
+as a Hub grants the devices of the account that rented it, for 10 min."""
 
 import base64
 import http.server
@@ -52,6 +55,9 @@ def serve(dir: str, case: str) -> None:
             if self.path == "/v1/worker/rental/authorized-keys":
                 worker = self.headers.get("X-Cozy-Worker-ID", "")
                 note("check_in", worker=worker)
+                if case == "held":
+                    keys = open(os.path.join(dir, "keys")).read().split()
+                    return answer(self, 200, {"worker_id": worker, "authorized_keys": keys, "lease_seconds": 600})
                 return answer(self, 200, {"worker_id": worker, "authorized_keys": [], "lease_seconds": LEASE_SECONDS})
             answer(self, 404, {"error": {"code": "worker.route_not_found", "message": self.path, "remedy": "none"}})
 
