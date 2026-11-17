@@ -959,7 +959,8 @@ case $SHARD in
   # Local code and every input by content (cl-817, cl-820): the CLI in a folder Calcifer can't see,
   # edits timed, a published cozy package called from local code (cl-871) and from an account's package (cl-872), a child
   # result's Latents in another package's caller (cr-276), a host path refused, a dev home's first-party packages from its
-  # packages checkout (xs-195); then a docker rental's end, signed out, with a revoked key and signed in (cl-875).
+  # packages checkout (xs-195) read once per change of it, the tools with the Hub away (cl-1126); then a docker rental's end, signed
+  # out, with a revoked key and signed in (cl-875).
   local-code) parts="
     uv_at_once
     unseen
@@ -974,6 +975,7 @@ case $SHARD in
     child_latents
     path_manifest
     from_source
+    tools_offline
     rental_end
     rental_end_again
     rental_rename
