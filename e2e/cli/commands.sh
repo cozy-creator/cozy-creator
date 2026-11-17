@@ -1212,6 +1212,50 @@ timeout 60 "$COZY" --json machine end stand-old --force -y > "$OUT/stand-old-end
 sudo pkill -KILL -u cozy-stand-old || true
 }
 
+# cl-1160 follow-up (coordinator, 11-17): once 0.26.0 is promoted, rented and local machines run Runtime 0.47.0, so a package
+# locked on 0.46 meets a machine on 0.47 as the common case. stand-new is a machine on this run's own pair (`e2e.yaml` runtime=0.47.0
+# tensorfs=0.26.0 tensord=0.26.0: the release; by default the RC's dev build). e2e-oldcall 0.1.0 (locked on Runtime 0.46.0) runs there
+# published, pinned, and as local code, and on local; each says how it ended. Judged as users need it: the published call with files
+# completes and its callee reads the file.
+old_call_on_pair() {
+step "a Runtime 0.46 package with a call with files, on a machine on this run's pair (cl-1160 follow-up)"
+[ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "old call on pair: its machine is another user of a fresh GitHub runner"; return; }
+[ -n "${E2E_OLDCALL:-}" ] || { check "old call on pair: isolated.sh published no e2e-oldcall: ${E2E_OLDCALL_REFUSED:-not seeded}"; return; }
+local file=$OUT/oldcall-pair.txt want local=$OUT/oldcall-local name
+cozy --json machine show local > "$OUT/set-local.json" || { check "old call on pair: machine show local: $(head -c 300 "$OUT/set-local.json")"; return; }
+stand_in stand-new || return
+stand_as stand-new --json machine show local > "$OUT/stand-new-show.json" || true
+echo "old call on pair: stand-new runs $(jq -r '.status | "cozy \(.version), Runtime \(.runtime), TensorFS \(.tensorfs)"' "$OUT/stand-new-show.json"); local runs $(jq -r '.status | "Runtime \(.runtime), TensorFS \(.tensorfs)"' "$OUT/set-local.json")"
+printf 'old call on pair %s\n' "$RANDOM$RANDOM" > "$file"
+want="notes=sha256:$(sha256sum "$file" | cut -d' ' -f1)"
+rm -rf "$local" && cp -r "$here/oldcall" "$local" && (cd "$local" && uv lock -q) > "$OUT/oldcall-local-lock.log" 2>&1 \
+  || check "old call on pair: uv lock of its local copy: $(tail -c 300 "$OUT/oldcall-local-lock.log")"
+echo "old call on pair: the local copy's lock holds cozy-runtime $(grep -A1 -x 'name = "cozy-runtime"' "$local/uv.lock" | tail -1), tensorfs $(grep -A1 -x 'name = "tensorfs"' "$local/uv.lock" | tail -1)"
+# said <name>: how its run ended, or what refused it before one.
+said() {
+  local n
+  n=$(cat "$OUT/$1.number" 2> /dev/null || true)
+  if [ -n "$n" ] && [ "$n" != none ] && [ -s "$OUT/$1.json" ]; then
+    run_get "$OUT" "$1" '"run \(.name // .number) \(.status) on \(.machine) (Runtime \(.measurements.software.runtime // "?")): \(.reason.code // "") \(.reason.message // "" | .[0:400]) \(.result // "" | tostring | .[0:200])"'
+  else
+    echo "no run: $(grep -ho '"code": *"[^"]*"' "$OUT/$1.ndjson" "$OUT/$1.err" 2> /dev/null | head -1) $(grep -ho '"message": *"[^"]*"' "$OUT/$1.ndjson" "$OUT/$1.err" 2> /dev/null | head -1 | cut -c1-400) $(tail -c 300 "$OUT/$1.err" 2> /dev/null | tr '\n' ' ')"
+  fi
+}
+for name in pair-published pair-pinned pair-local-code pair-here; do
+  case $name in
+    pair-published) run_cell "$OUT" "$name" "$E2E_OLDCALL/relay" --file "notes=$file" --on stand-new ;;
+    pair-pinned) run_cell "$OUT" "$name" "$E2E_OLDCALL/relay@0.1.0" --file "notes=$file" --on stand-new ;;
+    pair-local-code) run_cell "$OUT" "$name" "$local/relay" --file "notes=$file" --on stand-new ;;
+    pair-here) run_cell "$OUT" "$name" "$E2E_OLDCALL/relay" --file "notes=$file" --on local ;;
+  esac > /dev/null 2>&1 || true
+  echo "old call on pair: $name: $(said "$name")"
+done
+[ "$(run_get "$OUT" pair-published '[.status, .result.files[]?] | join(" ")')" = "completed $want" ] \
+  || check "old call on pair: e2e-oldcall 0.1.0 (Runtime 0.46.0) on stand-new: $(said pair-published)"
+timeout 60 "$COZY" --json machine end stand-new --force -y > "$OUT/stand-new-end.json" 2>&1 || true
+sudo pkill -KILL -u cozy-stand-new || true
+}
+
 # cl-1109 (coordinator, 11-16): a model asked with no release takes "finals first, else the newest", the same rule as packages, so
 # one rule everywhere. xs-203 met it on packages: RC machines took minimax-h3 0.13.0rc2 over the 0.12.0 final. isolated.sh publishes
 # e2e/final-model 0.1.0 and then 0.2.0-rc.1. Calcifer's `model show` and `model ls`, and the Hub's resolution (`model install` on

@@ -288,6 +288,8 @@ case $shard in
 esac
 case $key in
   cli:entrypoints | cli:executors | cli:projectdb-cancel | cli:local-wake | cli:containment | cli:containment-web | cli:projectvault-static | cli:projectvault-static-distros) needs='' ;;
+  # e2e-oldcall alone (cl-1160 follow-up), below.
+  cli:oldcall-skew) needs='' ;;
   # forward's run that moves local's Runtime for its project (cl-1055).
   cli:selfupdate) needs='next scratch' ;;
   # llm_write's Qwen3.5 0.8B (xs-204).
@@ -406,6 +408,12 @@ fi
 # The packages checkout, for a cell that runs one from source (account-rent's render time from source, cl-1024).
 [ -z "$packages" ] || export E2E_PACKAGES=$packages
 
+if [ "$key" = cli:oldcall-skew ]; then
+  sudo cp "${COZY_TEST_HUB_CA:?}" /usr/local/share/ca-certificates/cozy-test-hub.crt && sudo update-ca-certificates > "$seed/ca.log" 2>&1
+  systemctl --user set-environment SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+  systemctl --user restart cozy-calcifer > "$seed/calcifer-restart.log" 2>&1 || true
+  oldcall
+fi
 if [[ " $needs " == *" next "* ]]; then
   next
   needs=${needs/next/} && needs=${needs# }

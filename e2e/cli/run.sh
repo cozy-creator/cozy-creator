@@ -1009,6 +1009,8 @@ case $SHARD in
   asleep) parts="asleep logs" ;;
   # Typed package composition on the candidate cohort, with tiny local CPU inputs only.
   typed-calls) parts="typed_calls logs" ;;
+  # cl-1160 follow-up, by dispatch: a Runtime 0.46 package on a machine on this run's own pair.
+  oldcall-skew) parts="old_call_on_pair logs" ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
   coming) parts="coming_machine logs" ;;
   # `cozy update`, its own runner, as it replaces this computer's cozy: a newer release offered at a terminal (cl-1069), the Latest
