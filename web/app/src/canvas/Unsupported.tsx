@@ -7,8 +7,11 @@ const FILES = ["image", "video", "audio"]
  *  words take words only (a Text box's, or a version of words', xs-204); a prompt those and the files it declares (all of them when `takes` is
  *  unset), every file when it takes `file`. Words of no tool's (a Text box's) take anything. What's offered to mention is only what's usable (Paul, 11-16). */
 export function usable(field: ToolField | undefined, kind: string | undefined): boolean {
-  if (!field || !kind || kind === "text") return true
+  if (!field || kind === "text") return true
   if (field.type !== "prompt") return false
+  // A box whose kind this page can't read yet is offered only where every kind is: SDXL's words were offered coast, a picture, as its
+  // kind went unread for a moment (llm-reads, e2e 44003780375).
+  if (!kind) return !field.takes
   return !field.takes || field.takes.includes(kind) || (field.takes.includes("file") && FILES.includes(kind))
 }
 
