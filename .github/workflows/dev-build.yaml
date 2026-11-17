@@ -253,8 +253,9 @@ jobs:
           target: x86_64
           manylinux: 2_28
           working-directory: crates/tensorfs-py
-          # fault-hooks: the release gate's fault injection, in dev builds only (tensorfs-publish.yaml has none).
-          args: --release --locked --features fault-hooks --target-dir ../../target/manylinux2_28 --out dist -i python3.11
+          # fault-hooks: the release gate's fault injection, in dev builds only (tensorfs-publish.yaml has none). A
+          # `--features` replaces pyproject.toml's list, so it names that list's too (abi3 for this one 3.11 build).
+          args: --release --locked --features extension-module,store,pyo3/abi3-py311,fault-hooks --target-dir ../../target/manylinux2_28 --out dist -i python3.11
           docker-options: -e TENSORFS_REQUIRE_AOT=1
           before-script-linux: |
             export PATH="/opt/python/cp312-cp312/bin:$PATH"
