@@ -41,8 +41,9 @@ export type Media = "image" | "video" | "audio"
 export type Rent = Omit<Extract<NewMachine, { kind: "rent" }>, "kind">
 
 /** A project as this page holds it, with a page-local read-start order and any entities named by an older project file. */
-/** `headsOf`: the project document's heads each asset read alone was read at; the rest were read at `heads`. */
-export type Project = ProjectState & { began?: number; entities?: Entity[]; headsOf?: Record<string, string[]> }
+/** `headsOf`: the project document's heads each asset read alone was read at; the rest were read at `heads`. `wholeBegan`: when the last
+ *  read of the whole project began; a read of some of its boxes says nothing of the others (`began` is that read's). */
+export type Project = ProjectState & { began?: number; wholeBegan?: number; entities?: Entity[]; headsOf?: Record<string, string[]> }
 
 /** What the page reads of a target's `interface` (`cozy.package.interface/1`), which the API sends as JSON. */
 export interface TargetInterface {
