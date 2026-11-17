@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
+import { createPortal } from "react-dom"
 import { type CSSProperties, type PointerEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { parseLink, Player as MachinePlayer } from "../../../player/cozy-webrtc.js"
 import type { Client } from "../api/client"
@@ -19,6 +20,7 @@ import { isSelf } from "./versions"
 import { streamedWords } from "./streamed"
 import { OrbitView, orbitOf } from "./Orbit"
 import { BufferedImage } from "./BufferedImage"
+import { useFocusLayer } from "./FocusFrame"
 import type { VideoPlayback } from "./timeline/Player"
 import { FPS } from "./ranges"
 import { useArriving } from "./RunFace"
@@ -873,6 +875,8 @@ function Making({ view, name, run, cardWidth }: { view: ElementView; name: strin
 export function Media({ view, name, cardWidth, restWidth = cardWidth, children, previewHover }: { view: ElementView; name: string; cardWidth: number; restWidth?: number; children?: ReactNode; previewHover?: PreviewHover }) {
   const { client } = useConnection()
   const store = useCanvasStore()
+  const layer = useFocusLayer()
+  const onTop = (node: ReactNode) => (layer?.overlay ? createPortal(node, layer.overlay) : node)
   const { asset, placing, preview } = view
   const focused = useSignal(store.focusedName) === name
   // Being worked on, a take can be played and scrubbed, unless its words are over it.
@@ -975,7 +979,8 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children, 
       {(busy || (!view.here && making && (!asset?.pinned || makingMedia))) && run !== undefined && view.viewed === undefined && !glimpse && field !== "text" && <LatentPreview view={view} number={run} />}
       {busy && asset?.rendering != null && <Progress fraction={asset.rendering} says={`Rendering ${Math.round(asset.rendering * 100)}%`} rendering />}
       {/* What it can do is in Focus: at rest a box is its name, its picture, its tool and shape, and how its render goes (cl-932). */}
-      {view.here && asset?.kind === "image" && asset.tool && !view.hereWords && !pendingImage && shown && <button type="button" className="image-edit-action canvas-control" aria-label="Edit image" onClick={(event) => { event.stopPropagation(); store.beginImageEdit(name) }}>Edit</button>}
+      {/* Over the frame in Focus, never zoomed with the picture (cl-1190). */}
+      {view.here && asset?.kind === "image" && asset.tool && !view.hereWords && !pendingImage && shown && onTop(<button type="button" className="image-edit-action canvas-control" aria-label="Edit image" onClick={(event) => { event.stopPropagation(); store.beginImageEdit(name) }}>Edit</button>)}
       {turning && here && <OrbitView key={here.sha256} path={turning.path} shown={here} orbit={turning.orbit} />}
       {orbit && here && !open && !busy && (
         <span className="orbit-badge" title="An orbit. Open it, then drag to turn it.">

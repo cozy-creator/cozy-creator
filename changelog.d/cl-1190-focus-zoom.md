@@ -1,0 +1,2 @@
+Focus zooms a video and an orbit as it zooms a picture (cl-1190): the wheel or a pinch zooms about the pointer, a drag pans, and a double-click or Fit goes back to the fit (at the fit a video's double-click is still full screen). A video plays and scrubs on zoomed, its own file at its own pixels, drawn as they are past 1:1. On an orbit a drag still turns it, as far as at the fit; a Shift-drag or a middle-button drag pans it, and its bar isn't zoomed.
+- Zoomed in past 1:1 a picture's pixels are drawn as they are; fitted it's smoothed, however small its file.

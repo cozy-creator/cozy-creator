@@ -516,6 +516,7 @@ WEB_2=(
   llm-reads
   orbit
   tools-local
+  zoom
 )
 WEB_3=(
   focus
