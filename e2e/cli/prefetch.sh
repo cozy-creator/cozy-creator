@@ -449,19 +449,21 @@ pre_project "$P" "$name" || { pre_disk_end; return 0; }
 python3 "$here/project/slowinstall/wheel.py" "$OUT/slow-wheel" $((2 << 20)) > "$OUT/slow-wheel.log" 2>&1 &
 PRE_WHEEL=$!
 jq -n '[{name: "slow", tool: "e2e-slow-install/still", kind: "image", fields: {instructions: "A still whose tool takes a while to install."}}]' | boxes_in "$P" || { pre_disk_end; return 0; }
+# Its machine building the tool's environment for the guess: the wheel it needs asked of the server (a guess's install isn't in the
+# activity its Status lists).
 for _ in $(seq 240); do
-  pre_machine "$name" "$OUT/pre-disk-building.json"
-  J '[.status.activity[]? | select(.kind == "install")] | length > 0' "$OUT/pre-disk-building.json" && break
+  grep -q '"GET /e2e_slow_wheel' "$OUT/slow-wheel.log" 2> /dev/null && break
   J '.ready == true' <<< "$(pre_row "$P" slow)" && break
   sleep 0.5
 done
-if J '[.status.activity[]? | select(.kind == "install")] | length > 0' "$OUT/pre-disk-building.json"; then
+if grep -q '"GET /e2e_slow_wheel' "$OUT/slow-wheel.log" 2> /dev/null; then
   asked=$(date -u +%s%3N)
   n=$(run_submit "$OUT" pre-line run "$here/project/waits.py/wait" seconds=0 --on "$name")
   [ -n "$n" ] && run_wait "$OUT" pre-line && [ "$(run_get "$OUT" pre-line .status)" = completed ] \
     || check "prefetch disk: the run sent while the guess built didn't complete: $(run_get "$OUT" pre-line .reason.message | head -c 300)"
+  echo "prefetch disk: the slow wheel was asked for $(grep -c '"GET /e2e_slow_wheel' "$OUT/slow-wheel.log") times by then (once more is the guess building again after the run's install)"
 else
-  check "prefetch disk: $name never said it was installing e2e-slow-install for the box's guess: its activity $(jq -c '[.status.activity[]? | {kind, subject}]' "$OUT/pre-disk-building.json" 2> /dev/null); its row: $(pre_row "$P" slow)"
+  check "prefetch disk: $name never asked for e2e-slow-install's wheel for the box's guess: its row: $(pre_row "$P" slow)"
 fi
 if [ -n "$asked" ]; then
   pre_log "$name" "$OUT/pre-disk-line.tensord.log"
