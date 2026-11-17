@@ -17,7 +17,8 @@
 //! each slot for its lane and store and fetches the needed ones, then the extras, never a slot the rules exclude. An edit that changes
 //! what the rules say changes the item: its machine drops what only the old one wanted and fetches the new.
 use std::{
-    sync::{Arc, LazyLock, atomic::Ordering},
+    collections::HashSet,
+    sync::{Arc, LazyLock, Mutex, atomic::Ordering},
     time::Duration,
 };
 
@@ -40,6 +41,8 @@ const READ: Duration = Duration::from_secs(20);
 
 /// Moves whenever a project closes: each one's guesses end with it.
 static CLOSED: LazyLock<watch::Sender<u64>> = LazyLock::new(|| watch::channel(0).0);
+/// The functions whose Hub reads are read ahead (`fit::read_ahead`): by Hub, package, release and function.
+static READ_AHEAD: LazyLock<Mutex<HashSet<(String, String, String, String)>>> = LazyLock::new(Mutex::default);
 
 /// A project closed.
 pub(super) fn closed() {
@@ -65,6 +68,10 @@ pub(super) fn keep(api: &Arc<Api>, project: &Arc<Project>) {
         let loads = || api.machines.lists.load_moved.load(Ordering::Acquire);
         loop {
             if stale {
+                // An edit that came while it guessed settles as an edit, whatever else moved (44068453992: one waited 800 ms).
+                if edits.has_changed().unwrap_or(false) && open.upgrade().is_some_and(|project| super::revision(&project.folder.dir) != read) {
+                    why = "edited";
+                }
                 match why {
                     "shown" => {}
                     "edited" => tokio::time::sleep(SETTLE).await,
@@ -233,6 +240,11 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
         "guess {name} on {machine}: {}/{} with {fields:?}; its rules hold for {needed:?}, not for {unneeded:?}, give no answer for {unanswered:?}",
         package.name, renderer.function
     );
+    // Once a box's function is guessed, what any edit of it reads of the Hub is read behind it.
+    if READ_AHEAD.lock().expect("read-ahead lock").insert((hub.to_owned(), package.name.clone(), package.release.clone(), renderer.function.clone())) {
+        let (api, hub, package, function, made) = (api.clone(), hub.to_owned(), package.clone(), renderer.function.clone(), made.clone());
+        tokio::spawn(async move { super::fit::read_ahead(&api, &hub, &package, &function, &made).await });
+    }
     let mut spec = super::predicted(&renderer, made, request, project.draft_seed(name), source)?;
     // Its files, written to its machine behind the item (cl-1123): the item is its render's request to the byte, and its machine has
     // them before the render is sent; its plan reads none of them, so the item goes at once (44065133454: a first write held the

@@ -633,8 +633,19 @@ async fn checkpoint(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> 
 /// counts the fetch of what it lacks of these (cl-816, cl-1047): exactly the call's needs less what it has. Its extras are no part of
 /// it, as no call waits for them; what the Hub doesn't say in time is left out.
 pub(super) async fn checkpoints(api: &Api, hub: &str, package: &super::Package, function: &str, made: &Map<String, Value>, request: Option<&Value>) -> Vec<api::machine::ModelRef> {
+    held(api, hub, package, function, made, super::wants(package, function, request)).await
+}
+
+/// Reads ahead what a quote of any request of `function` reads of the Hub (its slots' cards and headers, whatever its rules say), so
+/// an edit's quote reads none (cl-1123: 44068453992's I2I edit read them on its way, 0.7 s).
+pub(super) async fn read_ahead(api: &Api, hub: &str, package: &super::Package, function: &str, made: &Map<String, Value>) {
+    let mut wanted = super::wants(package, function, None);
+    wanted.needed.extend(wanted.either.drain(..).flatten().chain(wanted.extras.drain(..).flat_map(|(_, slots)| slots)));
+    held(api, hub, package, function, made, wanted).await;
+}
+
+async fn held(api: &Api, hub: &str, package: &super::Package, function: &str, made: &Map<String, Value>, wanted: ::needs::Wants) -> Vec<api::machine::ModelRef> {
     let Ok(interface) = Interface::parse(package.document()) else { return vec![] };
-    let wanted = super::wants(package, function, request);
     let on_box: BTreeMap<String, String> = (made.get("models").and_then(Value::as_object).into_iter().flatten())
         .filter_map(|(param, slot)| Some((param.clone(), slot["ref"].as_str()?.to_owned())))
         .collect();
