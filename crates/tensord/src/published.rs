@@ -1193,7 +1193,15 @@ impl Publisher {
         // to, wherever their URLs point; uv reads none of them.
         if request.card.is_some() {
             let indexed: Vec<HubFile> = std::mem::take(&mut locked.indexed);
-            for file in indexed.into_iter().filter(|file| self.held_file(file)) {
+            // A lock row from an index that said no size is held by its digest alone.
+            let measured = |mut file: HubFile| {
+                if file.length == 0 {
+                    let path = self.store.path(&ObjectRef { sha256: file.sha256.clone(), length: 0 }).ok();
+                    file.length = path.and_then(|path| fs::metadata(path).ok()).map_or(0, |meta| meta.len());
+                }
+                file
+            };
+            for file in indexed.into_iter().map(measured).filter(|file| self.held_file(file)) {
                 if !locked.hub.iter().any(|held| held.sha256 == file.sha256) {
                     locked.hub.push(file);
                 }

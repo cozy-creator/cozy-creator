@@ -5,7 +5,7 @@
 //! in this computer's store by content. Another machine's install of it then takes it from here by content, as local code goes
 //! (`v1::Release::card`): it reads nothing of it at the Hub, which may be down. The rest of its lock is PyPI's, read by the machine.
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     fs,
     path::PathBuf,
     sync::{Arc, LazyLock, Mutex},
@@ -295,8 +295,7 @@ pub(crate) fn offline_index(home: &Home, hub: &str, namespace: &str) -> Option<S
         for name in dirs(&org.path()) {
             for record in fs::read_dir(name.path()).into_iter().flatten().flatten() {
                 let Some(kept) = fs::read(record.path()).ok().and_then(|bytes| serde_json::from_slice::<Kept>(&bytes).ok()) else { continue };
-                let own = (org.file_name().to_string_lossy() == namespace).then_some(&kept.card.wheels).into_iter().flatten();
-                for wheel in own.chain(kept.indexed.iter().filter(|wheel| wheel.namespace == namespace)) {
+                for wheel in kept.indexed.iter().filter(|wheel| wheel.namespace == namespace) {
                     let distribution = crate::local_code::distribution(wheel.name.split('-').next().unwrap_or_default());
                     wheels.entry(distribution).or_default().push(wheel.clone());
                 }
@@ -324,6 +323,58 @@ pub(crate) fn offline_index(home: &Home, hub: &str, namespace: &str) -> Option<S
         let _ = fs::create_dir_all(&dir).and_then(|()| fs::write(dir.join("index.html"), page));
     }
     any.then(|| url::Url::from_directory_path(&simple).ok().map(String::from)).flatten()
+}
+
+/// The lock at `path`, made from the index this computer holds (`offline_index`), as its Hub's index would have made it: each row
+/// at that index again (`index`), each wheel by the URL a lock of it named there. uv's lock, the Runtime and a machine read it as any.
+pub(crate) fn online_lock(home: &Home, hub: &str, path: &std::path::Path) -> Result<(), Error> {
+    let offline = hub_dir(home, hub).join(OFFLINE);
+    let (prefix, url_prefix) = (offline.to_string_lossy().into_owned(), url::Url::from_directory_path(&offline).map(String::from).unwrap_or_default());
+    let unwritable = |e: String| Error::new(Kind::Unavailable, "lock_failed", format!("{}: {e}", path.display()));
+    let text = fs::read_to_string(path).map_err(|e| unwritable(e.to_string()))?;
+    if !text.contains(&prefix) {
+        return Ok(());
+    }
+    let mut urls: BTreeMap<String, (String, u64)> = BTreeMap::new();
+    let dirs = |dir: &std::path::Path| fs::read_dir(dir).into_iter().flatten().flatten().filter(|entry| entry.path().is_dir()).collect::<Vec<_>>();
+    for org in dirs(&hub_dir(home, hub)).into_iter().filter(|org| org.file_name() != OFFLINE) {
+        for name in dirs(&org.path()) {
+            for record in fs::read_dir(name.path()).into_iter().flatten().flatten() {
+                let Some(kept) = fs::read(record.path()).ok().and_then(|bytes| serde_json::from_slice::<Kept>(&bytes).ok()) else { continue };
+                urls.extend(kept.indexed.into_iter().filter(|wheel| wheel.url.starts_with("http")).map(|wheel| (wheel.sha256, (wheel.url, wheel.length))));
+            }
+        }
+    }
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e: toml_edit::TomlError| unwritable(e.to_string()))?;
+    let mut namespaces = BTreeSet::new();
+    let namespace_of = |at: &str| at.split_once("/v1/index/").and_then(|(_, rest)| rest.split('/').next()).map(str::to_owned);
+    if let Some(rows) = doc.get_mut("package").and_then(toml_edit::Item::as_array_of_tables_mut) {
+        for row in rows.iter_mut() {
+            let registry = row.get("source").and_then(|source| source.get("registry")).and_then(toml_edit::Item::as_str).map(str::to_owned);
+            let Some(namespace) = registry.filter(|registry| registry.starts_with(&prefix)).and_then(|registry| namespace_of(&registry)) else { continue };
+            if let Some(source) = row.get_mut("source").and_then(toml_edit::Item::as_inline_table_mut) {
+                source.insert("registry", index(home, hub, &namespace).into());
+            }
+            namespaces.insert(namespace);
+            for wheel in row.get_mut("wheels").and_then(toml_edit::Item::as_array_mut).into_iter().flat_map(|wheels| wheels.iter_mut()) {
+                let Some(wheel) = wheel.as_inline_table_mut() else { continue };
+                let sha = wheel.get("hash").and_then(toml_edit::Value::as_str).unwrap_or_default().trim_start_matches("sha256:").to_ascii_lowercase();
+                if let Some((url, length)) = urls.get(&sha).filter(|_| wheel.contains_key("path")) {
+                    wheel.remove("path");
+                    wheel.insert("url", url.as_str().into());
+                    if *length > 0 && !wheel.contains_key("size") {
+                        wheel.insert("size", i64::try_from(*length).unwrap_or(0).into());
+                    }
+                }
+            }
+        }
+    }
+    let mut text = doc.to_string();
+    for namespace in &namespaces {
+        let held = format!("{url_prefix}v1/index/{namespace}/simple/");
+        text = text.replace(&held, &index(home, hub, namespace));
+    }
+    fs::write(path, text).map_err(|e| unwritable(e.to_string()))
 }
 
 fn pem(der: &[u8]) -> String {

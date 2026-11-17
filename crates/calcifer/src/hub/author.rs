@@ -414,6 +414,9 @@ pub(crate) async fn locked(hubs: &Hubs, hub: &Origin, project: &Project, within:
     blocking(|| {
         let python = python(project, &stage.uv)?;
         stage.lock(python.request.as_str(), upgrade)?;
+        if stage.offline {
+            super::held::online_lock(hubs.home(), hub.as_str(), &stage.src.join("uv.lock"))?;
+        }
         let locked = fs::read_to_string(stage.src.join("uv.lock")).map_err(|e| refuse("lock_failed", e))?;
         let changed = own.as_deref() != Some(locked.as_str());
         Ok(Locked { lock: locked, account_index, changed })

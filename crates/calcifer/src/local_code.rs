@@ -628,10 +628,6 @@ pub(crate) async fn locked(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
             let _ = fs::remove_dir_all(&done);
         }
     }
-    // A lock made from what this computer held, its Hub unreachable (cl-1127), stands only until the next: the Hub's again.
-    if done.join(OFFLINE).is_file() {
-        let _ = fs::remove_dir_all(&done);
-    }
     if !done.is_dir() {
         let project = Project::read(sent.clone())?;
         // A project's own code is the project's: nothing of it in Calcifer's log (cl-984).
@@ -647,7 +643,7 @@ pub(crate) async fn locked(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
             None => {
                 let made = crate::hub::author::locked(hubs, hub, &project, &within, false, &[], &say).await?;
                 let made = SharedLock { changed: made.changed, lock: made.lock };
-                if let Some(at) = shared.as_ref().filter(|_| !offline(&made.lock)) {
+                if let Some(at) = &shared {
                     let _ = serde_json::to_vec(&made).map_err(std::io::Error::other).and_then(|bytes| durable::replace(at, &bytes, 0o600).map_err(std::io::Error::other));
                 }
                 made
@@ -658,9 +654,6 @@ pub(crate) async fn locked(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
         let failed = |e: std::io::Error| refuse("code_unwritable", format!("{}: {e}", part.display()));
         let kept = if made.changed { made.lock.as_str() } else { "" };
         fs::create_dir_all(&part).and_then(|()| fs::write(part.join("lock"), kept)).map_err(failed)?;
-        if offline(&made.lock) {
-            fs::write(part.join(OFFLINE), b"").map_err(failed)?;
-        }
         if made.changed {
             copy_tree(&within, &part.join("copy"))?;
             let at = sent.strip_prefix(&within).unwrap_or(Path::new(""));
@@ -677,13 +670,6 @@ pub(crate) async fn locked(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
         false => sent,
     };
     Ok((dir, made))
-}
-
-/// Beside a lock made with the Hub unreachable, from the index this computer holds (`hub::held::offline_index`).
-const OFFLINE: &str = "offline";
-
-fn offline(lock: &str) -> bool {
-    lock.contains(&format!("{}/v1/index/", crate::hub::held::OFFLINE))
 }
 
 /// The lock `locked` made for `code` at `hub`, when it is not the tree's own: what its client writes into the package's folder.
