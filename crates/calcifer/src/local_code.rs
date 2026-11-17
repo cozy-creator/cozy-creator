@@ -552,6 +552,7 @@ pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
     if let Some(needs) = &needs {
         NEEDS.lock().expect("needs lock").insert(digest.to_string(), needs.clone());
     }
+    FOLDERS.lock().expect("folders lock").insert(digest.to_string(), project_dir.clone());
     Ok(Source {
         package: manifest.package,
         source: v1::LocalSource {
@@ -570,6 +571,17 @@ static NEEDS: LazyLock<Mutex<HashMap<String, pep440_rs::VersionSpecifiers>>> = L
 /// The `cozy-runtime` requirement of the local source `manifest` names, as `source` read it.
 pub(crate) fn needs_of(manifest: &str) -> Option<pep440_rs::VersionSpecifiers> {
     NEEDS.lock().expect("needs lock").get(manifest).cloned()
+}
+
+/// Each local source's package folder by its manifest, as `source` read it while Calcifer runs: what its runs are timed by
+/// (`benchmarks_of`).
+static FOLDERS: LazyLock<Mutex<HashMap<String, PathBuf>>> = LazyLock::new(Mutex::default);
+
+/// The benchmarks the source `manifest` names holds (`placement::source_benchmarks`), as placement's quotes take them: what a run of
+/// local code, which names no release, is held to (cl-1161). None: Calcifer hasn't read that source since it started, or it holds none.
+pub(crate) fn benchmarks_of(manifest: &str) -> Option<Vec<api::estimate::Benchmark>> {
+    let folder = FOLDERS.lock().expect("folders lock").get(manifest).cloned()?;
+    Some(crate::placement::source_benchmarks(&folder)).filter(|rows| !rows.is_empty())
 }
 
 /// What a lock of `code`'s copy for `hub` leaves beside the copy (`locked`): `lock`, the lock it made or nothing when the tree's

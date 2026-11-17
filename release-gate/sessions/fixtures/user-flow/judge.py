@@ -482,12 +482,20 @@ for r in rows:
     want = num(r.stored.get('cold_exec_s' if cold else 'warm_exec_s')) or 0.0
     # Its own work, as the stored run's time is: that run was alone on a machine that held its weights. This one's download and its wait
     # for a GPU behind another run are not its work; its download's rate and placement judge those.
-    check(f"request {r.request}'s own work within 5% of stored ({fn}, {key}, {'cold' if cold else 'warm'})", r.work_s is not None and r.work_s <= want * TIE,
-          f"{fmt(r.work_s, ' s', 1)} vs {want} s" + ('' if r.work_s is not None else ': no GPU lease in its record'))
+    # A FAIL says its GPU's clock and power beside the stored run's (cl-1161: hiroyuki's 4090, held by its host to ~160 of 450 W,
+    # ran 876 MHz against 2440 and took 2.8× as long): a slow host shows as one, not as the release.
+    clocks = r.record.clocks
+    held = f", held to {clocks['power_limit_w']} of {clocks['power_default_w']} W" if clocks and clocks['power_limit_w'] else ''
+    beside = ((f"; SM {clocks['sm_mhz']} MHz at up to {clocks['power_w']} W{held} ({', '.join(clocks['throttles']) or 'no limit'})" if clocks else '; no clocks recorded')
+              + (f" vs stored {r.stored['sm_mhz']} MHz at up to {r.stored['power_w']} W" if 'sm_mhz' in r.stored else '; stored clocks not recorded'))
+    fast = r.work_s is not None and r.work_s <= want * TIE
+    check(f"request {r.request}'s own work within 5% of stored ({fn}, {key}, {'cold' if cold else 'warm'})", fast,
+          f"{fmt(r.work_s, ' s', 1)} vs {want} s" + ('' if r.work_s is not None else ': no GPU lease in its record') + ('' if fast else beside))
     for part, step in (('dense', r.dense), ('sparse', r.sparse)):
         stored = num(r.stored.get(f'{part}_step_s'))
         if stored and step is not None:
-            check(f"request {r.request} {part} steps within 5% of stored ({key})", step <= stored * TIE, f"{step:.1f} s vs {stored} s")
+            check(f"request {r.request} {part} steps within 5% of stored ({key})", step <= stored * TIE,
+                  f"{step:.1f} s vs {stored} s" + ('' if step <= stored * TIE else beside))
 for r in rows:
     if r.record and 'edit' in r.target:
         sparse = (r.sol or {}).get('sparse', 0)

@@ -3,6 +3,9 @@
 # them, GPU 0 held back for heat 98% of its busy time at 89 °C), through the real path: a run that loads it 20 s warns
 # `gpu_throttled` as it goes, `cozy machine show` marks the machine slow, and a run far past what its function took before warns
 # `slow_run` naming the heat, on its record and live in `cozy run`. Then the machine goes back to its own readings and is no longer marked.
+# cl-1161 (the 0.26.0 coordinator, 11-17: "a loaded GPU held at a cap well under its default counts as slowed"): the same on
+# slow/capped-host.jsonl, user-flow 44055734347's hiroyuki, an RTX 4090 its host held to about 160 of its 450 W, at the power cap 98% of
+# its busy time and 876 of 3105 MHz: the run warns naming the power limit, `slow_run` names it, and the machine is marked.
 
 # slow_config <config.toml> <samples, or empty>: config.toml with `machine.gpu_samples` set, or taken out.
 slow_config() {
@@ -67,4 +70,30 @@ slow_config "$config" ''
 slow_machine
 cozy --json machine show local > "$OUT/slow-machine-after.json" 2>&1 || true
 J '(.status.heat // []) | length == 0' "$OUT/slow-machine-after.json" || check "slow: the machine is still marked hot: $(jq -c .status.heat "$OUT/slow-machine-after.json")"
+
+step "slow: the machine on a power-capped host's recorded readings (cl-1161)"
+slow_config "$config" "$(web_path "$here/slow/capped-host.jsonl")"
+slow_machine
+cell slow-capped "$tool/slow" 'seconds:=45' 'instructions=capped' || return 0
+n=$(cat "$OUT/slow-capped.number")
+J '[.warnings[]?.code] | index("gpu_throttled") and index("slow_run")' "$OUT/slow-capped.json" \
+  || check "slow: run $n's record has no gpu_throttled and slow_run warnings: $(jq -c .warnings "$OUT/slow-capped.json")"
+said=$(jq -r '.warnings[]? | select(.code == "gpu_throttled") | .message' "$OUT/slow-capped.json")
+grep -q 'GPU 0 ran at a 160 W power limit, under its 450 W default, 98% of this run' <<< "$said" || check "slow: run $n's gpu_throttled names no power limit: $said"
+said=$(jq -r '.warnings[]? | select(.code == "slow_run") | .message' "$OUT/slow-capped.json")
+grep -q 'GPU 0 held to 160 W of its 450 W by its host' <<< "$said" || check "slow: run $n's slow_run names no power limit: $said"
+cozy --json machine show local > "$OUT/slow-capped-machine.json" 2>&1 || check "slow: machine show local failed"
+J '.status.heat[]? | select(.gpu == 0 and .share > 0.9 and .power_limit_w == 160 and .power_default_w == 450 and .replayed == true)' "$OUT/slow-capped-machine.json" \
+  || check "slow: machine show local has no power-limited GPU 0: $(jq -c '.status.heat' "$OUT/slow-capped-machine.json")"
+cozy machine show local > "$OUT/slow-capped-machine.txt" 2>&1 || true
+grep -qE '^slow +GPU 0 held to 160 W of its 450 W by its host for 98% of its last run \([0-9]+ of 3105 MHz\)' "$OUT/slow-capped-machine.txt" \
+  || check "slow: machine show local does not say GPU 0 is power-limited: $(head -c 600 "$OUT/slow-capped-machine.txt")"
+J '[.calls[]?.measurements.memory.driver[]?, .measurements.memory.driver[]?] | any(.gpu == 0 and .power_limit_w == 160 and .power_default_w == 450 and .capped_share > 0.9)' "$OUT/slow-capped.json" \
+  || check "slow: run $n's driver record has no power limits or capped share"
+
+step "slow: back on its own readings again, the machine is no longer marked"
+slow_config "$config" ''
+slow_machine
+cozy --json machine show local > "$OUT/slow-capped-after.json" 2>&1 || true
+J '(.status.heat // []) | length == 0' "$OUT/slow-capped-after.json" || check "slow: the machine is still marked slowed: $(jq -c .status.heat "$OUT/slow-capped-after.json")"
 }

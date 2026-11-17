@@ -71,12 +71,16 @@ function Busy({ reading, total }: { reading: GpuReading; total: number }) {
   )
 }
 
-/** Whether it takes runs, at a glance: out of service (cl-935), held back for heat on its last run (cl-913), else ready. */
+/** Whether it takes runs, at a glance: out of service (cl-935), held back for heat (cl-913) or by its host's power limit (cl-1161) on
+ * its last run, else ready. */
 function stateOf(gpu: Gpu, status: MachineStatus): { word: string; tone: "ok" | "hot" | "bad"; why?: string } {
   if (gpu.out_of_service)
     return { word: "Not working", tone: "bad", why: `It isn't working: ${gpu.out_of_service.replace(/\.$/, "")}. Runs go to its other GPUs or to other machines.` }
   const hot = status.heat?.find((heat) => heat.gpu === gpu.index)
-  if (hot) return { word: "Slowed by heat", tone: "hot", why: `Held back ${heatWords(hot)}.` }
+  if (hot)
+    return hot.power_limit_w
+      ? { word: "Power-limited", tone: "hot", why: `Held ${heatWords(hot)}.` }
+      : { word: "Slowed by heat", tone: "hot", why: `Held back ${heatWords(hot)}.` }
   return { word: "Ready", tone: "ok" }
 }
 

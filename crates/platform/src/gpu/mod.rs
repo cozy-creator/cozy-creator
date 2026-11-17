@@ -291,8 +291,8 @@ impl Device {
 /// at its fullest. With its clocks while busy (readings NVML calls idle left out), so a slowed
 /// host shows in every call: the SM clock's mean and lowest against the card's maximum, the
 /// limits the driver applied (power cap, thermal, hardware slowdown) and the share of busy
-/// readings under one, the share under a heat limit (cl-913), the busy time they cover, the
-/// hottest temperature and the highest power draw.
+/// readings under one, the share under a heat limit (cl-913) and under a power limit its host set (cl-1161), the busy time they
+/// cover, the hottest temperature, the highest power draw, and the power limit the driver enforced against the card's default.
 #[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct Used {
     pub gpu: u32,
@@ -304,15 +304,28 @@ pub struct Used {
     pub throttles: Vec<&'static str>,
     pub throttled_share: f32,
     pub heat_share: f32,
+    /// The share of its busy readings at a power cap while its limit is under [`POWER_FLOOR`] of its default.
+    pub capped_share: f32,
     pub busy_ms: u64,
     pub temperature_max_c: u32,
     pub power_max_w: u32,
+    /// The power limit the driver enforces and the card's default; 0: the driver doesn't say.
+    pub power_limit_w: u32,
+    pub power_default_w: u32,
 }
 
 /// A GPU busy this long in a call was under load: its readings judge its heat.
 pub const LOADED_MS: u64 = 20_000;
-/// Held back for heat for more than this share of its busy readings: hot.
+/// Held back for heat (or at a host's power cap) for more than this share of its busy readings: slowed.
 pub const HOT_SHARE: f32 = 0.5;
+/// An enforced power limit under this share of the card's default is its host's, not the card's rating (cl-1161: hiroyuki's RTX
+/// 4090 held to about 160 of its 450 W ran at 876 MHz, 2.8× slower).
+pub const POWER_FLOOR: f32 = 0.8;
+
+/// `limit_w` is under [`POWER_FLOOR`] of `default_w`, both known.
+pub fn under_floor(limit_w: u32, default_w: u32) -> bool {
+    limit_w > 0 && default_w > 0 && (limit_w as f32) < POWER_FLOOR * default_w as f32
+}
 
 impl Used {
     /// It was under load in the call.
@@ -323,6 +336,16 @@ impl Used {
     /// Under load, the driver held it back for heat most of the time.
     pub fn hot(&self) -> bool {
         self.loaded() && self.heat_share > HOT_SHARE
+    }
+
+    /// Under load, it ran at a power limit its host set well under its default most of the time.
+    pub fn capped(&self) -> bool {
+        self.loaded() && self.capped_share > HOT_SHARE
+    }
+
+    /// Hot or capped: its runs are slower than its card's.
+    pub fn slowed(&self) -> bool {
+        self.hot() || self.capped()
     }
 }
 
@@ -337,7 +360,7 @@ const THROTTLES: [(ThrottleReasons, &str); 6] = [
 ];
 
 /// The limits that are heat's: the driver slowing the card to cool it, and the hardware slowdown that heat raises. A power cap
-/// is the card's own rating, not heat.
+/// is heat's only where the host set the limit under the card's rating ([`POWER_FLOOR`]), which [`Used::capped`] counts apart.
 fn heat() -> ThrottleReasons {
     ThrottleReasons::SW_THERMAL_SLOWDOWN | ThrottleReasons::HW_THERMAL_SLOWDOWN | ThrottleReasons::HW_SLOWDOWN
 }
@@ -345,21 +368,23 @@ fn heat() -> ThrottleReasons {
 /// How often a call's GPUs are read.
 const EVERY_MS: u64 = 100;
 
-/// A call's clock readings of one GPU, summed into [`Used`].
+/// A call's clock readings of one GPU, summed into [`Used`], with its enforced and default power limits in W.
 struct Clocks {
     busy: u32,
     mhz_sum: u64,
     low: u32,
     throttled: u32,
     hot: u32,
+    capped: u32,
     seen: ThrottleReasons,
     temperature: u32,
     power_mw: u32,
+    power: (u32, u32),
 }
 
 impl Clocks {
-    fn new() -> Self {
-        Self { busy: 0, mhz_sum: 0, low: 0, throttled: 0, hot: 0, seen: ThrottleReasons::empty(), temperature: 0, power_mw: 0 }
+    fn new(power: (u32, u32)) -> Self {
+        Self { busy: 0, mhz_sum: 0, low: 0, throttled: 0, hot: 0, capped: 0, seen: ThrottleReasons::empty(), temperature: 0, power_mw: 0, power }
     }
 
     fn read(&mut self, device: &Device) {
@@ -385,6 +410,7 @@ impl Clocks {
         let limited = THROTTLES.iter().fold(ThrottleReasons::empty(), |all, (r, _)| all | (reasons & *r));
         self.throttled += u32::from(!limited.is_empty());
         self.hot += u32::from(reasons.intersects(heat()));
+        self.capped += u32::from(reasons.contains(ThrottleReasons::SW_POWER_CAP) && under_floor(self.power.0, self.power.1));
         self.seen |= limited;
     }
 
@@ -395,7 +421,9 @@ impl Clocks {
             used.sm_mhz_low = self.low;
             used.throttled_share = self.throttled as f32 / self.busy as f32;
             used.heat_share = self.hot as f32 / self.busy as f32;
+            used.capped_share = self.capped as f32 / self.busy as f32;
         }
+        (used.power_limit_w, used.power_default_w) = self.power;
         used.busy_ms = u64::from(self.busy) * EVERY_MS;
         used.throttles = THROTTLES.iter().filter(|(r, _)| self.seen.contains(*r)).map(|(_, n)| *n).collect();
         used.temperature_max_c = self.temperature;
@@ -405,7 +433,7 @@ impl Clocks {
 
 /// One recorded reading of a GPU, as a call's thread takes one every 100 ms: what a replay feeds in place of NVML's
 /// (`machine.gpu_samples`, cl-913), so a throttling host's readings go through the real path. `reasons` are the driver's limits
-/// in force by [`THROTTLES`]' names, and `idle`.
+/// in force by [`THROTTLES`]' names, and `idle`; `power_limit_w` and `power_default_w` the limits its driver said (0: unknown).
 #[derive(Clone, Debug, Default, serde::Deserialize)]
 #[serde(default)]
 pub struct Sample {
@@ -416,6 +444,8 @@ pub struct Sample {
     pub reasons: Vec<String>,
     pub temperature_c: u32,
     pub power_w: u32,
+    pub power_limit_w: u32,
+    pub power_default_w: u32,
 }
 
 impl Sample {
@@ -427,8 +457,8 @@ impl Sample {
     }
 }
 
-/// Told, once per GPU, that the call has held it back for heat most of its load so far ([`Used::hot`]): what it read until then.
-pub type Hot = Box<dyn FnMut(&Used) + Send>;
+/// Told, once per GPU, that the call has slowed it most of its load so far ([`Used::slowed`]): what it read until then.
+pub type Slowed = Box<dyn FnMut(&Used) + Send>;
 
 /// Where a call's readings come from: its GPUs through NVML, or recorded ones, each GPU's in turn, from the first again
 /// once they run out.
@@ -446,7 +476,7 @@ pub struct Peak {
 
 impl Peak {
     /// `entries` as `CUDA_VISIBLE_DEVICES` spells them; None for none.
-    pub fn watch(entries: Vec<String>, hot: Option<Hot>) -> Option<Peak> {
+    pub fn watch(entries: Vec<String>, hot: Option<Slowed>) -> Option<Peak> {
         if entries.is_empty() {
             return None;
         }
@@ -454,7 +484,7 @@ impl Peak {
     }
 
     /// Recorded readings in place of the GPUs' own, by GPU; None for none.
-    pub fn replay(samples: Vec<Sample>, hot: Option<Hot>) -> Option<Peak> {
+    pub fn replay(samples: Vec<Sample>, hot: Option<Slowed>) -> Option<Peak> {
         let mut gpus: BTreeMap<u32, Vec<Sample>> = BTreeMap::new();
         for sample in samples {
             gpus.entry(sample.gpu).or_default().push(sample);
@@ -465,23 +495,27 @@ impl Peak {
         Self::spawn(move || Source::Recorded(gpus.into_values().collect()), hot)
     }
 
-    fn spawn(source: impl FnOnce() -> Source + Send + 'static, mut hot: Option<Hot>) -> Option<Peak> {
+    fn spawn(source: impl FnOnce() -> Source + Send + 'static, mut hot: Option<Slowed>) -> Option<Peak> {
         let (stop, stopped) = std::sync::mpsc::channel::<()>();
         let thread = std::thread::Builder::new().name("gpu-peak".into()).spawn(move || {
             let source = source();
-            // Each GPU's row, readings, card maximum, place in its recording, and whether it was said hot.
+            // Each GPU's row, readings, card maximum, place in its recording, and whether it was said slowed.
             let mut rows: Vec<(Used, Clocks, u32, usize, bool)> = match &source {
                 Source::Live(devices) => devices.iter()
                     .filter_map(|d| {
                         let bytes = d.used().ok()?;
-                        let limit = d.nvml.device_by_index(d.index).and_then(|gpu| gpu.max_clock_info(Clock::SM)).unwrap_or(0);
-                        Some((Used { gpu: d.index, before_bytes: bytes, peak_bytes: bytes, ..Used::default() }, Clocks::new(), limit, 0, false))
+                        let gpu = d.nvml.device_by_index(d.index).ok();
+                        let limit = gpu.as_ref().and_then(|gpu| gpu.max_clock_info(Clock::SM).ok()).unwrap_or(0);
+                        let watts = |mw: std::result::Result<u32, NvmlError>| mw.map_or(0, |mw| mw / 1000);
+                        let power = gpu.as_ref().map_or((0, 0), |gpu| (watts(gpu.enforced_power_limit()), watts(gpu.power_management_limit_default())));
+                        Some((Used { gpu: d.index, before_bytes: bytes, peak_bytes: bytes, ..Used::default() }, Clocks::new(power), limit, 0, false))
                     })
                     .collect(),
                 Source::Recorded(gpus) => gpus.iter()
                     .map(|samples| {
                         let first = &samples[0];
-                        (Used { gpu: first.gpu, before_bytes: first.used_bytes, peak_bytes: first.used_bytes, ..Used::default() }, Clocks::new(), first.sm_mhz_limit, 0, false)
+                        let power = (first.power_limit_w, first.power_default_w);
+                        (Used { gpu: first.gpu, before_bytes: first.used_bytes, peak_bytes: first.used_bytes, ..Used::default() }, Clocks::new(power), first.sm_mhz_limit, 0, false)
                     })
                     .collect(),
             };
@@ -503,7 +537,7 @@ impl Peak {
                     if let Some(hot) = hot.as_mut().filter(|_| !*said) {
                         let mut now = row.clone();
                         clocks.fill(&mut now, *limit);
-                        if now.hot() {
+                        if now.slowed() {
                             *said = true;
                             hot(&now);
                         }
