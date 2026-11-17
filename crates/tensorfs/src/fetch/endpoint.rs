@@ -24,7 +24,7 @@ use base64::engine::{general_purpose::STANDARD, Engine as _};
 use serde_json::Value;
 
 use super::ask::{self, Backoff};
-use super::grant::{self, Answer, Grant, Granted};
+use super::grant::{self, Answer, Grant, Granted, Listing, Wanted};
 use super::net::{join, same_origin, shown, Body, Client, GetError, HeaderMap, Pulse};
 use super::origin::{Boxed, Location, Origin};
 use super::policy::is_local;
@@ -105,8 +105,13 @@ pub struct Resolved {
     #[serde(rename = "commit", alias = "checkpoint")]
     pub checkpoint: ObjectRef,
     pub header: ObjectRef,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_empty")]
     pub reasons: Vec<String>,
+}
+
+/// A list a Go Hub may write as null.
+fn null_empty<'de, D: serde::Deserializer<'de>, T: serde::Deserialize<'de>>(d: D) -> std::result::Result<Vec<T>, D::Error> {
+    Ok(<Option<Vec<T>> as serde::Deserialize>::deserialize(d)?.unwrap_or_default())
 }
 
 /// An answer read whole.
@@ -165,11 +170,11 @@ impl Endpoint {
         Ok(Endpoint { url, at, client: client.clone(), token, sent: Arc::default(), pulse: Pulse::new(), grant: None })
     }
 
-    /// Its objects are `components` (none: all) of commit `tree`: a Hub's are located where one grant of them says, asked
-    /// when the first is located (`POST /v1/models/grants`). An object the grant doesn't list is refused.
-    pub fn granting(mut self, tree: &ObjectRef, components: &[String]) -> Self {
+    /// Its objects are what `want` names: a Hub's are located where one grant of it says, asked when the first is
+    /// located or its listing read (`POST /v1/models/grants`). An object the grant doesn't list is refused.
+    pub fn granting(mut self, want: Wanted) -> Self {
         if matches!(self.at, At::Http(_)) && !self.url.starts_with("s3://") {
-            self.grant = Some(Grant::new(tree, components));
+            self.grant = Some(Grant::new(want));
         }
         self
     }
@@ -562,7 +567,7 @@ impl Origin for Endpoint {
                     .map(|object| match granted.url(object) {
                         // A presigned URL is its own authority: the endpoint's credential stays here.
                         Some(url) => Ok(Location::Url { url: url.to_owned(), headers: vec![] }),
-                        None => Err(granted.absent(object, &grant.tree)),
+                        None => Err(granted.absent(object)),
                     })
                     .collect(),
                 _ => Ok(self.located(objects)),
@@ -581,6 +586,13 @@ impl Origin for Endpoint {
             Ok(renewed.as_ref().and_then(|granted| granted.url(object)).is_some_and(|now| now != url))
         })
     }
+
+    fn listing(&self) -> Boxed<'_, Result<Option<Arc<Listing>>>> {
+        Box::pin(async move {
+            let Some(grant) = &self.grant else { return Ok(None) };
+            Ok(self.granted(grant, None).await?.filter(|granted| !granted.unknown).map(|granted| granted.listing.clone()))
+        })
+    }
 }
 
 impl Endpoint {
@@ -592,26 +604,32 @@ impl Endpoint {
             return Ok(None);
         }
         let mut held = grant.held.lock().await;
-        let stale = match (held.as_ref(), refused) {
+        let (want, granted) = &mut *held;
+        let stale = match (granted.as_ref(), refused) {
             (None, _) => true,
             (Some(granted), None) => granted.ending(),
             (Some(granted), Some((object, url))) => granted.url(object) == Some(url) && granted.renewable(),
         };
         if stale {
-            match self.ask_grant(base, grant).await? {
-                Some(granted) => *held = Some(Arc::new(granted)),
+            match self.ask_grant(base, want).await? {
+                Some(asked) => {
+                    if let Some(renewal) = asked.renewal(want) {
+                        *want = renewal;
+                    }
+                    *granted = Some(Arc::new(asked));
+                }
                 None => {
                     grant::without_route(base);
                     return Ok(None);
                 }
             }
         }
-        Ok(held.clone())
+        Ok(granted.clone())
     }
 
-    /// One grant of `grant`'s commit, every page; None from a Hub without the route.
-    async fn ask_grant(&self, base: &str, grant: &Grant) -> Result<Option<Granted>> {
-        let (url, asked, mut body, mut pages) = (format!("{base}/v1/models/grants"), std::time::Instant::now(), grant.body(), vec![]);
+    /// One grant of `want`, every page; None from a Hub without the route.
+    async fn ask_grant(&self, base: &str, want: &Wanted) -> Result<Option<Granted>> {
+        let (url, asked, mut body, mut pages) = (format!("{base}/v1/models/grants"), std::time::Instant::now(), grant::body(want, None), vec![]);
         loop {
             let bytes = Bytes::from(serde_json::to_vec(&body).expect("JSON"));
             let payload = hex_digest(&bytes);
@@ -628,12 +646,12 @@ impl Endpoint {
             let next = answer.next.clone();
             pages.push((answer, reply.header("date").map(str::to_owned)));
             match next {
-                Some(cursor) => body["cursor"] = cursor.into(),
+                Some(cursor) => body = grant::body(want, Some(&cursor)),
                 None => break,
             }
         }
-        let granted = Granted::of(pages, asked)?;
-        tracing::info!(commit = %grant.tree.id(), unknown = granted.unknown, "a fetch grant from {base}");
+        let granted = Granted::of(want, pages, asked).map_err(|e| Refusal { code: e.code, detail: format!("POST {url}: {}", e.detail) })?;
+        tracing::info!(?want, objects = granted.listing.objects.len(), unknown = granted.unknown, "a fetch grant from {base}");
         Ok(Some(granted))
     }
 

@@ -1,7 +1,8 @@
-//! A fetch grant (xs-210): one Hub call (`POST /v1/models/grants`) answers every object a commit's download may read,
-//! each with a presigned storage URL good until the grant expires. An [`super::Endpoint`] bound to a commit asks it when
-//! it first locates one of its objects, asks again once near the end or when storage refuses a URL, and locates what it
-//! lists there, with no credential. A Hub without the route is asked per object (`GET /blobs/…`), as before.
+//! A fetch grant (xs-210): one Hub call (`POST /v1/models/grants`) says "I need this": a commit, or a model the Hub
+//! resolves first as `resolve` would. Its answer is the commit it resolved and every object the download may read, in
+//! the order to fetch them, each with a presigned storage URL good until the grant expires. An [`super::Endpoint`] bound
+//! to a want asks it once, asks again (for the commit it resolved) near the end or when storage refuses a URL, and
+//! locates what it lists there, with no credential. A Hub without the route is asked per object (`GET /blobs/…`).
 
 use std::collections::HashMap;
 use std::io::Read as _;
@@ -11,6 +12,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use super::endpoint::{Hardware, Resolved};
 use crate::err::{Code, Refusal, Result};
 use crate::format::ObjectRef;
 
@@ -37,32 +39,74 @@ pub(crate) fn without_route(base: &str) {
     WITHOUT.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((base.to_owned(), Instant::now()));
 }
 
-/// The commit an endpoint's objects belong to, and its grant as it stands (one ask at a time; the rest wait for it).
+/// What a download asks one grant for: `components` (none: all) of a commit, or of the checkpoint the Hub resolves model
+/// `name` to at `release` and `lane` (none: the one `hardware` runs best, its components the ones read), as `resolve`
+/// would; with `structure`, only its tree, repo files and header.
+#[derive(Debug, Clone)]
+pub enum Wanted {
+    Commit { tree: ObjectRef, components: Vec<String>, structure: bool },
+    Model { name: String, release: Option<String>, lane: Option<String>, hardware: Hardware, structure: bool },
+}
+
+impl Wanted {
+    fn wire(&self) -> Value {
+        let (mut want, components, structure) = match self {
+            Wanted::Commit { tree, components, structure } => (json!({"commit": tree.id()}), components, *structure),
+            Wanted::Model { name, release, lane, hardware, structure } => {
+                let mut want = json!({"model": name.to_ascii_lowercase()});
+                release.iter().for_each(|release| want["release"] = json!(release));
+                lane.iter().for_each(|lane| want["lane"] = json!(lane));
+                if !hardware.gpus.is_empty() {
+                    want["gpus"] = json!(hardware.gpus);
+                    hardware.free_vram.iter().for_each(|free| want["free_vram"] = json!(free));
+                }
+                if hardware.plain {
+                    want["plain"] = json!(true);
+                }
+                (want, &hardware.components, *structure)
+            }
+        };
+        if !components.is_empty() {
+            want["components"] = json!(components);
+        }
+        if structure {
+            want["structure"] = json!(true);
+        }
+        want
+    }
+}
+
+/// What one grant answers, as a download reads it: the commit a model want resolved to, and every object it may read, in
+/// the Hub's order.
+#[derive(Debug)]
+pub struct Listing {
+    pub resolved: Option<Resolved>,
+    pub objects: Vec<Listed>,
+}
+
+/// One object a grant lists, and its kind (`tree`, `header`, `model_asset` or `part`).
+#[derive(Debug, Clone)]
+pub struct Listed {
+    pub object: ObjectRef,
+    pub kind: String,
+}
+
+/// An endpoint's want and its grant as it stands (one ask at a time; the rest wait for it). Once a model want resolves,
+/// it is asked again as the commit it resolved to: a renewal never moves to a newer release.
 pub(crate) struct Grant {
-    pub(crate) tree: ObjectRef,
-    components: Vec<String>,
-    pub(crate) held: tokio::sync::Mutex<Option<Arc<Granted>>>,
+    pub(crate) held: tokio::sync::Mutex<(Wanted, Option<Arc<Granted>>)>,
 }
 
 impl Grant {
-    /// `components` of commit `tree`; none: all of them.
-    pub(crate) fn new(tree: &ObjectRef, components: &[String]) -> Grant {
-        Grant { tree: tree.clone(), components: components.to_vec(), held: tokio::sync::Mutex::new(None) }
-    }
-
-    /// The ask: this commit wanted, nothing said held.
-    pub(crate) fn body(&self) -> Value {
-        let mut want = json!({"commit": self.tree.id()});
-        if !self.components.is_empty() {
-            want["components"] = json!(self.components);
-        }
-        json!({"want": [want]})
+    pub(crate) fn new(want: Wanted) -> Grant {
+        Grant { held: tokio::sync::Mutex::new((want, None)) }
     }
 }
 
 /// What a grant lists, each object's URL by digest, and why the Hub refused any of the want.
 pub(crate) struct Granted {
     urls: HashMap<String, String>,
+    pub(crate) listing: Arc<Listing>,
     refused: Vec<String>,
     asked: Instant,
     until: Instant,
@@ -87,31 +131,67 @@ impl Granted {
     }
 
     /// `object` is not among what it lists.
-    pub(crate) fn absent(&self, object: &ObjectRef, tree: &ObjectRef) -> Refusal {
+    pub(crate) fn absent(&self, object: &ObjectRef) -> Refusal {
         let why = match self.refused.is_empty() {
             true => String::new(),
             false => format!(" (refused: {})", self.refused.join("; ")),
         };
-        Refusal { code: Code::REF_NOT_FOUND, detail: format!("{} is not in the Hub's grant for commit {}{why}", object.id(), tree.id()) }
+        Refusal { code: Code::REF_NOT_FOUND, detail: format!("{} is not in the Hub's grant{why}", object.id()) }
     }
 
-    /// One grant of its answer's pages, each with the Hub's `Date`, read when it was `asked`.
-    pub(crate) fn of(pages: Vec<(Answer, Option<String>)>, asked: Instant) -> Result<Granted> {
-        let mut granted = Granted { urls: HashMap::new(), refused: vec![], asked, until: asked + Duration::from_secs(3 * 60 * 60), unknown: false };
+    /// One grant of `want` from its answer's pages, each with the Hub's `Date`, read when it was `asked`. A model want the
+    /// Hub resolved nothing for is refused with its reason.
+    pub(crate) fn of(want: &Wanted, pages: Vec<(Answer, Option<String>)>, asked: Instant) -> Result<Granted> {
+        let mut granted = Granted {
+            urls: HashMap::new(),
+            listing: Arc::new(Listing { resolved: None, objects: vec![] }),
+            refused: vec![],
+            asked,
+            until: asked + Duration::from_secs(3 * 60 * 60),
+            unknown: false,
+        };
+        let (mut resolved, mut objects) = (None, vec![]);
         for (answer, date) in pages {
             let expires = parse(&answer.expires_at)?;
             // Its life on the Hub's clock, from its `Date`, not this machine's.
             let now = date.and_then(|date| jiff::fmt::rfc2822::DateTimeParser::new().parse_timestamp(&date).ok());
             let now = now.map_or_else(|| SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64, |t| t.as_second());
             granted.until = granted.until.min(asked + Duration::from_secs(expires.saturating_sub(now).max(0) as u64));
-            let (objects, refused) = (answer.objects.unwrap_or_default(), answer.refused.unwrap_or_default());
-            granted.urls.extend(objects.into_iter().map(|o| (o.digest.trim_start_matches("sha256:").to_owned(), o.url)));
+            for listed in answer.objects.unwrap_or_default() {
+                let sha256 = listed.digest.trim_start_matches("sha256:").to_owned();
+                granted.urls.insert(sha256.clone(), listed.url);
+                objects.push(Listed { object: ObjectRef { sha256, length: listed.size }, kind: listed.kind });
+            }
+            let refused = answer.refused.unwrap_or_default();
             granted.refused.extend(refused.iter().map(|r| format!("{}: {}", r.reason, r.detail)));
             granted.unknown |= refused.iter().any(|r| r.reason == "not_found");
+            resolved = resolved.or(answer.resolved.unwrap_or_default().into_iter().next());
+        }
+        if matches!(want, Wanted::Model { .. }) && resolved.is_none() {
+            let why = match granted.refused.is_empty() {
+                true => "the Hub resolved nothing for it".to_owned(),
+                false => granted.refused.join("; "),
+            };
+            return Err(Refusal { code: Code::REF_NOT_FOUND, detail: why });
         }
         granted.unknown &= granted.urls.is_empty();
+        granted.listing = Arc::new(Listing { resolved, objects });
         Ok(granted)
     }
+
+    /// The want to renew it with: the commit a model want resolved to.
+    pub(crate) fn renewal(&self, want: &Wanted) -> Option<Wanted> {
+        let Wanted::Model { hardware, structure, .. } = want else { return None };
+        let resolved = self.listing.resolved.as_ref()?;
+        Some(Wanted::Commit { tree: resolved.checkpoint.clone(), components: hardware.components.clone(), structure: *structure })
+    }
+}
+
+/// The body of one ask of `want`: none said held; `cursor` for a page after the first.
+pub(crate) fn body(want: &Wanted, cursor: Option<&str>) -> Value {
+    let mut body = json!({"want": [want.wire()]});
+    cursor.iter().for_each(|cursor| body["cursor"] = json!(cursor));
+    body
 }
 
 fn parse(at: &str) -> Result<i64> {
@@ -119,21 +199,24 @@ fn parse(at: &str) -> Result<i64> {
     Ok(at.as_second())
 }
 
-/// One page of a grant (the fields read).
+/// One page of a grant (the fields read). A Go Hub writes an empty list as null.
 #[derive(Deserialize)]
 pub(crate) struct Answer {
     expires_at: String,
     pub(crate) next: Option<String>,
-    // A Go Hub writes an empty list as null.
     #[serde(default)]
-    objects: Option<Vec<Listed>>,
+    objects: Option<Vec<WireListed>>,
     #[serde(default)]
     refused: Option<Vec<Refused>>,
+    #[serde(default)]
+    resolved: Option<Vec<Resolved>>,
 }
 
 #[derive(Deserialize)]
-struct Listed {
+struct WireListed {
     digest: String,
+    size: u64,
+    kind: String,
     url: String,
 }
 

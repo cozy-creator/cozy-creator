@@ -29,6 +29,12 @@ pub trait Origin: Send + Sync {
         let _ = (object, url);
         Box::pin(async { Ok(false) })
     }
+
+    /// What one ask of the origin lists for the download it serves (a Hub's grant: the commit it resolved and every object,
+    /// in order): None when it locates each object itself.
+    fn listing(&self) -> Boxed<'_, Result<Option<Arc<super::grant::Listing>>>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 
 /// Where one object can be read.

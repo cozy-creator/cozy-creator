@@ -315,13 +315,14 @@ wait "$second" || check "queued: the second download failed: $(tail -c 300 "$OUT
 
 # xs-210, Paul: "one request, like 'hey I have X, I need Y' ... the client shouldn't need to do a request per piece or per tensor or
 # per component." e2e/grants (e2e/isolated.sh) is a 1 MiB weight and 320 small assets: with its header and tree, 323 objects. Its
-# download onto local asks the Hub once for every object's URL (`POST /v1/models/grants`; once more at most, renewing it) and
-# reads them from storage: no `GET /blobs` (one per object before), counted from the Hub's own /stats. A Hub without the route
-# (rc/0.41.0) says so; the download still completes, one GET per object, and this cell fails on its counts.
+# download onto local is one Hub call in all: `POST /v1/models/grants` names the model, and the Hub answers the checkpoint it
+# resolves to and every object, each at a storage URL. No `GET …/resolve` (one before) and no `GET /blobs` (one per object
+# before), counted from the Hub's own /stats. A Hub without the route (rc/0.41.0) says so; the download still completes,
+# resolved and then one GET per object, and this cell fails on its counts.
 hub_grants() (
-  step "a model's download asks the Hub once for its objects, not once per object (xs-210)"
+  step "a model's download is one Hub call: one grant resolves it and lists its objects (xs-210)"
   [ -n "${COZY_HUB_URL:-}" ] && [ -n "${E2E_GRANTS:-}" ] || fail "hub grants: e2e/isolated.sh named no Hub or model"
-  local S=$OUT/hub-grants grants blobs
+  local S=$OUT/hub-grants grants resolves blobs calls
   mkdir -p "$S"
   # Each route's requests so far: `METHOD PATH COUNT`.
   routes() {
@@ -332,11 +333,13 @@ hub_grants() (
   cozy --json model install "$E2E_GRANTS" --on local > "$S/install.ndjson" 2>&1 \
     || check "hub grants: downloading $E2E_GRANTS failed: $(tail -c 300 "$S/install.ndjson")"
   routes > "$S/after.txt" || fail "hub grants: the Hub's /stats did not answer after the download"
-  awk 'NR == FNR { was[$1 " " $2] = $3; next } $3 > was[$1 " " $2] + 0 { print $1, $2, $3 - was[$1 " " $2] }' "$S/before.txt" "$S/after.txt" > "$S/calls.txt"
-  grants=$(awk '$1 == "POST" && $2 == "/v1/models/grants" { print $3 }' "$S/calls.txt")
-  blobs=$(awk '$1 == "GET" && $2 == "/blobs/{aa}/{bb}/{sha}" { print $3 }' "$S/calls.txt")
-  grep -q '^POST /v1/models/grants ' "$S/after.txt" || echo "hub grants: this Hub has no POST /v1/models/grants: its objects are asked for one at a time"
-  echo "hub grants: $E2E_GRANTS (323 objects) downloaded with ${grants:-0} POST /v1/models/grants and ${blobs:-0} GET /blobs; the Hub's calls meanwhile: $(paste -sd ';' "$S/calls.txt")"
-  [ "${grants:-0}" -ge 1 ] && [ "${grants:-0}" -le 2 ] || check "hub grants: the download asked the Hub for ${grants:-0} grants, not one (and at most one renewal)"
-  [ "${blobs:-0}" = 0 ] || check "hub grants: the download took ${blobs} GET /blobs from the Hub, not one grant"
+  # The download's calls: every route's that moved, but this cell's own reads of /stats.
+  awk 'NR == FNR { was[$1 " " $2] = $3; next } $1 " " $2 != "GET /stats" && $3 > was[$1 " " $2] + 0 { print $1, $2, $3 - was[$1 " " $2] }' \
+    "$S/before.txt" "$S/after.txt" > "$S/calls.txt"
+  count() { awk -v m="$1" -v p="$2" '$1 == m && $2 == p { n += $3 } END { print n + 0 }' "$S/calls.txt"; }
+  grants=$(count POST /v1/models/grants) resolves=$(count GET '/v1/models/{org}/{name}/resolve') blobs=$(count GET '/blobs/{aa}/{bb}/{sha}')
+  calls=$(awk '{ n += $3 } END { print n + 0 }' "$S/calls.txt")
+  grep -q '^POST /v1/models/grants ' "$S/after.txt" || echo "hub grants: this Hub has no POST /v1/models/grants: it resolves, then answers each object"
+  echo "hub grants: $E2E_GRANTS (323 objects) downloaded in $calls Hub calls: $grants POST /v1/models/grants, $resolves GET resolve, $blobs GET /blobs ($(paste -sd ';' "$S/calls.txt"))"
+  [ "$calls" = 1 ] && [ "$grants" = 1 ] || check "hub grants: the download took $calls Hub calls ($grants grants, $resolves resolves, $blobs GET /blobs), not one grant"
 )

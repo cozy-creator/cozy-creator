@@ -39,7 +39,8 @@ pub(crate) fn remote(machine: &Machine, source: &hub::Source, header: &ObjectRef
     let Some(pulled) = hub_pull(machine.store(), header)? else {
         return Ok(None);
     };
-    origin::remote(machine, source, Some((&pulled.tree, components))).map(Some).map_err(io::Error::other)
+    let want = tensorfs::fetch::Wanted::Commit { tree: pulled.tree, components: components.to_vec(), structure: false };
+    origin::remote(machine, source, Some(want)).map(Some).map_err(io::Error::other)
 }
 
 /// The Hub checkpoint `header` is, as this machine pulled it; a view's (its LoRAs composed on a base, `adapter::compose`) is
