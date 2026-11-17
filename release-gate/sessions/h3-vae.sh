@@ -51,7 +51,13 @@ for k in "${!NAMES[@]}"; do
     f=$(wheel_from "$OUT/wheels/$a" "$src") && [ -n "$f" ] || fail "arm $a: no native wheel in dev-build $src"
   fi
   WHEEL[$a]=$f; say "arm $a: $(basename "$f"), minimax-h3 at $(git -C "${PKG[$a]}" rev-parse --short HEAD)"
-  kernels "${PKG[$a]}"
+  # Its Triton sets built with the Runtime the arm runs, which a candidate package's import may need (lib.sh `kernels` takes
+  # the open RC's); lib.sh then builds them no more.
+  d=$(cd "${PKG[$a]}" && pwd)
+  t0=$SECONDS
+  "$(dirname "$d")/scripts/triton.sh" "$d" "" "file://$f" > "$OUT/kernels-$a.log" 2>&1 ||
+    fail "arm $a: minimax-h3's Triton sets did not build: $(tail -c 400 "$OUT/kernels-$a.log")"
+  KERNELS[$d]=1; say "kernels $a: built in $((SECONDS - t0)) s"
 done
 TENSORD=(); [[ $(cozy --version) != *-* ]] || TENSORD=(--tensord "$(command -v cozy)")
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
