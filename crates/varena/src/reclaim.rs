@@ -373,10 +373,20 @@ pub(crate) fn acquire<T>(
             Err(AllocationFailure::ReserveShort(_)) => {
                 // The pages fit, not beside the driver's reserve: what is idle and done goes for it,
                 // with no wait on our own work and no owner; short of that, the demand takes the reserve.
-                if !reserve(device, protect, wait != Wait::No)? {
-                    return crate::waived(&mut try_map).map_err(Into::into);
+                if reserve(device, protect, wait != Wait::No)? {
+                    continue;
                 }
-                continue;
+                // Taken, the reserve may be the driver's already (a context's growth, a library's
+                // workspace): a refusal then goes through the order below, waits and owners
+                // included, before the demand fails. var-021: RelayVSR's first keyframe on a 24 GB
+                // card wrote its K/V while the frame's own work still ran; nothing was done, so the
+                // reserve was taken, the driver refused 113 MB, and the run failed beside 14 GiB of
+                // idle weights and spillable K/V.
+                match crate::waived(&mut try_map) {
+                    Ok(value) => return Ok(value),
+                    Err(failure) if failure.is_oom() => failure,
+                    Err(failure) => return Err(failure.into()),
+                }
             }
             Err(failure) if failure.is_oom() => failure,
             Err(failure) => return Err(failure.into()),
