@@ -948,7 +948,7 @@ step "a package with only an RC floor runs from source and from the Hub, its loc
 [ -n "$LOCAL" ] || return 0
 local src=$OUT/rcfloor runtime rc
 rc=$(cozy --version | awk '{n = split($2, v, /[.-]/); print v[1] "." v[2] + ($2 ~ /-/ ? 0 : 1) ".0"}')
-runtime=$(curl -fsSL "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-$rc/SHA256SUMS" 2> /dev/null \
+runtime=$(curl -fsSL --retry 5 --retry-all-errors "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-$rc/SHA256SUMS" 2> /dev/null \
   | awk '$2 ~ /-py3-none-any[.]whl$/ {split($2, p, "-"); print p[2]; exit}')
 echo "rc floor: the open RC's newest Runtime is ${runtime:-unread}"
 grep -q '"status": *"published' "${E2E_RCFLOOR_PUBLISHED:-/dev/null}" 2> /dev/null \
@@ -1117,7 +1117,7 @@ jq -e '.status.runtime == "0.45.0"' "$OUT/machine.json" > /dev/null || check "ru
 # The RC is the one this cozy's version names: a dev build's (0.26.0-dev) its own minor, a release's the next (as rc.rs reads).
 local rc td was=$OUT/cozy-before-rc-pin
 rc=$(cozy --version | awk '{n = split($2, v, /[.-]/); print v[1] "." v[2] + ($2 ~ /-/ ? 0 : 1) ".0"}')
-td=$(curl -fsSL "https://github.com/cozy-creator/cozy-creator/releases/download/rc-$rc/SHA256SUMS" 2> /dev/null \
+td=$(curl -fsSL --retry 5 --retry-all-errors "https://github.com/cozy-creator/cozy-creator/releases/download/rc-$rc/SHA256SUMS" 2> /dev/null \
   | sed -n 's/.*  cozy-\(.*\)-linux-x86_64$/\1/p' | head -1) || td=
 if [ -n "$td" ]; then
   cp "$COZY" "$was"
