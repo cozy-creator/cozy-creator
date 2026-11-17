@@ -1,0 +1,1 @@
+- A machine's drawer reads its GPUs' use across the machine's restarts and updates. Before, a rental that came up on its image's older Cozy was answered 404 (a console error) and read nothing after it updated, and a restart ended the reading. One that can't report yet is now asked again whenever its state changes; only an unknown or ended machine is refused (cl-1117).
