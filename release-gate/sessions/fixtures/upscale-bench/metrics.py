@@ -8,6 +8,9 @@ clean/<name>.png gets full-reference scores, any other (paul/'s groudon, kyogre)
   lower better for both.
 - No reference, on the output Lanczos-resized to 1024 px on its long side (CPU-friendly): MUSIQ (KonIQ) and CLIP-IQA,
   higher better.
+- Framing: the affine that maps the output onto the clean picture (else the input's Lanczos blow-up), by OpenCV's ECC at
+  512 px: `scale` (1 keeps the framing; 1.05 means the output is zoomed in 5%) and `shift`, its offset at the centre as a
+  share of the side (0.01 = 1%).
 `lanczos` (degraded/ and paul/ Lanczos to the clean size, else 2048²) is scored too, as the floor. Prints per-candidate means: art (kind art
 or painting in sources.tsv), photo, and all.
 """
@@ -17,6 +20,7 @@ import csv
 import math
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pyiqa
 import torch
@@ -45,6 +49,22 @@ def psnr(a: Image.Image, b: Image.Image) -> float:
     return 10 * math.log10(255**2 / mse) if mse else 99.0
 
 
+def framing(output: Image.Image, reference: Image.Image) -> dict[str, float]:
+    """The output's zoom and offset against the reference: ECC's affine of the reference onto the output at 512 px."""
+    side = 512
+    a = np.asarray(reference.convert("L").resize((side, side), Image.Resampling.LANCZOS), dtype=np.float32) / 255
+    b = np.asarray(output.convert("L").resize((side, side), Image.Resampling.LANCZOS), dtype=np.float32) / 255
+    warp = np.eye(2, 3, dtype=np.float32)
+    try:
+        _, warp = cv2.findTransformECC(a, b, warp, cv2.MOTION_AFFINE, (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 200, 1e-6), None, 5)
+    except cv2.error:
+        return {"scale": float("nan"), "shift": float("nan")}
+    # warp maps reference coordinates to output coordinates: its linear part's scale is the output's zoom.
+    scale = math.sqrt(abs(float(np.linalg.det(warp[:, :2]))))
+    centre = warp[:, :2] @ np.array([side / 2, side / 2]) + warp[:, 2] - side / 2
+    return {"scale": scale, "shift": float(np.hypot(*centre)) / side}
+
+
 def score(output: Image.Image, name: str) -> dict[str, float]:
     output = output.convert("RGB")
     row: dict[str, float] = {}
@@ -54,6 +74,10 @@ def score(output: Image.Image, name: str) -> dict[str, float]:
         fitted = output.resize(clean.size, Image.Resampling.LANCZOS)
         a, b = tensor(fitted), tensor(clean)
         row |= {"psnr": psnr(fitted, clean), "lpips": float(lpips(a, b)), "dists": float(dists(a, b))}
+        row |= framing(output, clean)
+    else:
+        source = next(p for p in (HERE / "degraded" / f"{name}.jpg", HERE / "paul" / f"{name}.jpg") if p.exists())
+        row |= framing(output, Image.open(source).resize(output.size, Image.Resampling.LANCZOS))
     s = NR_SIDE / max(output.size)
     small = output.resize((round(output.width * s), round(output.height * s)), Image.Resampling.LANCZOS)
     t = tensor(small)
@@ -87,19 +111,20 @@ for candidate, files in candidates.items():
         rows.append(row)
         print("\t".join(str(v) for v in row.values()), flush=True)
 
-columns = ["candidate", "image", "kind", "size", "psnr", "lpips", "dists", "musiq", "clipiqa"]
+columns = ["candidate", "image", "kind", "size", "psnr", "lpips", "dists", "musiq", "clipiqa", "scale", "shift"]
 out = args.out or args.runs / "scores.tsv"
 with open(out, "w") as f:
     writer = csv.DictWriter(f, columns, delimiter="\t", restval="")
     writer.writeheader()
     writer.writerows(rows)
-print(f"\n{'candidate':28} {'set':6} {'n':>2} {'PSNR':>6} {'LPIPS':>6} {'DISTS':>6} {'MUSIQ':>6} {'CLIPIQA':>7}")
+print(f"\n{'candidate':28} {'set':6} {'n':>2} {'PSNR':>6} {'LPIPS':>6} {'DISTS':>6} {'MUSIQ':>6} {'CLIPIQA':>7} {'|zoom|':>6} {'shift':>6}")
 for candidate in candidates:
     for label, keep in (("art", ("art", "painting")), ("photo", ("photo",)), ("all", ("art", "painting", "photo")), ("paul", ("paul",))):
         mine = [r for r in rows if r["candidate"] == candidate and r["kind"] in keep]
         if not mine:
             continue
         mean = {k: sum(float(r[k]) for r in mine) / len(mine) if all(k in r for r in mine) else float("nan")
-                for k in ("psnr", "lpips", "dists", "musiq", "clipiqa")}
+                for k in ("psnr", "lpips", "dists", "musiq", "clipiqa", "shift")}
+        mean["zoom"] = sum(abs(float(r["scale"]) - 1) for r in mine) / len(mine)
         print(f"{candidate:28} {label:6} {len(mine):>2} {mean['psnr']:6.2f} {mean['lpips']:6.3f} {mean['dists']:6.3f} "
-              f"{mean['musiq']:6.2f} {mean['clipiqa']:7.3f}")
+              f"{mean['musiq']:6.2f} {mean['clipiqa']:7.3f} {mean['zoom']:6.3f} {mean['shift']:6.3f}")
