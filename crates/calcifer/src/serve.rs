@@ -400,21 +400,13 @@ pub(crate) async fn serve(loaded: &Loaded, taken: platform::generation::Taken) -
     }
     steps.done("record");
     let app = api::router(api.clone()).into_make_service_with_connect_info::<crate::loopback::Peer>();
-    // Accepting ends with Calcifer, or before it hands over: a connect then waits in the parent's backlog for the next generation.
+    // Accepting stops before it hands over: a connect then waits in the parent's backlog for the next generation (`Gate`).
     let accepting = tokio::sync::watch::channel(true).0;
-    let closing = || {
-        let (mut accepting, stopped) = (accepting.subscribe(), api.stopped());
-        async move {
-            tokio::select! {
-                _ = accepting.wait_for(|accepting| !*accepting) => {}
-                () = stopped => {}
-            }
-        }
-    };
-    let server = tokio::spawn(axum::serve(listener, app.clone()).with_graceful_shutdown(closing()).into_future());
+    let gate = |listener| crate::loopback::Gate::new(listener, accepting.subscribe());
+    let server = tokio::spawn(axum::serve(gate(listener), app.clone()).with_graceful_shutdown(api.stopped()).into_future());
     // `localhost` stops being Calcifer's the moment ::1's server ends.
     let server6 = listener6.map(|listener| {
-        let serving = axum::serve(listener, app).with_graceful_shutdown(closing()).into_future();
+        let serving = axum::serve(gate(listener), app).with_graceful_shutdown(api.stopped()).into_future();
         tokio::spawn(async move {
             let ended = serving.await;
             crate::loopback::LOCALHOST.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -495,14 +487,15 @@ async fn close(api: &Arc<Api>, server: Option<Server>, server6: Option<Server>) 
     crate::health::service_health(crate::health::HealthEvent::Stopped);
 }
 
-/// Letting go of the home for the next generation (cl-1113): the page's streams are told to come straight back, the servers stop
-/// accepting (the parent's listeners stay open, so a connect waits for the next one) and finish what they answer, then the stores
+/// Letting go of the home for the next generation (cl-1113), accepting already stopped (the parent's listeners stay open, so a connect
+/// waits for the next one): the page's streams are told to come straight back, the servers finish what they answer, then the stores
 /// close. The open views go to the next generation.
 async fn hand_over(api: &Arc<Api>, server: Server, server6: Option<Server>) -> Vec<(crate::project::vault::Carried, std::fs::File)> {
     info!("handing over to the next Calcifer");
     crate::events::restarting();
-    // Each stream ends once it has said so; what's left ends with the stop.
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Accepting has stopped. A connection taken just before has this long to begin its request, which is answered; then the stop
+    // closes only connections between requests (as a client reusing one expects), and every stream not already ended on `restarting`.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     api.stop();
     ended(Some(server), server6).await;
     // Its projects close first, their WAL emptied: the next generation opens them, encrypted ones through the same views.

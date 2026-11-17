@@ -39,6 +39,55 @@ impl Connected<IncomingStream<'_, TcpListener>> for Peer {
     }
 }
 
+impl Connected<IncomingStream<'_, Gate>> for Peer {
+    fn connect_info(stream: IncomingStream<'_, Gate>) -> Self {
+        Peer { addr: *stream.remote_addr(), local: stream.io().local_addr().ok(), accepted: SystemTime::now(), user: Arc::default() }
+    }
+}
+
+/// The parent's listener as a generation accepts from it (cl-1113). Before it hands over it stops accepting: a connect then waits in
+/// the backlog for the next generation, never taken here and closed unread as a server's graceful shutdown closes a connection with
+/// no request begun.
+pub(crate) struct Gate {
+    listener: TcpListener,
+    accepting: tokio::sync::watch::Receiver<bool>,
+}
+
+impl Gate {
+    pub(crate) fn new(listener: TcpListener, accepting: tokio::sync::watch::Receiver<bool>) -> Self {
+        Self { listener, accepting }
+    }
+}
+
+impl axum::serve::Listener for Gate {
+    type Io = tokio::net::TcpStream;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            if !*self.accepting.borrow_and_update() {
+                // Handed over: what's left is answered, nothing more taken.
+                std::future::pending::<()>().await;
+            }
+            tokio::select! {
+                accepted = self.listener.accept() => match accepted {
+                    Ok(accepted) => return accepted,
+                    // As axum's own: out of descriptors, or a connection that ended before it was taken.
+                    Err(e) => {
+                        tracing::warn!("accepting a connection: {e}");
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                },
+                _ = self.accepting.changed() => {}
+            }
+        }
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        self.listener.local_addr()
+    }
+}
+
 impl Peer {
     async fn user(&self) -> Result<&User, &'static str> {
         let (peer, local, accepted) = (self.addr, self.local, self.accepted);
