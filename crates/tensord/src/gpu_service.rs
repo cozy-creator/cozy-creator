@@ -318,21 +318,28 @@ impl Plan {
         let raw = self.sources.iter().map(|s| row(&s.parameter, (&s.model, &s.release), (&s.lane, &s.precision), &s.manifest));
         constructed.chain(raw).collect()
     }
-    /// What a call reads before its function runs: every slot's components but an on-demand
-    /// one's.
-    pub(crate) fn upfront(&self) -> Vec<(String, Vec<String>)> {
-        merged(self.slots.iter().filter(|slot| !slot.on_demand)).into_iter().map(|s| (s.manifest, s.components)).collect()
+    /// What a call reads before its function runs: every slot's components but an on-demand one's, and those of one its rule
+    /// says the request needs (`ruled`).
+    fn upfront(&self, ruled: &needs::Answers) -> Vec<(String, Vec<String>)> {
+        let waited = |slot: &&PlanSlot| !slot.on_demand || ruled.needed.contains(&slot.binding.model_parameter_name);
+        merged(self.slots.iter().filter(waited)).into_iter().map(|s| (s.manifest, s.components)).collect()
     }
-    /// What its on-demand slots read once a stage asks: guessed ahead, never waited on (Paul, 11-12).
-    pub(crate) fn possible(&self) -> Vec<(String, Vec<String>)> {
-        merged(self.slots.iter().filter(|slot| slot.on_demand)).into_iter().map(|s| (s.manifest, s.components)).collect()
+    /// What its on-demand slots read once a stage asks: guessed ahead, never waited on (Paul, 11-12). Not one its rule answers
+    /// for the request (`ruled`): a needed one is waited on, and an unneeded one isn't fetched.
+    fn possible(&self, ruled: &needs::Answers) -> Vec<(String, Vec<String>)> {
+        let guessed = |slot: &&PlanSlot| {
+            let parameter = &slot.binding.model_parameter_name;
+            slot.on_demand && !ruled.needed.contains(parameter) && !ruled.unneeded.contains(parameter)
+        };
+        merged(self.slots.iter().filter(guessed)).into_iter().map(|s| (s.manifest, s.components)).collect()
     }
-    /// What a call of it loads (`access::Needs`, cl-1102), as its function declares it: the fallback where its interface has no
-    /// rules for the request (cl-1103), whose answer, slot by slot, takes the place of `on_demand` here. Needed: every slot's
-    /// components but an on-demand one's, and its raw weights' (its function read those through its own executor's fetch, inside
-    /// its run, outside the download line). Extras: its on-demand slots', which a stage may read.
-    pub(crate) fn needs(&self) -> crate::access::Needs {
-        let mut needed = self.upfront();
+    /// What a call of it loads (`access::Needs`, cl-1102). `ruled` is what its interface's rules say of the request (cl-1103;
+    /// none for a call with no request): a slot a rule answers is needed or not fetched, as it says. Every other slot is as its
+    /// function declares it. Needed: every slot's components but an on-demand one's, and its raw weights' (its function read those
+    /// through its own executor's fetch, inside its run, outside the download line). Extras: its on-demand slots', which a stage
+    /// may read.
+    pub(crate) fn needs(&self, ruled: &needs::Answers) -> crate::access::Needs {
+        let mut needed = self.upfront(ruled);
         for source in &self.sources {
             match needed.iter_mut().find(|(manifest, _)| *manifest == source.manifest) {
                 // No components named is the checkpoint whole.
@@ -345,7 +352,7 @@ impl Plan {
                 None => needed.push((source.manifest.clone(), source.components.clone())),
             }
         }
-        let extras = match self.possible() {
+        let extras = match self.possible(ruled) {
             possible if possible.is_empty() => vec![],
             possible => vec![("its on-demand models".to_owned(), possible)],
         };
