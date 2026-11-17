@@ -5,9 +5,10 @@
 #             (`cozy run <package dir> --describe`): the functions and fields the executor's interface has
 #   lock      Calcifer's private lock API leaves the committed uv.lock as it is (a Hub index's URLs and wheels are this
 #             suite's Hub's: lock_same.py); not under run.sh's --lock fresh, which locked it before its run
-#   bind      every cell's request (drive.py's <out>/requests/<request>.json, its input files) bound by Calcifer's binder
-#             against the staged local code (the private estimate API; 0.22.1 refused `aspect_ratio=1:1`), a prompt's
-#             reference images named as the run's own `references`
+#   bind      a stand-in package's (drive.py, se-149) every cell's request (<out>/requests/<request>.json, its input files)
+#             bound by Calcifer's binder against the staged local code (the private estimate API; 0.22.1 refused
+#             `aspect_ratio=1:1`), a prompt's reference images named as the run's own `references`. Every other package's cells
+#             run for real (real.py), which binds them.
 # <project> is a project's folder: a run belongs to the project it is sent from. One line per cell, as run.sh's.
 set -uo pipefail
 COZY=$1 PROJECT=$2 PKG=$3 OUT=$4

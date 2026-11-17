@@ -849,31 +849,38 @@ def graphs_off_cuda(reply: Reply) -> None:
 
 def judge(cell: Cell, reply: Reply, spool: Path, reference: Seen | None,
           committed: Callable[[], dict[str, dict[str, int]]]) -> tuple[Seen, Files]:
-    """The cell's output judged, never only its completion: every declared output present, finite and not flat (or
-    declared empty), the cell's own check, the stored reference's, and its graphs' fallback (`graphs_off_cuda`)."""
+    """The stand-in's reply judged (`judged`): it succeeded, its graphs fell back off CUDA (`graphs_off_cuda`), and each
+    declared output is its file in the spool."""
     outcome = reply.get("outcome", {})
     if not reply.get("ok") or outcome.get("terminal") != "succeeded":
         raise Failed(f"{outcome.get('code') or reply.get('code')}: {first_line(outcome.get('message') or reply.get('detail', ''))}")
     graphs_off_cuda(reply)
     result_file = spool / "result.canonical"
     result = cast(Json, json.loads(result_file.read_bytes())) if result_file.exists() else reply.get("result")
-    seen: Seen = {"result": plain(result), "outputs": []}
-    weights = committed()
-    if weights:
-        seen["weights"] = weights
-    empty = set(cell.get("empty", []))
-    files: list[Path] = []
     named: Files = {}
     for declared in sorted(reply.get("outputs") or [], key=lambda o: str(o.get("output_id"))):
         output, ref, media_type = (str(declared.get(k, "")) for k in ("output_id", "asset_ref", "media_type"))
         path = spooled(spool, ref)
-        files.append(path)
         named[output] = (path, media_type)
         if path.suffix == ".raw" and media_type.startswith("video/"):
             registered = next((f for f in reply.get("frames", []) if f["handle"] == ref), None)
             if registered is None:
                 raise Failed(f"raw video {output} has no Runtime frame registration")
             path.with_suffix(path.suffix + ".json").write_text(json.dumps(registered["facts"]))
+    return judged(cell, result, named, reference, committed()), named
+
+
+def judged(cell: Cell, result: Json, named: Files, reference: Seen | None, weights: dict[str, dict[str, int]]) -> Seen:
+    """A call's output judged, never only its completion: every output (by output id, its file and media type) present,
+    finite and not flat (or declared empty), the cell's own check, and the stored reference's. The stand-in's (`judge`) and
+    a real run's (real.py) alike."""
+    seen: Seen = {"result": plain(result), "outputs": []}
+    if weights:
+        seen["weights"] = weights
+    empty = set(cell.get("empty", []))
+    files: list[Path] = []
+    for output, (path, media_type) in sorted(named.items()):
+        files.append(path)
         if not path.stat().st_size:
             if output not in empty:
                 raise Failed(f"output {output} is empty")
@@ -894,7 +901,7 @@ def judge(cell: Cell, reply: Reply, spool: Path, reference: Seen | None,
         raise Failed(problem)
     if reference is not None:
         compare(seen, reference, tolerance(cell))
-    return seen, named
+    return seen
 
 
 def tolerance(cell: Cell) -> float:
@@ -1108,6 +1115,16 @@ def cpu() -> str:
     return ""
 
 
+def tiny(fixture: Fixture, package_dir: Path, out: Path, store: Path) -> dict[str, str]:
+    """The fixture's tiny models in `store`, each by the ref or slot path it builds for: a source folder imported by
+    TensorFS, or a checkpoint its writer committed there."""
+    import tensorfs
+
+    os.environ["CPU_E2E_PACKAGES"] = str(package_dir.parent)
+    return {ref: source if isinstance(source, str) else tensorfs.convert_to_cozytensors(str(source), cache_dir=store).id
+            for ref, source in fixture.models(out / "source", store).items()}
+
+
 def stored(folder: Path, package: str) -> tuple[Path, str]:
     """The file of `package`'s references for this CPU's vendor, and what each cell's line says of it. bf16 matmuls sum
     in another order on Intel than on AMD, alike on every CPU of one vendor: a tiny model's picture can move past a
@@ -1154,12 +1171,7 @@ def main() -> int:
 
     started = time.monotonic()
     try:
-        import tensorfs
-
-        manifests: dict[str, str] = {}
-        os.environ["CPU_E2E_PACKAGES"] = str(package_dir.parent)
-        for ref, source in fixture.models(out / "source", store).items():
-            manifests[ref] = source if isinstance(source, str) else tensorfs.convert_to_cozytensors(str(source), cache_dir=store).id
+        manifests = tiny(fixture, package_dir, out, store)
         line(True, "-", "tiny-weights", started)
     except Exception as exc:
         with open(out / "tiny-weights.err", "w") as err:

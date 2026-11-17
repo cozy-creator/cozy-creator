@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# e2e/cpu/run.sh: every package's entry points through the Runtime's real executor on the CPU, with tiny random
-# weights (README "cpu"). No GPU, no rental, no sign-in.
+# e2e/cpu/run.sh: every package's entry points on the CPU, with tiny random weights (README "cpu"): with --cozy through
+# `cozy run --on local` and real TensorD (real.py), else through the Runtime's real executor and a stand-in TensorD
+# (drive.py). No GPU, no rental, no sign-in.
 #
 #   e2e/cpu/run.sh --out DIR --packages DIR --runtime R --tensorfs T [--cozy BIN --project DIR --stage-code BIN] [--envs DIR]
 #                  [--only pkg,...] [--cells entry/cell,...] [--jobs N] [--refs DIR] [--helpers pkg,...] [--record] [--keep]
 #                  [--lock fresh]
 # R and T: a wheel, a source dir (the Runtime), an exact release version, or `lock` (what each package's lock pins).
-# --cozy: a cozy whose Calcifer is up, and --project a project folder of it: each package's code is also uploaded,
-# locked and its cells' requests bound through it (cli.sh), and each slot's default lane resolved per GPU family first
-# (lanes.py; `--cells lanes` alone); without it those cells are not run.
+# --cozy: a cozy whose Calcifer is up, signed in to the suite's Hub as its admin, and --project a project folder of it: each
+# package's cells run through it (real.py), its code is also uploaded and locked (cli.sh), and each slot's default lane
+# resolved per GPU family first (lanes.py; `--cells lanes` alone).
 # --lock fresh (a release's smoke, promote.sh; needs --cozy, and R and T release versions): that cozy locks each package
 # first and it runs from that lock, which must pin R and T from PyPI. Its committed lock isn't compared.
 # --keep keeps each package's tiny weights, inputs and outputs (else only logs and replies stay);
@@ -41,6 +42,7 @@ release() { [[ $1 =~ ^[0-9][0-9a-z.]*$ ]] && [ ! -e "$1" ]; }
   || { echo "--lock fresh needs --cozy, and --runtime and --tensorfs release versions" >&2; exit 2; }
 abs() { if [ -e "$1" ]; then (cd "$(dirname "$1")" && echo "$PWD/$(basename "$1")"); else echo "$1"; fi; }
 OUT=$(mkdir -p "$OUT" && cd "$OUT" && pwd) PACKAGES=$(cd "$PACKAGES" && pwd) RUNTIME=$(abs "$RUNTIME") TENSORFS=$(abs "$TENSORFS")
+[ -z "$COZY" ] || COZY=$(abs "$COZY") PROJECT=$(abs "$PROJECT")
 if [ -n "$COZY" ]; then
   . "$HERE/../test-hub.sh"
   require_ci_test_hub || exit $?
@@ -118,7 +120,7 @@ one() {
   # core for a minute, cold).
   (s=$SECONDS; code=0
    nice -n 19 uvx -q mypy@2.4.1 --config-file "$HERE/mypy.ini" --cache-dir "$env/.mypy" --python-executable "$env/bin/python" \
-     "$HERE/drive.py" "$HERE/cell.py" "$HERE/surface.py" "$HERE/waive/cpu_e2e_waive.py" "$(fixture "$p")" > "$out/mypy.txt" 2>&1 || code=1
+     "$HERE/drive.py" "$HERE/real.py" "$HERE/cell.py" "$HERE/surface.py" "$HERE/waive/cpu_e2e_waive.py" "$(fixture "$p")" > "$out/mypy.txt" 2>&1 || code=1
    echo "$code $((SECONDS - s))" > "$out/mypy.rc") &
   local typing=$!
   typed() {
@@ -147,13 +149,18 @@ one() {
     return 1
   fi
   echo "PASS $p - describe $((SECONDS - t))s"
-  CUDA_VISIBLE_DEVICES= nice -n 19 "$env/bin/python" "$HERE/drive.py" "$PACKAGES/$p" "$out/interface.json" \
+  # With a cozy, each cell runs as a person runs it (real.py: `cozy run <package dir>/<function> --on local`, real TensorD,
+  # its tiny models published on the suite's Hub). A fixture that patches release geometry (PATCH, WAIVE: se-149) runs in
+  # the stand-in TensorD (drive.py) until its package takes a tiny geometry itself.
+  local driver=(drive.py "$PACKAGES/$p")
+  [ -z "$COZY" ] || grep -qE '^(PATCH|WAIVE)\b' "$(fixture "$p")" || driver=(real.py "$COZY" "$PROJECT" "$PACKAGES/$p")
+  CUDA_VISIBLE_DEVICES= nice -n 19 "$env/bin/python" "$HERE/${driver[0]}" "${driver[@]:1}" "$out/interface.json" \
     "$(fixture "$p")" "$out" --refs "$REFS" ${CELLS:+--only "$CELLS"} $RECORD 2> "$out/drive.err" || true
   # The driver catches each cell's failure; a traceback of its own is one it did not, and every cell after it is lost.
   ! grep -q '^Traceback' "$out/drive.err" || echo "FAIL $p - drive 0s: $(grep -v '^\s*$' "$out/drive.err" | tail -n1 | cut -c1-300)"
   [ -z "$COZY" ] || "$HERE/cli.sh" "$COZY" "$PROJECT" "$PACKAGES/$p" "$out"
   typed
-  [ -n "$KEEP" ] || rm -rf "$out"/{store,source,spool,made,inputs,cli/src}
+  [ -n "$KEEP" ] || rm -rf "$out"/{store,source,spool,made,inputs,mirror,cli/src} "$out"/cells/*/out
 }
 export -f one
 
