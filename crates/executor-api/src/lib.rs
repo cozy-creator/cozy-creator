@@ -191,7 +191,8 @@ pub struct Preview {
     pub for_ms: u64,
 }
 
-/// The queued preparation to discard, by its request id.
+/// A request to stop, by its id: a queued preparation is discarded, a running invoke stops at its next
+/// cancellation point and replies.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct Cancel {
