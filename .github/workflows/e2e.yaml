@@ -917,6 +917,13 @@ jobs:
         # The repository is public and GitHub masks no secret inside an artifact: no secret may ever be given to this job.
         run: |
           mkdir -p "$RUNNER_TEMP/e2e/cozy-logs" && cd ~/.cozy && find . -name '*.log' -size -20M | tar -cf - -T - | tar -xf - -C "$RUNNER_TEMP/e2e/cozy-logs" || true
+          # The stand-ins' (other users' cozy on this runner, machineset.sh's stand_in): plan's resent red (44041520735) died on stand-b
+          # with nothing of stand-b's TensorD kept (cl-1128).
+          for home in /home/cozy-*; do
+            sudo test -d "$home/.cozy" || continue
+            mkdir -p "$RUNNER_TEMP/e2e/cozy-logs/${home##*/}"
+            sudo find "$home/.cozy" -name '*.log' -size -20M -printf '%P\n' | sudo tar -C "$home/.cozy" -cf - -T - | tar -xf - -C "$RUNNER_TEMP/e2e/cozy-logs/${home##*/}" || true
+          done
           # Calcifer's own log is its user unit's journal; each project's walk keeps its placements in its own storage, named here
           # by its folder under the run's out dir. Each read is bounded: a wedged FUSE view can't hold the step and lose every log.
           XDG_RUNTIME_DIR=/run/user/$(id -u) timeout 60 journalctl --user -u cozy-calcifer.service --no-pager > "$RUNNER_TEMP/e2e/cozy-logs/calcifer-journal.log" 2>&1 || true
