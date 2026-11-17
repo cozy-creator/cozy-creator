@@ -374,6 +374,8 @@ export function Stage(props: StageProps) {
         setSaid(first ? store.get(first.data.name)?.name ?? first.data.name : "")
       }
     }
+    /** What each run and machine read the board last drew from. */
+    const readFrom = new Map<string, unknown>()
     stops.push(
       board.subscribeNodes(() => { announce(); publishDom(); invalidate() }),
       // A move of the camera ends a hover: what was under the pointer has moved; a new one comes with the pointer's next move.
@@ -392,7 +394,12 @@ export function Stage(props: StageProps) {
       queries.getQueryCache().subscribe((event) => {
         if (event.type !== "updated" || event.action.type !== "success") return
         const key = event.query.queryKey
-        if ((key[0] === "project-run" && key[1] === store.projectId) || key[0] === "machines") invalidate()
+        if (!((key[0] === "project-run" && key[1] === store.projectId) || key[0] === "machines")) return
+        // A read that found nothing new keeps the data it had (TanStack shares it): nothing to draw again, so a page sitting still draws
+        // nothing when its machines are read again (idle).
+        if (readFrom.get(event.query.queryHash) === event.query.state.data) return
+        readFrom.set(event.query.queryHash, event.query.state.data)
+        invalidate()
       }),
     )
     publishDom()
