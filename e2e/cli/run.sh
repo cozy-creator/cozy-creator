@@ -780,10 +780,15 @@ case $SHARD in
   slow) parts="
     slow_runs
     state_restart
+    hub_listing_restart
     logs
   " ;;
   # Calcifer restarted on a large store, its disk slow (cl-1010).
-  restart) parts="state_restart logs" ;;
+  restart) parts="
+    state_restart
+    hub_listing_restart
+    logs
+  " ;;
   # A project's run and its chosen machine, a rental chosen by its handle, follow its Hub's name for the host (cl-1089, cl-1106).
   rental-rename) parts="rental_rename logs" ;;
   # A take's thumbnail asked for while its file is on its way here answers no error (cl-1108).
@@ -868,6 +873,8 @@ case $SHARD in
   projectdb-pickup-kept) parts="db_pickup_kept logs" ;;
   # A local run's latents, landed after its run arrived, are its take's and go with it (cl-1046, cl-1093). Named projectvault-* for its driver.
   projectvault-kept-latents) parts="kept_latents logs" ;;
+  # An export whose bytes the machine no longer has settles and starts the machine no more (cl-1035). Named projectvault-* for its driver.
+  projectvault-export-gone) parts="export_gone logs" ;;
   projectdb-closes) parts="db_closes logs" ;;
   # cl-1000: a runner with no FUSE (e2e.yaml installs no vault driver for it).
   projectvault-nofuse) parts="vault_no_fuse logs" ;;
@@ -889,6 +896,7 @@ case $SHARD in
     hard_cut
     vault_leftovers
     kept_latents
+    export_gone
     vault_purge_due
     vault_swapped
     ended_logs

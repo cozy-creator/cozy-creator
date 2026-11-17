@@ -226,11 +226,7 @@ impl Machines {
         if me.dev {
             me.spawn(me.clone().follow_rcs());
         }
-        let lister = me.clone();
-        me.spawn(async move {
-            let _took = Took::new("list_hubs");
-            lister.list_hubs().await
-        });
+        me.refresh_hubs();
         me
     }
 
@@ -340,8 +336,8 @@ impl Machines {
     }
 
     /// Every machine: this computer's, those added, and every live rental of this account, ordered
-    /// here or by another of its clients. `refresh` lists every Hub again first; otherwise the
-    /// Hubs' last word is answered.
+    /// here or by another of its clients, by the Hubs' last word. `refresh` lists every Hub again beside the answer (cl-1010: it waited
+    /// on every Hub, 1 to 15 s on Paul's laptop): the new word reaches a page as a machine change, and the next list.
     pub(crate) async fn list(self: &Arc<Self>, refresh: bool) -> Result<MachineList, Error> {
         self.list_for(refresh, &[]).await
     }
@@ -349,7 +345,7 @@ impl Machines {
     /// The list as a page showing `projects` sees it: what each machine does for their runs too (`picture_for`).
     pub(crate) async fn list_for(self: &Arc<Self>, refresh: bool, projects: &[String]) -> Result<MachineList, Error> {
         if refresh {
-            self.list_hubs().await;
+            self.refresh_hubs();
         }
         let here = platform::Os::CURRENT.local_inference();
         if here {
