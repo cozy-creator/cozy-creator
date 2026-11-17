@@ -187,29 +187,39 @@ async fn keep(api: &Arc<Api>, hub: &str, package: &str, release: &str) -> Result
         true => hubs.facts(&Origin::parse(hub)?).await.ok().map(|facts| facts.ca().to_vec()).filter(|der| !der.is_empty()).map(|der| pem(&der)),
         false => None,
     };
+    // Each wheel this computer's store lacks, fetched; one that can't be is held once something else here fetches it (this computer's
+    // machine installing it): what `sent` sends is only ever what's held then.
     for wheel in all {
         let digest: Digest = format!("sha256:{}", wheel.sha256).parse().map_err(|_| unread("wheel digest"))?;
         if crate::runs::files::held(&digest).is_some() {
             continue;
         }
-        let mut bytes = Vec::with_capacity(wheel.length as usize);
-        let mut sink = |at: u64, frame: &[u8]| {
-            bytes.truncate(at as usize);
-            bytes.extend_from_slice(frame);
-            Ok(())
-        };
-        tensorfs::fetch::get_pinned_trusting(&wheel.url, roots.as_deref().map(str::as_bytes), &mut sink).await
-            .map_err(|e| Error::new(Kind::Unavailable, "release_wheel_unfetched", format!("{}: {e}", wheel.name)))?;
-        if hex::encode(Sha256::digest(&bytes)) != wheel.sha256 {
-            return Err(Error::new(Kind::Unavailable, "release_wheel_unfetched", format!("{} isn't the wheel its plan names", wheel.name)));
+        if let Err(e) = fetch(wheel, roots.as_deref()).await {
+            tracing::warn!("{package} {release}: {} isn't held here yet: {e}", wheel.name);
         }
-        tokio::task::spawn_blocking(move || crate::runs::files::hold(&bytes)).await.map_err(|e| Error::internal("release_wheel_unheld", e.to_string()))??;
     }
     let path = file(api, hub, package, release);
     let bytes = serde_json::to_vec(&kept).expect("a kept release serializes");
     durable::private_dir(path.parent().expect("a release's folder")).and_then(|()| durable::replace(&path, &bytes, 0o600))
         .map_err(|e| Error::internal("release_unheld", e.to_string()))?;
     tracing::info!("{package} {release} is held here for any machine");
+    Ok(())
+}
+
+/// `wheel` fetched into this computer's store, held to its digest.
+async fn fetch(wheel: &Wheel, roots: Option<&str>) -> Result<(), Error> {
+    let mut bytes = Vec::with_capacity(wheel.length as usize);
+    let mut sink = |at: u64, frame: &[u8]| {
+        bytes.truncate(at as usize);
+        bytes.extend_from_slice(frame);
+        Ok(())
+    };
+    tensorfs::fetch::get_pinned_trusting(&wheel.url, roots.map(str::as_bytes), &mut sink).await
+        .map_err(|e| Error::new(Kind::Unavailable, "release_wheel_unfetched", e.to_string()))?;
+    if hex::encode(Sha256::digest(&bytes)) != wheel.sha256 {
+        return Err(Error::new(Kind::Unavailable, "release_wheel_unfetched", "not the wheel its plan names"));
+    }
+    tokio::task::spawn_blocking(move || crate::runs::files::hold(&bytes)).await.map_err(|e| Error::internal("release_wheel_unheld", e.to_string()))??;
     Ok(())
 }
 

@@ -193,7 +193,7 @@ hub_down_install() {
     [ -n "$held" ] && break
     sleep 1
   done
-  [ -n "$held" ] || { check "hub down install: this computer didn't hold $E2E_RELAY 0.1.0 two minutes after its install: $(grep -a 'held here' "$HOME/.cozy/calcifer/diagnostics.log" 2> /dev/null | tail -2)"; return; }
+  [ -n "$held" ] || check "hub down install: this computer didn't hold $E2E_RELAY 0.1.0 two minutes after its install: $(grep -a 'held here' "$HOME/.cozy/calcifer/diagnostics.log" 2> /dev/null | tail -2)"
   cozy --json machine show local > "$OUT/set-local.json" || { check "hub down install: machine show local"; return; }
   stand_in "$m" || return
   hub_stop
