@@ -104,13 +104,12 @@ fault() {
     n=$(runno "$a-fault")
     [ -z "$n" ] || since=${since:-$SECONDS}
     [ -n "$n" ] && stage=$( (cd "$RUN_PROJECT" && cozy --json run watch "$n" --once) 2> /dev/null | jq -r '.progress.stage // .status // empty')
-    # Decoding: its stage says so, or a minute since it began (the paged executor is warm, so it is answering by then).
+    # Decoding: its stage says so, or 30 s since it began (construction ~15 s, then the paged decode for ~35 s).
     [[ ${stage:-} == answering* ]] && break
-    [ -n "$since" ] && [ $((SECONDS - since)) -ge 60 ] && break
+    [ -n "$since" ] && [ $((SECONDS - since)) -ge 30 ] && break
     kill -0 "$p" 2> /dev/null || break
     sleep 1
   done
-  sleep 5
   local broke
   broke=$(T=300 pod "python3 /tmp/lm.py break $ck" < /dev/null 2>&1)
   say "$a-fault: run ${n:-none} at '${stage:-?}': $broke"
