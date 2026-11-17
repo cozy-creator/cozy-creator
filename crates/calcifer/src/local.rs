@@ -21,11 +21,14 @@ use api::{
 };
 use tracing::{info, warn};
 
+use api::machine::Booting;
+
 use crate::store::Endpoint;
 
-/// How long this computer's machine may take to serve once started (cl-977). Past it, it isn't answering, and local takes no
-/// work until it serves or exits. TensorD's own waits on the way are bounded well below it: 70 s for its root's lock, 60 s for a
-/// fresh process to open its GPUs, 60 s per executor stuck in the kernel.
+/// How long this computer's machine may take to serve once started (cl-977), and then how long it may stay on one step of its start
+/// (`booting.step`, cl-1066): a start that moves on keeps being waited for (runs never stuck, Paul 11-15). Past it, it isn't
+/// answering, and local takes no work until it serves or exits. TensorD's own waits on the way are bounded well below it: 70 s for its
+/// root's lock, 60 s for a fresh process to open its GPUs, 60 s per executor stuck in the kernel.
 pub(crate) const START: Duration = Duration::from_secs(300);
 
 pub(crate) struct Local {
@@ -34,7 +37,7 @@ pub(crate) struct Local {
     services: Services,
     pub(crate) starting: tokio::sync::Mutex<()>,
     /// A start past `START` with no answer: its process, when, and the answer it waits for (cl-977).
-    silent: Mutex<Option<Silent>>,
+    silent: Arc<Mutex<Option<Silent>>>,
 }
 
 struct Silent {
@@ -55,7 +58,7 @@ impl Local {
             home: home.clone(),
             services: Services::new(home, user_home),
             starting: tokio::sync::Mutex::new(()),
-            silent: Mutex::new(None),
+            silent: Arc::default(),
         }
     }
 
@@ -156,14 +159,17 @@ impl Local {
 
     /// Starts TensorD from the installed `cozy` and waits until it serves: its `api-ready.json`
     /// written after the start while it holds its root. A start that exits first is refused with
-    /// its log. One silent past `START` is refused `machine_not_answering` (cl-977); it is judged
-    /// again as it answers (`answered` gets where it serves) or at the next use.
-    pub(crate) async fn start(&self, answered: impl FnOnce(Endpoint) + Send + 'static) -> Result<Endpoint, Error> {
+    /// its log. One whose step hasn't moved for `START` is refused `machine_not_answering` (cl-977), told to `silent`; it is judged
+    /// again as it answers (`answered` gets where it serves) or at the next use. It is waited for and judged on a task of its own,
+    /// whether or not the caller still waits (cl-1066); one the caller left that serves goes to `answered` too. `key` reads its step.
+    pub(crate) async fn start(
+        &self,
+        key: PathBuf,
+        answered: impl FnOnce(Endpoint) + Send + 'static,
+        silent: impl FnOnce(Error) + Send + 'static,
+    ) -> Result<Endpoint, Error> {
         let log = self.start_log();
-        let failed = |why: String| {
-            let message = format!("This computer's machine didn't start: {why}. Its log is at {}.", log.display());
-            Error::new(Kind::Unavailable, "machine_start_failed", message).next("cozy doctor")
-        };
+        let failed = |why: String| start_failed(&log, why);
         // A pod's machine is its image's, a rental with a Hub and an idle clock. One this starts would
         // own its root as neither.
         if config::image_machine() {
@@ -207,40 +213,74 @@ impl Local {
         let woke = wait.woke.clone();
         wait._watch = Some(self.watch(move || woke.notify_one()).map_err(|e| failed(e.message))?);
         let began = Instant::now();
-        // Slow is no hang (runs never stuck, Paul 11-15; cl-1066): past `START`, it is waited for while it moves (CPU or I/O since the
-        // last look), and judged silent only once a whole window passes with none, or when its progress can't be read.
-        let mut moved = progress(pid);
-        let served = loop {
-            match tokio::time::timeout(START, wait.served()).await {
-                Err(_) => match progress(pid) {
-                    now @ Some(_) if now != moved => moved = now,
-                    _ => break Err(()),
-                },
-                served => break served.map_err(drop),
-            }
-        };
-        match served {
-            Ok(Ok(endpoint)) => {
-                info!(ms = began.elapsed().as_millis() as u64, "this computer's machine serves");
-                Ok(endpoint)
-            }
-            Ok(Err(why)) => Err(failed(why)),
-            Err(()) => {
-                let stuck = self.stuck(Some(pid));
-                let refusal = not_answering(began, &stuck);
-                warn!("{}", refusal.message);
-                *self.silent.lock().unwrap() = Some(Silent { pid, began, before, stuck });
-                // Its answer, or its exit, judged as each comes: no deadline now, and nothing sampled.
-                tokio::spawn(async move {
+        let (told, heard) = tokio::sync::oneshot::channel();
+        let (judged, root, ready, start_log) = (self.silent.clone(), self.root.clone(), self.ready(), log.clone());
+        tokio::spawn(async move {
+            // Slow is no hang (runs never stuck, Paul 11-15): it is waited for while its start moves on (`booting.step`, cl-1066), and
+            // judged silent once it has stayed on one step for `START`, or its step can't be read. Its process tree's CPU and I/O are no
+            // measure: its booting listener answers each look while a step sits in the kernel.
+            let mut due = began + START;
+            let mut last = None;
+            let served = loop {
+                match tokio::time::timeout_at(due.into(), wait.served()).await {
+                    Ok(served) => break Some(served),
+                    Err(_) => match booting(&ready, &key).await {
+                        Some(Booting { on_step_ms: Some(ms), .. }) if Duration::from_millis(ms) < START => {
+                            due = Instant::now() + START - Duration::from_millis(ms);
+                        }
+                        // An older machine says only how far it got: moved since the last look, it has another `START`.
+                        Some(Booting { on_step_ms: None, progress, .. }) if last.replace(progress).is_none_or(|was| was != progress) => {
+                            due = Instant::now() + START;
+                        }
+                        _ => break None,
+                    },
+                }
+            };
+            let result = match served {
+                Some(Ok(endpoint)) => {
+                    info!(ms = began.elapsed().as_millis() as u64, "this computer's machine serves");
+                    Ok(endpoint)
+                }
+                Some(Err(why)) => Err(start_failed(&start_log, why)),
+                None => {
+                    let stuck = stuck_now(root, start_log.clone(), Some(pid));
+                    let refusal = not_answering(began, &stuck);
+                    warn!("{}", refusal.message);
+                    *judged.lock().unwrap() = Some(Silent { pid, began, before, stuck });
+                    silent(refusal.clone());
+                    Err(refusal)
+                }
+            };
+            let late = result.as_ref().is_err_and(|refusal| refusal.code == "machine_not_answering");
+            match told.send(result) {
+                // Its caller left: where it serves is recorded all the same.
+                Err(Ok(endpoint)) => answered(endpoint),
+                _ if late => {
+                    // Its answer, or its exit, judged as each comes: no deadline now, and nothing read.
                     if let Ok(endpoint) = wait.served().await {
                         info!(s = began.elapsed().as_secs(), "this computer's machine serves, late");
                         answered(endpoint);
                     }
-                });
-                Err(refusal)
+                }
+                _ => {}
             }
-        }
+        });
+        heard.await.unwrap_or_else(|_| Err(failed("its start was abandoned".into())))
     }
+}
+
+/// `machine_start_failed`: why, and where its log is.
+fn start_failed(log: &Path, why: String) -> Error {
+    let message = format!("This computer's machine didn't start: {why}. Its log is at {}.", log.display());
+    Error::new(Kind::Unavailable, "machine_start_failed", message).next("cozy doctor")
+}
+
+/// How far a start has got, as its booting listener answers (`booting`); none when it can't be read within `LOOK`. It answers where
+/// the last one served (`api-ready.json`): the same port and certificate, kept with the root.
+async fn booting(ready: &Path, key: &Path) -> Option<Booting> {
+    let endpoint = crate::machines::endpoint_of(ready).ok()?;
+    let link = crate::link::Link::new(&endpoint, crate::machines::signer(key).ok()?).ok()?;
+    tokio::time::timeout(LOOK, link.status()).await.ok()?.ok()?.booting
 }
 
 /// What a start waits on: TensorD's answer (`api-ready.json`, newer than `before`, while it holds its root) or its exit, each of
@@ -270,12 +310,6 @@ impl Answer {
             self.woke.notified().await;
         }
     }
-}
-
-/// What a start's processes have done so far: CPU time and bytes moved, summed over its tree. None: unreadable here.
-fn progress(pid: u32) -> Option<(u64, u64)> {
-    let each: Vec<(u64, u64)> = platform::process::tree(pid).iter().filter_map(|member| platform::process::meter(member.birth().pid)).collect();
-    (!each.is_empty()).then(|| each.iter().fold((0, 0), |(cpu, io), (c, i)| (cpu + c, io + i)))
 }
 
 /// `machine_not_answering`: how long since it started, what is stuck, and the next command.

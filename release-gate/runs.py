@@ -183,10 +183,6 @@ class Memory(TypedDict, total=False):
     peak_reserved_bytes: int | None
 
 
-class Loop(TypedDict, total=False):
-    native_steps: int | None
-
-
 class OnDemand(TypedDict, total=False):
     prepare_ms: float
     prepared_unix_ms: float
@@ -199,15 +195,19 @@ class Executor(TypedDict, total=False):
 
 
 class Execution(TypedDict, total=False):
-    loops: list[Loop] | None
     safeguards: dict[str, list[str]] | None
     on_demand: dict[str, OnDemand] | None
     executor: Executor | None
     construction: Executor | None
 
 
+class GraphCalls(TypedDict, total=False):
+    calls: int | None
+
+
 class Graph(TypedDict, total=False):
     replays: int | None
+    eager: GraphCalls | None
     eager_gap: str | None  # why the region's last call ran as written
 
 
@@ -348,18 +348,17 @@ class Run:
 
     @property
     def graphs(self) -> str | None:
-        """How its denoise loops ran: `native` when any step replayed a captured CUDA graph, `eager` when none did,
-        None with no loop (a text model, a describer)."""
-        loops = [l for m in self.measurements for l in (m.get('execution') or {}).get('loops') or []]
-        if not loops:
+        """How its models' steps ran (`residency.graphs`): `native` when a captured CUDA graph served any, `eager` when
+        steps ran and none did, None with no step recorded."""
+        rows = [g for m in self.measurements for g in ((m.get('residency') or {}).get('graphs') or {}).values()]
+        if not any((g.get('replays') or 0) + ((g.get('eager') or {}).get('calls') or 0) for g in rows):
             return None
-        return 'native' if any((l.get('native_steps') or 0) > 0 for l in loops) else 'eager'
+        return 'native' if any((g.get('replays') or 0) > 0 for g in rows) else 'eager'
 
     @property
     def replays(self) -> int:
-        """Steps a captured graph served: native loops', and each component's regions and decode steps."""
-        return sum(sum(l.get('native_steps') or 0 for l in (m.get('execution') or {}).get('loops') or [])
-                   + sum(g.get('replays') or 0 for g in ((m.get('residency') or {}).get('graphs') or {}).values())
+        """Steps a captured graph served: each component's regions and decode steps."""
+        return sum(sum(g.get('replays') or 0 for g in ((m.get('residency') or {}).get('graphs') or {}).values())
                    for m in self.measurements)
 
     @property

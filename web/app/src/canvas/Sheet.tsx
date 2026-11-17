@@ -185,6 +185,8 @@ function useArtAfterBoxes(viewport: ReturnType<typeof useBoard>, store: ReturnTy
         frame = requestAnimationFrame(() => {
           const decoded = ART.map((src) => {
             const image = new Image()
+            // Ahead of the pictures, which load at low priority: three tabs opening at once held these 250 ms behind ~380 (cl-1018).
+            image.fetchPriority = "high"
             image.src = src
             return image.decode().catch(() => {})
           })

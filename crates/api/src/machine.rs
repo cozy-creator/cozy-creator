@@ -1484,6 +1484,9 @@ pub struct StuckProcess {
 pub struct Booting {
     pub step: String,
     pub progress: u64,
+    /// How long it has been on `step`: a start whose step stops moving is told from a slow one (cl-1066). None: an older machine.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_step_ms: Option<u64>,
 }
 
 /// The machine's build toolchain: CUDA's compiler and a host C/C++ compiler.

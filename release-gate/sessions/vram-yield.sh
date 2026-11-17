@@ -88,7 +88,7 @@ say "busy game: $(jq -c '{phase, alloc_s, fails}' "$OUT/busy-status.value"); giv
 run busy-stop ./game.py op=stop cfg='{"name": "busy"}'
 run busy-again1 sdxl/generate prompt="$bprompt" seed:=$((bseed + 1))
 run busy-again2 sdxl/generate prompt="$bprompt" seed:=$((bseed + 2))
-loops() { jq -c '[.measurements.execution.loops[]? | {mode, reused, native_steps}]' "$OUT/$1.json"; }
+loops() { jq -c '.measurements.residency.graphs.unet // {} | {captures, replays, eager: .eager.calls}' "$OUT/$1.json"; }
 sha() { jq -r '.output[0].sha256 // empty' "$OUT/$1.json"; }
 # A picture's WebP: a flat or non-finite decode (black, one colour) compresses to a few KB at 1024².
 picture() { local f; f=$(awk '$1 == "image" {print $2}' "$OUT/$1.txt" | tail -1); [ -n "$f" ] && [ "$(stat -c %s "$f" 2>/dev/null || echo 0)" -gt 32768 ]; }

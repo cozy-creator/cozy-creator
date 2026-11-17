@@ -19,6 +19,7 @@ test = "pr: completion, each shell's script loads and completes cozy's verbs"
 [doctor]
 test = "pr: doctor, healthy, then a stuck Calcifer it restarts"
 "--on" = "pr: doctor --on local"
+"--fix" = "pending: e2e/cli/fresh.sh (the fresh shard, which no tier's shard list runs yet): the release's installer with doctor --fix"
 
 [restart]
 test = "pr: explicit_restart, Calcifer on the installed cozy under a new pid, the page's stream cut and the next command served"

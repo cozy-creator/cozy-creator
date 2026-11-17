@@ -245,14 +245,15 @@ cozy --json logout > /dev/null 2>&1 || true
 on_new_encrypted() {
 local E=$OUT/on-new-encrypted pass=$OUT/on-new-pass pid number='' id='' code='' runid='' rental='' w=$OUT/on-new-enc-watch.json
 printf 'on-new-%s%s\n' "$RANDOM" "$RANDOM" > "$pass"
-cozy --json new "$E" --passphrase-file "$pass" --recovery-out "$OUT/on-new-recovery" > "$OUT/on-new-enc-new.json" 2>&1 \
-  || { check "run_on_new: new encrypted: $(tail -c 300 "$OUT/on-new-enc-new.json")"; return; }
+# stderr apart: `cozy new` says "Creating encrypted project: …" there, and jq reads the JSON alone.
+cozy --json new "$E" --passphrase-file "$pass" --recovery-out "$OUT/on-new-recovery" > "$OUT/on-new-enc-new.json" 2> "$OUT/on-new-enc-new.err" \
+  || { check "run_on_new: new encrypted: $(tail -c 300 "$OUT/on-new-enc-new.err")"; return; }
 id=$(jq -r '.id // empty' "$OUT/on-new-enc-new.json") code=$(jq -r '.code // empty' "$OUT/on-new-enc-new.json")
 (cd "$E" && cozy --json -y run "$E2E_FINAL/echo" text=sealed --on new:cpu) > "$OUT/on-new-enc-run.ndjson" 2> "$OUT/on-new-enc-run.err" & pid=$!
 for _ in $(seq 120); do
   number=$(in_project "$E" --json run ls --limit 5 2> /dev/null | jq -r '[.runs[]? | select(.target | test("e2e-final"))] | min_by(.number) | .number // empty' 2> /dev/null || true)
   if [ -n "$number" ]; then
-    in_project "$E" --json run watch "$number" --once > "$w" 2>&1 || true
+    in_project "$E" --json run watch "$number" --once > "$w" 2> "$w.err" || true
     rental=$(cozy --json machine ls 2> /dev/null | jq -r --arg m "$(jq -r '.machine // empty' "$w")" '.machines[] | select(.name == $m and .rental_id != null) | .rental_id' 2> /dev/null | head -1 || true)
     [ -z "$rental" ] && ! J '.status == "failed"' "$w" || break
   fi

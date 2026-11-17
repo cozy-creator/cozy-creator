@@ -16,7 +16,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, 'suites'))
 import lm, quality, served, swap  # noqa: E402
-from runs import JSON, STEP_EXTRA_MS, STEP_RATIO, Baseline, Cell, Gate, Good, KnownFailing, Observation, Run, slow_steps  # noqa: E402
+from runs import JSON, STEP_EXTRA_MS, STEP_RATIO, Baseline, Cell, Gate, Good, KnownFailing, Observation, Run, RunRecord, slow_steps  # noqa: E402
 from tensorfs import check as tensorfs  # noqa: E402  (release-gate/suites/tensorfs, never the tensorfs library)
 from varena import check as varena  # noqa: E402
 from cli import check as cli  # noqa: E402
@@ -225,10 +225,47 @@ def against(mine: int | None, theirs: int | None) -> str:
     return f'{mine} ms vs {theirs} ms ({(mine - theirs) / theirs:+.1%})' if mine and theirs else 'not measured'
 
 
-# released.sh's pairs: a checkout cell and the same request and seed from the release the Hub serves, on the same pod.
+def _obj(v: JSON) -> dict[str, JSON]:
+    return v if isinstance(v, dict) else {}
+
+
+def _arr(v: JSON) -> list[JSON]:
+    return v if isinstance(v, list) else []
+
+
+def _num(v: JSON) -> int:
+    return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
+
+
+def derived_use(run_record: RunRecord) -> tuple[int, int, bool]:
+    """A record's LoRA bake blocks and derived bytes filled, over its own and its calls' GPUs, and whether the call memo
+    answered it. Read as plain JSON: any Runtime's measurements."""
+    record = cast(dict[str, JSON], run_record)
+    found = [_obj(record.get('measurements'))] + [_obj(_obj(c).get('measurements')) for c in _arr(record.get('calls'))]
+    stats = [_obj(_obj(v).get('stats')) for m in found for v in _arr(_obj(_obj(m.get('memory')).get('stats')).get('varena'))]
+    bake = sum(_num(_obj(_obj(s.get('moved')).get('bake')).get('blocks')) for s in stats)
+    derived = sum(_num(_obj(_obj(s.get('moved')).get('derived')).get('bytes')) for s in stats)
+    calls = _arr(record.get('calls'))
+    memoized = _obj(record.get('memo')).get('memoized') is True or any(_obj(c).get('memoized') is True for c in calls)
+    return bake, derived, memoized
+
+
+# released.sh's and the -ab hooks' pairs: a cell and the same request and seed on the release (or the base), on the same
+# pod. A pair the call memo answered, or whose cold cell (`-0`, an arm's first request) read derived pages it did not make,
+# is no comparison: the -ab hooks' arms start from a cold pod, and such a record says that start failed (44006261838).
 for name in [n for n in summary if n.endswith(('-released', '-released-again'))]:
     mine = name.replace('-released', '', 1)
     if mine not in summary:
+        continue
+    why = []
+    for n in (mine, name):
+        bake, derived, memoized = derived_use(runs[n].record)
+        if memoized:
+            why.append(f'the call memo answered {n}')
+        if mine.endswith('-0') and derived and not bake:
+            why.append(f'cold {n} read {derived / 1e9:.1f} GB of derived pages it did not make')
+    if why:
+        fails.append(f'{mine} vs {name}: not comparable: {"; ".join(why)}')
         continue
     a, b = summary[mine], summary[name]
     digests = [sorted(o.get('sha256', '') for o in runs[n].record.get('output') or []) for n in (mine, name)]

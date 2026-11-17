@@ -18,8 +18,8 @@ export interface LatentHandle {
 }
 export interface VideoHandle { readonly texture?: Texture; release(): void }
 
-/** Every picture in view is asked for at once (cl-982, cl-1018): the browser queues them on its own connections. The bound only keeps a
- *  5,000-card view from holding thousands of decodes at once. */
+/** Every picture in view is asked for at once (cl-982, cl-1018), at low priority: the browser queues them on its own connections, and the
+ *  page's own requests go first. The bound only keeps a 5,000-card view from holding thousands of decodes at once. */
 const LOADS = 64
 const MIB = 1024 * 1024
 /** Soft: pinned textures are never evicted, so a view of 5,000 cards may pass it. Unpinned ones go oldest first past either bound. */
@@ -311,7 +311,7 @@ export class Media {
           bitmap = await createImageBitmap(image, this.fit(image.naturalWidth, image.naturalHeight, width))
         } finally { image.removeAttribute("src") }
       } else {
-        const response = await this.o.client.transport.fetch(this.path(source), { signal: loading.signal })
+        const response = await this.o.client.transport.fetch(this.path(source), { signal: loading.signal, priority: "low" })
         if (response.status === 202 && sha256) {
           // Calcifer is still making it: waited for, not a failure, and no try spent.
           await response.body?.cancel()
@@ -406,7 +406,7 @@ export class Media {
     let bitmap: ImageBitmap | undefined
     try {
       const path = this.o.client.runPreview({ project: this.o.project, run: latent.run })
-      const response = await this.o.client.transport.fetch(path, { signal: loading.signal, headers: latent.tag ? { "If-None-Match": latent.tag } : {} })
+      const response = await this.o.client.transport.fetch(path, { signal: loading.signal, priority: "low", headers: latent.tag ? { "If-None-Match": latent.tag } : {} })
       const tag = response.headers.get("etag")
       if (response.status !== 200 || !tag || tag === latent.tag) { await response.body?.cancel(); return }
       const blob = await response.blob()

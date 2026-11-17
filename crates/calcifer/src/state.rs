@@ -43,6 +43,10 @@ pub(crate) const TABLES: &str = "
         at_ms INTEGER NOT NULL
     ) STRICT;
     CREATE TABLE IF NOT EXISTS steps_done (step TEXT PRIMARY KEY) STRICT;
+    CREATE TABLE IF NOT EXISTS hub_listings (
+        hub TEXT PRIMARY KEY,
+        listing TEXT NOT NULL
+    ) STRICT;
     CREATE TABLE IF NOT EXISTS tool_list (
         ord INTEGER PRIMARY KEY,
         package TEXT NOT NULL UNIQUE
@@ -478,6 +482,27 @@ impl Store {
     }
 
     /// Whether each project is being walked, which the next start walks again.
+
+    /// Each Hub's last listing of this account's rentals, as Calcifer last read it (cl-1010): a start answers it at once.
+    pub(crate) fn hub_listings(&self) -> Result<Vec<(String, String)>> {
+        self.read(|conn| {
+            let mut statement = conn.prepare("SELECT hub, listing FROM hub_listings")?;
+            let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    /// Keeps each Hub's last listing in place of what was kept: a Hub not among them is forgotten.
+    pub(crate) fn keep_hub_listings(&self, listings: &[(String, String)]) -> Result<()> {
+        self.write(|tx| {
+            tx.execute("DELETE FROM hub_listings", [])?;
+            for (hub, listing) in listings {
+                tx.execute("INSERT INTO hub_listings (hub, listing) VALUES (?1, ?2)
+                    ON CONFLICT (hub) DO UPDATE SET listing = excluded.listing", [hub, listing])?;
+            }
+            Ok(())
+        })
+    }
 
     /// Your tool list.
     pub(crate) fn tool_list(&self) -> Result<ToolList> {

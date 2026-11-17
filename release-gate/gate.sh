@@ -358,11 +358,13 @@ if [ -z "$ON" ]; then
   # varena's faults run there (faults.sh), suite bench holds the host's RAM there (pod.sh), and suite attention-corpus fetches
   # its captures over it, suite attention pushes a --corpus to the pod over it, and suite execution's library programs run
   # there (programs.sh), and suite slow moves the Runtime's kernels aside and gives the machine a hot host's GPU readings there
-  # (cl-913), with this computer's key, or a new one on a runner. An --only without them rents no SSH.
+  # (cl-913), and an A/B hook (*-ab.sh) clears each arm's derived state there (machines.sh `pod_derived`), with this computer's
+  # key, or a new one on a runner. An --only without them rents no SSH.
   SSH=
   if [[ -n $CORPUS && ,$SUITES, == *,attention,* ]] || [[ ,$SUITES, == *,tensord,* || ,$SUITES, == *,bench,* || ,$SUITES, == *,attention-corpus,* ]] || { [[ ,$SUITES, == *,tensorfs,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,kill,* ]]; }; } ||
      { [[ ,$SUITES, == *,varena,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,faults,* || $ONLY == *,public,* || $ONLY == *,core,* || $ONLY == *,offload,* ]]; }; } ||
-     { [[ ,$SUITES, == *,execution,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,tensorfs,* ]]; }; } || [[ ,$SUITES, == *,slow,* ]]; then
+     { [[ ,$SUITES, == *,execution,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,tensorfs,* ]]; }; } || [[ ,$SUITES, == *,slow,* ]] ||
+     [[ " ${EXTRA[*]:-} " == *-ab.sh* ]]; then
     SSH=1; [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
   fi
   # Followed in the background: its rental id is recorded once its Hub accepts the order, so a gate cancelled before its
@@ -520,7 +522,7 @@ expect candidate-installed PASS "$M runs cozy $v, Runtime $rt, TensorFS $tfs"
 # contract refuses fails here by name, whatever its cells do (22 of 25 were refused from 0.43.1 to 0.45.0, unseen: xs-174).
 # Judged by its package lines (`ok   <suite>/<package>:`, `FAIL <suite>/<package>:`), each package's own verdict.
 if [ ${#GATE_PKGS[@]} -gt 0 ]; then
-  "$HERE/interfaces.sh" --runtime "${RWF:-$rt}" ${TWF:+--tensorfs "$TWF"} "${GATE_PKGS[@]}" > gate-packages.txt 2>&1
+  "$HERE/interfaces.sh" --runtime "${RWF:-$rt}" ${TWF:+--tensorfs "$TWF"} ${PKGS:+--packages "$PKGS"} "${GATE_PKGS[@]}" > gate-packages.txt 2>&1
   gate_refused=$(grep -E '^FAIL [^ :]+/[^ :]+:' gate-packages.txt | cut -c1-160 | paste -sd';')
   gate_read=$(grep -cE '^ok   [^ :]+/[^ :]+:' gate-packages.txt)
   if [ -z "$gate_refused" ] && [ "$gate_read" = "${#GATE_PKGS[@]}" ]; then
