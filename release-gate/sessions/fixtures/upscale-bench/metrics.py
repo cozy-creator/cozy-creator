@@ -1,6 +1,6 @@
 """Scores upscaler outputs against the clean originals.
 
-    metrics.py <runs dir> [--out scores.tsv]
+    metrics.py <runs dir> [--out scores.tsv] [--images name,name]
 
 <runs dir>/<candidate>/<name>.png (or .jpg/.webp) is one candidate's output for degraded/<name>.jpg; a name with a
 clean/<name>.png gets full-reference scores, any other (paul/'s groudon, kyogre) no-reference only.
@@ -28,6 +28,7 @@ NR_SIDE = 1024
 parser = argparse.ArgumentParser()
 parser.add_argument("runs", type=Path)
 parser.add_argument("--out", type=Path)
+parser.add_argument("--images", default="", help="only these inputs (default: every one)")
 args = parser.parse_args()
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 kinds = {r["name"]: r["kind"] for r in csv.DictReader(open(HERE / "sources.tsv"), delimiter="\t")}
@@ -72,8 +73,11 @@ for path in sorted((HERE / "paul").glob("*.jpg")):
     candidates["lanczos"][path.stem] = path
 for folder in sorted(p for p in args.runs.iterdir() if p.is_dir() and p.name != "sheets"):
     candidates[folder.name] = outputs(folder)
+only = set(filter(None, args.images.split(",")))
 for candidate, files in candidates.items():
     for name, path in files.items():
+        if only and name not in only:
+            continue
         image = Image.open(path)
         if candidate == "lanczos":
             clean = HERE / "clean" / f"{name}.png"
