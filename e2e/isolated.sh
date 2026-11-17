@@ -475,15 +475,14 @@ if [ -n "$needs" ]; then
     mirror hf://ZhengPeng7/BiRefNet@e2bf8e4460fc8fa32bba5ea4d94b3233d367b0e4 zhengpeng7/birefnet fp16 0.1.0 https://huggingface.co/ZhengPeng7/BiRefNet
   fi
   case $shard in local-code | '') final_model ;; esac
-  # The real Qwen3.5 0.8B, which an LLM tool runs on the CPU (xs-204); it also stands in for the downloads' 1.6 GB.
+  # The real Qwen3.5 0.8B, abliterated (huihui-ai's, as qwen3's models are: se-145), which an LLM tool runs on the CPU (xs-204).
   if [[ " $needs " == *" qwen "* ]]; then
-    mirror hf://Qwen/Qwen3.5-0.8B@2fc06364715b967f1860aea9cf38778875588b17 qwen/qwen3.5-0.8b bf16 0.1.0 https://huggingface.co/Qwen/Qwen3.5-0.8B
+    mirror hf://huihui-ai/Huihui-Qwen3.5-0.8B-abliterated@4813135658fe51b2e535b8e77927d2f23909ce42 huihui-ai/huihui-qwen3.5-0.8b-abliterated \
+      bf16 0.1.0 https://huggingface.co/huihui-ai/Huihui-Qwen3.5-0.8B-abliterated
   fi
   if [[ " $needs " == *" downloads "* ]]; then
-    if [[ " $needs " != *" qwen "* ]]; then
-      random_weights "$seed/qwen3.5-0.8b.safetensors" 1640
-      mirror "$seed/qwen3.5-0.8b.safetensors" qwen/qwen3.5-0.8b bf16 0.1.0 https://huggingface.co/Qwen/Qwen3.5-0.8B --source-format as-is
-    fi
+    random_weights "$seed/qwen3.5-0.8b.safetensors" 1640
+    mirror "$seed/qwen3.5-0.8b.safetensors" qwen/qwen3.5-0.8b bf16 0.1.0 https://huggingface.co/Qwen/Qwen3.5-0.8B --source-format as-is
     random_weights "$seed/fontbox.safetensors" 115
     mirror "$seed/fontbox.safetensors" lilylilith/fontbox bf16 0.1.0 https://huggingface.co/lilylilith/fontbox --source-format as-is
     rm -f "$seed"/*.safetensors
