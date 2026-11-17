@@ -658,7 +658,7 @@ fn restart_local(project: &Project, store: &ProjectStore) -> Result<(Vec<RunId>,
             continue;
         }
         stopped.push(row.id.clone());
-        if *key == walker::owed_key(&pending.ask, &name_key(&pending.asset)) {
+        if pending.job_of(key) == walker::owed_key(&pending.ask, &name_key(&pending.asset)) {
             // Sent again under its job's key: the stopped run, kept, answers it no more.
             store.release_key(row.id.as_str()).map_err(|e| Error::new(Kind::Unavailable, "project_journal", e.to_string()))?;
             restarted.push(pending.asset.clone());
