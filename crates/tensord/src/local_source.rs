@@ -109,6 +109,10 @@ pub(crate) struct LocalSources {
     editable: PathBuf,
     /// By package: one package's installs go in turn, and another's go beside them.
     installing: Mutex<HashMap<String, Arc<Installing>>>,
+    /// By environment: each is built by one install at a time. Environments are the machine's (cl-984) while an install's turn
+    /// is its scope's: a prepare item's install and a project's run's built one together, the second over the first, and every
+    /// run of it after failed `No such file or directory` (e2e 44178003000).
+    building: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
     /// The generation each run still preparing was handed: no other install of its package takes
     /// it away before the run binds and the journal names it (cl-773).
     preparing: Mutex<HashMap<String, String>>,
@@ -205,6 +209,7 @@ impl LocalSources {
             objects,
             publisher,
             installing: Mutex::new(HashMap::new()),
+            building: Mutex::default(),
             preparing: Mutex::default(),
         }
     }
@@ -345,6 +350,9 @@ impl LocalSources {
         // Reused, it is in use again: reclaim drops only an environment no generation names that
         // has been left alone a while (`reclaim::IDLE`).
         let _ = platform::durable::set_times(&environment, fs::FileTimes::new().set_modified(std::time::SystemTime::now()));
+        // Its turn to build it, then whether it's built: another install may have built it meanwhile.
+        let turn = self.building.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(environment.clone()).or_default().clone();
+        let _building = turn.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if !ready.is_file() {
             let stage = format!("installing {} on this machine", manifest.package);
             job.stage(stage.clone());
