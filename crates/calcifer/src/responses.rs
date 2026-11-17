@@ -236,7 +236,12 @@ async fn request(api: &Arc<Api>, project: &str, asked: &Asked, system: String, p
     let has = |name: &str| fields.iter().any(|(field, _)| field == name);
     let mut input = Map::new();
     if let Some((prompt, _)) = fields.iter().find(|(_, ty)| ty.get("prompt").is_some()) {
-        input.insert(prompt.clone(), mentioned(&pieces));
+        // Its words, each file mentioned where it stands, and the files as the run's own references, which its mentions send.
+        let (text, references) = mentioned(&pieces);
+        input.insert(prompt.clone(), Value::from(text));
+        if !references.is_empty() {
+            input.insert("references".into(), Value::Array(references));
+        }
     } else if has("prompt") {
         let words: Vec<&str> = pieces.iter().filter_map(|piece| match piece { Piece::Words(words) => Some(words.as_str()), Piece::File { .. } => None }).collect();
         input.insert("prompt".into(), Value::from(words.join("\n")));
@@ -280,8 +285,9 @@ async fn request(api: &Arc<Api>, project: &str, asked: &Asked, system: String, p
     Ok(RunRequest { target: target.to_owned(), input: Some(input), terms, project: Some(project.to_owned()), hub, ..Default::default() })
 }
 
-/// A prompt of `pieces`: their words, each file mentioned where it stands (`<image_1>`) and named among its references.
-fn mentioned(pieces: &[Piece]) -> Value {
+/// A prompt of `pieces`: their words, each file mentioned where it stands (`<image_1>`), and the run's own references that name
+/// those files (`[{name, image|video: <file>}]`, as the binder takes them).
+fn mentioned(pieces: &[Piece]) -> (String, Vec<Value>) {
     let (mut text, mut references) = (String::new(), vec![]);
     let (mut images, mut videos) = (0, 0);
     for piece in pieces {
@@ -291,7 +297,10 @@ fn mentioned(pieces: &[Piece]) -> Value {
                 let n = if *kind == "image" { &mut images } else { &mut videos };
                 *n += 1;
                 let key = format!("{kind}_{n}");
-                references.push(json!({"key": key, "type": kind, "file": file}));
+                let mut reference = Map::new();
+                reference.insert("name".into(), Value::from(key.as_str()));
+                reference.insert((*kind).into(), Value::from(file.as_str()));
+                references.push(Value::Object(reference));
                 format!("<{key}>")
             }
         };
@@ -300,7 +309,7 @@ fn mentioned(pieces: &[Piece]) -> Value {
         }
         text.push_str(&words);
     }
-    json!({"text": text, "references": references})
+    (text, references)
 }
 
 /// One output item as it is answered: its key (`text`, `texts/2`), its message id and the words said of it.
