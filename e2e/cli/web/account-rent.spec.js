@@ -118,11 +118,13 @@ const codesFor = (email) => readFileSync(need('E2E_HUB_LOG'), 'utf8').split('\n'
 
 /** `cozy --json login <email>` in `cwd`, answered with the code the Hub logs after it asks, as rental.sh's signin does. Refused as too soon,
  *  asked again after the wait the Hub states. What it said. */
-async function cliSignIn(email, cwd) {
+async function cliSignIn(email, cwd, hub) {
   for (let tries = 1; ; tries += 1) {
     const before = codesFor(email).length;
     if (process.env.ARGV_LOG) appendFileSync(process.env.ARGV_LOG, `--json\x1flogin\x1f${email}\x1f\x1e`);
-    const child = spawn(need('COZY'), ['--json', 'login', email], { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+    // `hub`: signed in at that Hub, as a person whose cozy names it is (its key is that origin's).
+    const env = hub ? { ...process.env, COZY_HUB_URL: hub } : process.env;
+    const child = spawn(need('COZY'), ['--json', 'login', email], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
     const said = { out: '', err: '', exit: null };
     child.stdout.on('data', (chunk) => { said.out += chunk; });
     child.stderr.on('data', (chunk) => { said.err += chunk; });
@@ -273,7 +275,7 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await calciferControl.hub(stand.origin);
       expect.soft((await api.get('/v1/rental-skus')).rental_skus.map((sku) => sku.name), 'the stand-in sells a GPU').toContain(CARD.name);
       // Calcifer keeps a key per Hub origin: signed in at the stand-in too, which Render on a new RTX 4090 orders through (cl-1066).
-      await cliSignIn(email, project.path);
+      await cliSignIn(email, project.path, stand.origin);
       // A machine that hasn't said what it has isn't judged: this one has said it has no GPU.
       await expect.poll(async () => (await api.get('/v1/machines/local')).status?.gpus, { message: "local's GPUs", timeout: 60_000 }).toEqual([]);
     });
