@@ -9,7 +9,7 @@ const { join } = require('path');
 const { test, expect, themed, canvasIdle, canvasVisible, focus } = require('./fixtures');
 const { fit, leave } = require('./hands');
 
-const MODEL = 'qwen/qwen3.5-0.8b@0.1.0';
+const MODEL = 'huihui-ai/huihui-qwen3.5-0.8b-abliterated@0.1.0';
 const PROMPT = 'Write a long story in twelve chapters, each about two hundred words, of a lighthouse keeper through one winter of storms. Use plain sentences.';
 const NAME = 'story';
 
