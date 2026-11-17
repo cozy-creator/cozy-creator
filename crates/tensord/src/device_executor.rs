@@ -478,6 +478,12 @@ impl Codec {
         #[cfg(unix)]
         platform::process::keep_open(&mut command, hold.into_iter().collect());
         let mut child = command.spawn()?;
+        // A project's own codec holds its frames: its view keeps this birth too, so a lock that can't reach this machine ends it (cl-1064).
+        if let Err(error) = Birth::of(child.id()).map_err(io::Error::from).and_then(|birth| crate::private_io::record_birth(&self.config.python, &birth)) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
         let input = child
             .stdin
             .take()
