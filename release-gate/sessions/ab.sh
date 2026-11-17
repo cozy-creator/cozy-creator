@@ -19,6 +19,8 @@
 #   first arm that runs each function once: the arm after it starts cold with every weight on disk.
 # - Two builds compared run in both orders (A B B A), checked before renting, unless params say `"order": "one-way"`
 #   (an output-only proof).
+# Each cell also keeps the pod's model listing before and after it (<cell>-models-before/after.json), its run's
+# has/needs/extras, and the pod's TensorD log after it (<cell>-tensord.log).
 # params:
 #   cells      [{"name", "tree" (a packages_refs name; absent, `target` is a published `<package>/<function>[@release]`,
 #              run from the packages directory: an unchanged release on a candidate Runtime), "target"
@@ -136,6 +138,12 @@ fi
 say "pod: $(jq -r '"cozy \(.status.version) · Runtime \(.status.runtime) · TensorFS \(.status.tensorfs)"' "$OUT/show-rc.json" 2> /dev/null)"
 
 
+# held <cell> <before|after>: the models on the pod's disk (<cell>-models-<when>.json), each with its bytes in results.txt: what
+# landed for a request, and between cells what came in the background (cl-1103).
+held() {
+  cozy model ls --on "$NAME" --json --full > "$OUT/$1-models-$2.json" 2>&1
+  say "$1 disk $2: $(jq -r '[.models[]? | "\(.model) \(.lane) \((.bytes // 0) / 1e8 | floor / 10) GB\(if .complete == false then " partial" else "" end)"] | join(", ")' "$OUT/$1-models-$2.json" 2>/dev/null)"
+}
 # gpu: the processes holding GPU 0 and the card's reading, from the pod's root shell.
 gpu() { timeout 60 cozy machine ssh "$NAME" "nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader; nvidia-smi --query-gpu=memory.used,memory.free --format=csv,noheader" 2>&1 | grep -v '^Warning: Permanently added'; }
 # listeners: the pod's listening TCP sockets as `address:port process`, `ss -Hltnp`'s, else read from /proc.
@@ -280,6 +288,7 @@ for k in "${names[@]}"; do
   echo "$k" > "$OUT/current"
   say "$k: GPU before: $(gpu | paste -sd';')"
   tree=$(jq -r '.tree // empty' <<<"$c") target=$(jq -r .target <<<"$c")
+  held "$k" before
   cd "$PACKAGES/$tree" || fail "no tree for $k"
   [ -z "$tree" ] || target=./$target
   step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?
@@ -288,9 +297,12 @@ for k in "${names[@]}"; do
   cd "$RUN_PROJECT" || fail "no $RUN_PROJECT"
   if [ -n "$N" ]; then cozy run watch "$N" --once --json --full > "$OUT/$k.json" 2>/dev/null; cozy run watch "$N" --once -o "$OUT/$k.out" > /dev/null 2>&1; fi
   cd "$OUT" || fail "no $OUT"
+  held "$k" after
+  cozy machine logs "$NAME" -n 0 > "$OUT/$k-tensord.log" 2>&1
   st=$(jq -r '.status // "none"' "$OUT/$k.json" 2>/dev/null); st=${st:-none}
   MADE[$k]=$(ls "$OUT/$k.out"/* 2> /dev/null | grep -E '[.](png|webp|jpg|mp4)$' | sort | head -1)
   say "$k run ${N:-none} ${st:-none} (exit $code): $(summary "$k")"
+  say "$k has/needs/extras: $(jq -c '[.measurements.weights?, (.calls[]? | select(.measurements.weights? != null) | {(.function // "call"): .measurements.weights})] | map(select(. != null))' "$OUT/$k.json" 2>/dev/null)"
   # until_idle {region, step_s, max}: while this request's record says the idle queue hadn't reached `region` before it
   # (`graphs.<region>.idle.queued` > 0), wait step_s more and ask again with the next seed (`<cell>-w<i>`), up to max
   ui=$(jq -c '.until_idle // empty' <<<"$c")
@@ -325,7 +337,6 @@ for k in "${names[@]}"; do
     why=$(jq -r '.reason.message // .reason // empty' "$OUT/$k.json" 2>/dev/null)
     say "$k reason: $(printf '%s' "${why:-$(tr '\r' '\n' < "$OUT/$k.txt" | grep -m1 -E '^error:' || tail -c 600 "$OUT/$k.txt")}" | head -c 600)"
     say "$k: the GPU now: $(gpu | paste -sd';')"
-    cozy machine logs "$NAME" -n 0 > "$OUT/$k-tensord.log" 2>&1
   fi
   # A refusal before any run (st none) is the failure an `expect: failed` cell proves.
   [ "$st" = "$want" ] || { [ "$want" = failed ] && [ "$st" = none ] && [ "$code" != 0 ]; } ||
