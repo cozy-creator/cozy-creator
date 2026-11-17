@@ -6956,7 +6956,7 @@ pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str,
     // Its models, for placement, read as a quote reads them: nothing started, moved or updated on the first of `set` (cl-1115), which
     // may not be where it goes.
     let first = set.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
-    let read = host.quoted(hub, &format!("{package}@{release}"), &first).await.ok();
+    let read = host.read_published(hub, &format!("{package}@{release}"), &first).await.ok();
     let fetched = match &read {
         Some(read) => fit::checkpoints(api, hub, read, function, &Map::new()).await,
         None => fit::Fetched::default(),

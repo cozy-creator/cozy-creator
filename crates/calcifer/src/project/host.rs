@@ -305,14 +305,14 @@ impl Host {
     /// The package `with` names as a quote, an estimate, a guess or a read of a box's call reads it: nothing done on any machine for it
     /// (Paul: a quote never acts; cl-1115). Local code as the static describer reads it for the first of `on`'s machines, with the
     /// manifest a machine installs; a published one as a run there would bind it, by what that machine last said: none started, its
-    /// Runtime not moved and cozy not updated (`quoted`). Its install is neither asked for nor waited on: a call makes it ready where it
-    /// goes (`ready`).
+    /// Runtime not moved and cozy not updated (`read_published`). Its install is neither asked for nor waited on: a call makes it ready
+    /// where it goes (`ready`).
     pub(crate) async fn foreseen(&self, hub: &str, with: &str, folder: &Path, on: &[On]) -> Result<Package, Error> {
         let scope = crate::private_io::of_path(folder)?;
         crate::private_io::context(scope, async {
             let home = self.api.machines.hubs.home().root().parent().map(Path::to_path_buf).unwrap_or_default();
             let first = on.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
-            let Some(found) = local_code::target(with, Some(folder), &home) else { return self.quoted(hub, with, &first).await };
+            let Some(found) = local_code::target(with, Some(folder), &home) else { return self.read_published(hub, with, &first).await };
             let (path, named) = found?;
             let code = local_code::own(&self.api, &path)?;
             let read = local_code::foreseen(&self.api, &code, &first, hub).await?;
@@ -373,8 +373,8 @@ impl Host {
 
     /// A published package by `[org/]package[@release]` as a run `on` its machine would bind it, read only: that machine as it last
     /// said, none started for it, no Runtime moved and cozy not updated (`published` does those, for a call). Read once a walk.
-    pub(crate) async fn quoted(&self, hub: &str, with: &str, on: &On) -> Result<Package, Error> {
-        let at = (hub.to_owned(), with.to_owned(), format!("quoted {on}"));
+    pub(crate) async fn read_published(&self, hub: &str, with: &str, on: &On) -> Result<Package, Error> {
+        let at = (hub.to_owned(), with.to_owned(), format!("read {on}"));
         if let Some(found) = self.packages.lock().expect("packages lock").get(&at) {
             return Ok(found.clone());
         }
