@@ -240,16 +240,40 @@ impl ProjectTransition {
     pub(super) fn root(&self) -> &FsPath { &self.root }
 
     pub(super) fn validate(&self, project: &super::Project) -> Result<(), Error> {
-        if self.root != project.root || project.mount_id != mount_identity(&self.root) {
-            return Err(Error::new(Kind::Conflict, "project_view_changed", "the project's mounted view changed; reopen this project"));
-        }
-        let view = if encrypted(&self.root) { work_view(&self.root)? }
-            else { platform::durable::canonical(&self.root).map_err(provider)? };
-        if view != project.folder.dir {
-            return Err(Error::new(Kind::Conflict, "project_view_changed", "the project's mounted view changed; reopen this project"));
-        }
-        Ok(())
+        validate_authority(&self.root, project)
     }
+}
+
+/// Read authority over this exact project's journal, beside its other readers: what the vault clock looks at a project's work under
+/// (`working`). It took the transition (`exclusive`) once, and a tool starting then was refused: its run failed `lock_failed` (cl-1066).
+pub(super) struct ProjectInspection {
+    root: PathBuf,
+    _access: tokio::sync::OwnedRwLockReadGuard<()>,
+}
+
+impl ProjectInspection {
+    pub(super) fn validate(&self, project: &super::Project) -> Result<(), Error> {
+        validate_authority(&self.root, project)
+    }
+}
+
+/// `project` is `root`'s, on the mount and view it was opened on.
+fn validate_authority(root: &FsPath, project: &super::Project) -> Result<(), Error> {
+    if root != project.root || project.mount_id != mount_identity(root) {
+        return Err(Error::new(Kind::Conflict, "project_view_changed", "the project's mounted view changed; reopen this project"));
+    }
+    let view = if encrypted(root) { work_view(root)? }
+        else { platform::durable::canonical(root).map_err(provider)? };
+    if view != project.folder.dir {
+        return Err(Error::new(Kind::Conflict, "project_view_changed", "the project's mounted view changed; reopen this project"));
+    }
+    Ok(())
+}
+
+/// [`ProjectInspection`], now: none while a transition holds the project or waits for it.
+fn inspection(root: &FsPath) -> Result<ProjectInspection, Error> {
+    let guard = access(root).try_read_owned().map_err(|_| Error::new(Kind::Conflict, "project_busy", "the project's storage is changing"))?;
+    Ok(ProjectInspection { root: root.to_owned(), _access: guard })
 }
 
 fn exclusive(root: &FsPath) -> Result<ProjectTransition, Error> {
@@ -1242,9 +1266,9 @@ fn working(api: &Arc<Api>, root: &FsPath) -> Option<Work> {
     if api.calcifer.exporting_into(&project.id).is_some() { return going("a run saving its outputs", false); }
     if *project.walking.lock().expect("walking lock") { return going("a render", true); }
     if project.moving.try_lock().is_err() || project.cutting.try_lock().is_err() { return going("a move or cut", false); }
-    let Ok(transition) = exclusive(root) else { return going("a reader holding the project", false) };
-    let Ok(store) = api.projects.transition_store(api, &project.id, &transition) else { return going("a journal it cannot read", false) };
-    // The transition authority can inspect already-accepted work even if an idle
+    let Ok(inspection) = inspection(root) else { return going("a storage change", false) };
+    let Ok(store) = api.projects.inspection_store(api, &project.id, &inspection) else { return going("a journal it cannot read", false) };
+    // The inspection authority can read already-accepted work even if an idle
     // deadline just expired. Public viewing admission is deliberately stricter.
     let (Ok(sent), Ok(here), Ok(unstarted)) = (store.unsettled(), store.unsettled_here(), store.unsettled_unstarted()) else {
         return going("a journal it cannot read", false);
