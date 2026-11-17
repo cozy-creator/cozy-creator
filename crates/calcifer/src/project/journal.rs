@@ -177,8 +177,7 @@ impl Projects {
             _ => Error::new(api::error::Kind::Unavailable, "project_journal", "the project journal is unavailable"),
         })?;
         if fresh {
-            tokio::spawn(crate::hub::jobs::resume_project(api.clone(),store.project_id().into()));
-            if store.resume_allowed().map_err(|_|Error::new(api::error::Kind::Conflict,"project_journal","the project journal is unavailable"))? && store.project.folder.lock()?.owes() { super::walk(api,&store.project); }
+            super::attached(api, &store).await;
         }
         Ok(store)
     }
@@ -207,6 +206,7 @@ impl ProjectStore {
     pub(crate) fn resume_allowed(&self)->store::Result<bool> { self.read(|conn|Ok(!conn.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE owner<>?1)",[self.project_id()],|row|row.get::<_,bool>(0))?)) }
     pub(crate) fn project_id(&self) -> &str { &self.project.id }
     pub(crate) fn owner(&self) -> RunOwner { RunOwner { project: self.project.clone(), controller: self.controller.clone() } }
+    pub(super) fn project(&self) -> &Arc<Project> { &self.project }
     pub(crate) fn input_root(&self) -> store::Result<PathBuf> {
         self.validate()?;
         let path=self.project.folder.dir.join(".vault-inputs");

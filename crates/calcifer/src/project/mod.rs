@@ -471,9 +471,14 @@ impl Projects {
             (Err(error), Some(old)) if error.code == "project_moving" => {
                 // Moved while it rendered (cl-1066): its walker lets go at a step's end, and it opens here, its walk and runs taken over.
                 tokio::task::block_in_place(|| hand_over(api, &old, &root, dir))?;
-                self.open.lock().expect("projects lock").remove(&old.id);
+                {
+                    let mut open = self.open.lock().expect("projects lock");
+                    if open.get(&old.id).is_some_and(|held| std::ptr::eq(held.as_ptr(), Arc::as_ptr(&old))) {
+                        open.remove(&old.id);
+                    }
+                }
                 let project = self.open(api, dir)?;
-                tokio::task::block_in_place(|| take_over(api, &project, &old.root));
+                tokio::task::block_in_place(|| take_over(api, &project));
                 return Ok(project);
             }
             (opened, _) => opened?,
@@ -596,8 +601,12 @@ const HANDOVER: std::time::Duration = std::time::Duration::from_secs(10);
 /// names where it is first, so nothing takes it for gone (cl-1031) as it's handed over, and its walker ends at its next step, keeping
 /// nothing. Busy, briefly, if it doesn't end in time.
 fn hand_over(api: &Api, old: &Arc<Project>, root: &FsPath, dir: &FsPath) -> Result<(), Error> {
-    api.calcifer.store().project_moved(&old.root, root).map_err(|e| Error::internal("calcifer_store", e.to_string()))?;
-    old.moved.store(true, std::sync::atomic::Ordering::Release);
+    // One open hands it over; another at once waits for it.
+    let first = !old.moved.swap(true, std::sync::atomic::Ordering::AcqRel);
+    if first {
+        api.calcifer.store().project_moved(&old.root, root).map_err(|e| Error::internal("calcifer_store", e.to_string()))?;
+        MOVED_FROM.lock().expect("moved lock").insert(old.id.clone(), old.root.clone());
+    }
     old.asked.notify_one();
     let due = Instant::now() + HANDOVER;
     while *old.walking.lock().expect("walking lock") {
@@ -606,46 +615,54 @@ fn hand_over(api: &Api, old: &Arc<Project>, root: &FsPath, dir: &FsPath) -> Resu
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    crate::private_io::moved(&old.root, dir)
+    if first { crate::private_io::moved(&old.root, dir) } else { Ok(()) }
 }
 
-/// `project`, opened where it moved to as it rendered (cl-1066), takes its runs and its walk over. What this computer's machine was
-/// running of it is sent again here: that machine works inside the folder (its scratch, its executors, its environments), so nothing it
-/// was doing follows a move. Its executors there end, what they made again where it was goes ([`clean_left`]), and it says so in one
-/// line. Runs on other machines go on, and land here.
-fn take_over(api: &Arc<Api>, project: &Arc<Project>, was: &FsPath) {
+/// Where each project handed over as it moved (`hand_over`) was, by id, until it's attached where it is now (`attached`).
+static MOVED_FROM: std::sync::LazyLock<Mutex<HashMap<String, PathBuf>>> = std::sync::LazyLock::new(Mutex::default);
+
+/// `project`, opened where it moved to as it rendered (cl-1066), attached: its runs are routed here and its walk goes on, whichever open
+/// or request attaches it first ([`attached`]).
+fn take_over(api: &Arc<Api>, project: &Arc<Project>) {
     let store = match RunOwner::of(project, &api.calcifer).store() {
         Ok(store) => store,
         Err(error) => return warn!("{}: its runs stay where it was: {error}", project.root.display()),
     };
     match api.calcifer.attach_project(&store) {
-        Ok(true) => {}
-        // A request took it over first, and its walk goes on.
-        Ok(false) => return tracing::warn!("DEBUG {}: moved; a request took its walk over first", project.root.display()),
-        Err(error) => return warn!("{}: its runs stay where it was: {error}", project.root.display()),
+        Ok(true) => tokio::runtime::Handle::current().block_on(attached(api, &store)),
+        Ok(false) => {}
+        Err(error) => warn!("{}: its runs stay where it was: {error}", project.root.display()),
     }
-    let (stopped, restarted) = match restart_local(project, &store) {
-        Ok(local) => local,
-        Err(error) => {
-            warn!("{}: what this computer's machine ran of it isn't sent again: {}", project.root.display(), error.message);
-            (vec![], vec![])
+}
+
+/// A project attached for the first time in this open (`Calcifer::attach_project`): its Hub jobs and its walk go on. One that moved
+/// as it rendered first takes its runs over: what this computer's machine was running of it is sent again here, as that machine works
+/// inside the folder (its scratch, its executors, its environments) and nothing it was doing follows a move. Its executors there end,
+/// what they made again where it was goes ([`clean_left`]), and it says so in one line. Runs on other machines go on, and land here.
+pub(super) async fn attached(api: &Arc<Api>, store: &ProjectStore) {
+    let project = store.project();
+    let was = MOVED_FROM.lock().expect("moved lock").remove(&project.id);
+    if let Some(was) = was {
+        let (stopped, restarted) = match restart_local(project, store) {
+            Ok(local) => local,
+            Err(error) => {
+                warn!("{}: what this computer's machine ran of it isn't sent again: {}", project.root.display(), error.message);
+                (vec![], vec![])
+            }
+        };
+        tracing::warn!("DEBUG {}: moved from {}; {} of its runs here stopped, {} restarted", project.root.display(), was.display(), stopped.len(), restarted.join(", "));
+        for id in &stopped {
+            if let Err(error) = api.calcifer.cancel(id) { warn!(run = %id, "a run of a moved project goes on where it was: {error}"); }
         }
-    };
-    drop(store);
-    tracing::warn!("DEBUG {}: moved from {}; {} of its runs here stopped, {} restarted", project.root.display(), was.display(), stopped.len(), restarted.join(", "));
-    for id in &stopped {
-        if let Err(error) = api.calcifer.cancel(id) { warn!(run = %id, "a run of a moved project goes on where it was: {error}"); }
-    }
-    let handle = tokio::runtime::Handle::current();
-    handle.block_on(ended(api, &stopped));
-    handle.block_on(crate::private_io::relocated(api.clone(), project.id.clone(), project.root.clone()));
-    clean_left(was);
-    if !restarted.is_empty() {
-        project.said.lock().expect("said lock").push(format!("{} restarted in the moved folder.", restarted.join(", ")));
+        ended(api, &stopped).await;
+        crate::private_io::relocated(api.clone(), project.id.clone(), project.root.clone()).await;
+        clean_left(&was);
+        if !restarted.is_empty() {
+            project.said.lock().expect("said lock").push(format!("{} restarted in the moved folder.", restarted.join(", ")));
+        }
     }
     tokio::spawn(crate::hub::jobs::resume_project(api.clone(), project.id.clone()));
-    let resumes = RunOwner::of(project, &api.calcifer).store().is_ok_and(|store| store.resume_allowed().unwrap_or(false));
-    if resumes && project.folder.lock().is_ok_and(|lock| lock.owes()) {
+    if store.resume_allowed().unwrap_or(false) && project.folder.lock().is_ok_and(|lock| lock.owes()) {
         walk(api, project);
     }
 }
