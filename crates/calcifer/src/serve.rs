@@ -326,7 +326,10 @@ pub(crate) async fn serve(loaded: &Loaded, taken: platform::generation::Taken) -
     link.send(&ToParent::Prepared { protocol: PROTOCOL, version: ::api::VERSION.into() }).map_err(parent)?;
     let views = loop {
         match heard.recv().await {
-            Some((ToGeneration::TakeOver { views }, pipes)) => break views.into_iter().zip(pipes).collect::<Vec<_>>(),
+            Some((ToGeneration::TakeOver { views, streams }, pipes)) => {
+                crate::events::handed(streams);
+                break views.into_iter().zip(pipes).collect::<Vec<_>>();
+            }
             Some((ToGeneration::Stop, _)) | None => return Ok(Stopped::Down),
             Some(_) => {}
         }
@@ -455,9 +458,10 @@ pub(crate) async fn serve(loaded: &Loaded, taken: platform::generation::Taken) -
         }
         Stopped::HandedOver => {
             accepting.send_replace(false);
+            let streams = crate::events::streams();
             let views = hand_over(&api, server, server6).await;
             // Kept until the next one serves (Windows: the parent duplicates them out of this process meanwhile).
-            let _kept = link.release(views).inspect_err(|e| warn!("handing the open views over: {e}"));
+            let _kept = link.release(views, streams).inspect_err(|e| warn!("handing the open views over: {e}"));
             // Until the next one serves: the parent says `Exit`, or ends.
             while let Some((message, _)) = heard.recv().await {
                 if matches!(message, ToGeneration::Exit) {

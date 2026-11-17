@@ -321,6 +321,19 @@ async fn subscribe(api: Arc<Api>, scope: Scope, page: bool) -> Watch {
 /// What each stream shows, by its id: the projects it holds open (`PUT /v1/events/{stream}`), until it ends or shows others (cl-823),
 /// and whether it shows a machine's view.
 static SHOWN: LazyLock<Mutex<HashMap<String, Shows>>> = LazyLock::new(Mutex::default);
+/// The streams the last generation had when it handed over (cl-1113): a page's word on one, sent as the hand-over began, is answered
+/// with nothing held rather than refused, as its `hello` here names its own.
+static HANDED: LazyLock<Mutex<std::collections::HashSet<String>>> = LazyLock::new(Mutex::default);
+
+/// Every stream open now, to hand over (cl-1113).
+pub(crate) fn streams() -> Vec<String> {
+    SHOWN.lock().expect("shown lock").keys().cloned().collect()
+}
+
+/// The streams the last generation handed over.
+pub(crate) fn handed(streams: Vec<String>) {
+    HANDED.lock().expect("handed lock").extend(streams);
+}
 
 #[derive(Default)]
 struct Shows {
@@ -474,7 +487,11 @@ pub(crate) async fn show(
     let shown: Shown = crate::api::parse(&body?)?;
     let gone = || crate::api::Refusal(Error::new(api::error::Kind::NotFound, "stream_unknown", format!("The stream {stream} has ended.")));
     if !SHOWN.lock().expect("shown lock").contains_key(&stream) {
-        return Err(gone());
+        return match HANDED.lock().expect("handed lock").contains(&stream) {
+            // The last generation's: nothing is held for it here; its page tells its new stream after `hello`.
+            true => Ok(axum::Json(ProjectShowReply::default())),
+            false => Err(gone()),
+        };
     }
     let mut ids = shown.projects;
     ids.sort();

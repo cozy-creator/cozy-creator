@@ -153,7 +153,7 @@ impl Parent {
                     Ok(message) => {
                         #[cfg(unix)]
                         let pipes = match &message {
-                            ToParent::Released { views } => crate::generation::receive_pipes(&reader, views).unwrap_or_else(|e| {
+                            ToParent::Released { views, .. } => crate::generation::receive_pipes(&reader, views).unwrap_or_else(|e| {
                                 warn!("a generation's views came without their pipes: {e}");
                                 vec![]
                             }),
@@ -246,7 +246,7 @@ impl Parent {
                 }
                 match self.with(State::Serving).or(self.with(State::TakingOver)) {
                     // The first, or one after a death: nothing to take over from.
-                    None => self.take_over(id, vec![], None, vec![]),
+                    None => self.take_over(id, vec![], vec![], None, vec![]),
                     Some(serving) => {
                         if let Some(generation) = self.find(id) {
                             generation.state = State::Prepared;
@@ -289,12 +289,12 @@ impl Parent {
                     self.tell(id, &ToGeneration::SwapFailed { why: format!("cozy at {} didn't start: {e}", binary.display()) });
                 }
             }
-            ToParent::Released { views } => {
+            ToParent::Released { views, streams } => {
                 if let Some(generation) = self.find(id) {
                     generation.state = State::Released;
                 }
                 match self.with(State::Prepared) {
-                    Some(next) => self.take_over(next, views, Some(id), pipes),
+                    Some(next) => self.take_over(next, views, streams, Some(id), pipes),
                     // The next one died meanwhile: this one exits, and the binary it came from serves again.
                     None => {
                         self.tell(id, &ToGeneration::Exit);
@@ -322,12 +322,12 @@ impl Parent {
     /// Tells `id` to take the home, with the views `from` let go of and their pipes. A view whose pipe can't follow is left behind:
     /// its supervisor's stdin closes with `from`, and it locks.
     #[cfg_attr(unix, allow(unused_variables))]
-    fn take_over(&mut self, id: u64, mut views: Vec<crate::project::vault::Carried>, from: Option<u64>, pipes: Vec<Pipe>) {
+    fn take_over(&mut self, id: u64, mut views: Vec<crate::project::vault::Carried>, streams: Vec<String>, from: Option<u64>, pipes: Vec<Pipe>) {
         #[cfg(windows)]
         if let Some(from) = from {
             let (Some(giver), Some(taker)) = (self.generations.iter().find(|g| g.id == from), self.generations.iter().find(|g| g.id == id)) else {
                 views.clear();
-                return self.take_over(id, views, None, pipes);
+                return self.take_over(id, views, streams, None, pipes);
             };
             views.retain_mut(|view| match giver.child.give(view.pipe, &taker.child) {
                 Ok(given) => {
@@ -347,7 +347,7 @@ impl Parent {
         if let Some(generation) = self.find(id) {
             generation.state = State::TakingOver;
         }
-        self.tell(id, &ToGeneration::TakeOver { views });
+        self.tell(id, &ToGeneration::TakeOver { views, streams });
         #[cfg(unix)]
         if let Some(generation) = self.find(id)
             && let Err(e) = crate::generation::send_pipes(&generation.control, &pipes)
@@ -420,7 +420,7 @@ impl Parent {
                     && let Some(next) = self.with(State::Prepared)
                 {
                     // The serving one died handing over: the prepared one takes the home as it is.
-                    self.take_over(next, vec![], None, vec![]);
+                    self.take_over(next, vec![], vec![], None, vec![]);
                     return;
                 }
                 self.again();

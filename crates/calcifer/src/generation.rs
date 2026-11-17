@@ -27,7 +27,12 @@ pub(crate) enum ToGeneration {
     Start { protocol: u32, token: String, address: SocketAddr, parent: platform::process::Birth },
     /// Take the home: open its stores, adopt `views` (each supervisor's stdin follows the message, in order), start its machines,
     /// then say `Ready`.
-    TakeOver { views: Vec<Carried> },
+    TakeOver {
+        views: Vec<Carried>,
+        /// The streams the last generation had: a page's word on one as it handed over is answered, not refused.
+        #[serde(default)]
+        streams: Vec<String>,
+    },
     /// The holder record names this generation: answer requests.
     Accept,
     /// The next generation is prepared: let go of the home and say `Released`.
@@ -51,7 +56,11 @@ pub(crate) enum ToParent {
     /// `POST /v1/restart`, once idle: start the installed cozy beside this one and hand over to it.
     Swap,
     /// Let go of the home: `views` go to the next generation, each supervisor's stdin following the message, in order.
-    Released { views: Vec<Carried> },
+    Released {
+        views: Vec<Carried>,
+        #[serde(default)]
+        streams: Vec<String>,
+    },
     /// Stopped for good (`down`, a service stop): the parent ends after it.
     Down,
 }
@@ -115,7 +124,7 @@ impl Link {
         std::thread::Builder::new().name("calcifer-parent".into()).spawn(move || {
             while let Ok(message) = receive::<ToGeneration>(&reader) {
                 let pipes = match &message {
-                    ToGeneration::TakeOver { views } => match pipes(&reader, views) {
+                    ToGeneration::TakeOver { views, .. } => match pipes(&reader, views) {
                         Ok(pipes) => pipes,
                         Err(e) => {
                             tracing::warn!("the views handed over came without their pipes: {e}");
@@ -148,12 +157,12 @@ impl Link {
 
     /// Lets go of the home with `views` and their pipes. Windows: the parent duplicates each pipe out of this process, so the
     /// pipes come back to be kept until the parent says `Exit`.
-    pub(crate) fn release(&self, views: Vec<(Carried, File)>) -> io::Result<Vec<File>> {
+    pub(crate) fn release(&self, views: Vec<(Carried, File)>, streams: Vec<String>) -> io::Result<Vec<File>> {
         let stream = self.stream.lock().expect("parent stream");
         #[cfg(unix)]
         {
             let (views, pipes): (Vec<Carried>, Vec<File>) = views.into_iter().unzip();
-            send(&stream, &ToParent::Released { views })?;
+            send(&stream, &ToParent::Released { views, streams })?;
             send_pipes(&stream, &pipes)?;
             Ok(vec![])
         }
@@ -167,7 +176,7 @@ impl Link {
                     (view, pipe)
                 })
                 .unzip();
-            send(&stream, &ToParent::Released { views })?;
+            send(&stream, &ToParent::Released { views, streams })?;
             Ok(pipes)
         }
     }
