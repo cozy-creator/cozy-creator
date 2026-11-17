@@ -12,8 +12,9 @@ one exception, named. Once the machine goes on (SIGCONT), what it held of that v
 2. The maximum's deadline, stopped the same way.
 3. The maximum's deadline, stopped while a run's call is going, in a second project: the run holds the vault past its maximum until
    the clock asks local, which doesn't answer; the vault locks and the run settles canceled.
-4. The maximum's deadline with a run's output coming in, local stopped until the clock has judged it gone and the vault is locking,
-   then going on at once (back mid-drain): the save is judged by its progress, so it lands; the run reads completed.
+4. A brief hang (a 15 s maximum, past before the run's output starts coming in): local stopped as the output starts, until the clock
+   has judged it gone and the vault is locking, then going on at once (back mid-drain). Its save goes on where it was, judged by its
+   progress, so it lands and the run reads completed.
 5. Local slow from the moment the output starts coming (1.5 s stopped, 0.5 s going): slow, each status ping still answered within
    its 2 s, its save's bytes still coming. It is never judged gone, its save lands, and the vault locks once it has (re-review
    6939581151).
@@ -330,6 +331,9 @@ def runtime_left(folder: Path, ended: Path, mark: str, seconds: float = 30) -> l
 
 # Steps 4 and 5's output, in MB: the stop lands as its save starts, so a small one still stops mid-save.
 SMALL_SAVE_MB = 512
+# Step 4's maximum: past before its output starts coming in, so the clock judges local gone soon after the stop, and local is back
+# while its save's read is still open (a hang of seconds, not of the minute after which a read gives up and pauses).
+MAXIMUM_BACK = 15
 
 
 def until_state(cell: Cell, wanted: str, seconds: float) -> float | None:
@@ -360,7 +364,7 @@ def slow_local(going: threading.Event) -> None:
         going.wait(1.5)
 
 
-def judged_gone_then_back(cell: Cell, label: str, slow: bool, facts: dict[str, object], scanner: Scanner) -> list[str]:
+def judged_gone_then_back(cell: Cell, label: str, slow: bool, maximum: int, facts: dict[str, object], scanner: Scanner) -> list[str]:
     """Step 4 (`slow` False): the deadline with a run's output coming in, local stopped until the clock judged it gone (the vault
     reads locking), then going on at once. Step 5 (`slow`): local slow from the output's start, never judged gone. In both the save
     lands and the run reads completed."""
@@ -369,7 +373,7 @@ def judged_gone_then_back(cell: Cell, label: str, slow: bool, facts: dict[str, o
     scanner.add(mark)
     if cell.state() != "locked":
         cell.cozy(f"lock-before-{label}", "vault", "lock")
-    view = cell.unlock(f"unlock-{label}", MAXIMUM_SAVING)
+    view = cell.unlock(f"unlock-{label}", maximum)
     process, stdout = cell.start(f"{label}-run", sleeper(view), 1, mark, SMALL_SAVE_MB)
     assert waiting(stdout, process, ARRIVING), f"{label}: the run's output never started coming: {stdout.read_bytes()[-400:]!r}"
     number = number_of(stdout)
@@ -379,9 +383,9 @@ def judged_gone_then_back(cell: Cell, label: str, slow: bool, facts: dict[str, o
         threading.Thread(target=slow_local, args=(going,), daemon=True).start()
         judged = None
     else:
-        judged = facts[f"{label}_judged_s"] = until_state(cell, "locking", MAXIMUM_SAVING + DEADLINE_BOUND + 30)
+        judged = facts[f"{label}_judged_s"] = until_state(cell, "locking", maximum + DEADLINE_BOUND + 30)
         go_on()
-    locked = facts[f"{label}_locked_after_s"] = cell.locked_by(time.monotonic(), MAXIMUM_SAVING + 180)
+    locked = facts[f"{label}_locked_after_s"] = cell.locked_by(time.monotonic(), maximum + 180)
     going.set()
     time.sleep(0.6)
     go_on()
@@ -560,8 +564,8 @@ def main() -> None:
         failures.extend(deadline(first, "maximum", scanner, view, projects, facts, process, mark))
 
         # 4 and 5. Judged gone, then back (at once, or slow): a save whose bytes still come lands, and its run reads completed.
-        failures.extend(judged_gone_then_back(first, "back", slow=False, facts=facts, scanner=scanner))
-        failures.extend(judged_gone_then_back(first, "slow", slow=True, facts=facts, scanner=scanner))
+        failures.extend(judged_gone_then_back(first, "back", slow=False, maximum=MAXIMUM_BACK, facts=facts, scanner=scanner))
+        failures.extend(judged_gone_then_back(first, "slow", slow=True, maximum=MAXIMUM_SAVING, facts=facts, scanner=scanner))
 
         # 3. The maximum's deadline while local is stopped mid-call, in a second project: the run holds the vault past its maximum
         #    until the clock asks local, which doesn't answer; the vault locks and the run settles canceled.
