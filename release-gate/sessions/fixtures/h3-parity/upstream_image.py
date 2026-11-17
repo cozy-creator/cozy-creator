@@ -39,7 +39,15 @@ def main():
     dev = torch.device("cuda")
     available = int(next(line.split()[1] for line in open("/proc/meminfo") if line.startswith("MemAvailable"))) // (1 << 20)
     say(f"{model}; host RAM available {available} GiB; GPU {torch.cuda.get_device_name(0)}")
-    pipe = ModularPipeline.from_pretrained(REPO[model])
+    if model == "p-h3-image":
+        from diffusers.modular_pipelines.p_h3_image.modular_blocks_p_h3_image import PH3ImageBlocks
+
+        blocks = PH3ImageBlocks()
+        blocks.sub_blocks.pop("prompt_upsampler")  # the prompt as given (prompt_upsampler.py's own way)
+        pipe = blocks.init_pipeline(REPO[model])
+    else:
+        pipe = ModularPipeline.from_pretrained(REPO[model])
+    say(f"blocks {list(pipe.blocks.sub_blocks)}")
     t0 = time.time()
     pipe.load_components(names=NAMES[model], dtype=torch.bfloat16)
     if model == "minimax-h3-image":
