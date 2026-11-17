@@ -950,6 +950,7 @@ case $SHARD in
     hub_dependency
     hub_published
     rc_floor
+    local_dependency
     held_prerelease
     runtime_floor
     child_latents

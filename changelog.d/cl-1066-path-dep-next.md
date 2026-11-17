@@ -1,0 +1,1 @@
+Publishing a package with a path dependency is still refused (a release can't carry it), and the refusal's next line now names the dependency's own publish, as cargo does: `cozy package publish ../dep`.

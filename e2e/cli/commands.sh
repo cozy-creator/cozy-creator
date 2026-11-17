@@ -933,6 +933,16 @@ echo "hub published: $E2E_RELAY's environment names its callee ${callee:-nothing
 [ "$callee" = _/minimax-h3-tools ] || check "hub published: $E2E_RELAY's environment names its callee ${callee:-nothing}, not _/minimax-h3-tools"
 }
 
+# cl-1066: publishing a package with a path dependency is refused, a release can't carry it, and the next line names the dependency's
+# own publish (what cargo names): `cozy package publish ../dep`. isolated.sh tried e2e-localdep. Before, it named no command.
+local_dependency() {
+step "a package with a path dependency: its publish names the dependency's (cl-1066)"
+[ -n "$LOCAL" ] || return 0
+grep -q '"code": *"package_local_dependency"' "${E2E_LOCALDEP_PUBLISHED:-/dev/null}" 2> /dev/null \
+  && grep -q 'cozy package publish \.\./dep' "${E2E_LOCALDEP_PUBLISHED:-/dev/null}" \
+  || check "local dependency: publishing e2e-localdep didn't name cozy package publish ../dep: $(tail -c 400 "${E2E_LOCALDEP_PUBLISHED:-/dev/null}" 2> /dev/null | tr '\n' ' ')"
+}
+
 # xs-194: a package whose floor only the open RC meets (cozy-runtime>=0.47.0.dev0,<0.48) names no Runtime wheel, and runs from
 # its source and from the Hub as it was published: each lock takes the RC's newest build, so a Runtime merge between two
 # runs of this cell (each Runtime merge replaces the RC's wheels) needs no relock. isolated.sh published e2e-rcfloor 0.1.0.

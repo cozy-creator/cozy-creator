@@ -326,8 +326,9 @@ fn versions(lock: &str) -> Result<BTreeMap<String, String>, Error> {
     for package in lock.package {
         let local = ["directory", "path", "virtual", "editable"].iter().find(|k| package.source.contains_key(**k));
         if let Some(kind) = local
-            && package.source.get(*kind).and_then(|v| v.as_str()) != Some(".")
+            && let Some(at) = package.source.get(*kind).and_then(|v| v.as_str()).filter(|at| *at != ".")
         {
+            // Its own publish named, as cargo names what to publish first; nothing is published for it (cl-1066).
             return Err(refuse(
                 "package_local_dependency",
                 format!("{} is a local {kind} dependency, which a release cannot carry", package.name),
@@ -335,7 +336,8 @@ fn versions(lock: &str) -> Result<BTreeMap<String, String>, Error> {
             .remedy(format!(
                 "publish {} to your account and name it with `{{ index = \"{INDEX}\" }}` in [tool.uv.sources]",
                 package.name
-            )));
+            ))
+            .next(format!("cozy package publish {at}")));
         }
         out.insert(package.name, package.version);
     }

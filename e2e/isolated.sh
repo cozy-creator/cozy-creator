@@ -126,6 +126,20 @@ held() {
   else log "publishing e2e-lies was refused: $(tail -c 300 "$E2E_LIES" | tr '\n' ' ')"; fi
 }
 
+# local_dependency (cl-1066): the hub suite's echo as `e2e-localdep`, depending on a sibling package by path (`../dep`), which a release
+# can't carry: its publish is refused, naming the dependency's own publish next (as cargo names it). What it said is exported.
+local_dependency() {
+  local at=$seed/packages/e2e-localdep
+  rm -rf "$at" && mkdir -p "$at" && cp -r "$here/../release-gate/suites/hub/pkg" "$at/pkg" && cp -r "$here/../release-gate/suites/hub/pkg" "$at/dep"
+  sed -i 's/^name = "ci-hub-pkg"$/name = "e2e-localdep-dep"/' "$at/dep/pyproject.toml"
+  sed -i -e 's/^name = "ci-hub-pkg"$/name = "e2e-localdep"/' -e 's/^dependencies = \["cozy-runtime>=0.30", "msgspec>=0.19"\]$/dependencies = ["cozy-runtime>=0.30", "msgspec>=0.19", "e2e-localdep-dep"]/' \
+    "$at/pkg/pyproject.toml"
+  printf '\n[tool.uv.sources]\ne2e-localdep-dep = { path = "../dep" }\n' >> "$at/pkg/pyproject.toml"
+  export E2E_LOCALDEP_PUBLISHED=$seed/publish-e2e-localdep.json
+  if (cd "$at/pkg" && cozy --json package publish -y) > "$E2E_LOCALDEP_PUBLISHED" 2>&1; then log "published e2e-localdep, which it should have refused"
+  else log "publishing e2e-localdep was refused: $(tail -c 300 "$E2E_LOCALDEP_PUBLISHED" | tr '\n' ' ')"; fi
+}
+
 # final (held_prerelease, cl-1109): the hub suite's weightless echo as a tool, published as `e2e-final` 0.1.0 and then 0.2.0rc1, a
 # newer prerelease, as production has minimax-h3 0.12.0 and 0.13.0rc2 (xs-203). A refusal is the cell's to report.
 final() {
@@ -432,7 +446,8 @@ if [ -n "$needs" ]; then
       relay
       held
       final
-      rc_floor ;;
+      rc_floor
+      local_dependency ;;
   esac
   if [[ " $needs " == *" birefnet "* || " $needs " == *" qwen "* || " $needs " == *" downloads "* || " $needs " == *" loras "* || " $needs " == *" parts "* \
     || " $needs " == *" disk "* || " $needs " == *" lorabase "* || " $needs " == *" ltxlora "* || " $needs " == *" enhancer "* ]]; then
