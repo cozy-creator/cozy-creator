@@ -104,18 +104,18 @@ project_cell() {
   (cd "$C" && "$CLI" status) > project-cycle.log 2>&1 || cli_fail "status refused a cycle of mentions: $(tail -c 300 project-cycle.log)"
   grep -q "pier mentions hut, which is made from it, so that mention stays plain text" project-cycle.log \
     || cli_fail "status did not warn of the cycle: $(tail -c 300 project-cycle.log)"
-  cli_page render "$C" --on "$M" --wait hut,pier all > project-cycle-render.log 2>&1 || cli_fail "render all with a cycle of mentions: $(tail -c 400 project-cycle-render.log)"
+  cli_page render "$C" --on "$M" hut pier > project-cycle-render.log 2>&1 || cli_fail "render hut and pier, a cycle of mentions: $(tail -c 400 project-cycle-render.log)"
   project_status "$C" project-cycle.json
   jq -e '[.project.assets[] | select(.standing != "current")] | length == 0' project-cycle.json > /dev/null \
-    || cli_fail "after render all, a cycle's assets are not current: $(tail -c 400 project-cycle.json)"
+    || cli_fail "after rendering them, a cycle's assets are not current: $(tail -c 400 project-cycle.json)"
   if cli_page render "$P" --on "$M" --n 2 --approve lead > project-approve-n.log 2>&1 || ! grep -q approve_one project-approve-n.log; then
     cli_fail "--approve with -n 2 was not refused: $(tail -c 300 project-approve-n.log)"
   fi
-  cli_page render "$P" --on "$M" --wait lead,place,one,start,two,edit all > project-render.log 2>&1 || cli_fail "render all: $(tail -c 400 project-render.log)"
+  cli_page render "$P" --on "$M" lead place one start two edit > project-render.log 2>&1 || cli_fail "render every box: $(tail -c 400 project-render.log)"
   project_status "$P/notes" project-status.json  # found from a folder inside it
   ok=$(jq -r '[.project.assets[] | select(.standing != "current")] | length' project-status.json)
-  [ "$ok" = 0 ] || cli_fail "after render all, $ok assets are not current: $(tail -c 400 project-status.json)"
-  [ -s "$P/edit.mp4" ] || cli_fail "render all cut no edit.mp4"
+  [ "$ok" = 0 ] || cli_fail "after rendering every box, $ok assets are not current: $(tail -c 400 project-status.json)"
+  [ -s "$P/edit.mp4" ] || cli_fail "rendering every box cut no edit.mp4"
   jq -e '.tracks.children[] | select(.kind == "Video") | .children[0].source_range | .start_time.value == 0 and .duration.value == 96' \
     "$P/edit.otio" > /dev/null 2>&1 || cli_fail "edit.otio does not cut one's frames 0-96: $(head -c 300 "$P/edit.otio" 2>&1)"
   cli_page render "$P" --on "$M" lead > project-run.log 2>&1 || cli_fail "render lead: $(tail -c 400 project-run.log)"
@@ -133,12 +133,12 @@ project_cell() {
   jq -e '(.project.orphans // []) == [] and (.project.assets[] | select(.name == "yard") | .approved == 2 and .versions == 2)' project-renamed.json > /dev/null \
     || cli_fail "after rename, yard does not hold place's versions: $(jq -c '[.project.orphans, (.project.assets[] | select(.name == "yard"))]' project-renamed.json)"
   # A person's save while a render is under way stands.
-  cli_page render "$P" --on "$M" --queue all > project-race.log 2>&1 || cli_fail "render all: $(tail -c 300 project-race.log)"
+  cli_page render "$P" --on "$M" --queue lead yard one start two edit > project-race.log 2>&1 || cli_fail "render every box: $(tail -c 300 project-race.log)"
   for _ in $(seq 1 600); do cli_page board "$P" | jq -e '(.jobs // []) | length > 0' > /dev/null 2>&1 && break; sleep 1; done
   cli_page set "$P" two --fields "$(cli_page asset "$P" two | jq -c '{summary: (.asset.fields.summary | sub("facing the camera\\."; "facing the camera, hands in pockets."))}')" \
-    > project-save.log 2>&1 || cli_fail "a save during render all: $(tail -c 300 project-save.log)"
+    > project-save.log 2>&1 || cli_fail "a save during a render: $(tail -c 300 project-save.log)"
   for _ in $(seq 1 1800); do cli_page board "$P" | jq -e '[.jobs[]? | select(.state == "running" or .state == "waiting")] | length == 0' > /dev/null 2>&1 && break; sleep 2; done
-  cli_page asset "$P" two | jq -e '.asset.fields.summary | contains("hands in pockets")' > /dev/null || cli_fail "a save made during render all was lost"
+  cli_page asset "$P" two | jq -e '.asset.fields.summary | contains("hands in pockets")' > /dev/null || cli_fail "a save made during a render was lost"
 }
 [ -z "$ONLY" ] || [[ $ONLY == *",cli-project,"* ]] && project_cell
 

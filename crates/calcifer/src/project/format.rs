@@ -19,7 +19,7 @@ use super::{
     graph::{self, Graph, SELF, as_name, can_take, edits, is_name, mentions, mentions_in, mentions_replaced, name_key, version_of},
 };
 
-/// The name used to render every asset.
+/// The name that cancels every asset's work.
 pub(crate) const ALL: &str = "all";
 /// What the platform reads of an asset. Any other key is an input.
 const PLATFORM: [&str; 8] = ["tool", "approved", "description", "models", "lora", NODE_KIND, SELECTED_VERSION, STARRED];
@@ -322,7 +322,7 @@ impl Doc {
     fn declare(&mut self, name: &str, written: &Value, defaults: &Map<String, Value>, folder: &Folder, lock: &Lock) {
         let key = name_key(name);
         if key == ALL {
-            self.warn(name, format!("{name} is called `{ALL}`, which means every box when you render, so it renders along with everything else."));
+            self.warn(name, format!("{name} is called `{ALL}`, which means every box when you cancel, so canceling it cancels everything."));
         }
         let mut body = match written {
             Value::Object(body) => body.clone(),

@@ -261,12 +261,10 @@ code {
 }
 /* What only holds controls takes the pointer only on them: between them, a press is the canvas's. */
 .top > .history-controls,
-.top > .canvas-controls,
-.history,
-.render-all {
+.history {
   pointer-events: none;
 }
-:where(.history-controls, .canvas-controls, .history, .render-all) > * {
+:where(.history-controls, .history) > * {
   pointer-events: auto;
 }
 .icon {
@@ -294,11 +292,6 @@ code {
 }
 .sum.ood {
   color: var(--ood);
-}
-.canvas-controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 .tb {
   display: inline-flex;
@@ -1938,9 +1931,6 @@ video.preview.on {
 .status.bad {
   color: var(--bad);
 }
-.render-all {
-  position: relative;
-}
 .act {
   color: var(--ink);
   text-decoration: underline;
@@ -3480,14 +3470,6 @@ a.tab:hover {
   margin-right: 24px;
 }
 
-/* The top bar: a name, Render all, the rest in a menu. */
-.render-all {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: var(--small);
-  color: var(--mute);
-}
 /* Undo, Redo and the project's history, at the top bar's left. */
 .history-controls:empty {
   display: none;
@@ -4291,12 +4273,6 @@ input[type="checkbox"] {
   padding: calc(3px * var(--ui)) calc(9px * var(--ui));
 }
 .top .sum {
-}
-.top .render-all label {
-}
-.top .render-all label input {
-  width: calc(13px * var(--ui));
-  height: calc(13px * var(--ui));
 }
 .top .main-menu nav .tb {
   height: calc(32px * var(--ui));

@@ -1,6 +1,6 @@
 """`cozy render` (cl-956), as an agent runs it: off a terminal, on weightless fixtures (project/shots.py, project/shaped.py). A chain
 renders what it reads first; a current node renders nothing; `--new` and `-n`; a render already going is joined, a killed CLI's render
-finishes and is rejoined; a failure stops only what reads it; `--outdated`; `--pickup`. Nodes are made through the page's routes, as
+finishes and is rejoined; a failure stops only what reads it; an approved node stands; `--pickup`. Nodes are made through the page's routes, as
 the page makes them; every render is the CLI's.
     python3 render.py <project> <out>: $COZY the cozy under test; each call logged to <out>/argv.log for coverage. Prints what it saw as
     JSON and exits 1 if anything failed."""
@@ -168,15 +168,11 @@ def main() -> int:
     check("out_of_date_renders_first", stale.code == 0 and "film reads shot_2, which is out of date: rendering it first" in stale.out
           and took(stale, "shot_2") == [shots + 1] and took(stale, "film") == [films + 1] and took(stale, "shot_1") == [], stale)
 
-    # Approved stands, unless --outdated.
+    # Approved stands, though what it reads changed: nothing re-renders it but --new (cl-1192).
     api("/approve", "POST", {"name": "shot_1", "version": "1"})
     api("/assets/shot_1", "PATCH", {"fields": {"summary": "<mara> on <look>, at dawn."}})
     kept = cozy("render", "shot_1", "--on", "local")
-    check("approved_stands", kept.code == 0 and kept.out.startswith("nothing to render: shot_1 take 1 is approved, though") and "use --outdated to render it again" in kept.out, kept)
-    outdated = cozy("render", "shot_1", "--outdated", "--on", "local")
-    seen["outdated"] = repr(outdated)
-    held = api("/assets/shot_1")
-    check("outdated_renders_the_approved", outdated.code == 0 and took(outdated, "shot_1") == [2] and cast(Json, held["asset"]).get("approved") == 1, outdated)
+    check("approved_stands", kept.code == 0 and kept.out.startswith("nothing to render: shot_1 take 1 is approved, though") and "use --new to render it again" in kept.out, kept)
 
     # Joined: a second render of a node rendering joins it, and one killed leaves it going; it lands once.
     node("wait", SHOTS, "takes", {"seconds": 12})

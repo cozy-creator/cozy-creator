@@ -152,10 +152,6 @@ joined?: boolean,
  */
 added: number,
 /**
- * Pinned assets it was asked of by no name of their own: left as they are.
- */
-skipped?: Array<string>,
-/**
  * What it added, each with what is ahead of it.
  */
 queued?: Array<QueuedNow>,
@@ -837,15 +833,15 @@ export type Fit = { tools: Array<ToolFit>,
  */
 rent?: RentFor | null,
 /**
- * Each box named (not `all`), where a render of it would go now and how long it runs there (cl-1004).
+ * Each box named, where a render of it would go now and how long it runs there (cl-1004).
  */
 estimates?: Array<BoxEstimate>, };
 
 /**
- * `POST /v1/projects/{id}/fit`: what a render of `names` on this computer (`local`) would do poorly, `all` and `outdated` as
- * a render reads them; and how long each box named takes where a render of it would go now.
+ * `POST /v1/projects/{id}/fit`: what a render of `names` on this computer (`local`) would do poorly, and how long each box named
+ * takes where a render of it would go now.
  */
-export type FitAsk = { names: Array<string>, outdated?: boolean, };
+export type FitAsk = { names: Array<string>, };
 
 /**
  * One model a search found, with its newest release, lanes, author and kind.
@@ -3215,8 +3211,8 @@ export type RunStatus = "queued" | "in_progress" | "completed" | "failed" | "can
 
 /**
  * `POST /v1/projects/{id}/runs`: `n` new versions of each of `names`, with new seeds, a pinned one's to look at, and of what it reads
- * only if that has no state. With `all`, of everything not pinned. It joins the project's walk, which sends each once what it reads
- * is settled; `on` lists the machines they may go to. None: Calcifer's to say, as for a `cozy run` naming none.
+ * only if that has no state. It joins the project's walk, which sends each once what it reads is settled; `on` lists the machines
+ * they may go to. None: Calcifer's to say, as for a `cozy run` naming none.
  */
 export type Runs = { names: Array<string>, n: number, on: Array<On>,
 /**
@@ -3232,11 +3228,6 @@ approve?: boolean,
  * being made (it's joined), and what they read with no state first, a cut's too.
  */
 missing?: boolean,
-/**
- * Also make a new version of each pin out of date, when its turn comes in reading order: with `all`, every one; else those named
- * and what they read. What reads it in this render reads that; the version it held stays approved.
- */
-outdated?: boolean,
 /**
  * Pick up from here: one box's new take goes on from this take's frame.
  */

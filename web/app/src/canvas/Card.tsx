@@ -161,7 +161,7 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
   const shown = onWords || watch ? null : shownOf(view)
   const versions = [...(asset.prefixes ?? [])].reverse()
   // Each take on its way by its id, from the click to its version (cl-945); a run no take names, and what's asked with no take named
-  // (Render all, before Calcifer lists it), as they come.
+  // (what a box reads, before Calcifer lists it), as they come.
   const pending = takingOf(view)
   const making = (asset.making ?? []).filter((run) => !pending.some((take) => take.run === run))
   const waiting = !pending.length && !making.length && (view.queued || view.asked !== undefined)

@@ -87,7 +87,7 @@ def render(args: argparse.Namespace) -> int:
     names: list[str] = args.names
     # None: the page's ask with no machine chosen, which Calcifer places as a `cozy run` naming none (cl-894).
     on: list[str] = [] if args.on == "auto" else args.on.split(",")
-    waited = [] if args.queue else args.wait.split(",") if args.wait else [name for name in names if name != "all"]
+    waited = [] if args.queue else args.wait.split(",") if args.wait else names
     before = {name: len(cast(list[object], asset(args.project, name)["versions"])) for name in waited}
     if args.missing:  # a box with a version already makes nothing new
         before = {name: count for name, count in before.items() if not count}

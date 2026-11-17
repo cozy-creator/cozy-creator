@@ -48,7 +48,7 @@ Every other key is a **field** of its tool: the binder gives it to the function 
 
 **Text assets.** `text:` with no `tool` is an asset of words alone. `<name>` of one, in any input, is replaced by its words where it stands, before a package sees it, so a function has no `style` input and nothing is prepended: a style goes only where it's mentioned. Its text may mention others, and what it mentions is read by whatever mentions it. A cycle stays plain text, with a warning. Editing it puts what reaches it out of date, and what's approved stays approved. One deleted is no change to what was made with it. It can't go by a tag of a package the project uses.
 
-**Names** hold letters, digits, `_` and `-`, never `.`, which selects inside a box, and match in any case, with `_` and `-` alike: `<Style>` and `<sTYLE>` are one asset, and it keeps the spelling it was written with. Two names in a project that are one are refused. A `.` is a character like any other: `<Amy.original>` is one name, with nothing above it, and a model reads it as `<Amy original>`. Anything else is refused when the project is read, in one line with the fix. `all` is what `render all` means, and warns as a name.
+**Names** hold letters, digits, `_` and `-`, never `.`, which selects inside a box, and match in any case, with `_` and `-` alike: `<Style>` and `<sTYLE>` are one asset, and it keeps the spelling it was written with. Two names in a project that are one are refused. A `.` is a character like any other: `<Amy.original>` is one name, with nothing above it, and a model reads it as `<Amy original>`. Anything else is refused when the project is read, in one line with the fix. `all` is what `cancel all` means, and warns as a name.
 
 ## Defaults
 
