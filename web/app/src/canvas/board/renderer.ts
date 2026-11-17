@@ -2,7 +2,7 @@
 // compositor readback of 130-190 ms a frame (cl-1018); a 2D canvas on the CPU has none.
 // CSP-safe shader uniforms (no eval): the WebGL renderer is made as this module loads.
 import "pixi.js/unsafe-eval"
-import { CanvasGraphicsPipe, CanvasRenderer, Container, ExtensionType, extensions, Graphics, type InstructionSet, type Renderer, Sprite, Text, Texture, WebGLRenderer } from "pixi.js"
+import { CanvasGraphicsPipe, CanvasRenderer, Container, ExtensionType, extensions, Graphics, type InstructionSet, type Renderer, Sprite, Text, Texture, Ticker, WebGLRenderer } from "pixi.js"
 import { warmLabels } from "./text"
 
 /** Why this renderer: a hardware GPU; no WebGL at all; WebGL only in software (or only with a major performance caveat); WebGL refused to start. */
@@ -30,7 +30,25 @@ extensions.add(CanvasGraphics)
 /** Pixi's text system nulls a released label's entry but keeps its key, and no key comes back (each is the label's TextStyle uid): a pan
  *  that builds and drops cards grew that table without end (e2e 43803931154, 0.4 MB in ten cycles at 1,000 boxes). The GC's collection
  *  sweep drops the nulls, as it does for Pixi's own tables. */
+/** How often, at rest, Pixi's own upkeep runs: its renderer's scheduled tasks (the texture and resource GC, `tidy`'s sweeps). */
+const UPKEEP_MS = 5000
+let upkeep: ReturnType<typeof setInterval> | undefined
+
+/** Pixi's system ticker runs its renderer's scheduler and its pointer upkeep on every animation frame, for good: a page sitting still
+ *  asked for 60 frames a second (idle, e2e 44041643218), each waking the browser, on a laptop's battery and a runner's cores alike. It
+ *  ticks with the board's own frames instead (`systemTick`), and every UPKEEP_MS at rest. */
+function stillTicker() {
+  const system = Ticker.system
+  system.autoStart = false
+  system.stop()
+  upkeep ??= setInterval(() => system.update(), UPKEEP_MS)
+}
+
+/** Pixi's upkeep, on a frame the board draws. */
+export const systemTick = (time: number) => Ticker.system.update(time)
+
 function tidy(renderer: Renderer) {
+  stillTicker()
   const { gc, canvasText } = renderer as unknown as { gc: { addCollection(context: object, collection: string, type: "hash"): void }; canvasText: object }
   gc.addCollection(canvasText, "_activeTextures", "hash")
 }

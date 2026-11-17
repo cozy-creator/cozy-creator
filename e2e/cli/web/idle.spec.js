@@ -26,7 +26,8 @@ function countAsked() {
 }
 
 /** The animations running on the page, each with what it's on. */
-const running = (page) => page.evaluate(() => document.getAnimations().filter((animation) => animation.playState === 'running').map((animation) => {
+// A scroll's own (the fades at a list's ends, `animation-timeline: scroll()`) moves only with the scroll: only those on time count.
+const running = (page) => page.evaluate(() => document.getAnimations().filter((animation) => animation.playState === 'running' && animation.timeline instanceof DocumentTimeline).map((animation) => {
   const target = animation.effect?.target;
   const on = target instanceof Element ? `${target.tagName.toLowerCase()}${target.id ? `#${target.id}` : ''}${[...target.classList].map((name) => `.${name}`).join('')}` : String(target ?? '');
   return `${animation.animationName ?? animation.transitionProperty ?? animation.constructor.name} on ${on}`;

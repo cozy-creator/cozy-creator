@@ -22,7 +22,7 @@ import { inspection } from "./inspect"
 import { createInteraction } from "./Interaction"
 import { Media } from "./Media"
 import { pictureBox, type RunContext } from "./presentation"
-import { type Chosen, parkRenderer, takeRenderer } from "./renderer"
+import { type Chosen, parkRenderer, systemTick, takeRenderer } from "./renderer"
 import { Scene } from "./Scene"
 import { forgetMeasurements, onFontsLoaded } from "./text"
 
@@ -119,6 +119,7 @@ export function Stage(props: StageProps) {
       const delta = Math.min(100, Math.max(0, took))
       last = time
       tick(delta, Math.min(1000, Math.max(0, took)))
+      systemTick(time)
       if (running && !stopped) frame = requestAnimationFrame(loop)
     }
     const start = () => { if (running) return; running = true; last = performance.now(); paced = 0; frame = requestAnimationFrame(loop) }
