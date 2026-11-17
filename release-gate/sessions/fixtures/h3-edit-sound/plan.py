@@ -26,7 +26,7 @@ from itertools import accumulate
 from types import SimpleNamespace
 
 import numpy as np
-from cozy_runtime.author import Prompt
+from cozy_runtime.fields import Prompt
 from cozy_runtime.media import DecodedVideoFrame
 
 from minimax_h3.continuation import Carry
