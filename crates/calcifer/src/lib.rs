@@ -2824,6 +2824,39 @@ impl Calcifer {
         Ok(())
     }
 
+    /// `inputs` written to `machine`, each it doesn't hold whole, one write of an object at a time as a run's are (`writing`): local
+    /// code carried to the machine a box's guess goes to, as a run of it carries it (cl-1104), so its machine installs it with no run.
+    /// The bytes moving hold its idle clock as any upload's do; its source is small, never its weights.
+    pub(crate) async fn ship(&self, machine: &str, inputs: &[StagedInput]) -> Result<(), String> {
+        let machines = self.machines().ok_or("no machines yet")?;
+        let (_, link) = machines.linked(machine).map_err(|e| e.message)?;
+        let digests: Vec<Digest> = inputs.iter().map(|input| input.digest).collect();
+        let held = link.held_many(&digests).await.map_err(|e| e.to_string())?;
+        let whole = |held: &v1::Ranges, length: u64| length > 0 && v1::held_bytes(held) >= length;
+        for (input, held) in inputs.iter().zip(held) {
+            if whole(&held, input.length) {
+                continue;
+            }
+            let key = (machine.to_owned(), input.digest);
+            let turn = lock(&self.writing).entry(key.clone()).or_default().clone();
+            let mine = turn.0.lock().await;
+            let now = link.held_many(std::slice::from_ref(&input.digest)).await.map_err(|e| e.to_string())?.into_iter().next().unwrap_or_default();
+            let written = match whole(&now, input.length) {
+                true => Ok(()),
+                false => link.write(&input.digest, input.length, &input.path, now, |_, _| {}).await.map_err(|e| e.to_string()),
+            };
+            drop(mine);
+            {
+                let mut writing = lock(&self.writing);
+                if Arc::strong_count(&turn) <= 2 {
+                    writing.remove(&key);
+                }
+            }
+            written?;
+        }
+        Ok(())
+    }
+
     /// Reads the machine's warm set before a warm run's set is merged into it, if none was seen
     /// yet.
     async fn known_warm(&self, run: &RunRow, machine: &str, link: &Link) -> Result<(), Stop> {

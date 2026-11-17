@@ -20,7 +20,7 @@ use std::{
     time::Duration,
 };
 
-use api::{calcifer::On, error::Error, machine as v1};
+use api::{calcifer::On, config::Origin, error::Error, machine as v1};
 use serde_json::{Map, Value};
 use tokio::sync::watch;
 
@@ -152,8 +152,8 @@ async fn guess(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, f
 
 /// What `machine` has ready for a box of `kind` whose tool is `with` (`PUT /v1/prepare`): the function its text names, else the first
 /// of its package that makes this kind, with the box's model choices; and the function, as its row says it. Its package is read
-/// statically, nothing installed to read it (`Host::foreseen`). None: its package makes nothing of the kind, or it is an encrypted
-/// project's local code, which goes with the run that calls it.
+/// statically, nothing installed to read it (`Host::foreseen`). Local code is carried to `machine` first (`Calcifer::ship`). None: its
+/// package makes nothing of the kind, or it is an encrypted project's own local code, which goes with the run that calls it.
 #[allow(clippy::too_many_arguments)]
 async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, with: &str, kind: &str, made: &Map<String, Value>, machine: &On) -> Result<Option<(v1::Ahead, String)>, Error> {
     let dir = &project.folder.dir;
@@ -162,12 +162,23 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, with: &
     let models = super::listed_models(&renderer, made)?;
     let source = match &renderer.local {
         None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: recorded(api, project, hub, &renderer)? }),
-        // By its manifest, which a machine that ran it holds: one that holds none refuses the item, and its first render there sends it.
-        Some(_) => {
-            if crate::private_io::of_path(dir)?.is_some_and(|scope| !scope.storage.ordinary) {
+        // Carried to its machine as a run of it carries it, its files and manifest written there, so a fresh rental installs it too
+        // (frozen-RC 44000183889: H3 from a checkout never got ready on one). An encrypted project's own code goes only with the run
+        // that calls it; code beside the project (a dev home's checkout, `~/…`) isn't the project's.
+        Some(path) => {
+            let private = crate::private_io::of_path(dir)?.is_some_and(|scope| !scope.storage.ordinary);
+            if private && path.starts_with(dir) {
                 return Ok(None);
             }
-            v1::Source::Local(v1::LocalSource { manifest: package.manifest.clone() })
+            let On::Machine(on) = machine else { return Ok(None) };
+            let hubs = &api.machines.hubs;
+            let origin = Origin::parse(&if hub.is_empty() { hubs.default_origin() } else { hub.to_owned() })?;
+            let staged = crate::local_code::source(hubs.home(), &crate::local_code::own(api, path)?, hubs, &origin).await?;
+            if let Err(why) = api.calcifer.ship(on, &staged.inputs).await {
+                tracing::warn!(machine = on, "a guess's local code wasn't carried there: {why}");
+                return Ok(None);
+            }
+            v1::Source::Local(staged.source)
         }
     };
     let item = v1::Ahead { source: Some(source), entrypoint: renderer.function.clone(), models, ..Default::default() };
