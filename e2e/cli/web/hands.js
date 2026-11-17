@@ -66,7 +66,9 @@ async function toolRow(page, operation, id) {
   const row = tools.locator(`li[data-implementation][data-tool=${JSON.stringify(id)}]`);
   // The palette read: its tool, or its group with tools in it. A group with none is a list not read yet, which comes as the tool's own
   // row when it's the only one (web-llm, e2e 44088809798: a click on the empty group waited out its time as the row took its place).
-  await expect.poll(async () => (await row.count()) > 0 || ((await category.count()) > 0 && await category.isEnabled()), { message: `the palette offers ${operation}` }).toBe(true);
+  // As long as the list takes: a project's local code read anew took 34–37 s in a busy lane (e2e 44142655129, web-render), and the tool comes as
+  // it lands (cl-1168).
+  await expect.poll(async () => (await row.count()) > 0 || ((await category.count()) > 0 && await category.isEnabled()), { message: `the palette offers ${operation}`, timeout: 120_000 }).toBe(true);
   if (!(await row.count()) && await category.count()) {
     if ((await category.getAttribute('aria-expanded')) !== 'true') await category.click();
     await expect(category).toHaveAttribute('aria-expanded', 'true');
