@@ -77,6 +77,8 @@ class Case:
     child: str = ""
     child_function: str = "generate"
     forwarded: bool = False
+    #: A video's frame count; 0: an image.
+    frames: int = 0
 
 
 CASES = (
@@ -108,7 +110,17 @@ CASES = (
         child="failed",
     ),
     Case("intermediate", "intermediate"),
-    Case("streaming", "streaming", image_format="", size=(16, 16), metadata=False),
+    Case("streaming", "streaming", image_format="", size=(16, 16), metadata=False, frames=3),
+    # packages#953: H3's pickup without latents saved its kept start, joined it by `save_video_concat` and never
+    # returned it, refused `unreturned_handle`. A video joined into the result needs no return of its own.
+    Case(
+        "concat-saved",
+        "concat_saved",
+        image_format="",
+        size=(16, 16),
+        metadata=False,
+        frames=6,
+    ),
     Case("duplicate", "duplicate", error="duplicate_handle"),
     Case("decoded-bound", "decoded_bound", error="result_decoded_bound"),
     Case(
@@ -242,11 +254,7 @@ def verify(
         bool(item.get("url")) and not item.get("export_error"),
         "final output did not land in custody",
     )
-    media_type = (
-        "video/mp4"
-        if case.name == "streaming"
-        else f"image/{case.image_format.lower()}"
-    )
+    media_type = "video/mp4" if case.frames else f"image/{case.image_format.lower()}"
     require(
         item.get("media_type") == media_type,
         f"wrong stored media type: {item.get('media_type')}",
@@ -292,7 +300,7 @@ def verify(
             (item.get("width"), item.get("height")) == case.size,
             "stored output geometry differs from pixels",
         )
-    if case.name == "streaming":
+    if case.frames:
         with av.open(str(path)) as container:
             require(
                 len(container.streams.video) == 1, "stream has no unique video track"
@@ -301,10 +309,17 @@ def verify(
             require(stream.codec_context.name == "h264", "stream did not encode H.264")
             frames = list(container.decode(stream))
             require(
-                len(frames) == 3
+                len(frames) == case.frames
                 and all((frame.width, frame.height) == case.size for frame in frames),
                 "stream frame count/geometry changed",
             )
+            if case.name == "concat-saved":
+                reds = [cast(tuple[int, ...], frame.to_image().getpixel((8, 8)))[0] for frame in frames]
+                require(
+                    all(red < 100 for red in reds[:3])
+                    and all(red > 100 for red in reds[3:]),
+                    f"the join is not the first video then the second: red {reds}",
+                )
             timestamps = []
             for frame in frames:
                 require(
@@ -314,11 +329,11 @@ def verify(
                 assert frame.pts is not None and frame.time_base is not None
                 timestamps.append(frame.pts * frame.time_base)
             require(
-                timestamps == [Fraction(i, 24) for i in range(3)],
+                timestamps == [Fraction(i, 24) for i in range(case.frames)],
                 "stream frame clock changed",
             )
         require(
-            run.get("result", {}).get("frames") == 3,
+            run.get("result", {}).get("frames") == case.frames,
             "result lost streaming frame facts",
         )
     else:
