@@ -835,6 +835,7 @@ case $SHARD in
     db_deleted_gc
     db_purged
     db_purged_late
+    db_pickup_kept
     db_closes
     old_takes
     db_migrate
@@ -855,6 +856,8 @@ case $SHARD in
   projectdb-purged) parts="db_purged logs" ;;
   # A late-landed run row lets a purged version's file go (cl-1093).
   projectdb-purged-late) parts="db_purged_late logs" ;;
+  # A render asked for picks up from a take deleted while it waits, past the take's window (cl-1093).
+  projectdb-pickup-kept) parts="db_pickup_kept logs" ;;
   # A local run's latents, landed after its run arrived, are its take's and go with it (cl-1046, cl-1093). Named projectvault-* for its driver.
   projectvault-kept-latents) parts="kept_latents logs" ;;
   projectdb-closes) parts="db_closes logs" ;;
