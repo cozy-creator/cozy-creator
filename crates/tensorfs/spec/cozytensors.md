@@ -270,7 +270,7 @@ the logical tensor; no decode depends on anything outside the header, its chunks
 
 **Names** are `family.variant` in lowercase, in the words of the ecosystem that made the format: generic scaled
 formats are `element.granularity` (`fp8.tensorwise`, `int8.rowwise`, `fp8.blockwise`), a producer's own format
-is `producer.type` with the producer's type name verbatim (`gguf.q4_k`, `gptq.int4`, `awq.int4`, `ct.int4`,
+is `producer.type` with the producer's type name verbatim (`ggml.q4_k`, `gptq.int4`, `awq.int4`, `ct.int4`,
 `bnb.nf4`), and a vendor-neutral standard keeps its bare name (`mxfp4`, `mxfp8`, `nvfp4`).
 
 **Params** are snake_case keys in the producer's vocabulary (`block_size`, `rotation`, `rotation_size`,
@@ -297,7 +297,7 @@ name what a part is (`weight`, `scale`, `group_scale`, `codebook`, `correction`)
   a param is missing, unknown or has a value not listed, a part's dtype or shape breaks the scheme's rule, or the
   logical dtype is not `F32`, `BF16` or `F16`. Params drive the decode, so an unknown one is a refusal, never ignored.
 
-**Shapes.** `fp8.tensorwise`, `int8.tensorwise`, `bnb.nf4`, `bnb.fp4` and `gguf.*` flatten any logical shape
+**Shapes.** `fp8.tensorwise`, `int8.tensorwise`, `bnb.nf4`, `bnb.fp4` and `ggml.*` flatten any logical shape
 according to their scheme definitions. The other schemes use a matrix view of a rank-two-or-higher tensor unless
 their own section requires exactly rank two: `C` is the last extent and `R` the product of the others. An expert
 stack `[E, N, K]` therefore has `R = E·N` rows of `K` inputs. `i` indexes rows and `j` columns; block schemes act
@@ -511,16 +511,17 @@ Every producer seen writes these bytes, the even element in the low nibble and t
 `weight` and `weight_scale` (`pack_method: reorder`), MLX's `weight` (`U32` words, little-endian) and `scales`, and
 DeepSeek-V4's FP4 experts (`weight` `I8`, `scale`).
 
-### `gguf.*`
+### `ggml.*`
 
 ggml's block types as llama.cpp writes them in a GGUF (`ggml-common.h`, and `dequantize_row_*` in `ggml-quants.c`,
-llama.cpp `ff5a233`): one scheme per type, named `gguf.<type>` with ggml's type name in lowercase. ggml's plain types
+llama.cpp `ff5a233`): one scheme per type, named `ggml.<type>` with ggml's type name in lowercase (ggml's block layouts; GGUF is only
+the container a GGUF import reads them from). ggml's plain types
 (`f32`, `f16`, `bf16`, `i8`…`i64`, `f64`) are plain tensors.
 - Params: `block_size`: the type's `n` below.
 - Parts: `blocks`: `U8`, the type's structs of `S` bytes, as block structs `[lead…, C/n, S]` when `n` divides the last
   extent `C`, else `[N/n, S]` for a tensor of `N` elements (ComfyUI-GGUF stores a tensor whose last extent is not
   whole blocks reshaped). Either way struct `k` holds elements `k·n … k·n + n − 1` of the tensor in row-major order.
-  `gguf.nvfp4` adds `scale` and `input_scale` (optional, `F32`, one element each): ggml's `<name>.scale` and
+  `ggml.nvfp4` adds `scale` and `input_scale` (optional, `F32`, one element each): ggml's `<name>.scale` and
   `<name>.input_scale` tensors.
 - Decode, any shape whose element count is a multiple of `n`: element `t` of a struct is `round_L(v)`, with `v` below
   evaluated in f32 in ggml's own order, as written. `d`, `m` and `dmin` are the struct's `F16` fields, `lo(x) = x & 15`,
@@ -551,8 +552,9 @@ In the k-types, `b = ⌊t/16⌋` (`q2_k`, `q3_k`) is the sub-block, `h = ⌊t/12
 
 Every product of a code with a scale is exact in f32 (`q6_k`'s second product aside), so only the add or subtract of
 `q4_1`, `q5_1`, `q2_k`, `q4_k` and `q5_k`, `q6_k`'s second product and `nvfp4`'s `scale` round; a build of ggml that
-fuses multiply-adds agrees. ggml's own encoder for each type is its `quantize_row_<type>_ref`; TensorFS's is a port,
-bit-exact with it.
+fuses multiply-adds agrees. ggml's own encoder for each type is its `quantize_row_<type>_ref`; TensorFS's producer
+`ggml-ref/1` is a port of those for `q8_0`, `q5_0`, `q5_1`, `q4_k`, `q5_k` and `q6_k` (llama.cpp b12466), bit-exact with
+them and so with llama-quantize run without an importance matrix.
 
 ### `gptq.int2`, `gptq.int3`, `gptq.int4`, `gptq.int8`
 
@@ -872,7 +874,7 @@ of its little-endian bytes in that dtype, and a reader MAY check its copy agains
  [-1,  1,  1,  1]]
 ```
 
-### A.2 `K` (`gguf.mxfp4`, `gguf.nvfp4`)
+### A.2 `K` (`ggml.mxfp4`, `ggml.nvfp4`)
 
 ggml's `kvalues_fp4`: E2M1's values doubled, by code.
 

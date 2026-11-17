@@ -1,4 +1,4 @@
-//! `gguf.<type>` (spec §6 `gguf.*`): ggml's block structs as llama.cpp writes them in a GGUF, each
+//! `ggml.<type>` (spec §6 `ggml.*`): ggml's block structs as llama.cpp writes them in a GGUF, each
 //! element in ggml's own f32 order (`dequantize_row_*`, `ggml-quants.c` at llama.cpp ff5a233).
 
 use super::blocks::{f16_at, u32_at};
@@ -79,10 +79,10 @@ impl Type {
             .then(|| (numel / self.block).checked_mul(self.size))?
     }
 
-    /// `gguf.<type> {block_size}`.
+    /// `ggml.<type> {block_size}`.
     pub fn encoding(self) -> Encoding {
         super::super::encode::encoding(
-            &format!("gguf.{}", self.name),
+            &format!("ggml.{}", self.name),
             &[("block_size", self.block.into())],
         )
     }
@@ -112,7 +112,7 @@ macro_rules! scheme {
     };
     ($name:literal, $n:literal, $parts:expr) => {
         Scheme {
-            name: concat!("gguf.", $name),
+            name: concat!("ggml.", $name),
             view: View::Flat,
             params: &[Param {
                 key: "block_size",
@@ -148,7 +148,7 @@ pub(crate) const Q1_0: Scheme = scheme!("q1_0", 128);
 pub(crate) const Q2_0: Scheme = scheme!("q2_0", 64);
 
 fn ty(c: &Ctx) -> Type {
-    Type::by_name(&c.scheme["gguf.".len()..]).expect("every row names a ggml type")
+    Type::by_name(&c.scheme["ggml.".len()..]).expect("every row names a ggml type")
 }
 
 fn shape(c: &Ctx) -> Result<Shape> {
