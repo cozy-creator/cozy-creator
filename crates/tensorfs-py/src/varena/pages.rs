@@ -220,8 +220,11 @@ struct State {
     passes: HashMap<String, u64>,
     /// The pass of its set each page was last taken in.
     taken: HashMap<String, u64>,
-    /// The set this request last took a page of: the running loop's (cr-305).
+    /// The set this request last refilled a page of: the running loop's (cr-305).
     running: Option<String>,
+    /// Each set's last refill this request, and when its previous and current passes began.
+    counted: HashMap<String, u64>,
+    begun: HashMap<String, (u64, u64)>,
     /// Bytes of pages let go this process, by why: short of room, displaced, given, shed, forgotten.
     let_go: HashMap<&'static str, u64>,
     clock: u64,
@@ -334,12 +337,31 @@ impl State {
     }
     /// One refill of `key`, in its set's pass: taken again in the same pass, the next begins.
     fn count(&mut self, key: &str, set: &str) {
+        let now = self.tick();
         let pass = self.passes.entry(set.to_owned()).or_insert(1);
-        if self.taken.get(key).copied() == Some(*pass) {
+        let next = self.taken.get(key).copied() == Some(*pass);
+        if next {
             *pass += 1;
         }
-        self.taken.insert(key.to_owned(), *pass);
+        let pass = *pass;
+        self.taken.insert(key.to_owned(), pass);
         *self.refills.entry(key.to_owned()).or_default() += 1;
+        let begun = self.begun.entry(set.to_owned()).or_insert((now, now));
+        if next {
+            *begun = (begun.1, now);
+        }
+        self.counted.insert(set.to_owned(), now);
+        if self.running.as_deref() != Some(set) {
+            self.running = Some(set.to_owned());
+        }
+    }
+    /// The sets the running loop takes from: each refilled since the running set's last whole pass
+    /// began, or its first pass, so sets a step reads in turn are all in it.
+    fn looping(&self) -> HashSet<&str> {
+        let Some(&(since, _)) = self.running.as_ref().and_then(|set| self.begun.get(set)) else {
+            return HashSet::new();
+        };
+        self.counted.iter().filter(|(_, at)| **at >= since).map(|(set, _)| set.as_str()).collect()
     }
     fn remove(&mut self, key: &str, why: &'static str) -> Option<Kept> {
         let kept = self.kept.remove(key)?;
@@ -347,20 +369,20 @@ impl State {
         *self.let_go.entry(why).or_default() += kept.page.len as u64;
         Some(kept)
     }
-    /// Keys of the sets the running loop does not take from first, then each by the least worth,
-    /// then the most recently used: of pages a loop refills alike, the one it used last is the one
-    /// it needs last. Ranked by worth alone, a short tier let Qwen-Image's own blocks go before
-    /// pages it had finished with and read them again mid-loop: turbo steps 2-3 at 8.8-9.5 s
-    /// against 0.9 s (gate 44006460875); Flux-2's step 4 at 8.7 s against 1.7 s (44034703012).
-    fn cheapest(&self) -> Vec<(u64, Reverse<u64>, String)> {
-        let running = self.running.as_deref();
+    /// Keys of the sets the running loop does not take from first (`looping`), then each by the
+    /// least worth, then the most recently used: of pages a loop refills alike, the one it used last
+    /// is the one it needs last. With whether the running loop takes from it. Ranked by worth alone,
+    /// a loop's first pass tied with the text encoder it had finished, and a short tier let the
+    /// loop's own blocks go first, as the most recent, and read them again mid-loop: Qwen-Image
+    /// turbo steps 2-3 at 8.8-9.5 s against 0.9 s (gate 44006460875); Flux-2's step 4 at 8.7 s
+    /// against 1.7 s (44034703012).
+    fn cheapest(&self) -> Vec<(bool, u64, Reverse<u64>, String)> {
+        let looping = self.looping();
         let mut keys: Vec<_> = self.kept.iter()
-            .map(|(key, kept)| {
-                (running == Some(kept.set.as_str()), self.worth(key, &kept.set), Reverse(kept.last), key.clone())
-            })
+            .map(|(key, kept)| (looping.contains(kept.set.as_str()), self.worth(key, &kept.set), Reverse(kept.last), key.clone()))
             .collect();
         keys.sort_unstable();
-        keys.into_iter().map(|(_, worth, last, key)| (worth, last, key)).collect()
+        keys
     }
 }
 
@@ -457,7 +479,7 @@ impl Tier {
             *state.let_go.entry("short").or_default() += page.len as u64;
             gone.push(Kept { page: Arc::new(page), set: String::new(), last: 0 });
         }
-        for (_, _, key) in state.cheapest() {
+        for (_, _, _, key) in state.cheapest() {
             if enough(left) {
                 break;
             }
@@ -545,7 +567,7 @@ impl Tier {
                 *state.let_go.entry("given").or_default() += page.len as u64;
                 gone.push(Kept { page: Arc::new(page), set: String::new(), last: 0 });
             }
-            for (_, _, key) in state.cheapest() {
+            for (_, _, _, key) in state.cheapest() {
                 if given >= bytes {
                     break;
                 }
@@ -597,7 +619,7 @@ impl Tier {
         }
         let short = |state: &State, shed: i64| if pressed { shed < bytes } else { state.room - bytes < state.headroom };
         let mut freed = 0;
-        for (_, _, key) in if shed { state.cheapest() } else { Vec::new() } {
+        for (_, _, _, key) in if shed { state.cheapest() } else { Vec::new() } {
             if !short(&state, freed) {
                 break;
             }
@@ -617,8 +639,9 @@ impl Tier {
 
     /// Whether `key` of `set`, `bytes` of host RAM, enters the tier. Where there is no room it
     /// displaces kept pages worth less, never one worth as much: blocks refill in a fixed order,
-    /// so replacing the least recently used of equals would miss every refill. Admitted, the
-    /// bytes are `making` while the guard lives.
+    /// so replacing the least recently used of equals would miss every refill. A page of the
+    /// running loop also displaces any of a set the loop does not take from. Admitted, the bytes
+    /// are `making` while the guard lives.
     fn admit(&self, state: &mut State, key: &str, set: &str, bytes: u64) -> (Option<Moving>, Gone) {
         let mut gone = self.trim(state);
         if state.off.is_some() {
@@ -634,10 +657,14 @@ impl Tier {
         }
         self.ask_room(state, bytes);
         let worth = state.worth(key, set);
+        let looping = state.looping().contains(set);
         let (mut freed, mut chosen) = (0, Vec::new());
-        for (value, _, kept) in state.cheapest() {
-            if value >= worth || self.fits(state, bytes - freed) {
+        for (inside, value, _, kept) in state.cheapest() {
+            if self.fits(state, bytes - freed) {
                 break;
+            }
+            if value >= worth && (inside || !looping) {
+                continue;
             }
             freed += state.kept[&kept].page.len as i64;
             chosen.push(kept);
@@ -662,9 +689,6 @@ impl Tier {
             }
             if refill {
                 state.count(key, set);
-            }
-            if state.running.as_deref() != Some(set) {
-                state.running = Some(set.to_owned());
             }
             let gone = self.trim(&mut state);
             let tick = state.tick();
@@ -1036,6 +1060,8 @@ impl Tier {
         state.passes.clear();
         state.taken.clear();
         state.running = None;
+        state.counted.clear();
+        state.begun.clear();
         state.looked = None;
         state.last_reads = std::mem::take(&mut state.reads);
         let (fresh, stale): (Vec<_>, Vec<_>) = std::mem::take(&mut state.spare).into_iter().partition(|(_, fresh)| *fresh);
