@@ -79,7 +79,7 @@ BG="$BG $smi"
 write() {
   local cell=$1 package=$2 n code; shift 2
   step "$cell" run "$SOURCE/$package/write" "$@" --on "$NAME"; code=$?
-  n=$(runno "$cell")
+  n=$(runno "$cell"); [ -n "$n" ] || n=$(grep -oE '^Run [A-Z]+-[0-9]+ failed' "$OUT/$cell.txt" | awk '{print $2}' | tail -1)
   [ -z "$n" ] || (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$OUT/$cell.json" 2> "$OUT/$cell.err"
   say "$cell: run ${n:-none} $(jq -r '.status // "unrecorded"' "$OUT/$cell.json" 2> /dev/null), GPU $(gpu "$cell") pid $(pid "$cell"): $(jq -r '.result.text // .error.message // empty' "$OUT/$cell.json" 2> /dev/null | tr '\n' ' ' | cut -c1-300)"
   return "$code"
