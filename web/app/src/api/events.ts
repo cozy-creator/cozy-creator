@@ -376,7 +376,11 @@ export class EventStream {
         (data) => {
           const event = parse(data)
           if (!event) return
-          if (event.type === "restarting") this.restarting = true
+          if (event.type === "restarting") {
+            // This Calcifer hands over: nothing more is told on its stream, which the next one never knew (`hello` names its own).
+            this.restarting = true
+            this.stream = null
+          }
           if (event.type === "hello") {
             clearTimeout(this.quiet)
             this.quiet = undefined

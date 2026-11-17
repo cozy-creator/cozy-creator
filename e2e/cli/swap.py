@@ -24,6 +24,7 @@ from typing import TypedDict, cast
 HOME = Path.home() / ".cozy"
 HOLDER = HOME / "calcifer" / "calcifer.lock.holder"
 EXE = ".exe" if sys.platform == "win32" else ""
+SWAPS = 3
 
 
 class Holder(TypedDict):
@@ -43,6 +44,9 @@ def place(source: Path, at: Path) -> None:
     # Its bytes alone: a system binary's flags (macOS) don't copy.
     shutil.copyfile(source, staged)
     os.chmod(staged, 0o755)
+    if EXE and at.exists():
+        # Windows replaces no running binary but renames one, as an update moves it aside.
+        os.replace(at, at.with_name(f"{at.name}.aside-{time.monotonic_ns()}"))
     os.replace(staged, at)
 
 
@@ -205,10 +209,17 @@ def main() -> None:
         kept = Asking(before["address"], before["token"], keep_alive=True).start()
         stream = Following(before["address"], before["token"]).start()
         time.sleep(1)
-        began = time.monotonic()
-        restarted = cozy("--json", "restart")
-        took = time.monotonic() - began
-        time.sleep(2)
+        # Three in a row: each hand-over a fresh chance at a connection taken just before it.
+        swaps: list[float] = []
+        restarted = subprocess.CompletedProcess[str]([], 1, "", "no restart asked")
+        for _ in range(SWAPS):
+            began = time.monotonic()
+            restarted = cozy("--json", "restart")
+            swaps.append(round(time.monotonic() - began, 3))
+            if restarted.returncode != 0:
+                break
+            time.sleep(1)
+        time.sleep(1)
         for asking in (fresh, kept):
             asking.stop()
         stream.stop()
@@ -216,7 +227,7 @@ def main() -> None:
         followed = {"events": [e for e in stream.events if e != "run.updated"][-40:], "gaps_s": [round(g, 3) for g in stream.gaps], "failures": stream.failures[:20]}
         state = vault()
         results["swap"] = {
-            "restart": {"code": restarted.returncode, "stdout": restarted.stdout[-2000:], "stderr": restarted.stderr[-2000:], "s": round(took, 3)},
+            "restart": {"code": restarted.returncode, "stdout": restarted.stdout[-2000:], "stderr": restarted.stderr[-2000:], "s": swaps},
             "before": {"pid": before["pid"], "version": before["version"], "address": before["address"]},
             "after": {"pid": after["pid"], "version": after["version"], "address": after["address"]},
             "fresh": {"asked": fresh.asked, "failures": fresh.failures[:20], "slowest_s": round(fresh.slowest, 3)},
@@ -229,7 +240,7 @@ def main() -> None:
         assert after["address"] == before["address"] and after["token"] == before["token"], "the address or the bearer changed"
         assert not fresh.failures, f"requests on fresh connections failed: {fresh.failures[:5]}"
         assert not kept.failures, f"requests on a kept connection failed: {kept.failures[:5]}"
-        assert "restarting" in stream.events, f"the stream never said restarting: {followed}"
+        assert stream.events.count("restarting") == SWAPS, f"the stream didn't say restarting at each swap: {followed}"
         assert stream.gaps and max(stream.gaps) <= 1.0, f"the stream was gone longer than 1 s: {followed}"
         assert state == "unlocked", f"the encrypted project didn't stay unlocked: {state}"
         status = cozy("--json", "status", cwd=project)
