@@ -52,7 +52,7 @@
 #              "floor_mb_s", "floor_after_s" (optional: this cell's slow-host floor, lib.sh `step`; the session's by default);
 #              "host_free_gib" (optional: for this cell a root shell's program takes all of the pod's available host RAM
 #              but this many GiB, page cache included, as a computer whose other programs hold its memory: a short host
-#              tier, cr-305; it ends after the cell);
+#              tier, cr-305; it ends after the cell; a host with over 256 GiB more than that available is refused);
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR; and
 #              their seconds, cold or warm (pairs.tsv)
 #   order      optional: `abba` (default: each two builds compared run in both orders) or `one-way`
@@ -277,6 +277,8 @@ def available():
         pass
     return free
 take, held, chunks, pattern = max(available() - leave, 0), 0, [], b"\1" * (64 << 20)
+if take > 256 << 30:  # writing it takes minutes and can starve the pod: a host this large is the wrong host
+    sys.exit(f"{take >> 30} GiB to hold: rent a host with less memory for this cell")
 while held < take:
     n = min(1 << 30, take - held)
     m = mmap.mmap(-1, n)
@@ -296,13 +298,14 @@ ram() {
     script="pgrep -f /var/tmp/ab-ram.py | xargs -r kill; sleep 1
 echo $(base64 -w0 <<< "$RAM_HOLDER") | base64 -d > /var/tmp/ab-ram.py && rm -f /var/tmp/ab-ram.ready
 setsid nohup python3 /var/tmp/ab-ram.py $2 /var/tmp/ab-ram.ready > /var/tmp/ab-ram.out 2>&1 < /dev/null &
-i=0; while [ ! -s /var/tmp/ab-ram.ready ] && [ \$i -lt 600 ]; do sleep 0.5; i=\$((i + 1)); done
+i=0; while [ ! -s /var/tmp/ab-ram.ready ] && [ \$i -lt 600 ] && pgrep -f /var/tmp/ab-ram.py > /dev/null; do sleep 0.5; i=\$((i + 1)); done
 cat /var/tmp/ab-ram.ready 2> /dev/null || tail -c 300 /var/tmp/ab-ram.out"
   fi
   for try in 1 2 3; do
     cozy machine ssh "$NAME" "echo $(base64 -w0 <<< "$script") | base64 -d | sh" > "$OUT/ram-$1-$2.txt" 2>&1; code=$?
     if [ "$2" = off ]; then [ "$code" = 0 ] && return 0; else
       read -r _ held left _ < <(tail -1 "$OUT/ram-$1-$2.txt"); [[ ${held:-x} =~ ^[0-9]+$ ]] && break
+      ! grep -q "rent a host" "$OUT/ram-$1-$2.txt" || break
     fi
     say "$1: host holder $2, try $try: exit $code $(head -c 200 "$OUT/ram-$1-$2.txt")"; sleep 10
   done
