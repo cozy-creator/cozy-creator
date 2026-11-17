@@ -167,15 +167,34 @@ test('drawers', { tag: '@vault' }, async ({ page, project, api, cli, removeAfter
     });
 
     await test.step('a new Cozy version reloads the page by itself: no note, nothing in the bar (#3673)', async () => {
-      // A browser of its own: tabs of one browser share one event stream (its leader's), and this page's must say hello itself.
+      // A browser of its own: tabs of one browser share one event stream (its leader's), and this page's must hear it itself. Calcifer
+      // back as another build is its stream's hello saying another version, heard once the page connects again (as web/update's cell
+      // stages it, which proves when it may reload). Paul, 11-17: "remove this notification ... auto-refresh the webui".
       const other = await (await newContext()).newPage();
-      // The page as one opened before Cozy was updated: its first status says an older version, and the stream's hello the one that
-      // runs. Paul, 11-17: "remove this notification ... auto-refresh the webui": it reloads once nothing would be lost, and the page
-      // it loads is told the version that runs, so it reloads once. Every note it shows and anything in the bar, kept across the reload.
-      const status = await api.get('/v1/status');
-      let told = 0;
-      await other.route(/\/v1\/status(\?|$)/, (route) => (told++ === 0
-        ? route.fulfill({ json: { ...status, version: '0.0.1-older' } }) : route.continue()));
+      await other.addInitScript(() => {
+        const real = window.fetch.bind(window);
+        window.fetch = async (input, init = {}) => {
+          const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+          if (url.pathname !== '/v1/events') return real(input, init);
+          const dropped = new AbortController();
+          window.__dropStream = () => { dropped.abort(new DOMException('Calcifer stopped', 'AbortError')); return true; };
+          const response = await real(input, { ...init, signal: init.signal ? AbortSignal.any([init.signal, dropped.signal]) : dropped.signal });
+          if (!response.body) return response;
+          const reader = response.body.getReader();
+          const [decoder, encoder] = [new TextDecoder(), new TextEncoder()];
+          const body = new ReadableStream({
+            async pull(stream) {
+              const { done, value } = await reader.read();
+              if (done) return stream.close();
+              const text = decoder.decode(value, { stream: true });
+              stream.enqueue(encoder.encode(window.__calciferVersion ? text.replace(/("type":"hello"[^\n]*?"version":")[^"]*"/, `$1${window.__calciferVersion}"`) : text));
+            },
+            cancel(reason) { return reader.cancel(reason); },
+          });
+          return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+        };
+      });
+      // Every note it shows and anything in the bar, kept across the reload.
       const seen = [];
       let inBar = false;
       await other.exposeFunction('__cozySaw', (note, bar) => { if (note && !seen.includes(note)) seen.push(note); inBar ||= bar; });
@@ -185,13 +204,11 @@ test('drawers', { tag: '@vault' }, async ({ page, project, api, cli, removeAfter
           if (/updated|Reload/.test(document.querySelector('header.top')?.textContent ?? '')) window.__cozySaw?.('', true);
         }).observe(document, { subtree: true, childList: true, characterData: true });
       });
-      let loads = 0;
-      other.on('framenavigated', (frame) => { if (frame === other.mainFrame()) loads++; });
       await signIn(other, `${api.origin}/p/${plain.code}`);
       await expect(other.locator('.stage')).toBeVisible();
-      const opened = loads;
-      expect.soft(told, 'the page was told the older version').toBeGreaterThan(0);
-      await expect.poll(() => loads, { message: 'it reloads by itself', timeout: 30_000 }).toBeGreaterThan(opened);
+      await other.evaluate(() => { window.__notReloaded = true; });
+      expect(await other.evaluate(() => { window.__calciferVersion = '9.9.9-newer'; return window.__dropStream?.() ?? false; }), 'its stream ended').toBe(true);
+      await expect.poll(() => other.evaluate(() => !window.__notReloaded).catch(() => false), { message: 'it reloads by itself', timeout: 15_000 }).toBe(true);
       await expect(other.locator('.stage')).toBeVisible();
       expect.soft(new URL(other.url()).pathname, 'and stays where it was').toBe(`/p/${plain.code}`);
       expect.soft(seen.filter((said) => /updated|Reload/i.test(said)), 'no note of it').toEqual([]);
