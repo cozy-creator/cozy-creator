@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { hashKey, type Query, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Board } from "./board/Board"
 import type { Viewport } from "./board/Camera"
 import { BoardProvider, useBoard, useCameraValue, useNodesValue } from "./board/context"
@@ -12,7 +12,7 @@ import { canvasQuery, machinesQuery, projectQuery, projectViewQuery, toolsQuery 
 import { Unopened, useGone, useTo } from "../app/project"
 import { useConnection } from "../app/Connection"
 import { loadMore, loadSelection, loadToolsShut, loadViewport, saveMore, saveSelection, saveToolsShut, saveViewport } from "../app/view"
-import type { Opened, ProjectViewPatch } from "../api/calcifer"
+import type { Canvas, Opened, ProjectViewPatch } from "../api/calcifer"
 import { type Ask, asked, giveUp } from "../app/making"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
@@ -88,14 +88,29 @@ function ProjectSync({ id }: { id: string }) {
   // Its folder gone, nothing of it is read again (cl-980).
   const gone = useGone(id)
   const { data: state, error: stateError } = useQuery({ ...projectQuery(client, stream, id), enabled: !gone })
-  const { data: canvas, error: canvasError } = useQuery({ ...canvasQuery(client, stream, id), enabled: !gone })
+  const { error: canvasError } = useQuery({ ...canvasQuery(client, stream, id), enabled: !gone })
   const asked = useRef(new Set<string>())
   const queries = useQueryClient()
 
   const tools = useSignal(store.tools)
+  // Each read reaches the store as it lands, not a task and a render of the page later: React Query tells React in a timer of its own, and
+  // the canvas's first frame of a project waited behind that render (cl-1018, ~45 ms on a software runner).
   useEffect(() => {
-    if (state) store.applyState(state)
-  }, [store, state])
+    const cache = queries.getQueryCache()
+    const read = hashKey(projectQuery(client, stream, id).queryKey), placed = hashKey(canvasQuery(client, stream, id).queryKey)
+    const taken = new Map<string, unknown>()
+    const take = (query: Query) => {
+      const data = query.state.data
+      if (!data || taken.get(query.queryHash) === data || (query.queryHash !== read && query.queryHash !== placed)) return
+      taken.set(query.queryHash, data)
+      try {
+        if (query.queryHash === read) store.applyState(data as NonNullable<typeof state>)
+        else { const { cards, began, seq } = data as Canvas & { began: number }; store.applyCanvas(cards, began, seq) }
+      } catch (error) { reportError(error) }
+    }
+    for (const hash of [read, placed]) { const query = cache.get(hash); if (query) take(query) }
+    return cache.subscribe((event) => { if (event.type === "updated" && event.action.type === "success") take(event.query) })
+  }, [queries, store, client, stream, id])
   useEffect(() => {
     // A tool an asset names that the list didn't hold, asked for by its name, once. Before the list has come, that would be all of them, and a
     // first read under way can't be asked again. Text is there from the start, so the list has come when there's more.
@@ -110,9 +125,6 @@ function ProjectSync({ id }: { id: string }) {
       else client.tools(tool.split("/").slice(0, -1).join(" "), null, id).then(({ tools }) => store.addTools(tools), () => {})
     }
   }, [store, client, id, queries, state, tools])
-  useEffect(() => {
-    if (canvas) store.applyCanvas(canvas.cards, canvas.began, canvas.seq)
-  }, [store, canvas])
   // Gone (its folder deleted, say): said on the canvas (`Unread`) as anything else that stops it being read is, and the page stays where it is
   // (cl-980: sent to `/`, the tabs sent it back, forever). Its tab goes from the list.
   useEffect(() => {

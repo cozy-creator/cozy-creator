@@ -1,4 +1,4 @@
-import { BitmapFontManager, BitmapText, CanvasTextMetrics, type Container, Text } from "pixi.js"
+import { BitmapFontManager, BitmapText, CanvasTextMetrics, type Container, Text, TextStyle } from "pixi.js"
 
 // Shared glyphs sharp on a high-density screen at 100%; the page's few small sizes keep the atlas small.
 BitmapFontManager.defaultOptions.resolution = Math.max(2, Math.ceil(devicePixelRatio || 1))
@@ -16,7 +16,7 @@ const family = (mono: boolean) => {
 }
 export const fontEpoch = () => epoch
 export function onFontsLoaded(listener: () => void): () => void {
-  const loaded = () => { epoch++; families = null; widths.clear(); cuts.clear(); listener() }
+  const loaded = () => { epoch++; families = null; widths.clear(); cuts.clear(); styles.clear(); listener() }
   document.fonts.addEventListener("loadingdone", loaded)
   return () => document.fonts.removeEventListener("loadingdone", loaded)
 }
@@ -88,13 +88,33 @@ export function wrap(text: string, room: number, size: number, lines: number): s
 
 export interface LabelStyle { size: number; color: number; mono?: boolean; bold?: boolean }
 
+/** One TextStyle per look, shared by every label in it (cl-1018: a style each, made twice, was ~3 ms of an open's first frame). */
+const styles = new Map<string, TextStyle>()
+function styleOf(bitmap: boolean, style: LabelStyle): TextStyle {
+  const key = `${bitmap}:${style.size}:${style.color}:${style.mono}:${style.bold}`
+  let shared = styles.get(key)
+  if (!shared) {
+    const look = { fontFamily: family(Boolean(style.mono)), fontSize: style.size, fontWeight: style.bold ? "700" : "400" } as const
+    shared = new TextStyle(bitmap ? { ...look, fill: 0xffffff } : { ...look, fill: style.color, lineHeight: style.size * 1.25 })
+    styles.set(key, shared)
+  }
+  return shared
+}
+
+/** A name and a small label as cards draw them, for a renderer's first frame while the page waits: the small labels' atlas gets its first
+ *  page and the glyphs every picture's version and shape use (each costs ~0.5 ms to rasterize, so only those). */
+export function warmLabels(): Container[] {
+  return [new Text({ text: "pic", style: styleOf(false, { size: 13, color: 0, mono: true, bold: true }) }), new BitmapText({ text: "v0123456789:×", style: styleOf(true, { size: 12, color: 0 }) })]
+}
+
 /** A label kept for its card's life: its text and style change in place. Small labels share one dynamic bitmap font per style. */
 export class Label {
   readonly view: Container
   private text = ""
   private key = ""
   constructor(readonly bitmap: boolean) {
-    this.view = bitmap ? new BitmapText({ text: "", style: { fontFamily: family(false), fontSize: 12, fill: 0xffffff } }) : new Text({ text: "", style: { fontFamily: family(false), fontSize: 12 } })
+    const style = styleOf(bitmap, { size: 12, color: 0 })
+    this.view = bitmap ? new BitmapText({ text: "", style }) : new Text({ text: "", style })
     this.view.eventMode = "none"
   }
 
@@ -103,13 +123,9 @@ export class Label {
     const key = `${style.size}:${style.color}:${style.mono}:${style.bold}:${resolution}:${epoch}`
     if (key !== this.key) {
       this.key = key
-      if (this.bitmap) {
-        view.style = { fontFamily: family(Boolean(style.mono)), fontSize: style.size, fontWeight: style.bold ? "700" : "400", fill: 0xffffff }
-        view.tint = style.color
-      } else {
-        view.style = { fontFamily: family(Boolean(style.mono)), fontSize: style.size, fontWeight: style.bold ? "700" : "400", fill: style.color, lineHeight: style.size * 1.25 }
-        ;(view as Text).resolution = resolution
-      }
+      view.style = styleOf(this.bitmap, style)
+      if (this.bitmap) view.tint = style.color
+      else (view as Text).resolution = resolution
     }
     if (text !== this.text) { this.text = text; view.text = text }
     this.view.visible = Boolean(text)

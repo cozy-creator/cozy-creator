@@ -58,15 +58,24 @@ export const modelLabel = (tool: Tool) => {
   return namesItsPackage(tool) ? tool.label : `${title} ${tool.label}`
 }
 
-/** A group's rows: what makes something new, then what changes what it's given (MiniMax H3, then MiniMax H3 Edit), each by name; local code last. */
-const inGroup = (a: Tool, b: Tool) => Number(Boolean(a.local)) - Number(Boolean(b.local)) || Number(changes(a)) - Number(changes(b)) ||
-  modelLabel(a).localeCompare(modelLabel(b), undefined, { sensitivity: "base" }) || a.id.localeCompare(b.id)
+/** Collators made once, when first sorted: `localeCompare` makes one a call (cl-1018: the palette's sort was 60 ms of a cold project open). */
+let collators: { name: Intl.Collator; id: Intl.Collator } | null = null
+
+/** A group's rows: what makes something new, then what changes what it's given (MiniMax H3, then MiniMax H3 Edit), each by name; local code
+ *  last. Each tool's place is worked out once, not in every comparison. */
+function inGroup(tools: Tool[]): Tool[] {
+  const { name, id } = collators ??= { name: new Intl.Collator(undefined, { sensitivity: "base" }), id: new Intl.Collator() }
+  const keyed = tools.map((tool) => ({ tool, local: Number(Boolean(tool.local)), changes: Number(changes(tool)), label: modelLabel(tool) }))
+  keyed.sort((a, b) => a.local - b.local || a.changes - b.changes || name.compare(a.label, b.label) || id.compare(a.tool.id, b.tool.id))
+  return keyed.map(({ tool }) => tool)
+}
 
 /** Stable operation rows; executable choices live in the node's model control. */
 export function paletteEntries(tools: Tool[]): PaletteEntry[] {
   const available = withBuiltIns(tools)
+  const operations = new Map(available.map((tool) => [tool, operationOf(tool)]))
   return OPERATIONS.map((operation) => {
-    const variants = available.filter((tool) => operationOf(tool) === operation.key).sort(inGroup)
+    const variants = inGroup(available.filter((tool) => operations.get(tool) === operation.key))
     return { ...operation, tool: variants[0], variants }
   })
 }

@@ -100,7 +100,7 @@ export function Stage(props: StageProps) {
     // The open, counted (cl-1018): frames rendered from the first tick that has the project read to the first with every box in view built
     // (cards); how many frames drew pictures until every one in view is drawn (previews); and each of those frames' start, scene and render ms.
     const open = { read: -1, cards: -1, previews: -1, log: [] as number[][] }
-    let pictured = 0, drewMore = 0
+    let pictured = 0, drewMore = 0, shownBlank = false
     const stops: (() => void)[] = []
     const stage = new Container({ eventMode: "static" })
     // Frames on demand: asked for, the next animation frame draws. Not Pixi's Ticker: started on demand it skips a frame stamped before its start,
@@ -125,7 +125,16 @@ export function Stage(props: StageProps) {
     const stop = () => { running = false; cancelAnimationFrame(frame); frame = 0 }
     const media = new Media({ client, project: store.projectId ?? "", changed: () => invalidate() })
     const visible = () => latest.current.active && tabShown.get() && !lost
-    const invalidate = () => { dirty = true; if (!stopped && renderer && visible()) start() }
+    // A project's first frame is drawn as its read lands, not at the next animation frame after the tasks that read queued (cl-1018): the
+    // next frame paints it, as it would the page's own boxes.
+    let drawSoon = false
+    const drawNow = () => { drawSoon = false; if (open.read < 0 && store.hasRead && running && !stopped) tick(0) }
+    const invalidate = () => {
+      dirty = true
+      if (stopped || !renderer || !visible()) return
+      start()
+      if (open.read < 0 && store.hasRead && !drawSoon) { drawSoon = true; queueMicrotask(drawNow) }
+    }
     // A trackpad's wheel goes on after the hand has gone (cl-955): a stream that began while the canvas was held (Focus, its way back from
     // Focus) is one gesture, all of it held, until it pauses. It's followed on the whole page, as it begins over Focus, which isn't the
     // canvas's. A pause is WHEEL_GAP_MS and WHEEL_GAP_FRAMES frames with no wheel, counted from its last event or from when the canvas is
@@ -226,11 +235,13 @@ export function Stage(props: StageProps) {
           if (result.wake !== null) wakeTimer = setTimeout(invalidate, result.wake)
         } catch (error) { console.error("Scene:", error) }
       }
-      // A frame always presents, whatever a card did: the canvas never freezes.
+      // A frame always presents, whatever a card did: the canvas never freezes. One with nothing to draw over a canvas already blank (a project
+      // on its way) isn't drawn: a software compositor copies the whole canvas each frame, and the project's read waited behind it (cl-1018).
+      const blank = scene.blank, paint = !(blank && shownBlank)
+      shownBlank = blank
       const updated = performance.now()
-      renderer.render(stage)
-      frames++
-      if (open.read >= 0 && open.previews < 0) {
+      if (paint) { renderer.render(stage); frames++ }
+      if (paint && open.read >= 0 && open.previews < 0) {
         const rendered = performance.now(), held = scene.coverage
         if (open.log.length < 24) open.log.push([Math.round(began), Math.round(updated - began), Math.round(rendered - updated)])
         if (open.cards < 0 && held.inView > 0 && held.built >= held.inView) open.cards = frames - open.read
@@ -314,6 +325,8 @@ export function Stage(props: StageProps) {
       enable()
       // One frame now: Pixi's events hit-test what was last rendered, and a pointer can move before the first tick.
       renderer.render(stage)
+      frames++
+      shownBlank = scene.blank
       latest.current.onReady?.()
       setFailed(null)
       invalidate()
@@ -328,10 +341,9 @@ export function Stage(props: StageProps) {
       const focus = store.focusedName.get(), focused = focus ? store.resolveName(focus) : null
       for (const node of board.getNodes()) {
         const view = store.get(node.data.name)
-        if (!view || node.data.name === focused) continue
+        if (!view || view.draft === undefined || node.data.name === focused) continue
         const body = pictureBox({ id: node.id, name: node.data.name, box: node.bounds, view, selected: Boolean(node.selected) })
-        const box = { x: node.bounds.x, y: node.bounds.y, w: node.bounds.w, under: body.y + body.h - node.bounds.y }
-        if (view.draft !== undefined) next.push({ name: node.data.name, draft: view.draft, box })
+        next.push({ name: node.data.name, draft: view.draft, box: { x: node.bounds.x, y: node.bounds.y, w: node.bounds.w, under: body.y + body.h - node.bounds.y } })
       }
       setOverlays((previous) => JSON.stringify(previous) === JSON.stringify(next) ? previous : next)
       const list = board.getNodes().map((node) => {

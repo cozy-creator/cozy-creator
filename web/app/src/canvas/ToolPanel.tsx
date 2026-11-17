@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { toolsQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import type { Tool } from "../api/calcifer"
@@ -50,7 +50,8 @@ export function ToolPanel({ project, machine, waiting, shut, setShut }: { projec
   useEffect(() => {
     store.addTools(withBuiltIns(data && !isPlaceholderData ? data.tools : []))
   }, [store, data, isPlaceholderData])
-  const entries = paletteEntries(data?.tools ?? [])
+  const tools = data?.tools
+  const entries = useMemo(() => paletteEntries(tools ?? []), [tools])
   const list = useDragScroll({
     lift(pressed) {
       const from = pressed.closest<HTMLElement>("li[data-implementation]")

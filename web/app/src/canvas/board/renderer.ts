@@ -3,6 +3,7 @@
 // CSP-safe shader uniforms (no eval): the WebGL renderer is made as this module loads.
 import "pixi.js/unsafe-eval"
 import { CanvasGraphicsPipe, CanvasRenderer, Container, ExtensionType, extensions, Graphics, type InstructionSet, type Renderer, Sprite, Text, Texture, WebGLRenderer } from "pixi.js"
+import { warmLabels } from "./text"
 
 /** Why this renderer: a hardware GPU; no WebGL at all; WebGL only in software (or only with a major performance caveat); WebGL refused to start. */
 export type Why = "hardware" | "no-webgl" | "software-webgl" | "webgl-failed"
@@ -93,7 +94,22 @@ async function start(width: number, height: number): Promise<Chosen> {
 /** A renderer begun as the page loads, before any project is read (cl-1018: one begun as the canvas mounts held the open's first frame
  *  60–90 ms past its state): the first canvas takes it. It holds nothing of any project until then. */
 let early: Promise<Chosen> | null = start(innerWidth, innerHeight)
-early.catch(() => {})
+early.then(warm, () => {})
+
+/** What a card draws, drawn once by the early renderer at idle, unless a canvas took it first (cl-1018): otherwise a cold page's first frame
+ *  of a project runs the renderer's paths for a box, a name and a small label for the first time, and rasterizes the labels' glyphs. */
+function warm(chosen: Chosen) {
+  const self = early
+  const idle = window.requestIdleCallback ?? ((run: () => void) => setTimeout(run, 1))
+  idle(() => {
+    if (early !== self) return
+    const box = new Container()
+    box.addChild(new Graphics().roundRect(0, 0, 8, 8, 2).fill(0x808080).stroke({ width: 1, color: 0x404040 }), new Sprite(Texture.WHITE), ...warmLabels())
+    chosen.renderer.render(box)
+    box.destroy({ children: true })
+    chosen.renderer.render(new Container())
+  })
+}
 
 /** A project left (not locked): the page keeps its one renderer and GL context for the next project's canvas. */
 export function parkRenderer(chosen: Chosen) {
