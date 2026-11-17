@@ -73,6 +73,13 @@ pod_derived() {
 # pod_derived_zero <census line>: no derived page, memo entry or learned peak (an arm's own executors may compile kernels as
 # they boot).
 pod_derived_zero() { awk '{exit !($2 == 0 && $4 == 0 && $6 == 0)}' <<<"$1"; }
+# pod_dev <cli> <machine>: the machine a dev machine (an `--ssh` rental): `dev = true` at the top of its config.toml,
+# which TensorD reads at its next start and sends in each executor's Start (gate seams, replay audits). Prints that
+# line once written; restart the machine after (`cozy machine update`).
+pod_dev() {
+  timeout 120 "$1" machine ssh "$2" -- "mkdir -p ~/.cozy && touch ~/.cozy/config.toml && { echo 'dev = true'; grep -v '^dev *=' ~/.cozy/config.toml || true; } > ~/.cozy/config.toml.new && mv ~/.cozy/config.toml.new ~/.cozy/config.toml && head -1 ~/.cozy/config.toml" < /dev/null 2>/dev/null |
+    grep -x 'dev = true'
+}
 
 # tag_built <cozy_runtime|tensorfs> <version>: a candidate asked by version is the build of its own tag (coordinator 11-17,
 # xs-208). A machine accepts a GitHub prerelease only when its SHA256SUMS is signed by its publish workflow at master or the

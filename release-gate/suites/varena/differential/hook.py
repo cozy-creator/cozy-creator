@@ -1,5 +1,5 @@
 """Gate hook, loaded by a package copy (cell.sh): this arm, through the Runtime's gate seam
-(`cozy_runtime.differential`, unstable, release gate only). It digests every component's outputs and each split
+(`cozy_runtime.differential`, unstable, release gate only, inert off a dev machine: cell.sh makes the pod one). It digests every component's outputs and each split
 site's decisions into the run record's `execution.loops`. `ARM` turns on varena's checks; `PRESS` changes what the
 second request finds: "refill" fills the card once and lets go, so a kept graph's weights left and come back, "hold"
 keeps it filled through the request, so they can't all come back and its calls run eagerly, "eager" turns graphs off.

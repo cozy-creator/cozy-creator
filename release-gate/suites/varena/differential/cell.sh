@@ -52,6 +52,11 @@ if [ -z "$PKGS" ]; then
   [ -n "$ONLY" ] && [[ $ONLY != *,differential,* ]] || expect differential FAIL "needs --packages: nothing was run, so nothing is proven"
 else
   mkdir -p "$ARMS"
+  # The arms are the Runtime's gate seam, inert off a dev machine (cr-329): the pod becomes one, and restarts.
+  if [ -z "$ONLY" ] || [[ $ONLY == *,differential,* || $ONLY == *,diff-* ]]; then
+    pod_dev "$CLI" "$M" > /dev/null || expect differential-dev FAIL "the pod's config.toml says no dev = true: the arms stay off"
+    cap off
+  fi
   diff_model sdxl sdxl generate 6GiB uses prompt="$OBJECT on a wooden table, photo" seed:=$((R + 71))
   diff_press sdxl sdxl generate prompt="$OBJECT on a wooden table, photo" seed:=$((R + 71))
   diff_eager sdxl sdxl generate prompt="$OBJECT on a wooden table, photo" seed:=$((R + 71))

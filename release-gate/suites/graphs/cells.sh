@@ -17,9 +17,8 @@
 #   graphs-audit        replays were audited against their calls as written, and no P-H3-Image or Anima record differed
 G=$OUT/graphs
 mkdir -p "$G"
-said=$(timeout 120 "$CLI" machine ssh "$M" -- "mkdir -p ~/.cozy && touch ~/.cozy/config.toml && { echo 'dev = true'; grep -v '^dev *=' ~/.cozy/config.toml || true; } > ~/.cozy/config.toml.new && mv ~/.cozy/config.toml.new ~/.cozy/config.toml && head -1 ~/.cozy/config.toml" < /dev/null 2>/dev/null)
-grep -qx 'dev = true' <<< "$said" && expect graphs-dev PASS "the pod's config.toml says dev = true" ||
-  expect graphs-dev FAIL "the pod's config.toml says no dev = true: $said"
+pod_dev "$CLI" "$M" > /dev/null && expect graphs-dev PASS "the pod's config.toml says dev = true" ||
+  expect graphs-dev FAIL "the pod's config.toml says no dev = true"
 # gcap <off|NGiB>: the machine restarts (its service reads config.toml again) with that memory limit.
 gcap() {
   "$CLI" machine update "$M" --gpu-memory-limit "$1" -y > "graphs-cap-$1.log" 2>&1
