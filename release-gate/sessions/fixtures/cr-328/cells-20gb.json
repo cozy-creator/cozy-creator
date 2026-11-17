@@ -1,0 +1,82 @@
+{
+ "cells": [
+  {
+   "name": "m-panel",
+   "tree": "pk",
+   "target": "minimax-h3-image/probe",
+   "warmup": true,
+   "args": [
+    "text=A single panel from a black-and-white Japanese manga, drawn with crisp black ink lines and grey screentone on white paper. A young swordswoman stands in the middle of a narrow old-town street, seen full-body from the front at a slight three-quarter angle, at eye level. She has a short black bob haircut, a determined expression, a high-collared short jacket, a long scarf hanging down her back, wide trousers and sandals. A sheathed katana hangs at her left hip and her right hand rests on its hilt. Behind her, wooden shop fronts with paper lanterns, a tiled roof line and power lines recede down the street. Clean, confident linework, cross-hatching in the shadows, screentone gradients in the sky. No text, no speech bubbles, no sound effects, no panel border.",
+    "aspect_ratio=3:4",
+    "megapixels:=4",
+    "seed:=152001"
+   ]
+  },
+  {
+   "name": "rc-e1",
+   "tree": "pk",
+   "target": "minimax-h3-image/probe",
+   "args": [
+    "--file",
+    "picture={out:m-panel}",
+    "text=<panel> is a black-and-white manga panel. Draw the same frozen instant again from another camera position: the camera has moved a quarter of the way around the swordswoman, 90 degrees to her right, at the same height and distance. She is now seen in right profile, facing the right edge of the panel, in exactly the same pose: right hand on the katana's hilt, the scarf hanging down her back. The street now runs across the panel behind her, its shop fronts and lanterns seen side-on. Keep her face, hair, clothing, proportions and the black-and-white ink and screentone drawing style exactly as in <panel>. No text, no speech bubbles, no panel border.",
+    "megapixels:=4",
+    "seed:=152010"
+   ]
+  },
+  {
+   "name": "rc-e2",
+   "tree": "pk",
+   "target": "minimax-h3-image/probe",
+   "args": [
+    "--file",
+    "picture={out:m-panel}",
+    "text=<panel> is a black-and-white manga panel. Draw the same frozen instant again from another camera position: the camera has moved halfway around the swordswoman, 180 degrees, and looks at her from directly behind, at the same height and distance. We see her back: the back of her short black bob, the long scarf hanging down her back, and the sheathed katana at her left hip, now on the left of the panel. Beyond her, the street recedes the other way, with more shop fronts and lanterns. Keep her face, hair, clothing, proportions and the black-and-white ink and screentone drawing style exactly as in <panel>. No text, no speech bubbles, no panel border.",
+    "megapixels:=4",
+    "seed:=152011"
+   ]
+  },
+  {
+   "name": "fix-e1",
+   "tree": "pk",
+   "target": "minimax-h3-image/probe",
+   "args": [
+    "--file",
+    "picture={out:m-panel}",
+    "text=<panel> is a black-and-white manga panel. Draw the same frozen instant again from another camera position: the camera has moved a quarter of the way around the swordswoman, 90 degrees to her right, at the same height and distance. She is now seen in right profile, facing the right edge of the panel, in exactly the same pose: right hand on the katana's hilt, the scarf hanging down her back. The street now runs across the panel behind her, its shop fronts and lanterns seen side-on. Keep her face, hair, clothing, proportions and the black-and-white ink and screentone drawing style exactly as in <panel>. No text, no speech bubbles, no panel border.",
+    "megapixels:=4",
+    "seed:=152110"
+   ],
+   "update": {
+    "tensorfs": "artifact:44194582689/tensorfs-wheel-f80d57eb3f5e0eed9a16dcf243b62cfbb46ae22d"
+   }
+  },
+  {
+   "name": "fix-e2",
+   "tree": "pk",
+   "target": "minimax-h3-image/probe",
+   "args": [
+    "--file",
+    "picture={out:m-panel}",
+    "text=<panel> is a black-and-white manga panel. Draw the same frozen instant again from another camera position: the camera has moved halfway around the swordswoman, 180 degrees, and looks at her from directly behind, at the same height and distance. We see her back: the back of her short black bob, the long scarf hanging down her back, and the sheathed katana at her left hip, now on the left of the panel. Beyond her, the street recedes the other way, with more shop fronts and lanterns. Keep her face, hair, clothing, proportions and the black-and-white ink and screentone drawing style exactly as in <panel>. No text, no speech bubbles, no panel border.",
+    "megapixels:=4",
+    "seed:=152111"
+   ]
+  },
+  {
+   "name": "fix-e3",
+   "tree": "pk",
+   "target": "minimax-h3-image/probe",
+   "args": [
+    "--file",
+    "picture={out:m-panel}",
+    "text=<panel> is a black-and-white manga panel. Draw the same frozen instant again from another camera position: the camera has risen high above the swordswoman and looks steeply down at her from about 70 degrees above, still from her front: a bird's-eye view showing the top of her head and her shoulders, her body foreshortened below, her shadow on the paving stones, and the street and rooftops around her. Keep her face, hair, clothing, proportions and the black-and-white ink and screentone drawing style exactly as in <panel>. No text, no speech bubbles, no panel border.",
+    "megapixels:=4",
+    "seed:=152112"
+   ]
+  }
+ ],
+ "order": "one-way",
+ "max_failures": 5,
+ "need_s": 3600
+}
