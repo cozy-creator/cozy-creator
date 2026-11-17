@@ -18,7 +18,7 @@ from cell import Cell, Json, module, save
 from tiny import _shared
 from tiny._video import video
 
-REF = "lightricks/ltx-2.5@0.1.0"
+REF = "lightricks/ltx-2.5@0.2.0"
 _SPECIALS = ("<unk>", "<pad>", "<bos>", "<eos>", "<start_of_turn>", "<end_of_turn>", "<image>")
 
 

@@ -288,6 +288,57 @@ cat "$OUT/ondemand-needs.judged.json"
 while read -r why; do check "ondemand-needs: $why"; done < "$OUT/ondemand-needs.failed"
 }
 
+# cl-1103 (Paul, 11-16): "like we say 'okay invoke A' and then the package tells us 'okay, package A needs (Y) and we ensure that
+# those are on disc and in memory for it to use'." "ideally I want to be able to plan, without having to install packages and run
+# arbitrary code." project/rules' `pick` has two models, each needed by a rule over its request (as Qwen Image 2's two prompt enhancers:
+# one with pictures, one without), and `route` loads none and calls one of two functions by rule (as H3's `generate` calls one
+# segment function or the other). On this cold machine a request with words brings the model its rule names as its call's needs
+# (`measurements.weights`), none as an extra, and never the other; `route` brings what the function it calls reads, never the
+# other's; `stray` reads the model its rule rules out, which then comes at once and is said on its run; `hinted` says mid-run
+# that it will read one (`ctx.need`), over a 10 MB/s link, and finds it here when it reads it 8 s later; and project/badrule, whose rule
+# reads a field its request doesn't have, is refused when its code is read.
+ondemand_rules() {
+[ "$RUNNER_OS" = Linux ] || return 0
+step "a request brings the models its function's rules say it needs, and no other (cl-1103)"
+[ -z "${E2E_CALLS_SEED:-}" ] || { check "ondemand-rules: its models weren't seeded: $E2E_CALLS_SEED"; return 0; }
+local here_ gone weights
+rules_warned() { { jq -r '.warnings[]?.message' "$OUT/$1.json"; grep '^{' "$OUT/$1.ndjson" | jq -r 'select(.type == "run.log") | .text // empty'; } 2> /dev/null | grep -m1 'needs rule' || true; }
+# A model's bytes on the machine: one whose slot was resolved and never fetched holds its header alone, a few hundred bytes.
+rules_bytes() { cozy --json model ls --on local 2> /dev/null | jq -r --arg m "$1" '[.models[]? | select(.model == $m) | .bytes // 0] | add // 0'; }
+cell rules-worded "$here/project/rules/pick" 'words:=["a"]' || return 0
+here_=$(rules_bytes e2e/rules-worded); gone=$(rules_bytes e2e/rules-plain)
+weights=$(run_get "$OUT" rules-worded '.measurements.weights | tojson')
+echo "ondemand-rules: a request with words: $here_ bytes of e2e/rules-worded and $gone of e2e/rules-plain are on the machine; its weights: $weights"
+[ "${here_:-0}" -ge 33554432 ] || check "ondemand-rules: e2e/rules-worded, which its rule says a request with words needs, isn't on the machine: $here_ bytes"
+[ "${gone:-0}" -lt 1048576 ] || check "ondemand-rules: $gone bytes of e2e/rules-plain came, and its rule says a request with words doesn't need it"
+jq -e '.measurements.weights | .needs >= 33554432 and .needs < 35651584 and .extras == 0' "$OUT/rules-worded.json" > /dev/null 2>&1 \
+  || check "ondemand-rules: its record doesn't say it needed e2e/rules-worded's 32 MiB and no extra: $weights"
+[ -z "$(rules_warned rules-worded)" ] || check "ondemand-rules: a request its rules answered right warns: $(rules_warned rules-worded)"
+cell rules-route "$here/project/rules/route" 'words:=["a"]' seconds:=10 || return 0
+here_=$(rules_bytes e2e/rules-left); gone=$(rules_bytes e2e/rules-right)
+echo "ondemand-rules: a call by rule: $here_ bytes of e2e/rules-left and $gone of e2e/rules-right are on the machine"
+[ "${here_:-0}" -ge 33554432 ] || check "ondemand-rules: e2e/rules-left, which the function its rule says it calls reads, isn't on the machine: $here_ bytes"
+[ "${gone:-0}" -lt 1048576 ] || check "ondemand-rules: $gone bytes of e2e/rules-right came, and its rule says this request doesn't call its function"
+[ -z "$(rules_warned rules-route)" ] || check "ondemand-rules: a call its rules answered right warns: $(rules_warned rules-route)"
+# Its rules say a request with words needs `named` (e2e/rules-left, here) and not `other` (e2e/rules-right): it reads `other`.
+cell rules-stray "$here/project/rules/stray" 'words:=["a"]' || :
+gone=$(rules_bytes e2e/rules-right)
+echo "ondemand-rules: a read its rule ruled out: $gone bytes of e2e/rules-right came; $(rules_warned rules-stray)"
+[ "${gone:-0}" -ge 33554432 ] || check "ondemand-rules: e2e/rules-right, which the call read against its rule, didn't come: $gone bytes"
+[[ "$(rules_warned rules-stray)" == *other* ]] || check "ondemand-rules: a read of the model its rule ruled out wasn't said on its run: $(jq -c '.warnings' "$OUT/rules-stray.json" 2> /dev/null)"
+# `pick` left e2e/rules-plain's header alone here: `hinted` asks for the rest as it starts (3.4 s of this link) and reads it after 8.
+slow_store ondemand-rules 80mbit || return 0
+cell rules-need "$here/project/rules/hinted" 'words:=["a"]' seconds:=8 || :
+sudo tc qdisc del dev lo root || check "ondemand-rules: the store's link wasn't restored"
+gone=$(rules_bytes e2e/rules-plain)
+weights=$(jq -r '[.. | objects | select(has("read_ms")) | .read_ms] | first // empty' "$OUT/rules-need.json" 2> /dev/null)
+echo "ondemand-rules: a model asked for mid-run: $gone bytes of e2e/rules-plain came, and its read took ${weights:-?} ms"
+[ "${gone:-0}" -ge 33554432 ] || check "ondemand-rules: e2e/rules-plain, which the call asked for mid-run, didn't come: $gone bytes"
+[ -n "$weights" ] && [ "$weights" -lt 1500 ] || check "ondemand-rules: its read of the model it asked for 8 s earlier took ${weights:-no time said} ms: it wasn't fetched meanwhile"
+ALLOW=needs_rule_invalid cell rules-bad "$here/project/badrule/typo" || :
+[ -s "$OUT/rules-bad.refused" ] || check "ondemand-rules: a rule that reads a field its request doesn't have wasn't refused: $(tail -c 300 "$OUT/rules-bad.err" 2> /dev/null)"
+}
+
 # A call holds (resolved, its on-demand BiRefNet guessed behind every run's needs, so part of it may land first), then `cozy model
 # install` downloads Qwen3.5 0.8B's 1.6 GB, and while it does the call reads its on-demand BiRefNet (446 MB): its executor asks
 # TensorD for it (`model_need`), which fetches what of it is absent before every other download (order 0) and answers once it's
@@ -394,7 +445,7 @@ while read -r why; do check "ondemand-need: $why"; done < "$OUT/ondemand-need.fa
 
 # cl-1101 (Paul, 11-16): "We can download extras (Z) in the background, in anticipation of maybe needing them, but they aren't in
 # the critical path of inference (user request) so they shouldn't be waited on." A call's on-demand models are its guesses, wanted
-# with its needs, and the downloader started them beside its needs: each range took its share of the link. enhance.py's `plain`
+# with its needs, and the downloader started them beside its needs: each range took its share of the link. project/enhance's `behind`
 # needs its model (16 MiB: 1.7 s alone over this 10 MB/s link) and guesses two prompt enhancers (96 MiB each) it never reads: its
 # model took 6.5 s and its function started 5 s late (run 43955873288). No guess starts while a need of any run is under way.
 ondemand_behind() {
@@ -403,7 +454,7 @@ step "a call's guesses never take the link from its needs (cl-1101)"
 local began
 slow_store ondemand-behind 80mbit || return 0
 began=$(date -u +%s%3N)
-cell ondemand-behind "$here/script/enhance.py/plain" prompt_upsampling:=false seconds:=6 || :
+cell ondemand-behind "$here/project/enhance/behind" prompt_upsampling:=false seconds:=6 || :
 sudo tc qdisc del dev lo root || check "ondemand-behind: the store's link wasn't restored"
 cozy machine logs local --lines 0 --since 1h > "$OUT/ondemand-behind.tensord.log" 2>&1 || check "ondemand-behind: machine logs local failed"
 python3 - "$OUT" "$began" <<'JUDGE' > "$OUT/ondemand-behind.timeline.json" 2> "$OUT/ondemand-behind.failed" || true
@@ -448,8 +499,8 @@ while read -r why; do check "ondemand-behind: $why"; done < "$OUT/ondemand-behin
 }
 
 # cl-1101 (Paul, 11-16): "the same goes for qwen image 2.1 image's prompt enhancer; it has two (T2I and I2I) but we only need one
-# when we get a request." Qwen Image 2.1's `expander` (a prompt of words) and `rewriter` (one with pictures) are both on demand,
-# and a request reads at most one, as its first stage. enhance.py is that function three times, each with a model (16 MiB) and two
+# when we get a request." Qwen Image 2.1's `expander` (a prompt of words) and `rewriter` (one with pictures) are each needed by a
+# rule over the request (cl-1103), and a request reads at most one, as its first stage. project/enhance is that function three times, each with a model (16 MiB) and two
 # enhancers (96 MiB each) of its own, so each request starts cold, over a 10 MB/s link: `words` reads its expander, `edit` its
 # rewriter, `plain` (prompt_upsampling off) neither. A request fetches the enhancer it reads with its other weights, before its
 # function starts, and nothing of the other. ondemand-enhancers.json keeps what each fetched, at which order of the download
@@ -462,9 +513,9 @@ slow_store ondemand-enhancers 80mbit || return 0
 for request in words edit plain; do
   date -u +%s%3N > "$OUT/enhance-$request.began"
   case $request in
-    words) cell "enhance-$request" "$here/script/enhance.py/words" || : ;;
-    edit) cell "enhance-$request" "$here/script/enhance.py/edit" pictures:=true || : ;;
-    plain) cell "enhance-$request" "$here/script/enhance.py/plain" prompt_upsampling:=false seconds:=12 || : ;;
+    words) cell "enhance-$request" "$here/project/enhance/words" || : ;;
+    edit) cell "enhance-$request" "$here/project/enhance/edit" pictures:=true || : ;;
+    plain) cell "enhance-$request" "$here/project/enhance/plain" prompt_upsampling:=false seconds:=12 || : ;;
   esac
   date -u +%s%3N > "$OUT/enhance-$request.ended"
   cozy --json model ls --on local > "$OUT/enhance-$request.models.json" 2>&1 || check "ondemand-enhancers: model ls --on local failed after $request"

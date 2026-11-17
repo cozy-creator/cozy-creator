@@ -628,8 +628,21 @@ async fn checkpoint(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> 
 /// request (`checkpoints`' `made`) by the evaluator TensorD shares (cl-1103): an on-demand slot the request is sure to read is
 /// waited for, and its bytes are in the quote's download. Until a function has rules this is the same fallback as TensorD's
 /// (`Plan::needs`): each slot not on demand; an on-demand one comes in the background and is fetched at once when first read.
-fn waited(slots: &[Slot]) -> impl Iterator<Item = &Slot> {
-    slots.iter().filter(|slot| !slot.on_demand)
+/// `ruled` is what `function`'s rules say of the box as written (`needs::answers_written`): what only its bound request knows (a
+/// mention's file, a pickup) leaves a rule unanswered and its slot as it was.
+fn waited<'a>(slots: &'a [Slot], function: &'a str, ruled: &'a ::needs::Answers) -> impl Iterator<Item = &'a Slot> {
+    let own = move |slot: &Slot| slot.path.split_once(".models.").is_some_and(|(owner, param)| owner == function && ruled.needed.contains(param));
+    slots.iter().filter(move |slot| !slot.on_demand || own(slot))
+}
+
+/// Whether `slot`, `function`'s own or a function's it calls, is one its rules say this request doesn't read: nothing of it is
+/// fetched, so nothing of it is quoted.
+fn ruled_out(ruled: &::needs::Answers, function: &str, slot: &Slot) -> bool {
+    match slot.path.split_once(".models.") {
+        Some((owner, param)) if owner == function => ruled.unneeded.contains(param),
+        Some((called, _)) => ruled.unneeded.contains(called),
+        None => false,
+    }
 }
 
 /// What `function` of `package` fetches before it starts, as TensorD fetches it (cl-1071): each slot it waits for (`waited`), by its Hub
@@ -638,14 +651,22 @@ fn waited(slots: &[Slot]) -> impl Iterator<Item = &Slot> {
 /// quote can't know it reads. A header that can't be read counts its checkpoint whole. What a machine's estimate counts the fetch of
 /// (cl-816, cl-1047); what the Hub doesn't say in time is left out.
 pub(super) async fn checkpoints(api: &Api, hub: &str, package: &super::Package, function: &str, made: &Map<String, Value>) -> Fetched {
-    let Some(weights) = Interface::parse(package.document()).ok().and_then(|interface| Weights::read(&interface, function, made)) else { return Fetched::default() };
+    let Some(mut weights) = Interface::parse(package.document()).ok().and_then(|interface| Weights::read(&interface, function, made)) else { return Fetched::default() };
+    // A request not known here (`cozy run`'s placement names none) answers no rule.
+    let ruled = match made.is_empty() {
+        true => ::needs::Answers::default(),
+        false => (::api::interface::entrypoint(package.document(), function))
+            .map(|entry| ::needs::answers_written(entry, &Value::Object(made.clone())))
+            .unwrap_or_default(),
+    };
+    weights.slots.retain(|slot| !ruled_out(&ruled, function, slot));
     let placed = match package.local {
         None => placed(api, hub, &package.name, &package.release, function).await,
         Some(_) => None,
     };
     let mut counted: HashSet<String> = HashSet::new();
     let mut fetched = Fetched::default();
-    let waited: Vec<&Slot> = waited(&weights.slots).collect();
+    let waited: Vec<&Slot> = waited(&weights.slots, function, &ruled).collect();
     let on_demand = weights.slots.iter().filter(|slot| !waited.iter().any(|held| std::ptr::eq(*held, *slot)));
     for (slot, ahead) in waited.iter().map(|slot| (*slot, true)).chain(on_demand.map(|slot| (slot, false))) {
         let param = Weights::param(slot);

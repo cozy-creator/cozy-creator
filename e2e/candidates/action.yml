@@ -219,7 +219,8 @@ runs:
           args=(--tensord "$TENSORD")
         fi
         [ -z "$machine" ] || args+=(--tensorfs "${TENSORFS:-$(ls "$out"/tensorfs-*.whl)}" --runtime "${RUNTIME:-$(ls "$out"/cozy_runtime-*.whl)}")
-        [[ " $BUILD " != *" package "* ]] || args+=(--packages .src)
+        # A packages change is the packages checkout, whatever its selection's build tokens (a `select=cpu` dispatch has none).
+        [ "$REPO" != packages ] && [[ " $BUILD " != *" package "* ]] || args+=(--packages .src)
         [ -z "$pod" ] || args+=(--pod-tensord "$pod")
         echo "CANDIDATES=${args[*]}" >> "$GITHUB_ENV"
         echo "E2E_SEED_RUNTIME=${RUNTIME:-$(ls "$out"/cozy_runtime-*.whl)}" >> "$GITHUB_ENV"

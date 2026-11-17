@@ -33,8 +33,6 @@ EXPECTED = "int8 int8 int8 int8 int8 fp8|bf16 int8"
 # Each default (`org/name@release`, or one slot: `<package>:<slot path>`) that resolves otherwise, on purpose: its lane on each
 # family in FAMILIES' order, and why. A default that moves fails until its line here changes.
 OTHERWISE = {
-    "lightricks/ltx-2.5@0.1.0": ("bf16 bf16 bf16 bf16 bf16 bf16 bf16", "se-139: bf16 its only lane; int8 ConvRot coming"),
-    "ifm/pan2@0.1.0": ("bf16 bf16 bf16 bf16 bf16 bf16 bf16", "se-139: bf16 its only lane; int8 ConvRot coming"),
     "kopper/relayvsr@0.2.0": ("bf16 bf16 bf16 bf16 bf16 bf16 bf16", "cl-1076: bf16 its only lane, no 8-bit lane published"),
     "lbh-123-ai/h3-latent-upscaler@0.1.1": ("bf16 bf16 bf16 bf16 bf16 bf16 bf16", "cl-1076: bf16 its only lane, no 8-bit lane published"),
     "qwen/qwen3.5-9b-mtp@0.2.0": ("bf16 bf16 bf16 bf16 bf16 bf16 bf16", "cl-1076: bf16 its only lane, no 8-bit lane published"),
