@@ -398,86 +398,178 @@ project_api "$P" /cancel -X POST -H 'Content-Type: application/json' -H "Idempot
 cozy --json logout > /dev/null 2>&1 || true
 }
 
-# replan_name <rental id>: what machine ls calls the rental once its Hub named its host. replan_quit: the rental ended, signed out.
-replan_name() { cozy --json machine ls 2> /dev/null | jq -r --arg r "$1" '.machines[] | select(.rental_id == $r and .placeholder == null) | .name' 2> /dev/null || true; }
-replan_quit() { cozy --json machine end "$rental" -y > /dev/null 2>&1 || true; cozy --json logout > /dev/null 2>&1 || true; }
-# rental_replan (cl-1125). Paul, 11-17: "I had a job queued on 'project' but that job disappeared or something for some reason. It never
-# ran, was just queued forever." "then it gave up and quit? I don't know what happened. Do jobs sometimes expire after a period of time if
-# there's no runner for them? or perhaps it was assigned and then the machine died or something? bad experience either way."
-# His RTX 5090's image pull stalled, and its Hub replanned the order onto another host, which it named again: rent-24713671, kigurumi,
-# then cecilia, with Calcifer restarted between. His render's install, sent to the order and followed to kigurumi (cl-1089), failed
-# `machine_lost` ("kigurumi shut down before it took PRO6-1") at the second name, and his take went with it. Work queued for an order
-# follows it to whatever host it gets; only the order's end settles it, and that says why in one line.
-# This Hub's docker provider has one host, which a replanned attempt is named by again: the second name is its record of the order's
-# host renamed in its own database, as a replan's attempt is named. The rental never gets ready here, so the render waits, as Paul's did.
-rental_replan() {
-step "work queued for a rental order follows it through a Calcifer restart and a second host name; its end says why (cl-1125)"
-[ -n "${E2E_HUB_LOG:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] || { check "rental_replan: e2e/isolated.sh named no Hub log or email to sign in with"; return; }
-local rental='' handle='' first='' second="replan-$RANDOM" P=$OUT/replan-project pg='' number='' w=$OUT/replan-watch.json s=$OUT/replan-status.json
-signin "$E2E_HUB_EMAIL" > "$OUT/replan-login.json" || { check "rental_replan: cozy login failed: $(tail -c 300 "$OUT/replan-login.json")"; return; }
-cozy --json new --unencrypted "$P" > "$OUT/replan-new.json" 2>&1 || check "rental_replan: new: $(tail -c 300 "$OUT/replan-new.json")"
-jq -n --arg wait "$rename_here/project/waits.py/wait" --arg r "$RANDOM" \
-  '[{name: "queued", tool: $wait, kind: "image", fields: {instructions: "Queued for the order, \($r).", seconds: 1}}]' | boxes_in "$P" || true
-rename_order replan
-[ -n "$rental" ] && [[ $handle == rent-* ]] || { check "rental_replan: no rental accepted with a handle: $(tail -c 400 "$OUT/rename-rent-replan.ndjson")"; cozy --json logout > /dev/null 2>&1 || true; return; }
-# Preferred and rendered on the order by its handle, as the page does seconds after it.
-in_project "$P" --json machine use "$handle" > "$OUT/replan-use.json" 2>&1 || true
-project_api "$P" /runs -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: replan-$RANDOM$RANDOM" \
-  -d "{\"names\":[\"queued\"],\"on\":[\"$handle\"]}" > "$OUT/replan-render.json" 2>&1 || check "rental_replan: render: $(tail -c 300 "$OUT/replan-render.json")"
-for _ in $(seq 120); do first=$(replan_name "$rental"); [ -n "$first" ] && [[ $first != rent-* ]] && break; sleep 1; done
-[ -n "$first" ] && [[ $first != rent-* ]] || { check "rental_replan: its Hub never named $rental's host in 2 min"; replan_quit; return; }
-# The render's install waits on the order, under the host's first name. Its local code is locked first: minutes on a cold runner.
-for _ in $(seq 120); do
-  number=$(in_project "$P" --json run ls --limit 20 2> /dev/null | jq -r '[.runs[]? | select(.target | test("wait"))] | min_by(.number) | .number // empty' 2> /dev/null || true)
-  [ -z "$number" ] || break
-  sleep 5
-done
-[ -n "$number" ] || { check "rental_replan: the render sent to $handle made no run: $(status "$P" | jq -c '.board.jobs' 2> /dev/null)"; replan_quit; return; }
-for _ in $(seq 60); do in_project "$P" --json run watch "$number" --once > "$w" 2>&1 || true; J --arg n "$first" '.machine == $n' "$w" && break; sleep 2; done
-echo "rental_replan: run $number waits for $handle, named $first: $(jq -c '{machine, status, waiting}' "$w" 2> /dev/null)"
-# Calcifer restarts, as the laptop's did while Paul waited.
-systemctl --user restart cozy-calcifer || check "rental_replan: systemctl --user restart cozy-calcifer failed"
-for _ in $(seq 60); do cozy --json machine ls > /dev/null 2>&1 && break; sleep 1; done
-# Its Hub replans the order onto another host, named anew.
-pg=$(docker ps --filter name=cozy-skew-pg --format '{{.Names}}' | head -1)
-docker exec "$pg" psql -U postgres -v ON_ERROR_STOP=1 -tAc "UPDATE hub_v2.provider_resources r SET machine_name = '$second'
-  FROM hub_v2.rental_acquisition_attempts a WHERE a.rental_id = '$rental' AND a.provider_resource_id = r.id" > "$OUT/replan-hub.txt" 2>&1 \
-  && grep -q 'UPDATE [1-9]' "$OUT/replan-hub.txt" || check "rental_replan: the Hub's record of $rental's host wasn't renamed ($pg): $(tail -c 300 "$OUT/replan-hub.txt")"
-local now=''
-for _ in $(seq 120); do now=$(replan_name "$rental"); [ "$now" = "$second" ] && break; sleep 1; done
-[ "$now" = "$second" ] || check "rental_replan: Calcifer still calls $rental '${now:-nothing}' 2 min after its Hub named it $second"
-# What was queued for the order follows it there, still queued: never failed while the order stands.
-for _ in $(seq 30); do
-  in_project "$P" --json run watch "$number" --once > "$w" 2>&1 || true
-  J --arg n "$second" '.machine == $n or .status == "failed"' "$w" && break
-  sleep 2
-done
-echo "rental_replan: run $number after its order's host was named $first, then $second: $(jq -c '{machine, status, waiting, reason}' "$w" 2> /dev/null)"
-J --arg n "$second" '.machine == $n and .status != "failed" and .status != "canceled"' "$w" \
-  || check "rental_replan: run $number, queued for $rental, didn't follow it from $first to $second: $(jq -c '{machine, status, reason}' "$w" 2> /dev/null)"
-status "$P" > "$s" || true
-echo "rental_replan: the project's machines $(jq -c '.machines' "$s" 2> /dev/null), its take $(jq -c '{job: [.board.jobs[]? | select(.asset == "queued") | {state, error}], said: .board.said}' "$s" 2> /dev/null)"
-J --arg n "$second" '.machines == [$n]' "$s" || check "rental_replan: the project preferred $handle; once named $first, then $second, its machines are $(jq -c '.machines' "$s" 2> /dev/null)"
-J '[.board.jobs[]? | select(.asset == "queued" and (.state == "waiting" or .state == "running"))] | length == 1' "$s" \
-  || check "rental_replan: the take queued for $rental isn't waiting for it: $(jq -c '[.board.jobs[]? | select(.asset == "queued")]' "$s" 2> /dev/null)"
-# The order ends: what waited for it settles, saying why in one line, and the take says so too; nothing goes silently.
-cozy --json machine end "$rental" -y > "$OUT/replan-end.json" 2>&1 || check "rental_replan: machine end $rental: $(tail -c 300 "$OUT/replan-end.json")"
-for _ in $(seq 90); do
-  in_project "$P" --json run watch "$number" --once > "$w" 2>&1 || true
-  J '.status == "failed" or .status == "canceled"' "$w" && break
-  sleep 2
-done
-echo "rental_replan: run $number once $rental ended: $(jq -c '{machine, status, reason}' "$w" 2> /dev/null)"
-J --arg n "$second" '.status == "failed" and (.reason.message | test($n) and (test("\n") | not))' "$w" \
-  || check "rental_replan: run $number didn't settle in one line naming $second when its order ended: $(jq -c '{status, reason}' "$w" 2> /dev/null)"
-for _ in $(seq 30); do
-  status "$P" > "$s" || true
-  J --arg n "$second" '[.board.said[]?.message, .board.jobs[]?.error.message?, .board.errors[]?.message] | map(select(type == "string")) | any(test($n))' "$s" && break
-  sleep 2
-done
-echo "rental_replan: the take once $rental ended: $(jq -c '{job: [.board.jobs[]? | select(.asset == "queued") | {state, error}], said: .board.said}' "$s" 2> /dev/null)"
-J --arg n "$second" '[.board.said[]?.message, .board.jobs[]?.error.message?, .board.errors[]?.message] | map(select(type == "string")) | any(test($n))' "$s" \
-  || check "rental_replan: the render said nothing of $second's end: $(jq -c '.board' "$s" 2> /dev/null | head -c 600)"
-project_api "$P" /cancel -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: replan-cancel-$RANDOM$RANDOM" -d '{"names":["queued"]}' > "$OUT/replan-cancel.json" 2>&1 || true
-cozy --json logout > /dev/null 2>&1 || true
-}
+# th-383: RunPod listed RTX 5090s its create refused ("no longer any instances available") 51 times in 85 minutes: a no-capacity
+# answer held the offer off only until the provider's next inventory, so each listing bought one more refusal, and two gate
+# rentals waited 20 minutes on it, `booting`. Here the docker provider is that provider: its engine socket is phantom_docker.py's,
+# which asks every create for a million CPUs, so the engine refuses it for want of them, and its inventory is read every 10 s.
+# Two rentals of a CPU: neither is refused more than twice on the one offer (before, one per listing: ~6 each in the 150 s
+# watched), the provider's SKU rests (`GET /v1/admin/provider-cooldowns`), and `machine show` says each is waiting for capacity
+# from docker, not booting.
+hub_phantom_stock() (
+  step "listed stock its provider won't sell is set aside, not bought again at each listing (th-383)"
+  [ -n "${COZY_TEST_HUB_COMMAND_FILE:-}" ] && [ -n "${COZY_HUB_URL:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] \
+    || fail "phantom stock: e2e/isolated.sh named no Hub command, URL or email"
+  local S=$OUT/hub-phantom db port container proxy rentals=() rental pid n id ids token counts most total rested='' said shown
+  local word='waiting for capacity (docker has none right now)'
+  mkdir -p "$S"
+  db=$(tr '\0' '\n' < "$COZY_TEST_HUB_COMMAND_FILE" | grep -o 'postgres://[^" ]*' | head -1 || true)
+  port=$(sed -E 's#.*@[^:/]+:([0-9]+)/.*#\1#' <<< "$db")
+  container=$(docker ps --filter "publish=$port" --format '{{.Names}}' 2> /dev/null | head -1 || true)
+  [ -n "$container" ] || fail "phantom stock: no Postgres container publishes ${port:-?}"
+  sql() { docker exec -i "$container" psql -v ON_ERROR_STOP=1 -qtA -U postgres "$@"; }
+  python3 "$here/phantom_docker.py" "$S/docker.sock" /var/run/docker.sock "$S/creates.log" > "$S/proxy.log" 2>&1 & proxy=$!
+  for _ in $(seq 50); do [ -S "$S/docker.sock" ] && break; sleep 0.1; done
+  [ -S "$S/docker.sock" ] || fail "phantom stock: the engine proxy didn't start: $(tail -c 300 "$S/proxy.log")"
+  end_all() { for id in "${rentals[@]}"; do cozy --json machine end "$id" -y > /dev/null 2>&1 || true; done; }
+  trap 'end_all; kill "$proxy" 2> /dev/null || true; bash "$here/../skew/rehub.sh" > /dev/null 2>&1 || true' EXIT
+  signin "$E2E_HUB_EMAIL" > "$S/login.json" || fail "phantom stock: cozy login: $(tail -c 300 "$S/login.json")"
+  bash "$here/../skew/rehub.sh" --set "provider.docker.socket=$S/docker.sock" --set provider.inventory_refresh_seconds=10 \
+    > "$S/rehub.log" 2>&1 || fail "phantom stock: restarting the Hub on the proxy: $(tail -c 300 "$S/rehub.log")"
+  for n in 1 2; do
+    cozy --json machine rent cpu -y > "$S/rent-$n.ndjson" 2> "$S/rent-$n.err" & pid=$!
+    rental=''
+    for _ in $(seq 180); do
+      rental=$(jq -r 'select(.type? == "rental.accepted") | .rental_id // empty' "$S/rent-$n.ndjson" 2> /dev/null | tail -1 || true)
+      [ -n "$rental" ] || ! kill -0 "$pid" 2> /dev/null || { sleep 1; continue; }
+      break
+    done
+    kill -KILL "$pid" 2> /dev/null || true
+    wait "$pid" 2> /dev/null || true
+    [ -n "$rental" ] || fail "phantom stock: rent $n: no rental accepted: $(tail -c 300 "$S/rent-$n.ndjson") $(tail -c 300 "$S/rent-$n.err")"
+    rentals+=("$rental")
+  done
+  echo "phantom stock: rented ${rentals[*]}"
+  ids=$(printf "'%s'," "${rentals[@]}")
+  cozy --json whoami > /dev/null 2>&1 || true
+  token=$(jq -r .token "$(ls "$HOME"/.cozy/keys/*.bearer.json | head -1)" 2> /dev/null || true)
+  # 150 s: about six of the provider's listings, and as many creates per rental before th-383 (one per listing, each refused
+  # create proven to have made nothing in ~15 s).
+  for n in $(seq 150); do
+    counts=$(sql -c "SELECT rental_id || ' ' || count(*) FROM hub_v2.rental_acquisition_attempts
+      WHERE rental_id IN (${ids%,}) AND failure_code = 'provider.no_capacity' GROUP BY rental_id ORDER BY rental_id" 2> /dev/null | tr '\n' ' ' || true)
+    echo "$n ${counts:-none}" >> "$S/refused.txt"
+    if [ $((n % 5)) = 0 ]; then
+      curl -s -m 10 -H "Authorization: Bearer $token" "$COZY_HUB_URL/v1/admin/provider-cooldowns" > "$S/cooldowns-$n.json" 2>&1 || true
+      jq -e '.cooldowns[] | select(.provider == "docker" and .resting and .refusals >= 3)' "$S/cooldowns-$n.json" > /dev/null 2>&1 \
+        && rested=$(jq -c '.cooldowns' "$S/cooldowns-$n.json")
+    fi
+    sleep 1
+  done
+  # The last sample: `150 <rental> <refusals> <rental> <refusals>`.
+  most=$(tail -1 "$S/refused.txt" | awk '{m = 0; for (i = 3; i <= NF; i += 2) if ($i > m) m = $i; print m}')
+  total=$(tail -1 "$S/refused.txt" | awk '{t = 0; for (i = 3; i <= NF; i += 2) t += $i; print t}')
+  echo "phantom stock: refused for want of capacity (rental count) after 150 s: $(tail -1 "$S/refused.txt" | cut -d' ' -f2-); creates the engine refused: $(grep -c . "$S/creates.log" 2> /dev/null || echo 0)"
+  [ "${total:-0}" -ge 3 ] || check "phantom stock: only ${total:-0} creates refused in 150 s: $(tail -c 300 "$S/proxy.log") $(tail -3 "$S/refused.txt")"
+  [ "${most:-0}" -le 2 ] || check "phantom stock: a rental was refused $most times on the one offer in 150 s: its provider listed it again, and it was bought again ($(tail -1 "$S/refused.txt" | cut -d' ' -f2-))"
+  [ -n "$rested" ] && echo "phantom stock: the admin view: $rested" \
+    || check "phantom stock: GET /v1/admin/provider-cooldowns never showed docker's SKU resting after 3 refusals: $(head -c 300 "$S/cooldowns-150.json" 2> /dev/null)"
+  for id in "${rentals[@]}"; do
+    said='' shown=''
+    for _ in $(seq 30); do
+      cozy --json machine ls > "$S/ls.json" 2> /dev/null || true
+      said=$(jq -r --arg r "$id" '.machines[] | select(.rental_id == $r) | .waiting // empty' "$S/ls.json" 2> /dev/null || true)
+      shown=$(cozy machine show "$id" 2> /dev/null | grep -m1 -E '^ *state' || true)
+      [ "$said" = "$word" ] && [[ $shown == *"$word"* ]] && break
+      sleep 1
+    done
+    [ "$said" = "$word" ] && [[ $shown == *"$word"* ]] \
+      || check "phantom stock: $id is said as '${said:-nothing}' ($(jq -c --arg r "$id" '.machines[] | select(.rental_id == $r) | {state, boot}' "$S/ls.json" 2> /dev/null)), shown as '${shown:-nothing}', not '$word'"
+  done
+)
+
+# th-383 (Paul, 11-17: "you have money to rent on runpod and vast-ai"): refused for want of capacity, an order buys an equivalent
+# machine at once, from any host or provider, at its price or lower; only when none is on sale does it wait for capacity, offering
+# the cheapest above its price, which it buys once its renter agrees (the 2× A6000 and 2× 5090 orders sat 70+ min on one host's
+# offer). Two providers here: `docker`, whose engine refuses every create (phantom_docker.py), and `docker-b`, the runner's own
+# engine. Each listing comes every 120 s, so a wait for the next one would show. Priced alike, the order is refused by `docker`
+# and bought from `docker-b` within a minute. With `docker-b` 3× dearer, it waits, offers `docker-b`, buys nothing there until
+# `cozy machine rent <it> --yes` agrees, then buys it within a minute.
+hub_phantom_instead() (
+  step "an order refused for want of capacity buys an equivalent machine elsewhere at once, or one dearer once agreed (th-383)"
+  [ -n "${COZY_TEST_HUB_COMMAND_FILE:-}" ] && [ -n "${COZY_HUB_URL:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] \
+    || fail "phantom instead: e2e/isolated.sh named no Hub command, URL or email"
+  local S=$OUT/hub-instead db port container proxy rentals=() rental pid id attempts gap said instead offered bought
+  mkdir -p "$S"
+  db=$(tr '\0' '\n' < "$COZY_TEST_HUB_COMMAND_FILE" | grep -o 'postgres://[^" ]*' | head -1 || true)
+  port=$(sed -E 's#.*@[^:/]+:([0-9]+)/.*#\1#' <<< "$db")
+  container=$(docker ps --filter "publish=$port" --format '{{.Names}}' 2> /dev/null | head -1 || true)
+  [ -n "$container" ] || fail "phantom instead: no Postgres container publishes ${port:-?}"
+  sql() { docker exec -i "$container" psql -v ON_ERROR_STOP=1 -qtA -U postgres "$@"; }
+  python3 "$here/phantom_docker.py" "$S/docker.sock" /var/run/docker.sock "$S/creates.log" > "$S/proxy.log" 2>&1 & proxy=$!
+  for _ in $(seq 50); do [ -S "$S/docker.sock" ] && break; sleep 0.1; done
+  [ -S "$S/docker.sock" ] || fail "phantom instead: the engine proxy didn't start: $(tail -c 300 "$S/proxy.log")"
+  end_all() { for id in "${rentals[@]}"; do cozy --json machine end "$id" -y > /dev/null 2>&1 || true; done; }
+  trap 'end_all; kill "$proxy" 2> /dev/null || true; bash "$here/../skew/rehub.sh" > /dev/null 2>&1 || true' EXIT
+  signin "$E2E_HUB_EMAIL" > "$S/login.json" || fail "phantom instead: cozy login: $(tail -c 300 "$S/login.json")"
+  # two_providers <docker-b's price>: the Hub on both, each listed, no rest left from an earlier cell.
+  two_providers() {
+    bash "$here/../skew/rehub.sh" --set "provider.docker.socket=$S/docker.sock" \
+      --set "provider.docker.engines_json=[{\"name\":\"docker-b\",\"socket\":\"/var/run/docker.sock\",\"list_price_usd_micros_per_hour\":$1}]" \
+      > "$S/rehub-$1.log" 2>&1 || fail "phantom instead: restarting the Hub on two providers: $(tail -c 300 "$S/rehub-$1.log")"
+    sql -c "DELETE FROM hub_v2.provider_sku_cooldowns" > /dev/null 2>&1 || true
+    for _ in $(seq 60); do
+      [ "$(sql -c "SELECT count(*) FROM hub_v2.provider_inventory_heads WHERE provider IN ('docker','docker-b')" 2> /dev/null || echo 0)" = 2 ] && return
+      sleep 1
+    done
+    fail "phantom instead: the Hub didn't list both providers in a minute: $(sql -c 'SELECT provider FROM hub_v2.provider_inventory_heads' 2>&1 | tr '\n' ' ')"
+  }
+  # order <n>: a CPU, as `machine rent cpu` orders one; its rental id.
+  order() {
+    cozy --json machine rent cpu -y > "$S/rent-$1.ndjson" 2> "$S/rent-$1.err" & pid=$!
+    rental=''
+    for _ in $(seq 180); do
+      rental=$(jq -r 'select(.type? == "rental.accepted") | .rental_id // empty' "$S/rent-$1.ndjson" 2> /dev/null | tail -1 || true)
+      [ -n "$rental" ] || ! kill -0 "$pid" 2> /dev/null || { sleep 1; continue; }
+      break
+    done
+    kill -KILL "$pid" 2> /dev/null || true
+    wait "$pid" 2> /dev/null || true
+    [ -n "$rental" ] || fail "phantom instead: rent $1: no rental accepted: $(tail -c 300 "$S/rent-$1.ndjson") $(tail -c 300 "$S/rent-$1.err")"
+    rentals+=("$rental")
+  }
+  # tried <rental>: its attempts, `ordinal provider state failure created_s ended_s`.
+  tried() {
+    sql -c "SELECT ordinal, provider, state, coalesce(nullif(failure_code, ''), '-'), extract(epoch FROM created_at)::bigint,
+      extract(epoch FROM updated_at)::bigint FROM hub_v2.rental_acquisition_attempts WHERE rental_id = '$1' ORDER BY ordinal" 2> /dev/null | tr '|' ' '
+  }
+
+  two_providers 1000
+  order alike
+  for _ in $(seq 90); do
+    attempts=$(tried "$rental")
+    grep -q ' docker-b ' <<< "$attempts" && break
+    sleep 1
+  done
+  echo "phantom instead: priced alike, $rental's attempts: $(tr '\n' ';' <<< "$attempts")"
+  gap=$(awk '$2 == "docker" && $4 == "provider.no_capacity" {refused = $6} $2 == "docker-b" && refused {print $5 - refused; exit}' <<< "$attempts")
+  [ -n "$gap" ] && [ "$gap" -le 60 ] \
+    || check "phantom instead: refused by docker, $rental didn't buy docker-b's machine at its price within a minute (gap ${gap:-none}): $(tr '\n' ';' <<< "$attempts")"
+  end_all
+  rentals=()
+
+  two_providers 3000
+  order dearer
+  instead=''
+  for _ in $(seq 120); do
+    cozy --json machine ls > "$S/ls.json" 2> /dev/null || true
+    instead=$(jq -c --arg r "$rental" '.machines[] | select(.rental_id == $r) | .instead // empty' "$S/ls.json" 2> /dev/null || true)
+    [ -n "$instead" ] && break
+    sleep 1
+  done
+  said=$(jq -r --arg r "$rental" '.machines[] | select(.rental_id == $r) | .waiting // empty' "$S/ls.json" 2> /dev/null || true)
+  echo "phantom instead: docker-b dearer, $rental says '${said:-nothing}', offers ${instead:-nothing}"
+  [ -n "$instead" ] || fail "phantom instead: $rental never offered docker-b's dearer machine: $(jq -c --arg r "$rental" '.machines[] | select(.rental_id == $r) | {state, boot, waiting}' "$S/ls.json" 2> /dev/null) $(tr '\n' ';' <<< "$(tried "$rental")")"
+  [ "$said" = 'waiting for capacity (docker has none right now)' ] || check "phantom instead: $rental says '${said:-nothing}' while it waits"
+  sleep 20
+  ! tried "$rental" | grep -q ' docker-b ' || check "phantom instead: $rental bought docker-b's dearer machine before its renter agreed: $(tr '\n' ';' <<< "$(tried "$rental")")"
+  cozy --json machine rent "$rental" -y > "$S/agree.ndjson" 2> "$S/agree.err" \
+    || fail "phantom instead: machine rent $rental -y (agree): $(tail -c 300 "$S/agree.ndjson") $(tail -c 300 "$S/agree.err")"
+  offered=$(jq -r '.usd_micros_per_hour // empty' <<< "$instead")
+  bought=''
+  for _ in $(seq 90); do
+    tried "$rental" | grep -q ' docker-b ' && { bought=yes; break; }
+    sleep 1
+  done
+  echo "phantom instead: agreed to $offered micro-USD/h; attempts: $(tried "$rental" | tr '\n' ';')"
+  [ -n "$bought" ] || check "phantom instead: agreed, $rental didn't buy docker-b's machine within a minute: $(tr '\n' ';' <<< "$(tried "$rental")")"
+)
