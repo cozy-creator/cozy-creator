@@ -118,7 +118,34 @@ cleanup() {
       else launchctl unsetenv SSL_CERT_FILE; fi ;;
   esac
   rm -rf "$WORK"
+  lingering
   return "$status"
+}
+# lingering: every process still writing to this script's output (a job step's pipe, which ends only once each writer has
+# closed it), said and ended: one left behind held `commands`' step 11 min after its verdict (cl-1128).
+lingering() {
+  [ -r /proc/self/fd/1 ] || return 0
+  local out pid fd held=()
+  out=$(readlink /proc/$$/fd/1) || return 0
+  [[ $out == pipe:* ]] || return 0
+  for pid in $(ls /proc | grep -E '^[0-9]+$'); do
+    [ "$pid" != $$ ] && [ "$pid" != "$BASHPID" ] || continue
+    for fd in /proc/"$pid"/fd/*; do
+      # fd 0: the pipe's reader (the step's scrub), not a writer.
+      [ "${fd##*/}" != 0 ] && [ "$(readlink "$fd" 2> /dev/null)" = "$out" ] && { held+=("$pid"); break; }
+    done
+  done
+  [ ${#held[@]} -gt 0 ] || return 0
+  # Our own ancestors (the step's shell) hold it too; only what isn't one of them lingers.
+  local self=$$ ancestors=' '
+  while [ -n "$self" ] && [ "$self" != 0 ]; do ancestors+="$self "; self=$(awk '{print $4}' "/proc/$self/stat" 2> /dev/null); done
+  for pid in "${held[@]}"; do
+    [[ $ancestors == *" $pid "* ]] && continue
+    local said
+    said=$(ps -o pid=,ppid=,etime=,args= -p "$pid" 2> /dev/null | cut -c1-300) && [ -n "$said" ] || continue
+    echo "$(date -u +%H:%M:%SZ) lingering after the suite, ended: $said" | tee -a "$OUT/gate.log"
+    kill "$pid" 2> /dev/null || true
+  done
 }
 trap cleanup EXIT
 trap 'exit 130' INT

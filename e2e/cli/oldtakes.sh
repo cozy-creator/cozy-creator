@@ -14,7 +14,7 @@ id "$user" > /dev/null 2>&1 || sudo useradd -m "$user" || { check "old takes: no
 home=$(getent passwd "$user" | cut -d: -f6)
 P=$home/old-takes Q=$OUT/old-takes
 mkdir -p "$OUT/cozy-old"
-curl -fsSL --retry 3 -o "$OUT/cozy-old.tgz" "https://github.com/cozy-creator/cozy-creator/releases/download/v$OLD_RELEASE/cozy-x86_64-unknown-linux-gnu.tar.gz" \
+curl -fsSL --retry 5 --retry-all-errors -o "$OUT/cozy-old.tgz" "https://github.com/cozy-creator/cozy-creator/releases/download/v$OLD_RELEASE/cozy-x86_64-unknown-linux-gnu.tar.gz" \
   && tar -xzf "$OUT/cozy-old.tgz" -C "$OUT/cozy-old" || { check "old takes: no cozy $OLD_RELEASE"; return; }
 sudo install -D -m 755 "$OUT/cozy-old/cozy-x86_64-unknown-linux-gnu/cozy" /opt/cozy-old/cozy && sudo install -D -m 644 "$here/project/draw_runtime_045.py" /opt/cozy-old/draw.py \
   || { check "old takes: not installed for its user"; return; }

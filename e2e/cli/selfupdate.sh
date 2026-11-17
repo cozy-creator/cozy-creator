@@ -33,8 +33,8 @@ if [ "$(printf '%s\n%s\n' "${candidate%%[-+]*}" "$latest" | sort -V | tail -1)" 
   return 0
 fi
 rm -rf "$dir" && mkdir -p "$dir/x" \
-  && curl -fsSL --retry 3 -o "$dir/$SU_ARCHIVE" "https://github.com/cozy-creator/cozy-creator/releases/download/v$latest/$SU_ARCHIVE" \
-  && curl -fsSL --retry 3 -o "$dir/sha256.sum" "https://github.com/cozy-creator/cozy-creator/releases/download/v$latest/sha256.sum" \
+  && curl -fsSL --retry 5 --retry-all-errors -o "$dir/$SU_ARCHIVE" "https://github.com/cozy-creator/cozy-creator/releases/download/v$latest/$SU_ARCHIVE" \
+  && curl -fsSL --retry 5 --retry-all-errors -o "$dir/sha256.sum" "https://github.com/cozy-creator/cozy-creator/releases/download/v$latest/sha256.sum" \
   && (cd "$dir" && awk -v f="$SU_ARCHIVE" '{ n = $2; sub(/^\*/, "", n) } n == f' sha256.sum | sha256sum -c --strict -) \
   && tar -xzf "$dir/$SU_ARCHIVE" -C "$dir/x" --no-same-owner && bin=$(find "$dir/x" -type f -name cozy -print -quit) && [ -n "$bin" ] \
   && [ "$("$bin" --version)" = "cozy $latest" ] || { check "forward update: cozy $latest's $SU_ARCHIVE didn't check against its sha256.sum or run"; return 1; }
@@ -289,7 +289,7 @@ local latest=$SU_LATEST rel=$RUNNER_TEMP/offer-release port=$((20000 + RANDOM % 
 local asked="cozy $latest is out (this is 0.24.99). Update now? [Y/n]"
 rm -rf "$rel" && mkdir -p "$rel" || { check "update offer: $rel not made"; return; }
 for f in dist-manifest.json "$SU_ARCHIVE" "$SU_ARCHIVE.sigstore.jsonl"; do
-  curl -fsSL --retry 3 -o "$rel/$f" "https://github.com/cozy-creator/cozy-creator/releases/download/v$latest/$f" \
+  curl -fsSL --retry 5 --retry-all-errors -o "$rel/$f" "https://github.com/cozy-creator/cozy-creator/releases/download/v$latest/$f" \
     || { check "update offer: cozy $latest's $f not fetched"; return; }
 done
 (cd "$rel" && exec python3 -m http.server "$port" --bind 127.0.0.1 > "$OUT/offer-server.log" 2>&1) &
