@@ -392,7 +392,8 @@ A machine is this computer's (`local`, started when used), a rental, or another 
 - `GET /v1/machines[?refresh=true]`: `MachineList {machines, hubs, unanswered, signed_out, rentals}`. It lists
   every live machine, every live rental of this account among them: one another client ordered is reached with this
   computer's device key, reads `ordered: false` and takes no run that doesn't name it.
-  `refresh` lists every Hub again first. `rentals` sums the live rentals: count, `usd_micros_per_hour`, and
+  It answers the Hubs' last listing (kept across a restart; `hubs[].listed_at_ms` says when) at once; `refresh` lists every Hub again
+  beside the answer, one listing at a time, and the new one arrives as `machine.updated`. `rentals` sums the live rentals: count, `usd_micros_per_hour`, and
   `accrued_usd_micros` on its weakest `accrued_basis` (`accrued_floor` when some Hub said nothing).
   A machine's `status.activity` is what it does for this computer's runs besides their own work, as its Status says,
   and moves on `machine.updated`: each `Operation {id, kind: download|install, subject, stage?, bytes_done, bytes_total,
