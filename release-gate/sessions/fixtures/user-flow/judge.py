@@ -10,7 +10,8 @@ wait for a GPU are judged by their own lines. Placed right: machine B works whil
 GPU while a preferred one idles (cl-1073), a run takes every GPU of its machine. The page tells the truth: no page or console error; each take's tile names its phase (Downloading, then
 Rendering) with that phase's share and its machine, and a cancel (cl-1074); no MBps, no "0 of 0"; no CLI command in a toast (cl-1085);
 the take in Focus at its own shape (cl-1080); Calcifer never restarted; no page load nobody asked for (cl-1066); runs numbered from 1
-in a new project (cl-1075). The H3 edit's steps are not all dense (cl-1081)."""
+in a new project (cl-1075). The H3 edit's steps are not all dense (cl-1081). Prefetched: request 1, sent once the Shot's box says it's
+ready on A, downloads and installs nothing (cl-1104)."""
 import json
 import os
 import re
@@ -356,6 +357,16 @@ check('no page load nobody asked for (cl-1066)', unasked <= 1, f"{asked} asked, 
 if renting:
     numbers = sorted(r.number for r in rows if r.number)
     check("a new project's runs are numbered from 1 (cl-1075)", bool(numbers) and numbers[-1] < 100, ', '.join(r.run for r in rows))
+    # A tool attached, its box says it's ready on A beside Render; request 1, sent then, downloads nothing on its critical path and
+    # installs nothing (cl-1104: `weights.needs`, cl-1102's, is what it waited for; no Installing on its stream).
+    ready_on, request1 = obj(flow.get('ready_on')), next((r for r in rows if r.request == 1), None)
+    ready_said, machine_a = text(ready_on.get('said')), machines.get('A')
+    needs1 = num(obj(obj(obj(json.loads(json.dumps(request1.record.record))).get('measurements')).get('weights')).get('needs')) if request1 and request1.record else None
+    installed1 = bool(request1 and 'installing' in request1.first)
+    check("request 1, sent once its box said Ready on A, downloads and installs nothing (cl-1104)",
+          bool(ready_said) and bool(machine_a and machine_a.name and machine_a.name in ready_said) and needs1 == 0 and not (request1 and request1.dl_bytes) and not installed1,
+          f"its box said {ready_said or 'nothing'!r}" + (f" after {ready_on.get('waited_s')} s" if ready_said else '') + f"; its run waited for {fmt(needs1 / MIB if needs1 is not None else None, ' MiB')} of weights"
+          + (f", its stream said {request1.dl_bytes / GB:.1f} GB downloading" if request1 and request1.dl_bytes else '') + ('; it installed' if installed1 else '; no install'))
 
 # ---- Lean, per machine: what landed (TensorD's `landed` lines), what it holds, what its runs loaded.
 held_rows: list[Held] = []

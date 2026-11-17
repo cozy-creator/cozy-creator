@@ -1092,14 +1092,25 @@ impl Runs {
         if record.invocation.local_private.is_some() {
             return;
         }
-        let reads = crate::access::reads(&self.service.engine.store, selected);
-        if reads.is_empty() {
-            return;
-        }
         let sent = crate::journal::function_key(&record.invocation.package, &record.invocation.entrypoint);
         let entrypoint = std::slice::from_ref(&record.invocation.entrypoint);
         let timed = installation.and_then(|installation| crate::estimate::functions(&self.service, installation, entrypoint).pop()).map(|held| held.timed_as);
+        let before = self.service.engine.function_reads().unwrap_or_default();
         for function in timed.into_iter().filter(|timed| *timed != sent).chain([sent.clone()]) {
+            // Each checkpoint's components with those its function's runs here read of it before (cl-1104): another box of the
+            // function may read other parts of it (one slot a fine-tune's transformer, another the base's VAE).
+            let merged: Vec<(String, Vec<String>)> = (selected.iter())
+                .map(|(header, components)| {
+                    let read = before.iter().find(|(held, read)| *held == function && read.checkpoint == *header);
+                    let mut all: Vec<String> = read.map(|(_, read)| read.components.clone()).unwrap_or_default();
+                    all.extend(components.iter().filter(|component| !all.contains(component)).cloned().collect::<Vec<_>>());
+                    (header.clone(), all)
+                })
+                .collect();
+            let reads = crate::access::reads(&self.service.engine.store, &merged);
+            if reads.is_empty() {
+                continue;
+            }
             if let Err(error) = self.service.engine.record_reads(&function, &reads) {
                 tracing::warn!("run {id}: what it reads: {error}");
             }
@@ -1368,6 +1379,7 @@ impl Runs {
                 // its download ends for a run's need that has to make room.
                 let guessed = crate::ahead::guess(&caller).then(|| {
                     crate::ahead::brought(self.publisher.store(), &all_of(&reads), true);
+                    crate::ahead::needs(self.publisher.store(), &caller, &reads.needed);
                     self.record_reads(id, Some(&installation), &reads.needed);
                     crate::ahead::downloading(&stoppable.stop)
                 });
@@ -1571,8 +1583,10 @@ impl Runs {
         // A caller's guess: what nothing of is here yet is its own to bring, the first to go on a short disk (`ahead::brought`). What
         // it needs is its function's, as a run's is (`record_reads`): a quote of the function here counts what of that is still
         // to come, so the machine a guess made ready is quoted nothing to download (cl-1104).
-        if crate::ahead::guess(&self.service.engine.caller_id(id)) {
+        let caller = self.service.engine.caller_id(id);
+        if crate::ahead::guess(&caller) {
             crate::ahead::brought(self.publisher.store(), &all_of(reads), true);
+            crate::ahead::needs(self.publisher.store(), &caller, &reads.needed);
             self.record_reads(id, None, &reads.needed);
         }
         let free = crate::reclaim::Disk::measure(self.publisher.store().root())?.free();
@@ -1589,7 +1603,6 @@ impl Runs {
         for note in &lined.held_back {
             crate::private_io::warning(&self.service.engine, id, format_args!("{note}"));
         }
-        let caller = self.service.engine.caller_id(id);
         if listed && !ahead {
             self.account(id, lined.account);
         }

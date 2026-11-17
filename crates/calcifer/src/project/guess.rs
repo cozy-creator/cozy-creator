@@ -55,8 +55,9 @@ pub(super) fn keep(api: &Arc<Api>, project: &Arc<Project>) {
     runtime.spawn(async move {
         let (mut edits, mut closed) = (crate::events::edits(), CLOSED.subscribe());
         let (mut arrivals, mut machines) = (api.machines.arrivals.subscribe(), api.calcifer.machines_changed());
-        // Its revision as last guessed at; `stale`: something it's guessed from changed since.
-        let (mut read, mut stale) = (String::new(), true);
+        // Its revision and the machines' loads as last guessed at; `stale`: something it's guessed from changed since.
+        let (mut read, mut load, mut stale) = (String::new(), 0, true);
+        let loads = || api.machines.lists.load_moved.load(Ordering::Acquire);
         loop {
             if stale {
                 tokio::time::sleep(SETTLE).await;
@@ -66,6 +67,7 @@ pub(super) fn keep(api: &Arc<Api>, project: &Arc<Project>) {
                 arrivals.borrow_and_update();
                 machines.borrow_and_update();
                 read = super::revision(&project.folder.dir);
+                load = loads();
                 let guesses = guesses(&api, &project).await;
                 api.machines.lists.guess(&api.machines, &folder, guesses);
                 stale = false;
@@ -84,9 +86,11 @@ pub(super) fn keep(api: &Arc<Api>, project: &Arc<Project>) {
                     Ok(()) => stale = true,
                     Err(_) => break,
                 },
-                // A machine said its Status: guessed again only when one it's guessed on serves no more.
+                // A machine said its Status: guessed again when one it's guessed on serves no more, or a machine's load changed
+                // (cl-1104: a run began or ended there, or an update waits on its runs), so the one made ready is the one a render
+                // would go to now.
                 changed = machines.changed() => match changed {
-                    Ok(()) => stale = api.machines.lists.guess_left(&api.machines, &folder),
+                    Ok(()) => stale = loads() != load || api.machines.lists.guess_left(&api.machines, &folder),
                     Err(_) => break,
                 },
             }

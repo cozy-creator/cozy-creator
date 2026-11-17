@@ -1021,6 +1021,10 @@ pub struct ModelRef {
     /// unknown.
     #[serde(skip_serializing_if = "is_zero")]
     pub reads: u64,
+    /// The components its slot reads (cl-1104): of what a machine's runs of the function read of the checkpoint, those this job
+    /// fetches. None: all it reads of it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<String>,
 }
 
 /// What a job makes, in the units a function's time scales with; each unknown one is absent.
@@ -1341,7 +1345,7 @@ pub struct Timed {
     pub reads: Vec<Read>,
 }
 
-/// Of one model, the components a function's run read: their bytes, and of them those this machine lacks now.
+/// Of one model, the components a function's runs read: their bytes, and of them those this machine lacks now.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Read {
@@ -1351,6 +1355,30 @@ pub struct Read {
     pub checkpoint: String,
     pub bytes: u64,
     pub missing: u64,
+    /// Each component, as runs of the function read it (cl-1104): two boxes of one function may read different ones of a checkpoint,
+    /// and a quote of each counts its own (`ModelRef::components`). None: its header isn't here.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<ReadComponent>,
+}
+
+/// One component of a checkpoint a function reads: its bytes, and of them those this machine lacks now.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReadComponent {
+    pub name: String,
+    pub bytes: u64,
+    pub missing: u64,
+}
+
+impl Read {
+    /// Of what it names, the bytes of `components` and of them those missing; None when it doesn't name each of them. None asked: all.
+    pub fn of(&self, components: &[String]) -> Option<(u64, u64)> {
+        if components.is_empty() || self.components.is_empty() {
+            return Some((self.bytes, self.missing));
+        }
+        let parts: Vec<&ReadComponent> = self.components.iter().filter(|part| components.contains(&part.name)).collect();
+        (parts.len() == components.len()).then(|| (parts.iter().map(|part| part.bytes).sum(), parts.iter().map(|part| part.missing).sum()))
+    }
 }
 
 /// What one completed root took: its width, its size as its input said, its compute, and what it spent putting weights on its

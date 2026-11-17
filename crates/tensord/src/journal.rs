@@ -2125,10 +2125,10 @@ impl Journal {
         .collect()
     }
 
-    /// What `function`'s newest run here reads, in place of what the one before read (cl-967).
+    /// What `function`'s newest run here reads of each checkpoint, in place of what one before read of that one (cl-967), each kept
+    /// apart (cl-1104): two boxes of one function on different checkpoints are each quoted by what is here of their own.
     pub(crate) fn record_reads(&mut self, function: &str, reads: &[FunctionRead]) -> io::Result<()> {
         let tx = self.connection.transaction().map_err(db_error)?;
-        tx.execute("DELETE FROM function_reads WHERE function=?1", params![function]).map_err(db_error)?;
         for read in reads {
             tx.execute(
                 "INSERT OR REPLACE INTO function_reads(function,checkpoint,model,components,bytes) VALUES(?1,?2,?3,?4,?5)",

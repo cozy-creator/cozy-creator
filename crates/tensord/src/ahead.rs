@@ -52,6 +52,9 @@ static DOWNLOADING: LazyLock<(Mutex<Vec<(u64, Stop)>>, Condvar)> = LazyLock::new
 /// How long a run's need waits for the guesses it ended to let go of what they held.
 const LET_GO: Duration = Duration::from_secs(5);
 
+/// What each prepare item's run needs here, by its caller's id (`needs`): what its Status weighs it by once it ended (`standing`).
+static NEEDS: LazyLock<Mutex<HashMap<String, Vec<crate::journal::FunctionRead>>>> = LazyLock::new(Mutex::default);
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -95,6 +98,9 @@ pub(crate) fn put(runs: &Arc<Runs>, actor: VerifiedActor, prefix: &'static str, 
         .collect();
     let ids: Vec<String> = requests.iter().map(|request| request.id.clone()).collect();
     lock(&LISTED).insert((crate::runs::actor_id(actor), prefix), ids.clone());
+    // What no list names any more is weighed no more.
+    let named: Vec<String> = lock(&LISTED).values().flatten().cloned().collect();
+    lock(&NEEDS).retain(|id, _| named.contains(id));
     let dropped: Vec<String> = runs.live_ids(actor)?.into_iter().filter(|id| id.starts_with(prefix) && !ids.contains(id)).collect();
     // Noted before any is admitted: one in line at once is heard.
     static PUTS: AtomicU64 = AtomicU64::new(0);
@@ -179,6 +185,36 @@ pub(crate) fn make_way() {
     tracing::info!("{} guesses' downloads ended for a run that needs their room", stops.len());
     let held = |downloading: &mut Vec<(u64, Stop)>| downloading.iter().any(|(id, _)| ended.contains(id));
     drop(DOWNLOADING.1.wait_timeout_while(lock(&DOWNLOADING.0), LET_GO, held).unwrap_or_else(PoisonError::into_inner));
+}
+
+/// Run `caller` lines what it needs (`needed`): for a prepare item, what its Status weighs it by (`standing`).
+pub(crate) fn needs(store: &crate::storage::Store, caller: &str, needed: &crate::access::Selected) {
+    if guess(caller) {
+        lock(&NEEDS).insert(caller.to_owned(), crate::access::reads(store, needed));
+    }
+}
+
+/// The list items' runs `states` as their caller's Status says them. A prepare item whose run succeeded or was ended for a run's room
+/// (`make_way`) but lacks some of what it needs here now is `evicted` (cl-1104): no longer ready, and sent again under a new key its
+/// machine fetches it anew. `waiting` says why not yet: a run here goes first (`busy`), or what it lacks doesn't fit on the disk past
+/// its reserve, as a guess never makes room. Empty: it may come again now.
+pub(crate) fn standing(store: &crate::storage::Store, busy: bool, mut states: Vec<v1::RunState>) -> Vec<v1::RunState> {
+    let needs = lock(&NEEDS);
+    let free = || crate::reclaim::Disk::measure(store.root()).map_or(u64::MAX, |disk| disk.free());
+    for state in states.iter_mut().filter(|state| guess(&state.id) && matches!(state.state.as_str(), "succeeded" | "canceled")) {
+        let Some(reads) = needs.get(&state.id) else { continue };
+        let missing: u64 = reads.iter().map(|read| crate::access::missing(store, read)).sum();
+        if missing == 0 {
+            continue;
+        }
+        state.waiting = match (busy, free()) {
+            (true, _) => "the runs here go first".to_owned(),
+            (false, free) if missing > free => format!("room on the disk for {}", crate::reclaim::size(missing)),
+            _ => String::new(),
+        };
+        state.state = "evicted".to_owned();
+    }
+    states
 }
 
 /// `selected`'s checkpoints (header, components) came for a guess when nothing of them was here (`guessed`), or a call reads them

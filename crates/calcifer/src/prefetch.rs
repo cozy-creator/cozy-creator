@@ -84,6 +84,11 @@ pub(crate) struct Lists {
     /// there again later, it takes another, and its machine starts it anew.
     keys: Mutex<HashMap<(String, String), String>>,
     listings: AtomicU64,
+    /// A prepare item its machine says it lost was given a new key: the lists go again at its next Status (`seen`).
+    rekeyed: std::sync::atomic::AtomicBool,
+    /// By machine: what of its Status a quote of its load reads (`load`), and a count that moves whenever one's changes.
+    loads: Mutex<HashMap<String, (u64, u64)>>,
+    pub(crate) load_moved: AtomicU64,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -182,6 +187,9 @@ impl Lists {
     /// `machine` said its Status: what its lists concern it with goes now unless this boot of it was sent it (it came up since the
     /// lists were set, or started again and holds none).
     pub(crate) fn seen(&self, machines: &Arc<Machines>, machine: &str) {
+        if self.rekeyed.swap(false, Ordering::AcqRel) {
+            self.send(machines);
+        }
         let Some(frame) = machines.frame(machine) else { return };
         let concerned = {
             let planned = lock(&self.planned);
@@ -255,11 +263,28 @@ impl Lists {
     /// `machine`'s Status: each upcoming job's and each guess's row there moves with its item's run and the downloads it lists under
     /// it, and is ready once that run succeeded.
     pub(crate) fn observe(&self, machine: &str, frame: &v1::StatusFrame) {
+        self.weigh(machine, frame);
         let row_of = |id: &str, function: &str, names: Vec<String>| {
             let run = frame.ahead.iter().find(|run| run.id == id)?;
             let ops: Vec<&v1::Operation> = frame.activity.iter().filter(|op| op.runs.iter().any(|run| run == id)).collect();
             let downloads: Vec<&&v1::Operation> = ops.iter().filter(|op| op.kind == "download").collect();
             let ended = matches!(run.state.as_str(), "succeeded" | "failed" | "canceled");
+            // What it made ready went since (`evicted`, cl-1104): no longer ready, and fetched again once its machine says it may.
+            if run.state == "evicted" {
+                return Some(Row {
+                    ready: false,
+                    held_back: None,
+                    waiting: (!run.waiting.is_empty()).then(|| run.waiting.clone()),
+                    function: function.to_owned(),
+                    machine: machine.to_owned(),
+                    run: 0,
+                    names,
+                    stage: Some("fetching it again".to_owned()),
+                    done: 0,
+                    total: 0,
+                    guess: false,
+                });
+            }
             Some(Row {
                 ready: run.state == "succeeded",
                 // A fetch ahead that failed is no failure of the job: its own run makes it ready, and says so if that fails.
@@ -294,10 +319,60 @@ impl Lists {
             guessed.iter().filter(|(_, guesses)| on(guesses)).filter_map(|(folder, guesses)| Some((folder.clone(), guesses.first()?.project.upgrade()?))).collect()
         };
         for (folder, project) in guessing {
+            let mut lost = false;
             for (id, _, function, names) in self.rows(&folder).into_iter().filter(|(_, on, ..)| on == machine) {
                 if let Some(row) = row_of(&id, &function, names) {
                     project.jobs.guessed(&id, Row { guess: true, ..row });
                 }
+                // Its machine lost what it made ready, and may fetch it again now: listed under a new key, it is started anew.
+                if frame.ahead.iter().any(|run| run.id == id && run.state == "evicted" && run.waiting.is_empty()) {
+                    lost |= self.rekey(machine, &id);
+                }
+            }
+            if lost {
+                let now: HashSet<String> = self.rows(&folder).into_iter().map(|(id, ..)| id).collect();
+                project.jobs.guesses_kept(&now);
+                self.rekeyed.store(true, Ordering::Release);
+            }
+        }
+    }
+
+    /// The prepare item `machine`'s list names `id` takes a new key at its next listing. Whether it had that one.
+    fn rekey(&self, machine: &str, id: &str) -> bool {
+        let key = id.trim_start_matches(PREPARE);
+        let mut keys = lock(&self.keys);
+        let before = keys.len();
+        keys.retain(|(on, _), held| on != machine || held != key);
+        keys.len() != before
+    }
+
+    /// What of `machine`'s Status a quote of its load reads (cl-1104): the roots in its queue, each where it stands but for its bytes
+    /// still to come, the update it may wait on, its phase and its GPUs out of service. Where that changed, `load_moved` moves: each
+    /// open project's guesses are made again, so the machine made ready is still the one a render would go to.
+    fn weigh(&self, machine: &str, frame: &v1::StatusFrame) {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut loads = lock(&self.loads);
+        let was = loads.get(machine).copied();
+        // A stream sends its queue only when it changed: absent, as its last frame said.
+        let queue = match &frame.queue {
+            Some(queue) => {
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                for root in queue.iter().filter(|root| !root.run.starts_with(PREPARE) && !root.run.starts_with(UPCOMING)) {
+                    (&root.run, &root.function, root.running, root.width, root.gpu_waits, root.started_at_unix_ms).hash(&mut hasher);
+                }
+                hasher.finish()
+            }
+            None => was.map_or(0, |(queue, _)| queue),
+        };
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let update = frame.update.as_ref().map(|update| update.state.as_str());
+        let lost: Vec<_> = frame.gpus.iter().map(|gpu| &gpu.out_of_service).collect();
+        (queue, &frame.phase, update, lost).hash(&mut hasher);
+        let load = (queue, hasher.finish());
+        if was != Some(load) {
+            loads.insert(machine.to_owned(), load);
+            if was.is_some() {
+                self.load_moved.fetch_add(1, Ordering::AcqRel);
             }
         }
     }
