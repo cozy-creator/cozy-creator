@@ -260,8 +260,8 @@ fn asked(key: &str) {
 async fn read_local(api: &Arc<Api>, hub: &str, named: Vec<(String, PathBuf)>) -> Vec<Tool> {
     let scope = private_io::current();
     let private = scope.is_some();
-    // Each function is read at once, the static describer's reading kept in its project by its tree, and a read goes on past a list
-    // that stops waiting for it (its caller gone, or late): the next list has it.
+    // Each function is read at once, the static describer's reading kept in its project by its tree. What's known answers now; one
+    // read anew goes on past the list and is told as `tools.changed` once it lands, and the next list has it.
     let reads: Vec<_> = named.into_iter().map(|(written, path)| {
         let (api, hub, scope) = (api.clone(), hub.to_owned(), scope.clone());
         tokio::spawn(private_io::context(scope.clone(), async move {
@@ -273,10 +273,24 @@ async fn read_local(api: &Arc<Api>, hub: &str, named: Vec<(String, PathBuf)>) ->
             (written, described)
         }))
     }).collect();
-    let late = tokio::time::Instant::now() + LOCAL_LATE;
+    let now = tokio::time::Instant::now() + LOCAL_NOW;
     let mut tools = vec![];
-    for read in reads {
-        let Ok(Ok((written, described))) = tokio::time::timeout_at(late, read).await else { continue };
+    for mut read in reads {
+        let (written, described) = match tokio::time::timeout_at(now, &mut read).await {
+            Ok(Ok(read)) => read,
+            Ok(Err(_)) => continue,
+            Err(_) => {
+                // Only a reading that lists something, kept by then: one that can't be listed would be read and told again forever.
+                tokio::spawn(async move {
+                    if let Ok((_, Ok((_, document)))) = read.await
+                        && Interface::parse(&document).is_ok()
+                    {
+                        crate::events::tools_changed();
+                    }
+                });
+                continue;
+            }
+        };
         let (package, document) = match described {
             Ok(described) => described,
             Err(why) => {
@@ -303,9 +317,9 @@ fn staged(api: &Api, scope: Option<&private_io::Scope>, path: &Path) -> Result<a
     local_code::own(api, path)
 }
 
-/// How long a list waits for the local functions its project's boxes name to be read: the page reads the list again once when a box
-/// names one, so it waits for the reading. One read later still is listed by a later list.
-const LOCAL_LATE: Duration = Duration::from_secs(60);
+/// How long a list waits for the local functions its project's boxes name to be read: one whose reading is kept answers within it,
+/// and one read anew never holds the list (a palette stood empty 15 s while one was read, e2e 44103425048); its landing is told.
+const LOCAL_NOW: Duration = Duration::from_millis(250);
 /// How many of them are read at once.
 static LOCAL_READS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 
