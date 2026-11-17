@@ -2780,6 +2780,15 @@ impl Journal {
         })
     }
 
+    /// The machine ends speculative run `id` (cl-1123 D): its cancel recorded as `cancel_observed` records it, its commit not waiting
+    /// for the disk. A crash loses the run anyway, and its draft runs again.
+    pub(crate) fn cancel_unsynced(&mut self, id: &str, actor: &str) -> io::Result<Execution> {
+        self.connection.pragma_update(None, "synchronous", "OFF").map_err(db_error)?;
+        let canceled = self.cancel_observed(id, actor, None);
+        self.connection.pragma_update(None, "synchronous", "FULL").map_err(db_error)?;
+        canceled
+    }
+
     /// A run's children that have not finished.
     pub(crate) fn children(&self, parent: &str) -> io::Result<Vec<Execution>> {
         let mut statement = self
