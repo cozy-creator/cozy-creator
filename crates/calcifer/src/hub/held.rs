@@ -194,7 +194,12 @@ async fn keep(api: &Arc<Api>, hub: &str, package: &str, release: &str) -> Result
         if crate::runs::files::held(&digest).is_some() {
             continue;
         }
-        if let Err(e) = fetch(wheel, roots.as_deref()).await {
+        // A Hub index's file, wherever the lock's Hub named itself, is read where this computer reaches that Hub.
+        let at = match wheel.url.split_once("/v1/index/") {
+            Some((_, rest)) => Wheel { url: format!("{}/v1/index/{rest}", hub.trim_end_matches('/')), ..wheel.clone() },
+            None => wheel.clone(),
+        };
+        if let Err(e) = fetch(&at, roots.as_deref()).await {
             tracing::warn!("{package} {release}: {} isn't held here yet: {e}", wheel.name);
         }
     }
