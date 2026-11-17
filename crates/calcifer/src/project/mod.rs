@@ -1254,35 +1254,35 @@ fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_c
         } else { kept_identity(&known.path).is_some_and(|(held, _)| held == id) }
     });
     let copied = |id: &str| original(id).is_some();
-    // An encrypted copy unlocked under an id of its own (cl-1066, `vault::copy_of`): its key file names it, its database still the
-    // original's, which another folder holds. It takes that id as a plain copy takes a fresh one.
+    // An encrypted copy unlocked under an id of its own (cl-1066, `vault::copy_of`): its key file, which its storage is encrypted to, names
+    // it; its database still names its original's.
     let mut rekeyed = None;
     if encrypted {
         let keybag = project_vault::Keybag::load(&logical.join(project_vault::KEYBAG_FILE))
             .map_err(|_| Error::new(Kind::Conflict, "vault_identity", "Cozy can't read this locked project's key file."))?;
         let own = keybag.info().project_id;
         match &kept {
-            Some((id, _)) if id != &own && copied(id) => rekeyed = Some(own),
+            None => return Err(Error::new(Kind::Conflict, "vault_identity", "This locked project's id doesn't match its key file.")),
             Some((id, _)) if id == &own => {
                 if copied(&own) {
                     return Err(Error::new(Kind::Conflict, "vault_copy", "Another folder already holds this locked project. Open that one, or move its folder here instead."));
                 }
             }
-            _ => return Err(Error::new(Kind::Conflict, "vault_identity", "This locked project's id doesn't match its key file.")),
+            Some((id, _)) => rekeyed = Some((own, vault::holder(api, id, &logical))),
         }
     }
-    let (id, copy_of) = match &kept {
-        Some((id, _)) if rekeyed.is_some() => (rekeyed.clone().expect("checked"), original(id)),
-        Some((id, _)) => match original(id) {
+    let (id, copied_from) = match (&kept, rekeyed) {
+        (_, Some((own, from))) => (own, Some(from.map_or_else(|| "another project".to_owned(), |path| format!("the project in {}", path.display())))),
+        (Some((id, _)), None) => match original(id) {
             None => (id.clone(), None),
-            Some(original) => (fresh_id(), Some(original)),
+            Some(original) => (fresh_id(), Some(format!("{} ({})", original.name, original.path.display()))),
         },
-        None => return Err(Error::new(Kind::Validation, "project_identity", format!("{} has no project id, so Cozy can't open it as a project.", dir.join(db::DB).display()))),
+        (None, None) => return Err(Error::new(Kind::Validation, "project_identity", format!("{} has no project id, so Cozy can't open it as a project.", dir.join(db::DB).display()))),
     };
     // Its name is its folder's (cl-1097): the index lists it so, and a folder renamed, here or by hand, renames it.
     let name = unique_name(api, &id, dir, folder_name(&logical))?;
-    if let Some(original) = copy_of {
-        let said = format!("{} is a copy of {} ({}), so Cozy opened it as a separate project called {name}.", logical.display(), original.name, original.path.display());
+    if let Some(from) = copied_from {
+        let said = format!("{} is a copy of {from}, so Cozy opened it as a separate project called {name}.", logical.display());
         tracing::info!("{said}");
         COPIES.lock().expect("copies lock").insert(logical.clone(), said);
     }

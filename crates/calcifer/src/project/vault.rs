@@ -602,16 +602,26 @@ pub(crate) fn sweep_runtime(calcifer: &FsPath) -> bool {
     clean
 }
 
-/// Where the project `root`'s key file names lives too, when `root` is a copy of it: its original's folder, registered by that id
-/// and holding a key file of the same id, or another location of it unlocked now. A copy is never mounted under that id.
+/// The folder `root` is a copy of (cl-1066): another holding a key file of the same project id ([`holder`]), the locked ones only while
+/// `root` is new here (the index keeps only a locked project's folder). Of two folders it lists, both locked, the first unlocked keeps the
+/// id. A copy is never mounted under it.
 fn copy_of(api: &Api, root: &FsPath, keybag: &Keybag) -> Result<Option<PathBuf>, Error> {
-    let id = keybag.info().project_id;
-    if let Some(known) = api.calcifer.maintenance_store().known_project(&id).map_err(|e| error("vault_journal", e))? {
-        if known.path != root && Keybag::load(&known.path.join(KEYBAG_FILE)).is_ok_and(|other| other.info().project_id == id) {
-            return Ok(Some(known.path));
-        }
-    }
-    Ok(KEY_ROOTS.lock().expect("vault project roots").get(&id).filter(|known| *known != root && held(known).is_some()).cloned())
+    let known = api.calcifer.maintenance_store().known_projects().map_err(|e| error("vault_journal", e))?;
+    let new_here = !known.iter().any(|entry| entry.path == root);
+    Ok(holding(&known, &keybag.info().project_id, root, new_here))
+}
+
+/// Another folder than `except` holding project `id`'s key file: unlocked now, opened under that id, or locked in the index.
+pub(super) fn holder(api: &Api, id: &str, except: &FsPath) -> Option<PathBuf> {
+    let known = api.calcifer.maintenance_store().known_projects().ok()?;
+    holding(&known, id, except, true)
+}
+
+fn holding(known: &[crate::state::KnownProject], id: &str, except: &FsPath, locked: bool) -> Option<PathBuf> {
+    let same = |path: &FsPath| path != except && Keybag::load(&path.join(KEYBAG_FILE)).is_ok_and(|other| other.info().project_id == id);
+    KEY_ROOTS.lock().expect("vault project roots").get(id).filter(|root| *root != except && held(root).is_some()).cloned()
+        .or_else(|| known.iter().find(|entry| entry.id == id && same(&entry.path)).map(|entry| entry.path.clone()))
+        .or_else(|| known.iter().find(|entry| locked && entry.id.starts_with("locked-") && same(&entry.path)).map(|entry| entry.path.clone()))
 }
 
 fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &VaultAsk) -> Result<(), Error> {
