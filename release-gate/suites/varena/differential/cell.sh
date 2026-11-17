@@ -1,7 +1,8 @@
 # differential: a model must not know what its memory went through, and one request is one answer. Sourced by cells.sh.
 # Each model runs the same request and seed in each arm, so Paul's unique-request rule doesn't apply: this is correctness,
 # not a benchmark. Arms run in turn, because swapping a package's source ends its executors, and each second call is a
-# real warm repeat: the copies have call memoization stripped, and hook.py records digests of latents and outputs.
+# real warm repeat: the copies have call memoization stripped, and hook.py arms the Runtime's gate seam
+# (`cozy_runtime.differential`, Runtime 0.48 and later), which records digests of latents and outputs.
 #   repeat   base 1 against base 2, warm: byte-identical
 #   checks   vt.checks on, every idle pool unmapped before each use, scratch pages, freed blocks and reused ones perturbed,
 #            guards between large blocks: its calls against base's, byte for byte. `uses` must have reached a pool,

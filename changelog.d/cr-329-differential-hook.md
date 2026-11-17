@@ -1,0 +1,1 @@
+The varena suite's differential cells run on Runtime 0.48: their hook arms the Runtime's gate seam (`cozy_runtime.differential.arm`) instead of importing its internals, which the package contract refuses (cr-329).
