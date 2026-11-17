@@ -53,6 +53,9 @@ test('restart', { tag: '@solo' }, async ({ context, page, project, api, cli, sig
   guards.allow({ test: (line) => stopped && away.test(line) });
   // A stopping Calcifer admits no write: the tab's word of what it shows, as its project locks for the stop.
   guards.allow({ test: (line) => stopped && /status of 503\b.*\/v1\/events\//.test(line) });
+  // The stop's last events (its project locked) can be read after the next Calcifer listens (100 ms on, here): what the tab then says it
+  // shows, on the stream that ended, the new one doesn't know (404 stream_unknown), and the tab tells its new stream (44023680476).
+  guards.allow({ test: (line) => stopped && /status of 404\b.*\/v1\/events\/stream-[0-9a-f]+$/.test(line) });
 
   try {
     await test.step('what is typed as cozy locks the project is saved first', async () => {
