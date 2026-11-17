@@ -1,6 +1,7 @@
 # run-overhead (cl-1172): a warm run's time outside its compute on a rental of $SKU, this runner's Calcifer driving it, as
-# e2e/cli/overhead.sh measures it on this computer: N warm repeats each of minimax-h3-tools' echo (no model) and Qwen3.5's write on
-# the real 0.8B (a model held on the GPU), each `cozy run` timed from its start to its exit, less its record's execution time.
+# e2e/cli/overhead.sh measures it on another computer's machine: N warm repeats each of qwen3's caption (a new picture each) and
+# write on the real 0.8B (a model held on the GPU), each `cozy run` timed from its start to its exit, less its record's execution
+# time; and the link's round trip (its TCP connect), to say the rest in round trips.
 # The rental runs this session's cozy as its TensorD (pod-session `cozy`: a dev-build run), and `runtime` (a cozy-runtime dev-build
 # run id) when given, else the RC's.
 # Without `rent`, $0: the quote, and the checks before it.
@@ -45,12 +46,16 @@ for _ in $(seq 180); do
   sleep 5
 done
 say "on: $(jq -r '"cozy \(.status.version) · Runtime \(.status.runtime) · " + ([.status.gpus[] | "GPU \(.index) \(.name)"] | join(", "))' "$OUT/show-held.json")"
-say "ping: $(ping -c 5 -q "$(jq -r '.address // .endpoint // empty' "$OUT/show-held.json" | sed -E 's#^[a-z]+://##; s#[:/].*$##')" 2> /dev/null | tail -1)"
-OVERHEAD_ON=$NAME
-overhead_of echo minimax-h3-tools/echo text
-overhead_of write qwen3.5/write instructions --model model=qwen/qwen3.5-0.8b@0.1.0 max_tokens:=4 seed:=7 temperature:=0
-cat "$OUT"/overhead-echo.txt "$OUT"/overhead-write.txt >> "$R" 2> /dev/null
+# The link's round trip: TCP connects to its TensorD, the fastest of five.
+address=$(jq -r '.address // empty' "$OUT/show-held.json")
+RTT_MS=$(for _ in 1 2 3 4 5; do curl -sk -o /dev/null -m 5 -w '%{time_connect}\n' "https://$address/v1/health"; done | sort -n | head -1 | awk '{printf "%d", $1 * 1000}')
+say "link: $address, round trip ${RTT_MS:-?} ms (TCP connect)"
+OVERHEAD_ON=$NAME OVERHEAD_MS=$((300 + OVERHEAD_TRIPS * ${RTT_MS:-0}))
+qwen=(--model "model=${OVERHEAD_MODEL:-huihui-ai/huihui-qwen3.5-0.8b-abliterated@0.1.0}" max_tokens:=4 seed:=7 temperature:=0)
+overhead_of caption qwen3/caption picture "${qwen[@]}"
+overhead_of write qwen3/write instructions "${qwen[@]}"
+cat "$OUT"/overhead-caption.txt "$OUT"/overhead-write.txt >> "$R" 2> /dev/null
 [ ! -f /tmp/cozy-hops.log ] || cp /tmp/cozy-hops.log "$OUT/hops.log"
 cozy machine logs "$NAME" --since 2h -n 0 > "$OUT/machine.log" 2>&1
-{ echo "## run-overhead on $NAME ($SKU)"; tail -qn 1 "$OUT"/overhead-echo.txt "$OUT"/overhead-write.txt 2> /dev/null | sed 's/^/- /'; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+{ echo "## run-overhead on $NAME ($SKU)"; tail -qn 1 "$OUT"/overhead-caption.txt "$OUT"/overhead-write.txt 2> /dev/null | sed 's/^/- /'; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 exit "$RC"
