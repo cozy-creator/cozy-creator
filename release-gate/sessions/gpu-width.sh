@@ -87,7 +87,13 @@ arm() {
   local a=$1 bin=$2
   step "$a-tensord" machine update "$NAME" --tensord "$bin" -y || fail "$a: the pod refused its TensorD"
   ours "$a" "$bin" start
-  say "$a: TensorD $(cozy machine show "$NAME" --json | jq -r .status.version)"
+  # Its TensorD swapped, the old one's executors still hold the GPUs a few seconds (out of service): a lone run then would see one.
+  local t
+  for t in $(seq 120); do
+    cozy machine show "$NAME" --json 2> /dev/null | jq -e '[.status.gpus[]? | select((.out_of_service // "") != "")] | length == 0' > /dev/null && break
+    sleep 1
+  done
+  say "$a: TensorD $(cozy machine show "$NAME" --json | jq -r .status.version), both GPUs in service after ${t} s"
   send "$a-lone"
   settled "$a-lone"; facts "$a" "$a-lone"
   ours "$a" "$bin" hold
