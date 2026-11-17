@@ -1,0 +1,62 @@
+{
+ "tree": "pk",
+ "renders": [
+  {
+   "name": "m-back",
+   "tool": "minimax-h3-image/probe",
+   "files": {
+    "picture": "fixture:m-panel-full.png"
+   },
+   "fields": {
+    "text": "<panel> is a black-and-white manga panel. Draw the same frozen instant again from another camera position: the camera has moved halfway around the swordswoman, 180 degrees, and looks at her from directly behind, at the same height and distance. We see her back: the back of her short black bob, the long scarf hanging down her back, and the sheathed katana at her left hip, now on the left of the panel. Beyond her, the street recedes the other way, with more shop fronts and lanterns. Keep her face, hair, clothing, proportions and the black-and-white ink and screentone drawing style exactly as in <panel>. No text, no speech bubbles, no panel border.",
+    "megapixels": 4,
+    "seed": 152014
+   }
+  },
+  {
+   "name": "x-rooftop",
+   "tool": "minimax-h3-image/probe",
+   "fields": {
+    "text": "An anime-style city rooftop at sunset, background art with no people: a concrete floor, a low railing, a water tank, air-conditioning units, the city skyline and an orange and purple sky. Detailed painted background, soft cel shading, no text.",
+    "aspect_ratio": "16:9",
+    "megapixels": 4,
+    "seed": 152031
+   }
+  },
+  {
+   "name": "m-face",
+   "tool": "minimax-h3-image/probe",
+   "files": {
+    "picture": "fixture:m-panel-full.png"
+   },
+   "fields": {
+    "text": "<panel> is a black-and-white manga panel. Draw a close-up panel of the same swordswoman's face, from the front at eye level: her face and the top of her shoulders fill the panel, short black bob, determined expression, the high collar of her jacket. Keep her face, hair, clothing, proportions and the black-and-white ink and screentone drawing style exactly as in <panel>. No text, no speech bubbles, no panel border.",
+    "megapixels": 4,
+    "seed": 152015
+   }
+  },
+  {
+   "name": "x-tall-panel",
+   "tool": "minimax-h3-image/probe",
+   "fields": {
+    "text": "A single tall panel from a black-and-white Japanese manga, drawn with crisp black ink lines and grey screentone on white paper: a young samurai in a hakama and a haori stands in a bamboo forest, full body, front view at eye level, one hand on the sword at his hip, tall bamboo stalks rising on both sides and light falling through the leaves. Clean, confident linework, cross-hatching in the shadows. No text, no speech bubbles, no sound effects, no panel border.",
+    "aspect_ratio": "9:16",
+    "megapixels": 4,
+    "seed": 152032
+   }
+  },
+  {
+   "name": "m-right2",
+   "tool": "minimax-h3-image/probe",
+   "files": {
+    "picture": "fixture:m-panel-full.png"
+   },
+   "fields": {
+    "text": "<panel> is a black-and-white manga panel of a swordswoman standing in a street. Draw the same frozen instant as a camera standing at her right side would see it, 90 degrees round her from where the original camera stood, at the same height and distance. From there the street runs straight across the panel from left to right, so the background is now the shop fronts on one side of the street, seen face-on and flat behind her, not receding into the distance. She is seen in right profile, facing the right edge of the panel, her pose unchanged. Keep her face, hair, clothing, proportions and the black-and-white ink and screentone drawing style exactly as in <panel>. No text, no speech bubbles, no panel border.",
+    "megapixels": 4,
+    "seed": 152016
+   }
+  }
+ ],
+ "seconds": 3600
+}
