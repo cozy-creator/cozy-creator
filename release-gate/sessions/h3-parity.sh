@@ -111,7 +111,8 @@ grep -q 'reach https://huggingface.co ok' "$OUT/pod.txt" || fail "$NAME cannot r
 ram=$(awk '/^Mem:/{print $2; exit}' "$OUT/pod.txt")
 [ "${ram:-0}" -ge 96 ] || fail "$NAME has ${ram:-?} GiB of RAM; the upstream side needs about 96 or more"
 # The upstream environment and both phases' weights, downloading beside our runs.
-pod "cd /root/parity && setsid nohup bash pod_setup.sh > setup.out 2>&1 < /dev/null &" < /dev/null || fail "pod_setup not started"
+# `a && b &` would background the whole list, its shell holding SSH's output open: only the launch is backgrounded.
+pod "cd /root/parity || exit 1; setsid nohup bash pod_setup.sh > setup.out 2>&1 < /dev/null &" < /dev/null || fail "pod_setup not started"
 
 # prompt <name>: the encoder prompt of our H3 run (its log's head and tail, whole while it is at most 800 characters, checked
 # against its digest), else the image result's own `prompt`.
@@ -196,7 +197,7 @@ upstream() {
     pod "cat > /root/parity/$key.json" < "$OUT/upstream/$key.json" || { say "FAIL upstream $key: spec not sent"; bad=1; continue; }
     local script; script=$([ "$phase" = video ] && echo upstream_h3.py || echo upstream_image.py)
     say "upstream $key: $(jq -c '[.cases[] | {name, seed} + (if .short_edge then {short_edge} else {} end)]' <<<"$spec")"
-    pod "cd /root/parity && rm -f $key.done && setsid nohup bash -c 'HF_HUB_OFFLINE=1 /root/up/bin/python $script $key.json > $key.log 2>&1; echo \$? > $key.done' > /dev/null 2>&1 < /dev/null &" < /dev/null ||
+    pod "cd /root/parity || exit 1; rm -f $key.done; setsid nohup bash -c 'HF_HUB_OFFLINE=1 /root/up/bin/python $script $key.json > $key.log 2>&1; echo \$? > $key.done' > /dev/null 2>&1 < /dev/null &" < /dev/null ||
       { say "FAIL upstream $key: not started"; bad=1; continue; }
     t=0
     until pod "test -f /root/parity/$key.done" < /dev/null 2> /dev/null; do
