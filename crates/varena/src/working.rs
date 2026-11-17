@@ -341,6 +341,49 @@ pub(crate) struct State {
     // Freed workspaces by (stream, address): a graph on that stream may still name them.
     parked_workspaces: BTreeSet<(u64, u64)>,
     escapes: escape::Escapes,
+    /// The last allocation refused here, as it found the card (`refusal`).
+    refusal: Option<Refusal>,
+}
+
+/// The room an allocation varena refused found, read as it was refused, its caller's pins still
+/// held: what an out-of-memory line says. Read after the caller's frames unwound, the pins were
+/// gone, and Qwen3.6 reported "0.0 GiB of weights in use" with all 45.2 GiB pinned (cr-319).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Refusal {
+    pub requested: usize,
+    /// The card or its cap, less what is outside our bytes.
+    pub capacity: usize,
+    pub working_live: usize,
+    /// Weight bytes held for use (pinned), and all weight region bytes.
+    pub pinned: usize,
+    pub weights_resident: usize,
+    pub pools: usize,
+    pub caches: usize,
+    /// Every lever of the reclaim order was tried first; false for a graph pool's own shortfall.
+    pub offered: bool,
+}
+
+impl Refusal {
+    fn read(owner: &Device, state: &State, requested: usize, offered: bool) -> Self {
+        let mut caches = WorkingStats::default();
+        cache::working_stats(state, owner.page(), &mut caches);
+        Self {
+            requested,
+            capacity: owner.total.load(Ordering::Acquire).min(owner.capacity()),
+            working_live: state.blocks.values().filter(|b| b.life == Life::Live && !b.scratch).map(|b| b.capacity).sum(),
+            pinned: owner.held.load(Ordering::Acquire),
+            weights_resident: owner.pages.load(Ordering::Acquire),
+            pools: state.segments.values().filter(|s| s.pool.is_some() && s.backed()).map(|s| s.bytes).sum(),
+            caches: caches.cache_mapped_bytes,
+            offered,
+        }
+    }
+}
+
+/// The last refusal on `device` since the last read, taken: None when none came since.
+pub fn refusal(device: i32) -> Result<Option<Refusal>> {
+    let Some(owner) = existing(device)? else { return Ok(None) };
+    Ok(owner.lock()?.refusal.take())
 }
 
 impl State {
@@ -1546,6 +1589,7 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
                 return Ok(Device::activate(&mut state, ptr, bytes, escape::UNNAMED));
             }
             state.stats.ooms += 1;
+            state.refusal = Some(Refusal::read(owner, &state, bytes, false));
             let session = state.pools.get_mut(&id).expect("routed pool");
             session.short = session.short.max(bytes);
             return Err(Error::OutOfMemory {
@@ -1585,6 +1629,7 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
     if matches!(result, Err(Error::OutOfMemory { .. } | Error::Exhausted { .. })) {
         let mut state = owner.lock()?;
         state.stats.ooms += 1;
+        state.refusal = Some(Refusal::read(owner, &state, bytes, true));
         state.escapes.refused(owner.owned().saturating_add(bytes), escape::room_held(owner));
         split::refused(&mut state, bytes, stream);
     }

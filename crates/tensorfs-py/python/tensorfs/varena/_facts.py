@@ -110,6 +110,17 @@ class Room(TypedDict):
     free: int
 
 
+class Refusal(TypedDict):
+    requested: int
+    capacity: int
+    working_live: int
+    pinned: int
+    weights_resident: int
+    pools: int
+    caches: int
+    offered: int
+
+
 class WorkingStats(TypedDict):
     weights_resident: int
     weights_filled: int
