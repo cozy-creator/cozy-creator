@@ -561,7 +561,7 @@ impl<'a> Follow<'a> {
             let mut error = job.error.clone().unwrap_or_else(|| Error::new(Kind::Unavailable, "render_stopped", format!("{} {}", job.asset, job.why.clone().unwrap_or_else(|| "stopped".into()))));
             error.message = format!("{} did not render: {}", and(&names), own(&job.asset, &error.message));
             if error.next.is_empty() && let Some(run) = job.run {
-                error = error.next(format!("cozy run show {run}"));
+                error = error.next(format!("cozy run watch {run} --once"));
             }
             return Err(error);
         }

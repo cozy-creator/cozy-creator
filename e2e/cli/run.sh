@@ -728,9 +728,10 @@ case $SHARD in
   plan) parts="estimate_line plan_picks plan_published plan_update plan_fetch prepare_ahead logs" ;;
   # A box's tool gets its machine ready before Render (cl-1104): a guess switched, a request sent meanwhile, a box deleted.
   prefetch) parts="prefetch_switch prefetch_ready prefetch_yields logs" ;;
-  entrypoints) parts="entrypoints" ;;
+  entrypoints) parts="entrypoints hint_commands" ;;
   commands) parts="
     entrypoints
+    hint_commands
     outside_refuses
     catalog
     basics
