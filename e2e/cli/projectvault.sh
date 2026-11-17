@@ -706,6 +706,21 @@ vault_swapped() (
   rm -rf -- "$secrets" "$S"
 )
 
+# cl-1113, Paul 11-16: "it should be overlapping (v1 → v2) so I never have downtime." `cozy restart` on a busy Calcifer with an
+# encrypted project unlocked: nothing refused, the stream back within 1 s, the project still unlocked; then onto a cozy that can't
+# start: the running one serves on, its binary put back (swap.py). On Windows, WinFsp first, as vault_native installs it.
+swap_overlap() (
+  step "a Calcifer swap without downtime, busy, an encrypted project unlocked; then onto a cozy that can't start (cl-1113)"
+  local py
+  py=$(command -v python3 || command -v python) || fail "swap: no python"
+  if [ "${RUNNER_OS:-}" = Windows ]; then
+    cozy --json doctor --fix > "$OUT/swap-doctor.json" 2> "$OUT/swap-doctor.err" || true
+  fi
+  ARGV_LOG="$OUT/argv.log" "$py" "$E2E/cli/swap.py" --cozy "$COZY" --out "$OUT/swap" \
+    || fail "swap: $(jq -c '.failed // .' "$OUT/swap/results.json" 2> /dev/null | tail -c 1500)"
+  echo "swap: $(jq -c '{fresh: .swap.fresh.asked, kept: .swap.kept.asked, again: .swap.kept.again, gaps: .swap.stream.gaps_s, slowest: [.swap.fresh.slowest_s, .swap.kept.slowest_s], restart_s: .swap.restart.s}' "$OUT/swap/results.json")"
+)
+
 # cl-1049: an encrypted project on this runner's OS through cozy and its Calcifer (vault_native.py): made, written, locked, unlocked
 # by passphrase and by recovery secret, read back each time. On Windows, `cozy doctor --fix` installs WinFsp first, as an
 # administrator's would; its exit isn't the cell's.
