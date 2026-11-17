@@ -1,0 +1,1 @@
+A run sent again, its machine lost under it or its GPU failed, says which attempt and why, "attempt 2 of 3: stand-r shut down" (cl-1173): its record's `retry`, its take's tile (first line), its page ("Attempt"), `cozy run ls` (before its progress, while it goes) and `cozy run watch` (its status line; `--once` and its end record keep it). Nothing on a first attempt.

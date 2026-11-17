@@ -1,4 +1,4 @@
-import type { Progress, Run, Stalled } from "../../api/calcifer"
+import type { Progress, Retry, Run, Stalled } from "../../api/calcifer"
 import { ordinal, shown, span, usd } from "../format"
 import stages from "./stages.json"
 
@@ -9,6 +9,9 @@ export const runName = (run: Run) => run.name || String(run.number)
 
 /** A job's target says what it does (`install …`, `remove …`, a download's `file → model`), but an update's names only its parts. */
 export const target = (run: Run) => (run.kind === "update" ? `update ${shown(run.target)}` : shown(run.target))
+
+/** Sent again, its machine lost or its GPU failed (cl-1173): `attempt 2 of 3: stand-r shut down`. */
+export const attemptWords = (retry: Retry) => `attempt ${retry.attempt} of ${retry.attempts}${retry.why ? `: ${retry.why}` : ""}`
 
 /** `Canceling` once a cancel is asked; a waiting run's place in its line. */
 export function statusWord(run: Run): string {
