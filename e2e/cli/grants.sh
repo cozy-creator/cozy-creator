@@ -2,9 +2,10 @@
 # that moves no bytes for 43 minutes is a hang, and the product notices it and recovers: retry, another source, a clear one-line error.
 # cr-323's pod-session 44139328775 (chunhwa, 11-17) sat 42 minutes at "choosing the model for lone_probe.models.vae_encoder", its model
 # named by hash, until it was cancelled by hand: its capability granted a read the one TensorD held didn't, so its reads waited for a
-# redemption the renewal asked again forever, saying nothing. Here the isolated Hub's ingress takes those redemptions and answers nothing
-# (COZY_TEST_HUB_HOLD, e2e/skew/ingress.go): e2e/final-model 0.2.0-rc.1, installed on local by its checkpoint's hash, says what it waits
-# on with each attempt, and once they run out reads anonymously (it's public) and lands, within GRANT_S.
+# redemption, and the renewal never asked again after one ask the Hub didn't answer, saying nothing. Here the isolated Hub's ingress
+# takes those redemptions and answers nothing (COZY_TEST_HUB_HOLD, e2e/skew/ingress.go): e2e/final-model 0.2.0-rc.1, installed on local
+# by its checkpoint's hash, says what it waits on with each attempt, and once they run out reads anonymously (it's public) and lands,
+# within GRANT_S.
 GRANT_S=240
 
 # grant_held: how many redemptions the ingress has held so far.
