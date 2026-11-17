@@ -10,7 +10,8 @@ if [ -n "$pkgs" ]; then
   for dep in $(sed -n 's/^\([A-Za-z0-9._-]*\) *= *{ *index *= *"tensorhub" *}.*$/\1/p' "$copy/pyproject.toml"); do
     at=$(grep -lx "name = \"$dep\"" "$pkgs"/*/pyproject.toml 2> /dev/null | head -n 1) || true
     [ -n "$at" ] || continue
-    sed -i "s|^$dep *= *{ *index *= *\"tensorhub\" *}.*\$|$dep = { path = \"$(cd "$(dirname "$at")" && pwd)\" }|" "$copy/pyproject.toml"
+    # Relative, as cozy sends a path dependency beside the package: an absolute one names a folder only this computer has.
+    sed -i "s|^$dep *= *{ *index *= *\"tensorhub\" *}.*\$|$dep = { path = \"$(realpath --relative-to="$copy" "$(dirname "$at")")\" }|" "$copy/pyproject.toml"
   done
 fi
 echo "$copy"
