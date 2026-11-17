@@ -52,6 +52,10 @@ HOST_LEGS, SLOW_HOST, HOST_FLOOR_MS = ('package_import', 'cuda_init'), 2, 250
 fails: list[str]
 notes: list[str]
 fails, notes = [], []
+# Cells gate.sh stopped after N sampler steps (stop_cell, xs-208): canceled there on purpose, with no output and no
+# whole-run time. Judged on what they ran: the steps, peak VRAM, kernels and their suite's checks.
+STOPPED_TSV = os.path.join(out, 'stopped.tsv')
+STOPPED: dict[str, int] = {l.split('\t')[0]: int(l.split('\t')[1]) for l in open(STOPPED_TSV) if '\t' in l} if os.path.exists(STOPPED_TSV) else {}
 
 
 class KnownBlocking(TypedDict):
@@ -109,9 +113,15 @@ host_legs: dict[str, dict[str, int]]
 summary, runs, host_legs = {}, {}, {}
 for name, target, number in cells:
     run = Run.read(os.path.join(out, name + '.json'))
-    if run is None or run.status != 'completed':
+    stopped = run is not None and run.status == 'canceled' and name in STOPPED
+    if run is None or not (run.status == 'completed' or stopped):
         fails.append(f'{name}: run {number} {run and run.status} {run and run.reason or None}')
         continue
+    if stopped and len(run.steps) < STOPPED[name]:
+        fails.append(f'{name}: run {number} stopped after {len(run.steps)} of the {STOPPED[name]} steps it was to run')
+        continue
+    if stopped:
+        notes.append(f'{name}: stopped after step {len(run.steps)}, as asked ({STOPPED[name]})')
     runs[name] = run
     # A run completes even when the test it ran failed: its own verdict is the cell's.
     if isinstance(run.result, dict) and run.result.get('passed') is False:
@@ -159,7 +169,7 @@ for name, target, number in cells:
         notes.append(f'{name}: step 1 {s[0] / 1000:.1f} s, of which {reads / 1000:.1f} s readying weights (judged in execution time)')
         s = [s[0] - reads] + s[1:]
     c = summary[name] = {'blocking': blocking, 'run': run.number, 'target': canonical(target), 'gemm': gemm, 'attention': attn, 'graphs': run.graphs,
-                         'execution_ms': run.execution_ms, 'step1_ms': round(s[0]) if s else None, 'step1_read_ms': round(reads), 'to_step1_ms': run.to_step1_ms,
+                         'execution_ms': None if stopped else run.execution_ms, 'step1_ms': round(s[0]) if s else None, 'step1_read_ms': round(reads), 'to_step1_ms': run.to_step1_ms,
                          'vram_mb': vram and vram['added'], 'host': {leg: legs[leg] for leg in HOST_LEGS if leg in legs},
                          'steady_ms': round(sum(s[1:]) / len(s[1:])) if len(s) > 1 else None, 'files': list(run.outputs)}
     for i, ms, ref, what in slow_steps(canonical(target), s):
@@ -170,7 +180,7 @@ for name, target, number in cells:
 
 def image(name: str) -> Image.Image | None:
     c = summary.get(name)
-    if not c: return None
+    if not c or name in STOPPED: return None
     p = [f for f in c['files'] if f.endswith(('.png', '.webp', '.jpg'))]
     if not p:
         fails.append(f'{name}: no image output'); return None
@@ -196,12 +206,14 @@ im = image('birefnet')  # composites the cutout onto white
 if im is not None:
     white = (np.asarray(im.convert('L')) > 245).mean(); notes.append(f'birefnet: white background {white:.0%}')
     if white < 0.05: fails.append(f'birefnet: no white background ({white:.1%})')
-if 'describer' in runs:
+if 'describer' in runs and 'describer' not in STOPPED:
     texts = [s for d in walk(runs['describer'].result) for v in d.values() for s in (v if isinstance(v, list) else [v])
              if isinstance(s, str) and len(s) > 20]
     if not texts: fails.append('describer: no description text')
 for n, min_h, min_frames in (('h3', 700, 300), ('seedvr2', 1000, 20)):
     c = summary.get(n)
+    if n in STOPPED:
+        continue
     vids = [f for f in (c['files'] if c else []) if f.endswith('.mp4')]
     if c and not vids:
         fails.append(f'{n}: no video output'); continue
