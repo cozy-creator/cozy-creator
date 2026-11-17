@@ -342,6 +342,12 @@ impl Engine {
         if !self.gone.lock().unwrap().contains(project_id) || self.journal.lock().unwrap().private_active(project_id)? {
             return Ok(false);
         }
+        // Opened again where its folder moved to, and run there since (cl-1066): a folder it ran in holds it, so it isn't gone.
+        let roots = self.journal.lock().unwrap().project_roots()?.remove(project_id);
+        if roots.is_some_and(|roots| roots.iter().any(|root| holds_project(root, project_id))) {
+            self.gone.lock().unwrap().remove(project_id);
+            return Ok(false);
+        }
         self.private_roots.lock().unwrap().remove(project_id);
         crate::private_io::forget(project_id);
         self.journal.lock().unwrap().retire_project(project_id)?;

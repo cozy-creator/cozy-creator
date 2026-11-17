@@ -470,7 +470,7 @@ impl Projects {
         let (folder, Identified { id, name, code, key }) = match (opened, rendering) {
             (Err(error), Some(old)) if error.code == "project_moving" => {
                 // Moved while it rendered (cl-1066): its walker lets go at a step's end, and it opens here, its walk and runs taken over.
-                tokio::task::block_in_place(|| hand_over(&old, &root, dir))?;
+                tokio::task::block_in_place(|| hand_over(api, &old, &root, dir))?;
                 self.open.lock().expect("projects lock").remove(&old.id);
                 let project = self.open(api, dir)?;
                 tokio::task::block_in_place(|| take_over(api, &project, &old.root));
@@ -592,9 +592,11 @@ fn db_file(dir: &FsPath) -> Option<(u64, u64)> {
 /// How long an open where a moved project is now waits for its old walker to let go.
 const HANDOVER: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// `old`, a plaintext project that rendered as its folder moved to `root` (`dir`, as it reads now), let go of (cl-1066): its walker ends
-/// at its next step, keeping nothing. Busy, briefly, if it doesn't end in time.
-fn hand_over(old: &Arc<Project>, root: &FsPath, dir: &FsPath) -> Result<(), Error> {
+/// `old`, a plaintext project that rendered as its folder moved to `root` (`dir`, as it reads now), let go of (cl-1066): the index
+/// names where it is first, so nothing takes it for gone (cl-1031) as it's handed over, and its walker ends at its next step, keeping
+/// nothing. Busy, briefly, if it doesn't end in time.
+fn hand_over(api: &Api, old: &Arc<Project>, root: &FsPath, dir: &FsPath) -> Result<(), Error> {
+    api.calcifer.store().project_moved(&old.root, root).map_err(|e| Error::internal("calcifer_store", e.to_string()))?;
     old.moved.store(true, std::sync::atomic::Ordering::Release);
     old.asked.notify_one();
     let due = Instant::now() + HANDOVER;
