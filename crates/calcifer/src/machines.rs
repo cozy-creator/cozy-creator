@@ -1216,6 +1216,7 @@ impl Machines {
         self.calcifer.observe_warm(name, frame.warm.clone());
         self.calcifer.observe_downloads(name, &frame.activity);
         self.lists.observe(name, &frame);
+        let installed;
         let (back, ready) = {
             let mut seen = lock(&self.seen);
             let seen = seen.entry(name.to_owned()).or_default();
@@ -1239,6 +1240,9 @@ impl Machines {
             }
             seen.stopped &= frame.phase == "releasing";
             seen.streaming = true;
+            // What this computer has installed is in the tool list: a change there is told (cl-1126).
+            let installs = |frame: &v1::StatusFrame| frame.environments.iter().map(|env| (env.package.clone(), env.release.clone(), env.hub.clone())).collect::<std::collections::BTreeSet<_>>();
+            installed = name == "local" && seen.frame.as_ref().is_none_or(|last| installs(last) != installs(&frame));
             seen.frame = Some(frame);
             seen.heard = Some(crate::store::now_ms());
             seen.since = None;
@@ -1246,6 +1250,9 @@ impl Machines {
             seen.unanswered = None;
             (seen.unreachable.take().is_some(), ready)
         };
+        if installed {
+            crate::events::tools_changed();
+        }
         // Its runs and exports that wait on it try again now: it came back, or came up (a run held for its boot, cl-1069).
         if back || ready {
             self.calcifer.touch(name);

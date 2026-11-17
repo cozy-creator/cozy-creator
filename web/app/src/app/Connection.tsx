@@ -317,6 +317,10 @@ class Bridge {
       case "projects.changed":
         void this.queries.invalidateQueries({ queryKey: ["projects"] })
         break
+      // A dev home's first-party package was read from its source (cl-1126): the tools are read again.
+      case "tools.changed":
+        void this.queries.invalidateQueries({ queryKey: ["tools"] })
+        break
       case "appearance":
         this.queries.setQueryData(["appearance"], event.appearance)
         break

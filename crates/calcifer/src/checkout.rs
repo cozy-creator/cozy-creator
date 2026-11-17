@@ -42,8 +42,14 @@ pub(crate) fn start(config: &Config) {
     let _ = CHECKOUT.set(root);
 }
 
-fn root() -> Option<&'static Path> {
+pub(crate) fn root() -> Option<&'static Path> {
     CHECKOUT.get()?.as_deref()
+}
+
+/// The checkout changed: which packages it holds and its commit are read again.
+pub(crate) fn moved() {
+    *LISTED.lock().expect("listed lock") = None;
+    *HEAD_READ.lock().expect("head lock") = None;
 }
 
 /// Whether this dev home runs first-party packages from a checkout: then `local` follows the RC's Runtime too.

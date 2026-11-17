@@ -1401,6 +1401,23 @@ pub(crate) async fn describe(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &st
     Ok((crate::checkout::of(code).map_or(package, |from| from.package), document))
 }
 
+/// `code` as the tool list reads it (cl-1126): Runtime's static describer on the Runtime its lock names, the same whichever machine a
+/// run of it goes to, kept by its tree and Hub. A machine is named only for a run, which reads it as that machine does (`describe`):
+/// its Runtime keys what it read and what its install said.
+pub(crate) async fn read_source(api: &Arc<Api>, code: &LocalCode, hub: &str) -> Result<(String, Value), Error> {
+    let home = api.machines.hubs.home();
+    copied(home, code)?;
+    let (package, document) = match static_kept(home, code, hub, None) {
+        Some(known) => known,
+        None => {
+            let known = Box::pin(read_interface(api, code, &On::Any, hub, None)).await?;
+            keep_static(home, code, hub, None, &known);
+            known
+        }
+    };
+    Ok((crate::checkout::of(code).map_or(package, |from| from.package), document))
+}
+
 async fn described(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str) -> Result<(String, Value), Error> {
     let runtime = last_runtime(api, on);
     let project = crate::private_io::current().map(|scope| scope.storage.project_id);
