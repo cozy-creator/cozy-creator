@@ -87,7 +87,7 @@ def full(name: str, subject_line: str, summary_where: str, first: str, scene: st
                  f"{name}; its plain white background is not part of the scene.")  # fmt: skip
     marks = [(0.0, deg(0, f"; {'the viewpoint corresponds to <Picture 1>' if pinned else f'it faces the same side of {name} as <Picture 1>'}"))]
     for k, angle in ((1, 90), (2, 180), (3, 270)) if views else ((1, 120), (2, 240)):
-        marks.append(((angle / 360), deg(angle, f"; the viewpoint corresponds to {views[angle]}" if angle in views else "")))
+        marks.append(((angle / 360), deg(angle, f"; it faces {views[angle]}" if angle in views else "")))
     marks.append((1.0, deg(360, "; the viewpoint corresponds to <Picture 1>" if pinned else f"; it faces the same side of {name} as at the start")))
     return doc(defs, f"ORB360_CW. A frozen-moment 360-degree orbit of {name} {summary_where}, like a single instant stopped in time.",
                [f"{name} (appears in [Shot 1]): {KEPT}", keep0, *extra_keep],
@@ -158,6 +158,12 @@ ROOM_WORDS = ("The room stays in place in the world and is revealed consistently
               "Nobody is in the room. Everything is frozen in time: dust and sunbeams hang still.")
 GIRL = "<girl> is the exact same rigid character shown in <Picture 1>. Her geometry, proportions, materials, colors, markings and surface details remain unchanged."
 
+B1_TEXT = fl2va(
+         "The camera performs a slow, smooth clockwise 90-degree orbit arc around the completely stationary swordswoman, moving from the "
+         "first frame's viewpoint (her front) to the last frame's viewpoint (her right side, in profile), at constant angular speed, "
+         "constant radius, constant elevation and constant focal length, without pausing or reversing. The swordswoman and the whole street "
+         "stay frozen in time and perfectly rigid; the street behind her is revealed consistently as the camera moves. Black-and-white "
+         "manga ink and screentone style throughout. No zoom, dolly, camera roll, cuts, lighting changes or scene changes.")
 QUARTER_SWORD = quarter("<swordswoman>", SWORD, STREET, "the completely stationary <swordswoman>")
 renders = [
     # (a) partial arcs: ORB360 with its milestones placed for 90 degrees; the same caption without it; and the mirror (counter-clockwise).
@@ -166,18 +172,14 @@ renders = [
     {"name": "a2-base-quarter", "tool": T, "files": {"picture": "fixture:m-panel.png"},
      "fields": {"text": QUARTER_SWORD, "refs": ["swordswoman"], "first": 1, "duration": 5, "seed": 152101}},
     # (b) two keyframes, m-panel to m-right: FL2VA without the LoRA; Ref2VA with and without ORB360.
-    {"name": "b1-fl2va-two-keys", "tool": T, "files": {"picture": "fixture:m-panel.png", "picture2": "fixture:m-right.png"},
-     "fields": {"text": fl2va(
-         "The camera performs a slow, smooth clockwise 90-degree orbit arc around the completely stationary swordswoman, moving from the "
-         "first frame's viewpoint (her front) to the last frame's viewpoint (her right side, in profile), at constant angular speed, "
-         "constant radius, constant elevation and constant focal length, without pausing or reversing. The swordswoman and the whole street "
-         "stay frozen in time and perfectly rigid; the street behind her is revealed consistently as the camera moves. Black-and-white "
-         "manga ink and screentone style throughout. No zoom, dolly, camera roll, cuts, lighting changes or scene changes."),
-         "first": 1, "last": 2, "duration": 5, "seed": 152102}},
-    {"name": "b2-orb-two-keys", "tool": T, "files": {"picture": "fixture:m-panel.png", "picture2": "fixture:m-right.png"},
+    {"name": "b1-fl2va-two-keys", "tool": T, "files": {"picture": "fixture:m-panel.png", "picture2": "fixture:m-right2.png"},
+     "fields": {"text": B1_TEXT, "first": 1, "last": 2, "duration": 5, "seed": 152102}},
+    {"name": "b2-orb-two-keys", "tool": T, "files": {"picture": "fixture:m-panel.png", "picture2": "fixture:m-right2.png"},
      "fields": {"text": two_keys(), "refs": ["swordswoman", "right"], "first": 1, "last": 2, "lora": ORB, "duration": 5, "seed": 152103}},
-    {"name": "b3-base-two-keys", "tool": T, "files": {"picture": "fixture:m-panel.png", "picture2": "fixture:m-right.png"},
+    {"name": "b3-base-two-keys", "tool": T, "files": {"picture": "fixture:m-panel.png", "picture2": "fixture:m-right2.png"},
      "fields": {"text": two_keys(), "refs": ["swordswoman", "right"], "first": 1, "last": 2, "duration": 5, "seed": 152103}},
+    {"name": "b4-fl2va-turned-subject", "tool": T, "files": {"picture": "fixture:m-panel.png", "picture2": "fixture:m-right.png"},
+     "fields": {"text": B1_TEXT, "first": 1, "last": 2, "duration": 5, "seed": 152102}},
     # (c) vertical: H3 alone up over her and down below her; FL2VA up to m-top.
     {"name": "c1-base-up", "tool": T, "files": {"picture": "fixture:m-panel.png"},
      "fields": {"text": vertical(70), "refs": ["swordswoman"], "first": 1, "duration": 5, "seed": 152104}},
@@ -213,16 +215,16 @@ renders = [
                                  "fully_preserved - its desks, chairs, windows, blackboard and walls are retained, and it stays completely frozen.")),
                 "refs": ["classroom"], "first": 1, "last": 1, "lora": ORB, "duration": 15, "seed": 152107}},
     {"name": "e2-orb-turn-views", "tool": T,
-     "files": {"picture": "fixture:m-panel.png", "picture2": "fixture:m-right.png", "picture3": "fixture:m-back.png"},
+     "files": {"picture": "fixture:m-panel.png", "picture2": "fixture:m-right2.png", "picture3": "fixture:m-back.png"},
      "fields": {"text": full("<swordswoman>", SWORD.replace("<Picture 1>.", "<Picture 1>, <Picture 2> and <Picture 3>."),
                              "in the environment shown in <Picture 1>",
                              "The shot begins from <Picture 1>, with its exact environment, ground, background and light.", STREET,
                              "the completely stationary <swordswoman>",
-                             extra_defs=["<right> is <swordswoman> seen from 90 degrees clockwise round her, her right side, shown in <Picture 2>.",
-                                         "<back> is <swordswoman> seen from directly behind, 180 degrees round her, shown in <Picture 3>."],
-                             extra_keep=[f"<right> ([Shot 1] keyframe at {round(361 * 0.25) / FPS:.6f} seconds): fully_preserved - the camera passes through this exact view.",
-                                         f"<back> ([Shot 1] keyframe at {round(361 * 0.5) / FPS:.6f} seconds): fully_preserved - the camera passes through this exact view."],
-                             views={90: "<Picture 2>", 180: "<Picture 3>"}),
+                             extra_defs=["<right> shows <swordswoman> from her right side, 90 degrees clockwise round her, in <Picture 2>; it is not a frame of the video.",
+                                         "<back> shows <swordswoman> from directly behind, 180 degrees round her, in <Picture 3>; it is not a frame of the video, and its street is not the scene."],
+                             extra_keep=["<right> (not a frame of [Shot 1]; seen from 90 degrees clockwise of the starting direction): fully_preserved - its geometry, clothing and details define her right side; the orbit passes the same side.",
+                                         "<back> (not a frame of [Shot 1]; seen from 180 degrees clockwise of the starting direction): fully_preserved - its geometry, clothing and details define her back; the orbit passes the same side."],
+                             views={90: "her right side, as in <Picture 2>", 180: "her back, as in <Picture 3>"}),
                 "refs": ["swordswoman", "right", "back"], "first": 1, "last": 1, "lora": ORB, "duration": 15, "seed": 152109}},
     {"name": "e3-orb-turn-face", "tool": T, "files": {"picture": "fixture:m-panel.png", "picture2": "fixture:m-face.png"},
      "fields": {"text": full("<swordswoman>", SWORD, "in the environment shown in <Picture 1>",
