@@ -90,6 +90,9 @@ impl Publisher {
     /// design, since packages declare a minimum and machines run the newest Torch.
     pub(crate) fn build(&self, env: &Path, project: &Project, job: &Job) -> Result<Built, Failure> {
         let _install = job.within(crate::activity::Kind::Install, project.package);
+        // Its run's place in the download line goes on without it while it waits for its build and builds: no weight waits for
+        // an install (cl-905).
+        crate::origin::lined(job.order);
         // One build at a time, in job order (cl-905): its tools' downloads and disk don't split with another's.
         let said = |reason: Option<String>| job.waiting(reason);
         loop {

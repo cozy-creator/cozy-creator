@@ -4,9 +4,10 @@
 // drift, a response that breaks it the document's. A route the document lacks is a mismatch; an operation marked
 // `x-raw-body` (pages, redirects, bytes) has its status checked, not its body. Object fields follow the document's
 // additionalProperties policy. <out>/hub-calls.json counts the calls of each operation. Each call of an operation --keep names
-// is one JSON line in <out>/hub-kept.jsonl: its body, its answer, and whether it carried a credential.
+// is one JSON line in <out>/hub-kept.jsonl: its body, its answer, and whether it carried a credential. A request a line of
+// the --delays file names waits before it goes on: a cell's way to force an order (e2e/cli/lines.sh).
 //
-//	hubcheck --hub http://127.0.0.1:8819 --out DIR [--listen 127.0.0.1:0] [--spec FILE] [--keep "POST /v1/run-reports,..."]
+//	hubcheck --hub http://127.0.0.1:8819 --out DIR [--listen 127.0.0.1:0] [--spec FILE] [--keep "POST /v1/run-reports,..."] [--delays FILE]
 //
 // It prints the address it listens on, then serves until it is ended.
 package main
@@ -26,8 +27,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
@@ -72,6 +75,7 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:0", "the address cozy calls instead of the Hub")
 	spec := flag.String("spec", "", "an API document file instead of the Hub's own GET /openapi.yaml")
 	keep := flag.String("keep", "", "operations (`METHOD /route`, comma-separated) whose calls go to hub-kept.jsonl whole")
+	delays := flag.String("delays", "", "a file of `METHOD TEXT MILLISECONDS` lines, read at each request: one whose path holds TEXT waits that long")
 	flag.Parse()
 	if *out == "" {
 		fail(errors.New("--out is required"))
@@ -113,7 +117,33 @@ func main() {
 		fail(err)
 	}
 	fmt.Println(listener.Addr().String())
-	fail(http.Serve(listener, c.mux()))
+	fail(http.Serve(listener, delayed(*delays, c.mux())))
+}
+
+// delayed holds a request each line of the file at path names (`METHOD TEXT MILLISECONDS`: its method, and TEXT in its path)
+// that long before next serves it. The file is read at each request, so a cell writes and removes it as it goes; absent,
+// nothing waits.
+func delayed(path string, next http.Handler) http.Handler {
+	if path == "" {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := os.ReadFile(path)
+		for _, line := range strings.Split(string(raw), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) != 3 || fields[0] != r.Method || !strings.Contains(r.URL.Path, fields[1]) {
+				continue
+			}
+			if ms, err := strconv.Atoi(fields[2]); err == nil {
+				select {
+				case <-time.After(time.Duration(ms) * time.Millisecond):
+				case <-r.Context().Done():
+					return
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func fail(err error) {
