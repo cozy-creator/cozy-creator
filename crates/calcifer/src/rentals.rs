@@ -292,7 +292,15 @@ impl Machines {
     /// what each cost and the sums per UTC day and in all. An operator's Hub also says what the
     /// providers billed; a renter's never does.
     pub(crate) async fn history(&self, hub: &str, since_ms: Option<i64>) -> Result<RentalHistory, Error> {
-        let listing = self.hubs.client(hub)?.list_rentals("all").await.map_err(|e| hub_refusal(hub, e))?;
+        // Only the window asked (th-381: the whole history took 1.7 to 4.0 s on Paul's 3,845 rentals); a Hub before it lists
+        // them all, and those before `since` are left out here as ever.
+        let client = self.hubs.client(hub)?;
+        let since = since_ms.and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok()).map(|at| at.to_string());
+        let listing = match &since {
+            Some(since) => client.list_rentals_since("all", since).await,
+            None => client.list_rentals("all").await,
+        }
+        .map_err(|e| hub_refusal(hub, e))?;
         let now = crate::store::now_ms();
         let instant = |at: &str| {
             ms(at).ok_or_else(|| {

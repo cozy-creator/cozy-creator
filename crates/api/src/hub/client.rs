@@ -569,6 +569,15 @@ impl Client {
         .await
     }
 
+    /// `list_rentals`, only those created at or after `since` (RFC 3339): a Hub before th-381 lists them all.
+    pub async fn list_rentals_since(&self, state: &str, since: &str) -> Result<RentalListing, Error> {
+        self.json(
+            self.at(Method::GET, "/v1/rentals", &[])
+                .query(&[("state", state), ("since", since)]),
+        )
+        .await
+    }
+
     pub async fn get_rental(&self, id: &str) -> Result<Rental, Error> {
         self.json(self.at(Method::GET, "/v1/rentals/{id}", &[id]))
             .await

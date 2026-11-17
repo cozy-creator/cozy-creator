@@ -7,6 +7,8 @@
 #                the default key, and `machine ssh` says what stands in the way: not ready yet, or signed out (not "not
 #                a rental"). `logout` revokes a key this computer enrolled, never one installed with `login --key`,
 #                which another computer may hold; a pod signs in with a key of its own (`login --export`).
+#   hub_history  th-381: a rental history asks its Hub only for its window (`since`): one real rental copied 3,000 times in
+#                the Hub's database, its listing timed whole and for the last hour, and `machine ls --history` end to end.
 #   rental_end_again  cl-977: an end that failed (signed out) is asked again by Calcifer itself, paced: signed in again, the
 #                rental ends with no second `machine end`, and its container goes.
 
@@ -326,3 +328,124 @@ fi
 project_api "$P" /cancel -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: rename-cancel-$RANDOM$RANDOM" -d '{"names":["asked"]}' > "$OUT/rename-cancel-asked.json" 2>&1 || true
 cozy --json logout > /dev/null 2>&1 || true
 }
+
+# th-381: an account's rental history read every rental it ever had, each with its full projection: Paul's 3,845 took 1.7 to 4.0 s.
+# One real rental, rented here and ended, is copied HUB_HISTORY_RENTALS times (3,000) in the Hub's own database, a minute apart;
+# then the Hub's listing is timed as Calcifer asks it, every rental and those created in the last hour (`since`), and end to end.
+hub_history() (
+  step "a rental history asks its Hub only for its window: the last hour of 3,000 rentals, and all of them, timed (th-381)"
+  [ -n "${E2E_HUB_LOG:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] && [ -n "${COZY_TEST_HUB_COMMAND_FILE:-}" ] && [ -n "${COZY_HUB_URL:-}" ] \
+    || fail "hub history: e2e/isolated.sh named no Hub log, email, command or URL"
+  local S=$OUT/hub-history n=${HUB_HISTORY_RENTALS:-3000} rental='' pid name='' state='' db port container token since q answer status secs count
+  mkdir -p "$S"
+  signin "$E2E_HUB_EMAIL" > "$S/login.json" || fail "hub history: cozy login: $(tail -c 300 "$S/login.json")"
+  cozy --json machine rent cpu -y > "$S/rent.ndjson" 2> "$S/rent.err" & pid=$!
+  for _ in $(seq 180); do
+    rental=$(jq -r 'select(.type? == "rental.accepted") | .rental_id // empty' "$S/rent.ndjson" 2> /dev/null | tail -1 || true)
+    [ -n "$rental" ] || ! kill -0 "$pid" 2> /dev/null || { sleep 1; continue; }
+    break
+  done
+  kill -KILL "$pid" 2> /dev/null || true
+  wait "$pid" 2> /dev/null || true
+  [ -n "$rental" ] || fail "hub history: machine rent cpu: no rental accepted: $(tail -c 300 "$S/rent.ndjson") $(tail -c 300 "$S/rent.err")"
+  # Placed on a host, so it has an attempt, its provider resource and its window, as a real one does; then ended.
+  for _ in $(seq 120); do
+    name=$(cozy --json machine ls 2> /dev/null | jq -r --arg r "$rental" '.machines[] | select(.rental_id == $r and .placeholder == null) | .name' 2> /dev/null || true)
+    [ -n "$name" ] && [[ $name != rent-* ]] && break
+    sleep 1
+  done
+  cozy --json machine end "$rental" --force -y > "$S/end.json" 2>&1 || fail "hub history: machine end: $(tail -c 300 "$S/end.json")"
+  for _ in $(seq 90); do
+    state=$(cozy --json machine ls --history 2> /dev/null | jq -r --arg r "$rental" '.rentals[] | select(.rental_id == $r) | .state' 2> /dev/null || true)
+    [ "$state" = released ] && break
+    sleep 2
+  done
+  [ "$state" = released ] || fail "hub history: $rental is ${state:-not listed}, not released, 3 min after its end"
+  db=$(grep -o 'postgres://[^" ]*' "$COZY_TEST_HUB_COMMAND_FILE" | head -1)
+  [ -n "$db" ] || fail "hub history: the Hub's command names no database: $(head -c 300 "$COZY_TEST_HUB_COMMAND_FILE")"
+  port=$(sed -E 's#.*@[^:/]+:([0-9]+)/.*#\1#' <<< "$db")
+  container=$(docker ps --filter "publish=$port" --format '{{.Names}}' 2> /dev/null | head -1 || true)
+  sql() {
+    if [ -n "$container" ]; then docker exec -i "$container" psql -v ON_ERROR_STOP=1 -q -U postgres "$@"
+    else psql "$db" -v ON_ERROR_STOP=1 -q "$@"; fi
+  }
+  # Each row of the rental, its attempts, their provider resources, windows and receipts, copied with new ids (a window takes its own).
+  sql -v src="$rental" -v n="$n" > "$S/clone.out" 2>&1 <<'SQL' || fail "hub history: copying $rental: $(tail -c 600 "$S/clone.out")"
+CREATE FUNCTION pg_temp.clone(tbl regclass, src jsonb) RETURNS void LANGUAGE plpgsql AS $f$
+DECLARE cols text;
+BEGIN
+  SELECT string_agg(quote_ident(attname), ',' ORDER BY attnum) INTO cols FROM pg_attribute
+   WHERE attrelid = tbl AND attnum > 0 AND NOT attisdropped AND attgenerated = '' AND src ? attname;
+  EXECUTE format('INSERT INTO %s (%s) SELECT %s FROM jsonb_populate_record(NULL::%s, $1)', tbl, cols, cols, tbl) USING src;
+END $f$;
+SELECT set_config('clone.src', :'src', false), set_config('clone.n', :'n', false);
+DO $do$
+DECLARE s text := current_setting('clone.src'); n int := current_setting('clone.n')::int;
+        src jsonb; a jsonb; r jsonb; w jsonb; c jsonb; i int; rid text; aid text; pid text;
+        sfx text;
+BEGIN
+  SET CONSTRAINTS ALL DEFERRED;
+  SELECT to_jsonb(p) INTO src FROM hub_v2.private_rentals p WHERE id = s;
+  IF src IS NULL THEN RAISE EXCEPTION 'no rental %', s; END IF;
+  FOR i IN 1..n LOOP
+    sfx := '-c' || i;
+    rid := s || sfx;
+    PERFORM pg_temp.clone('hub_v2.private_rentals', src || jsonb_build_object('id', rid, 'name', (src->>'name') || sfx,
+      'client_request_key', (src->>'client_request_key') || sfx,
+      'created_at', (src->>'created_at')::timestamptz - make_interval(mins => i),
+      'ended_at', ((src->>'ended_at')::timestamptz - make_interval(mins => i))));
+    FOR a IN SELECT to_jsonb(x) FROM hub_v2.rental_acquisition_attempts x WHERE rental_id = s LOOP
+      aid := (a->>'id') || sfx;
+      pid := (a->>'provider_resource_id') || sfx;
+      PERFORM pg_temp.clone('hub_v2.rental_acquisition_attempts', a || jsonb_build_object('id', aid, 'rental_id', rid,
+        'provider_resource_id', pid, 'create_operation_key', (a->>'create_operation_key') || sfx));
+      IF pid IS NOT NULL THEN
+        SELECT to_jsonb(x) INTO r FROM hub_v2.provider_resources x WHERE id = a->>'provider_resource_id';
+        PERFORM pg_temp.clone('hub_v2.provider_resources', r || jsonb_build_object('id', pid, 'acquisition_attempt_id', aid,
+          'absent_observation_id', NULL, 'provider_resource_id', (r->>'provider_resource_id') || sfx,
+          'provider_name', (r->>'provider_name') || sfx, 'state', 'absent'));
+        FOR w IN SELECT to_jsonb(x) - 'id' FROM hub_v2.rental_windows x WHERE acquisition_attempt_id = a->>'id' LOOP
+          PERFORM pg_temp.clone('hub_v2.rental_windows', w || jsonb_build_object('acquisition_attempt_id', aid, 'resource_id', pid));
+        END LOOP;
+      END IF;
+      FOR c IN SELECT to_jsonb(x) FROM hub_v2.rental_readiness_receipts x WHERE acquisition_attempt_id = a->>'id' LOOP
+        PERFORM pg_temp.clone('hub_v2.rental_readiness_receipts', c || jsonb_build_object('acquisition_attempt_id', aid));
+      END LOOP;
+    END LOOP;
+  END LOOP;
+END $do$;
+ANALYZE hub_v2.private_rentals, hub_v2.rental_acquisition_attempts, hub_v2.provider_resources, hub_v2.rental_windows,
+        hub_v2.rental_readiness_receipts;
+SELECT 'copied', count(*) FROM hub_v2.private_rentals WHERE id LIKE :'src' || '-c%';
+SELECT 'attempts', count(*) FROM hub_v2.rental_acquisition_attempts WHERE rental_id LIKE :'src' || '-c%';
+SQL
+  echo "hub history: $rental ($name) copied: $(grep -E 'copied|attempts' "$S/clone.out" | tr -s ' \n' ' ')"
+  # The Hub's own listing, as Calcifer asks it, with the Bearer Calcifer last used.
+  cozy --json machine ls --history > /dev/null 2>&1 || true
+  token=$(jq -r .token "$(ls "$HOME"/.cozy/keys/*.bearer.json | head -1)" 2> /dev/null || true)
+  [ -n "$token" ] || fail "hub history: no Bearer kept in $HOME/.cozy/keys"
+  since=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)
+  for q in "state=all" "state=all&since=$since" "state=live"; do
+    for try in 1 2 3; do
+      answer=$(curl -sS -o "$S/listing.json" -w '%{http_code} %{time_total}' -m 60 -H "Authorization: Bearer $token" "$COZY_HUB_URL/v1/rentals?$q") || true
+      read -r status secs <<< "$answer" || true
+      count=$(jq '.rentals | length' "$S/listing.json" 2> /dev/null || echo '?')
+      echo "hub history: GET /v1/rentals?${q%%&since=*}${q#*since=*}$([[ $q == *since=* ]] && echo '&since=-1h') try $try: $status in ${secs:-?} s, $count rentals"
+      [ "$status" = 200 ] || check "hub history: GET /v1/rentals?$q: HTTP ${status:-none}: $(head -c 300 "$S/listing.json")"
+    done
+    [[ $q == *since=* ]] && { [ "$count" != '?' ] && [ "$count" -le 100 ] && [ "$count" -ge 1 ] \
+      || check "hub history: the last hour of $((n + 1)) rentals listed $count, not the about 60 created in it"; } || true
+    [[ $q == *since=* ]] && { awk -v s="$secs" 'BEGIN { exit !(s < 0.5) }' \
+      || check "hub history: the last hour of $((n + 1)) rentals took $secs s"; } || true
+  done
+  # End to end, as `cozy machine ls --history` reads it.
+  for args in "--history" "--history --since 1h"; do
+    for try in 1 2; do
+      local began ended
+      began=$(date +%s%N)
+      cozy --json machine ls $args > "$S/history.json" 2>&1 || check "hub history: machine ls $args: $(tail -c 300 "$S/history.json")"
+      ended=$(date +%s%N)
+      echo "hub history: cozy machine ls $args try $try: $(( (ended - began) / 1000000 )) ms, $(jq '.rentals | length' "$S/history.json" 2> /dev/null) rentals"
+    done
+  done
+)
