@@ -650,7 +650,7 @@ pub(super) async fn attached(api: &Arc<Api>, store: &ProjectStore) {
                 (vec![], vec![])
             }
         };
-        tracing::warn!("DEBUG {}: moved from {}; {} of its runs here stopped, {} restarted", project.root.display(), was.display(), stopped.len(), restarted.join(", "));
+        tracing::info!("{}: moved from {}; {} of its runs here stopped, {} restarted", project.root.display(), was.display(), stopped.len(), restarted.join(", "));
         for id in &stopped {
             if let Err(error) = api.calcifer.cancel(id) { warn!(run = %id, "a run of a moved project goes on where it was: {error}"); }
         }
@@ -674,11 +674,8 @@ fn restart_local(project: &Project, store: &ProjectStore) -> Result<(Vec<RunId>,
     struct Again { key: String, ask: String, run: u64, name: String, asset: String, kind: String, take: Option<Take>, tried: Option<Tried> }
     let walk = project.folder.walk_now()?;
     let (mut stopped, mut restarted, mut again) = (vec![], vec![], vec![]);
-    tracing::warn!("DEBUG restart_local: {} pending", walk.pending.len());
     for (key, pending) in &walk.pending {
-        let found = store.run_by_number(pending.run);
-        tracing::warn!("DEBUG pending {key} run {} job {}: {:?}", pending.run, pending.job_of(key), found.as_ref().map(|row| row.as_ref().map(|row| (row.machine.clone(), row.state, row.status))));
-        let Ok(Some(row)) = found else { continue };
+        let Ok(Some(row)) = store.run_by_number(pending.run) else { continue };
         let settled = row.state == crate::store::State::Settled;
         if pending.run == 0 || row.machine.as_deref() != Some("local") || (settled && row.status != Some(RunStatus::Canceled)) {
             continue;
