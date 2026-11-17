@@ -185,11 +185,10 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
         false => None,
     };
     if let Some(meter) = &creating { meter.finish_and_clear(); }
-    let label = if code.is_empty() { &id } else { &code };
     let message = if created {
-        format!("Created project {label} at {}. Its runs are {key}-1, {key}-2, ….", path.display())
+        format!("Created project {code} at {}. Its runs are {key}-1, {key}-2, ….", path.display())
     } else {
-        format!("Project not created. {} already contains project {label}, whose runs are {key}-N.", path.display())
+        format!("Project not created. {} already contains project {code}, whose runs are {key}-N.", path.display())
     };
     if let (Some(output), Some(secret)) = (&args.recovery_out, &recovery_secret) {
         vault::save_recovery(output, secret)?;

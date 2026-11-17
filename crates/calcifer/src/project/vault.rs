@@ -129,9 +129,14 @@ pub(super) fn project_id(root: &FsPath) -> Option<String> {
     Keybag::load(&root.join(KEYBAG_FILE)).ok().map(|keybag| keybag.info().project_id)
 }
 
-/// A locked project's id and public code, from its own keybag (cl-984): the index keeps neither.
+/// A locked project's id and public code, from its own keybag (cl-984): the index keeps neither. A keybag that holds no code (locked
+/// before codes were kept there) gives the one derived from its id, which its first unlock keeps (cl-1171).
 pub(crate) fn kept_in_keybag(root: &FsPath) -> Option<(String, String)> {
-    Keybag::load(&root.join(KEYBAG_FILE)).ok().map(|keybag| { let info = keybag.info(); (info.project_id, info.code) })
+    Keybag::load(&root.join(KEYBAG_FILE)).ok().map(|keybag| {
+        let info = keybag.info();
+        let code = if info.code.is_empty() { super::code::derived(&info.project_id) } else { info.code };
+        (info.project_id, code)
+    })
 }
 
 /// An unlocked project's public code, kept in its keybag beside its id so a compact link finds it once locked (cl-984).

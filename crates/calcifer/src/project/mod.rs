@@ -658,79 +658,51 @@ fn indexed(api: &Api) -> Result<Vec<crate::state::KnownProject>, Error> {
     }
     // An earlier Calcifer may have opened one of its own folders: its row stays, unlisted and unopened.
     here.retain(|entry| !own_folder(&entry.path));
-    for entry in here.iter_mut().filter(|entry| entry.code.is_empty()) {
-        // A locked project still has its canonical id. Do not mint a public
-        // code until an opened view can recover the code stored in its DB.
-        if vault::encrypted(&entry.path) { continue; }
-        let db = entry.path.join(db::DB);
-        if UNCODED.lock().expect("uncoded lock").get(&entry.id) == Some(&stamp(&db)) { continue; }
-        match backfill_code(store, entry) {
-            Ok(code) => {
-                UNCODED.lock().expect("uncoded lock").remove(&entry.id);
-                entry.code = code;
-            }
-            Err(error) => {
-                warn!("keeping the existing project link for {}: {}", entry.path.display(), error.message);
-                UNCODED.lock().expect("uncoded lock").insert(entry.id.clone(), stamp(&db));
-            }
-        }
+    // Every project has a code, its only address (cl-1171): a plain one with none in the index gets one now; an encrypted one's is its
+    // keybag's (`as_named`).
+    for entry in here.iter_mut().filter(|entry| entry.code.is_empty() && !vault::encrypted(&entry.path)) {
+        entry.code = backfill_code(store, entry)?;
     }
     Ok(here)
 }
 
-/// Each project whose code couldn't be backfilled, by id, with its `project.db` as it was then (`stamp`): tried again only once that
-/// file changes, never on each list.
-static UNCODED: std::sync::LazyLock<Mutex<HashMap<String, String>>> = std::sync::LazyLock::new(Mutex::default);
-
-/// An older project keeps its existing link if its public code cannot be recorded.
+/// A plain project's code, for an index from before codes: its `project.db`'s when that's free here, else a new one, kept in the index and,
+/// when it opens, in its `project.db`. Even one that can't be opened has one: its address says why.
 fn backfill_code(store: &crate::store::Store, entry: &crate::state::KnownProject) -> Result<String, Error> {
     let path = entry.path.join(db::DB);
-    if !path.is_file() { return Err(Folder::not_a_project(&entry.path)); }
-    let conn = db::open(&path)?;
-    if db::identity(&conn).is_none() {
-        return Err(Error::new(Kind::Validation, "project_identity", format!("{} has no project id, so Cozy can't open it as a project.", path.display())));
+    let conn = path.is_file().then(|| db::open(&path).ok()).flatten()
+        .filter(|conn| db::identity(conn).is_some_and(|(id, _)| id == entry.id));
+    let kept = conn.as_ref().and_then(|conn| db::meta(conn, "code"));
+    let code = match reserve_code(store, &entry.id, &entry.name, &entry.path, kept.as_deref()) {
+        Err(error) if error.code == "project_code_conflict" => reserve_code(store, &entry.id, &entry.name, &entry.path, None)?,
+        reserved => reserved?,
+    };
+    if let Some(conn) = conn.filter(|_| kept.as_deref() != Some(&code)) {
+        if let Err(error) = db::set_meta(&conn, &path, "code", Some(&code)) { warn!("{}: its code is kept at its next open: {}", path.display(), error.message); }
     }
-    let kept = db::meta(&conn, "code");
-    let code = reserve_code(store, &entry.id, &entry.name, &entry.path, kept.as_deref())?;
-    db::set_meta(&conn, &path, "code", Some(&code))?;
     Ok(code)
 }
 
-/// The project the index knows by `text`, its id, public code or its name (in any case).
-/// A locked project's row as the project it is now (cl-1090): unlocked since, it's the project its own keybag names in that folder, so a
-/// page that opened it by its handle goes on to its own address. Any other row as it is.
-fn unlocked(entry: crate::state::KnownProject) -> crate::state::KnownProject {
-    if !entry.id.starts_with("locked-") || vault::require_path(&entry.path).is_err() { return entry; }
+/// A locked encrypted project as the index's row for it says it outside Calcifer: by its keybag's id and code, never the row's
+/// `locked-` handle, which names only its folder here (cl-984, cl-1171). One whose keybag can't be read is named by its handle, and its
+/// address says why it can't open. Any other row as it is.
+fn as_named(entry: crate::state::KnownProject) -> crate::state::KnownProject {
+    if !(entry.id.starts_with(LOCKED) || entry.code.is_empty() && vault::encrypted(&entry.path)) { return entry; }
     match vault::kept_in_keybag(&entry.path) {
-        Some((id, code)) => crate::state::KnownProject { id, code, ..entry },
-        None => entry,
+        Some((id, code)) if entry.id.starts_with(LOCKED) => crate::state::KnownProject { id, code, ..entry },
+        Some((_, code)) => crate::state::KnownProject { code, ..entry },
+        None => crate::state::KnownProject { code: code::derived(&entry.id), ..entry },
     }
 }
 
+/// What the index's row of a locked encrypted project is keyed by (`Store::project_locked`).
+const LOCKED: &str = "locked-";
+
+/// The project the index knows by `text`, its id, public code or its name (in any case). A locked one by its keybag's (`as_named`).
 fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
-    let mut indexed = indexed(api)?;
+    let mut indexed: Vec<_> = indexed(api)?.into_iter().map(as_named).collect();
     if let Some(at) = indexed.iter().position(|entry| entry.id == text) {
-        return Ok(unlocked(indexed.swap_remove(at)));
-    }
-    // A locked project's handle, the project opened since by its own id (cl-1090): the project now in that folder, until its next lock,
-    // and only while that folder holds an unlocked encrypted project: never a plain one moved in, never a locked one.
-    if text.starts_with("locked-") {
-        let path = api.calcifer.store().handle_path(text).map_err(|e| Error::internal("calcifer_store", e.to_string()))?
-            .filter(|path| vault::encrypted(path) && vault::require_path(path).is_ok());
-        if let Some(at) = path.and_then(|path| indexed.iter().position(|entry| entry.path == path && !entry.id.starts_with("locked-"))) {
-            return Ok(indexed.swap_remove(at));
-        }
-    }
-    // A locked project's id and code are no longer in the index (cl-984), only its folder: both are read from its own keybag.
-    let code = code::parse(text);
-    let named_by = |(id, kept): &(String, String)| id == text || code.as_ref().is_some_and(|code| !kept.is_empty() && code::parse(kept).as_ref() == Some(code));
-    if let Some((at, (id, kept))) = indexed.iter().enumerate()
-        .filter(|(_, entry)| entry.id.starts_with("locked-"))
-        .find_map(|(at, entry)| vault::kept_in_keybag(&entry.path).filter(|held| named_by(held)).map(|held| (at, held))) {
-        let mut entry = indexed.swap_remove(at);
-        entry.id = id;
-        entry.code = kept;
-        return Ok(entry);
+        return Ok(indexed.swap_remove(at));
     }
     if let Some(code) = code::parse(text) {
         if let Some(at) = indexed.iter().position(|entry| entry.code == code) {
@@ -1269,9 +1241,12 @@ fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_c
         } else { kept_identity(&known.path).is_some_and(|(held, _)| held == id) }
     });
     let copied = |id: &str| original(id).is_some();
+    // An encrypted project's keybag's code: empty for one kept before codes were.
+    let mut sealed = None;
     if encrypted {
         let keybag = project_vault::Keybag::load(&logical.join(project_vault::KEYBAG_FILE))
             .map_err(|_| Error::new(Kind::Conflict, "vault_identity", "Cozy can't read this locked project's key file."))?;
+        sealed = Some(keybag.info().code);
         if kept.as_ref().is_none_or(|(id, _)| id != &keybag.info().project_id) {
             return Err(Error::new(Kind::Conflict, "vault_identity", "This locked project's id doesn't match its key file."));
         }
@@ -1294,7 +1269,17 @@ fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_c
         COPIES.lock().expect("copies lock").insert(logical.clone(), said);
     }
     let kept_code = kept.as_ref().filter(|(held, _)| held == &id).and(kept_code);
-    let code = reserve_code(store, &id, &name, &logical, kept_code.as_deref())?;
+    // An encrypted project's code is the one its links say (`as_named`, cl-1171): the index's while it has one, else its keybag's, which
+    // it was listed by locked, or for a keybag that holds none, the one derived from its id.
+    let wanted = match sealed {
+        Some(sealed) => Some(match store.known_project(&id).map_err(|e| Error::internal("calcifer_store", e.to_string()))? {
+            Some(known) if !known.code.is_empty() => known.code,
+            _ if !sealed.is_empty() => sealed,
+            _ => code::derived(&id),
+        }),
+        None => kept_code.clone(),
+    };
+    let code = reserve_code(store, &id, &name, &logical, wanted.as_deref())?;
     if encrypted { vault::keep_code(&logical, &code)?; }
     if kept.as_ref() != Some(&(id.clone(), name.clone())) || kept_code.as_deref() != Some(&code) {
         keep(Keep::Identity { id: &id, name: &name, code: &code })?;
@@ -2042,9 +2027,10 @@ struct Page {
     before: Option<String>,
 }
 
-/// The index, last used first: each project's name, where it is and its last use, and whether it is rendering.
+/// The index, last used first: each project's name, where it is and its last use, and whether it is rendering. A locked one by its
+/// keybag's id and code (`as_named`).
 async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<Json<Listed>, Refusal> {
-    let mut known = indexed(&api).map_err(Refusal)?;
+    let mut known: Vec<_> = indexed(&api).map_err(Refusal)?.into_iter().map(as_named).collect();
     if let Some(before) = &page.before {
         let at = known.iter().position(|entry| &entry.id == before).map_or(known.len(), |at| at + 1);
         known.drain(..at);
@@ -2053,7 +2039,6 @@ async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<J
     let older = known.len().saturating_sub(limit) as u64;
     let open: HashMap<String, Arc<Project>> = api.projects.now_open().into_iter().map(|project| (project.id.clone(), project)).collect();
     let projects = (known.into_iter().take(limit))
-        .map(unlocked)
         .map(|entry| Known {
             key: readable_key(&entry.path, entry.key),
             name: entry.name,

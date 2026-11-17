@@ -39,14 +39,15 @@ async fn public_code_fixture() {
         Ok(())
     }).unwrap();
 
-    // Listing assigns the readable project's code even when a different project's DB is unsupported.
+    // Listing assigns every project a code, its only address (cl-1171): one whose DB is unsupported too.
     let listed = indexed(&api).unwrap();
     assert_eq!(listed.len(), 2);
     let current = listed.iter().find(|entry| entry.id == id).unwrap();
     let code = current.code.clone();
     assert_eq!(code::parse(&code), Some(code.clone()));
     assert_eq!(current.used_at_ms, 42);
-    assert!(listed.iter().find(|entry| entry.id == unsupported_id).unwrap().code.is_empty());
+    let unsupported_code = listed.iter().find(|entry| entry.id == unsupported_id).unwrap().code.clone();
+    assert_eq!(code::parse(&unsupported_code), Some(unsupported_code.clone()));
     assert_eq!(known(&api, &unsupported_id).unwrap().path, unsupported);
     let refusal = api.projects.get(&api, &unsupported_id).err().expect("unsupported DB is refused when opened");
     assert_eq!(refusal.0.code, "project_db_version");

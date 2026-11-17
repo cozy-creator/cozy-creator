@@ -76,7 +76,7 @@ test('drawers', { tag: '@solo' }, async ({ page, project, api, cli, removeAfter,
     }
     const plain = extras[0];
     const mine = [project.path, ...extras.map((one) => one.path)];
-    /** The index's order of this cell's projects, by folder (a locked one's row is a handle). */
+    /** The index's order of this cell's projects, by folder. */
     const indexed = async () => (await api.get('/v1/projects?limit=1000')).projects.map((row) => row.path).filter((path) => mine.includes(path));
     const nameOf = (path) => path.split(/[\\/]/).pop();
 

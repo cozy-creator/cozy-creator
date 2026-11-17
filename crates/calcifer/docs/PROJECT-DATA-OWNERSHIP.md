@@ -15,7 +15,8 @@ bookkeeping (uploads, uses, run objects, held memos) in `.vault-machine/objects.
 Paul, 2026-11-15: once an encrypted project is locked "there is no traces of it on the computer elsewhere, in any way. There are
 no temp files leftover, no records of the prompts or the runs, etc." At lock, TensorD retires every machine journal row of the
 project's runs and every row its scope keyed, and Calcifer's index keeps only an opaque handle and the folder, so a list can offer
-Unlock; unlocking registers it again from its own project.db. The containment shard's lock scans prove it (`e2e/cli/containment`).
+Unlock. The list names it by the id and code in its own plaintext keybag (cl-1171), and the handle never leaves Calcifer; unlocking
+registers it again from its own project.db. The containment shard's lock scans prove it (`e2e/cli/containment`).
 
 
 All project data that Cozy stores automatically belongs in the project's directory. For an encrypted project, durable contents belong inside its encrypted filesystem. This includes run identities and history, inputs, outputs, logs and errors, retry records, derived caches, source, execution scratch, browser project preferences and private execution bookkeeping. An encrypted outside journal or a hash-only outside execution index is still a violation.

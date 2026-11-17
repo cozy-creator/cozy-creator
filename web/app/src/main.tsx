@@ -10,16 +10,10 @@ import { createRoot } from "react-dom/client"
 import { RouterProvider } from "react-router-dom"
 import { type Boot, type Connection, ConnectionProvider, connect } from "./app/Connection"
 import { theRouter } from "./app/routes"
-import { takeHashRoute } from "./app/session"
 import { tabShown, useSignal } from "./ui/signal"
 
 /** Asks Calcifer who it is. Runs once, outside React. */
-function boot(): Promise<Boot> {
-  takeHashRoute()
-  return connect()
-}
-
-const booted = boot()
+const booted: Promise<Boot> = connect()
 
 /** Calcifer won't answer this page: it isn't Calcifer's own, or not its user's. One state, drawn where the page was, and nothing of a
  *  project in it (cl-980). */
