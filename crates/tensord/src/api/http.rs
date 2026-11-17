@@ -441,22 +441,35 @@ async fn update(State(m): State<Machine>, headers: HeaderMap, body: Bytes) -> An
 async fn submit(State(m): State<Machine>, headers: HeaderMap, body: Bytes) -> Answer {
     let caller = m.caller(&headers)?;
     caller.machine()?;
-    let batch: v1::RunBatch = serde_json::from_slice(&body)
+    let mut batch: v1::RunBatch = serde_json::from_slice(&body)
         .map_err(|e| Error::validation("invalid_request", format!("the run batch is not JSON: {e}")))?;
     for request in &batch.runs {
         run_id(&request.id)?;
     }
+    // The run the answer goes on following (cl-1172): its events need no second round trip.
+    let follow = batch.runs.iter().position(|run| run.id == batch.follow).filter(|_| wants_events(&headers));
+    let followed_id = std::mem::take(&mut batch.follow);
     let admitted = m.admit()?;
     let actor = caller.actor;
     let accepted = m.call(move |runs| runs.accept(actor, batch.runs)).await?;
     drop(admitted);
-    let runs = (accepted.into_iter())
+    let runs: Vec<v1::Admitted> = (accepted.into_iter())
         .map(|admitted| match admitted {
             Ok((created, state)) => v1::Admitted { created, state: Some(state), refusal: None },
             Err(error) => v1::Admitted { refusal: Some(error), ..Default::default() },
         })
         .collect();
-    Ok(json(StatusCode::OK, &v1::RunBatchAnswer { runs }))
+    let answer = v1::RunBatchAnswer { runs };
+    if !follow.is_some_and(|at| answer.runs[at].state.is_some()) {
+        return Ok(json(StatusCode::OK, &answer));
+    }
+    let events = match super::machine_runs::follow(m.runs.clone(), caller.actor, followed_id, 0, caller.limit()).await {
+        Ok(events) => events,
+        Err(_) => return Ok(json(StatusCode::OK, &answer)),
+    };
+    let first = futures_util::stream::once(std::future::ready(event(v1::ADMITTED, &answer)));
+    let events = first.chain(received(events).map(|e| e.and_then(|e| run_event(&e))));
+    Ok(sse(m.authority(&caller), followed(&m.identity, events)))
 }
 
 /// `PUT /v1/upcoming` (cl-967): the caller's upcoming jobs here, nearest first, each prepared behind every run (`ahead`).

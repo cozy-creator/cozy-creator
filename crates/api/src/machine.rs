@@ -323,7 +323,15 @@ pub struct RunRequest {
 #[serde(default)]
 pub struct RunBatch {
     pub runs: Vec<RunRequest>,
+    /// The id of the run of `runs` whose events the answer goes on with, asked as `text/event-stream` (cl-1172): the answer is
+    /// then its [`ADMITTED`] event, and the run's events follow it as `GET /v1/runs/{id}/events` sends them from its start, so one
+    /// round trip admits a run and follows it. Empty, or a machine that doesn't stream it: the answer alone, as JSON.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub follow: String,
 }
+
+/// The SSE event that carries a batch's [`RunBatchAnswer`] ahead of its followed run's events (`RunBatch::follow`).
+pub const ADMITTED: &str = "admitted";
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]

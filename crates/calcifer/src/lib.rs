@@ -2308,7 +2308,7 @@ impl Calcifer {
                 self.write_inputs(link, run, machine).await?;
                 let _turn = sending.lock().await;
                 match self.deliver(run, machine, link).await? {
-                    Some(state) => (state, None),
+                    Some(delivered) => delivered,
                     // Sent with another run of its batch, or canceled: as its row now says.
                     None => return Ok(()),
                 }
@@ -2324,7 +2324,7 @@ impl Calcifer {
                         self.write_inputs(link, run, machine).await?;
                         let _turn = sending.lock().await;
                         match self.deliver(run, machine, link).await? {
-                            Some(state) => (state, None),
+                            Some(delivered) => delivered,
                             None => return Ok(()),
                         }
                     }
@@ -2337,7 +2337,7 @@ impl Calcifer {
                             self.publish(&run.id, noted);
                         }
                         let _turn = sending.lock().await;
-                        let Some(state) = self.deliver(run, machine, link).await? else { return Ok(()) };
+                        let Some((state, _)) = self.deliver(run, machine, link).await? else { return Ok(()) };
                         (state, Some(events))
                     }
                     attached => {
@@ -2385,7 +2385,7 @@ impl Calcifer {
     /// the caller holds: in one admission (`POST /v1/runs/batch`), so it packs them together as its estimate quoted them (cl-816). A
     /// run alone is a batch of one; an update goes alone, by `POST /v1/runs`. Another run whose inputs or spec fail is left to its own
     /// driver. Its own state; none when another driver sent it meanwhile, or a cancel won.
-    async fn deliver(&self, run: &RunRow, machine: &str, link: &Link) -> Result<Option<v1::RunState>, Stop> {
+    async fn deliver(&self, run: &RunRow, machine: &str, link: &Link) -> Result<Option<(v1::RunState, Option<link::Live<v1::RunEvent>>)>, Stop> {
         let mut sent = vec![];
         let own_scope = if machine == "local" { private_io::of_output(&run.out_dir).map_err(|error| Stop::Refused(Reason {
             code: error.code, message: error.message, origin: "private_storage".into(), ..Default::default()
@@ -2438,13 +2438,15 @@ impl Calcifer {
         };
         if run.kind == ::api::calcifer::Kind::Update {
             let (id, spec) = runs.remove(at);
-            return self.sent(machine, self.answered(&run.id, machine, link.update(id, spec)).await).map(Some);
+            return self.sent(machine, self.answered(&run.id, machine, link.update(id, spec)).await).map(|state| Some((state, None)));
         }
-        let answers = self.answered(&run.id, machine, link.admit(runs)).await;
+        // Its events come on the admission's answer (cl-1172): one round trip sends it and follows it.
+        let own = runs[at].0.clone();
+        let answers = self.answered(&run.id, machine, link.admit_following(runs, &own)).await;
         unpin(self.machines());
         match answers {
-            Ok(answers) => self.sent(machine, answers.into_iter().nth(at).expect("an answer a run")).map(Some),
-            Err(error) => self.sent(machine, Err(error)).map(Some),
+            Ok((answers, events)) => self.sent(machine, answers.into_iter().nth(at).expect("an answer a run")).map(|state| Some((state, events))),
+            Err(error) => self.sent(machine, Err(error)).map(|state| Some((state, None))),
         }
     }
 
