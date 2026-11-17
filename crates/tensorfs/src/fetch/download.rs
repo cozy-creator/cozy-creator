@@ -22,7 +22,7 @@
 //!   While a need is under way (a weight before `BACKGROUND`: what a run reads before it starts), no background weight
 //!   starts and one in flight gives way at its next bytes, in every downloader of the process too: a guess never takes
 //!   the link from what a run waits on (cl-1101). They wait the same while a call starts cold ([`starting`]), until its
-//!   first pass has read its weights: an extra takes no disk, link or page cache from a request's start (cl-1118).
+//!   models are loaded: an extra takes no disk, link or page cache from a request's start (cl-1118).
 //! - **Sharing (cl-1007).** Orders 0 and 1 are never paced. Weights (every later order) take the whole link, except while an
 //!   install downloads beside them ([`installing`]): its process group's own sockets, read once a second
 //!   ([`install_received`]), tell when it does and at what rate. Then the weights yield at once to a sixteenth of the most
@@ -323,7 +323,7 @@ impl Drop for Installing {
 pub struct Starting(());
 
 /// Until the guard drops, a call starts cold on this computer (TensorD's: its executor new or its models not loaded, until
-/// its first step): no background weight of any downloader of the process starts, and one in flight gives way at its next
+/// its Load returns): no background weight of any downloader of the process starts, and one in flight gives way at its next
 /// bytes, as while a need downloads (cl-1118). They go on the moment the last such call has loaded.
 pub fn starting() -> Starting {
     if LINK.starting.fetch_add(1, Ordering::AcqRel) == 0 {
