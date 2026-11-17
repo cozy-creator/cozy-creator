@@ -435,7 +435,8 @@ if [ -n "$needs" ]; then
   # Weightless (App only) and on a stable floor, as on the RC: published for every platform, so a consumer's universal lock
   # resolves it on each (hub_away's Windows-only dependency). A cohort pin would lock it to this runner alone.
   publish "$tools"
-  for p in qwen-image-2 minimax-h3 sdxl birefnet; do publish "$packages/$p" cohort; done
+  # run_overhead (cl-1172) runs only echo and the LLM Write tool.
+  [ "$key" = cli:overhead ] || for p in qwen-image-2 minimax-h3 sdxl birefnet; do publish "$packages/$p" cohort; done
   # The LLM Write tool the page's stream and the Responses API run by name (xs-209): qwen3's, or qwen3.5's before it.
   case $key in
     cli:runs | cli:overhead | cli:) for p in qwen3 qwen3.5; do [ ! -d "$packages/$p" ] || { publish "$packages/$p" cohort; break; }; done ;;
