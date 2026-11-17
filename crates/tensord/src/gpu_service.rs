@@ -123,6 +123,10 @@ pub(crate) struct GpuConfig {
     /// its kernels with them at start, before any package is installed (`image_kernel_boot`).
     #[serde(default)]
     pub image_kernels: Option<ImageKernels>,
+    /// A dev machine (`dev = true` in its config.toml): sent in Start, its executors audit their CUDA
+    /// graphs' replays.
+    #[serde(default)]
+    pub dev: bool,
     /// Tests only: recorded GPU readings every call reads in place of its GPUs' own (`machine.gpu_samples`, cl-913).
     #[serde(default)]
     pub gpu_samples: Option<PathBuf>,
@@ -3454,6 +3458,7 @@ impl Pool {
                     shared: false,
                     display_limit: vec![],
                     display_pace: None,
+                    dev: self.config.dev,
                 }),
                 &mut device_executor::Baseline,
             )?;
@@ -4007,6 +4012,7 @@ impl Pool {
                     shared: self.config.host.mode == HostMode::Shared,
                     display_limit: self.display_limit(&lane),
                     display_pace: self.display_pace(gpus),
+                    dev: self.config.dev,
                 }),
                 &mut callbacks,
             )?)?;
