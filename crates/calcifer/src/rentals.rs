@@ -445,11 +445,14 @@ impl Machines {
             return Err(Error::new(Kind::Usage, "idempotency_key_invalid", message));
         }
         let (mut request, alias, signer) = request(sku, shape);
-        let quote = self.quoted(&origin, &request).await?;
+        let mut quote = self.quoted(&origin, &request).await?;
         // The Hub's cap is the one price check: an order dearer than the price agreed, else this
         // quote's, rents nothing (409 rental.price_rose). It reads 0 as no cap, so 0 is sent as 1.
         let cap = request.max_usd_micros_per_hour.unwrap_or(quote.price_usd_micros_per_hour);
         request.max_usd_micros_per_hour = Some(cap.max(1));
+        // Quoted dearer than agreed since (its host found slow, its datacenter resting), the Hub places the order within
+        // the price agreed (th-383): what it is said to cost is that, never the dearer quote.
+        quote.price_usd_micros_per_hour = quote.price_usd_micros_per_hour.min(cap);
         write_key(&self.home.rental_key(&alias), &signer)?;
         let ask = Ask {
             key: key.to_owned(),

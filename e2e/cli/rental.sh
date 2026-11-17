@@ -709,6 +709,8 @@ SQL
   rental=$(jq -r '.machine.rental_id // empty' "$S/order.json" 2> /dev/null || true)
   echo "quote drift: ordered at the agreed $agreed: $(jq -c '{rental: .machine.rental_id, quote: .quote.usd_micros_per_hour, error: .error.code}' "$S/order.json" 2> /dev/null || head -c 300 "$S/order.json")"
   [ -n "$rental" ] || fail "quote drift: the order at the price agreed was refused, though docker's machine is on sale at it: $(head -c 400 "$S/order.json")"
+  jq -e --argjson a "$agreed" '.quote.usd_micros_per_hour <= $a' "$S/order.json" > /dev/null 2>&1 \
+    || check "quote drift: the order placed within $agreed says it costs $(jq -r .quote.usd_micros_per_hour "$S/order.json")"
   for _ in $(seq 90); do
     attempts=$(sql -c "SELECT provider || '/' || datacenter || ' ' || state FROM hub_v2.rental_acquisition_attempts WHERE rental_id = '$rental' ORDER BY ordinal" 2> /dev/null | tr '\n' ';')
     [ -n "$attempts" ] && break
