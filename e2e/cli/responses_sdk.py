@@ -11,7 +11,7 @@ import sys
 import time
 import zlib
 
-from openai import OpenAI
+from openai import OpenAI  # type: ignore[import-not-found]  # the cell runs it with `uv run --with openai`; the type check's environment has none
 
 
 def png(width: int, height: int) -> bytes:
@@ -38,7 +38,12 @@ def main() -> int:
     seen: dict[str, object] = {}
 
     began = time.monotonic()
-    events, deltas, said = [], [], {}
+    events: list[tuple[str, int, float]] = []
+    deltas: list[tuple[str, float]] = []
+    whole: str | None = None
+    done: str | None = None
+    ended = 0.0
+    failure = ""
     stream = client.responses.create(
         model=args.model,
         input="Write six sentences about a lighthouse at night.",
@@ -50,37 +55,41 @@ def main() -> int:
     )
     for event in stream:
         at = time.monotonic() - began
-        events.append((event.type, event.sequence_number, round(at, 2)))
-        if event.type == "response.output_text.delta":
-            deltas.append((event.delta, at))
-        elif event.type in ("response.output_text.done", "response.completed", "response.failed", "error"):
-            said[event.type] = (event, at)
+        kind = str(event.type)
+        events.append((kind, int(event.sequence_number), round(at, 2)))
+        if kind == "response.output_text.delta":
+            deltas.append((str(event.delta), at))
+        elif kind == "response.output_text.done":
+            done = str(event.text)
+        elif kind == "response.completed":
+            whole, ended = str(event.response.output_text), at
+        elif kind in ("response.failed", "error"):
+            failure = str(event)[:500]
     kinds = [kind for kind, _, _ in events]
-    seen["streamed"] = {"events": events[:6] + events[-6:], "deltas": len(deltas)}
+    streamed: dict[str, object] = {"events": events[:6] + events[-6:], "deltas": len(deltas), "text": whole}
+    seen["streamed"] = streamed
     if kinds[:2] != ["response.created", "response.in_progress"]:
         failed.append(f"streamed: it begins {kinds[:2]}, not response.created, response.in_progress")
     for kind in ("response.output_item.added", "response.content_part.added", "response.output_text.done", "response.content_part.done", "response.output_item.done"):
         if kind not in kinds:
             failed.append(f"streamed: no {kind}")
     if not kinds or kinds[-1] != "response.completed":
-        failed.append(f"streamed: it ends {kinds[-1:]}, not response.completed: {said.get('response.failed') or said.get('error')}")
+        failed.append(f"streamed: it ends {kinds[-1:]}, not response.completed: {failure}")
     numbers = [number for _, number, _ in events]
     if numbers != list(range(len(numbers))):
         failed.append(f"streamed: sequence numbers {numbers[:12]}…, not 0, 1, 2, …")
-    if "response.completed" in said:
-        completed, ended = said["response.completed"]
-        whole = completed.response.output_text
-        seen["streamed"]["text"] = whole
-        if "".join(delta for delta, _ in deltas) != whole:
-            failed.append(f"streamed: its deltas don't add up to its text: {''.join(delta for delta, _ in deltas)[:200]!r} vs {whole[:200]!r}")
-        done = said.get("response.output_text.done")
-        if done and done[0].text != whole:
+    if whole is not None:
+        joined = "".join(delta for delta, _ in deltas)
+        if joined != whole:
+            failed.append(f"streamed: its deltas don't add up to its text: {joined[:200]!r} vs {whole[:200]!r}")
+        if done is not None and done != whole:
             failed.append("streamed: output_text.done's text isn't the response's")
         if not whole.strip():
             failed.append("streamed: the answer is no words")
         # Streaming, its words come as they are made: several, the first well before it completes.
         if len(deltas) < 3 or deltas[0][1] > ended - 1.0:
-            failed.append(f"streamed: {len(deltas)} deltas, the first {deltas[0][1] if deltas else '-'} s and the end {ended:.2f} s: its words came only at its end")
+            first = f"{deltas[0][1]:.2f}" if deltas else "-"
+            failed.append(f"streamed: {len(deltas)} deltas, the first at {first} s and the end at {ended:.2f} s: its words came only at its end")
 
     picture = "data:image/png;base64," + base64.b64encode(png(64, 64)).decode()
     response = client.responses.create(
@@ -90,9 +99,10 @@ def main() -> int:
         temperature=0,
         metadata={"project": args.project},
     )
-    seen["whole"] = {"status": response.status, "id": response.id, "text": response.output_text}
-    if response.status != "completed" or not response.output_text.strip():
-        failed.append(f"not streamed: {response.status}, {response.output_text!r}")
+    status, text = str(response.status), str(response.output_text)
+    seen["whole"] = {"status": status, "id": str(response.id), "text": text}
+    if status != "completed" or not text.strip():
+        failed.append(f"not streamed: {status}, {text!r}")
 
     for line in failed:
         print(f"FAIL {line}")
