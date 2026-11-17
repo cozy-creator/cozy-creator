@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""folder_gone (cl-1124): an unlocked encrypted project's folder removed from outside, as a person's file manager would.
+"""folder_gone (cl-1124): an unlocked encrypted project's folder removed or moved from outside, as a person's file manager would.
 
-On Windows the removal succeeds at once and the view (a drive letter) dies with the backing, under a session Calcifer still holds.
-Then, each within its bound: `cozy vault lock` on it ends (it answers, it doesn't hang); its idle lock ends the session; Calcifer
-answers all along; and `cozy restart`, which lets go of every view, ends and succeeds. On Linux and macOS the folder can't go while
-its view is mounted (cl-1124's question (1)), but its keys and data do: the session must still end, not wedge. Its keybag alone
+A removal is a delete, on every OS: the folder goes within 20 s of retries (on Linux and macOS its mounted view blocks the first pass,
+until Calcifer ends the session and takes away what it kept there). Then, each within its bound: `cozy vault lock` on it answers and
+says the folder is gone; its idle lock ends the session; a folder moved away (to the Trash) leaves no view mounted and can be removed
+from where it went; Calcifer answers all along; and `cozy restart`, which lets go of every view, ends and succeeds. Its keybag alone
 deleted, the session stays open: it holds the only copy of the keys."""
 
 from __future__ import annotations
@@ -37,6 +37,8 @@ def ended(cell: "Cell", folder: Path, view: str) -> dict[str, object]:
 # The idle lock's limit, and how long past it the session may last.
 IDLE = 15
 IDLE_BOUND = 60
+# A view moved with its folder is unmounted within this.
+MOVED_BOUND = 30
 
 
 def mounted(view: str) -> bool:
@@ -150,8 +152,7 @@ def main() -> None:
                 failures.append(f"the lock asked of a project whose folder is gone didn't say so: {said.strip()[-300:]}")
         else:
             locked.update(ended(cell, folder, view))
-            if locked["state"] in ("unlocked", "locking", "no answer") or locked["mounted_after"]:
-                failures.append(f"lock: its session stays {locked['state']} after its folder's keys and data were removed: {locked}")
+            failures.append(f"lock: its folder couldn't be removed in 20 s: {locked}")
             cell.put_away(folder)
 
         # 2. Its folder removed, then its idle lock.
@@ -169,11 +170,35 @@ def main() -> None:
                 failures.append(f"its session lasts {IDLE + IDLE_BOUND} s past its folder's removal with a {IDLE} s idle limit: {state}")
         else:
             idled.update(ended(cell, folder, view))
-            if idled["state"] in ("unlocked", "locking", "no answer") or idled["mounted_after"]:
-                failures.append(f"idle: its session stays {idled['state']} after its folder's keys and data were removed: {idled}")
+            failures.append(f"idle: its folder couldn't be removed in 20 s: {idled}")
             cell.put_away(folder)
 
-        # 2b. Its keybag alone deleted: the session holds the only copy of the keys, so it stays open (asked of, and on the clock).
+        # 2b. Its folder moved away whole, as to the Trash: no view of it stays mounted, and it goes from there.
+        folder, view = cell.made("moved", 0)
+        trash = Path(tempfile.mkdtemp(prefix="folder-gone-trash-"))
+        try:
+            os.rename(folder, trash / "project")
+            moved: dict[str, object] = {"moved": True}
+        except OSError as error:
+            moved = {"moved": False, "why": str(error)}
+        facts["moved"] = moved
+        if moved["moved"]:
+            there = str(trash / "project" / Path(view).relative_to(folder)) if Path(view).is_relative_to(folder) else view
+            began = time.monotonic()
+            while (mounted(view) or mounted(there)) and time.monotonic() - began < MOVED_BOUND:
+                time.sleep(0.5)
+            moved.update({"unmounted_s": round(time.monotonic() - began, 1), "mounted": mounted(view) or mounted(there),
+                          "state": cell.state(folder), **{f"then_{key}": value for key, value in cell.removed(trash / "project").items()}})
+            if moved["mounted"]:
+                failures.append(f"moved: its view stays mounted {MOVED_BOUND} s after its folder moved away: {there}")
+            if moved["state"] == "unlocked":
+                failures.append("moved: Calcifer still says the project is unlocked after its folder moved away")
+            if not moved["then_removed"]:
+                failures.append(f"moved: its folder can't be removed from where it went: {moved}")
+        else:
+            cell.put_away(folder)
+
+        # 2c. Its keybag alone deleted: the session holds the only copy of the keys, so it stays open (asked of, and on the clock).
         folder, view = cell.made("keys", 0)
         keybag = folder / "project.vault.keys.json"
         kept = keybag.read_bytes()
