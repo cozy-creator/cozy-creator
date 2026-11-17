@@ -726,6 +726,8 @@ case $SHARD in
   # A small disk full of idle models' weights makes room for the next runs' (tfs-150).
   disk) parts="disk_full logs" ;;
   # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.
+  # A machine's GPU use followed across its restart and update, never refused for it (cl-1117).
+  machine-gpus) parts="gpu_use_follows logs" ;;
   plan) parts="estimate_line plan_picks plan_published plan_update plan_fetch prepare_ahead logs" ;;
   # A box's tool gets its machine ready before Render (cl-1104): a guess switched, a request sent meanwhile, a box deleted; two boxes
   # of one function quoted each by its own checkpoint; a guess moved when its machine's load changes; on a short disk a guess
@@ -843,6 +845,7 @@ case $SHARD in
     statedb
     local_idle
     machine_set
+    gpu_use_follows
     fall_back
     retry_elsewhere
     db_deleted_gc
