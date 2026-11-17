@@ -62,19 +62,29 @@ export function brokenWords(machine: Machine): string {
   return `This machine can't run anything right now: ${broken.message.replace(/\.$/, "")}. ${then}`
 }
 
-/** How a GPU was held back for heat (cl-913): `for 64% of its last run (89 °C, 1400 of 2520 MHz)`. */
-export const heatWords = (hot: GpuHeat) =>
-  `for ${Math.round(hot.share * 100)}% of its last run (${hot.temperature_max_c} °C, ${hot.sm_mhz_mean} of ${hot.sm_mhz_limit} MHz)${hot.replayed ? " (replayed readings)" : ""}`
+/** How a GPU was held back, for heat (cl-913) or at a power limit its host set (cl-1161): `for 64% of its last run (89 °C, 1400 of
+ * 2520 MHz)`, `to 160 W of its 450 W by its host for 98% of its last run (876 of 3105 MHz)`. */
+export const heatWords = (hot: GpuHeat) => {
+  const share = `for ${Math.round(hot.share * 100)}% of its last run`
+  const replayed = hot.replayed ? " (replayed readings)" : ""
+  return hot.power_limit_w
+    ? `to ${hot.power_limit_w} W of its ${hot.power_default_w} W by its host ${share} (${hot.sm_mhz_mean} of ${hot.sm_mhz_limit} MHz)${replayed}`
+    : `${share} (${hot.temperature_max_c} °C, ${hot.sm_mhz_mean} of ${hot.sm_mhz_limit} MHz)${replayed}`
+}
+
+/** What held a GPU back, as a sentence's start. */
+const heldBy = (hot: GpuHeat) => (hot.power_limit_w ? `GPU ${hot.gpu} held` : `GPU ${hot.gpu} slowed down from heat`)
 
 /** Its Runtime serves its GPUs none of its fast kernels: runs there are slower. */
 export const kernelsWords = (status: MachineStatus) =>
   status.runtime_kernels ? `Runtime ${status.runtime} is missing its fast GPU kernels, so runs here are slower: ${status.runtime_kernels}` : ""
 
-/** What makes its runs slow now (cl-913): a GPU throttled for heat, a Runtime without its kernels. Red wherever it shows. */
+/** What makes its runs slow now (cl-913): a GPU throttled for heat or held to its host's power limit, a Runtime without its kernels.
+ * Red wherever it shows. */
 export function slowWords(machine: Machine): string[] {
   const status = machine.status
   if (!status || machine.state === "ended") return []
-  const heat = (status.heat ?? []).map((hot) => `GPU ${hot.gpu} slowed down from heat ${heatWords(hot)}`)
+  const heat = (status.heat ?? []).map((hot) => `${heldBy(hot)} ${heatWords(hot)}`)
   const kernels = kernelsWords(status)
   return kernels ? [...heat, kernels] : heat
 }

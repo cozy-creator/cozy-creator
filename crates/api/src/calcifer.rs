@@ -847,9 +847,6 @@ pub struct RunEstimate {
     pub soonest: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<Note>,
-    /// Local code's install, still running: follow it, then ask again under the same key.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub preparing: Option<Box<Run>>,
 }
 
 /// One machine's quote for a run, or for one of `count` copies of it. Times are ms from the answer.
@@ -1489,7 +1486,7 @@ pub struct MachineStatus {
     /// What it does for this controller's runs besides their own work, each once however many wait on it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub activity: Vec<Operation>,
-    /// Its GPUs held back for heat most of their last loaded run: the machine is hot, and its runs slow (cl-913).
+    /// Its GPUs held back for heat (cl-913) or at a power limit its host set (cl-1161) most of their last loaded run: its runs are slow.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub heat: Vec<crate::machine::GpuHeat>,
     /// Why its Runtime serves its GPUs none of its native kernels; empty: it does.
@@ -1517,18 +1514,29 @@ pub struct Readied {
 }
 
 impl MachineStatus {
-    /// What makes its runs slow now, one line each: a GPU held back for heat, a Runtime without its kernels.
+    /// What makes its runs slow now, one line each: a GPU held back for heat or held to a power limit under its default, a Runtime
+    /// without its kernels.
     pub fn slowed(&self) -> Vec<String> {
         let heat = self.heat.iter().map(|hot| {
             let replayed = if hot.replayed { " (replayed readings)" } else { "" };
-            format!(
-                "GPU {} slowed down from heat for {:.0}% of its last run ({} °C, {} of {} MHz){replayed}",
-                hot.gpu,
-                hot.share * 100.0,
-                hot.temperature_max_c,
-                hot.sm_mhz_mean,
-                hot.sm_mhz_limit
-            )
+            match hot.power_limit_w {
+                0 => format!(
+                    "GPU {} slowed down from heat for {:.0}% of its last run ({} °C, {} of {} MHz){replayed}",
+                    hot.gpu,
+                    hot.share * 100.0,
+                    hot.temperature_max_c,
+                    hot.sm_mhz_mean,
+                    hot.sm_mhz_limit
+                ),
+                limit => format!(
+                    "GPU {} held to {limit} W of its {} W by its host for {:.0}% of its last run ({} of {} MHz){replayed}",
+                    hot.gpu,
+                    hot.power_default_w,
+                    hot.share * 100.0,
+                    hot.sm_mhz_mean,
+                    hot.sm_mhz_limit
+                ),
+            }
         });
         let kernels = (!self.runtime_kernels.is_empty()).then(|| format!("Its Runtime {} has no native kernels: {}", self.runtime, self.runtime_kernels));
         heat.chain(kernels).collect()

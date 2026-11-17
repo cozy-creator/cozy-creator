@@ -93,7 +93,7 @@ on:
         type: string
         default: ''
       shards:
-        description: "Linux CLI shards as a JSON list; empty: every default shard; `[]`: none (rc-os.yaml's macOS and Windows alone)"
+        description: "Linux CLI shards: a JSON list; empty every default shard; `[]` none (rc-os.yaml's macOS and Windows alone); `changed` (rc-e2e, cl-1128) the edge set and what changed since each last went green"
         type: string
         default: ''
   workflow_dispatch:
@@ -167,6 +167,10 @@ on:
         description: Keep CPU fixture inputs, weights and outputs in the run's artifacts
         type: boolean
         default: false
+      cpu_lock_fresh:
+        description: "The cozy under test locks each CPU package first and it runs from that lock, which pins the runtime and tensorfs releases from PyPI (promote.sh's smoke)"
+        type: boolean
+        default: false
       # The tensorhub ref every Hub here is built from: the isolated Hub of cli, imports and cpu, and skew's (`select=skew`:
       # released cozy versions × that Hub, e2e/skew/run.sh). Empty: as Runtime and packages, tensorhub's RC on a run toward one.
       hub_ref:
@@ -184,8 +188,8 @@ on:
 
 permissions:
   contents: read
-  # e2e/candidates/build.sh finds earlier runs' candidates.
-  actions: read
+  # e2e/candidates/build.sh finds earlier runs' candidates; a red edge shard of an RC run ends the run (cl-1128).
+  actions: write
 
 # Each merge group, dispatch and call runs to its end; a pull request's placeholder is superseded by the next push.
 concurrency:
@@ -201,7 +205,9 @@ jobs:
     # Last resort (tracker design/stalls.md): a runner that hangs sends no signal.
     timeout-minutes: 10
     outputs:
-      selection: ${{ steps.select.outputs.selection }}
+      selection: ${{ steps.changed.outputs.selection || steps.select.outputs.selection }}
+      cli_shards: ${{ steps.changed.outputs.shards }}
+      edge: ${{ steps.changed.outputs.edge || '[]' }}
       linux: ${{ steps.select.outputs.linux }}
       runners: ${{ steps.select.outputs.runners }}
       native_runners: ${{ steps.select.outputs.native_runners }}
@@ -233,13 +239,18 @@ jobs:
         run: |
           # No inputs: this repo's own merge group.
           [ -n "$REPO" ] || { REPO=cozy-creator REF=$HEAD_SHA BASE=$BASE_SHA CREATOR=$HEAD_SHA; }
-          # A cut across repos lands as `rc/<x>` in each: a change on or into one, or a dispatch from one, runs against its
-          # siblings' `rc/<x>` where they have one, else master. A merge group's head names the PR, not the PR's branch.
+          # A cut across repos lands as `rc/<x>` in each, a patch release as `release/X.Y.Z` (its tag vX.Y.Z is that line): a
+          # change on or into one, or a dispatch from one, runs against its siblings' same line where they have one, else master
+          # (the pin step's `sibling`). A merge group's head names the PR, not the PR's branch.
+          line() {
+            if [[ $1 == rc/* ]] || [[ $1 =~ ^release/[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "$1"
+            elif [[ $1 =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then echo "release/${BASH_REMATCH[1]}"; fi
+          }
           rc= from_rc=
-          for b in "${BASE_REF#refs/heads/}" "${HEAD_REF#refs/heads/}" "$DISPATCHED"; do [[ $b == rc/* ]] && { rc=$b from_rc="the run's branch"; break; }; done
+          for b in "${BASE_REF#refs/heads/}" "${HEAD_REF#refs/heads/}" "$DISPATCHED"; do rc=$(line "$b"); [ -z "$rc" ] || { from_rc="the run's branch"; break; }; done
           if [ -z "$rc" ] && [[ ${HEAD_REF#refs/heads/} =~ ^gh-readonly-queue/.+/pr-([0-9]+)- ]]; then
             b=$(gh api "repos/cozy-creator/${REPO/#tensorhub/tensorhub-v2}/pulls/${BASH_REMATCH[1]}" -q .head.ref 2>/dev/null) || b=
-            [[ $b != rc/* ]] || { rc=$b from_rc="its PR's branch"; }
+            rc=$(line "$b"); [ -z "$rc" ] || from_rc="its PR's branch"
           fi
           # A dispatch from a task branch runs against the RC it works toward, never master by default (two runs on 11-15 met
           # master's Runtime and packages and looked like product bugs): its open PR's base, else the line its own Cargo.toml says
@@ -247,8 +258,8 @@ jobs:
           # Only a dispatch on master runs against master.
           if [ -z "$rc" ] && [ -n "$DISPATCHED" ] && [ "$DISPATCHED" != master ]; then
             b=$(gh api "repos/$GITHUB_REPOSITORY/pulls?head=${GITHUB_REPOSITORY%%/*}:$DISPATCHED&state=open" -q '.[0].base.ref // empty' 2>/dev/null) || b=
-            if [[ $b == rc/* ]]; then
-              rc=$b from_rc="its PR's base"
+            if [ -n "$(line "$b")" ]; then
+              rc=$(line "$b") from_rc="its PR's base"
             elif [ "$GITHUB_REPOSITORY" = cozy-creator/cozy-creator ]; then
               v=$(gh api "repos/cozy-creator/cozy-creator/contents/Cargo.toml?ref=$DISPATCHED" -H 'Accept: application/vnd.github.raw' 2>/dev/null | sed -n 's/^version = "\([0-9]*\)\.\([0-9]*\)\.[0-9]*\(-[^"]*\)\{0,1\}"$/\1 \2 \3/p' | head -1) || v=
               read -r major minor dev <<< "$v"
@@ -307,12 +318,18 @@ jobs:
           FROM_RC: ${{ steps.what.outputs.from_rc }}
         run: |
           commit() { gh api "repos/$1/commits/$2" -q .sha; }
-          # The sibling's `rc/<x>` (the `what` step's) when it has one, else its newest `rc/*`, else what was asked.
+          # The sibling's line (the `what` step's) when it has one; else, toward an RC its newest `rc/*`, toward a patch release
+          # the release it patches (its newest `release/X.Y.*` before it: 0.26.1's packages are 0.26.0's); else what was asked.
           sibling() {
-            local newest
+            local newest names
             if [ -z "$RC" ] || [ "$2" != master ]; then echo "$2"; return; fi
             if gh api "repos/$1/branches/$RC" -q .name >/dev/null 2>&1; then echo "$RC"; return; fi
-            newest=$(gh api "repos/$1/branches?per_page=100" -q '.[].name' 2>/dev/null | grep '^rc/[0-9]' | sort -V | tail -1) || newest=
+            if [[ $RC == release/* ]]; then
+              names=$(gh api "repos/$1/git/matching-refs/heads/${RC%.*}." -q '.[].ref' 2>/dev/null) || names=
+              newest=$(printf '%s\n' ${names//refs\/heads\//} "$RC" | grep -xE 'release/[0-9]+\.[0-9]+\.[0-9]+' | sort -uV | awk -v at="$RC" '$0 == at { exit } { print }' | tail -1)
+            else
+              newest=$(gh api "repos/$1/branches?per_page=100" -q '.[].name' 2>/dev/null | grep '^rc/[0-9]' | sort -V | tail -1) || newest=
+            fi
             echo "${newest:-$2}"
           }
           ref=$(commit "$GITHUB_REPO" "$REF")
@@ -386,6 +403,32 @@ jobs:
           echo "native_build=$(echo "$s" | jq 'any(.suites[]; . == "cli")')" >> "$GITHUB_OUTPUT"
           { echo "### e2e selection: $REPO ${REF:0:12}"; echo '```'; echo "$s" | jq .; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           echo "$s" | jq .
+      # cl-1128 (Paul, 11-17: "test the hardest cases first … test only so far as you need to"): on an RC push, the edge set and each
+      # other shard (and cpu, imports) whose paths changed since it last went green on this RC (ci/suites.toml's
+      # [cozy-creator.shards]), read from the RC's commits' rc-e2e check runs in one GraphQL query. Edge shards first.
+      - id: changed
+        if: inputs.shards == 'changed'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RC: ${{ steps.what.outputs.rc }}
+          REF: ${{ steps.pin.outputs.ref }}
+          SELECTION: ${{ steps.select.outputs.selection }}
+        run: |
+          [ -n "$RC" ] || { echo "::error::shards=changed runs only toward an RC"; exit 1; }
+          git -C .creator fetch -q --no-tags --depth=200 origin "+refs/heads/$RC:refs/remotes/origin/$RC"
+          gh api graphql -f ref="refs/heads/$RC" -f query='query($ref:String!){repository(owner:"cozy-creator",name:"cozy-creator"){ref(qualifiedName:$ref){target{... on Commit{history(first:60){nodes{oid checkSuites(first:20){nodes{workflowRun{workflow{name}} checkRuns(first:100){nodes{name conclusion}}}}}}}}}}}' > "$RUNNER_TEMP/history.json"
+          # Each shard's newest commit whose rc-e2e run passed it; imports, both its halves.
+          jq '[.data.repository.ref.target.history.nodes[] | .oid as $oid | .checkSuites.nodes[] | select(.workflowRun.workflow.name == "rc-e2e")
+              | .checkRuns.nodes | (map(select(.conclusion == "SUCCESS") | .name | sub("^e2e / "; "")) ) as $green
+              | ($green | map(select(startswith("cli ")) | ltrimstr("cli ") | {key: ., value: $oid}))
+                + (if any($green[]; . == "cpu") then [{key: "cpu", value: $oid}] else [] end)
+                + (if ($green | index("imports 1/2")) and ($green | index("imports 2/2")) then [{key: "imports", value: $oid}] else [] end)]
+              | flatten | reverse | from_entries' "$RUNNER_TEMP/history.json" > "$RUNNER_TEMP/bases.json"
+          picked=$(cd .creator && python3 ci/affected --shards "$REF" "$RUNNER_TEMP/bases.json")
+          echo "shards=$(jq -c .shards <<< "$picked")" >> "$GITHUB_OUTPUT"
+          echo "edge=$(python3 -c 'import json, tomllib; print(json.dumps(tomllib.load(open(".creator/ci/suites.toml", "rb"))["cozy-creator"]["shards"]["edge"]))')" >> "$GITHUB_OUTPUT"
+          echo "selection=$(jq -c --argjson picked "$picked" '.suites |= map(select((. != "cpu" and . != "imports") or ($picked.suites | index(.))))' <<< "$SELECTION")" >> "$GITHUB_OUTPUT"
+          { echo "### What this RC run runs (cl-1128)"; echo '```'; jq -r '.why | to_entries[] | "\(.key): \(.value)"' <<< "$picked"; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
       # skew's clients: `previous` is the previous minor's latest patch, from this cozy's own version.
       - id: skew
         env:
@@ -732,7 +775,7 @@ jobs:
   cli:
     name: cli ${{ matrix.shard }}
     needs: [affected, candidate, hub]
-    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && inputs.shards != '[]' && !(inputs.publish_run != '' && inputs.select == 'cli' && inputs.shards == '["projectvault"]' && needs.affected.outputs.repo == 'cozy-creator')
+    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && inputs.shards != '[]' && (inputs.shards != 'changed' || needs.affected.outputs.cli_shards != '[]') && !(inputs.publish_run != '' && inputs.select == 'cli' && inputs.shards == '["projectvault"]' && needs.affected.outputs.repo == 'cozy-creator')
     strategy:
       fail-fast: false
       matrix:
@@ -742,7 +785,7 @@ jobs:
         # ondemand (ondemand-share its install's share of the link, ondemand-enhancers the enhancer a request's rule names), plan,
         # prefetch, coming, lines, disk and selfupdate guard features Paul asked for (xs-199): each on every RC run, as any cell.
         # dev-start builds the change's cozy as a dev home does and starts it on a render walk (cl-1069: a dev build overflowed 2 MiB).
-        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-2d","web-2d-solo","web-engines","web-solo","projectdb","projectvault","projectvault-nofuse","projectvault-static","local-code","ondemand","ondemand-share","ondemand-enhancers","plan","prefetch","coming","lines","disk","selfupdate","typed-calls","dev-start"]') }}
+        shard: ${{ fromJSON(inputs.shards == 'changed' && needs.affected.outputs.cli_shards || inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-2d","web-2d-solo","web-engines","web-solo","projectdb","projectvault","projectvault-nofuse","projectvault-static","local-code","ondemand","ondemand-share","ondemand-enhancers","plan","queue","prefetch","coming","lines","disk","selfupdate","typed-calls","dev-start"]') }}
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time. A web lane runs in under 10 min.
@@ -797,7 +840,7 @@ jobs:
         working-directory: .web-src/web/app
         run: pnpm install --frozen-lockfile
       - name: Install the optional project-encryption filesystem driver
-        if: (startsWith(matrix.shard, 'projectvault') && !startsWith(matrix.shard, 'projectvault-nofuse') && !startsWith(matrix.shard, 'projectvault-static')) || startsWith(matrix.shard, 'hardcut') || matrix.shard == 'local-code' || (matrix.shard == 'web-engines' || startsWith(matrix.shard, 'web-engines@')) || (matrix.shard == 'web-vault' || startsWith(matrix.shard, 'web-vault@')) || (matrix.shard == 'web-drawers' || startsWith(matrix.shard, 'web-drawers@')) || (matrix.shard == 'web-project-settings' || startsWith(matrix.shard, 'web-project-settings@')) || (matrix.shard == 'web-solo' || startsWith(matrix.shard, 'web-solo@')) || startsWith(matrix.shard, 'web-2d-solo') || startsWith(matrix.shard, 'containment') || startsWith(matrix.shard, 'web-opens')
+        if: (startsWith(matrix.shard, 'projectvault') && !startsWith(matrix.shard, 'projectvault-nofuse') && !startsWith(matrix.shard, 'projectvault-static')) || startsWith(matrix.shard, 'hardcut') || matrix.shard == 'local-code' || (matrix.shard == 'web-engines' || startsWith(matrix.shard, 'web-engines@')) || (matrix.shard == 'web-vault' || startsWith(matrix.shard, 'web-vault@')) || (matrix.shard == 'web-drawers' || startsWith(matrix.shard, 'web-drawers@')) || (matrix.shard == 'web-project-settings' || startsWith(matrix.shard, 'web-project-settings@')) || (matrix.shard == 'web-p-code-only' || startsWith(matrix.shard, 'web-p-code-only@')) || (matrix.shard == 'web-vault-list' || startsWith(matrix.shard, 'web-vault-list@')) || (matrix.shard == 'web-solo' || startsWith(matrix.shard, 'web-solo@')) || startsWith(matrix.shard, 'web-2d-solo') || startsWith(matrix.shard, 'containment') || startsWith(matrix.shard, 'web-opens')
         run: bash .creator/e2e/cli/install-vault-driver.sh
       # cl-1000: the provider probe (e2e/vault-provider) projectvault-static's cells run, not embedding the provider, and FUSE 3 beside
       # libfuse.so.2, which the glibc securefs build it times the static one against loads.
@@ -915,6 +958,15 @@ jobs:
         with:
           name: project-${{ matrix.shard }}-receipt
           path: ${{ runner.temp }}/e2e/containment/receipt.json
+      # Fail fast on the edge set (cl-1128): a red edge shard of an RC run ends the run's other jobs, its logs kept; rc-e2e's
+      # `since` still names what merged since green.
+      - name: An edge shard went red, so the run ends here
+        if: failure() && inputs.shards == 'changed' && contains(fromJSON(needs.affected.outputs.edge), matrix.shard)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "### cli ${{ matrix.shard }} (edge) is red: the run's other jobs end" >> "$GITHUB_STEP_SUMMARY"
+          gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel"
 
 
   # Each native runner builds or reuses cozy once for the CLI partitions.
@@ -1192,6 +1244,7 @@ jobs:
       CPU_CELLS: ${{ inputs.cpu_cells }}
       CPU_RECORD: ${{ inputs.cpu_record && 'true' || 'false' }}
       CPU_KEEP: ${{ inputs.cpu_keep && 'true' || 'false' }}
+      CPU_LOCK_FRESH: ${{ inputs.cpu_lock_fresh && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -1230,6 +1283,7 @@ jobs:
           [ -z "$CPU_CELLS" ] || cpu_args+=(--cells "$CPU_CELLS")
           if [ "$CPU_RECORD" = true ]; then cpu_args+=(--record --refs "$RUNNER_TEMP/e2e/refs"); fi
           if [ "$CPU_KEEP" = true ]; then cpu_args+=(--keep); fi
+          if [ "$CPU_LOCK_FRESH" = true ]; then cpu_args+=(--lock fresh); fi
           chmod +x "$RUNNER_TEMP/fixture-hub/tensorhub" "$RUNNER_TEMP/fixture-hub/minio"
           sudo loginctl enable-linger "$(id -un)"
           export XDG_RUNTIME_DIR=/run/user/$(id -u)

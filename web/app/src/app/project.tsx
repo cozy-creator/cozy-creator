@@ -25,10 +25,9 @@ export function useGone(id: string | null): string | null {
   return id ? data ?? null : null
 }
 
-/** Browser addresses use the short code. Older records can still be opened by their id. */
-export function projectPath(project: Pick<ProjectAddress, "id" | "code">, rest = ""): string {
-  const base = project.code ? `/p/${project.code}` : `/projects/${encodeURIComponent(project.id)}`
-  return `${base}${rest && `/${rest.replace(/^\//, "")}`}`
+/** A project's page: `/p/<code>`, its only address (cl-1171). */
+export function projectPath(project: Pick<ProjectAddress, "code">, rest = ""): string {
+  return `/p/${project.code}${rest && `/${rest.replace(/^\//, "")}`}`
 }
 
 export function useProjectId(): string | null {
@@ -39,7 +38,7 @@ export function useTo() {
   const project = useContext(CurrentProject)
   const id = project?.id
   const code = project?.code ?? ""
-  return useCallback((rest = "") => id ? projectPath({ id, code }, rest) : `/${rest}`, [id, code])
+  return useCallback((rest = "") => id ? projectPath({ code }, rest) : `/${rest}`, [id, code])
 }
 
 /** Resolve another project's address without putting its alias in API or event cache keys. */
@@ -51,11 +50,12 @@ export function useProjectHref(id: string | null | undefined, rest = ""): string
   return project ? projectPath(project, rest) : null
 }
 
+/** A code as a link may spell it (ContentKit's spellings: any case, dashes, O for 0, I or L for 1), as Calcifer keeps it. */
+const spelled = (code: string) => code.toUpperCase().replace(/-/g, "").replace(/O/g, "0").replace(/[IL]/g, "1")
+
 /** Resolve URL codes once, then expose only the canonical project id to the mounted app. */
 export function ProjectRoute({ children }: { children: ReactNode }) {
-  const compact = useMatch("/p/:code/*")
-  const legacy = useMatch("/projects/:id/*")
-  const reference = compact?.params.code ?? legacy?.params.id ?? ""
+  const reference = useMatch("/p/:code/*")?.params.code ?? ""
   const { client, stream } = useConnection()
   const queries = useQueryClient()
   const location = useLocation()
@@ -63,31 +63,28 @@ export function ProjectRoute({ children }: { children: ReactNode }) {
   const { data, error, refetch } = useQuery({ ...referenceQuery(client, reference), enabled: Boolean(reference) })
   // A read that failed is asked again once Calcifer is back, never left standing until a reload.
   useEffect(() => (error ? stream.subscribe((event) => { if (event.type === "hello") void refetch() }) : undefined), [error, stream, refetch])
+  // `/p/` takes a project's code alone: its id or its name there is no address (cl-1171).
+  const notCode = Boolean(reference && data && !data.gone && data.code !== spelled(reference))
 
   useLayoutEffect(() => {
-    if (!data || !reference) return
+    if (!data || !reference || notCode) return
     queries.setQueryData(referenceKey(data.id), data)
     if (data.code) queries.setQueryData(referenceKey(data.code), data)
-    const suffix = location.pathname.replace(/^\/(?:p|projects)\/[^/]+\/?/, "")
+    const suffix = location.pathname.replace(/^\/p\/[^/]+\/?/, "")
     const canonical = `${projectPath(data, suffix)}${location.search}`
     if (`${location.pathname}${location.search}` !== canonical) navigate(canonical, { replace: true })
-  }, [data, reference, location.pathname, location.search, navigate, queries])
+  }, [data, reference, notCode, location.pathname, location.search, navigate, queries])
 
   // While the next one's address is read, the page shown stays as it is: the frame never goes, and the screen never goes blank (cl-980).
   // Not an encrypted project's: that's covered at once.
   const shown = useRef<{ project: ProjectAddress | null } | null>(null)
   if (reference && data?.gone) return <main className="gate"><Unopened gone={data.gone} /></main>
+  if (notCode) return <main className="gate"><Unopened error={new Error("There's no project with this code on this computer.")} /></main>
   if (reference && error && !data) return <main className="gate"><Unopened error={error} /></main>
   if (reference && !data && (!shown.current || privateProject(shown.current.project?.id ?? null))) return <main className="gate">Opening project…</main>
   const project = !reference ? null : data ?? shown.current?.project ?? null
   shown.current = { project }
   return <CurrentProject.Provider value={project}>{children}</CurrentProject.Provider>
-}
-
-/** Every project address the page has read, read again: an unlock turns a locked project's handle (`locked-…`, the Projects list's) into
- *  the project's own address, which the page then goes on to (cl-1090). */
-export function readAddressesAgain(queries: QueryClient) {
-  return queries.invalidateQueries({ queryKey: ["project-reference"] })
 }
 
 /** A newly created project can be navigated to before the project list refetches. */

@@ -8,7 +8,8 @@ PRODUCTS=(minimax-h3 seedvr2 sdxl flux.3-klein qwen-image-2 anima birefnet qwen3
 [ -z "$FIRST" ] || mapfile -t PRODUCTS < <(tr , '\n' <<< "$FIRST"; printf '%s\n' "${PRODUCTS[@]}" | grep -vxF -f <(tr , '\n' <<< "$FIRST"))
 product() {
   local f=product_${1//[-.]/_}
-  if declare -F "$f" >/dev/null; then "$f"; else log "$1: no product cells"; fi
+  # Its cells are one group, made by this function (gate.sh `cell`, --skip-unchanged).
+  if declare -F "$f" >/dev/null; then CELL_GROUP=$1 HARNESS=$(declare -f "$f" | sha256sum | cut -c1-32) "$f"; else log "$1: no product cells"; fi
 }
 
 H3_SEED=2026102801

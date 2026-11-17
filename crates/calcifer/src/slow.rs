@@ -1,8 +1,8 @@
 //! A run far slower than its function is known to take on its card and lane says so, naming the likely cause (cl-913). What it's
 //! known to take, its bar: this machine's runs of it, else runs on other machines of its card, else its release's benchmarks (cl-1024:
-//! of its card, else another's scaled by the Hub's per-SKU speeds); at its lane and size (megapixels and steps as its time left reads them, and frames, tokens and media
-//! duration asked), never from a run itself slow or slowed (a hot GPU, a Runtime without its kernels). A run whose bar has stages is
-//! timed from its first one, so a cold start's load is no slowness, and what a run spends downloading weights is never counted. Far is 1.4× the bar and 20 s more: said once, as soon as its
+//! of its card, else another's scaled by the Hub's per-SKU speeds; local code's: its source's, cl-1161); at its lane and size (megapixels and steps as its time left reads them, and frames, tokens and media
+//! duration asked), never from a run itself slow or slowed (a GPU held back for heat or a host's power limit, a Runtime without its
+//! kernels). A run whose bar has stages is timed from its first one, so a cold start's load is no slowness, and what a run spends downloading weights is never counted. Far is 1.4× the bar and 20 s more: said once, as soon as its
 //! time so far is and a cause is known (`tick`), else at its end with what its record measured.
 use ::api::{
     calcifer::{EtaBasis, Kind, Status, Warning},
@@ -15,7 +15,8 @@ use crate::{Calcifer, RunId, eta, lock, project::fit, store};
 pub(crate) const SLOW_RUN: &str = "slow_run";
 const SLOWER: f64 = 1.4;
 const LONGER_MS: f64 = 20_000.0;
-/// A GPU busy this long in a call, held back for heat more than this share of it, was hot (`platform::gpu`'s `LOADED_MS`, `HOT_SHARE`).
+/// A GPU busy this long in a call, held back for heat or at its host's power limit more than this share of it, was slowed
+/// (`platform::gpu`'s `LOADED_MS`, `HOT_SHARE`).
 const LOADED_MS: u64 = 20_000;
 const HOT: f32 = 0.5;
 /// What a run says that makes it no bar for others, and that its box says.
@@ -159,19 +160,29 @@ impl Calcifer {
             };
             return Some(Self::barred(prior.with_steps(steps), steps, &of, basis, 1.0, extent));
         }
-        // Its release's benchmark (cl-1024): of its card, else another's scaled to it (estimated); at what it asks.
-        let hub = row.hub.as_ref()?.to_string();
-        let (package, release, function) = parts(&row.target)?;
+        // Its release's benchmark (cl-1024): of its card, else another's scaled to it (estimated); at what it asks. Local code names no
+        // release: its source's benchmarks, as placement's quotes take them (cl-1161).
         let machines = self.machines()?;
-        // The Hub's speeds for it, read as its placement is, so a speed-scaled benchmark has them.
-        let _ = tokio::time::timeout(crate::toolbox::HUB_LATE, fit::speeds(&machines.hubs, &hub, package, release, function)).await;
-        let references = crate::placement::references(&machines.hubs, std::slice::from_ref(&row.target));
+        let (references, whose) = match parts(&row.target) {
+            Some((package, release, function)) => {
+                let hub = row.hub.as_ref()?.to_string();
+                // The Hub's speeds for it, read as its placement is, so a speed-scaled benchmark has them.
+                let _ = tokio::time::timeout(crate::toolbox::HUB_LATE, fit::speeds(&machines.hubs, &hub, package, release, function)).await;
+                (crate::placement::references(&machines.hubs, std::slice::from_ref(&row.target)), "its release's")
+            }
+            None => {
+                let Some(v1::Source::Local(source)) = &row.spec.source else { return None };
+                let mut references = crate::placement::references(&machines.hubs, &[]);
+                references.add(row.target.rsplit_once('/')?.0, &crate::local_code::benchmarks_of(&source.manifest)?);
+                (references, "its source's")
+            }
+        };
         let size = v1::JobSize::of(&Value::Object(asked.clone()));
         let (warm_ms, _) = references.time(&row.target, &gpu, &size)?;
         // Timed from its start, load and all: a cold run is held to the cold time where the benchmark has one.
         let (total_ms, basis) = match references.measured(&row.target, &gpu, &size) {
-            Some((_, bench)) => (warm_ms * bench.cold_ms.map_or(1.0, |cold| cold as f64 / bench.warm_ms.max(1) as f64).max(1.0), format!("its release's benchmark of an {card}")),
-            None => (warm_ms, format!("an estimate from its release's benchmarks on other cards, scaled to an {card}")),
+            Some((_, bench)) => (warm_ms * bench.cold_ms.map_or(1.0, |cold| cold as f64 / bench.warm_ms.max(1) as f64).max(1.0), format!("{whose} benchmark of an {card}")),
+            None => (warm_ms, format!("an estimate from {whose} benchmarks on other cards, scaled to an {card}")),
         };
         Some(Bar { total_ms, lead_ms: None, stages: vec![], width: 1, basis, extent: Extent::of(&asked) })
     }
@@ -300,12 +311,15 @@ impl Calcifer {
     }
 
     /// What likely made `row` slow, by its own warnings, its machine's word now, and once it ended (`ended`) what its record
-    /// measured: heat, a Runtime without its kernels, kernels still building, another degree than its bar's.
+    /// measured: heat or a host's power limit, a Runtime without its kernels, kernels still building, another degree than its bar's.
     fn causes(&self, row: &store::RunRow, machine: &str, ended: Option<&v1::Outcome>, width: u32, bar: &Bar) -> Vec<String> {
         let mut causes: Vec<String> = vec![];
         let codes: Vec<&str> = row.warnings.iter().map(|warning| warning.code.as_str()).collect();
         let frame = self.machines().and_then(|machines| machines.frame(machine));
-        let mut hot: Vec<(u32, f32)> = frame.iter().flat_map(|frame| frame.heat.iter().map(|hot| (hot.gpu, hot.share))).collect();
+        // Each slowed GPU, its share, and the power limit and default it was held to (none: heat).
+        let mut hot: Vec<(u32, f32, Option<(u64, u64)>)> = (frame.iter())
+            .flat_map(|frame| frame.heat.iter().map(|hot| (hot.gpu, hot.share, (hot.power_limit_w > 0).then_some((hot.power_limit_w.into(), hot.power_default_w.into())))))
+            .collect();
         let mut without = codes.contains(&"runtime_without_kernels") || frame.as_ref().is_some_and(|frame| !frame.runtime_kernels.is_empty());
         let mut degree = width;
         let mut building = 0u64;
@@ -317,9 +331,13 @@ impl Calcifer {
             let measured: Vec<&Value> = own.iter().chain(calls.iter().filter_map(|call| call.measurements.as_ref())).collect();
             for measurements in measured {
                 for gpu in measurements["memory"]["driver"].as_array().into_iter().flatten() {
-                    let share = gpu["heat_share"].as_f64().unwrap_or(0.0) as f32;
-                    if share > HOT && gpu["busy_ms"].as_u64().unwrap_or(0) >= LOADED_MS {
-                        hot.push((gpu["gpu"].as_u64().unwrap_or(0) as u32, share));
+                    let (index, loaded) = (gpu["gpu"].as_u64().unwrap_or(0) as u32, gpu["busy_ms"].as_u64().unwrap_or(0) >= LOADED_MS);
+                    let share = |field: &str| gpu[field].as_f64().unwrap_or(0.0) as f32;
+                    if loaded && share("heat_share") > HOT {
+                        hot.push((index, share("heat_share"), None));
+                    } else if loaded && share("capped_share") > HOT {
+                        let watts = |field: &str| gpu[field].as_u64().unwrap_or(0);
+                        hot.push((index, share("capped_share"), Some((watts("power_limit_w"), watts("power_default_w")))));
                     }
                 }
                 for observed in measurements["observations"].as_array().into_iter().flatten() {
@@ -338,12 +356,15 @@ impl Calcifer {
             }
         }
         hot.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.total_cmp(&a.1)));
-        hot.dedup_by_key(|(gpu, _)| *gpu);
-        for (gpu, share) in hot {
-            causes.push(format!("GPU {gpu} slowed down from heat {:.0}% of the time", share * 100.0));
+        hot.dedup_by_key(|(gpu, ..)| *gpu);
+        for (gpu, share, power) in hot {
+            causes.push(match power {
+                None => format!("GPU {gpu} slowed down from heat {:.0}% of the time", share * 100.0),
+                Some((limit, default)) => format!("GPU {gpu} held to {limit} W of its {default} W by its host {:.0}% of the time", share * 100.0),
+            });
         }
         if codes.contains(&"gpu_throttled") && causes.is_empty() {
-            causes.push("a GPU slowed down from heat".into());
+            causes.push("a GPU slowed down from heat or a power limit its host set".into());
         }
         if without {
             causes.push("the machine's Runtime has no native kernels (slower GEMMs, no FlashAttention-3)".into());

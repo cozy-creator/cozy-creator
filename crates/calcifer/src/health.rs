@@ -61,3 +61,8 @@ pub(crate) fn service_health(event: HealthEvent) {
     };
     tracing::info!(target: "cozy.service_health", event, pid = std::process::id(), version = env!("CARGO_PKG_VERSION"));
 }
+
+/// A stop past its deadline: the step it was still on, as Calcifer exits anyway.
+pub(crate) fn stop_late(step: &'static str) {
+    tracing::info!(target: "cozy.service_health", event = "stop_late", step, pid = std::process::id(), version = env!("CARGO_PKG_VERSION"));
+}

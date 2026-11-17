@@ -56,7 +56,7 @@ pub fn newest_listed<'a, R: 'a>(releases: impl IntoIterator<Item = &'a R, IntoIt
 /// every build of it keeps a project's call in its project (per-call scratch). A project's run on an older Runtime moves its machine up
 /// first; held by hand, it is refused. A candidate or source build (`0.47.0.dev0+dev.g…`) meets it. Bump it with the Runtime's minor
 /// when a cozy minor is released (the RC's cozy-runtime pyproject, `0.<n>.0.dev0`).
-pub const RUNTIME_MINOR: &str = ">=0.47.0.dev0";
+pub const RUNTIME_MINOR: &str = ">=0.48.0.dev0";
 
 /// `needs` with this cozy's Runtime minor (`RUNTIME_MINOR`) added: what a project's run needs of its Runtime.
 pub fn for_project(needs: Option<VersionSpecifiers>) -> VersionSpecifiers {

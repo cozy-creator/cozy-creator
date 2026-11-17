@@ -275,7 +275,7 @@ test = "pr: agent, the file, a kind, a tool's block and one field of it in words
 
 [open]
 "--port" = "pr: entrypoint parser, loopback listener and preserved config tests"
-test = "pr: entrypoints, a private window of $BROWSER's Chrome started at the page's address, --json starting none, and with no private-window browser nothing opened, the address and one line; web-open opens the link in a browser; web-restart, a tab through a Calcifer restart and what's typed as cozy locks; page_http (commands) refuses what must be; open_unlocks (projectvault), a locked project unlocked at a terminal by passphrase or recovery secret, refused with --json or from a pipe"
+test = "pr: entrypoints, a private window of $BROWSER's Chrome started at the page's address; open_outside (cl-1179), outside a project Cozy Creator's root, one notice, exit 0, --json's note; --json starting none, and with no private-window browser nothing opened, the address and one line; web-open opens the link in a browser; web-restart, a tab through a Calcifer restart and what's typed as cozy locks; page_http (commands) refuses what must be; open_unlocks (projectvault), a locked project unlocked at a terminal by passphrase or recovery secret, refused with --json or from a pipe"
 
 ["vault"]
 "--directory" = "pr: projectvault: convert and rekey from outside the backing folder"

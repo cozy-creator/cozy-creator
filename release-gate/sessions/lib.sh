@@ -21,6 +21,12 @@ RIDS=()  # every rental this session ordered; $OUT/rental lists them, one a line
 fail() { say "FAIL: $*"; RC=1; exit 1; }
 # param <key> [default]: the session's setting from PARAMS (a non-string as JSON).
 param() { jq -r --arg k "$1" --arg d "${2-}" 'if has($k) then (.[$k] | if type == "string" then . else tojson end) else $d end' <<<"$PARAMS"; }
+# `file`: PARAMS are a JSON file in this checkout (from its root), for a matrix past the dispatch input's 65,535 characters;
+# read before any other param, so lib.sh's own (floor_mb_s, runtime, tensorfs) come from it too.
+PF=$(param file '')
+if [ -n "$PF" ]; then
+  PF=$(dirname "${BASH_SOURCE[0]}")/../../$PF; jq -e 'type == "object"' "$PF" > /dev/null 2>&1 || fail "params file $PF"; PARAMS=$(cat "$PF")
+fi
 # The slow-host floor (`floor_mb_s`, 0 for none; `floor_after_s`): a step whose upload to the pod or weights download still
 # reports under it that long in ends the session, `host too slow`, before the host's link eats the cap (th-377).
 FLOOR_MBS=$(param floor_mb_s 50) FLOOR_AFTER=$(param floor_after_s 120)
@@ -60,6 +66,8 @@ finish() {
   trap 'RC=1' INT TERM HUP
   # The helpers stop first, each one's children before itself: a watcher whose sleep is killed exits without acting.
   for p in $DL $WD $BG; do pkill -P "$p"; kill "$p"; done 2>/dev/null
+  # A session's last reads from a live pod (ab.sh: the pod's GPU readings).
+  if declare -F before_end > /dev/null && [ "${#RIDS[@]}" -gt 0 ] && ! gone "${RIDS[0]}"; then before_end; fi
   local r
   for r in "${RIDS[@]}"; do
     local tries=0
@@ -303,7 +311,7 @@ order() {
     say "no provider has $sku now (attempt $try/6): ordering again in ${pause}s"
     sleep "$pause"; try=$((try + 1)); pause=$((pause * 2 > 120 ? 120 : pause * 2))
   done
-  RID=$r; RIDS+=("$RID"); echo "$RID" >> "$OUT/rental"; eval "RP_$i=$RP"
+  RID=$r; RIDS+=("$RID"); echo "$RID" >> "$OUT/rental"; eval "RP_$i=$RP"; ORDERED_SKU=$sku
   say "rental $RID ordered"
   guard
 }
@@ -321,6 +329,12 @@ ready() {
   NAME=$(jq -r .name "$OUT/show$i.json")
   [ "$(jq -r .rental_id "$OUT/show$i.json")" = "$RID" ] && [ -n "$NAME" ] || fail "show $RID: $(head -c 300 "$OUT/show$i.json")"
   say "READY $RID as $NAME, image $(jq -r .rental.base_worker_image_digest "$OUT/show$i.json"), disk $(jq -r '.rental.disk_gb // "?"' "$OUT/show$i.json") GB of $DISK asked"
+  # What was rented is what was asked for: a provider that offers another width or card fails the session here, never runs it.
+  local asked=1 got sku
+  [[ " $RENT_ARGS " =~ \ --gpus\ ([0-9]+)\  ]] && asked=${BASH_REMATCH[1]}
+  got=$(jq '.status.gpus // [] | length' "$OUT/show$i.json") sku=$(jq -r '.sku // .rental.sku // empty' "$OUT/show$i.json")
+  [ "$got" = "$asked" ] || fail "$NAME has $got GPUs, not the $asked asked for"
+  [ -z "$sku" ] || [ "$sku" = "${ORDERED_SKU:-$SKU}" ] || fail "$NAME is $sku, not the ${ORDERED_SKU:-$SKU} asked for"
   grep -E '^(version|runtime|tensorfs|GPU 0|disk free) ' "$OUT/show$i.txt" | tee -a "$R"
 }
 

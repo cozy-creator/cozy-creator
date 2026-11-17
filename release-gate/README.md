@@ -12,7 +12,7 @@ same SKU and suites; any FAIL blocks the promotion. Design: tracker `design/ci-v
 
 | Suite | Proves | Rentals (`skus`) | Cost · time | Pick it for |
 |---|---|---|---|---|
-| `runtime` | every first-party package's default call (H3 15 s with a described reference, SeedVR2, SDXL, Klein, Qwen, Anima, BiRefNet, the Qwen3.5 describer (`qwen3` on Qwen3.5-9B), Gemma 4 E2B through `qwen3`'s VisionLM (cr-301), Fibo, HiDream, MOSS, Qwen-Image and its one-release swap), then SDXL in a second executor, SDXL cold then two warm calls after each of three restarts and a loop step no capture records (cr-227), six SDXL child calls each with its own LoRA stack (cl-687) and an SDXL int8 quantize (a weights output), and Regenerate-2K over the whole 15 s shot at 1440p, the largest one forward takes (cr-259), and H3's video VAE alone, encode and decode each within 5% of ComfyUI's stored times (`h3-vae`, cr-306): kernels, times, VRAM, quality, LM coverage | rtx-4090, rtx-5090 | ~$6.5 · ~95 min, in parallel | a Runtime, TensorFS, varena or TensorD change; any rewrite |
+| `runtime` | every first-party package's default call (H3 15 s with a described reference, SeedVR2, SDXL, Klein, Qwen, Anima, BiRefNet, the Qwen3.5 describer (`qwen3` on Qwen3.5-9B), Gemma 4 E2B through `qwen3`'s VisionLM (cr-301), Fibo, HiDream, MOSS, Qwen-Image and its one-release swap), then SDXL in a second executor, SDXL cold then two warm calls after each of three restarts and a loop step no capture records (cr-227), six SDXL child calls each with its own LoRA stack (cl-687) and an SDXL int8 quantize (a weights output), and Regenerate-2K over the whole 15 s shot at 1440p, the largest one forward takes (cr-259), and H3's video VAE alone, encode and decode each within 5% of ComfyUI's stored times (`h3-vae`, cr-306), and one picture through its encoder, held to the lone-frame path's stored time on a Runtime that has it (`h3-vae-picture`, cr-323): kernels, times, VRAM, quality, LM coverage | rtx-4090, rtx-5090 | ~$6.5 · ~95 min, in parallel | a Runtime, TensorFS, varena or TensorD change; any rewrite |
 | `upscale` | each picture Upscale tool (`suites/upscale/cells.sh` `UPSCALERS`) on the bench's hardest small JPEGs (`sessions/fixtures/upscale-bench`: 225 px, q50–75, of clean pictures from the private benchmarks repo's `upscale/originals`), at its defaults: its mean DISTS to the clean pictures at least its measured margin below the Lanczos blow-up's (`bars.py`; row `upscale-<key>-dists`; se-147: Paul's JPEG artifacts amplified, not fixed) | rtx-4090 | ~$0.3 · ~13 min | a release that changes an upscaler package (qwen-image-2, flux-2, flux.3-klein, moss-image, p-h3-image, sdxl, seedvr2) or the Runtime: escaped.tsv's `packages=` rows require it then |
 | `packages` | from the `--packages` checkout's source, its candidates (each at a prerelease version) and what `--only` names, plus the SDXL smoke | rtx-4090, rtx-5090 | ~$1–3 · 15–30 min | a package bump |
 | `published` | version skew, cozy × packages (cl-1160): on the Runtime and TensorFS the pod booted with (the Hub's, which users' machines run until a promotion), the candidate cozy runs each first-party package's published release at its default call (`<cell>-published`). H3's takes a character reference, so its segments are managed calls with files | rtx-4090 | ~$1.5 · ~75 min | every RC |
@@ -80,7 +80,7 @@ Local-package (`--packages`) gates build a small source-staging helper from this
    they move. A download that can't land before the job's cap (`--cap`, the workflow's `cap_minutes`) at the rate it has
    kept 4 to 8 minutes in fails the host, `host too slow: X MB/s, N GiB needs M min`: the pod ends, its files go to
    `slow-<machine>/`, and the gate starts over on another host, at most 5, one already found slow ended at once (th-364).
-4. Ends the rental and checks that it is gone, then writes a benchmark-ledger row per package run (`ledger.py`, below).
+4. Ends the rental and checks that it is gone.
 5. Runs `analyze.py`. Any GPU fault in the machine's log or kernel probe crash in its record fails the gate, whatever the
    cells did. A cell passes when it completed, did not report `passed: false`, served the last PASS's kernels (with no fallback), produced
    a sane output, and kept execution / step 1 / steady s/step / VRAM within the last PASS's spread. VRAM is the
@@ -88,6 +88,7 @@ Local-package (`--packages`) gates build a small source-staging helper from this
    and `runs.py` reads what the cell added at its fullest (caps judge everything in use). A GPU cell without it fails.
    Each executor's package import and CUDA init are held against the same cells' known-good: twice those or more is a
    slow host, which the verdict names, and its time fails read `(slow host)`, not a regression.
+6. Writes a benchmark-ledger row per package run, with its cell's verdict (`ledger.py`, below).
 
 ## Baselines
 
@@ -103,6 +104,14 @@ state (cold, warm), phases, peak VRAM, the host and its flaws. CI pushes with th
 laptop with its own git credentials. Rows that could not be pushed stay in the run's `ledger.jsonl`, for `ledger.py backfill
 <artifact id>`. `ledger.py compare <rows>` classifies each gap against the recorded rows as noise (5%), host, regression or
 improvement, or undecided (run a same-host A/B).
+
+`gate.sh --skip-unchanged` runs only what changed. A cell is skipped when its last PASS on the SKU asked the same
+(`ledger.py ask`: its function, its arguments with files by content, its STOP, its suite's or product's code) of the same
+cozy, Runtime, TensorFS, attention table, held models and package code (a committed dir of `--packages`; a package pins its
+model releases). The log and the verdict name the row it stands on, and the log says why each other cell runs. The flag pins
+the scenario (scenarios.tsv's first row), the seeds and the reference picture, which a gate otherwise draws. A cell that runs
+runs its product's (else its suite's) skipped cells first, so it starts from the state it always did. The kernels, gemm and
+execution suites always run.
 
 ## Running it
 

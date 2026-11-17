@@ -5,9 +5,10 @@
 //! answers 404 and that is fine. A marker in the machine's state keeps a restarted TensorD from
 //! reporting again. A loaded run's heat (cl-913: how much of it a GPU was held back for heat) is told
 //! at the first such run and whenever it turns hot or cool; a Hub from before it refuses the field,
-//! which is no harm.
+//! which is no harm. Its GPU power limit against the card's default (cl-1161) is told the same way, in a
+//! report of its own, so a Hub that refuses it still takes the heat.
 use super::hub::Hub;
-use ::api::hub::types::{WorkerDownload, WorkerGpuHeat, WorkerProbe};
+use ::api::hub::types::{WorkerDownload, WorkerGpuHeat, WorkerGpuPower, WorkerProbe};
 use std::{
     path::PathBuf,
     sync::{Arc, OnceLock},
@@ -80,9 +81,28 @@ pub(crate) fn heat(share: f32, seconds: f64) {
     let heat = WorkerGpuHeat { share, seconds };
     reporter.runtime.spawn(async move {
         let what = format!("{heat:?}");
-        match hub.report_speed(None, None, Some(heat)).await {
+        match hub.report_speed(None, None, Some(heat), None).await {
             Ok(()) => tracing::info!("reported this host's GPU heat to the Hub: {what}"),
             Err(refusal) => tracing::info!("the Hub took no GPU heat report: {refusal}"),
+        }
+    });
+}
+
+/// A loaded run on this pod ended on GPUs whose driver enforces `limit_w` of the card's `default_w`, the lowest of its GPUs against
+/// its default, over `seconds` busy: told at the first such run and whenever the limits change.
+pub(crate) fn power(limit_w: u32, default_w: u32, seconds: f64) {
+    static TOLD: std::sync::Mutex<Option<(u32, u32)>> = std::sync::Mutex::new(None);
+    let Some(reporter) = REPORTER.get() else { return };
+    if TOLD.lock().unwrap().replace((limit_w, default_w)) == Some((limit_w, default_w)) {
+        return;
+    }
+    let hub = reporter.hub.clone();
+    let power = WorkerGpuPower { power_cap_watts: limit_w, power_default_watts: default_w, seconds };
+    reporter.runtime.spawn(async move {
+        let what = format!("{power:?}");
+        match hub.report_speed(None, None, None, Some(power)).await {
+            Ok(()) => tracing::info!("reported this host's GPU power limit to the Hub: {what}"),
+            Err(refusal) => tracing::info!("the Hub took no GPU power report: {refusal}"),
         }
     });
 }
@@ -113,7 +133,7 @@ fn send(signal: &'static str, download: Option<WorkerDownload>, cpu: Option<Work
     let hub = reporter.hub.clone();
     reporter.runtime.spawn(async move {
         let what = format!("{download:?} {cpu:?}");
-        match hub.report_speed(download, cpu, heat).await {
+        match hub.report_speed(download, cpu, heat, None).await {
             Ok(()) => tracing::info!("reported this host's {signal} speed to the Hub: {what}"),
             Err(refusal) => tracing::info!("the Hub took no {signal} speed report: {refusal}"),
         }

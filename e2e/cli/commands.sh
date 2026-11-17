@@ -11,6 +11,14 @@ entrypoints() {
     || check "entrypoints: see $OUT/entrypoints/results.json"
 }
 
+# cl-1179 (Paul, 11-17: "we should also open the webui anyway, because they can select between different projects in it anyway"): `cozy open`
+# outside a project folder opens Cozy Creator's root, says so in one line, and exits 0 (e2e/cli/open_outside.py).
+open_outside() {
+  step "cozy open outside a project opens Cozy Creator (cl-1179)"
+  ARGV_LOG="$OUT/argv.log" python3 "$here/open_outside.py" --cozy "$COZY" --out "$OUT/open-outside" \
+    || check "open outside a project: see $OUT/open-outside"
+}
+
 # Every command a hint names is one this cozy has: each `cozy …` its code, page and docs tell someone to type, walked down its help.
 hint_commands() {
   step "every command a hint, a next line or a doc names parses"
@@ -881,7 +889,7 @@ step "local code calling a published cozy package, locked at its run (cl-871)"
 [ -n "$LOCAL" ] || return 0
 local dir=$OUT/hub-dependency
 rm -rf "$dir"
-package_at "$dir" e2e_local_relay '"cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19", "minimax-h3-tools>=0.1.0"' \
+package_at "$dir" e2e_local_relay '"cozy-runtime>=0.48.0.dev0,<0.49", "msgspec>=0.19", "minimax-h3-tools>=0.1.0"' \
   "$(printf '\n[tool.uv.sources]\nminimax-h3-tools = { index = "tensorhub" }')" <<'PY'
 import msgspec
 from e2e_local_relay_calls import Text, echo
@@ -940,7 +948,7 @@ echo "hub published: $E2E_RELAY's environment names its callee ${callee:-nothing
 [ "$callee" = _/minimax-h3-tools ] || check "hub published: $E2E_RELAY's environment names its callee ${callee:-nothing}, not _/minimax-h3-tools"
 }
 
-# xs-194: a package whose floor only the open RC meets (cozy-runtime>=0.47.0.dev0,<0.48) names no Runtime wheel, and runs from
+# xs-194: a package whose floor only the open RC meets (cozy-runtime>=0.48.0.dev0,<0.49) names no Runtime wheel, and runs from
 # its source and from the Hub as it was published: each lock takes the RC's newest build, so a Runtime merge between two
 # runs of this cell (each Runtime merge replaces the RC's wheels) needs no relock. isolated.sh published e2e-rcfloor 0.1.0.
 rc_floor() {
@@ -1308,7 +1316,7 @@ step "a child result holding Latents, in another package's caller (cr-276)"
 [ -n "$LOCAL" ] || return 0
 local dir=$OUT/child-latents
 rm -rf "$dir"
-package_at "$dir/maker" e2e_latents_maker '"cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19"' <<'PY'
+package_at "$dir/maker" e2e_latents_maker '"cozy-runtime>=0.48.0.dev0,<0.49", "msgspec>=0.19"' <<'PY'
 import hashlib
 from typing import cast
 
@@ -1337,7 +1345,7 @@ def shot(payload: Ask, out: Outputs) -> Shot:
     kept = out.save_bytes(data, media_type="application/octet-stream")  # a saved file fills a Latents field
     return Shot(clip=clip, latents=cast(Latents, kept), sha256=f"sha256:{hashlib.sha256(data).hexdigest()}")
 PY
-package_at "$dir/caller" e2e_latents_caller '"cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19", "e2e-latents-maker"' \
+package_at "$dir/caller" e2e_latents_caller '"cozy-runtime>=0.48.0.dev0,<0.49", "msgspec>=0.19", "e2e-latents-maker"' \
   "$(printf '\n[tool.uv.sources]\ne2e-latents-maker = { path = "../maker" }')" <<'PY'
 import hashlib
 from importlib.metadata import version
@@ -1557,6 +1565,33 @@ if [ -z "$n" ]; then check "the waiting run never got a number"; else
   grep -qE '"status": *"canceled"' "$OUT/followed.ndjson" || check "run watch $n did not follow it to canceled"
   cozy --json run watch "$n" --once > "$OUT/canceled.json" || true
   J '.status == "canceled"' "$OUT/canceled.json" || check "run cancel: run $n is $(jq -r '.status, .reason.code? // empty' "$OUT/canceled.json" | paste -sd' ' -), not canceled"
+fi
+
+# cl-1154 (the release coordinator, from xs-208's runs stopped at step 3: "a run canceled mid-call has no measurements and no
+# report"; "a cancel stops the call at its next cancellation point and keeps the executor (warm weights)"): canceled at its
+# step 3, a call stops at its next step, and its record keeps what it measured: its steps, in `--json` and in what
+# `cozy run watch --full` shows. Its executor stays, as after a failure: the next call there finds it started.
+step "a run canceled mid-steps keeps its measurements (cl-1154)"
+(cd "$here" && in_project "$RUN_PROJECT" --json run "$here/weightless/steps" steps:=40 seconds:=0.5 --on local > "$OUT/stopped.ndjson" 2>&1) &
+stopping=$! stopped=''
+until stopped=$(run_number "$OUT/stopped.ndjson"); [ -n "$stopped" ] || ! kill -0 "$stopping" 2> /dev/null; do sleep 0.2; done
+until grep '"type":"run.progress"' "$OUT/stopped.ndjson" 2> /dev/null | jq -se 'any(.[].progress; .completed >= 3)' > /dev/null 2>&1 \
+  || ! kill -0 "$stopping" 2> /dev/null; do sleep 0.2; done
+if [ -z "$stopped" ]; then check "the stepping run never got a number"; else
+  cozy --json run cancel "$stopped" > "$OUT/stopped-cancel.json" || check "run cancel $stopped failed"
+  wait "$stopping" || true
+  cozy --json --full run watch "$stopped" --once > "$OUT/stopped.json" 2>&1 || true
+  J '.status == "canceled" and .measurements != null
+    and ([.report.measured[]?.stages[]? | select(.name == "denoise") | .steps.count] | (length > 0 and all(. >= 3 and . < 10)))' "$OUT/stopped.json" \
+    || check "canceled at step 3, run $stopped kept no steps: $(jq -c '{status, measured: (.measurements != null), stages: [.report.measured[]?.stages[]? | {name, steps}]}' "$OUT/stopped.json" 2>&1 | head -c 600)"
+  cozy --full run watch "$stopped" --once > "$OUT/stopped.txt" 2>&1 || true
+  grep -q denoise "$OUT/stopped.txt" || check "cozy run watch --full $stopped doesn't show its steps: $(head -c 600 "$OUT/stopped.txt")"
+  (cd "$here" && in_project "$RUN_PROJECT" --json run "$here/weightless/steps" steps:=2 seconds:=0.1 --on local > "$OUT/stopped-next.ndjson" 2>&1) \
+    || check "the call after the canceled one failed: $(tail -c 300 "$OUT/stopped-next.ndjson")"
+  cozy --json --full run watch "$(run_number "$OUT/stopped-next.ndjson")" --once > "$OUT/stopped-next.json" 2>&1 || true
+  jq -se '.[0].measurements.execution.executor.started_unix_ms as $was | $was != null and .[1].measurements.execution.executor.started_unix_ms == $was' \
+    "$OUT/stopped.json" "$OUT/stopped-next.json" > /dev/null \
+    || check "after the canceled run $stopped, the next call started another executor: $(jq -c '.measurements.execution.executor' "$OUT/stopped.json" "$OUT/stopped-next.json" 2>&1 | head -c 400)"
 fi
 
 step "run ls filters"

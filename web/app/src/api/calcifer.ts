@@ -912,12 +912,13 @@ display?: boolean,
 out_of_service?: string, };
 
 /**
- * A GPU the driver held back for heat (thermal or hardware slowdown) for most of a run that loaded it: what that run's
- * readings measured, until a later loaded run there runs cool.
+ * A GPU the driver held back for most of a run that loaded it, for heat (thermal or hardware slowdown, cl-913) or at a power
+ * limit its host set under the card's default (cl-1161): what that run's readings measured, until a later loaded run there runs
+ * at full speed.
  */
 export type GpuHeat = { gpu: number,
 /**
- * The share of its busy readings under a heat limit, 0 to 1.
+ * The share of its busy readings under that limit, 0 to 1.
  */
 share: number,
 /**
@@ -935,7 +936,11 @@ run: string, at_unix_ms: number,
 /**
  * Its readings were recorded ones a test replays (`machine.gpu_samples`), not this GPU's own.
  */
-replayed: boolean, };
+replayed: boolean,
+/**
+ * Held at a power limit, not heat: the limit the driver enforced and the card's default, in W; 0: heat.
+ */
+power_limit_w: number, power_default_w: number, };
 
 /**
  * One GPU's reading: the share of its last sample period a kernel ran (`nvidia-smi`'s GPU-Util), and its memory in use, every
@@ -1530,7 +1535,7 @@ stuck?: Array<StuckProcess>,
  */
 activity?: Array<Operation>,
 /**
- * Its GPUs held back for heat most of their last loaded run: the machine is hot, and its runs slow (cl-913).
+ * Its GPUs held back for heat (cl-913) or at a power limit its host set (cl-1161) most of their last loaded run: its runs are slow.
  */
 heat?: Array<GpuHeat>,
 /**

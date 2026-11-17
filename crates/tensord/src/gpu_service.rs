@@ -3096,7 +3096,7 @@ impl Pool {
             }
         };
         let key = plan.executor.clone();
-        let result = self.call(engine, "", held, plan, &mut session, true, None, fetch);
+        let result = self.call(engine, "", held, plan, &mut session, true, None, fetch, None);
         if let Some(cancel) = cancellation.lock().unwrap().as_ref() { cancel.disable(); }
         drop(halt);
         match result {
@@ -3686,6 +3686,12 @@ impl Pool {
                 self.sessions.lock().unwrap().remove(&key)
             }
         };
+        // A request that loads models and starts cold (a new executor, or its models not loaded in the one it takes): from here
+        // until they are loaded, no background download takes the disk, the link or the page cache from it (cl-1118).
+        let request = engine.get(id).is_ok_and(|record| !record.invocation.background);
+        let loads = request && (!plan.slots.is_empty() || !plan.sources.is_empty());
+        let cold = loads && retained.as_ref().is_none_or(|session| !session.started || !session.loaded.contains_key(&plan.construction));
+        let starting = cold.then(tensorfs::fetch::starting);
         let session = match retained {
             Some(session) => {
                 *disposition = Disposition::Unknown(executor_births(&session.executor.birth, &session.followers));
@@ -3776,14 +3782,15 @@ impl Pool {
         let error = {
             let mut session = session;
             let fetch = calls.map(|calls| engine.get(id).map(|record| calls.fetch(&record))).transpose()?;
-            match self.call(engine, id, &held, plan, &mut session, false, calls, fetch) {
+            match self.call(engine, id, &held, plan, &mut session, false, calls, fetch, starting) {
                 Ok(post) => {
                     // Serialize against any old in-flight Halt before the executor becomes
                     // available to a new invocation. Late clones are harmless after this.
                     if let Some(cancel) = cancellation.lock().unwrap().as_ref() { cancel.disable(); }
                     // A caller can submit again as soon as finish publishes. Its predecessor
-                    // must already be idle, or gone if it cannot be reused.
-                    *disposition = if post.is_none() && degree > 0 && engine.get(id)?.cancel_actor.is_some() {
+                    // must already be idle, or gone if it cannot be reused. A call that stopped when
+                    // asked leaves its executor as a failure does (cl-1154).
+                    *disposition = if post.is_none() && degree > 0 && session.executor.killed() && engine.get(id)?.cancel_actor.is_some() {
                         self.retire_canceled(engine, id, session)
                     } else {
                         engine.returned_managed(id, &session.executor.birth)?;
@@ -3930,7 +3937,8 @@ impl Pool {
 
     /// Start the process once, load the plan's construction into it once and invoke it, active
     /// (unless `load_only`: a prewarm). A known outcome stays in the journal until run_on returns
-    /// its executor idle or proves its teardown ended.
+    /// its executor idle or proves its teardown ended. `cold` holds every background download until
+    /// its models are loaded (cl-1118).
     #[allow(clippy::too_many_arguments)]
     fn call(
         &self,
@@ -3942,6 +3950,7 @@ impl Pool {
         load_only: bool,
         calls: Option<&Arc<crate::calls::Calls>>,
         _fetch: Option<Arc<crate::access::Fetch>>,
+        cold: Option<tensorfs::fetch::Starting>,
     ) -> io::Result<Option<Postprocess>> {
         let (start, degree) = (session.start, plan.degree);
         let construction = plan.construction.clone();
@@ -3949,10 +3958,10 @@ impl Pool {
         if !session.ledger && degree > 0 {
             self.room_outside_ledger(session.lane(), !session.loaded.contains_key(&construction));
         }
-        // Its GPUs' readings (recorded ones, under `machine.gpu_samples`): one held back for heat most of its load warns as it goes.
+        // Its GPUs' readings (recorded ones, under `machine.gpu_samples`): one slowed most of its load (heat, a host's power limit) warns as it goes.
         let samples = self.config.gpu_samples.as_deref().and_then(crate::slowed::samples);
         let replayed = samples.is_some();
-        let hot: platform::gpu::Hot = {
+        let hot: platform::gpu::Slowed = {
             let (engine, id) = (engine.clone(), id.to_owned());
             Box::new(move |used: &platform::gpu::Used| crate::slowed::ran(&engine, &id, std::slice::from_ref(used), replayed, false))
         };
@@ -4108,6 +4117,8 @@ impl Pool {
                 leader.constructions.insert(construction.clone());
             }
         }
+        // Its models are loaded: the background downloads go on at once (cl-1118).
+        drop(cold);
         if load_only {
             return Ok(None);
         }
@@ -4206,6 +4217,9 @@ impl Pool {
         }
         session.executor.codec().prestart();
         let invoking = session.executor.lookahead().invoking(id);
+        // A call alone in its process is asked to stop on a cancel, so its reply keeps what it measured
+        // (cl-1154). A group's ranks are killed: its followers could wait on a collective rank 0 left.
+        let stoppable = session.followers.is_empty().then(|| session.executor.stoppable(id));
         engine.watch_previews(id, session.executor.previews(id));
         engine.notify_activity(); // Queued work may have arrived before this executor became ready.
         let reply = session.executor.command(
@@ -4237,7 +4251,7 @@ impl Pool {
             })),
             &mut callbacks,
         );
-        drop(invoking);
+        drop((invoking, stoppable));
         engine.watch_previews(id, None);
         let reply = reply?;
         // When the reply came (with the executor's handler and device-lease times) and when it

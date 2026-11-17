@@ -1,5 +1,5 @@
-//! Open the current project in a private window of the user's own browser and print its local URL. A `--json` caller is a program: it
-//! gets the link, and no browser starts.
+//! Open the current project in a private window of the user's own browser and print its local URL; outside a project, the page's start,
+//! where any project is a click away (cl-1179). A `--json` caller is a program: it gets the link, and no browser starts.
 mod window;
 
 use std::{
@@ -22,7 +22,7 @@ use crate::{
 };
 
 #[derive(clap::Args, Debug)]
-#[command(after_help = "It opens a private window of your browser ($BROWSER, else the default). With --json it prints the link and opens no browser.\n\nExamples:\n  cd my-project && cozy open\n  cozy open --port 8818")]
+#[command(after_help = "It opens a private window of your browser ($BROWSER, else the default). Outside a project folder it opens Cozy Creator, where you can pick one. With --json it prints the link and opens no browser.\n\nExamples:\n  cd my-project && cozy open\n  cozy open --port 8818")]
 pub(crate) struct Args {
     /// Use this loopback port for Calcifer, and keep it for later commands.
     #[arg(long, value_name = "PORT", value_parser = clap::value_parser!(u16).range(1..))]
@@ -33,15 +33,22 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     let (calcifer, project) = match args.port {
         Some(port) => select_port(ctx, port).await?,
         None => {
-            let project = project::identity(ctx).await?;
+            let project = here(ctx).await?;
             (ctx.calcifer().await?, project)
         }
     };
-    let url = page_url(&calcifer, &project)?;
+    let url = page_url(&calcifer, project.as_ref())?;
     // A `--json` caller is a program: it gets the page's address, and no browser starts.
     if ctx.json {
-        output::document(ctx, &json!({ "url": url }));
+        let mut document = json!({ "url": url });
+        if project.is_none() {
+            document["note"] = json!({ "code": "not_in_a_project", "message": OUTSIDE, "next": ["cozy new"] });
+        }
+        output::document(ctx, &document);
         return Ok(ExitCode::SUCCESS);
+    }
+    if project.is_none() {
+        output::say(ctx, OUTSIDE);
     }
     match window::open(&url).await {
         Ok(browser) => output::document(ctx, &json!({ "url": url, "browser": browser })),
@@ -54,13 +61,26 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The project's page on this Calcifer by its short code, as the page's own links say it (`/p/<code>`; Paul 11-16, of `/projects/<id>`:
-/// "where did this dumb other url come from?"). Any browser of this account opens it as Calcifer's own page.
-fn page_url(calcifer: &Client, project: &Address) -> Result<String, Error> {
+/// Paul, 11-17: "we should tell the user 'you are not in a project folder, please navigate to one or create one using cozy new' but we
+/// should also open the webui anyway, because they can select between different projects in it anyway" (cl-1179).
+const OUTSIDE: &str = "You're not in a project folder, so this opens Cozy Creator, where you can pick one. To open a project directly, run cozy open in its folder, or create one with cozy new.";
+
+/// The project here, None outside any: then the page opens at its start.
+async fn here(ctx: &Context) -> Result<Option<Address>, Error> {
+    match project::identity(ctx).await {
+        Ok(project) => Ok(Some(project)),
+        Err(error) if error.code == "not_in_a_project" => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// The project's page on this Calcifer, `/p/<code>`: a project's only address (cl-1171); with none, the page's start, `/`, its empty
+/// canvas under every project's tab. Any browser of this account opens it as Calcifer's own page.
+fn page_url(calcifer: &Client, project: Option<&Address>) -> Result<String, Error> {
     let holder = calcifer.holder().ok_or_else(|| Error::new(Kind::Unavailable, "calcifer_unavailable", "Calcifer isn't running").next("cozy open"))?;
-    Ok(match project.code.is_empty() {
-        false => format!("http://{}/p/{}", holder.address, project.code),
-        true => format!("http://{}/projects/{}", holder.address, project.id),
+    Ok(match project {
+        Some(project) => format!("http://{}/p/{}", holder.address, project.code),
+        None => format!("http://{}/", holder.address),
     })
 }
 
@@ -72,7 +92,7 @@ fn reserve_port(port: u16) -> Result<TcpListener, Error> {
     })
 }
 
-async fn select_port(ctx: &Context, port: u16) -> Result<(Client, Address), Error> {
+async fn select_port(ctx: &Context, port: u16) -> Result<(Client, Option<Address>), Error> {
     let port_error = |error: platform::Error| Error::new(Kind::Unavailable, "calcifer_port", error.to_string());
     ctx.home.open().map_err(port_error)?;
     let _held = LockFile::new(ctx.home.root().join("calcifer-port.lock"))
@@ -98,7 +118,7 @@ async fn select_port(ctx: &Context, port: u16) -> Result<(Client, Address), Erro
                 Kind::Conflict, "calcifer_port", format!("Calcifer did not start on the requested port {port}"),
             ));
         }
-        project::identity(ctx).await
+        here(ctx).await
     }.await;
     match selected {
         Ok(project) => Ok((calcifer, project)),

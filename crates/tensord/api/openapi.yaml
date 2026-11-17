@@ -656,17 +656,20 @@ components:
     GpuHeat:
       type: object
       description: >-
-        A GPU the driver held back for heat (thermal or hardware slowdown) for most of a run that loaded it: what that
-        run's readings measured, until a later loaded run there runs cool (cl-913).
+        A GPU the driver held back for most of a run that loaded it, for heat (thermal or hardware slowdown, cl-913) or at a
+        power limit its host set under the card's default (cl-1161): what that run's readings measured, until a later loaded
+        run there runs at full speed.
       properties:
         at_unix_ms: {type: integer, format: int64}
         busy_ms: {type: integer, format: int64, description: Its busy time those readings cover., minimum: 0}
         gpu: {type: integer, format: int32, minimum: 0}
+        power_default_w: {type: integer, format: int32, description: 'The card''s default power limit, in W; 0 or absent: heat.', minimum: 0}
+        power_limit_w: {type: integer, format: int32, description: 'The power limit the driver enforced, in W; 0 or absent: heat.', minimum: 0}
         replayed:
           type: boolean
           description: Its readings were recorded ones a test replays (`machine.gpu_samples`), not this GPU's own.
         run: {type: string, description: 'The run it was measured in, by this machine''s id.'}
-        share: {type: number, format: float, description: 'The share of its busy readings under a heat limit, 0 to 1.'}
+        share: {type: number, format: float, description: 'The share of its busy readings under that limit, 0 to 1.'}
         sm_mhz_limit: {type: integer, format: int32, minimum: 0}
         sm_mhz_mean: {type: integer, format: int32, minimum: 0}
         temperature_max_c: {type: integer, format: int32, minimum: 0}

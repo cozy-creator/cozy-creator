@@ -512,6 +512,7 @@ WEB_2=(
   fullscreen
   llm-reads
   orbit
+  tools-local
 )
 WEB_3=(
   focus
@@ -571,6 +572,8 @@ WEB_SOLO=(
   project-settings
   drawers
   locked-reveals
+  p-code-only
+  stop
 )
 # The timing and memory cells, `@solo`, in 2D: a runner's software GL drawing the WebGL path with MSAA is no computer's path, and the 2D
 # path is a computer with no GPU's (aa315b64, 11-16: large in 2D found a 1.1 MB-a-cycle heap leak).
@@ -601,6 +604,7 @@ case $SHARD in
   '') parts="
     uv_at_once
     entrypoints
+    open_outside
     weightless
     script_package
     one_name_two_paths
@@ -724,6 +728,7 @@ case $SHARD in
     ondemand_adapted
     ondemand_order
     ondemand_needs
+    ondemand_cold
     ondemand_behind
     ondemand_rules
     logs
@@ -736,6 +741,8 @@ case $SHARD in
   ondemand-enhancers) parts="ondemand_enhancers logs" ;;
   # A small disk full of idle models' weights makes room for the next runs' (tfs-150).
   disk) parts="disk_full logs" ;;
+  # A machine's GPU use followed across its restart and update, never refused for it (cl-1117).
+  machine-gpus) parts="gpu_use_follows logs" ;;
   # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.
   plan) parts="
     estimate_line
@@ -748,6 +755,8 @@ case $SHARD in
     logs" ;;
   # A run moved to another machine is that machine's to cancel and follow, and its take lands (cl-1116). Named plan-* for its stand-ins.
   plan-resent) parts="plan_resent logs" ;;
+  # A busy machine's runs ahead in its quote, replayed on two stand-ins that say only their Status (cl-1107): a few minutes.
+  queue) parts="plan_queue logs" ;;
   # A box's tool gets its machine ready before Render (cl-1104): a guess switched, a request sent meanwhile, a box deleted; two boxes
   # of one function quoted each by its own checkpoint; a guess moved when its machine's load changes; on a short disk a guess
   # evicts nothing, goes first, says so and comes again, and its install gives the line to a run's; local code is carried to a fresh
@@ -755,9 +764,10 @@ case $SHARD in
   prefetch) parts="prefetch_switch prefetch_ready prefetch_quoted prefetch_yields prefetch_load prefetch_local prefetch_disk prefetch_retry logs" ;;
   # A failed guess tried again or saying why it stays failed, and a guess's install on the machine's activity (cl-1104), alone.
   prefetch-retry) parts="prefetch_retry logs" ;;
-  entrypoints) parts="entrypoints hint_commands" ;;
+  entrypoints) parts="entrypoints open_outside hint_commands" ;;
   commands) parts="
     entrypoints
+    open_outside
     hint_commands
     outside_refuses
     catalog
@@ -821,6 +831,8 @@ case $SHARD in
   rental-replan) parts="rental_replan logs" ;;
   # A machine ends while it holds queued jobs: each completes on another machine (cl-1132).
   rental-queued) parts="queued_elsewhere logs" ;;
+  # A project on a rental alone quotes, renders and reads its box's call, and nothing of it installs on this computer (cl-1115).
+  rental-quote) parts="rental_quote logs" ;;
   # A take's thumbnail asked for while its file is on its way here answers no error (cl-1108).
   thumb-arriving) parts="thumb_arriving logs" ;;
   # A dev build's Calcifer at the stack size it ships resumes a render walk and answers /fit (cl-1069: E2E_DEV_COZY, e2e.yaml).
@@ -874,6 +886,7 @@ case $SHARD in
     statedb
     local_idle
     machine_set
+    gpu_use_follows
     fall_back
     retry_elsewhere
     db_deleted_gc
@@ -1006,6 +1019,7 @@ case $SHARD in
     rental_replan
     queued_elsewhere
     run_on_new
+    rental_quote
     logs
   " ;;
   # Stops, restarts, updates and starts past a TensorD that can't exit, and a start that hangs, then a rental's own end against a
@@ -1059,6 +1073,7 @@ if [ -z "$LOCAL" ] && [ "$parts" != "web_lane logs" ]; then
     web-*) parts="web_alone logs" ;;
     *) parts="
       entrypoints
+      open_outside
       refusals
       web_serves
       completions

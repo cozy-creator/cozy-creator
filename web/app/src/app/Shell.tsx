@@ -74,11 +74,11 @@ function tabsOf(order: KnownProject[], id: string | null, count: number): KnownP
 /** As many tabs as fit their room, the rest behind "N more", and what's said beside them. The room is the bar's free space, whatever its
  *  tabs, so a refit moves nothing it watches. What it holds changing refits it in that frame; its room changing, by the next. A hidden copy
  *  of every tab says what each takes. */
-function ProjectTabs({ id: project, folder, readable, children }: { id: string | null; folder?: string; readable: boolean; children: ReactNode }) {
+function ProjectTabs({ id, folder, readable, children }: { id: string | null; folder?: string; readable: boolean; children: ReactNode }) {
   const { client, stream } = useConnection()
   const to = useTo()
   const navigate = useNavigate()
-  const { data: heldProject } = useQuery({ ...projectQuery(client, stream, project ?? ""), enabled: Boolean(project) && readable })
+  const { data: heldProject } = useQuery({ ...projectQuery(client, stream, id ?? ""), enabled: Boolean(id) && readable })
   const data = readable ? heldProject : undefined
   const { data: list } = useQuery(projectsQuery(client))
   const queries = useQueryClient()
@@ -88,8 +88,6 @@ function ProjectTabs({ id: project, folder, readable, children }: { id: string |
   useEffect(() => { for (const row of list?.projects ?? []) rememberProject(queries, row) }, [list, queries])
   const [count, setCount] = useState(Number.POSITIVE_INFINITY)
   const order = useByUse(list?.projects ?? [])
-  // The open project's tab: its row by its id, or a locked one's by its folder, as the list holds it by its handle (cl-1090).
-  const id = order.some((row) => row.id === project) ? project : (order.find((row) => folder && row.path === folder)?.id ?? project)
   const room = useRef<HTMLDivElement>(null)
   const strip = useRef<HTMLElement>(null)
   const beside = useRef<HTMLSpanElement>(null)
@@ -480,7 +478,7 @@ export function Shell() {
       rememberProject(queries, { id: project, code })
       setVerified(project)
       void queries.invalidateQueries({ queryKey: ["projects"] })
-      navigate(projectPath({ id: project, code }, location.pathname.replace(/^\/$/, "")), { replace: true })
+      navigate(projectPath({ code }, location.pathname.replace(/^\/$/, "")), { replace: true })
     },
     [navigate, location.pathname, queries],
   )

@@ -5,7 +5,11 @@
 #   gate.sh <SKU> --suite name,... [--gpus N] [--out DIR] [--establish] [--publish] [--runtime F|URL] [--tensorfs F|URL]
 #           [--tensord BIN|URL] [--packages DIR] [--models org/name@version,...] [--only cell,cell] [--before FILE]...
 #           [--cells FILE]... [--first pkg,...] [--cli BIN] [--disk GB] [--on MACHINE] [--stall MIN]
-#           [--cap MIN] [--group NAME] [--corpus RUN] [--hub prod|isolated]
+#           [--cap MIN] [--group NAME] [--corpus RUN] [--hub prod|isolated] [--skip-unchanged]
+# --skip-unchanged: a cell whose last PASS on <SKU> in the benchmark ledger asked the same (ledger.py ask: its arguments, files
+# by content) of the same cozy, Runtime, TensorFS, attention table, held models and package code is not run; the log and the
+# verdict name the row it stands on (ledger.py skip; tracker design/benchmark-ledger.md §4). It pins the scenario, seeds and
+# reference picture a gate otherwise draws. The kernels, gemm and execution suites always run.
 # --hub: in CI, the Hub this gate rents on (e2e/test-hub.sh require_ci_rental_hub): prod, tensorhub.com, or a verified isolated one.
 # --on runs on that machine as it is (a dev proof on `local`): no rental, no --before, nothing ended.
 # --group: suite bench's group (suites/bench/skus) when it is not <SKU>x<GPUS>: two pods of one SKU split its cells.
@@ -40,11 +44,12 @@ HERE=$2 BEGAN=$3 HOST=$4 BEGUN_IN=$PWD; shift 4; ARGS=("$@")
 . "$HERE/machines.sh"
 REPO=cozy-creator/cozy-creator TAG=release-gate-baselines
 SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= MODELS= SUITES= K= CLIP= GPUS= FIRST= ON= STALL=15 STALL_STAGE=30 SEEDS= SCENARIO=
-BIN= RW= TW= TD= CAP=300 HOSTS=5 GROUP= CORPUS= HUB_TARGET=isolated
+BIN= RW= TW= TD= CAP=300 HOSTS=5 GROUP= CORPUS= HUB_TARGET=isolated SKIP_UNCHANGED=
 while [ $# -gt 0 ]; do
   case $1 in
     --establish) ESTABLISH=1; shift; continue;;
     --publish) PUBLISH=1; shift; continue;;
+    --skip-unchanged) SKIP_UNCHANGED=1; shift; continue;;
     --out) OUT=$2;;
     --only) ONLY=",$2,";;
     --cells) EXTRA+=("$2");;
@@ -139,6 +144,11 @@ else  # suite bench's numbers are checked in (baselines/), not a release asset
 fi
 REF=$(ls "$B/ref-$SKU".* 2>/dev/null | grep -v -- -clip | head -1); REF=${REF:-$HERE/ref/seed.jpg}
 mapfile -t ROWS < <(grep -v '^#' "$HERE/scenarios.tsv")
+# --skip-unchanged pins what a gate otherwise draws per run (the scenario, the seeds, the last PASS's reference picture and
+# clip), so an unchanged cell asks what it asked before; --scenario and --seeds still choose.
+if [ -n "$SKIP_UNCHANGED" ]; then
+  SCENARIO=${SCENARIO:-${ROWS[0]%%$'\t'*}} SEEDS=${SEEDS:-1000000000} REF=$HERE/ref/seed.jpg; rm -f "$B/ref-$SKU-clip.mp4"
+fi
 # --scenario and --seeds replay a logged gate ("scenario <name>, seeds from <n>") exactly.
 I=$(( $(date +%s) / 60 + $(cksum <<< "$SKU" | cut -d' ' -f1) ))
 [ -z "$SCENARIO" ] || for I in "${!ROWS[@]}"; do [ "${ROWS[$I]%%$'\t'*}" = "$SCENARIO" ] && break; done
@@ -316,15 +326,38 @@ stop_cell() {
 }
 # whole <cell>: it ran to its end, not stopped after $STOP steps (stop_cell): checks of its output read only such a cell.
 whole() { ! grep -q "^$1"$'\t' stopped.tsv 2> /dev/null; }
+# --skip-unchanged: SKIPPED holds each skipped cell's group (its product, else its suite), call and the row it stands on, by
+# name, in SKIP_ORDER. A cell that runs runs its group's skipped cells first, so it starts from the state it always did.
+declare -A SKIPPED=()
+SKIP_ORDER=()
 cell() {
-  local base=$1 name=$1${TWIN:-} target=$2 p issue n code=0; shift 2
+  local base=$1 name=$1${TWIN:-} target=$2 p issue n code=0 asked said s call; shift 2
   p=${target%/*}; p=${p##*/}
   [ -z "${TWIN:-}" ] || [[ ,${TWINS:-}, == *",$base,"* ]] || return 0
   [ -z "$ONLY" ] || [[ $ONLY == *",$base,"* || $ONLY == *",$p,"* ]] || return 0
   ! cut -f1 cells.tsv | grep -qx -- "$name" || return 0
+  [ -z "${SKIPPED[$name]:-}" ] || return 0
   issue=$(jq -r --arg s "$SKU" --arg c "$base" '.[] | select((.sku == $s or .sku == "*") and ((.cells // []) | index($c))) | .issue' \
     "$HERE/known-failing.json" | head -1)
   [ -z "$issue" ] || { log "$name: pending fix $issue, not run on $SKU"; return 0; }
+  asked=$(python3 -I "$HERE/ledger.py" ask ${STOP:+--stop "$STOP"} --harness "${HARNESS:-}" "$target" "$@")
+  if [ -n "$SKIP_UNCHANGED" ] && [ -z "${REPLAY:-}" ] && [[ " kernels gemm execution " != *" ${SUITE:-} "* ]]; then
+    said=$(python3 -I "$HERE/ledger.py" skip "$OUT" ledger-recorded.jsonl "$name" "$target" "$asked" ${PKGS:+--packages "$PKGS"}) && s=1 || s=
+    log "$said"
+    if [ -n "$s" ]; then
+      SKIPPED[$name]=${CELL_GROUP:-${SUITE:-}}$'\x1f'$(printf '%q ' STOP="${STOP:-}" TWIN="${TWIN:-}" HARNESS="${HARNESS:-}" \
+        CELL_GROUP="${CELL_GROUP:-}" cell "$base" "$target" "$@")$'\x1f'${said#*unchanged since }
+      SKIP_ORDER+=("$name")
+      return 0
+    fi
+  fi
+  [ -n "${REPLAY:-}" ] || for s in "${SKIP_ORDER[@]}"; do
+    [ "${SKIPPED[$s]:-}" ] && [ "${SKIPPED[$s]%%$'\x1f'*}" = "${CELL_GROUP:-${SUITE:-}}" ] || continue
+    call=${SKIPPED[$s]#*$'\x1f'}; call=${call%%$'\x1f'*}
+    unset "SKIPPED[$s]"
+    log "$s: runs after all, before $name of its group"
+    eval "REPLAY=1 $call"
+  done
   for p in "$@"; do  # quality.py
     case $p in prompt=*) printf '%s\t%s\n' "$name" "${p#prompt=}" >> prompts.tsv ;; seed:=*) printf '%s\t%s\n' "$name" "${p#seed:=}" >> seeds.tsv ;; esac
   done
@@ -333,6 +366,7 @@ cell() {
   if [ -n "${STOP:-}" ]; then stop_cell "$name" "$target" --on "$M" "$@" || code=$?; else run_cell "$OUT" "$name" "$target" --on "$M" "$@" || code=$?; fi
   n=$(cat "$name.number")
   printf '%s\t%s\t%s\n' "$name" "$target" "$n" >> cells.tsv
+  printf '%s\t%s\n' "$name" "$asked" >> asks.tsv
   log "$name run $n $(run_get "$OUT" "$name" .status)$(jq -r 'select(.error) | ": " + .error.message' "$name.ndjson" 2>/dev/null | head -1)"
 }
 # pkg <package> <fn>: the root package's function users get, or the --packages checkout's dir of it, once its Triton sets
@@ -353,7 +387,7 @@ pkg() {
 }
 output() { run_output "$OUT" "$1" "$2"; }
 # box <name> <file> <description>: the file as a described box of the gate's project (run_box), its mention; nothing without a file.
-box() { local b; [ -f "$2" ] && b=$(run_box "$@" 2>> box.err) && echo "<$b>"; }
+box() { local b; [ -f "$2" ] && b=$(run_box "$@" 2>> box.err) && printf '%s\tsha256:%s\n' "$b" "$(sha256sum < "$2" | cut -d' ' -f1)" >> boxes.tsv && echo "<$b>"; }
 . "$HERE/products.sh"
 . "$HERE/programs.sh"
 log "gate on $SKU (suites ${SUITES//,/ }): scenario $NAME, seeds from $R, candidate: ${CAND[*]:-released}${PKGS:+ packages $PKGS}${MODELS:+ models $MODELS}, cli: $CLI"
@@ -617,28 +651,42 @@ jq -n --arg label "$LABEL" --arg cozy "${TDF:+$v}" --arg runtime "${RWF:+$rt}" -
   -S '$ARGS.named | .models |= (split(" ") | map(select(. != "")) | sort)' > candidate.json
 printf '%s\n' ${SUITES//,/ } > suites
 printf '%s\n' ${ONLY//,/ } > only  # what --only chose, for a suite's check.py (empty: everything)
-for s in ${SUITES//,/ }; do . "$HERE/suites/$s/cells.sh"; done
+# What --skip-unchanged versions a cell by (ledger.py built): the software the machine reported, and this SKU's recorded rows.
+jq -n --arg cozy "$v" --arg runtime "$rt" --arg tensorfs "$tfs" '$ARGS.named' > reported.json
+if [ -n "$SKIP_UNCHANGED" ] && ! timeout 600 python3 -I "$HERE/ledger.py" query --sku "$SKU" > ledger-recorded.jsonl 2> ledger-recorded.err; then
+  log "skip-unchanged: no ledger to read, every cell runs: $(tail -c 300 ledger-recorded.err)"; : > ledger-recorded.jsonl
+fi
+# A cell's request names the code that makes it (ledger.py ask --harness): its suite's scripts, or its product's function.
+for s in ${SUITES//,/ }; do
+  SUITE=$s HARNESS=$(cat "$HERE/suites/$s"/*.sh | sha256sum | cut -c1-32)
+  . "$HERE/suites/$s/cells.sh"
+done
 # More cells (`--cells FILE`): `name<TAB>target<TAB>args`, args expanded here ($SCENE, $CHAR, $R, $K, $M, $CLI ...).
 for f in "${EXTRA[@]}"; do
   [[ $f == *.sh ]] && continue
+  SUITE=cells:${f##*/} HARNESS=$(sha256sum < "$f" | cut -c1-32)
   while IFS=$'\t' read -r name target args; do
     [ -n "$name" ] && [ "${name:0:1}" != "#" ] && eval "cell \"\$name\" \"\$target\" $args"
   done < "$f"
 done
 # A --cells FILE ending in .sh is sourced last, for cells that change the machine between them.
-for f in "${EXTRA[@]}"; do [[ $f != *.sh ]] || . "$f"; done
+for f in "${EXTRA[@]}"; do [[ $f != *.sh ]] || { SUITE=cells:${f##*/} HARNESS=$(sha256sum < "$f" | cut -c1-32); . "$f"; }; done
+for s in "${SKIP_ORDER[@]}"; do
+  [ -z "${SKIPPED[$s]:-}" ] || printf '%s\t%s\t%s\n' "$s" "${SKIPPED[$s]%%$'\x1f'*}" "${SKIPPED[$s]##*$'\x1f'}" >> skipped.tsv
+done
 end_it
-# The benchmark ledger (ledger.py): a row per package run into ledger.jsonl, appended to the tracker's benchmarks/ where
-# this machine can push (CI: the TRACKER_LEDGER_KEY deploy key). It never decides the verdict. A suite that caps VRAM
-# itself leaves its rows' cap unsaid: the records do not carry it.
-ledger_cap=off
-for s in ${SUITES//,/ }; do ! grep -qs -- --gpu-memory-limit "$HERE/suites/$s/cells.sh" || ledger_cap=; done
-{ python3 -I "$HERE/ledger.py" rows "$OUT" --source "$([ "$SUITES" = bench ] && echo bench || echo gate)" ${PKGS:+--packages "$PKGS"} \
-    ${ledger_cap:+--cap "$ledger_cap"} > ledger.jsonl && timeout 600 python3 -I "$HERE/ledger.py" append ledger.jsonl; } > ledger.log 2>&1 ||
-  log "ledger: rows kept in ledger.jsonl for ledger.py backfill: $(tail -c 300 ledger.log)"
 uv run -q --no-project --with pillow --with numpy --with torch --with transformers --index https://download.pytorch.org/whl/cpu \
   --index-strategy unsafe-best-match python -I "$HERE/analyze.py" "$OUT" "$SKU" "$B/gate-$BK.json" | tee verdict.txt
-[ "${PIPESTATUS[0]}" = 0 ] || exit 1
+verdict=${PIPESTATUS[0]}
+# The benchmark ledger (ledger.py): a row per package run into ledger.jsonl, each with its cell's verdict (what
+# --skip-unchanged stands on), appended to the tracker's benchmarks/ where this machine can push (CI: the
+# TRACKER_LEDGER_KEY deploy key). A suite that caps VRAM itself leaves its rows' cap unsaid: the records do not carry it.
+ledger_cap=off
+for s in ${SUITES//,/ }; do ! grep -qs -- --gpu-memory-limit "$HERE/suites/$s/cells.sh" || ledger_cap=; done
+{ python3 -I "$HERE/ledger.py" rows "$OUT" --sku "$SKU" --source "$([ "$SUITES" = bench ] && echo bench || echo gate)" ${PKGS:+--packages "$PKGS"} \
+    ${ledger_cap:+--cap "$ledger_cap"} > ledger.jsonl && timeout 600 python3 -I "$HERE/ledger.py" append ledger.jsonl; } > ledger.log 2>&1 ||
+  log "ledger: rows kept in ledger.jsonl for ledger.py backfill: $(tail -c 300 ledger.log)"
+[ "$verdict" = 0 ] || exit 1
 # A PASS hands the next gate new references of the same shape: this Klein image and 3 s of this H3 video.
 if [ -z "$ONLY" ] && [ -n "$K" ] && [ -n "$CLIP" ]; then
   rm -f "$B/ref-$SKU".* && cp "$K" "$B/ref-$SKU.${K##*.}"

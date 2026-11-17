@@ -147,15 +147,15 @@ final() {
 }
 
 # rc_floor (rc_floor, xs-194): the historical weightless relay as `e2e-rcfloor` 0.1.0, whose floor only the open RC meets
-# (cozy-runtime>=0.47.0.dev0,<0.48) and which names no Runtime wheel: publishing it locks the RC's newest build, whatever that
+# (cozy-runtime>=0.48.0.dev0,<0.49) and which names no Runtime wheel: publishing it locks the RC's newest build, whatever that
 # build's author API. What it said is exported, a refusal too, for the cell to judge.
 rc_floor() {
   local copy=$seed/packages/e2e-rcfloor account
   account=$(cozy --json whoami | jq -r '.account // empty')
   rm -rf "$copy" && mkdir -p "$seed/packages" && historical_relay "$copy"
-  sed -i -e 's/^name = "e2e-relay"$/name = "e2e-rcfloor"/' -e 's/"cozy-runtime[^"]*"/"cozy-runtime>=0.47.0.dev0,<0.48"/' "$copy/pyproject.toml"
+  sed -i -e 's/^name = "e2e-relay"$/name = "e2e-rcfloor"/' -e 's/"cozy-runtime[^"]*"/"cozy-runtime>=0.48.0.dev0,<0.49"/' "$copy/pyproject.toml"
   export E2E_RCFLOOR_PUBLISHED=$seed/publish-e2e-rcfloor.json E2E_RCFLOOR=$account/e2e-rcfloor
-  if (cd "$copy" && cozy --json package publish -y) > "$E2E_RCFLOOR_PUBLISHED" 2>&1; then log "published $E2E_RCFLOOR 0.1.0 (cozy-runtime>=0.47.0.dev0)"
+  if (cd "$copy" && cozy --json package publish -y) > "$E2E_RCFLOOR_PUBLISHED" 2>&1; then log "published $E2E_RCFLOOR 0.1.0 (cozy-runtime>=0.48.0.dev0)"
   else log "publishing e2e-rcfloor was refused: $(tail -c 300 "$E2E_RCFLOOR_PUBLISHED" | tr '\n' ' ')"; fi
 }
 
@@ -311,6 +311,8 @@ case $key in
   cli:env-cost) needs='packages birefnet' ;;
   # plan_fetch quotes a fine-tune composed of a base's parts (cl-1071).
   cli:plan) needs='packages birefnet downloads composed' ;;
+  # plan_queue's shot reads BiRefNet's weights (cl-1107).
+  cli:queue) needs='packages birefnet' ;;
   # A published tool of two models that share a VAE, which a box's machine fetches before any render (cl-1104).
   cli:prefetch | cli:prefetch-retry) needs='packages pre' ;;
   cli:) needs='packages birefnet qwen downloads spare loras vaes fits parts composed lorabase calls uninstall ltxlora pre' ;;
@@ -509,9 +511,10 @@ if [ -n "$needs" ]; then
     # ondemand_calls' orchestrator (cl-1077): the model of the function it calls and of one it never calls, 32 MiB each; and
     # ondemand_adapted's other model, bigger than its base, so its root's prefetch (smallest first) can't land it before its call;
     # and ondemand_order's two, the earlier run's bigger, so the later run's call is wanted while it still downloads; and
-    # ondemand_needs' two (cl-1102): the one its call loads, and the one it has on demand and never reads.
+    # ondemand_needs' two (cl-1102): the one its call loads, and the one it has on demand and never reads; and ondemand_cold's
+    # two the same (cl-1118).
     page=https://github.com/cozy-creator/cozy-creator/tree/master/e2e
-    for name in used:32 unused:32 other:256 early:256 late:128 needed:192 extra:256; do
+    for name in used:32 unused:32 other:256 early:256 late:128 needed:192 extra:256 cold:32 waits:256; do
       random_weights "$seed/calls.safetensors" "${name#*:}" "calls-${name%:*}"
       name=${name%:*}
       mirror "$seed/calls.safetensors" "e2e/calls-$name" bf16 0.1.0 "$page" --source-format as-is
@@ -566,7 +569,7 @@ PYCALLS
       E2E_CALLS_SEED="e2e/calls-lora: $(tail -c 400 "$seed/calls-lora.err" | tr '\n' ' ')"
     fi
     export E2E_CALLS_SEED=${E2E_CALLS_SEED:-}
-    log "published e2e/calls-used, -unused, -other, -early, -late, -needed, -extra, -base and e2e/calls-lora${E2E_CALLS_SEED:+ (not all: $E2E_CALLS_SEED)}"
+    log "published e2e/calls-used, -unused, -other, -early, -late, -needed, -extra, -cold, -waits, -base and e2e/calls-lora${E2E_CALLS_SEED:+ (not all: $E2E_CALLS_SEED)}"
     rm -f "$seed"/calls-*.safetensors
   fi
   if [[ " $needs " == *" enhancer "* ]]; then

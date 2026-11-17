@@ -552,6 +552,7 @@ pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
     if let Some(needs) = &needs {
         NEEDS.lock().expect("needs lock").insert(digest.to_string(), needs.clone());
     }
+    FOLDERS.lock().expect("folders lock").insert(digest.to_string(), project_dir.clone());
     Ok(Source {
         package: manifest.package,
         source: v1::LocalSource {
@@ -570,6 +571,17 @@ static NEEDS: LazyLock<Mutex<HashMap<String, pep440_rs::VersionSpecifiers>>> = L
 /// The `cozy-runtime` requirement of the local source `manifest` names, as `source` read it.
 pub(crate) fn needs_of(manifest: &str) -> Option<pep440_rs::VersionSpecifiers> {
     NEEDS.lock().expect("needs lock").get(manifest).cloned()
+}
+
+/// Each local source's package folder by its manifest, as `source` read it while Calcifer runs: what its runs are timed by
+/// (`benchmarks_of`).
+static FOLDERS: LazyLock<Mutex<HashMap<String, PathBuf>>> = LazyLock::new(Mutex::default);
+
+/// The benchmarks the source `manifest` names holds (`placement::source_benchmarks`), as placement's quotes take them: what a run of
+/// local code, which names no release, is held to (cl-1161). None: Calcifer hasn't read that source since it started, or it holds none.
+pub(crate) fn benchmarks_of(manifest: &str) -> Option<Vec<api::estimate::Benchmark>> {
+    let folder = FOLDERS.lock().expect("folders lock").get(manifest).cloned()?;
+    Some(crate::placement::source_benchmarks(&folder)).filter(|rows| !rows.is_empty())
 }
 
 /// What a lock of `code`'s copy for `hub` leaves beside the copy (`locked`): `lock`, the lock it made or nothing when the tree's
@@ -1063,6 +1075,17 @@ pub(crate) async fn prepare(
             Ok(prepared(Some(installed.interface), installed.installation, installed.machine, None))
         }
     }
+}
+
+/// `code` as a quote or an estimate of a call `on` a machine reads it (cl-1115: a quote never acts): its source, the files a call stages
+/// and its interface as `describe` reads it. Nothing is installed and no machine is asked or started.
+pub(crate) async fn foreseen(api: &Arc<Api>, local: &LocalCode, on: &On, hub: &str) -> Result<Prepared, Error> {
+    let hubs = &api.machines.hubs;
+    let hub = if hub.is_empty() { hubs.default_origin() } else { hub.to_owned() };
+    let code = source(hubs.home(), local, hubs, &Origin::parse(&hub)?).await?;
+    let (package, interface) = describe(api, local, on, &hub).await?;
+    let from = crate::checkout::of(local);
+    Ok(Prepared { package, from, source: code.source, files: code.inputs, interface: Some(interface), installation: None, machine: None, install: None })
 }
 
 /// How far an install has got.

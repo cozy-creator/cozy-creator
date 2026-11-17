@@ -149,6 +149,8 @@ const STATUS_AGAIN: Duration = Duration::from_secs(60);
 /// How often this computer vouches for a rental to its Hub while a run of its is live there (cl-977): a third of the Hub's 15-minute
 /// window, so two can be lost.
 const VOUCH_EVERY: Duration = Duration::from_secs(5 * 60);
+/// The least time between asks of a machine that couldn't say its GPU use (`follow_gpus`).
+const GPUS_AGAIN: Duration = Duration::from_secs(1);
 
 /// A ready machine's frame shows this computer's runs (or an update) queued or running there.
 fn working(frame: &v1::StatusFrame) -> bool {
@@ -802,17 +804,41 @@ impl Machines {
         lines.map_err(|e| log_refusal(&row.name, log, e))
     }
 
-    /// Its GPUs' use, once a second while followed (cl-1100). A machine whose Cozy predates it says so.
-    pub(crate) async fn follow_gpus(&self, text: &str) -> Result<crate::link::Live<v1::GpuUse>, Error> {
-        let (row, link) = self.linked(text)?;
-        link.follow_gpus().await.map_err(|e| match e {
-            LinkError::NotFound => Error::new(
-                Kind::NotFound,
-                "machine_gpu_use_unknown",
-                format!("{} runs an older Cozy that doesn't report GPU use. It will once it updates.", row.name),
-            ),
-            e => refusal(&row.name, e),
-        })
+    /// Its GPUs' use, once a second while followed (cl-1100), across its restarts and updates. One that can't say yet (starting,
+    /// restarting into an update, or on a Cozy from before cl-1100, as a new rental is on its image's) is asked again as the machines
+    /// report, at most once a `GPUS_AGAIN`, and is never refused for it (cl-1117: a rental's drawer, open as it became ready on its
+    /// image's 0.25.0, was answered 404 and read nothing after its update). A machine's own report is the cue: a restart quick enough
+    /// that it never went out of reach is told by nothing else. It ends when the machine does; an unknown or ended one is refused,
+    /// and one not up yet or out of reach is waited for.
+    pub(crate) fn follow_gpus(self: &Arc<Self>, text: &str) -> Result<impl futures_util::Stream<Item = v1::GpuUse> + Send + 'static, Error> {
+        let row = self.live_named(text)?;
+        let changed = self.calcifer.machines_changed();
+        let start = (self.clone(), row.name, changed, None::<link::Live<v1::GpuUse>>, None::<std::time::Instant>);
+        Ok(futures_util::stream::unfold(start, |(me, name, mut changed, mut readings, mut asked)| async move {
+            loop {
+                if let Some(live) = readings.as_mut() {
+                    if let Some(Ok(reading)) = live.next().await {
+                        return Some((reading, (me, name, changed, readings, asked)));
+                    }
+                    readings = None;
+                } else {
+                    if let Some(wait) = asked.and_then(|at| GPUS_AGAIN.checked_sub(at.elapsed())) {
+                        tokio::time::sleep(wait).await;
+                    }
+                    asked = Some(std::time::Instant::now());
+                    if let Ok(Some(link)) = me.calcifer.link(&name)
+                        && let Ok(live) = link.follow_gpus().await
+                    {
+                        readings = Some(live);
+                        continue;
+                    }
+                }
+                // Nothing to read now: asked again as the machines report.
+                if changed.changed().await.is_err() || me.store().machine(&name).ok().flatten().is_none_or(|row| row.state == MachineState::Ended) {
+                    return None;
+                }
+            }
+        }))
     }
 
     /// The machine whose kept lines `text` reads: as `named`, or by its name the one ended machine that had it when no live
@@ -840,15 +866,7 @@ impl Machines {
 
     /// A machine and its connection, which it has only once it has an endpoint.
     pub(crate) fn linked(&self, text: &str) -> Result<(MachineRow, Link), Error> {
-        let row = self.named(text)?.ok_or_else(|| not_found(text))?;
-        if row.state == MachineState::Ended {
-            return Err(Error::new(
-                Kind::Conflict,
-                "machine_ended",
-                format!("{} has ended.", row.name),
-            )
-            .next("cozy machine ls"));
-        }
+        let row = self.live_named(text)?;
         match self.calcifer.link(&row.name) {
             Ok(Some(link)) => Ok((row, link)),
             Ok(None) => Err(Error::new(
@@ -859,6 +877,15 @@ impl Machines {
             .next(format!("cozy machine show {}", row.name))),
             Err(e) => Err(Error::new(Kind::Unavailable, "machine_unreachable", e)),
         }
+    }
+
+    /// The machine `text` names, refused when there's none or it has ended.
+    fn live_named(&self, text: &str) -> Result<MachineRow, Error> {
+        let row = self.named(text)?.ok_or_else(|| not_found(text))?;
+        if row.state == MachineState::Ended {
+            return Err(Error::new(Kind::Conflict, "machine_ended", format!("{} has ended.", row.name)).next("cozy machine ls"));
+        }
+        Ok(row)
     }
 
     /// The machine as `GET /v1/machines` answers it.
@@ -2238,17 +2265,13 @@ pub(crate) async fn logs(
 }
 
 /// `GET /v1/machines/{name}/gpus`, as SSE (cl-1100): `gpus` events, each a `GpuUse` the machine read that second, for as long as the
-/// caller follows. Nothing is read while nobody does.
+/// caller follows, across the machine's restarts and updates (`Machines::follow_gpus`). Nothing is read while nobody does.
 pub(crate) async fn gpus(State(api): State<Arc<Api>>, UrlPath(name): UrlPath<String>) -> Result<Response, Refusal> {
-    let readings = api.machines.follow_gpus(&name).await.map_err(Refusal)?;
+    let readings = api.machines.follow_gpus(&name).map_err(Refusal)?;
     let events = readings
-        .take_while(|reading| std::future::ready(reading.is_ok()))
-        .filter_map(|reading| {
-            let event = reading.ok().map(|reading| {
-                let data = serde_json::to_string(&reading).expect("a reading serializes");
-                Ok::<_, Infallible>(sse::Event::default().event("gpus").data(data))
-            });
-            std::future::ready(event)
+        .map(|reading| {
+            let data = serde_json::to_string(&reading).expect("a reading serializes");
+            Ok::<_, Infallible>(sse::Event::default().event("gpus").data(data))
         })
         .take_until(api.stopped());
     Ok(Sse::new(events).keep_alive(KeepAlive::default()).into_response())
