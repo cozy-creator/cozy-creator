@@ -576,7 +576,7 @@ PYCALLS
     requests=plain
     [[ " $needs " != *" enhancers "* ]] || requests='words edit plain'
     for request in $requests; do
-      for slot in model:16 expander:96 rewriter:96; do
+      for slot in model:16 expander-t2i:96 expander-i2i:96; do
         random_weights "$seed/enhance.safetensors" "${slot#*:}" "enhance-$request-${slot%:*}"
         mirror "$seed/enhance.safetensors" "e2e/enhance-$request-${slot%:*}" bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is
         rm -f "$seed/enhance.safetensors"
