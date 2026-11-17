@@ -11,6 +11,8 @@ kernels, time and VRAM against the last pass.
   - no cell ends with varena backing that holds no page (resident - ready): a canceled prefetch's pages go back with it;
   - a graph served each cell of WARM. Falling back to eager is fine for a call and never an error, so nothing else would
     say that a model stopped using graphs: SDXL's steady step went from 0.08 s to 0.27 s with every rule and fault passing.
+  - each cell of ENCODER replayed its text encoder: the graph an earlier call recorded and checked against the call as
+    written (cr-300: a graph that differs is discarded, so a later call would run as written, unnoticed).
     check.py <gate dir> <SKU>     the same verdict alone"""
 import json, os, re, subprocess, sys
 from collections.abc import Iterator
@@ -23,6 +25,10 @@ from runs import Baseline, GateHistory, GateRuns, KnownFailing, Memory, Run  # n
 GIB = 1 << 30
 CHURN = 0.25
 WARM = 'warm-sdxl',  # a warm call whose model has graphs on every card; known-failing.json parks one that can't
+#: Anima's fourth call on one prompt, uncapped and at 6 GiB, and the region that must replay in it (cr-300, Paul 11-16:
+#: "get CUDA graphs working right again"). The fourth: a cold first call's time defers the capture from the second
+#: call to the third (the request's capture share)
+ENCODER = ('anima-graphs-4', 's6-anima-4'), 'model.text_encoder'
 FLOOR, KEEP = 0.8, 5
 CELL = re.compile(r's(\d+)-([a-z0-9]+)(?:-(\d+))?')
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -211,12 +217,30 @@ def warm(recs: dict[str, Run]) -> Verdict:
     return fails, notes
 
 
+def encoder(recs: dict[str, Run]) -> Verdict:
+    fails: list[str] = []
+    notes: list[str] = []
+    cells, region = ENCODER
+    for name in cells:
+        run = recs.get(name)
+        if run is None:  # analyze.py fails a cell that ran and didn't complete
+            continue
+        graphs = [(m.get('residency') or {}).get('graphs') or {} for m in run.measurements]
+        replays = sum((g.get(region) or {}).get('replays') or 0 for g in graphs)
+        if replays:
+            notes.append(f'{name}: {region} replayed {replays} calls')
+        else:
+            why = next((why[0] for why in run.safeguards.values()), 'nothing recorded it')
+            fails.append(f'{name}: run {run.number} replayed no {region} call: {why[:240]}')
+    return fails, notes
+
+
 def check(gate: VarenaGate) -> Verdict:
     recs, sku = gate['runs'], gate.get('sku', '')
     fails: list[str] = []
     notes: list[str] = []
     for f, n in (bandwidth(recs, gate.setdefault('baseline', {})), caps(gate['out'], recs), host(recs), videos(recs),
-                 unowned(recs), warm(recs)):
+                 unowned(recs), warm(recs), encoder(recs)):
         fails += f; notes += n
     known: list[KnownFailing] = json.load(open(os.path.join(HERE, '..', '..', 'known-failing.json')))
     parked = [c for k in known if k['sku'] in (sku, '*') for c in k.get('cells', [])]
