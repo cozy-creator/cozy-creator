@@ -24,6 +24,7 @@ hex.workspace = true
 hyper = { workspace = true, features = ["client", "http1"] }
 hyper-util.workspace = true
 infer.workspace = true
+image = { version = "0.25.6", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 pep440_rs = { version = "0.7.3", default-features = false }
 reqwest.workspace = true
 rusqlite = { workspace = true, features = ["backup", "functions", "hooks"] }

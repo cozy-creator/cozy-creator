@@ -23,7 +23,7 @@ use serde::Deserialize;
 use tokio::sync::{Notify, Semaphore};
 use tracing::warn;
 
-use super::{RunOwner, folder, host::Host, media_type, tools};
+use super::{RunOwner, folder, host::Host, media_type, still, tools};
 use crate::{
     api::{Api, Refusal},
     tools::Media,
@@ -326,8 +326,29 @@ async fn make(host: Host, mut drawing: Drawing) -> Result<Option<PathBuf>, Error
         }
     }
     // Its turn and ffmpeg first, holding nothing of the project: finding ffmpeg runs it, and blocks, so that too is a few at a time,
-    // and a lock queued on the project waits for neither (cl-1025).
+    // and a lock queued on the project waits for neither (cl-1025). A still is drawn here, with no ffmpeg (still.rs); one that won't
+    // decode here is ffmpeg's after all.
     let permit = FFMPEGS.acquire().await.expect("ffmpeg's turns never close");
+    if drawing.field == "image" && still::named(&drawing.source) {
+        let Some(access) = admitted(&drawing)? else { return Ok(None) };
+        let (dir, source, width) = (super::vault::resolve_path(&drawing.root)?.join(STORE), super::vault::resolve_path(&drawing.source)?, drawing.width);
+        let name = name.clone();
+        let drawn = tokio::task::spawn_blocking(move || {
+            let _access = access;
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            let part = |ext: &str| tempfile::Builder::new().prefix(".making").suffix(&format!(".{ext}")).tempfile_in(&dir).map_err(|e| e.to_string());
+            let Some(drawn) = still::draw(&source, width, part) else { return Ok(None) };
+            let (out, ext) = drawn?;
+            let at = dir.join(format!("{name}.{ext}"));
+            out.persist(&at).map_err(|e| e.error.to_string())?;
+            Ok::<_, String>(Some(at))
+        })
+        .await
+        .map_err(|e| Error::new(Kind::Internal, "thumb_failed", e.to_string()))?;
+        if let Ok(Some(at)) = drawn {
+            return Ok(Some(at));
+        }
+    }
     let (ffmpeg, ffprobe) = host.ffmpeg().await?;
     let Some(access) = admitted(&drawing)? else { return Ok(None) };
     let dir = super::vault::resolve_path(&drawing.root)?.join(STORE);

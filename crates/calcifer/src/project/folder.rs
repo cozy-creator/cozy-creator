@@ -2249,11 +2249,20 @@ impl Folder {
         if !lock.files.values().any(File::unmeasured) {
             return Ok(());
         }
-        let Some((found, ffprobe)) = platform::tools::ffmpeg(&self.tools, &crate::tools::path()) else { return Ok(()) };
-        let measured: BTreeMap<String, File> = (lock.files.values().filter(|file| file.unmeasured()))
-            .filter(|file| self.dir.join(&file.path).is_file())
-            .filter_map(|file| Some((file.sha256.clone(), super::tools::measured(&found.path, &ffprobe, &self.dir.join(&file.path), file.field())?)))
+        let waiting: Vec<(String, PathBuf, &'static str)> = (lock.files.values().filter(|file| file.unmeasured()))
+            .map(|file| (file.sha256.clone(), self.dir.join(&file.path), file.field()))
+            .filter(|(_, path, _)| path.is_file())
             .collect();
+        // A still is measured here, with no ffmpeg (still.rs); the rest by ffprobe, once it's here.
+        let mut measured: BTreeMap<String, File> = (waiting.iter().filter(|(_, _, field)| *field == "image"))
+            .filter_map(|(sha256, path, _)| Some((sha256.clone(), super::still::measured(path)?)))
+            .collect();
+        if waiting.iter().any(|(sha256, ..)| !measured.contains_key(sha256))
+            && let Some((found, ffprobe)) = platform::tools::ffmpeg(&self.tools, &crate::tools::path())
+        {
+            let rest: Vec<_> = waiting.iter().filter(|(sha256, ..)| !measured.contains_key(sha256)).collect();
+            measured.extend(rest.into_iter().filter_map(|(sha256, path, field)| Some((sha256.clone(), super::tools::measured(&found.path, &ffprobe, path, field)?))));
+        }
         if measured.is_empty() {
             return Ok(());
         }

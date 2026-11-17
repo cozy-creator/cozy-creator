@@ -36,6 +36,7 @@ pub(crate) mod model;
 mod nodes;
 pub(crate) mod numbers;
 mod remote;
+mod still;
 mod thumbs;
 mod binder;
 pub(crate) use binder::Inline;
