@@ -1592,7 +1592,9 @@ impl Journal {
                 if invocation.local_private.as_ref().is_some_and(|scope| local_private.as_ref().is_none_or(|parent| parent.project_id != scope.project_id)) {
                     return Err(io::Error::new(io::ErrorKind::PermissionDenied, "preparation cannot change its private workspace"));
                 }
-                record.invocation = Invocation { root, family, local_private, ..invocation };
+                // A guess or a speculative run stays no job once bound (cl-1123 D: 44175857630's held the idle clock); `adopt` makes it one.
+                let background = record.invocation.background;
+                record.invocation = Invocation { root, family, local_private, background, ..invocation };
                 if let Some(submission) = record.submission.as_mut() {
                     submission.preparation_id = preparation.into();
                 }

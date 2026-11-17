@@ -65,15 +65,19 @@ collect() {
   cozy machine logs "$NAME" --lines 0 --since "$(( ($(date +%s) - BEGAN) / 60 + 2 ))m" > "$OUT/tensord.log" 2>&1 || say "the pod's TensorD log wasn't read"
   cozy machine logs local calcifer --lines 20000 > "$OUT/calcifer.log" 2>&1 || true
 }
-# stage: the box's guess's readiness now: its prepare item's ("" for none).
-stage() { tail -1 "$OUT/status.ndjson" | jq -r '[.status.ahead[]? | select(.id | startswith("cozy:prepare:")) | .readiness.stage // empty] | first // ""'; }
+# item: the box's guess now, "<its prepare item> <its stage>" ("" for none).
+item() { tail -1 "$OUT/status.ndjson" | jq -r '[.status.ahead[]? | select(.id | startswith("cozy:prepare:")) | "\(.id) \(.readiness.stage // "")"] | first // ""'; }
+# until_stage <stages> <s>: within <s> s, the box's guess is at one of <stages> (a regex: 44175857630's went from loading to running
+# between two looks), and is not $WAS, the item it was before its last edit or render.
+WAS='' ITEM=''
 until_stage() {
-  local t=0
-  until [ "$(stage)" = "$1" ]; do
+  local t=0 now=''
+  until now=$(item); [ -n "$now" ] && [ "${now%% *}" != "$WAS" ] && [[ ${now#* } =~ ^($1)$ ]]; do
     sleep 1; t=$((t + 1))
     [ "$t" -lt "$2" ] || { collect; fail "the box's draft wasn't $1 within $2 s: $(tail -1 "$OUT/status.ndjson" | cut -c1-500)"; }
   done
-  say "the box's draft is $1 ($t s)"
+  ITEM=${now%% *}
+  say "the box's draft is ${now#* } ($t s; ${ITEM#cozy:prepare:})"
 }
 # mark <what>: a person's action (marks.txt): the idle deadline may move only at one.
 mark() { echo "$(date +%s%3N) $1" >> "$OUT/marks.txt"; }
@@ -81,9 +85,12 @@ mark() { echo "$(date +%s%3N) $1" >> "$OUT/marks.txt"; }
 render() {
   local asked; asked=$(date +%s%3N); mark "render $1"
   python3 "$RUN_PAGE" render "$RUN_PROJECT" --on "$NAME" q > "$OUT/render-$1.txt" 2>&1 || fail "$1: the render: $(tail -c 400 "$OUT/render-$1.txt")"
+  mark "render $1 landed"
   say "$1: the render's take landed $(( $(date +%s%3N) - asked )) ms after Render"
+  # Its draft's seed is taken, so the box is guessed anew: that item, whatever its stage.
+  WAS=$ITEM; until_stage '.*' 60
 }
-edit() { mark edit; run_page set q --fields "$(jq -nc --arg p "$1" '{instructions: $p}')" > "$OUT/edit.json" 2>&1 || fail "the edit: $(tail -c 300 "$OUT/edit.json")"; say "q edited: $1"; }
+edit() { WAS=$ITEM; mark edit; run_page set q --fields "$(jq -nc --arg p "$1" '{instructions: $p}')" > "$OUT/edit.json" 2>&1 || fail "the edit: $(tail -c 300 "$OUT/edit.json")"; say "q edited: $1"; }
 
 # The weights onto the pod (the default request reads the model, its text encoder, expander_t2i and Turbo's LoRA), then SDXL's.
 ours fetch
@@ -102,18 +109,18 @@ mark draft
 run_page add q --tool "$TOOL" --fields "$(jq -nc --arg p "$PROMPT" '{instructions: $p, megapixels: 1, aspect_ratio: "1:1", seed: 3}')" \
   > "$OUT/box.json" 2>&1 || fail "the box: $(tail -c 300 "$OUT/box.json")"
 say "box q drafted (Turbo and upsampling on)"
-until_stage loaded 600
-until_stage running 60
+until_stage 'loaded|running|done' 600
+until_stage 'running|done' 60
 until_stage done 300
 ours done
 render done
 
 # 2. edit: a new draft runs; edited again while it runs, it ends and the newer runs.
 edit "a green lighthouse on a cliff at dawn, mist below, photo"
-until_stage loaded 120
+until_stage 'loaded|running' 120
 until_stage running 60
 edit "a blue lighthouse in a storm at night, waves breaking, photo"
-until_stage loaded 120
+until_stage 'loaded|running' 120
 until_stage running 60
 
 # 3. in flight: rendered while that draft runs.
@@ -122,11 +129,12 @@ render in-flight
 
 # 4. preempt: another draft runs; SDXL sent meanwhile.
 edit "a white lighthouse at noon, calm sea, gulls, photo"
-until_stage loaded 120
+until_stage 'loaded|running' 120
 until_stage running 60
 ours preempt
 mark preempt
 step preempt run "$OTHER" --on "$NAME" prompt="a brass compass on a walnut desk" seed:=5 || fail "the other call"
+mark "preempt done"
 ours end
 kill $BG 2> /dev/null; BG=''
 
@@ -166,17 +174,22 @@ rows = [json.loads(line) for line in open(f"{out}/status.ndjson") if line.strip(
 rows = [row for row in rows if row.get("status")]
 def stage(row):
     return next(((a.get("readiness") or {}).get("stage") for a in row["status"]["ahead"] if a.get("id", "").startswith("cozy:prepare:")), None)
-moved, spans, held = [], 0, None
+moved, spans, held, busy = [], 0, None, 0
 for row in rows:
     since = max([m for m in marks if m <= row["at_ms"]], default=0)
-    # From 2 s after an action (its own call or list put landed) until the next one.
+    # From 2 s after an action (its own call or list put landed) until the next one. None is a moment's admission, or a job.
     if stage(row) not in ("running", "done") or row["at_ms"] < since + 2000:
-        held = None
+        held, busy = None, 0
         continue
     deadline = row["status"].get("idle_deadline_ms")
     if held is None or held[0] != since:
-        held, spans = (since, deadline), spans + 1
-    elif deadline != held[1]:
+        held, busy, spans = (since, None), 0, spans + 1
+    busy = busy + 1 if deadline is None else 0
+    if busy == 3:
+        moved.append((row["at_ms"], held[1], "held by a job"))
+    if deadline is not None and held[1] is None:
+        held = (since, deadline)
+    elif deadline is not None and deadline != held[1]:
         moved.append((row["at_ms"], held[1], deadline))
 print(f"idle: {'held' if not moved and spans else 'MOVED'} across {spans} spans of running ahead" + (f"; moved {moved[:3]}" if moved else ""))
 PY
