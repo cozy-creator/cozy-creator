@@ -147,15 +147,15 @@ final() {
 }
 
 # rc_floor (rc_floor, xs-194): the historical weightless relay as `e2e-rcfloor` 0.1.0, whose floor only the open RC meets
-# (cozy-runtime>=0.47.0.dev0,<0.48) and which names no Runtime wheel: publishing it locks the RC's newest build, whatever that
+# (cozy-runtime>=0.48.0.dev0,<0.49) and which names no Runtime wheel: publishing it locks the RC's newest build, whatever that
 # build's author API. What it said is exported, a refusal too, for the cell to judge.
 rc_floor() {
   local copy=$seed/packages/e2e-rcfloor account
   account=$(cozy --json whoami | jq -r '.account // empty')
   rm -rf "$copy" && mkdir -p "$seed/packages" && historical_relay "$copy"
-  sed -i -e 's/^name = "e2e-relay"$/name = "e2e-rcfloor"/' -e 's/"cozy-runtime[^"]*"/"cozy-runtime>=0.47.0.dev0,<0.48"/' "$copy/pyproject.toml"
+  sed -i -e 's/^name = "e2e-relay"$/name = "e2e-rcfloor"/' -e 's/"cozy-runtime[^"]*"/"cozy-runtime>=0.48.0.dev0,<0.49"/' "$copy/pyproject.toml"
   export E2E_RCFLOOR_PUBLISHED=$seed/publish-e2e-rcfloor.json E2E_RCFLOOR=$account/e2e-rcfloor
-  if (cd "$copy" && cozy --json package publish -y) > "$E2E_RCFLOOR_PUBLISHED" 2>&1; then log "published $E2E_RCFLOOR 0.1.0 (cozy-runtime>=0.47.0.dev0)"
+  if (cd "$copy" && cozy --json package publish -y) > "$E2E_RCFLOOR_PUBLISHED" 2>&1; then log "published $E2E_RCFLOOR 0.1.0 (cozy-runtime>=0.48.0.dev0)"
   else log "publishing e2e-rcfloor was refused: $(tail -c 300 "$E2E_RCFLOOR_PUBLISHED" | tr '\n' ' ')"; fi
 }
 
