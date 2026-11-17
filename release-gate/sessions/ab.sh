@@ -72,6 +72,11 @@ if jq -e 'any(.[].args[]?; contains("{clip}"))' <<<"$CELLS" > /dev/null; then
   ffmpeg -v error -y -loop 1 -i "$REF/seed.jpg" -vf "scale=1280:-2,crop=640:360:'(iw-640)*t/4':'(ih-360)/2',fps=24,format=yuv420p" \
     -t 4 -c:v libx264 -crf 18 "$CLIP" || fail "the clip"
 fi
+CLIP768=$OUT/clip-768.mp4  # the escaped suite's relayvsr input (products.sh clip-1s.mp4)
+if jq -e 'any(.[].args[]?; contains("{clip768}"))' <<<"$CELLS" > /dev/null; then
+  ffmpeg -v error -y -loop 1 -i "$REF/seed.jpg" -t 1 -r 24 -vf scale=-2:768 -c:v libx264 -pix_fmt yuv420p "$CLIP768" ||
+    fail "the 768p clip"
+fi
 mapfile -t names < <(jq -r '.[].name' <<<"$CELLS")
 [ "${#names[@]}" -gt 0 ] || fail "no cells"
 for k in "${names[@]}"; do
@@ -247,7 +252,7 @@ for k in "${names[@]}"; do
   c=$(jq -c --arg k "$k" 'map(select(.name==$k)) | first' <<<"$CELLS"); mapfile -t args < <(jq -r '.args[]' <<<"$c")
   FLOOR_MBS=$(jq -r --arg d "$FLOOR0" '.floor_mb_s // $d' <<<"$c") FLOOR_AFTER=$(jq -r --arg d "$AFTER0" '.floor_after_s // $d' <<<"$c")
   for i in "${!args[@]}"; do
-    a=${args[$i]//\{ref\}/$REF}; a=${a//\{clip\}/$CLIP}
+    a=${args[$i]//\{ref\}/$REF}; a=${a//\{clip\}/$CLIP}; a=${a//\{clip768\}/$CLIP768}
     while [[ $a =~ \{out:([A-Za-z0-9_-]+)\} ]]; do
       [ -n "${MADE[${BASH_REMATCH[1]}]:-}" ] || fail "cell $k: ${BASH_REMATCH[1]} made no image or video"
       a=${a//"${BASH_REMATCH[0]}"/"${MADE[${BASH_REMATCH[1]}]}"}
