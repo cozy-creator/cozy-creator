@@ -13,6 +13,7 @@ same SKU and suites; any FAIL blocks the promotion. Design: tracker `design/ci-v
 | Suite | Proves | Rentals (`skus`) | Cost · time | Pick it for |
 |---|---|---|---|---|
 | `runtime` | every first-party package's default call (H3 15 s with a described reference, SeedVR2, SDXL, Klein, Qwen, Anima, BiRefNet, the Qwen3.5 describer (`qwen3` on Qwen3.5-9B), Gemma 4 E2B through `qwen3`'s VisionLM (cr-301), Fibo, HiDream, MOSS, Qwen-Image and its one-release swap), then SDXL in a second executor, SDXL cold then two warm calls after each of three restarts and a loop step no capture records (cr-227), six SDXL child calls each with its own LoRA stack (cl-687) and an SDXL int8 quantize (a weights output), and Regenerate-2K over the whole 15 s shot at 1440p, the largest one forward takes (cr-259), and H3's video VAE alone, encode and decode each within 5% of ComfyUI's stored times (`h3-vae`, cr-306): kernels, times, VRAM, quality, LM coverage | rtx-4090, rtx-5090 | ~$6.5 · ~95 min, in parallel | a Runtime, TensorFS, varena or TensorD change; any rewrite |
+| `upscale` | each picture Upscale tool (`suites/upscale/cells.sh` `UPSCALERS`) on the bench's hardest small JPEGs (`sessions/fixtures/upscale-bench`: 225 px, q50–75, of clean pictures from the private benchmarks repo's `upscale/originals`), at its defaults: its mean DISTS to the clean pictures at least its measured margin below the Lanczos blow-up's (`bars.py`; row `upscale-<key>-dists`; se-147: Paul's JPEG artifacts amplified, not fixed) | rtx-4090 | ~$0.3 · ~13 min | a release that changes an upscaler package (qwen-image-2, flux-2, flux.3-klein, moss-image, p-h3-image, sdxl, seedvr2) or the Runtime: escaped.tsv's `packages=` rows require it then |
 | `packages` | from the `--packages` checkout's source, its candidates (each at a prerelease version) and what `--only` names, plus the SDXL smoke | rtx-4090, rtx-5090 | ~$1–3 · 15–30 min | a package bump |
 | `published` | version skew, cozy × packages (cl-1160): on the Runtime and TensorFS the pod booted with (the Hub's, which users' machines run until a promotion), the candidate cozy runs each first-party package's published release at its default call (`<cell>-published`). H3's takes a character reference, so its segments are managed calls with files | rtx-4090 | ~$1.5 · ~75 min | every RC |
 | `publish` | the Hub-publish path source runs skip: `packages_ref`'s candidates published to a throwaway Hub by `task publish -- --hub` (finals, locks rebound to its index, Triton sets, describe), each installed from it, and BiRefNet run from it on the runner (`suites/publish/run.sh`) | none: a runner (job `hub-fixture`) | $0 · ~30 min | every package promotion |
@@ -126,7 +127,8 @@ don't look: cozy as a GitHub prerelease (cozy-publish.yaml), TensorFS and the Ru
 (`packages_ref`), models private. `candidate.json` in each gate's output names the set: the versions the machine ran, the
 candidate files' digests, `packages_ref` and `models`. `verify.sh <run|dir>...` prints it only when every supplied SKU
 passed (or its FAIL was accepted by the lead). `verify.sh --release` also requires every row of `escaped.tsv` (a bug that
-reached users: the expect row of its cell and the SKUs it must pass on) to have passed in those gates. Numeric IDs must be
+reached users: the expect row of its cell and the SKUs it must pass on) to have passed in those gates. A row ending `packages=<pkg,…>` is required only when the set changes one of them (a
+prerelease version at its `packages_ref`) or a Runtime other than PyPI's newest (se-147's `upscale` rows). Numeric IDs must be
 completed, repository-owned dispatches of `release-gate.yml`; local gate directories are explicit hand receipts.
 
 `promote.sh [--images '<profile>=sha256:… …'] [--packages DIR] <run id>` (or `--record <URL> <dirs>...`) hands the set to
@@ -192,6 +194,9 @@ writing at once while the machine drawer's GPU use is held to the pod's nvidia-s
 Chrome, a Text box rendered twice and a caption of the photo and of the video. Without `rent` its page cells run on the runner with the local LLM fixture:
 `gh workflow run pod-session.yaml -R cozy-creator/cozy-creator --ref rc/<x> -f hub=prod -f script=llm-tools -f packages_refs=rc=<the
 packages RC> -f sku=rtx-a6000 -f disk=200 -f cap=6 -f cozy=<dev-build run> -f params='{"tree": "rc", "gpus": 2}' -f rent=true`.
+`upscale` (se-147) runs picture Upscale tools (`candidates`: {name, tree, tool, fields, from}) from `packages_refs` checkouts on one
+rental, over `fixtures/upscale-bench` (225 px JPEGs of clean pictures), and scores each output against its clean picture (LPIPS, DISTS,
+PSNR) and with none (MUSIQ, CLIP-IQA) on the runner after the rental ends; `$OUT/sheets` lays them side by side.
 `render-placement` (cl-774) is a render with the page's Run on at Automatically (`e2e/page.py render --on auto`) on a runner with no GPU and one rental: a tie and a model this computer has no GPU for go to the rental, nothing warns, and with the rental busy a weightless still goes here.
 `render-estimate` (cl-1004) is the bench's H3 Turbo 15 s shot as a box on one pod this runner never ran H3 on: the time `fit` gives
 the page before any run (its release's benchmark of that card) against the warm render's, within 35%, then `fit` again, measured there.
