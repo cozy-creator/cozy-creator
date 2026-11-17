@@ -2,11 +2,15 @@
   evict    the store's weights out of the page cache (cold-start.sh's)
   ceiling  TensorFS's own ceilings, from the newest executor environment: disk GB/s and pinned H2D GB/s to GPU 0
   end      every executor process ends (SIGTERM): the next run starts a new one
+  break <checkpoint>    the middle chunk of that checkpoint (`sha256:…`) emptied in place, its bytes kept aside: a
+                        read of it fails even through a file already open (TensorFS keeps chunk files open)
+  restore <checkpoint>  its bytes written back into the same file
 """
 
 import glob
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -62,6 +66,36 @@ elif mode == "ceiling":
     )
     done = subprocess.run([envs[-1], "-c", code, store or ""], capture_output=True, text=True, timeout=300)
     print(done.stdout.strip() or json.dumps({"error": done.stderr[-400:]}))
+elif mode in ("break", "restore"):
+    envs = sorted(glob.glob("/var/lib/cozy/tensord/generations/*/env/bin/python"), key=os.path.getmtime)
+    store = (roots("TENSORFS_HOME") or roots("COZY_TENSORFS_ROOT") or [None])[0]
+    if not envs or not store:
+        print(json.dumps({"error": "no executor environment or store"}))
+        sys.exit(1)
+    code = (
+        "import json, sys, tensorfs; ck = tensorfs.open(sys.argv[1], local_files_only=True, cache_dir=sys.argv[2]); "
+        "chunks = ck.chunks(); print(json.dumps(chunks[len(chunks) // 2]))"
+    )
+    done = subprocess.run([envs[-1], "-c", code, sys.argv[2], store], capture_output=True, text=True, timeout=300)
+    try:
+        sha, length = json.loads(done.stdout.strip())
+    except ValueError:
+        print(json.dumps({"error": done.stderr[-400:]}))
+        sys.exit(1)
+    found = glob.glob(os.path.join(store, "**", sha), recursive=True)
+    if not found:
+        print(json.dumps({"error": f"chunk {sha} not on disk", "store": store}))
+        sys.exit(1)
+    path, kept = found[0], "/tmp/lm-chunk-" + sha
+    if mode == "break" and not os.path.exists(kept):
+        shutil.copyfile(path, kept)
+        os.truncate(path, 0)
+    elif mode == "restore" and os.path.exists(kept):
+        with open(kept, "rb") as src, open(path, "r+b") as dst:  # the same inode: open readers see it
+            shutil.copyfileobj(src, dst, 16 << 20)
+            dst.truncate()
+        os.remove(kept)
+    print(json.dumps({"mode": mode, "chunk": sha, "bytes": length, "path": path, "size": os.path.getsize(path)}))
 elif mode == "end":
     ended = executors()
     for pid in ended:

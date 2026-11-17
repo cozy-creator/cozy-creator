@@ -11,6 +11,11 @@
 #   sdxl   SDXL's generate (1 MP, 20 steps) on a new executor, then again on it with another seed
 #   capped with `capped`, Qwen-Image 2's generate (1 MP, no upsampling) under that VRAM cap on a new executor: blocks
 #          paged per step, the varena-heavy twin (cr-318)
+#   paged  with `paged`, Qwen3.6 under that VRAM cap on a new executor: experts paged every token, its decode's
+#          refills the engine's demand and ahead reads side by side (cr-318 step 2)
+#   fault  with `fault` too, on that executor: Qwen3.6 again, and once it decodes the checkpoint's middle chunk is emptied
+#          in place (a refill reading it fails while the decode's other reads are in flight), then restored, and Qwen3.6
+#          once more: it must answer as `paged` did (no read's staging crossed into another's)
 # Every row's parts against the ceilings TensorFS measures on the pod (disk, pinned H2D) are in table.txt and the job summary.
 # A judged arm must construct warm in `prepare_s` and run cold in `x` times its weights' read at the disk's ceiling plus
 # `fixed_s` (legs.py): the default bar, 40 s and 2 x + 60 s, is 71 s on 44058999272's A6000 (6.78 GB/s), where the fixed
@@ -22,6 +27,8 @@
 #   bar      {"prepare_s": 40, "x": 2, "fixed_s": 60}
 #   sdxl     false: no SDXL rows
 #   capped   a VRAM cap (`12GiB`): the capped Qwen-Image 2 row per arm
+#   paged    a VRAM cap (`28GiB`): the paged Qwen3.6 row per arm
+#   fault    true (with `paged`): the fault rows per arm
 #   need_s   seconds the guard must buy (default 3600)
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -47,8 +54,8 @@ for a in "${names[@]}"; do
 done
 jq -n --argjson arms "$ARMS" --argjson bar "$BAR" '[$arms[] | {key: .name, value: ($bar + {judged: (.judged // false)})}] | from_entries' \
   > "$OUT/bar.json" || fail "bar: $BAR"
-CAPPED=$(param capped '')
-[[ -z $CAPPED || $CAPPED =~ ^[0-9]+GiB$ ]] || fail "capped $CAPPED"
+CAPPED=$(param capped '') PAGED=$(param paged '') FAULT=$(param fault false)
+[[ -z $CAPPED || $CAPPED =~ ^[0-9]+GiB$ ]] && [[ -z $PAGED || $PAGED =~ ^[0-9]+GiB$ ]] || fail "capped $CAPPED, paged $PAGED"
 kernels "$SOURCE/qwen3.6"; kernels "$SOURCE/sdxl"; [ -z "$CAPPED" ] || kernels "$SOURCE/qwen-image-2"
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh
@@ -86,6 +93,38 @@ fresh() {
   [ -n "$p" ] && step "rm-$1" package uninstall "$p" --on "$NAME" -y && return 0
   say "fresh $1: not uninstalled (${p:-not listed}); ending the pod's executors: $(T=60 pod "python3 /tmp/lm.py end" < /dev/null 2>&1)"
 }
+# fault <arm>: Qwen3.6 on the paged executor, its checkpoint's middle chunk emptied once it decodes, then restored; then
+# Qwen3.6 again, which must answer as <arm>-paged did.
+fault() {
+  local a=$1 ck n i stage p
+  ck=$(jq -r '.measurements.models[0].manifest // empty' "$OUT/$a-paged.json" 2> /dev/null)
+  [ -n "$ck" ] || { say "FAIL $a-fault: no checkpoint in $a-paged's record"; RC=1; return; }
+  (step "$a-fault" run "$SOURCE/qwen3.6/write" "instructions:=$ON_PHOTO" max_tokens:=200 temperature:=0 --on "$NAME") & p=$!
+  local since=''
+  for i in $(seq 900); do
+    n=$(runno "$a-fault")
+    [ -z "$n" ] || since=${since:-$SECONDS}
+    [ -n "$n" ] && stage=$( (cd "$RUN_PROJECT" && cozy --json run watch "$n" --once) 2> /dev/null | jq -r '.progress.stage // .status // empty')
+    # Decoding: its stage says so, or a minute since it began (the paged executor is warm, so it is answering by then).
+    [[ ${stage:-} == answering* ]] && break
+    [ -n "$since" ] && [ $((SECONDS - since)) -ge 60 ] && break
+    kill -0 "$p" 2> /dev/null || break
+    sleep 1
+  done
+  sleep 5
+  say "$a-fault: run ${n:-none} at '${stage:-?}': $(T=300 pod "python3 /tmp/lm.py break $ck" < /dev/null 2>&1)"
+  wait "$p"
+  record "$a-fault"
+  say "$a-fault: restored $(T=300 pod "python3 /tmp/lm.py restore $ck" < /dev/null 2>&1)"
+  write "$a-after"
+  local want got
+  want=$(jq -r '.result.text // empty' "$OUT/$a-paged.json" 2> /dev/null) got=$(jq -r '.result.text // empty' "$OUT/$a-after.json" 2> /dev/null)
+  if [ -n "$want" ] && [ "$want" = "$got" ]; then
+    say "PASS $a-fault: $(jq -r '.status' "$OUT/$a-fault.json" 2> /dev/null) ($(jq -r '.error.code // .error // "no error"' "$OUT/$a-fault.json" 2> /dev/null | head -c 120)), then $a-after answered as $a-paged did"
+  else
+    say "FAIL $a-fault: $a-after answered '$(head -c 120 <<<"$got")', $a-paged '$(head -c 120 <<<"$want")'"; RC=1
+  fi
+}
 ceiling() {
   T=600 pod "python3 /tmp/lm.py ceiling" < /dev/null > "$OUT/ceiling.json" 2> "$OUT/ceiling.err"
   say "ceiling: $(cat "$OUT/ceiling.json")"
@@ -113,6 +152,12 @@ for a in "${names[@]}"; do
     step "cap-$a" machine update "$NAME" --gpu-memory-limit "$CAPPED" -y || fail "$a: the cap"
     step "$a-qimg-capped" run "$SOURCE/qwen-image-2/generate" --input "$OUT/qimg.json" --on "$NAME"; record "$a-qimg-capped"
     step "uncap-$a" machine update "$NAME" --gpu-memory-limit off -y || fail "$a: lifting the cap"
+  fi
+  if [ -n "$PAGED" ]; then
+    step "page-$a" machine update "$NAME" --gpu-memory-limit "$PAGED" -y || fail "$a: the cap"
+    write "$a-paged"
+    [ "$FAULT" != true ] || fault "$a"
+    step "unpage-$a" machine update "$NAME" --gpu-memory-limit off -y || fail "$a: lifting the cap"
   fi
 done
 
