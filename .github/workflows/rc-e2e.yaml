@@ -7,7 +7,9 @@ name: rc-e2e
 # A red lists what merged since the last green run, here and in those two, each with its issue, to find the commit that
 # caused it (tracker cl-885).
 # `skew-candidate` is the RC's cozy against the production Hub's line (tensorhub master), as the suites' Hub is tensorhub's RC.
-# By hand: gh workflow run rc-e2e.yaml -R cozy-creator/cozy-creator --ref rc/<x.y.z> [-f select='cli os:macos os:windows']
+# On a push it runs the edge set and what changed since each shard last went green (cl-1128); a red edge shard ends the run. A
+# release's run is the release gate's, every shard. By hand: gh workflow run rc-e2e.yaml -R cozy-creator/cozy-creator --ref rc/<x.y.z>
+# [-f select='cli imports cpu model']: every shard of the suites named.
 on:
   push:
     branches: ['rc/*']
@@ -24,7 +26,8 @@ concurrency:
 
 permissions:
   contents: read
-  actions: read
+  # A red edge shard ends the run (e2e.yaml, cl-1128).
+  actions: write
 
 jobs:
   e2e:
@@ -34,6 +37,8 @@ jobs:
       repo: cozy-creator
       ref: ${{ github.sha }}
       select: ${{ inputs.select || 'cli imports cpu model skew-candidate' }}
+      # The edge set, and what changed since each shard last went green (cl-1128); a dispatch naming suites runs them whole.
+      shards: ${{ inputs.select && '' || 'changed' }}
 
   since:
     name: merged since green
