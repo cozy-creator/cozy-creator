@@ -8,6 +8,9 @@ import os
 import re
 import sys
 import urllib.request
+from typing import cast
+
+type Release = dict[str, object]
 
 API = "https://api.github.com/repos/cozy-creator/cozy-creator/releases"
 SHIPS = re.compile(r"^cozy (\S+), Runtime (\S+) and TensorFS (\S+?)[:.]?(\s|$)")
@@ -21,8 +24,8 @@ def read(url: str) -> object:
         return json.load(answer)
 
 
-def ships(release: dict) -> tuple[str, str, str]:
-    found = SHIPS.match((release.get("body") or "").strip())
+def ships(release: Release) -> tuple[str, str, str]:
+    found = SHIPS.match(str(release.get("body") or "").strip())
     if found is None:
         sys.exit(f"releases.py: {release['tag_name']}'s notes don't start \"cozy X, Runtime Y and TensorFS Z\"")
     return found.group(1), found.group(2), found.group(3)
@@ -33,18 +36,17 @@ def version(tag: str) -> tuple[int, ...] | None:
     return tuple(int(part) for part in found.groups()) if found else None
 
 
-latest = read(f"{API}/latest")
-assert isinstance(latest, dict)
+latest = cast(Release, read(f"{API}/latest"))
 cozy, runtime, tensorfs = ships(latest)
-line = version(latest["tag_name"])
+line = version(str(latest["tag_name"]))
 if line is None:
     sys.exit(f"releases.py: GitHub's Latest is {latest['tag_name']}, not a cozy release")
-releases = read(f"{API}?per_page=100")
-assert isinstance(releases, list)
-before = [r for r in releases if not r["draft"] and not r["prerelease"] and (v := version(r["tag_name"])) and v[:2] == (line[0], line[1] - 1)]
+releases = cast(list[Release], read(f"{API}?per_page=100"))
+before = [r for r in releases
+          if not r["draft"] and not r["prerelease"] and (v := version(str(r["tag_name"]))) and v[:2] == (line[0], line[1] - 1)]
 if not before:
     sys.exit(f"releases.py: no release of {line[0]}.{line[1] - 1}, the line before the Latest {cozy}")
-previous = max(before, key=lambda r: version(r["tag_name"]) or ())
+previous = max(before, key=lambda r: version(str(r["tag_name"])) or ())
 was = ships(previous)
 print(f"LATEST={cozy} LATEST_RUNTIME={runtime} LATEST_TENSORFS={tensorfs} PREVIOUS={was[0]} PREVIOUS_RUNTIME={was[1]} "
       f"PREVIOUS_TENSORFS={was[2]}")
