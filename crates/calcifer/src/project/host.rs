@@ -10,7 +10,6 @@ use std::{
 
 use api::{
     calcifer::{MachineState, On, OutputItem, Run, Status as RunStatus, SubmitRun},
-    config::Origin,
     error::{Error, Kind},
     ids::{Digest, RunId},
     interface::{self, Call, Interface, Slot},
@@ -51,6 +50,13 @@ pub(crate) struct Package {
 }
 
 impl Package {
+    /// Published `package`'s release as `card` says it, its tool naming `function`.
+    fn of_card(package: String, function: Option<String>, card: &::api::hub::cards::Card) -> Self {
+        let document = card.interface_document().clone();
+        let (digest, summary) = (card.digest().unwrap_or_default().to_owned(), card.summary().to_owned());
+        Self { name: package, release: card.release.clone(), local: None, manifest: String::new(), moved: None, named: function, digest, summary, document }
+    }
+
     /// Its interface, as its card or its source says.
     pub(crate) fn document(&self) -> &Value {
         &self.document
@@ -230,47 +236,33 @@ impl Host {
         format!("project-local-{}-{}", self.walk, &hex::encode(at)[..16])
     }
 
-    /// The project's local code at `path` made ready `on` a machine for a call, the install it needs waited for as `wait` says: read
-    /// into a copy as a client's is sent.
-    pub(crate) async fn ready(&self, path: &Path, on: &On, hub: &str, wait: Wait<'_>) -> Result<local_code::Prepared, Error> {
+    /// The project's local code at `path` made ready `on` the machine job `job`'s call goes to, its install waited for until the job is
+    /// canceled (`Installs`), out of the runs its turn sends together (`member`) meanwhile: read into a copy as a client's is sent. Only
+    /// a call, or a job's fetch ahead on the machine its plan placed it on, makes code ready: a quote reads it (`foreseen`, cl-1115).
+    pub(crate) async fn ready(&self, path: &Path, on: &On, hub: &str, job: &str, member: Option<&Member>) -> Result<local_code::Prepared, Error> {
         let scope = crate::private_io::current().or(crate::private_io::of_path(path)?);
         crate::private_io::context(scope, async {
             let code = local_code::own(&self.api, path)?;
             let key = self.key(path, on);
-            let (job, member) = match wait {
-                Wait::Plain => (None, None),
-                Wait::Job(job, member) => (Some(job), member),
-                Wait::Quote(job) => (Some(job), None),
-            };
             loop {
-                if job.is_some_and(|job| self.installs.canceled(job)) {
+                if self.installs.canceled(job) {
                     return Err(canceled());
                 }
                 let prepared = local_code::prepare(&self.api, &code, on, hub, false, &key, None, &|run| self.installs.ended(run)).await?;
                 let Some(run) = &prepared.install else { return Ok(prepared) };
-                if let Wait::Quote(job) = wait {
-                    self.installs.asked(&self.api, &run.id, job)?;
-                    return Err(Error::new(Kind::Unavailable, INSTALLING, format!("Its install (run {}) is still going.", run.number)));
-                }
                 let mut told = self.installs.told.subscribe();
-                let _waiting = match job {
-                    Some(job) => match self.installs.wait(&self.api, &run.id, job)? {
-                        Some(waiting) => Some(waiting),
-                        // Ended for want of waiters as this came to it: asked again, it installs again.
-                        None => continue,
-                    },
-                    None => None,
+                let Some(_waiting) = self.installs.wait(&self.api, &run.id, job)? else {
+                    // Ended for want of waiters as this came to it: asked again, it installs again.
+                    continue;
                 };
                 // What its turn sends together goes without it: they can start now (owner, cl-973).
                 if let Some(member) = member {
                     member.leave();
                 }
                 let canceled_meanwhile = async {
-                    if let Some(job) = job {
-                        while told.changed().await.is_ok() {
-                            if self.installs.canceled(job) {
-                                return;
-                            }
+                    while told.changed().await.is_ok() {
+                        if self.installs.canceled(job) {
+                            return;
                         }
                     }
                     std::future::pending().await
@@ -284,20 +276,20 @@ impl Host {
         }).await
     }
 
-    /// The package `with` names: local code (`./dir` from the project's `folder`, `~/…`, an absolute path), described on the first of
-    /// `on`'s machines; else `[org/]package[@release]` as `hub` (empty: the default one) has it. Local code is made ready as `wait` says
-    /// (`ready`).
-    pub(crate) async fn package(&self, hub: &str, with: &str, folder: &Path, on: &[On], wait: Wait<'_>) -> Result<Package, Error> {
+    /// The package `with` names for job `job`'s call: local code (`./dir` from the project's `folder`, `~/…`, an absolute path), made
+    /// ready on the first of `on`'s machines (`ready`); else `[org/]package[@release]` as `hub` (empty: the default one) has it for that
+    /// machine, which moves to a Runtime that runs it first. `on` is where the call goes: a quote reads it with `foreseen`.
+    pub(crate) async fn package(&self, hub: &str, with: &str, folder: &Path, on: &[On], job: &str, member: Option<&Member>) -> Result<Package, Error> {
         let scope = crate::private_io::of_path(folder)?;
-        crate::private_io::context(scope, self.package_scoped(hub, with, folder, on, wait)).await
+        crate::private_io::context(scope, self.package_scoped(hub, with, folder, on, job, member)).await
     }
 
-    async fn package_scoped(&self, hub: &str, with: &str, folder: &Path, on: &[On], wait: Wait<'_>) -> Result<Package, Error> {
+    async fn package_scoped(&self, hub: &str, with: &str, folder: &Path, on: &[On], job: &str, member: Option<&Member>) -> Result<Package, Error> {
         let home = self.api.machines.hubs.home().root().parent().map(Path::to_path_buf).unwrap_or_default();
         if let Some(found) = local_code::target(with, Some(folder), &home) {
             let (path, named) = found?;
             let on = on.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
-            let prepared = crate::stages::stage("local code", self.ready(&path, &on, hub, wait)).await?;
+            let prepared = crate::stages::stage("local code", self.ready(&path, &on, hub, job, member)).await?;
             let Some(document) = prepared.interface else {
                 let said = format!("{with} isn't installed on {on:?} yet, so its first render installs it.");
                 return Err(Error::new(Kind::Unavailable, "renderer_not_described", said));
@@ -310,25 +302,26 @@ impl Host {
         self.published(hub, with, Some(&first)).await
     }
 
-    /// The package `with` names for a job waiting for another's output (cl-905), never made ready on a machine for it: local code as
-    /// the static describer reads it on the first of `on`'s machines, with the manifest a machine installs; a published one as `package`
-    /// has it. Its install is neither asked for nor waited on, so the job is placed and its machine fetches ahead meanwhile.
+    /// The package `with` names as a quote, an estimate, a guess or a read of a box's call reads it: nothing done on any machine for it
+    /// (Paul: a quote never acts; cl-1115). Local code as the static describer reads it for the first of `on`'s machines, with the
+    /// manifest a machine installs; a published one as a run there would bind it, by what that machine last said: none started, its
+    /// Runtime not moved and cozy not updated (`quoted`). Its install is neither asked for nor waited on: a call makes it ready where it
+    /// goes (`ready`).
     pub(crate) async fn foreseen(&self, hub: &str, with: &str, folder: &Path, on: &[On]) -> Result<Package, Error> {
         let scope = crate::private_io::of_path(folder)?;
         crate::private_io::context(scope, async {
             let home = self.api.machines.hubs.home().root().parent().map(Path::to_path_buf).unwrap_or_default();
             let first = on.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
-            let Some(found) = local_code::target(with, Some(folder), &home) else { return self.published(hub, with, Some(&first)).await };
+            let Some(found) = local_code::target(with, Some(folder), &home) else { return self.quoted(hub, with, &first).await };
             let (path, named) = found?;
             let code = local_code::own(&self.api, &path)?;
-            let hubs = &self.api.machines.hubs;
-            let hub = if hub.is_empty() { hubs.default_origin() } else { hub.to_owned() };
-            // Its estimate names it by this (`Package::estimated`): without it, no machine quotes it.
-            let manifest = local_code::source(hubs.home(), &code, hubs, &Origin::parse(&hub)?).await?.source.manifest;
-            let (name, document) = local_code::describe(&self.api, &code, &first, &hub).await?;
+            let read = local_code::foreseen(&self.api, &code, &first, hub).await?;
+            // Its estimate names it by its manifest (`Package::estimated`): without it, no machine quotes it.
+            let manifest = read.source.manifest;
             let release = manifest.trim_start_matches("sha256:").chars().take(12).collect();
-            let summary = crate::checkout::of(&code).map(|from| from.summary).unwrap_or_default();
-            Ok(Package { name, release, local: Some(path), manifest, moved: None, named, digest: String::new(), summary, document })
+            let summary = read.from.map(|from| from.summary).unwrap_or_default();
+            let document = read.interface.unwrap_or_default();
+            Ok(Package { name: read.package, release, local: Some(path), manifest, moved: None, named, digest: String::new(), summary, document })
         }).await
     }
 
@@ -339,9 +332,8 @@ impl Host {
         Ok(Package { name: found.package, release: found.release, local: None, manifest: String::new(), moved: None, named: found.function, digest: String::new(), summary: found.summary, document: found.interface })
     }
 
-    /// A published package, by `[org/]package[@release]`, for a run `on` its machine (of several, the
-    /// walk's first; another installs the release); none: as this computer knows it, for a read
-    /// that runs nothing.
+    /// A published package, by `[org/]package[@release]`, for a call `on` the machine it goes to, which moves to a Runtime that runs it
+    /// first, as cozy updates itself for a release only a newer cozy runs; none: as this computer knows it, for a read that runs nothing.
     pub(crate) async fn published(&self, hub: &str, with: &str, on: Option<&On>) -> Result<Package, Error> {
         let at = (hub.to_owned(), with.to_owned(), on.map(On::to_string).unwrap_or_default());
         if let Some(found) = self.packages.lock().expect("packages lock").get(&at) {
@@ -374,9 +366,25 @@ impl Host {
         {
             moved = Some(upgrade.note());
         }
-        let found = Package { name: package, release: card.release.clone(), local: None, manifest: String::new(), moved: None, named: function, digest: card.digest().unwrap_or_default().to_owned(), summary: card.summary().to_owned(), document: card.interface_document().clone() };
+        let found = Package::of_card(package, function, &card);
         self.packages.lock().expect("packages lock").insert(at, found.clone());
         Ok(Package { moved, ..found })
+    }
+
+    /// A published package by `[org/]package[@release]` as a run `on` its machine would bind it, read only: that machine as it last
+    /// said, none started for it, no Runtime moved and cozy not updated (`published` does those, for a call). Read once a walk.
+    pub(crate) async fn quoted(&self, hub: &str, with: &str, on: &On) -> Result<Package, Error> {
+        let at = (hub.to_owned(), with.to_owned(), format!("quoted {on}"));
+        if let Some(found) = self.packages.lock().expect("packages lock").get(&at) {
+            return Ok(found.clone());
+        }
+        let hub = crate::runs::hub(&self.api, hub);
+        let Resolved::Release { package, function, card, .. } = crate::stages::stage("release", target::published(&self.api, &hub, with, Some(on), false)).await? else {
+            unreachable!("a published target resolves to a release");
+        };
+        let found = Package::of_card(package, function, &card);
+        self.packages.lock().expect("packages lock").insert(at, found.clone());
+        Ok(found)
     }
 
     /// How long the newest finished run of `target` on `machine` took, in seconds.
@@ -536,21 +544,6 @@ fn refused(error: crate::Error) -> Error {
     Refusal::from(error).0
 }
 
-/// How making local code ready waits for the install it needs (`Host::ready`).
-#[derive(Clone, Copy)]
-pub(crate) enum Wait<'a> {
-    /// It waits, for no job.
-    Plain,
-    /// It waits for job `job`, until that's canceled (`Installs`), out of the runs its turn sends together meanwhile (`Member::leave`).
-    Job(&'a str, Option<&'a Member>),
-    /// It doesn't: `INSTALLING` answers, and the install ends with job `job` as one it waited on would (`Installs::asked`). A plan's
-    /// quote, which every job of its turn waits on.
-    Quote(&'a str),
-}
-
-/// What local code made ready without waiting (`Wait::Quote`) answers while its install is going.
-pub(crate) const INSTALLING: &str = "renderer_installing";
-
 /// What a job waiting on its install answers once it was canceled (`Installs`): it sends nothing, and fails nothing.
 pub(crate) const CANCELED: &str = "render_canceled";
 
@@ -558,10 +551,10 @@ fn canceled() -> Error {
     Error::new(Kind::Conflict, CANCELED, "Canceled while it was waiting for its install.")
 }
 
-/// The installs a project's walk asks for its local code (`Host::ready`), and the jobs waiting on each or whose quotes asked for it. An
-/// install that only canceled jobs wanted ends with the last of them, unless a run of its package that hasn't begun goes to its machine
-/// too (owner, cl-973): an install a person asked for is their own run, under their own key, which no job waits on. Its installs are
-/// keyed by the walk, so a walk starts it empty.
+/// The installs a project's walk asks for its local code (`Host::ready`), and the jobs waiting on each. An install that only canceled
+/// jobs wanted ends with the last of them, unless a run of its package that hasn't begun goes to its machine too (owner, cl-973): an
+/// install a person asked for is their own run, under their own key, which no job waits on. Its installs are keyed by the walk, so a
+/// walk starts it empty.
 #[derive(Default)]
 pub(crate) struct Installs {
     waits: Mutex<Waits>,
@@ -578,14 +571,12 @@ struct Waits {
     canceled: HashSet<String>,
     /// The installs ended for want of waiters: one asked again installs again (`local_code::install_through`).
     ended: HashSet<RunId>,
-    /// The install each job's quote found going, and didn't wait on (`Wait::Quote`).
-    asked: HashMap<String, RunId>,
 }
 
 impl Waits {
-    /// Whether a job waits on install `run`, or its quote asked for it.
+    /// Whether a job waits on install `run`.
     fn wanted(&self, run: &RunId) -> bool {
-        self.waiting.contains_key(run) || self.asked.values().any(|asked| asked == run)
+        self.waiting.contains_key(run)
     }
 }
 
@@ -648,24 +639,7 @@ impl Installs {
         Ok(Some(Waiting { installs: self, run: run.clone(), token }))
     }
 
-    /// Job `job`'s quote found install `run` going, and didn't wait on it: it ends with the job, as one the job waited on would. A job
-    /// canceled meanwhile asked for nothing, and the install ends unless something else waits on it.
-    fn asked(&self, api: &Api, run: &RunId, job: &str) -> Result<(), Error> {
-        let mut waits = self.lock();
-        if !waits.canceled.contains(job) {
-            waits.asked.insert(job.to_owned(), run.clone());
-            return Ok(());
-        }
-        let alone = !waits.wanted(run);
-        drop(waits);
-        if alone {
-            self.end(api, run);
-        }
-        Err(canceled())
-    }
-
-    /// Jobs `jobs` canceled (`stop_jobs`): none waits again, and each install only they waited on, or their quotes asked for, ends with
-    /// them.
+    /// Jobs `jobs` canceled (`stop_jobs`): none waits again, and each install only they waited on ends with them.
     pub(crate) fn cancel(&self, api: &Api, jobs: &[String]) {
         if jobs.is_empty() {
             return;
@@ -682,7 +656,6 @@ impl Installs {
                 }
                 !waiters.is_empty()
             });
-            theirs.extend(jobs.iter().filter_map(|job| waits.asked.remove(job)));
             theirs.into_iter().filter(|run| !waits.wanted(run)).collect()
         };
         self.told.send_modify(|told| *told += 1);

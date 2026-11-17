@@ -162,7 +162,7 @@ async fn priced_scoped(api: &Arc<Api>, ask: RunRequest) -> Result<Option<RunQuot
 }
 
 /// `POST /v1/run-estimates` (`Idempotency-Key`; cl-816): when each machine the run may go to would finish it, as each says now.
-/// Nothing is sent. Local code not yet ready answers its install (`preparing`): follow it, then ask again under the same key.
+/// Nothing is sent, and nothing is installed, moved or updated: local code is read as a quote reads it (cl-1115).
 pub(crate) async fn estimate(
     State(api): State<Arc<Api>>,
     IdempotencyKey(key): IdempotencyKey,
@@ -178,13 +178,8 @@ pub(crate) async fn estimate(
 
 async fn estimate_asked(api: &Arc<Api>, key: &str, ask: &RunRequest, copies: Copies) -> Result<Json<RunEstimate>, Refusal> {
     let count = copies.count.unwrap_or(1).clamp(1, COPIES);
-    let (submit, mut notes, offers) = match prepare(api, key, ask, For::Estimate(count)).await.map_err(Refusal)? {
-        Prepared::Install(run) => {
-            let notes = updating(&run).into_iter().collect();
-            return Ok(Json(RunEstimate { preparing: Some(Box::new(run)), notes, ..RunEstimate::default() }));
-        }
-        Prepared::Cozy(run, note) => return Ok(Json(RunEstimate { preparing: Some(Box::new(run)), notes: vec![note], ..RunEstimate::default() })),
-        Prepared::Run { submit, notes, offers } => (submit, notes, offers),
+    let Prepared::Run { submit, mut notes, offers } = prepare(api, key, ask, For::Estimate(count)).await.map_err(Refusal)? else {
+        unreachable!("an estimate installs and updates nothing first");
     };
     if copies.count.is_some_and(|asked| asked != count) {
         notes.push(Note { level: NoteLevel::Warning, message: format!("You can render 1 to {COPIES} copies, so this estimate is for {count}.") });
@@ -201,7 +196,7 @@ async fn estimate_asked(api: &Arc<Api>, key: &str, ask: &RunRequest, copies: Cop
         On::Machine(name) => machines.iter().any(|machine| machine.job == 0 && machine.fits && machine.machine == *name).then(|| name.clone()),
         _ => None,
     };
-    Ok(Json(RunEstimate { machines, soonest, notes, preparing: None }))
+    Ok(Json(RunEstimate { machines, soonest, notes }))
 }
 
 /// The most copies one estimate quotes: a walk's window.
@@ -462,8 +457,7 @@ enum For {
     Run,
     /// A `new` run's price: nothing installs.
     Quote,
-    /// Its machines' estimates, for this many copies sent at once: every machine it may go to is asked, and nothing installs but local
-    /// code.
+    /// Its machines' estimates, for this many copies sent at once: every machine it may go to is asked, and nothing installs.
     Estimate(u32),
 }
 
@@ -518,7 +512,11 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     let agreed = ask.agreed.clone();
     // Given something to run with, a package of one function runs it; given nothing, it is listed.
     let given = !ask.terms.is_empty() || ask.input.is_some() || ask.input_text.is_some() || !ask.files.is_empty() || ask.warm.is_some();
-    let resolved = Box::pin(target::resolve(api, &hub, &ask.target, ask.code.as_ref(), &on, ask.warm.is_some(), given, key, agreed)).await?;
+    // A run resolves on its machine; a quote or an estimate only reads, installing, starting, moving or updating nothing (cl-1115).
+    let resolved = match purpose {
+        For::Run => Box::pin(target::resolve(api, &hub, &ask.target, ask.code.as_ref(), &on, ask.warm.is_some(), given, key, agreed)).await?,
+        For::Quote | For::Estimate(_) => Box::pin(target::foreseen(api, &hub, &ask.target, ask.code.as_ref(), &on)).await?,
+    };
     // cozy updates itself first for a release only a newer cozy's line runs (cl-978); a quote or an estimate says so.
     let cozy = match &resolved {
         Resolved::Release { cozy: Some(wanted), .. } if purpose == For::Run => {

@@ -792,6 +792,8 @@ case $SHARD in
   " ;;
   # A project's run and its chosen machine, a rental chosen by its handle, follow its Hub's name for the host (cl-1089, cl-1106).
   rental-rename) parts="rental_rename logs" ;;
+  # A project on a rental alone quotes, renders and reads its box's call, and nothing of it installs on this computer (cl-1115).
+  rental-quote) parts="rental_quote logs" ;;
   # A take's thumbnail asked for while its file is on its way here answers no error (cl-1108).
   thumb-arriving) parts="thumb_arriving logs" ;;
   # A dev build's Calcifer at the stack size it ships resumes a render walk and answers /fit (cl-1069: E2E_DEV_COZY, e2e.yaml).
@@ -962,6 +964,7 @@ case $SHARD in
     rental_end
     rental_end_again
     rental_rename
+    rental_quote
     logs
   " ;;
   # Stops, restarts, updates and starts past a TensorD that can't exit, and a start that hangs, then a rental's own end against a

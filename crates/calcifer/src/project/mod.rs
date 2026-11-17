@@ -3956,22 +3956,11 @@ const HELD_UP: std::time::Duration = std::time::Duration::from_secs(1);
 pub(crate) const GONE: [&str; 4] = ["machine_ended", "machine_name_ended", "machine_offline", "machine_ending"];
 const PLACED_AGAIN: u32 = 3;
 
-/// How a job's quote reads its package (`Walk::quotable`).
-#[derive(Clone, Copy, Debug)]
-pub(super) enum PackageRead {
-    /// As its turn would, not waiting for its install: none while that's going (`host::Wait::Quote`).
-    Now,
-    /// Once its install is done (`host::Wait::Job`).
-    Installed,
-    /// Statically, its install neither asked for nor waited on (`Host::foreseen`): a job waiting for another's output.
-    Foreseen,
-}
-
-/// Job `key` as its machines quote it: the function its tool `with` names, with `made`'s choices, its package read as `read` says; else
-/// why not. None: its install is going, and `read` doesn't wait for it. The walk's quote and `fit`'s estimate alike (cl-1004).
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn job_of(host: &Host, dir: &FsPath, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, read: PackageRead) -> Result<Option<placement::Job>, String> {
-    job_read(host, dir, key, on, hub, with, made, read).await.map_err(|unread| match unread {
+/// Job `key` as its machines `on` quote it: the function its tool `with` names, with `made`'s choices, its package read with nothing
+/// done on any machine for it (`Host::foreseen`, cl-1115: a quote never acts); else why not. The walk's quote, `fit`'s estimate and a
+/// box's guess alike (cl-1004, cl-1104).
+pub(super) async fn job_of(host: &Host, dir: &FsPath, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>) -> Result<placement::Job, String> {
+    job_read(host, dir, key, on, hub, with, made).await.map_err(|unread| match unread {
         Unquotable::Again(why) | Unquotable::Not(why) => why,
     })
 }
@@ -3984,18 +3973,10 @@ enum Unquotable {
 }
 
 /// `job_of`, its reads timed as stages of the quote (`crate::stages`), and why not said as whether asking again may help.
-#[allow(clippy::too_many_arguments)]
-async fn job_read(host: &Host, dir: &FsPath, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, read: PackageRead) -> Result<Option<placement::Job>, Unquotable> {
+async fn job_read(host: &Host, dir: &FsPath, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>) -> Result<placement::Job, Unquotable> {
     let api = host.api();
-    let package = match read {
-        PackageRead::Now => crate::stages::stage("package", host.package(hub, with, dir, &on, host::Wait::Quote(&key))).await,
-        PackageRead::Installed => crate::stages::stage("package", host.package(hub, with, dir, &on, host::Wait::Job(&key, None))).await,
-        PackageRead::Foreseen => crate::stages::stage("package", host.foreseen(hub, with, dir, &on)).await,
-    };
-    let package = match package {
-        Err(e) if e.code == host::INSTALLING => return Ok(None),
-        // Not described yet is no read that failed: its first render installs it.
-        Err(e) if e.kind == Kind::Unavailable && e.code != "renderer_not_described" => return Err(Unquotable::Again(format!("{with}: {}", e.message))),
+    let package = match crate::stages::stage("package", host.foreseen(hub, with, dir, &on)).await {
+        Err(e) if e.kind == Kind::Unavailable => return Err(Unquotable::Again(format!("{with}: {}", e.message))),
         Err(e) => return Err(Unquotable::Not(format!("{with}: {}", e.message))),
         Ok(package) => package,
     };
@@ -4012,7 +3993,7 @@ async fn job_read(host: &Host, dir: &FsPath, key: String, on: Vec<On>, hub: &str
     let scope = crate::private_io::of_path(dir).ok().flatten();
     let source = package.local.clone().filter(|dir| dir.is_dir());
     let (models, on_demand_bytes) = (fetched.models, fetched.on_demand_bytes);
-    Ok(Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on, scope, source, on_demand_bytes }))
+    Ok(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on, scope, source, on_demand_bytes })
 }
 
 /// The model choices a box's fields `made` give `renderer`'s function (`models`, `lora`), as a machine's list carries them: an
@@ -4082,9 +4063,9 @@ enum Done {
     Arrived { name: Option<String>, result: Result<(), Error> },
     Ahead,
     /// A ready job's quote, read off the walk's turn (`Walker::quoting`).
-    Quoted { key: String, quotable: Result<Option<placement::Job>, Unquoted> },
-    /// A waiting job's quote, its package read statically (`Walker::foreseeing`).
-    Foreseen { key: String, quotable: Result<Option<placement::Job>, Unquoted> },
+    Quoted { key: String, quotable: Result<placement::Job, Unquoted> },
+    /// A waiting job's quote (`Walker::foreseeing`).
+    Foreseen { key: String, quotable: Result<placement::Job, Unquoted> },
 }
 
 /// What a queued job's machine can fetch before its turn: a function as its text names it, on the machine the plan placed it on.
@@ -4122,8 +4103,8 @@ enum Act {
     Send { id: usize, key: String, ask: Arc<Ask>, doc: Arc<Doc>, stand: Arc<Vec<Standing>>, lock: Arc<Lock>, next: Next },
     /// Its machines are all busy: it waits here for one.
     Held { id: usize },
-    /// Its package is being installed: it has its turn once its quote is in (`Done::Quoted`).
-    Installing { id: usize },
+    /// Its quote is being read: it has its turn once that is in (`Done::Quoted`).
+    Quoting { id: usize },
     /// Its quote's reads didn't answer after every attempt: it fails, in one line, and never waits on them (xs-199).
     Unquoted { id: usize, ask: String, on: Vec<On>, key: String, asset: String, kind: String, inputs: Option<String>, message: String, silent: Vec<String> },
     Tool { id: usize, ask: Arc<Ask>, doc: Arc<Doc>, stand: Arc<Vec<Standing>>, lock: Arc<Lock>, i: usize },
@@ -4669,7 +4650,7 @@ impl Walk {
     /// project's are (Paul, 11-13); an encrypted project's local code goes with the run that calls it.
     async fn item(&self, key: &str, wanted: &Wanted) -> Result<Option<(v1::Ahead, String)>, Error> {
         let Wanted { machine, hub, with, kind, made } = wanted;
-        let package = self.host.package(hub, with, &self.folder().dir, std::slice::from_ref(machine), host::Wait::Job(key, None)).await?;
+        let package = self.host.package(hub, with, &self.folder().dir, std::slice::from_ref(machine), key, None).await?;
         let Some(renderer) = package.first_making(kind) else { return Ok(None) };
         let models = listed_models(&renderer, made)?;
         let source = match &renderer.local {
@@ -4680,27 +4661,27 @@ impl Walk {
                 if scope.as_ref().is_some_and(|scope| !scope.storage.ordinary) {
                     return Ok(None);
                 }
-                v1::Source::Local(crate::private_io::context(scope, self.host.ready(path, machine, hub, host::Wait::Job(key, None))).await?.source)
+                v1::Source::Local(crate::private_io::context(scope, self.host.ready(path, machine, hub, key, None)).await?.source)
             }
         };
         let item = v1::Ahead { key: key.to_owned(), source: Some(source), entrypoint: renderer.function.clone(), models, ..Default::default() };
         Ok(Some((item, package.name.clone() + "/" + &renderer.function)))
     }
 
-    /// Job `key` as its machines quote it: the function its tool names, with `made`'s choices, its package read as `read` says; else why
-    /// not. None: its install is going, and `read` doesn't wait for it.
-    async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, read: PackageRead) -> Result<Option<placement::Job>, Unquoted> {
+    /// Job `key` as its machines `on` quote it: the function its tool names, with `made`'s choices, its package read with nothing done on
+    /// any machine for it (`job_of`); else why not.
+    async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>) -> Result<placement::Job, Unquoted> {
         let (began, job, dir) = (std::time::Instant::now(), key.clone(), self.folder().dir.clone());
         let stages = Arc::new(Mutex::new(crate::stages::Stages::default()));
         // A read that may answer if asked again is, as any call (retry-standard-api-practice): backing off, each attempt said.
         let attempts = async {
             let mut attempt = 1;
             loop {
-                match job_read(&self.host, &dir, key.clone(), on.clone(), hub, with, made.clone(), read).await {
+                match job_read(&self.host, &dir, key.clone(), on.clone(), hub, with, made.clone()).await {
                     Err(Unquotable::Again(why)) if attempt < QUOTE_ATTEMPTS => {
                         let wait = std::time::Duration::from_secs(1 << (attempt - 1));
                         warn!("{}: quote of {job}, attempt {attempt}/{QUOTE_ATTEMPTS}: {why}; again in {} s", dir.display(), wait.as_secs());
-                        crate::private_io::diagnose(&dir, || format!("quote {job} ({read:?}, {with}) attempt {attempt}/{QUOTE_ATTEMPTS}: {why}; again in {} s", wait.as_secs()));
+                        crate::private_io::diagnose(&dir, || format!("quote {job} ({with}) attempt {attempt}/{QUOTE_ATTEMPTS}: {why}; again in {} s", wait.as_secs()));
                         attempt += 1;
                         tokio::time::sleep(wait).await;
                     }
@@ -4722,18 +4703,17 @@ impl Walk {
                     said_long = true;
                     let going = stages.lock().expect("stages lock").said();
                     warn!("{}: quote of {job} still going after {} s: {going}", dir.display(), LONG_QUOTE.as_secs());
-                    crate::private_io::diagnose(&dir, || format!("quote {job} ({read:?}, {with}) still going after {} s: {going}", LONG_QUOTE.as_secs()));
+                    crate::private_io::diagnose(&dir, || format!("quote {job} ({with}) still going after {} s: {going}", LONG_QUOTE.as_secs()));
                 }
             }
         };
         crate::private_io::diagnose(&dir, || {
             let said = match &quoted {
-                Ok(Some(quoted)) => quoted.function.clone(),
-                Ok(None) => "none: its install is going".into(),
+                Ok(quoted) => quoted.function.clone(),
                 Err(unquoted) => format!("none: {}", unquoted.why),
             };
             let stages = stages.lock().expect("stages lock").said();
-            format!("quote {job} ({read:?}, {with}) in {} ms: {said} ({stages})", began.elapsed().as_millis())
+            format!("quote {job} ({with}) in {} ms: {said} ({stages})", began.elapsed().as_millis())
         });
         quoted
     }
@@ -5063,8 +5043,10 @@ impl Walk {
         unsent.into_iter().filter(|unsent| if unsent.ready { quoting.contains(&unsent.key) } else { foresee.contains(&unsent.key) }).collect()
     }
 
-    /// Quotes `unquoted` in the walk's work, each once (`plan`): a ready job's from its package, and once its install is done if that's
-    /// going (`Walker::quoting`), a waiting job's from its package read statically (`Walker::foreseeing`). The plan after each places it.
+    /// Quotes `unquoted` in the walk's work, each once (`plan`), on the machines its render may go to: a ready job's (`Walker::quoting`)
+    /// and a waiting job's (`Walker::foreseeing`) alike, its package read with nothing done on any machine for it (cl-1115: quoting a
+    /// box installed its local code on this computer though its project renders on a rental alone). The plan after each places it, and
+    /// its call makes its code ready where it goes.
     fn quote_later<'a>(&'a self, unquoted: Vec<Unsent>, work: &mut FuturesUnordered<BoxFuture<'a, Done>>) {
         for unsent in unquoted {
             {
@@ -5074,14 +5056,8 @@ impl Walk {
             }
             work.push(async move {
                 let (key, hub, with) = (&unsent.key, &unsent.target.hub, &unsent.with);
-                let quotable = match unsent.ready {
-                    // As its turn reads it, not waiting for its install; that going, once it's done.
-                    true => match self.quotable(key.clone(), vec![], hub, with, unsent.made.clone(), PackageRead::Now).await {
-                        Ok(None) => self.quotable(key.clone(), vec![], hub, with, unsent.made.clone(), PackageRead::Installed).await,
-                        quoted => quoted,
-                    },
-                    false => self.quotable(key.clone(), vec![], hub, with, unsent.made.clone(), PackageRead::Foreseen).await,
-                };
+                let on = self.sending(&unsent.ask, &unsent.target.on);
+                let quotable = self.quotable(key.clone(), on, hub, with, unsent.made.clone()).await;
                 match unsent.ready {
                     true => Done::Quoted { key: unsent.key, quotable },
                     false => Done::Foreseen { key: unsent.key, quotable },
@@ -5334,8 +5310,8 @@ impl Walk {
                 }
             }
         }
-        // What can start now goes without a job whose package is being installed: that one goes once it's done, with what's ready then
-        // (owner, cl-973). One whose quote couldn't be had after every attempt fails now.
+        // What can start now goes without a job whose quote is being read: that one goes once it's in, with what's ready then (owner,
+        // cl-973). One whose quote couldn't be had after every attempt fails now.
         {
             let walker = self.project.walker.lock().expect("walker lock");
             for act in &mut acts {
@@ -5343,7 +5319,7 @@ impl Walk {
                     && walker.quoting.contains(key.as_str())
                 {
                     let id = *id;
-                    *act = Act::Installing { id };
+                    *act = Act::Quoting { id };
                 } else if let Act::Send { id, key, .. } = act
                     && walker.waiting.contains(key.as_str())
                 {
@@ -5370,7 +5346,7 @@ impl Walk {
         }
         // Only what moved counts: a job held for a machine that isn't free yet waits for the next wake, not for another turn now, which
         // would come round again at once, forever, with nothing it sent ever followed.
-        let moved = acts.iter().any(|act| !matches!(act, Act::Held { .. } | Act::Installing { .. }));
+        let moved = acts.iter().any(|act| !matches!(act, Act::Held { .. } | Act::Quoting { .. }));
         self.project.walker.lock().expect("walker lock").held = acts.iter().any(|act| matches!(act, Act::Held { .. }));
         // What goes to one machine goes together, as its quote packed it (cl-816).
         let mut together = HashMap::new();
@@ -5428,7 +5404,7 @@ impl Walk {
                 }
                 end(id, End::Failed);
             }
-            Act::Held { id } | Act::Installing { id } => self.project.walker.lock().expect("walker lock").graph.put_back(id),
+            Act::Held { id } | Act::Quoting { id } => self.project.walker.lock().expect("walker lock").graph.put_back(id),
             Act::Send { id, key, ask, doc, stand, lock, next } => {
                 let (name, kind, inputs) = (doc.assets[next.i].name.clone(), doc.assets[next.i].kind.clone(), stand[next.i].inputs.clone());
                 // Where its quote sent it, else its one machine.
@@ -5469,18 +5445,16 @@ impl Walk {
                 let mut walker = self.project.walker.lock().expect("walker lock");
                 walker.quoting.remove(&key);
                 match quotable {
-                    Ok(Some(job)) => drop(walker.quotables.insert(key, job)),
-                    Ok(None) => {}
+                    Ok(job) => drop(walker.quotables.insert(key, job)),
                     Err(unquoted) => drop(walker.unquoted.insert(key, unquoted)),
                 }
             }
             // Read: the next plan places it, and its machine fetches ahead; one its turn read already stands. Not: it isn't asked again
             // while it waits, and its turn reads it as any.
             Done::Foreseen { key, quotable } => match quotable {
-                Ok(Some(job)) => {
+                Ok(job) => {
                     self.project.walker.lock().expect("walker lock").quotables.entry(key).or_insert(job);
                 }
-                Ok(None) => {}
                 Err(Unquoted { why, .. }) => crate::private_io::diagnose(&self.folder().dir, || format!("{key} isn't fetched ahead: {why}")),
             },
             Done::Sent { id, key, ask, name, kind, inputs, result } => match result {
@@ -5762,7 +5736,9 @@ impl Walk {
                 }
             }
             let with = doc.target(i);
-            let package = self.again(|| self.host.package(&target.hub, &with, &self.folder().dir, &target.on, host::Wait::Job(&key, Some(&member)))).await?;
+            // Read for the machine its plan sends it to: its code is made ready there, never first on another of its machines (cl-1115).
+            let planned = member.on().filter(|on| target.on.contains(on)).map_or_else(|| target.on.clone(), |on| vec![on]);
+            let package = self.again(|| self.host.package(&target.hub, &with, &self.folder().dir, &planned, &key, Some(&member))).await?;
             if let Some(moved) = &package.moved {
                 self.say(match moved.level {
                     api::calcifer::NoteLevel::Warning => Told::Warning { message: moved.message.clone(), name: None },
@@ -6065,7 +6041,7 @@ impl Walk {
                 let began = std::time::Instant::now();
                 let prepared = self.again(|| async {
                     let scope = crate::private_io::of_path(&self.folder().dir)?;
-                    crate::private_io::context(scope, self.host.ready(path, &placed, &hub, host::Wait::Job(key, Some(&member)))).await
+                    crate::private_io::context(scope, self.host.ready(path, &placed, &hub, key, Some(&member))).await
                 }).await;
                 crate::private_io::diagnose(&self.folder().dir, || {
                     let how = prepared.as_ref().map_or_else(|error| format!("not: {}", error.code), |_| "ready".to_owned());
@@ -6977,7 +6953,10 @@ async fn pick(api: &Arc<Api>, on: &[On], offers: &[Offer], planned: Option<&Offe
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str, release: &str, function: &str, size: v1::JobSize, gpus: u32, gpu: bool, count: u32, update: bool) -> (Result<(On, Option<String>), Error>, Vec<Vec<Offer>>, Vec<String>) {
     let host = Host::new(api);
-    let read = host.published(hub, &format!("{package}@{release}"), set.first()).await.ok();
+    // Its models, for placement, read as a quote reads them: nothing started, moved or updated on the first of `set` (cl-1115), which
+    // may not be where it goes.
+    let first = set.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
+    let read = host.quoted(hub, &format!("{package}@{release}"), &first).await.ok();
     let fetched = match &read {
         Some(read) => fit::checkpoints(api, hub, read, function, &Map::new()).await,
         None => fit::Fetched::default(),

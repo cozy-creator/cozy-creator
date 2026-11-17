@@ -24,7 +24,7 @@ use api::{calcifer::On, error::Error, machine as v1};
 use serde_json::{Map, Value};
 use tokio::sync::watch;
 
-use super::{Doc, PackageRead, Project, host::{Host, Renderer}, job_of};
+use super::{Doc, Project, host::{Host, Renderer}, job_of};
 use crate::{api::Api, placement, plan, prefetch::Guess, store::now_ms};
 
 /// What's typed settles this long before it's guessed again.
@@ -131,8 +131,8 @@ async fn guesses_in(api: &Arc<Api>, project: &Arc<Project>) -> Vec<Guess> {
 /// The guess for one box: none when no machine that serves now could run it, or its package says nothing to run.
 async fn guess(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, folder: &str, on: Vec<On>, boxed: Boxed) -> Option<Guess> {
     let (name, with, kind, made, media) = boxed;
-    let read = job_of(host, &project.folder.dir, name.clone(), on, hub, &with, made.clone(), PackageRead::Foreseen);
-    let mut job = tokio::time::timeout(READ, read).await.ok()?.ok()??;
+    let read = job_of(host, &project.folder.dir, name.clone(), on, hub, &with, made.clone());
+    let mut job = tokio::time::timeout(READ, read).await.ok()?.ok()?;
     job.size.refs = Some(media);
     let (offers, _) = placement::offers_now(api, std::slice::from_ref(&job)).await;
     let now = now_ms();
