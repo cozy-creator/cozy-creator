@@ -216,10 +216,42 @@ switch() {
   grew=$(awk -F'\t' 'NR > 1 {if ($2 != last) {at = $1; last = $2}} END {print at + 0}' "$series")
   dropped=$(grep -m1 -E "list item cozy:prepare:[^ ]* dropped: its run ends" "$OUT/tensord-$NAME.log" | cut -c1-40)
   say "expander_t2i's own bytes: $at_edit at the edit, $T2I_LEFT at the end; last grew at $grew (Unix ms), $((grew - EDIT_MS)) ms after the edit; TensorD's drop: ${dropped:-not in its log}; series in t2i-series.tsv"
+  # Judged at the drop, on TensorD's own log: the objects it had started before the drop that landed after it (one at most), and those
+  # it stopped. On a 2 GB/s pod the 2–3 s from the edit to the drop lands gigabytes first (44065133454): that is the edit's latency
+  # (`first_fetch`), not the stop.
+  local stop
+  stop=$(python3 -I - "$OUT/tensord-$NAME.log" <<'PY'
+import datetime, re, sys
+def ms(stamp):
+    return int(datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp() * 1000)
+started, landed, drop = {}, {}, None
+for line in open(sys.argv[1], errors="replace"):
+    stamp = line.split(" ", 1)[0]
+    if not stamp[:4].isdigit():
+        continue
+    at = ms(stamp)
+    found = re.search(r"fetching object=(\w+) bytes=(\d+)", line)
+    if found:
+        started.setdefault(found.group(1), (at, int(found.group(2))))
+    found = re.search(r"landed object=(\w+) bytes=(\d+)", line)
+    if found:
+        landed.setdefault(found.group(1), at)
+    if drop is None and "cozy:prepare:" in line and "dropped: its run ends" in line:
+        drop = at
+if drop is None:
+    print("none 0 0 0 0")
+else:
+    flying = [(name, size) for name, (at, size) in started.items() if at < drop and landed.get(name, drop) >= drop]
+    after = [(name, size) for name, size in flying if name in landed]
+    print(drop, len(after), sum(size for _, size in after), len(flying) - len(after), sum(size for name, size in flying if name not in landed))
+PY
+)
+  read -r dropped_at landed_after landed_bytes stopped stopped_bytes <<< "$stop"
+  say "at TensorD's drop (${dropped_at} Unix ms, $((dropped_at - EDIT_MS)) ms after the edit): $landed_after objects in flight landed after it ($landed_bytes bytes), $stopped stopped ($stopped_bytes bytes)"
   if whole "$OUT/switch.json" "$T2I"; then
-    MISMATCH+=("expander_t2i came whole after the draft stopped needing it ($((grew - EDIT_MS)) ms after the edit)")
-  elif [ $((grew - EDIT_MS)) -gt 5000 ] || [ $((T2I_LEFT - at_edit)) -gt $((1 << 30)) ]; then
-    MISMATCH+=("expander_t2i's own bytes grew $((T2I_LEFT - at_edit)) bytes for $((grew - EDIT_MS)) ms after the edit")
+    MISMATCH+=("expander_t2i came whole after the draft stopped needing it")
+  elif [ "$dropped_at" = none ] || [ "$landed_after" -gt 1 ]; then
+    MISMATCH+=("expander_t2i didn't stop at the drop: ${landed_after} objects landed after it")
   fi
   say "after the edit: expander_t2i $([ ${#MISMATCH[@]} = 0 ] && echo stopped, unfinished || echo "${MISMATCH[-1]}"); expander_i2i whole; draw ready on $NAME: $(models "$OUT/switch.json")"
 }

@@ -31,6 +31,8 @@ use crate::{api::Api, placement, plan, prefetch::Guess, store::now_ms};
 /// What's typed settles this long before it's guessed again (cl-1123: a prediction is only as good as how early it starts). A project
 /// just shown is guessed at once.
 const SETTLE: Duration = Duration::from_millis(300);
+/// What machines said settles this long: a load that moved needs no guess sooner.
+const LOADS: Duration = Duration::from_millis(800);
 /// The most boxes a project guesses for: its first, in its order.
 const BOXES: usize = 64;
 /// A box's guess waits this long for its package and its models' cards, as its estimate does (`fit`).
@@ -58,14 +60,16 @@ pub(super) fn keep(api: &Arc<Api>, project: &Arc<Project>) {
         let (mut edits, mut closed) = (crate::events::edits(), CLOSED.subscribe());
         let (mut arrivals, mut machines) = (api.machines.arrivals.subscribe(), api.calcifer.machines_changed());
         // Its revision and the machines' loads as last guessed at; `stale`: something it's guessed from changed since.
-        let (mut read, mut load, mut stale, mut first) = (String::new(), 0, true, true);
+        // `why`: what made it stale, said with the guess it makes.
+        let (mut read, mut load, mut stale, mut why) = (String::new(), 0, true, "shown");
         let loads = || api.machines.lists.load_moved.load(Ordering::Acquire);
         loop {
             if stale {
-                if !first {
-                    tokio::time::sleep(SETTLE).await;
+                match why {
+                    "shown" => {}
+                    "edited" => tokio::time::sleep(SETTLE).await,
+                    _ => tokio::time::sleep(LOADS).await,
                 }
-                first = false;
                 let Some(project) = open.upgrade() else { break };
                 // What changed while it settled is in this guess.
                 edits.borrow_and_update();
@@ -75,7 +79,7 @@ pub(super) fn keep(api: &Arc<Api>, project: &Arc<Project>) {
                 load = loads();
                 let began = std::time::Instant::now();
                 let guesses = guesses(&api, &project).await;
-                tracing::info!(target: crate::prefetch::TARGET, "{folder}: {} guesses in {} ms", guesses.len(), began.elapsed().as_millis());
+                tracing::info!(target: crate::prefetch::TARGET, "{folder}: {} guesses in {} ms ({why})", guesses.len(), began.elapsed().as_millis());
                 api.machines.lists.guess(&api.machines, &folder, guesses);
                 stale = false;
             }
@@ -86,18 +90,24 @@ pub(super) fn keep(api: &Arc<Api>, project: &Arc<Project>) {
                     }
                 }
                 changed = edits.changed() => match (changed, open.upgrade()) {
-                    (Ok(()), Some(project)) => stale = super::revision(&project.folder.dir) != read,
+                    (Ok(()), Some(project)) => {
+                        if super::revision(&project.folder.dir) != read {
+                            (stale, why) = (true, "edited");
+                        }
+                    }
                     _ => break,
                 },
                 changed = arrivals.changed() => match changed {
-                    Ok(()) => stale = true,
+                    Ok(()) => (stale, why) = (true, "a machine came"),
                     Err(_) => break,
                 },
                 // A machine said its Status: guessed again when one it's guessed on serves no more, or a machine's load changed
                 // (cl-1104: a run began or ended there, or an update waits on its runs), so the one made ready is the one a render
                 // would go to now.
                 changed = machines.changed() => match changed {
-                    Ok(()) => stale = loads() != load || api.machines.lists.guess_left(&api.machines, &folder),
+                    Ok(()) if loads() != load => (stale, why) = (true, "a machine's load moved"),
+                    Ok(()) if api.machines.lists.guess_left(&api.machines, &folder) => (stale, why) = (true, "a machine it guessed on left"),
+                    Ok(()) => {}
                     Err(_) => break,
                 },
             }
@@ -224,14 +234,18 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
         package.name, renderer.function
     );
     let mut spec = super::predicted(&renderer, made, request, project.draft_seed(name), source)?;
-    // Its files, written to its machine now (cl-1123): the item is its render's request to the byte, and its machine has them before
-    // the render is sent. An encrypted project's go only with the run that reads them.
+    // Its files, written to its machine behind the item (cl-1123): the item is its render's request to the byte, and its machine has
+    // them before the render is sent; its plan reads none of them, so the item goes at once (44065133454: a first write held the
+    // edit's guess 1.4 s). An encrypted project's go only with the run that reads them.
     if crate::private_io::of_path(dir)?.is_none_or(|scope| scope.storage.ordinary) {
         let (inputs, staged) = super::predicted_inputs(&project.folder, &asking.lock, &spec);
         if let (On::Machine(on), false) = (machine, staged.is_empty()) {
-            if let Err(why) = api.calcifer.ship(on, &staged).await {
-                tracing::warn!(machine = on, "a guess's files weren't written there: {why}");
-            }
+            let (calcifer, on) = (api.calcifer.clone(), on.clone());
+            tokio::spawn(async move {
+                if let Err(why) = calcifer.ship(&on, &staged).await {
+                    tracing::warn!(machine = on, "a guess's files weren't written there: {why}");
+                }
+            });
         }
         spec.inputs = inputs;
     }
