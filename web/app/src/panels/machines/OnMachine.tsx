@@ -105,7 +105,7 @@ export function OnMachine<Body extends object, Answer>({
               .filter((machine) => machine.kind !== "local")
               .map((machine) => (
                 <option key={machine.name} value={machine.name}>
-                  {[called(machine), gpusWords(machine), machine.rental && `${usd(machine.rental.usd_micros_per_hour)}/h`, machine.state === "booting" && "starting up"].filter(Boolean).join(" · ")}
+                  {[called(machine), gpusWords(machine), machine.rental && `${usd(machine.rental.usd_micros_per_hour)}/h`, machine.state === "booting" && (machine.waiting ?? "starting up")].filter(Boolean).join(" · ")}
                 </option>
               ))}
             {machines.length > 1 && <option value="any">Any of these</option>}

@@ -1085,7 +1085,7 @@ impl Machines {
                     {
                         let mut seen = lock(&self.seen);
                         let seen = seen.entry(row.name.clone()).or_default();
-                        (seen.boot, seen.attempt) = (boot, attempt(&rental));
+                        (seen.boot, seen.attempt, seen.waiting) = (boot, attempt(&rental), waiting(&rental));
                     }
                     self.calcifer.machine_changed();
                     if gone(&rental.state) {
@@ -1099,7 +1099,7 @@ impl Machines {
                             continue;
                         }
                         if let Some(seen) = lock(&self.seen).get_mut(&row.name) {
-                            (seen.boot, seen.attempt) = (None, None);
+                            (seen.boot, seen.attempt, seen.waiting) = (None, None, None);
                         }
                         self.calcifer.machine_changed();
                         return self.watch(&row);
@@ -1823,6 +1823,23 @@ fn ready_at(rental: &types::Rental, now: i64) -> Option<i64> {
 /// The Hub has no pod for this order yet: none can be bought now, or it is placing it again.
 fn no_pod_yet(rental: &types::Rental) -> bool {
     rental.state == "pending_acquisition" || rental.boot.as_ref().is_some_and(|boot| boot.state == "replanning")
+}
+
+/// What a rental its Hub has no pod for yet waits on, said in place of `booting` (th-383): capacity, naming the provider
+/// whose create last answered it has none when its Hub says which (to an admin, or a renter who chose the provider). None:
+/// it has a pod, or its Hub is placing it again after a boot failed, which is still booting.
+fn waiting(rental: &types::Rental) -> Option<String> {
+    if !no_pod_yet(rental) {
+        return None;
+    }
+    let replaced = rental.boot.as_ref().and_then(|boot| boot.replanned_from.as_ref());
+    if replaced.is_some_and(|r| r.failure_code != "provider.no_capacity") {
+        return None;
+    }
+    Some(match replaced.and_then(|r| r.provider.as_deref()).filter(|p| !p.is_empty()) {
+        Some(provider) => format!("waiting for capacity ({provider} has none right now)"),
+        None => "waiting for capacity (none is free right now)".into(),
+    })
 }
 
 /// The Hub has proven the pod gone.

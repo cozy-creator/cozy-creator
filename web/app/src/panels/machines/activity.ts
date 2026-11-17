@@ -50,7 +50,7 @@ export const working = (run: Run, on?: Operation) => run.started_at_ms != null &
  *  `project`'s too while it's `locked` (cl-1099), whose installs and downloads aren't shown. */
 export function doingOf(machine: Machine, project: string | null, locked = false): Doing[] {
   const activity = ownActivity(machine, locked ? null : project)
-  const booting: Doing[] = machine.state === "booting" ? [{ kind: "boot", key: "boot", words: machine.boot ?? "booting" }] : []
+  const booting: Doing[] = machine.state === "booting" ? [{ kind: "boot", key: "boot", words: machine.waiting ?? machine.boot ?? "booting" }] : []
   const operations: Doing[] = [...activity]
     .sort((a, b) => Number(a.kind === "download") - Number(b.kind === "download"))
     .map((operation) => ({ kind: operation.kind as "install" | "download", key: operation.id, operation }))

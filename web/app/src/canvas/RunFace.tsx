@@ -112,7 +112,7 @@ export function faceOf(seen: Seen): Face {
     const renting = waiting?.match(/^renting (.+)$/)
     return renting ? face("renting", "Placing the order", `Renting ${renting[1]}`) : run.queue_position != null ? face("queued", "Queued,", where, `${ordinal(run.queue_position)} in line`) : face("queued", "Queued")
   }
-  if (machine?.state === "booting") return face("renting", machine.boot ? sentence(machine.boot) : "Starting up")
+  if (machine?.state === "booting") return face("renting", sentence(machine.waiting ?? machine.boot ?? "starting up"))
   if (waiting?.startsWith("uploading ")) return face("uploading", `Uploading ${waiting.slice("uploading ".length)}`)
   if (on?.kind === "install") return face("install", `Installing ${packageWords(on.subject)}${on.stage ? `: ${on.stage}` : ""}`)
   if (on?.kind === "download") return face("download", `Downloading ${modelWords(on.subject)},`, where, moving(on.bytes_done, on.bytes_total, on.bytes_per_s))

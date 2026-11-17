@@ -7,6 +7,9 @@ export const named = (machine: Machine, name: string) => [machine.name, machine.
 /** What people see it called: its name, or until its Hub names the host a rental is placed on, what's being rented (cl-888). */
 export const called = (machine: Machine) => machine.placeholder ?? machine.name
 
+/** A rental its Hub has no pod for yet, as a sentence: `Waiting for capacity (runpod has none right now)` (th-383). */
+export const waitingWords = (machine: Machine) => machine.waiting && machine.waiting.charAt(0).toUpperCase() + machine.waiting.slice(1)
+
 /** What a command names it by: its name, or while it has none, its rental id. */
 export const handle = (machine: Machine) => (machine.placeholder ? (machine.rental_id ?? machine.name) : machine.name)
 
@@ -29,6 +32,7 @@ export function stateWords(machine: Machine, now: number): string {
   const unverified = machine.unverified ? " (may be out of date)" : ""
   switch (machine.state) {
     case "booting":
+      if (machine.waiting) return `${waitingWords(machine)}${unverified}`
       return `Starting up${machine.boot ? ` (${machine.boot})` : ""}${unverified}`
     case "ready": {
       const since = machine.rental?.unreachable_since_ms

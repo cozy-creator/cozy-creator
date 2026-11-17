@@ -1333,6 +1333,11 @@ unreachable?: string | null, unreachable_since_ms?: number | null,
  */
 boot?: string | null,
 /**
+ * A rental its Hub has no pod for yet: what it waits on, said in place of `booting` (th-383):
+ * `waiting for capacity (runpod has none right now)`.
+ */
+waiting?: string | null,
+/**
  * A booting rental's acquisition attempt, as its Hub says it.
  */
 attempt?: Attempt | null,

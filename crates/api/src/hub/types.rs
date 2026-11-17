@@ -1066,6 +1066,8 @@ pub struct ReplannedBoot {
     pub attempt: u32,
     pub ended_at: String,
     pub failure_code: String,
+    /// Whose create or boot failed, when the Hub says it (to an admin, or a renter who chose the provider).
+    pub provider: Option<String>,
 }
 
 #[cfg(test)]

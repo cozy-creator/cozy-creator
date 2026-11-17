@@ -1248,6 +1248,10 @@ pub struct Machine {
     /// A booting rental's phase, as its Hub says it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub boot: Option<String>,
+    /// A rental its Hub has no pod for yet: what it waits on, said in place of `booting` (th-383):
+    /// `waiting for capacity (runpod has none right now)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<String>,
     /// A booting rental's acquisition attempt, as its Hub says it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempt: Option<Attempt>,

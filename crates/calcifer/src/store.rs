@@ -3034,6 +3034,7 @@ impl From<&MachineRow> for Machine {
             unreachable_since_ms: None,
             boot: None,
             attempt: None,
+            waiting: None,
             running: 0,
             queued: 0,
             jobs: vec![],

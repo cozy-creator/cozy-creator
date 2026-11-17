@@ -17,7 +17,7 @@ import { MachineLogs } from "./MachineLogs"
 import { Queue } from "./Queue"
 import { RenderCheck, Spec, useRenderMachines } from "./RenderHere"
 import { statusWord, target } from "../runs/words"
-import { brokenWords, called, endsWords, kindWords, kernelsWords, named, spentWords } from "./words"
+import { brokenWords, called, endsWords, kindWords, kernelsWords, named, spentWords, waitingWords } from "./words"
 import "./MachineDrawer.css"
 
 /** Its idle clock renewed (`cozy machine keepalive`), which only a person asks for: a rental ends 15 minutes after its last job. */
@@ -200,8 +200,9 @@ export function MachineDrawer() {
       {ended && <p className="muted">Ended. It costs nothing more, and results already downloaded stay on this computer.</p>}
       {machine.state === "booting" && (
         <p className="muted">
-          Starting up{machine.attempt ? ` (attempt ${machine.attempt.number})` : ""}. You pay only once it's ready, and it keeps going if you close this page.
-          {machine.attempt?.replaced && ` The last attempt failed: ${machine.attempt.replaced.failure}.`}
+          {waitingWords(machine) ?? `Starting up${machine.attempt ? ` (attempt ${machine.attempt.number})` : ""}`}. You pay only once it's ready, and it keeps going if
+          you close this page.
+          {!machine.waiting && machine.attempt?.replaced && ` The last attempt failed: ${machine.attempt.replaced.failure}.`}
         </p>
       )}
       {machine.offline && <p className="warn">It's offline, so it can't take runs. It comes back if its provider resumes it, and ends after 15 minutes idle.</p>}

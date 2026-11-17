@@ -19,7 +19,7 @@ pub(crate) const HEADERS: [&str; 11] = [
 /// What `--json` keeps of a machine in a list (`--full`: all of it): the table's facts, by the record's names.
 pub(crate) const FIELDS: &[&str] = &[
     "rentals", "unanswered", "signed_out", "machines.name", "machines.placeholder", "machines.kind", "machines.state", "machines.hub", "machines.rental_id",
-    "machines.ordered", "machines.unverified", "machines.offline", "machines.broken", "machines.unreachable", "machines.boot", "machines.reason", "machines.end_failed",
+    "machines.ordered", "machines.unverified", "machines.offline", "machines.broken", "machines.unreachable", "machines.boot", "machines.waiting", "machines.reason", "machines.end_failed",
     "machines.running", "machines.queued", "machines.rental.sku", "machines.rental.accelerator", "machines.rental.gpus",
     "machines.rental.usd_micros_per_hour", "machines.rental.spend_usd_micros", "machines.rental.spend_basis",
     "machines.rental.rented_at_ms", "machines.status.version", "machines.status.phase", "machines.status.gpus.index",
@@ -158,6 +158,9 @@ pub(crate) fn record(ctx: &Context, m: &Machine) -> output::Record {
         .field("machine", m.called())
         .field("kind", kind(m))
         .field("state", state_cell(m));
+    if let (Some(_), Some(boot)) = (&m.waiting, &m.boot) {
+        record = record.field("placing", boot);
+    }
     if let Some(alias) = m.alias.as_deref().filter(|a| *a != m.name) {
         record = record.field("alias", alias);
     }
@@ -469,9 +472,10 @@ pub(crate) fn state_cell(m: &Machine) -> String {
     let mut cell = match m.state {
         _ if m.offline.is_some() => format!("offline: {}", m.offline.as_deref().unwrap_or_default()),
         MachineState::Ready | MachineState::Booting if m.broken.is_some() => format!("broken: {}", m.broken.as_ref().map_or("", |b| b.code.as_str())),
-        MachineState::Booting => match &m.boot {
-            Some(boot) => format!("booting · {boot}"),
-            None => "booting".into(),
+        MachineState::Booting => match (&m.waiting, &m.boot) {
+            (Some(waiting), _) => waiting.clone(),
+            (None, Some(boot)) => format!("booting · {boot}"),
+            (None, None) => "booting".into(),
         },
         MachineState::Ready => match unreachable_since(m) {
             Some(since) => format!(

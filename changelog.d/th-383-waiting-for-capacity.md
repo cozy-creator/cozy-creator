@@ -1,0 +1,1 @@
+A rental its Hub has no machine for yet says `waiting for capacity (runpod has none right now)` in `cozy machine ls`, `machine show` and the page, instead of booting (th-383). `machine show` keeps the Hub's own word under `placing`.

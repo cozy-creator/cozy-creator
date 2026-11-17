@@ -126,6 +126,8 @@ pub(crate) struct Seen {
     /// A booting rental's phase and attempt, as its Hub says them.
     pub(crate) boot: Option<String>,
     pub(crate) attempt: Option<wire::Attempt>,
+    /// A rental its Hub has no pod for yet: what it waits on (th-383).
+    pub(crate) waiting: Option<String>,
     /// `local` is not running: it starts when something uses it.
     stopped: bool,
     /// The boot this computer last vouched for to the rental's Hub, and when (cl-977).
@@ -904,7 +906,7 @@ impl Machines {
         }
         let (mut held, mut activity) = (vec![], vec![]);
         // Copied under the lock and worked out after it: a picture never holds up what a machine's Status says.
-        let seen = lock(&self.seen).get(&row.name).map(|seen| Seen { frame: seen.frame.clone(), boot: seen.boot.clone(), attempt: seen.attempt.clone(), unreachable: seen.unreachable.clone(), silent: seen.silent.clone(), vouched: seen.vouched.clone(), unanswered: seen.unanswered, ..*seen });
+        let seen = lock(&self.seen).get(&row.name).map(|seen| Seen { frame: seen.frame.clone(), boot: seen.boot.clone(), attempt: seen.attempt.clone(), waiting: seen.waiting.clone(), unreachable: seen.unreachable.clone(), silent: seen.silent.clone(), vouched: seen.vouched.clone(), unanswered: seen.unanswered, ..*seen });
         if let Some(seen) = seen {
             if seen.stopped {
                 machine.state = MachineState::Stopped;
@@ -921,6 +923,7 @@ impl Machines {
             machine.unreachable_since_ms = seen.since;
             machine.boot = seen.boot;
             machine.attempt = seen.attempt;
+            machine.waiting = seen.waiting;
         }
         if let Some(status) = &mut machine.status {
             status.runs = held.into_iter().filter_map(|run| self.held(run)).collect();
@@ -1102,7 +1105,7 @@ impl Machines {
             task.abort();
         }
         if let Some(seen) = lock(&self.seen).get_mut(name) {
-            (seen.boot, seen.attempt) = (None, None);
+            (seen.boot, seen.attempt, seen.waiting) = (None, None, None);
         }
         self.arrivals.send_modify(|n| *n += 1);
         self.calcifer.machine_changed();

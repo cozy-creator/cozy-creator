@@ -20,7 +20,7 @@ export function takeNow(run: Run | undefined, on: Operation | undefined, machine
   if (!run) return { phase: "Queued" }
   if (run.cancel_requested) return { phase: "Canceling" }
   if (run.status === "completed") return { phase: "Saving", share: run.arriving ? share(run.arriving.bytes_done, run.arriving.bytes_total) : undefined }
-  if (machine?.state === "booting") return { phase: "Starting up" }
+  if (machine?.state === "booting") return { phase: machine.waiting ? "Waiting for capacity" : "Starting up" }
   // Its package installing or its weights arriving on its machine, before it runs.
   if (on) return { phase: on.kind === "download" ? "Downloading" : "Installing", share: fractionOf(on) }
   if (!run.machine || waits(run) || run.queue_position != null) return { phase: "Queued" }
