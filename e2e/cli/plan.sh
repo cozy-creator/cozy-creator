@@ -377,3 +377,84 @@ fi
 timeout 60 "$COZY" --json machine end stand-a --force -y > "$OUT/stand-a-end.json" 2>&1 || true
 timeout 60 "$COZY" --json machine end stand-b --force -y > "$OUT/stand-b-end.json" 2>&1 || true
 }
+
+# plan_queue (cl-1107; Paul, 11-16: "when I have two machines up, both set to 'preferred' status, all requests will keep going to the
+# first machine." "This should never happen."): pod-session 43996197790's third request, quoted again on two stand-ins that say only
+# the Status those machines pushed (fakemachine.py), so nothing is sent to them. queue-a is kubera, one RTX 5090 holding the shot's code
+# and two runs started on its CPU while their GPU work waits (`gpu_waits`): a shot whose 52 GB still come at 200 MB/s, then an edit no
+# benchmark times. queue-b is cibo, two RTX 4090s holding nothing, a minute's install and BiRefNet's weights about 5 min away. The
+# shot is timed by its benchmarks.json as H3's generate (230 s on the 5090, 335 s on a 4090, 196 s on two). queue-a finishes it in
+# 262 s of weights, 230 s and a minute ahead of it, then its own 230 s (782 s); queue-b in 120 + 300 + 196 s (616 s): it goes to queue-b,
+# on both GPUs. Before the fix queue-a's runs ahead were a minute each (612 s), and queue-b quoted one GPU (755 s): it went to queue-a.
+# Asked as the page's estimate asks it (`POST /fit`); this computer runs the shot once first, so its code's name is known.
+plan_queue() {
+step "plan queue (cl-1107): a machine's runs ahead count their time, so a shot goes where it finishes soonest"
+local P=$OUT/queue tool=$here/project/queued/shot r=$RANDOM manifest version runtime tensorfs run bytes link now name port fp pid pids=() estimate
+cozy --json new --unencrypted "$P" > "$OUT/queue-new.json" 2>&1 || { check "plan queue: new: $(tail -c 300 "$OUT/queue-new.json")"; return; }
+jq -n --arg t "$tool" --arg r "$r" '[
+  {name: "first", tool: $t, kind: "image", fields: {instructions: "This computer, \($r)."}},
+  {name: "second", tool: $t, kind: "image", fields: {instructions: "Where it finishes soonest, \($r)."}}]' | boxes_in "$P" || return
+coming_go first '["local"]'
+coming_done first 900
+manifest=$(grep -o 'sha256:[0-9a-f]\{64\}/shot' "$HOME/.cozy/calcifer/diagnostics.log" 2> /dev/null | tail -1 || true)
+manifest=${manifest%/shot}
+[ -n "$manifest" ] || { check "plan queue: no quote of first named its code ($(grep -c . "$HOME/.cozy/calcifer/diagnostics.log" 2> /dev/null) lines)"; return; }
+cozy --json machine show local > "$OUT/queue-local.json" || { check "plan queue: machine show local"; return; }
+version=$(jq -r '.status.version // empty' "$OUT/queue-local.json") runtime=$(jq -r '.status.runtime // empty' "$OUT/queue-local.json")
+tensorfs=$(jq -r '.status.tensorfs // empty' "$OUT/queue-local.json")
+# BiRefNet's bytes as a quote counts them: first's own download here, else what this computer holds of them.
+run=$(status "$P" | jq -r '[.board.jobs[]? | select(.asset == "first") | .run // empty] | last // empty')
+echo "$P" > "$OUT/queue-first.at"
+[ -z "$run" ] || run_show "$OUT" queue-first "$run"
+bytes=$(run_get "$OUT" queue-first '.placed.fetch_bytes | select(. > 0)')
+[ -n "$bytes" ] || bytes=$(jq -r '[.status.models[]? | select((.repository // .model) == "zhengpeng7/birefnet") | .total_bytes] | max // empty' "$OUT/queue-local.json")
+[ -n "$version" ] && [ "${bytes:-0}" -gt 0 ] || { check "plan queue: local's version or BiRefNet's bytes: $(run_get "$OUT" queue-first .placed) $(jq -c '{version: .status.version, models: [.status.models[]? | {repository, total_bytes}]}' "$OUT/queue-local.json")"; return; }
+# queue-b's link brings BiRefNet's weights in 300 s.
+link=$((bytes / 300)) now=$(date +%s%3N)
+jq -n --arg v "$version" --arg rt "$runtime" --arg tfs "$tensorfs" --arg m "$manifest" --argjson now "$now" '
+  {worker_id: "stand-in-queue-a", boot_id: "queue-a", version: $v, phase: "ready", platform: "linux/x86_64", runtime: $rt, tensorfs: $tfs,
+   started_at_unix_ms: ($now - 600000), serving_gpus: 1, link_bytes_per_s: 200000000, disk: {total_bytes: 322122547200, free_bytes: 213232541696},
+   gpus: [{index: 0, name: "NVIDIA GeForce RTX 5090", uuid: "GPU-queue-a-0", memory_bytes: 34190917632, family: "sm120", memory_class: "discrete"}],
+   environments: [{installation: "local-queued", package: "local/e2e-queued", release: "0.1.0", entrypoints: ["shot"], runtime: $rt, level: "imported",
+     manifest: $m, functions: [{entrypoint: "shot", timed_as: "local/e2e-queued/shot", widths: [1]}]}],
+   queue: [
+     {function: "local/e2e-queued/shot", widths: [1], running: true, width: 1, started_at_unix_ms: ($now - 14000), gpu_waits: true,
+      models: ["zhengpeng7/birefnet"], bytes_left: 52453916267},
+     {function: "local/e2e-queued/edit", widths: [1], running: true, width: 1, started_at_unix_ms: ($now - 7000), gpu_waits: true,
+      models: ["zhengpeng7/birefnet"], bytes_left: 0}],
+   times: []}' > "$OUT/queue-a.frame.json"
+jq -n --arg v "$version" --arg rt "$runtime" --arg tfs "$tensorfs" --argjson now "$now" --argjson link "$link" '
+  {worker_id: "stand-in-queue-b", boot_id: "queue-b", version: $v, phase: "ready", platform: "linux/x86_64", runtime: $rt, tensorfs: $tfs,
+   started_at_unix_ms: ($now - 60000), serving_gpus: 2, link_bytes_per_s: $link, disk: {total_bytes: 322122547200, free_bytes: 300000000000},
+   gpus: [range(2) as $i | {index: $i, name: "NVIDIA GeForce RTX 4090", uuid: "GPU-queue-b-\($i)", memory_bytes: 25757220864, family: "sm89",
+     memory_class: "discrete"}],
+   queue: [], times: []}' > "$OUT/queue-b.frame.json"
+for name in queue-a queue-b; do
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -subj "/CN=$name" -days 2 \
+    -keyout "$OUT/$name.key" -out "$OUT/$name.pem" > /dev/null 2>&1 || { check "plan queue: $name's certificate"; break; }
+  port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+  python3 "$here/fakemachine.py" --port "$port" --cert "$OUT/$name.pem" --key "$OUT/$name.key" --frame "$OUT/$name.frame.json" \
+    > "$OUT/$name.log" 2>&1 & pid=$!
+  pids+=("$pid")
+  for _ in $(seq 50); do curl -skf "https://127.0.0.1:$port/v1/status" > /dev/null 2>&1 && break; sleep 0.2; done
+  fp=$(openssl x509 -in "$OUT/$name.pem" -outform der | sha256sum | cut -c1-64)
+  cozy --json machine add "$name" "127.0.0.1:$port" --fingerprint "sha256:$fp" > "$OUT/$name-add.json" 2> "$OUT/$name-add.err" \
+    || check "plan queue: machine add $name: $(tail -c 300 "$OUT/$name-add.json") $(tail -c 300 "$OUT/$name-add.err")"
+done
+in_project "$P" --json machine use "queue-a,queue-b" > "$OUT/queue-use.json" 2>&1 \
+  || check "plan queue: machine use queue-a,queue-b: $(tail -c 300 "$OUT/queue-use.json")"
+# The estimate a box shows before its render, read again while its package's static reading is first made.
+for _ in $(seq 20); do
+  project_api "$P" /fit -X POST -H 'Content-Type: application/json' -d '{"names":["second"]}' > "$OUT/queue-fit.json" 2> "$OUT/queue-fit.err" || true
+  estimate=$(jq -c '.estimates[]? | select(.name == "second")' "$OUT/queue-fit.json" 2> /dev/null || true)
+  [ -n "$estimate" ] && break
+  sleep 3
+done
+echo "plan queue: second's estimate ${estimate:-none}; queue-b's link $((link / 1000000)) MB/s for BiRefNet's $((bytes >> 20)) MiB"
+J '.machine == "queue-b" and .card == "RTX 4090" and (.run_ms - 196000 | fabs) < 4000' <<< "${estimate:-null}" \
+  || check "plan queue: second goes to queue-b, on both its GPUs (196 s), not queue-a behind its two runs: ${estimate:-none} $(tail -c 300 "$OUT/queue-fit.json") $(tail -c 300 "$OUT/queue-fit.err")"
+for name in queue-a queue-b; do
+  timeout 60 "$COZY" --json machine end "$name" --force -y > "$OUT/$name-end.json" 2>&1 || true
+done
+kill "${pids[@]}" 2> /dev/null || true
+}
