@@ -2,6 +2,7 @@
 //! is deliberately Mac-specific and never represented as a portable securefs archive.
 use super::*;
 use plist::Value;
+use std::time::Instant;
 
 pub(super) const MARKER: &str = ".cozy-apfs-v1";
 const MAGIC: &[u8] = b"cozy-encrypted-apfs-sparsebundle-v1\n";
@@ -253,7 +254,14 @@ pub(super) struct Lease {
     view: PathBuf,
     volume: Option<String>,
     attached: bool,
+    /// When `hdiutil` last said its image is attached at its device. Asked at most every [`VERIFIED_FOR`]: each read of the view
+    /// asks whether it is still mounted, and `hdiutil` under the session's turn made a page's reads take seconds (cl-1113).
+    verified: std::cell::Cell<Option<Instant>>,
 }
+
+/// How long `hdiutil`'s word that the image is attached at its device stands. Within it, the view's own volume (statfs) answers;
+/// the image going away ends its supervisor too, which every read also asks.
+const VERIFIED_FOR: Duration = Duration::from_secs(30);
 impl Lease {
     /// To a successor process (cl-1113): the image stays attached; this value no longer detaches it.
     pub(super) fn hand_off(mut self) -> LeaseParts {
@@ -264,15 +272,19 @@ impl Lease {
 
     /// The lease a predecessor handed over.
     pub(super) fn adopt(provider: &Provider, parts: LeaseParts) -> Self {
-        Self { provider: provider.clone(), image: parts.image, device: parts.device, view: parts.view, volume: parts.volume, attached: parts.attached }
+        Self { provider: provider.clone(), image: parts.image, device: parts.device, view: parts.view, volume: parts.volume, attached: parts.attached, verified: std::cell::Cell::new(None) }
     }
 
     pub(super) fn is_current(&self) -> Result<bool> {
-        Ok(self.attached
-            && self.device.is_some()
-            && self.volume.is_some()
-            && macos_source(&self.view)? == self.volume
-            && current_device(&self.provider, &self.image)? == self.device)
+        if !(self.attached && self.device.is_some() && self.volume.is_some() && macos_source(&self.view)? == self.volume) {
+            return Ok(false);
+        }
+        if self.verified.get().is_some_and(|at| at.elapsed() < VERIFIED_FOR) {
+            return Ok(true);
+        }
+        let current = current_device(&self.provider, &self.image)? == self.device;
+        self.verified.set(current.then(Instant::now));
+        Ok(current)
     }
 
     pub(super) fn capture(provider: &Provider, backing: &Path, view: &Path) -> Result<Self> {
@@ -289,6 +301,8 @@ impl Lease {
                 "the native image has no mounted volume identity",
             ))?),
             attached: true,
+            // Just asked of `hdiutil`.
+            verified: std::cell::Cell::new(Some(Instant::now())),
         })
     }
 
@@ -384,6 +398,7 @@ pub(super) fn serve(request: Request) -> Result<()> {
         view: view.clone(),
         volume: None,
         attached: true,
+        verified: std::cell::Cell::new(None),
     };
     let mut command = provider.command("attach");
     command
