@@ -1203,6 +1203,7 @@ printf 'old call %s\n' "$RANDOM$RANDOM" > "$file"
 want="notes=sha256:$(sha256sum "$file" | cut -d' ' -f1)"
 if run_cell "$OUT" old-call "$E2E_OLDCALL/relay" --file "notes=$file" --on stand-old; then
   got=$(run_get "$OUT" old-call '[.result.files[]?, .result.runtime, .measurements.software.runtime] | join(" ")')
+  echo "old call files: run $(cat "$OUT/old-call.number") on stand-old: $got"
   [ "$got" = "$want 0.46.0 0.46.0" ] || check "old call files: its callee read '$got', not '$want' on Runtime 0.46.0"
 else
   check "old call files: run $(cat "$OUT/old-call.number" 2> /dev/null) on stand-old $(run_get "$OUT" old-call .status): $(run_get "$OUT" old-call .reason.message | head -c 400) $(tail -c 300 "$OUT/old-call.err")"
