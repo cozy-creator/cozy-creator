@@ -493,6 +493,7 @@ WEB_1=(
   references
   previews
   play-link
+  update
 )
 WEB_2=(
   fields
