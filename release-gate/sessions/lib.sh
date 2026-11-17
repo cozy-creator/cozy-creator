@@ -311,7 +311,7 @@ order() {
     say "no provider has $sku now (attempt $try/6): ordering again in ${pause}s"
     sleep "$pause"; try=$((try + 1)); pause=$((pause * 2 > 120 ? 120 : pause * 2))
   done
-  RID=$r; RIDS+=("$RID"); echo "$RID" >> "$OUT/rental"; eval "RP_$i=$RP"; ORDERED_SKU=$sku
+  RID=$r; RIDS+=("$RID"); echo "$RID" >> "$OUT/rental"; eval "RP_$i=$RP"; printf -v "SKU_$i" %s "$sku"
   say "rental $RID ordered"
   guard
 }
@@ -330,11 +330,14 @@ ready() {
   [ "$(jq -r .rental_id "$OUT/show$i.json")" = "$RID" ] && [ -n "$NAME" ] || fail "show $RID: $(head -c 300 "$OUT/show$i.json")"
   say "READY $RID as $NAME, image $(jq -r .rental.base_worker_image_digest "$OUT/show$i.json"), disk $(jq -r '.rental.disk_gb // "?"' "$OUT/show$i.json") GB of $DISK asked"
   # What was rented is what was asked for: a provider that offers another width or card fails the session here, never runs it.
-  local asked=1 got sku
-  [[ " $RENT_ARGS " =~ \ --gpus\ ([0-9]+)\  ]] && asked=${BASH_REMATCH[1]}
+  # The GPUs asked: the order's own count of its SKU (`gpus` when its Hub accepted it: --gpus N, else the SKU's one), each one
+  # GPU, or none for the CPU machine, as `cozy machine show` counts them (belgrieve, 44192794516: "0 GPUs, not the 1").
+  local s=SKU_$i asked got sku
+  asked=$(grep -m1 '"type":"rental.accepted"' "$OUT/rent$i.out" | jq -r '.gpus // empty')
+  ! jq -e '(.rental.accelerator // "") | ascii_downcase == "cpu"' "$OUT/show$i.json" > /dev/null || asked=0
   got=$(jq '.status.gpus // [] | length' "$OUT/show$i.json") sku=$(jq -r '.sku // .rental.sku // empty' "$OUT/show$i.json")
-  [ "$got" = "$asked" ] || fail "$NAME has $got GPUs, not the $asked asked for"
-  [ -z "$sku" ] || [ "$sku" = "${ORDERED_SKU:-$SKU}" ] || fail "$NAME is $sku, not the ${ORDERED_SKU:-$SKU} asked for"
+  [ -z "$sku" ] || [ "$sku" = "${!s}" ] || fail "$NAME is $sku, not the ${!s} asked for"
+  [ "$got" = "$asked" ] || fail "$NAME has $got GPUs, not the ${asked:-?} asked for"
   grep -E '^(version|runtime|tensorfs|GPU 0|disk free) ' "$OUT/show$i.txt" | tee -a "$R"
 }
 
