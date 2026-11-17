@@ -168,7 +168,9 @@ export function Stage(props: StageProps) {
     const project = store.projectId
 
     // Run context for a card's progress line: its machine, what it waits on, an install for its tool (RunFace's inputs).
-    const asked = new Set<number>()
+    // Each run's full read asked once for each state it was seen in: asked again when it fails or the run moves on. Asked once only, a read
+    // that failed left the card without its request for the whole run, and its references never drawn (references, e2e 44012485586).
+    const asked = new Map<number, string>()
     const merged = new WeakMap<object, { full: object; run: NonNullable<ReturnType<CanvasStore["get"]>>["run"] }>()
     // Memoized by its inputs' identities: a frame recomputes no card's context unless its view, the machines or its run's read changed.
     const contexts = new WeakMap<object, { machines: unknown; full: unknown; tools: unknown; value: RunContext | undefined }>()
@@ -194,7 +196,11 @@ export function Stage(props: StageProps) {
           if (held?.full === full) run = held.run
           else { const live = run; run = { ...live, request: full.request }; merged.set(live, { full, run }) }
         }
-        else if (!asked.has(run.number)) { asked.add(run.number); void queries.ensureQueryData(query).then(invalidate, () => {}) }
+        else if (asked.get(run.number) !== run.status) {
+          asked.set(run.number, run.status)
+          const number = run.number
+          void queries.ensureQueryData(query).then(invalidate, () => { asked.delete(number); setTimeout(invalidate, 1000) })
+        }
       }
       const machine = run?.machine ? machines.find((m) => m.name === run.machine) : undefined
       const on = run ? waitsOnOf(ownActivity(machine, store.projectId), run) : undefined

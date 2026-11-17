@@ -3817,24 +3817,32 @@ async fn settle(api: &Arc<Api>, project: &Arc<Project>) -> Vec<String> {
     let now = Ask::default();
     let mut tried: HashSet<String> = HashSet::new();
     loop {
-        let ready = (|| -> Result<_, Error> {
-            walker.measure()?;
+        let read = |measure: bool| -> Result<_, Error> {
+            if measure { walker.measure()?; }
             let (doc, lock) = (Doc::load(walker.folder())?, walker.folder().lock()?);
             let stand = doc.stand(&lock);
-            let tools = tools_ready(&doc, &stand, &lock);
-            Ok((doc, lock, stand, tools))
-        })();
-        let (doc, lock, stand, tools) = match ready {
+            let tools: Vec<usize> = tools_ready(&doc, &stand, &lock).into_iter().filter(|&i| !tried.contains(&doc.assets[i].name)).collect();
+            let cuts: Vec<usize> = (0..doc.assets.len()).filter(|&i| doc.tool(i) == Some(Tool::Cut)).collect();
+            Ok((doc, lock, stand, tools, cuts))
+        };
+        // A tool or a cut reads what it's made from at its measured size: measured first, for them only. An approval with neither waits on no
+        // ffprobe (a Windows runner's approve took 3-4 s starting ffmpeg and ffprobe, e2e 44022988318): measure_soon measures it off the answer.
+        let ready = read(false).and_then(|ready| match (ready.3.is_empty() && ready.4.is_empty()) || !ready.1.files.values().any(folder::File::unmeasured) {
+            true => Ok(ready),
+            false => read(true),
+        });
+        let (doc, lock, stand, tools, cuts) = match ready {
             Ok(ready) => ready,
             Err(error) => return vec![error.message],
         };
-        let tools: Vec<usize> = tools.into_iter().filter(|&i| tried.insert(doc.assets[i].name.clone())).collect();
         if tools.is_empty() {
-            for i in (0..doc.assets.len()).filter(|&i| doc.tool(i) == Some(Tool::Cut)) {
+            for i in cuts {
                 walker.film_follows(&doc, &stand, &lock, i).await;
             }
+            if lock.files.values().any(folder::File::unmeasured) { measure_soon(api, project); }
             return vec![];
         }
+        tried.extend(tools.iter().map(|&i| doc.assets[i].name.clone()));
         for i in tools {
             if let Err(error) = walker.tool(&now, &doc, &stand, &lock, i).await {
                 return vec![error.message];
