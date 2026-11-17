@@ -830,11 +830,11 @@ pub(crate) fn carry() -> Vec<(Carried, fs::File)> {
 
 /// The views the last generation handed this one (cl-1113), each with its supervisor's stdin. One that can't be taken locks: its
 /// pipe is dropped here, its supervisor's stdin closes, and its view ends.
-pub(crate) fn adopt(api: &Arc<Api>, views: Vec<(Carried, fs::File)>) {
+pub(crate) fn adopt(api: &Arc<Api>, views: Vec<(Carried, fs::File)>, found: Option<Provider>) {
     if views.is_empty() {
         return;
     }
-    let engine = match Provider::discover(&api.machines.hubs.home().tools()) {
+    let engine = match found.map_or_else(|| Provider::discover(&api.machines.hubs.home().tools()), Ok) {
         Ok(engine) => engine,
         Err(e) => {
             tracing::warn!(views = views.len(), "the views handed over can't be taken: {e}");

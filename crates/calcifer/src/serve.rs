@@ -324,6 +324,12 @@ pub(crate) async fn serve(loaded: &Loaded, taken: platform::generation::Taken) -
     // A view's supervisor watches the parent, which outlives this generation; this generation's end still closes its stdin.
     project_mount::watch_owner(stable);
     link.send(&ToParent::Prepared { protocol: PROTOCOL, version: ::api::VERSION.into() }).map_err(parent)?;
+    // The encrypted filesystem's provider, found while this one waits to take over: asked of its binary (a process start, ~0.4 s on
+    // Windows), it would otherwise lengthen the hand-over of any open view.
+    let finding = {
+        let tools = home.tools();
+        tokio::task::spawn_blocking(move || project_mount::Provider::discover(&tools).ok())
+    };
     let views = loop {
         match heard.recv().await {
             Some((ToGeneration::TakeOver { views, streams }, pipes)) => {
@@ -387,7 +393,11 @@ pub(crate) async fn serve(loaded: &Loaded, taken: platform::generation::Taken) -
             shutdown_after_signal(stopping).await;
         });
     }
-    crate::project::vault::adopt(&api, views);
+    let engine = match views.is_empty() {
+        true => None,
+        false => finding.await.ok().flatten(),
+    };
+    crate::project::vault::adopt(&api, views, engine);
     // The record before the first answer (cl-885): the parent publishes it, naming this generation, then says `Accept`.
     link.send(&ToParent::Ready { pid: std::process::id(), version: ::api::VERSION.into(), started_at_ms: api.started_ms }).map_err(parent)?;
     loop {
