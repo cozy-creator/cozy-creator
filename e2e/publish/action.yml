@@ -20,9 +20,32 @@ runs:
       env:
         OUTPUT: ${{ inputs.path }}
       run: node "$GITHUB_ACTION_PATH/scrub.js" "$OUTPUT"
+    # A SQLite database a process still holds keeps `-wal` and `-shm` files that vanish when it closes, which failed the zip
+    # mid-upload (`ENOENT …/project.db-shm`, 43987026486). Each WAL is folded into its database where it can be; neither goes up.
+    - shell: bash
+      env:
+        OUTPUT: ${{ inputs.path }}
+      run: |
+        py=$(command -v python3 || command -v python || true)
+        [ -z "$py" ] || "$py" - "$OUTPUT" <<'PY' || true
+        import pathlib, sqlite3, sys
+        for wal in pathlib.Path(sys.argv[1]).rglob("*-wal"):
+            db = wal.with_name(wal.name[:-4])
+            if not db.is_file():
+                continue
+            try:
+                held = sqlite3.connect(db, timeout=2)
+                held.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                held.close()
+            except Exception as error:
+                print(f"{db}: its WAL stays out of the upload ({error})")
+        PY
     - uses: actions/upload-artifact@v4
       with:
         name: ${{ inputs.name }}
-        path: ${{ inputs.path }}
+        path: |
+          ${{ inputs.path }}
+          !${{ inputs.path }}/**/*-wal
+          !${{ inputs.path }}/**/*-shm
         retention-days: ${{ inputs.retention-days }}
         if-no-files-found: ${{ inputs.if-no-files-found }}
