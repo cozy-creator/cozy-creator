@@ -31,4 +31,5 @@ def seen(payload: Nothing, assets: Files[File]) -> Seen:
 @app.entrypoint(accelerator=False)
 async def relay(payload: Nothing, assets: Files[File]) -> Seen:
     """Its files, passed on to `seen` by a managed call."""
-    return await call(seen, payload=Nothing(), assets=assets)
+    # 0.46's call(fn, **arguments); this tree types it against the RC's Runtime.
+    return await call(seen, payload=Nothing(), assets=assets)  # type: ignore[call-overload, no-any-return]
