@@ -32,4 +32,7 @@ test('swap', { tag: '@solo' }, async ({ page, project, api, cli, signIn }) => {
   expect(await page.evaluate(() => window.__swap?.offline), 'the same page, never offline').toBe(0);
   expect(await api.get(project.at('/vault')), 'the project stayed unlocked').toMatchObject({ encrypted: true, state: 'unlocked' });
   await expect(page.locator('header.top .pill').filter({ hasText: /offline|Trying again/ }), 'nothing left waiting').toHaveCount(0);
+  // The view the next generation took locks as any does: its mount ends, and the project's folder can go.
+  await api.post(project.at('/vault'), { action: 'lock' });
+  await expect.poll(async () => (await api.get(project.at('/vault'))).state, { message: 'the carried view locked', timeout: 30_000 }).toBe('locked');
 });

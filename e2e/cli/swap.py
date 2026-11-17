@@ -37,6 +37,13 @@ def holder() -> Holder:
     return cast(Holder, json.loads(HOLDER.read_text()))
 
 
+def place(source: Path, at: Path) -> None:
+    """`source` at `at`, renamed into place as an update does: a running process keeps the inode it runs (a copy over it is refused)."""
+    staged = at.with_name(at.name + ".staging")
+    shutil.copy2(source, staged)
+    os.replace(staged, at)
+
+
 def installed() -> Path:
     record = HOME / "installed"
     if record.is_file() and Path(record.read_text().strip()).is_file():
@@ -224,17 +231,19 @@ def main() -> None:
         assert state == "unlocked", f"the encrypted project didn't stay unlocked: {state}"
         status = cozy("--json", "status", cwd=project)
         assert status.returncode == 0, f"the encrypted project isn't readable after the swap: {status.stdout}{status.stderr}"
+        # The view the next generation took locks as any does: its mount ends.
+        locked = cozy("--json", "vault", "lock", cwd=project)
+        results["lock_after"] = {"code": locked.returncode, "said": (locked.stdout + locked.stderr)[-1500:], "state": vault()}
+        assert locked.returncode == 0 and vault() == "locked", f"the carried view didn't lock: {results['lock_after']}"
 
         # 2. An installed cozy that can't start: the running one serves on, its binary put back.
         target = installed()
         good = out / f"cozy-good{EXE}"
         shutil.copy2(target, good)
         previous = target.with_name(".cozy-previous")
-        shutil.copy2(target, previous)
+        place(target, previous)
         broken = Path(os.environ.get("SystemRoot", "C:\\Windows")) / "System32" / "findstr.exe" if EXE else Path(shutil.which("false") or "/bin/false")
-        staged = target.with_name(f".cozy-broken{EXE}")
-        shutil.copy2(broken, staged)
-        os.replace(staged, target)
+        place(broken, target)
         before = holder()
         fresh = Asking(before["address"], before["token"], keep_alive=False).start()
         try:
