@@ -45,7 +45,22 @@ echo "$1: $said"
 # for images (ideally streaming)": the page cell web/llm-stream.spec.js, on this shard's Qwen3.5 0.8B.
 llm_stream() {
 [ -n "$LOCAL" ] || return 0
-web_suite llm-stream llm-stream
+step "web-llm-stream: an LLM's words grow on its box while it writes them (xs-209)"
+local pw=$OUT/playwright-test web=$OUT/web chrome code=0 line
+chrome=$(web_chrome)
+[ -n "$chrome" ] && [ -x "$chrome" ] || { check "llm-stream: no Google Chrome on this runner (${chrome:-none})"; return; }
+npm install -s --prefix "$(web_path "$pw")" @playwright/test@1.55.0 > "$OUT/web-npm.log" 2>&1 \
+  || { check "llm-stream: npm install @playwright/test failed: $(tail -c 300 "$OUT/web-npm.log")"; return; }
+mkdir -p "$web" && rm -f "$web/report.json"
+HOLDER=$(web_path "$HOME/.cozy/calcifer/calcifer.lock.holder") COZY=$(web_path "$COZY") CHROME=$chrome OUT=$(web_path "$OUT") ARGV_LOG=$(web_path "$OUT/argv.log") \
+  NODE_PATH=$(web_path "$pw/node_modules") node "$(web_path "$pw/node_modules/@playwright/test/cli.js")" test -c "$(web_path "$here/web/llm-stream.config.js")" \
+  > "$web/llm-stream.log" 2>&1 || code=$?
+node "$(web_path "$here/web/report.js")" "$(web_path "$web/report.json")" llm-stream > "$web/llm-stream.said" 2>&1 \
+  || { check "llm-stream: no report (exit $code): $(tail -c 600 "$web/llm-stream.log")"; return; }
+while IFS= read -r line; do
+  case $line in FAILED\ *) check "${line#FAILED }" ;; *) echo "$line" ;; esac
+done < "$web/llm-stream.said"
+[ "$code" = 0 ] || grep -q '^FAILED' "$web/llm-stream.said" || check "llm-stream: Playwright exited $code: $(tail -c 600 "$web/llm-stream.log")"
 }
 
 # xs-209 (Paul, 11-17): "Make sure our machines are speaking the standard Responses-API (ChatGPT / openai standardized). That should make it
@@ -55,12 +70,11 @@ web_suite llm-stream llm-stream
 responses_sdk() {
 [ -n "$LOCAL" ] || return 0
 step "OpenAI's SDK streams an answer from Calcifer's Responses API (xs-209)"
-local holder=$HOME/.cozy/calcifer/calcifer.lock.holder package=qwen3.5 id said
+local holder=$HOME/.cozy/calcifer/calcifer.lock.holder package=qwen3.5 said
 [ -z "$PACKAGES" ] || [ ! -d "$PACKAGES/qwen3" ] || package=qwen3
-id=$(status "$RUN_PROJECT" | jq -r '.id // empty')
-[ -n "$id" ] || { check "responses: the project has no id"; return; }
+# Its project by its folder, as a run names one.
 if ! uv run -q --no-project --with 'openai>=1.80' python3 "$here/responses_sdk.py" --base "http://$(jq -r .address < "$holder")/v1" \
-  --key "$(jq -r .token < "$holder")" --project "$id" --model "$package/write:qwen/qwen3.5-0.8b@0.1.0" > "$OUT/responses.txt" 2>&1; then
+  --key "$(jq -r .token < "$holder")" --project "$RUN_PROJECT" --model "$package/write:qwen/qwen3.5-0.8b@0.1.0" > "$OUT/responses.txt" 2>&1; then
   said=$(grep '^FAIL ' "$OUT/responses.txt" | sed 's/^FAIL //' | paste -sd ';' -)
   check "responses: ${said:-$(tail -c 600 "$OUT/responses.txt")}"
 fi
