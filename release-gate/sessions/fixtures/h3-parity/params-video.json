@@ -1,0 +1,116 @@
+{
+ "tree": "pk",
+ "fix": "fix",
+ "fix_cases": [
+  "o-i2v-src"
+ ],
+ "phases": [
+  "video"
+ ],
+ "seconds": 4800,
+ "ours": [
+  {
+   "name": "o-i2v-src",
+   "phase": "video",
+   "tool": "minimax-h3/generate",
+   "input": "v-i2v-src.json",
+   "args": [
+    "--lane",
+    "bf16",
+    "--attention-kernel",
+    "sdpa"
+   ]
+  },
+  {
+   "name": "o-ref",
+   "phase": "video",
+   "tool": "minimax-h3/generate",
+   "input": "v-ref.json",
+   "args": [
+    "--lane",
+    "bf16",
+    "--attention-kernel",
+    "sdpa"
+   ]
+  },
+  {
+   "name": "o-ref-default",
+   "phase": "video",
+   "tool": "minimax-h3/generate",
+   "input": "v-ref-default.json"
+  }
+ ],
+ "upstream": [
+  {
+   "name": "u-i2v-src",
+   "phase": "video",
+   "trunk": "fl2va",
+   "of": "o-i2v-src",
+   "frames": 124,
+   "image": "/root/parity/in/lighthouse.jpg"
+  },
+  {
+   "name": "u-ref-1024",
+   "phase": "video",
+   "trunk": "ref2va",
+   "of": "o-ref",
+   "frames": 124,
+   "height": 768,
+   "width": 768,
+   "references": [
+    "/root/parity/in/fighter.jpg"
+   ],
+   "short_edge": 1024
+  },
+  {
+   "name": "u-ref-2048",
+   "phase": "video",
+   "trunk": "ref2va",
+   "of": "o-ref",
+   "frames": 124,
+   "height": 768,
+   "width": 768,
+   "references": [
+    "/root/parity/in/fighter.jpg"
+   ],
+   "short_edge": 2048
+  }
+ ],
+ "pairs": [
+  [
+   "o-i2v-src",
+   "u-i2v-src",
+   "H3 i2v from a 1024 px first frame: each side resizes it to 768 its own way (ours bicubic, upstream Lanczos)"
+  ],
+  [
+   "o-i2v-src-fix",
+   "u-i2v-src",
+   "H3 i2v from a 1024 px first frame, the LANCZOS fix (minimax-h3 0.16.0rc5)"
+  ],
+  [
+   "o-i2v-src-fix",
+   "o-i2v-src",
+   "the fix against before it"
+  ],
+  [
+   "o-ref",
+   "u-ref-1024",
+   "H3 Ref2VA Turbo, parity, both reading the picture at 1024"
+  ],
+  [
+   "u-ref-2048",
+   "u-ref-1024",
+   "upstream: its 2048 reference edge vs our 1024 default"
+  ],
+  [
+   "o-ref-default",
+   "o-ref",
+   "ours: shipped defaults (lane, 8-bit attention, 4 dense + 4 sparse) vs bf16 SDPA all dense"
+  ],
+  [
+   "o-ref-default",
+   "u-ref-2048",
+   "ours as shipped vs upstream as shipped"
+  ]
+ ]
+}

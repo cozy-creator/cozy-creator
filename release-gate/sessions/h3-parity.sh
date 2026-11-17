@@ -14,11 +14,12 @@
 #   pairs    [[upstream-or-ours name, against-name, what], ...] for compare.py
 #   fix      a second packages_refs checkout, a fix's (optional); `fix_cases`: ours names rerun from it as <name>-fix
 #            once the video phase's own ran, and the image phase then runs from it too (its packages unchanged)
+#   phases   which phases run, in order (default ["video", "image"])
 #   seconds  what the cap must buy (default 10800)
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/h3-parity WORK=${RUNNER_TEMP:-$OUT/..}/h3-parity
-TREE=$(param tree '') FIXT=$(param fix '') FIXC=$(param fix_cases '[]') OURS=$(param ours '[]') UPS=$(param upstream '[]') PAIRS=$(param pairs '[]') NEED=$(param seconds 10800)
+TREE=$(param tree '') FIXT=$(param fix '') FIXC=$(param fix_cases '[]') OURS=$(param ours '[]') UPS=$(param upstream '[]') PAIRS=$(param pairs '[]') NEED=$(param seconds 10800) PHASES=$(param phases '["video", "image"]')
 for tool in jq uv ffmpeg ffprobe python3; do command -v "$tool" > /dev/null || fail "no $tool"; done
 [ -n "$TREE" ] && [ -f "$PACKAGES/$TREE/minimax-h3/pyproject.toml" ] || fail "tree: a packages_refs checkout with minimax-h3"
 SOURCE=$(cd "$PACKAGES/$TREE" && pwd)
@@ -112,7 +113,7 @@ ram=$(awk '/^Mem:/{print $2; exit}' "$OUT/pod.txt")
 [ "${ram:-0}" -ge 96 ] || fail "$NAME has ${ram:-?} GiB of RAM; the upstream side needs about 96 or more"
 # The upstream environment and both phases' weights, downloading beside our runs.
 # `a && b &` would background the whole list, its shell holding SSH's output open: only the launch is backgrounded.
-pod "cd /root/parity || exit 1; setsid nohup bash pod_setup.sh > setup.out 2>&1 < /dev/null &" < /dev/null || fail "pod_setup not started"
+pod "cd /root/parity || exit 1; setsid nohup bash pod_setup.sh $(jq -r 'join(" ")' <<<"$PHASES") > setup.out 2>&1 < /dev/null &" < /dev/null || fail "pod_setup not started"
 
 # prompt <name>: the encoder prompt of our H3 run (its log's head and tail, whole while it is at most 800 characters, checked
 # against its digest), else the image result's own `prompt`.
@@ -160,6 +161,8 @@ ours() {
     if [ -n "$n" ]; then
       (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$OUT/records/$name.json" 2> /dev/null
       (cd "$RUN_PROJECT" && cozy --full run watch "$n" --once) > "$OUT/records/$name.log" 2> /dev/null
+      # `run -o` exports the media only; a watch's export brings the latents too.
+      (cd "$RUN_PROJECT" && cozy run watch "$n" --once -o "$OUT/ours/$name") > /dev/null 2>&1
     fi
     if [ "$code" != 0 ] || [ -z "$(find "$OUT/ours/$name" -type f \( -name '*.mp4' -o -name '*.png' \) | head -1)" ]; then
       say "FAIL $name: run ${n:-none}, exit $code: $(tail -c 400 "$OUT/$name.txt" | tr '\n' ' ')"; bad=1; continue
@@ -211,18 +214,19 @@ upstream() {
   done <<<"$groups"
 }
 
-ours video
-if [ -n "$FIXSRC" ] && [ "$(jq length <<<"$FIXC")" -gt 0 ]; then
+has() { jq -e --arg p "$1" 'index($p)' <<<"$PHASES" > /dev/null; }
+has video && ours video
+if has video && [ -n "$FIXSRC" ] && [ "$(jq length <<<"$FIXC")" -gt 0 ]; then
   home "$FIXSRC"
   OURS=$(jq -c --argjson f "$FIXC" '[.[] | select(.name as $n | $f | index($n)) | .name += "-fix" | .phase = "fix"] + .' <<<"$OURS")
   ours fix
 fi
-upstream video
+has video && upstream video
 # MiniMax-H3's DiTs and VAEs make room; its text encoder stays for MiniMax-H3-Image.
-pod 'cd /root/.cache/huggingface/hub/models--MiniMaxAI--MiniMax-H3/snapshots/* && for f in transformer*/*.safetensors vae/* audio_vae/*; do rm -f "$(readlink -f "$f")" "$f"; done; df -BG --output=avail /root | tail -1' \
+has image && has video && pod 'cd /root/.cache/huggingface/hub/models--MiniMaxAI--MiniMax-H3/snapshots/* && for f in transformer*/*.safetensors vae/* audio_vae/*; do rm -f "$(readlink -f "$f")" "$f"; done; df -BG --output=avail /root | tail -1' \
   < /dev/null >> "$OUT/pod.txt" 2>&1
-ours image
-upstream image
+has image && ours image
+has image && upstream image
 pod "cat /root/parity/setup.log /root/parity/setup.out" < /dev/null > "$OUT/setup.log" 2>&1
 cozy machine show "$NAME" --json > "$OUT/show-end.json" 2>&1
 cozy machine logs "$NAME" --since 6h -n 0 > "$OUT/machine.log" 2>&1

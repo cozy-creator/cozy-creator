@@ -17,13 +17,16 @@ uv venv -q --python 3.12 /root/up >> setup.log 2>&1 && uv pip install -q --pytho
 
 export HF_XET_HIGH_PERFORMANCE=1
 hf() { /root/up/bin/hf download "$@" >> download.log 2>&1; }
+# The phases this session runs ($@: video, image), each phase's weights in turn.
 (
   t=$SECONDS
+  [[ " $* " == *" video "* ]] || { touch dl-video.ok; exit 0; }
   hf MiniMaxAI/MiniMax-H3 --include model_index.json modular_model_index.json 'scheduler/*' 'audio_scheduler/*' 'processor/*' \
     'tokenizer/*' 'text_encoder/*' 'transformer/*' 'transformer_ref/*' 'vae/*' 'audio_vae/*' &&
     hf alibaba-pai/MiniMax-H3-Acc-LoRAs --include minimax_h3_pdd.py MiniMax-H3-FL2VA-Acc-8Step.safetensors \
       MiniMax-H3-Ref2VA-Acc-8Step.safetensors && { log "video weights in $((SECONDS - t)) s"; touch dl-video.ok; } ||
     { log "video weights failed"; touch dl-video.fail; }
+  [[ " $* " == *" image "* ]] || exit 0
   t=$SECONDS
   hf PrunaAI/P-H3-Image --include modular_model_index.json 'scheduler/*' 'audio_scheduler/*' 'processor/*' 'tokenizer/*' \
     'text_encoder/*' 'text_connector/*' 'transformer/*' 'vae/*' &&
