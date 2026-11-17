@@ -101,6 +101,43 @@ grep "making room in $mnt waited" "$OUT/disk.tensord.log" | cut -c1-200 \
   || check "disk: the machine's room for the runs' weights never waited for the reader"
 disk_below_reserve
 disk_run_object
+disk_in_use
+}
+
+# Paul 11-17: "Clearly we should never evict models from disc that are being used." A model's checkpoint, open from its load, holds
+# its objects in the store (retention.rs: a live hold), and every varena page source keeps that open checkpoint while its region is
+# registered, resident or paged out; the store collects nothing held. Here a 2.5 GiB disk (1 GiB reserve) holds e2e/disk-1, which
+# a call has read and holds mid-call (script/hold.py); a file leaves 128 MiB past the reserve, so e2e/disk-2 (384 MiB) fits only if
+# disk-1 goes. disk-2's run is refused `machine_disk_full`, naming disk-1 in use; the call then reads disk-1 again, the same sum.
+disk_in_use() {
+local hold=$here/script/hold.py img=$RUNNER_TEMP/tfs-inuse.img mnt=/mnt/tfs-inuse size avail reserve said i
+step "Paul 11-17: a model a call holds is never evicted for another render's room: that room is refused"
+truncate -s 2560M "$img" && mkfs.ext4 -q -F -m 0 "$img" && sudo mkdir -p "$mnt" && sudo mount -o loop "$img" "$mnt" \
+  && sudo chown "$(id -u):$(id -g)" "$mnt" || { check "disk: the in-use disk was not made"; return 0; }
+disk_store "$HOME/.cozy/config.toml" "$mnt"
+machine_stop || check "disk: the local machine did not stop"
+machine_ready
+run_submit "$OUT" inuse-hold run "$hold" --model "weights=e2e/disk-1@0.1.0" seconds=180 --on local > /dev/null
+for i in $(seq 240); do
+  grep -qw holding "$OUT/inuse-hold.ndjson" 2> /dev/null && break
+  run_ended "$OUT/inuse-hold.ndjson" && break
+  sleep 1
+done
+grep -qw holding "$OUT/inuse-hold.ndjson" 2> /dev/null \
+  || { check "disk: inuse-hold never held e2e/disk-1 mid-call: $(tail -c 300 "$OUT/inuse-hold.ndjson")"; return 0; }
+read -r size avail < <(df -B1 --output=size,avail "$mnt" | tail -1)
+reserve=$((size / 50)); [ "$reserve" -ge $((1 << 30)) ] || reserve=$((1 << 30))
+fallocate -l $((avail - reserve - (128 << 20))) "$mnt/inuse-filler" || { check "disk: the in-use filler was not made"; return 0; }
+df -B1 --output=used,avail "$mnt" | tail -1 | sed "s/^/e2e\/disk-1 in use, 128 MiB past the reserve: used, free: /"
+ALLOW=machine_disk_full cell inuse-other "$here/script/disk.py" --model "weights=e2e/disk-2@0.1.0" text=other || true
+said=$(run_get "$OUT" inuse-other '.reason.message')
+echo "inuse-other: $(run_get "$OUT" inuse-other .status): ${said:0:500}"
+{ [ -f "$OUT/inuse-other.refused" ] && grep -q 'e2e/disk-1' <<< "$said"; } \
+  || check "disk: e2e/disk-2's room, which only e2e/disk-1 in use by a call could give, was not refused naming it: ${said:0:300}"
+rm -f "$mnt/inuse-filler"
+run_wait "$OUT" inuse-hold && [ "$(run_get "$OUT" inuse-hold .status)" = completed ] \
+  || check "disk: inuse-hold $(run_get "$OUT" inuse-hold .status), its model read again: $(run_get "$OUT" inuse-hold .reason.message | head -c 300)"
+cozy machine logs local --lines 0 --since 10m 2>&1 | grep -E "evicted|let go of|doesn't have room" | cut -c1-300 | tail -6 || true
 }
 
 # cl-1076 (11-16): kamitsure's disk sat at its reserve for an hour while an idle LTX executor held 71.5 GB open, and its
