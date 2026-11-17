@@ -45,9 +45,17 @@ if [ -n "$COZY" ]; then
   RUN_CODE_STAGE=$(abs "$RUN_CODE_STAGE")
   [ -x "$RUN_CODE_STAGE" ] || { echo "--stage-code must name the API stage-code executable" >&2; exit 2; }
 fi
+# Each cell's calls and on-demand reads against its function's needs rules (drive.py `missed`): the evaluator TensorD answers
+# them with (crates/needs), here as its example.
+if [ -z "${NEEDS_ANSWERS:-}" ]; then
+  cargo build --locked --manifest-path "$HERE/../../Cargo.toml" -p needs --example needs-answers --target-dir "$OUT/needs-build" \
+    > "$OUT/needs-build.log" 2>&1 || { cat "$OUT/needs-build.log" >&2; exit 1; }
+  NEEDS_ANSWERS=$OUT/needs-build/debug/examples/needs-answers
+fi
+NEEDS_ANSWERS=$(abs "$NEEDS_ANSWERS")
 mkdir -p "$ENVS"
 REFS=$(mkdir -p "${REFS:-$HERE/refs}" && cd "${REFS:-$HERE/refs}" && pwd)
-export PACKAGES RUNTIME TENSORFS ENVS OUT RECORD CELLS HERE REFS HELPERS KEEP COZY PROJECT RUN_CODE_STAGE
+export PACKAGES RUNTIME TENSORFS ENVS OUT RECORD CELLS HERE REFS HELPERS KEEP COZY PROJECT RUN_CODE_STAGE NEEDS_ANSWERS
 
 # A package's fixture is tiny/<its name, - and . as _>.py. Every package in the checkout runs, or --only's.
 fixture() { local f=${1//-/_}; echo "$HERE/tiny/${f//./_}.py"; }
