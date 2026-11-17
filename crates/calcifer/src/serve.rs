@@ -467,8 +467,9 @@ fn stop_step(step: StopStep) {
     STOP_STEP.store(step as u8, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Past [`STOP_WITHIN`], the step still going is said in the health log and Calcifer exits as stopped (an update's successor starts
-/// in its place). Its own thread: a wedged runtime can't hold it.
+/// Past [`STOP_WITHIN`], the step still going is said in the health log, every encrypted view this Calcifer mounted is ended (its
+/// provider killed by its handle, its view unmounted), and Calcifer exits as stopped (an update's successor starts in its place). Its
+/// own thread: a wedged runtime can't hold it.
 fn stop_deadline(api: Arc<Api>) {
     let spawned = std::thread::Builder::new().name("stop-deadline".into()).spawn(move || {
         std::thread::sleep(STOP_WITHIN);
@@ -480,6 +481,7 @@ fn stop_deadline(api: Arc<Api>) {
             _ => "store",
         };
         crate::health::stop_late(step);
+        crate::project::vault::end_all_now();
         crate::health::service_health(crate::health::HealthEvent::Stopped);
         if api.updated() {
             let _ = successor();
