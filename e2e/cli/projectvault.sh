@@ -728,6 +728,18 @@ folder_gone() (
   cat "$OUT/folder-gone/folder-gone.json" 2> /dev/null || true
 )
 
+# stale_parent: ending a process's tree (as a let-go view's provider and a project's processes are ended) leaves a process that started
+# before it but records its pid as its parent, as Windows keeps a dead parent's id (e2e/cli/stale_parent.py, its probe e2e/process-tree).
+stale_parent() (
+  step "a process tree never takes a process that started before its supposed parent"
+  local py
+  py=$(command -v python3 || command -v python) || fail "stale parent: no python"
+  [ -n "${PROCESS_TREE:-}" ] || fail "stale parent: PROCESS_TREE names no built e2e/process-tree probe"
+  "$py" "$E2E/cli/stale_parent.py" --probe "$PROCESS_TREE" --out "$OUT/stale-parent" 2> "$OUT/stale-parent.err" \
+    || { cat "$OUT/stale-parent.err"; check "stale parent: $(tail -n 1 "$OUT/stale-parent.err" | cut -c1-900)"; }
+  cat "$OUT/stale-parent/stale-parent.json" 2> /dev/null || true
+)
+
 vault_native() (
   step "an encrypted project on this OS: made, written, locked, unlocked by passphrase and recovery, read back"
   local py root=$OUT/vault-native
