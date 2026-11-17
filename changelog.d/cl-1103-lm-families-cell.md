@@ -1,0 +1,1 @@
+The CPU suite runs the Runtime's decode engine against Transformers' own greedy generate on a tiny model of each language-model family it serves (Llama, Mistral, Phi-3, Qwen3 full, sliding and mixed, Ministral, Gemma 3, Gemma 4, Qwen3.5): a change that breaks one family's masks or caches fails there, as Mistral's dict of masks did after cr-303.

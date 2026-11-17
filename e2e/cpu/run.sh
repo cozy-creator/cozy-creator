@@ -143,6 +143,14 @@ if [ "$CELLS" != lanes ]; then
       | tee -a "$OUT/cells.txt" || true
     break
   done
+  # The decode engine against Transformers' greedy loop, a tiny model of each language-model family it serves, in a
+  # package's environment that has them all (lm_families.py; cl-1103).
+  for q in $packages; do
+    py=$ENVS/$q/bin/python
+    [ -x "$py" ] && "$py" -c 'import transformers as t; t.Gemma4ForCausalLM, t.Qwen3_5ForCausalLM' 2> /dev/null || continue
+    CUDA_VISIBLE_DEVICES= nice -n 19 "$py" -I "$HERE/lm_families.py" | tee -a "$OUT/cells.txt" || true
+    break
+  done
 fi
 pass=$(grep -c '^PASS' "$OUT/cells.txt" || true) fail=$(grep -c '^FAIL' "$OUT/cells.txt" || true)
 # The CPU the references were chosen by (drive.py `stored`): AMD's and Intel's bf16 sums differ.

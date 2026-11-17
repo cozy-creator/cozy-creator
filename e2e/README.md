@@ -30,7 +30,9 @@ Real runs of `cozy` on GitHub's runners, chosen by what a change touches (CI v2:
   through cozy's CLI (`cli.sh`): its code uploaded with an empty file and described as the executor's interface says,
   Calcifer's private lock API leaving its lock as committed, and every cell's request bound by Calcifer's binder against the
   published release (`--estimate`: nothing runs). Also a strict typecheck, `describe` (the static reader), and
-  `surface.py` (static: every TensorFS name the Runtime reads exists). With `--cozy`, first `lanes.py` (cl-1076; alone:
+  `surface.py` (static: every TensorFS name the Runtime reads exists), and `lm_families.py`: the decode engine's tokens
+  equal Transformers' greedy ones on a tiny model of each language-model family it serves (Llama, Mistral, Phi-3, Qwen3,
+  Ministral, Gemma 3 and 4, Qwen3.5), every layer full, every layer sliding, mixed, and gated delta nets (cl-1103). With `--cozy`, first `lanes.py` (cl-1076; alone:
   `--cells lanes`, e2e.yaml's `cpu_cells=lanes`): every slot that takes encoded weights and names a Hub default, resolved on
   each GPU family by `cozy model show <default> --gpu <cc> --components …` (dev-only) against tensorhub.com's releases, as
   TensorD asks for it, and held to its expectation there: int8 where int8 tensor cores run, fp8 on sm103. One line per cell, `PASS|FAIL|SKIP <package>
