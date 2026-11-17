@@ -35,9 +35,9 @@ hub_back() {
 # hd_said <file>...: a failure's code and message, in one line.
 hd_said() {
   local code message
-  code=$(grep -ho '"code": *"[^"]*"' "$@" 2> /dev/null | tail -1 | cut -d'"' -f4)
-  message=$(grep -ho '"message": *"[^"]*"' "$@" 2> /dev/null | tail -1 | cut -d'"' -f4)
-  [ -n "$code$message" ] || message=$(tail -c 200 "$@" 2> /dev/null | tr '\n|' '  ')
+  code=$(grep -ho '"code": *"[^"]*"' "$@" 2> /dev/null | tail -1 | cut -d'"' -f4) || code=
+  message=$(grep -ho '"message": *"[^"]*"' "$@" 2> /dev/null | tail -1 | cut -d'"' -f4) || message=
+  [ -n "$code$message" ] || message=$(tail -c 200 "$@" 2> /dev/null | tr '\n|' '  ') || message=
   echo "${code:+$code: }${message:0:220}"
 }
 
@@ -46,7 +46,7 @@ hd_row() {
   local what=$1 name=$2 code=0 status
   shift 2
   (cd "$RUN_PROJECT" && timeout 900 "$COZY" --json "$@") > "$OUT/hd-$name.ndjson" 2> "$OUT/hd-$name.err" || code=$?
-  status=$(grep '^{' "$OUT/hd-$name.ndjson" 2> /dev/null | jq -r '.run.status? // .status? // empty' 2> /dev/null | tail -1)
+  status=$(grep '^{' "$OUT/hd-$name.ndjson" 2> /dev/null | jq -r '.run.status? // .status? // empty' 2> /dev/null | tail -1) || status=
   if [ "$code" = 0 ] && [ "${status:-completed}" = completed ]; then
     printf '| %s | works | |\n' "$what" >> "$OUT/hubdown.md"
     echo "hub down: $what: works"
@@ -136,12 +136,12 @@ git_url() {
   step "a package installed and run from a public repository's URL (cl-1127)"
   [ -n "$LOCAL" ] || return 0
   local repo=https://github.com/cozy-creator/cozy-creator folder=release-gate/suites/hub/pkg tagged now said
-  tagged=$(git ls-remote "$repo" 'v0.25.0^{}' | cut -f1)
+  tagged=$(git ls-remote "$repo" 'v0.25.0^{}' | cut -f1) || tagged=
   [ -n "$tagged" ] || { check "git url: $repo has no tag v0.25.0 to install from"; return; }
   cozy --json package install "$repo@v0.25.0/$folder" --on local > "$OUT/git-install.ndjson" 2> "$OUT/git-install.err" \
     || { check "git url: cozy package install $repo@v0.25.0/$folder failed: $(hd_said "$OUT/git-install.ndjson" "$OUT/git-install.err")"; return; }
   cozy --json package ls --on local > "$OUT/git-installed.json" 2>&1
-  said=$(jq -r '[.packages[] | select(.package == "local/ci-hub-pkg") | .source | select(startswith("git+"))] | unique | join(" ")' "$OUT/git-installed.json")
+  said=$(jq -r '[.packages[] | select(.package == "local/ci-hub-pkg") | .source | select(startswith("git+"))] | unique | join(" ")' "$OUT/git-installed.json") || said=
   echo "git url: local/ci-hub-pkg on local from ${said:-nothing}"
   [ "$said" = "git+$repo@$tagged#subdirectory=$folder" ] || check "git url: local/ci-hub-pkg is listed from '${said:-nothing}', not git+$repo@$tagged#subdirectory=$folder"
   if cell git-run "$repo@v0.25.0/$folder/echo" "text=from github"; then
@@ -149,12 +149,12 @@ git_url() {
       || check "git url: the reply isn't the repository's echo: $(tail -c 300 "$OUT/git-run.ndjson")"
   fi
   # Installed again at another ref, it is that commit's.
-  now=$(git -C "$here_hubdown" rev-parse HEAD 2> /dev/null)
+  now=$(git -C "$here_hubdown" rev-parse HEAD 2> /dev/null) || now=
   [ -n "$now" ] && [ "$now" != "$tagged" ] || { echo "git url: no other commit to move to"; return 0; }
   cozy --json package install "$repo/tree/$now/$folder" --on local > "$OUT/git-again.ndjson" 2> "$OUT/git-again.err" \
     || { check "git url: installing it again at $now failed: $(hd_said "$OUT/git-again.ndjson" "$OUT/git-again.err")"; return; }
   cozy --json package ls --on local > "$OUT/git-moved.json" 2>&1
-  said=$(jq -r '[.packages[] | select(.package == "local/ci-hub-pkg") | .source | select(startswith("git+"))] | unique | join(" ")' "$OUT/git-moved.json")
+  said=$(jq -r '[.packages[] | select(.package == "local/ci-hub-pkg") | .source | select(startswith("git+"))] | unique | join(" ")' "$OUT/git-moved.json") || said=
   [ "$said" = "git+$repo@$now#subdirectory=$folder" ] || check "git url: installed again at $now, it's listed from '${said:-nothing}'"
 }
 
@@ -172,7 +172,7 @@ hub_down_install() {
     || { check "hub down install: installing $E2E_RELAY on local failed: $(hd_said "$OUT/hdi-local.ndjson" "$OUT/hdi-local.err")"; return; }
   # It is held here behind that install.
   for _ in $(seq 120); do
-    held=$(find "$HOME/.cozy/calcifer/held" -path "*/${E2E_RELAY}/0.1.0.json" 2> /dev/null | head -1)
+    held=$(find "$HOME/.cozy/calcifer/held" -path "*/${E2E_RELAY}/0.1.0.json" 2> /dev/null | head -1) || held=
     [ -n "$held" ] && break
     sleep 1
   done
