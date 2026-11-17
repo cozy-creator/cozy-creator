@@ -325,6 +325,9 @@ test('canvas-nav', async ({ context, project, api, signIn }) => {
 test('canvas-names', async ({ context, project, api, signIn }) => {
   const page = await context.newPage();
   await signIn(page, project.url());
+  // Moved once, as canvas-nav's steps moved it: the page saves its view after a move, and each look below waits for that save.
+  await page.getByRole('button', { name: /more zoom options$/ }).click();
+  await page.getByRole('menuitem', { name: /^Zoom to fit/ }).click();
   await canvasIdle(page);
   await test.step("names as it zooms: one line, cut where its box ends and whole under the pointer, on nothing; and a zoom moves no box", async () => {
     // Each box apart first: a picture an import (no tool), a word box with none.
