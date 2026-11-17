@@ -6,6 +6,12 @@
 #   (`runtime_without_kernels`), and `machine show` says it; back in place, no run says it.
 # - slow-hot: the machine on a hot host's recorded GPU readings (e2e/cli/slow/hot-host.jsonl, rabou's GPU 0 at 89 °C): a slow
 #   still past its bar warns `gpu_throttled` and `slow_run` naming the heat as it runs, and `machine show` marks the machine.
+# - slow-power: cl-1161 (the 0.26.0 coordinator, 11-17: "one cheap real rental with no false alarm"). A loaded run on the card's own
+#   readings records its enforced and default power limits, and warns `gpu_throttled` only when its host holds it under 80% of its
+#   default (or heat holds it back) most of the run: on a healthy card, no alarm. Escaped as xs-203's hiroyuki (a 4090 held to ~160 of 450 W, unflagged).
+# - slow-source-bar: cl-1161 (the coordinator: "fix `bar()` for from-source targets with no `@release`"). Local code names no release, so
+#   its bar is its source's benchmarks.json: a copy of e2e's weightless package whose rows say `wait` takes 1 s on this card waits 30 s and
+#   warns `slow_run` "based on its source's benchmark". Escaped as xs-203's from-source H3: 925 s against 331 s and no slow_run.
 S=$OUT/slow; mkdir -p "$S"
 [ -z "$ONLY" ] || [[ $ONLY == *,slow* ]] || return 0
 TOOL=$HERE/../e2e/cli/project/tool.py
@@ -47,6 +53,20 @@ run_cell "$OUT" slow-kernels-back "$(pkg sdxl generate)" --on "$M" megapixels:=1
 [ -s "$S/moved.txt" ] || bad+=("no kernel module found to move")
 expect slow-kernel-less "$([ ${#bad[@]} -eq 0 ] && echo PASS || echo FAIL)" "${bad[*]:-each run on the kernel-less Runtime said so, machine show too (${shown:0:120}), none once back}; ${said[*]}"
 
+# Power: one real SDXL long enough to load the card (20 s busy; SDXL takes at most 50 steps, which at 1 MP kept a 5060 Ti busy 16 s),
+# on its own readings.
+bad=()
+run_cell "$OUT" slow-power "$(pkg sdxl generate)" --on "$M" megapixels:=2.5 steps:=50 prompt="$OBJECT, power" seed:=$((R + 917)) > /dev/null 2>&1 || bad+=("the run did not complete")
+gpu=$(jq -c '[.calls[]?.measurements.memory.driver[]?, .measurements.memory.driver[]?] | max_by(.busy_ms // 0) // {}' "$OUT/slow-power.json" 2>/dev/null)
+read -r busy limit default capped heat mhz < <(jq -r '"\(.busy_ms // 0) \(.power_limit_w // 0) \(.power_default_w // 0) \(.capped_share // 0) \(.heat_share // 0) \(.sm_mhz_mean // 0)"' <<< "${gpu:-{\}}")
+[ "${busy:-0}" -ge 20000 ] || bad+=("not loaded: ${busy:-0} ms busy, so it judges nothing")
+[ "${limit:-0}" -gt 0 ] && [ "${default:-0}" -gt 0 ] || bad+=("no power limits read: $gpu")
+held=$(jq -n --argjson l "${limit:-0}" --argjson d "${default:-0}" --argjson c "${capped:-0}" --argjson h "${heat:-0}" '($l > 0 and $d > 0 and $l < 0.8 * $d and $c > 0.5) or $h > 0.5')
+c=$(codes slow-power)
+warned=false; [[ ,$c, == *,gpu_throttled,* ]] && warned=true
+[ "$warned" = "$held" ] || bad+=("gpu_throttled [$c] where its host's limit says $held")
+expect slow-power "$([ ${#bad[@]} -eq 0 ] && echo PASS || echo FAIL)" "${bad[*]:-run $(cat slow-power.number 2>/dev/null): ${busy} ms busy at ${mhz} MHz, power limit ${limit} of ${default} W, capped share ${capped}, heat share ${heat}: held $held, warned $warned}"
+
 # Hot: three short stills its bar, then the machine on the hot host's readings and a 45 s still.
 bad=()
 for i in 1 2 3; do run_cell "$OUT" "slow-bar-$i" "$TOOL/slow" --on "$M" 'seconds:=1' "instructions=bar $i" > /dev/null 2>&1 || bad+=("bar $i"); done
@@ -62,3 +82,14 @@ heat=$("$CLI" --json machine show "$M" 2>/dev/null | jq -c '[.status.heat[]? | {
 "$CLI" machine ssh "$M" -- "sed -i '/gpu_samples = /d' ~/.cozy/config.toml" < /dev/null > /dev/null 2>&1
 restart cool
 expect slow-hot "$([ ${#bad[@]} -eq 0 ] && echo PASS || echo FAIL)" "${bad[*]:-run $(cat slow-hot.number 2>/dev/null) warned gpu_throttled and slow_run: $said; machine show $heat}"
+
+# Local code's bar: its source's benchmarks.json, on this card.
+bad=()
+rm -rf "$S/benched" && cp -r "$HERE/../e2e/cli/weightless" "$S/benched"
+card=$("$CLI" --json machine show "$M" 2>/dev/null | jq -r '.status.gpus[0].name // empty')
+[ -n "$card" ] || bad+=("machine show names no GPU")
+jq -n --arg gpu "$card" '[{function: "wait", gpu: $gpu, gpus: 1, request: {}, warm_ms: 1000, cold_ms: 1000, note: "cl-1161 slow-source-bar"}]' > "$S/benched/benchmarks.json"
+run_cell "$OUT" slow-source-bar "$S/benched/wait" --on "$M" 'seconds:=30' > /dev/null 2>&1 || bad+=("the run did not complete")
+said=$(jq -r '.warnings[]? | select(.code == "slow_run") | .message' "$OUT/slow-source-bar.json" 2>/dev/null)
+grep -q "based on its source's benchmark of an" <<< "$said" || bad+=("no slow_run on its source's benchmark: [$(codes slow-source-bar)] $said")
+expect slow-source-bar "$([ ${#bad[@]} -eq 0 ] && echo PASS || echo FAIL)" "${bad[*]:-run $(cat slow-source-bar.number 2>/dev/null) on $card: $said}"

@@ -1453,14 +1453,15 @@ pub struct Resident {
     pub level: String,
 }
 
-/// A GPU the driver held back for heat (thermal or hardware slowdown) for most of a run that loaded it: what that run's
-/// readings measured, until a later loaded run there runs cool.
+/// A GPU the driver held back for most of a run that loaded it, for heat (thermal or hardware slowdown, cl-913) or at a power
+/// limit its host set under the card's default (cl-1161): what that run's readings measured, until a later loaded run there runs
+/// at full speed.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct GpuHeat {
     pub gpu: u32,
-    /// The share of its busy readings under a heat limit, 0 to 1.
+    /// The share of its busy readings under that limit, 0 to 1.
     pub share: f32,
     /// Its busy time those readings cover.
     pub busy_ms: u64,
@@ -1475,6 +1476,11 @@ pub struct GpuHeat {
     /// Its readings were recorded ones a test replays (`machine.gpu_samples`), not this GPU's own.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub replayed: bool,
+    /// Held at a power limit, not heat: the limit the driver enforced and the card's default, in W; 0: heat.
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub power_limit_w: u32,
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub power_default_w: u32,
 }
 
 /// Weights arriving or a package's environment built for runs: one per repository or package, whichever runs wait on it.

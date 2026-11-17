@@ -166,6 +166,8 @@ pub struct WorkerSpeedReport {
     pub cpu: Option<WorkerProbe>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gpu_heat: Option<WorkerGpuHeat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_power: Option<WorkerGpuPower>,
 }
 
 /// One transfer into the machine, all its streams together.
@@ -187,6 +189,15 @@ pub struct WorkerProbe {
 #[derive(Debug, Serialize)]
 pub struct WorkerGpuHeat {
     pub share: f32,
+    pub seconds: f64,
+}
+
+/// A loaded run's GPU power limit (cl-1161): the limit the driver enforced and the card's default, in W, of the GPU held lowest
+/// against its default, and the run's busy time.
+#[derive(Debug, Serialize)]
+pub struct WorkerGpuPower {
+    pub power_cap_watts: u32,
+    pub power_default_watts: u32,
     pub seconds: f64,
 }
 

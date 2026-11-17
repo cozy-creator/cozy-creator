@@ -3938,10 +3938,10 @@ impl Pool {
         if !session.ledger && degree > 0 {
             self.room_outside_ledger(session.lane(), !session.loaded.contains_key(&construction));
         }
-        // Its GPUs' readings (recorded ones, under `machine.gpu_samples`): one held back for heat most of its load warns as it goes.
+        // Its GPUs' readings (recorded ones, under `machine.gpu_samples`): one slowed most of its load (heat, a host's power limit) warns as it goes.
         let samples = self.config.gpu_samples.as_deref().and_then(crate::slowed::samples);
         let replayed = samples.is_some();
-        let hot: platform::gpu::Hot = {
+        let hot: platform::gpu::Slowed = {
             let (engine, id) = (engine.clone(), id.to_owned());
             Box::new(move |used: &platform::gpu::Used| crate::slowed::ran(&engine, &id, std::slice::from_ref(used), replayed, false))
         };

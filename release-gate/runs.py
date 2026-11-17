@@ -72,14 +72,30 @@ class Attribution(TypedDict, total=False):
 
 class DriverRow(TypedDict, total=False):
     """TensorD's NVML reads of one GPU over a call."""
+    gpu: int
     peak_bytes: int
     before_bytes: int
+    busy_ms: int | None
     sm_mhz_mean: float | None
     sm_mhz_limit: float | None
     throttled_share: float | None
+    heat_share: float | None
+    capped_share: float | None  # cl-1161
     throttles: list[str] | None
     temperature_max_c: float | None
     power_max_w: float | None
+    power_limit_w: int | None  # cl-1161
+    power_default_w: int | None
+
+
+class Clocks(TypedDict):
+    """Its GPUs under load, over the run and its calls: the SM clock's mean (by busy time), the highest draw, the most limits seen,
+    and the lowest power limit the driver enforced against the card's default (0 where none said)."""
+    sm_mhz: int
+    power_w: int
+    throttles: list[str]
+    power_limit_w: int
+    power_default_w: int
 
 
 class Fill(TypedDict, total=False):
@@ -483,6 +499,20 @@ class Run:
             return None
         return {'peak': round(max(r['peak_bytes'] for r in rows) / 2**20),
                 'added': round(max(r['peak_bytes'] - r['before_bytes'] for r in rows) / 2**20)}
+
+    @property
+    def clocks(self) -> Clocks | None:
+        """Its loaded GPUs' clocks and power (`memory.driver` rows busy 20 s or more); None where none was loaded."""
+        rows = [r for m in self.measurements for r in (m.get('memory') or {}).get('driver') or [] if (r.get('busy_ms') or 0) >= 20_000]
+        if not rows:
+            return None
+        busy = sum(r.get('busy_ms') or 0 for r in rows)
+        limited = [r for r in rows if r.get('power_limit_w') and r.get('power_default_w')]
+        low = min(limited, key=lambda r: (r.get('power_limit_w') or 0) / (r.get('power_default_w') or 1), default=DriverRow())
+        return {'sm_mhz': round(sum((r.get('sm_mhz_mean') or 0) * (r.get('busy_ms') or 0) for r in rows) / busy),
+                'power_w': round(max(r.get('power_max_w') or 0 for r in rows)),
+                'throttles': sorted({t for r in rows for t in r.get('throttles') or []}),
+                'power_limit_w': int(low.get('power_limit_w') or 0), 'power_default_w': int(low.get('power_default_w') or 0)}
 
     def files(self, *ext: str) -> list[str]:
         return [p for p in self.outputs if p.endswith(ext)]
