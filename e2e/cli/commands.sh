@@ -948,7 +948,7 @@ step "a package with only an RC floor runs from source and from the Hub, its loc
 [ -n "$LOCAL" ] || return 0
 local src=$OUT/rcfloor runtime rc
 rc=$(cozy --version | awk '{n = split($2, v, /[.-]/); print v[1] "." v[2] + ($2 ~ /-/ ? 0 : 1) ".0"}')
-runtime=$(curl -fsSL "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-$rc/SHA256SUMS" 2> /dev/null \
+runtime=$(curl -fsSL --retry 5 --retry-all-errors "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-$rc/SHA256SUMS" 2> /dev/null \
   | awk '$2 ~ /-py3-none-any[.]whl$/ {split($2, p, "-"); print p[2]; exit}')
 echo "rc floor: the open RC's newest Runtime is ${runtime:-unread}"
 grep -q '"status": *"published' "${E2E_RCFLOOR_PUBLISHED:-/dev/null}" 2> /dev/null \
@@ -1117,7 +1117,7 @@ jq -e '.status.runtime == "0.45.0"' "$OUT/machine.json" > /dev/null || check "ru
 # The RC is the one this cozy's version names: a dev build's (0.26.0-dev) its own minor, a release's the next (as rc.rs reads).
 local rc td was=$OUT/cozy-before-rc-pin
 rc=$(cozy --version | awk '{n = split($2, v, /[.-]/); print v[1] "." v[2] + ($2 ~ /-/ ? 0 : 1) ".0"}')
-td=$(curl -fsSL "https://github.com/cozy-creator/cozy-creator/releases/download/rc-$rc/SHA256SUMS" 2> /dev/null \
+td=$(curl -fsSL --retry 5 --retry-all-errors "https://github.com/cozy-creator/cozy-creator/releases/download/rc-$rc/SHA256SUMS" 2> /dev/null \
   | sed -n 's/.*  cozy-\(.*\)-linux-x86_64$/\1/p' | head -1) || td=
 if [ -n "$td" ]; then
   cp "$COZY" "$was"
@@ -1185,6 +1185,31 @@ if cell floor-release-held "$E2E_HELD/relay" "text=off the RC"; then
   grep -q 'relay@0\.1\.0"' "$OUT/floor-release-held.ndjson" && ! grep -q '0\.2\.0rc' "$OUT/floor-release-held.ndjson" \
     || check "runtime floor: off the RC on a release of the minor, the unversioned e2e-held run didn't take 0.1.0: $(grep -o '"target": *"[^"]*"' "$OUT/floor-release-held.ndjson" | head -1)"
 fi
+}
+
+# cl-1160 (0.26.0 blocker; Paul: version skew both ways): Runtime 0.46 sends a managed call's files inside the callee's request, where
+# 0.47 passes them by `assets=`; the RC's TensorD refused them ("its files come by assets="), so on a rented machine still on 0.46, every
+# minimax-h3 0.12.0 shot with references failed (gate 44053323560). stand-old is a machine of this candidate cozy on cozy 0.25.0's
+# Runtime and TensorFS, as such a pod is; isolated.sh published e2e-oldcall 0.1.0, locked on Runtime 0.46.0, whose `relay` passes its
+# files on to `seen` by a managed call. A project's run there completes on 0.46.0, and the callee read the bytes it was given.
+old_call_files() {
+step "a package of Runtime 0.46 passes files to a function it calls, on a machine still on 0.46 (cl-1160)"
+[ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "old call files: its machine is another user of a fresh GitHub runner"; return; }
+[ -n "${E2E_OLDCALL:-}" ] || { check "old call files: isolated.sh published no e2e-oldcall: ${E2E_OLDCALL_REFUSED:-not seeded}"; return; }
+local file=$OUT/oldcall.txt want got
+cozy --json machine show local > "$OUT/set-local.json" || { check "old call files: machine show local: $(head -c 300 "$OUT/set-local.json")"; return; }
+CAND_RT=0.46.0 CAND_TFS=0.25.1 stand_in stand-old || return
+printf 'old call %s\n' "$RANDOM$RANDOM" > "$file"
+want="notes=sha256:$(sha256sum "$file" | cut -d' ' -f1)"
+if run_cell "$OUT" old-call "$E2E_OLDCALL/relay" --file "notes=$file" --on stand-old; then
+  got=$(run_get "$OUT" old-call '[.result.files[]?, .result.runtime, .measurements.software.runtime] | join(" ")')
+  echo "old call files: run $(cat "$OUT/old-call.number") on stand-old: $got"
+  [ "$got" = "$want 0.46.0 0.46.0" ] || check "old call files: its callee read '$got', not '$want' on Runtime 0.46.0"
+else
+  check "old call files: run $(cat "$OUT/old-call.number" 2> /dev/null) on stand-old $(run_get "$OUT" old-call .status): $(run_get "$OUT" old-call .reason.message | head -c 400) $(tail -c 300 "$OUT/old-call.err")"
+fi
+timeout 60 "$COZY" --json machine end stand-old --force -y > "$OUT/stand-old-end.json" 2>&1 || true
+sudo pkill -KILL -u cozy-stand-old || true
 }
 
 # cl-1109 (coordinator, 11-16): a model asked with no release takes "finals first, else the newest", the same rule as packages, so

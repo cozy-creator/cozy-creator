@@ -148,8 +148,15 @@ test('type', { tag: '@engines' }, async ({ page, context, project, api, signIn }
     await expect(heads.first()).toHaveText('Summary');
     const summary = region.getByRole('textbox', { name: 'Summary', exact: true });
     await expect(summary).toBeFocused();
-    await page.keyboard.type('A harbour at dusk.');
-    await expect.poll(() => fieldOf('scene', 'summary')).toBe('A harbour at dusk.');
+    // The pause after a space sends "A ", which Calcifer keeps as "A" (nothing after its last word), and its answer lands as typing goes on:
+    // the space typed stays (e2e 44122550502: "Aharbour at dusk.", the trim taken for someone's edit and merged into the words).
+    const writes = await holdWrites(page, 'scene');
+    await page.keyboard.type('A ');
+    await expect.poll(() => writes.asked.length, { message: 'the pause sends "A "' }).toBeGreaterThan(0);
+    await page.keyboard.type('harbour at dusk.');
+    await writes.release();
+    await expect.poll(() => fieldOf('scene', 'summary'), { message: 'every character, the space too' }).toBe('A harbour at dusk.');
+    await expect(summary, 'shown as typed').toHaveText('A harbour at dusk.');
     const rows = region.locator('.in-frame .beats-edit[data-field="beats"] > .beat');
     const before = await rows.count();
     const add = region.locator('.in-frame .beats-last').getByRole('button', { name: '+ Beat', exact: true });

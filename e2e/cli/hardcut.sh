@@ -51,11 +51,11 @@ id "$CUT_USER" > /dev/null 2>&1 || sudo useradd -m "$CUT_USER" || { check "hard 
 home=$(getent passwd "$CUT_USER" | cut -d: -f6)
 P=$home/plain Q=$home/plain2 R=$home/plain3 E=$home/sealed F=$home/sealed2 pass=$home/pass
 mkdir -p "$OUT/cozy-cut"
-curl -fsSL --retry 3 -o "$OUT/cozy-cut.tgz" "https://github.com/cozy-creator/cozy-creator/releases/download/v$CUT_RELEASE/cozy-x86_64-unknown-linux-gnu.tar.gz" \
+curl -fsSL --retry 5 --retry-all-errors -o "$OUT/cozy-cut.tgz" "https://github.com/cozy-creator/cozy-creator/releases/download/v$CUT_RELEASE/cozy-x86_64-unknown-linux-gnu.tar.gz" \
   && tar -xzf "$OUT/cozy-cut.tgz" -C "$OUT/cozy-cut" || { check "hard cut: no cozy $CUT_RELEASE"; return; }
 # Its tools as that release had them: its Runtime runs that author API, not this one's.
 for tool in draw shaped; do
-  curl -fsSL --retry 3 -o "$OUT/cut-$tool.py" "https://raw.githubusercontent.com/cozy-creator/cozy-creator/v$CUT_RELEASE/e2e/cli/project/$tool.py" \
+  curl -fsSL --retry 5 --retry-all-errors -o "$OUT/cut-$tool.py" "https://raw.githubusercontent.com/cozy-creator/cozy-creator/v$CUT_RELEASE/e2e/cli/project/$tool.py" \
     || { check "hard cut: no $tool.py of $CUT_RELEASE"; return; }
 done
 sudo install -D -m 755 "$OUT/cozy-cut/cozy-x86_64-unknown-linux-gnu/cozy" /opt/cozy-cut/cozy-old && sudo install -D -m 755 "$COZY" /opt/cozy-cut/cozy-new \
@@ -280,7 +280,7 @@ CUT_RC_BUILD=0.26.0-dev+g64439105
 cut_already() {
   local journal=$home/.cozy/machine/var/lib/cozy/tensord/execution/executions.sqlite3 url sums before after
   url=https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.26.0
-  sums=$(curl -fsSL --retry 3 "$url/SHA256SUMS") && curl -fsSL --retry 3 -o "$OUT/cozy-rc" "$url/cozy-${CUT_RC_BUILD/+/%2B}-linux-x86_64" \
+  sums=$(curl -fsSL --retry 5 --retry-all-errors "$url/SHA256SUMS") && curl -fsSL --retry 5 --retry-all-errors -o "$OUT/cozy-rc" "$url/cozy-${CUT_RC_BUILD/+/%2B}-linux-x86_64" \
     && grep -q "^$(sha256sum "$OUT/cozy-rc" | cut -d' ' -f1) " <<< "$sums" \
     || { echo "hard cut (already cut): the RC build $CUT_RC_BUILD is no longer on rc-0.26.0; not checked"; return; }
   sudo install -D -m 755 "$OUT/cozy-rc" /opt/cozy-cut/cozy-rc || { check "hard cut (already cut): the RC build not installed"; return; }

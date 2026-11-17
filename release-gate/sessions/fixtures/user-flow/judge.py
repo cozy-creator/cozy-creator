@@ -8,11 +8,13 @@ Fast: rent, download and steps against bench.json (5%: a tie); a run's own work,
 executor start before it) to its end, against the stored run, which ran alone on a machine holding its weights: its download and its
 wait for a GPU are judged by their own lines. Placed right: machine B works while A is busy, a run never waits for a busy machine's
 GPU while a preferred one idles (cl-1073), a run takes every GPU of its machine. The page tells the truth: no page or console error; each take's tile names its phase (Downloading, then
-Rendering) with that phase's share and its machine, and a cancel (cl-1074); no MBps, no "0 of 0"; no CLI command in a toast (cl-1085);
+Rendering) with that phase's share, for its whole life: as the page showed it in Focus, and as the page's own words say it at each change
+the page read on its stream, its box in Focus or not (cl-1117); its machine, and a cancel (cl-1074); no MBps, no "0 of 0"; no CLI command in a toast (cl-1085);
 the take in Focus at its own shape (cl-1080); Calcifer never restarted; no page load nobody asked for (cl-1066); runs numbered from 1
 in a new project (cl-1075). The H3 edit's steps are not all dense (cl-1081). Prefetched: request 1, sent once the Shot's box says it's
 ready on A, downloads and installs nothing (cl-1104)."""
 import json
+import math
 import os
 import re
 import statistics as st
@@ -20,11 +22,15 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TypeAlias
 
 FLOW, BENCH, GATE = sys.argv[1], sys.argv[2], sys.argv[3]
 sys.path.insert(0, GATE)
 from runs import JSON, Run  # noqa: E402
+sys.path.insert(0, os.path.join(GATE, '..', 'e2e', 'cli'))
+import stages as stages_py  # noqa: E402  (e2e/cli/stages.py: the one reader of the page's map)
+STAGE_MAP = stages_py.compiled(Path(GATE, '..', 'web', 'app', 'src', 'panels', 'runs', 'stages.json'))
 
 Obj: TypeAlias = dict[str, JSON]
 TIE = 1.05
@@ -111,6 +117,7 @@ class Row:
     request: int
     box: str
     run: str
+    run_id: str
     target: str
     number: int | None
     sent_at: float
@@ -248,7 +255,8 @@ rows: list[Row] = []
 for s in map(obj, arr(flow.get('sent'))):
     name = text(s.get('name')) or str(s.get('number'))
     number = num(s.get('number'))
-    row = Row(int(num(s.get('request')) or 0), text(s.get('box')), name, text(s.get('target')), int(number) if number else None, num(s.get('at')) or 0.0)
+    row = Row(int(num(s.get('request')) or 0), text(s.get('box')), name, text(s.get('run')), text(s.get('target')), int(number) if number else None,
+              num(s.get('at')) or 0.0)
     timeline = run_events.get(text(s.get('run')), [])
     for at, one in timeline:
         row.first.setdefault(phase(one), at)
@@ -649,32 +657,160 @@ for label, m in machines.items():
           f"ran at once: {split}" if split else f"{len(leased)} runs, one at a time" if leased else 'no GPU lease in their records')
 
 # ---- The page tells the truth.
+def share(done: float | None, total: float | None) -> float | None:
+    return min(1.0, max(0.0, (done or 0.0) / total)) if total and total > 0 else None
+
+
+def first(*shares: float | None) -> float | None:
+    return next((x for x in shares if x is not None), None)
+
+
+def stage_of(stage: str) -> stages_py.Entry | None:
+    """The page's map's entry for a stage path's last part (`phaseOf`, `countsOf` in web/app/src/panels/runs/words.ts)."""
+    return stages_py.said(STAGE_MAP, re.split(r'\s+/\s+', stage)[-1])
+
+
+def take_now(run: Obj, on: Obj | None, machine_state: str) -> tuple[str, float | None]:
+    """What a take's tile says of its run, as the page says it: web/app/src/canvas/TakeProgress.tsx `takeNow`, line for line, on the
+    run, the operation on its machine it waits on (`waitsOnOf`) and its machine's state, as the page's stream had them."""
+    status = text(run.get('status'))
+    if run.get('cancel_requested'):
+        return 'Canceling', None
+    if status == 'completed':
+        arriving = obj(run.get('arriving'))
+        return 'Saving', share(num(arriving.get('bytes_done')), num(arriving.get('bytes_total'))) if arriving else None
+    if machine_state == 'booting':
+        return 'Starting up', None
+    if on:
+        total = num(on.get('bytes_total'))
+        return ('Downloading' if text(on.get('kind')) == 'download' else 'Installing'), ((num(on.get('bytes_done')) or 0.0) / total if total else None)
+    if not run.get('machine') or status == 'queued' or run.get('machine_state') == 'queued' or run.get('queue_position') is not None:
+        return 'Queued', None
+    progress = run.get('progress')
+    if not isinstance(progress, dict):
+        return ('Preparing' if run.get('machine_state') == 'preparing' else 'Starting'), None
+    entry = stage_of(text(progress.get('stage')))
+    phase_ = text(obj(entry).get('phase')) or None
+    counts = 'token' if progress.get('unit') == 'tokens' else 'bytes' if progress.get('unit') == 'bytes' else obj(entry).get('counts')
+    counted = None if counts == 'token' else share(num(progress.get('completed')), num(progress.get('total')))
+    moved = share(num(progress.get('bytes_done')), num(progress.get('bytes_total')))
+    stage = num(progress.get('stage_fraction'))
+    bytes_kind = None
+    if num(progress.get('bytes_total')) or num(progress.get('bytes_done')):
+        bytes_kind = 'load' if phase_ == 'loading' else None if phase_ in ('installing', 'uploading', 'saving', 'result') else 'download'
+    if phase_ == 'downloading' or bytes_kind == 'download':
+        return 'Downloading', first(moved, counted, stage)
+    if phase_ == 'installing':
+        return 'Installing', first(counted, stage)
+    if phase_ == 'loading':
+        return 'Loading', first(moved, counted, stage)
+    if phase_ in ('saving', 'result'):
+        return 'Saving', first(moved, counted)
+    if phase_ == 'queued':
+        return 'Queued', None
+    if phase_ and phase_ != 'working':
+        return 'Preparing', first(counted, stage)
+    return 'Rendering', first(counted, stage, num(progress.get('fraction')), num(progress.get('done_fraction')))
+
+
+def waits_on(machine: Obj, run: Obj) -> Obj | None:
+    """The operation on its machine `run` waits on, as the page finds it (`ownActivity`, then `waitsOnOf`): its install before its weights."""
+    project = run.get('project_id') or None
+    its = [obj(o) for o in arr(obj(machine).get('activity')) if (obj(o).get('project') or None) == project]
+    number = run.get('number')
+    return next((o for o in its if o.get('kind') == 'install' and number in arr(o.get('runs'))), None) \
+        or next((o for o in its if number in arr(o.get('runs'))), None)
+
+
+# A phase the page shows for less than this is a flicker no one reads (the flow looks at the page every 500 ms): a run's stream says its
+# stage and its machine's operations apart, and between them its tile may say another phase for some milliseconds.
+SAID_MS = 1000
+
+
+def streamed(run_id: str, said_ms: float = SAID_MS) -> list[Obj]:
+    """Each take's tile through its whole life, as the page's words say it (`take_now`) at each change the page read on its stream: from
+    its run's first sight to its end, or, completed, until its file is here; each phase it says for `said_ms` or more (cl-1117: request
+    2's box was out of Focus all its run)."""
+    run: Obj | None = None
+    held: dict[str, Obj] = {}
+    looks: list[Obj] = []
+    end = 0.0
+    for e in events:
+        at, ev = num(e.get('at')) or 0.0, obj(e.get('event'))
+        end = at
+        if ev.get('type') == 'machine.updated':
+            one = obj(ev.get('machine'))
+            held[text(one.get('name'))] = one
+        elif ev.get('type') == 'run.updated' and text(obj(ev.get('run')).get('id')) == run_id:
+            run = obj(ev.get('run'))
+        else:
+            continue
+        if run is None:
+            continue
+        status = text(run.get('status'))
+        if status in ('failed', 'canceled') or (status == 'completed' and not run.get('arriving')):
+            break
+        machine = held.get(text(run.get('machine')), {})
+        said, part = take_now(run, waits_on(machine, run), text(machine.get('state')))
+        look: Obj = {'at': at, 'phase': said, 'share': f"{math.floor(part * 100)}%" if part is not None else None, 'seen': 'stream'}
+        if not looks or (looks[-1]['phase'], looks[-1]['share']) != (look['phase'], look['share']):
+            looks.append(look)
+    # Each phase, from its first look to the next phase's: kept when it lasted long enough to be read.
+    starts = [i for i, look in enumerate(looks) if i == 0 or look['phase'] != looks[i - 1]['phase']]
+    kept: list[Obj] = []
+    for k, i in enumerate(starts):
+        until = starts[k + 1] if k + 1 < len(starts) else len(looks)
+        ended = (num(looks[until].get('at')) or 0.0) if until < len(looks) else end
+        if ended - (num(looks[i].get('at')) or 0.0) >= said_ms:
+            kept += looks[i:until]
+    return kept
+
+
 tiles: dict[str, list[Obj]] = defaultdict(list)
 for s in seen:
     if text(s.get('key')).startswith('tiles '):
         try:
             for tile in map(obj, arr(json.loads(text(s.get('text'))))):
                 if tile.get('making'):
-                    tiles[text(tile.get('run')) or text(tile.get('title'))].append(tile)
+                    in_focus: Obj = {**tile, 'at': num(s.get('at')) or 0.0, 'seen': 'focus'}
+                    tiles[text(tile.get('run')) or text(tile.get('title'))].append(in_focus)
         except ValueError:
             pass
 if renting:
     for r in rows:
         said_tiles = tiles.get(str(r.number)) or tiles.get(f"Run {r.run}") or []
-        if not said_tiles:
-            check(f"request {r.request}'s tile seen in Focus", None, 'its box was not in Focus while it rendered')
+        looks = sorted(said_tiles + streamed(r.run_id), key=lambda look: num(look.get('at')) or 0.0)
+        if not looks:
+            check(f"request {r.request}'s tile seen", None, 'neither in Focus nor on the page\'s stream')
             continue
-        phases = [text(t.get('phase')) for t in said_tiles if t.get('phase')]
+        phases = [text(t.get('phase')) for t in looks if t.get('phase')]
         order = [p for i, p in enumerate(phases) if i == 0 or p != phases[i - 1]]
         ok = 'Rendering' in order and (not r.dl_bytes or ('Downloading' in order and order.index('Downloading') < order.index('Rendering')))
-        check(f"request {r.request}'s tile says Downloading, then Rendering (cl-1074)", ok, ' > '.join(order) or f"no phase named: {text(said_tiles[-1].get('text'))!r}")
-        shares = [t for t in said_tiles if t.get('phase') in ('Downloading', 'Rendering')]
-        check(f"request {r.request}'s tile gives each phase its share (cl-1074)", bool(shares) and all(re.fullmatch(r'\d{1,3}%', text(t.get('share'))) for t in shares),
-              f"{len(shares)} looks")
+        seen_in = f"{len(said_tiles)} looks in Focus, {len(looks) - len(said_tiles)} changes on its stream"
+        check(f"request {r.request}'s tile says Downloading, then Rendering (cl-1074)", ok, (' > '.join(order) or f"no phase named: {text(looks[-1].get('text'))!r}") + f" ({seen_in})")
+        shares = [t for t in looks if t.get('phase') in ('Downloading', 'Rendering')]
+        unshared = [f"{text(t.get('phase'))} ({text(t.get('seen'))})" for t in shares if not re.fullmatch(r'\d{1,3}%', text(t.get('share')))]
+        check(f"request {r.request}'s tile gives each phase its share (cl-1074)", bool(shares) and not unshared,
+              f"{len(shares)} looks" + (f", {len(unshared)} with none: {', '.join(sorted(set(unshared)))}" if unshared else ''))
+        if not said_tiles:
+            check(f"request {r.request}'s tile seen in Focus", None, 'its box was not in Focus while it rendered: its machine and cancel go unjudged')
+            continue
         named = sorted({text(t.get('where')) for t in said_tiles if t.get('where')})
         check(f"request {r.request}'s tile names its machine (cl-1074)", bool(r.machine) and any(r.machine in w for w in named), f"said {named}, ran on {r.machine}")
         check(f"request {r.request}'s tile has its own cancel (cl-1074)", all(t.get('cancel') for t in said_tiles),
               f"{sum(1 for t in said_tiles if t.get('cancel'))} of {len(said_tiles)} looks")
+    # The replay is the page's words only while it says what the page showed: at each look in Focus, the phase the stream said last.
+    agreed = compared = 0
+    for r in rows:
+        replay = streamed(r.run_id, 0)
+        changed_at = [num(look.get('at')) or 0.0 for look in replay]
+        for tile in tiles.get(str(r.number)) or tiles.get(f"Run {r.run}") or []:
+            last = next((k for k in range(len(changed_at) - 1, -1, -1) if changed_at[k] <= (num(tile.get('at')) or 0.0)), None)
+            if last is not None:
+                compared += 1
+                agreed += replay[last].get('phase') == tile.get('phase')
+    check("the judge's replay of a tile's words says what the page showed in Focus (cl-1117)", agreed >= 0.95 * compared if compared >= 20 else None,
+          f"{agreed} of {compared} looks" + (' (too few to judge)' if compared < 20 else ''))
 if 'errors' in flow:
     errors = [text(obj(e).get('line')) for e in arr(flow.get('errors'))]
     check('the page reports no error (page and console errors)', not errors, f"{len(errors)}: " + '; '.join(errors[:3]) if errors else 'none')

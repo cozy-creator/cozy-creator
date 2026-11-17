@@ -296,6 +296,17 @@ class Region:
         return None if native is None else Use(native)
 
 
+def fill(regions: Sequence[Region], sources: Sequence[Source], stream: int) -> list[Use | None]:
+    """Each Region, bound to the matching Source, pinned for `stream`, the absent ones filled
+    together: all one store read covers in that one read, pieces pipelined across Regions; any
+    other by its own Source. None for a Region not filled here: its `use` fills it, waits for the
+    fill already running, or raises why it can't (cr-318: a binding's thousands of small blocks)."""
+    natives = _ext._varena_fill(
+        [region._native for region in regions], [source._native for source in sources], stream
+    )
+    return [None if native is None else Use(native) for native in natives]
+
+
 class Retained:
     """State a model writes on the card once and reads every step (a prefix's K/V): a Region
     the core keeps resident while there is room. A pinned host copy, taken behind compute on its

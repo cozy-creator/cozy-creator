@@ -4,7 +4,6 @@
 # ///
 """A stand-in game for the vram-yield session: raw driver allocations from a process that is not cozy's, the way a
 game takes the GPU (sessions/vram-yield.sh). One op per run (`op=<name> cfg=<json>`):
-  mode    machine.mode in TensorD's config.toml (`shared`: a desktop's default), read at its next start
   write   the game and its launcher, for a root shell to start over `cozy machine ssh`: `gb` GiB in 256 MiB blocks,
           now, once the GPU is busy (`trigger: util`) or once a new executor opens its CUDA context (`trigger:
           executor`), each refused block asked again every 50 ms up to `give_up_s`, held `hold_s` (`shrink_to_gb`
@@ -14,7 +13,6 @@ game takes the GPU (sessions/vram-yield.sh). One op per run (`op=<name> cfg=<jso
 This package starts no process (the package contract refuses one that does): a root shell starts the game, so it is a
 program that is not cozy's, as a game is. It has a stop file and a hard lifetime. Nothing here talks to the network."""
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -266,11 +264,6 @@ class State(TypedDict, total=False):
     log: str
 
 
-class ModeSet(TypedDict):
-    path: str
-    after: str
-
-
 class Launch(TypedDict):
     launch: str
     state: str
@@ -299,46 +292,9 @@ def stop_and_wait(state: Path, stopfile: Path, secs: float = 30) -> State:
     return load(state)
 
 
-def mode(cfg: Cfg) -> ModeSet:
-    """`machine.mode` in TensorD's config.toml (its COZY_HOME, else HOME/.cozy)."""
-    home = Path.home() / ".cozy"
-    for proc in Path("/proc").iterdir():
-        try:
-            if not os.readlink(proc / "exe").rsplit("/", 1)[-1].startswith("cozy"):
-                continue
-            env = dict(kv.split("=", 1) for kv in (proc / "environ").read_text().split("\0") if "=" in kv)
-        except OSError:
-            continue
-        home = Path(env.get("COZY_HOME") or Path(env.get("HOME", str(Path.home()))) / ".cozy")
-        break
-    path = home / "config.toml"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = path.read_text() if path.exists() else ""
-    out: list[str]
-    out, section, done = [], "", False
-    for line in text.splitlines():
-        if line.strip().startswith("["):
-            if section == "[machine]" and not done:
-                out.append(f'mode = "{cfg["mode"]}"')
-                done = True
-            section = line.strip()
-        if section == "[machine]" and line.strip().startswith("mode") and "=" in line:
-            if not done:
-                out.append(f'mode = "{cfg["mode"]}"')
-                done = True
-            continue
-        out.append(line)
-    if not done:
-        out += [f'mode = "{cfg["mode"]}"'] if section == "[machine]" else ["", "[machine]", f'mode = "{cfg["mode"]}"']
-    path.write_text("\n".join(out) + "\n")
-    return {"path": str(path), "after": path.read_text()[-2000:]}
-
-
-def run(cfg: Cfg) -> State | ModeSet | Launch:
+def run(cfg: Cfg) -> State | Launch:
     op, name = cfg["op"], cfg.get("name", "game")
     st, stop = D / f"game-{name}.json", D / f"game-{name}.stop"
-    if op == "mode":
-        return mode(cfg)
     if op == "write":  # the holder and its launcher, for a root shell to start (`cozy machine ssh`)
         if load(st).get("pid") and alive(load(st)["pid"]):
             stop_and_wait(st, stop)

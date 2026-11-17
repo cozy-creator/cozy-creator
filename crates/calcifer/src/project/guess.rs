@@ -46,6 +46,43 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Each box's last guess and what it was made of (`item`), by project folder and box: kept while its request holds and no machine's
+/// load moved that could place it elsewhere (`kept`), so a round re-guesses only the boxes an edit changed (cl-1123).
+static MADE: LazyLock<Mutex<std::collections::HashMap<(String, String), Made>>> = LazyLock::new(Mutex::default);
+
+#[derive(Clone)]
+struct Made {
+    /// Its request as `request_key` hashed it.
+    key: u64,
+    /// `load_moved` and the machines' arrivals when it was made.
+    load: u64,
+    arrived: u64,
+    package: super::Package,
+    function: String,
+    guess: Option<Guess>,
+}
+
+/// A box's request, hashed: its tool, kind and fields, its draft's seed, and what its render would send (`Asking::request`).
+fn request_key(with: &str, kind: &str, made: &Map<String, Value>, seed: u64, request: Option<&Value>) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (with, kind, Value::Object(made.clone()).to_string(), seed, request.map(Value::to_string)).hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Box `name`'s last guess, if what it was made of holds: its request the same, its machine serving, no machine come since, and no
+/// load moved that could place it elsewhere (`Lists::could_move`).
+fn kept(api: &Api, project: &Project, folder: &str, (name, with, kind, made): (&str, &str, &str, &Map<String, Value>), asking: &Asking) -> Option<Guess> {
+    let memo = lock(&MADE).get(&(folder.to_owned(), name.to_owned())).cloned()?;
+    let guess = memo.guess?;
+    let lists = &api.machines.lists;
+    if memo.arrived != *api.machines.arrivals.borrow() || api.machines.live_frame(&guess.machine).is_none() || lists.could_move(folder, memo.load, now_ms()).is_some() {
+        return None;
+    }
+    let request = asking.request(name, &memo.package, &memo.function);
+    (request_key(with, kind, made, project.draft_seed(name), request.as_ref()) == memo.key).then_some(guess)
+}
+
 /// Local code carried to a machine by a guess (`item`), by machine and its package's manifest: written there once, its source as staged.
 static CARRIED: LazyLock<Mutex<std::collections::HashMap<(String, String), v1::LocalSource>>> = LazyLock::new(Mutex::default);
 /// The functions whose Hub reads are read ahead (`fit::read_ahead`): by Hub, package, release and function.
@@ -131,6 +168,7 @@ pub(super) fn keep(api: &Arc<Api>, project: &Arc<Project>) {
             }
         }
         api.machines.lists.guess_closed(&api.machines, &folder);
+        lock(&MADE).retain(|(at, _), _| *at != folder);
     });
 }
 
@@ -161,14 +199,33 @@ async fn guesses_in(api: &Arc<Api>, project: &Arc<Project>) -> Vec<Guess> {
     }
     let Ok(on) = crate::runs::unnamed_set(api, Some(&project.id)).await else { return vec![] };
     let (hub, host, folder) = (api.machines.hubs.default_origin(), Host::new(api), project.folder.dir.to_string_lossy().into_owned());
-    let names: Vec<String> = boxes.iter().map(|(name, ..)| name.clone()).collect();
-    let each = boxes.into_iter().map(|boxed| Box::pin(guess(api, project, &host, &hub, &folder, on.clone(), boxed, &asking)));
+    // A box an edit didn't change keeps its guess: only the others are guessed again. The guesses stay in the boxes' order.
+    lock(&MADE).retain(|(at, name), _| *at != folder || boxes.iter().any(|(held, ..)| held == name));
+    let order: Vec<String> = boxes.iter().map(|(name, ..)| name.clone()).collect();
+    let (mut kept_now, mut fresh) = (vec![], vec![]);
+    for boxed in boxes {
+        match kept(api, project, &folder, (boxed.0.as_str(), boxed.1.as_str(), boxed.2.as_str(), &boxed.3), &asking) {
+            Some(guess) => kept_now.push(guess),
+            None => fresh.push(boxed),
+        }
+    }
+    if !kept_now.is_empty() {
+        let names: Vec<&str> = kept_now.iter().map(|guess| guess.asset.as_str()).collect();
+        tracing::info!(target: crate::prefetch::TARGET, "{folder}: {names:?} keep their guesses: their requests and loads hold");
+    }
+    let names: Vec<String> = fresh.iter().map(|(name, ..)| name.clone()).collect();
+    let each = fresh.into_iter().map(|boxed| Box::pin(guess(api, project, &host, &hub, &folder, on.clone(), boxed, &asking)));
     let made = futures_util::future::join_all(each).await;
     // A box whose guess couldn't be made this time (a read that didn't answer, its machine between frames) keeps the one it had, so
     // its item keeps its key and its machine goes on making it ready: what dropped and listed again 13 s later in 44057515041.
-    (names.into_iter().zip(made))
+    let made: Vec<Guess> = (names.into_iter().zip(made))
         .filter_map(|(name, made)| match made {
-            Guessed::Made(guess) => Some(*guess),
+            Guessed::Made(guess) => {
+                if let Some(memo) = lock(&MADE).get_mut(&(folder.clone(), name)) {
+                    memo.guess = Some((*guess).clone());
+                }
+                Some(*guess)
+            }
             Guessed::Nothing => None,
             Guessed::Unknown(why) => {
                 let kept = api.machines.lists.last_guess(&folder, &name);
@@ -176,7 +233,10 @@ async fn guesses_in(api: &Arc<Api>, project: &Arc<Project>) -> Vec<Guess> {
                 kept
             }
         })
-        .collect()
+        .collect();
+    let mut all: Vec<Guess> = kept_now.into_iter().chain(made).collect();
+    all.sort_by_key(|guess| order.iter().position(|name| *name == guess.asset));
+    all
 }
 
 /// What a box's guess came to: made; nothing (its package makes nothing of its kind, or it is an encrypted project's local code); or
@@ -259,7 +319,13 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
             }
             let On::Machine(on) = machine else { return Ok(None) };
             let carried = (on.clone(), package.manifest.clone());
-            let held = lock(&CARRIED).get(&carried).cloned();
+            let mut held = lock(&CARRIED).get(&carried).cloned();
+            // There already, a run of it having carried it: carried by its manifest alone.
+            if held.is_none() && is_there(api, on, &package.manifest).await {
+                let source = v1::LocalSource { manifest: package.manifest.clone() };
+                lock(&CARRIED).insert(carried.clone(), source.clone());
+                held = Some(source);
+            }
             let source = match held {
                 Some(source) => source,
                 None => {
@@ -292,7 +358,18 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
         let (api, hub, package, function, made) = (api.clone(), hub.to_owned(), package.clone(), renderer.function.clone(), made.clone());
         tokio::spawn(async move { super::fit::read_ahead(&api, &hub, &package, &function, &made).await });
     }
-    let mut spec = super::predicted(&renderer, made, request, project.draft_seed(name), source)?;
+    let seed = project.draft_seed(name);
+    // What it was made of, kept with it: a round in which that holds keeps it (`kept`).
+    let made_of = Made {
+        key: request_key(with, kind, made, seed, request.as_ref()),
+        load: api.machines.lists.load_moved.load(Ordering::Acquire),
+        arrived: *api.machines.arrivals.borrow(),
+        package: package.clone(),
+        function: renderer.function.clone(),
+        guess: None,
+    };
+    lock(&MADE).insert((dir.to_string_lossy().into_owned(), name.to_owned()), made_of);
+    let mut spec = super::predicted(&renderer, made, request, seed, source)?;
     // Its files, written to its machine behind the item (cl-1123): the item is its render's request to the byte, and its machine has
     // them before the render is sent; its plan reads none of them, so the item goes at once (44065133454: a first write held the
     // edit's guess 1.4 s). An encrypted project's go only with the run that reads them.
@@ -310,6 +387,14 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
     }
     // Its key is its machine's list's to give (`Lists::key`).
     Ok(Some((v1::Predicted { key: String::new(), spec }, package.name.clone() + "/" + &renderer.function)))
+}
+
+/// `machine` holds local source `manifest` whole, as Calcifer kept it.
+async fn is_there(api: &Api, machine: &str, manifest: &str) -> bool {
+    match crate::local_code::kept_manifest(api.machines.hubs.home(), manifest) {
+        Some((digest, length)) => api.calcifer.holds(machine, &digest, length).await,
+        None => false,
+    }
 }
 
 /// The digest `renderer`'s release must install (xs-196): the one this project's lock recorded at its first run of it, else its card's.

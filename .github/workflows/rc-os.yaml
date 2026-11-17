@@ -1,0 +1,28 @@
+name: rc-os
+# The macOS and Windows lanes (e2e.yaml's cli-os: web-native, projectvault-native, notraces) on every RC push, in a concurrency
+# group of their own (cl-1128, coordinator 11-17): rc-e2e's pushes never cancel them, and a slow Windows build never holds back
+# rc-e2e's Linux results. A push while one runs waits; only the newest waiting one runs, each on its newest head. Each OS's cozy
+# is built once a run and fanned out to its lanes, or reused from an earlier run that built the same build inputs.
+# By hand: gh workflow run rc-os.yaml -R cozy-creator/cozy-creator --ref rc/<x.y.z>
+on:
+  push:
+    branches: ['rc/*']
+  workflow_dispatch:
+
+concurrency:
+  group: rc-os-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  e2e:
+    uses: ./.github/workflows/e2e.yaml
+    secrets: inherit
+    with:
+      repo: cozy-creator
+      ref: ${{ github.sha }}
+      select: cli os:macos os:windows
+      shards: '[]'

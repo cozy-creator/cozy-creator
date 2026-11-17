@@ -372,7 +372,8 @@ impl Lists {
                 upcoming: upcoming.iter().map(|listed| listed.item.clone()).collect(),
                 prepare: prepare.iter().map(|(_, item)| item.clone()).collect(),
             };
-            if lock(&self.sent).get(&name) == Some(&now) {
+            let was = lock(&self.sent).get(&name).cloned();
+            if was.as_ref() == Some(&now) {
                 continue;
             }
             // A machine that isn't up is sent nothing, started or kept for nothing: its lists go once it says its Status (`seen`).
@@ -380,11 +381,17 @@ impl Lists {
                 lock(&self.sent).remove(&name);
                 continue;
             }
+            // Only a list that changed goes, each a round trip on an edit's way to its machine (cl-1123); both to one started since.
+            let started_since = |was: &Sent| was.boot != now.boot;
+            let upcoming_goes = was.as_ref().is_none_or(|was| started_since(was) || was.upcoming != now.upcoming);
+            let prepare_goes = was.as_ref().is_none_or(|was| started_since(was) || was.prepare != now.prepare);
             lock(&self.sent).insert(name.clone(), now);
             let keys: Vec<&str> = prepare.iter().map(|(_, item)| item.key.as_str()).collect();
-            tracing::info!(target: TARGET, "lists to {name}: {} upcoming, prepare {keys:?}", upcoming.len());
+            let said = |goes: bool| if goes { "" } else { " (unchanged)" };
+            tracing::info!(target: TARGET, "lists to {name}: {} upcoming{}, prepare {keys:?}{}", upcoming.len(), said(upcoming_goes), said(prepare_goes));
             let hubs: Vec<String> = upcoming.iter().map(|listed| listed.hub.clone()).chain(prepare.iter().map(|(hub, _)| hub.clone())).collect();
             let upcoming: Vec<(String, v1::Predicted)> = upcoming.iter().map(|listed| (listed.hub.clone(), listed.item.clone())).collect();
+            let (upcoming, prepare) = (upcoming_goes.then_some(upcoming), prepare_goes.then_some(prepare));
             let machines = machines.clone();
             machines.clone().spawn(async move {
                 if let Err(why) = put(&machines, &name, hubs, upcoming, prepare).await {
@@ -728,7 +735,14 @@ fn demand(planned: &HashMap<String, HashMap<String, Vec<Listed>>>, machine: &str
 }
 
 /// Sends `machine` its lists, each item under the access its Hub gives that machine.
-async fn put(machines: &Arc<Machines>, machine: &str, hubs: Vec<String>, upcoming: Vec<(String, v1::Predicted)>, prepare: Vec<(String, v1::Predicted)>) -> Result<(), String> {
+/// None: that list is as it was last sent.
+async fn put(
+    machines: &Arc<Machines>,
+    machine: &str,
+    hubs: Vec<String>,
+    upcoming: Option<Vec<(String, v1::Predicted)>>,
+    prepare: Option<Vec<(String, v1::Predicted)>>,
+) -> Result<(), String> {
     let began = std::time::Instant::now();
     let (_, link) = machines.linked(machine).map_err(|e| e.message)?;
     let mut access: HashMap<String, (Option<v1::HubAccess>, Option<String>)> = HashMap::new();
@@ -736,7 +750,7 @@ async fn put(machines: &Arc<Machines>, machine: &str, hubs: Vec<String>, upcomin
         if access.contains_key(&hub) {
             continue;
         }
-        let specs: Vec<v1::RunSpec> = (upcoming.iter().chain(&prepare))
+        let specs: Vec<v1::RunSpec> = (upcoming.iter().flatten().chain(prepare.iter().flatten()))
             .filter(|(held, _)| *held == hub)
             .map(|(_, item)| item.spec.clone())
             .collect();
@@ -754,8 +768,12 @@ async fn put(machines: &Arc<Machines>, machine: &str, hubs: Vec<String>, upcomin
     };
     let accessed = began.elapsed().as_millis();
     // Each is taken at once and admitted behind the answer: one refused says so in its readiness (cl-1123).
-    link.upcoming(&v1::Upcoming { jobs: upcoming.into_iter().map(with).collect() }).await.map_err(|e| e.to_string())?;
-    link.prepare(&v1::Prepare { items: prepare.into_iter().map(with).collect() }).await.map_err(|e| e.to_string())?;
+    if let Some(upcoming) = upcoming {
+        link.upcoming(&v1::Upcoming { jobs: upcoming.into_iter().map(with).collect() }).await.map_err(|e| e.to_string())?;
+    }
+    if let Some(prepare) = prepare {
+        link.prepare(&v1::Prepare { items: prepare.into_iter().map(with).collect() }).await.map_err(|e| e.to_string())?;
+    }
     tracing::info!(target: TARGET, "lists put on {machine} in {} ms ({accessed} ms for their access)", began.elapsed().as_millis());
     Ok(())
 }

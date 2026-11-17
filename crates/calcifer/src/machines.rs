@@ -923,16 +923,22 @@ impl Machines {
             machine.attempt = seen.attempt;
         }
         if let Some(status) = &mut machine.status {
+            let listed: HashSet<String> = held.iter().map(|run| crate::store::calcifer_id(&run.id).to_owned()).collect();
             status.runs = held.into_iter().filter_map(|run| self.held(run)).collect();
             // A project's runs execute in its own engine: listed from its journal, as the machine holds them (cl-811).
-            let listed: HashSet<String> = status.runs.iter().map(|run| crate::store::calcifer_id(&run.id).to_owned()).collect();
             for project_run in self.calcifer.project_runs_on(&row.name).into_iter().filter(|run| !listed.contains(run.id.as_str())) {
+                // A locked project's (cl-1130): its state there, nothing of its project's.
+                if crate::project::vault::hidden(&project_run.out_dir) {
+                    status.runs.push(wire::LiveRun::locked(project_run.machine_state.clone().unwrap_or_else(|| "running".into())));
+                    continue;
+                }
                 let Ok(run) = self.calcifer.record(&project_run) else { continue };
                 status.runs.push(wire::LiveRun {
                     id: project_run.id.to_string(),
                     state: run.machine_state.clone().unwrap_or_else(|| "running".into()),
                     waiting: run.waiting.clone().unwrap_or_default(),
                     run: Some(run),
+                    locked: false,
                 });
             }
             status.activity = activity.iter().filter_map(|operation| self.operation(operation, projects)).collect();
@@ -996,11 +1002,15 @@ impl Machines {
         Some(wire::Ssh { args, line })
     }
 
-    /// A run the machine holds for this controller, with this controller's record of it: Calcifer's own or an open project's.
+    /// A run the machine holds for this controller, with this controller's record of it: Calcifer's own or an open project's, a locked
+    /// one's by its state alone.
     fn held(&self, run:v1::RunState)->Option<wire::LiveRun> {
         // A run sent again (cl-935) is `<id>~<attempt>` there.
         let row=self.calcifer.active_run(crate::store::calcifer_id(&run.id))?;
-        Some(wire::LiveRun {run:self.calcifer.record(&row).ok(),id:run.id,state:run.state,waiting:self.calcifer.runs_named(&run.waiting)})
+        // A locked project's (cl-1130): its state there, nothing of its project's.
+        if crate::project::vault::hidden(&row.out_dir) { return Some(wire::LiveRun::locked(run.state)); }
+        let waiting = self.calcifer.runs_named_for(&run.waiting, Some(row.id.as_str()));
+        Some(wire::LiveRun {run:self.calcifer.record(&row).ok(),id:run.id,state:run.state,waiting,locked:false})
     }
 
     /// `text` with each run it names as people know it (`Calcifer::runs_named`).

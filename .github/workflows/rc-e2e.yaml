@@ -1,8 +1,9 @@
 name: rc-e2e
 # Every e2e suite on the open RC's head, after merges (Paul, 11-12: "merge it in and then do the tests on the RC branch
 # itself"): an rc/* merge queue requires `build` alone. One run per RC at a time: pushes while one runs wait, and only the
-# newest waiting one runs, so a busy RC is tested about hourly, each run its newest head. Nightly, master's rc-nightly.yaml
-# dispatches it with macOS and Windows too, and its rc-siblings.yaml dispatches it when cozy-runtime's or packages' RC moves.
+# newest waiting one runs, so a busy RC is tested about hourly, each run its newest head. macOS and Windows run on every push
+# too, in rc-os.yaml's own concurrency group (cl-1128). Nightly, master's rc-nightly.yaml dispatches both, and its
+# rc-siblings.yaml dispatches this when cozy-runtime's or packages' RC moves.
 # A red lists what merged since the last green run, here and in those two, each with its issue, to find the commit that
 # caused it (tracker cl-885).
 # `skew-candidate` is the RC's cozy against the production Hub's line (tensorhub master), as the suites' Hub is tensorhub's RC.

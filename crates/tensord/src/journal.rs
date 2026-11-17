@@ -1482,11 +1482,25 @@ impl Journal {
     /// `objects` (tree members, a local source) and keeping its `spec` (empty: none) until its
     /// preparation ends, for a restart to prepare it again. Each answers the run, and whether it
     /// is new; an id that names another spec or an update, or is invalid, is refused alone.
-    pub(crate) fn accept_runs(&mut self, actor: &str, runs: Vec<Accepting<'_>>) -> io::Result<Vec<io::Result<(Execution, bool)>>> {
+    /// Unless `synced`, its commit doesn't wait for the disk: what a crash loses of it is sent again (a list's items, cl-1123).
+    pub(crate) fn accept_runs(&mut self, actor: &str, runs: Vec<Accepting<'_>>, synced: bool) -> io::Result<Vec<io::Result<(Execution, bool)>>> {
+        if !synced {
+            self.connection.pragma_update(None, "synchronous", "OFF").map_err(db_error)?;
+        }
+        let accepted = self.accept_now(actor, runs, synced);
+        if !synced {
+            self.connection.pragma_update(None, "synchronous", "FULL").map_err(db_error)?;
+        }
+        accepted
+    }
+
+    fn accept_now(&mut self, actor: &str, runs: Vec<Accepting<'_>>, synced: bool) -> io::Result<Vec<io::Result<(Execution, bool)>>> {
+        let began = std::time::Instant::now();
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db_error)?;
+        let (begun, count) = (began.elapsed(), runs.len());
         let mut accepted = vec![];
         for run in runs {
             accepted.push(match accepting(&tx, actor, run) {
@@ -1494,7 +1508,18 @@ impl Journal {
                 accepted => Ok(accepted?),
             });
         }
+        let committing = std::time::Instant::now();
         tx.commit().map_err(db_error)?;
+        // A slow acceptance, said by its parts (cl-1123): the database's write lock, its writes, or its commit's wait for the disk.
+        if began.elapsed() > std::time::Duration::from_millis(100) {
+            tracing::info!(
+                "accepting {count} runs took {} ms: {} ms for the write lock, {} ms to commit ({})",
+                began.elapsed().as_millis(),
+                begun.as_millis(),
+                committing.elapsed().as_millis(),
+                if synced { "synced" } else { "not synced" }
+            );
+        }
         Ok(accepted)
     }
 
@@ -1884,8 +1909,6 @@ fn insert(
         invocation.local_private = parent.invocation.local_private.clone();
         invocation.root = parent.root_seq().to_string();
         invocation.family = parent.family().unwrap_or_default().into();
-        // A guess's calls, or a speculative run's, are no job either (cl-1123 D).
-        invocation.background |= parent.invocation.background;
     }
     let objects: Vec<_> = invocation
         .inputs
@@ -2037,33 +2060,6 @@ impl Journal {
                 |row| Ok((row.get(0)?, row.get::<_, Option<i64>>(1)?.unwrap_or(0).max(since))),
             )
             .map_err(db_error)
-    }
-
-    /// `actor`'s run `from` (a speculative run, cl-1123 D) becomes the run its caller sends as `to`: named so from now on, and a job
-    /// (no longer `background`). Its execution's id; none when no such run is going or has succeeded.
-    pub(crate) fn adopt(&mut self, actor: &str, from: &str, to: &str) -> io::Result<Option<String>> {
-        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
-        let found: Option<(String, String)> = tx
-            .query_row(
-                "SELECT id,record FROM executions WHERE actor=?1 AND request_id=?2 AND state NOT IN ('failed','canceled')",
-                params![actor, from],
-                |row| Ok((row.get::<_, i64>(0)?.to_string(), row.get(1)?)),
-            )
-            .optional()
-            .map_err(db_error)?;
-        let Some((id, record)) = found else { return Ok(None) };
-        let mut record = decoded_execution(&record)?;
-        if let Some(submission) = record.submission.as_mut() {
-            to.clone_into(&mut submission.request_id);
-        }
-        record.invocation.background = false;
-        tx.execute(
-            "UPDATE executions SET request_id=?1,invocation=?2,record=?3,updated_ms=?4 WHERE id=?5",
-            params![to, invocation_index(&record.invocation)?, encoded_execution(&record)?, timestamp(), id],
-        )
-        .map_err(db_error)?;
-        tx.commit().map_err(db_error)?;
-        Ok(Some(id))
     }
 
     pub(crate) fn nonterminal(&self, limit: usize) -> io::Result<Vec<Execution>> {

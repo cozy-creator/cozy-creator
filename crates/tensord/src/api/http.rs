@@ -550,6 +550,10 @@ fn followed<S: Stream + Send + 'static>(identity: &MachineIdentity, events: S) -
 /// A run event as SSE: named by its variant, its sequence as the id when it is durable.
 pub(super) fn run_event(event: &v1::RunEvent) -> Result<Event, Error> {
     let name = event.event.name();
+    // The Responses API's event object alone, as any client of it reads one (xs-209).
+    if let v1::Event::OutputTextDelta(delta) = &event.event {
+        return self::event(name, delta);
+    }
     let durable = !matches!(name, "state" | "progress" | "gpu") && event.sequence > 0;
     let sse = self::event(name, event)?;
     Ok(if durable { sse.id(event.sequence.to_string()) } else { sse })

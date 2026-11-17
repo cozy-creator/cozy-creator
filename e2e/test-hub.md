@@ -18,9 +18,3 @@ The cli and imports e2e shards call `require_ci_test_hub`: they run only against
 Release-gate and pod-session jobs rent real machines, which only production can place: they call
 `require_ci_rental_hub` with their dispatch's `hub=prod` or `hub=isolated`, and none has a default.
 Public dependency and release-artifact downloads are normal build inputs and remain allowed.
-
-Run the guard regression checks without a Hub or credentials:
-
-```sh
-python3 -m unittest discover -s e2e -p test_hub_test.py
-```

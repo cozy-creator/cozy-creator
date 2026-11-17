@@ -15,7 +15,7 @@ import threading
 from typing import TYPE_CHECKING, Iterator, Sequence, TypeAlias, cast
 
 from .. import _ext
-from ._facts import EscapeRecord, PhaseMode, PhaseObservation, Room, SplitContext, SplitObservation, SplitSelection, Verdict, WorkingStats
+from ._facts import EscapeRecord, PhaseMode, PhaseObservation, Refusal, Room, SplitContext, SplitObservation, SplitSelection, Verdict, WorkingStats
 
 PhaseOverlapError = _ext.PhaseOverlapError
 
@@ -211,6 +211,14 @@ def room(device: DeviceLike = 0) -> Room:
     outside this process), `working_live`, `pinned`, `weights_resident` and `free` bytes."""
     _installed()
     return _ext._varena_room(_device(device))
+
+
+def refusal(device: DeviceLike = 0) -> Refusal | None:
+    """The room the last allocation varena refused on `device` found, read as it was refused, its
+    caller's pins still held; taken, so None when none was refused since. `offered`: every lever of
+    the reclaim order was tried first."""
+    _installed()
+    return _ext._varena_refusal(_device(device))
 
 
 def reset_peak(device: DeviceLike = 0) -> None:

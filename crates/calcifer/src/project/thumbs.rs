@@ -82,15 +82,18 @@ struct Drawing {
     frames: u32,
     preview: bool,
     wave: bool,
+    /// An orbit's: its poster and preview start at its front, frame 0, the picture it turns from (cl-1131).
+    front: bool,
 }
 
 impl Drawing {
     fn name(&self) -> String {
         let hex = folder::hex_of(&self.sha256).to_ascii_lowercase();
+        let front = if self.front { "-front" } else { "" };
         match (self.preview, self.field, self.frames) {
-            (true, ..) => format!("{hex}-preview"),
+            (true, ..) => format!("{hex}-preview{front}"),
             _ if self.wave => format!("{hex}-{}-wave", self.width),
-            (false, "video", 0) => format!("{hex}-{}-poster", self.width),
+            (false, "video", 0) => format!("{hex}-{}-poster{front}", self.width),
             _ => format!("{hex}-{}-{}", self.width, self.frames),
         }
     }
@@ -126,9 +129,9 @@ pub(super) async fn thumb(
     let here = {
         let lock = folder.lock().map_err(Refusal)?;
         let file = lock.files.get(&format!("sha256:{hex}")).filter(|file| folder.path(&file.path).is_file());
-        file.map(|file| (file.field(), file.lasts_ms() as f64 / 1000.0, folder.path(&file.path)))
+        file.map(|file| (file.field(), file.lasts_ms() as f64 / 1000.0, folder.path(&file.path), lock.turns(&file.sha256)))
     };
-    let Some((field, seconds, source)) = here else {
+    let Some((field, seconds, source, turns)) = here else {
         // A take's file still on its way here, its run ended on its machine (cl-1108): not drawn yet, as one being drawn isn't. It's
         // drawn as it lands, and the `thumb` event says so.
         let digest = format!("sha256:{hex}");
@@ -143,7 +146,8 @@ pub(super) async fn thumb(
     let private = super::vault::encrypted(&project.root);
     let source = super::vault::logical(&source);
     let width = asked.w.unwrap_or(PICTURE).clamp(16, WIDEST);
-    let drawing = Drawing { root: project.root.clone(), source, sha256: format!("sha256:{hex}"), private, field, seconds, width, frames, preview, wave };
+    let front = turns && field == "video";
+    let drawing = Drawing { root: project.root.clone(), source, sha256: format!("sha256:{hex}"), private, field, seconds, width, frames, preview, wave, front };
     let name = drawing.name();
     let Some(at) = kept(&folder.dir.join(STORE), &name) else {
         // Drawn next: `202 thumb_pending` now, which is no picture and no error, and the page hears `thumb` when it's there.
@@ -171,8 +175,8 @@ fn pending() -> Response {
 }
 
 /// A file that just landed at `source` (`<project>/files/<hex>.<ext>`), measured as a `field`: what the canvas draws of it is made soon,
-/// after what pages wait on.
-pub(super) fn landed(source: PathBuf, sha256: &str, field: &str, seconds: f64) {
+/// after what pages wait on. `front`: an orbit's.
+pub(super) fn landed(source: PathBuf, sha256: &str, field: &str, seconds: f64, front: bool) {
     let source = super::vault::logical(&source);
     let Some(root) = source.parent().and_then(FsPath::parent).map(FsPath::to_owned) else { return };
     let field = match field {
@@ -182,7 +186,7 @@ pub(super) fn landed(source: PathBuf, sha256: &str, field: &str, seconds: f64) {
     };
     let private = super::vault::encrypted(&root);
     let sha256 = format!("sha256:{}", folder::hex_of(sha256).to_ascii_lowercase());
-    let picture = Drawing { root, source, sha256, private, field, seconds, width: PICTURE, frames: 0, preview: false, wave: false };
+    let picture = Drawing { root, source, sha256, private, field, seconds, width: PICTURE, frames: 0, preview: false, wave: false, front: front && field == "video" };
     let preview = (field == "video").then(|| Drawing { width: 0, preview: true, ..picture.clone() });
     ask(picture, false);
     if let Some(preview) = preview {
@@ -400,12 +404,14 @@ fn draw(ffmpeg: &FsPath, ffprobe: &FsPath, drawing: &Drawing, dir: &FsPath, name
         "video" if drawing.preview => {
             let out = part("mp4")?;
             let seconds = seconds(ffprobe, drawing);
-            preview(ffmpeg, &source, seconds, poster_at(ffmpeg, &source, seconds), out.path())?;
+            let at = if drawing.front { 0.0 } else { poster_at(ffmpeg, &source, seconds) };
+            preview(ffmpeg, &source, seconds, at, out.path())?;
             (out, "mp4")
         }
         "video" => {
             let out = part("jpg")?;
             let drawn = match drawing.frames {
+                0 if drawing.front => poster(ffmpeg, &source, 0.0, &scale, out.path()),
                 0 => poster(ffmpeg, &source, poster_at(ffmpeg, &source, seconds(ffprobe, drawing)), &scale, out.path()),
                 frames => strip(ffmpeg, ffprobe, drawing, &source, frames, &scale, out.path()),
             };

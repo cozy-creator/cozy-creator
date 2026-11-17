@@ -683,12 +683,7 @@ impl Service {
                         true => crate::access::WAITING_FOR_MODELS.to_owned(),
                         false => format!("{}: {on}", crate::access::WAITING_FOR_MODELS),
                     };
-                    // A private run's models aren't named in this machine's log.
-                    let said = match record.invocation.local_private {
-                        Some(_) => crate::access::WAITING_FOR_MODELS,
-                        None => reason.as_str(),
-                    };
-                    self.waits_for(&record, said, &mut waiting);
+                    self.waits_for(&record, &reason, false, &mut waiting);
                     self.engine.waiting(&record.id, Some(reason))?;
                     continue;
                 }
@@ -710,10 +705,6 @@ impl Service {
             }),
             false => Default::default(),
         };
-        // A real GPU call goes before every speculative run and its calls (cl-1123 D): one ready leaves them queued, and ends the one
-        // going.
-        let speculative = |record: &Execution| record.invocation.background && !record.invocation.prepares;
-        let real_gpu = source_ready.iter().any(|record| record.invocation.degree > 0 && !speculative(record));
         let ready = self.queue.lock().unwrap().order(source_ready, model);
         let (mut place, held) = (0, self.held.get().is_some_and(|held| held()));
         let mut next_gpu = None;
@@ -722,9 +713,6 @@ impl Service {
         let mut left_waiting = vec![];
         for record in ready {
             let invocation = &record.invocation;
-            if real_gpu && speculative(&record) {
-                continue;
-            }
             // Re-read for every offer, then once more inside Pool after it holds the GPU slot.
             let admit = || cpu_active().map(|used| if invocation.degree == 0 {
                 used < self.parallelism
@@ -738,7 +726,7 @@ impl Service {
                 }
                 self.went(&record);
             } else {
-                if invocation.degree > 0 && !speculative(&record) {
+                if invocation.degree > 0 {
                     left_waiting.push((record.clone(), width));
                 }
                 // An earlier incompatible GPU job remains a barrier. Lookahead never scans
@@ -772,13 +760,15 @@ impl Service {
                     } else {
                         "waiting for its turn".to_owned()
                     };
-                    self.waits_for(&record, &why, &mut waiting);
+                    // A wait naming a project's run (a CPU slot's holder) names it to its caller alone (cl-1130).
+                    let private = cpu_full && holders.iter().any(|holder| holder.invocation.local_private.is_some());
+                    self.waits_for(&record, &why, private, &mut waiting);
                     let shown = self.engine.in_line(&record.id, place, why);
                     shown.unwrap_or_else(|error| tracing::warn!("run {}: its place was not shown: {error}", record.id));
                 }
             }
         }
-        if !left_waiting.is_empty() && (pool.loading_ahead() || pool.speculating()) {
+        if !left_waiting.is_empty() && pool.loading_ahead() {
             let constructions: Vec<String> = (left_waiting.iter())
                 .map(|(record, width)| self.plan(&pool, record).and_then(|plan| match width {
                     Some(width) => plan.at(*width),
@@ -802,20 +792,22 @@ impl Service {
             [rest @ .., last] => format!("waiting for {} or {last} to finish with this machine's CPU", rest.join(", ")),
         }
     }
-    /// Run `record` left waiting `why` this pass: this machine's log says so when what it waits for changes.
-    fn waits_for(&self, record: &Execution, why: &str, waiting: &mut HashSet<String>) {
+    /// Run `record` left waiting `why` this pass: this machine's log says so when what it waits for changes. A project's run, or a
+    /// wait that names one (`private`), it doesn't say: no log of the machine's names a project's run (cl-1130).
+    fn waits_for(&self, record: &Execution, why: &str, private: bool, waiting: &mut HashSet<String>) {
         waiting.insert(record.id.clone());
+        let why = match private || record.invocation.local_private.is_some() { true => "", false => why };
         let mut waits = self.waits.lock().unwrap();
         let (_, said) = waits.entry(record.id.clone()).or_insert_with(|| (std::time::Instant::now(), String::new()));
         if said.as_str() != why {
             why.clone_into(said);
             drop(waits);
-            tracing::info!(run = %self.engine.caller_id(&record.id), "queue: {why}");
+            if !why.is_empty() { tracing::info!(run = %self.engine.caller_id(&record.id), "queue: {why}"); }
         }
     }
     /// Run `record` went: if it waited, this machine's log says how long, and for what last.
     fn went(&self, record: &Execution) {
-        let Some((since, why)) = self.waits.lock().unwrap().remove(&record.id) else { return };
+        let Some((since, why)) = self.waits.lock().unwrap().remove(&record.id).filter(|(_, why)| !why.is_empty()) else { return };
         tracing::info!(run = %self.engine.caller_id(&record.id), "queue: goes after {:.1} s {why}", since.elapsed().as_secs_f64());
     }
     /// The plan `record` runs: its journaled preparation's, else a weightless call's.

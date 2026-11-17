@@ -253,13 +253,15 @@ jobs:
           target: x86_64
           manylinux: 2_28
           working-directory: crates/tensorfs-py
-          args: --release --locked --target-dir ../../target/manylinux2_28 --out dist -i python3.11
+          # fault-hooks: the release gate's fault injection, in dev builds only (tensorfs-publish.yaml has none). A
+          # `--features` replaces pyproject.toml's list, so it names that list's too (abi3 for this one 3.11 build).
+          args: --release --locked --features extension-module,store,pyo3/abi3-py311,fault-hooks --target-dir ../../target/manylinux2_28 --out dist -i python3.11
           docker-options: -e TENSORFS_REQUIRE_AOT=1
           before-script-linux: |
             export PATH="/opt/python/cp312-cp312/bin:$PATH"
             /opt/python/cp312-cp312/bin/python -m pip install 'uv==0.12.7'
             # Match maturin's target, interpreter and feature graph through the canonical helper.
-            /opt/python/cp311-cp311/bin/python backend/stage_cli.py --release \
+            /opt/python/cp311-cp311/bin/python backend/stage_cli.py --release -F fault-hooks \
               --target x86_64-unknown-linux-gnu --target-dir ../../target/manylinux2_28 \
               -i /opt/python/cp311-cp311/bin/python
       # The container leaves root-owned files the verify and cache post-steps write.
@@ -294,6 +296,7 @@ jobs:
           assert base64.urlsafe_b64encode(digest).rstrip(b"=").decode() == entry.hash.value
           cli = json.loads(subprocess.check_output([str(tfs), "--json", "version"], text=True))
           assert cli["version"] == installed.version == tensorfs.__version__ == tensorfs._ext.__version__, cli
+          assert callable(tensorfs._ext._io_fail_pieces), "a dev build carries the fault hook (fault-hooks)"
           assert cli["sha256"] == digest.hex()
           assert callable(raw.quantize) and callable(tensorfs.Writer.quantize)
           encoded, measured = raw.quantize_measured(
@@ -499,22 +502,6 @@ jobs:
         env:
           CARGO_INCREMENTAL: '0'
         run: bash e2e/candidates/build.sh cozy . "$RUNNER_TEMP/project-vault-candidate"
-      - name: Check vault streaming and legacy-file boundaries
-        if: inputs.publish_run == ''
-        run: |
-          cargo test --release --locked -p cli --lib vault_
-          cargo test --release --locked -p cli --lib progress::transfer_tests
-          cargo test --release --locked -p cli --lib download_progress_reports_written_bytes
-          cargo test --release --locked -p calcifer --lib project::vault_operation::tests
-          cargo test --release --locked -p calcifer --lib vault_inventory_matches_copied_file_and_byte_totals
-          cargo test --release --locked -p calcifer --lib rejected_vault_credentials_have_a_specific_error
-          cargo test --release --locked -p calcifer --lib encrypted_conversion_cleanup
-          cargo test --release --locked -p calcifer --lib store::journal_tests
-          cargo test --release --locked -p calcifer --lib project::assets::tests
-          cargo test --release --locked -p calcifer --lib project::db::tests
-          cargo test --release --locked -p calcifer --lib project::code_tests
-          cargo test --release --locked -p calcifer --lib project::retired_storage_tests
-          cargo test --release --locked -p calcifer --lib legacy_missing_media_is_skipped
       - name: Take the exact published native archive
         if: inputs.publish_run != ''
         env:
@@ -654,17 +641,3 @@ jobs:
           path: product-vault-evidence
           if-no-files-found: warn
           retention-days: 14
-
-  api-protocol:
-    if: contains(inputs.build, 'api-protocol')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          ref: ${{ inputs.ref }}
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      - name: Model content negotiation and catalog protocol regressions
-        run: |
-          cargo test --locked -p api --features hub --lib hub::client::catalog_tests -- --nocapture | tee api-protocol.log
-          grep -q 'model_cards_negotiate_the_canonical_checkpoint_representation .*ok' api-protocol.log

@@ -15,10 +15,10 @@ from tokenizers import AddedToken, Regex, Tokenizer, models as token_models, pre
 from transformers import Qwen3_5TextConfig, Qwen3_5TextModel
 
 from cell import Cell, Json, module, save
-from tiny import _shared, qwen3_5
+from tiny import _shared, qwen3
 from tiny._video import video
 
-REF = "ifm/pan2@0.2.0"
+REF, REASONER = "ifm/pan2@0.2.0", "qwen/qwen3.5-9b@0.2.0"
 _CAPTION = json.dumps({"video_style": "A fixed tabletop shot.", "lighting": "Daylight.",
                        "perspective_view": "Side view.", "subjects_lifecycle": [],
                        "init_frame_visual_description": "A red ball on a table.",
@@ -81,7 +81,7 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
         "text_encoder": ["transformers", "Qwen3_5TextModel"], "vae": ["diffusers", "AutoencoderKLWan"],
         "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"], "tokenizer": ["transformers", "Qwen2Tokenizer"],
     }))
-    return {REF: out, **qwen3_5.models(root, store)}
+    return {REF: out, REASONER: qwen3.dense(root / "reasoner")}
 
 
 _SMALL: dict[str, Json] = {"prompt": _CAPTION, "duration_s": 1, "seed": 7, "steps": 1,

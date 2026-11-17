@@ -17,13 +17,18 @@ cap() {
   [ "$said" = "$want" ] || expect "cap-$1" FAIL "machine show says ${said:-nothing} bytes, not $want"
 }
 cap 6GiB
+# Every package's weights download in the background as the cells go (warm_ahead), and each run stops after 3 sampler
+# steps (gate.sh STOP): what a package keeps across steps, and how that grows, shows in three (xs-208).
+warm_ahead "${PRODUCTS[@]}"
+STOP=3
 for p in "${PRODUCTS[@]}"; do product "$p"; done
 cap off
 # refused <cell>: its capped run failed or has no record, or varena refused it memory in this request (a split level
 # refused for good, a Runtime Retry, a loop's refused pass, an OOM the package returned past).
 refused() {
   [ -f "$1.json" ] || return 0
-  jq -e '(.status != "completed") or ([.measurements, .calls[]?.measurements] | map(.memory.stats.varena[]?.stats // {})
+  # A run stopped after its steps (gate.sh STOP) ended canceled on purpose: only its memory record says it was refused.
+  jq -e --arg stopped "$(whole "$1" || echo 1)" '(.status != "completed" and ($stopped == "" or .status != "canceled")) or ([.measurements, .calls[]?.measurements] | map(.memory.stats.varena[]?.stats // {})
     | any(((.retries // 0) + (.swallowed_ooms // 0)) > 0 or any(.working_splits[]?; .refused != null)
           or any(.escaped[]?; .refused != null)))' "$1.json" >/dev/null 2>&1
 }
@@ -37,3 +42,4 @@ if [ -n "$TWINS" ]; then
   for p in "${PRODUCTS[@]}"; do product "$p"; done
   TWIN=
 fi
+STOP=

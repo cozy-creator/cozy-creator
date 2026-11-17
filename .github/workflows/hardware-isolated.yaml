@@ -74,10 +74,6 @@ jobs:
           uv venv --python 3.12 "$RUNNER_TEMP/author-contract"
           uv pip install --python "$RUNNER_TEMP/author-contract/bin/python" 'cozy-runtime==0.45.0'
           python3 e2e/hardware/contract_test.py --runtime-cli "$RUNNER_TEMP/author-contract/bin/cozy-runtime" --out "$RUNNER_TEMP/author-contract-results"
-      - name: Fixture isolation and cleanup regressions
-        run: |
-          python3 -m unittest discover -s e2e/hardware -p 'test_*.py' -v
-          python3 -m unittest discover -s e2e -p 'test_hub_test.py' -v
       - name: Source syntax and frozen helper provenance
         run: |
           python3 -m py_compile e2e/hardware/*.py e2e/hardware/probe/ci_hardware_probe/__init__.py

@@ -6,11 +6,12 @@ import { leftWords } from "../format"
 import { rateWords, size, target } from "../runs/words"
 
 /** One thing a machine is doing: a package installing, weights arriving, a run, a run of another project or of the open one while it's
- *  locked (`own`; its state alone), or the machine coming up. */
+ *  locked (`own`; its state alone), a locked project's run (`locked`: Calcifer says nothing more of it, cl-1130), or the machine coming
+ *  up. */
 export type Doing =
   | { kind: "install" | "download"; key: string; operation: Operation }
   | { kind: "run"; key: string; run: Run; on?: Operation }
-  | { kind: "other"; key: string; state: string; own?: boolean }
+  | { kind: "other"; key: string; state: string; own?: boolean; locked?: boolean }
   | { kind: "boot"; key: string; words: string }
 
 /** `qwen/qwen-image-2.1-turbo`, or a Hugging Face source of it, as people say it: `Qwen Image 2.1 Turbo`. Anything else is said as it is. */
@@ -54,7 +55,8 @@ export function doingOf(machine: Machine, project: string | null, locked = false
   const operations: Doing[] = [...activity]
     .sort((a, b) => Number(a.kind === "download") - Number(b.kind === "download"))
     .map((operation) => ({ kind: operation.kind as "install" | "download", key: operation.id, operation }))
-  const runs: Doing[] = (machine.status?.runs ?? []).flatMap(({ id, state, run }): Doing[] => {
+  const runs: Doing[] = (machine.status?.runs ?? []).flatMap(({ id = "", state, run, locked: sealed }, at): Doing[] => {
+    if (sealed) return [{ kind: "other", key: `locked ${at}`, state, locked: true }]
     if (!run) return []
     if (run.project_id && (run.project_id !== project || locked)) return [{ kind: "other", key: id, state, own: run.project_id === project }]
     return [{ kind: "run", key: `run ${run.project_id ?? ""} ${run.number}`, run, on: waitsOnOf(activity, run) }]

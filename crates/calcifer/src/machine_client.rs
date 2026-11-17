@@ -280,6 +280,10 @@ impl Machine {
         let events = sse(send(request).await?)?;
         Ok(events.filter_map(|event| async move {
             match event {
+                // The Responses API's event object alone (xs-209): live, in no log.
+                Ok(event) if event.event == ::api::machine::OUTPUT_TEXT_DELTA => Some(
+                    parse(&event.data).map(|delta| RunEvent { sequence: 0, at_ms: 0, event: Event::OutputTextDelta(delta) }),
+                ),
                 Ok(event) if Event::NAMES.contains(&event.event.as_str()) => {
                     Some(parse(&event.data))
                 }

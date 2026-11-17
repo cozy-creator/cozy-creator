@@ -75,7 +75,7 @@ function Row({ doing, boxes, to }: { doing: Doing; boxes: Map<number, string>; t
     return (
       <li className="doing" data-doing="other">
         <MarkOf mark={doing.state === "running" ? "work" : "idle"} />
-        <b>{doing.own ? "This project's run" : "Another project's run"}</b>
+        <b>{doing.locked ? "A locked project's run" : doing.own ? "This project's run" : "Another project's run"}</b>
         <span className="kind">{sentence(doing.state)}</span>
       </li>
     )

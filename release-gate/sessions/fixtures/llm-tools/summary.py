@@ -1,8 +1,9 @@
-"""xs-204's CLI cells (llm-tools.sh), each from its record (`cozy --json --full run watch <n> --once`, <dir>/<cell>.json): where it ran,
-its lane, total, step 1 and steady (each step track of its run and calls: the decode's tokens where it reports them), peak VRAM (TensorD's
-NVML reads), kernels, and its answer whole. Then whether each answer describes what it was shown.
+"""xs-204's and se-145's CLI cells (llm-tools.sh), each from its record (`cozy --json --full run watch <n> --once`, <dir>/<cell>.json):
+where it ran, its model and lane, total, start (its start to its first token: load, reading and prefill), answering (the stage) and
+tokens a second (steady decode), step 1 and steady (each step track of its run and calls: the decode's tokens where it reports them),
+peak VRAM (TensorD's NVML reads), kernels, and its answer whole. Then whether each answer describes what it was shown, or isn't refused.
 
-  python3 summary.py <dir> <cell>[=<pattern>] ...    (a pattern, case-insensitive, its answer must match)
+  python3 summary.py <dir> <cell>[=<pattern>|!<pattern>] ...    (case-insensitive: =, its answer must match; !, must not)
 """
 import os
 import re
@@ -27,14 +28,17 @@ def tracks(run: Run) -> str:
 def main() -> int:
     d, cells = sys.argv[1], sys.argv[2:]
     fails: list[str] = []
-    print('| cell | run | status | machine · GPU | model · lane | total | steps | peak VRAM (added) | attention · GEMM |')
-    print('|---|---|---|---|---|---|---|---|---|')
+    print('| cell | run | status | machine · GPU | model · lane | total | start | answering | tokens/s | steps | peak VRAM (added) |'
+          ' attention · GEMM |')
+    print('|---|---|---|---|---|---|---|---|---|---|---|---|')
     answers: list[tuple[str, int | None, str]] = []
     for cell in cells:
-        name, _, pattern = cell.partition('=')
+        said_as = re.match(r'([^=!]+)([=!]?)(.*)', cell, re.S)
+        assert said_as is not None
+        name, judged, pattern = said_as.groups()
         run = Run.read(os.path.join(d, f'{name}.json'))
         if run is None:
-            print(f'| {name} | - | no record | | | | | | |')
+            print(f'| {name} | - | no record | | | | | | | | | |')
             fails.append(f'{name}: no record')
             continue
         rec = run.record
@@ -44,23 +48,29 @@ def main() -> int:
         text = said if isinstance(said, str) else ''
         total = f'{run.execution_ms / 1000:.1f} s' if run.execution_ms else '?'
         peak = f"{vram['peak']} MiB ({vram['added']})" if vram else '?'
+        start = f'{run.to_step1_ms / 1000:.1f} s' if run.to_step1_ms else '?'
+        answering = run.stage_ms('answering')
+        steady = run.steps[1:]
+        rate = f'{1000 * len(steady) / sum(steady):.1f}' if steady and sum(steady) else '?'
         print(f"| {name} | {run.number} | {run.status} | {rec.get('machine')} · GPU {','.join(map(str, run.gpus)) or '?'} | {models} | {total} |"
-              f" {tracks(run)} | {peak} |"
+              f" {start} | {answering / 1000:.1f} s | {rate} | {tracks(run)} | {peak} |"
               f" {', '.join(run.attention) or '-'} · {', '.join(k for _, k in run.gemm) or '-'} |")
         answers.append((name, run.number, text))
         if run.status != 'completed':
             fails.append(f'{name} (run {run.number}): {run.status} {run.reason}')
         elif not text.strip():
             fails.append(f'{name} (run {run.number}): no words')
-        elif pattern and not re.search(pattern, text, re.I):
+        elif judged == '=' and pattern and not re.search(pattern, text, re.I):
             fails.append(f'{name} (run {run.number}): its answer does not say /{pattern}/: {text[:200]}')
+        elif judged == '!' and pattern and re.search(pattern, text, re.I):
+            fails.append(f'{name} (run {run.number}): its answer says /{pattern}/: {text[:200]}')
     print()
     for name, number, text in answers:
         print(f'**{name}** (run {number}):\n\n> ' + text.strip().replace('\n', '\n> ') + '\n')
     for fail in fails:
         print(f'FAIL {fail}')
     if not fails:
-        print(f'PASS {len(cells)} answers, each describing what it was shown')
+        print(f'PASS {len(cells)} answers, each describing what it was shown or answering what it was asked')
     return 1 if fails else 0
 
 
