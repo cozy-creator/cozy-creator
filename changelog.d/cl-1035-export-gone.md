@@ -1,0 +1,1 @@
+An export whose bytes the machine no longer has (collected, or let go of once copied into a project) now settles at once as lost: the machine answers `object_not_found` instead of a bare `not_found`, the output's export fails, and the run says why in one line. Before, the exporter took it as a pause and started the machine again each time it stopped, for good (cl-1035).
