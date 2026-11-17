@@ -76,7 +76,7 @@ local holder=$HOME/.cozy/calcifer/calcifer.lock.holder package=qwen3.5 said
 [ -z "$PACKAGES" ] || [ ! -d "$PACKAGES/qwen3" ] || package=qwen3
 # Its project by its folder, as a run names one.
 if ! uv run -q --no-project --with 'openai>=1.80' python3 "$here/responses_sdk.py" --base "http://$(jq -r .address < "$holder")/v1/openai" \
-  --key "$(jq -r .token < "$holder")" --project "$RUN_PROJECT" --model "$package/write:qwen/qwen3.5-0.8b@0.1.0" > "$OUT/responses.txt" 2>&1; then
+  --key "$(jq -r .token < "$holder")" --project "$RUN_PROJECT" --model "$package/write:huihui-ai/huihui-qwen3.5-0.8b-abliterated@0.1.0" > "$OUT/responses.txt" 2>&1; then
   said=$(grep '^FAIL ' "$OUT/responses.txt" | sed 's/^FAIL //' | paste -sd ';' - || true)
   check "responses: ${said:-$(tail -c 600 "$OUT/responses.txt")}"
 fi
@@ -92,7 +92,7 @@ step "cozy run writes an LLM's words as they come (xs-209)"
 local package=qwen3.5 said
 [ -z "$PACKAGES" ] || [ ! -d "$PACKAGES/qwen3" ] || package=qwen3
 if ! (cd "$RUN_PROJECT" && cozy run "$package/write" 'instructions=Write eight sentences about a lighthouse at night.' \
-  --model model=qwen/qwen3.5-0.8b@0.1.0 max_tokens:=240 seed:=7 temperature:=0 --on local 2> "$OUT/cli-words.err") \
+  --model model=huihui-ai/huihui-qwen3.5-0.8b-abliterated@0.1.0 max_tokens:=240 seed:=7 temperature:=0 --on local 2> "$OUT/cli-words.err") \
   | python3 -I "$here/timed.py" > "$OUT/cli-words.json"; then
   check "cli-words: cozy run failed: $(tail -c 400 "$OUT/cli-words.err")"
   return
