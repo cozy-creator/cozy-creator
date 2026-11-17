@@ -448,7 +448,7 @@ impl Projects {
         let physical = current_view(&root)?;
         let dir = physical.as_path();
         self.let_go_replaced(dir);
-        let mut rendering = None;
+        let (mut rendering, mut relocated) = (None, false);
         let opened = tokio::task::block_in_place(|| Folder::open_with(dir, api.machines.hubs.home(), |folder| {
             let identified = identify_loaded(api, dir, folder)?;
             let id = &identified.id;
@@ -462,6 +462,7 @@ impl Projects {
                     rendering = Some(open);
                     return Err(Error::new(Kind::Conflict, "project_moving", "its walk is handed over"));
                 }
+                relocated = !vault::encrypted(&root);
                 self.open.lock().expect("projects lock").remove(id);
             }
             Ok(identified)
@@ -475,6 +476,9 @@ impl Projects {
             }
             (opened, _) => opened?,
         };
+        if relocated {
+            tokio::spawn(crate::private_io::reprove(api.clone(), id.clone(), dir.to_owned()));
+        }
         IDENTITIES.lock().expect("identities lock").insert(dir.to_owned(), (id.clone(), name));
         crate::events::project_opened(dir);
         let mut open = self.open.lock().expect("projects lock");
@@ -600,7 +604,7 @@ fn hand_over(api: &Arc<Api>, old: &Arc<Project>, root: &FsPath, dir: &FsPath) ->
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     crate::private_io::moved(&old.root, dir)?;
-    tokio::runtime::Handle::current().block_on(crate::private_io::reprove(api, &old.id, dir));
+    tokio::runtime::Handle::current().block_on(crate::private_io::reprove(api.clone(), old.id.clone(), dir.to_owned()));
     Ok(())
 }
 

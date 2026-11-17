@@ -210,11 +210,11 @@ pub(crate) fn moved(from: &Path, to: &Path) -> Result<(), Error> {
 
 /// Project `id`'s folder moved while this computer's machine ran its work (cl-1066): its scope, renamed by `moved`, proved there again
 /// now, so what its runs going there write lands where it is now. Unproved, its next run proves it as it goes.
-pub(crate) async fn reprove(api: &Arc<crate::api::Api>, id: &str, root: &Path) {
-    PROVED.lock().unwrap().retain(|(project, _, _)| project != id);
+pub(crate) async fn reprove(api: Arc<crate::api::Api>, id: String, root: PathBuf) {
+    PROVED.lock().unwrap().retain(|(project, _, _)| project != &id);
     if !api.machines.local.running() { return; }
     let Ok(Some(base)) = api.calcifer.link("local") else { return };
-    if let Err(error) = execution_link(id, root, "local", &base).await {
+    if let Err(error) = execution_link(&id, &root, "local", &base).await {
         tracing::warn!("{}: this computer's machine still reads it where it was: {}", root.display(), error.message);
     }
 }
@@ -246,12 +246,20 @@ fn read_marker(view: &Path) -> Result<LocalPrivateMarker, Error> {
 /// obtains `project_id` from its canonical document, never from the marker itself.
 pub(crate) fn retained_scope(root: &Path, project_id: &str) -> Result<Option<Scope>, Error> {
     if !root.join(LOCAL_PRIVATE_MARKER).exists() { return Ok(None); }
-    let marker = read_marker(root)?;
+    let mut marker = read_marker(root)?;
     if marker.storage.project_id != project_id { return Ok(None); }
     validate_retained(&marker, project_id)?;
     let view = platform::durable::canonical(root).map_err(|_| error("the retained project is unavailable"))?;
     if marker.storage.view_root != view {
-        return Err(error("This project moved while its runs were open on this computer's machine. Let them finish, then open it again."));
+        // Moved, by hand or another program (cl-1066): where it was holds it no more, so its marker names where it is, its token and
+        // namespace kept, and this computer's machine is proved it again (`reprove`).
+        if crate::project::vault::plain_project_id(&marker.storage.view_root).as_deref() == Some(project_id) {
+            return Err(error("Another folder holds this project's files on this computer's machine. Open that one."));
+        }
+        marker.storage.view_root = view.clone();
+        let encoded = serde_json::to_vec(&marker).map_err(|_| error("cannot encode the private execution marker"))?;
+        platform::durable::replace(&root.join(LOCAL_PRIVATE_MARKER), &encoded, 0o600).map_err(|_| error("cannot retain the private execution marker"))?;
+        PROVED.lock().unwrap().retain(|(project, _, _)| project != project_id);
     }
     let scope = Scope { storage: marker.storage, token: marker.token };
     SCOPES.lock().unwrap().insert(view, scope.clone());
