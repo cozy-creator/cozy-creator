@@ -210,11 +210,28 @@ fn newest_first<T>(mut items: Vec<T>, version: impl Fn(&T) -> &str) -> Vec<T> {
 /// code, which retires nothing.
 pub(super) async fn install(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option<Agreed>, code: Option<LocalCode>, ask: PackageInstall) -> Result<Planned, Refusal> {
     let home = api.machines.hubs.home();
+    // A public repository's URL (cl-1127): fetched here at its commit, then installed as local code is, said with its commit.
+    let mut fetched = None;
+    let code = match code {
+        Some(code) => Some(code),
+        None => match crate::git_code::target(&ask.package) {
+            Some(found) => {
+                let (path, function) = found.map_err(Refusal)?;
+                if let Some(function) = function {
+                    let said = format!("{} names the function {function}: install its package's folder.", ask.package.trim());
+                    return Err(Refusal(Error::new(Kind::Usage, "package_ref_invalid", said)));
+                }
+                fetched = crate::git_code::origin_of(&path);
+                Some(crate::local_code::own(api, &path).map_err(Refusal)?)
+            }
+            None => None,
+        },
+    };
     if let Some(code) = &code {
         let source = crate::local_code::source(home, code, &api.machines.hubs, hub).await.map_err(Refusal)?;
         crate::maintenance_source::keep_derived(api,code,&source).map_err(Refusal)?;
         // Its machine's Runtime moves first to one its requirement admits, as a release's below (cl-1069).
-        let mut notes = vec![];
+        let mut notes: Vec<String> = fetched.iter().map(crate::git_code::Origin::said).collect();
         if let Some(upgrade) = Box::pin(crate::runs::target::local_upgrade(api, hub.as_str(), &on, &source.package, source.needs.clone())).await.map_err(Refusal)?
             && Box::pin(api.machines.upgrade(&upgrade)).await.map_err(Refusal)?.is_some()
         {
@@ -253,12 +270,20 @@ pub(super) async fn install(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option
             let _ = ::api::hub::cards::card(|| Ok(reader), &root, &hub, &package, &release).await;
         }
     });
-    let submit = release_install(hub.as_str(), on, &package, &chosen, agreed);
+    // One this computer holds goes from here by content, whether the Hub answers or not; else its machine reads it at the Hub, and it
+    // is kept here behind the install for the next (cl-1127).
+    let held = super::held::sent(api, hub.as_str(), &package, &chosen);
+    if held.is_none() {
+        super::held::keep_behind(api, hub.as_str(), &package, &chosen);
+    }
+    let submit = release_install(hub.as_str(), on, &package, &chosen, agreed, held);
     Ok(Planned::Run { submit: Box::new(submit), after: Some(After::Retire { package }), notes, mirror: None })
 }
 
-/// The run that installs `release` of `package` on a machine: a warm one naming no function.
-fn release_install(hub: &str, on: On, package: &str, release: &str, agreed: Option<api::calcifer::Agreed>) -> SubmitRun {
+/// The run that installs `release` of `package` on a machine: a warm one naming no function. `held`: its card and files from this
+/// computer (`held::sent`).
+fn release_install(hub: &str, on: On, package: &str, release: &str, agreed: Option<api::calcifer::Agreed>, held: Option<(String, Vec<api::calcifer::StagedInput>)>) -> SubmitRun {
+    let (card, inputs) = held.unwrap_or_default();
     SubmitRun { project: None,
         agreed,
         stays: vec![],
@@ -268,10 +293,10 @@ fn release_install(hub: &str, on: On, package: &str, release: &str, agreed: Opti
         target: format!("{package}@{release}"),
         spec: v1::RunSpec {
             kind: v1::RunKind::Warm,
-            source: Some(Source::Release(v1::Release { package: package.to_owned(), release: release.to_owned(), ..Default::default() })),
+            source: Some(Source::Release(v1::Release { package: package.to_owned(), release: release.to_owned(), card, ..Default::default() })),
             ..Default::default()
         },
-        inputs: vec![],
+        inputs,
         held: vec![],
         out: None,
         warnings: vec![],

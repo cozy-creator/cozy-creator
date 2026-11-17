@@ -19,6 +19,7 @@ mod cozy;
 mod eta;
 mod events;
 mod files;
+mod git_code;
 mod floor;
 mod hub;
 mod health;

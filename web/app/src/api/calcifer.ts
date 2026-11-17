@@ -737,7 +737,11 @@ level: string,
  * What its runs are told of the Runtime pair it holds (one of the machine's it did not take,
  * and why); empty for nothing.
  */
-warning: string, };
+warning: string,
+/**
+ * Local code fetched from a public repository: where, `git+<url>@<commit>[#subdirectory=<folder>]` (cl-1127); empty otherwise.
+ */
+origin?: string, };
 
 /**
  * A typed refusal: its class, stable code and message, with an optional remedy and next commands.
@@ -994,7 +998,7 @@ export type HeldPackage = { machine: string, package: string, release: string,
  */
 runtime: string, level: string, hub: string,
 /**
- * `local`, `hub`, or another Hub's URL.
+ * `local`, `hub`, another Hub's URL, or a repository's commit (`git+<url>@<commit>`, cl-1127).
  */
 source: string,
 /**

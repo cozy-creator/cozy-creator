@@ -76,6 +76,11 @@ pub(crate) struct Facts {
 }
 
 impl Facts {
+    /// The CA its machines trust it by, DER; empty for a Hub a public CA signs.
+    pub(crate) fn ca(&self) -> &[u8] {
+        &self.ca_der
+    }
+
     /// Whether the account may hold private checkpoints of model `org/name`.
     fn reads_privately(&self, model: &str) -> bool {
         let org = model.split('/').next().unwrap_or_default();

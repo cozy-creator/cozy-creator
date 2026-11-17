@@ -57,6 +57,7 @@ parse "$@"
 . "$(dirname "$0")/devstart.sh"
 . "$(dirname "$0")/standing.sh"
 . "$(dirname "$0")/llm.sh"
+. "$(dirname "$0")/hubdown.sh"
 
 # This proof owns its foreground Calcifer. Keep it out of the ordinary raw-log/body
 # collectors and never emit its private CLI data.
@@ -977,6 +978,8 @@ case $SHARD in
     local_edits
     hub_dependency
     hub_published
+    git_url
+    hub_down_install
     rc_floor
     held_prerelease
     final_model
@@ -1014,6 +1017,8 @@ case $SHARD in
     self_update
     logs
   " ;;
+  # What works with the Hub unreachable, on a stand-in machine (cl-1127): measured, by dispatch.
+  hubdown) parts="hub_down_table logs" ;;
   # By hand: the control-plane audit's cells alone (control.sh).
   control) parts="
     machine_show_runs

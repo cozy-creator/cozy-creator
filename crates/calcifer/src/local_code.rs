@@ -102,12 +102,17 @@ fn keep_manifest(home: &Home, digest: &Digest, document: &[u8]) -> Result<PathBu
 
 pub(crate) use api::target::local;
 
-/// Local code a project's text names (`./dir[/fn]`, `./script.py[/fn]` from its folder, `~/…`, an absolute path), or a
+/// Local code a project's text names (`./dir[/fn]`, `./script.py[/fn]` from its folder, `~/…`, an absolute path, a public repository's
+/// URL, `git_code`), or a
 /// first-party package a dev home's checkout holds (`qwen-image-2/generate`, `checkout::named`): a folder of Calcifer's own
 /// computer, as the project is, and the function it names. None: a published name. A client's own code comes by content instead
 /// (`copied`).
 pub(crate) fn target(text: &str, cwd: Option<&Path>, home: &Path) -> Option<Result<(PathBuf, Option<String>), Error>> {
     let raw = text.trim();
+    // A public repository's URL: fetched at its commit into a folder of Calcifer's own (cl-1127).
+    if let Some(found) = crate::git_code::target(raw) {
+        return Some(found);
+    }
     let Some(path) = local(raw, cwd.unwrap_or(Path::new("")), home) else {
         return crate::checkout::named(raw).map(Ok);
     };
@@ -164,12 +169,15 @@ pub(crate) fn copied(home: &Home, code: &LocalCode) -> Result<PathBuf, Error> {
 
 /// A folder of Calcifer's own (a project's `with: ./dir`) as local code: read as a client reads its own, and copied as a
 /// client's is, so the one path from here on is the copy's. Where no project is, only a package of the dev home's packages
-/// checkout, admitted as independent source (xs-195).
+/// checkout or a repository Calcifer fetched (cl-1127), admitted as independent source (xs-195).
 pub(crate) fn own(api: &Api, path: &Path) -> Result<LocalCode, Error> {
     let home = api.machines.hubs.home();
     if crate::private_io::current().is_none() {
         if crate::checkout::package_at(path).is_some() {
             return crate::maintenance_source::admit_checkout(api, path);
+        }
+        if crate::git_code::origin_of(path).is_some() {
+            return crate::maintenance_source::admit_fetched(api, path);
         }
         return Err(refuse("source_scope_required","use native independent source capture before staging project-independent code"));
     }
@@ -185,6 +193,7 @@ pub(crate) fn own(api: &Api, path: &Path) -> Result<LocalCode, Error> {
         tracing::info!("left out of {}: {}", path.display(), staged.left.join(", "));
     }
     let code = staged.code();
+    crate::git_code::noted(path, &code.tree);
     let members = api::tree::parse(&staged.document).map_err(|e| refuse("code_invalid", e))?;
     let from = |digest: &Digest| staged.files.iter().find(|file| file.digest == *digest).map(|file| file.path.clone());
     if !copies(home)?.join(hex(&code.tree)).join("tree").is_dir() {
@@ -485,6 +494,15 @@ pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
             length,
         });
     }
+    // The cozy packages its lock takes from a Hub index, carried from this computer where it holds them, so no machine reads the
+    // Hub for them (cl-1127).
+    let lock = fs::read_to_string(project_dir.join("uv.lock")).unwrap_or_default();
+    for (name, held, length) in crate::hub::held::indexed_held(&lock) {
+        if !wheels.iter().any(|w: &Member| w.name == name) {
+            wheels.push(Member { name, digest: held.digest.to_string(), length, executable: false });
+            inputs.push(held);
+        }
+    }
     let manifest = Manifest {
         package: format!("local/{}", project.name),
         release: project.version.clone(),
@@ -516,6 +534,7 @@ pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
     let environment = Digest::of(environment.to_string().as_bytes());
     let document = serde_json::to_vec(&manifest).map_err(|e| refuse("local_source_invalid", e))?;
     let digest = Digest::of(&document);
+    crate::git_code::link(&code.tree, &digest);
     let written = keep_manifest(home, &digest, &document)?;
     inputs.push(StagedInput {
         path: written,
@@ -837,6 +856,21 @@ fn hex(digest: &Digest) -> String {
 /// The interface kept for this exact source, as `runtime` described it.
 pub(crate) fn kept(home: &Home, filed: &Filed, runtime: &str) -> Option<Value> {
     let document: Value = serde_json::from_slice(&fs::read(file(home, filed, runtime).ok()?).ok()?).ok()?;
+    interface(&document).then_some(document)
+}
+
+/// The interface kept for `package`'s source of manifest `manifest`, as any Runtime described it, the newest: what this computer's
+/// installs of it list (`toolbox`). Not a project's.
+pub(crate) fn kept_for(home: &Home, package: &str, manifest: &str) -> Option<Value> {
+    let mut dir = home.root().join("packages");
+    dir.extend(package.split('/'));
+    let named = format!("-{}-", manifest.trim_start_matches("sha256:"));
+    let mut kept: Vec<(SystemTime, PathBuf)> = (fs::read_dir(dir).into_iter().flatten().flatten())
+        .filter(|entry| entry.file_name().to_string_lossy().contains(&named))
+        .filter_map(|entry| Some((entry.metadata().ok()?.modified().ok()?, entry.path())))
+        .collect();
+    kept.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+    let document: Value = serde_json::from_slice(&fs::read(&kept.first()?.1).ok()?).ok()?;
     interface(&document).then_some(document)
 }
 
