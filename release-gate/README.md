@@ -127,7 +127,8 @@ don't look: cozy as a GitHub prerelease (cozy-publish.yaml), TensorFS and the Ru
 (`packages_ref`), models private. `candidate.json` in each gate's output names the set: the versions the machine ran, the
 candidate files' digests, `packages_ref` and `models`. `verify.sh <run|dir>...` prints it only when every supplied SKU
 passed (or its FAIL was accepted by the lead). `verify.sh --release` also requires every row of `escaped.tsv` (a bug that
-reached users: the expect row of its cell and the SKUs it must pass on) to have passed in those gates. Numeric IDs must be
+reached users: the expect row of its cell and the SKUs it must pass on) to have passed in those gates. A row ending `packages=<pkg,…>` is required only when the set changes one of them (a
+prerelease version at its `packages_ref`) or a Runtime other than PyPI's newest (se-147's `upscale` rows). Numeric IDs must be
 completed, repository-owned dispatches of `release-gate.yml`; local gate directories are explicit hand receipts.
 
 `promote.sh [--images '<profile>=sha256:… …'] [--packages DIR] <run id>` (or `--record <URL> <dirs>...`) hands the set to
