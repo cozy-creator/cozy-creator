@@ -10,6 +10,8 @@
 #                       recording until cr-300's hold went) replays, byte-identical to graphs off; again at 6 GiB
 #   graphs-klein-283    Klein upsampled on cr-283's prompt and seed (gate 44006460875 run 17, rtx-4090): a decode graph
 #                       that differs names its cause in the record (analyze.py fails the cell either way)
+#   graphs-h3-upscale-* Regenerate-2K of a 5 s plate at 1080p, with a prompt and without: the latent upscaler's second
+#                       call captures its graph (its scale embedding was a pageable host copy, refused; gate 44167820873)
 #   graphs-audit        a replay was audited against its call as written, and no P-H3-Image or Anima record differed
 . "$HERE/suites/varena/differential/lib.sh"
 mkdir -p "$ARMS"
@@ -76,6 +78,14 @@ fi
 cell graphs-klein-283 "$(pkg flux.3-klein generate_turbo)" prompt_upsampling:=true seed:=241107249 \
   prompt="a vintage tin robot playing a saxophone on a small stage in a smoky jazz club"
 log "graphs-klein-283: decode $(jq -c '[.measurements.residency.graphs // {} | to_entries[] | select(.value.decode) | {lm: .key, captures: .value.decode.captures, refused: .value.decode.refused}]' graphs-klein-283.json 2>/dev/null)"
+gplate=$(plate 5)
+cell graphs-h3-upscale-1 "$(pkg minimax-h3 upscale)" video="$gplate" to=1080p prompt="$SCENE, slow push-in, ambient sound"
+cell graphs-h3-upscale-2 "$(pkg minimax-h3 upscale)" video="$gplate" to=1080p
+up='[.. | objects | .graphs? // empty | objects | to_entries[] | select(.key | test("upscaler$")) | .value.captures // 0] | add // 0'
+refused=$(cat graphs-h3-upscale-[12].json 2>/dev/null | jq -s -r '[.[] | .. | objects | .capture_refused? // empty | .[] | select(test("upscaler"))] | join(" | ")')
+captures=$(gfact graphs-h3-upscale-2 "$up")
+[ "$captures" -gt 0 ] && [ -z "$refused" ] && expect graphs-h3-upscaler PASS "the latent upscaler captured $captures graphs" ||
+  expect graphs-h3-upscaler FAIL "the latent upscaler captured ${captures:-0}; refused: ${refused:-none}"
 audited=0 mismatched=()
 for f in graphs-ph3-*.json graphs-anima-*.json; do
   [ -f "$f" ] || continue
