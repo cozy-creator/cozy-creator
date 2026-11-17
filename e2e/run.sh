@@ -86,6 +86,8 @@ run_submit1() {
 run_start() {
   local dir=$1 name=$2 n='' k=1 limit=${RUN_NUMBER_S:-1860} start=$SECONDS at; shift 2
   rm -f "$dir/$name".{ndjson,err,json,number,id,pid,at}
+  # `exec` runs the binary, not lib.sh's logging cozy(): its words go to argv.log here, for the coverage guard.
+  if [ "$1" = cozy ] && [ -n "${OUT:-}" ]; then printf '%s\x1f' "${@:2}" >> "$OUT/argv.log"; printf '\x1e' >> "$OUT/argv.log"; fi
   (cd "${RUN_PROJECT:-$PWD}" && exec "$@") > "$dir/$name.ndjson" 2> "$dir/$name.err" &
   local pid=$!
   echo "$pid" > "$dir/$name.pid"

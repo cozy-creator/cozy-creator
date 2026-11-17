@@ -412,7 +412,8 @@ soon told_more "$log" "$id" "$seen" || check "stream: a file back in files/ told
 soon told "$log" '.type == "machine.updated" and .machine.name == "local"' || check "stream: a run on local moved no machine.updated"
 [ -z "$(revs "$log" "$id" | sort | uniq -d)" ] || check "stream: a rev told twice: $(revs "$log" "$id" | sort | uniq -d)"
 
-soon grep -q '^:' "$log" || check "stream: no comment after 20 s"
+# Keep-alive comments go on a connection quiet for 15 s; a busy machine's events can keep this one from ever being quiet (cl-1104).
+soon grep -qs '^:' "$log" "$other" "$runs" || check "stream: no keep-alive comment on any connection after 20 s"
 kill -0 "$stream" 2> /dev/null || check "stream: it ended: $(cat "$OUT/events.err")"
 kill "$stream" "$other_stream" "$runs_stream" 2> /dev/null || true
 for route in runs machines "projects/$id"; do
