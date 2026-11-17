@@ -2,20 +2,25 @@
 nodes' work on each clip, started as ComfyUI's main.py starts (its allocator, dynamic VRAM, `--fast`), one warm-up and
 then `runs` timed passes, each synchronized. Prints one JSON line a pass.
 
-argv: <ComfyUI dir> <VAE file> <runs> <fast: 0|1> <clip.mp4>...
+argv: <ComfyUI dir> <VAE file> <runs> <fast: 0|1> <clip.mp4>...; $COMFY_ARGS: more of main.py's flags.
 """
 
+import faulthandler
 import json
+import logging
 import os
 import sys
 import time
 from importlib import import_module
 
+faulthandler.enable()
+logging.basicConfig(level=logging.INFO, stream=sys.stderr)
+
 root, vae_file, runs, fast = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4] == "1"
 clips = sys.argv[5:]
 sys.path.insert(0, root)
 os.chdir(root)
-sys.argv = ["main.py", *(["--fast", "fp16_accumulation"] if fast else [])]
+sys.argv = ["main.py", *(["--fast", "fp16_accumulation"] if fast else []), *os.environ.get("COMFY_ARGS", "").split()]
 
 # ComfyUI's modules come from its checkout (argv), so they are imported by name.
 import_module("comfy.options").enable_args_parsing()
@@ -58,6 +63,7 @@ facts = {
     "fp16_accumulation": bool(getattr(torch.backends.cuda.matmul, "allow_fp16_accumulation", False)),
     "vae_dtype": str(vae.vae_dtype),
     "aimdo": bool(memory.aimdo_enabled),
+    "argv": sys.argv[1:],
     "gpu": torch.cuda.get_device_name(),
 }
 print(json.dumps({"facts": facts}), flush=True)

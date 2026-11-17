@@ -12,7 +12,8 @@
 #   runs     timed passes per clip, engine and arm (2)
 #   clips    frame counts ([129, 362])
 #   comfy    {"commit": a ComfyUI commit, "kitchen": comfy-kitchen's version, "torch": "2.14.1", "torchvision": "0.29.1",
-#            "revision": Comfy-Org/MiniMax-H3's, "vae": its file under vae/, "configs": [{"name", "fast": true}]}; {} for none
+#            "revision": Comfy-Org/MiniMax-H3's, "vae": its file under vae/, "configs": [{"name", "fast": true, "args": [more
+#            of main.py's flags]}]}; {} for none. A config that fails is said, and the next runs.
 #   need_s   seconds the cap must buy (3600)
 . "$(dirname "$0")/lib.sh"
 FX=$(cd "$(dirname "$0")" && pwd)/fixtures/h3-vae
@@ -148,10 +149,12 @@ if [ "$(jq length <<<"$COMFY")" != 0 ]; then
   clips=$(printf " $W/clip%s.mp4" "${COUNTS[@]}")
   mapfile -t CONFIGS < <(jq -c '.configs[]' <<<"$COMFY")
   for cfg in "${CONFIGS[@]}"; do
-    cn=$(jq -r .name <<<"$cfg") fast=$(jq -r 'if .fast then 1 else 0 end' <<<"$cfg")
-    [[ $cn =~ ^[a-z0-9-]+$ ]] || fail "comfy config name $cn"
-    T=3600 pod "cd $W && venv/bin/python comfy_vae.py $W/ComfyUI $W/vae.safetensors $RUNS $fast$clips" \
-      < /dev/null > "$OUT/comfy-$cn.log" 2>&1 || fail "ComfyUI $cn: $(tail -5 "$OUT/comfy-$cn.log")"
+    cn=$(jq -r .name <<<"$cfg") fast=$(jq -r 'if .fast then 1 else 0 end' <<<"$cfg") extra=$(jq -r '(.args // []) | join(" ")' <<<"$cfg")
+    [[ $cn =~ ^[a-z0-9-]+$ && $extra =~ ^[a-z0-9\ -]*$ ]] || fail "comfy config $cn"
+    if ! T=3600 pod "cd $W && COMFY_ARGS='$extra' venv/bin/python comfy_vae.py $W/ComfyUI $W/vae.safetensors $RUNS $fast$clips" \
+      < /dev/null > "$OUT/comfy-$cn.log" 2>&1; then
+      say "ComfyUI $cn failed: $(grep -v '^{' "$OUT/comfy-$cn.log" | tail -8 | tr '\n' ' ' | cut -c1-600)"; RC=1; continue
+    fi
     say "ComfyUI $cn: $(grep -m1 '"facts"' "$OUT/comfy-$cn.log")"
     grep '^{"clip"' "$OUT/comfy-$cn.log" | jq -r --arg c "$cn" '["comfyui", $c, (.frames | tostring), (.pass | tostring), (.encode_s | tostring), (.decode_s | tostring), "-"] | @tsv' >> "$TSV"
   done
