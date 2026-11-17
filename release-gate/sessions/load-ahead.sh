@@ -10,6 +10,7 @@
 #   tool      the box's tool and the function the cold call runs (default qwen-image-2/image)
 #   other     the call that takes the GPU during a load (default sdxl/generate)
 #   wait_s    how long the box's request may take to be `loaded` (default 600)
+# Its other call's weights come from the Hub: `floor_mb_s: 0` keeps a slow link from ending it (44049593387: SDXL at 25 MB/s).
 . "$(dirname "$0")/lib.sh"
 TOOL=$(param tool qwen-image-2/image) OTHER=$(param other sdxl/generate) WAIT=$(param wait_s 600) BEGAN=$(date +%s)
 PROMPT="a red lighthouse on a cliff at dusk, waves below, photo"
@@ -51,9 +52,8 @@ unload() {
 # report <name> <run>: the run's own record, and its report's stages and first steps.
 report() {
   (cd "$RUN_PROJECT" && cozy --json run watch "$2" --once --full) > "$OUT/run-$1.json" 2>&1 || fail "$1: run $2 unread"
-  jq -c --arg arm "$1" '{arm: $arm, run: .number, status, execution_ms,
-    stages: [.report.measured[0].stages[]? | {(.name): (.ms | floor)}] | add,
-    first_steps: [.report.measured[0].steps[]? | select(.step <= 2) | {step, from_store: .store, resident: (.hit + .kept)}]}' \
+  jq -c --arg arm "$1" '{arm: $arm, run: .number, status, execution_ms, accepted_to_started_ms: (.started_at_ms - .accepted_at_ms),
+    stages: [.report.measured[0].stages[]? | {(.name): (.ms | floor)}] | add}' \
     "$OUT/run-$1.json" | tee -a "$R" > "$OUT/report-$1.json"
 }
 
