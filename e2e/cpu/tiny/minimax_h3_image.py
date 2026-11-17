@@ -163,7 +163,7 @@ def _prompt(text: str, *keys: str) -> dict[str, Json]:
 
 
 _FOX, _HAT = _shared.picture("fox", 640, 512), _shared.picture("hat", 384, 384)
-#: 4 MP, the tool's least; the prompt as written unless the cell upsamples it.
+#: 4 MP, the tool's least; the prompt as written unless the cell upsamples it. An edit's canvas is Picture 1's 5:4.
 _SMALL: dict[str, Json] = {"seed": 7, "megapixels": 4, "prompt_upsampling": False}
 
 CELLS: list[Cell] = [
@@ -173,9 +173,9 @@ CELLS: list[Cell] = [
      "payload": {"instructions": _prompt("a red fox"), **_SMALL, "prompt_upsampling": True}, "check": size(2048, 2048)},
     {"entry": "generate", "name": "edit",
      "payload": {"instructions": _prompt("give <fox> the hat in <hat>", "fox", "hat"), **_SMALL},
-     "files": {"instructions.references.0.file": _FOX, "instructions.references.1.file": _HAT}},
+     "files": {"instructions.references.0.file": _FOX, "instructions.references.1.file": _HAT}, "check": size(2304, 1824)},
     {"entry": "generate", "name": "edit-upsampled",
      "payload": {"instructions": _prompt("the fox in <fox> in a winter forest", "fox"), **_SMALL,
                  "prompt_upsampling": True},
-     "files": {"instructions.references.0.file": _FOX}},
+     "files": {"instructions.references.0.file": _FOX}, "check": size(2304, 1824)},
 ]
