@@ -558,7 +558,6 @@ WEB_ENGINES=(
   input
   fullscreen
   play-link
-  drawers
 )
 # What stops, restarts or re-points Calcifer, or needs the job to itself (`@solo`), one at a time, with the filesystem driver.
 WEB_SOLO=(
@@ -570,6 +569,7 @@ WEB_SOLO=(
   restart
   secret-account
   project-settings
+  drawers
 )
 # The timing and memory cells, `@solo`, in 2D: a runner's software GL drawing the WebGL path with MSAA is no computer's path, and the 2D
 # path is a computer with no GPU's (aa315b64, 11-16: large in 2D found a 1.1 MB-a-cycle heap leak).

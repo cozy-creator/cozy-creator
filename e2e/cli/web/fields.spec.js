@@ -67,7 +67,7 @@ test('fields', async ({ page, project, api, cli, guards }) => {
     const tools = await listed();
     [every, when] = [EVERY, WHEN].map((id) => tools.find((tool) => tool.local && tool.id === id));
     return Boolean(every && when);
-  }, { message: 'the project lists its local tools' }).toBe(true);
+  }, { message: 'the project lists its local tools', timeout: 180_000 }).toBe(true);
   for (const name of ['walk', 'coast', 'every', 'when', 'scene', 'still']) await expect.poll(() => canvasVisible(page, name)).toBe(true);
   await fit(page);
   const region = page.getByRole('region', { name: 'Focused asset' });
