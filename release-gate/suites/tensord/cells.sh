@@ -40,32 +40,36 @@ NGPU=$("$CLI" --json machine show "$M" 2>/dev/null | jq '.status.gpus | length')
 # Generations: install, update and roll back a package; then the Runtime back a release and forward to the candidate.
 # sdxl is the package the rest of this suite runs, at $NEW.
 read -r NEW _ <<< "$(released sdxl)"
-# The rollback is anima's: its last two releases both import on the current Runtime. sdxl's one before 0.2.0 predates Runtime 0.37.0 and refuses to (cl-739).
-read -r first second <<< "$(released anima)"
-AOLD=$second ANEW=$first
-"$CLI" package install "anima@$AOLD" --on "$M" -y > "$T/install.log" 2>&1; a=$(envs)
-"$CLI" package install "anima@$ANEW" --on "$M" -y > "$T/update.log" 2>&1; b=$(envs)
-n1=$(submit "anima/generate@$ANEW" prompt="masterpiece, anime illustration of $SCENE, generation $ANEW" seed:=$((R + 30))); until_status "$n1" terminal
-"$CLI" package install "anima@$AOLD" --on "$M" -y > "$T/rollback.log" 2>&1; c=$(envs)
-n2=$(submit "anima/generate@$AOLD" prompt="masterpiece, anime illustration of $OBJECT, generation $AOLD" seed:=$((R + 31))); until_status "$n2" terminal
-if [[ " $a " == *" anima@$AOLD "* && " $b " == *" anima@$ANEW "* && " $c " == *" anima@$AOLD "* ]] \
-   && [ "$(get "$n1" status)" = completed ] && [ "$(get "$n2" status)" = completed ]; then
-  expect tensord-generations PASS "anima $AOLD installed, updated to $ANEW (run $n1), rolled back to $AOLD (run $n2)"
+# The rollback is anima's: its newest release and the newest earlier one this Runtime runs (machines.sh `earlier`). After a
+# Runtime minor every earlier release needs the old one (the hard cut), so until anima ships a second, nothing is judged.
+read -r ANEW _ <<< "$(released anima)"
+if ! AOLD=$(earlier anima "$ANEW" "$T/install.log"); then
+  expect tensord-generations FAIL "an earlier release of anima did not install: $(tail -c 300 "$T/install.log")"
+elif [ -z "$AOLD" ]; then
+  expect tensord-generations SKIP "no earlier release of anima runs on this Runtime: $(grep -m1 -oE 'needs cozy-runtime[^,]*, but [^ ]+ runs [0-9.]+' "$T/install.log")"
+  expect tensord-unversioned-installed SKIP "no earlier release of anima runs on this Runtime"
 else
-  expect tensord-generations FAIL "installed [$a] updated [$b] rolled back [$c]; run $n1 $(get "$n1" status) $(get "$n1" reason), run $n2 $(get "$n2" status) $(get "$n2" reason)"
-fi
-# An unversioned run stays on what the machine holds and `package install` of it, unversioned, moves it, with nothing published (cl-748).
-read -r newest older <<< "$(released anima)"
-if [ -n "$older" ]; then
+  a=$(envs)
+  "$CLI" package install "anima@$ANEW" --on "$M" -y > "$T/update.log" 2>&1; b=$(envs)
+  n1=$(submit "anima/generate@$ANEW" prompt="masterpiece, anime illustration of $SCENE, generation $ANEW" seed:=$((R + 30))); until_status "$n1" terminal
+  "$CLI" package install "anima@$AOLD" --on "$M" -y > "$T/rollback.log" 2>&1; c=$(envs)
+  n2=$(submit "anima/generate@$AOLD" prompt="masterpiece, anime illustration of $OBJECT, generation $AOLD" seed:=$((R + 31))); until_status "$n2" terminal
+  if [[ " $a " == *" anima@$AOLD "* && " $b " == *" anima@$ANEW "* && " $c " == *" anima@$AOLD "* ]] \
+     && [ "$(get "$n1" status)" = completed ] && [ "$(get "$n2" status)" = completed ]; then
+    expect tensord-generations PASS "anima $AOLD installed, updated to $ANEW (run $n1), rolled back to $AOLD (run $n2)"
+  else
+    expect tensord-generations FAIL "installed [$a] updated [$b] rolled back [$c]; run $n1 $(get "$n1" status) $(get "$n1" reason), run $n2 $(get "$n2" status) $(get "$n2" reason)"
+  fi
+  # An unversioned run stays on what the machine holds and `package install` of it, unversioned, moves it, with nothing published (cl-748).
   "$CLI" package uninstall anima --on "$M" -y > "$T/unversioned-remove.log" 2>&1
-  "$CLI" package install "anima@$older" --on "$M" -y > "$T/unversioned-install.log" 2>&1
+  "$CLI" package install "anima@$AOLD" --on "$M" -y > "$T/unversioned-install.log" 2>&1
   n1=$(submit anima/generate prompt="masterpiece, anime illustration of $CHAR, whatever is installed" seed:=$((R + 37))); until_status "$n1" terminal
   "$CLI" package install anima --on "$M" -y > "$T/unversioned-update.log" 2>&1
   n2=$(submit anima/generate prompt="masterpiece, anime illustration of $SCENE, after the update" seed:=$((R + 38))); until_status "$n2" terminal
   t1=$(get "$n1" target) t2=$(get "$n2" target)
-  [[ $t1 == *"@$older" && $t2 == *"@$newest" ]] && [ "$(get "$n1" status)$(get "$n2" status)" = completedcompleted ] \
-    && expect tensord-unversioned-installed PASS "anima $older installed: run $n1 took it; package install: run $n2 took $newest" \
-    || expect tensord-unversioned-installed FAIL "with $older installed run $n1 took $t1 ($(get "$n1" status)); updated, run $n2 took $t2 ($(get "$n2" status))"
+  [[ $t1 == *"@$AOLD" && $t2 == *"@$ANEW" ]] && [ "$(get "$n1" status)$(get "$n2" status)" = completedcompleted ] \
+    && expect tensord-unversioned-installed PASS "anima $AOLD installed: run $n1 took it; package install: run $n2 took $ANEW" \
+    || expect tensord-unversioned-installed FAIL "with $AOLD installed run $n1 took $t1 ($(get "$n1" status)); updated, run $n2 took $t2 ($(get "$n2" status))"
 fi
 if [ -n "$RWF$TWF" ]; then
   # Back to the last release (PyPI's newest Runtime and TensorFS, which the machine fetches by version).
@@ -179,28 +183,30 @@ else:
 PY
 read -r v rest < "$T/delivery.txt"; expect tensord-output-delivery "$v" "$rest"
 
-# Adapter views (cl-683): distinct LoRA'd calls add nothing to the machine's disk beyond their LoRAs. A view is a header
-# in memory over the base's and the LoRAs' own chunks; one written to the store re-packed every small part of the base
-# again (GBs per SDXL call; H3 filled a 100 GB pod in its third, run 20445). The LoRAs and the base land first (one
-# LoRA'd call); three more stacks, each a new view, must leave the disk's free bytes where they were (bar: 512 MiB for
-# records and outputs).
+# Adapter views (cl-683): distinct LoRA'd calls add nothing to the machine's disk beyond their LoRAs and their derived
+# pages. A view written to the store as a model re-packed every small part of the base again (GBs per SDXL call; H3
+# filled a 100 GB pod in its third, run 20445). Its bake persists as derived pages since cr-277 (`derived/`, about 3.3 GB
+# a SDXL stack, 44053333998), the first thing a short disk drops (cl-1081, session derived-disk). The LoRAs and the base
+# land first (one LoRA'd call); three more stacks, each a new view, must leave the disk's free bytes where they were but
+# for derived pages (bar: 512 MiB for records and outputs).
 free_bytes() { "$CLI" --json machine show "$M" 2>/dev/null | jq -r '.status.disk_free_bytes // empty'; }
+derived_bytes() { "$CLI" machine ssh "$M" "du -sb /var/lib/tensorfs/derived 2>/dev/null | cut -f1" 2>/dev/null | tail -n 1; }
 ikea=ostris/ikea-lora-sdxl balloon=proomptengineer/balloon-lora-sdxl
 for l in $ikea $balloon; do "$CLI" model install "$l" --on "$M" -y > "$T/views-$(basename "$l").log" 2>&1; done
 v0=$(submit "sdxl/generate@$NEW" prompt="$OBJECT as flat-pack furniture, catalog photo" seed:=$((R + 60)) --lora "$ikea")
-until_status "$v0" terminal; f0=$(free_bytes)
+until_status "$v0" terminal; f0=$(free_bytes) d0=$(derived_bytes)
 v1=$(submit "sdxl/generate@$NEW" prompt="PEBalloonStyle, $CHAR made of balloons" seed:=$((R + 61)) --lora "$balloon")
 until_status "$v1" terminal
 v2=$(submit "sdxl/generate@$NEW" prompt="PEBalloonStyle, $SCENE as a flat-pack kit" seed:=$((R + 62)) --lora "$ikea,0.6" --lora "$balloon,0.8")
 until_status "$v2" terminal
 v3=$(submit "sdxl/generate@$NEW" prompt="$OBJECT, flat-pack, half strength" seed:=$((R + 63)) --lora "$ikea,0.5")
-until_status "$v3" terminal; f1=$(free_bytes)
+until_status "$v3" terminal; f1=$(free_bytes) d1=$(derived_bytes)
 s="$(get "$v0" status)$(get "$v1" status)$(get "$v2" status)$(get "$v3" status)"
-grew=$(( ${f0:-0} - ${f1:-0} ))
-if [ "$s" = completedcompletedcompletedcompleted ] && [ -n "$f0" ] && [ -n "$f1" ] && [ "$grew" -le $((512 << 20)) ]; then
-  expect tensord-adapter-views PASS "runs $v1 $v2 $v3 (three new LoRA stacks after run $v0) used $(( grew >> 20 )) MiB of disk"
+grew=$(( ${f0:-0} - ${f1:-0} )) baked=$(( ${d1:-0} - ${d0:-0} )); other=$(( grew - baked ))
+if [ "$s" = completedcompletedcompletedcompleted ] && [ -n "$f0" ] && [ -n "$f1" ] && [ "$other" -le $((512 << 20)) ]; then
+  expect tensord-adapter-views PASS "runs $v1 $v2 $v3 (three new LoRA stacks after run $v0) used $(( grew >> 20 )) MiB of disk: $(( baked >> 20 )) MiB derived pages, $(( other >> 20 )) MiB else"
 else
-  expect tensord-adapter-views FAIL "runs $v0 $v1 $v2 $v3: $s; the disk's free bytes went ${f0:-?} -> ${f1:-?} ($(( grew >> 20 )) MiB used)"
+  expect tensord-adapter-views FAIL "runs $v0 $v1 $v2 $v3: $s; the disk's free bytes went ${f0:-?} -> ${f1:-?} ($(( grew >> 20 )) MiB used, ${d1:+$(( baked >> 20 )) MiB of it derived pages}${d1:-derived pages unread})"
 fi
 
 [ "$NGPU" -lt 2 ] || . "$HERE/suites/tensord/one-process.sh"

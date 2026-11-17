@@ -26,6 +26,11 @@ FLOOR_MBS=$(param floor_mb_s 50) FLOOR_AFTER=$(param floor_after_s 120)
 [[ $FLOOR_MBS =~ ^[0-9]+$ && $FLOOR_AFTER =~ ^[0-9]+$ ]] || fail "floor_mb_s $FLOOR_MBS, floor_after_s $FLOOR_AFTER"
 state() { cozy machine show "$1" --json 2>/dev/null | jq -r '.state // empty'; }
 . "$(dirname "${BASH_SOURCE[0]}")/../machines.sh"
+# A Runtime or TensorFS a session is asked for by version is the build of its own tag (tag_built), checked at $0.
+for c in runtime:cozy_runtime tensorfs:tensorfs; do
+  v=$(param "${c%%:*}"); [[ $v =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || continue
+  why=$(tag_built "${c#*:}" "$v") || fail "$why"
+done
 gone() { local s; s=$(state "$1"); { [ "$s" = ended ] || [ -z "$s" ]; } && ! listed "$1"; }
 # wheel_from <dir> <source>: a manylinux x86_64 wheel fetched into dir, its path printed. source: an https URL,
 # `artifact:<run id>/<name>` of a cozy-creator run (a dev-build's tensorfs-wheel-<sha>) or a cozy-runtime dev-build run id
@@ -241,27 +246,32 @@ billed() {
 # seconds. Ends the $0 pre-flight unless RENT=true.
 quote() {
   local need=$1; shift
-  local skus=("${@:-$SKU}") s price hourly=0 said='' f gpus
+  local skus=("${@:-$SKU}") s price hourly=0 said='' f gpus gb
   say "cozy $(cozy --version); $(cozy whoami 2>&1 | grep -E '^account')"
   ! listed pr-pod-session-probe || fail "gone-check: a rental that never existed reads live (no machine listing answers?)"
   for s in "${skus[@]}"; do
     # A SKU no provider has is often offered again within minutes: asked again, six times over about 6 min, as `order` does.
     local try=1 pause=15
+    # stdout and stderr apart: a warning on stderr ("no a40 holds the 250 GB disk you asked for: it gets 195 GB") is no
+    # JSON, and in the same file it broke the parse (user-flow 44124965286: "no quote for a40:1").
     f=$OUT/quote-${s/:/x}.json gpus=(); [[ $s != *:* ]] || gpus=(--gpus "${s#*:}")
-    while cozy machine rent "${s%%:*}" "${gpus[@]}" --disk-gb "$DISK" $RENT_ARGS --json < /dev/null > "$f" 2>&1 || true
-      grep -q sku_out_of_stock "$f" && [ "$try" -lt 6 ]; do
+    while cozy machine rent "${s%%:*}" "${gpus[@]}" --disk-gb "$DISK" $RENT_ARGS --json < /dev/null > "$f" 2> "${f%.json}.err" || true
+      grep -qs sku_out_of_stock "$f" "${f%.json}.err" && [ "$try" -lt 6 ]; do
       say "no provider has $s now (attempt $try/6): asking again in ${pause}s"
       sleep "$pause"; try=$((try + 1)); pause=$((pause * 2 > 120 ? 120 : pause * 2))
     done
-    grep -q quote_unagreed "$f" || fail "a quote without --yes did not refuse: $(tail -c 300 "$f")"
-    price=$(jq -r 'select(.quote) | .quote.usd_micros_per_hour' "$f" 2>/dev/null | head -1)
-    [ -n "$price" ] || fail "no quote for $s: $(tail -c 300 "$f")"
-    hourly=$((hourly + price)); said="$said $s $price"
+    grep -qs quote_unagreed "$f" "${f%.json}.err" || fail "a quote without --yes did not refuse: $(tail -c 300 "$f") $(tail -c 300 "${f%.json}.err")"
+    price=$(jq -R -r 'fromjson? | select(.quote) | .quote.usd_micros_per_hour' "$f" | head -1)
+    [ -n "$price" ] || fail "no quote for $s: $(tail -c 300 "$f") $(tail -c 300 "${f%.json}.err")"
+    # The disk the offer gives: a SKU whose largest offer holds less than DISK is clamped to it, with a warning.
+    gb=$(jq -R -r 'fromjson? | select(.quote) | .quote.container_disk_gb // .quote.disk_gb // empty' "$f" | head -1)
+    grep -is '^warning' "${f%.json}.err" | while read -r w; do say "$s: $w"; done
+    hourly=$((hourly + price)); said="$said $s $price (${gb:-?} GB)"
   done
   cp "$OUT/quote-${skus[0]/:/x}.json" "$OUT/quote.json"
   CAP_S=$(awk -v c="$CAP" -v h="$hourly" 'BEGIN{printf "%d", c*1e6 / h * 3600}')
   [ "$CAP_S" -ge "$need" ] || fail "\$$CAP leaves only ${CAP_S}s for$said micro-USD/h"
-  say "quote$said micro-USD/h, $DISK GB each: \$$CAP buys about ${CAP_S}s; the guard ends them by what the Hub bills"
+  say "quote$said micro-USD/h, $DISK GB asked: \$$CAP buys about ${CAP_S}s; the guard ends them by what the Hub bills"
   [ "$RENT" = true ] || { say "pre-flight only: nothing rented"; exit 0; }
 }
 
@@ -300,11 +310,11 @@ ready() {
   wait "${!p}"; RRC=$?
   [ "$RRC" = 0 ] || fail "boot failed: $(tail -c 300 "$OUT/rent$i.out") $(tail -3 "$OUT/rent$i.err")"
   [ "$(state "$RID")" = ready ] || fail "$RID is $(state "$RID"), not ready"
-  cozy machine show "$RID" --json > "$OUT/show$i.json" 2>&1; cozy machine show "$RID" > "$OUT/show$i.txt" 2>&1
+  cozy machine show "$RID" --json > "$OUT/show$i.json" 2> "$OUT/show$i.err"; cozy machine show "$RID" > "$OUT/show$i.txt" 2>&1
   [ "$i" != 0 ] || { cp "$OUT/show0.json" "$OUT/show.json"; cp "$OUT/show0.txt" "$OUT/show.txt"; }
   NAME=$(jq -r .name "$OUT/show$i.json")
   [ "$(jq -r .rental_id "$OUT/show$i.json")" = "$RID" ] && [ -n "$NAME" ] || fail "show $RID: $(head -c 300 "$OUT/show$i.json")"
-  say "READY $RID as $NAME, image $(jq -r .rental.base_worker_image_digest "$OUT/show$i.json")"
+  say "READY $RID as $NAME, image $(jq -r .rental.base_worker_image_digest "$OUT/show$i.json"), disk $(jq -r '.rental.disk_gb // "?"' "$OUT/show$i.json") GB of $DISK asked"
   grep -E '^(version|runtime|tensorfs|GPU 0|disk free) ' "$OUT/show$i.txt" | tee -a "$R"
 }
 

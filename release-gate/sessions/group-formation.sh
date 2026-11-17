@@ -35,7 +35,7 @@ if [ -z "$NAME" ]; then
   quote 5400
   rent
 fi
-cozy machine show "$NAME" --json > "$OUT/show.json" 2>&1
+cozy machine show "$NAME" --json > "$OUT/show.json" 2> "$OUT/show.err"
 jq -e '.status.gpus | length == 2' "$OUT/show.json" > /dev/null || fail "$NAME has no 2 GPUs"
 [ -z "$W" ] || step update machine update "$NAME" --runtime "$W" -y || fail "update"
 say "pod $(cozy machine show "$NAME" --json | jq -c '{rt: .status.runtime, tfs: .status.tensorfs, gpus: [.status.gpus[].name]}')"
