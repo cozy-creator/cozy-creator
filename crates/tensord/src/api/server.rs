@@ -152,25 +152,28 @@ const LIVENESS: Duration = Duration::from_secs(20);
 
 /// A starting machine's step, which `booting` answers until the API serves.
 pub(crate) struct Boot {
-    step: std::sync::Mutex<&'static str>,
+    /// Its step, and since when.
+    step: std::sync::Mutex<(&'static str, std::time::Instant)>,
     progress: std::sync::atomic::AtomicU64,
 }
 
 impl Boot {
     pub(crate) fn new() -> Arc<Self> {
-        Arc::new(Self { step: std::sync::Mutex::new("starting"), progress: Default::default() })
+        Arc::new(Self { step: std::sync::Mutex::new(("starting", std::time::Instant::now())), progress: Default::default() })
     }
 
     /// The machine moved on to `step`: progress, whatever the step.
     pub(crate) fn at(&self, step: &'static str) {
-        *self.step.lock().unwrap() = step;
+        *self.step.lock().unwrap() = (step, std::time::Instant::now());
         self.progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn now(&self) -> super::v1::Booting {
+        let (step, since) = *self.step.lock().unwrap();
         super::v1::Booting {
-            step: (*self.step.lock().unwrap()).into(),
+            step: step.into(),
             progress: self.progress.load(std::sync::atomic::Ordering::Relaxed),
+            on_step_ms: Some(since.elapsed().as_millis() as u64),
         }
     }
 }
