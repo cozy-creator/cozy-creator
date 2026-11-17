@@ -27,6 +27,18 @@
    ]
   },
   {
+   "name": "o-i2v-src",
+   "phase": "video",
+   "tool": "minimax-h3/generate",
+   "input": "v-i2v-src.json",
+   "args": [
+    "--lane",
+    "bf16",
+    "--attention-kernel",
+    "sdpa"
+   ]
+  },
+  {
    "name": "o-ref",
    "phase": "video",
    "tool": "minimax-h3/generate",
@@ -130,6 +142,14 @@
    "image": "/root/parity/in/lighthouse-768.png"
   },
   {
+   "name": "u-i2v-src",
+   "phase": "video",
+   "trunk": "fl2va",
+   "of": "o-i2v-src",
+   "frames": 124,
+   "image": "/root/parity/in/lighthouse.jpg"
+  },
+  {
    "name": "u-ref-1024",
    "phase": "video",
    "trunk": "ref2va",
@@ -197,6 +217,11 @@
    "o-i2v",
    "u-i2v",
    "H3 i2v (FL2VA first frame) Turbo, parity"
+  ],
+  [
+   "o-i2v-src",
+   "u-i2v-src",
+   "H3 i2v from a 1024 px first frame: each side resizes it to 768 its own way (ours bicubic, upstream Lanczos)"
   ],
   [
    "o-ref",
