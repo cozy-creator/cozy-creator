@@ -14,14 +14,14 @@ exe=''
 [ "${RUNNER_OS:-}" != Windows ] || exe=.exe
 mkdir -p "$out"
 
-# reuse: the candidate an earlier cozy-creator e2e run built from the same build inputs. Only a merge group's or a
-# dispatch's run counts: a pull request's runs the PR's own workflow.
+# reuse: the candidate an earlier cozy-creator e2e run built from the same build inputs. Only a merge group's, a dispatch's or
+# an RC push's run counts (rc-e2e.yaml, rc-os.yaml: merged code): a pull request's runs the PR's own workflow.
 reuse() {
   local run
   for run in $(gh api "repos/cozy-creator/cozy-creator/actions/artifacts?name=$name" \
     --jq '.artifacts[] | select(.expired | not) | .workflow_run.id'); do
-    gh api "repos/cozy-creator/cozy-creator/actions/runs/$run" --jq '.event + " " + .path' \
-      | grep -qxE '(merge_group|workflow_dispatch) \.github/workflows/e2e\.yaml' || continue
+    gh api "repos/cozy-creator/cozy-creator/actions/runs/$run" --jq '.event + " " + (.path | split("@")[0])' \
+      | grep -qxE '(merge_group|workflow_dispatch) \.github/workflows/e2e\.yaml|(push|workflow_dispatch) \.github/workflows/rc-(e2e|os)\.yaml' || continue
     gh run download "$run" -R cozy-creator/cozy-creator -n "$name" -D "$out" > /dev/null || continue
     echo "$what: reused $name of https://github.com/cozy-creator/cozy-creator/actions/runs/$run" >&2
     return 0

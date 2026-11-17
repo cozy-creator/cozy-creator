@@ -92,6 +92,10 @@ on:
         description: Native CLI partitions as a JSON list; empty uses the full native matrix
         type: string
         default: ''
+      shards:
+        description: "Linux CLI shards as a JSON list; empty: every default shard; `[]`: none (rc-os.yaml's macOS and Windows alone)"
+        type: string
+        default: ''
   workflow_dispatch:
     inputs:
       repo:
@@ -393,6 +397,7 @@ jobs:
       - id: select
         env:
           PUBLISH_RUN: ${{ inputs.publish_run }}
+          SHARDS: ${{ inputs.shards }}
           TOKENS: ${{ inputs.select }}
           REPO: ${{ steps.what.outputs.repo }}
           REF: ${{ steps.pin.outputs.ref }}
@@ -402,7 +407,7 @@ jobs:
           else s=$(cd src && ../.creator/ci/affected "$REPO" "$BASE" "$REF" --json); fi
           echo "selection=$s" >> "$GITHUB_OUTPUT"
           # A Linux suite takes the candidate jobs' set.
-          echo "linux=$(echo "$s" | jq 'any(.suites[]; . == "cli" or . == "imports" or . == "cli-release" or . == "cpu" or . == "skew-candidate")')" >> "$GITHUB_OUTPUT"
+          echo "linux=$(echo "$s" | jq --arg shards "$SHARDS" 'any(.suites[]; (. == "cli" and $shards != "[]") or . == "imports" or . == "cli-release" or . == "cpu" or . == "skew-candidate")')" >> "$GITHUB_OUTPUT"
           # The cli suite's other runners: macOS arm64 (Intel Macs aren't supported), Windows x64; a release run's installer
           # on Windows arm64 too.
           arm=$([ -z "$PUBLISH_RUN" ] || echo '"windows-11-arm"')
