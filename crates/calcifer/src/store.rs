@@ -14,7 +14,7 @@ use crate::project::vault;
 mod hard_cut;
 pub(crate) use hard_cut::{hold, kept_path};
 use api::{
-    calcifer::{Agreed, Call, Event, ItemStatus, Kind, Machine, MachineKind, MachineState, Memo, OutputItem, Reason, Run, Status, Warning},
+    calcifer::{Agreed, Call, Event, ItemStatus, Kind, Machine, MachineKind, MachineState, Memo, OutputItem, Reason, Retry, Run, Status, Warning},
     config::Origin,
     ids::{Digest, RunId},
     machine as v1,
@@ -748,7 +748,7 @@ fn forget_jobs(tx: &Transaction<'_>, which: &str, values: impl rusqlite::Params)
         statement.query_map(values, |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?
     };
     for (id, key) in &jobs {
-        for sql in ["DELETE FROM run_logs WHERE run = ?1", "DELETE FROM outputs WHERE run = ?1", "DELETE FROM run_placements WHERE run = ?1",
+        for sql in ["DELETE FROM run_logs WHERE run = ?1", "DELETE FROM outputs WHERE run = ?1", "DELETE FROM run_placements WHERE run = ?1", "DELETE FROM run_retries WHERE run = ?1",
                     "UPDATE asks SET run = NULL WHERE run = ?1", "DELETE FROM ended_jobs WHERE run = ?1"] {
             tx.execute(sql, [id])?;
         }
@@ -1418,7 +1418,7 @@ macro_rules! journal_methods {
                     false => format!("to {machine}, on GPUs in service"),
                 };
                 let said = format!("failed on {machine}, the machine's fault ({}: {}): sent again {whither}", reason.code, reason.message);
-                return again(tx, &row, elsewhere, &said);
+                return again(tx, &row, elsewhere, &said, &format!("{machine}'s GPU failed ({})", reason.code));
             }
             let mut events = vec![];
             for product in &outcome.outputs {
@@ -1462,9 +1462,9 @@ macro_rules! journal_methods {
     /// Returns an accepted run its machine refused for its Runtime to the outbox (cl-1069, `Machines::refloored`), saying `said`:
     /// to its machine once that moved, or (`elsewhere`) an `any` run to be placed again. Nothing past its attempts or once canceled:
     /// it settles as refused.
-    pub(crate) fn resend(&self, id: &str, elsewhere: bool, said: &str) -> Result<Vec<Event>> {
+    pub(crate) fn resend(&self, id: &str, elsewhere: bool, said: &str, why: &str) -> Result<Vec<Event>> {
         self.write(|tx| match run_in(tx, id)?.filter(|row| row.state == State::Accepted && !row.cancel_requested && row.attempt < ATTEMPTS) {
-            Some(row) => again(tx, &row, elsewhere, said),
+            Some(row) => again(tx, &row, elsewhere, said, why),
             None => Ok(vec![]),
         })
     }
@@ -1477,15 +1477,18 @@ macro_rules! journal_methods {
             let Some(row) = run_in(tx, id)?.filter(|row| matches!(row.state, State::Queued | State::Accepted) && !row.cancel_requested) else {
                 return Ok(None);
             };
+            let text = format!("moved from {} to {machine}, which finishes it sooner", row.machine.unwrap_or_default());
             match row.state {
                 State::Queued => tx.execute("UPDATE runs SET machine = ?2 WHERE id = ?1", params![id, machine])?,
-                _ => tx.execute(
-                    "UPDATE runs SET state = 'queued', attempt = ?2, cursor = 0, machine_state = NULL, accepted_at = NULL, started_at = NULL, machine = ?3
-                     WHERE id = ?1",
-                    params![id, row.attempt + 1, machine],
-                )?,
+                _ => {
+                    retried(tx, id, &text)?;
+                    tx.execute(
+                        "UPDATE runs SET state = 'queued', attempt = ?2, cursor = 0, machine_state = NULL, accepted_at = NULL, started_at = NULL, machine = ?3
+                         WHERE id = ?1",
+                        params![id, row.attempt + 1, machine],
+                    )?
+                }
             };
-            let text = format!("moved from {} to {machine}, which finishes it sooner", row.machine.unwrap_or_default());
             let (seq, at_ms) = (next_seq(tx, id)?, now_ms());
             tx.execute(
                 "INSERT INTO run_logs (run, seq, at_ms, level, text) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -2006,6 +2009,7 @@ impl Store {
         writer.execute_batch(MEASUREMENTS_DROPPED)?;
         writer.execute_batch(MACHINE_NAMES)?;
         writer.execute_batch(crate::project::journal::PLACEMENTS)?;
+        writer.execute_batch(crate::project::journal::RETRIES)?;
         writer.execute_batch(crate::maintenance_source::TABLES)?;
         writer.execute_batch(crate::project::vault_operation::TABLES)?;
         writer.execute_batch(crate::state::TABLES)?;
@@ -3025,8 +3029,9 @@ fn next_seq(tx: &Transaction, id: &str) -> Result<u64> {
 /// Sends `row` again, its attempt's outputs not kept, saying why (`said`): after its machine's GPU failed under it, or once its
 /// machine moved to a Runtime its package needs (cl-1069). `elsewhere`: an `any` run placed again (`Machines::place_unplaced`)
 /// rather than to its machine: one its machine can't serve (`gpu_lost` on a rental, or a Runtime it can't move to).
-fn again(tx: &Transaction, row: &RunRow, elsewhere: bool, said: &str) -> Result<Vec<Event>> {
+fn again(tx: &Transaction, row: &RunRow, elsewhere: bool, said: &str, why: &str) -> Result<Vec<Event>> {
     let id = row.id.as_str();
+    retried(tx, id, why)?;
     tx.execute(
         "UPDATE runs SET state = 'queued', attempt = ?2, cursor = 0, machine_state = NULL, accepted_at = NULL, started_at = NULL,
             machine = CASE WHEN ?3 THEN NULL ELSE machine END, wants = CASE WHEN ?3 THEN 'any' ELSE wants END,
@@ -3049,6 +3054,12 @@ pub(crate) fn ended_why(machine: &str, reason: &str) -> String {
         "released_by_pod" => format!("{machine} ended itself after 15 idle minutes"),
         _ => format!("{machine} shut down"),
     }
+}
+
+/// Why run `id`'s attempt before this one stopped, in one line: what its record's `retry` says (cl-1173).
+fn retried(tx: &Transaction, id: &str, why: &str) -> Result<()> {
+    tx.execute("INSERT OR REPLACE INTO run_retries (run, why) VALUES (?1, ?2)", params![id, seal_run_text(tx, id, &run_context(id, "retry"), why)?])?;
+    Ok(())
 }
 
 /// Returns `row` to Calcifer's queue, its machine lost (cl-1132, Paul 11-17: "If that machine dies or disappears, it re-assigns that
@@ -3077,6 +3088,9 @@ fn requeue_in(tx: &Transaction, row: &RunRow, why: &str) -> Result<Vec<Event>> {
         return lost(format!("{why}, so {run} stopped on its last attempt ({ATTEMPTS} of {ATTEMPTS})"));
     }
     let attempt = row.attempt.max(1) + u32::from(taken);
+    if taken {
+        retried(tx, id, why)?;
+    }
     tx.execute(
         "UPDATE runs SET state = 'queued', attempt = ?2, cursor = 0, machine_state = NULL, accepted_at = NULL, started_at = NULL,
             machine = NULL, wants = 'any', pinned = 0
@@ -3337,7 +3351,18 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
         .ok()
         .flatten()
         .and_then(|placed| serde_json::from_str(&placed).ok());
+    // Past its first attempt, why the one before stopped: a store or project.db not yet given the table has none (cl-1173).
+    let retry = (row.attempt > 1).then(|| Retry {
+        attempt: row.attempt,
+        attempts: ATTEMPTS.max(row.attempt),
+        why: (conn.query_row("SELECT why FROM run_retries WHERE run = ?1", [row.id.as_str()], |r| r.get::<_, String>(0)).optional())
+            .ok()
+            .flatten()
+            .and_then(|why| open_text(&run_context(row.id.as_str(), "retry"), &why).ok())
+            .unwrap_or_default(),
+    });
     Ok(Run {
+        retry,
         placed,
         id: row.id.clone(),
         number: row.number,

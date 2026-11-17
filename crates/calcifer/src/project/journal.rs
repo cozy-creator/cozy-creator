@@ -299,6 +299,9 @@ fn project_error(error: Error) -> StoreError {
 
 /// Where the plan sent each run, and its offer there (cl-967): beside `runs`, so a journal of any version takes it.
 pub(crate) const PLACEMENTS: &str = "CREATE TABLE IF NOT EXISTS run_placements (run TEXT PRIMARY KEY, placed TEXT NOT NULL) STRICT, WITHOUT ROWID;";
+/// Why a run's attempt before its current one stopped (cl-1173), its record's `retry`: kept beside `runs`, so a project.db or store an
+/// older Calcifer wrote opens as it was, and one never retried has no row.
+pub(crate) const RETRIES: &str = "CREATE TABLE IF NOT EXISTS run_retries (run TEXT PRIMARY KEY, why TEXT NOT NULL) STRICT, WITHOUT ROWID;";
 
 pub(super) const UNSEEN_SCHEMA:&str="CREATE TABLE IF NOT EXISTS project_unseen (
     project TEXT NOT NULL, box TEXT NOT NULL, number INTEGER NOT NULL,

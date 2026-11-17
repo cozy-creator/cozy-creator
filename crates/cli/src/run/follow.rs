@@ -481,6 +481,9 @@ fn fields_after(ctx: &Context, run: &Run, wrote: Option<&str>) -> output::Record
         .field("target", &run.target)
         .field("status", status(run))
         .field("machine", run.machine.as_deref().unwrap_or("—"));
+    if let Some(retry) = &run.retry {
+        record = record.field("attempt", retry.to_string().trim_start_matches("attempt "));
+    }
     if let Some(placed) = &run.placed {
         record = record.field("placed", placed_words(placed));
     }
@@ -653,6 +656,8 @@ struct View {
     state: String,
     waiting: Option<String>,
     status: Option<Status>,
+    /// Which attempt it is past its first (cl-1173): the status line says it last; the log's warning says why.
+    attempt: Option<String>,
     /// The output items already named.
     named: HashSet<String>,
     /// The log's warnings already said: each once.
@@ -690,6 +695,7 @@ impl View {
             state: String::new(),
             waiting: None,
             status: None,
+            attempt: None,
             named: HashSet::new(),
             warned: HashSet::new(),
             last: None,
@@ -797,6 +803,7 @@ impl View {
             self.waiting.clone_from(&run.waiting);
         }
         self.status = Some(run.status);
+        self.attempt = run.retry.as_ref().map(|retry| format!("attempt {} of {}", retry.attempt, retry.attempts));
         self.show();
         self.stalled_as(run);
     }
@@ -811,7 +818,10 @@ impl View {
 
     /// The status line: why the run waits, else where it is.
     fn show(&mut self) {
-        let text = self.waiting.clone().unwrap_or_else(|| self.state.clone());
+        let mut text = self.waiting.clone().unwrap_or_else(|| self.state.clone());
+        if let Some(attempt) = &self.attempt {
+            text = format!("{text} · {attempt}");
+        }
         self.status(&text);
     }
 
@@ -889,6 +899,9 @@ impl View {
         }
         if let Some(stalled) = &self.stalled {
             let _ = write!(text, " · {}", stalled_words(stalled));
+        }
+        if let Some(attempt) = &self.attempt {
+            let _ = write!(text, " · {attempt}");
         }
         match &self.bar {
             Some(bar) => {

@@ -2930,6 +2930,15 @@ steps?: Steps | null,
 unaccounted?: boolean, };
 
 /**
+ * A run sent again, its machine lost under it or its GPU failed (cl-1132, cl-935): "attempt 2 of 3: stand-r shut down".
+ */
+export type Retry = { attempt: number, attempts: number,
+/**
+ * Why the attempt before stopped, in one line; empty when that wasn't kept.
+ */
+why: string, };
+
+/**
  * One run as Calcifer holds it.
  */
 export type Run = {
@@ -3036,7 +3045,11 @@ gpu?: string | null,
 /**
  * Where the plan sent it, and what it quoted there (cl-967); none for a run no plan placed.
  */
-placed?: Placed | null, };
+placed?: Placed | null,
+/**
+ * Past its first attempt (cl-1173): which it is and why the one before stopped. None on its first.
+ */
+retry?: Retry | null, };
 
 /**
  * What a run was asked, as it was bound. Read-only: asking it again is a new `POST /v1/runs`.

@@ -2705,7 +2705,8 @@ impl Calcifer {
                             crate::floor::Refloor::Moved(note) => (false, format!("refused on {on} (runtime_floor_unmet): {note}; sent again there")),
                             crate::floor::Refloor::Elsewhere(why) => (true, format!("refused on {on} (runtime_floor_unmet): {why}; placed again")),
                         };
-                        let events = self.with_run_store(id.as_str(), |store| store.resend(id.as_str(), elsewhere, &said))?;
+                        let why = format!("{on} refused it for its Runtime (runtime_floor_unmet)");
+                        let events = self.with_run_store(id.as_str(), |store| store.resend(id.as_str(), elsewhere, &said, &why))?;
                         if !events.is_empty() {
                             self.publish(id, events);
                             return Ok(());

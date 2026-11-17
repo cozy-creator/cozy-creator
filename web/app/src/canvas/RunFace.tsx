@@ -6,7 +6,7 @@ import { useConnection } from "../app/Connection"
 import { useNow } from "../panels/common"
 import { modelWords, packageWords, useInstalling, useWaitsOn } from "../panels/machines/activity"
 import { ordinal } from "../panels/format"
-import { bytesKind, rateWords, size, stageParts } from "../panels/runs/words"
+import { attemptWords, bytesKind, rateWords, size, stageParts } from "../panels/runs/words"
 import { useSignal } from "../ui/signal"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore, useElement } from "./context"
@@ -91,8 +91,14 @@ export interface Seen {
   boxOf: (run: number) => string | undefined
 }
 
-/** Its two lines' words, by what is known of it: the most specific first. */
+/** Its two lines' words, by what is known of it: the most specific first. Past its first attempt, line 1 says which and why (cl-1173). */
 export function faceOf(seen: Seen): Face {
+  const face = faceNow(seen)
+  const retry = seen.run?.retry
+  return retry && !["canceling", "failed", "result"].includes(face.phase) ? { ...face, machine: `${face.machine} · ${attemptWords(retry)}` } : face
+}
+
+function faceNow(seen: Seen): Face {
   const { view, run, machine, on, installing, waits, ahead, preparing } = seen
   const rented = machine?.kind === "rental" && machine.state === "booting"
   const card = machine?.rental?.accelerator || machine?.rental?.sku?.toUpperCase()

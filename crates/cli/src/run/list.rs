@@ -17,7 +17,7 @@ const SHOWN: u64 = 20;
 /// What `--json` keeps of a run in a list (`--full`: all of it): the table's facts, by the record's names.
 pub(crate) const FIELDS: &[&str] = &[
     "older", "machine", "unreadable", "runs.id", "runs.number", "runs.name", "runs.kind", "runs.target", "runs.project", "runs.project_id", "runs.machine",
-    "runs.status", "runs.queue_position", "runs.waiting", "runs.progress", "runs.stalled", "runs.reason.code",
+    "runs.status", "runs.retry", "runs.queue_position", "runs.waiting", "runs.progress", "runs.stalled", "runs.reason.code",
     "runs.reason.message", "runs.created_at_ms", "runs.accepted_at_ms", "runs.started_at_ms", "runs.settled_at_ms",
     "runs.execution_ms", "others.id", "others.name", "others.machine_number", "others.target", "others.machine", "others.status",
     "others.machine_state", "others.waiting", "others.reason.code", "others.reason.message", "others.accepted_at_ms",
@@ -208,8 +208,9 @@ fn clip_target(target: String) -> String {
 
 /// The runs as rows of the table and the live view: # · TARGET · PROJECT · MACHINE · STATUS · PROGRESS ·
 /// TIME. A queued run's STATUS is its place in its machine's line (`queue: 1` is next: only the
-/// running work is ahead of it). PROGRESS is the stage while it runs, and a failed or canceled
-/// run's reason in one line; `cozy run watch` has it whole. TIME is its own, never its queue's.
+/// running work is ahead of it). PROGRESS is the stage while it runs, after its attempt past its first
+/// (`attempt 2 of 3: stand-r shut down`), and a failed or canceled run's reason in one line; `cozy run
+/// watch` has it whole. TIME is its own, never its queue's.
 pub(crate) fn rows(runs: &[Run]) -> Vec<Vec<String>> {
     runs.iter().map(row).collect()
 }
@@ -275,6 +276,12 @@ pub(crate) fn progress(run: &Run) -> String {
         }
         (Status::Failed | Status::Canceled, _) => run.reason.as_ref().map(|r| r.message.clone()).unwrap_or_default(),
         _ => String::new(),
+    };
+    // Sent again, its machine lost or its GPU failed (cl-1173): which attempt, and why, while it goes.
+    let progress = match run.retry.as_ref().filter(|_| matches!(run.status, Status::Queued | Status::InProgress)) {
+        Some(retry) if progress.is_empty() => retry.to_string(),
+        Some(retry) => format!("{retry} · {progress}"),
+        None => progress,
     };
     clip(progress.split_whitespace().collect::<Vec<_>>().join(" "))
 }
