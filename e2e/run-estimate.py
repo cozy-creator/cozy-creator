@@ -22,7 +22,6 @@ def main() -> int:
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--file", action="append", default=[])
     parser.add_argument("--project", required=True, type=Path)
-    parser.add_argument("--cozy", required=True)
     parser.add_argument("--stage-code", default=os.environ.get("RUN_CODE_STAGE"), required=not os.environ.get("RUN_CODE_STAGE"))
     args = parser.parse_args()
     hub = os.environ.get("COZY_HUB_URL", "")
@@ -83,30 +82,19 @@ def main() -> int:
     request = {"target": staged["target"], "code": staged["code"], "input": payload,
                "files": files, "paths": paths, "on": ["local"], "hub": hub,
                "project": project}
-    key = str(uuid.uuid4())
-    followed: set[str] = set()
-    while True:
-        call = urllib.request.Request(base + "/v1/run-estimates", data=json.dumps(request).encode(), headers={
-            **headers, "Content-Type": "application/json", "Idempotency-Key": key,
-        })
-        with urllib.request.urlopen(call) as response:
-            answer = json.load(response)
-        if "error" in answer:
-            print(json.dumps(answer))
-            return 1
-        preparing = answer.get("preparing")
-        if not preparing:
-            if not isinstance(answer.get("machines"), list):
-                raise ValueError("Calcifer returned no estimate")
-            print(json.dumps(answer))
-            return 0
-        # Its KEY-N names it from this script's folder, which is no project's (cl-987).
-        name = str(preparing["name"])
-        # Local preparation installs code with a WARM run; the requested model function never runs.
-        if preparing["kind"] != "warm" or name in followed:
-            raise ValueError("Calcifer did not finish the local-code preparation")
-        followed.add(name)
-        subprocess.run([args.cozy, "--json", "run", "watch", name], stdout=sys.stderr, check=True)
+    # An estimate binds the call with nothing installed (cl-1115): its code read as a quote reads it.
+    call = urllib.request.Request(base + "/v1/run-estimates", data=json.dumps(request).encode(), headers={
+        **headers, "Content-Type": "application/json", "Idempotency-Key": str(uuid.uuid4()),
+    })
+    with urllib.request.urlopen(call) as response:
+        answer = json.load(response)
+    if "error" in answer:
+        print(json.dumps(answer))
+        return 1
+    if not isinstance(answer.get("machines"), list):
+        raise ValueError("Calcifer returned no estimate")
+    print(json.dumps(answer))
+    return 0
 
 
 if __name__ == "__main__":

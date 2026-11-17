@@ -181,8 +181,8 @@ async fn estimates(api: &Arc<Api>, project: &str, dir: &FsPath, hub: &str, boxes
 async fn estimate(api: &Arc<Api>, dir: &FsPath, hub: &str, asked: Boxed, on: Vec<On>, asking: Option<&super::Asking>) -> Option<BoxEstimate> {
     let Boxed { name, with, made, media } = asked;
     let host = Host::new(api);
-    let read = super::job_of(&host, dir, name.clone(), on, hub, &with, made, super::PackageRead::Foreseen, asking.map(|asking| (asking, name.as_str())));
-    let mut job = tokio::time::timeout(ESTIMATED, read).await.ok()?.ok()??;
+    let read = super::job_of(&host, dir, name.clone(), on, hub, &with, made, asking.map(|asking| (asking, name.as_str())));
+    let mut job = tokio::time::timeout(ESTIMATED, read).await.ok()?.ok()?;
     job.size.refs = Some(media);
     let (offers, pictured) = placement::offers_now(api, std::slice::from_ref(&job)).await;
     let chosen = placement::soonest(offers.first()?, now_ms())?.clone();

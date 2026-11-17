@@ -1065,6 +1065,17 @@ pub(crate) async fn prepare(
     }
 }
 
+/// `code` as a quote or an estimate of a call `on` a machine reads it (cl-1115: a quote never acts): its source, the files a call stages
+/// and its interface as `describe` reads it. Nothing is installed and no machine is asked or started.
+pub(crate) async fn foreseen(api: &Arc<Api>, local: &LocalCode, on: &On, hub: &str) -> Result<Prepared, Error> {
+    let hubs = &api.machines.hubs;
+    let hub = if hub.is_empty() { hubs.default_origin() } else { hub.to_owned() };
+    let code = source(hubs.home(), local, hubs, &Origin::parse(&hub)?).await?;
+    let (package, interface) = describe(api, local, on, &hub).await?;
+    let from = crate::checkout::of(local);
+    Ok(Prepared { package, from, source: code.source, files: code.inputs, interface: Some(interface), installation: None, machine: None, install: None })
+}
+
 /// How far an install has got.
 pub(crate) enum Install {
     /// It is going: follow it, then ask again.

@@ -847,9 +847,6 @@ pub struct RunEstimate {
     pub soonest: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<Note>,
-    /// Local code's install, still running: follow it, then ask again under the same key.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub preparing: Option<Box<Run>>,
 }
 
 /// One machine's quote for a run, or for one of `count` copies of it. Times are ms from the answer.

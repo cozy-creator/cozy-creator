@@ -86,7 +86,7 @@ for request in "$OUT"/requests/*.json; do
   files=()
   while IFS=$'\t' read -r field file; do files+=(--file "${field%.file}=$file"); done \
     < <(jq -r '.files | to_entries[] | select(.key | test("\\.references\\.[0-9]+\\.file$") | not) | "\(.key)\t\(.value)"' "$request")
-  if python3 "$(dirname "$0")/../run-estimate.py" "$cli/src/$p/$entry" --cozy "$COZY" --project "$PROJECT" \
+  if python3 "$(dirname "$0")/../run-estimate.py" "$cli/src/$p/$entry" --project "$PROJECT" \
       --input "$cli/$entry-$cell.payload" "${files[@]}" > "$cli/$entry-$cell.bound" 2> "$cli/$entry-$cell.bind.err" \
       && jq -e 'has("error") | not' "$cli/$entry-$cell.bound" > /dev/null; then
     line PASS "$entry" "bind/$cell"
