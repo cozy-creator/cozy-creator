@@ -137,6 +137,10 @@ for a in "${names[@]}"; do
     write "$a-first"  # the download, and the executor environment the ceiling is measured from
     ceiling
     fresh qwen3.6
+    if [ -n "$CAPPED" ]; then  # its download and first construction's caches, which no arm's row should carry
+      step "$a-qimg-first" run "$SOURCE/qwen-image-2/generate" --input "$OUT/qimg.json" --on "$NAME"; record "$a-qimg-first"
+      fresh qwen-image-2
+    fi
   fi
   T=300 pod "python3 /tmp/lm.py evict" < /dev/null > "$OUT/$a-evict.json" 2>&1; say "$a: evicted $(cat "$OUT/$a-evict.json")"
   write "$a-cold"
