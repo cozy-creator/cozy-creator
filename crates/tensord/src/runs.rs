@@ -480,7 +480,13 @@ impl Runs {
                 spec: &spec.journaled,
             })
             .collect();
+        let journaling = std::time::Instant::now();
+        let count = accepting.len();
         let accepted = self.service.engine.accept_runs(actor, accepting)?;
+        // A slow journal holds every run's acceptance (cl-1123: a list put's took ~1 s while its machine downloaded at full speed).
+        if journaling.elapsed() > std::time::Duration::from_millis(200) {
+            tracing::info!("the journal took {} ms to accept {count} runs", journaling.elapsed().as_millis());
+        }
         drop(custody);
         for ((at, _, spec, ..), accepted) in drafts.into_iter().zip(accepted) {
             answers[at] = Some(match accepted {
