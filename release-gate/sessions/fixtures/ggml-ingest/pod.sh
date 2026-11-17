@@ -7,9 +7,22 @@ TAG=$1 SUM=$2 HF=$3 W=/w
 mkdir -p $W/out && cd $W
 log() { echo "$(date -u +%T) $*" | tee -a $W/out/pod.log; }
 export PATH=$HOME/.local/bin:$PATH HF_XET_HIGH_PERFORMANCE=1
-command -v uv > /dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null
+# The worker image has no curl: Python fetches (its own, until the venv's).
+PY0=$(command -v python3 || echo /opt/cozy/python/bin/python)
+get() { $PY0 -c "import sys,urllib.request,shutil; shutil.copyfileobj(urllib.request.urlopen(sys.argv[1], timeout=600), open(sys.argv[2],'wb'), 1<<20)" "$1" "$2"; }
+# uv: the machine's own, else its release binary (no installer: that needs curl too).
+if ! command -v uv > /dev/null; then
+  found=$(ls /opt/cozy/bin/uv /opt/cozy/*/bin/uv "$HOME"/.cozy/bin/uv 2> /dev/null | head -1 || true)
+  mkdir -p "$HOME/.local/bin"
+  if [ -n "$found" ]; then
+    ln -sf "$found" "$HOME/.local/bin/uv"
+  else
+    get https://github.com/astral-sh/uv/releases/download/0.9.5/uv-x86_64-unknown-linux-gnu.tar.gz /tmp/uv.tgz
+    $PY0 -c "import sys,tarfile; t=tarfile.open(sys.argv[1]); m=t.getmember('uv-x86_64-unknown-linux-gnu/uv'); m.name='uv'; t.extract(m, sys.argv[2])" /tmp/uv.tgz "$HOME/.local/bin"
+  fi
+fi
 if [ ! -d $W/src ]; then
-  curl -fsSL --retry 5 -o $W/src.tgz "https://github.com/ggml-org/llama.cpp/archive/refs/tags/$TAG.tar.gz"
+  get "https://github.com/ggml-org/llama.cpp/archive/refs/tags/$TAG.tar.gz" $W/src.tgz
   echo "$SUM  $W/src.tgz" | sha256sum -c --quiet -
   tar xzf $W/src.tgz -C $W && mv "$W/llama.cpp-$TAG" $W/src
 fi
