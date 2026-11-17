@@ -1333,10 +1333,14 @@ pub struct Machine {
     /// In a dev home (`dev = true`), a rental this computer ordered and the open RC's builds (cl-922).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rc: Option<RcFollow>,
-    /// The software an update by hand gave it, in that update's words, which it keeps: it moves to neither the open RC nor a
-    /// package's floor until `cozy machine update <name>` names nothing (cl-952).
+    /// The software an update by hand held it on, in that update's words: it moves to neither the open RC nor a package's floor
+    /// until `cozy machine update <name>` names nothing (cl-952).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<String>,
+    /// What it runs that its hold names otherwise (`Runtime 0.48.0.dev2319 · cozy 0.27.0-dev`), while no update of it is going: the
+    /// hold is what was asked, this what it runs (cl-1196).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unheld: Option<String>,
 }
 
 /// A dev home's rental and the open RC's newest builds (cl-922).
@@ -1345,8 +1349,8 @@ pub struct Machine {
 pub struct RcFollow {
     /// The open RC: `0.25.0`.
     pub rc: String,
-    /// `current`: it runs the RC's builds; `behind`: it moves to them once it has no work; `held`: an update by hand gave it
-    /// other software, which it keeps; `none`: the RC has no build for it, or can't be read now.
+    /// `current`: it runs the RC's builds; `behind`: it moves to them once it has no work; `held`: an update by hand held it on
+    /// other software, which `detail` says it runs or not; `none`: the RC has no build for it, or can't be read now.
     pub state: String,
     /// What it runs or moves to, what holds it, or why there is none, in words.
     pub detail: String,

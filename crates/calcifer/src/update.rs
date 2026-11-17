@@ -240,8 +240,8 @@ impl Machines {
         let settings = ask.gpu_memory_limit.is_some() || ask.mode.is_some();
         if asked.is_empty() && placed.is_none() && torch.is_none() && !settings {
             // Nothing to move, and nothing named: it lets go of a hold by hand all the same (cl-952).
-            if flagless {
-                self.mind_hold(&m.name, key, "", true);
+            if let Some(None) = crate::rc::hold_of(key, "", flagless) {
+                self.set_hold(&m.name, None);
             }
             return Ok((Updating { machine: m, run: None, target: String::new() }, true));
         }
@@ -365,11 +365,18 @@ impl Machines {
             out: None,
             warnings: vec![],
         };
-        let submitted = self.calcifer.submit(key, submit, crate::store::Task::Update).await.map_err(|e| Refusal::from(e).0)?;
-        // Software named by hand holds the machine on it, across restarts, until an update names nothing (cl-952).
-        if !submitted.replay {
-            self.mind_hold(&m.name, key, &target, flagless);
-        }
+        // Software named by hand holds the machine on it, across restarts, until an update names nothing (cl-952); held or let go before
+        // it is sent, it supersedes what Calcifer asked of the machine itself (cl-1196).
+        let was = self.hold_for(&m.name, key, &target, flagless);
+        let submitted = match self.calcifer.submit(key, submit, crate::store::Task::Update).await {
+            Ok(submitted) => submitted,
+            Err(e) => {
+                if let Some(was) = was {
+                    self.set_hold(&m.name, was.as_deref());
+                }
+                return Err(Refusal::from(e).0);
+            }
+        };
         let updating = Updating { machine: m, run: Some(submitted.run), target };
         Ok((updating, !submitted.replay))
     }

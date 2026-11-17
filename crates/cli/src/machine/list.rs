@@ -23,7 +23,7 @@ pub(crate) const FIELDS: &[&str] = &[
     "machines.running", "machines.queued", "machines.rental.sku", "machines.rental.accelerator", "machines.rental.gpus",
     "machines.rental.usd_micros_per_hour", "machines.rental.spend_usd_micros", "machines.rental.spend_basis",
     "machines.rental.rented_at_ms", "machines.status.version", "machines.status.phase", "machines.status.gpus.index",
-    "machines.status.gpus.name", "machines.status.gpus.memory_bytes", "machines.status.idle_deadline_ms", "machines.held",
+    "machines.status.gpus.name", "machines.status.gpus.memory_bytes", "machines.status.idle_deadline_ms", "machines.held", "machines.unheld",
 ];
 /// The columns of `HEADERS` a view shows without `--full`.
 const SHOWN: [usize; 8] = [0, 1, 2, 4, 5, 6, 8, 10];
@@ -512,20 +512,26 @@ pub(crate) fn state_cell(m: &Machine) -> String {
         }
         _ => {}
     }
-    if m.held.is_some() && m.state != MachineState::Ended {
-        cell += " · held";
+    match (&m.held, &m.unheld) {
+        _ if m.state == MachineState::Ended => {}
+        (Some(_), Some(_)) => cell += " · held, runs other software",
+        (Some(_), None) => cell += " · held",
+        _ => {}
     }
     cell
 }
 
-/// What a machine an update by hand pinned keeps, and the command that lets it follow again (cl-952, cl-1029).
+/// What a machine an update by hand pinned keeps, or what it runs instead (cl-1196), and the command that lets it follow again
+/// (cl-952, cl-1029).
 fn held(m: &Machine) -> Option<String> {
     let held = m.held.as_deref()?;
-    Some(format!(
-        "{}: held by hand on {held}: it moves to neither the open RC nor a package's floor; `cozy machine update {}` lets it follow again",
-        m.called(),
-        m.handle()
-    ))
+    let (called, handle) = (m.called(), m.handle());
+    Some(match &m.unheld {
+        Some(runs) => format!("{called}: runs {runs}, though held by hand on {held}; `cozy machine update {handle}` lets it follow again"),
+        None => format!(
+            "{called}: held by hand on {held}: it moves to neither the open RC nor a package's floor; `cozy machine update {handle}` lets it follow again"
+        ),
+    })
 }
 
 /// The GPUs as the machine reports them, else as the rental was bought.

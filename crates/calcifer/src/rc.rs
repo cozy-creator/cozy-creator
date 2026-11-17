@@ -221,6 +221,47 @@ fn software(named: &str) -> bool {
     ["runtime ", "tensorfs ", "tensord ", "cozy "].iter().any(|member| named.starts_with(member))
 }
 
+/// The hold an update under `key` named `target` gives its machine (`flagless`: nothing named): `Some(None)` lets it go, `Some(words)`
+/// holds it on them. None leaves it as it is: Calcifer's own updates, and one that names no software. Software named by version holds it
+/// whatever that version is: an RC build named by hand (`(RC)`) is a pin, not the RC.
+pub(crate) fn hold_of<'a>(key: &str, target: &'a str, flagless: bool) -> Option<Option<&'a str>> {
+    if calcifers(key) {
+        return None;
+    }
+    match (flagless, target.split(", ").any(software)) {
+        (true, _) => Some(None),
+        (false, true) => Some(Some(target)),
+        (false, false) => None,
+    }
+}
+
+/// The software a hold's words name, by member and version: `runtime 0.47.0`, `tensorfs 0.26.0 (prerelease)`, `tensord 0.27.0-dev+g… (RC)`,
+/// a wheel file by its version, `cozy 0.27.0-dev+g… (installed)` as `tensord`. A `cozy` named by its file alone names none.
+fn held_versions(words: &str) -> Vec<(&'static str, &str)> {
+    fn named(item: &str) -> Option<(&'static str, &str)> {
+        let mut parts = item.split(' ');
+        let member = match parts.next()? {
+            "runtime" => "runtime",
+            "tensorfs" => "tensorfs",
+            "tensord" | "cozy" => "tensord",
+            _ => return None,
+        };
+        let named = parts.next()?;
+        let version = match named.strip_suffix(".whl") {
+            Some(wheel) => wheel.split('-').nth(1)?,
+            None => named,
+        };
+        version.starts_with(|c: char| c.is_ascii_digit()).then_some((member, version))
+    }
+    words.split(", ").filter_map(named).collect()
+}
+
+/// Whether a machine reporting `running` runs `named`: the same, or its public version when `named` has no local part (`0.48.0.dev2319`
+/// runs as `0.48.0.dev2319+g1a2b3c4d`).
+fn runs_named(running: &str, named: &str) -> bool {
+    running == named || (!named.contains('+') && running.split('+').next() == Some(named))
+}
+
 impl Machines {
     /// The update by hand that holds `name` on its software, in its words: kept in the store across Calcifer's restarts (cl-952),
     /// set by an update that named software by hand and let go by one that named nothing (`cozy machine update <name>`). The
@@ -230,20 +271,75 @@ impl Machines {
         self.store().held(name).ok().flatten()
     }
 
-    /// Keeps or lets go of `name`'s hold for an update under `key` named `target` (`flagless`: nothing named): see `held_by_hand`.
-    /// Software named by version holds it whatever that version is: an RC build named by hand (`(RC)`) is a pin, not the RC.
-    pub(crate) fn mind_hold(&self, name: &str, key: &str, target: &str, flagless: bool) {
-        if calcifers(key) {
-            return;
-        }
-        let words = match (flagless, target.split(", ").any(software)) {
-            (true, _) => None,
-            (false, true) => Some(target),
-            (false, false) => return,
-        };
+    /// Holds `name` on `words`, or lets it go (none).
+    pub(crate) fn set_hold(&self, name: &str, words: Option<&str>) {
         if let Err(e) = self.store().hold(name, words) {
             warn!(machine = name, "its hold: {e}");
         }
+    }
+
+    /// Gives `name` the hold its update under `key` named `target` asks (`hold_of`) before that update is sent, then cancels each update
+    /// Calcifer asked of it itself that is yet to end (cl-1196): the RC's, this cozy's minor's, a package floor's. One unsent ends here;
+    /// one its machine holds is canceled there before it activates, and one activating finishes before the hand's, which its machine
+    /// queues behind it. With `superseded` at each send, none goes after the hand's: the hold is set before the cancel looks. The hold
+    /// it had, to put back if the update isn't made; None when the update leaves the hold alone.
+    pub(crate) fn hold_for(&self, name: &str, key: &str, target: &str, flagless: bool) -> Option<Option<String>> {
+        let words = hold_of(key, target, flagless)?;
+        let was = self.held_by_hand(name);
+        self.set_hold(name, words);
+        let why = match words {
+            Some(words) => format!("superseded by an update by hand to {words}"),
+            None => "superseded by an update by hand".into(),
+        };
+        match self.calcifer.supersede(name, calcifers, &why) {
+            Ok(ended) if !ended.is_empty() => info!(machine = name, "{why}: {} of Cozy's own updates canceled", ended.len()),
+            Ok(_) => {}
+            Err(e) => warn!(machine = name, "canceling Cozy's own updates: {e}"),
+        }
+        Some(was)
+    }
+
+    /// Whether update `id` of `name`, about to be sent, is one Calcifer asked itself while `name` is held by hand: then it is canceled
+    /// here, never sent (cl-1196).
+    pub(crate) fn superseded(&self, id: &api::ids::RunId, name: &str) -> bool {
+        let Some(words) = self.held_by_hand(name) else { return false };
+        if !self.store().key(id.as_str()).ok().flatten().is_some_and(|key| calcifers(&key)) {
+            return false;
+        }
+        match self.calcifer.supersede(name, calcifers, &format!("superseded by an update by hand to {words}")) {
+            Ok(ended) => ended.contains(id),
+            Err(e) => {
+                warn!(machine = name, "canceling Cozy's own update: {e}");
+                false
+            }
+        }
+    }
+
+    /// What `name` runs (on `frame`) that its hold by hand names otherwise, in words (`Runtime 0.48.0.dev2319 · cozy 0.27.0-dev`),
+    /// while no update of it is going (cl-1196): the hold says what was asked, the machine what it runs, and the machine's word stands.
+    /// None: not held, running what the hold names, its Status unread, or an update under way.
+    pub(crate) fn unheld(&self, name: &str, frame: Option<&v1::StatusFrame>) -> Option<String> {
+        let held = self.held_by_hand(name)?;
+        let frame = frame?;
+        if self.store().updating(name).unwrap_or(true) {
+            return None;
+        }
+        let differs: Vec<String> = held_versions(&held)
+            .into_iter()
+            .filter_map(|(member, named)| {
+                let (label, running) = match member {
+                    "runtime" => ("Runtime", &frame.runtime),
+                    "tensorfs" => ("TensorFS", &frame.tensorfs),
+                    _ => ("cozy", &frame.version),
+                };
+                match running.as_str() {
+                    running if runs_named(running, named) => None,
+                    "" => Some(format!("no {label}")),
+                    running => Some(format!("{label} {}", prerelease::shown(running))),
+                }
+            })
+            .collect();
+        (!differs.is_empty()).then(|| differs.join(" · "))
     }
 
     /// Whether `name` follows the RC: a rental of this dev home that this computer ordered, up; or `local`, where a dev home runs
@@ -358,7 +454,8 @@ impl Machines {
         let frame = frame?;
         let follow = |state: &str, detail: String| Some(RcFollow { rc: open(), state: state.into(), detail });
         if let Some(target) = self.held_by_hand(name) {
-            return follow("held", format!("an update by hand gave it {target}; `cozy machine update {name}` moves it to the RC again"));
+            let runs = self.unheld(name, Some(frame)).map_or_else(String::new, |runs| format!(", but it runs {runs}"));
+            return follow("held", format!("held by hand on {target}{runs}; `cozy machine update {name}` moves it to the RC again"));
         }
         let Some(sums) = self.rc.last() else {
             return follow("none", "its builds haven't been read yet".into());

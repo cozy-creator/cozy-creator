@@ -1201,6 +1201,20 @@ impl Calcifer {
         })
     }
 
+    /// Cancels `machine`'s updates yet to end whose key `superseded` names, as `cancel` does, an unsent one saying `why` (cl-1196). The
+    /// runs it ended or asked its machine to end.
+    pub(crate) fn supersede(&self, machine: &str, superseded: impl Fn(&str) -> bool, why: &str) -> store::Result<Vec<RunId>> {
+        let ended = self.store.supersede(machine, superseded, why)?;
+        Ok(ended
+            .into_iter()
+            .map(|(id, events)| {
+                self.publish(&id, events);
+                self.wake(&id);
+                id
+            })
+            .collect())
+    }
+
     /// Tells run `id`'s machine to cancel it now, on its own: `cancel` keeps the request.
     pub(crate) fn stop_at_machine(self: &Arc<Self>, id: &RunId) {
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
@@ -2032,6 +2046,14 @@ impl Calcifer {
                     continue;
                 }
                 _ => {}
+            }
+            // An update Calcifer asked itself never goes to a machine held by hand since: the hand's supersedes it (cl-1196).
+            if run.state == State::Queued
+                && run.kind == ::api::calcifer::Kind::Update
+                && let Some(machines) = self.machines()
+                && machines.superseded(id, &name)
+            {
+                continue;
             }
             // Sent now, it would run on what the machine is leaving, or go as it restarts. An update already with the machine
             // finishes what it has first, and what's held here goes to what it became.

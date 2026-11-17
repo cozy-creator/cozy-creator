@@ -976,8 +976,10 @@ impl Machines {
             }
             status.activity = activity.iter().filter_map(|operation| self.operation(operation, projects)).collect();
         }
-        machine.rc = self.rc_follow(&row.name, self.frame(&row.name).as_ref());
+        let frame = self.frame(&row.name);
+        machine.rc = self.rc_follow(&row.name, frame.as_ref());
         machine.held = self.held_by_hand(&row.name);
+        machine.unheld = self.unheld(&row.name, frame.as_ref());
         let asked = match row.kind {
             MachineKind::Rental => store.rent_ask(&row.name).map_err(internal)?,
             _ => None,
