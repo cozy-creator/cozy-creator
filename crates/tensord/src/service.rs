@@ -559,9 +559,7 @@ impl Service {
             }
         };
         type Released = BTreeSet<(u32, String)>;
-        // What models give, without what nothing keeps: a collection judged before this one takes that, and an admit asks
-        // again once it has (e2e 44069895336: an admit refused 0.3 MiB short, its executors' models counted as not needed).
-        let freed = |ended: &BTreeSet<u32>, released: &Released| room.freed(|lane| lets_go(lane, ended, &busy, released)) - room.spare;
+        let freed = |ended: &BTreeSet<u32>, released: &Released| room.freed(|lane| lets_go(lane, ended, &busy, released));
         let (mut ended, mut released, mut names) = (BTreeSet::new(), Released::new(), vec![]);
         let mut can = freed(&ended, &released);
         for (pids, _) in idle {
@@ -620,8 +618,8 @@ impl Service {
             tracing::warn!("the disk is short of {}: executors let go of {}", crate::reclaim::size(need), names.join(", "));
         } else {
             let busy: Vec<String> = busy.iter().map(|(pid, models)| format!("{pid}: {} idle", models.idle.len())).collect();
-            tracing::info!("the disk is short of {}: no executor let go of a model ({} in models nothing holds, {} else free; executors {})",
-                crate::reclaim::size(need), crate::reclaim::size(can), crate::reclaim::size(room.spare), busy.join(", "));
+            tracing::info!("the disk is short of {}: no executor let go of a model ({} free without one; executors {})",
+                crate::reclaim::size(need), crate::reclaim::size(can), busy.join(", "));
         }
         // What a busy executor let go leaves the store's holds once it closes them.
         let deadline = std::time::Instant::now() + RELEASE_WAIT;
