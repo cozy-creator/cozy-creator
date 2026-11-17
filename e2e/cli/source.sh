@@ -24,7 +24,7 @@ rm -rf "$co" && mkdir -p "$co"
 cp -r "$here/../../release-gate/suites/hub/pkg" "$co/minimax-h3-tools" && mv "$co/minimax-h3-tools/ci_hub_pkg" "$co/minimax-h3-tools/minimax_h3_tools"
 sed -i -e 's/^name = "ci-hub-pkg"/name = "minimax-h3-tools"/' -e 's/ci_hub_pkg/minimax_h3_tools/g' "$co/minimax-h3-tools/pyproject.toml" "$co/minimax-h3-tools/package.toml"
 sed -i 's/^RELEASE = "0.1.0"$/RELEASE = "source"/' "$co/minimax-h3-tools/minimax_h3_tools/__init__.py"
-package_at "$co/e2e-source-relay" e2e_source_relay '"cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19", "minimax-h3-tools>=0.1.0"' \
+package_at "$co/e2e-source-relay" e2e_source_relay '"cozy-runtime>=0.48.0.dev0,<0.49", "msgspec>=0.19", "minimax-h3-tools>=0.1.0"' \
   "$(printf '\n[tool.uv.sources]\nminimax-h3-tools = { index = "tensorhub" }')" <<'PY'
 import msgspec
 from e2e_source_relay_calls import Text, echo

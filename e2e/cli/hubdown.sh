@@ -56,7 +56,7 @@ hd_row() {
 # hd_relay <dir> <name>: local code calling minimax-h3-tools's echo, its source the `tensorhub` index, with no uv.lock (hub_dependency).
 hd_relay() {
   rm -rf "$1"
-  package_at "$1" "$2" '"cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19", "minimax-h3-tools>=0.1.0"' \
+  package_at "$1" "$2" '"cozy-runtime>=0.48.0.dev0,<0.49", "msgspec>=0.19", "minimax-h3-tools>=0.1.0"' \
     "$(printf '\n[tool.uv.sources]\nminimax-h3-tools = { index = "tensorhub" }')" <<PY
 import msgspec
 from ${2}_calls import Text, echo
