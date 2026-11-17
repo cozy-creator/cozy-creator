@@ -4,14 +4,15 @@
 # (drive.py). No GPU, no rental, no sign-in.
 #
 #   e2e/cpu/run.sh --out DIR --packages DIR --runtime R --tensorfs T [--cozy BIN --project DIR --stage-code BIN] [--envs DIR]
-#                  [--only pkg,...] [--cells entry/cell,...] [--jobs N] [--refs DIR] [--helpers pkg,...] [--record] [--keep]
-#                  [--lock fresh]
+#                  [--only pkg,...] [--cells entry/cell,...] [--jobs N] [--shard K/N] [--refs DIR] [--helpers pkg,...] [--record]
+#                  [--keep] [--lock fresh]
 # R and T: a wheel, a source dir (the Runtime), an exact release version, or `lock` (what each package's lock pins).
 # --cozy: a cozy whose Calcifer is up, signed in to the suite's Hub as its admin, and --project a project folder of it: each
 # package's cells run through it (real.py), its code is also uploaded and locked (cli.sh), and each slot's default lane
 # resolved per GPU family first (lanes.py; `--cells lanes` alone).
 # --lock fresh (a release's smoke, promote.sh; needs --cozy, and R and T release versions): that cozy locks each package
 # first and it runs from that lock, which must pin R and T from PyPI. Its committed lock isn't compared.
+# --shard K/N runs every Nth package from the Kth, slowest first: N runners share the suite (e2e.yaml's cpu shards).
 # --keep keeps each package's tiny weights, inputs and outputs (else only logs and replies stay);
 # --refs reads (and --record writes) references elsewhere than refs/; --helpers installs those packages from the
 # checkout over the releases the locks pin (a helper not yet published). e2e/lib.sh's other candidate flags are ignored.
@@ -20,12 +21,12 @@
 # One line per cell: PASS|FAIL|SKIP <package> <entry> <cell> <seconds>s[: first error line]; the summary last.
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-OUT='' PACKAGES='' RUNTIME='' TENSORFS='' ENVS=${XDG_CACHE_HOME:-$HOME/.cache}/cozy-e2e-cpu ONLY='' CELLS='' JOBS=2 RECORD='' REFS='' HELPERS='' KEEP='' COZY='' PROJECT='' LOCK=''
+OUT='' PACKAGES='' RUNTIME='' TENSORFS='' ENVS=${XDG_CACHE_HOME:-$HOME/.cache}/cozy-e2e-cpu ONLY='' CELLS='' JOBS=2 SHARD=1/1 RECORD='' REFS='' HELPERS='' KEEP='' COZY='' PROJECT='' LOCK=''
 RUN_CODE_STAGE=${RUN_CODE_STAGE:-}
 while [ $# -gt 0 ]; do
   case $1 in
     --out) OUT=$2 ;; --packages) PACKAGES=$2 ;; --runtime) RUNTIME=$2 ;; --tensorfs) TENSORFS=$2 ;;
-    --envs) ENVS=$2 ;; --cozy) COZY=$2 ;; --project) PROJECT=$2 ;; --stage-code) RUN_CODE_STAGE=$2 ;; --only) ONLY=$2 ;; --cells) CELLS=$2 ;; --jobs) JOBS=$2 ;; --refs) REFS=$2 ;; --helpers) HELPERS=$2 ;;
+    --envs) ENVS=$2 ;; --cozy) COZY=$2 ;; --project) PROJECT=$2 ;; --stage-code) RUN_CODE_STAGE=$2 ;; --only) ONLY=$2 ;; --cells) CELLS=$2 ;; --jobs) JOBS=$2 ;; --shard) SHARD=$2 ;; --refs) REFS=$2 ;; --helpers) HELPERS=$2 ;;
     --lock) LOCK=$2 ;;
     --record) RECORD=--record; shift; continue ;;
     --keep) KEEP=1; shift; continue ;;
@@ -80,6 +81,8 @@ absent=$(for q in $packages; do [ -f "$PACKAGES/$q/pyproject.toml" ] || echo "$q
 packages=$(for q in $packages; do if [ -f "$PACKAGES/$q/pyproject.toml" ]; then echo "$q"; fi; done)
 packages=$(echo $packages)
 packages="$(for q in $SLOWEST; do [[ " $packages " != *" $q "* ]] || echo "$q"; done) $(for q in $packages; do [[ " $SLOWEST " == *" $q "* ]] || echo "$q"; done)"
+packages=$(i=0; for q in $packages; do [ $((i % ${SHARD#*/})) != $((${SHARD%/*} - 1)) ] || echo "$q"; i=$((i + 1)); done)
+packages=$(echo $packages)
 
 one() {
   local p=$1 out=$OUT/$1 env=$ENVS/$1 t

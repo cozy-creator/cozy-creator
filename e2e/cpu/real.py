@@ -10,8 +10,10 @@ One line per cell, as drive.py's. A quantize cell is `cozy model quantize`; a tw
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+import struct
 import subprocess
 import sys
 import time
@@ -20,8 +22,8 @@ from pathlib import Path
 from typing import cast
 
 from cell import Cell, Json, Seen, Source
-from drive import (HERE, Failed, Files, Interface, compact, first_line, judged, load_fixture, same_model, slot_ref, steered,
-                   stored, tiny, tolerance, twin_gap)
+from drive import (HERE, Failed, Files, Interface, Reply, compact, first_line, graphs_off_cuda, judged, load_fixture,
+                   same_model, slot_ref, steered, stored, tiny, tolerance, twin_gap)
 
 #: An author's page for every tiny model this suite mirrors.
 PAGE = "https://github.com/cozy-creator/cozy-creator/tree/master/e2e/cpu"
@@ -29,8 +31,11 @@ PAGE = "https://github.com/cozy-creator/cozy-creator/tree/master/e2e/cpu"
 FAMILIES = {"bf16": ("bf16", 16), "bfloat16": ("bf16", 16), "f16": ("fp16", 16), "float16": ("fp16", 16),
             "f32": ("f32", 32), "float32": ("f32", 32)}
 PREFIXES = {"int8.": ("int8", 8), "fp8.": ("fp8", 8), "int4.": ("int4", 4), "nvfp4": ("nvfp4", 4), "mxfp4": ("mxfp4", 4)}
-EXTENSIONS = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "video/mp4": ".mp4", "audio/wav": ".wav",
-              "audio/flac": ".flac", "audio/mpeg": ".mp3", "application/json": ".json", "text/plain": ".txt"}
+#: The extension `cozy run -o` names a file of each media type with (api::calcifer::output_file_name).
+EXTENSIONS = {"image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/webp": ".webp", "image/gif": ".gif",
+              "image/avif": ".avif", "video/mp4": ".mp4", "video/webm": ".webm", "audio/wav": ".wav", "audio/x-wav": ".wav",
+              "audio/wave": ".wav", "audio/mpeg": ".mp3", "audio/flac": ".flac", "audio/ogg": ".ogg",
+              "application/json": ".json", "text/plain": ".txt"}
 
 
 def cozy(binary: str, project: Path, args: list[str], log: Path, timeout: float = 1800) -> dict[str, Json]:
@@ -43,7 +48,8 @@ def cozy(binary: str, project: Path, args: list[str], log: Path, timeout: float 
     if done.returncode != 0 or runs and last.get("status") != "completed":
         reason = cast(dict[str, Json], last.get("reason") or {})
         said = reason.get("message") or reason.get("code") or log.with_suffix(".err").read_text().strip()
-        raise Failed(f"cozy {' '.join(args[:2])}: exit {done.returncode}, {last.get('status') or 'no run'}: {first_line(said)}")
+        raise Failed(f"cozy {' '.join(a for a in args[:3] if a != '--full')}: exit {done.returncode}, "
+                     f"{last.get('status') or 'no run'}: {first_line(said)}")
     return last
 
 
@@ -176,12 +182,15 @@ def outputs(run: dict[str, Json], folder: Path) -> Files:
         if item.get("stays") or item.get("checkpoint"):
             continue
         name, index, media_type = str(item["name"]), int(cast(int, item.get("index") or 0)), str(item.get("media_type", ""))
-        safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in name[:128])
-        stem = f"{number}-{safe}" + (f"-{index}" if index else "")
-        found = sorted(folder.glob(stem + EXTENSIONS.get(media_type.split(";")[0].strip().lower(), ".*")))
-        if not found:
-            raise Failed(f"output {name}{f' {index}' if index else ''} was not downloaded: {item.get('export_error') or 'no file'}")
-        named[f"{name}.{index - 1}" if index else name] = (found[0], media_type)
+        # As cozy names it: `<run>-<name>[-<index>]-<sha256 of the name and index>.<extension>`.
+        identity = hashlib.sha256(struct.pack("<Q", len(name.encode())) + name.encode() + struct.pack("<I", index)).hexdigest()
+        safe = "".join(c if c.isascii() and (c.isalnum() or c in "._-") else "_" for c in name[:128])
+        file = folder / (f"{number}-{safe}" + (f"-{index}" if index else "") + f"-{identity}"
+                         + EXTENSIONS.get(media_type.split(";")[0].strip().lower(), ""))
+        if not file.is_file():
+            raise Failed(f"output {name}{f' {index}' if index else ''} was not downloaded to {file.name}: "
+                         f"{item.get('export_error') or 'no file'}")
+        named[f"{name}.{index - 1}" if index else name] = (file, media_type)
     return named
 
 
@@ -274,9 +283,11 @@ def main() -> int:
                 payload, files = request(cell, out / "made")
                 (folder / "request.json").write_text(json.dumps(payload, indent=1))
                 models = [arg for path, ref in sorted(cell.get("models", {}).items()) for arg in ("--model", f"{path}={ref}")]
-                run = cozy(binary, project, ["run", f"{package_dir}/{entry}", "--input", str(folder / "request.json"), *files,
-                                             *models, "--on", "local", "-o", str(folder / "out")], folder / "run.ndjson")
+                run = cozy(binary, project, ["--full", "run", f"{package_dir}/{entry}", "--input", str(folder / "request.json"),
+                                             *files, *models, "--on", "local", "-o", str(folder / "out")], folder / "run.ndjson")
                 (folder / "run.json").write_text(json.dumps(run, indent=1))
+                # Its CUDA graphs fell back to the call as written, as its machine measured it (cr-297).
+                graphs_off_cuda(cast(Reply, cast(dict[str, Json], run.get("measurements") or {})))
                 if against is None and not (record and same_as is None):
                     raise Failed(f"no output of {same_as or key} to judge against: run it too, or record (run.sh --record)")
                 named = outputs(run, folder / "out")
