@@ -17,6 +17,7 @@
 //! each slot for its lane and store and fetches the needed ones, then the extras, never a slot the rules exclude. An edit that changes
 //! what the rules say changes the item: its machine drops what only the old one wanted and fetches the new.
 use std::{
+    borrow::Cow,
     collections::HashSet,
     sync::{Arc, LazyLock, Mutex, atomic::Ordering},
     time::Duration,
@@ -64,15 +65,15 @@ pub(super) fn keep(api: &Arc<Api>, project: &Arc<Project>) {
         let (mut arrivals, mut machines) = (api.machines.arrivals.subscribe(), api.calcifer.machines_changed());
         // Its revision and the machines' loads as last guessed at; `stale`: something it's guessed from changed since.
         // `why`: what made it stale, said with the guess it makes.
-        let (mut read, mut load, mut stale, mut why) = (String::new(), 0, true, "shown");
+        let (mut read, mut load, mut stale, mut why) = (String::new(), 0, true, Cow::Borrowed("shown"));
         let loads = || api.machines.lists.load_moved.load(Ordering::Acquire);
         loop {
             if stale {
                 // An edit that came while it guessed settles as an edit, whatever else moved (44068453992: one waited 800 ms).
                 if edits.has_changed().unwrap_or(false) && open.upgrade().is_some_and(|project| super::revision(&project.folder.dir) != read) {
-                    why = "edited";
+                    why = Cow::Borrowed("edited");
                 }
-                match why {
+                match why.as_ref() {
                     "shown" => {}
                     "edited" => tokio::time::sleep(SETTLE).await,
                     _ => tokio::time::sleep(LOADS).await,
@@ -99,21 +100,25 @@ pub(super) fn keep(api: &Arc<Api>, project: &Arc<Project>) {
                 changed = edits.changed() => match (changed, open.upgrade()) {
                     (Ok(()), Some(project)) => {
                         if super::revision(&project.folder.dir) != read {
-                            (stale, why) = (true, "edited");
+                            (stale, why) = (true, Cow::Borrowed("edited"));
                         }
                     }
                     _ => break,
                 },
                 changed = arrivals.changed() => match changed {
-                    Ok(()) => (stale, why) = (true, "a machine came"),
+                    Ok(()) => (stale, why) = (true, Cow::Borrowed("a machine came")),
                     Err(_) => break,
                 },
-                // A machine said its Status: guessed again when one it's guessed on serves no more, or a machine's load changed
-                // (cl-1104: a run began or ended there, or an update waits on its runs), so the one made ready is the one a render
-                // would go to now.
+                // A machine said its Status: guessed again when one it's guessed on serves no more, or a machine's load moved so a
+                // guess could go elsewhere (cl-1104, cl-1123: `Lists::could_move`), so the one made ready is the one a render would go
+                // to now. Any other move changes nothing here.
                 changed = machines.changed() => match changed {
-                    Ok(()) if loads() != load => (stale, why) = (true, "a machine's load moved"),
-                    Ok(()) if api.machines.lists.guess_left(&api.machines, &folder) => (stale, why) = (true, "a machine it guessed on left"),
+                    Ok(()) if api.machines.lists.guess_left(&api.machines, &folder) => (stale, why) = (true, Cow::Borrowed("a machine it guessed on left")),
+                    Ok(()) if loads() != load => {
+                        if let Some(moved) = api.machines.lists.could_move(&folder, load, now_ms()) {
+                            (stale, why) = (true, Cow::Owned(format!("load moved: {moved}")));
+                        }
+                    }
                     Ok(()) => {}
                     Err(_) => break,
                 },
@@ -202,13 +207,21 @@ async fn guess(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, f
         _ => soonest,
     };
     let On::Machine(machine) = &chosen.machine else { return Guessed::Nothing };
+    // Where else it would finish, and how long each one's line holds it from GPUs: what a load moving there could change.
+    let others = (up.iter().filter(|offer| offer.fits && offer.machine != chosen.machine))
+        .filter_map(|offer| match &offer.machine {
+            On::Machine(other) => Some((other.clone(), (offer.finish_at_ms, offer.waits_ms(now)))),
+            _ => None,
+        })
+        .collect();
+    let placed = crate::prefetch::Placed { finish_ms: chosen.finish_at_ms, others };
     let (item, function) = match item(api, host, project, hub, (name.as_str(), with.as_str(), kind.as_str(), &made), &chosen.machine, asking).await {
         Ok(Some(item)) => item,
         Ok(None) => return Guessed::Nothing,
         Err(_) => return Guessed::Unknown("its request couldn't be read"),
     };
     tracing::info!(target: crate::prefetch::TARGET, "{folder}: {name} guessed on {machine} in {} ms", began.elapsed().as_millis());
-    Guessed::Made(Box::new(Guess { project: Arc::downgrade(project), asset: name, machine: machine.clone(), hub: hub.to_owned(), item, function }))
+    Guessed::Made(Box::new(Guess { project: Arc::downgrade(project), asset: name, machine: machine.clone(), hub: hub.to_owned(), item, function, placed }))
 }
 
 /// What `machine` has ready for box `name` of `kind` whose tool is `with` (`PUT /v1/prepare`): the function its text names, else the

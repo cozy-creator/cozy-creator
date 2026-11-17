@@ -213,12 +213,12 @@ switch() {
   # When expander_t2i's own bytes last grew, by the runner's clock, and the drop as TensorD logged it (its own clock).
   local grew dropped at_edit
   at_edit=$(awk -F'\t' -v e="$EDIT_MS" 'NR > 1 && $1 <= e {b = $2} END {print b + 0}' "$series")
-  grew=$(awk -F'\t' 'NR > 1 {if ($2 != last) {at = $1; last = $2}} END {print at + 0}' "$series")
+  grew=$(awk -F'\t' 'NR > 1 {if ($2 > last) {at = $1}; last = $2} END {print at + 0}' "$series")
   dropped=$(grep -m1 -E "list item cozy:prepare:[^ ]* dropped: its run ends" "$OUT/tensord-$NAME.log" | cut -c1-40)
   say "expander_t2i's own bytes: $at_edit at the edit, $T2I_LEFT at the end; last grew at $grew (Unix ms), $((grew - EDIT_MS)) ms after the edit; TensorD's drop: ${dropped:-not in its log}; series in t2i-series.tsv"
-  # Judged at the drop, on TensorD's own log: the objects it had started before the drop that landed after it (one at most), and those
-  # it stopped. On a 2 GB/s pod the 2–3 s from the edit to the drop lands gigabytes first (44065133454): that is the edit's latency
-  # (`first_fetch`), not the stop.
+  # Judged at TensorD's drop: expander_t2i's own bytes grow no more 3 s after it (what was in flight, and `cozy machine show`'s lag).
+  # On a 2 GB/s pod the 2–3 s from the edit to the drop lands gigabytes first (44065133454): that is the edit's latency (`first_fetch`),
+  # not the stop. TensorD's log says what of every model was in flight at the drop: shared weights the new request needs go on.
   local stop
   stop=$(python3 -I - "$OUT/tensord-$NAME.log" <<'PY'
 import datetime, re, sys
@@ -247,11 +247,13 @@ else:
 PY
 )
   read -r dropped_at landed_after landed_bytes stopped stopped_bytes <<< "$stop"
-  say "at TensorD's drop (${dropped_at} Unix ms, $((dropped_at - EDIT_MS)) ms after the edit): $landed_after objects in flight landed after it ($landed_bytes bytes), $stopped stopped ($stopped_bytes bytes)"
+  say "at TensorD's drop (${dropped_at} Unix ms, $((dropped_at - EDIT_MS)) ms after the edit), of every model: $landed_after objects in flight landed after it ($landed_bytes bytes), $stopped stopped ($stopped_bytes bytes); expander_t2i's own last grew $((grew - dropped_at)) ms after it"
   if whole "$OUT/switch.json" "$T2I"; then
     MISMATCH+=("expander_t2i came whole after the draft stopped needing it")
-  elif [ "$dropped_at" = none ] || [ "$landed_after" -gt 1 ]; then
-    MISMATCH+=("expander_t2i didn't stop at the drop: ${landed_after} objects landed after it")
+  elif [ "$dropped_at" = none ]; then
+    MISMATCH+=("TensorD logged no drop of the text-to-image item")
+  elif [ $((grew - dropped_at)) -gt 3000 ]; then
+    MISMATCH+=("expander_t2i's own bytes grew until $((grew - dropped_at)) ms after TensorD's drop")
   fi
   say "after the edit: expander_t2i $([ ${#MISMATCH[@]} = 0 ] && echo stopped, unfinished || echo "${MISMATCH[-1]}"); expander_i2i whole; draw ready on $NAME: $(models "$OUT/switch.json")"
 }
@@ -346,7 +348,7 @@ if [ -n "${EDIT_MS:-}" ]; then
 fi
 # Calcifer's guess rounds over the session, by what started each, and what moved each machine's load (cl-1123).
 tally() { sort | uniq -c | sort -rn | awk '{n = $1; $1 = ""; printf "%s%s ×%d", sep, substr($0, 2), n; sep = "; "}'; }
-say "Calcifer's guess rounds: $(grep -c ' guesses in [0-9]* ms (' "$OUT/calcifer.log") ($(grep -o ' guesses in [0-9]* ms ([^)]*)' "$OUT/calcifer.log" | sed 's/.* ms (//; s/)$//' | tally))"
+say "Calcifer's guess rounds: $(grep -c ' guesses in [0-9]* ms (' "$OUT/calcifer.log") ($(grep -o ' guesses in [0-9]* ms (.*)$' "$OUT/calcifer.log" | sed 's/^ guesses in [0-9]* ms (//; s/)$//' | awk -v me="$NAME" '/^load moved: / {split($3, on, ":"); $3 = (on[1] == me ? me : "another machine") ":"} {print}' | tally))"
 say "machines' loads moved: $(grep -o "[^ ]*'s load moved: .*" "$OUT/calcifer.log" | sed "s/'s load moved: / /" | awk '{print ($1 == "'"$NAME"'" ? "'"$NAME"'" : "another machine") ": " substr($0, index($0, " ") + 1)}' | tally)"
 [ ${#MISMATCH[@]} = 0 ] || fail "what didn't match: ${MISMATCH[*]}"
 say "PASS: each machine fetched what each request's rules said, Calcifer's word ahead of the render, and the cold quote was what landed"
