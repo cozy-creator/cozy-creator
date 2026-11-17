@@ -92,6 +92,10 @@ PY_ENCRYPT_DEADLINE
   jq -e '.stream_proof.default_source_removed' "$work/encrypted.json" > /dev/null || fail "API encryption left a plaintext source"
   [ -n "$view" ] && [ -d "$view" ] || fail "encrypted project has no mounted readable view"
   grep -q SYNTHETIC_PRIVATE_VAULT_CONTENT_1762838400 "$view/files/private-sentinel.txt" || fail "mounted file changed"
+  # A command of no project sends an encrypted project's file only from that project (cl-1066): a plaintext one's goes (commands).
+  (cd "$work" && cozy --json machine update local --runtime "$view/files/private-sentinel.txt" -y) > "$work/encrypted-send.json" 2>&1 \
+    && fail "a command of no project sent an encrypted project's file"
+  grep -q project_source_scope "$work/encrypted-send.json" || fail "an encrypted project's file, sent from no project: $(tail -c 300 "$work/encrypted-send.json")"
   [ "$(sha "$view/files/movie.mp4")" = "$before" ] || fail "mounted video changed"
   ffprobe -v error -show_entries format=duration -of json "$view/files/movie.mp4" > "$work/video.json"
   ffmpeg -v error -ss 1 -i "$view/files/movie.mp4" -frames:v 1 -f null -

@@ -1,0 +1,1 @@
+A file inside a plaintext project named by a command of no project (`cozy machine update --runtime <file>`) is sent as any file, with no memo of its path, rather than refused `project_source_scope`. One inside an encrypted project is still sent only from that project.
