@@ -35,6 +35,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "containment"))
 from scan import Scanner, places  # noqa: E402
 
 MAXIMUM = 30
+# Step 2's maximum: its run writes and hashes a 2 GB output before it starts coming in, so the machine stops before the deadline.
+MAXIMUM_SAVING = 60
 # The lock's bound: a save gone silent is cut (outputs.rs EXPORT_SILENCE, 20 s), three unanswered asks of local (a second apart,
 # two seconds each), and the lock itself.
 BOUND = 60
@@ -320,6 +322,15 @@ def runtime_left(folder: Path, ended: Path, mark: str, seconds: float = 30) -> l
     return found
 
 
+def deadline_of(unlocked_at: float, maximum: int, facts: dict[str, object], label: str) -> float:
+    """When the vault's deadline passes with local stopped: its maximum, or the machine's stop if that came later (until then its
+    run held the vault, as runs do). The lock is measured from it."""
+    stopped_at = time.monotonic()
+    deadline = max(unlocked_at + maximum, stopped_at)
+    facts[f"{label}_deadline"] = "its maximum" if deadline > stopped_at else f"the stop, {round(stopped_at - unlocked_at, 1)} s after unlocking (past the {maximum} s maximum)"
+    return deadline
+
+
 def mounted(view: Path) -> bool:
     for line in Path("/proc/self/mountinfo").read_text().splitlines():
         point = line.split(" ")[4].replace("\\040", " ")
@@ -462,12 +473,12 @@ def main() -> None:
         scanner.add(mark)
         if first.state() != "locked":
             first.cozy("lock-before-maximum", "vault", "lock")
-        view = first.unlock("unlock-maximum", MAXIMUM)
+        view = first.unlock("unlock-maximum", MAXIMUM_SAVING)
         unlocked_at = time.monotonic()
         process, stdout = first.start("maximum-run", sleeper(view), 1, mark, SAVE_MB)
         assert waiting(stdout, process, ARRIVING), f"the maximum's run's output never started coming: {stdout.read_bytes()[-400:]!r}"
         facts["maximum_stopped"] = stop(view)
-        facts["maximum_locked_s"] = first.locked_by(unlocked_at, MAXIMUM + DEADLINE_BOUND)
+        facts["maximum_locked_s"] = first.locked_by(deadline_of(unlocked_at, MAXIMUM_SAVING, facts, "maximum"), DEADLINE_BOUND)
         failures.extend(deadline(first, "maximum", scanner, view, projects, facts, process, mark))
 
         # 3. The maximum's deadline while local is stopped mid-call, in a second project: the run holds the vault past its maximum
@@ -491,7 +502,7 @@ def main() -> None:
         assert waiting(stdout, process, BEGUN, 180), f"the going run didn't begin: {stdout.read_bytes()[-400:]!r}"
         number = number_of(stdout)
         facts["going_stopped"] = stop(view)
-        facts["going_locked_s"] = second.locked_by(unlocked_at, MAXIMUM + DEADLINE_BOUND)
+        facts["going_locked_s"] = second.locked_by(deadline_of(unlocked_at, MAXIMUM, facts, "going"), DEADLINE_BOUND)
         failures.extend(deadline(second, "going", scanner, view, projects, facts, process, mark))
         # Its run read once local answered, from the project unlocked again: a locked project's runs aren't read.
         if second.state() != "locked":
@@ -514,8 +525,8 @@ def main() -> None:
         for project in projects:
             clock(project)
     assert not failures, "lock hung: " + "; ".join(failures)
-    print(f"lock hung: locked in {facts['lock_s']} s by hand, {facts['maximum_locked_s']} s and {facts['going_locked_s']} s at a "
-          f"{MAXIMUM} s maximum, with local stopped; its clean-up done {facts['owed_paid_s']} s after it went on", flush=True)
+    print(f"lock hung: locked in {facts['lock_s']} s by hand, and {facts['maximum_locked_s']} s and {facts['going_locked_s']} s past "
+          f"a deadline (bound {DEADLINE_BOUND} s), with local stopped; its clean-up done {facts['owed_paid_s']} s after it went on", flush=True)
 
 
 def clock(project: Path) -> None:
@@ -530,7 +541,7 @@ def deadline(cell: Cell, label: str, scanner: Scanner, view: Path, projects: lis
     """A deadline step once its vault locked or didn't: what's wrong with it, the machine gone on and its clean-up seen done."""
     failures = []
     if facts[f"{label}_locked_s"] is None:
-        failures.append(f"{label}: the vault is open {MAXIMUM + DEADLINE_BOUND} s past unlocking with a {MAXIMUM} s maximum while local is stopped")
+        failures.append(f"{label}: the vault is open {DEADLINE_BOUND} s past its deadline ({facts[f'{label}_deadline']}) while local is stopped")
         facts[f"{label}_workaround"] = cell.workaround(label, scanner, view)
     else:
         found = facts[label] = hung(cell, label, scanner, view, projects)
