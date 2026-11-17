@@ -15,7 +15,10 @@ release-gate/bench.py baseline <version> <gate dir>... --comfyui-out FILE   # af
 - `skus`: the groups (`<sku>x<gpus>[.<part>]`: a part splits one SKU's cells over two pods), one fresh pod each, held to a
   fixed host RAM (30.46 GiB a GPU) by `pod.sh` over SSH, each with its disk and hard stop, ComfyUI's included.
 - `cells.tsv`: the cells and what each guards. Each runs once cold on its fixed seed (the judged output) and then `warm`
-  times on fresh seeds (the judged times). Weights download before the cold run (gate.sh `ahead`).
+  times on fresh seeds (the judged times). Weights download before the cold run (gate.sh `ahead`), and the cold run
+  starts from a cold pod: what earlier cells left (LoRA bakes, memos, learned peaks, kernels, page cache) is cleared and the
+  machine restarted (machines.sh `pod_derived`; `bench-derived.tsv`). A cold run that still read derived pages it did not
+  make is marked † and its cold time is not compared.
 - `calibrate/`: a reference workload and the pod's facts, before and after the cells: fixed GEMM, attention and convolution,
   the host-to-device copy, a cold disk read, and the host CPU (single-thread Python, 10k tiny kernel launches, a CLIP-style
   tokenize, and its executor's own fork and CUDA init; CPU model, cores, quota), all within the package contract; the GPU's

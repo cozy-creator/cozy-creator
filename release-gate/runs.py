@@ -88,10 +88,11 @@ class Fill(TypedDict, total=False):
 
 
 class Flow(TypedDict, total=False):
-    """What moved one way in a request (`stats.moved[origin]`), or its bakes (`moved.bake`: device_ns)."""
+    """What moved one way in a request (`stats.moved[origin]`), or its bakes (`moved.bake`: blocks, device_ns)."""
     bytes: int
     ns: int
     device_ns: int
+    blocks: int
 
 
 Moved: TypeAlias = dict[str, Flow]  # by origin (store, derived, kept, leased), and `bake`
