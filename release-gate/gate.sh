@@ -431,12 +431,13 @@ if [ -z "$ON" ]; then
   # varena's faults run there (faults.sh), suite bench holds the host's RAM there (pod.sh), and suite attention-corpus fetches
   # its captures over it, suite attention pushes a --corpus to the pod over it, and suite execution's library programs run
   # there (programs.sh), and suite slow moves the Runtime's kernels aside and gives the machine a hot host's GPU readings there
-  # (cl-913), and an A/B hook (*-ab.sh) and suite multi-gpu's 1-against-2 pair clear derived state there (machines.sh `pod_derived`), with this computer's
+  # (cl-913), suite graphs makes the pod a dev machine there (`dev = true`: its replays are audited), and an A/B hook
+  # (*-ab.sh) and suite multi-gpu's 1-against-2 pair clear derived state there (machines.sh `pod_derived`), with this computer's
   # key, or a new one on a runner. An --only without them rents no SSH.
   SSH=
   if [[ -n $CORPUS && ,$SUITES, == *,attention,* ]] || [[ ,$SUITES, == *,tensord,* || ,$SUITES, == *,bench,* || ,$SUITES, == *,attention-corpus,* || ,$SUITES, == *,multi-gpu,* ]] || { [[ ,$SUITES, == *,tensorfs,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,kill,* ]]; }; } ||
      { [[ ,$SUITES, == *,varena,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,faults,* || $ONLY == *,public,* || $ONLY == *,core,* || $ONLY == *,offload,* ]]; }; } ||
-     { [[ ,$SUITES, == *,execution,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,tensorfs,* ]]; }; } || [[ ,$SUITES, == *,slow,* ]] ||
+     { [[ ,$SUITES, == *,execution,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,tensorfs,* ]]; }; } || [[ ,$SUITES, == *,slow,* || ,$SUITES, == *,graphs,* ]] ||
      [[ " ${EXTRA[*]:-} " == *-ab.sh* ]]; then
     SSH=1; [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
   fi

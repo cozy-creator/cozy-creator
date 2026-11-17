@@ -266,15 +266,26 @@ def check_counts() -> dict[str, int]:
 
 def replay_differs(eager: object, replayed: object) -> str:
     """Why a replay is not its eager pass bit for bit ("" when it is): every graph's one check
-    before it is trusted. Both are pytrees of one shape; NaNs in the same place agree."""
+    before it is trusted. Both are pytrees of one shape; NaNs in the same place agree. A
+    difference says how big it is: the first differing index, the largest |difference| and the
+    relative L2 (tracker design cuda-graph-correctness.md §5.2), for triage, never acceptance."""
     import torch
     from torch.utils._pytree import tree_leaves
 
     for index, (a, b) in enumerate(zip(tree_leaves(eager), tree_leaves(replayed), strict=True)):
         if isinstance(a, torch.Tensor):
-            count = int(((a != b) & ~(a.isnan() & b.isnan())).sum())
+            differs = (a != b) & ~(a.isnan() & b.isnan())
+            count = int(differs.sum())
             if count:
-                return f"output {index}: {count} of {a.numel()} values differ"
+                first = int(differs.flatten().nonzero()[0])
+                x, y = a.detach().double().nan_to_num(), b.detach().double().nan_to_num()
+                delta = (x - y).abs()
+                size = float(x.norm())
+                relative = f"{float(delta.norm()) / size:.3g}" if size else "inf"
+                return (
+                    f"output {index}: {count} of {a.numel()} values differ (first at {first}, "
+                    f"max |Δ| {float(delta.max()):.3g}, relative L2 {relative})"
+                )
     return ""
 
 

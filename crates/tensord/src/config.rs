@@ -67,6 +67,8 @@ pub(crate) struct Config {
     pub warnings: Vec<String>,
     /// Tests only: recorded GPU readings every call reads (`machine.gpu_samples`).
     pub gpu_samples: Option<PathBuf>,
+    /// A dev machine (a top-level `dev = true`): its executors audit their CUDA graphs' replays.
+    pub dev: bool,
 }
 
 /// The one load, which declares the origins this machine fetches at a local address.
@@ -85,6 +87,7 @@ pub(crate) fn reread(config: &mut Config) -> io::Result<()> {
     config.mode = mode(config.grant.lifetime, &loaded.config.machine);
     config.display_pace = display_pace(config.mode, &loaded.config.machine);
     config.gpu_samples.clone_from(&loaded.config.machine.gpu_samples);
+    config.dev = loaded.config.dev;
     Ok(())
 }
 
@@ -130,6 +133,7 @@ fn from_loaded(lifetime: Lifetime, loaded: Loaded, environment: &BTreeMap<String
         grant,
         warnings,
         gpu_samples: machine.gpu_samples.clone(),
+        dev: loaded.config.dev,
     })
 }
 
