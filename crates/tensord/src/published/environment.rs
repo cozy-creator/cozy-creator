@@ -495,6 +495,10 @@ impl Publisher {
         // A package's environment is the machine's, whichever project's run builds it (cl-984): its uv runs on the
         // machine's cache and Pythons, never a project's.
         let stop = job.stops();
+        // A guess a run's install took the line from starts no step more (`line::Turn::outranked`).
+        if stop.as_ref().is_some_and(|(stop, _)| stop.is_cancelled()) {
+            return Err(canceled());
+        }
         let (ended, stderr) = run_builder(&mut command, &self.scope_namespace, stop.as_ref().map(|(stop, _)| stop), &|read| job.bytes(read, 0))?;
         let step = args[..2.min(args.len())].join(" ");
         match ended {

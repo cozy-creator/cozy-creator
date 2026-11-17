@@ -94,8 +94,8 @@ impl Machines {
         };
         let own = this_release();
         // The open RC's dev version moves no released machine to its minor: work goes to one as it runs, as when the RC's builds
-        // said the last release (cl-976). A dev home's rental moves to the open RC first, when it is behind it and has no work
-        // going (cl-922).
+        // said the last release (cl-976). A dev home's rental not on the open RC's builds yet moves to them first, when it has no
+        // work going (cl-922); one on them is never moved ahead of work (cl-1123).
         if same_minor(&frame.version, own) || rc_version() {
             return Ok(self.follow_rc(name, true).await);
         }

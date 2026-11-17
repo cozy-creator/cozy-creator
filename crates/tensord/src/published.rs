@@ -1336,6 +1336,8 @@ impl Publisher {
         let lock = File::create(locks.join(format!("{identity}.lock"))).map_err(io_failure)?;
         if lock.try_lock().is_err() {
             let holder = self.building.lock().unwrap().get(identity).cloned();
+            // A guess building it goes at this run's place in line until it's built (`line::Line::raise`).
+            let _raised = holder.as_deref().and_then(|holder| crate::line::INSTALLS.raise(holder, job.order));
             job.waiting(Some(match holder {
                 Some(run) => format!("waiting for {run} to install {package} {release}"),
                 None => format!("waiting for another render to install {package} {release}"),
