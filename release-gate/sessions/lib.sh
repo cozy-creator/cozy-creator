@@ -79,8 +79,8 @@ if [ -n "${SESSION_UNTIL:-}" ]; then
 fi
 # derived_state <label> <reset|settle|census>: the pod's derived state (release-gate/derived-state.sh, machines.sh
 # `pod_derived`): `reset` before an update's restart begins an arm, `settle` after it clears what the ended executors still
-# wrote and counts what is left. DERIVED holds the census line; a cold arm
-# starts with no derived page, memo entry or learned peak (`derived_zero`). The call memo can't be cleared there: a record
+# wrote and counts what is left. DERIVED holds the census line; a cold arm starts with no derived page, memo entry or
+# learned peak (`derived_zero`). The call memo can't be cleared there: a record
 # it answered says `memoized`, and ab.sh never compares one. No `cozy` verb clears any of this (tfs-299): the root shell
 # is the only way in.
 DERIVED=''
@@ -101,9 +101,9 @@ derived_zero() { pod_derived_zero "$DERIVED"; }
 # Arms on one pod (tfs-299): each starts cold or warm by declaration, never by what an earlier arm left. Cold: `derived_state
 # <arm> reset` before the update that restarts the machine (`cold_restart` when the arm updates nothing), then `arm_cold`.
 # Warm: its own warm-up first.
-# arm_cold <label>: after the restart that begins a cold arm, the census finds no derived page, memo entry or learned peak, or
-# the session fails.
-arm_cold() { derived_state "$1" census; derived_zero || fail "$1: its arm starts with derived state it did not make: $DERIVED"; }
+# arm_cold <label>: after the restart that begins a cold arm, a settle clears what the ended executors wrote behind their last
+# run (#3663), and its census finds no derived page, memo entry or learned peak, or the session fails.
+arm_cold() { derived_state "$1" settle; derived_zero || fail "$1: its arm starts with derived state it did not make: $DERIVED"; }
 # cold_restart <label>: a cold arm with no update of its own: the derived state goes, a settings-only update (`--gpu-memory-limit
 # off`) restarts TensorD and ends every executor, then `arm_cold`.
 cold_restart() {
