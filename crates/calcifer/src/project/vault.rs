@@ -777,15 +777,26 @@ fn saving(api: &Arc<Api>, root: &FsPath) -> Option<Error> {
 /// why. A remote machine's run keeps its outputs across a lock (the lock closes only this computer's machine,
 /// `private_io::close_private_project`), so its save stays owed and resumes when that machine answers. The runs it cut and the runs
 /// it left owed, by name, for the lock's answer to its own client and nothing else (no log). One rule for every lock.
-fn drain_saves(api: &Arc<Api>, root: &FsPath, mut saving: impl FnMut()) -> Result<(Vec<String>, Vec<String>), Error> {
+/// `local_gone`: the deadline's ask found local not answering (cl-1064): a save from it is cut at once, not after `EXPORT_SILENCE`,
+/// so the vault locks close to its deadline; its outputs read lost, saying local didn't answer.
+fn drain_saves(api: &Arc<Api>, root: &FsPath, local_gone: bool, mut saving: impl FnMut()) -> Result<(Vec<String>, Vec<String>), Error> {
     let journal = |_: crate::store::StoreError| error("project_journal", "the project journal could not be checked");
     let projects = api.projects.now_open();
     let Some(project) = projects.iter().find(|project| project.root == root).cloned() else { return Ok((vec![], vec![])) };
     let owner = super::RunOwner::of(&project, &api.calcifer);
     let (mut said, mut busy) = (false, None::<Instant>);
     loop {
-        let owed = match owner.store() {
-            Ok(store) => { busy = None; store.exports_owed().map_err(journal)? }
+        let (owed, from_local) = match owner.store() {
+            Ok(store) => {
+                busy = None;
+                let owed = store.exports_owed().map_err(journal)?;
+                let from_local: Vec<crate::RunId> = if local_gone {
+                    owed.iter().filter(|(id, _)| store.run(id.as_str()).ok().flatten().is_some_and(|row| row.machine.as_deref() == Some("local"))).map(|(id, _)| id.clone()).collect()
+                } else {
+                    vec![]
+                };
+                (owed, from_local)
+            }
             // Another lock's turn ahead of it on the project: looked at again shortly, no longer than a save may go silent.
             Err(crate::store::StoreError::Locked(code)) if code == "project_busy" => {
                 if busy.get_or_insert_with(Instant::now).elapsed() >= crate::outputs::EXPORT_SILENCE {
@@ -800,7 +811,7 @@ fn drain_saves(api: &Arc<Api>, root: &FsPath, mut saving: impl FnMut()) -> Resul
         // An exporter missing is started; one going is left alone: waking it is no progress, and cuts its pause.
         for (id, _) in &owed { if !api.calcifer.exporting(id) { api.calcifer.export(id); } }
         if !said { saving(); said = true; }
-        if owed.iter().any(|(id, _)| api.calcifer.export_moving(id)) {
+        if owed.iter().any(|(id, _)| api.calcifer.export_moving(id) && !from_local.contains(id)) {
             std::thread::sleep(Duration::from_millis(250));
             continue;
         }
@@ -818,7 +829,7 @@ fn drain_saves(api: &Arc<Api>, root: &FsPath, mut saving: impl FnMut()) -> Resul
                 deferred.push(format!("{}-{number}", project.key()));
                 continue;
             }
-            let why = "not saved: its save stopped moving before the project locked";
+            let why = if from_local.contains(&id) { "not saved: this computer's machine didn't answer as the project locked at its deadline" } else { "not saved: its save stopped moving before the project locked" };
             for item in &items {
                 if let Ok(events) = store.export_failed(id.as_str(), &item.name, item.index, item.rev, why) { api.calcifer.publish(&id, events); }
             }
@@ -989,7 +1000,7 @@ pub(crate) fn close_all(api: &Arc<Api>) -> Result<(), Error> {
         let _operation = op.lock().expect("vault operation");
         if end_if_gone(api, &root) { continue; }
         if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
-        drain_saves(api, &root, || {})?;
+        drain_saves(api, &root, false, || {})?;
         let transition = exclusive(&root)?;
         close(api, &root, &transition)?;
     }
@@ -1049,13 +1060,13 @@ static DUE: LazyLock<Mutex<BTreeMap<PathBuf, std::time::Instant>>> = LazyLock::n
 static ASKED: LazyLock<Mutex<BTreeMap<PathBuf, Instant>>> = LazyLock::new(Mutex::default);
 const ASKED_AGAIN: Duration = Duration::from_secs(10);
 
-/// Whether `root`'s runs on `local` hold it while local doesn't answer (cl-1064): local asked first, the journal read only then.
+/// Whether `root`'s runs on `local`, or their saves, hold it while local doesn't answer (cl-1064): local asked first, the journal
+/// read only then. A run whose call ended is no longer routed while its save goes on, so the journal is read, not the routes.
 fn unanswered(api: &Arc<Api>, root: &FsPath) -> bool {
     let Some(id) = project_id(root).or_else(|| plain_project_id(root)) else { return false };
     encrypted(root)
-        && api.calcifer.has_runs(&id)
         && !tokio::runtime::Handle::current().block_on(api.machines.answers("local"))
-        && journal(|| api.calcifer.unsettled_on(&id, "local")).map_err(refused(root, "run_cancel", "the project's work could not be read")).unwrap_or(false)
+        && journal(|| api.calcifer.held_on(&id, "local")).map_err(refused(root, "run_cancel", "the project's work could not be read")).unwrap_or(false)
 }
 
 /// Vaults whose lock is going on a thread of its own.
@@ -1155,7 +1166,7 @@ fn lock_lapsed(api: &Arc<Api>, root: &FsPath, unanswered: bool) {
     // deadline (cl-1082 review). Its pages find it locked.
     // What its runs still owe lands first, judged by progress (cl-1060); then the project's turn, and `close` revokes nothing while
     // a writer is still active.
-    if let Err(failure) = drain_saves(api, root, || {}) { idle_lock_failed(root, &failure); return; }
+    if let Err(failure) = drain_saves(api, root, unanswered, || {}) { idle_lock_failed(root, &failure); return; }
     let Ok(transition) = exclusive(root) else {
         say(root, "gate", || "locking waits for a request still holding the project".into());
         return;
@@ -1226,7 +1237,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
         // Its runs on a local that doesn't answer settle here now (cl-1064), so the lock goes on rather than wait for them.
         unanswered = settle_unanswered(api, root)?;
         // What the project's runs still owe lands before the machine's side closes, judged by progress (cl-1060).
-        (cut, deferred) = drain_saves(api, root, || progress.phase("saving its outputs first"))?;
+        (cut, deferred) = drain_saves(api, root, false, || progress.phase("saving its outputs first"))?;
         // A request still holds the project: its view is revoked, and the sweeper locks once it ends.
         if let Some(busy) = busy.filter(|_| !unanswered) {
             if ended.is_empty() { return Err(busy); }
@@ -1243,7 +1254,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
     let settling = !ended.is_empty() && !unanswered;
     // A storage change closes the machine's side as a lock does: what the project's runs still owe lands first (cl-1060).
     if matches!(ask.action.as_str(), "encrypt" | "decrypt" | "rotate") {
-        let (more_cut, more_deferred) = drain_saves(api, root, || progress.phase("saving its outputs first"))?;
+        let (more_cut, more_deferred) = drain_saves(api, root, false, || progress.phase("saving its outputs first"))?;
         cut.extend(more_cut);
         deferred.extend(more_deferred);
     }
@@ -1473,7 +1484,7 @@ fn working(api: &Arc<Api>, root: &FsPath) -> Option<Work> {
     let Some(project) = projects.iter().find(|project| project.root == root) else {
         return if following { going("a client following a run", true) } else if submitting { waiting } else { None };
     };
-    if api.calcifer.exporting_into(&project.id).is_some() { return going("a run saving its outputs", false); }
+    if api.calcifer.exporting_into(&project.id).is_some() { return running("a run saving its outputs", false); }
     if *project.walking.lock().expect("walking lock") { return going("a render", true); }
     if project.moving.try_lock().is_err() || project.cutting.try_lock().is_err() { return going("a move or cut", false); }
     let Ok(inspection) = inspection(root) else { return going("a storage change", false) };
