@@ -492,9 +492,10 @@ impl Store {
         })
     }
 
-    /// Keeps each Hub's last listing, replacing what was kept of it.
+    /// Keeps each Hub's last listing in place of what was kept: a Hub not among them is forgotten.
     pub(crate) fn keep_hub_listings(&self, listings: &[(String, String)]) -> Result<()> {
         self.write(|tx| {
+            tx.execute("DELETE FROM hub_listings", [])?;
             for (hub, listing) in listings {
                 tx.execute("INSERT INTO hub_listings (hub, listing) VALUES (?1, ?2)
                     ON CONFLICT (hub) DO UPDATE SET listing = excluded.listing", [hub, listing])?;

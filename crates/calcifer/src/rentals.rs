@@ -95,10 +95,12 @@ impl Hubs {
         }
     }
 
-    /// Each Hub's last word as state.db kept it (`hub_listings`), what a start answers until its own listing.
-    pub(crate) fn load_listings(&self, kept: Vec<(String, String)>) {
+    /// Each Hub's last word as state.db kept it (`hub_listings`), what a start answers until its own listing: of the Hubs in
+    /// use only (the configured one and those of live rentals), as a listing keeps.
+    pub(crate) fn load_listings(&self, kept: Vec<(String, String)>, rows: &[MachineRow]) {
+        let in_use = self.origins(rows);
         let mut listings = lock(&self.listings);
-        for (hub, listing) in kept {
+        for (hub, listing) in kept.into_iter().filter(|(hub, _)| in_use.contains(hub)) {
             // Signed out there since (no key), what it said then is no one's now.
             let keyed = config::Origin::parse(&hub).is_ok_and(|origin| origin.device_key(&self.home).exists());
             match serde_json::from_str::<Listing>(&listing) {
@@ -113,9 +115,11 @@ impl Hubs {
         }
     }
 
-    /// Each Hub's last word, as state.db keeps it.
-    fn kept_listings(&self) -> Vec<(String, String)> {
-        let listings = lock(&self.listings);
+    /// Each Hub in use's last word, as state.db keeps it; a Hub no longer in use (one a rental that ended was asked of) is
+    /// forgotten, as its word is no one's now: reported signed out, it held Rent off on the page for good.
+    fn kept_listings(&self, in_use: &[String]) -> Vec<(String, String)> {
+        let mut listings = lock(&self.listings);
+        listings.retain(|hub, _| in_use.contains(hub));
         (listings.iter()).map(|(hub, listing)| (hub.clone(), serde_json::to_string(listing).expect("a listing serializes"))).collect()
     }
 
@@ -1161,13 +1165,14 @@ impl Machines {
             Ok(rows) => rows,
             Err(e) => return warn!("reading the machines: {e}"),
         };
+        let in_use = self.hubs.origins(&rows);
         let mut lists = tokio::task::JoinSet::new();
-        for origin in self.hubs.origins(&rows) {
+        for origin in in_use.clone() {
             let me = self.clone();
             lists.spawn(async move { me.list_hub(&origin).await });
         }
         lists.join_all().await;
-        if let Err(e) = self.store().keep_hub_listings(&self.hubs.kept_listings()) {
+        if let Err(e) = self.store().keep_hub_listings(&self.hubs.kept_listings(&in_use)) {
             warn!("keeping the Hubs' last listing: {e}");
         }
         self.hubs.learn().await;

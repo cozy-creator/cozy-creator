@@ -208,9 +208,9 @@ impl Machines {
         // The Hubs' last word from before this start, answered until the first listing (cl-1010). It lives in state.db, as
         // all of Calcifer's state does (cl-818): the file a 0.26.0 dev build kept it in goes.
         let _ = std::fs::remove_file(me.home.calcifer().join("kept-hub-listings.json"));
-        match me.store().hub_listings() {
-            Ok(kept) => me.hubs.load_listings(kept),
-            Err(e) => warn!("reading the Hubs' last listing: {e}"),
+        match (me.store().hub_listings(), me.store().machines()) {
+            (Ok(kept), Ok(rows)) => me.hubs.load_listings(kept, &rows),
+            (Err(e), _) | (_, Err(e)) => warn!("reading the Hubs' last listing: {e}"),
         }
         match me.store().live_machines() {
             Ok(rows) => {
