@@ -10,6 +10,8 @@
 // new projects) connected to the project list": it's the strip's last item, after "N more", clear of every tab. Each at 1440×900 and
 // 1920×1080, paper and dark, kept to look at: the bar with and without "N more", the lock screen with the list open and with a machine's
 // list open, the list, the menu.
+// Solo: the index and the tabs are every project's on this Calcifer, so a cell beside it would lead them (e2e 44122550502: the vault cell's
+// project took the strip's first tab, and this one's own went behind "13 more").
 const { mkdirSync } = require('fs');
 const { join } = require('path');
 const { randomBytes } = require('crypto');
@@ -24,7 +26,7 @@ const LOOKS = [
   { width: 1920, height: 1080, theme: 'dark' },
 ];
 
-test('drawers', { tag: '@vault' }, async ({ page, project, api, cli, removeAfter, signIn, newContext, guards }) => {
+test('drawers', { tag: '@solo' }, async ({ page, project, api, cli, removeAfter, signIn, newContext, guards }) => {
   const shots = join(process.env.OUT, 'web', 'drawers');
   mkdirSync(shots, { recursive: true });
   const tabs = page.getByRole('navigation', { name: 'Projects' });
