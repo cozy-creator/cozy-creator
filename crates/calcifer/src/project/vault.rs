@@ -877,8 +877,8 @@ static ENDERS: LazyLock<Mutex<BTreeMap<PathBuf, project_mount::Ender>>> = LazyLo
 /// A stop past its deadline (`serve::stop_deadline`): every view this Calcifer mounted ended now, its provider killed by its handle and
 /// its view unmounted, so none outlives it mounted or with its key held.
 pub(crate) fn end_all_now() {
-    let enders: Vec<_> = ENDERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).drain().collect();
-    for (_, ender) in enders {
+    let enders = std::mem::take(&mut *ENDERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+    for ender in enders.into_values() {
         ender.end();
     }
 }
