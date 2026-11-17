@@ -926,6 +926,8 @@ case $SHARD in
   projectvault-unstarted) parts="vault_unstarted logs" ;;
   # An unlocked encrypted project's folder removed from outside (cl-1124), alone; on every OS.
   projectvault-folder-gone) parts="folder_gone logs" ;;
+  # cozy's process trees never take a process that started before its supposed parent (Windows' stale parent ids), alone; every OS.
+  stale-parent) parts="stale_parent logs" ;;
   # An ended machine's own lines still read; a locked project's run nowhere outside it (cl-1012). Named projectvault-* for its driver.
   projectvault-ended-logs) parts="ended_logs logs" ;;
   # A deleted box's next purge kept for a plaintext project only, never an encrypted one's (cl-1010). Named projectvault-* for its driver.
@@ -1028,7 +1030,7 @@ esac
 # is the same lane there.
 if [ -z "$LOCAL" ] && [ "$parts" != "web_lane logs" ]; then
   case $SHARD in
-    entrypoints | projectvault | projectvault-native | projectvault-folder-gone | web-serves | notraces | fresh | thumbs | typed-calls) ;;
+    entrypoints | projectvault | projectvault-native | projectvault-folder-gone | stale-parent | web-serves | notraces | fresh | thumbs | typed-calls) ;;
     web-*) parts="web_alone logs" ;;
     *) parts="
       entrypoints
