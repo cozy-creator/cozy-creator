@@ -14,7 +14,7 @@ required-features = ["net"]
 default = ["net"]
 # Fetch, import, model families, export and the Client API: the network and an async runtime. Without it: the
 # format, the store, its writer and the read engine.
-net = ["dep:base64", "dep:reqwest", "dep:rustls", "dep:webpki-roots", "dep:tokio", "dep:bytes", "dep:futures-util", "dep:tracing-subscriber", "dep:aws-lc-rs", "rustix/net", "rustix/event"]
+net = ["dep:base64", "dep:reqwest", "dep:rustls", "dep:webpki-roots", "dep:tokio", "dep:bytes", "dep:futures-util", "dep:tracing-subscriber", "dep:aws-lc-rs", "dep:flate2", "dep:jiff", "rustix/net", "rustix/event"]
 # GPU destinations through Varena: the wheel's. `cozy` opens no CUDA and links no native core.
 cuda = ["dep:varena"]
 # `Writer::quantize`'s encoders and the SVDQ fit: faer and its tree. The wheel's; `cozy` never quantizes.
@@ -54,6 +54,9 @@ futures-util = { workspace = true, features = ["std"], optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 # Endpoint credentials (src/fetch/token.rs): S3 SigV4's HMAC, from the TLS stack's own crypto.
 aws-lc-rs = { workspace = true, optional = true }
+# A Hub's fetch grant (src/fetch/grant.rs): its gzipped answer, its RFC 3339 expiry.
+flate2 = { workspace = true, optional = true }
+jiff = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

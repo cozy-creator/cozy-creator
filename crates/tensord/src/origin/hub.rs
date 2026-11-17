@@ -25,10 +25,13 @@ fn endpoint(machine: &Machine, source: &hub::Source) -> Result<(Endpoint, Key)> 
     Ok((endpoint, trust))
 }
 
-/// Where the objects of `source`'s Hub are read. Nothing is asked of the Hub until a fetch
-/// needs it.
-pub(crate) fn remote(machine: &Machine, source: &hub::Source) -> Result<Remote> {
-    let (endpoint, trust) = endpoint(machine, source)?;
+/// Where the objects of `source`'s Hub are read: those of `commit` (a tree, and the components read; none: all) where
+/// one grant of the Hub's says (xs-210). Nothing is asked of the Hub until a fetch needs it.
+pub(crate) fn remote(machine: &Machine, source: &hub::Source, commit: Option<(&ObjectRef, &[String])>) -> Result<Remote> {
+    let (mut endpoint, trust) = endpoint(machine, source)?;
+    if let Some((tree, components)) = commit {
+        endpoint = endpoint.granting(tree, components);
+    }
     Ok(Remote { origin: Arc::new(endpoint), trust })
 }
 

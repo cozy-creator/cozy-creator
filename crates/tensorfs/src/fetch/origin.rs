@@ -22,6 +22,13 @@ pub trait Origin: Send + Sync {
     /// Whether anyone may read these objects: only then are they written back to a shared
     /// volume.
     fn public(&self) -> bool;
+
+    /// Storage refused `url`, a bearer URL `locate` gave for `object` (its grant ran out): whether `locate` now gives
+    /// another.
+    fn renew<'a>(&'a self, object: &'a ObjectRef, url: &'a str) -> Boxed<'a, Result<bool>> {
+        let _ = (object, url);
+        Box::pin(async { Ok(false) })
+    }
 }
 
 /// Where one object can be read.

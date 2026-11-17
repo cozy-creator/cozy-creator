@@ -711,7 +711,10 @@ impl Publisher {
         room: Option<&dyn Fn(u64) -> Result<(), String>>, bytes: &(dyn Fn(u64, u64) + Sync)) -> Result<Landed, Failure> {
         let _inventory = crate::held_models::ModelChange;
         let header = named.header()?;
-        let remote = origin::remote(&self.machine, source).map_err(|e| unsigned(source, refused("model_download_failed", e.clone()), &e))?;
+        // Its objects read under one grant of its commit: a structure's (no components) under all of them, as the grant
+        // can't say none.
+        let commit = named.tree.as_ref().map(|tree| (tree, components.unwrap_or(&[])));
+        let remote = origin::remote(&self.machine, source, commit).map_err(|e| unsigned(source, refused("model_download_failed", e.clone()), &e))?;
         let stop = stop.cloned().unwrap_or_default();
         let failed = |e: Refusal| match stop.is_cancelled() {
             true => canceled(),
@@ -887,7 +890,7 @@ impl Publisher {
         let mut held = match held {
             Some(held) => held,
             None => {
-                let remote = origin::remote(&self.machine, source).map_err(failed)?;
+                let remote = origin::remote(&self.machine, source, None).map_err(failed)?;
                 self.machine.objects(&remote, std::slice::from_ref(&object), order, &Stop::default()).map_err(failed)?;
                 match storage::tree_or_header(&self.store, &object).map_err(|e| ("model_resolution_failed", e.to_string()))? {
                     Some(checkpoint) => {
