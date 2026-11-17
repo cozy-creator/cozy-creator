@@ -80,6 +80,15 @@ def left(folder: Path) -> list[str]:
         # The image registry: which image path each attached image is named by now, and its devices.
         info = subprocess.run(["hdiutil", "info"], capture_output=True, text=True).stdout
         found += [line.strip() for line in info.splitlines() if line.startswith(("image-path", "/dev/disk"))]
+        # What lets go of a volume whose mount point moved: a detach by its device, else an unmount by its path now.
+        for line in info.splitlines():
+            parts = line.split("\t")
+            if len(parts) == 3 and parts[2].startswith((str(folder), f"/private{folder}")):
+                tried = subprocess.run(["hdiutil", "detach", parts[0]], capture_output=True, text=True)
+                found.append(f"hdiutil detach {parts[0]}: {tried.returncode} {(tried.stdout + tried.stderr).strip()[-200:]}")
+                if tried.returncode != 0:
+                    tried = subprocess.run(["/sbin/umount", "-f", parts[2]], capture_output=True, text=True)
+                    found.append(f"umount -f: {tried.returncode} {(tried.stdout + tried.stderr).strip()[-200:]}")
     return found
 
 
