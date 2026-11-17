@@ -564,6 +564,8 @@ struct Session {
     kernels_absent: String,
     /// Whose call or predicted request it served last (`load_ahead`): another's model is never evicted for a guess.
     user: Option<load_ahead::Scope>,
+    /// The on-demand models a predicted request's load built in it ahead, as `<construction>#<parameter>` (cl-1123).
+    built: std::collections::BTreeSet<String>,
 }
 impl Session {
     fn lane(&self) -> std::ops::Range<usize> {
@@ -2034,7 +2036,7 @@ impl Pool {
             return "its warm preparation was canceled";
         }
         if let (Ok("loaded" | "already loaded"), Level::Gpu | Level::Host) = (&result, level) {
-            result = self.map_member(engine, plan, start, member, preparation);
+            result = self.map_member(engine, plan, start, member, preparation, &[]);
         }
         match result {
             Ok("loaded" | "already loaded" | "mapped") => "",
@@ -2046,13 +2048,14 @@ impl Pool {
         }
     }
     /// Warming a loaded member: its executor, on the lane from `start`, loads its models at
-    /// `level` (`gpu`, or `host` in RAM; Runtime places them): "mapped", or why not.
+    /// `level` (`gpu`, or `host` in RAM; Runtime places them), its on-demand ones `build` names built
+    /// first (cl-1123): "mapped", or why not.
     fn map_member(&self, engine: &Arc<Engine>, plan: &Plan, start: usize, member: &Member,
-        preparation: Option<&Stoppable>) -> io::Result<&'static str> {
+        preparation: Option<&Stoppable>, build: &[String]) -> io::Result<&'static str> {
         let level = member.level;
         let key = session_key(&plan.construction, start);
         let holds = self.levels.lock().unwrap().get(&key).map(|(_, level, _)| *level);
-        if holds == Some(level) && member.payload.is_none() {
+        if holds == Some(level) && member.payload.is_none() && build.is_empty() {
             return Ok("mapped");
         }
         let Some(mut session) = self.sessions.lock().unwrap().remove(&session_key(&plan.executor, start)) else {
@@ -2093,6 +2096,7 @@ impl Pool {
                 entrypoint: plan.entrypoint.clone(),
                 payload: member.payload.as_ref().map(|payload| executor_api::Json(
                     serde_json::from_str(payload.get()).expect("validated warm payload"))),
+                build: build.to_vec(),
             }),
             &mut callbacks,
         );
@@ -2103,6 +2107,7 @@ impl Pool {
         if reply.as_ref().is_ok_and(|reply| reply.ok) {
             // An unready program leaves its models loaded, and memory is the core's to give back.
             session.loaded.insert(plan.construction.clone(), if member.payload.is_none() || ready { level } else { Level::Host });
+            session.built.extend(build.iter().map(|parameter| format!("{}#{parameter}", plan.construction)));
         }
         if member.payload.is_some() {
             *member.prepared.lock().unwrap() = Some(ready && usable);
@@ -3873,6 +3878,7 @@ impl Pool {
             serving: id,
             kernels_absent: String::new(),
             user: None,
+            built: Default::default(),
         })
     }
 

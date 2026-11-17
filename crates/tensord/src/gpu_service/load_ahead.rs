@@ -27,6 +27,9 @@ pub(crate) struct Predicted {
     pub project: Option<String>,
     pub held: HeldGeneration,
     pub plan: Plan,
+    /// Its on-demand models its request reads (by parameter; its function's rules on its payload): built ahead too, so its first
+    /// step builds nothing.
+    pub build: Vec<String>,
 }
 
 #[derive(Default)]
@@ -99,7 +102,8 @@ impl Pool {
         if self.config.host.mode != HostMode::Dedicated || predicted.plan.degree == 0 || predicted.plan.slots.is_empty() {
             return;
         }
-        let need = predicted.plan.slots.iter().filter(|slot| !slot.on_demand).map(|slot| slot.selected_encoded_bytes).sum();
+        let built = |slot: &&PlanSlot| !slot.on_demand || predicted.build.contains(&slot.binding.model_parameter_name);
+        let need = predicted.plan.slots.iter().filter(built).map(|slot| slot.selected_encoded_bytes).sum();
         self.ahead.planned.lock().unwrap().insert((predicted.actor.clone(), predicted.caller.clone()));
         {
             let mut items = self.ahead.items.lock().unwrap();
@@ -182,10 +186,15 @@ impl Pool {
             let (key, (_, _, birth)) = levels.iter().find(|(key, (_, level, _))| key.split('@').next() == Some(construction.as_str()) && *level == Level::Gpu)?;
             (key.split_once('@').and_then(|(_, start)| start.parse().ok()).unwrap_or(0usize), birth.pid)
         };
+        // An idle executor holds it: its request's on-demand models are built there too, or it is to load (they are built then).
+        let built = |session: &Session| item.predicted.build.iter().all(|parameter| session.built.contains(&format!("{construction}#{parameter}")));
+        let idle = self.sessions.lock().unwrap().values().find(|session| session.executor.birth.pid == pid).map(built);
+        if idle == Some(false) {
+            return None;
+        }
         let Some(loaded) = item.state.lock().unwrap().loaded else { return Some(true) };
         // A call or a warm set made it, or a call has it now: the pool's own account stands.
-        let idle = self.sessions.lock().unwrap().values().any(|session| session.executor.birth.pid == pid);
-        if loaded != pid || !idle {
+        if loaded != pid || idle.is_none() {
             return Some(true);
         }
         Some(self.holdings(start, pid).is_none_or(|(held, _)| held == 0 || held.saturating_mul(10) >= item.need.saturating_mul(9)))
@@ -324,10 +333,10 @@ impl Pool {
                     session.user = Some(item.scope());
                 }
                 item.state.lock().unwrap().loaded = Some(pid);
-                tracing::info!(run = %caller, "load ahead: its models are on GPU {gpus} in {ms} ms ({} held, {} free before)",
-                    gib(held), free.map_or("?".into(), gib));
+                tracing::info!(run = %caller, "load ahead: its models are on GPU {gpus} in {ms} ms, its on-demand {:?} built ahead ({} free before)",
+                    item.predicted.build, free.map_or("?".into(), gib));
                 self.notes.note(serde_json::json!({"event": "load_ahead", "run": caller, "plan": construction, "gpus": gpus,
-                    "ms": ms, "need": item.need, "held": held, "free_before": free}));
+                    "ms": ms, "need": item.need, "held": held, "built": item.predicted.build, "free_before": free}));
             }
             Err(_) if halted.is_some() => {}
             Err(why) => {
@@ -355,7 +364,7 @@ impl Pool {
             return Err("ended".into());
         }
         let member = Member::new(item.predicted.held.clone(), Some(plan.clone()), Level::Gpu, None, None);
-        match self.map_member(engine, plan, start, &member, Some(stop)).map_err(|error| error.to_string())? {
+        match self.map_member(engine, plan, start, &member, Some(stop), &item.predicted.build).map_err(|error| error.to_string())? {
             "mapped" => {}
             why => return Err(why.into()),
         }

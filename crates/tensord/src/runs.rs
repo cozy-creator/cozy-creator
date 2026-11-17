@@ -1323,8 +1323,13 @@ impl Runs {
                 drop(guessed);
                 moved = downloaded?;
             }
-            // A predicted request's weights are here: its machine loads it as its call would, once a GPU is idle (cl-1123).
+            // A predicted request's weights are here: its machine loads it as its call would, once a GPU is idle (cl-1123), the
+            // on-demand models its rules say its request reads built ahead too.
             if let (true, Some(plan), Some(pool)) = (crate::ahead::hidden(&caller), plan, self.service.pool()) {
+                let build = (plan.slots.iter())
+                    .filter(|slot| slot.on_demand && wants.needed.contains(&slot.binding.model_binding_path))
+                    .map(|slot| slot.binding.model_parameter_name.clone())
+                    .collect();
                 match generation.application(&spec.application) {
                     Ok(held) => pool.predict(&self.service.engine, crate::gpu_service::Predicted {
                         caller: caller.clone(),
@@ -1332,6 +1337,7 @@ impl Runs {
                         project: spec.local_private.as_ref().map(|scope| scope.project_id.clone()),
                         held,
                         plan,
+                        build,
                     }),
                     Err(error) => tracing::warn!(run = %caller, "it won't load ahead: {error}"),
                 }
