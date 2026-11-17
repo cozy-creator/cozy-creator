@@ -222,12 +222,10 @@ def available():
     except (OSError, KeyError, ValueError):
         pass
     return a
-held, ones = [], b"\1" * (16 << 20)
+held = []
 while available() > keep + step:
-    m = mmap.mmap(-1, step, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
-    for _ in range(step // len(ones)):
-        m.write(ones)
-    held.append(m)
+    # Faulted in by the kernel (MAP_POPULATE on a writable private map): a 500 GiB host fills in seconds, not minutes (43989495774).
+    held.append(mmap.mmap(-1, step, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS | getattr(mmap, "MAP_POPULATE", 0x8000)))
 open(ready, "w").write(f"{os.getpid()} {len(held) * step} {available()}\n")
 while True:
     time.sleep(3600)'
