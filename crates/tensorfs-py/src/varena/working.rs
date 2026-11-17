@@ -59,6 +59,24 @@ fn _varena_room(py: Python<'_>, device: i32) -> PyResult<std::collections::BTree
     ].into_iter().collect())
 }
 
+/// The room the last allocation varena refused on `device` found, read as it was refused (its
+/// caller's pins still held), taken: None when none was refused since the last read. `offered`:
+/// every lever of the reclaim order was tried first.
+#[pyfunction]
+fn _varena_refusal(py: Python<'_>, device: i32) -> PyResult<Option<std::collections::BTreeMap<&'static str, u64>>> {
+    let refusal = py.detach(|| { check()?; varena::working::refusal(device) }).map_err(|e| super::raise(py, e))?;
+    Ok(refusal.map(|r| [
+        ("requested", r.requested as u64),
+        ("capacity", r.capacity as u64),
+        ("working_live", r.working_live as u64),
+        ("pinned", r.pinned as u64),
+        ("weights_resident", r.weights_resident as u64),
+        ("pools", r.pools as u64),
+        ("caches", r.caches as u64),
+        ("offered", u64::from(r.offered)),
+    ].into_iter().collect()))
+}
+
 fn check() -> varena::Result<()> {
     if !installed() {
         return Err(varena::Error::Invalid(
@@ -888,6 +906,7 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let _ = GIL_CHECK.set(unsafe { std::mem::transmute::<usize, unsafe extern "C" fn() -> std::ffi::c_int>(address) });
     varena::set_host_lock_probe(|| GIL_CHECK.get().is_some_and(|check| unsafe { check() } != 0));
     module.add_function(wrap_pyfunction!(_varena_room, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_refusal, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_context, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_select, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_begin, module)?)?;
