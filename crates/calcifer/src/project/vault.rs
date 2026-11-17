@@ -67,6 +67,8 @@ struct Session {
     closing: bool,
     readable: Arc<AtomicBool>,
     runtime: PathBuf,
+    /// Its folder watched while it's unlocked (cl-1124): its keybag leaving, or the folder moving, wakes the clock, which ends it.
+    _folder: Option<platform::watch::Watcher>,
 }
 
 fn error(code: &'static str, why: impl std::fmt::Display) -> Error { Error::new(Kind::Unavailable, code, why.to_string()) }
@@ -689,7 +691,12 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     KEY_ROOTS.lock().expect("vault project roots").insert(keybag.info().project_id.clone(), root.to_owned());
     let idle = ask.idle_timeout_s.unwrap_or(DEFAULT_IDLE);
     let maximum = ask.max_duration_s.unwrap_or(0);
-    let session = Session { identity: MountIdentity(Arc::new(())), mount: mounted, secret, keybag, idle, maximum, timer: timer(idle, maximum), active_ms: super::now_ms(), began_ms: super::now_ms(), closing: false, readable: Arc::new(AtomicBool::new(true)), runtime };
+    // A removal or a move of its folder is a delete (cl-1124): seen at once, not at the clock's next deadline.
+    // Windows needs none: a removal there ends the view with its backing, and a move is refused while it serves.
+    let folder = (!cfg!(windows)).then(|| platform::watch::Watcher::new("vault-folder", &[(root, platform::watch::Writes::None)], stir)
+        .inspect_err(|e| tracing::warn!("{}: its folder's removal is seen at its next deadline: {e}", root.display()))
+        .ok()).flatten();
+    let session = Session { identity: MountIdentity(Arc::new(())), mount: mounted, secret, keybag, idle, maximum, timer: timer(idle, maximum), active_ms: super::now_ms(), began_ms: super::now_ms(), closing: false, readable: Arc::new(AtomicBool::new(true)), runtime, _folder: folder };
     // Its supervisor's exit is its mount's end: a lock, its provider dying, an unmount from outside.
     let supervisor = session.mount.supervisor();
     SESSIONS.lock().expect("vault sessions").insert(root.to_owned(), Arc::new(Mutex::new(session)));
@@ -1033,7 +1040,25 @@ fn end_if_gone(api: &Arc<Api>, root: &FsPath) -> bool {
     ROOTS.lock().expect("vault roots").retain(|_, logical| logical != root);
     crate::events::project_vault(&id, "locked");
     CLOSED.notify_waiters();
-    let _ = std::thread::Builder::new().name("vault-let-go".into()).spawn(move || drop(session));
+    // Its view let go, what Calcifer kept in the folder goes too (`.vault-runtime`), so the delete under way finishes on its next pass.
+    // Where its runtime folder is now: a folder moved away (to the Trash) took it along.
+    let runtime = { let session = session.lock().expect("vault session"); session.mount.view_now().and_then(|view| view.parent().map(FsPath::to_path_buf)).unwrap_or_else(|| session.runtime.clone()) };
+    let _ = std::thread::Builder::new().name("vault-let-go".into()).spawn(move || {
+        drop(session);
+        let began = Instant::now();
+        while retire_runtime(&runtime).is_err() && began.elapsed() < Duration::from_secs(30) {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        // Only Calcifer's own: a `.vault-runtime` holding nothing but its owner mark.
+        if let Some(base) = runtime.parent()
+            && base.file_name().is_some_and(|name| name == RUNTIME_DIR)
+            && fs::read(base.join("owner")).is_ok_and(|mark| mark == RUNTIME_MARKER)
+            && fs::read_dir(base).is_ok_and(|mut left| left.all(|entry| entry.is_ok_and(|entry| entry.file_name() == "owner")))
+        {
+            let _ = fs::remove_file(base.join("owner"));
+            let _ = fs::remove_dir(base);
+        }
+    });
     true
 }
 
