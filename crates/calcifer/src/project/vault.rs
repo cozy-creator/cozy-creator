@@ -900,7 +900,10 @@ fn end_if_gone(api: &Arc<Api>, root: &FsPath) -> bool {
         while retire_runtime(&runtime).is_err() && began.elapsed() < Duration::from_secs(30) {
             std::thread::sleep(Duration::from_millis(200));
         }
+        // Only Calcifer's own: a `.vault-runtime` holding nothing but its owner mark.
         if let Some(base) = runtime.parent()
+            && base.file_name().is_some_and(|name| name == RUNTIME_DIR)
+            && fs::read(base.join("owner")).is_ok_and(|mark| mark == RUNTIME_MARKER)
             && fs::read_dir(base).is_ok_and(|mut left| left.all(|entry| entry.is_ok_and(|entry| entry.file_name() == "owner")))
         {
             let _ = fs::remove_file(base.join("owner"));
