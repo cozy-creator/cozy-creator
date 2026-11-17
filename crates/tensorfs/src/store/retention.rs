@@ -439,8 +439,12 @@ impl Store {
             }
             *collections += 1;
         }
+        // Judged under the lock, as the collection was: read after it, another admit's bytes taken meanwhile made a fit that
+        // needed nothing collected look short, and it was refused with an idle model left to go (e2e disk 43982726077:
+        // 0.2 MiB short, e2e/disk-3 evicted 1.8 s later for the next admit). The next admit collects for what this one takes.
+        let fits = short()? == 0;
         drop(collections);
-        Ok(short()? == 0)
+        Ok(fits)
     }
 
     /// Room for a derived page of `incoming` bytes: free space, else older derived pages, never a
