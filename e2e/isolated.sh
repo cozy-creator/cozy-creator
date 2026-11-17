@@ -175,17 +175,18 @@ oldcall() {
   fi
 }
 
-# next (self_update, cl-978): the hub suite's weightless echo as the admin's account's `e2e-next` 0.1.0, needing cozy-runtime>=0.46.0,
-# which only a cozy of the Latest's line runs.
+# next (self_update, cl-978): the hub suite's weightless echo as the admin's account's `e2e-next` 0.1.0, needing the Latest's Runtime
+# minor, which only a cozy of the Latest's line runs.
 next() {
-  local copy=$seed/packages/e2e-next account
+  local copy=$seed/packages/e2e-next account floor
   account=$(cozy --json whoami | jq -r '.account // empty')
+  eval "$(python3 -I "$here/releases.py")" && floor="cozy-runtime>=${LATEST_RUNTIME%.*}.0" || { echo "e2e-next: GitHub's Latest unread" >&2; return 1; }
   rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$here/../release-gate/suites/hub/pkg" "$copy"
-  sed -i -e 's/^name = "ci-hub-pkg"$/name = "e2e-next"/' -e 's/"cozy-runtime[^"]*"/"cozy-runtime>=0.46.0"/' "$copy/pyproject.toml"
+  sed -i -e 's/^name = "ci-hub-pkg"$/name = "e2e-next"/' -e "s/\"cozy-runtime[^\"]*\"/\"$floor\"/" "$copy/pyproject.toml"
   (cd "$copy" && cozy --json package publish -y) > "$seed/publish-e2e-next.json" 2>&1 \
     || { echo "publishing e2e-next failed: $(tail -c 600 "$seed/publish-e2e-next.json")" >&2; return 1; }
   export E2E_NEXT=$account/e2e-next
-  log "published $E2E_NEXT 0.1.0 (cozy-runtime>=0.46.0)"
+  log "published $E2E_NEXT 0.1.0 ($floor)"
 }
 
 # final_model (final_model, cl-1109): e2e/final-model, two checkpoints of 1 MiB of random weights published as 0.1.0 and then

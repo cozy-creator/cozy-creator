@@ -887,6 +887,7 @@ jobs:
       - if: (matrix.shard == 'selfupdate' || startsWith(matrix.shard, 'selfupdate@'))
         env:
           CARGO_INCREMENTAL: "0"
+          GH_TOKEN: ${{ github.token }}
         run: echo "E2E_COZY_BEFORE=$(bash .creator/e2e/candidates/build.sh cozy-before .before "$RUNNER_TEMP/before")" >> "$GITHUB_ENV"
       # dev-start (cl-1069): the change's cozy built as scripts/dev-local.sh builds a dev home's, the dev profile (E2E_DEV_COZY).
       - if: (matrix.shard == 'dev-start' || startsWith(matrix.shard, 'dev-start@'))
@@ -922,9 +923,14 @@ jobs:
           privacy_artifacts=()
           [[ '${{ matrix.shard }}' != containment* ]] || privacy_artifacts=(--private-artifacts)
           # local-code's isolated Hub pins Runtime 0.45.0 / TensorFS 0.24.1: runtime_floor's machine moves there, held by nothing (cl-952).
-          # selfupdate's pins 0.24's software, then restarts it on 0.25's (e2e/cli/selfupdate.sh, cl-978).
+          # selfupdate's pins the software of the line before GitHub's Latest, then restarts it on the Latest's (e2e/releases.py,
+          # e2e/cli/selfupdate.sh, cl-978).
+          software=()
+          shard='${{ matrix.shard }}'
+          [[ ${shard%%@*} != local-code ]] || software=(--software 0.45.0,0.24.1)
+          if [[ ${shard%%@*} == selfupdate ]]; then eval "$(python3 -I .creator/e2e/releases.py)"; software=(--software "$PREVIOUS_RUNTIME,$PREVIOUS_TENSORFS"); fi
           bash .creator/e2e/skew/run.sh --hub-bin "$RUNNER_TEMP/fixture-hub" --candidates "$CANDIDATES" --admin "${privacy_artifacts[@]}" --out "$RUNNER_TEMP/e2e/hub" \
-            ${{ (matrix.shard == 'local-code' || startsWith(matrix.shard, 'local-code@')) && '--software 0.45.0,0.24.1' || ((matrix.shard == 'selfupdate' || startsWith(matrix.shard, 'selfupdate@')) && '--software 0.45.2,0.24.2' || '') }} \
+            "${software[@]}" \
             --command .creator/e2e/isolated.sh -- cli \
             --out "$RUNNER_TEMP/e2e" --shard ${{ matrix.shard }} $MODEL $CANDIDATES $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
       # cozy's logs (Calcifer's too) however the suite ended: one the job's timeout ends never reaches its `logs` part (cl-837).
