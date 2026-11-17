@@ -1066,7 +1066,25 @@ fn unanswered(api: &Arc<Api>, root: &FsPath) -> bool {
     let Some(id) = project_id(root).or_else(|| plain_project_id(root)) else { return false };
     encrypted(root)
         && !tokio::runtime::Handle::current().block_on(api.machines.answers("local"))
-        && journal(|| api.calcifer.held_on(&id, "local")).map_err(refused(root, "run_cancel", "the project's work could not be read")).unwrap_or(false)
+        && held_on_local(api, root, &id).map_err(|failure| say(root, "ask", || format!("its ask read nothing: {}", failure.code))).unwrap_or(false)
+}
+
+/// Whether the project at `root` has a run on `local` not yet settled, or a save from it still owed (cl-1064). Read as the clock
+/// reads its work, beside its readers (`inspection`): a project whose last run handed its outputs to an exporter has no run owner
+/// left to read it through.
+fn held_on_local(api: &Arc<Api>, root: &FsPath, id: &str) -> Result<bool, Error> {
+    let journal = |_: crate::store::StoreError| error("project_journal", "the project journal could not be checked");
+    let inspection = inspection(root)?;
+    let store = api.projects.inspection_store(api, id, &inspection)?;
+    if !store.exports_owed_on("local").map_err(journal)?.is_empty() {
+        return Ok(true);
+    }
+    for run in store.unsettled().map_err(journal)? {
+        if store.run(run.as_str()).map_err(journal)?.is_some_and(|row| row.machine.as_deref() == Some("local")) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Vaults whose lock is going on a thread of its own.

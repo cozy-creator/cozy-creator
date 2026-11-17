@@ -913,22 +913,6 @@ impl Calcifer {
         Ok(false)
     }
 
-    /// Whether `project` has a run on `machine` not yet settled, or a save from it still owed (cl-1064): what a deadline's ask of a
-    /// machine that doesn't answer locks for.
-    pub(crate) fn held_on(&self, project: &str, machine: &str) -> Result<bool, Error> {
-        let Some(owner) = self.owner_of(project) else { return Ok(false) };
-        let store = owner.store()?;
-        if !store.exports_owed_on(machine)?.is_empty() {
-            return Ok(true);
-        }
-        for id in store.unsettled()? {
-            if store.run(id.as_str())?.is_some_and(|row| row.machine.as_deref() == Some(machine)) {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
     /// A lock ends `project`'s runs on `machine`, which doesn't answer (cl-1064): each settles here as canceled, never waiting for
     /// it; the machine cancels them when it next answers, before anything else is sent to it.
     pub(crate) fn cancel_unanswered_for_lock(&self, project: &str, machine: &str) -> Result<Vec<u64>, Error> {
