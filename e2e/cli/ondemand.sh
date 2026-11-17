@@ -852,11 +852,16 @@ edge = lambda t: any(abs(t - b) <= 2000 for b in busy)
 inside = [w for t, w, _ in during if t in busy]
 outside = [w for t, w, _ in during if not edge(t)]
 mean = lambda xs: sum(xs) / len(xs) if xs else 0.0
-stalls, run = [], []
-for t, w, _ in during:
-    run = run + [t] if w < 0.02 * LINK else []
-    if len(run) == 5:
-        stalls.append(run[0] - began)
+# A stall is 20 s in which the weights moved under 2% of the link. The weights are paced: the reader drains what its sockets hold
+# at its allowance (a sixteenth of the link), so at the wire they come in bursts with seconds between (43991466520: 8 s at the wire
+# with none while TensorD read 0.47 MB/s throughout, and 0.34 MB/s or more over every 20 s). A hold, as #3126's, is minutes.
+STALL = 20
+stalls = []
+for k in range(len(during) - STALL + 1):
+    window = during[k:k + STALL]
+    if window[-1][0] - window[0][0] <= (STALL + 2) * 1000 and sum(w for _, w, _ in window) < 0.02 * LINK * STALL:
+        if not stalls or window[0][0] - began > stalls[-1] + STALL * 1000:
+            stalls.append(window[0][0] - began)
 shares = []
 for line in (out / "ondemand-share.tensord.log").read_text(errors="replace").splitlines():
     if "link shared with an install" in line or "weights take the whole link" in line:
@@ -879,7 +884,7 @@ if not during or not inside:
     fail(f"the install didn't download beside the weights: {summary}")
 else:
     if stalls:
-        fail(f"the weights stopped for 5 s or more during the install, from {summary['stalls_from_s']} s")
+        fail(f"the weights moved under 2% of the link for {STALL} s during the install, from {summary['stalls_from_s']} s")
     if mean(outside) < 0.75 * LINK:
         fail(f"outside the install's downloads the weights moved {mean(outside) / 1e6:.2f} MB/s of the {LINK / 1e6:.2f} MB/s link")
     if not 0 < mean(inside) <= 0.35 * LINK:
