@@ -409,18 +409,20 @@ fi
 timeout 60 "$COZY" --json machine end stand-p --force -y > "$OUT/stand-p-end.json" 2>&1 || true
 }
 
-# prefetch_disk (cl-1104): a guess on a short disk. stand-q, a new stand-in, keeps its store on a 3 GiB disk, 1 GiB of it TensorFS's
-# reserve. It installs e2e/pre-ask (256 MiB, a request's: the oldest it holds). A project of stand-q shows a box of e2e/pre-a: while
-# stand-q builds the tool's environment for its guess a run of a script that needs one of its own is sent there, and the guess's build
-# gives the install line to it ("gave its turn") and builds after; then stand-q gets pre-a (704 MiB) ready. A file leaves 150 MiB free
-# past the reserve. A box of e2e/pre-b, whose transformer (384 MiB) doesn't fit, is guessed there: nothing is evicted for it. Then
-# `cozy model install e2e/pre-req` (256 MiB) makes room: what only a guess brought goes first, pre-a, though pre-ask is older. pre-a's
-# box stops saying ready; once e2e/pre-req is uninstalled there is room again and its guess fetches pre-a again, ready on stand-q.
+# prefetch_disk (cl-1104): a guess on a short disk, and a guess's install. stand-q, a new stand-in, keeps its store on a 3 GiB disk, 1
+# GiB of it TensorFS's reserve. A run there reads e2e/pre-ask (256 MiB: a call's, the oldest it holds), and its machine starts again so
+# no executor holds it. A project of stand-q shows a box of e2e-slow-install, whose environment takes a wheel a server here sends at
+# 2 MiB/s: while stand-q builds it for the guess, a run of a script that needs an environment of its own is sent there, and the
+# guess's build gives the install line to it ("gave its turn"). That box goes; a box of e2e/pre-a gets stand-q ready (704 MiB). A
+# file leaves 150 MiB free past the reserve. A box of e2e/pre-b, whose transformer (384 MiB) doesn't fit, is guessed there: nothing is
+# evicted or written for it. `cozy model install e2e/pre-req` (256 MiB) makes room: what only a guess brought goes first, pre-a, though
+# pre-ask is older. pre-a's box stops saying ready; once e2e/pre-req is uninstalled there is room again, and its guess fetches pre-a
+# again, ready on stand-q.
 prefetch_disk() {
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || return 0
 step "prefetch (cl-1104): on a short disk a guess evicts nothing, goes first, says so and comes again; its install gives way to a run's"
 [ -n "${PRE_PAGE:-}" ] || { check "prefetch disk: the cells before it left no page"; pre_end; return 0; }
-local P=$OUT/pre-disk name=stand-q img=$RUNNER_TEMP/pre-disk.img mnt=/mnt/pre-disk asked n row size avail reserve filler before after _
+local P=$OUT/pre-disk name=stand-q img=$RUNNER_TEMP/pre-disk.img mnt=/mnt/pre-disk asked='' n row size avail reserve filler before after holder pid _
 id "cozy-$name" > /dev/null 2>&1 || sudo useradd -m "cozy-$name" || { check "prefetch disk: $name: no user"; pre_end; return 0; }
 truncate -s 3072M "$img" && mkfs.ext4 -q -F -m 0 "$img" && sudo mkdir -p "$mnt" && sudo mount -o loop "$img" "$mnt" && sudo chown "cozy-$name:" "$mnt" \
   || { check "prefetch disk: $name's 3 GiB disk was not made"; pre_end; return 0; }
@@ -428,17 +430,29 @@ sudo -u "cozy-$name" -H bash -c 'mkdir -p ~/.cozy && printf "[machine]\nstore = 
   || { check "prefetch disk: $name's store was not set"; pre_end; return 0; }
 cozy --json machine show local > "$OUT/set-local.json" || { check "prefetch disk: machine show local"; pre_end; return 0; }
 stand_in "$name" || { pre_end; return 0; }
-n=$(run_submit "$OUT" pre-oldest model install e2e/pre-ask --on "$name")
-{ [ -n "$n" ] && run_wait "$OUT" pre-oldest && [ "$(run_get "$OUT" pre-oldest .status)" = completed ]; } \
-  || { check "prefetch disk: model install e2e/pre-ask on $name: $(run_get "$OUT" pre-oldest .reason.message | head -c 300)"; pre_disk_end; return 0; }
+# A call's read of e2e/pre-ask, then its machine anew: nothing holds it.
+run_cell "$OUT" pre-oldest "$here/script/disk.py" --model weights=e2e/pre-ask@0.1.0 text=oldest --on "$name" \
+  || { check "prefetch disk: a run reading e2e/pre-ask on $name: $(run_get "$OUT" pre-oldest .reason.message | head -c 300)"; pre_disk_end; return 0; }
+holder=$(sudo find "/home/cozy-$name/.cozy/machine" -name agent.lock.holder 2> /dev/null | head -1)
+pid=$([ -z "$holder" ] || sudo grep -o '"pid": *[0-9]*' "$holder" | grep -o '[0-9]*$' || true)
+[ -n "$pid" ] || { check "prefetch disk: $name's machine has no lock holder"; pre_disk_end; return 0; }
+sudo kill "$pid"
+for _ in $(seq 60); do case $(ps -o stat= -p "$pid" 2> /dev/null || true) in '' | Z*) break ;; esac; sleep 1; done
+stand_as "$name" --json machine show local > "$OUT/pre-disk-again.json" || { check "prefetch disk: $name didn't start again: $(tail -c 300 "$OUT/$name.err")"; pre_disk_end; return 0; }
+for _ in $(seq 120); do
+  pre_machine "$name" "$OUT/pre-disk-up.json"
+  J '.state == "ready"' "$OUT/pre-disk-up.json" && break
+  sleep 1
+done
 pre_project "$P" "$name" || { pre_disk_end; return 0; }
-asked=''
-jq -n --arg t e2e-prefetched/still '[{name: "kept", tool: $t, kind: "image", fields: {instructions: "A still stand-q gets ready on a short disk."}}]' | boxes_in "$P" || { pre_disk_end; return 0; }
-# Its machine building the tool's environment for the guess: an install in its activity, nothing else asked of it.
+# A guess's environment that takes a while: the wheel it needs comes at 2 MiB/s.
+python3 "$here/project/slowinstall/wheel.py" "$OUT/slow-wheel" $((2 << 20)) > "$OUT/slow-wheel.log" 2>&1 &
+PRE_WHEEL=$!
+jq -n '[{name: "slow", tool: "e2e-slow-install/still", kind: "image", fields: {instructions: "A still whose tool takes a while to install."}}]' | boxes_in "$P" || { pre_disk_end; return 0; }
 for _ in $(seq 240); do
   pre_machine "$name" "$OUT/pre-disk-building.json"
   J '[.status.activity[]? | select(.kind == "install")] | length > 0' "$OUT/pre-disk-building.json" && break
-  J '.ready == true' <<< "$(pre_row "$P" kept)" && break
+  J '.ready == true' <<< "$(pre_row "$P" slow)" && break
   sleep 0.5
 done
 if J '[.status.activity[]? | select(.kind == "install")] | length > 0' "$OUT/pre-disk-building.json"; then
@@ -447,9 +461,8 @@ if J '[.status.activity[]? | select(.kind == "install")] | length > 0' "$OUT/pre
   [ -n "$n" ] && run_wait "$OUT" pre-line && [ "$(run_get "$OUT" pre-line .status)" = completed ] \
     || check "prefetch disk: the run sent while the guess built didn't complete: $(run_get "$OUT" pre-line .reason.message | head -c 300)"
 else
-  check "prefetch disk: $name never said it was installing the box's tool: its activity $(jq -c '[.status.activity[]? | {kind, subject}]' "$OUT/pre-disk-building.json" 2> /dev/null); its row: $(pre_row "$P" kept)"
+  check "prefetch disk: $name never said it was installing e2e-slow-install for the box's guess: its activity $(jq -c '[.status.activity[]? | {kind, subject}]' "$OUT/pre-disk-building.json" 2> /dev/null); its row: $(pre_row "$P" slow)"
 fi
-pre_ready "$P" kept "$name" 300 || { pre_disk_end; return 0; }
 if [ -n "$asked" ]; then
   pre_log "$name" "$OUT/pre-disk-line.tensord.log"
   pre_judge "$OUT/pre-disk-line.tensord.log" "$asked" '{}' <<'JUDGE' > "$OUT/pre-disk-line.failed"
@@ -479,6 +492,10 @@ elif not any(when <= run_turn + 2000 for when in gave):
 JUDGE
   while read -r why; do check "prefetch disk: $why"; done < "$OUT/pre-disk-line.failed"
 fi
+project_api "$P" /assets/slow -X DELETE > "$OUT/pre-disk-slow-delete.json" 2>&1 || check "prefetch disk: the slow box wasn't deleted"
+kill "$PRE_WHEEL" 2> /dev/null || true
+jq -n --arg t e2e-prefetched/still '[{name: "kept", tool: $t, kind: "image", fields: {instructions: "A still stand-q gets ready on a short disk."}}]' | boxes_in "$P" || { pre_disk_end; return 0; }
+pre_ready "$P" kept "$name" 300 || { pre_disk_end; return 0; }
 # 150 MiB past the reserve.
 read -r size avail < <(df -B1 --output=size,avail "$mnt" | tail -1)
 reserve=$((size / 50)); [ "$reserve" -ge $((1 << 30)) ] || reserve=$((1 << 30))
@@ -508,7 +525,7 @@ n=$(run_submit "$OUT" pre-req model install e2e/pre-req --on "$name")
 pre_machine "$name" "$OUT/pre-disk-made-room.json"
 echo "prefetch disk: once e2e/pre-req came: pre-ask $(pre_held "$OUT/pre-disk-made-room.json" e2e/pre-ask), pre-a $(pre_held "$OUT/pre-disk-made-room.json" e2e/pre-a), pre-req $(pre_held "$OUT/pre-disk-made-room.json" e2e/pre-req)"
 J '[.status.models[]? | select(.repository == "e2e/pre-ask") | .checkpoints[]?.complete] | any' "$OUT/pre-disk-made-room.json" \
-  || check "prefetch disk: e2e/pre-ask, which a request brought, went to make room while e2e/pre-a, which only a guess brought, stayed: $(pre_held "$OUT/pre-disk-made-room.json" e2e/pre-a)"
+  || check "prefetch disk: e2e/pre-ask, which a call read, went to make room while e2e/pre-a, which only a guess brought, stayed: $(pre_held "$OUT/pre-disk-made-room.json" e2e/pre-a)"
 for _ in $(seq 40); do
   row=$(pre_row "$P" kept)
   J '.ready != true' <<< "${row:-null}" && break
@@ -527,6 +544,7 @@ pre_disk_end
 }
 # pre_disk_end: stand-q ended, its filler gone, the page closed.
 pre_disk_end() {
+  [ -z "${PRE_WHEEL:-}" ] || kill "$PRE_WHEEL" 2> /dev/null || true
   sudo rm -f /mnt/pre-disk/pre-disk-filler || true
   timeout 60 "$COZY" --json machine end stand-q --force -y > "$OUT/stand-q-end.json" 2>&1 || true
   pre_end

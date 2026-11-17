@@ -676,7 +676,14 @@ PYH3
         || { echo "naming $model's family failed: $(tail -c 600 "$seed/edit-${model#e2e/}.json")" >&2; exit 1; }
     done
     publish "$here/cli/project/prefetched"
-    log "published e2e/pre-a@0.1.0 (transformer, vae), e2e/pre-b@0.1.0 (its transformer, e2e/pre-a's vae), e2e/pre-ask@0.1.0, e2e/pre-req@0.1.0 and e2e-prefetched"
+    # prefetch_disk's slow install: its lock pins the wheel its server makes the same each time, served fast while it publishes.
+    python3 "$here/cli/project/slowinstall/wheel.py" "$seed/slow-wheel" > "$seed/slow-wheel.log" 2>&1 &
+    slow_wheel=$!
+    for _ in $(seq 100); do curl -fsI http://127.0.0.1:47104/e2e_slow_wheel-0.0.0-py3-none-any.whl > /dev/null 2>&1 && break; sleep 0.2; done
+    publish "$here/cli/project/slowinstall" || log "e2e-slow-install wasn't published: prefetch_disk's install line is not judged"
+    kill "$slow_wheel" 2> /dev/null || true
+    rm -rf "$seed/slow-wheel"
+    log "published e2e/pre-a@0.1.0 (transformer, vae), e2e/pre-b@0.1.0 (its transformer, e2e/pre-a's vae), e2e/pre-ask@0.1.0, e2e/pre-req@0.1.0, e2e-prefetched and e2e-slow-install"
     rm -f "$seed"/pre-*.safetensors
   fi
   if [[ " $needs " == *" fits "* ]]; then
