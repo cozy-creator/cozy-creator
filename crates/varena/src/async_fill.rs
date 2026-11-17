@@ -837,6 +837,23 @@ impl Region {
             Preparation::Fill(fill) => StreamPreparation::Fill(fill),
         })
     }
+
+    /// Demand admission for a caller that fills several Regions together (cr-318: one store read
+    /// for a binding's absent blocks): `Ok(pin)` when its bytes are here, or published and now
+    /// ordered on `consumer_stream`; else its `Fill`, which the caller writes and publishes as
+    /// the Region's Source would. The Source is never called here.
+    ///
+    /// # Safety
+    /// `use_on`'s: the consumer stream is live in this primary context and reads nothing before
+    /// the Pin, or the Fill's publication, is returned.
+    #[allow(unsafe_code)]
+    pub unsafe fn admit_on(self: &Arc<Self>, consumer_stream: u64) -> Result<std::result::Result<Pin, Fill>> {
+        // SAFETY: this method's own contract.
+        Ok(match unsafe { self.prepare_on(consumer_stream) }? {
+            StreamPreparation::Ready(pin) | StreamPreparation::Ordered(pin) => Ok(pin),
+            StreamPreparation::Fill(fill) => Err(fill),
+        })
+    }
 }
 impl Pin {
     /// # Safety
