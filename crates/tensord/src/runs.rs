@@ -1069,7 +1069,7 @@ impl Runs {
         }
         Ok(named)
     }
-    /// A warning of run `id` by its `code`, which its controller keeps among the run's warnings (`cozy run show`): on its root
+    /// A warning of run `id` by its `code`, which its controller keeps among the run's warnings (`cozy run watch --once`): on its root
     /// run's log, a call's led by its function, as `Engine::append_warning` says one.
     fn warn(&self, id: &str, code: &str, text: &str) {
         let engine = &self.service.engine;

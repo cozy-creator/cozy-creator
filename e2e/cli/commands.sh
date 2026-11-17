@@ -1837,7 +1837,7 @@ newest_release() {
 }
 
 # run.sh's last step before removal (after the steps that stop Calcifer): this computer's cozy (the candidate), having run, goes
-# back to the newest release as a person's `cozy update <version>` does. Calcifer's store is one way (version 8): the binary is
+# back to the newest release as a person's `cozy update <version>` does. Calcifer's store is one way (store.rs VERSION): the binary is
 # the release's, and its Calcifer refuses to start on the newer store, saying so. Putting the candidate back (a dev build's file
 # swapped in, `cozy doctor` restarting Calcifer on it, as `candidate_cozy` does) recovers: the project's runs and outputs are as
 # they were. (An older release's own update is its code, frozen: run 40084450876 found 0.11.14's update waiting on Calcifer for
@@ -1859,9 +1859,9 @@ if cozy --json update "$newest" > "$OUT/update.json"; then
   echo "update $newest: $((SECONDS - t0)) s; it reads this store"
 else
   said=$(grep '^{' "$OUT/update.json" | jq -r 'select(.error) | [.error.message, .error.remedy // "", (.error.next // [] | join(" "))] | join(" ")' 2> /dev/null) || said=
-  [[ $said == *"Calcifer's store is at version 8: this cozy reads version 7"* || ( $said == *"version 8"* && $said == *"cozy update"* ) ]] \
-    || check "update $newest: not refused for Calcifer's version 8 store: $(tail -c 300 "$OUT/update.json")"
-  echo "update $newest: $((SECONDS - t0)) s; its Calcifer refused the version 8 store: $said"
+  [[ $said =~ "Calcifer's store is at version "[0-9]+ && $said == *"cozy update"* ]] \
+    || check "update $newest: not refused for Calcifer's newer store: $(tail -c 300 "$OUT/update.json")"
+  echo "update $newest: $((SECONDS - t0)) s; its Calcifer refused the newer store: $said"
 fi
 [ "$(cozy --version)" = "cozy $newest" ] || check "update: cozy is $(cozy --version), not $newest"
 CAND_COZY=$back install_candidate_binary

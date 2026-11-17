@@ -87,6 +87,8 @@
     { "match": "waiting on gpu {#n}: attention", "says": "Optimizing GPU {n}", "phase": "starting" },
     { "match": "waiting on gpu {#n}: kernels", "says": "Optimizing GPU {n}", "phase": "starting" },
     { "match": "waiting on gpu {#n}: {what}", "says": "Waiting for GPU {n}: {what}", "phase": "starting" },
+    { "match": "waiting for the models to download: {what}", "says": "Waiting for the models to download: {what}", "phase": "downloading" },
+    { "match": "waiting for the models to download", "says": "Waiting for the models to download", "phase": "downloading" },
     { "match": "waiting for {gpus}: {what}", "says": "Waiting for {gpus}: {what}", "phase": "working" },
     { "match": "installing cpython {version}", "says": "Installing Python {version}", "phase": "installing" },
     { "match": "cpython {version} ready", "says": "Python {version} ready", "phase": "installing" },
