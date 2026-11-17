@@ -9,6 +9,8 @@
 #                                           random weights, and uploaded, locked and bound through the candidate cozy
 #                                           (e2e/cpu): what the Runtime, TensorFS, varena, TensorD's frames, Calcifer's
 #                                           describe, lock and binder, or a package decide
+#   skew-candidate                          the candidate cozy against a Hub of tensorhub master, production's line (the
+#                                           Hub suite's cells, e2e/skew/run.sh), while the suites' Hub is tensorhub's RC
 #   cli-release                             cozy's signed-in commands (e2e/release/run.sh): a release only, with the CI key
 #   model                                   the cli suite's real inference on the CPU (BiRefNet's forward pass): what the
 #                                           Runtime, TensorD, TensorFS, varena or the package decides. Every cli run
