@@ -237,8 +237,8 @@ fn canonical_role(model: &types::ModelSummary) -> Option<String> {
 }
 
 fn found(card: &types::ModelCard) -> FoundModel {
-    // The Hub lists releases newest first.
-    let release = card.releases.iter().find(|release| release.visibility == api::model_ref::ReleaseVisibility::Public);
+    let public = card.releases.iter().filter(|release| release.visibility == api::model_ref::ReleaseVisibility::Public);
+    let release = api::release::newest_listed(public, |release| &release.version);
     let lanes = match release {
         Some(r) => r.lanes.keys().cloned().collect(),
         None => (card.checkpoints.iter().map(|c| c.lane.clone()))

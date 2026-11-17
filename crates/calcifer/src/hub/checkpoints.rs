@@ -79,7 +79,8 @@ fn save(api: &Api) {
 
 /// Its newest release's plainest lane, else, to its members, its newest checkpoint.
 fn header_of(card: &types::ModelCard) -> Option<&types::ObjectRef> {
-    let released = card.releases.iter().find(|release| release.visibility == api::model_ref::ReleaseVisibility::Public).and_then(|release| release.lanes.values().next()).map(|lane| &lane.header);
+    let public = card.releases.iter().filter(|release| release.visibility == api::model_ref::ReleaseVisibility::Public);
+    let released = api::release::newest_listed(public, |release| &release.version).and_then(|release| release.lanes.values().next()).map(|lane| &lane.header);
     released.or(card.checkpoints.first().map(|checkpoint| &checkpoint.header))
 }
 

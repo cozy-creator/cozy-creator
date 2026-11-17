@@ -952,6 +952,7 @@ case $SHARD in
     hub_published
     rc_floor
     held_prerelease
+    final_model
     runtime_floor
     child_latents
     path_manifest

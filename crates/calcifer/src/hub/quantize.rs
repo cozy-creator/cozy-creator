@@ -141,7 +141,7 @@ async fn checkpoint(api: &Api, hub: &Origin, model: &ModelRef, lane: &str) -> Re
         None => {
             let found = match release {
                 Some(version) => card.releases.iter().find(|r| r.version == version),
-                None => card.releases.first(),
+                None => api::release::newest_listed(&card.releases, |r| &r.version),
             };
             let found = found.ok_or_else(|| absent(format!("{model_id} has no release {}", release.unwrap_or("yet"))))?;
             let originals: Vec<_> = found.lanes.values().filter(|l| original(&l.kinds)).collect();

@@ -1187,6 +1187,54 @@ if cell floor-release-held "$E2E_HELD/relay" "text=off the RC"; then
 fi
 }
 
+# cl-1109 (coordinator, 11-16): a model asked with no release takes "finals first, else the newest", the same rule as packages, so
+# one rule everywhere. xs-203 met it on packages: RC machines took minimax-h3 0.13.0rc2 over the 0.12.0 final. isolated.sh publishes
+# e2e/final-model 0.1.0 and then 0.2.0-rc.1. Calcifer's `model show` and `model ls`, and the Hub's resolution (`model install` on
+# local; the TensorFS SDK online) take 0.1.0; the SDK takes 0.2.0-rc.1 when it names it; offline, holding both, TensorFS's own
+# resolution takes 0.1.0.
+final_model() {
+step "a model asked with no release takes its newest final, a prerelease label only when named (cl-1109)"
+[ -n "$LOCAL" ] || return 0
+local model=e2e/final-model dir=$OUT/final-model with said
+mkdir -p "$dir"
+cozy --json model show "$model" > "$dir/show.json" 2>&1
+said=$(jq -r '.release // empty' "$dir/show.json" 2> /dev/null)
+[ "$said" = 0.1.0 ] || check "final model: model show $model says ${said:-no release}, not 0.1.0: $(head -c 300 "$dir/show.json")"
+cozy --json model ls final-model > "$dir/ls.json" 2>&1
+said=$(jq -c --arg m "$model" '[.models[]? | select(.model == $m) | .release]' "$dir/ls.json" 2> /dev/null)
+[ "$said" = '["0.1.0"]' ] || check "final model: model ls lists $model at ${said:-nothing}, not 0.1.0: $(head -c 300 "$dir/ls.json")"
+cozy --json model install "$model" --on local > "$dir/install.ndjson" 2>&1 \
+  || check "final model: model install $model --on local failed: $(tail -c 300 "$dir/install.ndjson")"
+cozy --json model ls --on local > "$dir/installed.json" 2>&1
+said=$(jq -c --arg m "$model" '[.models[]? | select(.model == $m) | .release] | unique' "$dir/installed.json" 2> /dev/null)
+[ "$said" = '["0.1.0"]' ] || check "final model: an unpinned install put $model ${said:-nothing} on local, not 0.1.0"
+# The TensorFS SDK, against this Hub, in a store of its own.
+[ -n "${CAND_TFS:-}" ] || { echo "final model: the SDK's part skipped, this run names no TensorFS"; return 0; }
+if [ -f "$CAND_TFS" ]; then with=$CAND_TFS; else with=tensorfs==${CAND_TFS#v}; fi
+# This Hub and its store are on loopback: declared local for the SDK as for cozy (`local_origins`).
+TENSORFS_LOCAL_ORIGINS=${COZY_LOCAL_ORIGINS:-} uv run -q --no-project --with "$with" python -I - "$model" "$dir/store" > "$dir/sdk.json" 2> "$dir/sdk.err" <<'PY' \
+  || { check "final model: the TensorFS SDK failed: $(tail -n 1 "$dir/sdk.err" | cut -c1-300)"; return; }
+import json, os, ssl, sys
+import tensorfs
+ca = os.environ.get("COZY_TEST_HUB_CA")
+if ca and os.path.isfile(ca):
+    with open(ca) as pem:
+        tensorfs.configure(ca_der=ssl.PEM_cert_to_DER_cert(pem.read()))
+model, store = sys.argv[1], sys.argv[2]
+def release(**asked):
+    with tensorfs.open(model, cache_dir=store, **asked) as checkpoint:
+        return checkpoint.release
+said = {"online": release(), "pinned": release(release="0.2.0-rc.1")}
+release(release="0.1.0")
+said["offline"] = release(local_files_only=True)
+print(json.dumps(said))
+PY
+echo "final model: the SDK: $(cat "$dir/sdk.json")"
+J '.online == "0.1.0"' "$dir/sdk.json" || check "final model: the SDK online took $(jq -r .online "$dir/sdk.json"), not 0.1.0"
+J '.pinned == "0.2.0-rc.1"' "$dir/sdk.json" || check "final model: the SDK naming 0.2.0-rc.1 took $(jq -r .pinned "$dir/sdk.json")"
+J '.offline == "0.1.0"' "$dir/sdk.json" || check "final model: offline, holding 0.1.0 and 0.2.0-rc.1, TensorFS took $(jq -r .offline "$dir/sdk.json"), not 0.1.0"
+}
+
 # minor_release: the candidate's Runtime wheel as a release of its minor (0.47.0.dev0+dev.g… as 0.47.0), for a cell that needs a cap
 # to bind; made once, its path said. Fails, saying why, without a candidate wheel.
 minor_release() {

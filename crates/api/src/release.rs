@@ -1,6 +1,6 @@
 //! Which release a name resolves to: one rule for Calcifer and TensorD, for packages and models (xs-183, cl-952, se-128, cl-1109).
-//! A package asked with no release takes its newest final, as pip does (`tensorfs::format::newest_by`), on every machine: a pre-
-//! or dev release (`0.13.0rc2`) only when it is named exactly, or when the package has no final at all.
+//! A package or model asked with no release takes its newest final, as pip does (`tensorfs::format::newest_by`), on every machine:
+//! a pre- or dev release (`0.13.0rc2`, `1.1.0-rc.1`) only when it is named exactly, or when there is no final at all.
 //!
 //! A package release runs only on a Runtime its `cozy-runtime` requirement admits (`runs`). The open RC's Runtime is a dev
 //! release of the minor it makes (`0.47.0.dev2260+g1a2b3c4d`), so a floor can name it. `choose` decides a run's release with its machine:
@@ -41,6 +41,13 @@ pub fn candidates<'a>(releases: impl IntoIterator<Item = &'a str>) -> Vec<&'a st
     let read: Vec<&str> = newest_first(releases, |release| release).into_iter().filter(|release| Version::from_str(release).is_ok()).collect();
     let finals = read.iter().any(|release| !prerelease(release));
     read.into_iter().filter(|release| !finals || !prerelease(release)).collect()
+}
+
+/// Of a model's `releases` as the Hub lists them (newest first), the one asked with no release takes
+/// (`tensorfs::format::newest_by`); the first when no label parses as a version.
+pub fn newest_listed<'a, R: 'a>(releases: impl IntoIterator<Item = &'a R, IntoIter: Clone>, version: impl Fn(&R) -> &str) -> Option<&'a R> {
+    let releases = releases.into_iter();
+    newest_by(releases.clone(), |release| version(release)).or_else(|| releases.clone().next())
 }
 
 /// What `requires` (a wheel's `Requires-Dist`) asks of `distribution` outside any extra (`cozy-runtime[media]<0.46,>=0.45.0`):
