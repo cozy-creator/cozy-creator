@@ -472,6 +472,7 @@ jobs:
           SEEDS: ${{ inputs.seeds }}
           SCENARIO: ${{ inputs.scenario }}
           CAP: ${{ inputs.cap_minutes || '300' }}
+          TRACKER_LEDGER_KEY: ${{ secrets.TRACKER_LEDGER_KEY }}  # gate.sh's ledger rows into the tracker's benchmarks/
         run: |
           read -ra args <<< "$ARGS"
           [ -z "$ONLY" ] || args+=(--only "$ONLY")

@@ -10,6 +10,7 @@ set +e -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../../e2e/test-hub.sh"
 require_ci_rental_hub "${HUB:-isolated}" || exit 2
 MODEL_DETAILS=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../e2e" && pwd)/model-details.py
+LEDGER=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ledger.py
 model_details() { python3 "$MODEL_DETAILS" "$1"; }
 mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd); R=$OUT/results.txt
 say() { echo "$(date -u +%T) $*" | tee -a "$R"; }
@@ -71,6 +72,11 @@ finish() {
     done
     say "GONE $r: ended, and the machine listing holds no live machine of it; billed $(billed "$r")"
   done
+  # The benchmark ledger (release-gate/ledger.py): a row per package run, appended to the tracker's benchmarks/ with the
+  # TRACKER_LEDGER_KEY deploy key; without it, or on a refused push, the rows stay in ledger.jsonl for `ledger.py backfill`.
+  { python3 -I "$LEDGER" rows "$OUT" --source "session:$(basename "$0" .sh)" ${PACKAGES:+--packages "$PACKAGES"} > "$OUT/ledger.jsonl" &&
+    timeout 120 python3 -I "$LEDGER" append "$OUT/ledger.jsonl"; } > "$OUT/ledger.log" 2>&1 ||
+    say "ledger: rows kept in ledger.jsonl ($(tail -c 200 "$OUT/ledger.log"))"
   say "RESULT $([ "$RC" = 0 ] && echo PASSED || echo FAILED)"
   exit "$RC"
 }

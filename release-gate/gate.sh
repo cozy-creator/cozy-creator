@@ -628,6 +628,14 @@ done
 # A --cells FILE ending in .sh is sourced last, for cells that change the machine between them.
 for f in "${EXTRA[@]}"; do [[ $f != *.sh ]] || . "$f"; done
 end_it
+# The benchmark ledger (ledger.py): a row per package run into ledger.jsonl, appended to the tracker's benchmarks/ where
+# this machine can push (CI: the TRACKER_LEDGER_KEY deploy key). It never decides the verdict. A suite that caps VRAM
+# itself leaves its rows' cap unsaid: the records do not carry it.
+ledger_cap=off
+for s in ${SUITES//,/ }; do ! grep -qs -- --gpu-memory-limit "$HERE/suites/$s/cells.sh" || ledger_cap=; done
+{ python3 -I "$HERE/ledger.py" rows "$OUT" --source "$([ "$SUITES" = bench ] && echo bench || echo gate)" ${PKGS:+--packages "$PKGS"} \
+    ${ledger_cap:+--cap "$ledger_cap"} > ledger.jsonl && timeout 600 python3 -I "$HERE/ledger.py" append ledger.jsonl; } > ledger.log 2>&1 ||
+  log "ledger: rows kept in ledger.jsonl for ledger.py backfill: $(tail -c 300 ledger.log)"
 uv run -q --no-project --with pillow --with numpy --with torch --with transformers --index https://download.pytorch.org/whl/cpu \
   --index-strategy unsafe-best-match python -I "$HERE/analyze.py" "$OUT" "$SKU" "$B/gate-$BK.json" | tee verdict.txt
 [ "${PIPESTATUS[0]}" = 0 ] || exit 1
