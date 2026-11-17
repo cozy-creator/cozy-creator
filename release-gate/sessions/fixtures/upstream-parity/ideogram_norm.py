@@ -69,7 +69,7 @@ print(json.dumps(facts))
 W = 384
 y, xo = (h - W) // 2, (w - W) // 2
 tiles = [img[y:y + W, xo:xo + W] for img in (source, ideogram, diffusers)]
-tiles.append(np.clip(np.abs(ideogram.astype(np.int16) - diffusers) * 4, 0, 255).astype(np.uint8))
+tiles.append(np.clip(np.abs(tiles[1].astype(np.int16) - tiles[2]) * 4, 0, 255).astype(np.uint8))
 sheet = Image.fromarray(np.concatenate(tiles, axis=1))
 sheet.resize((sheet.width * 2, sheet.height * 2), Image.NEAREST).save(out / f"{stem}-norm-crops.jpg", quality=92)
 Image.fromarray(np.concatenate([source, ideogram, diffusers], axis=1)).save(out / f"{stem}-norm-full.jpg", quality=90)
