@@ -360,14 +360,17 @@ pub(crate) async fn close_private_project(
             Scope { storage: marker.storage, token: marker.token }
         }
     };
-    let Some(link) = api
-        .calcifer
-        .link("local")
-        .map_err(|_| error("This computer's machine isn't running, so Cozy can't lock the project yet. Try again in a moment."))?
-    else {
-        return Err(error(
-            "This computer's machine isn't ready to lock the project yet. Try again in a moment.",
-        ));
+    // No link to it, and it doesn't answer (cl-1064): a machine stopped long enough loses its link, and still never holds the lock.
+    let link = match api.calcifer.link("local") {
+        Ok(Some(link)) => link,
+        _ if !api.machines.answers("local").await => {
+            let mut scopes = SCOPES.lock().unwrap();
+            scopes.remove(root);
+            scopes.remove(&scope.storage.view_root);
+            return Ok(Sealed::Owed(scope.storage.view_root.clone()));
+        }
+        Ok(None) => return Err(error("This computer's machine isn't ready to lock the project yet. Try again in a moment.")),
+        Err(_) => return Err(error("This computer's machine isn't running, so Cozy can't lock the project yet. Try again in a moment.")),
     };
     // Asked while it answers (cl-1064): a machine that stops answering never holds the lock; its clean-up is owed instead.
     let sealed = match api.machines.while_answering("local", link.with_private(scope.clone()).close_private()).await {

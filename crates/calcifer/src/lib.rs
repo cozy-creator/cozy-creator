@@ -111,6 +111,9 @@ pub(crate) struct Calcifer {
     drivers: Mutex<HashMap<RunId, Arc<Notify>>>,
     /// Each driver whose task is going, kept by the task itself (`Driving`): what a run's writes into its project count of it.
     driving: Mutex<HashSet<RunId>>,
+    /// Runs a lock settled here because their machine didn't answer (cl-1064): their drivers, blocked on it, write nothing, so they
+    /// hold no lock (`writing_into`). Each goes as its driver ends.
+    let_go: Mutex<HashSet<RunId>>,
     /// Runs told to cancel whose request is still to be kept: a project's edit held its writer when it asked.
     canceling: Mutex<HashSet<String>>,
     /// Queued runs told to cancel on their machine to go to another that finishes them sooner (cl-1073), by id: where each goes.
@@ -293,6 +296,7 @@ struct Driving {
 impl Drop for Driving {
     fn drop(&mut self) {
         lock(&self.calcifer.driving).remove(&self.id);
+        lock(&self.calcifer.let_go).remove(&self.id);
     }
 }
 
@@ -325,6 +329,7 @@ impl Calcifer {
             live: Mutex::default(),
             drivers: Mutex::default(),
             driving: Mutex::default(),
+            let_go: Mutex::default(),
             canceling: Mutex::default(),
             moving: Mutex::default(),
             machines: Mutex::default(),
@@ -592,7 +597,7 @@ impl Calcifer {
     /// its machine) or its exporter moving its outputs, latents among them, into the project (`export_moving`). The project's vault
     /// clock and every lock wait for it; an exporter that stalls stops holding them.
     pub(crate) fn writing_into(&self, project: &str) -> Option<RunId> {
-        self.routed(project).into_iter().find(|id| lock(&self.driving).contains(id) || self.export_moving(id))
+        self.routed(project).into_iter().find(|id| (lock(&self.driving).contains(id) && !lock(&self.let_go).contains(id)) || self.export_moving(id))
     }
 
     /// A run of `project` whose exporter is moving its outputs into it (`writing_into` without the drivers, cl-1082).
@@ -919,6 +924,7 @@ impl Calcifer {
             if row.machine.as_deref() != Some(machine) { continue; }
             let mut events = store.request_cancel(id.as_str())?;
             events.extend(store.cancel_unanswered(id.as_str(), machine, "machine_not_answering", "the project was locked")?);
+            if lock(&self.driving).contains(&id) { lock(&self.let_go).insert(id.clone()); }
             self.publish(&id, events); self.wake(&id); canceled.push(row.number);
         }
         Ok(canceled)
