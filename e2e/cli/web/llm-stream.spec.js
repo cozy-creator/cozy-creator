@@ -106,9 +106,10 @@ test('llm-stream', async ({ page, project, api }) => {
 });
 
 // The GPU check (release-gate/sessions/llm-stream.sh): a real model on a rental, STREAM_TOOL (`qwen3/write`, its default the abliterated
-// Qwen3.8-27B) on STREAM_MACHINE, rendered three times: cold, warm, and warm thinking at `low` effort, whose box says it's thinking and
-// shows no words until the answer begins. Each render's time from its ask to its first word on the box at rest, and the words a second
-// the box shows against the tokens a second its run counts, both over the same span, in OUT/web/llm-stream-gpu.
+// Qwen3.8-27B) on STREAM_MACHINE: a long story cold, then warm; then a short question thinking at `low`, `medium` and `xhigh` effort
+// (its chat template's `reasoning_effort`), whose box says it's thinking and shows no words until its answer begins, each effort thinking
+// longer than the one before. Each render's time from its ask to its first word on the box at rest, the words a second the box shows
+// against the tokens a second its run counts over the same span, and a thought's tokens, in OUT/web/llm-stream-gpu.
 test('llm-stream: a real model on a GPU', { tag: '@gpu' }, async ({ page, project, api }) => {
   const machine = process.env.STREAM_MACHINE, tool = process.env.STREAM_TOOL;
   test.skip(!machine || !tool, 'release-gate/sessions/llm-stream.sh sets STREAM_MACHINE and STREAM_TOOL');
@@ -125,9 +126,10 @@ test('llm-stream: a real model on a GPU', { tag: '@gpu' }, async ({ page, projec
   const count = (words) => (words.match(/\S+/g) ?? []).length;
   const renders = [];
   let before = story;
-  for (const n of [1, 2, 3]) {
-    const thinking = n === 3;
-    if (thinking) await api.patch(project.at(`/assets/${NAME}`), { fields: { thinking: true, reasoning_effort: 'low' } });
+  const QUESTION = 'Why is the sea salty, and why are rivers not? Answer in three sentences.';
+  for (const [n, effort] of [[1], [2], [3, 'low'], [4, 'medium'], [5, 'xhigh']]) {
+    const thinking = Boolean(effort);
+    if (thinking) await api.patch(project.at(`/assets/${NAME}`), { fields: { instructions: QUESTION, thinking: true, reasoning_effort: effort, max_tokens: 8000 } });
     const asked = Date.now();
     await api.call('POST', project.at('/runs'), { names: [NAME], on: [machine] }, { headers: { 'Idempotency-Key': randomUUID() } });
     const shown = [], counted = [];
@@ -157,7 +159,8 @@ test('llm-stream: a real model on a GPU', { tag: '@gpu' }, async ({ page, projec
     const span = (rows) => rows.filter(([at]) => at >= from);
     const rate = (rows) => (rows.length > 1 ? ((rows.at(-1)[1] - rows[0][1]) * 1000) / (rows.at(-1)[0] - rows[0][0]) : null);
     renders.push({
-      render: n, run: number, machine: run.machine, gpu: run.gpu, executed_ms: run.execution_ms, landed_ms: Date.now() - asked,
+      render: n, effort: effort ?? null, thought_tokens: thinking ? (counted.filter(([, , stage]) => /thinking/i.test(stage)).at(-1)?.[1] ?? 0) : null,
+      run: number, machine: run.machine, gpu: run.gpu, executed_ms: run.execution_ms, landed_ms: Date.now() - asked,
       first_word_ms: first ?? null, words_per_s: rate(span(shown)), tokens_per_s: rate(span(counted)),
       words: count(version.main?.text ?? ''), tokens: counted.at(-1)?.[1] ?? null, stages: [...new Set(counted.map(([, , stage]) => stage))],
       shown: shown.length, text: (version.main?.text ?? '').slice(0, 300),
@@ -166,11 +169,14 @@ test('llm-stream: a real model on a GPU', { tag: '@gpu' }, async ({ page, projec
     if (thinking) {
       // While it thought, its stage said so and the box showed nothing new: no words of the thought.
       const thought = counted.filter(([, , stage]) => /thinking/i.test(stage));
-      expect.soft(thought.length, 'render 3: its stage said it was thinking').toBeGreaterThan(0);
-      expect.soft(thought.some(([, , , shown]) => shown), 'render 3: no words showed while it thought').toBe(false);
+      expect.soft(thought.length, `render ${n} (${effort}): its stage said it was thinking`).toBeGreaterThan(0);
+      expect.soft(thought.some(([, , , shown]) => shown), `render ${n} (${effort}): no words showed while it thought`).toBe(false);
     }
     before = version.main?.text ?? '';
     await page.screenshot({ path: join(out, `landed-${n}.png`) });
   }
   writeFileSync(join(out, 'numbers.json'), JSON.stringify({ tool, model: process.env.STREAM_MODEL ?? 'default', renders }, null, 2));
+  // Each effort thinks longer than the one before (se-145: low asks for brief thinking, xhigh to think carefully).
+  const thoughts = renders.filter((one) => one.effort).map((one) => one.thought_tokens);
+  expect.soft(thoughts[0] < thoughts[2], `low thinks less than xhigh: ${JSON.stringify(thoughts)} tokens`).toBe(true);
 });

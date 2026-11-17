@@ -262,7 +262,7 @@ busy on that pair, the code `--on any` is refused there `runtime_floor_unmet`, a
 `machine-end` (cl-946, `pods` cheap pods, 3 by default) ends each with `cozy machine end <name>`: what it printed must be its
 Hub's record of the rental (`released` or `failed`, with an end time, only once its provider holds no pod) and Calcifer's.
 
-`llm-stream` (xs-209) renders qwen3's Write on a Text box three times (cold, warm, then thinking at low effort) on one rental, its TensorD this session's dev-build cozy and
+`llm-stream` (xs-209) renders qwen3's Write on a Text box cold, then warm, then a question thinking at low, medium and xhigh effort on one rental, its TensorD this session's dev-build cozy and
 its Runtime the cozy-runtime dev-build run `runtime`, the page in Chrome here: each render's time from its ask to its first word on the box,
 and the words a second shown against the tokens a second counted (`numbers.json`). `model` pins the checkpoint (a private int8 commit):
 `gh workflow run pod-session.yaml -R cozy-creator/cozy-creator --ref <branch> -f hub=prod -f script=llm-stream -f packages_refs=q3=<qwen3 branch>

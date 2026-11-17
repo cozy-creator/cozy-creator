@@ -3,7 +3,7 @@
 # images (ideally streaming)". A dev home on this session's cozy (pod-session `cozy`: a dev-build run of the change), its first-party
 # packages from the packages_refs checkout `tree`. The rental runs this cozy's TensorD and the change's Runtime (`runtime`: a cozy-runtime
 # dev-build run id, whose wheel carries the kernels), held there for the session. `llm-stream: a real model on a GPU`
-# (e2e/cli/web/llm-stream.spec.js) renders a Text box of qwen3's Write on it cold, warm, then thinking (low effort): each render's time from its ask to
+# (e2e/cli/web/llm-stream.spec.js) renders a Text box of qwen3's Write on it, cold then warm, then a question thinking at each effort: each render's time from its ask to
 # its first word on the box, and the words a second the box shows against the tokens a second its run counts (numbers.json).
 # Without `rent`, $0: the quote, and the checks before it.
 # params:
