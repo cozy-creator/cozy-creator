@@ -566,7 +566,7 @@ impl Runs {
             .into_iter()
             .map(|r| {
                 let object = ObjectRef { sha256: sha256::hex(&r.digest), length: r.length };
-                let file = crate::storage::file(&store, &object).map_err(problem)?;
+                let file = crate::storage::file(&store, &object).map_err(gone(problem))?;
                 Ok((file, r.length))
             })
             .collect::<Result<Vec<_>, Error>>()?;
@@ -603,7 +603,7 @@ impl Runs {
         let (sha, length) = (object.sha256.as_str(), object.length);
         let record = self.record(actor, id)?;
         let store = self.service.engine.store_for(&record.id).map_err(problem)?;
-        let file = crate::storage::file(&store, object).map_err(storage)?;
+        let file = crate::storage::file(&store, object).map_err(gone(storage))?;
         Ok(OutputSnapshot {
             parts: vec![(file, length)],
             length,
@@ -625,7 +625,7 @@ impl Runs {
         };
         let object = ObjectRef { sha256: sha256.to_string(), length };
         let store = self.objects.store().map_err(problem)?;
-        crate::storage::file(&store, &object).map_err(storage)
+        crate::storage::file(&store, &object).map_err(gone(storage))
     }
     /// `actor`'s installations, each with what it holds now (`StatusFrame.environments`).
     pub(crate) fn environments(&self, actor: VerifiedActor) -> Result<Vec<v1::Environment>, Error> {
@@ -930,6 +930,14 @@ fn problem(error: io::Error) -> Error {
         io::ErrorKind::InvalidInput => Error::validation("invalid_request", error.to_string()),
         io::ErrorKind::PermissionDenied => Error::forbidden("capability_scope", error.to_string()),
         _ => Error::conflict("precondition_failed", error.to_string()),
+    }
+}
+/// An object's bytes absent from the store (collected, or let go of once copied into a project) as what they are: gone, said so
+/// (`object_not_found`), which a reader settles as lost and asks for no more; any other failure as `otherwise` says it.
+fn gone(otherwise: fn(io::Error) -> Error) -> impl Fn(io::Error) -> Error {
+    move |error| match error.kind() {
+        io::ErrorKind::NotFound => Error::not_found("object_not_found", error.to_string()),
+        _ => otherwise(error),
     }
 }
 fn storage(error: impl std::fmt::Display) -> Error {

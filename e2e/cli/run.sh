@@ -858,6 +858,8 @@ case $SHARD in
   projectdb-pickup-kept) parts="db_pickup_kept logs" ;;
   # A local run's latents, landed after its run arrived, are its take's and go with it (cl-1046, cl-1093). Named projectvault-* for its driver.
   projectvault-kept-latents) parts="kept_latents logs" ;;
+  # An export whose bytes the machine no longer has settles and starts the machine no more (cl-1035). Named projectvault-* for its driver.
+  projectvault-export-gone) parts="export_gone logs" ;;
   projectdb-closes) parts="db_closes logs" ;;
   # cl-1000: a runner with no FUSE (e2e.yaml installs no vault driver for it).
   projectvault-nofuse) parts="vault_no_fuse logs" ;;
@@ -879,6 +881,7 @@ case $SHARD in
     hard_cut
     vault_leftovers
     kept_latents
+    export_gone
     vault_purge_due
     vault_swapped
     ended_logs

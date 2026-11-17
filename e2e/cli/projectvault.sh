@@ -642,6 +642,20 @@ kept_latents() (
   cat "$work/proof/kept-latents.json" 2> /dev/null || true
 )
 
+# An export that can never finish settles (cl-1035): its bytes gone from the machine, the output's export fails at once with why, and
+# nothing starts the machine for it again (e2e/cli/export_gone.py).
+export_gone() (
+  step "an export whose bytes the machine no longer has settles as lost, said once, and starts the machine no more (cl-1035)"
+  [ -n "$LOCAL" ] || exit 0
+  [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "export gone: Linux runners only"; exit 0; }
+  local work
+  work=$(mktemp -d "$OUT/export-gone.XXXXXX")
+  python3 "$E2E/cli/export_gone.py" --work "$work" --out "$work/proof" --cli "$COZY" 2> "$work/proof.err" \
+    || { cat "$work/proof.err"; check "export gone: $(tail -n 1 "$work/proof.err" | cut -c1-600)"; }
+  cat "$work/proof/export-gone.json" 2> /dev/null || true
+  # The machine stopped above stays so only while nothing asks for it: the next part starts it as it needs.
+)
+
 # cl-981: an update renames a new cozy over the one Calcifer runs, which goes on running a deleted file, whose `current_exe()` is
 # `<path> (deleted)`. An encrypted project then still unlocks: Calcifer starts its filesystem supervisor from the build it runs
 # (Linux's /proc/self/exe), never that path (ENOENT) and never the newer file. The new file here is a copy: the same bytes, another
