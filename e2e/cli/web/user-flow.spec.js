@@ -512,6 +512,27 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
       return;
     }
 
+    // cl-1104 (Paul, 11-16): "when a user attaches a tool … we could figure out what machine, if we got a request, that request would
+    // land on. On that machine, we can pre-emptively install packages + models". With A up, the Shot's box says so beside its Render
+    // once A has H3 and its weights; request 1 goes then, and downloads and installs nothing (the judge's line).
+    await test.step("the Shot's box says it's ready on A before its Render", async () => {
+      const r = await look(SHOT);
+      const note = r.locator('.ready-on');
+      const began = Date.now();
+      let moved = began, events = heard, said = '';
+      for (;;) {
+        said = ((await note.first().textContent({ timeout: 1000 }).catch(() => '')) ?? '').trim();
+        if (said.startsWith('Ready on ')) break;
+        if (heard !== events) [events, moved] = [heard, Date.now()];
+        if (Date.now() - moved > QUIET_MS) throw new Error(`no "Ready on": nothing moved for ${QUIET_MS / 60_000} min`);
+        if (Date.now() - began > STEP_MS) throw new Error(`no "Ready on" in ${STEP_MS / 60_000} min`);
+        await page.waitForTimeout(2000);
+      }
+      flow.ready_on = { box: SHOT, said, machine: A.name, at: Date.now(), waited_s: Math.round((Date.now() - began) / 1000) };
+      mark('the Shot says ready', { said });
+      await shot('ready-on-A');
+    }).catch((error) => failed("the Shot's box says it's ready on A before its Render", error));
+
     await test.step('request 1: the Shot rendered, on A', async () => {
       const first = await render(1, SHOT, GENERATE);
       await shot('request-1-sent');

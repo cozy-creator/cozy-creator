@@ -81,6 +81,29 @@ pub(crate) fn missing(store: &Store, read: &crate::journal::FunctionRead) -> u64
     }
 }
 
+/// Each of `read`'s components: its bytes, and of them those not here now (cl-1104: a quote of one slot counts only those it reads).
+/// None once its header is gone. Each one's bytes are its header's, read once.
+pub(crate) fn parts(store: &Store, read: &crate::journal::FunctionRead) -> Vec<(String, u64, u64)> {
+    static BYTES: Mutex<BTreeMap<(String, String), u64>> = Mutex::new(BTreeMap::new());
+    let known: Option<Vec<u64>> = {
+        let bytes = BYTES.lock().unwrap();
+        read.components.iter().map(|component| bytes.get(&(read.checkpoint.clone(), component.clone())).copied()).collect()
+    };
+    if let Some(known) = known.filter(|_| whole(store, &read.checkpoint, &read.components)) {
+        return read.components.iter().zip(known).map(|(component, bytes)| (component.clone(), bytes, 0)).collect();
+    }
+    let Ok(checkpoint) = checkpoint(store, &read.checkpoint) else { return vec![] };
+    let mut bytes = BYTES.lock().unwrap();
+    (read.components.iter())
+        .map(|component| {
+            let chunks = storage::chunks(&checkpoint, std::slice::from_ref(component));
+            let length: u64 = chunks.iter().map(|o| o.length).sum();
+            bytes.insert((read.checkpoint.clone(), component.clone()), length);
+            (component.clone(), length, chunks.iter().filter(|o| !store.holds(o)).map(|o| o.length).sum())
+        })
+        .collect()
+}
+
 /// Whether every chunk of `components` of `header` is here (`downloaded`). Once true it is
 /// remembered (Status asks every second) until the store next evicts, in any process.
 pub(crate) fn whole(store: &Store, header: &str, components: &[String]) -> bool {

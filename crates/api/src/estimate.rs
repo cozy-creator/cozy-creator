@@ -685,10 +685,13 @@ fn fetches(frame: &StatusFrame, function: &str, model: &v1::ModelRef) -> u64 {
         return 0;
     }
     let timed = frame.times.iter().flatten().find(|timed| !function.is_empty() && timed.function == function);
-    let here = timed.and_then(|timed| timed.reads.iter().find(|read| read.checkpoint == header || (!model.model.is_empty() && read.model == model.model)));
-    match (here, model.reads) {
-        (Some(read), _) => read.missing,
-        (None, 0) => absent(frame, model),
+    let reads = timed.map_or(&[][..], |timed| timed.reads.as_slice());
+    let here = (reads.iter().find(|read| read.checkpoint == header)).or_else(|| reads.iter().find(|read| !model.model.is_empty() && read.model == model.model));
+    // Of what its runs here read of the checkpoint, what this slot reads (cl-1104: another box of the function reads other parts).
+    match (here.map(|read| read.of(&model.components)), model.reads) {
+        (Some(Some((_, missing))), _) => missing,
+        // A part no run of it here read: what its held checkpoint lacks, no more than the slot reads.
+        (Some(None), _) | (None, 0) => absent(frame, model),
         (None, reads) => reads.min(absent(frame, model)),
     }
 }
@@ -703,7 +706,7 @@ pub fn learn_reads(frames: &[&StatusFrame], job: &mut EstimateJob) {
             .filter(|timed| timed.function == function)
             .flat_map(|timed| &timed.reads)
             .filter(|read| read.model == model.model)
-            .map(|read| read.bytes)
+            .filter_map(|read| read.of(&model.components).map(|(bytes, _)| bytes))
             .max()
             .unwrap_or(0);
     }

@@ -208,7 +208,9 @@ async fn held_now(identity: &Arc<MachineIdentity>, runs: &Arc<Runs>, actor: Veri
         let service = &runs.service;
         let problem = |error: std::io::Error| Error::internal("status_unreadable", error.to_string());
         let reader = crate::runs::actor_id(actor);
-        let queue = (crate::estimate::roots(service).map_err(problem)?.into_iter())
+        let roots = crate::estimate::roots(service).map_err(problem)?;
+        let busy = roots.iter().any(|root| !crate::ahead::hidden(&root.caller_id));
+        let queue = (roots.into_iter())
             .map(|root| v1::Queued {
                 run: match actor.owner || root.actor == reader {
                     true => root.caller_id,
@@ -221,6 +223,9 @@ async fn held_now(identity: &Arc<MachineIdentity>, runs: &Arc<Runs>, actor: Veri
         // What each function's newest run here read, and of it what isn't here now (cl-967).
         for (function, read) in service.engine.function_reads().map_err(problem)? {
             let missing = crate::access::missing(&service.engine.store, &read);
+            let components = (crate::access::parts(&service.engine.store, &read).into_iter())
+                .map(|(name, bytes, missing)| v1::ReadComponent { name, bytes, missing })
+                .collect();
             let at = match times.iter().position(|timed| timed.function == function) {
                 Some(at) => at,
                 None => {
@@ -228,7 +233,7 @@ async fn held_now(identity: &Arc<MachineIdentity>, runs: &Arc<Runs>, actor: Veri
                     times.len() - 1
                 }
             };
-            times[at].reads.push(v1::Read { model: read.model, checkpoint: read.checkpoint, bytes: read.bytes, missing });
+            times[at].reads.push(v1::Read { model: read.model, checkpoint: read.checkpoint, bytes: read.bytes, missing, components });
         }
         Ok(Held {
             queue,
@@ -236,7 +241,7 @@ async fn held_now(identity: &Arc<MachineIdentity>, runs: &Arc<Runs>, actor: Veri
             link: crate::estimate::link(service),
             serving: service.pool().map_or(0, |pool| pool.serving_width() as u32),
             nvlink: service.pool().is_some_and(|pool| pool.hardware_class().1),
-            ahead: crate::ahead::listed(&reader).iter().filter_map(|id| runs.state(actor, id).ok()).collect(),
+            ahead: crate::ahead::standing(&service.engine.store, busy, crate::ahead::listed(&reader).iter().filter_map(|id| runs.state(actor, id).ok()).collect()),
             runs: runs.live(actor)?,
             environments: runs.environments(actor)?,
             warm: runs.warm(actor)?,

@@ -662,7 +662,7 @@ pub(super) async fn checkpoints(api: &Api, hub: &str, package: &super::Package, 
             None => held.bytes,
         };
         match ahead {
-            true => fetched.models.push(api::machine::ModelRef { checkpoint: held.checkpoint, bytes, model: repository(written), reads: 0 }),
+            true => fetched.models.push(api::machine::ModelRef { checkpoint: held.checkpoint, bytes, model: repository(written), reads: 0, components: slot.fetched_components() }),
             false => fetched.on_demand_bytes += bytes,
         }
     }
