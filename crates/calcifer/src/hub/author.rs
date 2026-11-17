@@ -229,7 +229,8 @@ impl Stage {
             if self.offline {
                 command.arg("--offline");
             }
-            if refresh {
+            // Offline, what uv holds is all there is: nothing to refresh.
+            if refresh && !self.offline {
                 command.arg("--refresh");
             }
             run_said(&mut command, "lock_failed", "uv lock").map(drop)
