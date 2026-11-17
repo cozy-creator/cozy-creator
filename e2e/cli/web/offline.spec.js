@@ -115,6 +115,7 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
   const approve = was.pinned && was.approved === 2 ? 1 : 2;
 
   const page = await context.newPage();
+  page.on('console', (message) => { if (message.text().startsWith('probe ')) console.log(`PROBE ${Date.now() % 100000} ${message.text()}`); });
   await signIn(page, project.url());
   await expect(page.locator('.stage')).toBeVisible();
   const tab = (row) => page.getByRole('navigation', { name: 'Projects' }).getByRole('link', { name: row.name, exact: true });
