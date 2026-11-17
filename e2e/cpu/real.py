@@ -194,19 +194,25 @@ def outputs(run: dict[str, Json], folder: Path) -> Files:
     return named
 
 
-def quantized(binary: str, project: Path, package_dir: Path, cell: Cell, folder: Path) -> Seen:
-    """A `quantize` cell as an author asks it (`cozy model quantize <ref> --lane <lane> --package <dir>`): the checkpoint it
-    makes holds the lane's own kind (its precision family), not its source's."""
+def quantized(binary: str, project: Path, package_dir: Path, cell: Cell, folder: Path, against: Seen | None) -> Seen:
+    """A `quantize` cell as an author asks it (`cozy model quantize <ref> --lane <lane> --package <dir>`): a checkpoint in that
+    lane (its machine uploads only weights as wide as the lane names: `commit_lane_mismatch`), holding as many tensors as the
+    stand-in's (the reference's `weights`), as `cozy model show` reads it."""
     source = next(iter(cell.get("sources", {}).values()))
     wanted_lane = str(cell["payload"]["lane"])
     run = cozy(binary, project, ["model", "quantize", source, "--lane", wanted_lane, "--package", str(package_dir), "--on", "local",
                                  "-y"], folder / "quantize.ndjson")
-    models = cast(list[dict[str, Json]], cast(dict[str, Json], run.get("result") or {}).get("models") or [{}])
-    precision = str(models[0].get("precision") or "")
-    family = FAMILIES.get(wanted_lane, (wanted_lane.split(".")[0].split("-")[0], 0))[0]
-    if precision != family:
-        raise Failed(f"quantize {wanted_lane} made a checkpoint of {precision or 'no'} precision")
-    return {"result": {"lane": wanted_lane, "precision": precision}, "outputs": []}
+    made = next((cast(dict[str, Json], item["checkpoint"]) for item in cast(list[dict[str, Json]], run.get("output") or [])
+                 if item.get("checkpoint")), None)
+    if made is None or made.get("lane") != wanted_lane:
+        raise Failed(f"quantize {wanted_lane} made no checkpoint in its lane: {json.dumps(made)}")
+    cozy(binary, project, ["model", "show", f"{made['repo_id']}@{made['revision']}"], folder / "show.json")
+    lanes = cast(list[dict[str, Json]], cast(dict[str, Json], json.loads((folder / "show.json").read_text())).get("lanes") or [{}])
+    tensors = sum(int(cast(int, component.get("tensors") or 0)) for component in cast(list[dict[str, Json]], lanes[0].get("components") or []))
+    held = cast(dict[str, int], (against or {}).get("weights", {}).get(wanted_lane, {})).get("tensors")
+    if not tensors or held is not None and held != tensors:
+        raise Failed(f"quantize {wanted_lane}'s checkpoint holds {tensors} tensors, the reference's {held}")
+    return {"result": {"lane": wanted_lane}, "outputs": [], "weights": {wanted_lane: {"tensors": tensors}}}
 
 
 def main() -> int:
@@ -277,7 +283,7 @@ def main() -> int:
             same_as = cell.get("same_as")
             against = ran.get(same_as) or references.get(same_as) if same_as else None if record else references.get(key)
             if "sources" in cell:
-                seen: Seen = quantized(binary, project, package_dir, cell, folder)
+                seen: Seen = quantized(binary, project, package_dir, cell, folder, against)
                 named: Files = {}
             else:
                 payload, files = request(cell, out / "made")
