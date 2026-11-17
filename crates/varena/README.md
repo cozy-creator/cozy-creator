@@ -50,7 +50,8 @@ The driver allocates on its own: a kernel's code at its first launch, local memo
 Its refusal fails that launch, not an allocation of ours, so no reclaim can answer it. Every map tries
 to leave 800 MiB of the card free for it, read from the driver at the map: pages that fit, but not beside
 the reserve, take what is idle and done for it (no wait on our own work, no owner), an idle peer's
-before our weights, and short of that take the reserve. The reserve never makes a demand fail.
+before our weights, and short of that take the reserve. The reserve never makes a demand fail: one the
+driver still refuses goes through the whole order.
 
 The amount is measured: 2x the largest out-of-books growth (driver used less varena's books) a request
 showed, rounded up to 32 MiB. The cold H3 15 s runs of cr-293:
