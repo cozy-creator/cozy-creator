@@ -427,7 +427,20 @@ bounded_cell 300 after-burst ./weightless/reverse "text=burst$RANDOM" || check "
 update() { step update; update_to_newest; }
 # Every log cozy wrote (Calcifer, TensorD, executors), before removal erases ~/.cozy: what a failed step left behind.
 # As files, which e2e/publish can scrub.
-logs() { step logs; mkdir -p "$OUT/cozy-logs"; (cd ~/.cozy && find . -name '*.log' -size -20M | tar -cf - -T - | (cd "$OUT/cozy-logs" && tar -xf -)) || true; }
+# no_json_stores: Calcifer's state lives in state.db (cl-818), never a JSON file beside it, in every shard however it got there (#3618's
+# kept-hub-listings.json, #3424's kept-families.json and kept-runners.json); blobs by hash stay files, refused.json is the CLI's.
+no_json_stores() {
+  local dir=$HOME/.cozy/calcifer stores
+  [ -d "$dir" ] || return 0
+  stores=$(cd "$dir" && find . -maxdepth 1 -name '*.json' ! -name refused.json | sort | paste -sd' ')
+  [ -z "$stores" ] || check "state: JSON stores in $dir: $stores"
+}
+logs() {
+  step logs
+  no_json_stores
+  mkdir -p "$OUT/cozy-logs"
+  (cd ~/.cozy && find . -name '*.log' -size -20M | tar -cf - -T - | (cd "$OUT/cozy-logs" && tar -xf -)) || true
+}
 remove() { logs; step "remove cozy"; remove_cozy; }
 
 # Local code of one name at two paths, each saying which it is, run in turn: each runs its own, not the first's install (cl-733: a
