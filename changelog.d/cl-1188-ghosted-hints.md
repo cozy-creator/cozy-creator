@@ -1,0 +1,1 @@
+Suggested text in every text box looks alike and can't be taken for what's there (cl-1188): lighter than typed words, in italics and never bold, gone once there's a value. Prompts, fields, searches and every panel's inputs, in paper and dark; still 4.5:1 on every surface a box sits on.
