@@ -138,7 +138,8 @@ fn commit_of(git: &Git, dir: &Path) -> Result<String, Error> {
     let mut kept: Repository = fs::read(&kept_at).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
     let name = git.reference.clone().unwrap_or_else(|| "HEAD".into());
     // A ref read at its repository this last minute stands: a project names its code at each read.
-    static READ: LazyLock<Mutex<HashMap<(String, String), (Instant, String)>>> = LazyLock::new(Mutex::default);
+    type Read = HashMap<(String, String), (Instant, String)>;
+    static READ: LazyLock<Mutex<Read>> = LazyLock::new(Mutex::default);
     let key = (git.repository().to_owned(), name.clone());
     if let Some((_, commit)) = READ.lock().expect("refs lock").get(&key).filter(|(at, _)| at.elapsed() < Duration::from_secs(60)) {
         return Ok(commit.clone());
@@ -198,7 +199,7 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, Error> {
 /// git's last line on stderr, its reason.
 fn last_words(stderr: &[u8]) -> String {
     let said = String::from_utf8_lossy(stderr);
-    let line = said.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with("hint:")).last().unwrap_or("it said nothing");
+    let line = said.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with("hint:")).next_back().unwrap_or("it said nothing");
     line.trim_start_matches("fatal: ").chars().take(300).collect()
 }
 

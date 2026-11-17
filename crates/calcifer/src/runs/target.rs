@@ -244,6 +244,10 @@ pub(crate) async fn published(api: &Arc<Api>, hub: &str, text: &str, on: Option<
         }
         (Err(e), _) => return Err(e),
     };
+    // What a machine runs, this computer holds for any other (cl-1127).
+    if on.is_some() {
+        crate::hub::held::keep_behind(api, hub, &package, &card.release);
+    }
     Ok(Resolved::Release { package, function, card, release, from, moved, upgrade, cozy })
 }
 

@@ -123,11 +123,14 @@ pub(crate) fn releases(api: &Api, hub: &str, package: &str) -> Vec<String> {
     kept.filter_map(|entry| Some(std::path::Path::new(&entry.file_name()).file_stem()?.to_str()?.to_owned())).collect()
 }
 
-/// Keeps `release` of `package` behind whatever asked, once: what a later install of it anywhere takes from here.
+/// Keeps `release` of `package` behind whatever asked, once a Calcifer: what a later install of it anywhere takes from here.
 pub(crate) fn keep_behind(api: &Arc<Api>, hub: &str, package: &str, release: &str) {
-    static KEEPING: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(Mutex::default);
+    static ASKED: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(Mutex::default);
+    if crate::private_io::current().is_some_and(|scope| !scope.storage.ordinary) {
+        return;
+    }
     let path = file(api, hub, package, release);
-    if path.is_file() || !KEEPING.lock().expect("keeping lock").insert(path.clone()) {
+    if path.is_file() || !ASKED.lock().expect("asked lock").insert(path) {
         return;
     }
     let (api, hub, package, release) = (api.clone(), hub.to_owned(), package.to_owned(), release.to_owned());
@@ -135,7 +138,6 @@ pub(crate) fn keep_behind(api: &Arc<Api>, hub: &str, package: &str, release: &st
         if let Err(e) = keep(&api, &hub, &package, &release).await {
             tracing::info!("{package} {release} isn't held here: {e}");
         }
-        KEEPING.lock().expect("keeping lock").remove(&path);
     });
 }
 
