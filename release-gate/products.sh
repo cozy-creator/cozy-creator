@@ -3,7 +3,7 @@
 # Qwen-Image's edits its render) falls back to the gate's reference when that one did not run. The describer reads the
 # checked-in ref/seed.jpg, so both arms of a comparison caption the same picture.
 PRODUCTS=(minimax-h3 seedvr2 sdxl flux.3-klein qwen-image-2 anima birefnet qwen3.5 fibo-2 hidream-o1 moss-image qwen-image
-  flux-2 ideogram-4 krea-2 hunyuan-image-3)
+  flux-2 ideogram-4 krea-2 p-h3-image ltx-2.5 relayvsr qwen3.6 orbit pan2 hunyuan-image-3)
 # --first runs these packages before the rest, in its order: a clean standalone number before models stack.
 [ -z "$FIRST" ] || mapfile -t PRODUCTS < <(tr , '\n' <<< "$FIRST"; printf '%s\n' "${PRODUCTS[@]}" | grep -vxF -f <(tr , '\n' <<< "$FIRST"))
 product() {
@@ -187,6 +187,25 @@ product_ideogram_4() {
     seed:=$((R + 26))
 }
 product_krea_2() { cell krea "$(pkg krea-2 generate)" prompt="$CHAR under a neon sign that reads \"NIGHT MARKET\", photo" seed:=$((R + 27)); }
+# xs-208: the six first-party packages the 0.26.0 gate logged as "has no product cells", each by its default call.
+product_p_h3_image() { cell ph3 "$(pkg p-h3-image generate)" instructions="$SCENE, photo" seed:=$((R + 30)); }
+product_ltx_2_5() {
+  cell ltx "$(pkg ltx-2.5 generate)" prompt="$SCENE, slow push-in, ambient sound" seed:=$((R + 31))
+  av ltx 1080
+}
+product_relayvsr() {
+  [ -f clip-1s.mp4 ] || nice -n 19 ffmpeg -v error -y -loop 1 -i "$REF" -t 1 -r 24 -vf scale=-2:768 -c:v libx264 -pix_fmt yuv420p clip-1s.mp4
+  cell relayvsr "$(pkg relayvsr upscale)" --file video="$OUT/clip-1s.mp4"
+}
+# Qwen3.6 (35B-A3B by default) asked about the checked-in picture, as the describer is.
+product_qwen3_6() {
+  cell writer "$(pkg qwen3.6 ask)" prompt="Describe this picture: who is in it, where, and the light." --file images="$HERE/ref/seed.jpg"
+}
+product_orbit() { cell orbit "$(pkg orbit orbit)" --file picture="${K:-$REF}" subject="character" seed:=$((R + 33)); }
+product_pan2() {
+  cell pan2 "$(pkg pan2 generate)" prompt="$SCENE. $CHAR walks in from the left, stops at the centre and looks around. One continuous wide shot." \
+    seed:=$((R + 34))
+}
 # HunyuanImage 3.0's 80B experts page about 85 GB a step through a 24 GB card and wedged there (se-079): only by --only
 # (hunyuan, hunyuan-refs or hunyuan-image-3), on a card of 48 GB or more (rtx-pro-6000, a100-80gb).
 product_hunyuan_image_3() {
