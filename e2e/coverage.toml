@@ -233,7 +233,7 @@ test = "pr: run ls filters"
 ["run cancel"]
 test = "pr: a run followed, a snapshot, a cancel"
 ["run retry"]
-test = "pr: retry_elsewhere, a box's take its stand-in's end cut short rendered again on local, its seed kept"
+test = "pr: retry_elsewhere, a run its stand-in's end cut short completed on local as its second attempt: nothing to retry"
 ["render"]
 test = "pr: agent_render, a chain from what it reads, nothing to render, -n forcing nothing, a joined render, a killed CLI rejoined, a failure stopping its readers"
 "--on" = "pr: agent_render, on local; without it, where Calcifer places it once the local-fit question says nothing"

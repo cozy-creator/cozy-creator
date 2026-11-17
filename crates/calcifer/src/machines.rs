@@ -58,7 +58,7 @@ use crate::{
     api::{Api, Refusal, parse},
     link::{self, Link, LinkError},
     rentals::{Hubs, Shape, Word, hub_refusal},
-    store::{AskKind, Endpoint, MachineRow, RunRow, Store},
+    store::{AskKind, Endpoint, MachineRow, Store},
     took::Took,
 };
 
@@ -1253,9 +1253,11 @@ impl Machines {
         if installed {
             crate::events::tools_changed();
         }
-        // Its runs and exports that wait on it try again now: it came back, or came up (a run held for its boot, cl-1069).
+        // Its runs and exports that wait on it try again now: it came back, or came up (a run held for its boot, cl-1069); and
+        // Calcifer's queue may go to it (cl-1132).
         if back || ready {
             self.calcifer.touch(name);
+            self.placing.notify_one();
         }
         // Its lists, unless this boot of it was sent them: it came up since they were set, or started again.
         if let Some(machines) = self.calcifer.machines() {
@@ -1600,14 +1602,14 @@ impl Machines {
         }
     }
 
-    /// Places each unplaced run, now, whenever one is created or returned to the outbox, and
-    /// whenever a rental appears or is ready.
+    /// Places each job of Calcifer's queue, now, whenever one is created or returns to it, and whenever a machine appears, is
+    /// ready, or answers again.
     async fn place_runs(self: Arc<Self>) {
         let mut events = self.calcifer.subscribe();
         loop {
             {
                 let _took = Took::new("place_runs");
-                self.place_unplaced();
+                Box::pin(self.place_unplaced()).await;
             }
             loop {
                 let event = tokio::select! {
@@ -1628,31 +1630,40 @@ impl Machines {
         }
     }
 
-    fn place_unplaced(self: &Arc<Self>) {
+    /// Calcifer's queue, placed (cl-1132, Paul 11-17: "calcifer has a queue of jobs, it gives that queue of jobs to a machine"): each
+    /// job goes where it finishes soonest of its machines (`project::queued_on`), said in its log, or waits in the queue saying why
+    /// while none can take it. `new` rents what the Hub places it on; `new:<sku>` that product.
+    async fn place_unplaced(self: &Arc<Self>) {
         let unplaced = match self.calcifer.each_store(|store| store.unplaced()).map(|lists| lists.into_iter().flatten().collect::<Vec<_>>()) {
             Ok(unplaced) => unplaced,
             Err(e) => return warn!("reading unplaced runs: {e}"),
         };
+        let Some(api) = self.calcifer.api.get().and_then(std::sync::Weak::upgrade) else { return };
         for run in unplaced {
-            let gpus = run.spec.gpus;
-            let placed = match run.wants.as_str() {
-                // It waits for a rental that fits while none does.
-                "any" => match self.fitting(gpus) {
-                    Ok(Some(name)) => self.calcifer.place(&run.id, &name).map(drop),
-                    Ok(None) => {
-                        self.calcifer.waiting(&run.id, self.unfitted(&run));
-                        Ok(())
-                    }
-                    Err(e) => Err(crate::Error::Invalid(e.message)),
-                },
-                // `new` rents what the Hub places it on; `new:<sku>` that product.
-                wants => {
-                    self.rent_for(&run, wants.strip_prefix("new:"), gpus);
-                    Ok(())
+            if run.wants != "any" {
+                self.rent_for(&run, run.wants.strip_prefix("new:"), run.spec.gpus);
+                continue;
+            }
+            let set = Box::pin(crate::project::queue_set(&api, &run)).await;
+            let offer = match Box::pin(crate::project::queued_on(&api, &set, &run)).await {
+                Ok(offer) => offer,
+                Err(why) => {
+                    self.calcifer.waiting(&run.id, why);
+                    continue;
                 }
             };
-            if let Err(e) = placed {
-                warn!(run = %run.id, "placing it: {e}");
+            let On::Machine(name) = &offer.machine else { continue };
+            match self.calcifer.place(&run.id, name) {
+                Ok(true) => {
+                    self.calcifer.quoted(&run.id, offer.quoted());
+                    let said = format!("Cozy placed it: {}", crate::placement::said(&offer, crate::store::now_ms()));
+                    match self.calcifer.with_run_store(run.id.as_str(), |store| store.note(run.id.as_str(), "info", &said)) {
+                        Ok(events) => self.calcifer.publish(&run.id, events),
+                        Err(e) => warn!(run = %run.id, "{e}"),
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => warn!(run = %run.id, "placing it: {e}"),
             }
         }
     }
@@ -1673,19 +1684,6 @@ impl Machines {
             },
             On::Any => Ok(None),
         }
-    }
-
-    /// Why an `any` run no rental fits waits: a rental on order, or that none is coming.
-    fn unfitted(&self, run: &RunRow) -> String {
-        let asks = self.store().pending_asks().unwrap_or_default();
-        if asks.iter().any(|ask| ask.kind == AskKind::Rent) {
-            return "waiting for the rental Cozy ordered".into();
-        }
-        let none = match run.spec.gpus {
-            0 => "no rental is running or starting".to_owned(),
-            gpus => format!("no rental with {gpus} GPUs is running or starting"),
-        };
-        format!("{none}, so this run waits for one; rent a machine, or cancel the run")
     }
 
     /// The least busy rental of this controller that fits a run of `gpus` GPUs (0: any), a

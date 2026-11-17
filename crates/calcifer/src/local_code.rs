@@ -919,8 +919,8 @@ pub(crate) fn installed(run: Run) -> Result<Installed, Error> {
             || ("local_install_unfinished".to_owned(), format!("the install was {}", format!("{:?}", run.status).to_lowercase()), vec![]),
             |r| (r.code, r.message, r.next),
         );
-        // Its machine ended before it accepted the install: a machine gone, which a render places again (`project::GONE`).
-        let lost = code == "machine_lost" && run.accepted_at_ms.is_none();
+        // Its machine was lost under it: a machine gone, which a render places again (`project::GONE`, cl-1132).
+        let lost = code == ::api::calcifer::MACHINE_LOST;
         let failed = match lost {
             true => Error::new(Kind::Unavailable, "machine_ended", format!("The machine ended before it installed this code: {message}")),
             false => Error::new(Kind::Unavailable, "local_install_failed", format!("The machine couldn't install this code: {message}")),
