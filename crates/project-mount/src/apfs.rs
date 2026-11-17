@@ -245,12 +245,14 @@ pub(super) struct Lease {
     attached: bool,
 }
 impl Lease {
+    /// Its image's device is read once, as it's attached (`capture`); it can change only with the volume coming off the view, which the
+    /// volume's own `statfs` shows. So a check, made on each request into the project, is that one call: never `hdiutil`, never a process
+    /// (cl-1111: ~1 s a thumbnail on a Mac).
     pub(super) fn is_current(&self) -> Result<bool> {
         Ok(self.attached
             && self.device.is_some()
             && self.volume.is_some()
-            && macos_source(&self.view)? == self.volume
-            && current_device(&self.provider, &self.image)? == self.device)
+            && macos_source(&self.view)? == self.volume)
     }
 
     pub(super) fn capture(provider: &Provider, backing: &Path, view: &Path) -> Result<Self> {
