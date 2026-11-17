@@ -18,7 +18,8 @@ const WATCHED_MS = 3_000;
 function newBuildOnCue() {
   const real = window.fetch.bind(window);
   window.fetch = async (input, init = {}) => {
-    const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+    // The page asks by a URL, a string or a Request.
+    const url = new URL(input instanceof Request ? input.url : String(input), location.href);
     if (url.pathname !== '/v1/events') return real(input, init);
     const dropped = new AbortController();
     window.__dropStream = () => { dropped.abort(new DOMException('Calcifer stopped', 'AbortError')); return true; };
