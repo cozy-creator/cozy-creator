@@ -731,6 +731,8 @@ case $SHARD in
   ondemand-enhancers) parts="ondemand_enhancers logs" ;;
   # A small disk full of idle models' weights makes room for the next runs' (tfs-150).
   disk) parts="disk_full logs" ;;
+  # A machine's GPU use followed across its restart and update, never refused for it (cl-1117).
+  machine-gpus) parts="gpu_use_follows logs" ;;
   # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.
   plan) parts="
     estimate_line
@@ -868,6 +870,7 @@ case $SHARD in
     statedb
     local_idle
     machine_set
+    gpu_use_follows
     fall_back
     retry_elsewhere
     db_deleted_gc
