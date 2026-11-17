@@ -52,19 +52,6 @@ on:
         description: "Rent and run; without it, the $0 pre-flight only"
         type: boolean
         default: false
-  # rc-e2e.yaml's `h3-group` (cr-326): the same inputs, `hub` a string.
-  workflow_call:
-    inputs:
-      hub: {type: string, required: true}
-      script: {type: string, required: true}
-      packages_refs: {type: string, default: ''}
-      sku: {type: string, required: true}
-      disk: {type: string, required: true}
-      cap: {type: string, required: true}
-      params: {type: string, default: '{}'}
-      cozy: {type: string, default: released}
-      runtime_ref: {type: string, default: ''}
-      rent: {type: boolean, default: false}
 run-name: pod-session ${{ inputs.hub }} ${{ inputs.script }} ${{ inputs.sku }}${{ inputs.rent && ' rent' || ' pre-flight' }}
 
 jobs:
@@ -250,7 +237,7 @@ jobs:
       - if: always()
         uses: ./creator/e2e/publish
         with:
-          name: session-${{ inputs.script }}-${{ github.run_id }}-${{ inputs.sku }}x${{ fromJSON(inputs.params).gpus || 1 }}
+          name: session-${{ inputs.script }}-${{ github.run_id }}
           path: ${{ env.OUT }}
           if-no-files-found: ignore
           retention-days: 30

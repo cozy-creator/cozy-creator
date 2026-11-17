@@ -5,7 +5,8 @@
 # registering weights inside a construction, and every group follower failed its prepare, `Invalid device id` (Paul's Orbit,
 # PRO6-36/38/45/46 on 2x H100 NVL), with nothing between releases running a group. Each degree here forms its group, registers
 # H3's weights with native memory on every GPU and renders H3's shortest clip (Turbo, 1 s); it passes when the run completes
-# at that degree on that many GPUs. Every RC push runs 2 and 4 (rc-e2e.yaml `h3-group`); the Runtime's release runs 8 and 7.
+# at that degree on that many GPUs. A release-gate cell of the Runtime and varena suites, run by hand: the release lead at a cut
+# (4, 2 and 1 on one 4x rtx-3090; 8 and 7 on an 8x by hand), and a change to groups, varena or minimax-h3 at 2 as its PR proof.
 # A dev home on this runner's cozy (an RC build: pod-session `cozy`), packages from the packages_refs checkout `tree`: the
 # rental moves to the RC's builds, as Paul's laptop moves his. params:
 #   tree      the packages_refs checkout the packages run from (required)
