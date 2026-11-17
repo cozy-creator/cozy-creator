@@ -6,6 +6,7 @@
     frames.py variant CONTROL OUTPUT                       # a fine-tune's or LoRA's render against a same-seed control
     frames.py seams OUTPUT --at S[,S...]                   # a several-piece shot at its piece boundaries
     frames.py coherent OUTPUT                              # a render alone, with no reference to lose to
+    frames.py pair ONE TWO                                 # the same request's output on 1 GPU and on 2, sample by sample
 
 regen: both in the original's 1344x768 frame (a 16:9 output un-stretched), over every 4th frame: mean luma PSNR and
 SSIM at full size (reported: regenerated texture, dense foliage most, rightly moves them), and at 112x64, where texture
@@ -104,6 +105,16 @@ class Seams(Probe):
     boundaries: list[Boundary]
     flicker: int
     flicker_at_s: list[float]
+
+
+class Pair(Probe):
+    other_frames: int
+    worst: float
+    worst_at: int
+    mean: float
+    audio_samples: list[int]
+    audio_max: float | None
+    audio_mean: float | None
 
 
 class Coherent(Probe):
@@ -269,6 +280,39 @@ def fine(output: str) -> tuple[float, float]:
     return float(np.percentile(ratios, 90)), float(np.median(levels))
 
 
+def rgb(path: str, width: int, height: int) -> npt.NDArray[np.uint8]:
+    raw = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                         capture_output=True, check=True).stdout
+    return np.frombuffer(raw, np.uint8).reshape(-1, height, width, 3)
+
+
+def stereo(path: str) -> npt.NDArray[np.float32]:
+    raw = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", path, "-vn", "-ac", "2", "-ar", "48000",
+                          "-f", "f32le", "-"], capture_output=True, check=True).stdout
+    return np.frombuffer(raw, np.float32)
+
+
+def pair(one: str, two: str) -> Pair:
+    """The same request on 1 GPU and on 2 (suite multi-gpu), as the CPU suite's two-rank cells judge their one-rank twin
+    (e2e/cpu/drive.py `twin_gap`): each frame's mean absolute RGB difference, of 255, the worst and where, at full size;
+    the soundtracks at 48 kHz stereo, their lengths in samples and the largest and mean difference."""
+    p, q = probe(one), probe(two)
+    a, b = rgb(one, p["width"], p["height"]), rgb(two, q["width"], q["height"])
+    worst, at, gaps = 0.0, -1, []
+    if a.shape == b.shape:
+        for i in range(len(a)):
+            gap = float(np.abs(a[i].astype(np.int16) - b[i].astype(np.int16)).mean())
+            gaps.append(gap)
+            if gap > worst or at < 0:
+                worst, at = gap, i
+    x, y = stereo(one), stereo(two)
+    same = len(x) == len(y) and len(x) > 0
+    return {**p, "other_frames": q["frames"], "worst": round(worst, 3) if gaps else 255.0, "worst_at": at,
+            "mean": round(float(np.mean(gaps)), 3) if gaps else 255.0, "audio_samples": [len(x) // 2, len(y) // 2],
+            "audio_max": round(float(np.abs(x - y).max()), 5) if same else None,
+            "audio_mean": round(float(np.abs(x - y).mean()), 6) if same else None}
+
+
 def coherent(output: str) -> Coherent:
     a = gray(output, 192, 108)
     pairs = [ssim(a[i - 1], a[i]) for i in range(1, len(a))]
@@ -287,6 +331,8 @@ if __name__ == "__main__":
     mode, first, second, *rest = sys.argv[1:]
     if mode == "regen":
         print(json.dumps(regen(first, second)))
+    elif mode == "pair":
+        print(json.dumps(pair(first, second)))
     elif mode == "still":
         print(json.dumps(still(first, second, rest[0])))
     elif mode == "variant":
