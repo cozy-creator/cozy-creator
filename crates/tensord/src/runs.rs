@@ -420,11 +420,11 @@ impl Runs {
                         .ok_or_else(|| refused("child_undeclared", format!("this environment holds no package {distribution}")))?;
                     let held = self.callee_view(installation.clone(), &callee.application)?;
                     let prefix = format!("{function}.");
-                    let own = models.iter().filter_map(|choice| {
+                    let own: Vec<_> = models.iter().filter_map(|choice| {
                         let parameter = addressed(&choice.parameter, &held.package, &callee.interface).filter(|path| path.starts_with(&prefix))?;
                         Some(stored::ModelChoice { parameter, ..choice.clone() })
-                    });
-                    (held, function, own.collect(), "")
+                    }).collect();
+                    (held, function, own, "")
                 }
             };
             let request = self.request(id, Some(held), None, hub.clone(), asker, function, &own, lane);
