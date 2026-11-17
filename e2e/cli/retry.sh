@@ -1,14 +1,15 @@
-# retry_elsewhere (cl-1085). Paul, 11-16: "when you shutdown a machine, and the job ends because of it, you should be given the chance to
-# retry it (the toast notification tells you to retry it). you push the retry button and we'll try to place that run on a different machine
-# then, or whatever we have available." Two boxes render on a stand-in machine (another user of this runner, as machine_set's), the project's
-# one machine, each held there (waits.py's `held`), and it ends mid-run. Each run fails `machine_lost`, "stand-r shut down, so <run>
-# stopped". In the page (web/retry.js) one box's toast, at the window's bottom left with no command, offers Retry, which renders it again
-# on local; `cozy run retry` renders the other again on local; each on the seed it failed with.
+# retry_elsewhere (cl-1085, cl-1132). Paul, 11-16: "when you shutdown a machine, and the job ends because of it, you should be given the
+# chance to retry it ... we'll try to place that run on a different machine then, or whatever we have available." Paul, 11-17: "the real
+# fix should be like 'calcifer has a queue of jobs, it gives that queue of jobs to a machine. If that machine dies or disappears, it
+# re-assigns that queued job to another machine.'" Two boxes render on a stand-in machine (another user of this runner, as machine_set's),
+# the project's one machine, each held there (waits.py's `held`), and it ends mid-run. Neither fails: each run returns to Calcifer's queue
+# as its next attempt ("attempt 1 stopped: stand-r shut down; attempt 2 of 3 …") and completes on local, on the seed it was asked with;
+# `cozy render cut` follows it there and exits 0, and the page (web/retry.js) says no failure and shows paged's take land.
 retry_elsewhere() {
-step "retry elsewhere (cl-1085): renders a machine's end cut short, retried on the machine left from the page's toast and cozy run retry"
+step "a running job's machine ends: it reruns elsewhere as attempt 2 and completes (cl-1085, cl-1132)"
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] \
   || { echo "retry elsewhere: its stand-in is another user of a fresh GitHub runner"; return; }
-local P=$OUT/retry tool=$here/project/waits.py/held pw=$OUT/playwright chrome cut='' paged='' job pid code=0 name again
+local P=$OUT/retry tool=$here/project/waits.py/held pw=$OUT/playwright chrome cut='' paged='' job pid code=0 name run
 chrome=$(web_chrome)
 [ -n "$chrome" ] && [ -x "$chrome" ] || { check "retry elsewhere: no Google Chrome on this runner (${chrome:-none})"; return; }
 npm install -s --prefix "$pw" playwright-core@1.55.0 > "$OUT/retry-npm.log" 2>&1 || { check "retry elsewhere: npm install playwright-core: $(tail -c 300 "$OUT/retry-npm.log")"; return; }
@@ -38,31 +39,36 @@ if [ -z "$cut" ] || [ -z "$paged" ]; then
   kill "$pid" 2> /dev/null || true
   return
 fi
+project_api "$P" "/runs/$cut?detail=full" > "$OUT/retry-cut-before.json" 2>&1
 
-# The page open on the project as stand-r ends: its toasts, Retry, and paged rendered again.
+# The page open on the project as stand-r ends: no failure said, and paged's take lands.
 HOLDER=$HOME/.cozy/calcifer/calcifer.lock.holder CHROME=$chrome PLAYWRIGHT=$pw/node_modules/playwright-core COZY=$COZY SHOT=$OUT/retry-page LAST_LOOK=$OUT/retry-page \
   node "$here/web/retry.js" "$P" stand-r "$paged" "$cut" > "$OUT/retry-page.json" 2> "$OUT/retry-page.err" || code=$?
 [ "$code" = 0 ] || check "retry elsewhere: the page: $(jq -c '{failures, seen}' "$OUT/retry-page.json" 2> /dev/null | head -c 2000) $(tail -c 500 "$OUT/retry-page.err")"
 timeout 60 "$COZY" --json machine end stand-r --force -y > /dev/null 2>&1 || true
 
-# cut, from the CLI: its render ended saying why, then `cozy run retry` renders it again on local, on its seed.
-for _ in $(seq 120); do kill -0 "$pid" 2> /dev/null || break; sleep 0.5; done
-kill "$pid" 2> /dev/null && check "retry elsewhere: cozy render cut still followed it a minute after stand-r ended"
-wait "$pid" 2> /dev/null || true
-project_api "$P" "/runs/$cut?detail=full" > "$OUT/retry-cut-run.json" 2>&1
-name=$(jq -r '.name // empty' "$OUT/retry-cut-run.json")
-J --arg n "$name" '.status == "failed" and .reason.code == "machine_lost" and .reason.message == "stand-r shut down, so \($n) stopped"' "$OUT/retry-cut-run.json" \
-  || check "retry elsewhere: cut's run didn't fail as its machine shut down: $(jq -c '{name, status, reason}' "$OUT/retry-cut-run.json")"
-grep -q 'stand-r shut down' "$OUT/retry-cut.ndjson" "$OUT/retry-cut.err" && grep -q "cozy run retry $name" "$OUT/retry-cut.ndjson" "$OUT/retry-cut.err" \
-  || check "retry elsewhere: cozy render cut didn't say stand-r shut down and to run cozy run retry $name: $(tail -c 300 "$OUT/retry-cut.err") $(tail -c 300 "$OUT/retry-cut.ndjson")"
-row "$P" cut '.failure' | J --arg n "$name" '.code == "machine_lost" and .message == "cut: stand-r shut down, so \($n) stopped"' \
-  || check "retry elsewhere: cut's failure: $(row "$P" cut '.failure')"
-in_project "$P" --json run retry "$name" > "$OUT/retry-cli.ndjson" 2> "$OUT/retry-cli.err" \
-  || check "retry elsewhere: cozy run retry $name: $(tail -c 400 "$OUT/retry-cli.err") $(tail -c 300 "$OUT/retry-cli.ndjson")"
-again=$(jq -r 'select(.type? == "take" and .take.name == "cut") | .take.run // empty' "$OUT/retry-cli.ndjson" 2> /dev/null | tail -1)
-project_api "$P" "/runs/${again:-0}?detail=full" > "$OUT/retry-again.json" 2>&1
-J --slurpfile was "$OUT/retry-cut-run.json" '.machine == "local" and .status == "completed" and .request.seed == $was[0].request.seed' "$OUT/retry-again.json" \
-  || check "retry elsewhere: cut wasn't rendered again on local on its seed: $(jq -c '{name, machine, status, seed: .request.seed}' "$OUT/retry-again.json") was $(jq -c '.request.seed' "$OUT/retry-cut-run.json")"
-[ "$(made "$P" cut)" -ge 1 ] || check "retry elsewhere: cut has no take after cozy run retry"
-echo "retry elsewhere: cut $name -> $(jq -r '.name' "$OUT/retry-again.json") on $(jq -r '.machine' "$OUT/retry-again.json"); the page: $(jq -c '.seen.again' "$OUT/retry-page.json" 2> /dev/null)"
+# cut, from the CLI: the same run, its second attempt, completed on local on its seed; `cozy render cut` followed it there.
+for _ in $(seq 240); do kill -0 "$pid" 2> /dev/null || break; sleep 0.5; done
+kill "$pid" 2> /dev/null && check "retry elsewhere: cozy render cut still followed it two minutes after stand-r ended"
+code=0; wait "$pid" 2> /dev/null || code=$?
+for run in "$cut" "$paged"; do
+  project_api "$P" "/runs/$run?detail=full" > "$OUT/retry-$run.json" 2>&1
+  name=$(jq -r '.name // empty' "$OUT/retry-$run.json")
+  J '.status == "completed" and .machine == "local"' "$OUT/retry-$run.json" \
+    || check "retry elsewhere: $name, rendering on stand-r as it ended, didn't complete on local: $(jq -c '{name, machine, status, reason}' "$OUT/retry-$run.json")"
+  project_api "$P" "/runs/$run/events" --max-time 10 -H 'Accept: text/event-stream' > "$OUT/retry-said-$run.txt" 2> /dev/null || true
+  grep -q 'attempt 1 stopped: stand-r shut down; attempt 2 of 3' "$OUT/retry-said-$run.txt" \
+    || check "retry elsewhere: $name's log doesn't say attempt 1 stopped as stand-r shut down and attempt 2 of 3 went elsewhere: $(grep -o '"text":"[^"]*"' "$OUT/retry-said-$run.txt" | tail -5)"
+done
+[ "$code" = 0 ] || check "retry elsewhere: cozy render cut exited $code: $(tail -c 300 "$OUT/retry-cut.err")"
+J --slurpfile was "$OUT/retry-cut-before.json" '.request.seed != null and .request.seed == $was[0].request.seed' "$OUT/retry-$cut.json" \
+  || check "retry elsewhere: cut's second attempt didn't keep its seed: $(jq -c '.request.seed' "$OUT/retry-$cut.json"), was $(jq -c '.request.seed' "$OUT/retry-cut-before.json")"
+row "$P" cut '.failure' | J '. == null' || check "retry elsewhere: cut failed: $(row "$P" cut '.failure')"
+[ "$(made "$P" cut)" -ge 1 ] || check "retry elsewhere: cut has no take"
+# Nothing failed, so `cozy run retry` has nothing to do.
+name=$(jq -r '.name // empty' "$OUT/retry-$cut.json")
+code=0; in_project "$P" --json run retry "$name" > "$OUT/retry-cli.json" 2> "$OUT/retry-cli.err" || code=$?
+[ "$code" != 0 ] && grep -q 'run_completed' "$OUT/retry-cli.json" "$OUT/retry-cli.err" \
+  || check "retry elsewhere: cozy run retry $name, completed on its second attempt, wasn't refused run_completed: exit $code $(tail -c 300 "$OUT/retry-cli.json") $(tail -c 300 "$OUT/retry-cli.err")"
+echo "retry elsewhere: cut $(jq -r '.name' "$OUT/retry-$cut.json") and paged $(jq -r '.name' "$OUT/retry-$paged.json") on $(jq -r '.machine' "$OUT/retry-$cut.json"); the page: $(jq -c '.seen.landed' "$OUT/retry-page.json" 2> /dev/null)"
 }
