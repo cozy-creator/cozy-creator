@@ -397,3 +397,87 @@ fi
 project_api "$P" /cancel -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: rename-cancel-$RANDOM$RANDOM" -d '{"names":["asked"]}' > "$OUT/rename-cancel-asked.json" 2>&1 || true
 cozy --json logout > /dev/null 2>&1 || true
 }
+
+# replan_name <rental id>: what machine ls calls the rental once its Hub named its host. replan_quit: the rental ended, signed out.
+replan_name() { cozy --json machine ls 2> /dev/null | jq -r --arg r "$1" '.machines[] | select(.rental_id == $r and .placeholder == null) | .name' 2> /dev/null || true; }
+replan_quit() { cozy --json machine end "$rental" -y > /dev/null 2>&1 || true; cozy --json logout > /dev/null 2>&1 || true; }
+# rental_replan (cl-1125). Paul, 11-17: "I had a job queued on 'project' but that job disappeared or something for some reason. It never
+# ran, was just queued forever." "then it gave up and quit? I don't know what happened. Do jobs sometimes expire after a period of time if
+# there's no runner for them? or perhaps it was assigned and then the machine died or something? bad experience either way."
+# His RTX 5090's image pull stalled, and its Hub replanned the order onto another host, which it named again: rent-24713671, kigurumi,
+# then cecilia, with Calcifer restarted between. His render's install, sent to the order and followed to kigurumi (cl-1089), failed
+# `machine_lost` ("kigurumi shut down before it took PRO6-1") at the second name, and his take went with it. Work queued for an order
+# follows it to whatever host it gets; only the order's end settles it, and that says why in one line.
+# This Hub's docker provider has one host, which a replanned attempt is named by again: the second name is its record of the order's
+# host renamed in its own database, as a replan's attempt is named. The rental never gets ready here, so the render waits, as Paul's did.
+rental_replan() {
+step "work queued for a rental order follows it through a Calcifer restart and a second host name; its end says why (cl-1125)"
+[ -n "${E2E_HUB_LOG:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] || { check "rental_replan: e2e/isolated.sh named no Hub log or email to sign in with"; return; }
+local rental='' handle='' first='' second="replan-$RANDOM" P=$OUT/replan-project pg='' number='' w=$OUT/replan-watch.json s=$OUT/replan-status.json
+signin "$E2E_HUB_EMAIL" > "$OUT/replan-login.json" || { check "rental_replan: cozy login failed: $(tail -c 300 "$OUT/replan-login.json")"; return; }
+cozy --json new --unencrypted "$P" > "$OUT/replan-new.json" 2>&1 || check "rental_replan: new: $(tail -c 300 "$OUT/replan-new.json")"
+jq -n --arg wait "$rename_here/project/waits.py/wait" --arg r "$RANDOM" \
+  '[{name: "queued", tool: $wait, kind: "image", fields: {instructions: "Queued for the order, \($r).", seconds: 1}}]' | boxes_in "$P" || true
+rename_order replan
+[ -n "$rental" ] && [[ $handle == rent-* ]] || { check "rental_replan: no rental accepted with a handle: $(tail -c 400 "$OUT/rename-rent-replan.ndjson")"; cozy --json logout > /dev/null 2>&1 || true; return; }
+# Preferred and rendered on the order by its handle, as the page does seconds after it.
+in_project "$P" --json machine use "$handle" > "$OUT/replan-use.json" 2>&1 || true
+project_api "$P" /runs -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: replan-$RANDOM$RANDOM" \
+  -d "{\"names\":[\"queued\"],\"on\":[\"$handle\"]}" > "$OUT/replan-render.json" 2>&1 || check "rental_replan: render: $(tail -c 300 "$OUT/replan-render.json")"
+for _ in $(seq 120); do first=$(replan_name "$rental"); [ -n "$first" ] && [[ $first != rent-* ]] && break; sleep 1; done
+[ -n "$first" ] && [[ $first != rent-* ]] || { check "rental_replan: its Hub never named $rental's host in 2 min"; replan_quit; return; }
+# The render's install waits on the order, under the host's first name. Its local code is locked first: minutes on a cold runner.
+for _ in $(seq 120); do
+  number=$(in_project "$P" --json run ls --limit 20 2> /dev/null | jq -r '[.runs[]? | select(.target | test("wait"))] | min_by(.number) | .number // empty' 2> /dev/null || true)
+  [ -z "$number" ] || break
+  sleep 5
+done
+[ -n "$number" ] || { check "rental_replan: the render sent to $handle made no run: $(status "$P" | jq -c '.board.jobs' 2> /dev/null)"; replan_quit; return; }
+for _ in $(seq 60); do in_project "$P" --json run watch "$number" --once > "$w" 2>&1 || true; J --arg n "$first" '.machine == $n' "$w" && break; sleep 2; done
+echo "rental_replan: run $number waits for $handle, named $first: $(jq -c '{machine, status, waiting}' "$w" 2> /dev/null)"
+# Calcifer restarts, as the laptop's did while Paul waited.
+systemctl --user restart cozy-calcifer || check "rental_replan: systemctl --user restart cozy-calcifer failed"
+for _ in $(seq 60); do cozy --json machine ls > /dev/null 2>&1 && break; sleep 1; done
+# Its Hub replans the order onto another host, named anew.
+pg=$(docker ps --filter name=cozy-skew-pg --format '{{.Names}}' | head -1)
+docker exec "$pg" psql -U postgres -v ON_ERROR_STOP=1 -tAc "UPDATE hub_v2.provider_resources r SET machine_name = '$second'
+  FROM hub_v2.rental_acquisition_attempts a WHERE a.rental_id = '$rental' AND a.provider_resource_id = r.id" > "$OUT/replan-hub.txt" 2>&1 \
+  && grep -q 'UPDATE [1-9]' "$OUT/replan-hub.txt" || check "rental_replan: the Hub's record of $rental's host wasn't renamed ($pg): $(tail -c 300 "$OUT/replan-hub.txt")"
+local now=''
+for _ in $(seq 120); do now=$(replan_name "$rental"); [ "$now" = "$second" ] && break; sleep 1; done
+[ "$now" = "$second" ] || check "rental_replan: Calcifer still calls $rental '${now:-nothing}' 2 min after its Hub named it $second"
+# What was queued for the order follows it there, still queued: never failed while the order stands.
+for _ in $(seq 30); do
+  in_project "$P" --json run watch "$number" --once > "$w" 2>&1 || true
+  J --arg n "$second" '.machine == $n or .status == "failed"' "$w" && break
+  sleep 2
+done
+echo "rental_replan: run $number after its order's host was named $first, then $second: $(jq -c '{machine, status, waiting, reason}' "$w" 2> /dev/null)"
+J --arg n "$second" '.machine == $n and .status != "failed" and .status != "canceled"' "$w" \
+  || check "rental_replan: run $number, queued for $rental, didn't follow it from $first to $second: $(jq -c '{machine, status, reason}' "$w" 2> /dev/null)"
+status "$P" > "$s" || true
+echo "rental_replan: the project's machines $(jq -c '.machines' "$s" 2> /dev/null), its take $(jq -c '{job: [.board.jobs[]? | select(.asset == "queued") | {state, error}], said: .board.said}' "$s" 2> /dev/null)"
+J --arg n "$second" '.machines == [$n]' "$s" || check "rental_replan: the project preferred $handle; once named $first, then $second, its machines are $(jq -c '.machines' "$s" 2> /dev/null)"
+J '[.board.jobs[]? | select(.asset == "queued" and (.state == "waiting" or .state == "running"))] | length == 1' "$s" \
+  || check "rental_replan: the take queued for $rental isn't waiting for it: $(jq -c '[.board.jobs[]? | select(.asset == "queued")]' "$s" 2> /dev/null)"
+# The order ends: what waited for it settles, saying why in one line, and the take says so too; nothing goes silently.
+cozy --json machine end "$rental" -y > "$OUT/replan-end.json" 2>&1 || check "rental_replan: machine end $rental: $(tail -c 300 "$OUT/replan-end.json")"
+for _ in $(seq 90); do
+  in_project "$P" --json run watch "$number" --once > "$w" 2>&1 || true
+  J '.status == "failed" or .status == "canceled"' "$w" && break
+  sleep 2
+done
+echo "rental_replan: run $number once $rental ended: $(jq -c '{machine, status, reason}' "$w" 2> /dev/null)"
+J --arg n "$second" '.status == "failed" and (.reason.message | test($n) and (test("\n") | not))' "$w" \
+  || check "rental_replan: run $number didn't settle in one line naming $second when its order ended: $(jq -c '{status, reason}' "$w" 2> /dev/null)"
+for _ in $(seq 30); do
+  status "$P" > "$s" || true
+  J --arg n "$second" '[.board.said[]?.message, .board.jobs[]?.error.message?, .board.errors[]?.message] | map(select(type == "string")) | any(test($n))' "$s" && break
+  sleep 2
+done
+echo "rental_replan: the take once $rental ended: $(jq -c '{job: [.board.jobs[]? | select(.asset == "queued") | {state, error}], said: .board.said}' "$s" 2> /dev/null)"
+J --arg n "$second" '[.board.said[]?.message, .board.jobs[]?.error.message?, .board.errors[]?.message] | map(select(type == "string")) | any(test($n))' "$s" \
+  || check "rental_replan: the render said nothing of $second's end: $(jq -c '.board' "$s" 2> /dev/null | head -c 600)"
+project_api "$P" /cancel -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: replan-cancel-$RANDOM$RANDOM" -d '{"names":["queued"]}' > "$OUT/replan-cancel.json" 2>&1 || true
+cozy --json logout > /dev/null 2>&1 || true
+}

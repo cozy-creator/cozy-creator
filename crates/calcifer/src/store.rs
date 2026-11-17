@@ -165,6 +165,10 @@ const ENDED_KEPT_MS: i64 = 60_000;
 const GIVEN_UP_MS: i64 = 30 * 24 * 3600 * 1000;
 /// The newest run number whose measurements `drop_measurements` has gone past.
 const MEASUREMENTS_DROPPED: &str = "CREATE TABLE IF NOT EXISTS measurements_dropped (through INTEGER NOT NULL) STRICT;";
+/// Each name a rental had before its current one (cl-1125): a project's run keeps the name it was sent by, and an order replanned onto
+/// another host is named again.
+const MACHINE_NAMES: &str =
+    "CREATE TABLE IF NOT EXISTS machine_names (name TEXT NOT NULL, rental_id TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (name, rental_id)) STRICT, WITHOUT ROWID;";
 /// Projects whose files left on a machine were gone before the legacy cut could copy them in (cl-1003), said by `cozy doctor`
 /// and the project's page.
 pub(crate) const LOST: &str = "CREATE TABLE IF NOT EXISTS lost_before_upgrade (path TEXT PRIMARY KEY, files INTEGER NOT NULL) STRICT;";
@@ -2015,6 +2019,7 @@ impl Store {
                 while forget_jobs(&tx, "id IN (SELECT run FROM ended_jobs WHERE machine IN (SELECT name FROM temp.pruned_machines))", [])? > 0 {}
                 tx.execute("DELETE FROM machine_logs WHERE machine IN (SELECT name FROM temp.pruned_machines)", [])?;
                 let pruned = tx.execute("DELETE FROM machines WHERE name IN (SELECT name FROM temp.pruned_machines)", [])?;
+                tx.execute("DELETE FROM machine_names WHERE rental_id NOT IN (SELECT rental_id FROM machines WHERE rental_id IS NOT NULL)", [])?;
                 if pruned > 0 { tx.execute_batch("PRAGMA incremental_vacuum(256)")?; }
                 tx.commit()?;
                 Ok(pruned)
@@ -2062,6 +2067,7 @@ impl Store {
         writer.execute_batch(ANSWERS)?;
         writer.execute_batch(LOST)?;
         writer.execute_batch(MEASUREMENTS_DROPPED)?;
+        writer.execute_batch(MACHINE_NAMES)?;
         writer.execute_batch(crate::project::journal::PLACEMENTS)?;
         writer.execute_batch(crate::maintenance_source::TABLES)?;
         writer.execute_batch(crate::project::vault_operation::TABLES)?;
@@ -2308,13 +2314,14 @@ impl Store {
         })
     }
 
-    /// The machines a name, a former name (alias) or a rental id names, in any state; one with
-    /// that very name first.
+    /// The machines a name, a former name (its order's handle, or a host its Hub named before) or a rental id names, in any state;
+    /// one with that very name first.
     pub(crate) fn machines_named(&self, text: &str) -> Result<Vec<MachineRow>> {
         self.read(|conn| {
             let mut statement = conn.prepare(&format!(
                 "SELECT {MACHINE_COLUMNS} FROM machines
                  WHERE name = ?1 COLLATE NOCASE OR alias = ?1 COLLATE NOCASE OR rental_id = ?1 COLLATE NOCASE
+                    OR rental_id IN (SELECT rental_id FROM machine_names WHERE name = ?1 COLLATE NOCASE)
                  ORDER BY name = ?1 COLLATE NOCASE DESC, rowid DESC"
             ))?;
             let rows = statement.query_map([text], machine_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2350,8 +2357,20 @@ impl Store {
         })
     }
 
-    /// Renames a machine that has not served (its Hub named it): its runs move with it, and the
-    /// old name stays its alias. An ended machine that held the name gives it up: its history
+    /// Every name `name` had before (cl-1125): its order's handle and each host its Hub named before this one.
+    pub(crate) fn former_names(&self, name: &str) -> Result<Vec<String>> {
+        self.read(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT alias FROM machines WHERE name = ?1 AND alias IS NOT NULL
+                 UNION SELECT n.name FROM machine_names n JOIN machines m ON m.rental_id = n.rental_id WHERE m.name = ?1 AND n.name <> ?1",
+            )?;
+            let names = statement.query_map([name], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+            Ok(names)
+        })
+    }
+
+    /// Renames a machine that has not served (its Hub named it): its runs move with it, the
+    /// old name stays its alias, and every name it had finds it. An ended machine that held the name gives it up: its history
     /// keeps it as `<name>@<when it was recorded>`.
     pub(crate) fn rename_machine(&self, old: &str, new: &str) -> Result<bool> {
         self.write(|tx| {
@@ -2373,6 +2392,11 @@ impl Store {
                 None => {}
             }
             move_machine(tx, old, new, Some(old))?;
+            // Its alias keeps only the first: a host named after a replan (cl-1125) leaves a project's runs under the one before.
+            tx.execute(
+                "INSERT OR REPLACE INTO machine_names (name, rental_id, at) SELECT ?1, rental_id, ?3 FROM machines WHERE name = ?2 AND rental_id IS NOT NULL",
+                params![old, new, now_ms()],
+            )?;
             Ok(true)
         })
     }

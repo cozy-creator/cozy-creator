@@ -4283,6 +4283,14 @@ impl Walk {
     /// tell me to rent a new one"): with every one gone (ended, ending, offline), where a render naming none goes, said once a render.
     fn live(&self, ask: &str, on: &[On]) -> Vec<On> {
         let api = self.host.api();
+        // Each by its name now: a rental asked by a name it had before goes where its order went (cl-1089, cl-1125).
+        let on: Vec<On> = (on.iter())
+            .map(|on| match on {
+                On::Machine(name) => On::Machine(api.calcifer.machine_name_now(name)),
+                other => other.clone(),
+            })
+            .collect();
+        let on = on.as_slice();
         let gone: Vec<String> = (on.iter())
             .filter_map(|on| match on {
                 On::Machine(name) => api.machines.gone(name),
