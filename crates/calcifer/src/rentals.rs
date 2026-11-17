@@ -1142,12 +1142,17 @@ impl Machines {
         if self.hubs.listing_now.swap(true, Ordering::AcqRel) {
             return;
         }
+        struct Going<'a>(&'a std::sync::atomic::AtomicBool);
+        impl Drop for Going<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::Release);
+            }
+        }
         let me = self.clone();
         self.spawn(async move {
-            let took = crate::took::Took::new("list_hubs");
+            let _going = Going(&me.hubs.listing_now);
+            let _took = crate::took::Took::new("list_hubs");
             me.list_hubs().await;
-            drop(took);
-            me.hubs.listing_now.store(false, Ordering::Release);
         });
     }
 
