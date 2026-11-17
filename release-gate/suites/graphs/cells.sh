@@ -2,10 +2,10 @@
 # held to their calls as written, bit for bit, on a dev machine: `dev = true` in the pod's config.toml (over SSH), which
 # TensorD sends in each executor's Start, so the Runtime audits every 16th replay of a region. Repeats run a package
 # copy with memoization out, so a second request computes; equal output bytes mean a replay equals the call as written.
-#   graphs-ph3-t2i      P-H3-Image text-to-image: its DiT records (in the call or at idle)
-#   graphs-ph3-edit-*   then an edit three times, an idle period after the first: the edit's key moved, so its DiT records
-#                       at idle on its own call's inputs (cr-287: invented zero indices raced in `index_copy_`); edits 2
-#                       and 3 replay it, their images byte-identical to edit 1's as written
+#   graphs-ph3-t2i      P-H3-Image text-to-image: its DiT records in the call
+#   graphs-ph3-short-*  then a shorter prompt three times, an idle period after the first: its key moved, so its DiT records
+#                       at idle on its own call's inputs (cr-287: invented zero indices raced in `index_copy_`); 2 and 3
+#                       replay it, their images byte-identical to 1's as written
 #   graphs-anima-*      Anima three times: its text encoder (2-D token ids, held out of idle recording until cr-300's hold
 #                       went) replays in the third, its image byte-identical to the first's; again at 6 GiB
 #   graphs-klein-283    Klein upsampled on cr-283's prompt and seed (gate 44006460875 run 17, rtx-4090): a decode graph
@@ -15,7 +15,7 @@
 #   graphs-audit        replays were audited against their calls as written, and no P-H3-Image or Anima record differed
 G=$OUT/graphs
 mkdir -p "$G"
-said=$(timeout 120 "$CLI" machine ssh "$M" -- "mkdir -p ~/.cozy && touch ~/.cozy/config.toml && { echo 'dev = true'; grep -v '^dev *=' ~/.cozy/config.toml; } > ~/.cozy/config.toml.new && mv ~/.cozy/config.toml.new ~/.cozy/config.toml && head -1 ~/.cozy/config.toml" < /dev/null 2>/dev/null)
+said=$(timeout 120 "$CLI" machine ssh "$M" -- "mkdir -p ~/.cozy && touch ~/.cozy/config.toml && { echo 'dev = true'; grep -v '^dev *=' ~/.cozy/config.toml || true; } > ~/.cozy/config.toml.new && mv ~/.cozy/config.toml.new ~/.cozy/config.toml && head -1 ~/.cozy/config.toml" < /dev/null 2>/dev/null)
 grep -qx 'dev = true' <<< "$said" && expect graphs-dev PASS "the pod's config.toml says dev = true" ||
   expect graphs-dev FAIL "the pod's config.toml says no dev = true: $said"
 # gcap <off|NGiB>: the machine restarts (its service reads config.toml again) with that memory limit.
@@ -35,7 +35,7 @@ gcap off
 gcopy() {
   rm -rf "${G:?}/$1"; mkdir -p "$G/$1"
   tar -C "$PKGS/$1" --exclude=.venv --exclude=__pycache__ -cf - . | tar -C "$G/$1" -xf - &&
-    { grep -rlE --include='*.py' '^ *memoize=' "$G/$1" | xargs -r sed -i -E '/^ *memoize=(True|Memoize\(requires=\["seed"\]\)),$/d'; }
+    { grep -rlE --include='*.py' '^ *memoize=' "$G/$1" || true; } | xargs -r sed -i -E '/^ *memoize=(True|Memoize\(requires=\["seed"\]\)),$/d'
 }
 # grun <cell> <package> <function> <args...>: a run of the copy (its record graphs/<cell>.json via run_cell).
 grun() { local name=$1 package=$2 function=$3; shift 3; run_cell "$OUT" "$name" "./graphs/$package/$function" --on "$M" "$@"
@@ -51,25 +51,23 @@ gsame() {
 gfact() { jq "$2" "$1.json" 2>/dev/null || echo 0; }
 # gregion <regex> <field jq>: over every region of a record whose name matches, the field's values in a list.
 gregion() { echo "[.. | objects | .graphs? // empty | objects | to_entries[] | select(.key | test(\"$1\")) | .value | $2]"; }
-gphoto=$OUT/graphs-photo.jpg
-[ -f "$gphoto" ] || nice -n 19 ffmpeg -v error -y -i "$REF" -vf "scale=w='trunc(sqrt(1048576*iw/ih)/32)*32':h=-2" -q:v 3 "$gphoto"
 if gcopy p-h3-image; then
+  # A text-to-image records its DiT in the call; another prompt's key then moved, so a short step (under the
+  # Runtime's 1 s idle bound: a 4090's edit DiT step is past it) records at idle on its own call's inputs.
   grun graphs-ph3-t2i p-h3-image generate prompt_upsampling:=false seed:=$((R + 601)) \
     instructions="A lighthouse keeper's kitchen at dawn, copper pots, steam, $OBJECT on the table (take $R)"
-  gedit=(references:="[{\"name\":\"photo\",\"image\":\"$gphoto\"}]" prompt_upsampling:=false seed:=$((R + 602))
-    instructions="<photo> at night under neon signs, everything else kept (take $R)")
-  grun graphs-ph3-edit-1 p-h3-image generate "${gedit[@]}"
-  sleep 30  # an idle period: the edit's DiT records
-  grun graphs-ph3-edit-2 p-h3-image generate "${gedit[@]}"
-  grun graphs-ph3-edit-3 p-h3-image generate "${gedit[@]}"
-  gsame graphs-ph3-repeat graphs-ph3-edit-1 graphs-ph3-edit-2
-  gsame graphs-ph3-repeat-3 graphs-ph3-edit-1 graphs-ph3-edit-3
-  idle=$(gfact graphs-ph3-edit-2 "$(gregion transformer '.graph.measured[]? | select(.replay_ms == null)') | length")
-  replays=$(gfact graphs-ph3-edit-2 "$(gregion transformer '.replays // 0') | add // 0")
-  eager=$(gfact graphs-ph3-edit-2 "$(gregion transformer '.graph.eager // [] | .[]') | join(\"; \")")
+  gshort=(prompt_upsampling:=false seed:=$((R + 602)) instructions="$OBJECT, studio photo")
+  grun graphs-ph3-short-1 p-h3-image generate "${gshort[@]}"
+  sleep 30  # an idle period: the short prompt's DiT records
+  for i in 2 3; do grun graphs-ph3-short-$i p-h3-image generate "${gshort[@]}"; done
+  gsame graphs-ph3-repeat graphs-ph3-short-1 graphs-ph3-short-2
+  gsame graphs-ph3-repeat-3 graphs-ph3-short-1 graphs-ph3-short-3
+  idle=$(gfact graphs-ph3-short-2 "$(gregion transformer '.graph.measured[]? | select(.replay_ms == null)') | length")
+  replays=$(gfact graphs-ph3-short-2 "$(gregion transformer '.replays // 0') | add // 0")
+  eager=$(gfact graphs-ph3-short-2 "$(gregion transformer '.graph.eager // [] | .[]') | join(\"; \")")
   [ "$replays" -gt 0 ] && [ "$idle" -gt 0 ] && [ "$eager" = '""' ] &&
-    expect graphs-ph3-idle PASS "the edit's DiT recorded at idle ($idle) and replayed $replays steps" ||
-    expect graphs-ph3-idle FAIL "the edit's DiT: idle recordings $idle, replays $replays, as written for $eager"
+    expect graphs-ph3-idle PASS "the short prompt's DiT recorded at idle ($idle) and replayed $replays steps" ||
+    expect graphs-ph3-idle FAIL "the short prompt's DiT: idle recordings $idle, replays $replays, as written for $eager"
 else
   expect graphs-ph3 FAIL "no copy of p-h3-image"
 fi
