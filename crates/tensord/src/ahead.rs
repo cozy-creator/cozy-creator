@@ -202,7 +202,6 @@ fn admit(runs: &Arc<Runs>, actor: VerifiedActor, list: List, put: u64, requests:
     }
     let began = std::time::Instant::now();
     let prefix = list.1;
-    let ms = |since: std::time::Instant| since.elapsed().as_millis();
     let dropped: Vec<String> = match runs.live_ids(actor) {
         Ok(live) => live.into_iter().filter(|id| id.starts_with(prefix) && !ids.contains(id)).collect(),
         Err(error) => {
@@ -214,10 +213,8 @@ fn admit(runs: &Arc<Runs>, actor: VerifiedActor, list: List, put: u64, requests:
     static HANDOVERS: AtomicU64 = AtomicU64::new(0);
     let handover = HANDOVERS.fetch_add(1, Ordering::Relaxed);
     lock(&HANDED).push(Handed { put: handover, actor, dropped, waiting: ids.clone() });
-    let (read, accepting) = (ms(began), std::time::Instant::now());
     let admitted = runs.accept(actor, requests);
     drop(admission);
-    let (accepted, settling) = (ms(accepting), std::time::Instant::now());
     // Only an item new now takes over what a dropped one fetched: any other is in line already, or never will be.
     let new: Vec<&String> = match &admitted {
         Ok(admitted) => ids.iter().zip(admitted).filter(|(_, admitted)| matches!(admitted, Ok((true, _)))).map(|(id, _)| id).collect(),
@@ -246,12 +243,7 @@ fn admit(runs: &Arc<Runs>, actor: VerifiedActor, list: List, put: u64, requests:
         }
         Err(error) => ids.iter().for_each(|id| refused(&mut *planning, id, &error.message)),
     }
-    tracing::info!(
-        "{prefix} list: {} items admitted in {} ms (its runs read in {read} ms, accepted in {accepted} ms, what it dropped settled in {} ms)",
-        ids.len(),
-        ms(began),
-        ms(settling)
-    );
+    tracing::info!("{prefix} list: {} items admitted in {} ms", ids.len(), began.elapsed().as_millis());
 }
 
 /// To `states` (the runs of `listed`), each listed item not yet admitted, `planning`; one its admission refused, failed and why.
