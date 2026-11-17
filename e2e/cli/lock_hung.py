@@ -12,6 +12,10 @@ one exception, named. Once the machine goes on (SIGCONT), what it held of that v
 2. The maximum's deadline, stopped the same way.
 3. The maximum's deadline, stopped while a run's call is going, in a second project: the run holds the vault past its maximum until
    the clock asks local, which doesn't answer; the vault locks and the run settles canceled.
+4. The maximum's deadline with a run's output coming in, local stopped until the clock has judged it gone and the vault is locking,
+   then going on at once (back mid-drain): the save is judged by its progress, so it lands; the run reads completed.
+5. The same, local then slow (stopped and going on in turn): it misses its status pings while its save's bytes still come, and the
+   save lands (review 6939581151).
 
 A step that doesn't lock takes the release note's workaround, as a person does (the hung machine ended, the lock asked again), and
 the cell goes on: a red names each way it hangs. The machine always goes on at the end."""
@@ -28,6 +32,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from typing import cast
 
@@ -322,6 +327,76 @@ def runtime_left(folder: Path, ended: Path, mark: str, seconds: float = 30) -> l
     return found
 
 
+# Steps 4 and 5's output, in MB: the stop lands as its save starts, so a small one still stops mid-save.
+SMALL_SAVE_MB = 512
+
+
+def until_state(cell: Cell, wanted: str, seconds: float) -> float | None:
+    """Seconds until the vault reads `wanted` (looked at as often as its status answers), or None."""
+    began = time.monotonic()
+    while time.monotonic() - began < seconds:
+        if cell.state() == wanted:
+            return round(time.monotonic() - began, 1)
+        time.sleep(0.1)
+    return None
+
+
+def slow_local(going: threading.Event) -> None:
+    """Local stopped and going on in turn until `going` is set: 1.5 s stopped, 0.5 s going, so most of its status pings (2 s
+    each) go unanswered while a save's bytes still come every 2 s."""
+    while not going.is_set():
+        for pid in STOPPED:
+            try:
+                os.kill(pid, signal.SIGCONT)
+            except ProcessLookupError:
+                pass
+        time.sleep(0.5)
+        for pid in STOPPED:
+            try:
+                os.kill(pid, signal.SIGSTOP)
+            except ProcessLookupError:
+                pass
+        going.wait(1.5)
+
+
+def judged_gone_then_back(cell: Cell, label: str, slow: bool, facts: dict[str, object], scanner: Scanner) -> list[str]:
+    """Step 4 (`slow` False) or 5: the deadline with a run's output coming in, local stopped until the clock judged it gone (the
+    vault reads locking), then going on at once or slowly. The save lands and the run reads completed."""
+    failures = []
+    mark = f"CL1064_{label.upper()}_{secrets.token_hex(12)}"
+    scanner.add(mark)
+    if cell.state() != "locked":
+        cell.cozy(f"lock-before-{label}", "vault", "lock")
+    view = cell.unlock(f"unlock-{label}", MAXIMUM_SAVING)
+    process, stdout = cell.start(f"{label}-run", sleeper(view), 1, mark, SMALL_SAVE_MB)
+    assert waiting(stdout, process, ARRIVING), f"{label}: the run's output never started coming: {stdout.read_bytes()[-400:]!r}"
+    number = number_of(stdout)
+    facts[f"{label}_stopped"] = stop(view)
+    judged = facts[f"{label}_judged_s"] = until_state(cell, "locking", MAXIMUM_SAVING + DEADLINE_BOUND + 30)
+    going = threading.Event()
+    if slow:
+        threading.Thread(target=slow_local, args=(going,), daemon=True).start()
+    else:
+        go_on()
+    locked = facts[f"{label}_locked_after_s"] = cell.locked_by(time.monotonic(), 180)
+    going.set()
+    time.sleep(0.6)
+    go_on()
+    finish(process)
+    if judged is None:
+        failures.append(f"{label}: the clock never judged local gone (the vault never read locking)")
+    if locked is None:
+        failures.append(f"{label}: the vault never locked once local was back")
+        return failures
+    again = cell.unlock(f"unlock-after-{label}")
+    run = facts[f"{label}_run"] = cell.status(number)
+    files = facts[f"{label}_files"] = written(again / "files", mark)
+    cell.cozy(f"lock-after-{label}", "vault", "lock")
+    if not str(run).startswith("completed") or not files:
+        failures.append(f"{label}: a save whose bytes still came was cut: the run is {run!r}, its file {files or 'absent'}")
+    return failures
+
+
 def deadline_of(unlocked_at: float, maximum: int, facts: dict[str, object], label: str) -> float:
     """When the vault's deadline passes with local stopped: its maximum, or the machine's stop if that came later (until then its
     run held the vault, as runs do). The lock is measured from it."""
@@ -480,6 +555,10 @@ def main() -> None:
         facts["maximum_stopped"] = stop(view)
         facts["maximum_locked_s"] = first.locked_by(deadline_of(unlocked_at, MAXIMUM_SAVING, facts, "maximum"), DEADLINE_BOUND)
         failures.extend(deadline(first, "maximum", scanner, view, projects, facts, process, mark))
+
+        # 4 and 5. Judged gone, then back (at once, or slow): a save whose bytes still come lands, and its run reads completed.
+        failures.extend(judged_gone_then_back(first, "back", slow=False, facts=facts, scanner=scanner))
+        failures.extend(judged_gone_then_back(first, "slow", slow=True, facts=facts, scanner=scanner))
 
         # 3. The maximum's deadline while local is stopped mid-call, in a second project: the run holds the vault past its maximum
         #    until the clock asks local, which doesn't answer; the vault locks and the run settles canceled.
