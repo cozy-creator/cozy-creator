@@ -29,7 +29,7 @@ cfg=$HOME/.cozy/config.toml
 mkdir -p "${cfg%/*}" && touch "$cfg" || fail "no $cfg"
 { echo 'dev = true'; grep -v '^dev *=' "$cfg" || true; } > "$cfg.new" && mv "$cfg.new" "$cfg" || fail "dev = true not written"
 cozy restart > "$OUT/restart.txt" 2>&1 || fail "cozy restart: $(tail -c 300 "$OUT/restart.txt")"
-[ -z "$(own)" ] || fail "this runner's Calcifer already holds a rental: $(own | paste -sd' ')"
+[ -n "$ON" ] || [ -z "$(own)" ] || fail "this runner's Calcifer already holds a rental: $(own | paste -sd' ')"
 trap 'code=$?; claim; (exit "$code"); finish' EXIT
 quote "$(param seconds 1500)"
 GUARD_ALSO=own guard
