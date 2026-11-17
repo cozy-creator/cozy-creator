@@ -229,13 +229,18 @@ jobs:
         run: |
           # No inputs: this repo's own merge group.
           [ -n "$REPO" ] || { REPO=cozy-creator REF=$HEAD_SHA BASE=$BASE_SHA CREATOR=$HEAD_SHA; }
-          # A cut across repos lands as `rc/<x>` in each: a change on or into one, or a dispatch from one, runs against its
-          # siblings' `rc/<x>` where they have one, else master. A merge group's head names the PR, not the PR's branch.
+          # A cut across repos lands as `rc/<x>` in each, a patch release as `release/X.Y.Z` (its tag vX.Y.Z is that line): a
+          # change on or into one, or a dispatch from one, runs against its siblings' same line where they have one, else master
+          # (the pin step's `sibling`). A merge group's head names the PR, not the PR's branch.
+          line() {
+            if [[ $1 == rc/* ]] || [[ $1 =~ ^release/[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "$1"
+            elif [[ $1 =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then echo "release/${BASH_REMATCH[1]}"; fi
+          }
           rc= from_rc=
-          for b in "${BASE_REF#refs/heads/}" "${HEAD_REF#refs/heads/}" "$DISPATCHED"; do [[ $b == rc/* ]] && { rc=$b from_rc="the run's branch"; break; }; done
+          for b in "${BASE_REF#refs/heads/}" "${HEAD_REF#refs/heads/}" "$DISPATCHED"; do rc=$(line "$b"); [ -z "$rc" ] || { from_rc="the run's branch"; break; }; done
           if [ -z "$rc" ] && [[ ${HEAD_REF#refs/heads/} =~ ^gh-readonly-queue/.+/pr-([0-9]+)- ]]; then
             b=$(gh api "repos/cozy-creator/${REPO/#tensorhub/tensorhub-v2}/pulls/${BASH_REMATCH[1]}" -q .head.ref 2>/dev/null) || b=
-            [[ $b != rc/* ]] || { rc=$b from_rc="its PR's branch"; }
+            rc=$(line "$b"); [ -z "$rc" ] || from_rc="its PR's branch"
           fi
           # A dispatch from a task branch runs against the RC it works toward, never master by default (two runs on 11-15 met
           # master's Runtime and packages and looked like product bugs): its open PR's base, else the line its own Cargo.toml says
@@ -243,8 +248,8 @@ jobs:
           # Only a dispatch on master runs against master.
           if [ -z "$rc" ] && [ -n "$DISPATCHED" ] && [ "$DISPATCHED" != master ]; then
             b=$(gh api "repos/$GITHUB_REPOSITORY/pulls?head=${GITHUB_REPOSITORY%%/*}:$DISPATCHED&state=open" -q '.[0].base.ref // empty' 2>/dev/null) || b=
-            if [[ $b == rc/* ]]; then
-              rc=$b from_rc="its PR's base"
+            if [ -n "$(line "$b")" ]; then
+              rc=$(line "$b") from_rc="its PR's base"
             elif [ "$GITHUB_REPOSITORY" = cozy-creator/cozy-creator ]; then
               v=$(gh api "repos/cozy-creator/cozy-creator/contents/Cargo.toml?ref=$DISPATCHED" -H 'Accept: application/vnd.github.raw' 2>/dev/null | sed -n 's/^version = "\([0-9]*\)\.\([0-9]*\)\.[0-9]*\(-[^"]*\)\{0,1\}"$/\1 \2 \3/p' | head -1) || v=
               read -r major minor dev <<< "$v"
@@ -336,12 +341,18 @@ jobs:
           FROM_RC: ${{ steps.what.outputs.from_rc }}
         run: |
           commit() { gh api "repos/$1/commits/$2" -q .sha; }
-          # The sibling's `rc/<x>` (the `what` step's) when it has one, else its newest `rc/*`, else what was asked.
+          # The sibling's line (the `what` step's) when it has one; else, toward an RC its newest `rc/*`, toward a patch release
+          # the release it patches (its newest `release/X.Y.*` before it: 0.26.1's packages are 0.26.0's); else what was asked.
           sibling() {
-            local newest
+            local newest names
             if [ -z "$RC" ] || [ "$2" != master ]; then echo "$2"; return; fi
             if gh api "repos/$1/branches/$RC" -q .name >/dev/null 2>&1; then echo "$RC"; return; fi
-            newest=$(gh api "repos/$1/branches?per_page=100" -q '.[].name' 2>/dev/null | grep '^rc/[0-9]' | sort -V | tail -1) || newest=
+            if [[ $RC == release/* ]]; then
+              names=$(gh api "repos/$1/git/matching-refs/heads/${RC%.*}." -q '.[].ref' 2>/dev/null) || names=
+              newest=$(printf '%s\n' ${names//refs\/heads\//} "$RC" | grep -xE 'release/[0-9]+\.[0-9]+\.[0-9]+' | sort -uV | awk -v at="$RC" '$0 == at { exit } { print }' | tail -1)
+            else
+              newest=$(gh api "repos/$1/branches?per_page=100" -q '.[].name' 2>/dev/null | grep '^rc/[0-9]' | sort -V | tail -1) || newest=
+            fi
             echo "${newest:-$2}"
           }
           ref=$(commit "$GITHUB_REPO" "$REF")
