@@ -1472,6 +1472,8 @@ impl Machines {
     /// ask (`end_unconfirmed`), and asked on.
     async fn end_once(self: &Arc<Self>, ask: &Ask) -> bool {
         let id = ask.digest.clone();
+        // Its machine as named now: its Hub may have named its host since the end was asked (`rename_machine` moves the ask with it).
+        let machine = || self.store().ask(&ask.key).ok().flatten().and_then(|now| now.machine).or_else(|| ask.machine.clone());
         let mut pause = Duration::ZERO;
         let settle = |outcome: Result<(), String>| {
             let settled = match &outcome {
@@ -1486,8 +1488,8 @@ impl Machines {
         };
         // An added machine is removed from this controller: no Hub is asked.
         if ask.hub.is_empty() {
-            if let Some(name) = &ask.machine {
-                self.ended(name, "removed from this computer");
+            if let Some(name) = machine() {
+                self.ended(&name, "removed from this computer");
             }
             return settle(Ok(()));
         }
@@ -1512,8 +1514,8 @@ impl Machines {
                     Err(e) if e.kind == Kind::NotFound => {
                         let listed = client.list_rentals("live").await.map(|listing| listing.rentals.iter().any(|rental| rental.rental_id == id));
                         if let Ok(false) = listed {
-                            if let Some(name) = &ask.machine {
-                                self.ended(name, &format!("The Hub at {} has no rental {id}, so it is forgotten here.", ask.hub));
+                            if let Some(name) = machine() {
+                                self.ended(&name, &format!("The Hub at {} has no rental {id}, so it is forgotten here.", ask.hub));
                             }
                             return settle(Ok(()));
                         }
@@ -1541,8 +1543,8 @@ impl Machines {
                         let gone_now = gone(&rental.state).then(|| cause(&rental));
                         self.hubs.seen(&ask.hub, rental);
                         if let Some(cause) = gone_now {
-                            if let Some(name) = &ask.machine {
-                                self.ended(name, &cause);
+                            if let Some(name) = machine() {
+                                self.ended(&name, &cause);
                             }
                             return settle(Ok(()));
                         }

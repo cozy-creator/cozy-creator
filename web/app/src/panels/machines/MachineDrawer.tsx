@@ -1,5 +1,5 @@
-import { useQuery } from "@tanstack/react-query"
-import { type FormEvent, useRef, useState } from "react"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { type FormEvent, useEffect, useRef, useState } from "react"
 import { useParams } from "react-router-dom"
 import { machineQuery, machinesQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
@@ -166,11 +166,16 @@ function Doing({ machine, now }: { machine: Machine; now: number }) {
 /** One machine, read from the live list while it's in it: reading it alone would start `local`. */
 export function MachineDrawer() {
   const { client } = useConnection()
+  const queries = useQueryClient()
   const to = useTo()
   const name = useParams().name ?? ""
   const { data: list } = useQuery(machinesQuery(client))
   const listed = list?.machines.find((machine) => named(machine, name))
   const { data: record, error } = useQuery({ ...machineQuery(client, name), enabled: Boolean(list && !listed) })
+  // Its record is what the list last said: once it leaves the list (it ended), that shows until the record is read again.
+  useEffect(() => {
+    if (listed) queries.setQueryData(machineQuery(client, name).queryKey, listed)
+  }, [queries, client, name, listed])
   const machine = listed ?? record
   const now = useNow(Boolean(machine && machine.state !== "ended"))
   const { chosen } = useRenderMachines()
