@@ -1031,7 +1031,12 @@ impl Runs {
             let (stage, saving) = (format!("downloading {}", choice.model), format!("saving {}", choice.model));
             let wait = crate::activity::wait(crate::activity::Kind::Download, &choice.model, &self.service.engine.caller_id(id));
             let room = |absent| self.service.room_for(id, absent);
-            let (named, landed) = publisher.download(&self.service, hub_access()?, named, &hardware, structure, self.order(id, spec, 0), stop, &room, &|done, total| {
+            let source = hub_access()?;
+            // The Hub's grant of the run's reads, waited for as it shows: each attempt it doesn't answer (cl-1189).
+            if let Some(capability) = &source.capability {
+                capability.granted(stop, &|said| observe(&said, 0, 0));
+            }
+            let (named, landed) = publisher.download(&self.service, source, named, &hardware, structure, self.order(id, spec, 0), stop, &room, &|done, total| {
                 // Every byte is here (a total this small is still only the header's): what is left is the disk's,
                 // and a slow one has held a run at 100% for over a minute with no word (tfs-143).
                 let now = if total >= 1 << 20 && done >= total { &saving } else { &stage };
