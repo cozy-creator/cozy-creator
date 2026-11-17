@@ -23,12 +23,15 @@
 #   bars        the cell's verdict: a JSON list of {candidate, vs, metric, by}: `candidate`'s mean DISTS or LPIPS over the
 #               full-reference pictures it shares with `vs` (a candidate, or `lanczos`, the floor) at most `vs`'s times 1 - `by`
 #               (bars.py, after the scoring); a bar missed fails the session. Set `by` from a measured gap, never to pass.
+#   post        candidates made on this runner once the rental ends, scored with the rest: a JSON list of {candidate, methods}:
+#               colorfix.py's colour matches (adain, wavelet, wavelet64) of `candidate`'s outputs to their inputs, each
+#               `<candidate>+<method>`
 #   seconds     what the cap must buy (default 5400)
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/upscale-bench WORK=${RUNNER_TEMP:-$OUT/..}/upscale
 CANDIDATES=$(param candidates '[]') IMAGES=$(param images '') PRIVATE=$(param private '') PUBKEY=$(param pubkey '') NEED=$(param seconds 5400)
-BARS=$(param bars '[]')
+BARS=$(param bars '[]') POST=$(param post '[]')
 for tool in jq uv openssl; do command -v "$tool" > /dev/null || fail "no $tool"; done
 jq -e 'type == "array" and length > 0 and all(.[]; (.name | test("^[a-z0-9-]+$")) and (.tree | type == "string") and (.tool | test("^[a-z0-9._-]+/[a-z_]+$")))' \
   <<<"$CANDIDATES" > /dev/null || fail "candidates: a JSON list of {name, tree, tool, fields?, from?, images?}"
@@ -133,6 +136,10 @@ cozy machine logs "$NAME" --since 4h -n 0 > "$OUT/machine.log" 2>&1
 for r in "${RIDS[@]}"; do cozy machine end "$r" -y >> "$OUT/end.txt" 2>&1; done
 for r in "${RIDS[@]}"; do for _ in $(seq 60); do gone "$r" && break; sleep 10; done; say "$r: $(gone "$r" && echo gone || echo 'still listed')"; done
 
+while read -r cand methods; do
+  [ -n "$cand" ] || continue
+  "$PY" -I "$FIX/colorfix.py" "$WORK/runs" "$cand" "$methods" >> "$OUT/post.txt" 2>&1 || { say "colorfix.py $cand: $(tail -c 300 "$OUT/post.txt")"; RC=1; }
+done < <(jq -r '.[] | "\(.candidate) \(.methods)"' <<<"$POST")
 "$PY" -I "$FIX/metrics.py" "$WORK/runs" --out "$OUT/scores.tsv" > "$OUT/scores.txt" 2>&1 || { say "metrics.py: $(tail -c 400 "$OUT/scores.txt")"; RC=1; }
 "$PY" -I "$FIX/sheets.py" "$WORK/runs" --out "$WORK/sheets" > "$OUT/sheets.txt" 2>&1 || { say "sheets.py: $(tail -c 400 "$OUT/sheets.txt")"; RC=1; }
 { echo "## upscale on $NAME ($SKU)"; echo '```'; sed -n '/^candidate /,$p' "$OUT/scores.txt"; echo '```'; } > "$OUT/summary.md"
