@@ -253,13 +253,15 @@ jobs:
           target: x86_64
           manylinux: 2_28
           working-directory: crates/tensorfs-py
-          args: --release --locked --target-dir ../../target/manylinux2_28 --out dist -i python3.11
+          # fault-hooks: the release gate's fault injection, in dev builds only (tensorfs-publish.yaml has none). A
+          # `--features` replaces pyproject.toml's list, so it names that list's too (abi3 for this one 3.11 build).
+          args: --release --locked --features extension-module,store,pyo3/abi3-py311,fault-hooks --target-dir ../../target/manylinux2_28 --out dist -i python3.11
           docker-options: -e TENSORFS_REQUIRE_AOT=1
           before-script-linux: |
             export PATH="/opt/python/cp312-cp312/bin:$PATH"
             /opt/python/cp312-cp312/bin/python -m pip install 'uv==0.12.7'
             # Match maturin's target, interpreter and feature graph through the canonical helper.
-            /opt/python/cp311-cp311/bin/python backend/stage_cli.py --release \
+            /opt/python/cp311-cp311/bin/python backend/stage_cli.py --release -F fault-hooks \
               --target x86_64-unknown-linux-gnu --target-dir ../../target/manylinux2_28 \
               -i /opt/python/cp311-cp311/bin/python
       # The container leaves root-owned files the verify and cache post-steps write.
@@ -294,6 +296,7 @@ jobs:
           assert base64.urlsafe_b64encode(digest).rstrip(b"=").decode() == entry.hash.value
           cli = json.loads(subprocess.check_output([str(tfs), "--json", "version"], text=True))
           assert cli["version"] == installed.version == tensorfs.__version__ == tensorfs._ext.__version__, cli
+          assert callable(tensorfs._ext._io_fail_pieces), "a dev build carries the fault hook (fault-hooks)"
           assert cli["sha256"] == digest.hex()
           assert callable(raw.quantize) and callable(tensorfs.Writer.quantize)
           encoded, measured = raw.quantize_measured(
