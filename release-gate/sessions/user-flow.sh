@@ -6,7 +6,7 @@
 # This runner's cozy as a person installs it (pod-session `cozy`: released, a tag, or a dev-build run; a dev build is a dev home, so its
 # rentals take the open RC's builds, as Paul's laptop's do). e2e/cli/web/user-flow.spec.js drives Calcifer's page in Chrome: an encrypted
 # project unlocked, a plate dropped, H3's Shot and Edit from the Tools palette, machine A ($SKU, one GPU) rented through the page, the Shot
-# rendered once its box says it's ready on A (cl-1104), the plate's edit rendered behind it, machine B (sku_b, gpus_b) rented and preferred as it boots, the Shot rendered while B
+# rendered once its box says it's ready on A or 8 min on (cl-1104), the plate's edit rendered behind it, machine B (sku_b, gpus_b) rented and preferred as it boots, the Shot rendered while B
 # boots and again once it's ready (cl-1073's placement on real pods); every take back in the project and shown; both machines ended
 # through the page. fixtures/user-flow/judge.py judges what it recorded (works, lean, fast against bench.json, placed
 # right, the page tells the truth) into one table per run and per machine: report.md, in the job summary too. Without `rent`, $0: the page
