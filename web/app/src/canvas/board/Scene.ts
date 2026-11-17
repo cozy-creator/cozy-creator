@@ -13,7 +13,7 @@ import { pictureBox, present, type Presentation, type RunContext, type SceneNode
 import { fontEpoch } from "./text"
 
 export interface Frame { moving: boolean; slow: boolean; camera: Viewport; width: number; height: number; dpr: number; settled: boolean; theme: string; now: number; hidden: ReadonlySet<string>; offering: boolean }
-interface Held { view: CardView; node?: SceneNode; show?: Presentation; key?: unknown[]; glide?: { from: { x: number; y: number }; began: number }; landing?: number; decoding?: number; waits?: boolean }
+interface Held { view: CardView; node?: SceneNode; show?: Presentation; key?: unknown[]; glide?: { from: { x: number; y: number }; began: number }; landing?: number; decoding?: number; waits?: boolean; shown?: boolean }
 
 const MARGIN = 160
 /** How long a file dropped waits, at most, to be first drawn with its picture. */
@@ -51,7 +51,11 @@ export class Scene {
 
   setHover(hit: Hit | null) { if (hit?.name !== this.hover?.name || hit?.part !== this.hover?.part) { this.hover = hit; this.o.invalidate() } }
   setResize(name: string | null, label?: string) { this.resize = name ? { name, label: label ?? "" } : null; this.o.invalidate() }
+  /** Nothing to draw: no card, no marquee, no ring. */
+  get blank() { return this.held.size === 0 && !this.marqueeOn && this.ringed.size === 0 }
+  private marqueeOn = false
   setMarquee(box: Box | null) {
+    this.marqueeOn = Boolean(box)
     this.marquee.clear()
     if (box && this.palette) this.marquee.rect(box.x, box.y, box.w, box.h).fill({ color: this.palette.colors.select, alpha: 0.1 }).stroke({ width: 1 / this.zoom, color: this.palette.colors.select })
     this.o.invalidate()
@@ -210,12 +214,14 @@ export class Scene {
     card.root.alpha = alpha
     card.root.zIndex = dragging ? 3 : state.hover ? 2 : node.selected ? 1 : 0
     // A file dropped is first drawn with its picture: held back while it's decoded, a quarter second at most (upload: "each is first drawn
-    // where and as it stays, its picture decoded").
+    // where and as it stays, its picture decoded"), whether it's still being placed or Calcifer's row for it has landed first (a read now
+    // reaches the store as it lands, cl-1018). Only a file dropped here has a picture of its own bytes; a box already drawn stays.
     const main = card.picture
-    const decoding = Boolean(view.placing && main?.local && !main.handle?.texture && !main.handle?.failed && !main.next?.failed)
+    const decoding = Boolean(!held.shown && main?.local && !main.handle?.texture && !main.handle?.failed && !main.next?.failed)
     held.decoding = decoding ? held.decoding ?? now : undefined
     const waits = held.waits = decoding && now - held.decoding! < DECODE_MS
     card.root.visible = !frame.hidden.has(name) && !waits
+    if (card.root.visible) held.shown = true
     card.pin(Math.max(0.0001, frame.camera.zoom))
     return card.animate(now, env) || animating || waits
   }
