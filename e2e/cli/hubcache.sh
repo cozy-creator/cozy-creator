@@ -1,8 +1,8 @@
 # The Hub's read cache (th-385), against the suite's isolated Hub and a second replica of it on the same database:
 #   hub_read_cache  Paul: "it could cache, on its application side, common read-query results; especially useful if they're
 #                expensive queries". 400 reads of one model (resolve and card) across both replicas read its index rows and its
-#                lookup at most a few times (pg_stat_statements); then a release published and the model deleted through replica A
-#                each show on replica B at once, not after the cache's minute. 50 signed-in reads read the caller's orgs once a
+#                lookup and card at most a few times (pg_stat_statements); then a release published, a family set and the model
+#                deleted through replica A each show on replica B at once, not after the cache's minute. 50 signed-in reads read the caller's orgs once a
 #                replica, and an AuthKit event (a role revoked and granted) has B read them again.
 
 # hub_read_cache (th-385): the e2e and production load reads the same models over and over (production: 12,000 resolves a day,
@@ -60,16 +60,19 @@ PY
   xargs -P 20 -I{} curl -s -o /dev/null -w '%{http_code}\n' -m 60 {} < "$S/reads.txt" > "$S/codes.txt" 2>&1 || true
   bash "$here/../skew/pg-stats.sh" "$container" 60 > "$S/statements.tsv" 2>&1 || true
   read_calls() { sql -c "SELECT coalesce(sum(calls), 0) FROM pg_stat_statements WHERE regexp_replace(query, '\s+', ' ', 'g') LIKE '%$1%'"; }
-  local index lookup etag every
+  local index lookup etag card every
   index=$(( $(read_calls 'FROM hub_v2.model_commits WHERE repo_id=$1 ORDER BY created_at') + $(read_calls 'FROM hub_v2.model_releases WHERE repo_id=$1 ORDER BY created_at') ))
   etag=$(read_calls 'SELECT etag FROM hub_v2.model_repos WHERE repo_id=$1')
   lookup=$(read_calls 'FROM hub_v2.repos WHERE org = $1 AND kind = $3')
+  card=$(read_calls 'FROM hub_v2.repos r LEFT JOIN hub_v2.model_repos model ON model.repo_id=r.id WHERE r.id = $1')
   every=$(sql -c "SELECT coalesce(sum(calls), 0) FROM pg_stat_statements WHERE query NOT LIKE '%pg_stat_statements%'")
-  echo "hub read cache: 400 reads ($(sort "$S/codes.txt" | uniq -c | awk '{printf "%s×%s ", $2, $1}')) asked Postgres $every statements: index rows $index, its file's ETag $etag, the model's lookup $lookup"
+  echo "hub read cache: 400 reads ($(sort "$S/codes.txt" | uniq -c | awk '{printf "%s×%s ", $2, $1}')) asked Postgres $every statements: index rows $index, its file's ETag $etag, the model's lookup $lookup, its card $card"
   head -12 "$S/statements.tsv" | cut -c1-220
   ! grep -qv '^200$' "$S/codes.txt" || check "hub read cache: 400 reads of $model answered $(sort "$S/codes.txt" | uniq -c | awk '{printf "%s×%s ", $2, $1}')"
   [ "$index" -le 8 ] || check "hub read cache: 400 reads of one model read its index rows $index times, not from a cache (8 at most: each replica's first, twice)"
   [ "$lookup" -le 8 ] || check "hub read cache: 400 reads of one model looked it up $lookup times, not from a cache (8 at most)"
+  [ "$card" -le 8 ] || check "hub read cache: 200 reads of one model's card read its row $card times, not from a cache (8 at most)"
+  [ "$every" -le 200 ] || check "hub read cache: 400 reads of one model asked Postgres $every statements (200 at most, the replicas' own loops included)"
 
   # Both replicas hold 0.1.0; a release published through A shows on B at once.
   newest() { curl -s -m 10 "$1$path/resolve" | jq -r '.release // empty'; }
@@ -91,6 +94,10 @@ PY
   [ "$(newest "$A")" = 0.1.0 ] && [ "$(newest "$B")" = 0.1.0 ] || check "hub read cache: before the write the replicas answered $(newest "$A") and $(newest "$B"), not 0.1.0"
   cozy --json model publish "$model" 0.2.0 "$c2" -y > "$S/publish-2.json" 2>&1 || fail "hub read cache: publishing 0.2.0: $(tail -c 300 "$S/publish-2.json")"
   agree "a release published" '.release // empty' 0.2.0 "$path/resolve"
+  # A family set (its card).
+  curl -s -m 10 "$B$path" > /dev/null
+  cozy --json model edit "$model" --family th385-family > "$S/edit.json" 2>&1 || fail "hub read cache: cozy model edit --family: $(tail -c 300 "$S/edit.json")"
+  agree "a family set" '.model.family // empty' th385-family "$path"
   # The model deleted: neither replica finds it (its lookup).
   cozy --json model delete "$model" -y > "$S/delete.json" 2>&1 || fail "hub read cache: cozy model delete: $(tail -c 300 "$S/delete.json")"
   agree "the model deleted" '.error.code // "resolved"' model.not_readable "$path/resolve"
