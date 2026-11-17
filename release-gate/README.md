@@ -78,7 +78,7 @@ Local-package (`--packages`) gates build a small source-staging helper from this
    they move. A download that can't land before the job's cap (`--cap`, the workflow's `cap_minutes`) at the rate it has
    kept 4 to 8 minutes in fails the host, `host too slow: X MB/s, N GiB needs M min`: the pod ends, its files go to
    `slow-<machine>/`, and the gate starts over on another host, at most 5, one already found slow ended at once (th-364).
-4. Ends the rental and checks that it is gone.
+4. Ends the rental and checks that it is gone, then writes a benchmark-ledger row per package run (`ledger.py`, below).
 5. Runs `analyze.py`. Any GPU fault in the machine's log or kernel probe crash in its record fails the gate, whatever the
    cells did. A cell passes when it completed, did not report `passed: false`, served the last PASS's kernels (with no fallback), produced
    a sane output, and kept execution / step 1 / steady s/step / VRAM within the last PASS's spread. VRAM is the
@@ -92,6 +92,15 @@ Local-package (`--packages`) gates build a small source-staging helper from this
 Assets of the `release-gate-baselines` release: `gate-<SKU>-<suites>.json`, plus the reference image and clip the next gate's H3
 cell starts from. Every gate reads them. A PASS (with `--publish`, or the workflow's `baseline` job) replaces them.
 A SKU and suites with no baseline need `--establish` once.
+
+## Benchmark ledger
+
+Every gate, bench and session appends a row per package run to the private tracker's `benchmarks/<sku>/<YYYY-MM>.jsonl`
+(`ledger.py`; design: tracker `design/benchmark-ledger.md`, xs-210). A row holds the workload, the versions, the declared
+state (cold, warm), phases, peak VRAM, the host and its flaws. CI pushes with the `TRACKER_LEDGER_KEY` deploy key and a
+laptop with its own git credentials. Rows that could not be pushed stay in the run's `ledger.jsonl`, for `ledger.py backfill
+<artifact id>`. `ledger.py compare <rows>` classifies each gap against the recorded rows as noise (5%), host, regression or
+improvement, or undecided (run a same-host A/B).
 
 ## Running it
 

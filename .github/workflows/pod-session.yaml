@@ -75,6 +75,7 @@ jobs:
         with:
           sparse-checkout: |
             release-gate/sessions
+            release-gate/ledger.py
             release-gate/ref
             release-gate/suites/bench/vram.py
             release-gate/suites/bench/fixtures
@@ -209,6 +210,7 @@ jobs:
           PARAMS: ${{ inputs.params }}
           RENT: ${{ inputs.rent }}
           SESSION_UNTIL: ${{ steps.deadline.outputs.until }}
+          TRACKER_LEDGER_KEY: ${{ secrets.TRACKER_LEDGER_KEY }}  # lib.sh's ledger rows into the tracker's benchmarks/
         run: |
           s=creator/release-gate/sessions
           [[ $SCRIPT =~ ^[a-z0-9-]+$ && $SCRIPT != lib && -f $s/$SCRIPT.sh ]] ||
