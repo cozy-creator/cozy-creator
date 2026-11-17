@@ -81,7 +81,8 @@ for i in $(seq 1 20); do pod true < /dev/null > /dev/null 2>&1 && break; [ "$i" 
 say "pod: $(pod 'nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader; free -g | sed -n 2p; df -h / | tail -1; nproc' < /dev/null | paste -sd'|')"
 pod "mkdir -p /root/up/fx /root/up/out" < /dev/null || fail "the pod's work folder"
 for f in upstream.py setup.sh cells.json; do pod "cat > /root/up/$f" < "$FIX/$f" || fail "copy $f"; done
-for f in "$WORK"/fx/*; do pod "cat > /root/up/fx/${f##*/}" < "$f" || fail "copy ${f##*/}"; done
+# Binary files go as base64: the SSH channel is only promised text.
+for f in "$WORK"/fx/*; do base64 -w0 "$f" | pod "base64 -d > /root/up/fx/${f##*/}" || fail "copy ${f##*/}"; done
 pod "cd /root/up && setsid nohup bash setup.sh > setup.log 2>&1 < /dev/null &" < /dev/null || fail "setup.sh"
 say "the references' environments and weights: fetching on the pod"
 
@@ -123,7 +124,7 @@ for g in qwen-image birefnet qwen3 pan2; do
   # Its weights go: the disk holds the next group's and ours.
   pod "rm -rf /root/hf/hub/models--$(case $g in qwen-image) echo 'Qwen--Qwen-Image-* /root/hf/hub/models--lightx2v--*' ;; pan2) echo IFM--PAN2 ;; qwen3) echo huihui-ai--* ;; *) echo ZhengPeng7--* ;; esac)" < /dev/null
 done
-T=900 pod "tar -C /root/up/out -cf - ." < /dev/null > "$WORK/up.tar" && tar -xf "$WORK/up.tar" -C "$WORK/up" || fail "the references' outputs"
+T=1800 pod "tar -C /root/up/out -cf - . | base64 -w0" < /dev/null | base64 -d > "$WORK/up.tar" && tar -xf "$WORK/up.tar" -C "$WORK/up" || fail "the references' outputs"
 say "references: $(ls "$WORK/up" | paste -sd' ')"
 wait "$BG"; BG=''
 
