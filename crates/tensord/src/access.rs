@@ -64,44 +64,61 @@ pub(crate) fn reads(store: &Store, selected: &[(String, Vec<String>)]) -> Vec<cr
         .filter_map(|(header, components)| {
             let checkpoint = checkpoint(store, header).ok()?;
             let model = Pulled::of(store, checkpoint.id()).ok().flatten()?.model;
-            let bytes = storage::chunks(&checkpoint, components).iter().map(|o| o.length).sum();
+            let bytes = chunks_in(header, components, &checkpoint).iter().map(|o| o.length).sum();
             Some(crate::journal::FunctionRead { checkpoint: header.clone(), model, components: components.clone(), bytes })
         })
         .collect()
 }
 
-/// Of what `read` names, the bytes not here now: all of them once its header is gone.
+/// The chunks `components` of checkpoint `header` read (all, when none), by header and components: read once from its structure,
+/// then known for good, as a header names its chunks for good. So they are known once the header went with its model too, while
+/// other models still hold some of them (two fine-tunes share a base's VAE; 44185604891: pre-a's VAE stayed under pre-b).
+static CHUNKS: Mutex<BTreeMap<(String, Vec<String>), Arc<[ObjectRef]>>> = Mutex::new(BTreeMap::new());
+
+/// The chunks `components` of `header` read, from `checkpoint`, its structure here, and known from now on (`CHUNKS`).
+fn chunks_in(header: &str, components: &[String], checkpoint: &Checkpoint) -> Arc<[ObjectRef]> {
+    let mut known = CHUNKS.lock().unwrap();
+    let key = (header.to_owned(), components.to_vec());
+    known.entry(key).or_insert_with(|| storage::chunks(checkpoint, components).into()).clone()
+}
+
+/// The chunks `components` of checkpoint `header` read (all, when none): as its structure here says, else as it said when it was
+/// last here. None: its header isn't here and never was read here.
+fn chunks_of(store: &Store, header: &str, components: &[String]) -> Option<Arc<[ObjectRef]>> {
+    if let Some(known) = CHUNKS.lock().unwrap().get(&(header.to_owned(), components.to_vec())) {
+        return Some(known.clone());
+    }
+    Some(chunks_in(header, components, &checkpoint(store, header).ok()?))
+}
+
+/// Of what `read` names, the bytes not here now: of its chunks, those the store doesn't hold, though its header went with its model
+/// (`chunks_of`). All of them, for a header never read here.
 pub(crate) fn missing(store: &Store, read: &crate::journal::FunctionRead) -> u64 {
     if whole(store, &read.checkpoint, &read.components) {
         return 0;
     }
-    match checkpoint(store, &read.checkpoint) {
-        Ok(checkpoint) => storage::chunks(&checkpoint, &read.components).iter().filter(|o| !store.holds(o)).map(|o| o.length).sum(),
-        Err(_) => read.bytes,
+    match chunks_of(store, &read.checkpoint, &read.components) {
+        Some(chunks) => chunks.iter().filter(|o| !store.holds(o)).map(|o| o.length).sum(),
+        None => read.bytes,
     }
 }
 
 /// Each of `read`'s components: its bytes, and of them those not here now (cl-1104: a quote of one slot counts only those it reads).
-/// None once its header is gone. Each one's bytes are its header's, read once.
+/// None for a header never read here (`chunks_of`).
 pub(crate) fn parts(store: &Store, read: &crate::journal::FunctionRead) -> Vec<(String, u64, u64)> {
-    static BYTES: Mutex<BTreeMap<(String, String), u64>> = Mutex::new(BTreeMap::new());
-    let known: Option<Vec<u64>> = {
-        let bytes = BYTES.lock().unwrap();
-        read.components.iter().map(|component| bytes.get(&(read.checkpoint.clone(), component.clone())).copied()).collect()
-    };
-    if let Some(known) = known.filter(|_| whole(store, &read.checkpoint, &read.components)) {
-        return read.components.iter().zip(known).map(|(component, bytes)| (component.clone(), bytes, 0)).collect();
-    }
-    let Ok(checkpoint) = checkpoint(store, &read.checkpoint) else { return vec![] };
-    let mut bytes = BYTES.lock().unwrap();
+    let whole = whole(store, &read.checkpoint, &read.components);
     (read.components.iter())
         .map(|component| {
-            let chunks = storage::chunks(&checkpoint, std::slice::from_ref(component));
-            let length: u64 = chunks.iter().map(|o| o.length).sum();
-            bytes.insert((read.checkpoint.clone(), component.clone()), length);
-            (component.clone(), length, chunks.iter().filter(|o| !store.holds(o)).map(|o| o.length).sum())
+            let chunks = chunks_of(store, &read.checkpoint, std::slice::from_ref(component))?;
+            let bytes: u64 = chunks.iter().map(|o| o.length).sum();
+            let absent: u64 = match whole {
+                true => 0,
+                false => chunks.iter().filter(|o| !store.holds(o)).map(|o| o.length).sum(),
+            };
+            Some((component.clone(), bytes, absent))
         })
-        .collect()
+        .collect::<Option<Vec<_>>>()
+        .unwrap_or_default()
 }
 
 /// Whether every chunk of `components` of `header` is here (`downloaded`). Once true it is
@@ -114,7 +131,7 @@ pub(crate) fn whole(store: &Store, header: &str, components: &[String]) -> bool 
         return true;
     }
     let whole = checkpoint(store, header)
-        .is_ok_and(|ck| storage::chunks(&ck, components).iter().all(|o| store.holds(o)));
+        .is_ok_and(|ck| chunks_in(header, components, &ck).iter().all(|o| store.holds(o)));
     match whole {
         true => WHOLE.lock().unwrap().insert(key, evicted),
         false => WHOLE.lock().unwrap().remove(&key),
