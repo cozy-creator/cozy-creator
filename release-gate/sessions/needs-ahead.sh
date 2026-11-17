@@ -83,33 +83,36 @@ done
 ID=$(cd "$RUN_PROJECT" && cozy --json status | jq -r '.id // empty')
 curl -fsS -X PUT "${H[@]}" -H "Origin: http://$ADDR" -H 'Content-Type: application/json' -d "$(jq -nc --arg id "$ID" '{projects: [$id]}')" \
   "http://$ADDR/v1/events/$STREAM" > "$OUT/show.json" 2>&1 || fail "the page couldn't show the project: $(tail -c 300 "$OUT/show.json")"
-# expander_t2i coming, not yet whole: the moment to change the draft. expander_i2i never comes meanwhile.
+# row: draw's guess's row on the board, the newest that names it: what the machine a render of it would go to has ready for it.
+row() { run_page board | jq -c --arg n draw '[.ahead[]? | select((.names // []) | index($n))] | max_by(.run) // empty' 2> /dev/null; }
+# expander_t2i coming (the model and the rest came for `first`, so it is all draw's guess downloads), not yet whole: the moment to
+# change the draft. expander_i2i never comes meanwhile.
 began=$SECONDS cut=0
 while [ $((SECONDS - began)) -lt 1200 ]; do
-  shown "$OUT/guess.json"
+  shown "$OUT/guess.json"; guessed=$(row)
   [ "$(held "$OUT/guess.json" "$I2I")" = 0 ] || fail "expander_i2i came for a text-to-image draft: $(models "$OUT/guess.json")"
   ! whole "$OUT/guess.json" "$T2I" || fail "expander_t2i was whole before the edit could cut it (no unfinished bytes to stop): $(models "$OUT/guess.json")"
-  cut=$(held "$OUT/guess.json" "$T2I"); [ "$cut" -gt $((512 << 20)) ] && break
+  cut=$(jq -r '.done // 0' <<< "${guessed:-null}"); [ "${cut:-0}" -gt $((64 << 20)) ] && break
   sleep 1
 done
-[ "$cut" -gt 0 ] || fail "draw's guess fetched no expander_t2i on $NAME in 20 min: $(models "$OUT/guess.json"); board: $(run_page board | jq -c .ahead)"
-say "draw's guess: $NAME holds $cut bytes of expander_t2i, none of expander_i2i: $(models "$OUT/guess.json")"
+[ "${cut:-0}" -gt 0 ] || fail "draw's guess fetched nothing on $NAME in 20 min: $(models "$OUT/guess.json"); its row: ${guessed:-none}"
+say "draw's guess on $NAME: ${guessed}; it holds $(held "$OUT/guess.json" "$T2I") bytes of expander_t2i, none of expander_i2i: $(models "$OUT/guess.json")"
 
 say "step 3: draw's draft mentions <pic>"
 run_page set draw --fields '{"instructions": "The red bicycle of <pic>, against a white wall at night."}' > "$OUT/set.json" 2>&1 ||
   fail "draw's edit: $(tail -c 300 "$OUT/set.json")"
-began=$SECONDS t2i=$cut
+began=$SECONDS
 while [ $((SECONDS - began)) -lt 1800 ]; do
   shown "$OUT/switch.json"
-  row=$(run_page board | jq -c --arg n draw '[.ahead[]? | select((.names // []) | index($n))] | max_by(.run) // empty' 2> /dev/null)
-  whole "$OUT/switch.json" "$I2I" && jq -e --arg m "$NAME" '.ready == true and .machine == $m' <<< "${row:-null}" > /dev/null 2>&1 && break
+  ready=$(row)
+  whole "$OUT/switch.json" "$I2I" && jq -e --arg m "$NAME" '.ready == true and .machine == $m' <<< "${ready:-null}" > /dev/null 2>&1 && break
   sleep 2
 done
-whole "$OUT/switch.json" "$I2I" || fail "expander_i2i isn't whole on $NAME 30 min after the edit: $(models "$OUT/switch.json"); row: ${row:-none}"
-jq -e --arg m "$NAME" '.ready == true and .machine == $m' <<< "${row:-null}" > /dev/null || fail "draw isn't ready on $NAME: ${row:-no row}"
+whole "$OUT/switch.json" "$I2I" || fail "expander_i2i isn't whole on $NAME 30 min after the edit: $(models "$OUT/switch.json"); row: ${ready:-none}"
+jq -e --arg m "$NAME" '.ready == true and .machine == $m' <<< "${ready:-null}" > /dev/null || fail "draw isn't ready on $NAME: ${ready:-no row}"
 t2i=$(held "$OUT/switch.json" "$T2I")
 ! whole "$OUT/switch.json" "$T2I" || fail "expander_t2i came whole after the draft stopped needing it: $(models "$OUT/switch.json")"
-say "after the edit: expander_t2i stopped at $t2i bytes ($cut when the draft changed), expander_i2i whole; draw ready on $NAME: $(models "$OUT/switch.json")"
+say "after the edit: expander_t2i stopped at $t2i bytes, unfinished; expander_i2i whole; draw ready on $NAME: $(models "$OUT/switch.json")"
 
 say "step 4: draw rendered on $NAME"
 before=$(jq -r '[.status.models[]?.checkpoints[]?.held_bytes // 0] | add // 0' "$OUT/switch.json")
