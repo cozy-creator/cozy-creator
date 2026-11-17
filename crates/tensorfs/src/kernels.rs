@@ -35,7 +35,7 @@ const CORE_KINDS: [&str; 7] = ["codes", "unpack", "regular_h4", "rotated", "requ
 #[cfg(require_aot)]
 const _: () = assert!(
     BINARIES.len()
-        == FAMILIES.len() * (crate::format::decode::gguf::STRUCTS.len() + CORE_KINDS.len()) * 3
+        == FAMILIES.len() * (crate::format::decode::ggml::STRUCTS.len() + CORE_KINDS.len()) * 3
 );
 
 #[cfg(feature = "cuda")]
