@@ -5,6 +5,7 @@ import type { Opened } from "../api/calcifer"
 import { projectsQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { newFolder } from "../app/making"
+import { useReloadHold } from "../app/reload"
 import { Failure } from "./common"
 import { Recovery, vaultKey } from "./ProjectVault"
 
@@ -65,6 +66,8 @@ export function ProjectCreate({ onCreated, onCancel, onHolding, autoFocus = fals
   }, [autoFocus])
   useEffect(() => { if (named === null && field.current === document.activeElement) field.current?.select() }, [suggested, named])
   useEffect(() => { onHolding?.(busy || Boolean(recovery)) }, [onHolding, busy, recovery])
+  // What's typed here, or the recovery secret shown once, is no reload's to lose.
+  useReloadHold(busy || Boolean(recovery) || typed !== null || named !== null || passphrase !== "" || confirmation !== "")
 
   // The recovery secret it was made with stays on screen until Done, whatever happens to the connection meanwhile: it is shown once. Its
   // lock is read here before it opens: a first drop's canvas stays mounted across the move only while its project's lock is known (Shell),

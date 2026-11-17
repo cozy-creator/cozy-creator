@@ -33,7 +33,7 @@ interface Owed {
 
 /** Stream events into the query cache. The stream invalidates, so nothing goes stale by itself. */
 class Bridge {
-  /** Calcifer came back as another version: the page offers Reload. */
+  /** Calcifer came back as another version: the page reloads itself when it's safe to (`reloadWhenSafe`). */
   readonly newVersion = signal<string | null>(null)
   private queries: QueryClient
   private client: Client
