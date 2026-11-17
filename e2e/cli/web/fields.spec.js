@@ -158,10 +158,10 @@ test('fields', async ({ page, project, api, cli, guards }) => {
     const slot = region.locator('.slot-control[data-field="first_frame"]');
     await slot.scrollIntoViewIfNeeded();
     // The canvas right of what Focus shows, where walk is carried from.
-    const strip = await page.evaluate(() => {
+    const { strip, right } = await page.evaluate(() => {
       const root = document.querySelector('.canvas-root'), at = root.canvasInspection.camera(), pane = root.getBoundingClientRect();
       const right = Math.max(...[...document.querySelectorAll('.focus-viewport .focus-card > .here-under, .focus-viewport .focus-card .media')].map((el) => el.getBoundingClientRect().right));
-      return { x: Math.round((right + 24 - pane.x - at.x) / at.zoom), y: Math.round((innerHeight / 2 - pane.y - at.y) / at.zoom) };
+      return { strip: { x: Math.round((right + 24 - pane.x - at.x) / at.zoom), y: Math.round((innerHeight / 2 - pane.y - at.y) / at.zoom) }, right };
     });
     await project.api.patch(project.at('/canvas'), { cards: { walk: strip } });
     const stood = async () => {
@@ -170,7 +170,9 @@ test('fields', async ({ page, project, api, cli, guards }) => {
     };
     await expect.poll(stood).toEqual(strip);
     let from;
-    await expect.poll(async () => (from = await reach(page, 'walk')), { message: 'walk in reach beside Focus' }).toBeTruthy();
+    // Reached where the page draws it beside Focus, not where it was before the API's move landed in the page (44041520735: the carry
+    // began at walk's old place at the left edge, so nothing was held over the slot).
+    await expect.poll(async () => (from = await reach(page, 'walk'))?.x > right, { message: 'walk in reach beside Focus' }).toBe(true);
     const said = await carry(page, from, await middle(slot), async () => ({ refuses: /\brefuses\b/.test(await slot.getAttribute('class')), why: await slot.locator('.refusal').textContent() }));
     expect.soft(said, 'said as it is carried over').toMatchObject({ refuses: true, why: expect.stringContaining('takes an image') });
     await expect.soft(page.locator('.notes .note .line', { hasText: 'takes an image' }), 'and said once let go').toHaveCount(1);
