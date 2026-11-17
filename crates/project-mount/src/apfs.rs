@@ -189,7 +189,15 @@ fn base_device(value: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn current_device(provider: &Provider, image: &Path) -> Result<Option<String>> {
+/// An image's identity on its filesystem (device, inode): the same image wherever its folder is moved (cl-1124: dragged to the Trash,
+/// where the image registry names it by its new path).
+fn identity(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    fs::metadata(path).ok().map(|metadata| (metadata.dev(), metadata.ino()))
+}
+
+/// The device the image at `image` is attached as: named by its path, or by its identity `same` once its folder moved.
+fn current_device(provider: &Provider, image: &Path, same: Option<(u64, u64)>) -> Result<Option<String>> {
     let mut command = provider.command("info");
     command.arg("-plist");
     let info = decode(run(
@@ -212,8 +220,9 @@ fn current_device(provider: &Provider, image: &Path) -> Result<Option<String>> {
         else {
             continue;
         };
-        let path = fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
-        if path == image {
+        let named = PathBuf::from(path);
+        let path = fs::canonicalize(&named).unwrap_or_else(|_| named.clone());
+        if path == image || same.is_some_and(|same| identity(&named) == Some(same)) {
             return base_device(candidate).map(Some).ok_or(Error::Invalid(
                 "an attached native image has no valid owned device identity",
             ));
@@ -239,6 +248,7 @@ pub(super) fn unmount(provider: &Provider, view: &Path, budget: Duration) -> Res
 pub(super) struct Lease {
     provider: Provider,
     image: PathBuf,
+    same: Option<(u64, u64)>,
     device: Option<String>,
     view: PathBuf,
     volume: Option<String>,
@@ -257,12 +267,14 @@ impl Lease {
 
     pub(super) fn capture(provider: &Provider, backing: &Path, view: &Path) -> Result<Self> {
         let image = validate(backing)?;
-        let device = current_device(provider, &image)?.ok_or(Error::Invalid(
+        let same = identity(&image);
+        let device = current_device(provider, &image, same)?.ok_or(Error::Invalid(
             "the mounted image has no owned backing-device identity",
         ))?;
         Ok(Self {
             provider: provider.clone(),
             image,
+            same,
             device: Some(device),
             view: view.to_owned(),
             volume: Some(macos_source(view)?.ok_or(Error::Invalid(
@@ -276,7 +288,7 @@ impl Lease {
         if !self.attached {
             return Ok(true);
         }
-        let Some(current) = current_device(&self.provider, &self.image)? else {
+        let Some(current) = current_device(&self.provider, &self.image, self.same)? else {
             self.attached = false;
             return Ok(true);
         };
@@ -298,7 +310,7 @@ impl Lease {
             NORMAL_DETACH_ACK,
         )
         .is_err()
-            && current_device(&self.provider, &self.image)?.as_deref() == Some(current.as_str())
+            && current_device(&self.provider, &self.image, self.same)?.as_deref() == Some(current.as_str())
         {
             let mut forced = self.provider.command("detach");
             forced.arg("-force").arg(&current);
@@ -311,7 +323,7 @@ impl Lease {
             );
         }
         let remains =
-            current_device(&self.provider, &self.image)?.as_deref() == Some(current.as_str());
+            current_device(&self.provider, &self.image, self.same)?.as_deref() == Some(current.as_str());
         if !remains {
             self.attached = false;
         }
@@ -352,7 +364,8 @@ pub(super) fn serve(request: Request) -> Result<()> {
     } = request;
     let image = validate(&backing)?;
     encrypted(&provider, &image)?;
-    if current_device(&provider, &image)?.is_some() {
+    let same = identity(&image);
+    if current_device(&provider, &image, same)?.is_some() {
         return Err(Error::Invalid(
             "the encrypted image is already attached; close that attachment before unlocking it here",
         ));
@@ -360,6 +373,7 @@ pub(super) fn serve(request: Request) -> Result<()> {
     let mut lease = Lease {
         provider: provider.clone(),
         image: image.clone(),
+        same,
         device: None,
         view: view.clone(),
         volume: None,
@@ -385,7 +399,7 @@ pub(super) fn serve(request: Request) -> Result<()> {
     // APFS attach output may name its synthesized container rather than the backing disk.
     // Record identity from the same image registry used for every later ownership check;
     // comparing those two different device identities would skip controller-death cleanup.
-    let device = current_device(&provider, &image)?.ok_or(Error::Invalid(
+    let device = current_device(&provider, &image, same)?.ok_or(Error::Invalid(
         "the native image attached without an owned device identity",
     ))?;
     lease.device = Some(device);
