@@ -146,6 +146,13 @@ def port(package: Path, files: Path, kind: str, out: Path) -> None:
     vae_module.DiagonalGaussianDistribution.sample = lambda self, generator=None: self.mean
     seen = {}
     real = rng.noise
+    decode = model.vae.decode
+
+    def keep(latents, *a, **k):  # what the VAE decodes, as the ref run keeps it: scaled and shifted
+        seen["latents"] = latents.detach().clone()
+        return decode(latents, *a, **k)
+
+    model.vae.decode = keep
 
     def fixed(shape, seed, *, dtype=torch.float32, device="cpu"):
         return noise_for(shape, seen["seed"]).to(device=device, dtype=dtype)
@@ -169,7 +176,7 @@ def port(package: Path, files: Path, kind: str, out: Path) -> None:
                 image = model.decode_latents(latents)
         finally:
             m.rng.noise = real
-        dump[name] = {"latents": latents.float(), "image": torch.from_numpy(np.asarray(image).copy())}
+        dump[name] = {"latents": seen["latents"].squeeze(2).float(), "image": torch.from_numpy(np.asarray(image).copy())}
         print(f"port {kind} {name}: image {image.size}", flush=True)
     torch.save(dump, out / f"port-{kind}.pt")
 
