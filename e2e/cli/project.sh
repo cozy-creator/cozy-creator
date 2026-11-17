@@ -359,7 +359,7 @@ for _ in $(seq 30); do answer=$(project_api "$N" '' 2>&1) && break; sleep 1; don
 J --arg i "$id" '.id == $i' <<< "$answer" || { check "moved: it doesn't open where it is now: $(head -c 300 <<< "$answer")"; return; }
 # This computer's machine works inside the folder: what it was running goes again here, said in one line (coordinator, 11-17).
 J '(.warnings // []) | any(.message | test("^long restarted in the moved folder"))' <<< "$answer" \
-  || check "moved: its local run wasn't said restarted: $(jq -c '.warnings' <<< "$answer")"
+  || check "moved: its local run wasn't said restarted: $(jq -c '.warnings' <<< "$answer"); Calcifer: $(grep -a -i 'moved\|moving' "$HOME/.cozy/calcifer/diagnostics.log" 2> /dev/null | tail -5)"
 for _ in $(seq 240); do J '.busy | not' <<< "$(status "$N")" && break; sleep 0.5; done
 { [ "$(made "$N" long)" = 1 ] && [ "$(made "$N" after)" = 1 ]; } \
   || check "moved: its renders didn't land where it is now: $(status "$N" | jq -c '{busy, jobs: [.board.jobs[] | {asset, state, error: .error.message}]}')"

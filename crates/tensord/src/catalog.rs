@@ -145,7 +145,8 @@ impl Catalog {
         let mut record = self.read(&directory, identity)?;
         let expected = platform::paths::venv_python(&directory.join("env"));
         // A project's own generations are kept in it (cl-984): moved with its folder, the record names this one where it was (cl-1066).
-        if record.python != expected && expected.strip_prefix(&self.root).is_ok_and(|tail| record.python.ends_with(tail)) {
+        let generations = directory.parent().unwrap_or(&directory);
+        if record.python != expected && expected.strip_prefix(generations).is_ok_and(|tail| record.python.ends_with(tail)) {
             record.python = expected.clone();
         }
         // The venv's interpreter may be a symlink into uv's immutable interpreter store.
