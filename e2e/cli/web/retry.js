@@ -48,7 +48,8 @@ const asset = async (name) => (await api('')).assets?.find((row) => row.name ===
   // Its machine ended, as Machines' End ends one. Every note the page shows until paged's take lands is kept: none says a failure.
   execFileSync(process.env.COZY, ['--json', 'machine', 'end', stand, '--force', '-y'], { encoding: 'utf8', timeout: 60_000 });
   const said = new Set();
-  const finished = page.locator('.notes .note').filter({ hasText: 'of paged is ready' });
+  // "Version 2 of paged is ready", or one note for both takes landing together ("2 renders are ready: cut, paged").
+  const finished = page.locator('.notes .note').filter({ hasText: /\bready\b/ }).filter({ hasText: 'paged' });
   const landed = await until('paged landed again', async () => {
     for (const text of await page.locator('.notes .note').allInnerTexts().catch(() => [])) said.add(text);
     return (await finished.count()) > 0 ? Date.now() : 0;
