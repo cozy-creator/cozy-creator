@@ -160,9 +160,10 @@ impl Link {
         &self,
         runs: Vec<(store::Sent, v1::RunSpec)>,
         follow: &store::Sent,
+        objects: Vec<v1::CarriedObject>,
     ) -> Result<(Vec<Result<v1::RunState, LinkError>>, Option<Live<v1::RunEvent>>), LinkError> {
         let runs = runs.into_iter().map(|(id, spec)| v1::RunRequest { id: id.as_str().to_owned(), spec }).collect();
-        let batch = v1::RunBatch { runs, follow: follow.as_str().to_owned() };
+        let batch = v1::RunBatch { runs, follow: follow.as_str().to_owned(), objects };
         let (answers, events) = self.machine.submit_batch_following(&batch).await?;
         let events: Option<Live<v1::RunEvent>> = events.map(|events| Box::pin(events.map_err(LinkError::from)) as Live<v1::RunEvent>);
         Ok((answers.into_iter().map(|answer| answer.map_err(LinkError::from)).collect(), events))

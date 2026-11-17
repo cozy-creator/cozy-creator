@@ -451,7 +451,14 @@ async fn submit(State(m): State<Machine>, headers: HeaderMap, body: Bytes) -> An
     let followed_id = std::mem::take(&mut batch.follow);
     let admitted = m.admit()?;
     let actor = caller.actor;
-    let accepted = m.call(move |runs| runs.accept(actor, batch.runs)).await?;
+    let carried = std::mem::take(&mut batch.objects);
+    let accepted = m.call(move |runs| {
+        // What the batch carries is written first, as its PUT would write it: its runs read it (cl-1172).
+        for object in carried {
+            runs.objects.carried(&actor_id(actor), &object.digest, &object.data)?;
+        }
+        runs.accept(actor, batch.runs)
+    }).await?;
     drop(admitted);
     let runs: Vec<v1::Admitted> = (accepted.into_iter())
         .map(|admitted| match admitted {
