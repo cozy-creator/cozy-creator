@@ -607,8 +607,19 @@ function LatentPreview({ view, number }: { view: ElementView; number: number }) 
   )
 }
 
+/** The words a text tool's run `number` has written so far, from its record as the events stream keeps it (`project-run`), while it
+ *  writes them and until its version lands (xs-209). */
+export function useWords(view: ElementView, number: number | undefined): string | undefined {
+  const { client } = useConnection()
+  const store = useCanvasStore()
+  const project = store.projectId
+  const text = Boolean(view.asset?.tool && view.asset.kind === "text" && number !== undefined)
+  const { data } = useQuery({ ...runQuery(client, project ?? "", number ?? 0), enabled: Boolean(project) && text })
+  return text ? streamedWords(data ?? (view.run?.number === number ? view.run : undefined)) : undefined
+}
+
 /** A tool's words, to read and select. While they are written, the end stays in view once it was read to there. */
-function Answer({ words, version, writing }: { words: string; version?: number; writing: boolean }) {
+export function Answer({ words, version, writing }: { words: string; version?: number; writing: boolean }) {
   const box = useRef<HTMLDivElement>(null)
   const atEnd = useRef(true)
   useLayoutEffect(() => {
@@ -883,8 +894,8 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children, 
   // Made, with its file still on its way here: it says so, as a render on its way does.
   const arriving = useArriving(view)
   const run = onItsWay ? makingRun(view) : arriving
-  // Its run writing words: they show as they come, until its version lands with them (xs-209).
-  const writing = asset?.tool && field === "text" && run !== undefined && view.run?.number === run ? streamedWords(view.run) : undefined
+  // Its run writing words: they show as they come, until its version lands with them (xs-209); open, under what it was asked (InFrame).
+  const writing = useWords(view, run)
   // What a render showed so far: only the run its frame is on's, never another take's (cl-945).
   const glimpse = view.glimpse && (run === undefined || view.glimpse.number === run) ? view.glimpse : undefined
   const here = shown && !shown.absent ? shown : null
@@ -944,7 +955,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children, 
         {nearImage && field === "image" && !own && <BufferedImage sha256={drawnImage?.sha256 ?? null} originalPath={drawnImage?.path} neighborPaths={neighborPaths} neighbors={nearImage.absent || nearImage === drawnImage ? neighbors : [nearImage.sha256, ...neighbors]} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
         {here && field !== "video" && field !== "image" && field !== "text" && <FramePicture key={here.sha256} sha256={here.sha256} open={Boolean(view.here)} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
         {/* What a tool wrote, whole, to read and select (xs-204), and its words as they come (xs-209): one element, so it reads on. */}
-        {(writing !== undefined || here) && field === "text" && asset?.tool && <Answer words={writing ?? here?.text ?? ""} version={writing === undefined ? here?.number : undefined} writing={writing !== undefined} />}
+        {(writing !== undefined ? !view.here : Boolean(here)) && field === "text" && asset?.tool && <Answer words={writing ?? here?.text ?? ""} version={writing === undefined ? here?.number : undefined} writing={writing !== undefined} />}
         {shown?.absent && arriving === undefined && <span className="media-note">{shown.machine ? `Stored on ${shown.machine}` : "Stored on another computer"}</span>}
         {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}
       </div>
