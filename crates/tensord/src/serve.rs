@@ -475,6 +475,13 @@ fn start_api(
 ) -> io::Result<()> {
     use crate::api;
     let publisher = crate::published::Publisher::new(sdk, machine.clone(), root);
+    let own_hub = own_hub
+        .map(|hub| crate::hub::Source::new(&hub.origin, hub.ca_der, None))
+        .transpose()
+        .map_err(|e| io::Error::other(e.0))?;
+    if let Some(hub) = &own_hub {
+        publisher.own_hub(hub.clone());
+    }
     service.configure_publisher(publisher.clone());
     identity.updates.installs_with(publisher.clone());
     let objects = Arc::new(crate::objects::Objects::new(service.engine.clone()));
@@ -484,10 +491,7 @@ fn start_api(
         objects: objects.clone(),
         local: Arc::new(crate::local_source::LocalSources::new(objects, publisher.clone(), generations)),
         publisher,
-        own_hub: own_hub
-            .map(|hub| crate::hub::Source::new(&hub.origin, hub.ca_der, None))
-            .transpose()
-            .map_err(|e| io::Error::other(e.0))?,
+        own_hub: own_hub.clone(),
         contexts: Default::default(),
         projection: Default::default(),
     });

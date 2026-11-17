@@ -362,6 +362,9 @@ pub(crate) struct Publisher {
     layer: Mutex<Option<Arc<layer::Layer>>>,
     /// One ask of the Hub for its PyTorch at a time (`follow`).
     following: Mutex<()>,
+    /// The machine's own Hub (`serve`), which a package with no Hub of its own (local code) asks for its PyTorch: asked by none,
+    /// a machine whose first package was local code built it no Torch, and its executor couldn't start (e2e 44041520735).
+    own_hub: std::sync::OnceLock<hub::Source>,
     /// The held names being read again at their Hub (`resolve`).
     refreshing: Arc<Mutex<BTreeSet<String>>>,
 }
@@ -413,8 +416,14 @@ impl Publisher {
             building: Mutex::new(HashMap::new()),
             layer: Mutex::default(),
             following: Mutex::default(),
+            own_hub: std::sync::OnceLock::new(),
             refreshing: Arc::default(),
         })
+    }
+
+    /// The machine's own Hub, which local code's environments ask for their PyTorch (`follow`).
+    pub(crate) fn own_hub(&self, hub: hub::Source) {
+        let _ = self.own_hub.set(hub);
     }
 
     /// This machine's PyTorch layer: its base's, read once. A machine with no image installs its
@@ -504,7 +513,7 @@ impl Publisher {
     /// start, at its first package, unless an update said it first (`prepare_torch`): one built on another goes to it at
     /// its next use, so a moved Hub moves every machine as it restarts. An older Hub, or none answering, names none.
     fn follow(&self, hub: Option<&hub::Source>) {
-        let Some(hub) = hub.filter(|_| self.sdk.torch.unasked()) else {
+        let Some(hub) = hub.or_else(|| self.own_hub.get()).filter(|_| self.sdk.torch.unasked()) else {
             return;
         };
         let _one = self.following.lock().unwrap();
