@@ -356,8 +356,9 @@ impl Capability {
     /// said to the reads waiting on it; once they run out those reads go anonymously, and it goes on asking
     /// (cl-1189: a Hub that never answered held a run's first read 43 minutes, saying nothing).
     fn renew(self: Arc<Self>, engine: std::sync::Weak<crate::execution::Engine>) {
-        // The pause before the next ask, and the attempts in a row the Hub didn't answer for the capability `asked`.
-        let (mut failing, mut streak, mut asked) = (Duration::ZERO, None::<Backoff>, String::new());
+        // The last pause after an ask the Hub didn't answer and when the next may go (unix ms), and the attempts in a row it
+        // didn't answer for the capability `asked`.
+        let (mut failing, mut retry_at, mut streak, mut asked) = (Duration::ZERO, 0i64, None::<Backoff>, String::new());
         loop {
             {
                 let mut served = self.runs.lock().unwrap();
@@ -377,9 +378,11 @@ impl Capability {
             let held = self.held.lock().unwrap();
             // A newer capability is asked at once, its attempts counted afresh.
             if held.signed != asked {
-                (failing, streak, asked) = (Duration::ZERO, None, held.signed.clone());
+                (failing, retry_at, streak, asked) = (Duration::ZERO, 0, None, held.signed.clone());
             }
-            let wait = Duration::from_millis(held.renew_at.saturating_sub(now_ms()).max(0) as u64).max(failing);
+            // Due at its token's renewal, and not before its pause after an ask the Hub didn't answer is over. The pause was a
+            // floor on every wait: once the Hub missed one ask it was never asked again, and every read waited forever (cl-1189).
+            let wait = Duration::from_millis(held.renew_at.max(retry_at).saturating_sub(now_ms()).max(0) as u64);
             if !wait.is_zero() {
                 let _ = self.changed.wait_timeout(held, wait).unwrap();
                 continue;
@@ -389,7 +392,7 @@ impl Capability {
             let backoff = streak.get_or_insert_with(Backoff::call);
             match self.redeem(&signed) {
                 Ok(token) => {
-                    (failing, streak) = (Duration::ZERO, None);
+                    (failing, retry_at, streak) = (Duration::ZERO, 0, None);
                     let mut held = self.held.lock().unwrap();
                     // A newer capability came meanwhile: its own redemption is due.
                     if held.signed != signed {
@@ -418,12 +421,13 @@ impl Capability {
                     let why = format!("{} didn't redeem the run's capability: {error}", self.origin);
                     match backoff.again(&why, false, error.stated_wait()) {
                         Some((pause, said)) => {
-                            failing = pause;
+                            (failing, retry_at) = (pause, now_ms() + pause.as_millis() as i64);
                             tracing::warn!(origin = %self.origin, "{said}");
                             self.token.send_modify(|token| token.failing = Some(said));
                         }
                         None => {
                             failing = error.stated_wait().unwrap_or(failing * 2).clamp(Duration::from_secs(1), Duration::from_secs(60));
+                            retry_at = now_ms() + failing.as_millis() as i64;
                             let spent = backoff.spent(&why);
                             tracing::warn!(origin = %self.origin, retry_s = failing.as_secs(), "{spent}: its reads go anonymously meanwhile");
                             self.token.send_modify(|token| (token.failing, token.spent) = (None, Some(spent)));
