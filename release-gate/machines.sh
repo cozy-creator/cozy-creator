@@ -55,12 +55,17 @@ run_clock() {
     | [$at, (.runs[] | select(.status == "queued" or .status == "in_progress") | if (.name // "") != "" then .name else .id end)] | map(tostring) | join(" ")'
 }
 
-# pod_derived <cli> <machine> <reset|census>: release-gate/derived-state.sh on the machine's root shell (an `--ssh` rental):
-# `reset` clears what earlier runs left besides weights and installs (LoRA bakes, memos, learned peaks, kernels, page cache);
-# both print its census line, `derived N memo N peaks N kernels N jit N cached_gib X`. Nothing printed: no answer.
+# The pod side of `pod_derived`, found once as this file is sourced: a session cds into its packages and outputs, and a
+# path relative to where it started found nothing after its first arm (44034679486).
+POD_DERIVED_SCRIPT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/derived-state.sh
+# pod_derived <cli> <machine> <reset|settle|census>: release-gate/derived-state.sh on the machine's root shell (an `--ssh`
+# rental): `reset` before an update clears what earlier runs left besides weights and installs (LoRA bakes, memos, learned
+# peaks, kernels, page cache); `settle` after its restart clears what the ended executors still wrote; each prints its census line, `derived N memo N peaks N kernels N jit N cached_gib X`. Nothing printed: no answer. No
+# script here: exit 2 at once, as no retry finds it.
 pod_derived() {
   local script
-  script=$(base64 -w0 < "$(dirname "${BASH_SOURCE[0]}")/derived-state.sh") || return 1
+  [ -f "$POD_DERIVED_SCRIPT" ] || { echo "no $POD_DERIVED_SCRIPT" >&2; return 2; }
+  script=$(base64 -w0 < "$POD_DERIVED_SCRIPT") || return 2
   timeout 300 "$1" machine ssh "$2" -- "echo $script | base64 -d > /var/tmp/derived-state.sh && sh /var/tmp/derived-state.sh $3" < /dev/null |
     grep -E '^derived [0-9]+ memo [0-9]+ peaks [0-9]+ kernels [0-9]+ jit [0-9]+' | tail -1
 }
