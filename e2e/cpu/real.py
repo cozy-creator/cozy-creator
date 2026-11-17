@@ -82,20 +82,25 @@ def mirror(binary: str, project: Path, ref: str, manifest: str, store: Path, out
     work.mkdir(parents=True, exist_ok=True)
     stem = name.replace("/", "-")
     file = work / f"{stem}.cozytensors"
-    tensorfs.open(manifest, cache_dir=store, local_files_only=True).write_file(file)
-    made = cozy(binary, project, ["model", "upload", str(file), name, "--lane", lane(manifest, store), "--mirror", PAGE,
+    checkpoint = tensorfs.open(manifest, cache_dir=store, local_files_only=True)
+    checkpoint.write_file(file)
+    # A LoRA's checkpoint holds its factors alone: a person uploads it as a LoRA (isolated.sh `standin_lora`).
+    kind = "lora" if all(key.endswith((".lora_A.weight", ".lora_B.weight")) for component in checkpoint.components.values()
+                         for key in component.tensors) else "model"
+    made = cozy(binary, project, [kind, "upload", str(file), name, "--lane", lane(manifest, store), "--mirror", PAGE,
                                   "--on", "local", "-y"], work / f"upload-{stem}.ndjson")
     models = cast(list[dict[str, Json]], cast(dict[str, Json], made.get("result") or {}).get("models") or [{}])
     commit = cast(dict[str, Json], models[0].get("published") or {}).get("commit")
     if not isinstance(commit, str) or not commit:
         raise Failed(f"uploading {name} made no checkpoint")
-    cozy(binary, project, ["model", "publish", name, release or "0.1.0", commit, "-y"], work / f"publish-{stem}.ndjson")
+    cozy(binary, project, [kind, "publish", name, release or "0.1.0", commit, "-y"], work / f"publish-{stem}.ndjson")
     file.unlink()
 
 
 def wanted(interface: Interface, manifests: dict[str, str], cells: list[Cell]) -> dict[str, str]:
-    """Each Hub ref a call reads by default (every slot's `default` the fixture builds), or a cell picks (`models`), and the
-    tiny checkpoint published there. A slot whose ref the fixture builds twice is the fixture's error."""
+    """Each Hub ref a call reads by default (every slot's `default` the fixture builds), a cell picks (`models`), or the fixture
+    builds by its ref (a LoRA a function stacks), and the tiny checkpoint published there. A ref built twice is the fixture's
+    error."""
     refs: dict[str, str] = {}
 
     def want(ref: str, manifest: str | None) -> None:
@@ -113,6 +118,11 @@ def wanted(interface: Interface, manifests: dict[str, str], cells: list[Cell]) -
     for cell in cells:
         for ref in [*cell.get("models", {}).values(), *cell.get("sources", {}).values()]:
             want(ref, manifests.get(ref))
+    # A build of a release the package moved past (`same_model`: its default is now another) is that default's alone.
+    names = {ref.partition("@")[0] for ref in refs}
+    for ref, manifest in manifests.items():
+        if "@" in ref and (ref in refs or ref.partition("@")[0] not in names):
+            want(ref, manifest)
     return refs
 
 

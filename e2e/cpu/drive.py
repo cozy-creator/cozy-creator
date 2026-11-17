@@ -1,4 +1,6 @@
-"""e2e/cpu: one package's cells through the Runtime's real executor on the CPU, with tiny random weights.
+"""e2e/cpu: one package's cells through the Runtime's real executor on the CPU, with tiny random weights, and this
+driver standing in for TensorD: for a fixture that patches release geometry (PATCH, WAIVE: se-149), and for every package
+run without a cozy. With one, every other package's cells run for real (real.py), judged here (`judged`).
 
 Runs in the package's own environment (run.sh). It stands where TensorD stands: the executor process is the
 Runtime's (`python -m cozy_runtime.internal.executor`), and this sends it TensorD's frames (`executor-protocol`) over
