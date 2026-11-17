@@ -1,0 +1,1 @@
+A package published for Runtime 0.46 (cozy 0.25.0's, such as minimax-h3 0.12.0) passes files to a function it calls again on a machine still on that Runtime: TensorD takes them inside the call's request, as 0.46 sends them, the same as by `assets=` (cl-1160). A shot with references no longer fails "its files come by assets=".

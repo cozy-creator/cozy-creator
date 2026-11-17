@@ -159,6 +159,22 @@ rc_floor() {
   else log "publishing e2e-rcfloor was refused: $(tail -c 300 "$E2E_RCFLOOR_PUBLISHED" | tr '\n' ' ')"; fi
 }
 
+# oldcall (old_call_files, cl-1160): e2e/cli/oldcall as the admin's account's `e2e-oldcall` 0.1.0, locked on Runtime 0.46.0 as cozy
+# 0.25.0's packages are. A refusal is the cell's to report.
+oldcall() {
+  local copy=$seed/packages/e2e-oldcall account
+  account=$(cozy --json whoami | jq -r '.account // empty')
+  rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$here/cli/oldcall" "$copy"
+  if (cd "$copy" && cozy --json package publish -y) > "$seed/publish-e2e-oldcall.json" 2>&1; then
+    export E2E_OLDCALL=$account/e2e-oldcall
+    log "published $E2E_OLDCALL 0.1.0 ($(grep -A1 -x 'name = "cozy-runtime"' "$copy/uv.lock" 2> /dev/null | tail -1))"
+  else
+    E2E_OLDCALL_REFUSED=$(tail -c 400 "$seed/publish-e2e-oldcall.json" | tr '\n' ' ')
+    export E2E_OLDCALL_REFUSED
+    log "publishing e2e-oldcall was refused: $E2E_OLDCALL_REFUSED"
+  fi
+}
+
 # next (self_update, cl-978): the hub suite's weightless echo as the admin's account's `e2e-next` 0.1.0, needing cozy-runtime>=0.46.0,
 # which only a cozy of the Latest's line runs.
 next() {
@@ -440,7 +456,8 @@ if [ -n "$needs" ]; then
       relay
       held
       final
-      rc_floor ;;
+      rc_floor
+      oldcall ;;
   esac
   if [[ " $needs " == *" birefnet "* || " $needs " == *" qwen "* || " $needs " == *" downloads "* || " $needs " == *" loras "* || " $needs " == *" parts "* \
     || " $needs " == *" disk "* || " $needs " == *" lorabase "* || " $needs " == *" ltxlora "* || " $needs " == *" enhancer "* ]]; then
