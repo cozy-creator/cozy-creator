@@ -15,6 +15,7 @@
 #   lanes     comma-separated lanes (q8_0,q4_k_m); the GGUF type each compares with is its name upper-cased
 #   llama     llama.cpp's tag (b12466) and llama_sha256 its source archive's digest
 #   tensorfs, runtime   wheel sources (required)
+#   have      space-separated lane=org/name@sha256:… already written: pulled, not quantized again
 #   seconds   what the cap must buy (5400)
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -48,8 +49,13 @@ there "bash /w/pod.sh $LLAMA $LLAMA_SUM $HFREPO > /w/out/pod.out 2>&1" 7200 < /d
 # 1. Ours.
 step pull model install "$MODEL" --on "$NAME" || fail "pull $MODEL"
 declare -A REF
+for pair in $(param have ''); do REF[${pair%%=*}]=${pair#*=}; done
 IFS=, read -ra lanes <<<"$LANES"
 for lane in "${lanes[@]}"; do
+  if [ -n "${REF[$lane]:-}" ]; then
+    step "pull-$lane" model install "${REF[$lane]}" --on "$NAME" || fail "pull $lane ${REF[$lane]}"
+    continue
+  fi
   step "$lane" model quantize "$MODEL" --lane "$lane" --package "./$PACKAGE" --on "$NAME" || fail "quantize $lane"
   c=$(made "$lane"); [ -n "$c" ] || fail "quantize $lane made no checkpoint"
   REF[$lane]="${MODEL%@*}@$c"; say "$lane: ${REF[$lane]}"
