@@ -19,6 +19,8 @@
 #   tree     the packages_refs checkout whose qwen-image-2 runs (`-f packages_refs=pk=<packages ref with its rules>`, tree pk)
 #   cpu_sku  a CPU-only SKU (`cpu`) for steps 2–3 (default: none, all four on $SKU)
 #   t2i, i2i the enhancers' repositories (default: qwen-image-2's defaults)
+#   link_mbit the GPU rental's download link shaped to this many Mbit/s from step 2 on (tc police on its ingress, over SSH; default
+#            800), so a draft's edit lands while expander_t2i is still coming ("": as rented; a fast pod fetched its 11 GB in 18 s)
 #   need_s   the seconds the cap must buy of every rental together (default 3600)
 . "$(dirname "$0")/lib.sh"
 TREE=$(param tree '') CPU_SKU=$(param cpu_sku '')
@@ -60,6 +62,12 @@ else
   boxes "$OUT/boxes.json" "$WORDS" first
 fi
 say "cozy $V, a dev home; qwen-image-2 $(sed -n 's/^version = "\(.*\)"/\1/p' "$SOURCE/qwen-image-2/pyproject.toml" | head -1) from $TREE $(git -C "$SOURCE" rev-parse --short=8 HEAD 2> /dev/null)${CPU_SKU:+; steps 2–3 on $CPU_SKU}"
+LINK=$(param link_mbit 800)
+[[ -z $LINK || $LINK =~ ^[0-9]+$ ]] || fail "link_mbit $LINK"
+if [ -n "$LINK" ]; then
+  [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
+  RENT_ARGS=--ssh
+fi
 quote "$(param need_s 3600)" "$SKU" ${CPU_SKU:+"$CPU_SKU"}
 
 # shown <file>: what the machine says it holds now. held <file> <repository>: its bytes there (`total_bytes`; a checkpoint whose
@@ -120,11 +128,11 @@ switch() {
     shown "$OUT/guess.json"; guessed=$(row)
     [ "$(held "$OUT/guess.json" "$I2I")" -le "$HEADER" ] || fail "expander_i2i came for a text-to-image draft: $(models "$OUT/guess.json")"
     ! whole "$OUT/guess.json" "$T2I" || fail "expander_t2i was whole before the edit could cut it (no unfinished bytes to stop): $(models "$OUT/guess.json")"
-    { [ "$(held "$OUT/guess.json" "$T2I")" -gt $((64 << 20)) ] || [ "$(jq -r '.done // 0' <<< "${guessed:-null}")" -gt $((64 << 20)) ]; } && break
+    [ "$(held "$OUT/guess.json" "$T2I")" -gt $((64 << 20)) ] && break
     sleep 1
   done
   had=$(held "$OUT/guess.json" "$T2I")
-  [ "$had" -gt "$HEADER" ] || [ "$(jq -r '.done // 0' <<< "${guessed:-null}")" -gt 0 ] || fail "draw's guess brought no expander_t2i to $NAME in 30 min: $(models "$OUT/guess.json"); its row: ${guessed:-none}"
+  [ "$had" -gt "$HEADER" ] || fail "draw's guess brought no expander_t2i to $NAME in 30 min: $(models "$OUT/guess.json"); its row: ${guessed:-none}"
   say "draw's guess on $NAME: ${guessed}; it holds $had bytes of expander_t2i, none of expander_i2i: $(models "$OUT/guess.json")"
   say "step 3: draw's draft mentions <pic>"
   run_page set draw --fields "$(jq -nc --arg w "$PICTURED" '{instructions: $w}')" > "$OUT/set.json" 2>&1 || fail "draw's edit: $(tail -c 300 "$OUT/set.json")"
@@ -170,6 +178,20 @@ say "first: quoted $quoted bytes to download ($(jq -c .placed "$OUT/first.json")
 [ "$waited" -gt 0 ] && [ $(( (quoted > waited ? quoted - waited : waited - quoted) * 200 )) -le "$waited" ] ||
   fail "first's cold quote $quoted bytes is off the $waited it waited for by more than 0.5%"
 
+# shaped: $NAME's download link at $LINK Mbit/s, as a slower pod's is: what a guess fetches takes long enough to be cut.
+shaped() {
+  [ -n "$LINK" ] || return 0
+  local dev _
+  for _ in $(seq 20); do timeout 120 cozy machine ssh "$NAME" true < /dev/null > /dev/null 2>&1 && break; sleep 15; done
+  dev=$(timeout 120 cozy machine ssh "$NAME" "ip route show default | awk '{print \$5; exit}'" < /dev/null 2> /dev/null | tr -d '\r')
+  if timeout 120 cozy machine ssh "$NAME" "tc qdisc add dev $dev handle ffff: ingress && tc filter add dev $dev parent ffff: protocol ip u32 match u32 0 0 police rate ${LINK}mbit burst 4m drop flowid :1" \
+      < /dev/null > "$OUT/link.txt" 2>&1; then
+    say "$NAME's link ($dev) is shaped to $LINK Mbit/s"
+  else
+    say "$NAME refused the shaped link: $(tail -c 200 "$OUT/link.txt"); it runs as rented"
+  fi
+}
+shaped
 if [ -n "$CPU_SKU" ]; then
   say "step 4: a page shows the project; draw, its draft mentioning <pic>, is guessed on $NAME"
   page
