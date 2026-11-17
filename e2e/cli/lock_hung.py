@@ -287,6 +287,36 @@ def paid(view: Path) -> tuple[int | None, float]:
     return rows, round(time.monotonic() - began, 1)
 
 
+def live_mounts() -> set[str]:
+    return {line.split(" ")[4].replace("\\040", " ") for line in Path("/proc/self/mountinfo").read_text().splitlines()}
+
+
+def runtime_left(folder: Path, ended: Path, mark: str, seconds: float = 30) -> list[str]:
+    """Once local answered and its clean-up is paid: what of the ended view stays in the project's folder (review 6936314732). Its
+    sealed mount point stays only until then; the runtime area holds nothing else outside a live mount (its `owner` mark aside); and
+    nothing in the folder, its encrypted backing aside, holds the run's mark."""
+    began = time.monotonic()
+    while ended.parent.exists() and time.monotonic() - began < seconds:
+        time.sleep(1)
+    found = [f"{ended.parent.name}: still there"] if ended.parent.exists() else []
+    live = live_mounts()
+    for top, folders, files in os.walk(folder):
+        here = Path(top)
+        folders[:] = [name for name in folders if str(here / name) not in live and not (here == folder and name == "project.vault.data")]
+        for name in files:
+            path = here / name
+            if path.parent == folder / ".vault-runtime" and name == "owner":
+                continue
+            inside_runtime = folder / ".vault-runtime" in path.parents
+            try:
+                held = path.stat().st_size < 64 << 20 and mark.encode() in path.read_bytes()
+            except OSError:
+                held = False
+            if inside_runtime or held:
+                found.append(f"{path.relative_to(folder)}{' (holds the mark)' if held else ''}")
+    return found
+
+
 def mounted(view: Path) -> bool:
     for line in Path("/proc/self/mountinfo").read_text().splitlines():
         point = line.split(" ")[4].replace("\\040", " ")
@@ -398,6 +428,7 @@ def main() -> None:
             facts["files_before"] = written(again / "files", mark) + written(again / ".vault-machine", mark)
             go_on()
             facts["journal_rows_after"], facts["owed_paid_s"] = paid(view)
+            facts["runtime_left"] = runtime_left(first.project, view, mark)
             finish(process)
             facts["run_after"] = first.status(number)
             facts["files_after"] = written(again / "files", mark) + written(again / ".vault-machine", mark)
@@ -410,6 +441,8 @@ def main() -> None:
                 failures.append(f"the stopped run wrote into the project once local went on: {facts['files_before']} became {facts['files_after']}")
             if facts["journal_rows_after"] != 0:
                 failures.append(f"local's journal keeps the ended view's runs once it answered: {facts['journal_rows_after']}")
+            if facts["runtime_left"]:
+                failures.append(f"lock: the ended view stays in the project's folder once local answered: {facts['runtime_left']}")
             if facts["answered_said"]:
                 failures.append(f"a lock local answered said its clean-up is owed: {facts['answered_said']!r}")
             for label in ("lock", "after_lock"):
@@ -432,7 +465,7 @@ def main() -> None:
         assert waiting(stdout, process, ARRIVING), f"the maximum's run's output never started coming: {stdout.read_bytes()[-400:]!r}"
         facts["maximum_stopped"] = stop(view)
         facts["maximum_locked_s"] = first.locked_by(unlocked_at, MAXIMUM + BOUND)
-        failures.extend(deadline(first, "maximum", scanner, view, projects, facts, process))
+        failures.extend(deadline(first, "maximum", scanner, view, projects, facts, process, mark))
 
         # 3. The maximum's deadline while local is stopped mid-call, in a second project: the run holds the vault past its maximum
         #    until the clock asks local, which doesn't answer; the vault locks and the run settles canceled.
@@ -456,7 +489,7 @@ def main() -> None:
         number = number_of(stdout)
         facts["going_stopped"] = stop(view)
         facts["going_locked_s"] = second.locked_by(unlocked_at, MAXIMUM + BOUND)
-        failures.extend(deadline(second, "going", scanner, view, projects, facts, process))
+        failures.extend(deadline(second, "going", scanner, view, projects, facts, process, mark))
         # Its run read once local answered, from the project unlocked again: a locked project's runs aren't read.
         if second.state() != "locked":
             second.cozy("lock-before-reading", "vault", "lock")
@@ -490,7 +523,7 @@ def clock(project: Path) -> None:
 
 
 def deadline(cell: Cell, label: str, scanner: Scanner, view: Path, projects: list[Path], facts: dict[str, object],
-             process: subprocess.Popen[bytes]) -> list[str]:
+             process: subprocess.Popen[bytes], mark: str) -> list[str]:
     """A deadline step once its vault locked or didn't: what's wrong with it, the machine gone on and its clean-up seen done."""
     failures = []
     if facts[f"{label}_locked_s"] is None:
@@ -505,6 +538,9 @@ def deadline(cell: Cell, label: str, scanner: Scanner, view: Path, projects: lis
     go_on()
     rows, _ = paid(view)
     facts[f"{label}_journal_rows_after"] = rows
+    remains = facts[f"{label}_runtime_left"] = runtime_left(cell.project, view, mark)
+    if remains:
+        failures.append(f"{label}: the ended view stays in the project's folder once local answered: {remains}")
     if rows != 0:
         failures.append(f"{label}: local's journal keeps the ended view's runs once it answered: {rows} (id, state, private: {left(view)})")
     finish(process)
