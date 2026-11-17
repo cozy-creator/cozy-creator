@@ -17,6 +17,27 @@ const RING: usize = 2;
 const STAGING: usize = READERS * RING;
 const STREAMS: usize = 4;
 
+/// A test's faults (cr-318, `_io_fail_pieces`): staged pieces to let pass, then how many to fail.
+static FAULT_AFTER: AtomicUsize = AtomicUsize::new(0);
+static FAULT_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// The next `count` staged pieces read on any device fail, after `after` more pass: a reader
+/// failing mid-run, for the release gate's fault case. Not a user API.
+pub fn fail_pieces(after: usize, count: usize) {
+    FAULT_AFTER.store(after, Relaxed);
+    FAULT_COUNT.store(count, Relaxed);
+}
+
+fn injected() -> bool {
+    if FAULT_COUNT.load(Relaxed) == 0 {
+        return false;
+    }
+    if FAULT_AFTER.fetch_update(AcqRel, Relaxed, |n| n.checked_sub(1)).is_ok() {
+        return false;
+    }
+    FAULT_COUNT.fetch_update(AcqRel, Relaxed, |n| n.checked_sub(1)).is_ok()
+}
+
 fn failed(copy: usize, error: cuda::Error) -> Error {
     let kind = match error {
         cuda::Error::Cuda {
@@ -931,6 +952,10 @@ impl Engine {
             slot.pending = false;
         }
         match job.c.src {
+            Src::File(..) if injected() => {
+                let source = io::Error::other("an injected staged-piece fault (release gate)");
+                return Err(Error { copy: job.copy, source });
+            }
             Src::File(file, offset) => {
                 let copy = Copy {
                     src: Src::File(file, offset + job.at as u64),
