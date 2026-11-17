@@ -311,6 +311,8 @@ case $key in
   cli:env-cost) needs='packages birefnet' ;;
   # plan_fetch quotes a fine-tune composed of a base's parts (cl-1071).
   cli:plan) needs='packages birefnet downloads composed' ;;
+  # plan_queue's shot reads BiRefNet's weights (cl-1107).
+  cli:queue) needs='packages birefnet' ;;
   # A published tool of two models that share a VAE, which a box's machine fetches before any render (cl-1104).
   cli:prefetch) needs='packages pre' ;;
   cli:) needs='packages birefnet qwen downloads spare loras vaes fits parts composed lorabase calls uninstall ltxlora pre' ;;

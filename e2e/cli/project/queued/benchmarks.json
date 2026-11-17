@@ -1,0 +1,5 @@
+[
+  {"function": "shot", "gpu": "NVIDIA GeForce RTX 5090", "gpus": 1, "request": {}, "warm_ms": 230000, "note": "minimax-h3 generate's, pod-session 43455948344"},
+  {"function": "shot", "gpu": "NVIDIA GeForce RTX 4090", "gpus": 1, "request": {}, "warm_ms": 335100, "note": "minimax-h3 generate's, release-gate 43211705140"},
+  {"function": "shot", "gpu": "NVIDIA GeForce RTX 4090", "gpus": 2, "request": {}, "warm_ms": 196000, "note": "minimax-h3 generate's, h3a-099's 1.71x"}
+]
