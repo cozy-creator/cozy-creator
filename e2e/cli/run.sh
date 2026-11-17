@@ -717,6 +717,7 @@ case $SHARD in
     ondemand_adapted
     ondemand_order
     ondemand_needs
+    ondemand_cold
     ondemand_behind
     ondemand_rules
     logs
