@@ -234,9 +234,30 @@ impl Machine {
         json(send(self.request(Method::POST, path::RUNS, &[]).json(run)).await?).await
     }
 
-    /// Sends `runs` as one admission (`run-batch/1`): each one's state, or its refusal, in their order.
-    pub(crate) async fn submit_batch(&self, runs: &RunBatch) -> Result<Vec<Result<RunState, Error>>, Error> {
-        let answer: RunBatchAnswer = json(send(self.request(Method::POST, path::RUNS_BATCH, &[]).json(runs)).await?).await?;
+    /// Sends `runs` as one admission (`run-batch/1`): each one's state, or its refusal, in their order; then the events of its
+    /// run `runs.follow` from its start, as `events` reads them, on the same answer (cl-1172). None for the events: a machine
+    /// that answers the batch alone (before cl-1172), whose events its caller asks for.
+    pub(crate) async fn submit_batch(
+        &self,
+        runs: &RunBatch,
+    ) -> Result<(Vec<Result<RunState, Error>>, Option<EventStream>), Error> {
+        let request = self.request(Method::POST, path::RUNS_BATCH, &[]).header(header::ACCEPT, "text/event-stream, application/json");
+        let response = send(request.json(runs)).await?;
+        let streams = (response.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()))
+            .is_some_and(|v| v.starts_with("text/event-stream"));
+        if !streams {
+            return Ok((Self::admitted(runs, json(response).await?)?, None));
+        }
+        let mut events = Box::pin(sse(response)?);
+        let answer = match events.next().await {
+            Some(Ok(event)) if event.event == ::api::machine::ADMITTED => parse::<RunBatchAnswer>(&event.data)?,
+            Some(Err(e)) => return Err(e),
+            _ => return Err(Error::Answer("the machine's admission stream did not open with its answer".into())),
+        };
+        Ok((Self::admitted(runs, answer)?, Some(Box::pin(run_events(events)))))
+    }
+
+    fn admitted(runs: &RunBatch, answer: RunBatchAnswer) -> Result<Vec<Result<RunState, Error>>, Error> {
         if answer.runs.len() != runs.runs.len() {
             return Err(Error::Answer(format!("the machine answered {} runs of {} sent", answer.runs.len(), runs.runs.len())));
         }
@@ -277,20 +298,7 @@ impl Machine {
         if after > 0 {
             request = request.header("last-event-id", after.to_string());
         }
-        let events = sse(send(request).await?)?;
-        Ok(events.filter_map(|event| async move {
-            match event {
-                // The Responses API's event object alone (xs-209): live, in no log.
-                Ok(event) if event.event == ::api::machine::OUTPUT_TEXT_DELTA => Some(
-                    parse(&event.data).map(|delta| RunEvent { sequence: 0, at_ms: 0, event: Event::OutputTextDelta(delta) }),
-                ),
-                Ok(event) if Event::NAMES.contains(&event.event.as_str()) => {
-                    Some(parse(&event.data))
-                }
-                Ok(_) => None,
-                Err(e) => Some(Err(e)),
-            }
-        }))
+        Ok(run_events(sse(send(request).await?)?))
     }
 
     /// The run's newest preview (`path::PREVIEW`); none while it has none. Asking keeps the machine
@@ -626,6 +634,24 @@ fn held(response: &Response) -> Result<Ranges, Error> {
     value
         .and_then(parse_held)
         .ok_or_else(|| Error::Answer(format!("the machine answered {HELD} {value:?}")))
+}
+
+/// A run's events, as the machine streams them: those this build reads.
+pub(crate) type EventStream = std::pin::Pin<Box<dyn Stream<Item = Result<RunEvent, Error>> + Send>>;
+
+/// `events`, its SSE read as a run's events: the Responses API's deltas, and each event this build knows.
+fn run_events(events: impl Stream<Item = Result<sse::Event, Error>> + Send + 'static) -> impl Stream<Item = Result<RunEvent, Error>> + Send + 'static {
+    events.filter_map(|event| async move {
+        match event {
+            // The Responses API's event object alone (xs-209): live, in no log.
+            Ok(event) if event.event == ::api::machine::OUTPUT_TEXT_DELTA => Some(
+                parse(&event.data).map(|delta| RunEvent { sequence: 0, at_ms: 0, event: Event::OutputTextDelta(delta) }),
+            ),
+            Ok(event) if Event::NAMES.contains(&event.event.as_str()) => Some(parse(&event.data)),
+            Ok(_) => None,
+            Err(e) => Some(Err(e)),
+        }
+    })
 }
 
 fn sse(response: Response) -> Result<impl Stream<Item = Result<sse::Event, Error>> + Send + 'static, Error> {

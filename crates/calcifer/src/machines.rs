@@ -431,6 +431,12 @@ impl Machines {
         if !wake && text.eq_ignore_ascii_case("local") && !self.local_runs() {
             return self.frame("local").map(|frame| ("local".to_owned(), frame.environments));
         }
+        // Its open Status stream says what it holds as that changes: a run asks it nothing more (cl-1172: a round trip a run).
+        if let Ok(Some(row)) = self.named(&text)
+            && let Some(frame) = self.live_frame(&row.name)
+        {
+            return Some((row.name, frame.environments));
+        }
         let name = self.show(&text).await.ok()?.name;
         let frame = self.frame(&name)?;
         Some((name, frame.environments))

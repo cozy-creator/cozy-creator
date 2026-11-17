@@ -292,6 +292,8 @@ case $key in
   cli:selfupdate) needs='next scratch' ;;
   # llm_write's Qwen3.5 0.8B (xs-204), which llm_stream and responses_sdk run too (xs-209).
   cli:runs) needs='packages birefnet qwen' ;;
+  # run_overhead's Qwen3.5 0.8B and echo (cl-1172).
+  cli:overhead) needs='packages qwen' ;;
   # project_runtime's probe (cl-1055).
   cli:local-code) needs='packages birefnet scratch' ;;
   # commands shows a LoRA's modules (lora show, xs-183), fits a lane on a slot's components (lane_fit, xs-191) and composes a
@@ -433,10 +435,11 @@ if [ -n "$needs" ]; then
   # Weightless (App only) and on a stable floor, as on the RC: published for every platform, so a consumer's universal lock
   # resolves it on each (hub_away's Windows-only dependency). A cohort pin would lock it to this runner alone.
   publish "$tools"
-  for p in qwen-image-2 minimax-h3 sdxl birefnet; do publish "$packages/$p" cohort; done
+  # run_overhead (cl-1172) runs only echo and the LLM Write tool.
+  [ "$key" = cli:overhead ] || for p in qwen-image-2 minimax-h3 sdxl birefnet; do publish "$packages/$p" cohort; done
   # The LLM Write tool the page's stream and the Responses API run by name (xs-209): qwen3's, or qwen3.5's before it.
   case $key in
-    cli:runs | cli:) for p in qwen3 qwen3.5; do [ ! -d "$packages/$p" ] || { publish "$packages/$p" cohort; break; }; done ;;
+    cli:runs | cli:overhead | cli:) for p in qwen3 qwen3.5; do [ ! -d "$packages/$p" ] || { publish "$packages/$p" cohort; break; }; done ;;
   esac
   [[ " $needs " != *" scratch "* ]] || publish "$here/cli/scratch"
   # MOSS Image, which takes words only: a mention it can't use is crossed out (cl-944).

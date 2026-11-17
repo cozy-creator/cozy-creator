@@ -234,6 +234,10 @@ struct Machine {
 
 /// How often a wait for a machine's answer says again how long it has lasted.
 const RESAID: Duration = Duration::from_secs(5);
+/// The most of one input a run's admission carries, and of all it carries (cl-1172): a photo, not a video; under the machine's
+/// HTTP/2 stream window as base64, so it moves in the one round trip that admits the run.
+const CARRIED_EACH: u64 = 512 << 10;
+const CARRIED_TOTAL: u64 = 640 << 10;
 /// How soon a machine answering an internal failure about a run is asked again, at first and at most. Only its journal settles the run.
 const BROKEN_ASKED_FIRST: Duration = Duration::from_secs(5);
 const BROKEN_ASKED_MOST: Duration = Duration::from_secs(60);
@@ -2305,10 +2309,10 @@ impl Calcifer {
         let (state, stream) = match run.state {
             State::Settled => return Ok(()),
             State::Queued => {
-                self.write_inputs(link, run, machine).await?;
+                let carried = self.write_inputs(link, run, machine, CARRIED_TOTAL).await?;
                 let _turn = sending.lock().await;
-                match self.deliver(run, machine, link).await? {
-                    Some(state) => (state, None),
+                match self.deliver(run, machine, link, carried).await? {
+                    Some(delivered) => delivered,
                     // Sent with another run of its batch, or canceled: as its row now says.
                     None => return Ok(()),
                 }
@@ -2321,10 +2325,10 @@ impl Calcifer {
                 // It may be there: attach first, and send again only to a machine that never got it.
                 match self.answered(&run.id, machine, link.attach(&sent, run.cursor)).await {
                     Err(LinkError::NoRun | LinkError::NotFound) if run.state == State::Sent => {
-                        self.write_inputs(link, run, machine).await?;
+                        let carried = self.write_inputs(link, run, machine, CARRIED_TOTAL).await?;
                         let _turn = sending.lock().await;
-                        match self.deliver(run, machine, link).await? {
-                            Some(state) => (state, None),
+                        match self.deliver(run, machine, link, carried).await? {
+                            Some(delivered) => delivered,
                             None => return Ok(()),
                         }
                     }
@@ -2337,7 +2341,7 @@ impl Calcifer {
                             self.publish(&run.id, noted);
                         }
                         let _turn = sending.lock().await;
-                        let Some(state) = self.deliver(run, machine, link).await? else { return Ok(()) };
+                        let Some((state, _)) = self.deliver(run, machine, link, vec![]).await? else { return Ok(()) };
                         (state, Some(events))
                     }
                     attached => {
@@ -2385,7 +2389,13 @@ impl Calcifer {
     /// the caller holds: in one admission (`POST /v1/runs/batch`), so it packs them together as its estimate quoted them (cl-816). A
     /// run alone is a batch of one; an update goes alone, by `POST /v1/runs`. Another run whose inputs or spec fail is left to its own
     /// driver. Its own state; none when another driver sent it meanwhile, or a cancel won.
-    async fn deliver(&self, run: &RunRow, machine: &str, link: &Link) -> Result<Option<v1::RunState>, Stop> {
+    async fn deliver(
+        &self,
+        run: &RunRow,
+        machine: &str,
+        link: &Link,
+        mut carried: Vec<v1::CarriedObject>,
+    ) -> Result<Option<(v1::RunState, Option<link::Live<v1::RunEvent>>)>, Stop> {
         let mut sent = vec![];
         let own_scope = if machine == "local" { private_io::of_output(&run.out_dir).map_err(|error| Stop::Refused(Reason {
             code: error.code, message: error.message, origin: "private_storage".into(), ..Default::default()
@@ -2408,14 +2418,23 @@ impl Calcifer {
                 return Ok(None);
             }
             let spec = async {
-                if !own {
-                    self.write_inputs(link, &row, machine).await?;
-                }
+                let room = CARRIED_TOTAL.saturating_sub(carried.iter().map(|object| object.data.len() as u64).sum());
+                let carried = match own {
+                    false => self.write_inputs(link, &row, machine, room).await?,
+                    true => vec![],
+                };
                 self.known_warm(&row, machine, link).await?;
-                self.sent_spec(&row).await
+                Ok::<_, Stop>((self.sent_spec(&row).await?, carried))
             };
             let spec = match spec.await {
-                Ok(spec) => spec,
+                Ok((spec, more)) => {
+                    for object in more {
+                        if !carried.iter().any(|known| known.digest == object.digest) {
+                            carried.push(object);
+                        }
+                    }
+                    spec
+                }
                 Err(stop) if own => return Err(stop),
                 Err(_) => continue,
             };
@@ -2438,13 +2457,15 @@ impl Calcifer {
         };
         if run.kind == ::api::calcifer::Kind::Update {
             let (id, spec) = runs.remove(at);
-            return self.sent(machine, self.answered(&run.id, machine, link.update(id, spec)).await).map(Some);
+            return self.sent(machine, self.answered(&run.id, machine, link.update(id, spec)).await).map(|state| Some((state, None)));
         }
-        let answers = self.answered(&run.id, machine, link.admit(runs)).await;
+        // Its events come on the admission's answer (cl-1172): one round trip sends it and follows it.
+        let own = runs[at].0.clone();
+        let answers = self.answered(&run.id, machine, link.admit(runs, &own, carried)).await;
         unpin(self.machines());
         match answers {
-            Ok(answers) => self.sent(machine, answers.into_iter().nth(at).expect("an answer a run")).map(Some),
-            Err(error) => self.sent(machine, Err(error)).map(Some),
+            Ok((answers, events)) => self.sent(machine, answers.into_iter().nth(at).expect("an answer a run")).map(|state| Some((state, events))),
+            Err(error) => self.sent(machine, Err(error)).map(|state| Some((state, None))),
         }
     }
 
@@ -2822,21 +2843,40 @@ impl Calcifer {
     /// What the machine already holds is asked once for all of them. One object is written to one
     /// machine once at a time: a run naming an object another run is writing there waits its
     /// turn (named by that run's number), then asks again what is held.
-    async fn write_inputs(&self, link: &Link, run: &RunRow, machine: &str) -> Result<(), Stop> {
+    async fn write_inputs(&self, link: &Link, run: &RunRow, machine: &str, room: u64) -> Result<Vec<v1::CarriedObject>, Stop> {
         if run.inputs.is_empty() {
-            return Ok(());
+            return Ok(vec![]);
         }
         let names: HashMap<&str, &str> = (run.spec.inputs.iter())
             .map(|i| (i.digest.as_str(), i.field.as_str()))
             .collect();
         let input_root = self.run_input_root(run).map_err(Stop::from)?;
-        let digests: Vec<Digest> = run.inputs.iter().map(|(digest, _)| *digest).collect();
+        // Its small inputs go with its admission to a machine that takes them there, while the batch has `room` (cl-1172): no round
+        // trip asks what it holds of them, and none writes them.
+        let mut carried = vec![];
+        let mut inputs: Vec<(Digest, u64)> = vec![];
+        let carries = self.machines().and_then(|machines| machines.live_frame(machine)).is_some_and(|frame| frame.carried_objects);
+        for (digest, length) in run.inputs.iter().copied() {
+            let room = room.saturating_sub(carried.iter().map(|object: &v1::CarriedObject| object.data.len() as u64).sum());
+            let read = match carries && length > 0 && length <= CARRIED_EACH.min(room) {
+                true => tokio::fs::read(input_root.join(hex::encode(digest.bytes()))).await.ok().filter(|data| data.len() as u64 == length),
+                false => None,
+            };
+            match read {
+                Some(data) => carried.push(v1::CarriedObject { digest: digest.to_string(), data }),
+                None => inputs.push((digest, length)),
+            }
+        }
+        if inputs.is_empty() {
+            return Ok(carried);
+        }
+        let digests: Vec<Digest> = inputs.iter().map(|(digest, _)| *digest).collect();
         let held = link.held_many(&digests).await?;
         // An empty object's ranges cannot say it is held: it is always sent (one empty PUT).
         let whole = |held: &v1::Ranges, length: u64| length > 0 && v1::held_bytes(held) >= length;
         // The request's files the machine already holds are not sent again, and the run's log says
         // so: `run watch` and a follower that attaches late read it too.
-        let reused: Vec<(&str, u64)> = (run.inputs.iter().zip(&held))
+        let reused: Vec<(&str, u64)> = (inputs.iter().zip(&held))
             .filter(|((_, length), held)| whole(held, *length))
             .filter_map(|((digest, length), _)| {
                 Some((*names.get(digest.to_string().as_str())?, *length))
@@ -2853,7 +2893,7 @@ impl Calcifer {
             let events = self.with_run_store(run.id.as_str(), |store| store.note(run.id.as_str(), "inputs", &text))?;
             self.publish(&run.id, events);
         }
-        for ((digest, length), held) in run.inputs.iter().zip(held) {
+        for ((digest, length), held) in inputs.iter().zip(held) {
             if whole(&held, *length) {
                 continue;
             }
@@ -2899,7 +2939,7 @@ impl Calcifer {
             }
             written?;
         }
-        Ok(())
+        Ok(carried)
     }
 
     /// Whether `machine` holds object `digest`, `length` bytes, whole: what a guess would carry, there already (a run of it carried it).

@@ -58,6 +58,7 @@ parse "$@"
 . "$(dirname "$0")/standing.sh"
 . "$(dirname "$0")/llm.sh"
 . "$(dirname "$0")/hubdown.sh"
+. "$(dirname "$0")/overhead.sh"
 
 # This proof owns its foreground Calcifer. Keep it out of the ordinary raw-log/body
 # collectors and never emit its private CLI data.
@@ -616,6 +617,7 @@ case $SHARD in
     llm_stream
     responses_sdk
     llm_cli_words
+    run_overhead
     previews
     second_executor
     lifetime
@@ -691,6 +693,7 @@ case $SHARD in
     llm_stream
     responses_sdk
     llm_cli_words
+    run_overhead
     previews
     run_flags
     run_playback
@@ -699,6 +702,8 @@ case $SHARD in
     performance_data
     logs
   " ;;
+  # A warm run's time outside its compute (cl-1172), alone.
+  overhead) parts="run_overhead logs" ;;
   executors) parts="
     second_executor
     lifetime

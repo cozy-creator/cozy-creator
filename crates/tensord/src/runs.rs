@@ -1040,7 +1040,9 @@ impl Runs {
                 })
                 .collect();
             let reads = crate::access::reads(&self.service.engine.store, &merged);
-            if reads.is_empty() {
+            // What it read the run before is no write (cl-1172): a warm repeat's journal waits on no flush for it.
+            let known = |read: &crate::journal::FunctionRead| before.iter().any(|(held, was)| *held == function && was == read);
+            if reads.iter().all(known) {
                 continue;
             }
             if let Err(error) = self.service.engine.record_reads(&function, &reads) {

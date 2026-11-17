@@ -9,8 +9,9 @@
 //! only public releases carries none. Signed out, a run reads public releases at its Hub's origin; a
 //! run that publishes needs the sign-in.
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    time::{SystemTime, UNIX_EPOCH},
+    collections::{BTreeMap, BTreeSet, HashMap},
+    sync::{LazyLock, Mutex},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use ::api::hub::Credential;
@@ -32,6 +33,13 @@ use crate::{
 /// A capability's life: AuthKit's most. The Hub ends it sooner at each redemption, once its rental
 /// has ended.
 const LIFETIME_S: u64 = 24 * 60 * 60;
+
+/// How long a model release the Hub said is public is taken as public without asking again (cl-1172): every send asked the Hub,
+/// a round trip to it before each run. An owner who makes it private since is heard at the next ask.
+const PUBLIC_FOR: Duration = Duration::from_secs(10 * 60);
+
+/// Each (Hub origin, model, version) the Hub said is a public release, and when.
+static PUBLIC: LazyLock<Mutex<HashMap<(String, String, String), Instant>>> = LazyLock::new(Mutex::default);
 
 /// What a send carries besides the spec the run was submitted with.
 #[derive(Default)]
@@ -188,24 +196,28 @@ impl Needs {
                 refused(error)
             }
         };
+        let known = |model: &str, version: &str| {
+            let key = (origin.to_string(), model.to_owned(), version.to_owned());
+            lock(&PUBLIC).get(&key).is_some_and(|said| said.elapsed() < PUBLIC_FOR)
+        };
         for (model, versions) in requested {
+            if versions.iter().all(|version| known(model, version)) {
+                continue;
+            }
             let id = api::model_ref::ModelId::parse(model).map_err(refused)?;
             let public = match client.anonymous().get_model(&id.org, &id.name).await {
                 Ok(card) => Some(card),
                 Err(::api::hub::Error::Hub { status: 404, .. }) => None,
                 Err(error) => return Err(failure(error)),
             };
-            let missing: Vec<_> = versions
-                .into_iter()
-                .filter(|version| {
-                    public.as_ref().is_none_or(|card| {
-                        !card.releases.iter().any(|release| {
-                            release.visibility == api::model_ref::ReleaseVisibility::Public
-                                && same_version(&release.version, version)
-                        })
+            let (said_public, missing): (Vec<_>, Vec<_>) = versions.into_iter().partition(|version| {
+                public.as_ref().is_some_and(|card| {
+                    card.releases.iter().any(|release| {
+                        release.visibility == api::model_ref::ReleaseVisibility::Public && same_version(&release.version, version)
                     })
                 })
-                .collect();
+            });
+            remember_public(origin, model, said_public);
             if missing.is_empty() {
                 continue;
             }
@@ -561,6 +573,14 @@ fn destination(spec: &v1::RunSpec) -> &str {
 
 fn refused(error: Error) -> Denied {
     Denied::Refused(reason(error))
+}
+
+/// `versions` of `model` at `origin`, which the Hub said now are public releases (`PUBLIC`).
+fn remember_public(origin: &Origin, model: &str, versions: Vec<&str>) {
+    let now = Instant::now();
+    let mut held = lock(&PUBLIC);
+    held.retain(|_, said| said.elapsed() < PUBLIC_FOR);
+    held.extend(versions.into_iter().map(|version| ((origin.to_string(), model.to_owned(), version.to_owned()), now)));
 }
 
 fn same_version(left: &str, right: &str) -> bool {
