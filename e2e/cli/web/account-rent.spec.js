@@ -164,6 +164,8 @@ async function zoomToFit(page) {
 }
 
 test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calciferControl, guards }, testInfo) => {
+  // Render on a new RTX 4090 signs in at the stand-in, orders one rental and ends it, looked at in six pictures (cl-1066).
+  test.setTimeout(480_000);
   const email = need('E2E_HUB_EMAIL');
   const seeded = JSON.parse(readFileSync(join(need('OUT'), 'web', 'fixtures.json'), 'utf8')).hub;
   // Qwen Image 2 from the Hub, which the Hub places on a card: by the stand-in, its rtx-4090.
@@ -270,11 +272,13 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await page.goto('about:blank');
       await calciferControl.hub(stand.origin);
       expect.soft((await api.get('/v1/rental-skus')).rental_skus.map((sku) => sku.name), 'the stand-in sells a GPU').toContain(CARD.name);
+      // Calcifer keeps a key per Hub origin: signed in at the stand-in too, which Render on a new RTX 4090 orders through (cl-1066).
+      await cliSignIn(email, project.path);
       // A machine that hasn't said what it has isn't judged: this one has said it has no GPU.
       await expect.poll(async () => (await api.get('/v1/machines/local')).status?.gpus, { message: "local's GPUs", timeout: 60_000 }).toEqual([]);
     });
 
-    await test.step('Render time: a slow box says how long beside Render, a fast one nothing; Slow here on an H3 shot opens Rent with its card', async () => {
+    await test.step('Render time: a slow box says how long beside Render, a fast one nothing; Slow here on an H3 shot renders on a new one of its card', async () => {
       const fits = `/v1/projects/${encodeURIComponent(project.id)}/fit`;
       /** The next estimate the page asks for `name`, as Calcifer answers it. */
       const estimated = async (name) => {
