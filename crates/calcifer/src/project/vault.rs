@@ -840,7 +840,10 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Resul
 /// once, nothing of it left open here, and its view let go on a thread of its own (a provider under a removed backing never ends on
 /// its own; `Mounted`'s drop is bounded). Whether it ended one. Under the project's vault operation.
 fn end_if_gone(api: &Arc<Api>, root: &FsPath) -> bool {
-    if root.join(KEYBAG_FILE).is_file() {
+    // Gone only when both its keys and its encrypted data are reported missing: a keybag alone missing leaves its open session
+    // holding the only copy of the keys, and an unreadable folder is not a gone one.
+    let missing = |name: &str| fs::symlink_metadata(root.join(name)).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound);
+    if !(missing(KEYBAG_FILE) && missing(BACKING)) {
         return false;
     }
     let Some(session) = SESSIONS.lock().expect("vault sessions").remove(root) else { return false };
@@ -850,7 +853,10 @@ fn end_if_gone(api: &Arc<Api>, root: &FsPath) -> bool {
         api.projects.open.lock().expect("projects lock").remove(&project.id);
         crate::events::project_closed(&project.id);
     }
-    api.calcifer.retire_project(&id);
+    // Its index row and local's records of it go at once, as for any project whose folder is gone (cl-1031).
+    if let Err(e) = super::let_go(api, std::slice::from_ref(&id)) {
+        tracing::warn!("{}: a project whose folder is gone stays in the index until the next start: {e}", root.display());
+    }
     LOCK_RETRIES.lock().expect("lock retries").remove(root);
     DUE.lock().expect("vault deadlines").remove(root);
     ROOTS.lock().expect("vault roots").retain(|_, logical| logical != root);
