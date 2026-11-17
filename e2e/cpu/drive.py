@@ -551,6 +551,15 @@ def slot_ref(slot: Slot) -> str:
     return slot.get("default") or slot["path"]
 
 
+def same_model(manifests: Mapping[str, str], ref: str) -> str | None:
+    """The fixture's one build of the model a slot names at another release: a package moving its default to a new release
+    of the same model (pan2 0.2.0 → 0.3.0) reads the same tiny weights, built from the package's own classes. A model the
+    fixture builds at two releases (they differ) is matched exactly only."""
+    name = ref.split("@", 1)[0]
+    found = [manifest for key, manifest in manifests.items() if key.split("@", 1)[0] == name]
+    return found[0] if len(found) == 1 else None
+
+
 def held(manifest: str, store: Path) -> list[str]:
     import tensorfs
 
@@ -630,7 +639,7 @@ def bindings(interface: Interface, interface_path: str, entry: Entrypoint, manif
         if slot.get("weights"):
             continue
         ref = slot_ref(slot)
-        manifest = manifests.get(slot["path"]) or manifests.get(ref)
+        manifest = manifests.get(slot["path"]) or manifests.get(ref) or same_model(manifests, ref)
         if manifest is None:
             raise Failed(f"the fixture builds no model for {slot['path']} ({ref})")
         wanted = slot.get("components") or sorted({c for use in slot.get("component_use", {}).values() for c in use})
