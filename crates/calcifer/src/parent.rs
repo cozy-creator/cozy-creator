@@ -26,13 +26,20 @@ use tracing::{error, info, warn};
 
 use crate::generation::{PROTOCOL, ToGeneration, ToParent, receive, send};
 
+/// A carried view's pipe as the parent holds it on its way: Unix's arrive as descriptors.
+#[cfg(unix)]
+type Pipe = platform::handles::Owned;
+#[cfg(windows)]
+type Pipe = ();
+
 /// How long a next generation has to say it's prepared: started, its configuration read, its runtime up.
 const PREPARE: Duration = Duration::from_secs(10);
 /// How long the first generation has (a cold disk).
 const FIRST: Duration = Duration::from_secs(60);
 
 enum Event {
-    Said(u64, ToParent),
+    /// A message, and the pipes that came with it (Unix; Windows' ride in the message).
+    Said(u64, ToParent, Vec<Pipe>),
     /// Its stream ended: it exited, or is exiting.
     Gone(u64),
     /// A service manager's stop (Unix).
@@ -144,7 +151,17 @@ impl Parent {
             loop {
                 match receive::<ToParent>(&reader) {
                     Ok(message) => {
-                        if events.send(Event::Said(id, message)).is_err() {
+                        #[cfg(unix)]
+                        let pipes = match &message {
+                            ToParent::Released { views } => crate::generation::receive_pipes(&reader, views).unwrap_or_else(|e| {
+                                warn!("a generation's views came without their pipes: {e}");
+                                vec![]
+                            }),
+                            _ => vec![],
+                        };
+                        #[cfg(windows)]
+                        let pipes = vec![];
+                        if events.send(Event::Said(id, message, pipes)).is_err() {
                             return;
                         }
                     }
@@ -155,7 +172,8 @@ impl Parent {
                 }
             }
         })?;
-        send(&control, &ToGeneration::Start { protocol: PROTOCOL, token: self.token.clone(), address: self.address })?;
+        let parent = platform::process::Birth::own().map_err(std::io::Error::other)?;
+        send(&control, &ToGeneration::Start { protocol: PROTOCOL, token: self.token.clone(), address: self.address, parent })?;
         info!(pid = child.pid(), binary = %binary.display(), "Calcifer generation started");
         self.generations.push(Generation {
             id,
@@ -190,7 +208,7 @@ impl Parent {
                 },
             };
             match event {
-                Some(Event::Said(id, message)) => self.said(id, message),
+                Some(Event::Said(id, message, pipes)) => self.said(id, message, pipes),
                 Some(Event::Gone(id)) => self.gone(id),
                 Some(Event::Stop) => self.stop(),
                 None => self.overdue(),
@@ -214,7 +232,7 @@ impl Parent {
         }
     }
 
-    fn said(&mut self, id: u64, message: ToParent) {
+    fn said(&mut self, id: u64, message: ToParent, pipes: Vec<Pipe>) {
         let Some(state) = self.find(id).map(|generation| generation.state) else { return };
         match message {
             ToParent::Prepared { protocol, version } => {
@@ -228,7 +246,7 @@ impl Parent {
                 }
                 match self.with(State::Serving).or(self.with(State::TakingOver)) {
                     // The first, or one after a death: nothing to take over from.
-                    None => self.take_over(id, vec![]),
+                    None => self.take_over(id, vec![], None, vec![]),
                     Some(serving) => {
                         if let Some(generation) = self.find(id) {
                             generation.state = State::Prepared;
@@ -276,7 +294,7 @@ impl Parent {
                     generation.state = State::Released;
                 }
                 match self.with(State::Prepared) {
-                    Some(next) => self.take_over(next, views),
+                    Some(next) => self.take_over(next, views, Some(id), pipes),
                     // The next one died meanwhile: this one exits, and the binary it came from serves again.
                     None => {
                         self.tell(id, &ToGeneration::Exit);
@@ -301,11 +319,41 @@ impl Parent {
         }
     }
 
-    fn take_over(&mut self, id: u64, views: Vec<crate::project::vault::Carried>) {
+    /// Tells `id` to take the home, with the views `from` let go of and their pipes. A view whose pipe can't follow is left behind:
+    /// its supervisor's stdin closes with `from`, and it locks.
+    #[cfg_attr(unix, allow(unused_variables))]
+    fn take_over(&mut self, id: u64, mut views: Vec<crate::project::vault::Carried>, from: Option<u64>, pipes: Vec<Pipe>) {
+        #[cfg(windows)]
+        if let Some(from) = from {
+            let (Some(giver), Some(taker)) = (self.generations.iter().find(|g| g.id == from), self.generations.iter().find(|g| g.id == id)) else {
+                views.clear();
+                return self.take_over(id, views, None, pipes);
+            };
+            views.retain_mut(|view| match giver.child.give(view.pipe, &taker.child) {
+                Ok(given) => {
+                    view.pipe = given;
+                    true
+                }
+                Err(e) => {
+                    warn!("a view's pipe couldn't follow it: {e}");
+                    false
+                }
+            });
+        }
+        #[cfg(unix)]
+        if pipes.len() != views.len() {
+            views.clear();
+        }
         if let Some(generation) = self.find(id) {
             generation.state = State::TakingOver;
         }
         self.tell(id, &ToGeneration::TakeOver { views });
+        #[cfg(unix)]
+        if let Some(generation) = self.find(id)
+            && let Err(e) = crate::generation::send_pipes(&generation.control, &pipes)
+        {
+            warn!("the views' pipes didn't reach the next Calcifer: {e}");
+        }
     }
 
     /// A next generation that won't serve: ended, its binary put back when the serving one's is beside it, and the serving one told.
@@ -372,7 +420,7 @@ impl Parent {
                     && let Some(next) = self.with(State::Prepared)
                 {
                     // The serving one died handing over: the prepared one takes the home as it is.
-                    self.take_over(next, vec![]);
+                    self.take_over(next, vec![], None, vec![]);
                     return;
                 }
                 self.again();

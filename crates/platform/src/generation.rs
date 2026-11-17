@@ -35,6 +35,12 @@ pub fn start(program: &Path, args: &[OsString], log: Option<&Path>, listeners: &
     Ok((started, parent))
 }
 
+/// Windows: a pipe's handle the parent duplicated into this process ([`Child::give`]), as the value it was told.
+#[cfg(windows)]
+pub fn handed(value: u64) -> Result<std::fs::File> {
+    sys::handed(value).map_err(Error::os("take a handed pipe"))
+}
+
 /// In the child: what [`start`] handed it, from the words it appended. Fails when the parent is already gone.
 pub fn take(words: &[OsString]) -> Result<Taken> {
     sys::take(words).map_err(Error::os("take what the parent handed"))

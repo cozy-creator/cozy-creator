@@ -70,6 +70,8 @@ pub(super) fn start(
 }
 
 pub(super) fn take(words: &[OsString]) -> io::Result<Taken> {
+    // The parent waits for its signals with them blocked, and a blocked mask outlives exec: this generation takes them back.
+    crate::process::unblock_signals()?;
     let parent = std::os::unix::process::parent_id();
     if !crate::process::die_with_parent(parent).map_err(io::Error::other)? {
         return Err(io::Error::new(io::ErrorKind::NotFound, "the parent ended before this generation started"));
@@ -89,6 +91,12 @@ pub(super) fn take(words: &[OsString]) -> io::Result<Taken> {
     }
     // SAFETY: open sockets this process inherited for exactly this, owned from here on.
     let control = unsafe { UnixStream::from_raw_fd(fds[0]) };
-    let listeners = fds[1..].iter().map(|&fd| unsafe { TcpListener::from_raw_fd(fd) }).collect();
+    let listeners = fds[1..]
+        .iter()
+        .map(|&fd| {
+            // SAFETY: as the control stream: open sockets this process inherited for exactly this, owned from here on.
+            unsafe { TcpListener::from_raw_fd(fd) }
+        })
+        .collect();
     Ok(Taken { control, listeners })
 }

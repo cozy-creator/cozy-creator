@@ -236,6 +236,16 @@ pub(super) fn unmount(provider: &Provider, view: &Path, budget: Duration) -> Res
     Ok(())
 }
 
+/// A [`Lease`] on its way to a successor process (cl-1113).
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(super) struct LeaseParts {
+    image: PathBuf,
+    device: Option<String>,
+    view: PathBuf,
+    volume: Option<String>,
+    attached: bool,
+}
+
 pub(super) struct Lease {
     provider: Provider,
     image: PathBuf,
@@ -245,6 +255,18 @@ pub(super) struct Lease {
     attached: bool,
 }
 impl Lease {
+    /// To a successor process (cl-1113): the image stays attached; this value no longer detaches it.
+    pub(super) fn hand_off(mut self) -> LeaseParts {
+        let parts = LeaseParts { image: self.image.clone(), device: self.device.clone(), view: self.view.clone(), volume: self.volume.clone(), attached: self.attached };
+        self.attached = false;
+        parts
+    }
+
+    /// The lease a predecessor handed over.
+    pub(super) fn adopt(provider: &Provider, parts: LeaseParts) -> Self {
+        Self { provider: provider.clone(), image: parts.image, device: parts.device, view: parts.view, volume: parts.volume, attached: parts.attached }
+    }
+
     pub(super) fn is_current(&self) -> Result<bool> {
         Ok(self.attached
             && self.device.is_some()

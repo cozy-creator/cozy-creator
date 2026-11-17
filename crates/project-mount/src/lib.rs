@@ -6,8 +6,8 @@
 #![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
 
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-#[cfg(unix)]
 use std::fs::File;
 use std::{
     ffi::OsString,
@@ -535,7 +535,10 @@ impl Provider {
             return Err(Error::Busy(view.to_path_buf()));
         }
         let guard = ViewGuard::prepare(view)?;
-        let parent = platform::process::Birth::own()?;
+        let parent = match OWNER.get() {
+            Some(owner) => owner.clone(),
+            None => platform::process::Birth::own()?,
+        };
         // This very build, which an update can't take away (cl-981): `current_exe()` then names `<path> (deleted)`.
         let mut command = clean_command(&platform::exe::running()?);
         // The supervisor's securefs inherits its PATH, and with it any `fusermount` link.
@@ -602,12 +605,13 @@ impl Provider {
                 });
             }
         };
+        let supervisor = child.id();
         let mut mounted = Mounted {
             provider: self.clone(),
             view: view.to_path_buf(),
-            child,
-            input: Some(input),
-            guard,
+            child: Some(child),
+            input: Some(pipe_file(input)),
+            guard: Some(guard),
             owner,
             #[cfg(not(target_os = "macos"))]
             identity: None,
@@ -618,8 +622,8 @@ impl Provider {
         };
         let mut output = mounted
             .child
-            .stdout
-            .take()
+            .as_mut()
+            .and_then(|child| child.stdout.take())
             .ok_or(Error::Invalid("provider readiness pipe is unavailable"))?;
         let (ready, readiness) = mpsc::channel();
         thread::spawn(move || {
@@ -632,17 +636,17 @@ impl Provider {
             Ok(Ok(true)) => {}
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 #[cfg(all(debug_assertions, target_os = "macos"))]
-                debug_readiness(view, mounted.child.id());
+                debug_readiness(view, supervisor);
                 return Err(Error::NotReady);
             }
             Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                 if mounted.owner.wait_for(CONTROL_ACK)?
-                    && let Some(status) = mounted
-                        .child
+                    && let Some(child) = mounted.child.as_mut()
+                    && let Some(status) = child
                         .try_wait()
                         .map_err(io_error("read filesystem supervisor status"))?
                 {
-                    let said = mounted.child.stderr.take().map(|stderr| said_within(stderr, CONTROL_ACK)).unwrap_or_default();
+                    let said = child.stderr.take().map(|stderr| said_within(stderr, CONTROL_ACK)).unwrap_or_default();
                     return Err(self.failure_said("mount", status, &said));
                 }
                 return Err(Error::Invalid(
@@ -652,7 +656,7 @@ impl Provider {
         }
         {
             if self.is_mounted(view)? {
-                mounted.guard.seal()?;
+                mounted.seal()?;
                 #[cfg(target_os = "macos")]
                 if self.native {
                     mounted.native_lease = Some(apfs::Lease::capture(self, backing, view)?);
@@ -660,14 +664,14 @@ impl Provider {
                 #[cfg(not(target_os = "macos"))]
                 {
                     mounted.identity = self.identity(view)?;
-                    for process in platform::process::tree(mounted.child.id()) {
-                        if process.birth().pid == mounted.child.id() {
+                    for process in platform::process::tree(supervisor) {
+                        if process.birth().pid == supervisor {
                             continue;
                         }
                         // The provider is the supervisor's own child. Read at its acknowledgment, the tree can
                         // still hold the fusermount that mounted the view, exiting: its exit is no unmount.
                         #[cfg(not(windows))]
-                        if platform::process::parent_of(process.birth().pid).ok() != Some(mounted.child.id()) {
+                        if platform::process::parent_of(process.birth().pid).ok() != Some(supervisor) {
                             continue;
                         }
                         #[cfg(windows)]
@@ -824,9 +828,12 @@ pub struct MountOptions {
 pub struct Mounted {
     provider: Provider,
     view: PathBuf,
-    child: Child,
-    input: Option<ChildStdin>,
-    guard: ViewGuard,
+    /// The supervisor, when this process started it; one adopted from a predecessor isn't this process's child (cl-1113).
+    child: Option<Child>,
+    /// The supervisor's stdin: its end ends the view.
+    input: Option<File>,
+    /// The underlay's guard, when this process prepared the view.
+    guard: Option<ViewGuard>,
     owner: platform::process::Exact,
     #[cfg(not(target_os = "macos"))]
     identity: Option<String>,
@@ -836,12 +843,88 @@ pub struct Mounted {
     native_lease: Option<apfs::Lease>,
 }
 
+/// A mounted view on its way to a successor process (Calcifer's next generation, cl-1113): what identifies it, and with it, apart,
+/// the supervisor's stdin, which keeps the view up while either process holds it.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Handed {
+    view: PathBuf,
+    supervisor: platform::process::Birth,
+    #[cfg(not(target_os = "macos"))]
+    identity: Option<String>,
+    helpers: Vec<platform::process::Birth>,
+    #[cfg(target_os = "macos")]
+    lease: Option<apfs::LeaseParts>,
+}
+
+/// Whose life a supervisor started from now on watches (cl-1113): this process's parent when that parent outlives it, as Calcifer's
+/// stable parent outlives its generations. A view still ends with this process, whose end closes the supervisor's stdin.
+static OWNER: std::sync::OnceLock<platform::process::Birth> = std::sync::OnceLock::new();
+
+/// Supervisors started from now on watch `owner` instead of this process (cl-1113). Set once, before the first mount.
+pub fn watch_owner(owner: platform::process::Birth) {
+    let _ = OWNER.set(owner);
+}
+
+#[cfg(unix)]
+fn pipe_file(input: ChildStdin) -> File {
+    File::from(std::os::fd::OwnedFd::from(input))
+}
+
+#[cfg(windows)]
+fn pipe_file(input: ChildStdin) -> File {
+    File::from(std::os::windows::io::OwnedHandle::from(input))
+}
+
 impl Mounted {
+    /// Hands this view to a successor process (cl-1113): it stays mounted, and its supervisor's stdin goes with it.
+    pub fn hand_off(mut self) -> Result<(Handed, File)> {
+        let input = self.input.take().ok_or(Error::Invalid("this view's supervisor is already told to stop"))?;
+        let handed = Handed {
+            view: self.view.clone(),
+            supervisor: self.owner.birth().clone(),
+            #[cfg(not(target_os = "macos"))]
+            identity: self.identity.clone(),
+            helpers: self.helpers.iter().map(|helper| helper.birth().clone()).collect(),
+            #[cfg(target_os = "macos")]
+            lease: self.native_lease.take().map(apfs::Lease::hand_off),
+        };
+        // Nothing of it ends here: no EOF, no wait, no detach.
+        self.retired = true;
+        Ok((handed, input))
+    }
+
+    /// The view a predecessor handed over, with its supervisor's stdin.
+    pub fn adopt(provider: &Provider, handed: Handed, input: File) -> Result<Self> {
+        let owner = platform::process::Exact::open(&handed.supervisor)?.ok_or(Error::Invalid("the view's supervisor has ended"))?;
+        let helpers = handed.helpers.iter().filter_map(|birth| platform::process::Exact::open(birth).ok().flatten()).collect();
+        Ok(Self {
+            provider: provider.clone(),
+            #[cfg(target_os = "macos")]
+            native_lease: handed.lease.map(|parts| apfs::Lease::adopt(provider, parts)),
+            view: handed.view,
+            child: None,
+            input: Some(input),
+            guard: None,
+            owner,
+            #[cfg(not(target_os = "macos"))]
+            identity: handed.identity,
+            helpers,
+            retired: false,
+        })
+    }
+
+    fn seal(&self) -> Result<()> {
+        match &self.guard {
+            Some(guard) => guard.seal(),
+            None => Ok(()),
+        }
+    }
+
     pub fn view(&self) -> &Path {
         &self.view
     }
     pub fn provider_pid(&self) -> u32 {
-        self.child.id()
+        self.owner.birth().pid
     }
     /// The supervisor, whose exit is the mount's end: a lock, its provider dying, an unmount from outside.
     pub fn supervisor(&self) -> Result<platform::process::Exact> {
@@ -879,10 +962,9 @@ impl Mounted {
     pub fn reconcile(&mut self) -> Result<()> {
         if self.retired { return Ok(()); }
         if self.owner.wait_for(Duration::ZERO)? {
-            let _ = self
-                .child
-                .try_wait()
-                .map_err(io_error("reap filesystem supervisor"))?;
+            if let Some(child) = self.child.as_mut() {
+                child.try_wait().map_err(io_error("reap filesystem supervisor"))?;
+            }
             self.input.take();
             for helper in &self.helpers {
                 if !helper.wait_for(Duration::ZERO)? {
@@ -904,7 +986,7 @@ impl Mounted {
                     return Err(Error::StillRunning);
                 }
             }
-            self.guard.seal()?;
+            self.seal()?;
             self.retired = true;
         }
         Ok(())
@@ -933,11 +1015,11 @@ impl Mounted {
         if !self.owner.wait_for(acknowledgement)? {
             return Err(Error::StillRunning);
         }
-        self.child
-            .try_wait()
-            .map_err(io_error("wait for filesystem shutdown"))?;
+        if let Some(child) = self.child.as_mut() {
+            child.try_wait().map_err(io_error("wait for filesystem shutdown"))?;
+        }
         self.reconcile()?;
-        self.guard.seal()?;
+        self.seal()?;
         Ok(())
     }
 }
@@ -948,7 +1030,15 @@ impl Drop for Mounted {
         self.input.take();
         // A failed startup cannot return while its delayed helper could still expose a view.
         // EOF makes the supervisor stop its owned provider before this process releases it.
-        let _ = self.child.wait();
+        match self.child.as_mut() {
+            Some(child) => {
+                let _ = child.wait();
+            }
+            // Adopted from a predecessor (cl-1113): not this process's child, so its exit is watched, not waited for.
+            None => {
+                let _ = self.owner.wait();
+            }
+        }
         if self.reconcile().is_err() {
             for helper in &self.helpers {
                 let _ = helper.wait();
@@ -958,7 +1048,7 @@ impl Drop for Mounted {
                 thread::sleep(Duration::from_millis(100));
             }
         }
-        let _ = self.guard.seal();
+        let _ = self.seal();
     }
 }
 

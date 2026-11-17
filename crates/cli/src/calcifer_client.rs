@@ -844,7 +844,18 @@ impl Client {
 
     /// Puts `holder`'s Calcifer on the installed cozy.
     async fn replace(&self, holder: Holder) -> Result<Holder, Error> {
-        self.swap(&holder).await
+        match self.swap(&holder).await {
+            Ok(holder) => Ok(holder),
+            // The installed cozy didn't take over. Put back, the running one serves on; otherwise (an older cozy, a parent from
+            // before) it is stopped and started, as before cl-1113.
+            Err(_) => match self.live().await {
+                Some(now) if !self.replaced(&now) => Ok(now),
+                _ => {
+                    let _ = self.down(&holder).await;
+                    self.start().await
+                }
+            },
+        }
     }
 
     /// Puts `holder`'s Calcifer on the installed cozy without a moment off (cl-1113): `POST /v1/restart`, which waits until nothing
@@ -860,8 +871,9 @@ impl Client {
         }
         let _: serde_json::Value = decode(answer).await?;
         self.wait("Calcifer to restart", || async { self.record().is_some_and(|now| now.pid != holder.pid) }).await;
-        self.remember(None);
-        self.endpoint().await
+        let next = self.live().await.ok_or_else(|| Error::new(Kind::Unavailable, "calcifer_unreachable", "Calcifer didn't answer after it restarted").next("cozy doctor"))?;
+        self.remember(Some(next.clone()));
+        Ok(next)
     }
 
     fn remember(&self, holder: Option<Holder>) {

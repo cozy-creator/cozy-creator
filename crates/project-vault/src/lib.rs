@@ -201,6 +201,48 @@ impl ProjectSecret {
         self.with_bytes(|value| output.write_all(value))?;
         output.write_all(b"\n")
     }
+
+    /// For the successor process an unlocked view moves to (Calcifer's next generation, cl-1113), over their private channel only.
+    pub fn hand_over(&self) -> HandedSecret {
+        HandedSecret {
+            project_id: self.project_id.clone(),
+            generation: self.generation,
+            key_id: self.key_id.clone(),
+            value: self.value.expose_secret().to_owned(),
+        }
+    }
+
+    /// The secret a predecessor process handed over.
+    pub fn handed(mut handed: HandedSecret) -> Self {
+        Self {
+            project_id: std::mem::take(&mut handed.project_id),
+            generation: handed.generation,
+            key_id: std::mem::take(&mut handed.key_id),
+            value: SecretString::from(std::mem::take(&mut handed.value)),
+        }
+    }
+}
+
+/// An unlocked secret on its way from one process to its successor over their private channel (cl-1113): serialized only there,
+/// redacted in Debug, zeroized when dropped.
+#[derive(Serialize, Deserialize)]
+pub struct HandedSecret {
+    project_id: String,
+    generation: u64,
+    key_id: String,
+    value: String,
+}
+
+impl fmt::Debug for HandedSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HandedSecret").field("project_id", &self.project_id).field("value", &"[REDACTED]").finish_non_exhaustive()
+    }
+}
+
+impl Drop for HandedSecret {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.value);
+    }
 }
 
 /// A 256-bit recovery secret with a transcription checksum. Never serialized implicitly.
@@ -818,6 +860,26 @@ impl SessionTimer {
             self.activity_wall = SystemTime::now();
         }
         self.held = held;
+    }
+
+    /// When its limits started counting, to carry to a successor process (cl-1113): opened, last activity.
+    pub fn since(&self) -> (SystemTime, SystemTime) {
+        (self.opened_wall, self.activity_wall)
+    }
+
+    /// A timer carried over from a predecessor process: its limits run from the same moments, neither extended nor cut.
+    pub fn resumed(policy: SessionPolicy, opened: SystemTime, activity: SystemTime) -> Self {
+        let (now, wall) = (Instant::now(), SystemTime::now());
+        let back = |since: SystemTime| now.checked_sub(wall.duration_since(since).unwrap_or_default()).unwrap_or(now);
+        Self {
+            policy,
+            opened: back(opened),
+            opened_wall: opened,
+            activity: back(activity),
+            activity_wall: activity,
+            expired: AtomicBool::new(false),
+            held: Hold::Nothing,
+        }
     }
 
     /// An expired timer cannot be revived by delayed interaction or a heartbeat.

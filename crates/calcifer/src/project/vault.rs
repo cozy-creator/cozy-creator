@@ -593,15 +593,35 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     let took = crate::took::Took::new("vault mount");
     let mounted = secret.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: false })).map_err(mounting)?;
     drop(took);
+    let idle = ask.idle_timeout_s.unwrap_or(DEFAULT_IDLE);
+    let maximum = ask.max_duration_s.unwrap_or(0);
+    let now = super::now_ms();
+    register(root, Opened { mount: mounted, secret, keybag, idle, maximum, timer: timer(idle, maximum), active_ms: now, began_ms: now, runtime })
+}
+
+/// An open view as it starts its session: one just mounted, or one a predecessor generation handed over (cl-1113).
+struct Opened {
+    mount: Mounted,
+    secret: ProjectSecret,
+    keybag: Keybag,
+    idle: u64,
+    maximum: u64,
+    timer: SessionTimer,
+    active_ms: i64,
+    began_ms: i64,
+    runtime: PathBuf,
+}
+
+/// The session of the view open at `root`: what finds its project, reads it, trusts its key, and sees its mount end.
+fn register(root: &FsPath, opened: Opened) -> Result<(), Error> {
+    let Opened { mount: mounted, secret, keybag, idle, maximum, timer, active_ms, began_ms, runtime } = opened;
     let canonical_view = platform::durable::canonical(mounted.view()).map_err(provider)?;
     ROOTS.lock().expect("vault roots").insert(mounted.view().to_owned(), root.to_owned());
     ROOTS.lock().expect("vault roots").insert(canonical_view.clone(), root.to_owned());
     crate::private_io::descriptor_for_mounted(&canonical_view, &keybag.info().project_id, keybag.info().generation)?;
     TRUSTED_KEYS.lock().expect("trusted vault recipients").insert(root.to_owned(), keybag.clone());
     KEY_ROOTS.lock().expect("vault project roots").insert(keybag.info().project_id.clone(), root.to_owned());
-    let idle = ask.idle_timeout_s.unwrap_or(DEFAULT_IDLE);
-    let maximum = ask.max_duration_s.unwrap_or(0);
-    let session = Session { identity: MountIdentity(Arc::new(())), mount: mounted, secret, keybag, idle, maximum, timer: timer(idle, maximum), active_ms: super::now_ms(), began_ms: super::now_ms(), closing: false, readable: Arc::new(AtomicBool::new(true)), runtime };
+    let session = Session { identity: MountIdentity(Arc::new(())), mount: mounted, secret, keybag, idle, maximum, timer, active_ms, began_ms, closing: false, readable: Arc::new(AtomicBool::new(true)), runtime };
     // Its supervisor's exit is its mount's end: a lock, its provider dying, an unmount from outside.
     let supervisor = session.mount.supervisor();
     SESSIONS.lock().expect("vault sessions").insert(root.to_owned(), Arc::new(Mutex::new(session)));
@@ -753,30 +773,97 @@ fn drain_saves(api: &Arc<Api>, root: &FsPath, mut saving: impl FnMut()) -> Resul
 }
 
 
-/// An open encrypted view on its way from one Calcifer generation to the next (cl-1113).
+/// An open encrypted view on its way from one Calcifer generation to the next (cl-1113), over their parent's private channels only:
+/// its key, its mount, and its lock clocks as they ran. Its supervisor's stdin travels beside it (a descriptor on Unix; on Windows
+/// `pipe` is its handle's value in the process reading this, which the parent duplicates into it).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) struct Carried {}
+pub(crate) struct Carried {
+    root: PathBuf,
+    mount: project_mount::Handed,
+    secret: project_vault::HandedSecret,
+    idle: u64,
+    maximum: u64,
+    opened: SystemTime,
+    activity: SystemTime,
+    active_ms: i64,
+    began_ms: i64,
+    runtime: PathBuf,
+    #[serde(default)]
+    pub(crate) pipe: u64,
+}
 
-/// The views the last generation handed this one (cl-1113).
-pub(crate) fn adopt(_api: &Arc<Api>, views: Vec<Carried>) {
-    if !views.is_empty() {
-        tracing::warn!(views = views.len(), "views handed over that this Calcifer can't take");
+/// Before this generation hands over (cl-1113): each open view, with its supervisor's stdin, for the next generation. It stays
+/// mounted and keeps its lock clocks; this process only lets go of it. A view still closing finishes first.
+pub(crate) fn carry() -> Vec<(Carried, fs::File)> {
+    for _ in 0..40 {
+        if !SESSIONS.lock().expect("vault sessions").values().any(|held| held.lock().expect("vault session").closing) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let roots: Vec<PathBuf> = SESSIONS.lock().expect("vault sessions").keys().cloned().collect();
+    let mut carried = vec![];
+    for root in roots {
+        let Some(held) = SESSIONS.lock().expect("vault sessions").remove(&root) else { continue };
+        let session = match Arc::try_unwrap(held) {
+            Ok(session) => session.into_inner().expect("vault session"),
+            Err(held) => {
+                // Held by work this process still does: it locks when this process ends, as at a stop.
+                tracing::warn!("{}: an encrypted view still in use isn't carried over", root.display());
+                SESSIONS.lock().expect("vault sessions").insert(root, held);
+                continue;
+            }
+        };
+        if session.closing {
+            continue;
+        }
+        let Session { mount, secret, idle, maximum, timer, active_ms, began_ms, runtime, .. } = session;
+        let (opened, activity) = timer.since();
+        let secret = secret.hand_over();
+        match mount.hand_off() {
+            Ok((mount, pipe)) => carried.push((Carried { root, mount, secret, idle, maximum, opened, activity, active_ms, began_ms, runtime, pipe: 0 }, pipe)),
+            Err(e) => tracing::warn!("{}: its view can't be carried over: {e}", root.display()),
+        }
+    }
+    carried
+}
+
+/// The views the last generation handed this one (cl-1113), each with its supervisor's stdin. One that can't be taken locks: its
+/// pipe is dropped here, its supervisor's stdin closes, and its view ends.
+pub(crate) fn adopt(api: &Arc<Api>, views: Vec<(Carried, fs::File)>) {
+    if views.is_empty() {
+        return;
+    }
+    let engine = match Provider::discover(&api.machines.hubs.home().tools()) {
+        Ok(engine) => engine,
+        Err(e) => {
+            tracing::warn!(views = views.len(), "the views handed over can't be taken: {e}");
+            return;
+        }
+    };
+    for (carried, pipe) in views {
+        let root = carried.root.clone();
+        match taken(&engine, carried, pipe) {
+            Ok(()) => tracing::info!("{}: its encrypted view carried over", root.display()),
+            Err(e) => tracing::warn!(code = %e.code, "{}: its encrypted view couldn't be carried over: {}", root.display(), e.message),
+        }
     }
 }
 
-/// Before this generation hands over (cl-1113): its open views, for the next. Closed here, as at a stop, until views are carried.
-pub(crate) fn carry(api: &Arc<Api>) -> Vec<Carried> {
-    for _ in 0..60 {
-        match close_all(api) {
-            Ok(()) => return vec![],
-            Err(e) if matches!(e.code.as_str(), "project_busy" | "project_locked") => std::thread::sleep(Duration::from_millis(500)),
-            Err(e) => {
-                tracing::warn!(code = %e.code, "closing encrypted views before handing over: {}", e.message);
-                return vec![];
-            }
-        }
+fn taken(engine: &Provider, carried: Carried, pipe: fs::File) -> Result<(), Error> {
+    let Carried { root, mount, secret, idle, maximum, opened, activity, active_ms, began_ms, runtime, .. } = carried;
+    let mounted = Mounted::adopt(engine, mount, pipe).map_err(provider)?;
+    if !mounted.is_mounted().map_err(provider)? {
+        return Err(error("vault_provider", "the view is no longer mounted"));
     }
-    vec![]
+    let keybag = Keybag::load(&root.join(KEYBAG_FILE)).map_err(|e| error("vault_keybag", e))?;
+    let secret = ProjectSecret::handed(secret);
+    if secret.project_id() != keybag.info().project_id || secret.generation() != keybag.info().generation {
+        return Err(error("vault_keybag", "the key handed over is not this project's current one"));
+    }
+    let policy = SessionPolicy { idle_seconds: (idle > 0).then_some(idle), maximum_seconds: (maximum > 0).then_some(maximum) };
+    let timer = SessionTimer::resumed(policy, opened, activity);
+    register(&root, Opened { mount: mounted, secret, keybag, idle, maximum, timer, active_ms, began_ms, runtime })
 }
 
 /// Every unlocked vault's pages send what they typed, before a stop closes them all.

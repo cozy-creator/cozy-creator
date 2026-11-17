@@ -318,14 +318,16 @@ pub(crate) async fn serve(loaded: &Loaded, taken: platform::generation::Taken) -
     crate::project::purge::set_window(loaded.config.calcifer.undo_seconds);
     let parent = |e: std::io::Error| Error::new(Kind::Internal, "calcifer_parent", e.to_string());
     let (link, mut heard) = Link::open(taken.control).map_err(parent)?;
-    let Some(ToGeneration::Start { protocol: _, token, address }) = heard.recv().await else {
+    let Some((ToGeneration::Start { protocol: _, token, address, parent: stable }, _)) = heard.recv().await else {
         return Err(Error::new(Kind::Internal, "calcifer_parent", "the parent said nothing to start with"));
     };
+    // A view's supervisor watches the parent, which outlives this generation; this generation's end still closes its stdin.
+    project_mount::watch_owner(stable);
     link.send(&ToParent::Prepared { protocol: PROTOCOL, version: ::api::VERSION.into() }).map_err(parent)?;
     let views = loop {
         match heard.recv().await {
-            Some(ToGeneration::TakeOver { views }) => break views,
-            Some(ToGeneration::Stop) | None => return Ok(Stopped::Down),
+            Some((ToGeneration::TakeOver { views }, pipes)) => break views.into_iter().zip(pipes).collect::<Vec<_>>(),
+            Some((ToGeneration::Stop, _)) | None => return Ok(Stopped::Down),
             Some(_) => {}
         }
     };
@@ -373,8 +375,8 @@ pub(crate) async fn serve(loaded: &Loaded, taken: platform::generation::Taken) -
     link.send(&ToParent::Ready { pid: std::process::id(), version: ::api::VERSION.into(), started_at_ms: api.started_ms }).map_err(parent)?;
     loop {
         match heard.recv().await {
-            Some(ToGeneration::Accept) => break,
-            Some(ToGeneration::Stop) | None => {
+            Some((ToGeneration::Accept, _)) => break,
+            Some((ToGeneration::Stop, _)) | None => {
                 let _ = link.send(&ToParent::Down);
                 close(&api, None, None).await;
                 return Ok(Stopped::Down);
@@ -429,9 +431,9 @@ pub(crate) async fn serve(loaded: &Loaded, taken: platform::generation::Taken) -
         tokio::select! {
             () = api.stopped() => break Stopped::Down,
             message = heard.recv() => match message {
-                Some(ToGeneration::HandOver { .. }) => break Stopped::HandedOver,
+                Some((ToGeneration::HandOver { .. }, _)) => break Stopped::HandedOver,
                 // A service stop is `down`, as graceful: the machine runs on.
-                Some(ToGeneration::Stop) => {
+                Some((ToGeneration::Stop, _)) => {
                     info!("stop: stopping as down does");
                     tokio::spawn(shutdown_after_signal(api.clone()));
                 }
@@ -448,9 +450,10 @@ pub(crate) async fn serve(loaded: &Loaded, taken: platform::generation::Taken) -
         Stopped::HandedOver => {
             accepting.send_replace(false);
             let views = hand_over(&api, server, server6).await;
-            let _ = link.send(&ToParent::Released { views });
+            // Kept until the next one serves (Windows: the parent duplicates them out of this process meanwhile).
+            let _kept = link.release(views).inspect_err(|e| warn!("handing the open views over: {e}"));
             // Until the next one serves: the parent says `Exit`, or ends.
-            while let Some(message) = heard.recv().await {
+            while let Some((message, _)) = heard.recv().await {
                 if matches!(message, ToGeneration::Exit) {
                     break;
                 }
@@ -481,15 +484,16 @@ async fn close(api: &Arc<Api>, server: Option<Server>, server6: Option<Server>) 
 /// Letting go of the home for the next generation (cl-1113): the page's streams are told to come straight back, the servers stop
 /// accepting (the parent's listeners stay open, so a connect waits for the next one) and finish what they answer, then the stores
 /// close. The open views go to the next generation.
-async fn hand_over(api: &Arc<Api>, server: Server, server6: Option<Server>) -> Vec<crate::project::vault::Carried> {
+async fn hand_over(api: &Arc<Api>, server: Server, server6: Option<Server>) -> Vec<(crate::project::vault::Carried, std::fs::File)> {
     info!("handing over to the next Calcifer");
     crate::events::restarting();
     // Each stream ends once it has said so; what's left ends with the stop.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     api.stop();
     ended(Some(server), server6).await;
-    let views = tokio::task::block_in_place(|| crate::project::vault::carry(api));
+    // Its projects close first, their WAL emptied: the next generation opens them, encrypted ones through the same views.
     tokio::task::block_in_place(|| api.projects.close_lingering());
+    let views = tokio::task::block_in_place(crate::project::vault::carry);
     api.machines.close();
     api.calcifer.close();
     views

@@ -16,7 +16,7 @@ use std::{
 };
 
 use windows_sys::Win32::{
-    Foundation::{HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
+    Foundation::{DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation, WAIT_OBJECT_0, WAIT_TIMEOUT},
     Networking::WinSock::{
         FROM_PROTOCOL_INFO, INVALID_SOCKET, SOCKET, WSA_FLAG_NO_HANDLE_INHERIT, WSA_FLAG_OVERLAPPED, WSADATA, WSADuplicateSocketW,
         WSAGetLastError, WSAPROTOCOL_INFOW, WSASocketW, WSAStartup,
@@ -48,6 +48,27 @@ impl Child {
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
         self.waited(INFINITE)?.ok_or_else(|| io::Error::other("the generation has not exited"))
     }
+    /// `handle`, a value in this generation's process, duplicated into `to`'s: its value there (a carried view's pipe, cl-1113).
+    pub fn give(&self, handle: u64, to: &Child) -> io::Result<u64> {
+        let mut given: HANDLE = std::ptr::null_mut();
+        // SAFETY: two live process handles this parent opened with every right; the value names a handle in the first.
+        let duplicated = unsafe {
+            DuplicateHandle(
+                self.process.as_raw_handle() as HANDLE,
+                handle as usize as HANDLE,
+                to.process.as_raw_handle() as HANDLE,
+                &mut given,
+                0,
+                0,
+                DUPLICATE_SAME_ACCESS,
+            )
+        };
+        if duplicated == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(given as usize as u64)
+    }
+
     pub fn kill(&mut self) -> io::Result<()> {
         // SAFETY: a live process handle this value owns.
         if unsafe { TerminateProcess(self.process.as_raw_handle() as HANDLE, 1) } == 0 && self.try_wait()?.is_none() {
@@ -108,13 +129,31 @@ pub(super) fn start(
     Ok(child)
 }
 
+/// A pipe's handle the parent duplicated into this process (`Child::give`), owned from here on.
+pub(super) fn handed(value: u64) -> io::Result<std::fs::File> {
+    if value == 0 {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "no handle was handed"));
+    }
+    // SAFETY: a handle the parent placed in this process for exactly this.
+    let handle = unsafe { OwnedHandle::from_raw_handle(value as usize as HANDLE) };
+    // SAFETY: only asks the handle's type.
+    if unsafe { windows_sys::Win32::Storage::FileSystem::GetFileType(handle.as_raw_handle() as HANDLE) } != windows_sys::Win32::Storage::FileSystem::FILE_TYPE_PIPE {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "a handed handle is not a pipe"));
+    }
+    Ok(std::fs::File::from(handle))
+}
+
 pub(super) fn take(words: &[OsString]) -> io::Result<Taken> {
     let invalid = || io::Error::new(io::ErrorKind::InvalidInput, "a generation is given its pipe's handle and its sockets' count");
     let [control, count] = words else { return Err(invalid()) };
     let control = control.to_str().and_then(|word| word.parse::<usize>().ok()).filter(|handle| *handle != 0).ok_or_else(invalid)?;
     let count = count.to_str().and_then(|word| word.parse::<usize>().ok()).filter(|count| *count <= 8).ok_or_else(invalid)?;
     // SAFETY: the pipe handle this process inherited for exactly this, owned from here on; `inherited` checks it is a pipe.
-    let control = LocalStream::inherited(unsafe { OwnedHandle::from_raw_handle(control as HANDLE) })?;
+    let control = unsafe { OwnedHandle::from_raw_handle(control as HANDLE) };
+    // Its own children inherit nothing of it.
+    // SAFETY: the handle just owned.
+    unsafe { SetHandleInformation(control.as_raw_handle() as HANDLE, HANDLE_FLAG_INHERIT, 0) };
+    let control = LocalStream::inherited(control)?;
     let mut data: WSADATA = unsafe { mem::zeroed() };
     // SAFETY: Winsock 2.2, counted like std's own start, which then finds it started.
     let started = unsafe { WSAStartup(0x0202, &mut data) };
