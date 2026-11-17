@@ -68,10 +68,9 @@ T=60 pod "cat > /tmp/lm.py" < "$FIX/pod.py" || fail "pod.py"
 run_page import "$PICTURE" --name photo > "$OUT/import-photo.json" 2>&1 || fail "import the photo: $(tail -c 300 "$OUT/import-photo.json")"
 photo=$(jq -r '.sha256 // empty' "$OUT/import-photo.json"); [ -n "$photo" ] || fail "the import holds no file"
 ON_PHOTO=$(jq -cn --arg f "sha256:${photo#sha256:}" '{text: "What is in <photo>? Answer in two sentences.", references: [{key: "photo", type: "image", file: $f}]}')
-jq -n '{prompt: {text: "a lighthouse keeper'"'"'s desk at dawn, watercolor"}, megapixels: 1, prompt_upsampling: false, seed: 7}' > "$OUT/qimg.json"
-for seed in 7 8; do
-  jq -n --argjson s "$seed" '{prompt: "a lighthouse keeper'"'"'s desk at dawn, watercolor", megapixels: 1.0, aspect_ratio: "1:1", steps: 20, seed: $s}' > "$OUT/sdxl-$seed.json"
-done
+# Each image row its own seed: a call answered from the memo (the same code and inputs) would time nothing.
+qimg() { jq -n --argjson s "$1" '{prompt: {text: "a lighthouse keeper'"'"'s desk at dawn, watercolor"}, megapixels: 1, prompt_upsampling: false, seed: $s}' > "$OUT/qimg-$1.json"; echo "$OUT/qimg-$1.json"; }
+sdxl() { jq -n --argjson s "$1" '{prompt: "a lighthouse keeper'"'"'s desk at dawn, watercolor", megapixels: 1.0, aspect_ratio: "1:1", steps: 20, seed: $s}' > "$OUT/sdxl-$1.json"; echo "$OUT/sdxl-$1.json"; }
 RECORDS=()
 # record <label>: the run its step named, its whole record as <label>.json.
 record() {
@@ -130,6 +129,7 @@ ceiling() {
   say "ceiling: $(cat "$OUT/ceiling.json")"
 }
 
+k=0
 for a in "${names[@]}"; do
   step "update-$a" machine update "$NAME" --tensord "$(command -v cozy)" --runtime "${RT[$a]}" --tensorfs "${TF[$a]}" -y || fail "$a: the update"
   say "$a: $(cozy machine show "$NAME" --json | jq -r '"cozy \(.status.version) · Runtime \(.status.runtime) · TensorFS \(.status.tensorfs) · GPU 0 \(.status.gpus[0].name)"')"
@@ -138,7 +138,7 @@ for a in "${names[@]}"; do
     ceiling
     fresh qwen3.6
     if [ -n "$CAPPED" ]; then  # its download and first construction's caches, which no arm's row should carry
-      step "$a-qimg-first" run "$SOURCE/qwen-image-2/generate" --input "$OUT/qimg.json" --on "$NAME"; record "$a-qimg-first"
+      step "$a-qimg-first" run "$SOURCE/qwen-image-2/generate" --input "$(qimg 99)" --on "$NAME"; record "$a-qimg-first"
       fresh qwen-image-2
     fi
   fi
@@ -149,12 +149,12 @@ for a in "${names[@]}"; do
   write "$a-hot"
   if [ "$(param sdxl true)" = true ]; then
     fresh qwen3.6
-    step "$a-sdxl-new" run "$SOURCE/sdxl/generate" --input "$OUT/sdxl-7.json" --on "$NAME"; record "$a-sdxl-new"
-    step "$a-sdxl-warm" run "$SOURCE/sdxl/generate" --input "$OUT/sdxl-8.json" --on "$NAME"; record "$a-sdxl-warm"
+    step "$a-sdxl-new" run "$SOURCE/sdxl/generate" --input "$(sdxl $((100 + k)))" --on "$NAME"; record "$a-sdxl-new"
+    step "$a-sdxl-warm" run "$SOURCE/sdxl/generate" --input "$(sdxl $((200 + k)))" --on "$NAME"; record "$a-sdxl-warm"
   fi
   if [ -n "$CAPPED" ]; then
     step "cap-$a" machine update "$NAME" --gpu-memory-limit "$CAPPED" -y || fail "$a: the cap"
-    step "$a-qimg-capped" run "$SOURCE/qwen-image-2/generate" --input "$OUT/qimg.json" --on "$NAME"; record "$a-qimg-capped"
+    step "$a-qimg-capped" run "$SOURCE/qwen-image-2/generate" --input "$(qimg $((300 + k)))" --on "$NAME"; record "$a-qimg-capped"
     step "uncap-$a" machine update "$NAME" --gpu-memory-limit off -y || fail "$a: lifting the cap"
   fi
   if [ -n "$PAGED" ]; then
@@ -163,6 +163,7 @@ for a in "${names[@]}"; do
     [ "$FAULT" != true ] || fault "$a"
     step "unpage-$a" machine update "$NAME" --gpu-memory-limit off -y || fail "$a: lifting the cap"
   fi
+  k=$((k + 1))
 done
 
 cozy machine logs "$NAME" --since 3h -n 0 > "$OUT/machine.log" 2>&1
