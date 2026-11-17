@@ -1,7 +1,8 @@
 """Builds clean/ (the ground truth) and degraded/ (what an upscaler is given) from originals/, per sources.tsv.
 
 clean: the crop, on white, Lanczos to `gt` px square. degraded: clean Lanczos to 225 px, then JPEG at `q`
-(`sub` 444 or 420 chroma), as a web thumbnail like Paul's Groudon and Kyogre (225 px, q~74, 4:4:4).
+(`sub` 444 or 420 chroma), as a web thumbnail like Paul's Groudon and Kyogre (225 px, q~74, 4:4:4). A `side` and `gt`
+written WxH crop and keep that shape, the degraded picture 225 px on its short side.
     make_set.py [--from DIR] [--fetch] [--clean-only]
 Each original is checked against its `sha256`. A missing one is copied from DIR (the private benchmarks repo's
 upscale/originals) or, with --fetch, downloaded from its `url`. --clean-only keeps degraded/ as committed (a JPEG
@@ -55,10 +56,13 @@ for row in csv.DictReader(open(HERE / "sources.tsv"), delimiter="\t"):
     image = Image.open(original).convert("RGBA")
     white = Image.new("RGBA", image.size, "white")
     white.alpha_composite(image)
-    x, y, side, gt = (int(row[k]) for k in ("x", "y", "side", "gt"))
-    clean = white.convert("RGB").crop((x, y, x + side, y + side)).resize((gt, gt), Image.Resampling.LANCZOS)
+    x, y = int(row["x"]), int(row["y"])
+    w, h = (int(v) for v in (row["side"].split("x") * 2)[:2])
+    gt = tuple(int(v) for v in (row["gt"].split("x") * 2)[:2])
+    clean = white.convert("RGB").crop((x, y, x + w, y + h)).resize(gt, Image.Resampling.LANCZOS)
     clean.save(HERE / "clean" / f"{row['name']}.png")
     if not args.clean_only:
-        small = clean.resize((SMALL, SMALL), Image.Resampling.LANCZOS)
+        scale = SMALL / min(gt)
+        small = clean.resize((round(gt[0] * scale), round(gt[1] * scale)), Image.Resampling.LANCZOS)
         small.save(HERE / "degraded" / f"{row['name']}.jpg", quality=int(row["q"]), subsampling=0 if row["sub"] == "444" else 2)
     print(row["name"], clean.size, f"q{row['q']}", row["sub"])
