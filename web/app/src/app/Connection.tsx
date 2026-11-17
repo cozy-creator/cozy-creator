@@ -70,6 +70,24 @@ class Bridge {
   constructor(queries: QueryClient, client: Client, private vaultChanged: (id: string, state: string) => void) {
     this.queries = queries
     this.client = client
+    // A tools read that ends with a change owed since it began: one more (`toolsChanged`).
+    queries.getQueryCache().subscribe((event) => {
+      if (!this.toolsOwed || event.type !== "updated" || event.query.queryKey[0] !== "tools") return
+      if (event.action.type === "success" || event.action.type === "error") this.toolsChanged()
+    })
+  }
+
+  /** The tools changed: read again. A read going is let finish and one more follows it, never aborted: aborted at each change (a render
+   *  ending, local code read), a list that took seconds to answer never landed, and the palette said there were no tools for as long
+   *  (web-llm, e2e 44088809798). */
+  private toolsOwed = false
+  private toolsChanged() {
+    if (this.queries.isFetching({ queryKey: ["tools"] })) {
+      this.toolsOwed = true
+      return
+    }
+    this.toolsOwed = false
+    void this.queries.invalidateQueries({ queryKey: ["tools"] }, { cancelRefetch: false })
   }
 
   projectEpoch(id: string) { return this.privacyEpoch.get(id) ?? 0 }
@@ -205,7 +223,8 @@ class Bridge {
       if (!query.getObserversCount()) query.invalidate()
       else if (behind || query.state.fetchStatus !== "fetching") this.changed(id, {})
     }
-    void this.queries.invalidateQueries({ predicate: ({ queryKey }) => queryKey[0] !== "project" }, { cancelRefetch: behind })
+    void this.queries.invalidateQueries({ predicate: ({ queryKey }) => queryKey[0] !== "project" && queryKey[0] !== "tools" }, { cancelRefetch: behind })
+    this.toolsChanged()
   }
 
   onRun(listener: (run: Run) => void): () => void {
@@ -240,7 +259,7 @@ class Bridge {
     const ended = batch.some((run) => run.status !== "queued" && run.status !== "in_progress")
     // An install, a removal or a machine's update that ends can change what a tool reads as, and so does local code's call: the machine's reading
     // of an install is kept as its call is asked, after the install's own end. The list is read again.
-    if (batch.some((run) => run.status === "completed" && (run.kind !== "call" || run.target.startsWith("local/")))) void this.queries.invalidateQueries({ queryKey: ["tools"] })
+    if (batch.some((run) => run.status === "completed" && (run.kind !== "call" || run.target.startsWith("local/")))) this.toolsChanged()
     // A list shows a run it holds as it changes; one it doesn't hold may be new to it, so it's read again.
     for (const [key, list] of this.queries.getQueriesData<RunList>({ queryKey: ["project-runs"] })) {
       if (!list) continue
@@ -319,7 +338,7 @@ class Bridge {
         break
       // A dev home's first-party package was read from its source (cl-1126): the tools are read again.
       case "tools.changed":
-        void this.queries.invalidateQueries({ queryKey: ["tools"] })
+        this.toolsChanged()
         break
       case "appearance":
         this.queries.setQueryData(["appearance"], event.appearance)
