@@ -40,8 +40,8 @@ if dynamic:
     except TypeError:
         started = control.init_devices(d.index for d in mm.get_all_torch_devices())
     if started:
-        patcher.CoreModelPatcher = patcher.ModelPatcherDynamic
-        memory.aimdo_enabled = True
+        setattr(patcher, "CoreModelPatcher", patcher.ModelPatcherDynamic)  # noqa: B010
+        setattr(memory, "aimdo_enabled", True)  # noqa: B010
 sd_module, utils, nodes = import_module("comfy.sd"), import_module("comfy.utils"), import_module("nodes")
 
 
