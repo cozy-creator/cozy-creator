@@ -4,10 +4,12 @@
 // 'files' to 'assets'", "rename library -> Installations", "'account' should be at the bottom ... in the hamburger menu", and of "Cozy updated
 // to 0.26-dev" in the header: "make them temporary toast notifications in the bottom-left, like everything else".
 // Projects opened in the page lead the index and the tabs, most recent first; the Projects list is a search and every project in that order,
-// with no form. On the locked project, "N more" opens the list, Machines opens, and Runs and Assets open saying the project is locked. The
+// with no form. On the locked project, "N more" opens the list, Machines opens, and Runs and Assets open saying the project is locked; a
+// machine's tab lists what it's working on, says the project is locked with no Prefer, and nothing asks the project and is refused (cl-1099). The
 // menu says Installations and Assets, Account last. A new Cozy version is one note, nothing in the bar. And of the bar's +: "have the + (for
 // new projects) connected to the project list": it's the strip's last item, after "N more", clear of every tab. Each at 1440×900 and
-// 1920×1080, paper and dark, kept to look at: the bar with and without "N more", the lock screen with the list open, the list, the menu.
+// 1920×1080, paper and dark, kept to look at: the bar with and without "N more", the lock screen with the list open and with a machine's
+// list open, the list, the menu.
 const { mkdirSync } = require('fs');
 const { join } = require('path');
 const { randomBytes } = require('crypto');
@@ -105,8 +107,10 @@ test('drawers', { tag: '@vault' }, async ({ page, project, api, cli, removeAfter
     });
 
     await test.step('locked: N more, Machines, Runs and Assets each open', async () => {
-      // The bar's machine tabs still ask the locked project's runs, refused, as the browser says in its console (MachineTabs, not this).
-      guards.allow(new RegExp(`status of 409\\b.*/v1/projects/${project.id}/runs\\b`));
+      // cl-1099: nothing on the page asks the locked project for what it holds; one refused (409) is said by name.
+      const refused = [];
+      const heard = (response) => { if (response.status() === 409) refused.push(`${response.request().method()} ${new URL(response.url()).pathname}`); };
+      page.on('response', heard);
       const said = await cli('--json', 'vault', '--directory', project.path, 'lock');
       expect(said.code, `cozy vault lock: ${said.stderr.slice(-300)}`).toBe(0);
       await page.goto(project.url());
@@ -131,6 +135,17 @@ test('drawers', { tag: '@vault' }, async ({ page, project, api, cli, removeAfter
       }
       await page.keyboard.press('Escape');
       await expect(drawer).toHaveCount(0);
+
+      // cl-1099: a machine's tab lists what it's working on, and of the locked project says only how to render there.
+      await page.getByRole('navigation', { name: 'Machines', exact: true }).locator('.mtab[data-machine="local"]').click();
+      const working = page.getByRole('dialog', { name: /^What .+ is doing$/ });
+      await expect(working, 'a click on local lists what it is doing').toBeVisible();
+      await expect.soft(working.locator('footer'), 'it says the project is locked').toContainText('This project is locked. Unlock it to render here.');
+      await expect.soft(working.getByRole('checkbox'), 'with no Prefer to press').toHaveCount(0);
+      await page.keyboard.press('Escape');
+      await expect(working).toHaveCount(0);
+      page.off('response', heard);
+      expect.soft(refused, 'nothing asked of the locked project and refused').toEqual([]);
     });
 
     await test.step('the menu: Installations and Assets, Account last', async () => {
@@ -188,6 +203,12 @@ test('drawers', { tag: '@vault' }, async ({ page, project, api, cli, removeAfter
         await expect(titled('Projects')).toBeVisible();
         await expect(page.getByRole('button', { name: 'Unlock project' })).toBeVisible();
         await page.screenshot({ path: join(shots, `locked-list-${tag}.png`) });
+        await page.keyboard.press('Escape');
+        await expect(titled('Projects')).toHaveCount(0);
+        await page.getByRole('navigation', { name: 'Machines', exact: true }).locator('.mtab[data-machine="local"]').click();
+        await expect(page.getByRole('dialog', { name: /^What .+ is doing$/ })).toBeVisible();
+        await page.screenshot({ path: join(shots, `locked-machine-${tag}.png`) });
+        await page.keyboard.press('Escape');
         await page.goto(`${api.origin}/p/${plain.code}`);
         await expect(page.locator('.stage')).toBeVisible();
         await plusEnds(tag);

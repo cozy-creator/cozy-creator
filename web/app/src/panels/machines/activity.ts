@@ -5,12 +5,12 @@ import type { Machine, Operation, Run } from "../../api/calcifer"
 import { leftWords } from "../format"
 import { rateWords, size, target } from "../runs/words"
 
-/** One thing a machine is doing: a package installing, weights arriving, a run, another project's run (its state alone), or the machine
- *  coming up. */
+/** One thing a machine is doing: a package installing, weights arriving, a run, a run of another project or of the open one while it's
+ *  locked (`own`; its state alone), or the machine coming up. */
 export type Doing =
   | { kind: "install" | "download"; key: string; operation: Operation }
   | { kind: "run"; key: string; run: Run; on?: Operation }
-  | { kind: "other"; key: string; state: string }
+  | { kind: "other"; key: string; state: string; own?: boolean }
   | { kind: "boot"; key: string; words: string }
 
 /** `qwen/qwen-image-2.1-turbo`, or a Hugging Face source of it, as people say it: `Qwen Image 2.1 Turbo`. Anything else is said as it is. */
@@ -46,16 +46,17 @@ export const waitsOnOf = (activity: Operation[], run: Run) => {
 export const working = (run: Run, on?: Operation) => run.started_at_ms != null && !waits(run) && !on
 
 /** What a machine is doing now, as its status says, kept by the machines' stream: each install and download once, however many runs wait
- *  on it, then its runs, those going first. `project`'s runs and this computer's own by name; another project's by its state alone. */
-export function doingOf(machine: Machine, project: string | null): Doing[] {
-  const activity = ownActivity(machine, project)
+ *  on it, then its runs, those going first. `project`'s runs and this computer's own by name; another project's by its state alone, and
+ *  `project`'s too while it's `locked` (cl-1099), whose installs and downloads aren't shown. */
+export function doingOf(machine: Machine, project: string | null, locked = false): Doing[] {
+  const activity = ownActivity(machine, locked ? null : project)
   const booting: Doing[] = machine.state === "booting" ? [{ kind: "boot", key: "boot", words: machine.boot ?? "booting" }] : []
   const operations: Doing[] = [...activity]
     .sort((a, b) => Number(a.kind === "download") - Number(b.kind === "download"))
     .map((operation) => ({ kind: operation.kind as "install" | "download", key: operation.id, operation }))
   const runs: Doing[] = (machine.status?.runs ?? []).flatMap(({ id, state, run }): Doing[] => {
     if (!run) return []
-    if (run.project_id && run.project_id !== project) return [{ kind: "other", key: id, state }]
+    if (run.project_id && (run.project_id !== project || locked)) return [{ kind: "other", key: id, state, own: run.project_id === project }]
     return [{ kind: "run", key: `run ${run.project_id ?? ""} ${run.number}`, run, on: waitsOnOf(activity, run) }]
   })
   const going = (doing: Doing) => Number(doing.kind === "run" ? !working(doing.run, doing.on) : doing.kind === "other" && doing.state !== "running")
