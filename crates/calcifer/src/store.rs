@@ -997,6 +997,14 @@ macro_rules! journal_methods {
     /// Records `new` under `key`, once: the same key again answers the recorded run (`false`), and
     /// with another submission (`digest`) is a conflict.
     /// The run recorded under `key`, if one is.
+    /// Run `id`'s idempotency key let go, the run kept (cl-1066): stopped as its project moved, its job goes again under that key.
+    pub(crate) fn release_key(&self, id: &str) -> Result<()> {
+        self.write(|tx| {
+            tx.execute("UPDATE runs SET idempotency_key = idempotency_key || ' moved ' || number WHERE id = ?1", [id])?;
+            Ok(())
+        })
+    }
+
     pub(crate) fn keyed(&self, key: &str) -> Result<Option<RunRow>> {
         self.read(|db| {
             let id = db.query_row("SELECT id FROM runs WHERE idempotency_key = ?1", [key], |r| r.get::<_, String>(0));

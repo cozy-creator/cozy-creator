@@ -479,7 +479,7 @@ impl Projects {
             (opened, _) => opened?,
         };
         if relocated {
-            tokio::spawn(crate::private_io::reprove(api.clone(), id.clone(), dir.to_owned()));
+            tokio::spawn(crate::private_io::relocated(api.clone(), id.clone(), dir.to_owned()));
         }
         IDENTITIES.lock().expect("identities lock").insert(dir.to_owned(), (id.clone(), name));
         crate::events::project_opened(dir);
@@ -622,27 +622,23 @@ fn take_over(api: &Arc<Api>, project: &Arc<Project>, was: &FsPath) {
         Ok(false) => return,
         Err(error) => return warn!("{}: its runs stay where it was: {error}", project.root.display()),
     }
-    let restarted = match restart_local(project, &store) {
-        Ok(restarted) => restarted,
+    let (stopped, restarted) = match restart_local(project, &store) {
+        Ok(local) => local,
         Err(error) => {
             warn!("{}: what this computer's machine ran of it isn't sent again: {}", project.root.display(), error.message);
-            vec![]
+            (vec![], vec![])
         }
     };
     drop(store);
+    for id in &stopped {
+        if let Err(error) = api.calcifer.cancel(id) { warn!(run = %id, "a run of a moved project goes on where it was: {error}"); }
+    }
+    let handle = tokio::runtime::Handle::current();
+    handle.block_on(ended(api, &stopped));
+    handle.block_on(crate::private_io::relocated(api.clone(), project.id.clone(), project.root.clone()));
+    clean_left(was);
     if !restarted.is_empty() {
-        let ids: Vec<RunId> = restarted.iter().map(|(id, _)| id.clone()).collect();
-        for id in &ids {
-            if let Err(error) = api.calcifer.cancel(id) { warn!(run = %id, "a run of a moved project goes on where it was: {error}"); }
-        }
-        let handle = tokio::runtime::Handle::current();
-        handle.block_on(ended(api, &ids));
-        if let Err(error) = handle.block_on(crate::private_io::close_private_project(api, &project.root)) {
-            warn!("{}: this computer's machine keeps its executors from where it was: {}", project.root.display(), error.message);
-        }
-        clean_left(was);
-        let names: Vec<&str> = restarted.iter().map(|(_, name)| name.as_str()).collect();
-        project.said.lock().expect("said lock").push(format!("{} restarted in the moved folder.", names.join(", ")));
+        project.said.lock().expect("said lock").push(format!("{} restarted in the moved folder.", restarted.join(", ")));
     }
     tokio::spawn(crate::hub::jobs::resume_project(api.clone(), project.id.clone()));
     let resumes = RunOwner::of(project, &api.calcifer).store().is_ok_and(|store| store.resume_allowed().unwrap_or(false));
@@ -651,18 +647,21 @@ fn take_over(api: &Arc<Api>, project: &Arc<Project>, was: &FsPath) {
     }
 }
 
-/// What this computer's machine is running of `project`, each run's id and asset. Each made by one of its renders goes again: its walk
-/// owes it as before it was sent.
-fn restart_local(project: &Project, store: &ProjectStore) -> Result<Vec<(RunId, String)>, Error> {
+/// The runs this computer's machine is running of `project`'s walk, to stop, and the assets of those its renders owe again as before
+/// they were sent (a take, sent once, isn't: it ends canceled).
+fn restart_local(project: &Project, store: &ProjectStore) -> Result<(Vec<RunId>, Vec<String>), Error> {
     let walk = project.folder.walk_now()?;
-    let (mut restarted, mut again) = (vec![], vec![]);
+    let (mut stopped, mut restarted, mut again) = (vec![], vec![], vec![]);
     for (key, pending) in &walk.pending {
         let Ok(Some(row)) = store.run_by_number(pending.run) else { continue };
         if pending.run == 0 || row.state == crate::store::State::Settled || row.machine.as_deref() != Some("local") {
             continue;
         }
-        restarted.push((row.id.clone(), pending.asset.clone()));
+        stopped.push(row.id.clone());
         if *key == walker::owed_key(&pending.ask, &name_key(&pending.asset)) {
+            // Sent again under its job's key: the stopped run, kept, answers it no more.
+            store.release_key(row.id.as_str()).map_err(|e| Error::new(Kind::Unavailable, "project_journal", e.to_string()))?;
+            restarted.push(pending.asset.clone());
             again.push((key.clone(), pending.ask.clone(), name_key(&pending.asset), pending.run));
         }
     }
@@ -676,7 +675,7 @@ fn restart_local(project: &Project, store: &ProjectStore) -> Result<Vec<(RunId, 
             }
         }
     })?;
-    Ok(restarted)
+    Ok((stopped, restarted))
 }
 
 /// Back once each of `ids` ended, or after `HANDOVER`.
