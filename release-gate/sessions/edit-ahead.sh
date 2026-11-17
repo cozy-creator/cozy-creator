@@ -3,9 +3,12 @@
 # typed, is a draft its machine gets ready for; so is a text-to-image box. Qwen Image 2 from a packages checkout (a dev home, as Paul's
 # laptop is), every step through this runner's cozy and its Calcifer, on the session's TensorD; evidence is the machine's own log
 # and records.
+# 0. The rental has qwen-image-2 installed, as one that has run it has (Paul's hougetsu had): a cold one installs it before it can
+#    plan an item of it, which the first run says (44188035440: a cold runner's first guess took 9.1 s, the rental's install 10.2 s).
 # 1. A page shows the project. `photo`, an imported picture, gets Qwen Image 2.1, then an edit typed (`<self.1> …`, as the page
 #    writes it): its machine plans the item with expander_i2i needed within 3 s of each, and lands it whole; expander_t2i never comes.
-# 2. photo rendered: its run is the request the item predicted, its quote downloads nothing and it waits for nothing.
+# 2. photo rendered: its run is the request the item predicted, its quote downloads nothing, it waits for nothing, and its machine
+#    fetches nothing while it runs.
 # 3. `draw`, a text-to-image box, added: planned with expander_t2i needed (expander_i2i not) within 3 s; expander_t2i lands whole;
 #    rendered, it is adopted and waits for nothing.
 # params:
@@ -126,18 +129,33 @@ judged() {
   say "$1, $4 at $2 (Unix ms): planned on $NAME $((at - $2)) ms later ($rules); first fetched ahead $((fetched - $2)) ms after"
   [ "$at" -gt 0 ] && [ $((at - $2)) -le 3000 ] || MISMATCH+=("$1's item with $3 needed was planned $((at - $2)) ms after $4")
 }
-# rendered <box>: rendered on $NAME, it adopts its item and its quote and its wait are 0.
+# fetched <from ms> <to ms>: how many objects TensorD's log says it started fetching between them (the pod's clock).
+fetched() {
+  python3 -I - "$OUT/tensord-$NAME.log" "$1" "$2" <<'PY'
+import datetime, sys
+log, since, until = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+n = 0
+for line in open(log, errors="replace"):
+    stamp = line.split(" ", 1)[0]
+    if stamp[:4].isdigit() and "fetching object=" in line and since <= datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp() * 1000 <= until:
+        n += 1
+print(n)
+PY
+}
+# rendered <box>: rendered on $NAME, it adopts its item, its quote and its wait are 0, and nothing is fetched while it runs.
 rendered() {
-  local before after adopted
-  shown "$OUT/before-$1.json"; before=$(models "$OUT/before-$1.json")
+  local adopted began ended n
+  began=$(date +%s%3N)
   timeout 3000 python3 "$RUN_PAGE" render "$RUN_PROJECT" --on "$NAME" "$1" > "$OUT/$1.txt" 2>&1 || fail "$1: $(tail -c 400 "$OUT/$1.txt")"
+  ended=$(date +%s%3N)
   record "$1" "$OUT/$1-run.json" || fail "$1 has no run record: $(tail -c 300 "$OUT/$1.txt")"
-  shown "$OUT/after-$1.json"; after=$(models "$OUT/after-$1.json")
   say "$1: placed $(jq -c .placed "$OUT/$1-run.json"); weights $(jq -c .measurements.weights "$OUT/$1-run.json")"
   jq -e '.placed.fetch_bytes == 0' "$OUT/$1-run.json" > /dev/null || MISMATCH+=("$1's quote counts $(jq -r .placed.fetch_bytes "$OUT/$1-run.json") bytes to download")
   jq -e '.measurements.weights.needs == 0' "$OUT/$1-run.json" > /dev/null || MISMATCH+=("$1 waited for $(jq -r .measurements.weights.needs "$OUT/$1-run.json") bytes")
-  [ "$before" = "$after" ] || MISMATCH+=("$NAME's models moved during $1's render: $before -> $after")
   cozy machine logs "$NAME" --since 2h -n 0 > "$OUT/tensord-$NAME.log" 2>&1 || true
+  n=$(fetched "$began" "$ended")
+  say "$1: $NAME started $n fetches while it rendered ($began to $ended Unix ms)"
+  [ "$n" = 0 ] || MISMATCH+=("$NAME fetched $n objects while $1 rendered")
   adopted=$(grep -E "run run-[0-9a-f]+ (is the request|names)" "$OUT/tensord-$NAME.log" | tail -1 | sed 's/.*INFO tensord::ahead: //')
   say "$1's run on $NAME: ${adopted:-named no predicted request}"
   [[ $adopted == *"is the request"*"takes what it made ready"* && $adopted != "${ADOPTED:-}" ]] || MISMATCH+=("$1's render didn't adopt its item: ${adopted:-it named none}")
@@ -147,6 +165,10 @@ rendered() {
 rent
 ours
 (cd "$RUN_PROJECT" && cozy --json machine use "$NAME") > "$OUT/use.json" 2>&1 || fail "machine use $NAME: $(tail -c 300 "$OUT/use.json")"
+began=$SECONDS
+(cd "$RUN_PROJECT" && cozy --json package install "$SOURCE/qwen-image-2" --on "$NAME") > "$OUT/install.json" 2>&1 ||
+  fail "qwen-image-2 not installed on $NAME: $(tail -c 300 "$OUT/install.json")"
+say "step 0: qwen-image-2 installed on $NAME in $((SECONDS - began)) s"
 say "step 1: a page shows the project; photo, an imported picture, gets Qwen Image 2.1, then an edit"
 page
 sleep 2

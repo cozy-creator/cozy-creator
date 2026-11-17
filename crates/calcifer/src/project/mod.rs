@@ -5937,8 +5937,12 @@ impl Walk {
                 // A failed run's seed is kept for the next try on these inputs, so finished segments aren't paid twice.
                 // Try again is a render of what failed on these inputs: the same seed, so its finished calls come from the memo.
                 let tried = now.asset(&name).and_then(|held| held.tried.as_ref()).filter(|tried| tried.inputs == inputs).map(|tried| tried.seed);
-                // Else the seed its draft was predicted with (cl-1123): the request its machine made ready is the one it is sent.
-                version.seed = Some(tried.unwrap_or_else(|| self.project.take_draft_seed(&name)));
+                // Else the seed its draft was predicted with (cl-1123): the request its machine made ready is the one it is sent, and
+                // that item stays listed for it, whatever the box is guessed as before it is sent.
+                version.seed = Some(tried.unwrap_or_else(|| {
+                    self.host.api().machines.lists.taking(&self.folder().dir.to_string_lossy(), &name);
+                    self.project.take_draft_seed(&name)
+                }));
             }
             version.pickup = pickup;
             // Its number now, whichever of several lands first.
@@ -6189,20 +6193,19 @@ impl Walk {
                 v1::Source::Local(prepared.source)
             }
         };
-        // The request its machine was told it may get, if it was (cl-1123): it names that item, which made it ready.
-        let predicted = match &placed {
-            On::Machine(machine) => self.host.api().machines.lists.predicted(machine, &self.folder().dir.to_string_lossy(), &name, key),
-            _ => None,
-        };
-        let spec = v1::RunSpec {
+        let mut spec = v1::RunSpec {
             kind: v1::RunKind::Call,
             source: Some(source),
             entrypoint: renderer.function.clone(),
             payload: Some(v1::Json::parse(payload.to_string()).expect("a payload is JSON")),
             inputs,
             models,
-            predicted,
             ..Default::default()
+        };
+        // The request its machine was told it may get, if it was (cl-1123): it names that item, which made it ready.
+        spec.predicted = match &placed {
+            On::Machine(machine) => self.host.api().machines.lists.predicted(machine, &self.folder().dir.to_string_lossy(), &name, key, &spec),
+            _ => None,
         };
         let submit = SubmitRun { project: Some(self.project.id.clone()),
             on: placed,

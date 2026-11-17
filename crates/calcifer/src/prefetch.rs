@@ -251,19 +251,42 @@ impl Lists {
         lock(&self.guessed).get(project)?.iter().find(|guess| guess.asset == asset).map(|guess| guess.machine.clone())
     }
 
-    /// The key of the item `machine`'s lists predict job `job` (box `asset`) of `project` by (cl-1123): its upcoming job's, else its box's
-    /// guess's, which stays listed until the machine answers the render (`answered`). What its render names (`RunSpec::predicted`), so
-    /// the machine knows the request it made ready is this one.
-    pub(crate) fn predicted(&self, machine: &str, project: &str, asset: &str, job: &str) -> Option<String> {
+    /// A render of box `asset` of `project` takes the seed its draft is guessed with (`Project::take_draft_seed`): the item its guess
+    /// holds now is the request that render sends, so it stays listed until its machine answers (`answered`), whatever the box is
+    /// guessed as meanwhile. 44188035440: the round the render's own writes started guessed the box afresh, with a fresh seed, before
+    /// the render named its item, and the render named the new one, which it wasn't.
+    pub(crate) fn taking(&self, project: &str, asset: &str) {
+        let Some(guess) = lock(&self.guessed).get(project).and_then(|guesses| guesses.iter().find(|guess| guess.asset == asset).cloned()) else { return };
+        let Some(key) = lock(&self.keys).get(&(guess.machine.clone(), identity(&guess.item))).cloned() else { return };
+        let pinned = Pinned { hub: guess.hub, item: v1::Predicted { key: key.clone(), ..guess.item }, asset: asset.to_owned(), since: std::time::Instant::now() };
+        lock(&self.pinned).insert((guess.machine.clone(), key.clone()), pinned);
+        tracing::info!(target: TARGET, "{asset}'s render takes its draft's seed: {key} on {} stays listed until the machine answers", guess.machine);
+    }
+
+    /// The key of the item `machine`'s lists predict job `job` (box `asset`) of `project` by (cl-1123): its upcoming job's, else the item
+    /// whose request `spec` is to the byte (one a render pinned as it took its seed, `taking`), else its box's guess's, which stays
+    /// listed until the machine answers the render (`answered`). What its render names (`RunSpec::predicted`), so the machine knows
+    /// the request it made ready is this one, or says it isn't.
+    pub(crate) fn predicted(&self, machine: &str, project: &str, asset: &str, job: &str, spec: &v1::RunSpec) -> Option<String> {
         let planned = lock(&self.planned).get(machine).and_then(|lists| lists.get(project)).and_then(|listed| listed.iter().find(|listed| listed.item.key == job).map(|listed| listed.item.key.clone()));
         if planned.is_some() {
             return planned;
         }
+        let sent = identity(&v1::Predicted { key: String::new(), spec: v1::RunSpec { predicted: None, ..spec.clone() } });
+        let held = lock(&self.pinned).iter().find(|((on, _), pinned)| on == machine && pinned.asset == asset && identity(&pinned.item) == sent).map(|((_, key), _)| key.clone());
+        if let Some(key) = held {
+            tracing::info!(target: TARGET, "{asset}'s render names {key} on {machine}, the request it made ready");
+            return Some(key);
+        }
         let guess = lock(&self.guessed).get(project)?.iter().find(|guess| guess.asset == asset && guess.machine == machine)?.clone();
         let key = lock(&self.keys).get(&(machine.to_owned(), identity(&guess.item))).cloned()?;
+        let same = identity(&guess.item) == sent;
         let pinned = Pinned { hub: guess.hub, item: v1::Predicted { key: key.clone(), ..guess.item }, asset: asset.to_owned(), since: std::time::Instant::now() };
         lock(&self.pinned).insert((machine.to_owned(), key.clone()), pinned);
-        tracing::info!(target: TARGET, "{asset}'s render names {key} on {machine}: it stays listed until the machine answers");
+        match same {
+            true => tracing::info!(target: TARGET, "{asset}'s render names {key} on {machine}: it stays listed until the machine answers"),
+            false => tracing::info!(target: TARGET, "{asset}'s render names {key} on {machine}, its guess, though it isn't the request that guess made ready"),
+        }
         Some(key)
     }
 
