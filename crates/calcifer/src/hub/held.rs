@@ -136,7 +136,7 @@ pub(crate) fn keep_behind(api: &Arc<Api>, hub: &str, package: &str, release: &st
     let (api, hub, package, release) = (api.clone(), hub.to_owned(), package.to_owned(), release.to_owned());
     tokio::spawn(async move {
         if let Err(e) = keep(&api, &hub, &package, &release).await {
-            tracing::info!("{package} {release} isn't held here: {e}");
+            tracing::warn!("{package} {release} isn't held here: {e}");
         }
     });
 }

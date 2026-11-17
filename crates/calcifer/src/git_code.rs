@@ -205,7 +205,13 @@ fn last_words(stderr: &[u8]) -> String {
 
 /// The commit `name` (a branch, a tag, `HEAD`) names at the repository now: a tag's commit, not its annotation. Asked from `dir`.
 fn remote(repository: &Git, name: &str, dir: &Path) -> Result<String, Error> {
-    let listed = git(dir, &["ls-remote", &repository.url, name]).map_err(|e| match e.code.as_str() {
+    // A tag's commit is its peeled row (`^{}`), which a server lists only when asked by that name.
+    let peeled = format!("{name}^{{}}");
+    let asked: &[&str] = match name {
+        "HEAD" => &["ls-remote", &repository.url, "HEAD"],
+        _ => &["ls-remote", &repository.url, name, &peeled],
+    };
+    let listed = git(dir, asked).map_err(|e| match e.code.as_str() {
         "git_failed" => Error::new(Kind::Unavailable, "git_unreachable", format!("{} can't be read: {}", repository.url, e.message))
             .remedy("Cozy fetches public repositories over https: check the URL, and that it's public."),
         _ => e,

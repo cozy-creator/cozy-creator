@@ -168,6 +168,8 @@ hub_down_install() {
   [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "hub down install: its stand-in is another user of a fresh GitHub runner"; return 0; }
   [ -n "${E2E_RELAY:-}" ] || { check "hub down install: isolated.sh published no e2e-relay: ${E2E_RELAY_REFUSED:-not seeded}"; return; }
   local m=stand-k held
+  # Why a release isn't held here is a warning, in Calcifer's diagnostics log (tests only).
+  calcifer_diagnostics
   cozy --json package install "$E2E_RELAY" --on local > "$OUT/hdi-local.ndjson" 2> "$OUT/hdi-local.err" \
     || { check "hub down install: installing $E2E_RELAY on local failed: $(hd_said "$OUT/hdi-local.ndjson" "$OUT/hdi-local.err")"; return; }
   # It is held here behind that install.
@@ -176,7 +178,7 @@ hub_down_install() {
     [ -n "$held" ] && break
     sleep 1
   done
-  [ -n "$held" ] || { check "hub down install: this computer didn't hold $E2E_RELAY 0.1.0 two minutes after its install: $(grep -a 'held here' "$HOME/.cozy/calcifer/"*.log 2> /dev/null | tail -2)"; return; }
+  [ -n "$held" ] || { check "hub down install: this computer didn't hold $E2E_RELAY 0.1.0 two minutes after its install: $(grep -a 'held here' "$HOME/.cozy/calcifer/diagnostics.log" 2> /dev/null | tail -2)"; return; }
   cozy --json machine show local > "$OUT/set-local.json" || { check "hub down install: machine show local"; return; }
   stand_in "$m" || return
   hub_stop
