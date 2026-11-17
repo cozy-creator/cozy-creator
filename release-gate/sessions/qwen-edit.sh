@@ -94,6 +94,7 @@ edit() {
   say "$s: run $n $(jq -r '"\(.status), exec \((.execution_ms // 0) / 1000) s, generating \((.measurements.attribution.stages["generating image"].total_ms // 0) / 1000 * 100 | floor / 100) s, lanes \([.measurements.models[]?.lane] | unique | join("+")), attention \(.measurements.execution.gpus[0].attention.observed // "?")"' "$OUT/records/$s.json" 2> /dev/null)"
 }
 
+run_arms() {
 for i in $(seq 0 $(($(jq '.arms | length' <<<"$PARAMS") - 1))); do
   arm=$(jq -c ".arms[$i]" <<<"$PARAMS"); a=$(jq -r .name <<<"$arm")
   say "arm $a: $(jq -c 'del(.sets)' <<<"$arm")"
@@ -108,8 +109,9 @@ for i in $(seq 0 $(($(jq '.arms | length' <<<"$PARAMS") - 1))); do
     done
   done < <(jq -r '.sets[] | "\(.cases) \(.mps | join(","))"' <<<"$arm")
 done
-
+}
 # Each chain: generation k edits generation k-1's own file, as a box referencing a take does.
+run_chains() {
 for i in $(seq 0 $(($(jq '(.chains // []) | length' <<<"$PARAMS") - 1))); do
   chain=$(jq -c ".chains[$i]" <<<"$PARAMS"); cn=$(jq -r .name <<<"$chain")
   for k in $(seq 0 $(($(jq '(.chain_arms // []) | length' <<<"$PARAMS") - 1))); do
@@ -123,6 +125,9 @@ for i in $(seq 0 $(($(jq '(.chains // []) | length' <<<"$PARAMS") - 1))); do
     done
   done
 done
+}
+# `chains_first`: the chains before the single edits, so a deadline cuts the single edits.
+if [ "$(param chains_first false)" = true ]; then run_chains; run_arms; else run_arms; run_chains; fi
 cozy machine show "$NAME" --json > "$OUT/show-end.json" 2>&1
 cozy machine logs "$NAME" --since 6h -n 0 > "$OUT/machine.log" 2>&1
 # The rental ends before the scoring, which needs only this runner.

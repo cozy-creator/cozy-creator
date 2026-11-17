@@ -110,20 +110,6 @@
  },
  "arms": [
   {
-   "name": "rc",
-   "tree": "rc",
-   "fn": "generate_turbo",
-   "sets": [
-    {
-     "cases": "M",
-     "mps": [
-      2,
-      4
-     ]
-    }
-   ]
-  },
-  {
    "name": "cond",
    "tree": "pf",
    "fn": "generate_turbo",
@@ -167,9 +153,9 @@
    ]
   },
   {
-   "name": "own",
+   "name": "qturbo",
    "tree": "pf",
-   "fn": "generate_turbo_own",
+   "fn": "generate_qwen_turbo",
    "fields": {
     "keep_unchanged": false
    },
@@ -201,9 +187,30 @@
    ]
   },
   {
-   "name": "qturbo",
+   "name": "qturbo16",
    "tree": "pf",
    "fn": "generate_qwen_turbo",
+   "fields": {
+    "keep_unchanged": false
+   },
+   "flags": [
+    "--lane",
+    "bf16"
+   ],
+   "sets": [
+    {
+     "cases": "M",
+     "mps": [
+      2,
+      4
+     ]
+    }
+   ]
+  },
+  {
+   "name": "own",
+   "tree": "pf",
+   "fn": "generate_turbo_own",
    "fields": {
     "keep_unchanged": false
    },
@@ -218,16 +225,9 @@
    ]
   },
   {
-   "name": "qturbo16",
-   "tree": "pf",
-   "fn": "generate_qwen_turbo",
-   "fields": {
-    "keep_unchanged": false
-   },
-   "flags": [
-    "--lane",
-    "bf16"
-   ],
+   "name": "rc",
+   "tree": "rc",
+   "fn": "generate_turbo",
    "sets": [
     {
      "cases": "M",
@@ -330,5 +330,6 @@
   }
  ],
  "chain_mp": 2,
- "seconds": 5400
+ "seconds": 4200,
+ "chains_first": true
 }
