@@ -761,6 +761,10 @@ pub struct GpuAllocation {
     pub gpus: Vec<u32>,
     pub width: u32,
     pub behind: String,
+    /// `wait`: about how long until it gets them, ms, as the machine's packing times the runs holding them (cl-1187); 0: not known,
+    /// as none of them has been timed there.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub left_ms: u64,
 }
 
 /// A run as its machine tracks it: number, state, log head, what it waits for and its times.
