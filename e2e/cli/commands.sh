@@ -979,11 +979,21 @@ echo "hub published: $E2E_RELAY's environment names its callee ${callee:-nothing
 rc_floor() {
 step "a package with only an RC floor runs from source and from the Hub, its lock on the RC's newest Runtime (xs-194)"
 [ -n "$LOCAL" ] || return 0
-local src=$OUT/rcfloor runtime rc
-rc=$(cozy --version | awk '{n = split($2, v, /[.-]/); print v[1] "." v[2] + ($2 ~ /-/ ? 0 : 1) ".0"}')
-runtime=$(curl -fsSL --retry 5 --retry-all-errors "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-$rc/SHA256SUMS" 2> /dev/null \
-  | awk '$2 ~ /-py3-none-any[.]whl$/ {split($2, p, "-"); print p[2]; exit}')
-echo "rc floor: the open RC's newest Runtime is ${runtime:-unread}"
+local src=$OUT/rcfloor runtime rc minor newest="the open RC's newest"
+if cozy --version | awk '{exit !($2 ~ /-/)}'; then
+  # A dev cozy (X.Y.0-dev) is its open RC's: the lock takes that RC's newest build.
+  rc=$(cozy --version | awk '{n = split($2, v, /[.-]/); print v[1] "." v[2] ".0"}')
+  runtime=$(curl -fsSL --retry 5 --retry-all-errors "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-$rc/SHA256SUMS" 2> /dev/null \
+    | awk '$2 ~ /-py3-none-any[.]whl$/ {split($2, p, "-"); print p[2]; exit}')
+else
+  # A release's (a run on release/X.Y.Z, its tag, or a PR into it) is its own line's, never the next RC's (cl-1186): the lock takes
+  # the newest released Runtime of the minor its machine runs, as cozy-runtime's release/X.Y.Z is.
+  newest="the release line's newest"
+  minor=$(cozy --json machine show local 2> /dev/null | jq -r '.status.runtime // empty' | awk -F. '{print $1 "." $2}')
+  [ -z "$minor" ] || runtime=$(curl -fsSL --retry 5 --retry-all-errors https://pypi.org/pypi/cozy-runtime/json 2> /dev/null | jq -r '.releases | keys[]' \
+    | grep -xE "${minor//./\\.}\.[0-9]+" | sort -V | tail -1)
+fi
+echo "rc floor: $newest Runtime is ${runtime:-unread}"
 grep -q '"status": *"published' "${E2E_RCFLOOR_PUBLISHED:-/dev/null}" 2> /dev/null \
   || check "rc floor: publishing e2e-rcfloor failed: $(tail -c 300 "${E2E_RCFLOOR_PUBLISHED:-/dev/null}" 2> /dev/null | tr '\n' ' ')"
 rm -rf "$src" && cp -r "$here/relay" "$src"
@@ -992,7 +1002,7 @@ cell rc-floor-source "$src/relay" "text=from source" || check "rc floor: its sou
 grep -q 'cozy-runtime = ' "$src/pyproject.toml" && check "rc floor: its pyproject.toml took a Runtime source"
 if [ -f "$src/uv.lock" ] && [ -n "$runtime" ]; then
   grep -A1 -x 'name = "cozy-runtime"' "$src/uv.lock" | grep -qF "version = \"$runtime\"" \
-    || check "rc floor: its lock holds $(grep -A1 -x 'name = "cozy-runtime"' "$src/uv.lock" | tail -1), not the RC's newest $runtime"
+    || check "rc floor: its lock holds $(grep -A1 -x 'name = "cozy-runtime"' "$src/uv.lock" | tail -1), not $newest $runtime"
 fi
 [ -z "${E2E_RCFLOOR:-}" ] || cell rc-floor-hub "$E2E_RCFLOOR/relay" "text=from the Hub" \
   || check "rc floor: the published e2e-rcfloor's run failed: $(run_get "$OUT" rc-floor-hub .reason.message | head -c 300)"
