@@ -23,6 +23,20 @@ const ASK_EVERY: Duration = Duration::from_secs(1);
 const ASK_WITHIN: Duration = Duration::from_secs(2);
 const MISSES: u32 = 3;
 
+/// When each machine last missed `MISSES` asks in a row: one lock reuses that verdict for `VERDICT_KEPT` rather than ask again at
+/// each of its steps; anything heard from the machine clears it (`answered_local`).
+static UNANSWERED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> = std::sync::LazyLock::new(Default::default);
+const VERDICT_KEPT: Duration = Duration::from_secs(15);
+
+fn unanswered_lately(name: &str) -> bool {
+    UNANSWERED.lock().expect("unanswered").get(name).is_some_and(|at| at.elapsed() < VERDICT_KEPT)
+}
+
+fn verdict(name: &str, answers: bool) {
+    let mut unanswered = UNANSWERED.lock().expect("unanswered");
+    if answers { unanswered.remove(name); } else { unanswered.insert(name.to_owned(), std::time::Instant::now()); }
+}
+
 /// Whether state.db may hold an owed clean-up: true at start, so the first answer looks; false once a look finds none.
 static MAYBE_OWED: AtomicBool = AtomicBool::new(true);
 /// One payer at a time.
@@ -31,26 +45,35 @@ static PAYING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 impl Machines {
     /// Whether `name` answers its status now: asked up to three times, a second apart, two seconds each.
     pub(crate) async fn answers(&self, name: &str) -> bool {
+        if unanswered_lately(name) {
+            return false;
+        }
         for ask in 0..MISSES {
             if ask > 0 {
                 tokio::time::sleep(ASK_EVERY).await;
             }
             if self.asked(name).await {
+                verdict(name, true);
                 return true;
             }
         }
+        verdict(name, false);
         false
     }
 
     /// `work`, which waits on `name`, while `name` answers: its status asked every second meanwhile; None once it missed three in
     /// a row, and `work` is dropped.
     pub(crate) async fn while_answering<T>(&self, name: &str, work: impl Future<Output = T>) -> Option<T> {
+        if unanswered_lately(name) {
+            return None;
+        }
         let watch = async {
             let mut misses = 0;
             loop {
                 tokio::time::sleep(ASK_EVERY).await;
                 misses = if self.asked(name).await { 0 } else { misses + 1 };
                 if misses >= MISSES {
+                    verdict(name, false);
                     return;
                 }
             }
@@ -122,6 +145,7 @@ impl Machines {
 
     /// `local` answered: what locks owe it is paid now, before anything else is sent to it.
     pub(crate) fn answered_local(&self) {
+        verdict("local", true);
         if !self.maybe_owed() {
             return;
         }

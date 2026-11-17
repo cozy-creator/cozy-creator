@@ -337,6 +337,24 @@ impl Engine {
         }
         self.retire_if_gone(project_id)
     }
+    /// A project a lock that couldn't reach this machine ended (cl-1064): its runs here stopped and every record of it gone now,
+    /// not as the last of them settles. None can settle: their view is gone and its workspace locked, so their rows can't be
+    /// written, and Calcifer settled them as the lock ended them. Refused, as `forget_project` is, while a folder still holds it.
+    pub(crate) fn end_project(&self, project_id: &str, actor: &str) -> io::Result<()> {
+        if self.forget_project(project_id, actor)? {
+            return Ok(());
+        }
+        for id in self.journal.lock().unwrap().private_active_ids(project_id)? {
+            let stop = self.active.lock().unwrap().get(&id).cloned();
+            if let Some(stop) = stop { let _ = stop(); }
+            self.progress.lock().unwrap().remove(&id);
+        }
+        self.private_roots.lock().unwrap().remove(project_id);
+        crate::private_io::forget(project_id);
+        self.journal.lock().unwrap().retire_project(project_id)?;
+        self.gone.lock().unwrap().remove(project_id);
+        Ok(())
+    }
     /// The projects journaled here as having run in vault view `view` (cl-1064).
     pub(crate) fn projects_at(&self, view: &std::path::Path) -> io::Result<Vec<String>> {
         let projects = self.journal.lock().unwrap().project_roots()?;

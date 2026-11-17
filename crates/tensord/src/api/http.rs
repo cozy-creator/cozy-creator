@@ -184,7 +184,7 @@ async fn project_gone(State(m): State<Machine>, Path(project): Path<String>, hea
 }
 
 /// What a lock that couldn't reach this machine owes it (cl-1064): every project it ran in the vault view named has its runs there
-/// cancelled and its records retired, as `project_gone` does. Calcifer sends it before any new work, whenever this machine answers.
+/// stopped and its records retired now (`end_project`), since none of them can settle in a view gone. Calcifer sends it before any new work, whenever this machine answers.
 async fn project_gone_at(State(m): State<Machine>, headers: HeaderMap, body: Bytes) -> Answer {
     if !m.identity.lifecycle.is_local() {
         return Err(Error::forbidden("local_private_only", "only this computer's local machine runs its projects").into());
@@ -196,7 +196,7 @@ async fn project_gone_at(State(m): State<Machine>, headers: HeaderMap, body: Byt
     m.call(move |runs| {
         let projects = runs.service.engine.projects_at(&gone.view).map_err(|error| Error::conflict("private_storage_busy", error.to_string()))?;
         for project in projects {
-            runs.service.engine.forget_project(&project, &actor).map_err(|error| match error.kind() {
+            runs.service.engine.end_project(&project, &actor).map_err(|error| match error.kind() {
                 std::io::ErrorKind::AlreadyExists => Error::conflict("project_present", error.to_string()),
                 _ => Error::conflict("private_storage_busy", error.to_string()),
             })?;
