@@ -241,7 +241,12 @@ async fn held_now(identity: &Arc<MachineIdentity>, runs: &Arc<Runs>, actor: Veri
             link: crate::estimate::link(service),
             serving: service.pool().map_or(0, |pool| pool.serving_width() as u32),
             nvlink: service.pool().is_some_and(|pool| pool.hardware_class().1),
-            ahead: crate::ahead::standing(&service.engine.store, busy, crate::ahead::listed(&reader).iter().filter_map(|id| runs.state(actor, id).ok()).collect()),
+            ahead: {
+                let listed = crate::ahead::listed(&reader);
+                let mut states = listed.iter().filter_map(|id| runs.state(actor, id).ok()).collect();
+                crate::ahead::planning(&listed, &mut states);
+                crate::ahead::standing(&service.engine.store, busy, states)
+            },
             runs: runs.live(actor)?,
             environments: runs.environments(actor)?,
             warm: runs.warm(actor)?,
@@ -303,10 +308,11 @@ fn host() -> &'static (String, u64) {
 }
 
 fn picture(identity: &MachineIdentity, held: Held, resident: Vec<v1::Resident>) -> v1::StatusFrame {
-    let Held { runs, environments, warm, models, mut memory, lost, mut out, queue, times, link, serving, nvlink, ahead } = held;
+    let Held { runs, environments, warm, models, mut memory, lost, mut out, queue, times, link, serving, nvlink, mut ahead } = held;
     let (updates, lifecycle) = (&identity.updates, &identity.lifecycle);
     let software = updates.software();
     let activity = crate::activity::listed(|id| runs.iter().any(|run| run.id == id) || ahead.iter().any(|own| own.id == id));
+    crate::ahead::progress(&mut ahead, &activity);
     v1::StatusFrame {
         idle_deadline_unix_ms: lifecycle.deadline_ms(),
         runs,

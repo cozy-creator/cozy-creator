@@ -2429,11 +2429,20 @@ impl Calcifer {
         }
         let at = sent.iter().position(|(own, _)| *own).expect("its own run is sent");
         let mut runs: Vec<(store::Sent, v1::RunSpec)> = sent.into_iter().map(|(_, request)| request).collect();
+        // A render that is a request its machine was told it may get (cl-1123): that item stays listed until the machine answers.
+        let predicted: Vec<String> = runs.iter().filter_map(|(_, spec)| spec.predicted.clone()).collect();
+        let unpin = |machines: Option<Arc<machines::Machines>>| {
+            if let Some(machines) = machines {
+                predicted.iter().for_each(|key| machines.lists.answered(&machines, machine, key));
+            }
+        };
         if run.kind == ::api::calcifer::Kind::Update {
             let (id, spec) = runs.remove(at);
             return self.sent(machine, self.answered(&run.id, machine, link.update(id, spec)).await).map(Some);
         }
-        match self.answered(&run.id, machine, link.admit(runs)).await {
+        let answers = self.answered(&run.id, machine, link.admit(runs)).await;
+        unpin(self.machines());
+        match answers {
             Ok(answers) => self.sent(machine, answers.into_iter().nth(at).expect("an answer a run")).map(Some),
             Err(error) => self.sent(machine, Err(error)).map(Some),
         }
@@ -2887,6 +2896,46 @@ impl Calcifer {
             let mut writing = lock(&self.writing);
             if Arc::strong_count(&turn) <= 2 {
                 writing.remove(&key);
+            }
+            written?;
+        }
+        Ok(())
+    }
+
+    /// Whether `machine` holds object `digest`, `length` bytes, whole: what a guess would carry, there already (a run of it carried it).
+    pub(crate) async fn holds(&self, machine: &str, digest: &Digest, length: u64) -> bool {
+        let Some(machines) = self.machines() else { return false };
+        let Ok((_, link)) = machines.linked(machine) else { return false };
+        length > 0 && link.held(digest, length).await.is_ok_and(|held| held >= length)
+    }
+
+    /// `inputs` written to `machine`, each it doesn't hold whole, one write of an object at a time as a run's are (`writing`): local
+    /// code carried to the machine a box's guess goes to, as a run of it carries it (cl-1104), and the files a predicted request reads
+    /// (cl-1123), so its machine has them before a render of it is sent. The bytes moving hold its idle clock as any upload's do.
+    pub(crate) async fn ship(&self, machine: &str, inputs: &[StagedInput]) -> Result<(), String> {
+        let machines = self.machines().ok_or("no machines yet")?;
+        let (_, link) = machines.linked(machine).map_err(|e| e.message)?;
+        let digests: Vec<Digest> = inputs.iter().map(|input| input.digest).collect();
+        let held = link.held_many(&digests).await.map_err(|e| e.to_string())?;
+        let whole = |held: &v1::Ranges, length: u64| length > 0 && v1::held_bytes(held) >= length;
+        for (input, held) in inputs.iter().zip(held) {
+            if whole(&held, input.length) {
+                continue;
+            }
+            let key = (machine.to_owned(), input.digest);
+            let turn = lock(&self.writing).entry(key.clone()).or_default().clone();
+            let mine = turn.0.lock().await;
+            let now = link.held_many(std::slice::from_ref(&input.digest)).await.map_err(|e| e.to_string())?.into_iter().next().unwrap_or_default();
+            let written = match whole(&now, input.length) {
+                true => Ok(()),
+                false => link.write(&input.digest, input.length, &input.path, now, |_, _| {}).await.map_err(|e| e.to_string()),
+            };
+            drop(mine);
+            {
+                let mut writing = lock(&self.writing);
+                if Arc::strong_count(&turn) <= 2 {
+                    writing.remove(&key);
+                }
             }
             written?;
         }

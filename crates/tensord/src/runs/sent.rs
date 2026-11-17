@@ -92,6 +92,11 @@ fn member(mut item: v1::WarmItem) -> Result<Option<crate::runs::SetItem>, Error>
     }))
 }
 
+/// What run `spec` is (its identity digest, as `spec_of` makes it): a predicted request's, to know the call that is it (cl-1123).
+pub(crate) fn identity(spec: v1::RunSpec) -> Result<String, Error> {
+    spec_of(spec).map(|(spec, _)| spec.digest)
+}
+
 /// A Run spec as this machine's run sources (`runs`), and the Hub it reads. Its digest (the
 /// Hub's origin alone) makes the id idempotent: the same id with another spec is refused.
 fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAccess>), Error> {
@@ -117,6 +122,8 @@ fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAc
     let (identity_digest, legacy_digest) = {
         let mut identity = spec.clone();
         identity.payload = None;
+        // The item it is the request of, if any, is no part of what it is (cl-1123): the two have one identity.
+        identity.predicted = None;
         identity.hub = hub.as_ref().map(|hub| v1::HubAccess {
             origin: hub.origin.trim_end_matches('/').into(),
             ..Default::default()
@@ -331,8 +338,12 @@ impl Runs {
         let signer = super::read::actor_id(actor);
         let (mut answers, mut sent, mut serving) = (vec![], vec![], vec![]);
         for request in requests {
+            let predicted = request.spec.predicted.clone();
             match spec_of(request.spec).and_then(|(spec, hub)| reach(&signer, spec, hub)) {
                 Ok(spec) => {
+                    if let Some(key) = &predicted {
+                        crate::ahead::adopts(key, &request.id, &spec.digest);
+                    }
                     // Renewed from before it prepares: its first reads wait for the token.
                     let capability = spec.hub.as_ref().and_then(|hub| hub.capability.as_ref());
                     serving.extend(capability.map(|capability| capability.serves(&request.id, &self.service.engine)));

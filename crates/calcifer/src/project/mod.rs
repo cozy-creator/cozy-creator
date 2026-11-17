@@ -201,6 +201,8 @@ pub(crate) struct Project {
     _watch: Option<platform::watch::Watcher>,
     /// What its boxes would run is guessed while it's open (`guess::keep`), since a page first showed it.
     guessing: std::sync::atomic::AtomicBool,
+    /// Each box's seed drawn for its draft (cl-1123), by name key: the one its predicted request carries, which its next render takes.
+    drafts: Mutex<HashMap<String, u64>>,
 }
 
 impl Drop for Project {
@@ -508,6 +510,7 @@ impl Projects {
                     unseen: Mutex::new(unseen),
                     _watch: watch,
                     guessing: Default::default(),
+                    drafts: Mutex::default(),
                 });
                 // What closed since the last open goes from the list.
                 open.retain(|_, held| held.strong_count() > 0);
@@ -1584,7 +1587,7 @@ struct Walker {
     /// Each job's planned start and the machines that can run it, by its key, as the last plan said.
     starts: HashMap<String, (i64, Vec<String>)>,
     /// What each machine is told to have ready for each job, by machine and job key: its Hub, item and function; none: nothing.
-    items: HashMap<(String, String), Option<(String, v1::Ahead, String)>>,
+    items: HashMap<(String, String), Option<(String, v1::Predicted, String)>>,
     /// Items being made.
     making: HashSet<(String, String)>,
     /// The last turn held a job for a busy machine.
@@ -3996,8 +3999,8 @@ pub(super) enum PackageRead {
 /// Job `key` as its machines quote it: the function its tool `with` names, with `made`'s choices, its package read as `read` says; else
 /// why not. None: its install is going, and `read` doesn't wait for it. The walk's quote and `fit`'s estimate alike (cl-1004).
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn job_of(host: &Host, dir: &FsPath, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, read: PackageRead) -> Result<Option<placement::Job>, String> {
-    job_read(host, dir, key, on, hub, with, made, read).await.map_err(|unread| match unread {
+pub(super) async fn job_of(host: &Host, dir: &FsPath, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, read: PackageRead, asked: Option<(&Asking, &str)>) -> Result<Option<placement::Job>, String> {
+    job_read(host, dir, key, on, hub, with, made, read, asked).await.map_err(|unread| match unread {
         Unquotable::Again(why) | Unquotable::Not(why) => why,
     })
 }
@@ -4009,9 +4012,10 @@ enum Unquotable {
     Not(String),
 }
 
-/// `job_of`, its reads timed as stages of the quote (`crate::stages`), and why not said as whether asking again may help.
+/// `job_of`, its reads timed as stages of the quote (`crate::stages`), and why not said as whether asking again may help. `asked`: its
+/// box in its project, whose render's request its function's needs rules read (cl-1103); none, no request is known and no rule answers.
 #[allow(clippy::too_many_arguments)]
-async fn job_read(host: &Host, dir: &FsPath, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, read: PackageRead) -> Result<Option<placement::Job>, Unquotable> {
+async fn job_read(host: &Host, dir: &FsPath, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, read: PackageRead, asked: Option<(&Asking, &str)>) -> Result<Option<placement::Job>, Unquotable> {
     let api = host.api();
     let package = match read {
         PackageRead::Now => crate::stages::stage("package", host.package(hub, with, dir, &on, host::Wait::Quote(&key))).await,
@@ -4030,30 +4034,112 @@ async fn job_read(host: &Host, dir: &FsPath, key: String, on: Vec<On>, hub: &str
         Ok(None) => return Err(Unquotable::Not(format!("{with} has no function to run"))),
         Err(e) => return Err(Unquotable::Not(format!("{with}: {}", e.message))),
     };
-    let fetched = crate::stages::stage("models", fit::checkpoints(&api, hub, &package, &renderer.function, &made)).await;
+    let request = asked.and_then(|(asking, name)| asking.request(name, &package, &renderer.function));
+    let models = crate::stages::stage("models", fit::checkpoints(&api, hub, &package, &renderer.function, &made, request.as_ref())).await;
     let size = v1::JobSize::of(&Value::Object(made));
     let gpu = api::interface::Interface::parse(package.document()).ok().is_some_and(|interface| {
         interface.callables.iter().find(|callable| callable.name == renderer.function).is_some_and(|callable| interface.needs_gpu(callable))
     });
     let scope = crate::private_io::of_path(dir).ok().flatten();
     let source = package.local.clone().filter(|dir| dir.is_dir());
-    let (models, on_demand_bytes) = (fetched.models, fetched.on_demand_bytes);
-    Ok(Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on, scope, source, on_demand_bytes }))
+    Ok(Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on, scope, source }))
 }
 
-/// The model choices a box's fields `made` give `renderer`'s function (`models`, `lora`), as a machine's list carries them: an
-/// upcoming job's (`Walk::item`) and a guess's (`guess`) alike.
-fn listed_models(renderer: &Renderer, made: &Map<String, Value>) -> Result<Vec<v1::ModelChoice>, Error> {
-    let mut payload = Map::new();
+/// A project's boxes as their renders would ask their functions, read once (cl-1103): what each one's needs rules read, so a machine is
+/// told to fetch only what that render needs, and its quote counts only that.
+pub(super) struct Asking {
+    doc: Doc,
+    lock: Lock,
+    stand: Vec<Standing>,
+}
+
+impl Asking {
+    /// `folder` as it stands. None: it can't be read.
+    pub(super) fn of(folder: &Folder) -> Option<Self> {
+        let doc = Doc::load(folder).ok()?;
+        let lock = folder.lock().ok()?;
+        let stand = doc.stand(&lock);
+        Some(Self { doc, lock, stand })
+    }
+
+    /// What a render of box `name` would send `function` of `package` (`binder::foreseen`): its fields bound, a mention of a box not
+    /// rendered yet as its kind, and no pickup (only a gesture makes one). None: it has no such box, or `package` no such function.
+    pub(super) fn request(&self, name: &str, package: &Package, function: &str) -> Option<Value> {
+        let i = find(&self.doc, name).ok()?;
+        let callable = package.callable(function)?;
+        let (fields, reserved, title, tool) = (self.doc.inputs_of(i), package.reserved(), package.title(), self.doc.target(i));
+        let gone = BTreeSet::new();
+        let call = binder::Call {
+            name, tool: &tool, package: &package.name, title: &title, callable: &callable, fields: &fields, reserved: &reserved, doc: &self.doc,
+            own: Some(i), lock: &self.lock, stand: &self.stand, gone: &gone, pickup: None, inline: &[],
+        };
+        Some(Value::Object(binder::foreseen(&call)))
+    }
+}
+
+impl Project {
+    /// The seed box `name`'s draft is predicted with (cl-1123), drawn once and kept: its render sends it, so the request a machine
+    /// made ready is the one it is sent, and nothing about the render changes the item it names.
+    pub(super) fn draft_seed(&self, name: &str) -> u64 {
+        *self.drafts.lock().expect("drafts lock").entry(name_key(name)).or_insert_with(new_seed)
+    }
+
+    /// Box `name`'s render was answered by its machine (`prefetch::Lists::answered`): its next draft is predicted with a seed of its
+    /// own, as its next render takes one.
+    pub(crate) fn rotate_draft_seed(&self, name: &str) {
+        self.drafts.lock().expect("drafts lock").remove(&name_key(name));
+    }
+}
+
+/// The request a render of a box would send `renderer`'s function (cl-1123; Paul, 11-17: "calcifer only has to worry about what it
+/// knows, i.e., it predicts what the user MAY want"): `request`, its fields bound as a render binds them (`Asking::request`), with
+/// `seed` as a render puts it in, its model choices taken from its fields (`made`) as a render takes them, from `source`. The spec a
+/// prepare or upcoming item carries: the machine plans it as it would plan that run, and nothing about its components, lanes or
+/// downloads is said.
+fn predicted(renderer: &Renderer, made: &Map<String, Value>, request: Option<Value>, seed: u64, source: v1::Source) -> Result<v1::RunSpec, Error> {
+    let mut payload = match request {
+        Some(Value::Object(payload)) => payload,
+        _ => Map::new(),
+    };
+    if renderer.accepts.contains("seed") && !payload.contains_key("seed") {
+        payload.insert("seed".into(), json!(seed));
+    }
     for field in ["models", "lora"] {
-        if let Some(value) = made.get(field).filter(|value| !value.is_null()) {
+        if let Some(value) = made.get(field) {
             payload.insert(field.into(), value.clone());
         }
     }
     let called = renderer.target();
     let mut choices = Choices::new(&called, &renderer.function, &renderer.slots, renderer.call_slots());
     choices.take(&mut payload)?;
-    choices::wire(&choices.into_choices())
+    let models = choices::wire(&choices.into_choices())?;
+    let payload = v1::Json::parse(Value::Object(payload).to_string()).map_err(|e| Error::new(Kind::Internal, "payload", e.to_string()))?;
+    Ok(v1::RunSpec { kind: v1::RunKind::Call, source: Some(source), entrypoint: renderer.function.clone(), payload: Some(payload), models, ..Default::default() })
+}
+
+/// The files `spec`'s payload reads (`tools::files_in`) as a run of it lists them (`Walk::submit`), and as they're written to a machine
+/// ahead of it (`Calcifer::ship`), so a predicted request is its render's to the byte (cl-1123). One not on this computer is left out.
+pub(super) fn predicted_inputs(folder: &Folder, lock: &Lock, spec: &v1::RunSpec) -> (Vec<v1::InputFile>, Vec<StagedInput>) {
+    let Some(payload) = spec.payload.as_ref().and_then(|payload| serde_json::from_str::<Value>(payload.get()).ok()) else { return (vec![], vec![]) };
+    let (mut inputs, mut staged) = (vec![], vec![]);
+    for (field, path, digest) in tools::files_in(&payload, folder, lock, &HashMap::new()) {
+        let (Ok(length), Ok(parsed)) = (std::fs::metadata(&path).map(|held| held.len()), digest.parse::<Digest>()) else { continue };
+        inputs.push(v1::InputFile { field: field.clone(), digest: digest.clone(), length, media_type: media_type(&path).to_owned(), order: order_of(&field) });
+        staged.push(StagedInput { path, digest: parsed, length });
+    }
+    (inputs, staged)
+}
+
+/// What a call of `function` of `package` wants of its models, by slot (cl-1103): its needs rules evaluated on `request` (none: no rule
+/// answers), walked over the functions it calls (`needs::wants`), the walk its machine makes of a request it is sent. A quote's alone
+/// (cl-1123): what a machine fetches is its own to plan.
+pub(super) fn wants(package: &Package, function: &str, request: Option<&Value>) -> ::needs::Wants {
+    let document = package.document();
+    let answers = match (request, api::interface::entrypoint(document, function)) {
+        (Some(request), Some(entry)) => ::needs::answers(entry, request),
+        _ => ::needs::Answers::default(),
+    };
+    ::needs::wants(document, function, &answers)
 }
 
 /// Why the plan placed no machine for ready job `key`, said when that changes: it goes to the first of its machines that takes it.
@@ -4121,6 +4207,8 @@ struct Wanted {
     with: String,
     kind: String,
     made: Map<String, Value>,
+    /// Its box, whose render's request its function's needs rules read (cl-1103).
+    asset: String,
 }
 
 
@@ -4663,7 +4751,7 @@ impl Walk {
             };
             // With `any`, or none placed yet, where isn't known.
             let Some(machine @ On::Machine(_)) = machine else { continue };
-            let wanted = Wanted { machine, hub: target.hub.clone(), with: reading.doc.target(job.node), kind: asset.kind.clone(), made: asset.made.clone() };
+            let wanted = Wanted { machine, hub: target.hub.clone(), with: reading.doc.target(job.node), kind: asset.kind.clone(), made: asset.made.clone(), asset: asset.name.clone() };
             jobs.push((job.key.clone(), job.asset.clone(), wanted));
         }
         jobs
@@ -4698,14 +4786,14 @@ impl Walk {
     }
 
     /// What `wanted`'s machine has ready for job `key` (`PUT /v1/upcoming`): the function its text names, else the first of its package
-    /// that makes this kind, with its model choices; and the function, as its row says it. None: its package makes nothing of the kind.
+    /// that makes this kind, with its model choices and what its needs rules say its box's render needs of its models (cl-1103); and
+    /// the function, as its row says it. None: its package makes nothing of the kind.
     /// Local code is installed there first, as a call's is. A project's published code and its models are the machine's, as every
     /// project's are (Paul, 11-13); an encrypted project's local code goes with the run that calls it.
-    async fn item(&self, key: &str, wanted: &Wanted) -> Result<Option<(v1::Ahead, String)>, Error> {
-        let Wanted { machine, hub, with, kind, made } = wanted;
+    async fn item(&self, key: &str, wanted: &Wanted) -> Result<Option<(v1::Predicted, String)>, Error> {
+        let Wanted { machine, hub, with, kind, made, asset } = wanted;
         let package = self.host.package(hub, with, &self.folder().dir, std::slice::from_ref(machine), host::Wait::Job(key, None)).await?;
         let Some(renderer) = package.first_making(kind) else { return Ok(None) };
-        let models = listed_models(&renderer, made)?;
         let source = match &renderer.local {
             None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: self.pinned(hub, &renderer)?, ..Default::default() }),
             Some(path) => {
@@ -4717,20 +4805,27 @@ impl Walk {
                 v1::Source::Local(crate::private_io::context(scope, self.host.ready(path, machine, hub, host::Wait::Job(key, None))).await?.source)
             }
         };
-        let item = v1::Ahead { key: key.to_owned(), source: Some(source), entrypoint: renderer.function.clone(), models, ..Default::default() };
-        Ok(Some((item, package.name.clone() + "/" + &renderer.function)))
+        let asking = Asking::of(self.folder());
+        let request = asking.as_ref().and_then(|asking| asking.request(asset, &package, &renderer.function));
+        let mut spec = predicted(&renderer, made, request, self.project.draft_seed(asset), source)?;
+        // Its files as its run lists them, which that run writes there: the item is its request to the byte (cl-1123).
+        if let Some(asking) = &asking {
+            spec.inputs = predicted_inputs(self.folder(), &asking.lock, &spec).0;
+        }
+        Ok(Some((v1::Predicted { key: key.to_owned(), spec }, package.name.clone() + "/" + &renderer.function)))
     }
 
     /// Job `key` as its machines quote it: the function its tool names, with `made`'s choices, its package read as `read` says; else why
     /// not. None: its install is going, and `read` doesn't wait for it.
-    async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, read: PackageRead) -> Result<Option<placement::Job>, Unquoted> {
+    #[allow(clippy::too_many_arguments)]
+    async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, read: PackageRead, asked: Option<(&Asking, &str)>) -> Result<Option<placement::Job>, Unquoted> {
         let (began, job, dir) = (std::time::Instant::now(), key.clone(), self.folder().dir.clone());
         let stages = Arc::new(Mutex::new(crate::stages::Stages::default()));
         // A read that may answer if asked again is, as any call (retry-standard-api-practice): backing off, each attempt said.
         let attempts = async {
             let mut attempt = 1;
             loop {
-                match job_read(&self.host, &dir, key.clone(), on.clone(), hub, with, made.clone(), read).await {
+                match job_read(&self.host, &dir, key.clone(), on.clone(), hub, with, made.clone(), read, asked).await {
                     Err(Unquotable::Again(why)) if attempt < QUOTE_ATTEMPTS => {
                         let wait = std::time::Duration::from_secs(1 << (attempt - 1));
                         warn!("{}: quote of {job}, attempt {attempt}/{QUOTE_ATTEMPTS}: {why}; again in {} s", dir.display(), wait.as_secs());
@@ -5100,21 +5195,25 @@ impl Walk {
     /// Quotes `unquoted` in the walk's work, each once (`plan`): a ready job's from its package, and once its install is done if that's
     /// going (`Walker::quoting`), a waiting job's from its package read statically (`Walker::foreseeing`). The plan after each places it.
     fn quote_later<'a>(&'a self, unquoted: Vec<Unsent>, work: &mut FuturesUnordered<BoxFuture<'a, Done>>) {
+        // What each box's render would send, which its function's needs rules read (cl-1103): the project as it stands, read once.
+        let asking = (!unquoted.is_empty()).then(|| Asking::of(self.folder())).flatten().map(Arc::new);
         for unsent in unquoted {
             {
                 let mut walker = self.project.walker.lock().expect("walker lock");
                 let going = if unsent.ready { &mut walker.quoting } else { &mut walker.foreseeing };
                 going.insert(unsent.key.clone());
             }
+            let asking = asking.clone();
             work.push(async move {
                 let (key, hub, with) = (&unsent.key, &unsent.target.hub, &unsent.with);
+                let asked = asking.as_deref().map(|asking| (asking, unsent.asset.as_str()));
                 let quotable = match unsent.ready {
                     // As its turn reads it, not waiting for its install; that going, once it's done.
-                    true => match self.quotable(key.clone(), vec![], hub, with, unsent.made.clone(), PackageRead::Now).await {
-                        Ok(None) => self.quotable(key.clone(), vec![], hub, with, unsent.made.clone(), PackageRead::Installed).await,
+                    true => match self.quotable(key.clone(), vec![], hub, with, unsent.made.clone(), PackageRead::Now, asked).await {
+                        Ok(None) => self.quotable(key.clone(), vec![], hub, with, unsent.made.clone(), PackageRead::Installed, asked).await,
                         quoted => quoted,
                     },
-                    false => self.quotable(key.clone(), vec![], hub, with, unsent.made.clone(), PackageRead::Foreseen).await,
+                    false => self.quotable(key.clone(), vec![], hub, with, unsent.made.clone(), PackageRead::Foreseen, asked).await,
                 };
                 match unsent.ready {
                     true => Done::Quoted { key: unsent.key, quotable },
@@ -5860,7 +5959,8 @@ impl Walk {
                 // A failed run's seed is kept for the next try on these inputs, so finished segments aren't paid twice.
                 // Try again is a render of what failed on these inputs: the same seed, so its finished calls come from the memo.
                 let tried = now.asset(&name).and_then(|held| held.tried.as_ref()).filter(|tried| tried.inputs == inputs).map(|tried| tried.seed);
-                version.seed = Some(tried.unwrap_or_else(new_seed));
+                // Else the seed its draft was predicted with (cl-1123): the request its machine made ready is the one it is sent.
+                version.seed = Some(tried.unwrap_or_else(|| self.project.draft_seed(&name)));
             }
             version.pickup = pickup;
             // Its number now, whichever of several lands first.
@@ -6111,6 +6211,11 @@ impl Walk {
                 v1::Source::Local(prepared.source)
             }
         };
+        // The request its machine was told it may get, if it was (cl-1123): it names that item, which made it ready.
+        let predicted = match &placed {
+            On::Machine(machine) => self.host.api().machines.lists.predicted(machine, &self.folder().dir.to_string_lossy(), &name, key),
+            _ => None,
+        };
         let spec = v1::RunSpec {
             kind: v1::RunKind::Call,
             source: Some(source),
@@ -6118,6 +6223,7 @@ impl Walk {
             payload: Some(v1::Json::parse(payload.to_string()).expect("a payload is JSON")),
             inputs,
             models,
+            predicted,
             ..Default::default()
         };
         let submit = SubmitRun { project: Some(self.project.id.clone()),
@@ -7031,34 +7137,34 @@ pub(crate) async fn queued_on(api: &Arc<Api>, set: &[On], row: &crate::store::Ru
     let hub = row.hub.as_ref().map_or_else(|| api.machines.hubs.default_origin(), ToString::to_string);
     let function = row.spec.entrypoint.as_str();
     let payload: Value = row.spec.payload.as_ref().and_then(|payload| serde_json::from_str(payload.get()).ok()).unwrap_or_default();
-    let (read, named, fetched, gpu) = match &row.spec.source {
+    let (read, named, models, gpu) = match &row.spec.source {
         Some(v1::Source::Release(release)) => {
             let read = Host::new(api).published(&hub, &format!("{}@{}", release.package, release.release), set.first()).await.ok();
-            let fetched = match &read {
-                Some(read) => fit::checkpoints(api, &hub, read, function, &Map::new()).await,
-                None => fit::Fetched::default(),
+            // What its request waits for, by its function's needs rules on its payload (cl-1103).
+            let models = match &read {
+                Some(read) => fit::checkpoints(api, &hub, read, function, &Map::new(), Some(&payload)).await,
+                None => vec![],
             };
             let gpu = read.as_ref().and_then(|read| api::interface::Interface::parse(read.document()).ok()).is_some_and(|interface| {
                 interface.callables.iter().find(|callable| callable.name == function).is_some_and(|callable| interface.needs_gpu(callable))
             });
-            (read, format!("{}/{function}@{}", release.package, release.release), fetched, gpu)
+            (read, format!("{}/{function}@{}", release.package, release.release), models, gpu)
         }
         // Local code: as its machine's estimate names it; one that builds models wants a GPU.
-        Some(v1::Source::Local(local)) => (None, format!("{}/{function}", local.manifest), fit::Fetched::default(), !row.spec.models.is_empty()),
-        _ => (None, row.target.clone(), fit::Fetched::default(), false),
+        Some(v1::Source::Local(local)) => (None, format!("{}/{function}", local.manifest), vec![], !row.spec.models.is_empty()),
+        _ => (None, row.target.clone(), vec![], false),
     };
     let job = placement::Job {
         key: row.id.to_string(),
         target: row.target.clone(),
         function: named,
-        models: fetched.models,
+        models,
         size: v1::JobSize::of(&payload),
         gpus: row.spec.gpus,
         gpu,
         on: set.to_vec(),
         scope: None,
         source: None,
-        on_demand_bytes: fetched.on_demand_bytes,
     };
     let (offers, said) = Box::pin(placement::offers(api, std::slice::from_ref(&job), true)).await;
     let offers = offers.into_iter().next().unwrap_or_default();
@@ -7076,18 +7182,19 @@ pub(crate) async fn queued_on(api: &Arc<Api>, set: &[On], row: &crate::store::Ru
 }
 
 /// Where `cozy run` of `function` goes among `set` (Paul, 11-06): as a render's job does (`pick`), each machine asked once, for `count`
-/// copies of it as if sent at once. Also each copy's offers, and a line for each machine that didn't answer.
+/// copies of it as if sent at once, each quoted what its needs rules say `request` (its bound payload) needs (cl-1103). Also each copy's
+/// offers, and a line for each machine that didn't answer.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str, release: &str, function: &str, size: v1::JobSize, gpus: u32, gpu: bool, count: u32, update: bool) -> (Result<(On, Option<String>), Error>, Vec<Vec<Offer>>, Vec<String>) {
+pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str, release: &str, function: &str, request: Option<&Value>, size: v1::JobSize, gpus: u32, gpu: bool, count: u32, update: bool) -> (Result<(On, Option<String>), Error>, Vec<Vec<Offer>>, Vec<String>) {
     let host = Host::new(api);
     let read = host.published(hub, &format!("{package}@{release}"), set.first()).await.ok();
-    let fetched = match &read {
-        Some(read) => fit::checkpoints(api, hub, read, function, &Map::new()).await,
-        None => fit::Fetched::default(),
+    let models = match &read {
+        Some(read) => fit::checkpoints(api, hub, read, function, &Map::new(), request).await,
+        None => vec![],
     };
     let named = format!("{package}/{function}@{release}");
     let jobs: Vec<placement::Job> = (0..count.max(1))
-        .map(|copy| placement::Job { key: copy.to_string(), target: named.clone(), function: named.clone(), models: fetched.models.clone(), size, gpus, gpu, on: set.to_vec(), scope: None, source: None, on_demand_bytes: fetched.on_demand_bytes })
+        .map(|copy| placement::Job { key: copy.to_string(), target: named.clone(), function: named.clone(), models: models.clone(), size, gpus, gpu, on: set.to_vec(), scope: None, source: None })
         .collect();
     let (offers, said) = placement::offers(api, &jobs, update).await;
     let chosen = pick(api, set, offers.first().map_or(&[][..], Vec::as_slice), None, hub, read.as_ref(), function, &Map::new()).await;

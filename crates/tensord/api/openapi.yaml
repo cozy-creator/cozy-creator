@@ -307,9 +307,8 @@ paths:
         content: {application/json: {schema: {$ref: '#/components/schemas/Upcoming'}}}
         required: true
       responses:
-        '200':
-          description: Each job as a run would be admitted, in its order
-          content: {application/json: {schema: {$ref: '#/components/schemas/AheadAnswer'}}}
+        '202':
+          description: Taken. Its jobs are admitted behind the answer; each shows in Status, `planning` until planned.
   /v1/prepare:
     put:
       summary: >-
@@ -323,9 +322,8 @@ paths:
         content: {application/json: {schema: {$ref: '#/components/schemas/Prepare'}}}
         required: true
       responses:
-        '200':
-          description: Each item as a run would be admitted, in its order
-          content: {application/json: {schema: {$ref: '#/components/schemas/AheadAnswer'}}}
+        '202':
+          description: Taken. Its items are admitted behind the answer; each shows in Status, `planning` until planned.
   /v1/runs/{id}/cancel:
     post:
       summary: >-
@@ -1169,6 +1167,11 @@ components:
         tensorfs:
           description: Ordinary TensorFS connection settings supplied by the caller, forwarded to Runtime.
           oneOf: [{$ref: '#/components/schemas/TensorFSOptions'}, {type: 'null'}]
+        predicted:
+          type: string
+          description: >-
+            A real call that is the request a list item predicted (cl-1123): its key. One whose identity is the item's adopts
+            what the item made ready.
         weights_destination:
           type: string
           description: >-
@@ -1193,6 +1196,14 @@ components:
           type: array
           items: {type: string}
           description: The runs it waits for, by id (an update waits for those in flight).
+        readiness:
+          type: object
+          description: "A list item's (Status `ahead`): how ready the machine is for it (cl-1123)."
+          properties:
+            stage: {type: string, description: 'planning, installing, downloading, ready, loading, loaded, evicted, running, done; refused (with its reason)'}
+            done: {type: integer, format: int64, minimum: 0}
+            total: {type: integer, format: int64, minimum: 0, description: Bytes the stage counts.}
+            reason: {type: string, description: Why it stops where it is.}
     Source:
       oneOf:
         - type: object
@@ -1211,23 +1222,20 @@ components:
       description: What a run runs.
     Upcoming:
       type: object
-      properties: {jobs: {type: array, items: {$ref: '#/components/schemas/Ahead'}, description: Nearest first.}}
+      properties: {jobs: {type: array, items: {$ref: '#/components/schemas/Predicted'}, description: Nearest first.}}
     Prepare:
       type: object
-      properties: {items: {type: array, items: {$ref: '#/components/schemas/Ahead'}}}
-    Ahead:
+      properties: {items: {type: array, items: {$ref: '#/components/schemas/Predicted'}}}
+    Predicted:
       type: object
-      description: One function to have ready, its code and its models in their lanes.
+      description: >-
+        A request the caller predicts it may send here (cl-1123): the exact spec a run of it would carry, its payload bound and its
+        seed fixed. The machine plans it as that run (its function's needs rules on its payload, its lane for these GPUs, its
+        store) and makes it ready; nothing of components, lanes or downloads is said. A run later sent naming its key
+        (`RunSpec.predicted`) with the same identity adopts it.
       properties:
         key: {type: string, description: "The caller's name for it: an upcoming job's key, the one its run is sent under."}
-        source: {$ref: '#/components/schemas/Source'}
-        entrypoint: {type: string, description: 'Empty: its code installed only.'}
-        models: {type: array, items: {$ref: '#/components/schemas/ModelChoice'}}
-        lane: {type: string}
-        hub: {$ref: '#/components/schemas/HubAccess'}
-    AheadAnswer:
-      type: object
-      properties: {items: {type: array, items: {$ref: '#/components/schemas/Admitted'}}}
+        spec: {$ref: '#/components/schemas/RunSpec'}
     Queued:
       type: object
       properties:

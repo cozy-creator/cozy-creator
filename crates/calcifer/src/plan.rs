@@ -18,7 +18,7 @@ const PASSES: usize = 2;
 const TIE: f64 = 0.02;
 /// A job leaves the machine fetching ahead for it only for one that finishes it this much sooner, both.
 const STAY: f64 = 0.10;
-const STAY_MS: i64 = 30_000;
+pub(crate) const STAY_MS: i64 = 30_000;
 
 /// One job to place.
 #[derive(Clone, Debug)]
@@ -181,8 +181,13 @@ fn stays(job: &Job, was: &Option<(usize, Offer)>, now_placed: &Option<(usize, Of
 
 /// `sooner` finishes clearly before `than`: 10% and 30 s.
 pub(crate) fn clearly_sooner(sooner: &Offer, than: &Offer, now: i64) -> bool {
-    let gain = than.finish_at_ms - sooner.finish_at_ms;
-    gain >= STAY_MS && gain as f64 >= STAY * (than.finish_at_ms - now).max(0) as f64
+    finishes_clearly_sooner(sooner.finish_at_ms, than.finish_at_ms, now)
+}
+
+/// A finish at `sooner` is clearly before one at `than` (`clearly_sooner`).
+pub(crate) fn finishes_clearly_sooner(sooner: i64, than: i64, now: i64) -> bool {
+    let gain = than - sooner;
+    gain >= STAY_MS && gain as f64 >= STAY * (than - now).max(0) as f64
 }
 
 /// Of `offers`, where a job goes: the soonest finish of those that can run it, of those tied a machine that serves before one on its

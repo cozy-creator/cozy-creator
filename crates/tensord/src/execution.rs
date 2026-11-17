@@ -677,9 +677,16 @@ impl Engine {
     }
 
     /// See `Journal::accept_runs`: one admission, which the dispatcher sees whole.
-    pub(crate) fn accept_runs(&self, actor: &str, runs: Vec<crate::journal::Accepting<'_>>) -> io::Result<Vec<io::Result<(Execution, bool)>>> {
+    pub(crate) fn accept_runs(&self, actor: &str, runs: Vec<crate::journal::Accepting<'_>>, synced: bool) -> io::Result<Vec<io::Result<(Execution, bool)>>> {
+        let began = std::time::Instant::now();
         let mut owned = self.owned.lock().unwrap();
-        let accepted = self.journal.lock().unwrap().accept_runs(actor, runs)?;
+        let mut journal = self.journal.lock().unwrap();
+        // What an acceptance waited for, said when it was long (cl-1123): another's hold of the journal, or the disk (`Journal`).
+        if began.elapsed() > std::time::Duration::from_millis(100) {
+            tracing::info!("an acceptance waited {} ms for the journal's lock", began.elapsed().as_millis());
+        }
+        let accepted = journal.accept_runs(actor, runs, synced)?;
+        drop(journal);
         owned.extend(accepted.iter().flatten().filter(|(_, new)| *new).map(|(record, _)| record.id.clone()));
         drop(owned);
         self.notify_activity();

@@ -120,7 +120,9 @@ async fn judged_in(api: &Arc<Api>, id: &str, asked: &FitAsk) -> Result<Fit, Refu
         (targets, boxes, project.folder.dir.clone())
     };
     let hub = api.machines.hubs.default_origin();
-    let estimating = estimates(api, &project.id, &dir, &hub, boxes);
+    // What each box's render would send, which its function's needs rules read (cl-1103).
+    let asking = (!boxes.is_empty()).then(|| super::Asking::of(&project.folder)).flatten();
+    let estimating = estimates(api, &project.id, &dir, &hub, boxes, asking.as_ref());
     // A machine that hasn't said what it has can't be judged: nothing is said of it.
     let Some(gpus) = gpus(api) else { return Ok(Fit { estimates: estimating.await, ..Fit::default() }) };
     let largest = gpus.iter().map(|gpu| gpu.1).max();
@@ -166,20 +168,20 @@ struct Boxed {
 /// Each of `boxes`, where a render of it would go now and how long it runs there (cl-1004): its machines as a render naming none has
 /// them (`runs::unnamed_set`), each quoted by what it last said, nothing started, updated or rented, and the soonest finish chosen as
 /// placement chooses it (`placement::soonest`).
-async fn estimates(api: &Arc<Api>, project: &str, dir: &FsPath, hub: &str, boxes: Vec<Boxed>) -> Vec<BoxEstimate> {
+async fn estimates(api: &Arc<Api>, project: &str, dir: &FsPath, hub: &str, boxes: Vec<Boxed>, asking: Option<&super::Asking>) -> Vec<BoxEstimate> {
     if boxes.is_empty() {
         return vec![];
     }
     let Ok(on) = crate::runs::unnamed_set(api, Some(project)).await else { return vec![] };
     // Each boxed: joined inline, every box's estimate sat in the poll's frames (a release `/fit` measured up to 1.8 of its 2 MiB).
-    let each = boxes.into_iter().map(|asked| Box::pin(estimate(api, dir, hub, asked, on.clone())));
+    let each = boxes.into_iter().map(|asked| Box::pin(estimate(api, dir, hub, asked, on.clone(), asking)));
     futures_util::future::join_all(each).await.into_iter().flatten().collect()
 }
 
-async fn estimate(api: &Arc<Api>, dir: &FsPath, hub: &str, asked: Boxed, on: Vec<On>) -> Option<BoxEstimate> {
+async fn estimate(api: &Arc<Api>, dir: &FsPath, hub: &str, asked: Boxed, on: Vec<On>, asking: Option<&super::Asking>) -> Option<BoxEstimate> {
     let Boxed { name, with, made, media } = asked;
     let host = Host::new(api);
-    let read = super::job_of(&host, dir, name.clone(), on, hub, &with, made, super::PackageRead::Foreseen);
+    let read = super::job_of(&host, dir, name.clone(), on, hub, &with, made, super::PackageRead::Foreseen, asking.map(|asking| (asking, name.as_str())));
     let mut job = tokio::time::timeout(ESTIMATED, read).await.ok()?.ok()??;
     job.size.refs = Some(media);
     let (offers, pictured) = placement::offers_now(api, std::slice::from_ref(&job)).await;
@@ -623,76 +625,65 @@ async fn checkpoint(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> 
     found
 }
 
-/// The slots a run of a function waits for before it starts, the one set a quote's download sums over (cl-1071): its needs, as
-/// its machine reckons them (TensorD's `access::Needs`, cl-1102). Their source is the rules in its interface, evaluated against the
-/// request (`checkpoints`' `made`) by the evaluator TensorD shares (cl-1103): an on-demand slot the request is sure to read is
-/// waited for, and its bytes are in the quote's download. Until a function has rules this is the same fallback as TensorD's
-/// (`Plan::needs`): each slot not on demand; an on-demand one comes in the background and is fetched at once when first read.
-/// `ruled` is what `function`'s rules say of the box as written (`needs::answers_written`): what only its bound request knows (a
-/// mention's file, a pickup) leaves a rule unanswered and its slot as it was.
-fn waited<'a>(slots: &'a [Slot], function: &'a str, ruled: &'a ::needs::Answers) -> impl Iterator<Item = &'a Slot> {
-    let own = move |slot: &Slot| slot.path.split_once(".models.").is_some_and(|(owner, param)| owner == function && ruled.needed.contains(param));
-    slots.iter().filter(move |slot| !slot.on_demand || own(slot))
+/// What `function` of `package` waits for before it starts, as its machine fetches it (cl-1071, cl-1103): what it wants of its models by
+/// its needs rules for `request` (`super::wants`, the walk its machine makes; none: no rule answers), each slot by its Hub card's lane
+/// checkpoint with `made`'s choices, resolved as its machine resolves them (`needs::resolved`: of the functions it may call that no
+/// rule answers, what they all read), and the bytes of the chunks its components read, each object once across checkpoints (a
+/// fine-tune composed of a base's parts shares them). A header that can't be read counts its checkpoint whole. A machine's estimate
+/// counts the fetch of what it lacks of these (cl-816, cl-1047): exactly the call's needs less what it has. Its extras are no part of
+/// it, as no call waits for them; what the Hub doesn't say in time is left out.
+pub(super) async fn checkpoints(api: &Api, hub: &str, package: &super::Package, function: &str, made: &Map<String, Value>, request: Option<&Value>) -> Vec<api::machine::ModelRef> {
+    held(api, hub, package, function, made, super::wants(package, function, request)).await
 }
 
-/// Whether `slot`, `function`'s own or a function's it calls, is one its rules say this request doesn't read: nothing of it is
-/// fetched, so nothing of it is quoted.
-fn ruled_out(ruled: &::needs::Answers, function: &str, slot: &Slot) -> bool {
-    match slot.path.split_once(".models.") {
-        Some((owner, param)) if owner == function => ruled.unneeded.contains(param),
-        Some((called, _)) => ruled.unneeded.contains(called),
-        None => false,
-    }
+/// Reads ahead what a quote of any request of `function` reads of the Hub (its slots' cards and headers, whatever its rules say), so
+/// an edit's quote reads none (cl-1123: 44068453992's I2I edit read them on its way, 0.7 s).
+pub(super) async fn read_ahead(api: &Api, hub: &str, package: &super::Package, function: &str, made: &Map<String, Value>) {
+    let mut wanted = super::wants(package, function, None);
+    wanted.needed.extend(wanted.either.drain(..).flatten().chain(wanted.extras.drain(..).flat_map(|(_, slots)| slots)));
+    held(api, hub, package, function, made, wanted).await;
 }
 
-/// What `function` of `package` fetches before it starts, as TensorD fetches it (cl-1071): each slot it waits for (`waited`), by its Hub
-/// card's lane checkpoint, and the bytes of the chunks its components read that no slot before it reads, each object once across
-/// checkpoints (a fine-tune composed of a base's parts shares them); and, of its on-demand slots, those it may fetch besides, which a
-/// quote can't know it reads. A header that can't be read counts its checkpoint whole. What a machine's estimate counts the fetch of
-/// (cl-816, cl-1047); what the Hub doesn't say in time is left out.
-pub(super) async fn checkpoints(api: &Api, hub: &str, package: &super::Package, function: &str, made: &Map<String, Value>) -> Fetched {
-    let Some(mut weights) = Interface::parse(package.document()).ok().and_then(|interface| Weights::read(&interface, function, made)) else { return Fetched::default() };
-    // A request not known here (`cozy run`'s placement names none) answers no rule.
-    let ruled = match made.is_empty() {
-        true => ::needs::Answers::default(),
-        false => (::api::interface::entrypoint(package.document(), function))
-            .map(|entry| ::needs::answers_written(entry, &Value::Object(made.clone())))
-            .unwrap_or_default(),
-    };
-    weights.slots.retain(|slot| !ruled_out(&ruled, function, slot));
+async fn held(api: &Api, hub: &str, package: &super::Package, function: &str, made: &Map<String, Value>, wanted: ::needs::Wants) -> Vec<api::machine::ModelRef> {
+    let Ok(interface) = Interface::parse(package.document()) else { return vec![] };
+    let on_box: BTreeMap<String, String> = (made.get("models").and_then(Value::as_object).into_iter().flatten())
+        .filter_map(|(param, slot)| Some((param.clone(), slot["ref"].as_str()?.to_owned())))
+        .collect();
     let placed = match package.local {
         None => placed(api, hub, &package.name, &package.release, function).await,
         Some(_) => None,
     };
-    let mut counted: HashSet<String> = HashSet::new();
-    let mut fetched = Fetched::default();
-    let waited: Vec<&Slot> = waited(&weights.slots, function, &ruled).collect();
-    let on_demand = weights.slots.iter().filter(|slot| !waited.iter().any(|held| std::ptr::eq(*held, *slot)));
-    for (slot, ahead) in waited.iter().map(|slot| (*slot, true)).chain(on_demand.map(|slot| (slot, false))) {
+    // Every slot of the package, by its path: a function's own, and those of the functions it calls.
+    let slots: HashMap<&str, &Slot> = (interface.callables.iter())
+        .flat_map(|callable| callable.models.iter().chain(interface.call_slots(callable)))
+        .map(|slot| (slot.path.as_str(), slot))
+        .collect();
+    // Each slot it may wait for, by its card's checkpoint, with the slot's choice and components.
+    let mut held: HashMap<&str, (Lane, String, Vec<String>)> = HashMap::new();
+    for path in wanted.needed.iter().chain(wanted.either.iter().flatten()) {
+        let Some(slot) = slots.get(path.as_str()).filter(|_| !held.contains_key(path.as_str())) else { continue };
         let param = Weights::param(slot);
-        let Some(written) = weights.on_box.get(param).or(slot.default.as_ref()) else { continue };
-        let placed = placed.as_ref().and_then(|placed| placed.slots.iter().find(|(held, ..)| held == param));
-        let lane = placed.map(|(_, lane, _)| lane.clone()).or_else(|| slot.lane.clone());
-        let Some(held) = checkpoint(api, hub, written, lane.as_deref()).await else { continue };
-        let chunks = match &held.header {
-            Some(header) => crate::hub::headers::wanted(api, hub, header, &slot.fetched_components()).await,
+        let Some(written) = on_box.get(param).or(slot.default.as_ref()) else { continue };
+        let lane = (placed.as_ref().and_then(|placed| placed.slots.iter().find(|(held, ..)| held == param)))
+            .map(|(_, lane, _)| lane.clone())
+            .or_else(|| slot.lane.clone());
+        let Some(checkpoint) = checkpoint(api, hub, written, lane.as_deref()).await else { continue };
+        held.insert(path.as_str(), (checkpoint, written.clone(), slot.fetched_components()));
+    }
+    let resolved = ::needs::resolved(&wanted, |path| held.get(path).map(|(lane, _, components)| (lane.checkpoint.clone(), components.clone())));
+    let mut counted: HashSet<String> = HashSet::new();
+    let mut models = vec![];
+    for (checkpoint, components) in resolved.needed {
+        let Some((lane, written, _)) = held.values().find(|(lane, ..)| lane.checkpoint == checkpoint) else { continue };
+        let chunks = match &lane.header {
+            Some(header) => crate::hub::headers::wanted(api, hub, header, &components).await,
             None => None,
         };
         let bytes = match chunks {
             Some(chunks) => chunks.iter().filter(|chunk| counted.insert(chunk.sha256.clone())).map(|chunk| chunk.length).sum(),
-            None => held.bytes,
+            None => lane.bytes,
         };
-        match ahead {
-            true => fetched.models.push(api::machine::ModelRef { checkpoint: held.checkpoint, bytes, model: repository(written), reads: 0, components: slot.fetched_components() }),
-            false => fetched.on_demand_bytes += bytes,
-        }
+        models.push(api::machine::ModelRef { checkpoint, bytes, model: repository(written), reads: 0, components });
     }
-    fetched
-}
-
-/// What a function fetches (`checkpoints`): what it waits for before it starts, and the most it may fetch on demand besides.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct Fetched {
-    pub models: Vec<api::machine::ModelRef>,
-    pub on_demand_bytes: u64,
+    models
 }
