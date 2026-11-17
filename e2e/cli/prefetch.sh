@@ -492,6 +492,10 @@ elif not any(when <= run_turn + 2000 for when in gave):
 JUDGE
   while read -r why; do check "prefetch disk: $why"; done < "$OUT/pre-disk-line.failed"
 fi
+# Only the machine its render would go to got it: the project's one, stand-q; never this computer, which it doesn't prefer.
+cozy --json machine show local > "$OUT/pre-disk-local.json" 2> /dev/null || true
+! J '[.status.environments[]? | select(.package == "e2e-slow-install")] | length > 0' "$OUT/pre-disk-local.json" \
+  || check "prefetch disk: this computer installed e2e-slow-install, though the box's project renders on $name alone"
 project_api "$P" /assets/slow -X DELETE > "$OUT/pre-disk-slow-delete.json" 2>&1 || check "prefetch disk: the slow box wasn't deleted"
 kill "$PRE_WHEEL" 2> /dev/null || true
 jq -n --arg t e2e-prefetched/still '[{name: "kept", tool: $t, kind: "image", fields: {instructions: "A still stand-q gets ready on a short disk."}}]' | boxes_in "$P" || { pre_disk_end; return 0; }
