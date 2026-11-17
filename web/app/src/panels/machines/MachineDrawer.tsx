@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { type FormEvent, useEffect, useRef, useState } from "react"
 import { useParams } from "react-router-dom"
+import { useShowGpus } from "../../api/gpus"
 import { machineQuery, machinesQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
 import { useTo } from "../../app/Shell"
@@ -165,7 +166,8 @@ function Doing({ machine, now }: { machine: Machine; now: number }) {
 
 /** One machine, read from the live list while it's in it: reading it alone would start `local`. */
 export function MachineDrawer() {
-  const { client } = useConnection()
+  const { client, stream } = useConnection()
+  useShowGpus(stream)
   const queries = useQueryClient()
   const to = useTo()
   const name = useParams().name ?? ""

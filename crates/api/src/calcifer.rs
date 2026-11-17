@@ -1090,6 +1090,9 @@ pub struct Shown {
     pub projects: Vec<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub machines: bool,
+    /// It shows machines' GPU use (cl-1191): every machine's is read each second while one does, and sent as `machine.gpus`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub gpus: bool,
 }
 
 /// The Readers installed by `PUT /v1/events/{stream}`. IDs not in `held` are not acknowledged;
@@ -1134,6 +1137,9 @@ pub enum StreamEvent {
     /// It left the list.
     #[serde(rename = "machine.removed")]
     MachineRemoved { name: String },
+    /// Its GPUs' use that second (cl-1191), only to a stream whose page shows it (`Shown::gpus`), and never kept.
+    #[serde(rename = "machine.gpus")]
+    MachineGpus { name: String, reading: GpuUse },
     /// `rev` is opaque, and changes whenever the project does. Optional
     /// `cursor` is its emission position, comparable only with the same controller generation.
     #[serde(rename = "project.changed")]

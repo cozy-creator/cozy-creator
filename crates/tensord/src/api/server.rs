@@ -74,6 +74,8 @@ pub(crate) struct MachineIdentity {
     pub gpu_problems: Vec<String>,
     /// The most memory each of them offers (`machine.gpu_memory_limit`).
     pub gpu_memory_limit: Option<u64>,
+    /// Tests only: recorded GPU readings its live gauges replay in place of its GPUs' own (`machine.gpu_samples`, cl-1191).
+    pub gpu_samples: Option<std::path::PathBuf>,
     /// `shared` or `dedicated` (`machine.mode`, else by its lifetime).
     pub mode: &'static str,
     /// Where its PyTorch layer comes from.

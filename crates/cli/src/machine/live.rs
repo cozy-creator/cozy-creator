@@ -1,6 +1,6 @@
 //! `cozy machine ls` as a live view (`crate::tui`), fed by Calcifer's events.
 use api::{
-    calcifer::{Machine, MachineList, MachineState, StreamEvent},
+    calcifer::{GpuUse, Machine, MachineList, MachineState, StreamEvent},
     error::{Error, Kind},
 };
 
@@ -177,30 +177,55 @@ impl Machines {
     }
 }
 
-/// One machine as `cozy machine show` draws it, kept as Calcifer says it changes.
+/// One machine as `cozy machine show` draws it, kept as Calcifer says it changes, its GPUs' use each second (cl-1191).
 pub(crate) struct Shown {
     calcifer: Client,
     following: Following,
     machine: Machine,
+    /// Its GPUs' readings while this is open: the machine reads them only then. None from a Calcifer from before cl-1100.
+    gpus: Option<Watch<GpuUse>>,
+    gpu_use: Option<GpuUse>,
 }
 
 impl Shown {
     pub(crate) async fn open(ctx: &Context, name: &str) -> Result<Self, Error> {
         let calcifer = ctx.calcifer().await?;
         let (following, machine) = Following::open(&calcifer, name).await?;
+        let gpus = calcifer.watch::<GpuUse>(&format!("{}/gpus", route(&machine.name)?)).await.ok().map(Watch::quiet);
         Ok(Self {
             calcifer,
             following: following.quiet(),
             machine,
+            gpus,
+            gpu_use: None,
         })
     }
 
-    /// Cancel-safe, as [`Following::next`] is.
+    /// Cancel-safe, as [`Following::next`] and [`Watch::next`] are.
     pub(crate) async fn changed(&mut self) -> Result<(), Error> {
-        match self.following.next(&self.calcifer).await? {
-            Some(machine) => self.machine = machine,
+        enum Heard {
+            Machine(Option<Box<Machine>>),
+            Gpus(Option<GpuUse>),
+        }
+        let heard = {
+            let Self { calcifer, following, gpus, .. } = self;
+            let reading = async {
+                match gpus.as_mut() {
+                    Some(gpus) => gpus.next().await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::select! {
+                changed = following.next(calcifer) => Heard::Machine(changed?.map(Box::new)),
+                reading = reading => Heard::Gpus(reading),
+            }
+        };
+        match heard {
+            Heard::Machine(Some(machine)) => self.machine = *machine,
             // It left the list: nothing more will change.
-            None => std::future::pending().await,
+            Heard::Machine(None) => std::future::pending().await,
+            Heard::Gpus(Some(reading)) => self.gpu_use = Some(reading),
+            Heard::Gpus(None) => self.gpus = None,
         }
         Ok(())
     }
@@ -212,6 +237,6 @@ impl Shown {
 
     /// Its record's lines, each with whether it is an alarm.
     pub(crate) fn lines(&self, ctx: &Context) -> Vec<(String, bool)> {
-        list::record(ctx, &self.machine).marked()
+        list::record(ctx, &self.machine, self.gpu_use.as_ref()).marked()
     }
 }

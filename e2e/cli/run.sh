@@ -572,6 +572,7 @@ WEB_ENGINES=(
 WEB_SOLO=(
   open
   machine-details
+  gpu-gauges
   account-rent
   machine-tabs
   offline

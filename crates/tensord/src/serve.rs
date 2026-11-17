@@ -426,6 +426,7 @@ fn run_machine(
         gpus,
         gpu_problems,
         gpu_memory_limit,
+        gpu_samples,
         mode: mode.name(),
         torch,
         stuck: crate::machine::stuck::Before::watch(stuck, paths.clone(), broken.is_some()),

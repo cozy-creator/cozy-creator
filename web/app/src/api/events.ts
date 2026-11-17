@@ -8,8 +8,9 @@ export type Health =
   | { state: "reconnecting"; attempt: number }
   | { state: "signed_out" }
 
-/** What a tab shows: a project, and whether a machine's view, where runs of no project show (installs, updates). */
-type Presence = { tab: string; project: string | null; revision: number; machines: boolean }
+/** What a tab shows: a project, whether a machine's view, where runs of no project show (installs, updates), and whether machines' GPU
+ *  use (cl-1191). */
+type Presence = { tab: string; project: string | null; revision: number; machines: boolean; gpus?: boolean }
 type Acknowledged = Presence & { stream: string; refusal?: ProjectShowRefusal }
 type Waiter = { project: string; done(): void; fail(error: unknown): void }
 type Confirmed = { stream: string; key: string; readers: number; reply: ProjectShowReply | null }
@@ -71,6 +72,8 @@ export class EventStream {
   private showing: string | null = null
   /** This tab shows a machine's view. */
   private machines = false
+  /** This tab shows machines' GPU use. */
+  private gpus = false
   private revision = 0
   private acknowledged: Acknowledged | null = null
   private waiters = new Set<Waiter>()
@@ -154,6 +157,14 @@ export class EventStream {
     else this.announce()
   }
 
+  /** This tab shows machines' GPU use, or not (cl-1191): only while one does are machines' GPUs read, and their readings sent. */
+  showGpus(on: boolean) {
+    if (on === this.gpus) return
+    this.gpus = on
+    if (this.holding) this.heard(this.presence())
+    else this.announce()
+  }
+
   /** Await this tab's held acknowledgement (legacy services confirm completion only). Owns no Reader. */
   whenShown(project: string, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted()
@@ -175,7 +186,7 @@ export class EventStream {
   }
 
   private presence(): Presence {
-    return { tab: this.tab, project: this.showing, revision: this.revision, machines: this.machines }
+    return { tab: this.tab, project: this.showing, revision: this.revision, machines: this.machines, gpus: this.gpus }
   }
 
   private announce() {
@@ -247,7 +258,8 @@ export class EventStream {
     const snapshot = [...this.shown.values()]
     const projects = [...new Set(snapshot.flatMap(({ project }) => project === null ? [] : [project]))].sort()
     const machines = snapshot.some((one) => one.machines)
-    const key = `${projects.join()}${machines ? " machines" : ""}`
+    const gpus = snapshot.some((one) => one.gpus)
+    const key = `${projects.join()}${machines ? " machines" : ""}${gpus ? " gpus" : ""}`
     const stream = this.stream
     const readers = this.readers
     if (this.told?.stream === stream && this.told.key === key && this.told.readers === readers) {
@@ -256,7 +268,7 @@ export class EventStream {
     }
     this.telling = true
     try {
-      const reply = await this.client.show(stream, projects, machines, this.following.signal)
+      const reply = await this.client.show(stream, projects, machines, gpus, this.following.signal)
       if (this.stream === stream && this.readers === readers) {
         this.told = { stream, key, readers, reply }
         this.confirm(snapshot, this.told)
@@ -444,5 +456,3 @@ export const holdMedia = (signal: AbortSignal) => ration(["cozy-media-0", "cozy-
 /** The one run's log stream, across tabs. */
 export const holdLog = (signal: AbortSignal) => ration(["cozy-log"], signal)
 
-/** The one machine's GPU readings, across tabs (cl-1100). */
-export const holdGpus = (signal: AbortSignal) => ration(["cozy-gpus"], signal)
