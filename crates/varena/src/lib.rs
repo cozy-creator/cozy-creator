@@ -1380,6 +1380,26 @@ impl Region {
         Ok(pin)
     }
 
+    /// A fill ahead of demand on the caller's thread, pinned for `consumer`, if the rule the fill
+    /// worker follows allows it (`prepare_ahead`, `reclaim::prefetch_room`): for a Source that
+    /// needs its caller (a derive), which the worker never runs. None declines without IO: no
+    /// room by the rule, a fill already present or running, or a capture in progress (cr-330).
+    ///
+    /// # Safety
+    /// `consumer` is live in this primary context and reads nothing before this returns.
+    #[allow(unsafe_code)]
+    pub unsafe fn use_ahead(self: &Arc<Self>, consumer: u64) -> Result<Option<Pin>> {
+        let hold = match enter_producer(self.device()) {
+            Ok(hold) => hold,
+            Err(Error::CaptureActive) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let Some(fill) = self.prepare_ahead(false)? else { return Ok(None) };
+        let pin = self.source.fill(fill, Some(consumer));
+        drop(hold);
+        pin
+    }
+
     /// A fill ahead of demand, if the rule allows (`reclaim::prefetch_room`). A wrong guess costs
     /// a read, never a refusal: None declines without IO or waiting.
     #[allow(unsafe_code)]

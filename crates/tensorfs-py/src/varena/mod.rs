@@ -299,6 +299,21 @@ impl PyRegion {
     fn use_on(&self, py: Python<'_>, stream: u64) -> PyResult<PyUse> {
         use_region(py, &self.region, stream)
     }
+    /// Pinned for `stream` when the core admits a fill ahead of demand by its own rule
+    /// (`Region::use_ahead`), its Source run here, a derive with it; None where it declines.
+    #[cfg(feature = "store")]
+    fn use_ahead(&self, py: Python<'_>, stream: u64) -> PyResult<Option<PyUse>> {
+        // SAFETY: the caller's live stream, which reads nothing before this returns.
+        let pin = py.detach(|| unsafe { self.region.use_ahead(stream) })
+            .map_err(|error| source::take_failure(py).unwrap_or_else(|| raise(py, error)))?;
+        let Some(pin) = pin else { return Ok(None) };
+        let consumers = Consumers::new(self.region.device());
+        consumers.declare(stream).map_err(|error| raise(py, error))?;
+        Ok(Some(PyUse {
+            preparation: Mutex::new(Some(UsePreparation::Resident(SharedPin::new(pin, consumers.clone())))),
+            device: self.region.device(), pid: std::process::id(), consumers,
+        }))
+    }
     fn pin(&self, py: Python<'_>) -> PyResult<Option<PyUse>> {
         let pin = py
             .detach(|| self.region.try_pin())
