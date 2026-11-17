@@ -476,7 +476,7 @@ if [ -n "$needs" ]; then
   if [[ " $needs " == *" birefnet "* ]]; then
     mirror hf://ZhengPeng7/BiRefNet@e2bf8e4460fc8fa32bba5ea4d94b3233d367b0e4 zhengpeng7/birefnet fp16 0.1.0 https://huggingface.co/ZhengPeng7/BiRefNet
   fi
-  case $shard in local-code | '') final_model ;; esac
+  case $shard in local-code | grants | '') final_model ;; esac
   # The real Qwen3.5 0.8B, abliterated (huihui-ai's, as qwen3's models are: se-145), which an LLM tool runs on the CPU (xs-204).
   if [[ " $needs " == *" qwen "* ]]; then
     mirror hf://huihui-ai/Huihui-Qwen3.5-0.8B-abliterated@4813135658fe51b2e535b8e77927d2f23909ce42 huihui-ai/huihui-qwen3.5-0.8b-abliterated \

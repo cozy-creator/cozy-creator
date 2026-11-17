@@ -58,6 +58,7 @@ parse "$@"
 . "$(dirname "$0")/standing.sh"
 . "$(dirname "$0")/llm.sh"
 . "$(dirname "$0")/hubdown.sh"
+. "$(dirname "$0")/grants.sh"
 
 # This proof owns its foreground Calcifer. Keep it out of the ordinary raw-log/body
 # collectors and never emit its private CLI data.
@@ -755,6 +756,8 @@ case $SHARD in
     logs" ;;
   # A run moved to another machine is that machine's to cancel and follow, and its take lands (cl-1116). Named plan-* for its stand-ins.
   plan-resent) parts="plan_resent logs" ;;
+  # A capability redemption the Hub never answers: each attempt said, then an anonymous read (cl-1189). Its own shard for a dispatch.
+  grants) parts="grant_silent logs" ;;
   # A busy machine's runs ahead in its quote, replayed on two stand-ins that say only their Status (cl-1107): a few minutes.
   queue) parts="plan_queue logs" ;;
   # A box's tool gets its machine ready before Render (cl-1104): a guess switched, a request sent meanwhile, a box deleted; two boxes
@@ -1009,6 +1012,7 @@ case $SHARD in
     rc_floor
     held_prerelease
     final_model
+    grant_silent
     runtime_floor
     old_call_files
     child_latents

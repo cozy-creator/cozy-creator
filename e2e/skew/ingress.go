@@ -1,11 +1,14 @@
 // ingress terminates TLS for the skew harness's Hub as a deployment's ingress does, under a fresh CA: machines reach the
 // Hub at its https public origin (workload grants are served only there) and trust the CA the Hub hands them
-// (rental.hub_ca_path). It writes <dir>/ca.pem, prints the origin, and proxies until it is ended.
+// (rental.hub_ca_path). It writes <dir>/ca.pem, prints the origin, and proxies until it is ended. While <dir>/hold-grants
+// exists it stands in for a Hub that takes a machine's capability redemption (the jwt-bearer grant) and answers nothing
+// until its client gives up (cl-1189), each one a `held` line in <dir>/requests.jsonl.
 //
 //	go run ingress.go <listen 127.0.0.1:PORT> <hub http://127.0.0.1:8819> <dir>
 package main
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -15,6 +18,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"log"
 	"math/big"
 	"net"
@@ -78,7 +82,19 @@ func main() {
 		})
 	}
 	sdk := http.StripPrefix("/__cozy_sdk/", http.FileServer(http.Dir(filepath.Join(dir, "sdk"))))
+	hold := filepath.Join(dir, "hold-grants")
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := os.Stat(hold); err == nil && r.Method == http.MethodPost {
+			body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			if form, err := url.ParseQuery(string(body)); err == nil && form.Get("grant_type") == "urn:ietf:params:oauth:grant-type:jwt-bearer" {
+				traceMu.Lock()
+				_ = json.NewEncoder(trace).Encode(map[string]any{"method": r.Method, "path": r.URL.EscapedPath(), "held": true, "at": time.Now().UnixMilli()})
+				traceMu.Unlock()
+				<-r.Context().Done()
+				return
+			}
+		}
 		if !strings.HasPrefix(r.URL.Path, "/__cozy_sdk/") {
 			proxy.ServeHTTP(w, r)
 			return
