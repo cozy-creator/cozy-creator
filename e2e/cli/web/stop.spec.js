@@ -35,9 +35,10 @@ test('stop', { tag: '@solo' }, async ({ context, project, api, signIn, guards, c
   await signIn(page, project.url());
   await expect(page.locator('.stage')).toBeVisible();
   await expect.poll(() => canvasVisible(page, 'words')).toBe(true);
-  // Calcifer away: what the page asks of it fails as the browser says in its console, on purpose, until the page is back with it.
+  // Calcifer stopping or away: what the page asks of it is refused ("Cozy is stopping", 503) or fails, as the browser says in its console,
+  // on purpose, until the page is back with it.
   const origin = api.origin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const refused = new RegExp(`^console error: Failed to load resource: net::ERR_[A-Z_]+ ${origin}/`);
+  const refused = new RegExp(`^console error: Failed to load resource: (net::ERR_[A-Z_]+|the server responded with a status of 503 \\(Service Unavailable\\)) ${origin}/`);
   let away = false;
   guards.allow({ test: (line) => away && refused.test(line) });
   const region = await focus(page, 'words');
