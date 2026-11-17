@@ -789,7 +789,11 @@ fn drain_saves(api: &Arc<Api>, root: &FsPath, mut local_gone: bool, mut saving: 
     let projects = api.projects.now_open();
     let Some(project) = projects.iter().find(|project| project.root == root).cloned() else { return Ok((vec![], vec![])) };
     let owner = super::RunOwner::of(&project, &api.calcifer);
-    let (mut said, mut busy, began, mut asked) = (false, None::<Instant>, Instant::now(), false);
+    let (mut said, mut busy, began) = (false, None::<Instant>, Instant::now());
+    // While its saves wait their `LOCAL_STILL`, local is asked every half second (each ask given its 2 s): the first answer means it
+    // came back (re-review 6939581151). Started with the first save from it; the asks end once one answers or the window does.
+    let back = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut asking = false;
     loop {
         let (owed, from_local) = match owner.store() {
             Ok(store) => {
@@ -813,9 +817,20 @@ fn drain_saves(api: &Arc<Api>, root: &FsPath, mut local_gone: bool, mut saving: 
             Err(e) => return Err(journal(e)),
         };
         if owed.is_empty() { return Ok((vec![], vec![])); }
-        // Asked once more before any save from it is cut for the verdict: a local that answers now came back, and its saves, judged
-        // anew from now, go on as any do (re-review 6939581151); their exporters are woken from their pause.
-        if !from_local.is_empty() && !std::mem::replace(&mut asked, true) && tokio::runtime::Handle::current().block_on(api.machines.answers_now("local")) {
+        if !from_local.is_empty() && !std::mem::replace(&mut asking, true) {
+            let runtime = tokio::runtime::Handle::current();
+            for at in 0..(LOCAL_STILL.as_millis() / 500) as u64 {
+                let (machines, back) = (api.machines.clone(), back.clone());
+                runtime.spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(500 * at)).await;
+                    if !back.load(std::sync::atomic::Ordering::Acquire) && machines.answers_now("local").await {
+                        back.store(true, std::sync::atomic::Ordering::Release);
+                    }
+                });
+            }
+        }
+        // Back: its saves, judged anew from now, go on as any do; their exporters are woken from their pause.
+        if !from_local.is_empty() && back.load(std::sync::atomic::Ordering::Acquire) {
             for id in &from_local {
                 api.calcifer.export_fresh(id);
                 api.calcifer.export(id);
