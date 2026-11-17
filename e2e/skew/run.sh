@@ -106,7 +106,9 @@ cleanup() {
   for pid in "${HUBPID:-}" "${S3PID:-}" "${INGRESS:-}"; do
     [ -z "$pid" ] || { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }
   done
-  if [ "$OS" = Linux ]; then docker rm -f "$PG_NAME" >/dev/null 2>&1 || true
+  if [ "$OS" = Linux ]; then
+    bash "$E2E/skew/pg-stats.sh" "$PG_NAME" > "$OUT/pg-stat-statements.tsv" 2> /dev/null || true
+    docker rm -f "$PG_NAME" >/dev/null 2>&1 || true
   elif [ -n "$PG_BIN" ]; then "$PG_BIN/pg_ctl" -D "$(native "$WORK/pg")" -m immediate stop >/dev/null 2>&1 || true; fi
   [ ! -f "$WORK/requests.jsonl" ] || cp "$WORK/requests.jsonl" "$OUT/hub-requests.jsonl"
   case $SEED_CA_MANAGER in
@@ -144,7 +146,9 @@ fi
 MINIO_ROOT_USER=$S3KEY MINIO_ROOT_PASSWORD=$S3SECRET "${NICE[@]}" "$TOOLS/minio$EXE" server "$(native "$WORK/s3")" --address 127.0.0.1:$S3_PORT --quiet > minio.log 2>&1 & S3PID=$!
 case $OS in
   Linux)
-    docker run -d --name "$PG_NAME" --cpu-shares 64 -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1::5432 postgres:18-alpine > /dev/null || die store "Postgres did not start"
+    # pg_stat_statements: what the Hub asked of its database, dumped into the run's output (pg-stat-statements.tsv) as it ends (th-385).
+    docker run -d --name "$PG_NAME" --cpu-shares 64 -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1::5432 postgres:18-alpine \
+      -c shared_preload_libraries=pg_stat_statements -c pg_stat_statements.max=10000 > /dev/null || die store "Postgres did not start"
     PG_PORT=$(docker port "$PG_NAME" 5432/tcp | sed 's/.*://')
     pg_ready() { docker exec "$PG_NAME" pg_isready -q -U postgres; } ;;
   *)
@@ -167,6 +171,11 @@ case $OS in
     pg_ready() { "$PG_BIN/pg_isready" -q -h 127.0.0.1 -p "$PG_PORT" -U postgres; } ;;
 esac
 for _ in $(seq 60); do curl -sf "$S3/minio/health/live" > /dev/null && pg_ready && break; sleep 1; done
+# Over TCP: the image's first, socket-only server (its initdb's) may still be the one answering.
+if [ "$OS" = Linux ]; then
+  for _ in $(seq 30); do docker exec "$PG_NAME" psql -h 127.0.0.1 -qtA -U postgres -c 'CREATE EXTENSION IF NOT EXISTS pg_stat_statements' > pg-stats.log 2>&1 && break; sleep 1; done
+  grep -q . pg-stats.log && die store "pg_stat_statements did not load: $(tail -c 300 pg-stats.log)"
+fi
 for b in repo source; do
   AWS_ACCESS_KEY_ID=$S3KEY AWS_SECRET_ACCESS_KEY=$S3SECRET aws --endpoint-url "$S3" --region us-east-1 s3api create-bucket --bucket "$b" > /dev/null 2>> s3.log ||
     die store "bucket $b: $(tail -c 300 s3.log)"
