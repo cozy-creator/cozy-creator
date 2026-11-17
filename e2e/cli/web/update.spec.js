@@ -13,16 +13,16 @@ const RELOADS_MS = 10_000;
 /** How long a tab that mustn't reload is watched not doing it. */
 const WATCHED_MS = 3_000;
 
-/** `page` as a tab loaded from an older build: its first `/v1/status` says OLDER, and its stream waits until what's returned is called. */
-async function older(page) {
+/** `page` as a tab loaded from an older build: its first `/v1/status` says OLDER, and its stream waits until what's returned is called.
+ *  That status is Calcifer's own, read as the cell: a fetch of the page's request from here isn't the page's, and Calcifer refuses it. */
+async function older(page, api) {
   let release;
   const held = new Promise((done) => { release = done; });
   let said = false;
   await page.route('**/v1/status', async (route) => {
     if (said) return route.continue();
     said = true;
-    const response = await route.fetch();
-    await route.fulfill({ response, json: { ...(await response.json()), version: OLDER } });
+    await route.fulfill({ json: { ...(await api.get('/v1/status')), version: OLDER } });
   });
   await page.route('**/v1/events', async (route) => { await held; await route.continue(); });
   return release;
@@ -42,7 +42,7 @@ test('update', async ({ context, project, api, signIn }) => {
 
   await test.step(`idle: it reloads itself within ${RELOADS_MS / 1000} s, says nothing, and the canvas stands where it was`, async () => {
     const page = await context.newPage();
-    const stream = await older(page);
+    const stream = await older(page, api);
     await signIn(page, project.url());
     await boxesUp(page);
     // A view of its own, saved: moved over `second`.
@@ -67,7 +67,7 @@ test('update', async ({ context, project, api, signIn }) => {
 
   await test.step('typing in a box: it waits until the field is left and the words are saved, then reloads itself', async () => {
     const page = await context.newPage();
-    const stream = await older(page);
+    const stream = await older(page, api);
     let release;
     const writes = new Promise((done) => { release = done; });
     await page.route('**/v1/projects/*/assets/words', async (route) => {
@@ -97,7 +97,7 @@ test('update', async ({ context, project, api, signIn }) => {
 
   await test.step('a passphrase typed for a new project: it waits until the form is put away, then reloads itself', async () => {
     const page = await context.newPage();
-    const stream = await older(page);
+    const stream = await older(page, api);
     await signIn(page, project.url());
     await boxesUp(page);
     await page.getByRole('button', { name: 'New project', exact: true }).click();
