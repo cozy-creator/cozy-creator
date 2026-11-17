@@ -13,17 +13,18 @@
 #               <package>/<function>, `fields` its inputs (`key:=value` each), `from` a candidate whose outputs are this one's inputs,
 #               `images` the inputs it takes (comma-separated names; default all)
 #   images      the inputs (comma-separated names of degraded/; default all)
-#   extra       more inputs, kept private: base64 of a .tar.gz of <name>.jpg files. Their outputs and sheets leave the runner only
-#               encrypted to `pubkey` (base64 of a PEM RSA public key): private.tar.gz.enc, its AES key in private.key.enc
+#   private     more inputs, kept private: a folder of <name>.jpg files in the private benchmarks checkout (`bench_ref` its branch;
+#               never in params, whose values the public log prints). Their outputs and sheets leave the runner only encrypted to
+#               `pubkey` (base64 of a PEM RSA public key): private.tar.gz.enc, its AES key in private.key.enc
 #   seconds     what the cap must buy (default 5400)
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/upscale-bench WORK=${RUNNER_TEMP:-$OUT/..}/upscale
-CANDIDATES=$(param candidates '[]') IMAGES=$(param images '') EXTRA=$(param extra '') PUBKEY=$(param pubkey '') NEED=$(param seconds 5400)
+CANDIDATES=$(param candidates '[]') IMAGES=$(param images '') PRIVATE=$(param private '') PUBKEY=$(param pubkey '') NEED=$(param seconds 5400)
 for tool in jq uv openssl; do command -v "$tool" > /dev/null || fail "no $tool"; done
 jq -e 'type == "array" and length > 0 and all(.[]; (.name | test("^[a-z0-9-]+$")) and (.tree | type == "string") and (.tool | test("^[a-z0-9._-]+/[a-z_]+$")))' \
   <<<"$CANDIDATES" > /dev/null || fail "candidates: a JSON list of {name, tree, tool, fields?, from?, images?}"
-[ -z "$EXTRA" ] || [ -n "$PUBKEY" ] || fail "extra inputs are private: name a pubkey to encrypt their outputs to"
+[ -z "$PRIVATE" ] || [ -n "$PUBKEY" ] || fail "private inputs: name a pubkey to encrypt their outputs to"
 V=$(cozy --version | awk '{print $2}')
 [[ $V == *-dev* ]] || fail "cozy $V is no RC build: dispatch with cozy=<a dev-build or rc-dev run of rc/<x>>"
 while read -r tree tool; do
@@ -40,10 +41,11 @@ PY=$WORK/iqa/bin/python
 "$PY" -I "$FIX/make_set.py" --fetch --clean-only > "$OUT/make-set.log" 2>&1 || fail "the bench: $(tail -c 400 "$OUT/make-set.log")"
 say "bench: $(ls "$FIX/clean" | wc -l) clean pictures, $(ls "$FIX/degraded" | wc -l) inputs"
 mkdir -p "$FIX/paul"
-if [ -n "$EXTRA" ]; then
-  base64 -d <<<"$EXTRA" | tar xz -C "$FIX/paul" --no-same-owner || fail "extra: not a base64 .tar.gz"
+if [ -n "$PRIVATE" ]; then
+  [[ $PRIVATE =~ ^[A-Za-z0-9/_-]+$ ]] && ls "$BENCH/$PRIVATE"/*.jpg > /dev/null 2>&1 || fail "private: no <name>.jpg in the benchmarks checkout's $PRIVATE"
+  cp "$BENCH/$PRIVATE"/*.jpg "$FIX/paul/" || fail "private: copy"
   base64 -d <<<"$PUBKEY" > "$WORK/pub.pem" && openssl pkey -pubin -in "$WORK/pub.pem" -noout || fail "pubkey: not a PEM public key"
-  say "extra (private): $(ls "$FIX/paul" | paste -sd' ')"
+  say "private: $(ls "$FIX/paul" | paste -sd' ')"
 fi
 # input <name>: the picture a first candidate takes.
 input() { local f; for f in "$FIX/degraded/$1.jpg" "$FIX/paul/$1.jpg"; do [ -f "$f" ] && { echo "$f"; return 0; }; done; return 1; }
