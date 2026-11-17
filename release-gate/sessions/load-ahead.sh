@@ -4,8 +4,9 @@
 # construction or loading stage and reads nothing from the store in its first step, beside a cold call of the same function on the
 # same machine. Then a load is made to yield: the executors ended, the box's request loads again, and a different call (SDXL) sent
 # while it loads goes at once; TensorD's log says how long the GPU took to come back. The idle clock is read before and after a
-# load: a load never moves it. Each arm starts with the pod's executors ended over SSH (no verb ends one); its disk stays.
-# Enhancer and Turbo off: they are on-demand slots, built at a call's first read. params:
+# load: a load never moves it. Each arm starts with TensorD restarted (`cozy machine update --mode dedicated`, the mode it has: no
+# verb ends an executor alone), which ends every executor; its disk stays, and Calcifer sends its lists again to the service that
+# started. Enhancer and Turbo off: they are on-demand slots, built at a call's first read. params:
 #   tool      the box's tool and the function the cold call runs (default qwen-image-2/image)
 #   other     the call that takes the GPU during a load (default sdxl/generate)
 #   wait_s    how long the box's request may take to be `loaded` (default 1200)
@@ -13,12 +14,8 @@
 TOOL=$(param tool qwen-image-2/image) OTHER=$(param other sdxl/generate) WAIT=$(param wait_s 1200)
 PROMPT="a red lighthouse on a cliff at dusk, waves below, photo"
 FIELDS='turbo:=false prompt_upsampling:=false megapixels:=1 aspect_ratio=1:1'
-[ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
-RENT_ARGS=--ssh
 quote "$(param need_s 3600)"
 rent
-pod() { timeout "${T:-120}" cozy machine ssh "$NAME" "$@"; }
-for i in $(seq 1 20); do pod true < /dev/null > /dev/null 2>&1 && break; [ "$i" = 20 ] && fail "no SSH into $NAME"; sleep 15; done
 step tensord machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "the pod refused the session's TensorD"
 v=$(cozy machine show "$NAME" --json | jq -r .status.version)
 [ "$v" = "$(cozy --version | awk '{print $2}')" ] || fail "the pod runs TensorD $v, not the session's"
@@ -40,20 +37,10 @@ until_stage() {
   done
   say "a predicted request is $1 ($t s)"
 }
-# unload: every executor on the pod ended (its disk stays), and its GPU's memory back.
+# unload <name>: TensorD restarted, every executor with it; its disk stays.
 unload() {
-  T=60 pod "python3 -c 'import glob, os, signal
-for d in glob.glob(\"/proc/[0-9]*\"):
-    try:
-        if b\"cozy_runtime.internal.executor\" in open(d + \"/cmdline\", \"rb\").read(): os.kill(int(d[6:]), signal.SIGKILL); print(d[6:])
-    except OSError: pass'" < /dev/null >> "$OUT/unload.txt" 2>&1
-  local used
-  for _ in $(seq 1 60); do
-    used=$(T=30 pod "nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits" < /dev/null 2> /dev/null | head -1 | tr -dc 0-9)
-    [ -n "$used" ] && [ "$used" -lt 1500 ] && { say "executors ended: GPU 0 holds $used MiB"; return; }
-    sleep 2
-  done
-  fail "the GPU kept $used MiB after its executors ended"
+  step "restart-$1" machine update "$NAME" --mode dedicated -y || fail "the restart: $(tail -c 300 "$OUT/restart-$1.txt")"
+  [ "$(cozy machine show "$NAME" --json | jq -r .status.phase)" = ready ] || fail "$NAME isn't ready after its restart"
 }
 # report <name> <run>: the run's own record, and its report's stages and first steps.
 report() {
@@ -66,11 +53,11 @@ report() {
 
 # Its weights onto the pod by one call of it, which downloads them: every arm after reads them from its disk.
 step fetch run "$TOOL" --on "$NAME" instructions="$PROMPT" $FIELDS seed:=1 || fail "the first call"
-unload
+unload cold
 # The cold call: its weights on disk, no executor.
 step cold run "$TOOL" --on "$NAME" instructions="$PROMPT" $FIELDS seed:=2 || fail "the cold call"
 report cold "$(runno cold)"
-unload
+unload predicted
 
 # The prediction: a box with the tool, as a person puts one on the canvas. Calcifer guesses its render onto the pod.
 ASK=$(date +%s%3N)
@@ -86,10 +73,10 @@ WARM=$(jq -r --argjson a "$ASK" '[.runs[]? | select(.created_at_ms >= $a)] | max
 [ -n "$WARM" ] || fail "the render's run: $(head -c 300 "$OUT/runs.json")"
 report predicted "$WARM"
 
-# The yield: SDXL's weights onto the pod, then the executors ended. The box's request loads again at once (the GPU is idle);
-# while it does, SDXL is sent.
+# The yield: SDXL's weights onto the pod, then TensorD restarted. Calcifer sends the box's request to the service that started,
+# which plans it again and loads it (the GPU is idle); while it does, SDXL is sent.
 step other-fetch run "$OTHER" --on "$NAME" prompt="a brass compass on a walnut desk" seed:=4 || fail "the other call's fetch"
-unload
+unload yield
 until_stage loading 300
 SENT=$(date +%s%3N)
 step other run "$OTHER" --on "$NAME" prompt="a brass compass on a walnut desk" seed:=5 || fail "the other call"

@@ -319,6 +319,31 @@ fn resume_scope(runs: &Arc<Runs>, project: Option<&str>) -> std::io::Result<()> 
 pub(crate) type Accepted = Result<(bool, v1::RunState), Error>;
 
 impl Runs {
+    /// A list's item whose run `run` succeeded before this machine last started, or before its list last dropped it, planned
+    /// again as that run was, on a thread of its own, so the machine loads it (cl-1123): nothing of it is downloaded again that is
+    /// here, and its run stays as it ended.
+    pub(crate) fn replan(self: &Arc<Self>, actor: VerifiedActor, run: String, spec: v1::RunSpec) {
+        let signer = super::read::actor_id(actor);
+        let spec = spec_of(spec).and_then(|(spec, hub)| reach(&signer, spec, hub));
+        let private = self.service.engine.private_storage(&run);
+        let (mut spec, private) = match (spec, private) {
+            (Ok(spec), Ok(private)) => (spec, private),
+            (Err(error), _) => return tracing::warn!(run = %run, "its item isn't planned again: {}", error.message),
+            (_, Err(error)) => return tracing::warn!(run = %run, "its item isn't planned again: {error}"),
+        };
+        spec.local_private.clone_from(&private);
+        let this = self.clone();
+        let started = std::thread::Builder::new().name(format!("replan-{run}")).spawn(move || crate::private_io::within(private, || {
+            let stoppable = this.service.engine.stoppable(&run);
+            if let Err(refused) = this.prepare(&signer, &run, spec, &stoppable) {
+                tracing::warn!(run = %run, "its item wasn't planned again: {}", refused.message);
+            }
+        }));
+        if let Err(error) = started {
+            tracing::warn!("its item isn't planned again: {error}");
+        }
+    }
+
     /// Accepts the runs `requests` name as one admission (`Runs::admit`): each whether it is new and
     /// its state, or why it was refused. A run reads its Hub's public content anonymously, and private
     /// content under its signer's run capability there, which a re-sent spec's may replace and which is

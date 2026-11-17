@@ -29,6 +29,8 @@ pub(crate) struct Predicted {
 #[derive(Default)]
 pub(super) struct Ahead {
     items: Mutex<Vec<Arc<Item>>>,
+    /// Each item planned (by actor and caller id) since this machine started, or since its list last named it.
+    planned: Mutex<BTreeSet<(String, String)>>,
     loading: Mutex<Option<Loading>>,
     /// Its thread, started with the first item.
     serving: std::sync::OnceLock<()>,
@@ -93,6 +95,7 @@ impl Pool {
             return;
         }
         let need = predicted.plan.slots.iter().filter(|slot| !slot.on_demand).map(|slot| slot.selected_encoded_bytes).sum();
+        self.ahead.planned.lock().unwrap().insert((predicted.actor.clone(), predicted.caller.clone()));
         {
             let mut items = self.ahead.items.lock().unwrap();
             items.retain(|item| !(item.predicted.actor == predicted.actor && item.predicted.caller == predicted.caller));
@@ -113,6 +116,13 @@ impl Pool {
     pub(crate) fn unlist(&self, actor: &str) {
         let named = |item: &Arc<Item>| item.predicted.actor != actor || crate::ahead::rank(actor, &item.predicted.caller).is_some();
         self.ahead.items.lock().unwrap().retain(named);
+        self.ahead.planned.lock().unwrap().retain(|(of, caller)| of != actor || crate::ahead::rank(actor, caller).is_some());
+    }
+
+    /// `actor`'s item `caller`, whose run made it ready, was never planned for its load since this machine started or since its
+    /// list last named it: it is to be, once (`Runs::replan`). Never on a machine that doesn't load ahead.
+    pub(crate) fn plans_again(&self, actor: &str, caller: &str) -> bool {
+        self.config.host.mode == HostMode::Dedicated && self.ahead.planned.lock().unwrap().insert((actor.to_owned(), caller.to_owned()))
     }
 
     /// A predicted request is loading now.

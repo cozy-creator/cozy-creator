@@ -104,6 +104,7 @@ pub(crate) fn put(runs: &Arc<Runs>, actor: VerifiedActor, prefix: &'static str, 
         })
         .collect();
     let ids: Vec<String> = requests.iter().map(|request| request.id.clone()).collect();
+    let specs: Vec<v1::RunSpec> = requests.iter().map(|request| request.spec.clone()).collect();
     lock(&LISTED).insert((crate::runs::actor_id(actor), prefix), ids.clone());
     // What no list names now loads no more (cl-1123).
     if let Some(pool) = runs.service.pool() {
@@ -128,6 +129,18 @@ pub(crate) fn put(runs: &Arc<Runs>, actor: VerifiedActor, prefix: &'static str, 
             handed.waiting.retain(|id| new.contains(&id));
         }
     });
+    // An item whose run made it ready before (before a restart, or before its list last named it) is planned again, so the
+    // machine loads it as one sent now (cl-1123).
+    if let (Ok(admitted), Some(pool)) = (&admitted, runs.service.pool()) {
+        let signer = crate::runs::actor_id(actor);
+        for ((id, spec), admitted) in ids.iter().zip(specs).zip(admitted) {
+            if let Ok((false, state)) = admitted {
+                if state.state == "succeeded" && pool.plans_again(&signer, id) {
+                    runs.replan(actor, state.number.to_string(), spec);
+                }
+            }
+        }
+    }
     let items = (admitted?.into_iter())
         .map(|admitted| match admitted {
             Ok((created, state)) => v1::Admitted { created, state: Some(state), refusal: None },
