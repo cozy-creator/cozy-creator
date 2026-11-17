@@ -1,0 +1,1 @@
+varena keeps the room each refused allocation found (cr-319): `tensorfs.varena.torch.refusal(device)` returns it once, read as the allocation was refused, its caller's pins still held, and whether every lever of the reclaim order was tried. An out-of-memory line read after the caller's frames unwound said "0.0 GiB of weights in use" while 45.2 GiB were pinned.
