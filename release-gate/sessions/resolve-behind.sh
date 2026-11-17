@@ -11,6 +11,7 @@
 #   big_before, big_after      models `cozy model install` downloads (default minimaxai/minimax-h3, qwen/qwen-image-2.1)
 #   small_before, small_after  models the cold resolve reads (default qwen/qwen3.5-0.8b@0.1.0, huihui-ai/huihui-qwen3.5-0.8b-abliterated@0.1.0)
 #   seconds       what the cap must buy (default 1800)
+#   then, then_params  a session run on the pod after (`on_this`), and its params (default none)
 . "$(dirname "$0")/lib.sh"
 check() { say "FAIL $*"; [ "${LABEL:-}" = before ] || RC=1; }
 for tool in jq python3; do command -v "$tool" > /dev/null || fail "no $tool"; done
@@ -113,4 +114,5 @@ PY
 measure after "$OUT/after-cozy" "$(param big_after qwen/qwen-image-2.1)" "$(param small_after huihui-ai/huihui-qwen3.5-0.8b-abliterated@0.1.0)"
 cozy machine logs "$NAME" tensord --since 2h -n 0 > "$OUT/tensord.log" 2>&1
 { echo "## resolve-behind on $NAME ($SKU)"; cat "$OUT"/*-resolve.txt 2> /dev/null | sed 's/^/- /'; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+[ -z "$(param then '')" ] || on_this "$(param then)" "$(param then_params '{}')"
 exit "$RC"
