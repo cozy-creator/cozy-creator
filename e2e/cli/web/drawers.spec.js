@@ -6,7 +6,7 @@
 // Projects opened in the page lead the index and the tabs, most recent first; the Projects list is a search and every project in that order,
 // with no form. On the locked project, "N more" opens the list, Machines opens, and Runs and Assets open saying the project is locked; a
 // machine's tab lists what it's working on, says the project is locked with no Prefer, and nothing asks the project and is refused (cl-1099). The
-// menu says Installations and Assets, Account last. A new Cozy version is one note, nothing in the bar. And of the bar's +: "have the + (for
+// menu says Installations and Assets, Account last. A new Cozy version reloads the page by itself, no note and nothing in the bar (#3673). And of the bar's +: "have the + (for
 // new projects) connected to the project list": it's the strip's last item, after "N more", clear of every tab. Each at 1440×900 and
 // 1920×1080, paper and dark, kept to look at: the bar with and without "N more", the lock screen with the list open and with a machine's
 // list open, the list, the menu.
@@ -166,31 +166,36 @@ test('drawers', { tag: '@vault' }, async ({ page, project, api, cli, removeAfter
       await page.keyboard.press('Escape');
     });
 
-    await test.step('a new Cozy version is one note, never in the bar', async () => {
+    await test.step('a new Cozy version reloads the page by itself: no note, nothing in the bar (#3673)', async () => {
       // A browser of its own: tabs of one browser share one event stream (its leader's), and this page's must say hello itself.
       const other = await (await newContext()).newPage();
-      // The page as one opened before Cozy was updated: what it was told at first is an older version. Each note it says, and anything
-      // of it in the bar, kept as it shows: a note goes by itself after 10 s.
+      // The page as one opened before Cozy was updated: its first status says an older version, and the stream's hello the one that
+      // runs. Paul, 11-17: "remove this notification ... auto-refresh the webui": it reloads once nothing would be lost, and the page
+      // it loads is told the version that runs, so it reloads once. Every note it shows and anything in the bar, kept across the reload.
       const status = await api.get('/v1/status');
       let told = 0;
-      await other.route(/\/v1\/status(\?|$)/, (route) => { told++; return route.fulfill({ json: { ...status, version: '0.0.1-older' } }); });
+      await other.route(/\/v1\/status(\?|$)/, (route) => (told++ === 0
+        ? route.fulfill({ json: { ...status, version: '0.0.1-older' } }) : route.continue()));
+      const seen = [];
+      let inBar = false;
+      await other.exposeFunction('__cozySaw', (note, bar) => { if (note && !seen.includes(note)) seen.push(note); inBar ||= bar; });
       await other.addInitScript(() => {
-        const seen = (window.__notesSeen = []);
         new MutationObserver(() => {
-          for (const note of document.querySelectorAll('.notes .note')) {
-            const said = `${note.querySelector('.line')?.textContent ?? ''}|${note.querySelector('.note-act')?.textContent ?? ''}`;
-            if (!seen.includes(said)) seen.push(said);
-          }
-          if (/updated|Reload/.test(document.querySelector('header.top')?.textContent ?? '')) window.__inBar = true;
+          for (const note of document.querySelectorAll('.notes .note')) window.__cozySaw?.(note.querySelector('.line')?.textContent ?? '', false);
+          if (/updated|Reload/.test(document.querySelector('header.top')?.textContent ?? '')) window.__cozySaw?.('', true);
         }).observe(document, { subtree: true, childList: true, characterData: true });
       });
+      let loads = 0;
+      other.on('framenavigated', (frame) => { if (frame === other.mainFrame()) loads++; });
       await signIn(other, `${api.origin}/p/${plain.code}`);
       await expect(other.locator('.stage')).toBeVisible();
-      const updated = () => other.evaluate(() => window.__notesSeen.filter((said) => said.startsWith('Cozy updated to')));
+      const opened = loads;
       expect.soft(told, 'the page was told the older version').toBeGreaterThan(0);
-      await expect.poll(updated, { message: 'one note', timeout: 30_000 }).toHaveLength(1);
-      expect.soft((await updated())[0]).toMatch(/^Cozy updated to \S+\. Reload the page to use it\.\|Reload$/);
-      expect.soft(await other.evaluate(() => window.__inBar ?? false), 'nothing in the bar').toBe(false);
+      await expect.poll(() => loads, { message: 'it reloads by itself', timeout: 30_000 }).toBeGreaterThan(opened);
+      await expect(other.locator('.stage')).toBeVisible();
+      expect.soft(new URL(other.url()).pathname, 'and stays where it was').toBe(`/p/${plain.code}`);
+      expect.soft(seen.filter((said) => /updated|Reload/i.test(said)), 'no note of it').toEqual([]);
+      expect.soft(inBar, 'nothing in the bar').toBe(false);
       await other.context().close();
     });
 
