@@ -285,6 +285,7 @@ impl Fetcher {
         shared.join_link();
         tokio::spawn(Arc::clone(&shared).dispatch());
         tokio::spawn(Arc::clone(&shared).pace());
+        tokio::spawn(Arc::clone(&shared).tail());
         Fetcher { shared }
     }
 

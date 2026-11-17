@@ -331,6 +331,7 @@ ready() {
   say "READY $RID as $NAME, image $(jq -r .rental.base_worker_image_digest "$OUT/show$i.json"), disk $(jq -r '.rental.disk_gb // "?"' "$OUT/show$i.json") GB of $DISK asked"
   # What was rented is what was asked for: a provider that offers another width or card fails the session here, never runs it.
   local asked=1 got sku
+  [ "${ORDERED_SKU:-$SKU}" != cpu ] || asked=0  # the cpu SKU has none
   [[ " $RENT_ARGS " =~ \ --gpus\ ([0-9]+)\  ]] && asked=${BASH_REMATCH[1]}
   got=$(jq '.status.gpus // [] | length' "$OUT/show$i.json") sku=$(jq -r '.sku // .rental.sku // empty' "$OUT/show$i.json")
   [ "$got" = "$asked" ] || fail "$NAME has $got GPUs, not the $asked asked for"
