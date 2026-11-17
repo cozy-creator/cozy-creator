@@ -300,7 +300,7 @@ stop_cell() {
   local name=$1 n pid; shift
   [ -n "$(run_submit "$OUT" "$name" run "$@")" ] || return 1
   n=$(cat "$name.number") pid=$(cat "$name.pid")
-  until stepped "$name.ndjson" "$STOP" || run_ended "$name.ndjson" || ! run_alive "$pid"; do sleep 1; done
+  until stepped "$name.ndjson" "$STOP" || run_ended "$name.ndjson" || ! run_alive "$pid"; do sleep 0.2; done
   if ! run_ended "$name.ndjson" && stepped "$name.ndjson" "$STOP"; then
     "$CLI" --json run cancel "$(run_ref "$OUT" "$name" "$n")" > "$name.stop.json" 2>&1 || log "$name: cancel at step $STOP: $(tail -c 300 "$name.stop.json")"
     printf '%s\t%s\n' "$name" "$STOP" >> stopped.tsv
