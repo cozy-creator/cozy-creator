@@ -397,3 +397,82 @@ fi
 project_api "$P" /cancel -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: rename-cancel-$RANDOM$RANDOM" -d '{"names":["asked"]}' > "$OUT/rename-cancel-asked.json" 2>&1 || true
 cozy --json logout > /dev/null 2>&1 || true
 }
+
+# th-383: RunPod listed RTX 5090s its create refused ("no longer any instances available") 51 times in 85 minutes: a no-capacity
+# answer held the offer off only until the provider's next inventory, so each listing bought one more refusal, and two gate
+# rentals waited 20 minutes on it, `booting`. Here the docker provider is that provider: its engine socket is phantom_docker.py's,
+# which asks every create for a million CPUs, so the engine refuses it for want of them, and its inventory is read every 10 s.
+# Two rentals of a CPU: neither is refused more than twice on the one offer (before, one per listing: ~6 each in the 150 s
+# watched), the provider's SKU rests (`GET /v1/admin/provider-cooldowns`), and `machine show` says each is waiting for capacity
+# from docker, not booting.
+hub_phantom_stock() (
+  step "listed stock its provider won't sell is set aside, not bought again at each listing (th-383)"
+  [ -n "${COZY_TEST_HUB_COMMAND_FILE:-}" ] && [ -n "${COZY_HUB_URL:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] \
+    || fail "phantom stock: e2e/isolated.sh named no Hub command, URL or email"
+  local S=$OUT/hub-phantom db port container proxy rentals=() rental pid n id ids token counts most total rested='' said shown
+  local word='waiting for capacity (docker has none right now)'
+  mkdir -p "$S"
+  db=$(tr '\0' '\n' < "$COZY_TEST_HUB_COMMAND_FILE" | grep -o 'postgres://[^" ]*' | head -1 || true)
+  port=$(sed -E 's#.*@[^:/]+:([0-9]+)/.*#\1#' <<< "$db")
+  container=$(docker ps --filter "publish=$port" --format '{{.Names}}' 2> /dev/null | head -1 || true)
+  [ -n "$container" ] || fail "phantom stock: no Postgres container publishes ${port:-?}"
+  sql() { docker exec -i "$container" psql -v ON_ERROR_STOP=1 -qtA -U postgres "$@"; }
+  python3 "$here/phantom_docker.py" "$S/docker.sock" /var/run/docker.sock "$S/creates.log" > "$S/proxy.log" 2>&1 & proxy=$!
+  for _ in $(seq 50); do [ -S "$S/docker.sock" ] && break; sleep 0.1; done
+  [ -S "$S/docker.sock" ] || fail "phantom stock: the engine proxy didn't start: $(tail -c 300 "$S/proxy.log")"
+  end_all() { for id in "${rentals[@]}"; do cozy --json machine end "$id" -y > /dev/null 2>&1 || true; done; }
+  trap 'end_all; kill "$proxy" 2> /dev/null || true; bash "$here/../skew/rehub.sh" > /dev/null 2>&1 || true' EXIT
+  signin "$E2E_HUB_EMAIL" > "$S/login.json" || fail "phantom stock: cozy login: $(tail -c 300 "$S/login.json")"
+  bash "$here/../skew/rehub.sh" --set "provider.docker.socket=$S/docker.sock" --set provider.inventory_refresh_seconds=10 \
+    > "$S/rehub.log" 2>&1 || fail "phantom stock: restarting the Hub on the proxy: $(tail -c 300 "$S/rehub.log")"
+  for n in 1 2; do
+    cozy --json machine rent cpu -y > "$S/rent-$n.ndjson" 2> "$S/rent-$n.err" & pid=$!
+    rental=''
+    for _ in $(seq 180); do
+      rental=$(jq -r 'select(.type? == "rental.accepted") | .rental_id // empty' "$S/rent-$n.ndjson" 2> /dev/null | tail -1 || true)
+      [ -n "$rental" ] || ! kill -0 "$pid" 2> /dev/null || { sleep 1; continue; }
+      break
+    done
+    kill -KILL "$pid" 2> /dev/null || true
+    wait "$pid" 2> /dev/null || true
+    [ -n "$rental" ] || fail "phantom stock: rent $n: no rental accepted: $(tail -c 300 "$S/rent-$n.ndjson") $(tail -c 300 "$S/rent-$n.err")"
+    rentals+=("$rental")
+  done
+  echo "phantom stock: rented ${rentals[*]}"
+  ids=$(printf "'%s'," "${rentals[@]}")
+  cozy --json whoami > /dev/null 2>&1 || true
+  token=$(jq -r .token "$(ls "$HOME"/.cozy/keys/*.bearer.json | head -1)" 2> /dev/null || true)
+  # 150 s: about six of the provider's listings, and as many creates per rental before th-383 (one per listing, each refused
+  # create proven to have made nothing in ~15 s).
+  for n in $(seq 150); do
+    counts=$(sql -c "SELECT rental_id || ' ' || count(*) FROM hub_v2.rental_acquisition_attempts
+      WHERE rental_id IN (${ids%,}) AND failure_code = 'provider.no_capacity' GROUP BY rental_id ORDER BY rental_id" 2> /dev/null | tr '\n' ' ' || true)
+    echo "$n ${counts:-none}" >> "$S/refused.txt"
+    if [ $((n % 5)) = 0 ]; then
+      curl -s -m 10 -H "Authorization: Bearer $token" "$COZY_HUB_URL/v1/admin/provider-cooldowns" > "$S/cooldowns-$n.json" 2>&1 || true
+      jq -e '.cooldowns[] | select(.provider == "docker" and .resting and .refusals >= 3)' "$S/cooldowns-$n.json" > /dev/null 2>&1 \
+        && rested=$(jq -c '.cooldowns' "$S/cooldowns-$n.json")
+    fi
+    sleep 1
+  done
+  # The last sample: `150 <rental> <refusals> <rental> <refusals>`.
+  most=$(tail -1 "$S/refused.txt" | awk '{m = 0; for (i = 3; i <= NF; i += 2) if ($i > m) m = $i; print m}')
+  total=$(tail -1 "$S/refused.txt" | awk '{t = 0; for (i = 3; i <= NF; i += 2) t += $i; print t}')
+  echo "phantom stock: refused for want of capacity (rental count) after 150 s: $(tail -1 "$S/refused.txt" | cut -d' ' -f2-); creates the engine refused: $(grep -c . "$S/creates.log" 2> /dev/null || echo 0)"
+  [ "${total:-0}" -ge 3 ] || check "phantom stock: only ${total:-0} creates refused in 150 s: $(tail -c 300 "$S/proxy.log") $(tail -3 "$S/refused.txt")"
+  [ "${most:-0}" -le 2 ] || check "phantom stock: a rental was refused $most times on the one offer in 150 s: its provider listed it again, and it was bought again ($(tail -1 "$S/refused.txt" | cut -d' ' -f2-))"
+  [ -n "$rested" ] && echo "phantom stock: the admin view: $rested" \
+    || check "phantom stock: GET /v1/admin/provider-cooldowns never showed docker's SKU resting after 3 refusals: $(head -c 300 "$S/cooldowns-150.json" 2> /dev/null)"
+  for id in "${rentals[@]}"; do
+    said='' shown=''
+    for _ in $(seq 30); do
+      cozy --json machine ls > "$S/ls.json" 2> /dev/null || true
+      said=$(jq -r --arg r "$id" '.machines[] | select(.rental_id == $r) | .waiting // empty' "$S/ls.json" 2> /dev/null || true)
+      shown=$(cozy machine show "$id" 2> /dev/null | grep -m1 -E '^ *state' || true)
+      [ "$said" = "$word" ] && [[ $shown == *"$word"* ]] && break
+      sleep 1
+    done
+    [ "$said" = "$word" ] && [[ $shown == *"$word"* ]] \
+      || check "phantom stock: $id is said as '${said:-nothing}' ($(jq -c --arg r "$id" '.machines[] | select(.rental_id == $r) | {state, boot}' "$S/ls.json" 2> /dev/null)), shown as '${shown:-nothing}', not '$word'"
+  done
+)
