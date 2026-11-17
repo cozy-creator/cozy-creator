@@ -141,7 +141,9 @@ lingering() {
   while [ -n "$self" ] && [ "$self" != 0 ]; do ancestors+="$self "; self=$(awk '{print $4}' "/proc/$self/stat" 2> /dev/null); done
   for pid in "${held[@]}"; do
     [[ $ancestors == *" $pid "* ]] && continue
-    echo "$(date -u +%H:%M:%SZ) lingering after the suite: $(ps -o pid=,ppid=,etime=,args= -p "$pid" 2> /dev/null | cut -c1-300)" | tee -a "$OUT/gate.log"
+    local said
+    said=$(ps -o pid=,ppid=,etime=,args= -p "$pid" 2> /dev/null | cut -c1-300) && [ -n "$said" ] || continue
+    echo "$(date -u +%H:%M:%SZ) lingering after the suite, ended: $said" | tee -a "$OUT/gate.log"
     kill "$pid" 2> /dev/null || true
   done
 }
