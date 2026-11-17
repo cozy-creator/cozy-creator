@@ -826,10 +826,15 @@ def written(cell: Cell, items: list[Item], store: Path) -> dict[str, dict[str, i
 type Files = dict[str, tuple[Path, str]]
 
 
+#: The guards the Runtime names before it reads the device (`graphs._call`, in its order): the LM engine's own loop
+#: (`BYPASS`), a step cache, then the device. Any other guard, or any capture, means a CPU call went past them.
+AS_WRITTEN = ("graphs are off for this call", "under a step cache", "off CUDA")
+
+
 def graphs_off_cuda(reply: Reply) -> None:
     """CUDA graphs fall back to the call as written off CUDA, and the record says so (cr-297): every component
-    call the Runtime counted (`residency.graphs[*].calls`) is a guarded one, "off CUDA", none recorded or replayed.
-    A Runtime that counts no calls yet is not judged."""
+    call the Runtime counted (`residency.graphs[*].calls`) is a guarded one, for a reason of `AS_WRITTEN`, none
+    recorded or replayed. A Runtime that counts no calls yet is not judged."""
     residency = cast(dict[str, Json], cast(dict[str, Json], reply).get("residency") or {})
     regions = cast(dict[str, dict[str, Json]], residency.get("graphs") or {})
     for component, region in regions.items():
@@ -838,7 +843,7 @@ def graphs_off_cuda(reply: Reply) -> None:
             continue
         ran = {code: n for code, n in calls.items() if code != "guard"}
         why = cast(dict[str, str], region.get("why") or {}).get("guard", "")
-        if ran or (calls.get("guard") and why != "off CUDA"):
+        if ran or (calls.get("guard") and why not in AS_WRITTEN):
             raise Failed(f"{component}: a CPU call's graphs ran {ran or calls} ({why or 'no reason'}), not as written off CUDA")
 
 
