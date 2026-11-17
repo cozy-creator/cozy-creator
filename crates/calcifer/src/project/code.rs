@@ -16,6 +16,18 @@ pub(crate) fn generate() -> String {
     }
 }
 
+/// The code an encrypted project whose keybag holds none goes by (one locked before codes were kept there): always the same for its
+/// id, so its links say it while it's locked and its first unlock keeps it (cl-1171).
+pub(crate) fn derived(id: &str) -> String {
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::digest(id.as_bytes());
+    let mut code: Vec<u8> = digest[..LENGTH].iter().map(|byte| ALPHABET[usize::from(byte & 31)]).collect();
+    if !code.iter().any(u8::is_ascii_uppercase) {
+        code[0] = ALPHABET[10 + usize::from(digest[LENGTH]) % 22];
+    }
+    String::from_utf8(code).expect("the code alphabet is ASCII")
+}
+
 /// Accept the spellings ContentKit accepts, returning the canonical public code.
 pub(crate) fn parse(text: &str) -> Option<String> {
     let mut code = String::with_capacity(LENGTH);

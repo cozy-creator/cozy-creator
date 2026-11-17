@@ -371,13 +371,11 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
   // dropped its own address, so its page, opened from the list, reloaded for ever on "Opening project…".
   await test.step('opened from the list while locked: Unlock shows, and the page is still', async () => {
     const listed = (await api.get('/v1/projects?limit=1000')).projects.find((row) => row.path === made.path);
-    expect(listed?.id, 'listed under its locked handle').toMatch(/^locked-/);
-    // Refused on purpose, as under its id above: what the tab asks of it before it has read that it's locked.
-    guards.allow(new RegExp(`status of 409\\b.*/v1/projects/${listed.id}\\b`));
+    expect(listed, 'listed by its id and code (cl-1171)').toMatchObject({ id: made.id, code: made.code });
     const tab = await page.context().newPage();
     let asked = 0;
     tab.on('request', (request) => { if (new URL(request.url()).pathname.startsWith('/v1/')) asked++; });
-    await tab.goto(`${api.origin}/projects/${listed.id}`);
+    await tab.goto(`${api.origin}/p/${listed.code}`);
     await expect(tab.getByText('This project is locked.', { exact: true }), 'it says it is locked').toBeVisible({ timeout: 30_000 });
     await expect(tab.getByRole('button', { name: 'Unlock project', exact: true }), 'Unlock is offered').toBeVisible();
     const before = asked;

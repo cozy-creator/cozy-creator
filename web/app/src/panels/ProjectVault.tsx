@@ -3,7 +3,6 @@ import { type FormEvent, useEffect, useRef, useState } from "react"
 import QRCode from "react-qr-code"
 import { ApiError, type Client, type VaultAsk, type VaultProgress } from "../api/client"
 import { useConnection } from "../app/Connection"
-import { readAddressesAgain } from "../app/project"
 import { CopyButton } from "../ui/Copyable"
 import { useSignal } from "../ui/signal"
 import { useReloadHold } from "../app/reload"
@@ -172,7 +171,6 @@ export function VaultBody({ id }: { id: string }) {
         answer.vault = current
       }
       queries.setQueryData(vaultKey(id), answer.vault)
-      if (action === "unlock") await readAddressesAgain(queries)
       if (answer.recovery_secret) setNewRecovery(answer.recovery_secret)
       if (action === "encrypt") setSourceRemoved(true)
       if (answer.skipped_files?.length) setSkipped(answer.skipped_files)

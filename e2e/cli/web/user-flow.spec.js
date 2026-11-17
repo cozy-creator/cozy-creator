@@ -401,13 +401,11 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
       flow.code = new URL(page.url()).pathname;
       mark('unlocked');
       await shot('unlocked');
-      // Unlocked where it was opened, it's the project: its canvas, not a page about its locked handle (43852897461: "This project can't
-      // be opened yet", its uploads sent to `locked-…`). Said, then opened at its own address so the flow goes on.
-      // The page's words for it: "Couldn't open this project" since cl-1084, "This project can't be opened yet" before. Either way the
-      // tab stays at `locked-…`, which is no project's address.
+      // Unlocked where it was opened from the Projects list, it's the project at its own address, `/p/<code>` (cl-1171; 43852897461:
+      // "This project can't be opened yet", its uploads sent to a locked handle). Said, then opened at its address so the flow goes on.
       const stuck = page.getByRole('heading', { name: /^(Couldn't open this project|This project can't be opened yet)$/ });
       const stale = await stuck.waitFor({ state: 'visible', timeout: 10_000 }).then(() => true, () => false);
-      if (stale || /\/locked-/.test(new URL(page.url()).pathname)) {
+      if (stale || new URL(page.url()).pathname !== `/p/${project.code}`) {
         failed('the project opens where it was unlocked, from the Projects list', `at ${new URL(page.url()).pathname}: ${(await page.locator('main, .stage').first().innerText()).replace(/\s+/g, ' ').slice(0, 300)}`);
         await goto(project.url());
         await expect(page.locator('.stage')).toBeVisible({ timeout: 60_000 });

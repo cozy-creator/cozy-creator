@@ -54,14 +54,11 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The project's page on this Calcifer by its short code, as the page's own links say it (`/p/<code>`; Paul 11-16, of `/projects/<id>`:
-/// "where did this dumb other url come from?"). Any browser of this account opens it as Calcifer's own page.
+/// The project's page on this Calcifer, `/p/<code>`: a project's only address (cl-1171). Any browser of this account opens it as Calcifer's
+/// own page.
 fn page_url(calcifer: &Client, project: &Address) -> Result<String, Error> {
     let holder = calcifer.holder().ok_or_else(|| Error::new(Kind::Unavailable, "calcifer_unavailable", "Calcifer isn't running").next("cozy open"))?;
-    Ok(match project.code.is_empty() {
-        false => format!("http://{}/p/{}", holder.address, project.code),
-        true => format!("http://{}/projects/{}", holder.address, project.id),
-    })
+    Ok(format!("http://{}/p/{}", holder.address, project.code))
 }
 
 fn reserve_port(port: u16) -> Result<TcpListener, Error> {

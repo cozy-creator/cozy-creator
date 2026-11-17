@@ -292,8 +292,7 @@ async function candidate(context, origin) {
     const opened = cli(['open', '--json'], project.folder, STEP), link = new URL(opened.url);
     if (typeof state.code !== 'string' || !/^[0-9A-HJKMNP-TV-Z]{9}$/.test(state.code)) throw new Error('prepared project has no canonical code');
     const canonical = `/p/${encodeURIComponent(state.code)}`;
-    if (link.origin !== origin || link.hash || link.search || ![canonical, `/projects/${encodeURIComponent(project.id)}`].includes(link.pathname)) throw new Error('CLI open did not return this project plain Calcifer URL');
-    link.pathname = canonical;
+    if (link.origin !== origin || link.hash || link.search || link.pathname !== canonical) throw new Error('CLI open did not return this project plain Calcifer URL');
     const coldStart = performance.now(), document = await page.goto(link.href);
     if (!document.headers()['content-security-policy'] || document.headers()['referrer-policy'] !== 'no-referrer') throw new Error('real page CSP verification failed');
     await until('canvas ready', camera, Boolean);

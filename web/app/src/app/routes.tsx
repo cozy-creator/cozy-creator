@@ -48,7 +48,7 @@ const drawers: RouteObject[] = [
   drawer("settings", <Settings />),
 ]
 
-/** Made once boot has taken a link's code out of the URL: a router reads where it is as it's made, and `to` is where the link goes. */
+/** Made once, at its first use: a router reads where it is as it's made. */
 let router: ReturnType<typeof createBrowserRouter> | null = null
 
 export const theRouter = () =>
@@ -61,8 +61,9 @@ export const theRouter = () =>
         // The empty canvas: `/` opens no project by itself (cl-980).
         { index: true, element: null },
         ...drawers,
-        ...["p/:code", "projects/:id"].map((path) => ({
-          path,
+        // A project's only address (cl-1171).
+        {
+          path: "p/:code",
           children: [
             { index: true, element: null },
             // A box opened: drawn over the canvas, by the canvas, which is always mounted.
@@ -72,7 +73,7 @@ export const theRouter = () =>
             drawer("assets", <Files />),
             drawer("project-settings", <ProjectSettings />),
           ],
-        })),
+        },
         { path: "*", element: <Navigate replace to="/" /> },
       ],
     },

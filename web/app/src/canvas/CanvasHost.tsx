@@ -314,9 +314,7 @@ function Canvas({
   const [openedOn] = useState(projectId)
   const [veil, setVeil] = useState(false)
   const [shut, setShut] = useState(loadToolsShut)
-  const compactAsset = useMatch("/p/:code/assets/:name")
-  const legacyAsset = useMatch("/projects/:id/assets/:name")
-  const opened = (compactAsset ?? legacyAsset)?.params.name
+  const opened = useMatch("/p/:code/assets/:name")?.params.name
   const openedNow = useRef(opened)
   openedNow.current = opened
   const stage = useRef<HTMLDivElement>(null)
