@@ -2,11 +2,11 @@
 // can grab the image and spin it around, 360-style, as if it were a 3d model. Currently instead they are treated just as regular videos, where you
 // push play and watch it in time." A video box whose tool declares its file an orbit (project/orbit.py's `turn`: `with_metadata`, every frame a
 // keyframe, as the `orbit` package does) lands that metadata on its version. At rest on the board it carries the orbit mark, which a plain video
-// doesn't; in Focus it has no play button or timeline, and a drag turns it, there and in full screen. Pictures to look at, at rest and in Focus,
-// at 1440×900 and 1920×1080, paper and dark: $OUT/web/orbit/<browser>.
+// doesn't, and shows its front, frame 0, the picture it turns from; in Focus it has no play button or timeline, and a drag turns it, there and
+// in full screen. Pictures to look at, at rest and in Focus, at 1440×900 and 1920×1080, paper and dark: $OUT/web/orbit/<browser>.
 const { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, themed, focus, canvasVisible, canvasIdle, fixtureTool } = require('./fixtures');
+const { test, expect, themed, focus, canvasCard, canvasVisible, canvasIdle, fixtureTool, screenshotPixels } = require('./fixtures');
 const { ffmpeg, fit, leave } = require('./hands');
 
 const TURN = fixtureTool('orbit.py/turn');
@@ -52,6 +52,13 @@ test('orbit', async ({ page, project, api, cli }) => {
     const mark = await markOf(page, 'turned');
     expect.soft(mark.width, 'the mark as big as on screen as a control').toBeGreaterThanOrEqual(14);
     expect(await markOf(page, 'plain'), 'no mark on a plain video').toBeNull();
+    // Its picture at rest is its front, frame 0, the view it turns from: the marker in front, red, at its middle (cl-1131).
+    await expect.poll(async () => {
+      const body = (await canvasCard(page, 'turned'))?.body;
+      if (!body) return 'not drawn';
+      const [r, g, b] = screenshotPixels(await page.screenshot({ scale: 'css' }))(body.x + body.width / 2, body.y + body.height / 2);
+      return r > 150 && b < 100 ? 'front' : `rgb ${r},${g},${b} at its middle`;
+    }, { message: 'at rest, its front: the marker red at its middle' }).toBe('front');
   });
 
   await test.step('in Focus: no play button or timeline, and a drag turns it', async () => {

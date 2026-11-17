@@ -3710,7 +3710,7 @@ async fn import(
         Ok(answer)
     }).map_err(Refusal)?;
     // What the canvas draws of it, made now (cl-982): its page asks for it in a moment.
-    thumbs::landed(landing.0, &landing.1, landing.2, 0.0);
+    thumbs::landed(landing.0, &landing.1, landing.2, 0.0, false);
     measure_soon(&api, &project);
     Ok(Json(answer))
 }
