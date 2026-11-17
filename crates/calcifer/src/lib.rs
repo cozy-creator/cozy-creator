@@ -2670,7 +2670,9 @@ impl Calcifer {
                         1 => "a GPU".to_owned(),
                         n => format!("{n} GPUs"),
                     };
+                    // No run: the machine's own work holds them (a load ahead, which yields to it, or warming).
                     let holder = match self.with_run_store(&gpu.behind, |store| store.run(&gpu.behind)) {
+                        _ if gpu.behind.is_empty() => "the machine's own work".to_owned(),
                         Ok(Some(holder)) => self.named_for(&holder, id.as_str()),
                         _ => "another run".to_owned(),
                     };
