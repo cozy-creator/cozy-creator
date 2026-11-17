@@ -649,16 +649,20 @@ fn take_over(api: &Arc<Api>, project: &Arc<Project>, was: &FsPath) {
 }
 
 /// The runs this computer's machine is running of `project`'s walk, to stop, and the assets of those its renders owe again as before
-/// they were sent (a take, sent once, isn't: it ends canceled).
+/// they were sent (a take, sent once, isn't: it ends canceled). One its folder's going already ended canceled (cl-1031: a folder gone
+/// before it's opened where it moved to) goes again too.
 fn restart_local(project: &Project, store: &ProjectStore) -> Result<(Vec<RunId>, Vec<String>), Error> {
     let walk = project.folder.walk_now()?;
     let (mut stopped, mut restarted, mut again) = (vec![], vec![], vec![]);
     for (key, pending) in &walk.pending {
         let Ok(Some(row)) = store.run_by_number(pending.run) else { continue };
-        if pending.run == 0 || row.state == crate::store::State::Settled || row.machine.as_deref() != Some("local") {
+        let settled = row.state == crate::store::State::Settled;
+        if pending.run == 0 || row.machine.as_deref() != Some("local") || (settled && row.status != Some(RunStatus::Canceled)) {
             continue;
         }
-        stopped.push(row.id.clone());
+        if !settled {
+            stopped.push(row.id.clone());
+        }
         if pending.job_of(key) == walker::owed_key(&pending.ask, &name_key(&pending.asset)) {
             // Sent again under its job's key: the stopped run, kept, answers it no more.
             store.release_key(row.id.as_str()).map_err(|e| Error::new(Kind::Unavailable, "project_journal", e.to_string()))?;
