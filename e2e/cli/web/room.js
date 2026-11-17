@@ -2,8 +2,9 @@
 // probably warn them and stop them from trying to download models they cannot fit, instead telling them to free up disc-space or run on
 // another machine + rent another machine". A box whose render waits because no machine of its has room on its disk for its models says
 // so: its face, on the canvas and opened, "Waiting for disk space / Needs <bytes> more", and opened, its status: "This computer needs
-// <bytes> more disk space for its models: free that much and it renders here, or render it on a new rental." beside Machines. Looked at
-// at 1440×900 and 1920×1080, paper and dark, on the canvas and opened.
+// <bytes> more disk space for its models: free that much and it renders here, or render it on a new rental." beside Machines and Render on
+// a new rental, which opens in place under it the rental, priced for this render, to agree to (cl-1066's). Looked at at 1440×900 and
+// 1920×1080, paper and dark, on the canvas, opened, and with the offer open. Nothing is rented.
 //   node room.js <project folder> <box>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $HOLDER: Calcifer's lock record; $SHOT: its pictures.
 // Prints what it saw as JSON, exits 1 if anything failed.
@@ -61,8 +62,17 @@ async function shoot(page, name) {
   check('face_says_room', /^Waiting for disk space\s*Needs\s+\d+(\.\d+)?(MB|GB) more\s*Cancel$/.test(face.trim()), face || (await page.locator('.run-face').allInnerTexts().catch(() => [])).join(' | ').slice(0, 600));
   const status = page.locator('.status.mak').filter({ hasText: SAID }).first();
   const said = await status.waitFor({ timeout: 30_000 }).then(() => status.innerText(), () => '');
-  check('status_says_room', SAID.test(said) && /Machines$/.test(said.trim()), said || 'no status');
+  check('status_says_room', SAID.test(said) && /Machines\s*Render on a new rental$/.test(said.trim()), said || 'no status');
   await shoot(page, 'opened');
+  await status.getByRole('button', { name: 'Render on a new rental' }).click();
+  const offer = page.locator('.new-notice');
+  await offer.waitFor({ timeout: 30_000 });
+  const agree = offer.locator('button.primary');
+  // Its price for this render, once the Hub answers: the button that agrees to it says it.
+  await page.waitForFunction(() => !/Getting the price/.test(document.querySelector('.new-notice button.primary')?.textContent ?? ''), null, { timeout: 60_000 }).catch(() => {});
+  seen.offer = (await offer.innerText().catch(() => '')).replace(/\s+/g, ' ').slice(0, 400);
+  check('offer_priced', /^Render on a new .+ at \$\d+\.\d{2}\/h$/.test((await agree.innerText().catch(() => '')).trim()), seen.offer);
+  await shoot(page, 'offer');
   await browser.close();
   console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(failures.length ? 1 : 0);

@@ -386,7 +386,8 @@ J '[.queue[]? | select(.name == "roomless") | .no_room.line // "" | test("^This 
 [ -z "$(jq -r '.run // empty' <<< "${job:-null}")" ] || check "disk room: roomless's render was sent, to run $(jq -r .run <<< "$job"): $job"
 J '[.board.said[]? | .message] | any(test("^roomless: This computer needs [0-9.]+(MB|GB) more disk space for its models"))' "$OUT/room-status.json" \
   || check "disk room: the render didn't say how much room this computer lacks: $(jq -c '[.board.said[]?.message]' "$OUT/room-status.json" 2> /dev/null | head -c 500)"
-# The page, open on the project: its box says so, on the canvas and opened.
+# The page, open on the project: its box says so, on the canvas and opened, and offers a new rental priced by this computer's Hub.
+signin "$E2E_HUB_EMAIL" > "$OUT/room-login.json" || check "disk room: cozy login: $(tail -c 300 "$OUT/room-login.json")"
 chrome=$(web_chrome)
 if [ -n "$chrome" ] && [ -x "$chrome" ] && npm install -s --prefix "$pw" playwright-core@1.55.0 > "$OUT/room-npm.log" 2>&1; then
   HOLDER=$HOME/.cozy/calcifer/calcifer.lock.holder CHROME=$chrome PLAYWRIGHT=$pw/node_modules/playwright-core SHOT=$OUT/room-page LAST_LOOK=$OUT/room-page \

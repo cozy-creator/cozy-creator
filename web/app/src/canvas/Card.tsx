@@ -291,12 +291,13 @@ function Act({ label, onClick, opens, box }: { label: string; onClick: () => voi
   )
 }
 
-/** Waiting for a machine, Render on a new rental opened under it: the product chosen, its price for this render, agreed in place (cl-1066).
+/** Waiting for a machine, or for disk room (cl-1175), Render on a new rental opened under it: the product chosen, its price for this render,
+ *  agreed in place (cl-1066).
  *  Closes on its ✕, Escape, or a click whose press began outside it and its opener. */
 function WaitsNotice({ name, view }: { name: string; view: ElementView }) {
   const store = useCanvasStore()
   const own = useRef<HTMLDivElement>(null)
-  const open = Boolean(view.waiting && view.newOpen)
+  const open = Boolean((view.waiting || view.noRoom) && view.newOpen)
   const close = () => store.patch(store.resolveName(name), { newOpen: undefined })
   useClosesInPlace(open, (element) => Boolean(own.current?.contains(element) || element.closest(".act[data-box]")?.getAttribute("data-box") === name), close)
   if (!open) return null
@@ -342,12 +343,17 @@ function Status({ view, name }: { view: ElementView; name: string }) {
       </div>
     )
   }
-  // Its models fit on none of its machines' disks (cl-1175): how much room it lacks, and where to get a machine with room.
+  // Its models fit on none of its machines' disks (cl-1175): how much room it lacks, another machine, or a new rental that renders it in
+  // place of the wait.
   if (view.noRoom) {
     return (
-      <div className="status mak">
-        {view.noRoom.line} <Act label="Machines" onClick={store.askMachine} />
-      </div>
+      <>
+        <div className="status mak">
+          {view.noRoom.line} <Act label="Machines" onClick={store.askMachine} />{" "}
+          <Act label="Render on a new rental" opens={Boolean(view.newOpen)} box={name} onClick={() => store.patch(store.resolveName(name), { newOpen: !view.newOpen || undefined })} />
+        </div>
+        <WaitsNotice name={name} view={view} />
+      </>
     )
   }
   // Its machines have no GPU, and nothing measured says it runs without one (cl-1279): why, and where to rent one.
