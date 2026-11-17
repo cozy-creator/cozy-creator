@@ -1307,6 +1307,10 @@ impl Machines {
         if installed {
             crate::events::tools_changed();
         }
+        // What a lock that couldn't reach it owes it goes first (cl-1064).
+        if name == "local" {
+            self.answered_local();
+        }
         // Its runs and exports that wait on it try again now: it came back, or came up (a run held for its boot, cl-1069); and
         // Calcifer's queue may go to it (cl-1132).
         if back || ready {

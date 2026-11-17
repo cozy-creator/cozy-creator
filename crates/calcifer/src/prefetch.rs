@@ -333,9 +333,26 @@ impl Lists {
     }
 
     /// Each machine's lists as they stand, each sent where it differs from what that machine was last sent.
+    /// Each machine's lists again, as they are now (cl-1064: a clean-up a lock owed local was paid).
+    pub(crate) fn again(&self, machines: &Arc<Machines>) {
+        self.send(machines);
+    }
+
     fn send(&self, machines: &Arc<Machines>) {
         let planned = lock(&self.planned).clone();
-        let guessed: Vec<Guess> = lock(&self.guessed).values().flatten().cloned().collect();
+        let mut guessed: Vec<Guess> = lock(&self.guessed).values().flatten().cloned().collect();
+        // Nothing of a project a lock owes local a clean-up for is warmed on local until it's paid (cl-1064): its clean-up would
+        // end that warm-up again, and the project's own runs there wait for it as well. Other machines' lists are as planned.
+        let owed = machines.owed_folders();
+        let mut planned_local = planned.clone();
+        if !owed.is_empty() {
+            for lists in planned_local.values_mut() {
+                for listed in lists.values_mut() {
+                    listed.retain(|item| !owed.iter().any(|folder| *folder == item.project.folder_root()));
+                }
+            }
+            guessed.retain(|guess| guess.machine != "local" || guess.project.upgrade().is_none_or(|project| !owed.iter().any(|folder| *folder == project.folder_root())));
+        }
         // Each machine planned or guessed on, sent before, or able to run what's planned: an idle one may prepare it.
         let mut names: Vec<String> = planned.keys().cloned().collect();
         names.extend(lock(&self.sent).keys().cloned());
@@ -345,6 +362,7 @@ impl Lists {
         names.dedup();
         for name in names {
             let Some(frame) = machines.frame(&name) else { continue };
+            let planned = if name == "local" { &planned_local } else { &planned };
             let mut upcoming: Vec<&Listed> = planned.get(&name).into_iter().flat_map(|lists| lists.values().flatten()).collect();
             upcoming.sort_by_key(|listed| listed.start_at_ms);
             // Its guesses, each once, then what demand elsewhere asks of it that no guess does.

@@ -67,6 +67,7 @@ pub(super) fn router(identity: Arc<MachineIdentity>, runs: Arc<Runs>) -> Router 
 fn routes() -> Router<Machine> {
     Router::new()
         .route(path::PROJECT_GONE, post(project_gone))
+        .route(path::PROJECT_GONE_AT, post(project_gone_at))
         .route(path::STATUS, get(status))
         .route(path::KEEPALIVE, post(keepalive))
         .route(path::RUNS, post(update).layer(DefaultBodyLimit::max(16 << 20)).get(list))
@@ -177,6 +178,38 @@ async fn project_gone(State(m): State<Machine>, Path(project): Path<String>, hea
         if let Some(pool) = runs.service.pool() {
             if let Err(error) = pool.close_project_namespace(&project) { tracing::warn!("a project whose folder is gone: its executors: {error}"); }
         }
+        Ok(())
+    }).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// What a lock that couldn't reach this machine owes it (cl-1064): every project it ran in the vault view named has its runs there
+/// stopped and its records retired now (`end_project`), since none of them can settle in a view gone. Calcifer sends it before any new work, whenever this machine answers.
+async fn project_gone_at(State(m): State<Machine>, headers: HeaderMap, body: Bytes) -> Answer {
+    if !m.identity.lifecycle.is_local() {
+        return Err(Error::forbidden("local_private_only", "only this computer's local machine runs its projects").into());
+    }
+    let caller = m.caller(&headers)?;
+    caller.machine()?;
+    let gone: v1::ViewGone = serde_json::from_slice(&body).map_err(|_| Error::validation("view_gone_invalid", "a view gone names its path"))?;
+    let actor = actor_id(caller.actor);
+    m.call(move |runs| {
+        let projects = runs.service.engine.projects_at(&gone.view).map_err(|error| Error::conflict("private_storage_busy", error.to_string()))?;
+        for project in projects {
+            // Its executors go first, so its stopped runs end; while they don't close, the clean-up isn't done and Calcifer asks again.
+            if let Some(pool) = runs.service.pool() {
+                pool.close_project_namespace(&project).map_err(|error| {
+                    tracing::warn!("a vault view a lock ended: its executors: {error}");
+                    Error::conflict("private_storage_busy", "the project's executors there didn't close; asked again")
+                })?;
+            }
+            runs.service.engine.end_project(&project, &actor, &gone.view).map_err(|error| match error.kind() {
+                std::io::ErrorKind::AlreadyExists => Error::conflict("project_present", error.to_string()),
+                _ => Error::conflict("private_storage_busy", error.to_string()),
+            })?;
+        }
+        // Done: the births kept for the view go with it.
+        crate::private_io::forget_births(&gone.view);
         Ok(())
     }).await?;
     Ok(StatusCode::NO_CONTENT.into_response())

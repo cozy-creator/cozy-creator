@@ -66,6 +66,11 @@ impl Local {
         self.root.join("var/lib/cozy/machine/agent.lock")
     }
 
+    /// Where TensorD keeps the births of each vault view's processes (cl-1064).
+    pub(crate) fn births(&self) -> PathBuf {
+        self.root.join("var/lib/cozy/tensord/private-executors")
+    }
+
     fn ready(&self) -> PathBuf {
         self.root.join("var/lib/cozy/tensord/api-ready.json")
     }

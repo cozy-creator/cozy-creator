@@ -170,6 +170,11 @@ impl Machine {
         send(self.request(Method::POST, path::PROJECT_GONE, &[id])).await.map(|_| ())
     }
 
+    /// What a lock that couldn't reach this machine owes it (cl-1064): what it ran in vault view `view` is cancelled and retired.
+    pub(crate) async fn project_gone_at(&self, view: &std::path::Path) -> Result<(), Error> {
+        send(self.request(Method::POST, path::PROJECT_GONE_AT, &[]).json(&api::machine::ViewGone { view: view.to_owned() })).await.map(|_| ())
+    }
+
     pub(crate) async fn close_private(&self) -> Result<(), Error> {
         let scope = self.private.as_ref().ok_or_else(|| Error::Answer("closing private storage requires a selected project".into()))?;
         send(self.request(Method::POST, path::PRIVATE_CLOSE, &[&scope.storage.project_id])).await.map(|_| ())
