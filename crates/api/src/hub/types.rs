@@ -830,6 +830,8 @@ pub struct Rental {
     pub ended_at: Option<String>,
     pub release_cause: Option<String>,
     pub detail: Option<String>,
+    /// A waiting order's way out (th-383): the cheapest of its machines on sale now, above the price agreed.
+    pub alternative: Option<RentalAlternative>,
     pub failure: Option<RentalFailure>,
     /// The rental runs off the continent its request came from.
     pub placement_note: Option<String>,
@@ -1057,6 +1059,19 @@ pub struct RentalPull {
     pub extract_bytes_per_second: Option<f64>,
     /// A lower bound for the layers it has seen, never when the rental is ready.
     pub remaining_seconds: Option<f64>,
+}
+
+/// The cheapest of a waiting order's machines on sale now, priced above what its renter agreed: sending
+/// `max_usd_micros_per_hour` back (`POST /v1/rentals/{id}/agree`) buys it, or one as cheap to run.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RentalAlternative {
+    pub sku: String,
+    pub accelerator_count: u32,
+    pub price_usd_micros_per_hour: i64,
+    pub max_usd_micros_per_hour: i64,
+    /// For an admin, or a renter who named the provider.
+    pub provider: Option<String>,
 }
 
 /// The failed attempt a rental's current one replaced.

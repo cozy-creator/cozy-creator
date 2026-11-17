@@ -13,7 +13,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use platform::paths::Home;
 use api::{
     calcifer::{
-        Agreed, Attempt, Ended, HubListing, HubProblem, Machine, MachineKind, MachineState, On,
+        Agreed, Attempt, Ended, HubListing, Instead, HubProblem, Machine, MachineKind, MachineState, On,
         Quote, Alternative, Reason, Rental, RentalHistory, RentalRow, RentalSku, RentalSkus,
         RentalSum, Rented, Replaced, RunQuote, SubmitRun, Warning,
     },
@@ -1085,7 +1085,8 @@ impl Machines {
                     {
                         let mut seen = lock(&self.seen);
                         let seen = seen.entry(row.name.clone()).or_default();
-                        (seen.boot, seen.attempt, seen.waiting) = (boot, attempt(&rental), waiting(&rental));
+                        (seen.boot, seen.attempt, seen.waiting, seen.instead) =
+                            (boot, attempt(&rental), waiting(&rental), instead(&rental));
                     }
                     self.calcifer.machine_changed();
                     if gone(&rental.state) {
@@ -1099,7 +1100,7 @@ impl Machines {
                             continue;
                         }
                         if let Some(seen) = lock(&self.seen).get_mut(&row.name) {
-                            (seen.boot, seen.attempt, seen.waiting) = (None, None, None);
+                            (seen.boot, seen.attempt, seen.waiting, seen.instead) = (None, None, None, None);
                         }
                         self.calcifer.machine_changed();
                         return self.watch(&row);
@@ -1562,6 +1563,14 @@ impl Machines {
 }
 
 impl Hubs {
+    /// Its renter's agreement to a waiting order's alternative at `max` an hour, as its Hub then says the order (th-383).
+    pub(crate) async fn agree(&self, origin: &str, id: &str, max: i64) -> Result<types::Rental, Error> {
+        let client = self.client(origin)?;
+        let rental = client.agree_rental(id, max).await.map_err(|e| hub_refusal(origin, e))?;
+        self.seen(origin, rental.clone());
+        Ok(rental)
+    }
+
     /// One rental as its Hub says it now.
     async fn read(&self, origin: &str, id: &str) -> Result<types::Rental, Error> {
         let client = self.client(origin)?;
@@ -1828,7 +1837,7 @@ fn no_pod_yet(rental: &types::Rental) -> bool {
 /// What a rental its Hub has no pod for yet waits on, said in place of `booting` (th-383): capacity, naming the provider
 /// whose create last answered it has none when its Hub says which (to an admin, or a renter who chose the provider). None:
 /// it has a pod, or its Hub is placing it again after a boot failed, which is still booting.
-fn waiting(rental: &types::Rental) -> Option<String> {
+pub(crate) fn waiting(rental: &types::Rental) -> Option<String> {
     if !no_pod_yet(rental) {
         return None;
     }
@@ -1839,6 +1848,18 @@ fn waiting(rental: &types::Rental) -> Option<String> {
     Some(match replaced.and_then(|r| r.provider.as_deref()).filter(|p| !p.is_empty()) {
         Some(provider) => format!("waiting for capacity ({provider} has none right now)"),
         None => "waiting for capacity (none is free right now)".into(),
+    })
+}
+
+/// What a rental waiting for capacity could be bought as now, dearer than agreed, as its Hub offers it (th-383).
+pub(crate) fn instead(rental: &types::Rental) -> Option<Instead> {
+    let alternative = rental.alternative.as_ref().filter(|_| no_pod_yet(rental))?;
+    Some(Instead {
+        sku: alternative.sku.clone(),
+        gpus: alternative.accelerator_count.max(1),
+        usd_micros_per_hour: alternative.price_usd_micros_per_hour,
+        agreed: Agreed { usd_micros_per_hour: alternative.max_usd_micros_per_hour },
+        provider: alternative.provider.clone().filter(|p| !p.is_empty()),
     })
 }
 

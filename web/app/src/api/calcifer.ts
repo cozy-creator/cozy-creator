@@ -1093,6 +1093,20 @@ already?: boolean,
 kept?: { [key in string]: Card | null }, };
 
 /**
+ * What a rental waiting for capacity could be bought as now, dearer than agreed (th-383): `agreed` is what its renter
+ * sends back to buy it.
+ */
+export type Instead = { sku: string, gpus: number,
+/**
+ * What it would cost an hour.
+ */
+usd_micros_per_hour: number, agreed: Agreed,
+/**
+ * Its provider, for a Hub admin or a renter who named the provider.
+ */
+provider?: string | null, };
+
+/**
  * Where an output is: still arriving, complete, or final in a run that did not complete.
  */
 export type ItemStatus = "in_progress" | "completed" | "incomplete";
@@ -1337,6 +1351,11 @@ boot?: string | null,
  * `waiting for capacity (runpod has none right now)`.
  */
 waiting?: string | null,
+/**
+ * A rental waiting for capacity: the cheapest of its machines on sale now, above the price agreed, which it buys
+ * once its renter agrees (`POST /v1/machines/{name}/agree` with `agreed`, as `cozy machine rent <name>` asks).
+ */
+instead?: Instead | null,
 /**
  * A booting rental's acquisition attempt, as its Hub says it.
  */

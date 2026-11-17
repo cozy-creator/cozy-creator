@@ -1252,6 +1252,10 @@ pub struct Machine {
     /// `waiting for capacity (runpod has none right now)`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting: Option<String>,
+    /// A rental waiting for capacity: the cheapest of its machines on sale now, above the price agreed, which it buys
+    /// once its renter agrees (`POST /v1/machines/{name}/agree` with `agreed`, as `cozy machine rent <name>` asks).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instead: Option<Instead>,
     /// A booting rental's acquisition attempt, as its Hub says it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempt: Option<Attempt>,
@@ -1972,6 +1976,21 @@ pub struct Quote {
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub datacenter: Option<String>,
+}
+
+/// What a rental waiting for capacity could be bought as now, dearer than agreed (th-383): `agreed` is what its renter
+/// sends back to buy it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Instead {
+    pub sku: String,
+    pub gpus: u32,
+    /// What it would cost an hour.
+    pub usd_micros_per_hour: i64,
+    pub agreed: Agreed,
+    /// Its provider, for a Hub admin or a renter who named the provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 /// The most a renter agreed to pay an hour: the order's `max_usd_micros_per_hour` at the Hub.

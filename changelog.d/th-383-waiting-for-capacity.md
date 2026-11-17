@@ -1,1 +1,2 @@
 A rental its Hub has no machine for yet says `waiting for capacity (runpod has none right now)` in `cozy machine ls`, `machine show` and the page, instead of booting (th-383). `machine show` keeps the Hub's own word under `placing`.
+A rental waiting for capacity offers what is on sale instead at a higher price (`... · 1× RTX 5090 for $2.40/h instead: cozy machine rent <name>`); `cozy machine rent <name>` or the page's "Rent it for $X/h" agrees to it, and the Hub buys it then, never before (th-383).

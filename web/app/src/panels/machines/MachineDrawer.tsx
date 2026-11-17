@@ -8,7 +8,7 @@ import type { Machine, MachineUpdate } from "../../api/calcifer"
 import { Copyable } from "../../ui/Copyable"
 import { Failure, KV, Section, useAsk, useNow } from "../common"
 import { DrawerFrame } from "../Drawer"
-import { span } from "../format"
+import { span, usd } from "../format"
 import { Disk } from "./Disk"
 import { End } from "./End"
 import { Gpus } from "./Gpus"
@@ -17,10 +17,30 @@ import { MachineLogs } from "./MachineLogs"
 import { Queue } from "./Queue"
 import { RenderCheck, Spec, useRenderMachines } from "./RenderHere"
 import { statusWord, target } from "../runs/words"
-import { brokenWords, called, endsWords, kindWords, kernelsWords, named, spentWords, waitingWords } from "./words"
+import { brokenWords, called, endsWords, kindWords, kernelsWords, named, spentWords, stableName, waitingWords } from "./words"
 import "./MachineDrawer.css"
 
 /** Its idle clock renewed (`cozy machine keepalive`), which only a person asks for: a rental ends 15 minutes after its last job. */
+/** A rental waiting for capacity, and what is on sale instead at a higher price: bought only once its renter agrees (th-383). */
+function Instead({ machine }: { machine: Machine }) {
+  const { client } = useConnection()
+  const ask = useAsk()
+  const instead = machine.instead
+  if (!instead || machine.state !== "booting") return null
+  const what = `${instead.gpus > 1 ? `${instead.gpus}× ` : ""}${instead.sku.toUpperCase()}${instead.provider ? ` on ${instead.provider}` : ""}`
+  return (
+    <>
+      <p className="muted">
+        {what} is on sale for {usd(instead.usd_micros_per_hour)}/h, above the price you agreed.
+      </p>
+      <button type="button" className="tb" disabled={ask.busy} onClick={() => void ask.run(() => client.agree(stableName(machine), instead.agreed))}>
+        Rent it for {usd(instead.usd_micros_per_hour)}/h
+      </button>
+      <Failure error={ask.error} lead="Couldn't rent it instead" />
+    </>
+  )
+}
+
 function KeepRunning({ machine }: { machine: Machine }) {
   const { client } = useConnection()
   const ask = useAsk()
@@ -210,6 +230,7 @@ export function MachineDrawer() {
       {machine.unreachable && !ended && <p className="muted">It didn't respond just now ({machine.unreachable}), so this is from its last report.</p>}
       {!ended && <Doing machine={machine} now={now} />}
       <div className="machine-actions">
+        <Instead machine={machine} />
         <KeepRunning machine={machine} />
         <End machine={machine} />
       </div>

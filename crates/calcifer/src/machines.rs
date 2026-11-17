@@ -126,8 +126,9 @@ pub(crate) struct Seen {
     /// A booting rental's phase and attempt, as its Hub says them.
     pub(crate) boot: Option<String>,
     pub(crate) attempt: Option<wire::Attempt>,
-    /// A rental its Hub has no pod for yet: what it waits on (th-383).
+    /// A rental its Hub has no pod for yet: what it waits on, and what it could be bought as now, dearer (th-383).
     pub(crate) waiting: Option<String>,
+    pub(crate) instead: Option<wire::Instead>,
     /// `local` is not running: it starts when something uses it.
     stopped: bool,
     /// The boot this computer last vouched for to the rental's Hub, and when (cl-977).
@@ -740,6 +741,22 @@ impl Machines {
         self.end_here(row, force)
     }
 
+    /// Its renter's agreement to what a rental waiting for capacity could be bought as now, dearer than agreed (th-383): its
+    /// Hub's order then buys that, or one as cheap to run, at most `agreed` an hour.
+    pub(crate) async fn agree(&self, text: &str, agreed: wire::Agreed) -> Result<Machine, Error> {
+        let row = self.named(text)?.ok_or_else(|| not_found(text))?;
+        let Some(id) = row.rental_id.clone().filter(|_| row.state == MachineState::Booting) else {
+            return Err(Error::new(Kind::Conflict, "machine_not_waiting", format!("{} is not a rental waiting for capacity.", row.name))
+                .next(format!("cozy machine show {}", row.name)));
+        };
+        let rental = self.hubs.agree(&row.hub, &id, agreed.usd_micros_per_hour).await?;
+        if let Some(seen) = lock(&self.seen).get_mut(&row.name) {
+            (seen.waiting, seen.instead) = (crate::rentals::waiting(&rental), crate::rentals::instead(&rental));
+        }
+        self.calcifer.machine_changed();
+        self.picture(&row)
+    }
+
     /// Starts a rental's 15-minute idle clock over, once the machine acknowledges it.
     pub(crate) async fn keepalive(&self, text: &str) -> Result<Keepalive, Error> {
         let (row, link) = self.linked(text)?;
@@ -906,7 +923,7 @@ impl Machines {
         }
         let (mut held, mut activity) = (vec![], vec![]);
         // Copied under the lock and worked out after it: a picture never holds up what a machine's Status says.
-        let seen = lock(&self.seen).get(&row.name).map(|seen| Seen { frame: seen.frame.clone(), boot: seen.boot.clone(), attempt: seen.attempt.clone(), waiting: seen.waiting.clone(), unreachable: seen.unreachable.clone(), silent: seen.silent.clone(), vouched: seen.vouched.clone(), unanswered: seen.unanswered, ..*seen });
+        let seen = lock(&self.seen).get(&row.name).map(|seen| Seen { frame: seen.frame.clone(), boot: seen.boot.clone(), attempt: seen.attempt.clone(), waiting: seen.waiting.clone(), instead: seen.instead.clone(), unreachable: seen.unreachable.clone(), silent: seen.silent.clone(), vouched: seen.vouched.clone(), unanswered: seen.unanswered, ..*seen });
         if let Some(seen) = seen {
             if seen.stopped {
                 machine.state = MachineState::Stopped;
@@ -924,6 +941,7 @@ impl Machines {
             machine.boot = seen.boot;
             machine.attempt = seen.attempt;
             machine.waiting = seen.waiting;
+            machine.instead = seen.instead;
         }
         if let Some(status) = &mut machine.status {
             status.runs = held.into_iter().filter_map(|run| self.held(run)).collect();
@@ -1105,7 +1123,7 @@ impl Machines {
             task.abort();
         }
         if let Some(seen) = lock(&self.seen).get_mut(name) {
-            (seen.boot, seen.attempt, seen.waiting) = (None, None, None);
+            (seen.boot, seen.attempt, seen.waiting, seen.instead) = (None, None, None, None);
         }
         self.arrivals.send_modify(|n| *n += 1);
         self.calcifer.machine_changed();
@@ -2083,6 +2101,14 @@ pub(crate) async fn end(
         _ => StatusCode::OK,
     };
     Ok((status, Json(ended)))
+}
+
+pub(crate) async fn agree(
+    State(api): State<Arc<Api>>,
+    UrlPath(name): UrlPath<String>,
+    Json(agreed): Json<wire::Agreed>,
+) -> Result<Json<Machine>, Refusal> {
+    Ok(Json(api.machines.agree(&name, agreed).await.map_err(Refusal)?))
 }
 
 pub(crate) async fn keepalive(

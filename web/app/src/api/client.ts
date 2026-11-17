@@ -756,6 +756,11 @@ export class Client {
     return this.json(`${machine(name)}${force ? "?force=true" : ""}`, { method: "DELETE" })
   }
 
+  /** Agrees to what a rental waiting for capacity could be bought as now, dearer than agreed (th-383). */
+  agree(name: string, agreed: Agreed): Promise<Machine> {
+    return this.write("POST", `${machine(name)}/agree`, agreed)
+  }
+
   keepAlive(name: string): Promise<Keepalive> {
     return this.write("POST", `${machine(name)}/keepalive`, {})
   }

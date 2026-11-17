@@ -587,6 +587,12 @@ impl Client {
             .map(drop)
     }
 
+    /// Agrees to a waiting order's alternative at `max` an hour (th-383): the order then buys it, or one as cheap to run.
+    pub async fn agree_rental(&self, id: &str, max: i64) -> Result<Rental, Error> {
+        self.json(self.at(Method::POST, "/v1/rentals/{id}/agree", &[id]).json(&json!({ "max_usd_micros_per_hour": max })))
+            .await
+    }
+
     /// Releases the rental: its person's end (`owner_stop`), or with `by_pod` its machine's own idle
     /// release, which this client heard and passes on (`released_by_pod`).
     pub async fn release_rental(&self, id: &str, by_pod: bool) -> Result<(), Error> {

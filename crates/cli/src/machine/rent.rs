@@ -15,7 +15,7 @@ use crate::{Context, calcifer_client::Client, output};
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct Rent {
-    /// GPU product to rent. Omit to list available products.
+    /// GPU product to rent, or a rental waiting for capacity to rent as what is on sale instead. Omit to list available products.
     sku: Option<String>,
     /// Number of GPUs.
     #[arg(long, requires = "sku", value_parser = clap::value_parser!(u32).range(1..))]
@@ -52,6 +52,9 @@ pub(crate) async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
         ssh_key: ssh_key.clone(),
     };
     let calcifer = ctx.calcifer().await?;
+    if let Some(machine) = waiting(&calcifer, &sku).await? {
+        return rent_instead(ctx, &calcifer, machine).await;
+    }
     // The Hub's price for exactly this order, agreed before it is placed or resumed. Calcifer
     // admits the product first: an explicit ask is honoured or refused, never widened.
     let quote = calcifer.post("/v1/rental-quotes", &ask(None), None).await?;
@@ -229,6 +232,40 @@ fn placed(q: &RunQuote) -> String {
 /// for tools to check: the machine, our price an hour, and the disk the Hub sized for it. Once the
 /// Hub accepts the order, `cozy machine rent` prints `{"type":"rental.accepted", rental_id, name}`
 /// at once, and the machine's document when it is ready.
+/// The rental `text` names, when it waits for capacity (th-383): `cozy machine rent <name>` agrees to what is on sale instead.
+async fn waiting(calcifer: &Client, text: &str) -> Result<Option<Machine>, Error> {
+    let Ok(path) = super::route(text) else { return Ok(None) };
+    let Ok(machine) = calcifer.get::<Machine>(&path).await else { return Ok(None) };
+    match (&machine.waiting, &machine.instead) {
+        (_, Some(_)) => Ok(Some(machine)),
+        (Some(waiting), None) => Err(Error::new(Kind::Conflict, "nothing_instead", format!("{} is {waiting}: nothing else of its kind is on sale now.", machine.called()))
+            .next(format!("cozy machine show {}", machine.handle()))),
+        (None, None) => Ok(None),
+    }
+}
+
+/// Its renter's agreement to what a rental waiting for capacity could be bought as now, dearer than agreed: sent as
+/// `agreed`, which the Hub holds the order to.
+async fn rent_instead(ctx: &Context, calcifer: &Client, machine: Machine) -> Result<ExitCode, Error> {
+    let Some(instead) = machine.instead.clone() else { return Ok(ExitCode::SUCCESS) };
+    let at = instead.provider.as_deref().map_or(String::new(), |p| format!(" on {p}"));
+    let offer = format!("{}× {} at {}/h{at}", instead.gpus, instead.sku.to_ascii_uppercase(), usd(instead.usd_micros_per_hour));
+    if ctx.json {
+        output::ndjson(&serde_json::json!({"instead": instead, "machine": machine.handle()}));
+    }
+    output::say(ctx, &format!("{}: {}", machine.called(), state_cell(&machine)));
+    if !confirm(ctx, &format!("{offer} for {}", machine.called()), "")? {
+        output::say(ctx, "nothing changed: it waits for capacity at the price agreed");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let machine: Machine = calcifer.post(&format!("{}/agree", super::route(&machine.handle())?), &instead.agreed, None).await?;
+    match ctx.json {
+        true => output::json(&machine),
+        false => anstream::println!("{}: {}", machine.called(), state_cell(&machine)),
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 pub(crate) fn agree(ctx: &Context, quoted: &RunQuote) -> Result<bool, Error> {
     quoted.quote.warnings.iter().chain(&quoted.warnings).for_each(|warning| output::warn(warning));
     if ctx.json {
@@ -245,6 +282,11 @@ pub(crate) fn agree(ctx: &Context, quoted: &RunQuote) -> Result<bool, Error> {
     }
     let said = placed(quoted);
     let (offer, why) = said.split_once('\n').unwrap_or((&said, ""));
+    confirm(ctx, offer, why)
+}
+
+/// `Rent <offer>? [Y/n]`, after why; `--yes` agrees, and no terminal to ask on is a refusal naming it.
+fn confirm(ctx: &Context, offer: &str, why: &str) -> Result<bool, Error> {
     if ctx.yes {
         output::say(ctx, &format!("Renting {offer}"));
         if !why.is_empty() {

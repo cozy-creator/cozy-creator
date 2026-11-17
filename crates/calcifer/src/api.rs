@@ -254,6 +254,7 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
             get(machines::show).delete(machines::end),
         )
         .route("/v1/machines/{name}/keepalive", post(machines::keepalive))
+        .route("/v1/machines/{name}/agree", post(machines::agree))
         .route("/v1/machines/{name}/logs/{log}", get(machines::logs))
         .route("/v1/machines/{name}/gpus", get(machines::gpus))
         .route("/v1/machines/{name}/packages", get(machines::packages))
