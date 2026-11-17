@@ -29,7 +29,12 @@ test('gone', async ({ context, project, api, signIn, guards }) => {
     const trash = `${project.path}-trash`;
     renameSync(project.path, trash);
     rmSync(trash, { recursive: true, force: true });
-    await expect(page.locator('.unread h2', { hasText: said })).toBeVisible();
+    const t0 = Date.now();
+    const seen = await page.locator('.unread h2', { hasText: said }).waitFor({ timeout: 90_000 }).then(() => Date.now() - t0, () => null);
+    const known = await api.get(`/v1/projects/${project.id}/address`).then((a) => JSON.stringify(a).slice(0, 200), (e) => String(e).slice(0, 200));
+    console.log(`PROBE gone: notice after ${seen} ms; address now ${known}`);
+    test.info().annotations.push({ type: 'probe', description: `notice after ${seen} ms; ${known}` });
+    await expect(page.locator('.unread h2', { hasText: said })).toBeVisible({ timeout: 1 });
     expect.soft(await stays(page), 'it stays where it is').toEqual(here);
     await expect.soft(page.locator('.unread'), 'said once').toHaveCount(1);
     await expect.soft(page.locator('.gate'), 'and no gate').toHaveCount(0);

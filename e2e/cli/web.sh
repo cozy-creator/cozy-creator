@@ -73,7 +73,7 @@ web_suite() {
     [ -z "$xvfb" ] || export FIREFOX_DISPLAY=:97
     HOLDER=$(web_path "$HOME/.cozy/calcifer/calcifer.lock.holder") COZY=$(web_path "$COZY") CHROME=$chrome OUT=$(web_path "$OUT") ARGV_LOG=$(web_path "$OUT/argv.log") \
       NODE_PATH=$(web_path "$pw/node_modules") node "$(web_path "$pw/node_modules/@playwright/test/cli.js")" test -c "$(web_path "$here/web/playwright.config.js")" \
-      "${projects[@]/#/--project=}" ${workers[@]+"${workers[@]}"} "${filters[@]}" 2>&1 && echo 0 > "$web/$lane.code" || echo $? > "$web/$lane.code"
+      "${projects[@]/#/--project=}" ${workers[@]+"${workers[@]}"} ${WEB_REPEAT:+--repeat-each=$WEB_REPEAT} "${filters[@]}" 2>&1 && echo 0 > "$web/$lane.code" || echo $? > "$web/$lane.code"
   } | tee "$web/$lane.log"
   code=$(cat "$web/$lane.code")
   [ -z "$busy" ] || { kill "$busy" 2> /dev/null; wait "$busy" 2> /dev/null || true; }

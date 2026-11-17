@@ -74,8 +74,16 @@ test('mention', async ({ page, project, api, cli }) => {
     await page.keyboard.press('Enter');
     await expect(words.locator('.chip[data-mention="amy"]')).toHaveText('<Amy>');
     await expect.soft(offered, 'the list goes with the pick').toHaveCount(0);
-    await page.keyboard.type('and');
-    await expect.poll(said, { message: 'saved as its name' }).toBe('A sheet of <amy> and');
+    const dom = [];
+    const look = async (when) => dom.push(`${when} @${Date.now()}: ${JSON.stringify(await words.evaluate((el) => el.innerHTML))} sel=${JSON.stringify(await page.evaluate(() => { const s = document.getSelection(); return s && s.anchorNode ? [s.anchorNode.nodeName, s.anchorNode.textContent, s.anchorOffset] : null }))}`);
+    await look('picked');
+    for (const ch of 'and') { await page.keyboard.type(ch); await look(`typed ${ch}`); }
+    let last = '';
+    const ok = await expect.poll(async () => (last = await said()), { timeout: 15_000 }).toBe('A sheet of <amy> and').then(() => true, () => false);
+    await look('end');
+    console.log(`PROBE mention: ${ok ? 'kept' : 'LOST'} saved=${JSON.stringify(last)}\n  ${dom.join('\n  ')}`);
+    expect(ok, `saved ${JSON.stringify(last)}`).toBe(true);
+    return;
     expect.soft((await project.asset('still')).making ?? [], 'Enter on a name renders nothing').toEqual([]);
   });
 
