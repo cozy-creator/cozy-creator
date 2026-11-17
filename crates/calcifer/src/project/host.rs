@@ -321,7 +321,7 @@ impl Host {
             let first = on.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
             let Some(found) = local_code::target(with, Some(folder), &home) else { return self.read_published(hub, with, &first).await };
             let (path, named) = found?;
-            let code = local_code::own(&self.api, &path)?;
+            let code = crate::stages::stage("staged", async { local_code::own(&self.api, &path) }).await?;
             let read = local_code::foreseen(&self.api, &code, &first, hub).await?;
             // Its estimate names it by its manifest (`Package::estimated`): without it, no machine quotes it.
             let manifest = read.source.manifest;

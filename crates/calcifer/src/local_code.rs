@@ -1082,8 +1082,8 @@ pub(crate) async fn prepare(
 pub(crate) async fn foreseen(api: &Arc<Api>, local: &LocalCode, on: &On, hub: &str) -> Result<Prepared, Error> {
     let hubs = &api.machines.hubs;
     let hub = if hub.is_empty() { hubs.default_origin() } else { hub.to_owned() };
-    let code = source(hubs.home(), local, hubs, &Origin::parse(&hub)?).await?;
-    let (package, interface) = describe(api, local, on, &hub).await?;
+    let code = crate::stages::stage("source", source(hubs.home(), local, hubs, &Origin::parse(&hub)?)).await?;
+    let (package, interface) = crate::stages::stage("describe", describe(api, local, on, &hub)).await?;
     let from = crate::checkout::of(local);
     Ok(Prepared { package, from, source: code.source, files: code.inputs, interface: Some(interface), installation: None, machine: None, install: None })
 }
@@ -1511,7 +1511,7 @@ async fn described(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str) -> Resu
         *held = Some((known.clone(), false));
         return Ok(known);
     }
-    let known = read_interface(api, code, on, hub, runtime.clone()).await?;
+    let known = crate::stages::stage("describer", read_interface(api, code, on, hub, runtime.clone())).await?;
     keep_static(home, code, hub, runtime.as_deref(), &known);
     *held = Some((known.clone(), false));
     Ok(known)
