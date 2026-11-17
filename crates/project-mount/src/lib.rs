@@ -942,19 +942,33 @@ impl Mounted {
     }
 }
 
+/// How long letting go of a view waits on what serves it before it ends it (cl-1124): a provider under a backing removed from outside
+/// (Windows) never ends on its own, and a drop that waits on it without end hung a lock's caller, a swap and a restart.
+const LET_GO: Duration = Duration::from_secs(10);
+
 impl Drop for Mounted {
     fn drop(&mut self) {
         if self.retired { return; }
         self.input.take();
         // A failed startup cannot return while its delayed helper could still expose a view.
-        // EOF makes the supervisor stop its owned provider before this process releases it.
+        // EOF makes the supervisor stop its owned provider before this process releases it; one that doesn't within `LET_GO` is
+        // ended with its tree, never waited on without end.
+        if !self.owner.wait_for(LET_GO).unwrap_or(false) {
+            for process in platform::process::tree(self.child.id()) {
+                let _ = process.kill();
+            }
+            let _ = self.owner.kill();
+        }
         let _ = self.child.wait();
         if self.reconcile().is_err() {
             for helper in &self.helpers {
-                let _ = helper.wait();
+                if !helper.wait_for(LET_GO).unwrap_or(false) {
+                    let _ = helper.kill();
+                }
             }
-            // Past the helpers' exits, only a kernel or disk-image cleanup still settling.
-            while self.reconcile().is_err() {
+            // Past the helpers' exits, only a kernel or disk-image cleanup still settling, waited on for `LET_GO` at most.
+            let began = std::time::Instant::now();
+            while self.reconcile().is_err() && began.elapsed() < LET_GO {
                 thread::sleep(Duration::from_millis(100));
             }
         }
