@@ -387,7 +387,7 @@ timeout 60 "$COZY" --json machine end stand-b --force -y > "$OUT/stand-b-end.jso
 # queue-a finishes it in 262 s of weights, 230 s and a minute ahead of it, then its own 230 s (782 s); queue-b in 120 + 300 + 196 s
 # (616 s): it goes to queue-b, on both GPUs. Before the fix queue-a's runs ahead were a minute each (612 s) and queue-b quoted one GPU
 # (755 s): it went to queue-a. Asked as the page's estimate asks it (`POST /fit`); this computer runs the shot once first, so its
-# code's name is known.
+# code is staged and its manifest kept.
 plan_queue() {
 step "plan queue (cl-1107): a machine's runs ahead count their time, so a shot goes where it finishes soonest"
 local P=$OUT/queue tool=$here/project/queued/shot r=$RANDOM manifest version runtime tensorfs now name port fp pid pids=() estimate
@@ -398,9 +398,11 @@ jq -n --arg t "$tool" --arg r "$r" '[
   {name: "second", tool: $t, kind: "image", fields: {instructions: "Where it finishes soonest, \($r)."}}]' | boxes_in "$P" || return
 coming_go first '["local"]'
 coming_done first 900
-manifest=$(grep -o 'sha256:[0-9a-f]\{64\}/shot' "$HOME/.cozy/calcifer/diagnostics.log" 2> /dev/null | tail -1 || true)
-manifest=${manifest%/shot}
-[ -n "$manifest" ] || { check "plan queue: no quote of first named its code: $(grep -F 'first' "$HOME/.cozy/calcifer/diagnostics.log" 2> /dev/null | tail -3)"; return; }
+# Its code's name: the manifest Calcifer staged it by, kept under its digest (local_code::keep_manifest).
+manifest=$(grep -rlE --include='*.json' '"local/e2e[-_]queued"' "$HOME/.cozy/calcifer" "$P" 2> /dev/null | grep -E '/[0-9a-f]{64}\.json$' | xargs -r ls -t | head -1 || true)
+manifest=${manifest##*/} manifest=${manifest%.json}
+[ -n "$manifest" ] || { check "plan queue: no manifest of first's code kept in $HOME/.cozy/calcifer or $P"; return; }
+manifest=sha256:$manifest
 cozy --json machine show local > "$OUT/queue-local.json" || { check "plan queue: machine show local"; return; }
 version=$(jq -r '.status.version // empty' "$OUT/queue-local.json") runtime=$(jq -r '.status.runtime // empty' "$OUT/queue-local.json")
 tensorfs=$(jq -r '.status.tensorfs // empty' "$OUT/queue-local.json") now=$(date +%s%3N)
