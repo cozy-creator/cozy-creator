@@ -20,8 +20,8 @@ import sys
 import time
 from typing import cast
 
-ROUNDS = 6
-PER_ROUND = 150
+# Processes started (suspended, each holding a pid) until one gets A's: all kept until then, so freed pids below A's are used up.
+LIMIT = 5000
 
 
 def probe(binary: Path, pid: int) -> list[int]:
@@ -52,6 +52,7 @@ def windows(binary: Path, facts: dict[str, object], failures: list[str]) -> None
     kernel.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
     synchronize_terminate = 0x00100000 | 0x0001
     no_window = 0x08000000
+    suspended = 0x00000004
 
     def held(pid: int) -> int:
         handle = kernel.OpenProcess(synchronize_terminate, False, pid)
@@ -74,26 +75,21 @@ def windows(binary: Path, facts: dict[str, object], failures: list[str]) -> None
     gc.collect()
     facts.update({"a_pid": a_pid, "c_pid": c_pid})
 
-    # Processes until one gets A's pid: T.
+    # Processes until one gets A's pid: T. Suspended, they hold a pid and little else.
     target: subprocess.Popen[bytes] | None = None
-    spawned = 0
-    for _ in range(ROUNDS):
-        batch: list[subprocess.Popen[bytes]] = []
-        for _ in range(PER_ROUND):
-            started = subprocess.Popen(["ping", "-n", "900", "127.0.0.1"], stdout=subprocess.DEVNULL, creationflags=no_window)
-            spawned += 1
-            if started.pid == a_pid:
-                target = started
-                break
-            batch.append(started)
-        for other in batch:
-            other.kill()
-            other.wait()
-        del batch
-        gc.collect()
-        if target is not None:
-            break
-    facts["spawned"] = spawned
+    held_pids: list[subprocess.Popen[bytes]] = []
+    while target is None and len(held_pids) < LIMIT:
+        started = subprocess.Popen(["ping", "-n", "900", "127.0.0.1"], stdout=subprocess.DEVNULL, creationflags=no_window | suspended)
+        if started.pid == a_pid:
+            target = started
+        else:
+            held_pids.append(started)
+    spawned = facts["spawned"] = len(held_pids) + (1 if target is not None else 0)
+    for other in held_pids:
+        other.kill()
+        other.wait()
+    del held_pids
+    gc.collect()
     if target is None:
         kernel.TerminateProcess(c, 1)
         failures.append(f"no process got A's pid {a_pid} in {spawned} starts: the collision wasn't made")
