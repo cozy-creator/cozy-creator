@@ -68,6 +68,7 @@ function Trace({ trace, index, wide = false }: { trace: GpuTrace; index: number;
         onPointerMove={pick}
         onPointerLeave={() => setHover(null)}
       >
+        <line className="trace-base" x1={0} x2={w} y1={h - 0.5} y2={h - 0.5} vectorEffect="non-scaling-stroke" />
         <polygon className="trace-area" points={area} />
         <polyline className="trace-line" points={line} vectorEffect="non-scaling-stroke" />
         {shown && <line className="trace-at" x1={x(shown.at)} x2={x(shown.at)} y1={0} y2={h} vectorEffect="non-scaling-stroke" />}
@@ -90,47 +91,47 @@ function Meter({ kind, label, share: fill }: { kind: string; label: string; shar
   )
 }
 
-/** A machine's GPUs on its row of the machines list (cl-1191, Paul 11-17: "like a throttle, from 0 -> 100%, like what runpod has"): a line
- *  each, columns aligned: its busy share as a bar and its last minute, its memory, power against its limit, temperature, and under it
- *  what holds it back now. */
+/** A machine's GPUs on its row of the machines list (cl-1191, Paul 11-17: "like a throttle, from 0 -> 100%, like what runpod has"): each
+ *  one's busy share as a bar, the figure and its last minute beside it, and under the bar its memory, power against its limit,
+ *  temperature and what holds it back now. */
 export function GpuStrip({ trace, gpus }: { trace: GpuTrace; gpus: Gpu[] }) {
   const live = useLive(trace)
   if (!live?.gpus.length) return null
   const many = live.gpus.length > 1
   return (
-    <div className="gpu-strip-box">
-      <div className={`gpu-strip ${many ? "many" : ""}`}>
-        {live.gpus.map((reading) => {
-          const total = reading.memory_total_bytes || gpus.find((gpu) => gpu.index === reading.index)?.memory_bytes || 0
-          const limits = limitsOf(reading)
-          return (
-            <div className="gauge" key={reading.index} data-gpu={reading.index}>
-              {many && <span className="gauge-gpu">GPU {reading.index}</span>}
-              <Meter kind="busy" label={`GPU ${reading.index} busy`} share={reading.busy_percent / 100} />
-              <b className="gauge-busy">{reading.busy_percent}%</b>
-              <Trace trace={trace} index={reading.index} />
+    <div className={`gpu-strip ${many ? "many" : ""}`}>
+      {live.gpus.map((reading) => {
+        const total = reading.memory_total_bytes || gpus.find((gpu) => gpu.index === reading.index)?.memory_bytes || 0
+        const limits = limitsOf(reading)
+        return (
+          <div className="gauge" key={reading.index} data-gpu={reading.index}>
+            {many && <span className="gauge-gpu">GPU {reading.index}</span>}
+            <Meter kind="busy" label={`GPU ${reading.index} busy`} share={reading.busy_percent / 100} />
+            <b className="gauge-busy">{reading.busy_percent}%</b>
+            <Trace trace={trace} index={reading.index} />
+            <span className="gauge-facts">
               <span className="gauge-fact" title="Memory in use">
                 {total ? share(reading.memory_used_bytes, total) : bytes(reading.memory_used_bytes)}
               </span>
-              <span className="gauge-fact power" title={reading.power_limit_w ? "Power draw of its limit" : "Power draw"}>
-                {reading.power_w != null && `${reading.power_w}${reading.power_limit_w ? `/${reading.power_limit_w}` : ""}W`}
-              </span>
-              <span className="gauge-fact" title="Temperature">
-                {reading.temperature_c != null && `${reading.temperature_c}°C`}
-              </span>
-              {limits.length > 0 && (
-                <span className="gauge-limits">
-                  {limits.map((limit) => (
-                    <span className="gauge-limit" key={limit.word} title={`${limit.word}: ${limit.why}`}>
-                      {limit.word}
-                    </span>
-                  ))}
+              {reading.power_w != null && (
+                <span className="gauge-fact" title={reading.power_limit_w ? "Power draw of its limit" : "Power draw"}>
+                  {`${reading.power_w}${reading.power_limit_w ? `/${reading.power_limit_w}` : ""}W`}
                 </span>
               )}
-            </div>
-          )
-        })}
-      </div>
+              {reading.temperature_c != null && (
+                <span className="gauge-fact" title="Temperature">
+                  {`${reading.temperature_c}°C`}
+                </span>
+              )}
+              {limits.map((limit) => (
+                <span className="gauge-limit" key={limit.word} title={`${limit.word}: ${limit.why}`}>
+                  {limit.word}
+                </span>
+              ))}
+            </span>
+          </div>
+        )
+      })}
     </div>
   )
 }
