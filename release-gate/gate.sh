@@ -145,7 +145,7 @@ I=$(( $(date +%s) / 60 + $(cksum <<< "$SKU" | cut -d' ' -f1) ))
 IFS=$'\t' read -r NAME CHAR MOTION OBJECT SCENE <<< "${ROWS[$((I % ${#ROWS[@]}))]}"
 [ -z "$SCENARIO" ] || [ "$NAME" = "$SCENARIO" ] || { echo "no scenario $SCENARIO in scenarios.tsv" >&2; exit 2; }
 R=${SEEDS:-$(( $(date +%s%N) / 1000 % 4000000000 ))}
-M= RID= RP= KEEP= AQ=
+M= RID= RP= KEEP= AQ= WARMER=
 # The machine's own logs as they stand. A pod that's gone can't answer, so what was last saved stays.
 save_machine_logs() {
   local log
@@ -157,6 +157,7 @@ end_it() {
   [ -z "$KEEP" ] || kill "$KEEP" 2>/dev/null
   [ -z "$AQ" ] || kill "$AQ" 2>/dev/null
   [ -z "$RP" ] || kill "$RP" 2>/dev/null  # the boot's follower only: the order is ended below
+  [ -z "$WARMER" ] || kill "$WARMER" 2>/dev/null
   if [ -n "$M" ]; then
     # The machine's own logs leave with it: keep them for every gate (a poisoned executor is diagnosed from them).
     save_machine_logs
@@ -237,6 +238,15 @@ ahead() {
   key="$target ${want[*]}"
   [ -z "${AHEAD[$key]:-}" ] || return 0
   AHEAD[$key]=1
+  # Warmed in the background already (warm_ahead): its turn waited for.
+  local k; k=$(printf '%s' "$key" | sha1sum | cut -c1-16)
+  if [ -e "ahead/$k.queued" ]; then
+    until [ -e "ahead/$k.done" ] || ! kill -0 "$WARMER" 2> /dev/null; do sleep 2; done
+    [ "$(cat "ahead/$k.code" 2> /dev/null)" = 0 ] ||
+      expect "$name-weights" FAIL "warmed ahead as ahead-$k: $(s=$(run_get "$OUT" "ahead-$k" .status) w=$(run_get "$OUT" "ahead-$k" .reason.message)
+        [ -n "$s$w" ] && echo "$s $w" || echo "no run: $(tail -c 200 "ahead-$k.err" | tr '\n' ' ')")"
+    return 0
+  fi
   # Local code warms through the staging helper, built only for --packages; without it (suite bench's calibrate) the
   # cell's first run installs it, as the run of any untimed cell would.
   [[ $target != .* && $target != /* ]] || [ -n "${RUN_CODE_STAGE:-}" ] || return 0
@@ -244,10 +254,68 @@ ahead() {
     expect "$name-weights" FAIL "run $(cat "$name-weights.number") $(run_get "$OUT" "$name-weights" .status): $(run_get "$OUT" "$name-weights" '.reason.message')"
   run_warm_cell "$OUT" "$name-weights-off" "$target" off --on "$M" > "$name-weights-off.log" 2>&1 || log "$name: API warming off: $(tail -c 300 "$name-weights-off.log")"
 }
+# warm_ahead <product>...: the functions those products' cells call (products.sh), each warmed to `downloaded` and taken
+# out of the warm set again, one after another in the background, in the order their cells run, from the moment a suite
+# calls it (xs-208). The pod's link works while cells render, and a cell's `ahead` waits only for its own. The 0.26.0 gate
+# spent 46 of its 146 minutes on downloads made one at a time between cells (44006460875). A suite whose cells are timed
+# against the last pass leaves it out: a download beside a run moves its load times.
+warm_ahead() {
+  # An --only gate is a narrow proof, warmed cell by cell; HunyuanImage 3.0 runs only by --only.
+  [ -z "${COLD:-}" ] && [ -z "$ONLY" ] || return 0
+  local p f pk fn t k queue=()
+  mkdir -p ahead
+  for p in "$@"; do
+    f=product_${p//[-.]/_}
+    [ "$p" != hunyuan-image-3 ] && declare -F "$f" > /dev/null || continue
+    while read -r pk fn; do
+      t=$(pkg "$pk" "$fn")
+      [[ $t != .* && $t != /* ]] || [ -n "${RUN_CODE_STAGE:-}" ] || continue
+      k=$(printf '%s' "$t " | sha1sum | cut -c1-16)
+      [ ! -e "ahead/$k.queued" ] || continue
+      : > "ahead/$k.queued"; queue+=("$k" "$t")
+    done < <(declare -f "$f" | grep -oE '(pkg|refs [a-z0-9-]+) [a-z0-9.-]+ [a-z_]+' | awk '{print $(NF-1), $NF}' | awk '!seen[$0]++')
+  done
+  [ ${#queue[@]} -gt 0 ] || return 0
+  log "warming ahead: $(( ${#queue[@]} / 2 )) functions of $*"
+  (
+    set -- "${queue[@]}"
+    while [ $# -gt 0 ]; do
+      run_warm_cell "$OUT" "ahead-$1" "$2" downloaded --on "$M" > /dev/null 2>&1; echo $? > "ahead/$1.code"
+      run_warm_cell "$OUT" "ahead-$1-off" "$2" off --on "$M" > /dev/null 2>&1
+      : > "ahead/$1.done"; shift 2
+    done
+  ) & WARMER=$!
+}
 # cell <name> <target> [args...]: one run on $M (e2e/run.sh's run_cell): its record <name>.json; its files land in project/.
 # --only names cells or packages. $TWIN, when a suite sets it, names a second run (<name>$TWIN) of the cells $TWINS lists.
-# A cell another suite already ran, or one known-failing.json parks on this SKU ("cells"; sku "*" is every SKU), does
-# not run.
+# $STOP, when set (`STOP=3 cell ...`), stops the run after that many sampler steps (stop_cell). A cell another suite already
+# ran, or one known-failing.json parks on this SKU ("cells"; sku "*" is every SKU), does not run.
+# stepped <ndjson> <n>: the run's sampler said step n: a progress event whose stage ends in a sampler's stage (runs.py
+# STEP_STAGES; an LM's decode and a stage's loading say none) with a step total.
+stepped() {
+  grep '"type":"run.progress"' "$1" 2> /dev/null | jq -sre --argjson n "$2" 'any(.[].progress;
+    (.stage | split(" / ") | last) as $s | ($s | IN("denoise", "generating image", "refine", "step", "generate"))
+    and .total > 0 and .completed >= $n)' > /dev/null 2>&1
+}
+# stop_cell <name> <target> [args...]: run_cell's run, canceled by name once its sampler reports step $STOP (Paul 11-17:
+# "don't complete an entire test if half a test will be sufficient"). `ctx.progress` is a cancellation point, so it ends at
+# that step's boundary, its record keeping the peak, kernels and step times; nothing new runs on the machine. stopped.tsv
+# names it for analyze.py, which takes it as passed when it ended canceled after at least $STOP steps with nothing failed.
+# One that completes first is a plain cell. Every stop is also a cancel mid-step, and the next cell its successor.
+stop_cell() {
+  local name=$1 n pid; shift
+  [ -n "$(run_submit "$OUT" "$name" run "$@")" ] || return 1
+  n=$(cat "$name.number") pid=$(cat "$name.pid")
+  until stepped "$name.ndjson" "$STOP" || run_ended "$name.ndjson" || ! run_alive "$pid"; do sleep 0.2; done
+  if ! run_ended "$name.ndjson" && stepped "$name.ndjson" "$STOP"; then
+    "$CLI" --json run cancel "$(run_ref "$OUT" "$name" "$n")" > "$name.stop.json" 2>&1 || log "$name: cancel at step $STOP: $(tail -c 300 "$name.stop.json")"
+    printf '%s\t%s\n' "$name" "$STOP" >> stopped.tsv
+  fi
+  run_wait "$OUT" "$name" || return 1
+  case $(run_get "$OUT" "$name" .status) in completed) return 0 ;; canceled) grep -q "^$name"$'\t' stopped.tsv ;; *) return 1 ;; esac
+}
+# whole <cell>: it ran to its end, not stopped after $STOP steps (stop_cell): checks of its output read only such a cell.
+whole() { ! grep -q "^$1"$'\t' stopped.tsv 2> /dev/null; }
 cell() {
   local base=$1 name=$1${TWIN:-} target=$2 p issue n code=0; shift 2
   p=${target%/*}; p=${p##*/}
@@ -262,7 +330,7 @@ cell() {
   done
   [[ $target != *minimax-h3*/generate* ]] || { one_beat "$@"; set -- "${BEAT[@]}"; }
   ahead "$name" "$target" "$@"
-  run_cell "$OUT" "$name" "$target" --on "$M" "$@" || code=$?
+  if [ -n "${STOP:-}" ]; then stop_cell "$name" "$target" --on "$M" "$@" || code=$?; else run_cell "$OUT" "$name" "$target" --on "$M" "$@" || code=$?; fi
   n=$(cat "$name.number")
   printf '%s\t%s\t%s\n' "$name" "$target" "$n" >> cells.tsv
   log "$name run $n $(run_get "$OUT" "$name" .status)$(jq -r 'select(.error) | ": " + .error.message' "$name.ndjson" 2>/dev/null | head -1)"
@@ -363,10 +431,10 @@ if [ -z "$ON" ]; then
   # varena's faults run there (faults.sh), suite bench holds the host's RAM there (pod.sh), and suite attention-corpus fetches
   # its captures over it, suite attention pushes a --corpus to the pod over it, and suite execution's library programs run
   # there (programs.sh), and suite slow moves the Runtime's kernels aside and gives the machine a hot host's GPU readings there
-  # (cl-913), and an A/B hook (*-ab.sh) clears each arm's derived state there (machines.sh `pod_derived`), with this computer's
+  # (cl-913), and an A/B hook (*-ab.sh) and suite multi-gpu's 1-against-2 pair clear derived state there (machines.sh `pod_derived`), with this computer's
   # key, or a new one on a runner. An --only without them rents no SSH.
   SSH=
-  if [[ -n $CORPUS && ,$SUITES, == *,attention,* ]] || [[ ,$SUITES, == *,tensord,* || ,$SUITES, == *,bench,* || ,$SUITES, == *,attention-corpus,* ]] || { [[ ,$SUITES, == *,tensorfs,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,kill,* ]]; }; } ||
+  if [[ -n $CORPUS && ,$SUITES, == *,attention,* ]] || [[ ,$SUITES, == *,tensord,* || ,$SUITES, == *,bench,* || ,$SUITES, == *,attention-corpus,* || ,$SUITES, == *,multi-gpu,* ]] || { [[ ,$SUITES, == *,tensorfs,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,kill,* ]]; }; } ||
      { [[ ,$SUITES, == *,varena,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,faults,* || $ONLY == *,public,* || $ONLY == *,core,* || $ONLY == *,offload,* ]]; }; } ||
      { [[ ,$SUITES, == *,execution,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,tensorfs,* ]]; }; } || [[ ,$SUITES, == *,slow,* ]] ||
      [[ " ${EXTRA[*]:-} " == *-ab.sh* ]]; then

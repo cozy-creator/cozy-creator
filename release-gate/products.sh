@@ -3,7 +3,7 @@
 # Qwen-Image's edits its render) falls back to the gate's reference when that one did not run. The describer reads the
 # checked-in ref/seed.jpg, so both arms of a comparison caption the same picture.
 PRODUCTS=(minimax-h3 seedvr2 sdxl flux.3-klein qwen-image-2 anima birefnet qwen3 fibo-2 hidream-o1 moss-image qwen-image
-  flux-2 ideogram-4 krea-2 hunyuan-image-3)
+  flux-2 ideogram-4 krea-2 p-h3-image ltx-2.5 relayvsr orbit pan2 hunyuan-image-3)
 # --first runs these packages before the rest, in its order: a clean standalone number before models stack.
 [ -z "$FIRST" ] || mapfile -t PRODUCTS < <(tr , '\n' <<< "$FIRST"; printf '%s\n' "${PRODUCTS[@]}" | grep -vxF -f <(tr , '\n' <<< "$FIRST"))
 product() {
@@ -12,11 +12,22 @@ product() {
 }
 
 H3_SEED=2026102801
+# plate <seconds>: a synthetic 1344x768, 24 fps clip with a tone, made once: the source of an upscale whose shot made no
+# video (stopped by gate.sh STOP, or failed: that failure is its own cell's).
+# judged <cell>: its run completed, so its output can be checked. A failed run is already its cell's FAIL (analyze.py), and
+# checks of an output it never made only repeat it (44058085989: "no warning of missing text" for an out-of-memory run).
+judged() { [ -f "$1.number" ] && [ "$(run_get "$OUT" "$1" .status)" = completed ]; }
+plate() {
+  local f=$OUT/plate-$1s.mp4
+  [ -s "$f" ] || nice -n 19 ffmpeg -v error -y -f lavfi -i "testsrc2=size=1344x768:rate=24:duration=$1" \
+    -f lavfi -i "sine=frequency=440:duration=$1" -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest "$f"
+  echo "$f"
+}
 # av <cell> <height>: its tallest mp4 is <height>p and carries a soundtrack as long as its picture (within 0.1 s).
 # seedvr2 0.1.0 wrote a batch's audio after all its frames, past the writer's interleave buffer (run 20347).
 av() {
   local c=$1${TWIN:-} f v a
-  [ -f "$c.number" ] || return 0
+  judged "$c" || return 0
   f=$(run_outputs "$OUT" "$c" | grep -E '\.mp4$' | while read -r p; do
     echo "$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$p") $p"; done | sort -n | tail -1)
   v=$(ffprobe -v error -select_streams v:0 -show_entries stream=duration -of csv=p=0 "${f#* }" 2>/dev/null)
@@ -42,20 +53,22 @@ product_minimax_h3() {
     prompt="<$name> $motion" seed:=$H3_SEED duration_s:=15
   ONLY=$SAVED
   CLIP=$(output h3 mp4)
+  [ -n "$CLIP" ] || CLIP=$(plate 15)
   # Above 768p a take is re-rendered whole by Regenerate-2K (UPSCALE.md) with its soundtrack. A file of a box has no
   # latents and no text (a mention's description is off, cl-900): it goes from its frames and the prompt given, else
   # from no text, with a warning (se-138).
   [[ $ONLY == *",h3-1080p,"* || $ONLY == *",h3-1440p,"* || $ONLY == *",h3-notext-1080p,"* || $ONLY == *",h3-take-1080p,"* ]] && ONLY="$ONLY,h3-5s,"
   cell h3-5s "$(pkg minimax-h3 generate)" prompt="$p" seed:=$((R + 16)) duration_s:=5
   ONLY=$SAVED
-  v=$(box h3_5s "$(output h3-5s mp4)" "$p")
+  v=$(output h3-5s mp4); [ -n "$v" ] || v=$(plate 5)
+  v=$(box h3_5s "$v" "$p")
   for r in 1080 1440; do
     cell "h3-${r}p" "$(pkg minimax-h3 upscale)" video="$v" to=${r}p prompt="$p"
     av "h3-${r}p" $r
   done
   cell h3-notext-1080p "$(pkg minimax-h3 upscale)" video="$v" to=1080p
   av h3-notext-1080p 1080
-  if [ -f "h3-notext-1080p${TWIN:-}.number" ]; then
+  if judged "h3-notext-1080p${TWIN:-}"; then
     r=$(run_get "$OUT" "h3-notext-1080p${TWIN:-}" '[.result.warnings[]? | select(startswith("no text to guide"))] | first')
     expect "h3-notext-1080p${TWIN:-}-warns" "$([ -n "$r" ] && echo PASS || echo FAIL)" "${r:-no warning of missing text}"
   fi
@@ -65,7 +78,7 @@ product_minimax_h3() {
   # cr-259). About 11 min and $0.22 on a 5090 (run 28788), about 18 min and $0.30 on a 4090, past the shot it starts from.
   cell regen-1440p-15s "$(pkg minimax-h3 upscale)" video="$(box h3_15s "$CLIP" "$who. $motion")" to=1440p prompt="$who. $motion"
   av regen-1440p-15s 1440
-  if [ -f "regen-1440p-15s${TWIN:-}.number" ]; then
+  if judged "regen-1440p-15s${TWIN:-}"; then
     r=$(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/frames.py" regen "$CLIP" "$(output "regen-1440p-15s${TWIN:-}" mp4)" 2>&1 | tail -1)
     expect "regen-1440p-15s${TWIN:-}-frames" "$(jq -r 'if .structure_psnr >= 18 and .structure_ssim >= 0.5 and .flicker <= 2 and .corr >= 0.95 then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "$r"
   fi
@@ -83,7 +96,7 @@ h3_take() {
     { expect h3-take-1080p FAIL "the take: $(tail -c 300 h3-take.err)"; return; }
   cell h3-take-1080p "$(pkg minimax-h3 upscale)" video='<h3_take>' to=1080p
   av h3-take-1080p 1080
-  [ -f h3-take-1080p.number ] || return 0
+  judged h3-take-1080p || return 0
   r=$(run_get "$OUT" h3-take-1080p '{latents: .request.input.video.latents, warnings: [.result.warnings[]?]} | tostring')
   expect h3-take-1080p-text "$(jq -r 'if (.latents // "" | startswith("sha256:")) and ([.warnings[] | select(startswith("no text"))] | length) == 0
     then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "${r:-no record}"
@@ -119,27 +132,34 @@ product_qwen_image_2() {
 QWEN_LORA=hf://gribbliest/qwen-image-2.1-qma-camera-angles@13007eec2648c09529e930164c2ccc9c8c12428c/qwen-image-2.1-qma-camera-angles.safetensors
 qwen_lora() {
   [ -z "$ONLY" ] || [[ $ONLY == *",qwen-lora,"* || $ONLY == *",qwen-image-2,"* ]] || return 0
-  local who model commit format said
+  # A twin pass uploads again only for a qwen-lora twin, under a new name: a deleted model's name is retired (409
+  # name.retired, 44058085989).
+  [ -z "${TWIN:-}" ] || [[ ,${TWINS:-}, == *",qwen-lora,"* ]] || return 0
+  local who model commit format said t=${TWIN:-}
   who=$("$CLI" --json whoami 2>/dev/null | jq -r '.account // empty')
-  model=$who/ci-qwen21-lora-$R
-  run_submit "$OUT" qwen-lora-upload model upload "$QWEN_LORA" "$model" --lane bf16 --on "$M" > /dev/null
-  run_wait "$OUT" qwen-lora-upload
-  commit=$(run_get "$OUT" qwen-lora-upload '.result.models[0].published.commit')
-  format=$(run_get "$OUT" qwen-lora-upload '.result.models[0].format')
-  expect qwen-lora-convert "$([[ $format == "detected qwenimage21.lora; LoRA of qwen-image-2 transformer" && -n $commit ]] && echo PASS || echo FAIL)" \
-    "upload run $(cat qwen-lora-upload.number): ${format:-no format}, ${commit:-no commit}"
+  model=$who/ci-qwen21-lora-$R$t
+  run_submit "$OUT" "qwen-lora-upload$t" model upload "$QWEN_LORA" "$model" --lane bf16 --on "$M" > /dev/null
+  run_wait "$OUT" "qwen-lora-upload$t"
+  commit=$(run_get "$OUT" "qwen-lora-upload$t" '.result.models[0].published.commit')
+  format=$(run_get "$OUT" "qwen-lora-upload$t" '.result.models[0].format')
+  expect "qwen-lora-convert$t" "$([[ $format == "detected qwenimage21.lora; LoRA of qwen-image-2 transformer" && -n $commit ]] && echo PASS || echo FAIL)" \
+    "upload run $(cat "qwen-lora-upload$t.number"): ${format:-no format}, ${commit:-no commit}"
   if [ -n "$commit" ]; then
     cell qwen-lora "$(pkg qwen-image-2 generate_turbo)" --lora "$model@$commit" seed:=$((R + 28)) prompt="A low-angle shot looking up at $OBJECT, wide lens"
-    said=$(grep -o 'do not apply[^"]*' qwen-lora.ndjson 2>/dev/null | head -1)
-    expect qwen-lora-applied "$([ "$(run_get "$OUT" qwen-lora .status)" = completed ] && [ -z "$said" ] && echo PASS || echo FAIL)" \
-      "run $(cat qwen-lora.number): $(run_get "$OUT" qwen-lora .status) ${said:-every layer applied}"
+    said=$(grep -o 'do not apply[^"]*' "qwen-lora$t.ndjson" 2>/dev/null | head -1)
+    if judged "qwen-lora$t" || ! whole "qwen-lora$t"; then
+      expect "qwen-lora-applied$t" "$([ -z "$said" ] && echo PASS || echo FAIL)" \
+        "run $(cat "qwen-lora$t.number"): $(run_get "$OUT" "qwen-lora$t" .status) ${said:-every layer applied}"
+    fi
   fi
-  "$CLI" model delete "$model" -y > qwen-lora-delete.log 2>&1 || log "qwen-lora: $model not deleted: $(tail -c 200 qwen-lora-delete.log)"
+  "$CLI" model delete "$model" -y > "qwen-lora-delete$t.log" 2>&1 || log "qwen-lora: $model not deleted: $(tail -c 200 "qwen-lora-delete$t.log")"
 }
 product_anima() { cell anima "$(pkg anima generate)" prompt="masterpiece, best quality, anime illustration of $CHAR" seed:=$((R + 6)); }
 product_birefnet() { cell birefnet "$(pkg birefnet remove_background)" --file image="${K:-$REF}"; }
+# The describer on Qwen3.5-9B; the writer on Qwen3.6-35B-A3B, qwen3.6's default before qwen3 replaced it (xs-208).
 product_qwen3() {
   cell describer "$(pkg qwen3 ask)" --model model=qwen/qwen3.5-9b@0.2.0 prompt="Describe this character: appearance, clothing and pose." --file images="$HERE/ref/seed.jpg"
+  cell writer "$(pkg qwen3 ask)" --model model=qwen/qwen3.6-35b-a3b@0.1.0 prompt="Describe this picture: who is in it, where, and the light." --file images="$HERE/ref/seed.jpg"
 }
 # Fibo's prompt upsampler (a greedy VLM) runs, as by default.
 product_fibo_2() {
@@ -177,6 +197,22 @@ product_ideogram_4() {
     seed:=$((R + 26))
 }
 product_krea_2() { cell krea "$(pkg krea-2 generate)" prompt="$CHAR under a neon sign that reads \"NIGHT MARKET\", photo" seed:=$((R + 27)); }
+# xs-208: the first-party packages the 0.26.0 gate logged as "has no product cells", each by its default call (Qwen3.6's is
+# product_qwen3's writer).
+product_p_h3_image() { cell ph3 "$(pkg p-h3-image generate)" instructions="$SCENE, photo" seed:=$((R + 30)); }
+product_ltx_2_5() {
+  cell ltx "$(pkg ltx-2.5 generate)" prompt="$SCENE, slow push-in, ambient sound" seed:=$((R + 31))
+  av ltx 1080
+}
+product_relayvsr() {
+  [ -f clip-1s.mp4 ] || nice -n 19 ffmpeg -v error -y -loop 1 -i "$REF" -t 1 -r 24 -vf scale=-2:768 -c:v libx264 -pix_fmt yuv420p clip-1s.mp4
+  cell relayvsr "$(pkg relayvsr upscale)" --file video="$OUT/clip-1s.mp4"
+}
+product_orbit() { cell orbit "$(pkg orbit orbit)" --file picture="${K:-$REF}" subject="character" seed:=$((R + 33)); }
+product_pan2() {
+  cell pan2 "$(pkg pan2 generate)" prompt="$SCENE. $CHAR walks in from the left, stops at the centre and looks around. One continuous wide shot." \
+    seed:=$((R + 34))
+}
 # HunyuanImage 3.0's 80B experts page about 85 GB a step through a 24 GB card and wedged there (se-079): only by --only
 # (hunyuan, hunyuan-refs or hunyuan-image-3), on a card of 48 GB or more (rtx-pro-6000, a100-80gb).
 product_hunyuan_image_3() {

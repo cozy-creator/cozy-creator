@@ -11,7 +11,9 @@
 #   anima-graphs-*   (> 8 GB card) Anima four times: the fourth replays the text encoder an earlier call recorded (check.py)
 #   sizes-sdxl-*     (> 8 GB card) SDXL at sizes A, B, C, C, D, D in a fresh executor: the second D replays (check.py)
 #   s8-* s6-* s3-*   under 8, 6 and 3 GiB software caps; at 6 GiB SDXL and Klein alternate three times, then Anima's
-#                    four calls again
+#                    four calls again. SDXL and Klein under 6 and 3 GiB stop after 3 steps (gate.sh STOP, xs-208): a cap's
+#                    fit, splits and alternation show by then. Graph cells (anima-graphs, sizes-sdxl) run whole: their
+#                    capture share follows the request's length
 #   (≤ 8 GB card)    cold, co and reload only: the driver's own out-of-memory paths (a capped card never fills)
 #   h3-8gb           (≤ 8 GB card) H3 Turbo 15 s, the 8 GB tier's product shape
 #   host-*           on a CPU rental, under its cgroup's memory.max (host-cap.py): pages must spill to disk
@@ -127,11 +129,11 @@ h3 s8-h3 13 5 "Handheld, close."
 h3 s8-h3-15 14 15 "Wide, steady."
 cap 6GiB
 for i in 1 2 3; do
-  vcell s6-sdxl-$i "$SDXL" prompt="$CHAR in $SCENE, film still $i" seed:=$((R + 20 + i))
-  vcell s6-klein-$i "$KLEIN" prompt="$OBJECT, studio photo, angle $i" seed:=$((R + 30 + i))
+  STOP=3 vcell s6-sdxl-$i "$SDXL" prompt="$CHAR in $SCENE, film still $i" seed:=$((R + 20 + i))
+  STOP=3 vcell s6-klein-$i "$KLEIN" prompt="$OBJECT, studio photo, angle $i" seed:=$((R + 30 + i))
 done
 for i in 1 2 3 4; do vcell s6-anima-$i "$ANIMA" prompt="$ANIMA_SAYS" seed:=$((R + 70 + i)); done
 cap 3GiB
-vcell s3-sdxl "$SDXL" prompt="$CHAR, oil painting" seed:=$((R + 41))
-vcell s3-klein "$KLEIN" prompt="an aerial photo of $SCENE" seed:=$((R + 42))
+STOP=3 vcell s3-sdxl "$SDXL" prompt="$CHAR, oil painting" seed:=$((R + 41))
+STOP=3 vcell s3-klein "$KLEIN" prompt="an aerial photo of $SCENE" seed:=$((R + 42))
 authority

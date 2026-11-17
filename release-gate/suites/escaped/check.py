@@ -8,6 +8,7 @@ success, peak and kernels, never the bytes (a cap may tile).
     check.py <gate dir> <SKU>     the same verdict alone"""
 import os, sys
 from collections.abc import Callable
+from typing import TypeGuard
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 import record  # noqa: E402
@@ -37,14 +38,26 @@ def twins(out: str) -> list[tuple[str, Run | None, Run | None]]:
     return [(n[:-len(TWIN)], read(n[:-len(TWIN)]), read(n)) for n in names if n.endswith(TWIN)]
 
 
+def stopped(out: str) -> set[str]:
+    """The cells gate.sh stopped after their steps on purpose (stopped.tsv, xs-208): canceled there, judged as ran."""
+    p = os.path.join(out, 'stopped.tsv')
+    return {line.split('\t')[0] for line in open(p) if '\t' in line} if os.path.exists(p) else set()
+
+
+def ran(run: Run | None, name: str, meant: set[str]) -> TypeGuard[Run]:
+    """It completed, or gate.sh stopped it after its steps."""
+    return run is not None and (run.status == 'completed' or (run.status == 'canceled' and name in meant))
+
+
 def compared(out: str) -> tuple[list[str], list[str]]:
     fails: list[str]
     notes: list[str]
     fails, notes = [], []
+    meant = stopped(out)
     for cell, capped, uncapped in twins(out):
-        if uncapped is None or uncapped.status != 'completed':
+        if not ran(uncapped, cell + TWIN, meant):
             continue
-        if capped is None or capped.status != 'completed':
+        if not ran(capped, cell, meant):
             why = capped.reason[:200] if capped else 'no record'
             fails.append(f'{cell}: fails at the {CAP >> 30} GiB cap ({why}) and completes uncapped (run {uncapped.number}): '
                          'it sizes its work from the card, not from varena\'s room')
