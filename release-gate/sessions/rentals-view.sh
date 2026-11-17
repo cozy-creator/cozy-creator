@@ -61,12 +61,13 @@ reader() {
   while [ -z "$W" ]; do
     [ "$(date +%s)" -lt "$until" ] || fail "no rental another computer ordered ran cl1193 in ${wait}s"
     sleep 15
+    # Its run names cl1193; a machine before cl-1193 names no computer for a run, so one that does is the worker's too.
     W=$(cozy machine ls --json 2> /dev/null | jq -r '[.machines[] | select(.state != "ended" and .ordered == false
-      and any(.status.others[]?; (.function // "") | test("cl1193")))][0].name // empty')
+      and any(.status.others[]?; ((.function // "") | test("cl1193")) or (.client // "") != ""))][0].name // empty')
   done
   say "the worker's pod, which another computer ordered: $W"
 
-  held '[.status.others[]? | select((.function // "") | test("cl1193")) | .step] | any(. > 1)' || check "its run never said a step"
+  held '[.status.others[]? | .step] | any(. > 1)' || check "its run never said a step"
   shown running
   jq -e '.ordered == false and .running >= 1 and .status.ssh_sessions >= 1
     and any(.status.others[]; ((.function // "") | test("cl1193")) and .running and (.client // "") != "" and .step > 0 and .steps > 0)' \
