@@ -290,8 +290,11 @@ pub(crate) fn record(ctx: &Context, m: &Machine) -> output::Record {
 }
 
 /// A run the machine holds: its state there, target, stage and why it waits. One whose record
-/// here ended is an executor left behind.
+/// here ended is an executor left behind; a locked project's, its state alone (cl-1130).
 fn live_run(held: &LiveRun) -> (String, String) {
+    if held.locked {
+        return ("a locked project's run".into(), held.state.clone());
+    }
     let Some(run) = &held.run else {
         return (format!("run {}", held.id), format!("{}; no record of it here", held.state));
     };

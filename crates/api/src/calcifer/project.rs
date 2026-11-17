@@ -1648,7 +1648,7 @@ pub struct HistoryStepped {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct VaultStatus {
     pub encrypted: bool,
-    /// plain, locked, unlocked, or locking (a native application still holds the mount).
+    /// plain, locked, unlocked, or locking (`holding` says what it waits for).
     pub state: String,
     pub path: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1659,6 +1659,10 @@ pub struct VaultStatus {
     pub idle_timeout_s: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub next: Vec<String>,
+    /// While locking, what it waits for: `runs` (its runs, which the lock ended, still finishing) or `files` (an app with its files
+    /// open); empty: not said.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub holding: String,
 }
 
 /// The default local project unlock window; explicit zero still disables idle expiry.
