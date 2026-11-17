@@ -65,7 +65,12 @@ test('idle', async ({ context, project, signIn }) => {
       await page.mouse.move(1, 1);
       await page.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined));
       await canvasIdle(page);
-      await page.evaluate(() => window.__asked());
+      // What it was still taking in (a picture landing, its note) done: a second with no animation frame asked.
+      await expect.poll(async () => {
+        await page.evaluate(() => window.__asked());
+        await page.waitForTimeout(1000);
+        return (await page.evaluate(() => window.__asked())).slice(0, 4);
+      }, { message: `${theme}: the page settles, a second with no animation frame asked`, timeout: 20_000 }).toEqual([]);
       const did = await traced(page, QUIET_MS);
       const seen = { ...did, animations: await running(page), asked: (await page.evaluate(() => window.__asked())).slice(0, 8) };
       test.info().annotations.push({ type: 'note', description: `${theme}: ${JSON.stringify(seen)}` });
