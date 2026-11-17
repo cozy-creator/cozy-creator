@@ -401,7 +401,7 @@ hub_listing_restart() (
   step "a machine list answers the Hubs' last listing at once, across a restart, while the Hub doesn't answer (cl-1010)"
   [ -n "${COZY_TEST_HUB_PID_FILE:-}" ] && [ -f "$COZY_TEST_HUB_PID_FILE" ] || { echo "hub listing: needs an isolated Hub this cell can stop"; exit 0; }
   [ -n "${E2E_HUB_LOG:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] || fail "hub listing: e2e/isolated.sh named no Hub log or email to sign in with"
-  local hub_pid lock=$HOME/.cozy/calcifer/calcifer.lock.holder pid listed halted answer status secs S=$OUT/hub-listing
+  local hub_pid lock=$HOME/.cozy/calcifer/calcifer.lock.holder pid now='' listed='' halted answer='' status='' secs='' S=$OUT/hub-listing
   mkdir -p "$S"
   hub_pid=$(cat "$COZY_TEST_HUB_PID_FILE")
   trap 'kill -CONT "$hub_pid" 2> /dev/null || true' EXIT
@@ -410,12 +410,12 @@ hub_listing_restart() (
   cozy --json machine ls > "$S/before.json" 2>&1 || fail "hub listing: machine ls: $(tail -c 300 "$S/before.json")"
   # When this Calcifer last listed the Hub.
   for _ in $(seq 100); do
-    db_calcifer
-    listed=$(api "http://$ADDR/v1/machines" | jq -r '[.hubs[].listed_at_ms] | max // empty')
+    db_calcifer 2> /dev/null || true
+    listed=$(api "http://$ADDR/v1/machines" 2> /dev/null | jq -r '[.hubs[].listed_at_ms] | max // empty' 2> /dev/null) || listed=''
     [ -n "$listed" ] && break
     sleep 0.2
   done
-  [ -n "$listed" ] || fail "hub listing: the Hub was never listed: $(api "http://$ADDR/v1/machines" | jq -c '{hubs, unanswered, signed_out}')"
+  [ -n "$listed" ] || fail "hub listing: the Hub was never listed: $(api "http://$ADDR/v1/machines" 2>&1 | jq -c '{hubs, unanswered, signed_out}' 2>&1)"
   # Kept just after it's read: before this change, never.
   for _ in $(seq 50); do [ -s "$HOME/.cozy/calcifer/kept-hub-listings.json" ] && break; sleep 0.2; done
   pid=$(jq -r .pid "$lock")
@@ -424,11 +424,16 @@ hub_listing_restart() (
   # The Hub stops answering: a connection is taken, and nothing comes back.
   kill -STOP "$hub_pid" || fail "hub listing: the Hub ($hub_pid) couldn't be stopped"
   systemctl --user start cozy-calcifer || fail "hub listing: systemctl --user start cozy-calcifer failed"
-  for _ in $(seq 150); do [ "$(jq -r .pid "$lock" 2> /dev/null)" != "$pid" ] && break; sleep 0.1; done
-  db_calcifer
+  for _ in $(seq 150); do
+    now=$(jq -r .pid "$lock" 2> /dev/null) || now=''
+    [ -n "$now" ] && [ "$now" != "$pid" ] && break
+    sleep 0.1
+  done
+  [ -n "$now" ] && [ "$now" != "$pid" ] || fail "hub listing: Calcifer didn't start again in 15 s"
+  db_calcifer || fail "hub listing: the started Calcifer's record can't be read"
   answer=$(api -o "$S/after.json" -w '%{http_code} %{time_total}' -m 10 "http://$ADDR/v1/machines?refresh=true") || true
-  kill -CONT "$hub_pid"
-  read -r status secs <<< "$answer"
+  kill -CONT "$hub_pid" || true
+  read -r status secs <<< "$answer" || true
   echo "hub listing: refresh with the Hub stopped: $status in ${secs:-?} s, listing $(jq -c '.hubs' "$S/after.json" 2> /dev/null); halted at $halted"
   [ "$status" = 200 ] && awk -v s="$secs" 'BEGIN { exit !(s < 1.0) }' \
     || check "hub listing: with the Hub not answering, a restarted Calcifer's refresh took ${secs:-10 or more} s (HTTP ${status:-none})"
