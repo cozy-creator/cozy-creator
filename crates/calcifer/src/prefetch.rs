@@ -71,9 +71,15 @@ pub(crate) struct Guess {
 
 #[derive(Clone, Default, PartialEq)]
 struct Sent {
+    /// The machine's run it went to (`started`).
     boot: String,
     upcoming: Vec<v1::Predicted>,
     prepare: Vec<v1::Predicted>,
+}
+
+/// A machine's run: its boot, and its service's start in it. A service that started again (an update, a restart) holds no list.
+fn started(frame: &v1::StatusFrame) -> String {
+    format!("{}@{}", frame.boot_id, frame.started_at_unix_ms)
 }
 
 /// Every machine's lists.
@@ -216,7 +222,7 @@ impl Lists {
                 || lock(&self.guessed).values().flatten().any(|guess| guess.machine == machine)
         };
         let sent = lock(&self.sent).get(machine).map(|sent| sent.boot.clone());
-        if sent.as_deref() == Some(frame.boot_id.as_str()) || (sent.is_none() && !concerned) {
+        if sent == Some(started(&frame)) || (sent.is_none() && !concerned) {
             return;
         }
         lock(&self.sent).remove(machine);
@@ -252,7 +258,7 @@ impl Lists {
             lock(&self.keys).retain(|(machine, made), _| *machine != name || listed.contains(made.as_str()));
             let prepare: Vec<(String, v1::Predicted)> = prepare.into_iter().map(|(_, hub, item)| (hub, v1::Predicted { key: self.key(&name, &item), ..item })).collect();
             let now = Sent {
-                boot: frame.boot_id.clone(),
+                boot: started(&frame),
                 upcoming: upcoming.iter().map(|listed| listed.item.clone()).collect(),
                 prepare: prepare.iter().map(|(_, item)| item.clone()).collect(),
             };
