@@ -476,3 +476,100 @@ hub_phantom_stock() (
       || check "phantom stock: $id is said as '${said:-nothing}' ($(jq -c --arg r "$id" '.machines[] | select(.rental_id == $r) | {state, boot}' "$S/ls.json" 2> /dev/null)), shown as '${shown:-nothing}', not '$word'"
   done
 )
+
+# th-383 (Paul, 11-17: "you have money to rent on runpod and vast-ai"): refused for want of capacity, an order buys an equivalent
+# machine at once, from any host or provider, at its price or lower; only when none is on sale does it wait for capacity, offering
+# the cheapest above its price, which it buys once its renter agrees (the 2× A6000 and 2× 5090 orders sat 70+ min on one host's
+# offer). Two providers here: `docker`, whose engine refuses every create (phantom_docker.py), and `docker-b`, the runner's own
+# engine. Each listing comes every 120 s, so a wait for the next one would show. Priced alike, the order is refused by `docker`
+# and bought from `docker-b` within a minute. With `docker-b` 3× dearer, it waits, offers `docker-b`, buys nothing there until
+# `cozy machine rent <it> --yes` agrees, then buys it within a minute.
+hub_phantom_instead() (
+  step "an order refused for want of capacity buys an equivalent machine elsewhere at once, or one dearer once agreed (th-383)"
+  [ -n "${COZY_TEST_HUB_COMMAND_FILE:-}" ] && [ -n "${COZY_HUB_URL:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] \
+    || fail "phantom instead: e2e/isolated.sh named no Hub command, URL or email"
+  local S=$OUT/hub-instead db port container proxy rentals=() rental pid id attempts gap said instead offered bought
+  mkdir -p "$S"
+  db=$(tr '\0' '\n' < "$COZY_TEST_HUB_COMMAND_FILE" | grep -o 'postgres://[^" ]*' | head -1 || true)
+  port=$(sed -E 's#.*@[^:/]+:([0-9]+)/.*#\1#' <<< "$db")
+  container=$(docker ps --filter "publish=$port" --format '{{.Names}}' 2> /dev/null | head -1 || true)
+  [ -n "$container" ] || fail "phantom instead: no Postgres container publishes ${port:-?}"
+  sql() { docker exec -i "$container" psql -v ON_ERROR_STOP=1 -qtA -U postgres "$@"; }
+  python3 "$here/phantom_docker.py" "$S/docker.sock" /var/run/docker.sock "$S/creates.log" > "$S/proxy.log" 2>&1 & proxy=$!
+  for _ in $(seq 50); do [ -S "$S/docker.sock" ] && break; sleep 0.1; done
+  [ -S "$S/docker.sock" ] || fail "phantom instead: the engine proxy didn't start: $(tail -c 300 "$S/proxy.log")"
+  end_all() { for id in "${rentals[@]}"; do cozy --json machine end "$id" -y > /dev/null 2>&1 || true; done; }
+  trap 'end_all; kill "$proxy" 2> /dev/null || true; bash "$here/../skew/rehub.sh" > /dev/null 2>&1 || true' EXIT
+  signin "$E2E_HUB_EMAIL" > "$S/login.json" || fail "phantom instead: cozy login: $(tail -c 300 "$S/login.json")"
+  # two_providers <docker-b's price>: the Hub on both, each listed, no rest left from an earlier cell.
+  two_providers() {
+    bash "$here/../skew/rehub.sh" --set "provider.docker.socket=$S/docker.sock" \
+      --set "provider.docker.engines_json=[{\"name\":\"docker-b\",\"socket\":\"/var/run/docker.sock\",\"list_price_usd_micros_per_hour\":$1}]" \
+      > "$S/rehub-$1.log" 2>&1 || fail "phantom instead: restarting the Hub on two providers: $(tail -c 300 "$S/rehub-$1.log")"
+    sql -c "DELETE FROM hub_v2.provider_sku_cooldowns" > /dev/null 2>&1 || true
+    for _ in $(seq 60); do
+      [ "$(sql -c "SELECT count(*) FROM hub_v2.provider_inventory_heads WHERE provider IN ('docker','docker-b')" 2> /dev/null || echo 0)" = 2 ] && return
+      sleep 1
+    done
+    fail "phantom instead: the Hub didn't list both providers in a minute: $(sql -c 'SELECT provider FROM hub_v2.provider_inventory_heads' 2>&1 | tr '\n' ' ')"
+  }
+  # order <n>: a CPU, as `machine rent cpu` orders one; its rental id.
+  order() {
+    cozy --json machine rent cpu -y > "$S/rent-$1.ndjson" 2> "$S/rent-$1.err" & pid=$!
+    rental=''
+    for _ in $(seq 180); do
+      rental=$(jq -r 'select(.type? == "rental.accepted") | .rental_id // empty' "$S/rent-$1.ndjson" 2> /dev/null | tail -1 || true)
+      [ -n "$rental" ] || ! kill -0 "$pid" 2> /dev/null || { sleep 1; continue; }
+      break
+    done
+    kill -KILL "$pid" 2> /dev/null || true
+    wait "$pid" 2> /dev/null || true
+    [ -n "$rental" ] || fail "phantom instead: rent $1: no rental accepted: $(tail -c 300 "$S/rent-$1.ndjson") $(tail -c 300 "$S/rent-$1.err")"
+    rentals+=("$rental")
+  }
+  # tried <rental>: its attempts, `ordinal provider state failure created_s ended_s`.
+  tried() {
+    sql -c "SELECT ordinal, provider, state, coalesce(nullif(failure_code, ''), '-'), extract(epoch FROM created_at)::bigint,
+      extract(epoch FROM updated_at)::bigint FROM hub_v2.rental_acquisition_attempts WHERE rental_id = '$1' ORDER BY ordinal" 2> /dev/null | tr '|' ' '
+  }
+
+  two_providers 1000
+  order alike
+  for _ in $(seq 90); do
+    attempts=$(tried "$rental")
+    grep -q ' docker-b ' <<< "$attempts" && break
+    sleep 1
+  done
+  echo "phantom instead: priced alike, $rental's attempts: $(tr '\n' ';' <<< "$attempts")"
+  gap=$(awk '$2 == "docker" && $4 == "provider.no_capacity" {refused = $6} $2 == "docker-b" && refused {print $5 - refused; exit}' <<< "$attempts")
+  [ -n "$gap" ] && [ "$gap" -le 60 ] \
+    || check "phantom instead: refused by docker, $rental didn't buy docker-b's machine at its price within a minute (gap ${gap:-none}): $(tr '\n' ';' <<< "$attempts")"
+  end_all
+  rentals=()
+
+  two_providers 3000
+  order dearer
+  instead=''
+  for _ in $(seq 120); do
+    cozy --json machine ls > "$S/ls.json" 2> /dev/null || true
+    instead=$(jq -c --arg r "$rental" '.machines[] | select(.rental_id == $r) | .instead // empty' "$S/ls.json" 2> /dev/null || true)
+    [ -n "$instead" ] && break
+    sleep 1
+  done
+  said=$(jq -r --arg r "$rental" '.machines[] | select(.rental_id == $r) | .waiting // empty' "$S/ls.json" 2> /dev/null || true)
+  echo "phantom instead: docker-b dearer, $rental says '${said:-nothing}', offers ${instead:-nothing}"
+  [ -n "$instead" ] || fail "phantom instead: $rental never offered docker-b's dearer machine: $(jq -c --arg r "$rental" '.machines[] | select(.rental_id == $r) | {state, boot, waiting}' "$S/ls.json" 2> /dev/null) $(tr '\n' ';' <<< "$(tried "$rental")")"
+  [ "$said" = 'waiting for capacity (docker has none right now)' ] || check "phantom instead: $rental says '${said:-nothing}' while it waits"
+  sleep 20
+  ! tried "$rental" | grep -q ' docker-b ' || check "phantom instead: $rental bought docker-b's dearer machine before its renter agreed: $(tr '\n' ';' <<< "$(tried "$rental")")"
+  cozy --json machine rent "$rental" -y > "$S/agree.ndjson" 2> "$S/agree.err" \
+    || fail "phantom instead: machine rent $rental -y (agree): $(tail -c 300 "$S/agree.ndjson") $(tail -c 300 "$S/agree.err")"
+  offered=$(jq -r '.usd_micros_per_hour // empty' <<< "$instead")
+  bought=''
+  for _ in $(seq 90); do
+    tried "$rental" | grep -q ' docker-b ' && { bought=yes; break; }
+    sleep 1
+  done
+  echo "phantom instead: agreed to $offered micro-USD/h; attempts: $(tried "$rental" | tr '\n' ';')"
+  [ -n "$bought" ] || check "phantom instead: agreed, $rental didn't buy docker-b's machine within a minute: $(tr '\n' ';' <<< "$(tried "$rental")")"
+)
