@@ -4,6 +4,7 @@ import type { Box } from "../graph"
 import { fieldsOf } from "../controls"
 import { ratioWords } from "../ratios"
 import { faceOf as runFace, short, type Face } from "../RunFace"
+import { orbitOf } from "../Orbit"
 import { type NodeState, viewState } from "../StateDot"
 import { aspectOf, HEAD, hexOf, isPicture, makes, ratioOf, shownOf, toolName, valueIn, valuesOf } from "../shown"
 import { clock, lineAt, mentionsIn } from "../text"
@@ -75,6 +76,8 @@ export interface Presentation {
   from: string
   progress?: Face & { time: string; fraction?: number; cancel: boolean }
   duration: string
+  /** Its file says it turns, not plays (xs-180): marked at rest, as before the board (cl-1131). */
+  orbit: boolean
   entity?: { kind: string; description: string; slots: EntitySlot[]; rows: EntityRow[] }
 }
 
@@ -207,6 +210,7 @@ export function present(store: CanvasStore, node: SceneNode, now = Date.now()): 
     tool: asset?.tool ? tool ? toolName(tool) : asset.tool : "",
     shape: shapeOf(view, tools), from, progress,
     duration: shown?.duration_ms ? clock(shown.duration_ms) : "",
+    orbit: shown?.field === "video" && !shown.absent && orbitOf(shown) !== null,
     entity: view.entity ? {
       kind: view.entity.kind, description: view.entity.description ?? "", slots: slotsOf(store, view.entity.links),
       rows: (view.entity.subs ?? []).map((sub) => ({ name: sub.name, description: sub.description ?? "", slots: slotsOf(store, sub.links) })),

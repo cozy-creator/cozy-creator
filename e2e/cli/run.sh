@@ -510,6 +510,7 @@ WEB_2=(
   notes
   fullscreen
   llm-reads
+  orbit
 )
 WEB_3=(
   focus

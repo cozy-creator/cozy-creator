@@ -76,13 +76,15 @@ export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; 
   const [ready, setReady] = useState(false)
   const [spinning, setSpinning] = useState(false)
   const [used, setUsed] = useState(false)
+  // Its own length, read from the element: a take just landed isn't measured yet, and one frame would turn nothing (cl-1131).
+  const [length, setLength] = useState(0)
   const screen = useFullScreen(true)
   const at = useRef(0)
   const seek = useRef<{ pending: number | null; busy: boolean }>({ pending: null, busy: false })
   const drag = useRef<{ x: number; from: number; last: number; t: number; v: number } | null>(null)
   const frameId = useRef(0)
   const fps = shown.fps ?? 24
-  const frames = Math.max(1, shown.frames ?? (Math.round(((shown.duration_ms ?? 0) / 1000) * fps) || 1))
+  const frames = Math.max(1, shown.frames ?? (Math.round(((shown.duration_ms ?? 0) / 1000 || length) * fps) || 1))
   const sign = orbit.direction === "ccw" ? -1 : 1
   const shownAngle = within(angle, orbit)
   const frame = frameAt(shownAngle, orbit, frames)
@@ -216,6 +218,7 @@ export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; 
         muted
         playsInline
         preload="auto"
+        onLoadedMetadata={(event) => setLength(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)}
         onLoadedData={() => {
           setReady(true)
           turn(at.current)
