@@ -5,7 +5,7 @@
 A label is <arm>-<case> (case: first, cold, warm, hot, sdxl-new, sdxl-warm). Each row: its wait before the executor (download,
 install, queue), executor start, construction (prepare) and its fill legs, the time from construction to the answer's
 first weight read, the load of the weights it read (bytes and GB/s against the store's ceiling), and the rest. The
-bar (`bar.json`, an arm judged when its `judged` is true) is checked on its Qwen3.6 rows: a warm construction under
+bar (`bar.json`) is checked on every arm's Qwen3.6 rows, and fails the session for an arm whose `judged` is true: a warm construction under
 `prepare_s`, and a cold run's execution under `x` times the weights it read at the disk's ceiling plus `fixed_s`.
 """
 
@@ -75,14 +75,14 @@ print("|" + "---|" * len(cols))
 for r in rows:
     print("| " + " | ".join("" if r.get(c) is None else str(r.get(c)) for c in cols) + " |")
 disk = ceiling.get("disk_gbps") or 0
+# Every arm's verdict is said; only a judged arm's fails the session (an unjudged one is the red beside it).
 for arm, bar in bars.items():
-    if not bar.get("judged"):
-        continue
+    judged = bool(bar.get("judged"))
     for case in ("warm", "cold"):
         r = next((r for r in rows if r["label"] == f"{arm}-{case}"), None)
         if r is None or r.get("status") != "completed":
-            print(f"FAIL {arm}-{case}: no completed Qwen3.6 run")
-            failed = True
+            print(f"FAIL {arm}-{case}: no completed Qwen3.6 run{'' if judged else ' (not judged)'}")
+            failed |= judged
             continue
         if case == "warm":
             ok, said = r["prepare_s"] <= bar["prepare_s"], f"construction {r['prepare_s']} s, bar {bar['prepare_s']} s"
@@ -91,6 +91,6 @@ for arm, bar in bars.items():
             ok = limit is not None and r["execution_s"] <= limit
             said = (f"execution {r['execution_s']} s, bar {limit} s ({bar['x']} x {r['store_gb']} GB at the disk's "
                     f"{disk:.2f} GB/s + {bar['fixed_s']} s)")
-        print(f"{'PASS' if ok else 'FAIL'} {arm}-{case}: {said}")
-        failed |= not ok
+        print(f"{'PASS' if ok else 'FAIL'} {arm}-{case}: {said}{'' if judged else ' (not judged)'}")
+        failed |= judged and not ok
 sys.exit(1 if failed else 0)
