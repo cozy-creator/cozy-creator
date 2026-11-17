@@ -1,9 +1,11 @@
 #!/bin/bash
 # ggml-ingest, on the pod: stock llama.cpp <tag>'s llama-quantize (CPU, unpatched) and its converter, the Hugging Face
-# checkpoint <hf>, its bf16 GGUF and, from it, llama-quantize's Q8_0 and Q4_K_M (no importance matrix). Everything under /w.
-#   pod.sh <tag> <sha256 of the tag's source archive> <hf repo>
+# checkpoint <hf>, its bf16 GGUF and, from it, llama-quantize's file of each type (no importance matrix): <TYPE> to
+# /w/<TYPE>.gguf, `pure:<TYPE>` with --pure (every tensor that type) to /w/pure-<TYPE>.gguf. Everything under /w.
+#   pod.sh <tag> <sha256 of the tag's source archive> <hf repo> <type>...
 set -euo pipefail
 TAG=$1 SUM=$2 HF=$3 W=/w
+shift 3
 mkdir -p $W/out && cd $W
 log() { echo "$(date -u +%T) $*" | tee -a $W/out/pod.log; }
 export PATH=$HOME/.local/bin:$PATH HF_XET_HIGH_PERFORMANCE=1
@@ -41,9 +43,12 @@ $W/py/bin/hf download "$HF" --local-dir $W/hf > $W/out/download.log 2>&1
 log "convert to a bf16 GGUF"
 PYTHONPATH=$W/src/gguf-py $W/py/bin/python $W/src/convert_hf_to_gguf.py $W/hf --outtype bf16 --outfile $W/bf16.gguf \
   > $W/out/convert.log 2>&1
-for type in Q8_0 Q4_K_M; do
+for type in "$@"; do
   log "llama-quantize $type"
-  $W/build/bin/llama-quantize $W/bf16.gguf $W/$type.gguf $type > $W/out/quantize-$type.log 2>&1
+  case $type in
+    pure:*) $W/build/bin/llama-quantize --pure $W/bf16.gguf $W/pure-${type#pure:}.gguf ${type#pure:} > $W/out/quantize-$type.log 2>&1 ;;
+    *) $W/build/bin/llama-quantize $W/bf16.gguf $W/$type.gguf $type > $W/out/quantize-$type.log 2>&1 ;;
+  esac
 done
 rm -f $W/bf16.gguf
 log "done"
