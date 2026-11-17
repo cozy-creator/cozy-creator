@@ -9,6 +9,7 @@
 #   only     cells to run, comma-separated (default all): h-t2i, h-edit, h-dev-edit, h-default, i-fp8, i-default
 #   seed_h   HiDream's seed (32, inference.py's default); seed_i Ideogram's (7)
 #   need_s   seconds the cap must buy (4200)
+#   floor_mb_s  lib.sh's slow-host floor: upstream's weights download beside ours, so give it about half the usual (25)
 . "$(dirname "$0")/lib.sh"
 FX=$(cd "$(dirname "$0")" && pwd)/fixtures/upstream-parity
 TREE=$(param tree pk) ONLY=",$(param only 'h-t2i,h-edit,h-dev-edit,h-default,i-fp8,i-default'),"
@@ -96,7 +97,7 @@ for spec, where, skip in (("$HIDREAM_FULL", "full", None), ("$HIDREAM_DEV", "dev
 print("PULLED", flush=True)
 EOF
 )
-printf '%s' "$PULL" | pod "cat > $W/pull.py && cd $W && nohup venv/bin/python -I pull.py > pull.log 2>&1 < /dev/null &" ||
+printf '%s' "$PULL" | pod "cat > $W/pull.py && cd $W && { nohup venv/bin/python -I pull.py > pull.log 2>&1 < /dev/null & echo \$! > pull.pid; }" ||
   fail "starting the downloads"
 
 # Ours: each cell one run followed to its end, its record and outputs kept.
@@ -131,7 +132,7 @@ step free machine update "$NAME" --gpu-memory-limit off -y || say "freeing the G
 ( while sleep 240; do cozy machine keepalive "$NAME" > /dev/null 2>&1; done ) 9>&- & BG=$!
 for i in $(seq 1 20); do pod true < /dev/null > /dev/null 2>&1 && break; sleep 15; done
 for i in $(seq 1 120); do
-  pod "grep -q PULLED $W/pull.log || ! pgrep -f pull.py > /dev/null" < /dev/null > /dev/null 2>&1 && break; sleep 30
+  pod "grep -q PULLED $W/pull.log || ! kill -0 \$(cat $W/pull.pid)" < /dev/null > /dev/null 2>&1 && break; sleep 30
 done
 pod "tail -5 $W/pull.log; du -sh $W/full $W/dev $W/qwen $W/hf 2>/dev/null" < /dev/null | tee -a "$R"
 pod "grep -q PULLED $W/pull.log" < /dev/null || fail "upstream's weights did not download: $(pod "tail -c 600 $W/pull.log" < /dev/null)"
