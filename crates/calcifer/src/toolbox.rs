@@ -290,18 +290,17 @@ static SOURCE_READS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(
 /// A checkout package's tools as a list asks for them: its name, the Hub and the machine.
 type SourceKey = (String, String, String);
 /// Each package's last good tools, shown while a new reading goes on (or failed), so a slow read never empties the list; kept across
-/// a restart in Calcifer's home (`kept-source-tools.json`), so a start lists them before its first reading ends.
+/// a restart in state.db (`kept` `source_tools`), so a start lists them before its first reading ends.
 static LAST_GOOD: std::sync::OnceLock<Mutex<HashMap<SourceKey, Vec<Tool>>>> = std::sync::OnceLock::new();
 /// When each package's source was last read behind a list.
 static SOURCE_READ_AT: LazyLock<Mutex<HashMap<SourceKey, Instant>>> = LazyLock::new(Mutex::default);
 
-fn kept_source_tools(api: &Api) -> PathBuf {
-    api.machines.hubs.home().calcifer().join("kept-source-tools.json")
-}
+const KEPT_SOURCE_TOOLS: &str = "source_tools";
 
 fn last_good(api: &Api) -> &'static Mutex<HashMap<SourceKey, Vec<Tool>>> {
     LAST_GOOD.get_or_init(|| {
-        let kept: Vec<(SourceKey, Vec<Tool>)> = std::fs::read(kept_source_tools(api)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+        let kept: Vec<(SourceKey, Vec<Tool>)> =
+            api.machines.store().kept(KEPT_SOURCE_TOOLS).ok().flatten().and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default();
         Mutex::new(kept.into_iter().collect())
     })
 }
@@ -354,7 +353,9 @@ fn reading(api: &Arc<Api>, hub: &str, on: &On, key: SourceKey, dir: PathBuf) -> 
                 last.insert(held.clone(), found);
                 last.iter().map(|(key, tools)| (key.clone(), tools.clone())).collect()
             };
-            let _ = platform::durable::replace(&kept_source_tools(&api), &serde_json::to_vec(&kept).expect("serializes"), 0o600);
+            if let Err(e) = api.machines.store().keep(KEPT_SOURCE_TOOLS, &serde_json::to_string(&kept).expect("serializes")) {
+                tracing::warn!("keeping the source tools: {e}");
+            }
         }
         READING.lock().expect("reading lock").remove(&held);
     });
@@ -584,7 +585,7 @@ struct Runner {
 type Runners = HashMap<(String, String, String, bool), (Option<Instant>, Option<Arc<Runner>>, bool)>;
 static RUNNERS: std::sync::OnceLock<Mutex<Runners>> = std::sync::OnceLock::new();
 
-/// A Runner as Calcifer's home keeps it across a restart (`kept-runners.json`): a restart's first list holds back what it did (cl-1010).
+/// A Runner as state.db keeps it across a restart (`kept` `runners`): a restart's first list holds back what it did (cl-1010).
 #[derive(serde::Serialize, Deserialize)]
 struct KeptRunner {
     machine: String,
@@ -597,13 +598,12 @@ struct KeptRunner {
     at_ms: i64,
 }
 
-fn kept_runners(api: &Api) -> PathBuf {
-    api.machines.hubs.home().calcifer().join("kept-runners.json")
-}
+const KEPT_RUNNERS: &str = "runners";
 
 fn runners(api: &Api) -> &'static Mutex<Runners> {
     RUNNERS.get_or_init(|| {
-        let kept: Vec<KeptRunner> = std::fs::read(kept_runners(api)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+        let kept: Vec<KeptRunner> =
+            api.machines.store().kept(KEPT_RUNNERS).ok().flatten().and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default();
         let now = crate::store::now_ms();
         let runners = kept.into_iter().filter_map(|kept| {
             let moves = match kept.moves.as_str() { "yes" => Moves::Yes, "held" => Moves::Held, "no" => Moves::No, _ => return None };
@@ -628,7 +628,9 @@ fn keep_runners(api: &Api) {
             at_ms: now.0 - now.1.duration_since(*at).as_millis() as i64,
         })
     }).collect();
-    let _ = platform::durable::replace(&kept_runners(api), &serde_json::to_vec(&kept).expect("serializes"), 0o600);
+    if let Err(e) = api.machines.store().keep(KEPT_RUNNERS, &serde_json::to_string(&kept).expect("serializes")) {
+        tracing::warn!("keeping the runners: {e}");
+    }
 }
 /// A machine's Runner worked out this recently is current.
 const RUNNER_FOR: Duration = Duration::from_secs(60);

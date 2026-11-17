@@ -47,6 +47,10 @@ pub(crate) const TABLES: &str = "
         hub TEXT PRIMARY KEY,
         listing TEXT NOT NULL
     ) STRICT;
+    CREATE TABLE IF NOT EXISTS kept (
+        what TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    ) STRICT;
     CREATE TABLE IF NOT EXISTS tool_list (
         ord INTEGER PRIMARY KEY,
         package TEXT NOT NULL UNIQUE
@@ -500,6 +504,19 @@ impl Store {
                 tx.execute("INSERT INTO hub_listings (hub, listing) VALUES (?1, ?2)
                     ON CONFLICT (hub) DO UPDATE SET listing = excluded.listing", [hub, listing])?;
             }
+            Ok(())
+        })
+    }
+
+    /// What Calcifer read and keeps for its next start (`families`, `runners`, `source_tools`), as JSON: none kept, None.
+    pub(crate) fn kept(&self, what: &str) -> Result<Option<String>> {
+        self.read(|conn| Ok(conn.query_row("SELECT value FROM kept WHERE what = ?1", [what], |row| row.get(0)).optional()?))
+    }
+
+    /// Keeps `value` as `what`, in place of what was kept.
+    pub(crate) fn keep(&self, what: &str, value: &str) -> Result<()> {
+        self.write(|tx| {
+            tx.execute("INSERT INTO kept (what, value) VALUES (?1, ?2) ON CONFLICT (what) DO UPDATE SET value = excluded.value", [what, value])?;
             Ok(())
         })
     }

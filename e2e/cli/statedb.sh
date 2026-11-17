@@ -86,10 +86,10 @@ api -sS -o /dev/null -X POST -H 'Content-Type: application/json' -d '{"add": "qw
 
 state_files() {
 step "state.db: no JSON store in ~/.cozy/calcifer, state.db its owner's alone, and no browser session kept"
-local dir=$HOME/.cozy/calcifer stores table
-# Blobs stay files, each named by its sha256 (`files/`, `local/`'s manifests): a store is a file of what changes.
-stores=$(cd "$dir" && find . -maxdepth 1 -name '*.json' ! -name refused.json | sort | paste -sd' ')
-[ -z "$stores" ] || check "state: JSON stores in $dir: $stores"
+local dir=$HOME/.cozy/calcifer table
+# Blobs stay files, each named by its sha256 (`files/`, `local/`'s manifests): a store is a file of what changes. Every shard's
+# `logs` checks it again at its end (no_json_stores).
+no_json_stores
 [ ! -e "$dir/after" ] || check "state: $dir/after is still there: $(ls -A "$dir/after" | head -5 | paste -sd' ')"
 [ "$(stat -c %a "$dir/state.db")" = 600 ] || check "state: state.db is $(stat -c %a "$dir/state.db"), not 600"
 for table in projects tool_list tools_off headers after_steps; do

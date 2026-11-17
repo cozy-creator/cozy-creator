@@ -159,26 +159,27 @@ struct DefaultModel {
 
 static NAMED: OnceLock<Mutex<HashMap<String, (Instant, DefaultModel)>>> = OnceLock::new();
 
-/// What was read so far, kept across a restart in Calcifer's home (`kept-families.json`): a restart's first list says them (cl-1010).
+/// What was read so far, kept across a restart in state.db (`kept` `families`): a restart's first list says them (cl-1010).
 fn named_so_far(api: &Api) -> &'static Mutex<HashMap<String, (Instant, DefaultModel)>> {
     NAMED.get_or_init(|| {
-        let kept: HashMap<String, (i64, DefaultModel)> = std::fs::read(kept_families(api)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+        let kept: HashMap<String, (i64, DefaultModel)> =
+            api.machines.store().kept(KEPT_FAMILIES).ok().flatten().and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default();
         let now = crate::store::now_ms();
         let at = |ms: i64| Instant::now().checked_sub(Duration::from_millis((now - ms).max(0) as u64)).unwrap_or_else(Instant::now);
         Mutex::new(kept.into_iter().map(|(key, (ms, model))| (key, (at(ms), model))).collect())
     })
 }
 
-fn kept_families(api: &Api) -> std::path::PathBuf {
-    api.machines.hubs.home().calcifer().join("kept-families.json")
-}
+const KEPT_FAMILIES: &str = "families";
 
 /// Keeps what was read so far for the next start, each with when (Unix ms).
 fn keep_families(api: &Api) {
     let now = (crate::store::now_ms(), Instant::now());
     let kept: HashMap<String, (i64, DefaultModel)> = named_so_far(api).lock().expect("named lock").iter()
         .map(|(key, (at, model))| (key.clone(), (now.0 - now.1.duration_since(*at).as_millis() as i64, model.clone()))).collect();
-    let _ = platform::durable::replace(&kept_families(api), &serde_json::to_vec(&kept).expect("serializes"), 0o600);
+    if let Err(e) = api.machines.store().keep(KEPT_FAMILIES, &serde_json::to_string(&kept).expect("serializes")) {
+        tracing::warn!("keeping the families read: {e}");
+    }
 }
 
 /// A declared default: its family label or header, and its real checkpoint kind.
