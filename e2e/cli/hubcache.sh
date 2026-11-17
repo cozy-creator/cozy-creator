@@ -2,7 +2,8 @@
 #   hub_read_cache  Paul: "it could cache, on its application side, common read-query results; especially useful if they're
 #                expensive queries". 400 reads of one model (resolve and card) across both replicas read its index rows and its
 #                lookup at most a few times (pg_stat_statements); then a release published and the model deleted through replica A
-#                each show on replica B at once, not after the cache's minute.
+#                each show on replica B at once, not after the cache's minute. 50 signed-in reads read the caller's orgs once a
+#                replica, and an AuthKit event (a role revoked and granted) has B read them again.
 
 # hub_read_cache (th-385): the e2e and production load reads the same models over and over (production: 12,000 resolves a day,
 # each a storage HEAD and four queries). The Hub keeps a model's index and lookup a minute, and a write to them empties them on
@@ -93,4 +94,26 @@ PY
   # The model deleted: neither replica finds it (its lookup).
   cozy --json model delete "$model" -y > "$S/delete.json" 2>&1 || fail "hub read cache: cozy model delete: $(tail -c 300 "$S/delete.json")"
   agree "the model deleted" '.error.code // "resolved"' model.not_readable "$path/resolve"
+
+  # A signed-in caller's orgs come from the cache; an AuthKit event (the root role revoked and granted again by the Hub's
+  # operator command, as skew/run.sh grants it) empties it on B.
+  local token who before after
+  token=$(jq -r .token "$(ls "$HOME"/.cozy/keys/*.bearer.json | head -1)" 2> /dev/null || true)
+  who=$(cozy --json whoami | jq -r '.account // empty')
+  [ -n "$token" ] && [ -n "$who" ] || fail "hub read cache: no Bearer kept in $HOME/.cozy/keys, or no account"
+  orgs() { read_calls 'FROM hub_v2.orgs WHERE id::text = ANY($1)'; }
+  signed() { for _ in $(seq "$2"); do curl -s -o /dev/null -w '%{http_code}\n' -m 10 -H "Authorization: Bearer $token" "$1/v1/accounts/current"; done; }
+  before=$(orgs)
+  { signed "$A" 25; signed "$B" 25; } > "$S/signed.txt"
+  after=$(orgs)
+  echo "hub read cache: 50 signed-in reads ($(sort "$S/signed.txt" | uniq -c | awk '{printf "%s×%s ", $2, $1}')) read the caller's orgs $((after - before)) times"
+  [ $((after - before)) -le 2 ] || check "hub read cache: 50 signed-in reads read the caller's orgs $((after - before)) times, not from a cache (2 at most)"
+  { "${hub[@]}" admin revoke "$who" && "${hub[@]}" admin grant "$who"; } > "$S/admin.log" 2>&1 \
+    || fail "hub read cache: revoking and granting $who's root role: $(tail -c 300 "$S/admin.log")"
+  sleep 1
+  before=$(orgs)
+  signed "$B" 1 >> "$S/signed.txt"
+  after=$(orgs)
+  echo "hub read cache: after AuthKit recorded a role change, replica B read the caller's orgs $((after - before)) times"
+  [ $((after - before)) -ge 1 ] || check "hub read cache: replica B kept the caller's orgs after AuthKit recorded a role change"
 )
