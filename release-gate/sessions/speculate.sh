@@ -106,9 +106,9 @@ grep -q '"held": \["' "$OUT/shown.txt" || fail "the project wasn't shown: $(tail
 
 # 1. done: drafted, loaded, run ahead to its end; then Render.
 mark draft
-run_page add q --tool "$TOOL" --fields "$(jq -nc --arg p "$PROMPT" '{instructions: $p, megapixels: 1, aspect_ratio: "1:1", seed: 3}')" \
+run_page add q --tool "$TOOL" --fields "$(jq -nc --arg p "$PROMPT" '{instructions: $p, megapixels: 1, aspect_ratio: "1:1"}')" \
   > "$OUT/box.json" 2>&1 || fail "the box: $(tail -c 300 "$OUT/box.json")"
-say "box q drafted (Turbo and upsampling on)"
+say "box q drafted (Turbo and upsampling on, its seed unset: each render takes its draft's)"
 until_stage 'loaded|running|done' 600
 until_stage 'running|done' 60
 until_stage done 300
