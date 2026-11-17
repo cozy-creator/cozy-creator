@@ -76,6 +76,10 @@ def left(folder: Path) -> list[str]:
     if sys.platform != "win32":
         table = subprocess.run(["mount"], capture_output=True, text=True).stdout
         found += [line for line in table.splitlines() if str(folder) in line or f"/private{folder}" in line]
+    if sys.platform == "darwin":
+        # The image registry: which image path each attached image is named by now, and its devices.
+        info = subprocess.run(["hdiutil", "info"], capture_output=True, text=True).stdout
+        found += [line.strip() for line in info.splitlines() if line.startswith(("image-path", "/dev/disk"))]
     return found
 
 
