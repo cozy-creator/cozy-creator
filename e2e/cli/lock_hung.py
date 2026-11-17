@@ -263,6 +263,20 @@ def journaled(view: Path) -> int | None:
     return int(row[0])
 
 
+def left(view: Path) -> list[object]:
+    """The machine journal's runs of `view` still there: each one's id and state, for a red."""
+    try:
+        connection = sqlite3.connect(f"file:{journal()[0]}?mode=ro", uri=True, timeout=2)
+        try:
+            return [list(row) for row in connection.execute(
+                "SELECT id, state, json_extract(invocation,'$.local_private.project_id') IS NOT NULL FROM executions "
+                "WHERE json_extract(invocation,'$.local_private.view_root') = ?", (str(view),))]
+        finally:
+            connection.close()
+    except sqlite3.Error as error:
+        return [str(error)]
+
+
 def paid(view: Path) -> tuple[int | None, float]:
     """Once the machine goes on: its journal's runs of `view` once they're gone (or after 90 s), and the seconds it took."""
     began = time.monotonic()
@@ -492,7 +506,7 @@ def deadline(cell: Cell, label: str, scanner: Scanner, view: Path, projects: lis
     rows, _ = paid(view)
     facts[f"{label}_journal_rows_after"] = rows
     if rows != 0:
-        failures.append(f"{label}: local's journal keeps the ended view's runs once it answered: {rows}")
+        failures.append(f"{label}: local's journal keeps the ended view's runs once it answered: {rows} (id, state, private: {left(view)})")
     finish(process)
     after = facts[f"after_{label}"] = traces(scanner, cell.out, f"{label}-after", projects)
     if after["matches"]:

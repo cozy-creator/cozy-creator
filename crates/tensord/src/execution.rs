@@ -344,15 +344,20 @@ impl Engine {
         if self.forget_project(project_id, actor)? {
             return Ok(());
         }
-        for id in self.journal.lock().unwrap().private_active_ids(project_id)? {
-            let stop = self.active.lock().unwrap().get(&id).cloned();
-            if let Some(stop) = stop { let _ = stop(); }
-            self.progress.lock().unwrap().remove(&id);
+        let active = self.journal.lock().unwrap().private_active_ids(project_id)?;
+        let mut stopped = 0;
+        for id in &active {
+            let stop = self.active.lock().unwrap().get(id).cloned();
+            if let Some(stop) = stop {
+                stopped += usize::from(stop().is_ok());
+            }
+            self.progress.lock().unwrap().remove(id);
         }
         self.private_roots.lock().unwrap().remove(project_id);
         crate::private_io::forget(project_id);
         self.journal.lock().unwrap().retire_project(project_id)?;
         self.gone.lock().unwrap().remove(project_id);
+        tracing::warn!("a view a lock ended: {} run(s) still going there, {stopped} stopped; its records retired", active.len());
         Ok(())
     }
     /// The projects journaled here as having run in vault view `view` (cl-1064).

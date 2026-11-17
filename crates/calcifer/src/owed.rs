@@ -137,7 +137,10 @@ impl Machines {
                     warn!(folder = %folder.display(), code, "local didn't take the clean-up a lock owes it for this project; asked again when it next answers");
                     return false;
                 }
-                Err(_) => return false,
+                Err(_) => {
+                    warn!(folder = %folder.display(), "local didn't finish the clean-up a lock owes it for this project in time; asked again when it next answers");
+                    return false;
+                }
             }
         }
         true
