@@ -22,11 +22,14 @@ export function about(ms: number): string {
 }
 
 /** Beside Render: how long a render of it runs where it would go now, from 15 s, and Slow here when a rented GPU runs it far faster
- *  (cl-1004). Asked of Calcifer while it shows, and again once what's typed settles, a take lands or the machines change. */
+ *  (cl-1004). Asked of Calcifer while it shows, and again once what's typed settles, a take lands or the machines change. Before
+ *  them, "Ready on kamitsure" once the machine a render of it would go to has its tool and models (cl-1104): Calcifer's guess, which
+ *  goes when the guess does. */
 export function RenderTime({ name, view }: { name: string; view: ElementView }) {
   const store = useCanvasStore()
   const estimates = useSignal(store.estimates)
   const machines = useSignal(store.machineSet)
+  useSignal(store.ahead)
   const asked = JSON.stringify([view.asset?.tool, view.asset?.fields, view.asset?.prefixes?.length])
   // biome-ignore lint/correctness/useExhaustiveDependencies: asked again when what it renders, or where, changes
   useEffect(() => {
@@ -34,17 +37,24 @@ export function RenderTime({ name, view }: { name: string; view: ElementView }) 
     return () => clearTimeout(later)
   }, [store, name, asked, machines])
   const estimate = estimates.get(store.resolveName(name))
-  if (!estimate) return null
-  const machine = estimate.machine === "local" ? "this computer" : estimate.machine
-  const where = estimate.card ? `${machine}'s ${estimate.card}` : machine
+  const prepared = store.preparing(name)
+  const ready = prepared?.guess && prepared.ready ? (prepared.machine === "local" ? "this computer" : prepared.machine) : undefined
+  if (!estimate && !ready) return null
+  const machine = estimate?.machine === "local" ? "this computer" : estimate?.machine
+  const where = estimate?.card ? `${machine}'s ${estimate.card}` : machine
   return (
     <>
-      {estimate.run_ms >= SHOWN_MS && (
+      {ready && (
+        <span className="ready-on" role="note" aria-label="Ready" title={`This box's tool and models are already on ${ready}`}>
+          Ready on {ready}
+        </span>
+      )}
+      {estimate && estimate.run_ms >= SHOWN_MS && (
         <span className="render-time" role="note" aria-label="Render time" title={`Typical time on ${where}, once it starts`}>
           {about(estimate.run_ms)}
         </span>
       )}
-      {estimate.faster && (
+      {estimate?.faster && (
         <button
           type="button"
           className={`slow-here canvas-control ${view.slowOpen ? "on" : ""}`}

@@ -211,8 +211,28 @@ pub(crate) struct Job {
     pub(crate) within: Mutex<Option<crate::activity::Waiting>>,
     /// Its run's place in this machine's install and download lines (`origin::priority`).
     pub(crate) order: u64,
+    /// While it builds an environment as a caller's guess: what a run's install cancels to take the install line from it
+    /// (`line::Turn::outranked`).
+    pub(crate) yields: Mutex<Option<Stop>>,
 }
 impl Job {
+    /// What ends a step of its build: its run's stop, or a run's install taking the line from a guess (`yields`), as one, with the
+    /// wakes that tell it while they're held.
+    pub(crate) fn stops(&self) -> Option<(Stop, Vec<crate::stop::OnCancel>)> {
+        let Some(outranked) = self.yields.lock().unwrap().clone() else { return self.stop.clone().map(|stop| (stop, vec![])) };
+        let either = Stop::default();
+        let wakes: Vec<crate::stop::OnCancel> = (self.stop.iter().chain([&outranked]))
+            .map(|stop| {
+                let either = either.clone();
+                stop.on_cancel(move || either.cancel())
+            })
+            .collect();
+        if self.stop.as_ref().is_some_and(Stop::is_cancelled) || outranked.is_cancelled() {
+            either.cancel();
+        }
+        Some((either, wakes))
+    }
+
     fn set(&self, stage: String, moved: u64, total: u64) {
         if let Some(observe) = &self.observer {
             observe(&stage, moved, total);

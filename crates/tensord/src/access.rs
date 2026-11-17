@@ -606,12 +606,12 @@ impl Fetch {
     /// Every needed component `lined` holds here, each at its order, reporting its bytes (a warm run of
     /// a function): those that came from the Hub and from the datacenter volume, and those held. Its
     /// extras are wanted beside them and waited for until they land or are dropped (`guess`): a warm run
-    /// is itself a fetch ahead, no one's request.
-    pub(crate) fn download(self: &Arc<Self>, mut lined: Lined, stop: &Stop, progress: &(dyn Fn(u64, u64) + Sync)) -> io::Result<tensorfs::fetch::Landed> {
+    /// is itself a fetch ahead, no one's request. `wanted` hears once every one of them is in the download line.
+    pub(crate) fn download(self: &Arc<Self>, mut lined: Lined, stop: &Stop, progress: &(dyn Fn(u64, u64) + Sync), wanted: &dyn Fn()) -> io::Result<tensorfs::fetch::Landed> {
         self.guess(std::mem::take(&mut lined.guessed), std::mem::take(&mut lined.guesses))?;
         let counted = Arc::new(tensorfs::fetch::Progress::default());
         let wants = lined.wants.into_iter().map(|(order, part)| (part.remote, part.objects, order)).collect();
-        let landed = origin::watched(&counted, progress, || self.machine.all(wants, counted.clone(), stop).map_err(failed))?;
+        let landed = origin::watched(&counted, progress, || self.machine.all(wants, counted.clone(), wanted, stop).map_err(failed))?;
         let tasks = std::mem::take(&mut self.guessed.lock().unwrap().tasks);
         // A dropped guess ends its task: that ends no wait here.
         self.machine.block(stop, async move {

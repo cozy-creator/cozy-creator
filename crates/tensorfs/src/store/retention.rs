@@ -30,6 +30,8 @@ use crate::format::{Header, ObjectRef, Model};
 pub(crate) const TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// How often maintenance expires uses.
 const SWEEP: Duration = Duration::from_secs(10 * 60);
+/// Under `uses/`: the headers of the checkpoints only a guess brought (`Store::guess`).
+pub(super) const GUESSED: &str = ".guessed";
 /// The most a collection that bytes wait on waits for the fence's readers, who hold it only between reading metadata and
 /// holding what it names.
 const FENCE_WAIT: Duration = Duration::from_secs(30);
@@ -246,6 +248,32 @@ impl Store {
         self.commit(&path, text.as_bytes(), false)
     }
 
+    /// Says the checkpoint whose header is `header` (a digest) came for a guess (`guessed`), or that a call read it: on a short
+    /// disk what only a guess brought goes first, before a derived page or any checkpoint a call read (`collect_guessed`, cl-1104).
+    pub fn guess(&self, header: &str, guessed: bool) -> Result<()> {
+        let dir = self.root.join("uses").join(GUESSED);
+        let path = dir.join(header);
+        if !is_digest(header) {
+            return Err(invalid(&path, "a guess is named by its header's digest"));
+        }
+        match guessed {
+            true => {
+                fs::create_dir_all(&dir).map_err(fail("create", &dir))?;
+                File::create(&path).map(drop).map_err(fail("create", &path))
+            }
+            false => match fs::remove_file(&path) {
+                Err(e) if e.kind() != io::ErrorKind::NotFound => Err(fail("remove", &path)(e)),
+                _ => Ok(()),
+            },
+        }
+    }
+
+    /// The headers of the checkpoints only a guess brought (`guess`).
+    pub(super) fn guesses(&self) -> BTreeSet<String> {
+        let marked = list(&self.root.join("uses").join(GUESSED)).unwrap_or_default();
+        marked.iter().filter_map(|path| path.file_name()?.to_str().map(str::to_owned)).collect()
+    }
+
     /// Roots `header` while the file at `path` (absolute) holds it: one record per path, so saving
     /// another header there replaces it.
     pub fn root_file(&self, path: &Path, header: &ObjectRef) -> Result<()> {
@@ -353,9 +381,9 @@ impl Store {
     /// An origin's handle runs none. A handle collects once at a time: an admit that finds one
     /// collecting waits for it, judges the disk again and, still short, collects for its own bytes.
     /// Short, in this order (cl-1081): the machine's garbage (`on_short`, which also ends idle executors
-    /// whose open models alone keep the room), then what cut fetches kept, then derived pages least
-    /// recently used first (`drop_derived`), then the least recently used models no queued or running
-    /// call holds (`collect_locked`); only then is the write refused.
+    /// whose open models alone keep the room), then what cut fetches kept, then what only a guess brought
+    /// (`collect_guessed`, cl-1104), then derived pages least recently used first (`drop_derived`), then the
+    /// least recently used models no queued or running call holds (`collect_locked`); only then is the write refused.
     pub fn maintain(&self, incoming: u64) -> Result<bool> {
         if !self.cache {
             return Ok(true);
@@ -450,6 +478,10 @@ impl Store {
         if short()? > 0 {
             self.drop_partials()?;
         }
+        // What only a guess brought, which no call has read, goes before anything a call made or read.
+        if short()? > 0 {
+            all.add(self.collect_guessed(short()?)?);
+        }
         // A bake is made again from what is on this disk: derived pages go before any model.
         if short()? > 0 {
             self.drop_derived(&short)?;
@@ -529,10 +561,13 @@ impl Store {
             self.sweep_writers(TTL)?;
             self.collect_locked(u64::MAX, TTL)?;
         }
-        // What a cut fetch kept can be asked for again, and a bake made again from what is on this
-        // disk: both go before any model.
+        // What a cut fetch kept can be asked for again, what only a guess brought no call has read, and a bake is made again
+        // from what is on this disk: each goes before any model a call read.
         if short()? > 0 {
             self.drop_partials()?;
+        }
+        if short()? > 0 {
+            self.collect_guessed(short()?)?;
         }
         if short()? > 0 {
             self.drop_derived(short)?;

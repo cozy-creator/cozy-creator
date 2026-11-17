@@ -1,6 +1,7 @@
 //! The machine's install line (cl-905): one environment built at a time, in job order, beside its
 //! download line (TensorFS's queue, `origin::priority`) and its GPU queue, so the next job installs
-//! while this one downloads or runs. A lone job never waits.
+//! while this one downloads or runs. A lone job never waits. A caller's guess (`origin::priority::prefetch`) holding the turn
+//! gives it up to a run's install that comes for it, and builds again after it (cl-1104).
 use std::{
     collections::BTreeMap,
     sync::{Condvar, LazyLock, Mutex, MutexGuard, PoisonError},
@@ -20,13 +21,29 @@ pub(crate) struct Line {
 struct State {
     /// The run whose turn it is (as its caller names it), what it does, and how many turns it holds.
     holder: Option<(String, String, usize)>,
+    /// Its order, and what a run's install cancels when the holder is a caller's guess (`Turn::outranked`).
+    held: Option<(u64, Stop)>,
     /// Who waits, by order and then arrival.
     waiting: BTreeMap<(u64, u64), String>,
     arrivals: u64,
 }
 
-/// A turn in the line, given up when it drops: its line, and whose it is.
-pub(crate) struct Turn(&'static Line, String);
+/// A turn in the line, given up when it drops: its line, whose it is, what a run's install cancels to take it from a guess,
+/// and whether its run held the turn already.
+pub(crate) struct Turn(&'static Line, String, Stop, bool);
+
+impl Turn {
+    /// Canceled once a run's install came for the line while a caller's guess held it: the guess's build stops, gives its turn
+    /// up and goes again after that run's.
+    pub(crate) fn outranked(&self) -> &Stop {
+        &self.2
+    }
+
+    /// Its run held the turn already: the turn is given up where it was first taken.
+    pub(crate) fn nested(&self) -> bool {
+        self.3
+    }
+}
 
 impl Line {
     fn state(&self) -> MutexGuard<'_, State> {
@@ -38,13 +55,20 @@ impl Line {
     /// turn already has it at once. None: `stop` ended the wait.
     pub(crate) fn turn(&'static self, order: u64, caller: &str, what: &str, stop: Option<&Stop>, said: &dyn Fn(Option<String>)) -> Option<Turn> {
         let mut state = self.state();
-        if let Some((_, _, held)) = state.holder.as_mut().filter(|(holder, ..)| holder == caller) {
-            *held += 1;
-            return Some(Turn(self, caller.to_owned()));
+        if state.holder.as_mut().filter(|(holder, ..)| holder == caller).map(|(_, _, held)| *held += 1).is_some() {
+            let outranked = state.held.as_ref().map(|(_, outranked)| outranked.clone()).unwrap_or_default();
+            return Some(Turn(self, caller.to_owned(), outranked, true));
         }
         state.arrivals += 1;
         let key = (order, state.arrivals);
         state.waiting.insert(key, caller.to_owned());
+        // A caller's guess building now gives way to a run's install: told with the line let go, as its build's steps hear it.
+        let guess = |order: u64| crate::origin::priority::prefetch(order);
+        if let Some(outranked) = state.held.as_ref().filter(|(held, _)| guess(*held) && !guess(order)).map(|(_, outranked)| outranked.clone()) {
+            drop(state);
+            outranked.cancel();
+            state = self.state();
+        }
         let mut shown: Option<String> = None;
         // A turn given up or the stop wakes the wait.
         let _woken = stop.map(|stop| stop.on_cancel(move || {
@@ -55,12 +79,14 @@ impl Line {
             if state.holder.is_none() && state.waiting.keys().next() == Some(&key) {
                 state.waiting.remove(&key);
                 state.holder = Some((caller.to_owned(), what.to_owned(), 1));
+                let outranked = Stop::default();
+                state.held = Some((order, outranked.clone()));
                 drop(state);
                 if shown.is_some() {
                     said(None);
                 }
                 tracing::info!(run = caller, what, order, "install line: its turn");
-                return Some(Turn(self, caller.to_owned()));
+                return Some(Turn(self, caller.to_owned(), outranked, false));
             }
             if stop.is_some_and(Stop::is_cancelled) {
                 state.waiting.remove(&key);
@@ -96,6 +122,7 @@ impl Drop for Turn {
             *held -= 1;
             if *held == 0 {
                 state.holder = None;
+                state.held = None;
                 tracing::info!(run = self.1, "install line: done");
             }
         }

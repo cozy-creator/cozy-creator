@@ -15,6 +15,7 @@ mod benchmarks;
 pub(crate) mod fit;
 mod folder;
 mod format;
+mod guess;
 pub(crate) mod graph;
 mod history;
 pub(crate) mod purge;
@@ -198,6 +199,8 @@ pub(crate) struct Project {
     unseen: Mutex<unseen::Unseen>,
     /// Its folder watched while it's open, a plain one's (`Projects::look`).
     _watch: Option<platform::watch::Watcher>,
+    /// What its boxes would run is guessed while it's open (`guess::keep`), since a page first showed it.
+    guessing: std::sync::atomic::AtomicBool,
 }
 
 impl Drop for Project {
@@ -210,6 +213,7 @@ impl Drop for Project {
         }
         drop(identities);
         crate::events::project_closed(&self.id);
+        guess::closed();
     }
 }
 
@@ -407,7 +411,10 @@ impl Projects {
 
     /// Project `id` held open by a stream that shows it, until the stream lets it go.
     pub(crate) fn reader(&self, api: &Arc<Api>, id: &str) -> Result<Reader, Refusal> {
-        self.get(api, id).map(Reader)
+        let project = self.get(api, id)?;
+        // A page shows it: what its boxes would run is guessed, and their machines made ready, while it stays open (cl-1104).
+        guess::keep(api, &project);
+        Ok(Reader(project))
     }
 
     /// The project in `dir` (canonical), opened if it isn't, given its id and name and recorded in the index; its walk goes on when
@@ -470,6 +477,7 @@ impl Projects {
                     unsent: Mutex::default(),
                     unseen: Mutex::new(unseen),
                     _watch: watch,
+                    guessing: Default::default(),
                 });
                 // What closed since the last open goes from the list.
                 open.retain(|_, held| held.strong_count() > 0);
@@ -1486,6 +1494,8 @@ fn sync_jobs(project: &Project, run: impl Fn(u64) -> Option<Run>) -> Result<(), 
 struct Unsent {
     id: usize,
     key: String,
+    /// Its box.
+    asset: String,
     ask: String,
     target: Target,
     with: String,
@@ -2093,7 +2103,8 @@ fn next_steps(orphans: &[Orphan], absent: u64, owed: bool) -> Vec<String> {
 
 /// Its render going, or its last since Calcifer started.
 fn board_of(project: &Project) -> Option<api::calcifer::project::Board> {
-    Some(project.jobs.board()).filter(|board| board.seq > 0)
+    // With no render yet, what its machines have ready for its boxes is still its board's to say (`Jobs::guessed`).
+    Some(project.jobs.board()).filter(|board| board.seq > 0 || !board.ahead.is_empty())
 }
 
 /// The local code `id`'s assets name, each once: its path as they write it, and where that is. Not a checkout's first-party
@@ -3981,6 +3992,21 @@ async fn job_read(host: &Host, dir: &FsPath, key: String, on: Vec<On>, hub: &str
     Ok(Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on, scope, source, on_demand_bytes }))
 }
 
+/// The model choices a box's fields `made` give `renderer`'s function (`models`, `lora`), as a machine's list carries them: an
+/// upcoming job's (`Walk::item`) and a guess's (`guess`) alike.
+fn listed_models(renderer: &Renderer, made: &Map<String, Value>) -> Result<Vec<v1::ModelChoice>, Error> {
+    let mut payload = Map::new();
+    for field in ["models", "lora"] {
+        if let Some(value) = made.get(field).filter(|value| !value.is_null()) {
+            payload.insert(field.into(), value.clone());
+        }
+    }
+    let called = renderer.target();
+    let mut choices = Choices::new(&called, &renderer.function, &renderer.slots, renderer.call_slots());
+    choices.take(&mut payload)?;
+    choices::wire(&choices.into_choices())
+}
+
 /// Why the plan placed no machine for ready job `key`, said when that changes: it goes to the first of its machines that takes it.
 fn unplanned(walker: &mut Walker, dir: &str, key: &str, why: String) {
     if walker.unplanned.get(key) != Some(&why) {
@@ -4582,18 +4608,18 @@ impl Walk {
         jobs
     }
 
-    /// Each machine's upcoming jobs of this walk, as far as their items are made, in the order they start (`ahead::Lists`); their rows
+    /// Each machine's upcoming jobs of this walk, as far as their items are made, in the order they start (`prefetch::Lists`); their rows
     /// on the board, and only theirs.
     fn list_ahead(&self, jobs: &[(String, String, Wanted)]) {
         let api = self.host.api();
-        let mut by_machine: HashMap<String, Vec<crate::ahead::Listed>> = HashMap::new();
+        let mut by_machine: HashMap<String, Vec<crate::prefetch::Listed>> = HashMap::new();
         {
             let walker = self.project.walker.lock().expect("walker lock");
             for (key, asset, wanted) in jobs {
                 let On::Machine(name) = &wanted.machine else { continue };
                 let Some(Some((hub, item, function))) = walker.items.get(&(name.clone(), key.clone())) else { continue };
                 let (start_at_ms, fits) = walker.starts.get(key).cloned().unwrap_or((i64::MAX, vec![]));
-                let listed = crate::ahead::Listed {
+                let listed = crate::prefetch::Listed {
                     project: self.project.clone(),
                     asset: asset.clone(),
                     start_at_ms,
@@ -4618,16 +4644,7 @@ impl Walk {
         let Wanted { machine, hub, with, kind, made } = wanted;
         let package = self.host.package(hub, with, &self.folder().dir, std::slice::from_ref(machine), host::Wait::Job(key, None)).await?;
         let Some(renderer) = package.first_making(kind) else { return Ok(None) };
-        let mut payload = Map::new();
-        for field in ["models", "lora"] {
-            if let Some(value) = made.get(field).filter(|value| !value.is_null()) {
-                payload.insert(field.into(), value.clone());
-            }
-        }
-        let called = renderer.target();
-        let mut choices = Choices::new(&called, &renderer.function, &renderer.slots, renderer.call_slots());
-        choices.take(&mut payload)?;
-        let models = choices::wire(&choices.into_choices())?;
+        let models = listed_models(&renderer, made)?;
         let source = match &renderer.local {
             None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: self.pinned(hub, &renderer)? }),
             Some(path) => {
@@ -4824,7 +4841,7 @@ impl Walk {
                     let reading = walker.readings.get(&ask.digest)?;
                     let asset = reading.doc.assets.get(job.node)?;
                     let (with, made) = (reading.doc.target(job.node), asset.made.clone());
-                    Some(Unsent { id, key: job.key.clone(), ask: ask.id.clone(), target: target.clone(), with, made, needs: job.needs.clone(), ready: ready.contains(&id) })
+                    Some(Unsent { id, key: job.key.clone(), asset: job.asset.clone(), ask: ask.id.clone(), target: target.clone(), with, made, needs: job.needs.clone(), ready: ready.contains(&id) })
                 })
                 .take(plan::PLANNED)
                 .collect();
@@ -4921,7 +4938,11 @@ impl Walk {
                 machines,
                 needs: unsent.needs.iter().filter_map(|need| position.get(need).copied()).collect(),
                 after_at_ms: unsent.needs.iter().filter_map(|need| ends.get(need).copied()).max(),
-                stay: foreseen.get(&unsent.key).cloned().flatten().and_then(|on| plan::index(&pictures, &on)),
+                // Where its weights are fetched ahead: for this walk, else for its box's guess (cl-1104), so the machine a guess made
+                // ready is where its render goes unless another finishes it clearly sooner.
+                stay: (foreseen.get(&unsent.key).cloned().flatten())
+                    .or_else(|| api.machines.lists.guessed_on(&self.folder().dir.to_string_lossy(), &unsent.asset).map(On::Machine))
+                    .and_then(|on| plan::index(&pictures, &on)),
             });
         }
         // What each job's function read of its models on any machine: what it fetches on one that holds none of them (cl-967).
