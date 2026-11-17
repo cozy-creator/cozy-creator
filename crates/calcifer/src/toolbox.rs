@@ -256,36 +256,12 @@ async fn read_local(api: &Arc<Api>, hub: &str, named: Vec<(String, PathBuf)>) ->
     let scope = private_io::current();
     let private = scope.is_some();
     // Each function is read at once, the static describer's reading kept in its project by its tree. What's known answers now; one
-    // read anew goes on past the list and is told as `tools.changed` once it lands, and the next list has it.
-    let reads: Vec<_> = named.into_iter().map(|(written, path)| {
-        let (api, hub, scope) = (api.clone(), hub.to_owned(), scope.clone());
-        tokio::spawn(private_io::context(scope.clone(), async move {
-            let _turn = LOCAL_READS.acquire().await;
-            let described = match staged(&api, scope.as_ref(), &path) {
-                Ok(code) => Box::pin(local_code::read_source(&api, &code, &hub)).await,
-                Err(why) => Err(why),
-            };
-            (written, described)
-        }))
-    }).collect();
+    // read anew goes on past the list, its landing told as `tools.changed`, and the next list has it.
+    let reads: Vec<_> = named.into_iter().map(|(written, path)| (written, reading(api, hub, scope.clone(), path))).collect();
     let now = tokio::time::Instant::now() + LOCAL_NOW;
     let mut tools = vec![];
-    for mut read in reads {
-        let (written, described) = match tokio::time::timeout_at(now, &mut read).await {
-            Ok(Ok(read)) => read,
-            Ok(Err(_)) => continue,
-            Err(_) => {
-                // Only a reading that lists something, kept by then: one that can't be listed would be read and told again forever.
-                tokio::spawn(async move {
-                    if let Ok((_, Ok((_, document)))) = read.await
-                        && Interface::parse(&document).is_ok()
-                    {
-                        crate::events::tools_changed();
-                    }
-                });
-                continue;
-            }
-        };
+    for (written, read) in reads {
+        let Ok(Some(described)) = tokio::time::timeout_at(now, read).await else { continue };
         let (package, document) = match described {
             Ok(described) => described,
             Err(why) => {
@@ -304,6 +280,42 @@ async fn read_local(api: &Arc<Api>, hub: &str, named: Vec<(String, PathBuf)>) ->
         }));
     }
     tools
+}
+
+/// One reading of local code, shared by every list that asks for it while it goes: none if it ended without an answer.
+type Reading = futures_util::future::Shared<futures_util::future::BoxFuture<'static, Option<Result<(String, Value), Error>>>>;
+
+/// The readings going, by project, Hub and path: a page's lists, asked again and again while one takes seconds, start one, not one each.
+static READING: LazyLock<Mutex<HashMap<(Option<String>, String, PathBuf), Reading>>> = LazyLock::new(Mutex::default);
+
+/// `path`'s reading: the one going, else one started now, run to its end whoever waits for it. One that lands past `LOCAL_NOW` is told
+/// as `tools.changed`, once, if it lists something: one that can't be listed would be read and told again forever.
+fn reading(api: &Arc<Api>, hub: &str, scope: Option<private_io::Scope>, path: PathBuf) -> Reading {
+    use futures_util::FutureExt as _;
+    let key = (scope.as_ref().map(|scope| scope.storage.project_id.clone()), hub.to_owned(), path.clone());
+    let mut going = READING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(read) = going.get(&key) {
+        return read.clone();
+    }
+    let (api, hub, began, held) = (api.clone(), hub.to_owned(), Instant::now(), key.clone());
+    let task = tokio::spawn(private_io::context(scope.clone(), async move {
+        let _turn = LOCAL_READS.acquire().await;
+        match staged(&api, scope.as_ref(), &path) {
+            Ok(code) => Box::pin(local_code::read_source(&api, &code, &hub)).await,
+            Err(why) => Err(why),
+        }
+    }));
+    let read = async move {
+        let described = task.await.ok();
+        READING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&held);
+        if began.elapsed() >= LOCAL_NOW && described.as_ref().is_some_and(|read| read.as_ref().is_ok_and(|(_, document)| Interface::parse(document).is_ok())) {
+            crate::events::tools_changed();
+        }
+        described
+    }.boxed().shared();
+    tokio::spawn(read.clone());
+    going.insert(key, read.clone());
+    read
 }
 
 /// `path`'s code copied into its project, which holds still meanwhile: a lock under way refuses the read, and one asked waits.
