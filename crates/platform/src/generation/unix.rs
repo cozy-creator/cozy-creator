@@ -51,14 +51,10 @@ pub(super) fn start(
     let fds: Vec<RawFd> = std::iter::once(child.as_raw_fd()).chain(listeners.iter().map(|listener| listener.as_raw_fd())).collect();
     let mut command = Command::new(program);
     command.args(args).args(fds.iter().map(|fd| fd.to_string())).current_dir(dir).stdin(Stdio::null());
-    match log {
-        Some(path) => {
-            let file = OpenOptions::new().create(true).append(true).open(path)?;
-            command.stdout(file.try_clone()?).stderr(file);
-        }
-        None => {
-            command.stdout(Stdio::null()).stderr(Stdio::null());
-        }
+    // None: the parent's own output, a service's journal.
+    if let Some(path) = log {
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        command.stdout(file.try_clone()?).stderr(file);
     }
     crate::process::inherit_nothing(&mut command);
     crate::process::keep_open(&mut command, fds);

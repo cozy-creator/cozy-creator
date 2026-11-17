@@ -26,7 +26,8 @@ pub struct Taken {
 }
 
 /// Starts `program args…` and the words naming what it inherits: its end of a new private stream and `listeners`. Its output goes to
-/// `log` (appended), its input is null, it starts in the home folder. Returns the child and the parent's end of the stream.
+/// `log` (appended); with none, to the parent's own (Unix; Windows discards it). Its input is null, it starts in the home folder.
+/// Returns the child and the parent's end of the stream.
 pub fn start(program: &Path, args: &[OsString], log: Option<&Path>, listeners: &[&TcpListener]) -> Result<(Child, LocalStream)> {
     // The child dials: on Windows its end is the client, whose peer is the parent that made the pipe.
     let (child, parent) = crate::ipc::pair()?;
