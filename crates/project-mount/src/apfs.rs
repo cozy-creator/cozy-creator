@@ -222,6 +222,30 @@ fn current_device(provider: &Provider, image: &Path) -> Result<Option<String>> {
     Ok(None)
 }
 
+/// Where the image at `image` has its volumes mounted now, as the image registry says (it follows a mount point that moved).
+fn mount_points(provider: &Provider, image: &Path) -> Result<Vec<PathBuf>> {
+    let mut command = provider.command("info");
+    command.arg("-plist");
+    let info = decode(run(provider, command, "read attached native images", None, CONTROL_ACK)?)?;
+    let images = info
+        .as_dictionary()
+        .and_then(|dictionary| dictionary.get("images"))
+        .and_then(Value::as_array)
+        .ok_or(Error::Invalid("the native image registry is unavailable"))?;
+    let ours = images.iter().filter_map(Value::as_dictionary).find(|candidate| {
+        candidate.get("image-path").and_then(Value::as_string).is_some_and(|path| {
+            fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)) == image
+        })
+    });
+    Ok(ours
+        .and_then(|candidate| candidate.get("system-entities")?.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|entity| entity.as_dictionary()?.get("mount-point")?.as_string())
+        .map(PathBuf::from)
+        .collect())
+}
+
 pub(super) fn unmount(provider: &Provider, view: &Path, budget: Duration) -> Result<()> {
     // Disk Arbitration can reject an image eject solely because mds monitors its root.
     // A normal kernel unmount releases the volume without forcing an editor's open files.
@@ -300,11 +324,11 @@ impl Lease {
         .is_err()
             && current_device(&self.provider, &self.image)?.as_deref() == Some(current.as_str())
         {
-            // A volume whose mount point moved with its folder (cl-1124: dragged to the Trash) refuses a detach until the disk's own
-            // volumes are unmounted, by the disk, not by a path.
-            let mut volumes = clean_command(Path::new("/usr/sbin/diskutil"));
-            volumes.args(["unmountDisk", "force"]).arg(&current);
-            let _ = control_status(volumes, "unmount owned encrypted image volumes", CONTROL_ACK);
+            // A volume whose mount point moved with its folder (cl-1124: dragged to the Trash) refuses a detach, which unmounts it by
+            // Disk Arbitration: the kernel unmounts it where it is now, then the image detaches.
+            for point in mount_points(&self.provider, &self.image)? {
+                let _ = unix_unmount(&point, true, CONTROL_ACK);
+            }
             let mut forced = self.provider.command("detach");
             forced.arg("-force").arg(&current);
             let _ = run(
