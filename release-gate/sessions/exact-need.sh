@@ -7,13 +7,16 @@
 # decision point) and runs BiRefNet again on a fresh input. At the decision point red's make_room offloads BiRefNet;
 # green's does not. If the reuse then truly outgrows the card, green's in-call yield (`running_call`, the backstop) may
 # still offload BiRefNet mid-call: reported, not failed. Green never ends BiRefNet's process for a reuse (same pid). If
-# red's make_room offloads nothing, the pair cannot discriminate: that fails as inconclusive.
+# red's make_room offloads nothing, the pair cannot discriminate: that fails as inconclusive. Green starts with none of red's
+# derived state (its learned peaks above all: lib.sh `derived_state`, a census after the update; tfs-299).
 . "$(dirname "$0")/lib.sh"
 recpid() { jq -r 'first(.measurements.execution.gpus[]?.pid) // empty' "$OUT/$1.json"; }
 store_bytes() { jq -r '[.measurements.memory.stats.varena[]?.stats.moved.store.bytes // 0] | add // 0' "$OUT/$1.json"; }
 show() { cozy run watch "$(runno "$1")" --once --json --full > "$OUT/$1.json" 2>&1; jq -r '.status // empty' "$OUT/$1.json"; }
 # picture <step>: the file its run made.
 picture() { cozy run watch "$(runno "$1")" --once -o "$OUT/$1.out" > /dev/null 2>&1; ls "$OUT/$1.out"/* 2> /dev/null | grep -E '[.](webp|png)$' | head -1; }
+[ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
+RENT_ARGS=--ssh
 quote 2400
 rent
 IMG=$REF/seed.jpg
@@ -59,9 +62,11 @@ declare -A START YIELD ENDED B1 B3 READ
 
 say "red: the pod's own TensorD $(cozy machine show "$NAME" --json | jq -r .status.version)"
 phase red
+derived_state green reset
 step update machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "update"
 v=$(cozy machine show "$NAME" --json | jq -r .status.version)
 [ "$v" = "$(cozy --version | awk '{print $2}')" ] || fail "the pod runs TensorD $v, not the session's"
+arm_cold green
 say "green: the candidate TensorD $v"
 phase green
 

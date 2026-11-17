@@ -1,6 +1,8 @@
 # install-share (cl-1007, Paul 11-15: "instead of pausing the download, wouldn't it be better to just leave extra room while another
 # install is happening"; cl-1001: hidream's install files sat 10 min behind its own weights): one rental, a release's cold first run,
-# its install and its weights together, once per TensorD arm, each from an emptied store with the package uninstalled. Each arm keeps
+# its install and its weights together, once per TensorD arm, each from an emptied store with the package uninstalled and none of
+# the derived state (stage memos, learned peaks, kernels) an earlier arm left (lib.sh `derived_state`, a census after its TensorD
+# starts: tfs-299), on a seed of its own (the same request on the same builds is the call memo's). Each arm keeps
 # the run's record, its output stamped line by line, TensorD's log and summary.json: the install's span, the weights' MB/s each 5 s
 # across it (what TensorD wrote, read on the pod each second), when they were done, the first output, the link's best 5 s, the
 # install's Hub files (software, order 1) and the share's lines (cl-1007). params:
@@ -59,21 +61,28 @@ PY
 )
 T=60 pod "rm -f /tmp/share.stop /tmp/share-samples.txt" < /dev/null || fail "the sampler's files"
 (printf '%s' "$SAMPLE_PY" | T=9000 pod "cat > /tmp/share.py && python3 /tmp/share.py 2> /tmp/share.err" > /dev/null 2>&1) &
-for ARM in "${names[@]}"; do
-  D=$OUT/arm-$ARM BEGAN=$(date +%s) RUN_PROJECT=$OUT/project-$ARM
+for i in "${!names[@]}"; do
+  ARM=${names[$i]}; D=$OUT/arm-$ARM BEGAN=$(date +%s) RUN_PROJECT=$OUT/project-$ARM
   mkdir -p "$D"
   { run_project "$RUN_PROJECT" && (cd "$RUN_PROJECT" && "$RUN_CLI" --json status); } > "$D/project.json" 2>&1 || fail "arm $ARM: its project"
   T=600 pod "cat > /tmp/reset.py && python3 /tmp/reset.py" < "$(dirname "$0")/empty-store.py" > "$D/reset.json" 2>&1 || fail "arm $ARM: the pod's store wasn't emptied: $(tail -c 300 "$D/reset.json")"
+  derived_state "$ARM" reset
   step "uninstall-$ARM" package uninstall "${TARGET%%/*}" --on "$NAME" -y || say "arm $ARM: ${TARGET%%/*} wasn't uninstalled"
   step "tensord-$ARM" machine update "$NAME" --tensord "${TENSORD[$ARM]}" -y || fail "the pod refused arm $ARM's TensorD"
+  arm_cold "$ARM"
+  args=()
+  for w in "${INPUTS[@]}"; do [[ ! $w =~ ^seed:=([0-9]+)$ ]] || w="seed:=$((BASH_REMATCH[1] + i))"; args+=("$w"); done
   ASK=$(date +%s%3N)
-  say "step run-$ARM: cozy run $TARGET ${INPUTS[*]} --on $NAME"
+  say "step run-$ARM: cozy run $TARGET ${args[*]} --on $NAME"
   # Each line its time: the install's steps are its stages, a project's run says nothing in TensorD's log (#2858).
-  (cd "$RUN_PROJECT" && timeout 3000 cozy run "$TARGET" "${INPUTS[@]}" --on "$NAME" 2>&1) | while IFS= read -r line; do printf '%s %s\n' "$(date +%s%3N)" "$line"; done > "$D/run.txt"
+  (cd "$RUN_PROJECT" && timeout 3000 cozy run "$TARGET" "${args[@]}" --on "$NAME" 2>&1) | while IFS= read -r line; do printf '%s %s\n' "$(date +%s%3N)" "$line"; done > "$D/run.txt"
   tail -4 "$D/run.txt" | cut -c1-300 | sed 's/^/    /' >> "$R"
   n=$( (cd "$RUN_PROJECT" && cozy --json run ls --limit 1) | jq -r '.runs[0].number // empty')
   (cd "$RUN_PROJECT" && cozy run watch "$n" --once --json --full) > "$D/run.json" 2>&1
   [ "$(jq -r .status "$D/run.json" 2> /dev/null)" = completed ] || say "FAIL: arm $ARM: the run didn't complete: $(tail -c 300 "$D/run.txt")"
+  # Its weights are fetched inside the request: that is what the session measures.
+  state_row "$ARM" "$ARM" cold "$D/run.json" "$D/run.txt"
+  why=$(unfit "$ARM" fetches); [ -z "$why" ] || { say "FAIL: arm $ARM: $why"; RC=1; }
   cozy machine logs "$NAME" --lines 0 --since "$(( ($(date +%s) - BEGAN) / 60 + 2 ))m" > "$D/tensord.log" 2>&1 || say "arm $ARM: the pod's TensorD log wasn't read"
   T=120 pod "cat /tmp/share-samples.txt" > "$D/samples.txt" 2> /dev/null < /dev/null || say "arm $ARM: the samples weren't read"
   python3 - "$D" "$ASK" > "$D/summary.json" <<'PY'

@@ -143,6 +143,8 @@ up now "$NOW/upscale" "{\"video\": \"<take>\", \"to\": \"$TO\"}" take
 check "now: the take's latents, no prompt sent: $(jq -c '{latents: .request.input.video.latents, prompt: .request.input.prompt}' "$OUT/now.json")" \
   J '(.request.input.video.latents // "" | startswith("sha256:")) and (.request.input | has("prompt") | not)' "$OUT/now.json"
 check "now: no warning of missing text" J '[.result.warnings[]? | select(startswith("no text"))] | length == 0' "$OUT/now.json"
+# The same request: answered by the call memo, `was = now` would prove nothing (tfs-299).
+check "now: computed, not the call memo's" J '(.memo.memoized // false | not) and ([.calls[]?.memoized] | any | not)' "$OUT/now.json"
 s=$(same was now); check "was = now: $s" [ "${s%%:*}" != differ ]
 
 say "the take's file as a box (an uploaded video: no latents), with no text at 0.7 and with the shot's words"

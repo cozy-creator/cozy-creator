@@ -2,7 +2,10 @@
 # its TensorD on the pod (the pod's own image for `image`), installs each of its models' packages afresh (uninstall, then
 # install), drops the weights from the page cache first, runs one cold request each and counts the environment's
 # bytecode after it; the executor processes' memory is read after the machine starts and after the requests, and the
-# machine's kernel boots at the end. An arm's `wait` says when
+# machine's kernel boots at the end. Each arm starts cold (tfs-299): the derived state an earlier arm left (LoRA bakes,
+# memos, learned peaks, kernels: lib.sh `derived_state`) goes before its update restarts the machine (a settings-only
+# restart for `image` and `same`), and a census after must find none. states.tsv holds each request's state; one the
+# call memo answered or that fetched its weights fails the session. An arm's `wait` says when
 # its requests go after their install: `now`, once the package's level is `imported` (its import-only parent is up),
 # or once that parent's kernel compiles have ended too (`compiled`); the session says how long each took. An arm's
 # `warm` requests follow each cold one on the same executor, each a new prompt and seed (0 by default). Nothing
@@ -311,6 +314,7 @@ PROMPTS=("a lighthouse keeper's desk at dawn, watercolor" "a night market under 
 k=0
 for i in "${!names[@]}"; do
   a=${names[$i]}
+  derived_state "$a" reset
   if [ -n "${bins[$i]}" ]; then
     step "update-$a" machine update "$NAME" --tensord "${bins[$i]}" -y || fail "$a: update"
     v=$(cozy machine show "$NAME" --json | jq -r .status.version); say "$a: pod TensorD $v"
@@ -322,9 +326,9 @@ for i in "${!names[@]}"; do
     step "pair-$a" machine update "$NAME" ${wheels[$i]} -y || fail "$a: Runtime/TensorFS update"
     say "$a: pod Runtime $(cozy machine show "$NAME" --json | jq -r .status.runtime), TensorFS $(cozy machine show "$NAME" --json | jq -r .status.tensorfs)"
   fi
-  if [ -n "${bins[$i]}${wheels[$i]}" ]; then
-    sleep 30; podpy ps > "$OUT/$a-ps-start.json"; say "$a: executors 30 s after start $(cat "$OUT/$a-ps-start.json")"
-  fi
+  [ -n "${bins[$i]}${wheels[$i]}" ] || step "restart-$a" machine update "$NAME" --gpu-memory-limit off -y || fail "$a: the restart"
+  arm_cold "$a"
+  sleep 30; podpy ps > "$OUT/$a-ps-start.json"; say "$a: executors 30 s after start $(cat "$OUT/$a-ps-start.json")"
   sig=$(jq -r --argjson i "$i" '.[$i].probe_signal // empty' <<<"$ARMS")
   wait=$(jq -r --argjson i "$i" '.[$i].wait // "now"' <<<"$ARMS") warm=$(jq -r --argjson i "$i" '.[$i].warm // 0' <<<"$ARMS")
   for m in $(jq -r --argjson i "$i" '.[$i].models // ["sdxl", "anima"] | .[]' <<<"$ARMS"); do
@@ -375,6 +379,7 @@ for i in "${!names[@]}"; do
         continue
       fi
       request "$label" "$fn" "$OUT/$a-$m-$w.yaml" || fail "$a: $m request"
+      state_row "$label" "$a" "$([ "$w" = 0 ] && echo cold || echo warm)" "$OUT/$label.json" "$OUT/$label.ndjson"
     done
     podpy pyc "$module" > "$OUT/$a-$m-pyc.json"; say "$a $m bytecode after its request (py, pyc): $(jq -c .packages "$OUT/$a-$m-pyc.json")"
   done
@@ -389,4 +394,6 @@ if [ "$(param sample false)" = true ]; then
   say "samples: $(wc -l < "$OUT/samples.jsonl") rows"
 fi
 say "kernel boots: $(wc -l < "$OUT/kernel-boot.jsonl") lines"
+bad=$(states_unfit)
+[ -z "$bad" ] || fail "requests that measure nothing of their temperature: $bad"
 say "PASS: ${#names[@]} arms"

@@ -169,7 +169,10 @@ the session's Calcifer in to Civitai;
 `ab` runs cells from `packages_refs` checkouts on one pod and compares their outputs (a refactor's same-bytes proof).
 A package a session runs or installs from a `packages_refs` checkout carries its Triton sets, built into the checkout first by its
 `scripts/triton.sh` as a release ships them (`lib.sh` `kernels`). `parity` (xs-194) runs a package from source and its Hub release on one
-pod, each cold then warm on the same seed: the environments' distributions, their `_triton` kernels, cold execution and the output bytes must match.
+pod, each from a cold start in A B B A order, cold then warm on the same seed: the environments' distributions, their `_triton` kernels, cold execution and the output bytes must match.
+Arms on one pod start cold or warm by declaration (tfs-299): a cold arm's derived state (LoRA bakes, memos, learned peaks, kernels, page cache)
+goes before the restart that begins it and a census after must find none (`lib.sh` `cold_restart`, `arm_cold`); each compared record's state
+is in `states.tsv`, and a pair of different temperatures, or one the call memo answered or that fetched its weights, fails (`incomparable`).
 `tool-functions` (cl-774) takes `qwen-image-2/image`, `birefnet/remove_background`, `minimax-h3/generate`, `upscale` and `edit` from dropping the tool to accepting its output on one 4090, as the page does (`e2e/page.py`), a shape like `lab`'s beside them, from a `packages_refs` checkout `pk`, keeping frames to judge.
 `h3-upscale` (se-138) upscales the gate's 15 s Skater take as the page does, from `packages_refs` checkouts `was` and `now`: with no
 prompt both must give the same frames; an overriding prompt (0.7 and 0.909) must differ; the take's file as a box (no latents) runs with
