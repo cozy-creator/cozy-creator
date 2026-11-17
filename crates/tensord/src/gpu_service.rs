@@ -359,7 +359,7 @@ impl Plan {
         crate::access::Needs { needed, extras }
     }
     /// All its calls may read, on-demand slots too: what a `downloaded` warm set member holds,
-    /// asked for by name (`cozy machine warm`), so its first call waits on no download (cl-790).
+    /// asked for by name, so its first call waits on no download (cl-790).
     pub(crate) fn read(&self) -> Vec<(String, Vec<String>)> {
         merged(&self.slots).into_iter().map(|s| (s.manifest, s.components)).collect()
     }

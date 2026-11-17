@@ -9,6 +9,7 @@
 #   co-*             all three again on one card: what does not fit is evicted and refilled
 #   reload-*         after an unload (a restart ends every executor), each model back from page cache or disk
 #   anima-graphs-*   (> 8 GB card) Anima four times: the fourth replays the text encoder an earlier call recorded (check.py)
+#   sizes-sdxl-*     (> 8 GB card) SDXL at sizes A, B, C, C, D, D in a fresh executor: the second D replays (check.py)
 #   s8-* s6-* s3-*   under 8, 6 and 3 GiB software caps; at 6 GiB SDXL and Klein alternate three times, then Anima's
 #                    four calls again
 #   (≤ 8 GB card)    cold, co and reload only: the driver's own out-of-memory paths (a capped card never fills)
@@ -107,6 +108,18 @@ fi
 ANIMA=$(pkg anima generate) ANIMA_SAYS="masterpiece, best quality, anime illustration of $CHAR"
 for i in 1 2 3 4; do vcell anima-graphs-$i "$ANIMA" prompt="$ANIMA_SAYS" seed:=$((R + 60 + i)); done
 h3 reload-h3 9 5 "A slow pan follows the action."
+# cr-297 (Paul 11-13: "Shouldn't we always record the CUDA graph on the first run, and then replay it, if relevant?"):
+# SDXL at sizes A, B, C, C, D, D in a fresh executor. A region whose key moves two requests in a row stops recording
+# at C; the stop must end once a path repeats, so the second D replays (check.py). On cozy-runtime 6accccadc the stop
+# held for the process and D ran as written (pod-session 43981267206: the sixth refused 30 of 30 at 0.142 s/step;
+# e4b6ff4d8, #2206, replayed 30 of 30 at 0.081). D's capture passes request 5's share and records at idle, so the
+# machine idles before the sixth.
+cap off  # a fresh executor
+SIZES=('' aspect_ratio=16:9 aspect_ratio=9:16 aspect_ratio=9:16 aspect_ratio=4:3 aspect_ratio=4:3)
+for i in 1 2 3 4 5 6; do
+  [ "$i" != 6 ] || sleep 15
+  vcell sizes-sdxl-$i "$SDXL" prompt="$OBJECT, product photo $i" seed:=$((R + 80 + i)) ${SIZES[i - 1]}
+done
 cap 8GiB
 vcell s8-sdxl "$SDXL" prompt="$OBJECT in a museum display case, photo" seed:=$((R + 11))
 vcell s8-klein "$KLEIN" prompt="$SCENE, watercolor" seed:=$((R + 12))

@@ -1,0 +1,1 @@
+A `cozy run` in an encrypted project no longer fails `lock_failed` ("uv lock didn't start … storage is changing") as its work begins: the vault clock looks at a project's runs beside its other readers instead of taking the project's storage gate, which refused the run's tools while it held it.

@@ -849,17 +849,15 @@ The CLI resolves the current directory to an existing project and sends its abso
 | `cozy model edit` | `PATCH /v1/models/{org}/{name}` |
 | `cozy model publish` | `POST /v1/models/{org}/{name}/releases` |
 | `cozy model delete` | `DELETE /v1/models/{org}/{name}[/releases/{v}\|/commits/{c}]` |
-| `cozy model download` | a file `HEAD`/`PUT /v1/files/sha256:<hex>`, `POST /v1/runs` of `cozy/model_download` (`POST /v1/run-quotes` first for `new`); `GET /v1/runs/{id}/events` |
+| `cozy model install` | a file `HEAD`/`PUT /v1/files/sha256:<hex>`, `POST /v1/runs` of `cozy/model_download` (`POST /v1/run-quotes` first for `new`); `GET /v1/runs/{id}/events` |
 | `cozy model upload` | a file or folder `HEAD`/`PUT /v1/files/sha256:<hex>`, `POST /v1/runs` of `cozy/model_upload` (`POST /v1/run-quotes` first for `new`); `GET /v1/runs/{id}/events` |
 | `cozy model quantize` | `--package ./dir`, its tree `PUT`; `POST /v1/runs` of `cozy/model_quantize` (`POST /v1/run-quotes` first for `new`), again while `preparing`; `GET /v1/runs/{id}/events` |
 | `cozy package ls [query]` | `GET /v1/packages` |
 | `cozy package ls --on` | `GET /v1/machines/{name}`, `GET /v1/machines/{name}/packages?fresh=true`; `--on all`: `GET /v1/machines` |
-| `cozy package info` | `GET /v1/packages/{org}/{name}` |
 | `cozy package install` | local code's tree `PUT`, `POST /v1/runs` of `cozy/package_install` (`POST /v1/run-quotes` first for `new`); `GET /v1/runs/{id}/events` |
 | `cozy package uninstall` | `POST /v1/runs` of `cozy/package_remove`; `GET /v1/runs/{id}/events` |
 | `cozy package benchmarks [package] [--out FILE]` | `GET /v1/projects/{id}/benchmarks?package=`; writes `benchmarks.json` here (else `--out`) |
 | `cozy package yank [--undo]` | `POST` (`DELETE`) `/v1/packages/{org}/{name}/releases/{release}/yank` |
-| `cozy package lock` | the package's tree `PUT`, `POST /v1/runs` of `cozy/package_lock`, `GET /v1/runs/{id}/events`; the CLI writes the `uv.lock` its result holds |
 | `cozy package publish` | the package's tree `PUT`, `POST /v1/runs` of `cozy/package_publish`, `GET /v1/runs/{id}/events`; a `lock` its result holds, the CLI writes |
 | `cozy get` | `GET /v1/projects/{id}`: one line per node |
 | `cozy get NAME…\|NAME.N\|--all [--takes]` | `GET /v1/projects/{id}/nodes?names=&takes=`, printed as YAML |

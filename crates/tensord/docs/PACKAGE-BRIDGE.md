@@ -33,7 +33,7 @@ and the seal's names, over this machine's uv cache and Pythons):
   0.44 / 0.23; `Publisher::speaks`). A lock of another series takes this machine's pair, said in
   `sdk_fallback`, where its pins and every declared range admit it. Otherwise, and for anything else
   that resolves outside the series, the build is refused in one line naming the fix:
-  `runtime_protocol_unspoken` with `cozy package lock --upgrade-package cozy-runtime` (local code) or a
+  `runtime_protocol_unspoken` with `uv lock --upgrade-package cozy-runtime` (local code) or a
   newer release, `runtime_floor_unmet` with `cozy machine update <machine>` for a newer pair.
 - Wheels from files (`--no-deps --no-index --link-mode copy`): a release's Hub-hosted wheels (fetched by
   TensorFS), local code's carried ones. Then local code itself, editable, its `.pth` paths spelled as

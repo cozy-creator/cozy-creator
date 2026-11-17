@@ -2,8 +2,8 @@
 # Development worker image with this checkout's TensorD: one layer appended to the current
 # tensorhub/worker image of KIND (cpu | cuda). `push` pushes it untagged by digest, never onto a
 # tag; without it the staged layer is left for a local boot. A third argument names a directory
-# of Runtime/TensorFS wheels TensorD's executors use. Rent it with
-# `cozy rental new <sku> --image=sha256:<digest>` once a Hub has registered that digest.
+# of Runtime/TensorFS wheels TensorD's executors use. A Hub that registers that digest serves it
+# to the rentals it makes; no client picks an image.
 set -eu
 kind=$1; push=${2:-}; own_wheels=${3:-}; case $kind in cpu) tag=cpu-linux-x86 ;; cuda) tag=torch2.14.0-cu130-linux-x86 ;; *) echo "usage: $0 cpu|cuda" >&2; exit 2 ;; esac
 repo=$(cd "$(dirname "$0")/.." && pwd); commit=$(git -C "$repo" rev-parse HEAD); base=$(crane digest "tensorhub/worker:$tag")
