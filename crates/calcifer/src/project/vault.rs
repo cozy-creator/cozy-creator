@@ -859,8 +859,9 @@ pub(crate) fn adopt(api: &Arc<Api>, views: Vec<(Carried, fs::File)>, found: Opti
 fn taken(engine: &Provider, carried: Carried, pipe: fs::File) -> Result<(), Error> {
     let Carried { root, mount, secret, idle, maximum, opened, activity, active_ms, began_ms, runtime, .. } = carried;
     let mounted = Mounted::adopt(engine, mount, pipe).map_err(provider)?;
-    if !mounted.is_mounted().map_err(provider)? {
-        return Err(error("vault_provider", "the view is no longer mounted"));
+    // Its supervisor, cheaply: whether the view is still mounted is asked as it's next read, off the hand-over (macOS asks `hdiutil`).
+    if !mounted.serving().map_err(provider)? {
+        return Err(error("vault_provider", "the view's supervisor has ended"));
     }
     let keybag = Keybag::load(&root.join(KEYBAG_FILE)).map_err(|e| error("vault_keybag", e))?;
     let secret = ProjectSecret::handed(secret);

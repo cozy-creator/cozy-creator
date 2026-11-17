@@ -16,6 +16,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -217,8 +218,8 @@ def main() -> None:
         def removed_from_outside(name: str, swap_first: bool) -> dict[str, object]:
             """An unlocked encrypted project's folder removed by another program, as a person's file manager would: whether it goes,
             and whether its view is still mounted after. A swap carries it first when asked."""
-            folder = out / name
-            shutil.rmtree(folder, ignore_errors=True)
+            # Outside the job's output: a view's sealed underlay, left if the folder can't go, would stop its upload.
+            folder = Path(tempfile.mkdtemp(prefix=f"swap-{name}-")) / "project"
             made = cozy("--json", "new", str(folder), "--passphrase-file", str(out / "passphrase"), "--recovery-out", str(out / f"{name}.recovery"))
             assert made.returncode == 0, f"cozy new {name}: {made.stdout}{made.stderr}"
             status = json.loads(cozy("--json", "vault", "status", cwd=folder).stdout)
@@ -238,8 +239,13 @@ def main() -> None:
             if not gone:
                 said = cozy("--json", "vault", "status", cwd=folder)
                 seen["state"] = json.loads(said.stdout).get("state") if said.returncode == 0 else "unreadable"
-                # Put away, as the person would next: locked, then removed.
+                # Put away, as the person would next: locked, then removed (its sealed underlay opened first).
                 cozy("--json", "vault", "lock", cwd=folder)
+                for path in [folder, *folder.rglob("*")]:
+                    try:
+                        os.chmod(path, 0o700)
+                    except OSError:
+                        pass
                 shutil.rmtree(folder, ignore_errors=True)
             return seen
 

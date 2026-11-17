@@ -913,6 +913,12 @@ impl Mounted {
         })
     }
 
+    /// Whether its supervisor still serves it: what taking it over checks (cl-1113). Cheap on every OS; whether the view itself is
+    /// still mounted (macOS asks `hdiutil`) is asked as it's next read.
+    pub fn serving(&self) -> Result<bool> {
+        Ok(!self.retired && !self.owner.wait_for(Duration::ZERO)?)
+    }
+
     fn seal(&self) -> Result<()> {
         match &self.guard {
             Some(guard) => guard.seal(),

@@ -704,7 +704,7 @@ swap_overlap() (
   fi
   ARGV_LOG="$OUT/argv.log" "$py" "$E2E/cli/swap.py" --cozy "$COZY" --out "$OUT/swap" \
     || fail "swap: $(jq -c '.failed // .' "$OUT/swap/results.json" 2> /dev/null | tail -c 1500)"
-  echo "swap: $(jq -c '{fresh: .swap.fresh.asked, kept: .swap.kept.asked, again: .swap.kept.again, gaps: .swap.stream.gaps_s, slowest: [.swap.fresh.slowest_s, .swap.kept.slowest_s], restart_s: .swap.restart.s}' "$OUT/swap/results.json")"
+  echo "swap: $(jq -c '{fresh: .swap.fresh.asked, kept: .swap.kept.asked, again: .swap.kept.again, gaps: .swap.stream.gaps_s, slowest: [.swap.fresh.slowest_s, .swap.kept.slowest_s], restart_s: .swap.restart.s, outside: .outside}' "$OUT/swap/results.json")"
 )
 
 # cl-1049: an encrypted project on this runner's OS through cozy and its Calcifer (vault_native.py): made, written, locked, unlocked
