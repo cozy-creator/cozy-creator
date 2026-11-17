@@ -73,8 +73,11 @@ waits = sorted({line.split("stage: ", 1)[1].strip() for line in log.splitlines()
 said = [json.loads(line).get("reason", "") for line in open(f"{out}/{name}.ndjson") if line.startswith("{") and '"run.waiting"' in line]
 # `(at 50.1s)`, `(at 3m21.1s)`: since it was sent.
 denoise = next((60 * int(m.group(1) or 0) + float(m.group(2)) for m in re.finditer(r"stage: .*denoise.* \(at (?:(\d+)m)?([0-9.]+)s\)", log)), None)
-degrees = [c.get("measurements", {}).get("execution", {}).get("degree", 0) for c in run.get("calls", [])]
-print(json.dumps({"arm": arm, "run": name, "number": run.get("name"), "width": max(degrees or [0]), "denoise_at_s": denoise,
+execs = [c.get("measurements", {}).get("execution", {}) for c in run.get("calls", [])]
+degrees = [e.get("degree", 0) for e in execs]
+# When its first GPU call's executor started, the pod's clock: the call had its GPUs.
+gpu_at = min([e.get("executor", {}).get("started_unix_ms", 0) for e in execs if e.get("degree", 0) > 0] or [0])
+print(json.dumps({"arm": arm, "run": name, "number": run.get("name"), "width": max(degrees or [0]), "denoise_at_s": denoise, "gpu_at_ms": gpu_at,
                   "waits": waits, "said": sorted({s for s in said if s}), "execution_s": round((run.get("execution_ms") or 0) / 1000, 1),
                   "accepted_to_settled_s": round(((run.get("settled_at_ms") or 0) - (run.get("accepted_at_ms") or 0)) / 1000, 1)}))
 PY
@@ -136,5 +139,10 @@ say "green next: width $(f green-next width), denoise at $(f green-next denoise_
 [ "$(f red-lone width)" = 2 ] && [ "$(f green-lone width)" = 2 ] || fail "a lone H3 didn't take both GPUs (red $(f red-lone width), green $(f green-lone width))"
 [ "$(f green-next width)" = 1 ] && [[ $(f green-next waits) != *GPU* ]] || fail "green's next didn't start at once on the free GPU"
 [[ $(f green-second said) == *"about "*" min"* || $(f green-second said) == *"under a minute"* ]] || say "NOTE: green's second said no time for its wait: $(f green-second said)"
-[ "$AHEAD" = false ] || [ -z "$(f green-ahead width)" ] || say "green ahead: width $(f green-ahead width); TensorD: $(grep -a 'load ahead' "$OUT/queue.log" | tail -3 | tr '\n' ' ')"
+if [ "$AHEAD" = true ] && [ -n "$(f green-ahead width)" ]; then
+  # The load's yield (TensorD's log, the pod's clock) to the H3's first GPU call taking its GPUs (its executor's start).
+  yielded=$(grep -a 'load ahead: its GPU went to a run' "$OUT/tensord.log" | tail -1 | grep -oE '^[0-9T:.-]+Z' || true)
+  y_ms=$([ -z "$yielded" ] || date -d "$yielded" +%s%3N)
+  say "green ahead: width $(f green-ahead width), its first GPU call's executor at $(f green-ahead gpu_at_ms) ms; the load yielded at ${yielded:-never} (${y_ms:-?} ms)$([ -z "$y_ms" ] || echo ", $(( $(f green-ahead gpu_at_ms) - y_ms )) ms before the call had its GPUs")"
+fi
 say "PASS: red's next waited for 2 GPUs held by hold; green's started at once on the free GPU; a lone H3 took both on each"
