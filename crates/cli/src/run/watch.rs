@@ -101,7 +101,7 @@ pub(crate) async fn exec(
                 .map(|r| r.message.clone())
                 .unwrap_or_default();
             table = table.row([
-                call.index.to_string(),
+                call.path(),
                 call.function.clone(),
                 call.label.clone(),
                 status,
