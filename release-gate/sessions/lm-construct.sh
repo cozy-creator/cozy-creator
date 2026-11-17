@@ -111,8 +111,11 @@ fault() {
     sleep 1
   done
   sleep 5
-  say "$a-fault: run ${n:-none} at '${stage:-?}': $(T=300 pod "python3 /tmp/lm.py break $ck" < /dev/null 2>&1)"
+  local broke
+  broke=$(T=300 pod "python3 /tmp/lm.py break $ck" < /dev/null 2>&1)
+  say "$a-fault: run ${n:-none} at '${stage:-?}': $broke"
   wait "$p"
+  [ "$(jq -r '.size // empty' <<<"$broke" 2> /dev/null)" = 0 ] || { say "FAIL $a-fault: the chunk was not emptied"; RC=1; }
   record "$a-fault"
   say "$a-fault: restored $(T=300 pod "python3 /tmp/lm.py restore $ck" < /dev/null 2>&1)"
   write "$a-after"

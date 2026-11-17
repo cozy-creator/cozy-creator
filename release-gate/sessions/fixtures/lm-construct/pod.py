@@ -74,7 +74,7 @@ elif mode in ("break", "restore"):
         sys.exit(1)
     code = (
         "import json, sys, tensorfs; ck = tensorfs.open(sys.argv[1], local_files_only=True, cache_dir=sys.argv[2]); "
-        "chunks = ck.chunks(); print(json.dumps(chunks[len(chunks) // 2]))"
+        "chunks = ck.chunks() if callable(ck.chunks) else ck.chunks; print(json.dumps(list(chunks[len(chunks) // 2])))"
     )
     done = subprocess.run([envs[-1], "-c", code, sys.argv[2], store], capture_output=True, text=True, timeout=300)
     try:
