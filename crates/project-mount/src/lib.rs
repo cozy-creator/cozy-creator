@@ -1342,7 +1342,7 @@ fn control_process(
     Err(Error::ControlTimeout(operation))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(debug_assertions, target_os = "macos"))]
 fn control_output(mut command: Command, operation: &'static str) -> Result<Vec<u8>> {
     let mut child = command
         .stdin(Stdio::null())
@@ -1380,13 +1380,11 @@ fn macos_source(view: &Path) -> Result<Option<String>> {
         .and_then(|parent| fs::canonicalize(parent).ok())
         .zip(view.file_name())
         .map_or_else(|| view.to_path_buf(), |(parent, name)| parent.join(name));
-    let bytes = control_output(clean_command(Path::new("/sbin/mount")), "status")?;
-    let needle = format!(" on {} (", view.display());
-    Ok(String::from_utf8_lossy(&bytes)
-        .lines()
-        .find(|line| line.contains(&needle))
-        .and_then(|line| line.split_once(" on "))
-        .map(|(source, _)| source.to_owned()))
+    // One `statfs`, not `/sbin/mount`: each request into an encrypted project checks its volume (cl-1111: two processes a request, ~1 s a
+    // thumbnail on a Mac).
+    Ok(platform::mounts::mount_of(&view)
+        .filter(|(on, _)| *on == view)
+        .map(|(_, source)| source))
 }
 
 #[cfg(all(debug_assertions, target_os = "macos"))]

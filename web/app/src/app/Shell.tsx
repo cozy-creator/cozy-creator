@@ -538,7 +538,7 @@ export function Shell() {
         <ProjectTabs id={id} folder={vault.data?.path} readable={readable}>
           <Connectivity />
         </ProjectTabs>
-        <MachineTabs to={to} projectId={id} />
+        <MachineTabs to={to} projectId={id} readable={readable} locked={revoked} />
         <span className="canvas-controls" ref={setSlot} />
         <MainMenu id={id} readable={readable} />
       </header>

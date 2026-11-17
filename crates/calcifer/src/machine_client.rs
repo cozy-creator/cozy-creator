@@ -29,7 +29,7 @@ use url::Url;
 use api::{
     error::{Envelope, Kind},
     machine::{
-        Event, GpuUse, HELD, HeldAnswer, HeldBytes, HeldObject, HeldRequest, LogLines, OutputTarget, Ranges,
+        Event, GpuUse, HELD, HeldAnswer, HeldBytes, HeldObject, HeldRequest, LogLines, Ranges,
         PREVIEW_STEP, RunBatch, RunBatchAnswer, RunEvent, RunList, RunRequest, RunState, SERVER_NAME, StatusFrame, capability, parse_held,
         path,
     },
@@ -421,6 +421,17 @@ impl Machine {
     }
 }
 
+/// One output of a run, as `GET /v1/runs/{id}/outputs/{output}?index=&member=` names it: the run as its machine knows it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct OutputAt {
+    pub run: crate::store::Sent,
+    pub output: String,
+    /// A list item's 1-based index; 0 for a single output.
+    pub index: u32,
+    /// One file of a tree output, by its manifest path; empty: the manifest.
+    pub member: String,
+}
+
 /// HTTP/1.1 connections of one bulk lane.
 #[derive(Clone)]
 pub(crate) struct Bulk {
@@ -456,11 +467,11 @@ impl Bulk {
     /// newest). A moved revision is a 412 refusal, a range past its end a 416.
     pub(crate) async fn get(
         &self,
-        target: &OutputTarget,
+        target: &OutputAt,
         (first, end): (u64, u64),
         rev: u64,
     ) -> Result<Output, Error> {
-        let mut request = self.request(Method::GET, path::OUTPUT, &[&target.run, &target.output]);
+        let mut request = self.request(Method::GET, path::OUTPUT, &[target.run.as_str(), &target.output]);
         if target.index > 0 {
             request = request.query(&[("index", target.index)]);
         }

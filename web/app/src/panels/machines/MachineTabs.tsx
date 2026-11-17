@@ -75,7 +75,7 @@ function Row({ doing, boxes, to }: { doing: Doing; boxes: Map<number, string>; t
     return (
       <li className="doing" data-doing="other">
         <MarkOf mark={doing.state === "running" ? "work" : "idle"} />
-        <b>Another project's run</b>
+        <b>{doing.own ? "This project's run" : "Another project's run"}</b>
         <span className="kind">{sentence(doing.state)}</span>
       </li>
     )
@@ -116,8 +116,9 @@ function Row({ doing, boxes, to }: { doing: Doing; boxes: Map<number, string>; t
 }
 
 /** What a machine is working on, under its chip, as Chrome's downloads under its button (Paul 11-16): each thing a line with how far it
- *  is, then its Render here and Details. Open until a press elsewhere or Escape. */
-function Activity({ machine, doing, boxes, to, chip, close }: { machine: Machine; doing: Doing[]; boxes: Map<number, string>; to: (rest?: string) => string; chip: HTMLElement; close: () => void }) {
+ *  is, then its Render here and Details. On a project that isn't read, no Render here: a locked one says how to get it (cl-1099). Open
+ *  until a press elsewhere or Escape. */
+function Activity({ machine, doing, boxes, to, chip, readable, locked, close }: { machine: Machine; doing: Doing[]; boxes: Map<number, string>; to: (rest?: string) => string; chip: HTMLElement; readable: boolean; locked: boolean; close: () => void }) {
   const held = useRef<HTMLDivElement>(null)
   const [at, setAt] = useState<{ top: number; right: number } | null>(null)
   useLayoutEffect(() => {
@@ -144,6 +145,11 @@ function Activity({ machine, doing, boxes, to, chip, close }: { machine: Machine
       window.removeEventListener("keydown", key)
     }
   }, [chip, close])
+  const details = (
+    <Link className="more" to={to(`machines/${encodeURIComponent(stableName(machine))}`)} onClick={close}>
+      Details
+    </Link>
+  )
   return (
     <div className="activity" ref={held} role="dialog" aria-label={`What ${called(machine)} is doing`} style={at ? { top: at.top, right: at.right } : { visibility: "hidden" }}>
       <header>
@@ -164,11 +170,7 @@ function Activity({ machine, doing, boxes, to, chip, close }: { machine: Machine
         <p className="said">Nothing running.</p>
       )}
       <footer>
-        <Checks machine={machine}>
-          <Link className="more" to={to(`machines/${encodeURIComponent(stableName(machine))}`)} onClick={close}>
-            Details
-          </Link>
-        </Checks>
+        {readable ? <Checks machine={machine}>{details}</Checks> : <div className="checks">{locked && <span className="said">This project is locked. Unlock it to render here.</span>}{details}</div>}
       </footer>
     </div>
   )
@@ -177,11 +179,14 @@ function Activity({ machine, doing, boxes, to, chip, close }: { machine: Machine
 /** Each machine, top right, `local` first: what it's doing at a glance, and a click shows each thing with how far it is, and Render here,
  *  which makes it one of the open project's preferred machines, green (Paul 11-12). Kept by the stream. As many as fit the strip's width,
  *  the rest behind "N more", which lists them first, and the strip ends in + for a new machine wherever renting is (Paul 11-16). As
- *  ProjectTabs fits its own: a hidden copy of every tab says what each takes, what it holds refits it in that frame, a size by the next. */
-export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; projectId: string | null }) {
+ *  ProjectTabs fits its own: a hidden copy of every tab says what each takes, what it holds refits it in that frame, a size by the next. A
+ *  project that isn't `readable` (`locked`, or being checked) is asked nothing, and what of it is on a machine is its state alone (cl-1099). */
+export function MachineTabs({ to, projectId, readable, locked }: { to: (rest?: string) => string; projectId: string | null; readable: boolean; locked: boolean }) {
   const { client, stream } = useConnection()
   const { data } = useQuery(machinesQuery(client))
-  const { data: project } = useQuery({ ...projectQuery(client, stream, projectId ?? ""), enabled: Boolean(projectId) })
+  const { data: read } = useQuery({ ...projectQuery(client, stream, projectId ?? ""), enabled: Boolean(projectId) && readable })
+  const project = readable ? read : undefined
+  const doing = (machine: Machine) => doingOf(machine, projectId, !readable)
   const [open, setOpen] = useState<{ name: string; chip: HTMLElement } | null>(null)
   const [count, setCount] = useState(Number.POSITIVE_INFINITY)
   const strip = useRef<HTMLElement>(null)
@@ -253,7 +258,7 @@ export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; 
                 setOpen((now) => (now?.name === machine.name ? null : { name: machine.name, chip }))
               }}
             >
-              <Face machine={machine} doing={doingOf(machine, projectId)} />
+              <Face machine={machine} doing={doing(machine)} />
             </button>
           ))}
           {hidden.length > 0 && (
@@ -272,14 +277,14 @@ export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; 
         <div ref={sizes}>
           {machines.map((machine) => (
             <span key={machine.name} className="mtab">
-              <Face machine={machine} doing={doingOf(machine, projectId)} />
+              <Face machine={machine} doing={doing(machine)} />
             </span>
           ))}
           <span className="mtab">{machines.length} more</span>
           {renting && <span className="ptab add">+</span>}
         </div>
       </div>
-      {open && shown && <Activity machine={shown} doing={doingOf(shown, projectId)} boxes={boxes} to={to} chip={open.chip} close={() => setOpen(null)} />}
+      {open && shown && <Activity machine={shown} doing={doing(shown)} boxes={boxes} to={to} chip={open.chip} readable={readable} locked={locked} close={() => setOpen(null)} />}
     </>
   )
 }

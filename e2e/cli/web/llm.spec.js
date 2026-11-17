@@ -6,8 +6,9 @@
 // on a picture, it makes a new text box right of it whose prompt starts with the picture's mention, opened with the caret after it: what's
 // typed is asked, and its answer read the picture. On a video the same, and Undo takes the new box away. A tool that makes video from a
 // picture (project/clip.py) let go on a picture makes a new video box reading it, one step that Undo takes away. On a sound, which it can't
-// read, the LLM changes nothing and says why. The LLM row, the Text box with its answer and the new box beside the picture are kept at
-// 1440×900 and 1920×1080, on paper and dark.
+// read, the LLM changes nothing and says why. Typed while Calcifer is still making the new box (its making held, as a slow first listing or
+// install holds it), the words stand as typed: after the mention, or in its place. The LLM row, the Text box with its answer and the new box
+// beside the picture are kept at 1440×900 and 1920×1080, on paper and dark.
 const { randomUUID } = require('crypto');
 const { mkdirSync, readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
@@ -197,7 +198,52 @@ test('llm', async ({ page, project, api }) => {
     expect.soft({ tool: after.tool ?? null, kind: after.kind, fields: after.fields }, 'the sound stays as it was').toEqual({ tool: before.tool ?? null, kind: before.kind, fields: before.fields });
     expect.soft((await project.assets()).length, 'and no box is made').toBe(count);
   });
+
+  // The GPU proof's first drop (43985932697, 43992085255): Calcifer was still making the box when its words were typed, and they landed as
+  // " write a caption<photo>". Typed on the project as the page last read it, without the box, they and the mention Calcifer wrote merged
+  // as two insertions at one place, in either order, and a word replacing the mention left it there. Held here as a slow first listing or
+  // install holds the box's making.
+  await test.step('typed while Calcifer is still making the box: the words stand as typed', async () => {
+    for (const [on, keys, typed, want] of [
+      ['coast', [], ' write a caption', '<coast> write a caption'],
+      ['take', [], ' write a caption', '<take> write a caption'],
+      ['coast', ['ControlOrMeta+A'], 'Describe the sea.', 'Describe the sea.'],
+    ]) {
+      const was = (await project.assets()).map((asset) => asset.name);
+      const release = await holdMaking(page);
+      await carry(page, await toolRow(page, 'LLM', LLM), await canvasPoint(page, on));
+      await expect(page.locator('.card.here .in-frame .mention-text[data-field="instructions"]'), 'opened on its words').toBeFocused();
+      for (const key of keys) await page.keyboard.press(key);
+      await page.keyboard.type(typed);
+      // Past the typing pause: what's typed is on its way, behind the box.
+      await page.waitForTimeout(800);
+      expect((await project.assets()).length, 'Calcifer is still making it').toBe(was.length);
+      await release();
+      const made = await madeAfter(was, `the LLM on ${on}`);
+      await expect.poll(async () => (await project.asset(made.name))?.fields?.instructions ?? '', { message: `${made.name}: what's typed lands` }).toContain(typed.trim());
+      expect.soft((await project.asset(made.name)).fields?.instructions, `${made.name}, made from ${on}: ${JSON.stringify(typed)} typed${keys.length ? ' over all of it' : ''}`).toBe(want);
+      await page.keyboard.press('Escape');
+      await expect(page.locator('.card.here'), 'left').toHaveCount(0);
+      await canvasIdle(page);
+    }
+  });
 });
+
+/** The next box this page makes held on its way to Calcifer until `release()`, as a slow first listing or install holds it there. */
+async function holdMaking(page) {
+  let release;
+  const held = new Promise((done) => (release = done));
+  const going = [];
+  const making = (url) => /\/v1\/projects\/[^/]+\/assets$/.test(url.pathname);
+  const handler = async (route) => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    const sent = held.then(() => route.continue());
+    going.push(sent);
+    await sent;
+  };
+  await page.route(making, handler);
+  return async () => { release(); await Promise.all(going); await page.unroute(making, handler); };
+}
 
 // xs-204's GPU proof, release-gate/sessions/llm-tools.sh: the same hands on a real model, its renders on a rental. LLM_MACHINE is where the
 // project's renders go (`local` in the session's $0 pre-flight); LLM_TOOL the tool (`qwen3.6/write`, the dev home's checkout's; a local
@@ -314,8 +360,8 @@ test('llm: real models on a GPU', { tag: '@gpu' }, async ({ page, project, api, 
       const words = page.locator(`.card.here[data-asset=${JSON.stringify(made.name)}] .in-frame .mention-text[data-field="instructions"]`);
       await expect(words, 'opened on its words').toBeFocused();
       await page.keyboard.type(' write a caption');
-      // The caret after the mention: on Qwen3.6 from a checkout the words went before it, " write a caption<photo>" (43985932697), where
-      // the CPU fixture's go after it. Said, and the caption asked either way: the prompt still mentions the picture.
+      // The words after the mention: typed while Calcifer was still making the box, they went before it, " write a caption<photo>"
+      // (43985932697, 43992085255; the CPU cell's last step holds that). Said, and the caption asked either way: it still mentions the picture.
       await expect.poll(async () => (await project.asset(made.name))?.fields?.instructions ?? '', { message: "what's typed lands" }).toContain('write a caption');
       const typed = (await project.asset(made.name)).fields?.instructions;
       kept.typed = { ...kept.typed, [kind]: typed };

@@ -208,6 +208,76 @@ for _ in $(seq 90); do [ -z "$(docker ps -aq --filter label=com.cozy.tensorhub.p
 cozy --json logout > /dev/null 2>&1 || true
 }
 
+# run_on_new (cl-1066, Paul's fix-don't-refuse): a project's `cozy run --on new:cpu -y` rents for it, quoted and agreed. Before, its rent
+# was refused `project_remote_execution_unavailable` ("A project's render can't rent a machine by itself") and the run failed: every run
+# is a project's since cl-1028, so `--on new` rented for none. This Hub's docker rental never gets ready, so where the run stands is the
+# cell: on its new rental, waiting for it, not failed.
+run_on_new() {
+step "a project's run --on new rents for it (cl-1066)"
+[ -n "${E2E_HUB_LOG:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] && [ -n "${E2E_FINAL:-}" ] || { check "run_on_new: e2e/isolated.sh named no Hub log, email or e2e-final"; return; }
+local P=$OUT/on-new-project pid run='' w=$OUT/on-new-watch.json rental=''
+signin "$E2E_HUB_EMAIL" > "$OUT/on-new-login.json" || { check "run_on_new: cozy login failed: $(tail -c 300 "$OUT/on-new-login.json")"; return; }
+cozy --json new --unencrypted "$P" > "$OUT/on-new-new.json" 2>&1 || check "run_on_new: new: $(tail -c 300 "$OUT/on-new-new.json")"
+(cd "$P" && cozy --json -y run "$E2E_FINAL/echo" text=rented --on new:cpu) > "$OUT/on-new-run.ndjson" 2> "$OUT/on-new-run.err" & pid=$!
+for _ in $(seq 120); do
+  in_project "$P" --json run ls --limit 5 > "$OUT/on-new-runs.json" 2> /dev/null || true
+  run=$(jq -r '[.runs[]? | select(.target | test("e2e-final"))] | min_by(.number) | .number // empty' "$OUT/on-new-runs.json" 2> /dev/null || true)
+  if [ -n "$run" ]; then
+    in_project "$P" --json run watch "$run" --once > "$w" 2>&1 || true
+    rental=$(cozy --json machine ls 2> /dev/null | jq -r --arg m "$(jq -r '.machine // empty' "$w")" '.machines[] | select(.name == $m and .rental_id != null) | .rental_id' 2> /dev/null | head -1 || true)
+    [ -z "$rental" ] || J '.status == "failed"' "$w" || break
+    J '.status == "failed"' "$w" && break
+  fi
+  sleep 2
+done
+kill -KILL "$pid" 2> /dev/null || true
+wait "$pid" 2> /dev/null || true
+echo "run_on_new: run ${run:-none}: $(jq -c '{status, machine, waiting, reason: .reason.code}' "$w" 2> /dev/null), rental ${rental:-none}"
+[ -n "$run" ] || check "run_on_new: run --on new:cpu made no run: $(tail -c 300 "$OUT/on-new-run.ndjson") $(tail -c 300 "$OUT/on-new-run.err")"
+[ -n "$rental" ] && ! J '.status == "failed"' "$w" \
+  || check "run_on_new: the project's run --on new:cpu rented nothing for it: $(jq -c '{status, machine, reason}' "$w" 2> /dev/null)"
+[ -z "$rental" ] || cozy --json machine end "$rental" --force -y > "$OUT/on-new-end.json" 2>&1 || check "run_on_new: its rental didn't end: $(tail -c 300 "$OUT/on-new-end.json")"
+on_new_encrypted
+cozy --json logout > /dev/null 2>&1 || true
+}
+# on_new_encrypted: the same from an encrypted project; once it locks, Calcifer's own store holds nothing that ties the rental to it (no
+# traces, cl-984): its rent asks name neither the run, the project's id nor its code (coordinator, 11-17).
+on_new_encrypted() {
+local E=$OUT/on-new-encrypted pass=$OUT/on-new-pass pid number='' id='' code='' runid='' rental='' w=$OUT/on-new-enc-watch.json
+printf 'on-new-%s%s\n' "$RANDOM" "$RANDOM" > "$pass"
+cozy --json new "$E" --passphrase-file "$pass" --recovery-out "$OUT/on-new-recovery" > "$OUT/on-new-enc-new.json" 2>&1 \
+  || { check "run_on_new: new encrypted: $(tail -c 300 "$OUT/on-new-enc-new.json")"; return; }
+id=$(jq -r '.id // empty' "$OUT/on-new-enc-new.json") code=$(jq -r '.code // empty' "$OUT/on-new-enc-new.json")
+(cd "$E" && cozy --json -y run "$E2E_FINAL/echo" text=sealed --on new:cpu) > "$OUT/on-new-enc-run.ndjson" 2> "$OUT/on-new-enc-run.err" & pid=$!
+for _ in $(seq 120); do
+  number=$(in_project "$E" --json run ls --limit 5 2> /dev/null | jq -r '[.runs[]? | select(.target | test("e2e-final"))] | min_by(.number) | .number // empty' 2> /dev/null || true)
+  if [ -n "$number" ]; then
+    in_project "$E" --json run watch "$number" --once > "$w" 2>&1 || true
+    rental=$(cozy --json machine ls 2> /dev/null | jq -r --arg m "$(jq -r '.machine // empty' "$w")" '.machines[] | select(.name == $m and .rental_id != null) | .rental_id' 2> /dev/null | head -1 || true)
+    [ -z "$rental" ] && ! J '.status == "failed"' "$w" || break
+  fi
+  sleep 2
+done
+kill -KILL "$pid" 2> /dev/null || true
+wait "$pid" 2> /dev/null || true
+runid=$(jq -r '.id // empty' "$w" 2> /dev/null || true)
+[ -n "$rental" ] && ! J '.status == "failed"' "$w" || check "run_on_new: the encrypted project's run --on new:cpu rented nothing for it: $(jq -c '{status, machine, reason}' "$w" 2> /dev/null)"
+[ -z "$rental" ] || cozy --json machine end "$rental" --force -y > "$OUT/on-new-enc-end.json" 2>&1 || check "run_on_new: the encrypted project's rental didn't end"
+in_project "$E" --json vault lock > "$OUT/on-new-enc-lock.json" 2>&1 || check "run_on_new: the encrypted project didn't lock: $(tail -c 300 "$OUT/on-new-enc-lock.json")"
+python3 - "$HOME/.cozy/calcifer/state.db" "$id" "$code" "$runid" > "$OUT/on-new-traces.txt" 2>&1 <<'PY' || check "run_on_new: once locked, Calcifer's asks tie the rental to the encrypted project: $(cat "$OUT/on-new-traces.txt")"
+import sqlite3, sys
+path, *marks = sys.argv[1:]
+marks = [mark for mark in marks if mark]
+assert len(marks) == 3, f"what to look for: {marks}"
+db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+rows = db.execute("SELECT key, coalesce(run, ''), body, coalesce(reason, '') FROM asks").fetchall()
+found = [(mark[:8], row[0]) for row in rows for mark in marks
+         if mark.encode() in b"".join(value if isinstance(value, bytes) else str(value).encode() for value in row)]
+assert not found, f"{found} in {len(rows)} asks"
+print(f"{len(rows)} asks, none naming the run, the project's id or its code")
+PY
+}
+
 # rental_rename (cl-1089): a render sent to a rental by its `rent-…` handle, before its Hub names the host, follows the name: cl-1069's
 # pod sessions (43849240267, 43850691690) waited on "no machine named rent-…" until cut. Its run says the host's name, never that wait,
 # and once the rental ends it settles. This Hub's docker rental never gets ready, so the run is never sent: where it stands is the cell.

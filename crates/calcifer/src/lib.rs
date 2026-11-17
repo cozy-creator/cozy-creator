@@ -35,7 +35,6 @@ mod machines;
 mod machine_client;
 mod old_outputs;
 mod outputs;
-mod others;
 mod page;
 mod placement;
 mod plan;
@@ -2259,7 +2258,6 @@ impl Calcifer {
         let link = private.as_ref().unwrap_or(link);
         // Its machine knows it by the id of this attempt (cl-935).
         let sent = run.sent_id();
-        let id = sent.as_str();
         let mut canceled = false;
         let (state, stream) = match run.state {
             State::Settled => return Ok(()),
@@ -2274,11 +2272,11 @@ impl Calcifer {
             }
             State::Sent | State::Accepted => {
                 if run.cancel_requested {
-                    link.cancel(id).await?;
+                    link.cancel(&sent).await?;
                     canceled = true;
                 }
                 // It may be there: attach first, and send again only to a machine that never got it.
-                match self.answered(&run.id, machine, link.attach(id, run.cursor)).await {
+                match self.answered(&run.id, machine, link.attach(&sent, run.cursor)).await {
                     Err(LinkError::NoRun | LinkError::NotFound) if run.state == State::Sent => {
                         self.write_inputs(link, run, machine).await?;
                         let _turn = sending.lock().await;
@@ -2317,7 +2315,7 @@ impl Calcifer {
             }
             Acceptance::Again => {}
             Acceptance::Stale => {
-                link.cancel(id).await?;
+                link.cancel(&sent).await?;
                 return Ok(());
             }
         }
@@ -2328,7 +2326,7 @@ impl Calcifer {
         // A run just sent is accepted by the machine's answer; its events follow from the start.
         let stream = match stream {
             Some(stream) => stream,
-            None => link.events(id, 0).await?,
+            None => link.events(&sent, 0).await?,
         };
         self.clock(run, machine);
         // What the Hub says of other cards comes while it's followed, never ahead of its events; so does its bar (`slow`).
@@ -2384,12 +2382,13 @@ impl Calcifer {
                     false => continue,
                 }
             }
-            sent.push((own, v1::RunRequest { id: row.sent_id(), spec }));
+            sent.push((own, (row.sent_id(), spec)));
         }
         let at = sent.iter().position(|(own, _)| *own).expect("its own run is sent");
-        let mut runs: Vec<v1::RunRequest> = sent.into_iter().map(|(_, request)| request).collect();
+        let mut runs: Vec<(store::Sent, v1::RunSpec)> = sent.into_iter().map(|(_, request)| request).collect();
         if run.kind == ::api::calcifer::Kind::Update {
-            return self.sent(machine, self.answered(&run.id, machine, link.update(runs.remove(at))).await).map(Some);
+            let (id, spec) = runs.remove(at);
+            return self.sent(machine, self.answered(&run.id, machine, link.update(id, spec)).await).map(Some);
         }
         match self.answered(&run.id, machine, link.admit(runs)).await {
             Ok(answers) => self.sent(machine, answers.into_iter().nth(at).expect("an answer a run")).map(Some),
