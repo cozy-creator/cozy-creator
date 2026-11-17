@@ -592,24 +592,20 @@ fn raw_parts<'py>(
     component: &str,
     key: &str,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let component = checkpoint
-        .header
-        .components()
-        .iter()
-        .find(|c| c.name == component)
-        .ok_or_else(|| {
-            raise(
-                py,
-                Failure {
-                    kind: Kind::NotFound,
-                    detail: format!("no component {component:?}"),
-                },
-            )
-        })?;
-    let tensor = component
-        .tensors
-        .iter()
-        .find(|t| t.key == key)
+    // The header's index: a scan per key made a component's every lookup O(tensors), 22k of
+    // them twice over at Qwen3.6's registration (cr-307).
+    let header = &checkpoint.header;
+    if header.component(component).is_none() {
+        return Err(raise(
+            py,
+            Failure {
+                kind: Kind::NotFound,
+                detail: format!("no component {component:?}"),
+            },
+        ));
+    }
+    let tensor = header
+        .tensor(component, key)
         .ok_or_else(|| {
             raise(
                 py,
