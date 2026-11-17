@@ -319,8 +319,6 @@ export class CanvasStore {
   /** Its boxes drawn once. What hangs on each, the line under it, its meter and its corner, comes the paint after: none of them takes room
    *  in it, and the frame a project opens in is its boxes alone (cl-982). */
   readonly drawn = signal(false)
-  /** The canvas's zoom as pictures are asked for it: a power of two, so a zoom asks for a sharper picture only as it doubles. */
-  readonly sharpness = signal(1)
   /** What takes a drop, by its element: a box marks itself `data-drop-target`. */
   readonly dropTargets = new Map<Element, DropTarget>()
   /** Each open text's way to take a name at its caret, by `<node>:<place>`. */
