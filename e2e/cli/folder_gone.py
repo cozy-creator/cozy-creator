@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from typing import cast
 
 # A lock asked of it, and Calcifer's status, answer within this; a restart within `RESTART`.
 ANSWER = 60
@@ -37,12 +38,24 @@ def mounted(view: str) -> bool:
     return any(line.split()[4] == escaped for line in Path("/proc/self/mountinfo").read_text().splitlines())
 
 
+def answer(said: str) -> dict[str, object]:
+    """The last JSON object `cozy --json` printed: its answer."""
+    for line in reversed(said.splitlines()):
+        try:
+            found = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(found, dict):
+            return cast(dict[str, object], found)
+    return {}
+
+
 class Cell:
     def __init__(self, cozy: Path, out: Path) -> None:
         self.cozy_binary, self.out = cozy, out
 
     def cozy(self, *words: str, timeout: float = 600, cwd: Path | None = None) -> tuple[int | None, str, float]:
-        """Exit (None: it didn't answer within `timeout`), its output, and how long it took."""
+        """Exit (None: it didn't answer within `timeout`), its output (all its stdout, then its stderr's end), and how long it took."""
         if log := os.environ.get("ARGV_LOG"):
             with open(log, "a") as logged:
                 logged.write("".join(f"{word}\x1f" for word in words) + "\x1e")
@@ -51,16 +64,14 @@ class Cell:
             done = subprocess.run([str(self.cozy_binary), *words], cwd=cwd, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
             return None, "", round(time.monotonic() - began, 1)
-        return done.returncode, (done.stdout + done.stderr)[-800:], round(time.monotonic() - began, 1)
+        return done.returncode, done.stdout + "\n" + done.stderr[-800:], round(time.monotonic() - began, 1)
 
     def state(self, folder: Path) -> str:
         code, said, _ = self.cozy("--json", "vault", "--directory", str(folder), "status", timeout=ANSWER)
         if code is None:
             return "no answer"
-        try:
-            return str(json.loads(said.strip().splitlines()[-1]).get("state"))
-        except (ValueError, IndexError):
-            return f"refused: {said.strip()[-200:]}"
+        found = answer(said)
+        return str(found.get("state")) if found else f"refused: {said.strip()[-200:]}"
 
     def up(self) -> bool:
         code, _, _ = self.cozy("--json", "status", timeout=ANSWER)
@@ -76,8 +87,7 @@ class Cell:
         assert code == 0, f"lock {name} before its unlock: {said}"
         code, said, _ = self.cozy("--json", "vault", "--directory", str(folder), "unlock", "--passphrase-file", str(secret), "--idle", str(idle))
         assert code == 0, f"unlock {name}: {said}"
-        view = json.loads(said.strip().splitlines()[-1])["vault"]["view"]
-        return folder, str(view)
+        return folder, str(cast(dict[str, object], answer(said)["vault"])["view"])
 
     def removed(self, folder: Path) -> dict[str, object]:
         """The folder removed from outside, retried for 20 s as a person would: whether it went."""
