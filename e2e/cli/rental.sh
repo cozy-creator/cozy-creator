@@ -10,6 +10,8 @@
 #   hub_blob_reads  th-382: a weight download's range reads take at most 4 of the Hub's connections however slow Postgres is:
 #                verified_objects locked 4 s while 400 range GETs of 20 public objects go 80 at once; /readyz still answers, and
 #                each GET its redirect.
+#   hub_connection_budget  th-382: a replica's connections stay within database.connections_per_replica (30 here), each label
+#                (tensorhub, tensorhub-authkit) within its share, under blob reads and signed-in requests with Postgres slowed.
 #   rental_end_again  cl-977: an end that failed (signed out) is asked again by Calcifer itself, paced: signed in again, the
 #                rental ends with no second `machine end`, and its container goes.
 
@@ -459,4 +461,88 @@ SQL
   [ "$ready" = 204 ] && awk -v s="$secs" 'BEGIN { exit !(s < 1.0) }' \
     || check "hub blob reads: the Hub wasn't ready while a download read (/readyz $ready in $secs s): its pool was the download's"
   ! grep -qv '^30[27]$' "$S/codes.txt" || check "hub blob reads: 400 range GETs answered $codes(not all redirects)"
+)
+
+# th-382: every connection a replica opens comes from one budget (database.connections_per_replica), so all replicas fit Postgres,
+# a rollout's extra one included. The fixture Hub is restarted on a budget of 30, then loaded where each pool is pushed to its
+# most: a weight download's range reads with blob reads slowed, and 80 signed-in requests at once with AuthKit's tables slowed.
+# Its sessions, sampled throughout, stay within each label's share and 30 in all.
+hub_connection_budget() (
+  step "a replica's connections stay within database.connections_per_replica, each pool within its share (th-382)"
+  [ -n "${COZY_TEST_HUB_COMMAND_FILE:-}" ] && [ -n "${COZY_HUB_URL:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] \
+    || fail "hub budget: e2e/isolated.sh named no Hub command, URL or email"
+  local S=$OUT/hub-budget budget=30 db port container shas authkit token said hub_share authkit_share loads load peak
+  mkdir -p "$S"
+  db=$(tr '\0' '\n' < "$COZY_TEST_HUB_COMMAND_FILE" | grep -o 'postgres://[^" ]*' | head -1 || true)
+  port=$(sed -E 's#.*@[^:/]+:([0-9]+)/.*#\1#' <<< "$db")
+  container=$(docker ps --filter "publish=$port" --format '{{.Names}}' 2> /dev/null | head -1 || true)
+  [ -n "$container" ] || fail "hub budget: no Postgres container publishes ${port:-?}"
+  sql() { docker exec -i -e PGAPPNAME=th382 "$container" psql -v ON_ERROR_STOP=1 -qtA -U postgres "$@"; }
+  release() { sql -c "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE application_name LIKE 'th382-slow%'" > /dev/null 2>&1 || true; }
+  forget() { sql -c "DELETE FROM hub_v2.verified_objects WHERE bucket = 'th382b'" > /dev/null 2>&1 || true; }
+  trap 'release; forget; bash "$here/../skew/rehub.sh" > /dev/null 2>&1 || true' EXIT
+  signin "$E2E_HUB_EMAIL" > "$S/login.json" || fail "hub budget: cozy login: $(tail -c 300 "$S/login.json")"
+  # The budget, on a Hub that has one; one that hasn't starts as it is, and is held to 30 all the same.
+  bash "$here/../skew/rehub.sh" --set "database.connections_per_replica=$budget" > "$S/rehub.log" 2>&1 \
+    || bash "$here/../skew/rehub.sh" > "$S/rehub-plain.log" 2>&1 || fail "hub budget: restarting the Hub: $(tail -c 300 "$S/rehub.log")"
+  said=$(grep '"database connected"' "$COZY_TEST_HUB_SERVE_LOG" | tail -1)
+  hub_share=$(jq -r '.tensorhub // empty' <<< "$said" 2> /dev/null || true)
+  authkit_share=$(jq -r '."tensorhub-authkit" // empty' <<< "$said" 2> /dev/null || true)
+  echo "hub budget: the Hub says $(jq -c '{connections_per_replica, hub_pool, authkit_pool, tensorhub, "tensorhub-authkit"}' <<< "$said" 2> /dev/null || echo 'no budget')"
+  cozy --json whoami > /dev/null 2>&1 || true
+  token=$(jq -r .token "$(ls "$HOME"/.cozy/keys/*.bearer.json | head -1)" 2> /dev/null || true)
+  [ -n "$token" ] || fail "hub budget: no Bearer kept in $HOME/.cozy/keys"
+  sql > "$S/objects.out" 2>&1 <<'SQL' || fail "hub budget: recording public objects: $(tail -c 300 "$S/objects.out")"
+INSERT INTO hub_v2.verified_objects (object_id, length, bucket, key, backend_version, etag, checksum_sha256, storage_domain, custody_scope, public)
+SELECT 'sha256:' || h, 16 << 20, 'th382b', 'th382b/' || h, '', '', '', 'repo_cas', 'shared', true
+  FROM (SELECT encode(sha256(('th382b-' || i || '-' || random())::bytea), 'hex') AS h FROM generate_series(1, 40) i) o;
+SQL
+  shas=$(sql -c "SELECT substr(object_id, 8) FROM hub_v2.verified_objects WHERE bucket = 'th382b'")
+  authkit=$(sql -c "SELECT table_schema FROM information_schema.tables WHERE table_name = 'refresh_sessions' LIMIT 1")
+  [ -n "$authkit" ] || fail "hub budget: no AuthKit schema (refresh_sessions) in the fixture's Postgres"
+  # Both slowed for 4 s: the blob reads' table and every table of AuthKit's.
+  docker exec -i -e PGAPPNAME=th382-slow-blobs "$container" psql -qtA -U postgres > "$S/slow-blobs.out" 2>&1 <<'SQL' &
+BEGIN;
+LOCK TABLE hub_v2.verified_objects IN ACCESS EXCLUSIVE MODE;
+SELECT pg_sleep(4);
+COMMIT;
+SQL
+  docker exec -i -e PGAPPNAME=th382-slow-auth "$container" psql -qtA -U postgres -v schema="$authkit" > "$S/slow-auth.out" 2>&1 <<'SQL' &
+BEGIN;
+SELECT set_config('th382.schema', :'schema', true);
+DO $$ DECLARE t text; BEGIN
+  FOR t IN SELECT format('%I.%I', schemaname, tablename) FROM pg_tables WHERE schemaname = current_setting('th382.schema') LOOP
+    EXECUTE 'LOCK TABLE ' || t || ' IN ACCESS EXCLUSIVE MODE';
+  END LOOP;
+END $$;
+SELECT pg_sleep(4);
+COMMIT;
+SQL
+  for _ in $(seq 50); do
+    [ "$(sql -c "SELECT count(DISTINCT a.application_name) FROM pg_locks l JOIN pg_stat_activity a USING (pid) WHERE a.application_name LIKE 'th382-slow%' AND l.mode = 'AccessExclusiveLock' AND l.granted" 2> /dev/null || echo 0)" -ge 2 ] && break
+    sleep 0.1
+  done
+  # The Hub's sessions by label, sampled while the load goes.
+  (while :; do sql -c "SELECT coalesce(nullif(application_name, ''), 'unlabelled') || ' ' || count(*) FROM pg_stat_activity
+     WHERE backend_type = 'client backend' AND coalesce(application_name, '') NOT LIKE 'th382%' AND coalesce(application_name, '') <> 'psql'
+     GROUP BY 1 UNION ALL SELECT 'total ' || count(*) FROM pg_stat_activity WHERE backend_type = 'client backend'
+     AND coalesce(application_name, '') NOT LIKE 'th382%' AND coalesce(application_name, '') <> 'psql'" 2> /dev/null; sleep 0.2; done) > "$S/sessions.txt" &
+  local sampler=$!
+  for _ in $(seq 10); do printf '%s\n' $shas; done | sed -E 's#^(..)(..)(.*)$#/blobs/\1/\2/\1\2\3#' > "$S/load.txt"
+  for _ in $(seq 400); do echo /v1/account; done >> "$S/load.txt"
+  shuf "$S/load.txt" | xargs -P 80 -I{} curl -s -o /dev/null -w '%{http_code}\n' -m 60 -H "Authorization: Bearer $token" \
+    "$COZY_HUB_URL{}" > "$S/codes.txt" 2>&1 || true
+  kill "$sampler" 2> /dev/null || true
+  wait "$sampler" 2> /dev/null || true
+  release
+  forget
+  peak() { awk -v l="$1" '$1 == l && $2 > m { m = $2 } END { print m + 0 }' "$S/sessions.txt"; }
+  echo "hub budget: 800 requests answered $(sort "$S/codes.txt" | uniq -c | awk '{printf "%s×%s ", $2, $1}')"
+  echo "hub budget: most sessions at once: tensorhub $(peak tensorhub) of ${hub_share:-?}, tensorhub-authkit $(peak tensorhub-authkit) of ${authkit_share:-?}, unlabelled $(peak unlabelled), in all $(peak total) of $budget"
+  [ "$(peak total)" -le "$budget" ] || check "hub budget: the replica held $(peak total) connections at once, over its budget of $budget"
+  [ -n "$hub_share" ] && [ "$(peak tensorhub)" -le "$hub_share" ] || check "hub budget: tensorhub's sessions reached $(peak tensorhub), over its share ${hub_share:-(none said)}"
+  [ -n "$authkit_share" ] && [ "$(peak tensorhub-authkit)" -le "$authkit_share" ] \
+    || check "hub budget: tensorhub-authkit's sessions reached $(peak tensorhub-authkit), over its share ${authkit_share:-(none said)}"
+  [ "$(peak unlabelled)" = 0 ] || check "hub budget: $(peak unlabelled) of the Hub's sessions say no label"
+  ! grep -q '^5' "$S/codes.txt" || check "hub budget: $(grep -c '^5' "$S/codes.txt") of 800 requests answered a 5xx"
 )
