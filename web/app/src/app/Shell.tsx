@@ -28,7 +28,7 @@ import { projectPath, rememberProject, useProjectId, useTo } from "./project"
 import { opened, useByUse } from "../panels/Projects"
 export { useProjectId, useTo } from "./project"
 
-/** A few tries in, it isn't a blip. Nothing restarts Calcifer on Windows, and starting Cozy again does anywhere. */
+/** A few tries in, it isn't a blip. Nothing restarts Calcifer on Windows, and starting Cozy Creator again does anywhere. */
 const SAYS_HOW = 5
 /** How long before an unlock's deadline its status is asked again. */
 const EXPIRY_ASK_MS = 2000
@@ -49,8 +49,8 @@ function Connectivity() {
     <>
       {health.state === "reconnecting" ? (
         <span className="pill warn" role="status">
-          Cozy Creator is offline{owed.count > 0 && `, ${changes} waiting`}
-          {health.attempt >= SAYS_HOW && ". Restart it"}
+          Offline{owed.count > 0 && `, ${changes} waiting`}
+          {health.attempt >= SAYS_HOW && ". Restart Cozy Creator"}
         </span>
       ) : owed.count > 0 && owed.slow ? (
         <span className="pill warn" role="status">

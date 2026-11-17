@@ -224,7 +224,7 @@ test('open, alone on its Calcifer', { tag: '@solo' }, async ({ context, page, pr
     await calciferControl.kill();
     await expect(page.locator('header.top .pill'), 'the top bar clears').toHaveCount(0, { timeout: 60_000 });
     away = false;
-    expect.soft(await page.evaluate(() => window.barSaid), 'it said Cozy was offline').toContainEqual(expect.stringMatching(/^Cozy Creator is offline/));
+    expect.soft(await page.evaluate(() => window.barSaid), 'it said Cozy was offline').toContainEqual(expect.stringMatching(/^Offline/));
     expect.soft(pid(), 'a new Calcifer').not.toBe(was);
   };
   /** Where `row`'s tab stands, its canvas kept, and no gate drawn at any moment of this document. */

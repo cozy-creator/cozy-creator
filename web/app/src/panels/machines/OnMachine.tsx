@@ -99,7 +99,7 @@ export function OnMachine<Body extends object, Answer>({
               setGpus(undefined)
             }}
           >
-            <option value="">Cozy Creator picks</option>
+            <option value="">Automatic</option>
             {status.local_usable && <option value="local">This computer</option>}
             {machines
               .filter((machine) => machine.kind !== "local")

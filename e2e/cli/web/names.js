@@ -1,6 +1,6 @@
 // Every page string cl-1066 made longer by naming the product (Paul, 11-17: "Cozy Creator" for users), as pictures to be looked at: at
 // 1280×800, 1920×1080 and 390×844, on paper and dark. The top bar offline and with changes waiting, and a drawer's failure while it's
-// away; the update toast; the Video Timeline box's tool line on the canvas and in Focus; the machine's drawer and Machines, Account's sign
+// away; the Video Timeline box's tool line on the canvas and in Focus; the machine's drawer and Machines, Account's sign
 // out, Install's machine picker, Project settings; the gates; an encrypted project locked and unlocked. It judges nothing: a view it
 // couldn't reach is listed under `missed`, with what no runner shows.
 //   node names.js: as look.js ($PLAYWRIGHT, $CHROME, $HOLDER, $SHOT), with $COZY to stop, start and lock.
@@ -12,7 +12,6 @@ const { join } = require('path');
 const { holderToken, projectFolder, BARS, DARK_OPEN, MP4, STEP_MS, calcifer, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, openCanvas, png, projectFromPage, settled, signIn, until, upload, canvasBox } = require('./page');
 
 const SIZES = [[1280, 800], [1920, 1080], [390, 844]];
-const NEWER = '0.99.0';
 
 const seen = {
   looks: 0, shots: [], lines: {}, missed: {
@@ -39,8 +38,7 @@ const cozy = (...words) => {
   return execFileSync(process.env.COZY, words, { encoding: 'utf8', timeout: 5 * STEP_MS });
 };
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-// One matcher each, so `unroute` finds the route it took.
-const EVENTS = (url) => url.pathname === '/v1/events';
+// One matcher, so `unroute` finds the route it took.
 const STATUS = (url) => url.pathname === '/v1/status';
 
 (async () => {
@@ -57,9 +55,13 @@ const STATUS = (url) => url.pathname === '/v1/status';
     pages[theme] = page;
   }
   lookAt(pages.paper);
+  /** Calcifer's appearance `theme`, shown on `page`: asked again until it is, as a Calcifer just started may refuse or the page not hear. */
   const looks = async (page, theme) => {
-    await page.evaluate((theme) => fetch('/v1/appearance', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ theme }) }), theme);
-    await page.waitForFunction((dark) => (document.documentElement.dataset.theme === 'dark') === dark, theme === 'dark');
+    const shown = () => page.waitForFunction((dark) => (document.documentElement.dataset.theme === 'dark') === dark, theme === 'dark', { timeout: 5_000 }).then(() => true, () => false);
+    await until(`the ${theme} theme`, async () => {
+      await page.evaluate((theme) => fetch('/v1/appearance', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ theme }) }).catch(() => null), theme);
+      return shown();
+    }, Boolean, STEP_MS);
   };
   const both = async (what) => { for (const [theme, page] of Object.entries(pages)) { await looks(page, theme); await what(page, theme); } };
   const out = (name) => `${process.env.SHOT}-${name}.png`;
@@ -150,12 +152,13 @@ const STATUS = (url) => url.pathname === '/v1/status';
   };
 
   const paper = pages.paper;
-  const api = (path, init = {}) => paper.evaluate(async ({ path, init }) => {
-    const answer = await fetch(path, { ...init, signal: AbortSignal.timeout(240_000), headers: { 'Content-Type': 'application/json', ...(init.method === 'POST' ? { 'Idempotency-Key': `names-${Date.now()}-${Math.random()}` } : {}) } });
+  // A POST has an Idempotency-Key unless `once`: an encrypted project is refused one, as its recovery secret is never kept for a retry.
+  const api = (path, init = {}, once = false) => paper.evaluate(async ({ path, init, once }) => {
+    const answer = await fetch(path, { ...init, signal: AbortSignal.timeout(240_000), headers: { 'Content-Type': 'application/json', ...(init.method === 'POST' && !once ? { 'Idempotency-Key': `names-${Date.now()}-${Math.random()}` } : {}) } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
-  }, { path, init });
-  const post = async (path, body) => {
-    const answer = await api(path, { method: 'POST', body: JSON.stringify(body) });
+  }, { path, init, once });
+  const post = async (path, body, once = false) => {
+    const answer = await api(path, { method: 'POST', body: JSON.stringify(body) }, once);
     if (answer.status >= 300) throw new Error(`${path}: ${JSON.stringify(answer)}`);
     return answer.body;
   };
@@ -219,6 +222,7 @@ const STATUS = (url) => url.pathname === '/v1/status';
       await page.waitForTimeout(300);
     },
   });
+  seen.lines['tile-edit'] = await canvasBox(paper, 'edit').then((card) => card?.rendered?.labels?.tool?.fullText ?? null).catch(() => null);
   await shoot('focus-edit', { open: async (page) => { await leave(page); await fitCanvas(page); await openBox(page, 'edit'); } });
   await crop('focus-edit-tool', (page) => page.locator('.image-tool').first(), { pad: 16 });
   await both(leave);
@@ -229,35 +233,6 @@ const STATUS = (url) => url.pathname === '/v1/status';
     seen.notes = said;
     if (said.some((line) => line.includes('Cozy Creator')) && process.env.SHOT) await paper.screenshot({ path: out('notes-so-far') });
   });
-
-  // The update toast: a hello from a newer Calcifer, its version only, on a reload at each size.
-  during = 'toast-updated';
-  for (const [theme, page] of Object.entries(pages)) {
-    for (const [width, height] of SIZES) {
-      const label = `toast-updated-${width}x${height}-${theme}`;
-      try {
-        await looks(page, theme);
-        await page.setViewportSize({ width, height });
-        await page.route(EVENTS, (route) => route.fulfill({ status: 200, headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' }, body: `data: ${JSON.stringify({ type: 'hello', version: NEWER, stream: 'names' })}\n\n` }), { times: 1 });
-        await page.reload();
-        await page.waitForSelector('.top');
-        const note = page.locator('.notes .note', { hasText: NEWER }).first();
-        await note.waitFor({ timeout: 30_000 });
-        await page.waitForTimeout(400);
-        if (process.env.SHOT) await page.screenshot({ path: out(label) });
-        const box = await page.locator('.notes').boundingBox();
-        if (box && process.env.SHOT) await page.screenshot({ path: out(`crop-${label}`), clip: { x: Math.max(0, box.x - 12), y: Math.max(0, box.y - 12), width: Math.min(width - Math.max(0, box.x - 12), box.width + 24), height: Math.min(height - Math.max(0, box.y - 12), box.height + 24) } });
-        seen.lines[label] = await note.innerText();
-        seen.shots.push(label);
-        seen.looks++;
-      } catch (why) {
-        seen.missed[label] = String(why.message ?? why).slice(0, 400);
-      }
-    }
-    await page.unroute(EVENTS).catch(() => {});
-    await page.setViewportSize({ width: SIZES[0][0], height: SIZES[0][1] });
-  }
-  await both((page) => goto(page, projectPath));
 
   // Calcifer away (SIGTERM, which its service leaves down), once a theme: the bar, then with changes waiting, then a drawer it can't fill.
   const partAt = async (page, name, part) => {
@@ -341,21 +316,25 @@ const STATUS = (url) => url.pathname === '/v1/status';
       if (await out.count()) await out.click();
     },
   });
-  await shoot('drawer-models-upload', {
+  // The first model Models lists, and its Download.
+  await shoot('drawer-model', {
     open: async (page) => {
       await goto(page, `${projectPath}/models`);
-      await page.locator('.drawer details.sect summary', { hasText: 'Upload a model file' }).click({ timeout: 15_000 });
+      await page.locator('.drawer ul.list a').first().click({ timeout: 15_000 });
+      await page.getByRole('combobox', { name: 'Machine' }).first().waitFor({ timeout: 30_000 });
     },
     prepare: async (page) => { await page.getByRole('combobox', { name: 'Machine' }).first().scrollIntoViewIfNeeded(); },
   });
-  const pkg = await tryStep('a package', async () => ((await api(`/v1/tools?project=${id}`)).body?.tools ?? []).find((tool) => tool.package && tool.package !== 'cozy' && !tool.local)?.package);
-  seen.package = pkg ?? null;
-  if (pkg) {
-    await shoot('drawer-package', {
-      open: (page) => goto(page, `${projectPath}/packages/${encodeURIComponent(pkg)}`),
-      prepare: async (page) => { await page.getByRole('combobox', { name: 'Machine' }).first().scrollIntoViewIfNeeded(); },
-    });
-  }
+  // The first package Installations lists, and its Install.
+  await shoot('drawer-package', {
+    open: async (page) => {
+      await goto(page, `${projectPath}/packages`);
+      await page.locator('.drawer ul.list a').first().click();
+      await page.getByRole('combobox', { name: 'Machine' }).first().waitFor({ timeout: 30_000 });
+      seen.package = new URL(page.url()).pathname;
+    },
+    prepare: async (page) => { await page.getByRole('combobox', { name: 'Machine' }).first().scrollIntoViewIfNeeded(); },
+  });
   await shoot('drawer-project-settings', { open: (page) => goto(page, `${projectPath}/project-settings`) });
   await both((page) => goto(page, projectPath));
 
@@ -382,7 +361,7 @@ const STATUS = (url) => url.pathname === '/v1/status';
   // An encrypted project, locked (its page and its settings), then unlocked (its settings, Change the encryption key open).
   const passphrase = `names-${Math.random().toString(36).slice(2)}-${Date.now()}`;
   const vault = await tryStep('an encrypted project', async () => {
-    const made = await post('/v1/projects', { path: projectFolder(`web-names-vault-${Date.now()}`), passphrase });
+    const made = await post('/v1/projects', { path: projectFolder(`web-names-vault-${Date.now()}`), passphrase }, true);
     seen.vault = { id: made.id, folder: made.path };
     cozy('--json', 'vault', '--directory', made.path, 'lock');
     await until('locked', async () => (await api(`/v1/projects/${encodeURIComponent(made.id)}/vault`)).body?.state, (state) => state === 'locked', STEP_MS);

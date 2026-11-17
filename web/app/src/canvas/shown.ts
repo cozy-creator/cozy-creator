@@ -92,8 +92,8 @@ export const makes = (view: ElementView | undefined) => Boolean(view?.asset?.too
 export const namesItsPackage = (tool: Tool) => Boolean(tool.package_title) && tool.label.toLowerCase().includes(tool.package_title.toLowerCase())
 
 /** A tool named away from its package's heading: `Qwen-Image-2.1 · Image`, and its label alone where that names its package already,
- *  `MiniMax H3 Edit`, never `MiniMax H3 · MiniMax H3 Edit`. */
-export const toolName = (tool: Tool) => (namesItsPackage(tool) || !tool.package_title ? tool.label : `${tool.package_title} · ${tool.label}`)
+ *  `MiniMax H3 Edit`, never `MiniMax H3 · MiniMax H3 Edit`, or where it's built in: `Video Timeline`. */
+export const toolName = (tool: Tool) => (tool.package === "cozy" || namesItsPackage(tool) || !tool.package_title ? tool.label : `${tool.package_title} · ${tool.label}`)
 
 /** What Calcifer makes itself, free, with no machine. */
 export const madeHere = (tool?: string | null) => tool === "cozy" || Boolean(tool?.startsWith("cozy/"))
