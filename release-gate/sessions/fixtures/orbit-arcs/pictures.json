@@ -1,0 +1,84 @@
+{
+ "tree": "pk",
+ "renders": [
+  {
+   "name": "m-panel",
+   "tool": "minimax-h3-image/probe",
+   "fields": {
+    "text": "A single panel from a black-and-white Japanese manga, drawn with crisp black ink lines and grey screentone on white paper. A young swordswoman stands in the middle of a narrow old-town street, seen full-body from the front at a slight three-quarter angle, at eye level. She has a short black bob haircut, a determined expression, a high-collared short jacket, a long scarf hanging down her back, wide trousers and sandals. A sheathed katana hangs at her left hip and her right hand rests on its hilt. Behind her, wooden shop fronts with paper lanterns, a tiled roof line and power lines recede down the street. Clean, confident linework, cross-hatching in the shadows, screentone gradients in the sky. No text, no speech bubbles, no sound effects, no panel border.",
+    "aspect_ratio": "3:4",
+    "megapixels": 4,
+    "seed": 152001
+   }
+  },
+  {
+   "name": "m-right",
+   "tool": "minimax-h3-image/probe",
+   "files": {
+    "picture": "run:m-panel"
+   },
+   "fields": {
+    "text": "<panel> is a black-and-white manga panel. Draw the same frozen instant again from another camera position: the camera has moved a quarter of the way around the swordswoman, 90 degrees to her right, at the same height and distance. She is now seen in right profile, facing the right edge of the panel, in exactly the same pose: right hand on the katana's hilt, the scarf hanging down her back. The street now runs across the panel behind her, its shop fronts and lanterns seen side-on. Keep her face, hair, clothing, proportions and the black-and-white ink and screentone drawing style exactly as in <panel>. No text, no speech bubbles, no panel border.",
+    "megapixels": 4,
+    "seed": 152010
+   }
+  },
+  {
+   "name": "m-back",
+   "tool": "minimax-h3-image/probe",
+   "files": {
+    "picture": "run:m-panel"
+   },
+   "fields": {
+    "text": "<panel> is a black-and-white manga panel. Draw the same frozen instant again from another camera position: the camera has moved halfway around the swordswoman, 180 degrees, and looks at her from directly behind, at the same height and distance. We see her back: the back of her short black bob, the long scarf hanging down her back, and the sheathed katana at her left hip, now on the left of the panel. Beyond her, the street recedes the other way, with more shop fronts and lanterns. Keep her face, hair, clothing, proportions and the black-and-white ink and screentone drawing style exactly as in <panel>. No text, no speech bubbles, no panel border.",
+    "megapixels": 4,
+    "seed": 152011
+   }
+  },
+  {
+   "name": "m-top",
+   "tool": "minimax-h3-image/probe",
+   "files": {
+    "picture": "run:m-panel"
+   },
+   "fields": {
+    "text": "<panel> is a black-and-white manga panel. Draw the same frozen instant again from another camera position: the camera has risen high above the swordswoman and looks steeply down at her from about 70 degrees above, still from her front: a bird's-eye view showing the top of her head and her shoulders, her body foreshortened below, her shadow on the paving stones, and the street and rooftops around her. Keep her face, hair, clothing, proportions and the black-and-white ink and screentone drawing style exactly as in <panel>. No text, no speech bubbles, no panel border.",
+    "megapixels": 4,
+    "seed": 152012
+   }
+  },
+  {
+   "name": "m-face",
+   "tool": "minimax-h3-image/probe",
+   "files": {
+    "picture": "run:m-panel"
+   },
+   "fields": {
+    "text": "<panel> is a black-and-white manga panel. Draw a close-up panel of the same swordswoman's face, from the front at eye level: her face and the top of her shoulders fill the panel, short black bob, determined expression, the high collar of her jacket. Keep her face, hair, clothing, proportions and the black-and-white ink and screentone drawing style exactly as in <panel>. No text, no speech bubbles, no panel border.",
+    "megapixels": 4,
+    "seed": 152013
+   }
+  },
+  {
+   "name": "w-girl",
+   "tool": "minimax-h3-image/probe",
+   "fields": {
+    "text": "Full-body anime character illustration on a pure white background. A girl with long silver hair tied in twin tails and bright red eyes, wearing a red jacket over a white sailor-style school uniform, a black pleated skirt and black knee-high boots, holding a closed blue umbrella in her right hand. She stands upright in a relaxed pose, three-quarter front view, at eye level, the whole figure visible from head to boots with space around her. Clean line art, soft cel shading, vivid colours. The background is completely plain white: no floor, no shadow, no other objects, no text.",
+    "aspect_ratio": "9:16",
+    "megapixels": 4,
+    "seed": 152020
+   }
+  },
+  {
+   "name": "s-classroom",
+   "tool": "minimax-h3-image/probe",
+   "fields": {
+    "text": "An empty classroom in a Japanese high school, anime background art, warm late-afternoon light. A wide view from the middle of the room at standing eye level: rows of wooden desks with chairs, tall windows along the left wall with golden sunlight streaming in and long shadows across the floor, a green blackboard and a clock on the far wall, a door and a notice board on the right wall, plants on the window sills. Nobody is in the room. Detailed painted background, soft cel shading, no text.",
+    "aspect_ratio": "16:9",
+    "megapixels": 4,
+    "seed": 152030
+   }
+  }
+ ],
+ "seconds": 3600
+}
