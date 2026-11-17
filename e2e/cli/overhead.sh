@@ -48,12 +48,12 @@ sys.exit(0 if median < bar else 1)
 PY
 }
 
-# timed_run <cell> <target> [inputs]: one `cozy --json run` on local from the run project, its wall time in <cell>.ms.
+# timed_run <cell> <target> [inputs]: one `cozy --json run` on OVERHEAD_ON (local) from the run project, its wall time in <cell>.ms.
 timed_run() {
 local cell=overhead-$1 began ended code=0
 shift
 began=$(date +%s%N)
-(cd "$RUN_PROJECT" && cozy --json run "$@" --on local) > "$OUT/$cell.ndjson" 2> "$OUT/$cell.err" || code=$?
+(cd "$RUN_PROJECT" && cozy --json run "$@" --on "${OVERHEAD_ON:-local}") > "$OUT/$cell.ndjson" 2> "$OUT/$cell.err" || code=$?
 ended=$(date +%s%N)
 echo $(((ended - began) / 1000000)) > "$OUT/$cell.ms"
 return "$code"
