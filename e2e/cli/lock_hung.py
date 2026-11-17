@@ -38,6 +38,9 @@ MAXIMUM = 30
 # The lock's bound: a save gone silent is cut (outputs.rs EXPORT_SILENCE, 20 s), three unanswered asks of local (a second apart,
 # two seconds each), and the lock itself.
 BOUND = 60
+# A deadline's bound past the maximum (coordinator 11-17: "a deadline lock must lock close to its deadline"): local asked three
+# times, a save from it cut at once, and the lock.
+DEADLINE_BOUND = 15
 # Big enough that its save into the project takes seconds, so the stop lands in it (as vault_work's step 4).
 SAVE_MB = 2048
 SLEEPER = '''# /// script
@@ -464,7 +467,7 @@ def main() -> None:
         process, stdout = first.start("maximum-run", sleeper(view), 1, mark, SAVE_MB)
         assert waiting(stdout, process, ARRIVING), f"the maximum's run's output never started coming: {stdout.read_bytes()[-400:]!r}"
         facts["maximum_stopped"] = stop(view)
-        facts["maximum_locked_s"] = first.locked_by(unlocked_at, MAXIMUM + BOUND)
+        facts["maximum_locked_s"] = first.locked_by(unlocked_at, MAXIMUM + DEADLINE_BOUND)
         failures.extend(deadline(first, "maximum", scanner, view, projects, facts, process, mark))
 
         # 3. The maximum's deadline while local is stopped mid-call, in a second project: the run holds the vault past its maximum
@@ -488,7 +491,7 @@ def main() -> None:
         assert waiting(stdout, process, BEGUN, 180), f"the going run didn't begin: {stdout.read_bytes()[-400:]!r}"
         number = number_of(stdout)
         facts["going_stopped"] = stop(view)
-        facts["going_locked_s"] = second.locked_by(unlocked_at, MAXIMUM + BOUND)
+        facts["going_locked_s"] = second.locked_by(unlocked_at, MAXIMUM + DEADLINE_BOUND)
         failures.extend(deadline(second, "going", scanner, view, projects, facts, process, mark))
         # Its run read once local answered, from the project unlocked again: a locked project's runs aren't read.
         if second.state() != "locked":
@@ -527,7 +530,7 @@ def deadline(cell: Cell, label: str, scanner: Scanner, view: Path, projects: lis
     """A deadline step once its vault locked or didn't: what's wrong with it, the machine gone on and its clean-up seen done."""
     failures = []
     if facts[f"{label}_locked_s"] is None:
-        failures.append(f"{label}: the vault is open {MAXIMUM + BOUND} s past unlocking with a {MAXIMUM} s maximum while local is stopped")
+        failures.append(f"{label}: the vault is open {MAXIMUM + DEADLINE_BOUND} s past unlocking with a {MAXIMUM} s maximum while local is stopped")
         facts[f"{label}_workaround"] = cell.workaround(label, scanner, view)
     else:
         found = facts[label] = hung(cell, label, scanner, view, projects)
