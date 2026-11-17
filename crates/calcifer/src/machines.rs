@@ -1022,20 +1022,32 @@ impl Machines {
     /// project's own is in its private scope (`resource_key`), so its runs are all that project's.
     fn operation(&self,operation:&v1::Operation,projects:&[String])->Option<wire::Operation> {
         let mut project=None;
-        let mut number=|id:&str| {
+        let (mut runs,mut names)=(vec![],vec![]);
+        for id in &operation.runs {
+            // A box's guess, or a job fetched ahead (cl-1104): no run, said by its boxes, in its project's views as any install is.
+            if crate::prefetch::listed(id) {
+                let Some((of,boxes))=self.lists.owner(id).filter(|(of,_)| projects.contains(of)) else { continue };
+                project=Some(of);
+                names.extend(boxes);
+                continue;
+            }
             let id=crate::store::calcifer_id(id);
-            if let Some(row)=self.calcifer.maintenance_store().run(id).ok().flatten() { return Some((row.number,self.calcifer.named(&row))); }
+            if let Some(row)=self.calcifer.maintenance_store().run(id).ok().flatten() {
+                runs.push(row.number);
+                names.push(self.calcifer.named(&row));
+                continue;
+            }
             match self.calcifer.run_store(id).ok()? {
                 crate::store::RunStore::Project(store) if projects.iter().any(|project| project==store.project_id()) => {
                     let row=store.run(id).ok().flatten()?;
                     project=Some(store.project_id().to_owned());
-                    Some((row.number,self.calcifer.run_name(&row)))
+                    runs.push(row.number);
+                    names.push(self.calcifer.run_name(&row));
                 }
-                _ => None,
+                _ => return None,
             }
-        };
-        let (runs,names):(Vec<u64>,Vec<String>)=operation.runs.iter().map(|id|number(id)).collect::<Option<Vec<_>>>()?.into_iter().unzip();
-        if runs.is_empty() {return None;}
+        }
+        if names.is_empty() {return None;}
         let rate=Some(operation.bytes_per_s).filter(|rate|*rate>=1.0);
         let left=operation.bytes_total.saturating_sub(operation.bytes_done);
         Some(wire::Operation {id:operation.id.clone(),kind:operation.kind.clone(),subject:operation.subject.clone(),stage:operation.stage.clone(),bytes_done:operation.bytes_done,bytes_total:operation.bytes_total,bytes_here:operation.bytes_here,bytes_per_s:rate,eta_s:rate.filter(|_|left>0).map(|rate|(left as f64/rate) as i64),started_at_ms:operation.started_at_unix_ms,runs,names,project})
@@ -1225,7 +1237,9 @@ impl Machines {
         }
         self.calcifer.observe_warm(name, frame.warm.clone());
         self.calcifer.observe_downloads(name, &frame.activity);
-        self.lists.observe(name, &frame);
+        if let Some(machines) = self.calcifer.machines() {
+            self.lists.observe(&machines, name, &frame);
+        }
         let installed;
         let (back, ready) = {
             let mut seen = lock(&self.seen);

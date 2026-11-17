@@ -287,7 +287,15 @@ async fn guess(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, f
         Err(_) => return Guessed::Unknown("its request couldn't be read"),
     };
     tracing::info!(target: crate::prefetch::TARGET, "{folder}: {name} guessed on {machine} in {} ms", began.elapsed().as_millis());
-    Guessed::Made(Box::new(Guess { project: Arc::downgrade(project), asset: name, machine: machine.clone(), hub: hub.to_owned(), item, function, placed }))
+    Guessed::Made(Box::new(Guess { project: Arc::downgrade(project), asset: name, machine: machine.clone(), hub: hub.to_owned(), item, function, placed, draft: draft(&with, &made) }))
+}
+
+/// A box's draft request, hashed: its tool and its fields. One edited is a new guess, which a failed one's doesn't stand in for.
+fn draft(with: &str, made: &Map<String, Value>) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (with, Value::Object(made.clone()).to_string()).hash(&mut hasher);
+    hasher.finish()
 }
 
 /// What `machine` has ready for box `name` of `kind` whose tool is `with` (`PUT /v1/prepare`): the function its text names, else the

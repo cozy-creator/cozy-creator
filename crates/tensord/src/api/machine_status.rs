@@ -243,7 +243,7 @@ async fn held_now(identity: &Arc<MachineIdentity>, runs: &Arc<Runs>, actor: Veri
             nvlink: service.pool().is_some_and(|pool| pool.hardware_class().1),
             ahead: {
                 let listed = crate::ahead::listed(&reader);
-                let mut states = listed.iter().filter_map(|id| runs.state(actor, id).ok()).collect();
+                let mut states = listed.iter().filter_map(|id| runs.listed_state(actor, id).ok()).collect();
                 crate::ahead::planning(&listed, &mut states);
                 crate::ahead::readiness(service.pool().as_deref(), &reader, crate::ahead::standing(&service.engine.store, busy, states))
             },

@@ -356,14 +356,20 @@ pub(crate) fn needs(store: &crate::storage::Store, caller: &str, needed: &crate:
     }
 }
 
-/// The list items' runs `states` as their caller's Status says them. A prepare item whose run succeeded or was ended for a run's room
-/// (`make_way`) but lacks some of what it needs here now is `evicted` (cl-1104): no longer ready, and sent again under a new key its
-/// machine fetches it anew. `waiting` says why not yet: a run here goes first (`busy`), or what it lacks doesn't fit on the disk past
-/// its reserve, as a guess never makes room. Empty: it may come again now.
+/// The list items' runs `states` as their caller's Status says them. A prepare item whose run succeeded, was ended for a run's room
+/// (`make_way`) or failed for want of room on the disk, but lacks some of what it needs here now, is `evicted` (cl-1104): no longer
+/// ready, and sent again under a new key its machine fetches it anew. `waiting` says why not yet: a run here goes first (`busy`), or
+/// what it lacks doesn't fit on the disk past its reserve, as a guess never makes room. Empty: it may come again now. One that failed
+/// keeps its `reason`, and its caller counts each try.
 pub(crate) fn standing(store: &crate::storage::Store, busy: bool, mut states: Vec<v1::RunState>) -> Vec<v1::RunState> {
     let needs = lock(&NEEDS);
     let free = || crate::reclaim::Disk::measure(store.root()).map_or(u64::MAX, |disk| disk.free());
-    for state in states.iter_mut().filter(|state| guess(&state.id) && matches!(state.state.as_str(), "succeeded" | "canceled")) {
+    let lost = |state: &v1::RunState| match state.state.as_str() {
+        "succeeded" | "canceled" => true,
+        "failed" => state.reason.as_ref().is_some_and(|reason| reason.code == "machine_disk_full"),
+        _ => false,
+    };
+    for state in states.iter_mut().filter(|state| guess(&state.id) && lost(state)) {
         let Some(reads) = needs.get(&state.id) else { continue };
         let missing: u64 = reads.iter().map(|read| crate::access::missing(store, read)).sum();
         if missing == 0 {

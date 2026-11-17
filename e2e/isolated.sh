@@ -312,7 +312,7 @@ case $key in
   # plan_fetch quotes a fine-tune composed of a base's parts (cl-1071).
   cli:plan) needs='packages birefnet downloads composed' ;;
   # A published tool of two models that share a VAE, which a box's machine fetches before any render (cl-1104).
-  cli:prefetch) needs='packages pre' ;;
+  cli:prefetch | cli:prefetch-retry) needs='packages pre' ;;
   cli:) needs='packages birefnet qwen downloads spare loras vaes fits parts composed lorabase calls uninstall ltxlora pre' ;;
   # shared_scratch's probe and its warm BiRefNet (cl-984).
   cli:projectvault) needs='packages birefnet scratch' ;;

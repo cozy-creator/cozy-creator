@@ -765,6 +765,9 @@ pub struct RunState {
     /// A list item's (`StatusFrame::ahead`): how ready its machine is for it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub readiness: Option<Readiness>,
+    /// Why a list's item failed (`StatusFrame::ahead`, cl-1104): what its caller decides by whether to send it again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<Reason>,
 }
 
 /// How ready a machine is for a predicted request (cl-1123): `planning` (its request not planned yet), `installing`, `downloading`,
