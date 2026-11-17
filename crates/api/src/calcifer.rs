@@ -1129,6 +1129,9 @@ pub enum StreamEvent {
     /// The index changed (a project renamed or deleted): `GET /v1/projects` again.
     #[serde(rename = "projects.changed")]
     ProjectsChanged,
+    /// What `GET /v1/tools` lists changed: a dev home's first-party package read from its source (cl-1126). `GET /v1/tools` again.
+    #[serde(rename = "tools.changed")]
+    ToolsChanged,
     /// How the page looks everywhere (`GET /v1/appearance`) changed.
     #[serde(rename = "appearance")]
     Appearance { appearance: Appearance },

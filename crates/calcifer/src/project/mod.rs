@@ -2128,7 +2128,7 @@ fn board_of(project: &Project) -> Option<api::calcifer::project::Board> {
 }
 
 /// The local code `id`'s assets name, each once: its path as they write it, and where that is. Not a checkout's first-party
-/// package, which is listed by its name (`toolbox::from_source`).
+/// package, which is listed by its name (`source_tools::listed`).
 pub(crate) fn local_code_named(api: &Arc<Api>, id: &str) -> Result<Vec<(String, PathBuf)>, Refusal> {
     let project = api.projects.get(api, id)?;
     let folder = &project.folder;

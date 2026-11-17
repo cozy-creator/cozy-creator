@@ -49,6 +49,7 @@ mod reports;
 mod runs;
 pub mod serve;
 mod slow;
+mod source_tools;
 mod stages;
 mod state;
 mod store;

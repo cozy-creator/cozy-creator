@@ -142,12 +142,19 @@ pub fn plan(path: &Path) -> Result<SourcePlan, Error> {
 /// This is a filename filter, not secret detection; other runtime resources remain included.
 pub fn source_files(root: &Path, left: &mut Vec<String>) -> Result<Vec<PathBuf>, Error> {
     let mut files = vec![];
-    walk(root, Path::new(""), &mut files, left)?;
+    walk(root, Path::new(""), &mut files, &mut vec![], left)?;
     files.sort();
     Ok(files)
 }
 
-fn walk(root: &Path, rel: &Path, files: &mut Vec<PathBuf>, left: &mut Vec<String>) -> Result<(), Error> {
+/// `root` and each folder in it that `source_files` reads, absolute: what a watch of the source watches.
+pub fn source_dirs(root: &Path) -> Vec<PathBuf> {
+    let mut dirs = vec![];
+    let _ = walk(root, Path::new(""), &mut vec![], &mut dirs, &mut vec![]);
+    std::iter::once(root.to_owned()).chain(dirs.into_iter().map(|dir| root.join(dir))).collect()
+}
+
+fn walk(root: &Path, rel: &Path, files: &mut Vec<PathBuf>, dirs: &mut Vec<PathBuf>, left: &mut Vec<String>) -> Result<(), Error> {
     const SKIP: &str = ".git .hg .svn .jj __pycache__ .mypy_cache .ruff_cache .pytest_cache .tox";
     const SKIP_AT_ROOT: &str = ".venv venv node_modules .idea .vscode build dist";
     const SECRET_DIRS: &str = ".aws .ssh .direnv credentials secrets";
@@ -193,7 +200,8 @@ fn walk(root: &Path, rel: &Path, files: &mut Vec<PathBuf>, left: &mut Vec<String
             }
             let at_root = rel.as_os_str().is_empty() && listed(SKIP_AT_ROOT, &name);
             if !listed(SKIP, &name) && !name.ends_with(".egg-info") && !at_root {
-                walk(root, &path, files, left)?;
+                dirs.push(path.clone());
+                walk(root, &path, files, dirs, left)?;
             }
             continue;
         }
