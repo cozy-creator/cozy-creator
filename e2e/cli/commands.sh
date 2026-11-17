@@ -1686,9 +1686,14 @@ fi
 
 machines() {
 step machines
-# The same wheels again, an update to what the machine runs: it reports their versions.
+# The same wheels again, an update to what the machine runs: it reports their versions. They're named from inside a plaintext project,
+# which a command of no project sends as any file (cl-1066, fix don't refuse); before, `project_source_scope` refused them.
 if [ -n "$CAND_RT" ] && [ -n "$CAND_TFS" ]; then
-  cozy --json machine update local --runtime "$CAND_RT" --tensorfs "$CAND_TFS" -y > "$OUT/update-again.json" || check "machine update local --runtime --tensorfs failed"
+  wheels=$RUN_PROJECT/cl-1066-wheels
+  mkdir -p "$wheels" && cp "$CAND_RT" "$CAND_TFS" "$wheels/"
+  cozy --json machine update local --runtime "$wheels/$(basename "$CAND_RT")" --tensorfs "$wheels/$(basename "$CAND_TFS")" -y \
+    > "$OUT/update-again.json" 2> "$OUT/update-again.err" || check "machine update local --runtime --tensorfs, wheels in a plaintext project, failed: $(tail -c 300 "$OUT/update-again.err") $(tail -c 300 "$OUT/update-again.json")"
+  rm -rf "$wheels"
   rt=$(jq -r 'select(.machine) | .runtime' "$OUT/update-again.json" | tail -1 || true)
   tfs=$(jq -r 'select(.machine) | .tensorfs' "$OUT/update-again.json" | tail -1 || true)
   cozy --json machine show local | J --arg rt "$rt" --arg tfs "$tfs" '$rt != "" and .status.runtime == $rt and .status.tensorfs == $tfs' \
