@@ -122,6 +122,8 @@ pub(crate) struct Request {
     pub lane: String,
     /// Its place in this machine's install and download lines (`origin::priority`): its run's.
     pub order: u64,
+    /// The release's install card as its controller sent it (cl-1127): installed from in place of the Hub's plan.
+    pub card: Option<Vec<u8>>,
 }
 
 impl Request {
@@ -1186,7 +1188,25 @@ impl Publisher {
         let card = self.card(service, actor, request, &release, &catalog)?;
         // An earlier environment of this release (another SDK's): the Runtime pair it holds.
         let earlier = self.earlier(service, actor, request, &release);
-        let locked = read_lock(&card.pyproject, &card.lock, Some(source))?;
+        let mut locked = read_lock(&card.pyproject, &card.lock, Some(source))?;
+        // Sent by its controller (cl-1127): the cozy packages its lock takes from a Hub index come from the store, which it wrote them
+        // to, wherever their URLs point; uv reads none of them.
+        if request.card.is_some() {
+            let indexed: Vec<HubFile> = std::mem::take(&mut locked.indexed);
+            // A lock row from an index that said no size is held by its digest alone.
+            let measured = |mut file: HubFile| {
+                if file.length == 0 {
+                    let path = self.store.path(&ObjectRef { sha256: file.sha256.clone(), length: 0 }).ok();
+                    file.length = path.and_then(|path| fs::metadata(path).ok()).map_or(0, |meta| meta.len());
+                }
+                file
+            };
+            for file in indexed.into_iter().map(measured).filter(|file| self.held_file(file)) {
+                if !locked.hub.iter().any(|held| held.sha256 == file.sha256) {
+                    locked.hub.push(file);
+                }
+            }
+        }
         let before = earlier.and_then(|dir| fs::read(dir.join("generation.json")).ok())
             .and_then(|raw| serde_json::from_slice::<crate::catalog::Generation>(&raw).ok())
             .map(|record| record.dependencies.into_iter().map(|d| (normalized(&d.name), d.version)).collect());
@@ -1254,6 +1274,18 @@ impl Publisher {
         let kept = earlier.as_deref().and_then(kept_card);
         // One checked against other files than the run pinned is read again at its Hub, which must have the pinned ones (xs-196).
         let pinned = |card: &Card| request.digest.is_empty() || card.digest == request.digest;
+        // Its controller's, which holds it (cl-1127): no Hub read, the Hub up or down. Its wheels are objects it wrote here.
+        if let Some(sent) = &request.card {
+            let invalid = |why: String| ("release_card_invalid", format!("the install card of {} {release} its controller sent: {why}", request.package));
+            let mut card: Card = serde_json::from_slice(sent).map_err(|e| invalid(e.to_string()))?;
+            if !pinned(&card) {
+                return Err(invalid(format!("its digest is {}, not the {} this run was pinned to", card.digest, request.digest)));
+            }
+            if card.python.is_empty() {
+                card.python = self.sdk.python.clone();
+            }
+            return Ok(card);
+        }
         match kept.filter(|card| card.wheels.iter().all(|wheel| self.held_file(wheel)) && pinned(card)) {
             Some(card) => Ok(card),
             None => hub_card(&catalog()?, &request.package, release, &self.sdk.python, &request.digest),
@@ -2073,6 +2105,23 @@ struct Card {
 }
 const CARD: &str = "release.json";
 
+/// The objects of the install card `digest` its controller wrote here (cl-1127), it and each wheel it names, which a run takes
+/// custody of: one not written is refused, as a local source's is.
+pub(crate) fn card_objects(objects: &crate::objects::Objects, actor: &str, digest: &str) -> Result<Vec<ObjectRef>, Refused> {
+    let unwritten = |what: &str| Refused { code: "release_card_incomplete", message: format!("{what} of the release's install card was not written to this machine") };
+    let (path, length) = objects.path(actor, digest)?.ok_or_else(|| unwritten("the card"))?;
+    let card: Card = serde_json::from_slice(&fs::read(path)?)
+        .map_err(|e| Refused { code: "release_card_invalid", message: format!("the release's install card: {e}") })?;
+    let mut held = vec![ObjectRef { sha256: digest.trim_start_matches("sha256:").to_owned(), length }];
+    for wheel in &card.wheels {
+        match objects.path(actor, &format!("sha256:{}", wheel.sha256))? {
+            Some((_, length)) => held.push(ObjectRef { sha256: wheel.sha256.clone(), length }),
+            None => return Err(unwritten(&wheel.name)),
+        }
+    }
+    Ok(held)
+}
+
 /// The card kept beside the environment at `generation`.
 fn kept_card(generation: &Path) -> Option<Card> {
     serde_json::from_slice(&fs::read(generation.join(CARD)).ok()?).ok()
@@ -2288,6 +2337,8 @@ pub(crate) struct Locked {
     git: Vec<String>,
     local: Vec<String>,
     hub: Vec<HubFile>,
+    /// Every row from a Hub index with one wheel, wherever its URL is: a sent card's rows the store holds (cl-1127).
+    indexed: Vec<HubFile>,
     /// The Hub namespace each row from a Hub index takes it from (`…/v1/index/<namespace>/simple/`), by name.
     namespaces: BTreeMap<String, String>,
     /// Each package it names, at its version.
@@ -2384,6 +2435,9 @@ pub(crate) fn read_lock(pyproject: &str, lock: &str, source: Option<&hub::Source
             .filter(|namespace| !namespace.is_empty() && !namespace.contains('/'));
         if let Some(namespace) = namespace {
             locked.namespaces.insert(name.clone(), namespace.to_owned());
+            if let [Wheel { url: Some(url), hash: Some(hash), size }] = row.wheels.as_slice() {
+                locked.indexed.extend(HubFile::new(url, hash, url.rsplit('/').next().unwrap_or_default(), *size));
+            }
         }
         let local = ["directory", "editable", "path"].iter().any(|key| row.source.contains_key(*key));
         if row.source.contains_key("git") {

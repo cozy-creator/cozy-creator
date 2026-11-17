@@ -76,6 +76,11 @@ pub(crate) struct Facts {
 }
 
 impl Facts {
+    /// The CA its machines trust it by, DER; empty for a Hub a public CA signs.
+    pub(crate) fn ca(&self) -> &[u8] {
+        &self.ca_der
+    }
+
     /// Whether the account may hold private checkpoints of model `org/name`.
     fn reads_privately(&self, model: &str) -> bool {
         let org = model.split('/').next().unwrap_or_default();
@@ -276,6 +281,17 @@ impl Machines {
             providers,
             owner: Some(facts.account),
         })
+    }
+
+    /// The account local code of a list item at `hub` names, as a run's send gives it (`finish_spec`): the item is the run's request
+    /// to the byte (cl-1123). None: signed out there.
+    pub(crate) async fn list_owner(&self, hub: &str) -> Option<String> {
+        let origin = match Origin::parse(hub) {
+            Ok(origin) => self.hubs.resolve(&origin).await,
+            Err(_) => self.hubs.hub.clone(),
+        };
+        self.hubs.client(&origin).ok()?;
+        self.hubs.facts(&origin).await.ok().map(|facts| facts.account)
     }
 
     /// The Hub access a machine's list (`PUT /v1/upcoming`, `/v1/prepare`) of `specs` at `hub` carries: what this computer's

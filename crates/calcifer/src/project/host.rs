@@ -246,7 +246,14 @@ impl Host {
                 if job.is_some_and(|job| self.installs.canceled(job)) {
                     return Err(canceled());
                 }
-                let prepared = local_code::prepare(&self.api, &code, on, hub, false, &key, None, &|run| self.installs.ended(run)).await?;
+                // An install ended for want of waiters is sent again only for a job still waiting: one canceled meanwhile (its cancel can
+                // land while this is on its way) asks for nothing, or its new install starts and is canceled at once (account-rent, e2e
+                // 44011938933: two installs of a canceled render, both canceled).
+                let wanted = |run: &RunId| self.installs.ended(run) && !job.is_some_and(|job| self.installs.canceled(job));
+                let prepared = match local_code::prepare(&self.api, &code, on, hub, false, &key, None, &wanted).await {
+                    Err(_) if job.is_some_and(|job| self.installs.canceled(job)) => return Err(canceled()),
+                    prepared => prepared?,
+                };
                 let Some(run) = &prepared.install else { return Ok(prepared) };
                 if let Wait::Quote(job) = wait {
                     self.installs.asked(&self.api, &run.id, job)?;

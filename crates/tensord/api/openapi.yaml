@@ -307,9 +307,8 @@ paths:
         content: {application/json: {schema: {$ref: '#/components/schemas/Upcoming'}}}
         required: true
       responses:
-        '200':
-          description: Each job as a run would be admitted, in its order
-          content: {application/json: {schema: {$ref: '#/components/schemas/AheadAnswer'}}}
+        '202':
+          description: Taken. Its jobs are admitted behind the answer; each shows in Status, `planning` until planned.
   /v1/prepare:
     put:
       summary: >-
@@ -323,9 +322,8 @@ paths:
         content: {application/json: {schema: {$ref: '#/components/schemas/Prepare'}}}
         required: true
       responses:
-        '200':
-          description: Each item as a run would be admitted, in its order
-          content: {application/json: {schema: {$ref: '#/components/schemas/AheadAnswer'}}}
+        '202':
+          description: Taken. Its items are admitted behind the answer; each shows in Status, `planning` until planned.
   /v1/runs/{id}/cancel:
     post:
       summary: >-
@@ -1202,7 +1200,7 @@ components:
           type: object
           description: "A list item's (Status `ahead`): how ready the machine is for it (cl-1123)."
           properties:
-            stage: {type: string, description: 'installing, downloading, ready, loading, loaded, evicted, running, done'}
+            stage: {type: string, description: 'planning, installing, downloading, ready, loading, loaded, evicted, running, done; refused (with its reason)'}
             done: {type: integer, format: int64, minimum: 0}
             total: {type: integer, format: int64, minimum: 0, description: Bytes the stage counts.}
             reason: {type: string, description: Why it stops where it is.}
@@ -1238,9 +1236,6 @@ components:
       properties:
         key: {type: string, description: "The caller's name for it: an upcoming job's key, the one its run is sent under."}
         spec: {$ref: '#/components/schemas/RunSpec'}
-    AheadAnswer:
-      type: object
-      properties: {items: {type: array, items: {$ref: '#/components/schemas/Admitted'}}}
     Queued:
       type: object
       properties:

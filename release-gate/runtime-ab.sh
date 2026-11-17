@@ -18,7 +18,7 @@ AB_PASS=0  # the second pass of a row (A B B A) takes other seeds
 ab_on() {
   local want=0 show said lim i line
   # An arm begins cold: what the last arm left on the pod (LoRA bakes, memos, peaks, kernels, page cache) goes before the
-  # restart, and the census after it must find none (machines.sh `pod_derived`; 44006261838 compared a cold arm with a warm).
+  # restart, and a settle after it (what the ended executors still wrote) must leave none (machines.sh `pod_derived`; 44006261838 compared a cold arm with a warm).
   [ -n "$(pod_derived "$CLI" "$M" reset)" ] || { log "runtime-ab: no derived-state reset on $M (an --ssh rental)"; return 1; }
   [ "$3" = off ] || want=$(($3 << 30))
   "$CLI" --json machine update "$M" --runtime "$1" --gpu-memory-limit "$([ "$3" = off ] && echo off || echo "${3}GiB")" -y \
@@ -28,7 +28,7 @@ ab_on() {
     said=$(jq -r '.status.runtime // ""' <<< "$show")
     lim=$(jq -r '[.status.gpus[]? | .memory_limit_bytes // 0 | tostring] | unique | join(",")' <<< "$show")
     [ "$said" = "$2" ] && [ "$lim" = "$want" ] && {
-      line=$(pod_derived "$CLI" "$M" census); printf '%s\t%s\n' "$*" "$line" >> ab-derived.tsv
+      line=$(pod_derived "$CLI" "$M" settle); printf '%s\t%s\n' "$*" "$line" >> ab-derived.tsv
       pod_derived_zero "$line" && return 0
       log "runtime-ab: $* starts with derived state it did not make: ${line:-no census}"; return 1; }
     sleep 5

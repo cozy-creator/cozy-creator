@@ -36,8 +36,9 @@ pub(crate) use sent::{choices, identity, identity_value, resume, resume_private}
 
 pub(crate) enum Source {
     /// A published release by name (th-245); empty: the Hub's newest. `digest`: the release digest its caller pinned (a project's
-    /// lock, this computer's kept card), which its files must have; empty: none.
-    Release { package: String, release: String, digest: String },
+    /// lock, this computer's kept card), which its files must have; empty: none. `card`: its install card, an object its controller
+    /// wrote (cl-1127), which it installs from in place of the Hub's plan; empty: none.
+    Release { package: String, release: String, digest: String, card: String },
     /// An installation this machine already holds for the signer.
     Installation(String),
     /// Unpublished code written with Write: its manifest's digest.
@@ -46,8 +47,8 @@ pub(crate) enum Source {
     Models,
 }
 
-/// A published release a run installs: its package, release and pinned digest.
-type Published = (String, String, String);
+/// A published release a run installs: its package, release, pinned digest and the card its controller sent.
+type Published = (String, String, String, String);
 
 /// One member of the warm set a warm run carries (`RunSpec.set`).
 pub(crate) struct SetItem {
@@ -536,6 +537,12 @@ impl Runs {
         // objects now, and a refused id is free for the client to write them and send again.
         if let Source::Local(digest) = &spec.source {
             references.extend(self.local.written(actor, digest)?);
+        }
+        // A release's install card its controller sent, and the wheels it names (cl-1127).
+        if let Source::Release { card, .. } = &spec.source {
+            if !card.is_empty() {
+                references.extend(crate::published::card_objects(&self.objects, actor, card)?);
+            }
         }
         // A written file a warm run makes into a model (`object://sha256:<hex>/<file>`).
         for choice in &spec.models {
@@ -1117,7 +1124,7 @@ impl Runs {
             None => None,
         };
         let release = match &spec.source {
-            Source::Release { package, release, digest } => Some((package.clone(), release.clone(), digest.clone())),
+            Source::Release { package, release, digest, card } => Some((package.clone(), release.clone(), digest.clone(), card.clone())),
             _ => None,
         };
         // Its own slots' choices resolve here; the rest address its callables, whose calls
@@ -1507,12 +1514,13 @@ impl Runs {
     /// function reads (`reads`) at its place in the download line. None when nothing installs (its release is held) or
     /// reads ahead (a child, a warm run of no function, a warm set), or its card doesn't answer: its plan wants them then.
     fn early(&self, actor: &str, id: &str, spec: &Spec, hub: Option<hub::Source>, stop: &Stop) -> Option<Arc<crate::access::Fetch>> {
-        let Source::Release { package, release, digest } = &spec.source else { return None };
+        let Source::Release { package, release, digest, card } = &spec.source else { return None };
         if spec.entrypoint.is_empty() || !spec.parent.is_empty() || spec.set.is_some() || spec.remove {
             return None;
         }
         let asker = self.asker(id, spec);
-        let request = self.request(id, None, Some((package.clone(), release.clone(), digest.clone())), hub.clone(), &asker, "", &[], "");
+        let mut request = self.request(id, None, Some((package.clone(), release.clone(), digest.clone(), card.clone())), hub.clone(), &asker, "", &[], "");
+        request.card = self.sent_card(actor, card).ok()?;
         if self.publisher.held_installation(&self.service, actor, &request).ok()?.is_some() {
             return None;
         }
@@ -1665,7 +1673,7 @@ impl Runs {
                     let absent = || refused("installation_absent", "this machine holds no such installation for this signer");
                     (Some(held.ok_or_else(absent)?), None)
                 }
-                Source::Release { package, release, digest } => (None, Some((package.clone(), release.clone(), digest.clone()))),
+                Source::Release { package, release, digest, card } => (None, Some((package.clone(), release.clone(), digest.clone(), card.clone()))),
                 _ => return Err(refused("invalid_request", "a warm set member names a release or an installation")),
             };
             // `installed` stops at the code: nothing of the function is resolved or downloaded.
@@ -1860,7 +1868,9 @@ impl Runs {
         observe: Option<crate::published::Observer>,
         stop: Option<&Stop>,
     ) -> Result<(Installation, Option<crate::gpu_service::Plan>, Vec<String>), Refused> {
-        let request = self.request(id, held, release, hub, asker, entrypoint, choices, lane);
+        let card = release.as_ref().map(|(_, _, _, card)| card.clone()).unwrap_or_default();
+        let mut request = self.request(id, held, release, hub, asker, entrypoint, choices, lane);
+        request.card = self.sent_card(actor, &card)?;
         let prepared = self
             .publisher
             .prepare_now(&self.service, actor, &request, observe, stop)
@@ -1868,12 +1878,23 @@ impl Runs {
         Ok((prepared.installation, prepared.plan, prepared.warnings))
     }
 
+    /// The install card `digest` names, as `actor` wrote it here (cl-1127); empty: none.
+    fn sent_card(&self, actor: &str, digest: &str) -> Result<Option<Vec<u8>>, Refused> {
+        if digest.is_empty() {
+            return Ok(None);
+        }
+        let (path, _) = self.objects.path(actor, digest)?
+            .ok_or_else(|| refused("release_card_incomplete", format!("the release's install card {digest} was not written to this machine")))?;
+        Ok(Some(std::fs::read(path)?))
+    }
+
     /// What the resolver is asked for run `id`: `held` code, else the release named, its function and model choices.
     #[allow(clippy::too_many_arguments)]
     fn request(&self, id: &str, held: Option<Installation>, release: Option<Published>, hub: Option<hub::Source>, asker: &Asker,
         entrypoint: &str, choices: &[stored::ModelChoice], lane: &str) -> Request {
-        let (package, release, digest) = release.unwrap_or_default();
+        let (package, release, digest, _) = release.unwrap_or_default();
         Request {
+            card: None,
             run: id.into(),
             source: hub,
             package,

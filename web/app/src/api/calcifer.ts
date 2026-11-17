@@ -737,7 +737,11 @@ level: string,
  * What its runs are told of the Runtime pair it holds (one of the machine's it did not take,
  * and why); empty for nothing.
  */
-warning: string, };
+warning: string,
+/**
+ * Local code fetched from a public repository: where, `git+<url>@<commit>[#subdirectory=<folder>]` (cl-1127); empty otherwise.
+ */
+origin?: string, };
 
 /**
  * A typed refusal: its class, stable code and message, with an optional remedy and next commands.
@@ -994,7 +998,7 @@ export type HeldPackage = { machine: string, package: string, release: string,
  */
 runtime: string, level: string, hub: string,
 /**
- * `local`, `hub`, or another Hub's URL.
+ * `local`, `hub`, another Hub's URL, or a repository's commit (`git+<url>@<commit>`, cl-1127).
  */
 source: string,
 /**
@@ -3306,7 +3310,7 @@ gone?: Array<string>,
 /**
  * What's said of the project besides its assets changed: `GET /v1/projects/{id}?assets=false`.
  */
-head?: boolean, cursor?: ProjectEventCursor | null, } | { "type": "project.vault", id: string, state: string, } | { "type": "project.saving", id: string, } | { "type": "project.gone", id: string, path: string, } | { "type": "projects.changed" } | { "type": "appearance", appearance: Appearance, } | { "type": "canvas", id: string, seq: number, cards: { [key in string]: Card | null }, } | { "type": "board.updated", project: string, board: Board, } | { "type": "job.updated", project: string, job: Job, seq: number, } | { "type": "ahead.updated", project: string, ahead: Ahead, } | { "type": "history", id: string, undo?: HistoryEntry | null, redo?: HistoryEntry | null, } | { "type": "thumb", project: string, sha256: string, } | { "type": "resync" };
+head?: boolean, cursor?: ProjectEventCursor | null, } | { "type": "project.vault", id: string, state: string, } | { "type": "project.saving", id: string, } | { "type": "project.gone", id: string, path: string, } | { "type": "projects.changed" } | { "type": "tools.changed" } | { "type": "appearance", appearance: Appearance, } | { "type": "canvas", id: string, seq: number, cards: { [key in string]: Card | null }, } | { "type": "board.updated", project: string, board: Board, } | { "type": "job.updated", project: string, job: Job, seq: number, } | { "type": "ahead.updated", project: string, ahead: Ahead, } | { "type": "history", id: string, undo?: HistoryEntry | null, redo?: HistoryEntry | null, } | { "type": "thumb", project: string, sha256: string, } | { "type": "resync" };
 
 /**
  * A killed process in uninterruptible sleep (`D`: a driver after an Xid, a hung network
@@ -3637,13 +3641,9 @@ install: string,
 detail: string, };
 
 /**
- * `GET /v1/tools`.
+ * `GET /v1/tools`: the same for every machine, and told changed on `/v1/events` (`tools.changed`).
  */
-export type Tools = { tools: Array<Tool>,
-/**
- * Why the list holds only what's installed, or the Hub's as last read: the Hub didn't answer.
- */
-note?: string | null, };
+export type Tools = { tools: Array<Tool>, };
 
 /**
  * One track's clips as they read now.

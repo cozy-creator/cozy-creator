@@ -52,6 +52,8 @@ export type OutboxPort = Pick<Outbox, "add" | "owing" | "back" | "wait" | "owed"
 
 export class Outbox {
   readonly owed = signal<Owed>({ count: 0, slow: false })
+  /** Nothing queued, being sent or on its way, the page's own view included: a reload now loses none of it. */
+  readonly quiet = signal(true)
   private queue: Action<any>[] = []
   /** What's on its way outside the queue: a file's bytes. */
   private outside = 0
@@ -166,6 +168,8 @@ export class Outbox {
     const now = { ...this.owed.get(), ...change, count: this.unsent() + [...this.active.keys()].filter((action) => !action.view && !this.queue.includes(action)).length }
     const was = this.owed.get()
     if (now.count !== was.count || now.slow !== was.slow || now.held !== was.held) this.owed.set(now)
+    const quiet = !this.queue.length && !this.active.size && !this.outside
+    if (quiet !== this.quiet.get()) this.quiet.set(quiet)
   }
 
   private async drain() {

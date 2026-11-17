@@ -8,7 +8,10 @@
     A mention reads as the prompt of the cell that made its picture (the run's request names each reference's file):
     `<Scene> in bright morning sun` alone names nothing CLIP can see (a correct turbo edit scored 0.228);
   - sharpness: CLIP-IQA's "A sharp image." against "A blurry image.". Single renders vary too much to judge alone (a
-    transparent object on grey reads soft), so the gate's median must hold against the last passed gates' medians.
+    transparent object on grey reads soft), so the gate's median must hold against the last passed gates' medians,
+    each taken over the cells both judged (`soft`): a gate of some cells (`--only qwen`) against a passed gate of others
+    compares nothing. Six qwen renders of 11-17 scored 0.11-0.54 by the subject (glass, crystal), 0.16 opaque, the
+    background they are composited on moving them either way; blurred 6 px, 0.005-0.16.
 Never a same-seed pixel diff: a kernel swap moves the pixels (26 dB) without changing the quality.
 Measured on the 10-23 gate outputs: adherence 0.325-0.430 for renders against their own prompts, 0.06-0.31 against
 another gate's prompts, 0.16-0.18 for noise and grey. Sharpness medians 0.80 for the renders, 0.07 blurred (6 px),
@@ -21,7 +24,7 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from runs import Baseline, GateHistory, QualityRef, Run  # noqa: E402
+from runs import Baseline, GateHistory, QualityPass, QualityRef, Run  # noqa: E402
 
 if TYPE_CHECKING:
     from transformers import CLIPModel, CLIPProcessor
@@ -115,6 +118,20 @@ def frames(path: str, n: int = 3) -> list[Image.Image]:
     return [Image.open(f).convert('RGB') for f in sorted(glob.glob(f'{d}/*.png'))]
 
 
+def soft(cells: dict[str, list[tuple[float, float]]], passed: list[QualityPass]) -> tuple[str, bool]:
+    """Whether the renders went soft: against each passed gate, the sharpness median over the cells both judged; soft
+    when it is BUDGET under every one of theirs. A passed gate that judged none of these cells holds nothing."""
+    def median(of: dict[str, list[tuple[float, float]]], names: list[str]) -> float:
+        return float(np.median([s for n in names for _, s in of[n]]))
+    held = [(h, sorted(set(cells) & set(h.get('cells') or {}))) for h in passed]
+    held = [(h, names) for h, names in held if names]
+    if not held:
+        return (' (no passed gate judged these cells: not held)' if passed else ''), False
+    pairs = [(median(cells, names), median(h['cells'], names), len(names)) for h, names in held]
+    said = ', '.join(f'{ours:.3f} against {theirs:.3f} on {n} cells' for ours, theirs, n in pairs)
+    return f' (against the last passed: {said}; budget {BUDGET})', all(ours < theirs - BUDGET for ours, theirs, _ in pairs)
+
+
 def check(gate: GateHistory) -> tuple[list[str], list[str]]:
     out, base = gate['out'], gate.get('baseline') or {}
     p = os.path.join(out, 'prompts.tsv')
@@ -175,12 +192,11 @@ def check(gate: GateHistory) -> tuple[list[str], list[str]]:
     med = round(float(np.median([s for v in cells.values() for _, s in v])), 4)
     hist = base.setdefault('quality', [])
     line = f'quality: {len(cells)} cells, adherence median {adh:.3f}, sharpness median {med:.3f}'
-    if hist:
-        limit = min(h['sharpness'] for h in hist[-KEEP:]) - BUDGET
-        line += f' (last passed {", ".join(format(h["sharpness"], ".3f") for h in hist[-KEEP:])}; floor {limit:.3f})'
-        if med < limit:
-            fails.append(line + ': the renders went soft'); line = None
-    if line:
+    held, failed = soft(cells, hist[-KEEP:])
+    line += held
+    if failed:
+        fails.append(line + ': the renders went soft')
+    else:
         notes.append(line)
     hist.append({'sharpness': med, 'adherence': round(adh, 4), 'cells': cells, 'label': label})
     del hist[:-KEEP]

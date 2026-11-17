@@ -47,7 +47,8 @@ pub(crate) enum Resolved {
 }
 
 /// The local code and function a target names: a client's by content (`code`, `text` its function), a project's (`text` a
-/// path from its folder `cwd`, read into a copy as a client's is), or a first-party package from the dev home's checkout; none
+/// path from its folder `cwd`, read into a copy as a client's is), a public repository's (`git_code`), or a first-party package
+/// from the dev home's checkout; none
 /// for a published target. A client's path is refused: Calcifer reads no client's folder.
 fn local(api: &Api, text: &str, code: Option<&LocalCode>, cwd: Option<&Path>) -> Option<Result<(LocalCode, Option<String>), Error>> {
     if let Some(code) = code {
@@ -59,9 +60,13 @@ fn local(api: &Api, text: &str, code: Option<&LocalCode>, cwd: Option<&Path>) ->
             let (path, function) = found?;
             Ok((crate::local_code::own(api, &path)?, function))
         }),
-        None if api::target::written_as_path(text) => Some(Err(by_path(text))),
-        // A first-party package the dev home's checkout holds is its source there (xs-195).
-        None => crate::checkout::named(text).map(|(path, function)| Ok((crate::local_code::own(api, &path)?, function))),
+        None => match crate::git_code::target(text) {
+            // A public repository's URL, fetched here at its commit (cl-1127).
+            Some(found) => Some(found.and_then(|(path, function)| Ok((crate::local_code::own(api, &path)?, function)))),
+            None if api::target::written_as_path(text) => Some(Err(by_path(text))),
+            // A first-party package the dev home's checkout holds is its source there (xs-195).
+            None => crate::checkout::named(text).map(|(path, function)| Ok((crate::local_code::own(api, &path)?, function))),
+        },
     }
 }
 
@@ -239,6 +244,10 @@ pub(crate) async fn published(api: &Arc<Api>, hub: &str, text: &str, on: Option<
         }
         (Err(e), _) => return Err(e),
     };
+    // What a machine runs, this computer holds for any other (cl-1127).
+    if on.is_some() {
+        crate::hub::held::keep_behind(api, hub, &package, &card.release);
+    }
     Ok(Resolved::Release { package, function, card, release, from, moved, upgrade, cozy })
 }
 
@@ -449,15 +458,21 @@ struct Unversioned {
 /// An unversioned run's releases on the machine that holds `held`: the Hub's finals, or with none its prereleases, never a
 /// yanked one (`api::release::candidates`, cl-1109), read at most a minute ago, for `choose` to pick from; installed there if it
 /// holds another, and the run says so ("minimax-h3 0.12.0, newer than the 0.11.1 on rabou"). Unversioned means newest, so a fix
-/// reaches machines that already hold a release (se-128, cl-952). With the Hub unanswering, what the machine holds runs (`Ok`).
+/// reaches machines that already hold a release (se-128, cl-952). With the Hub unanswering, what the machine holds runs (`Ok`), else the
+/// newest this computer holds (`hub::held`).
 async fn unversioned(api: &Arc<Api>, hub: &str, package: &str, held: &Held) -> Result<Result<String, Unversioned>, Error> {
     let holds = held.releases(package);
     let read = match api.releases.fresh(api, hub, package).await {
         Ok(read) => read,
         Err(why) => {
-            return match api::release::newest(holds.iter().copied()) {
-                Some(top) => Ok(Ok(top.to_owned())),
-                None => Err(why),
+            if let Some(top) = api::release::newest(holds.iter().copied()) {
+                return Ok(Ok(top.to_owned()));
+            }
+            // The newest this computer holds, to install there from here (cl-1127).
+            let here = crate::hub::held::releases(api, hub, package);
+            return match api::release::newest(here.iter().map(String::as_str)) {
+                Some(top) if why.transient() => Ok(Err(Unversioned { candidates: vec![top.to_owned()], said: None })),
+                _ => Err(why),
             };
         }
     };

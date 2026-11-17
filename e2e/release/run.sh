@@ -239,8 +239,13 @@ until run_reached "$OUT/rental-wait.ndjson" in_progress || ! kill -0 "$going" 2>
 ended=$M
 cozy --json machine end "$M" --force -y > "$OUT/end.json" || check "machine end $M --force failed"
 ! listed "$M" && M='' || check "machine end --force: $M is still listed"
-# Its follower ends with the run (machine_lost); a bare `wait` would wait on --release's loopback server too.
+# Its run returns to Calcifer's queue as its second attempt, never failed (cl-1132): canceled here, so it holds no other machine for its
+# 10 minutes, which ends its follower; a bare `wait` would wait on --release's loopback server too.
+n=$(grep -oE '"number": *[0-9]+' "$OUT/rental-wait.ndjson" | head -1 | grep -oE '[0-9]+$' || true)
+[ -n "$n" ] && (cd "$RUN_PROJECT" && cozy --json run cancel "$n") > "$OUT/rental-wait-cancel.json" 2>&1 \
+  || check "the run going on $ended wasn't canceled after it ended: ${n:-no number} $(tail -c 300 "$OUT/rental-wait-cancel.json" 2> /dev/null)"
 wait "$going" || true
+! grep -q '"machine_lost"' "$OUT/rental-wait.ndjson" || check "the run going on $ended failed machine_lost as it ended"
 
 step "the rental in its history"
 # Ended, it stays in the Hub's history with what it cost (cl-693).

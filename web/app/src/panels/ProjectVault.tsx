@@ -6,6 +6,7 @@ import { useConnection } from "../app/Connection"
 import { readAddressesAgain } from "../app/project"
 import { CopyButton } from "../ui/Copyable"
 import { useSignal } from "../ui/signal"
+import { useReloadHold } from "../app/reload"
 import { Failure, useAsk } from "./common"
 import { bytes } from "./format"
 
@@ -111,6 +112,8 @@ export function VaultBody({ id }: { id: string }) {
   const [maximum, setMaximum] = useState("0")
   const mounted = useRef(false)
   const request = useRef<AbortController | null>(null)
+  // A passphrase or recovery secret typed, one shown once, or an operation going: no reload's to lose.
+  useReloadHold(Boolean(operation) || passphrase !== "" || confirmation !== "" || recovery !== "" || newRecovery !== null)
   useEffect(() => {
     mounted.current = true
     return () => { mounted.current = false; request.current?.abort(); request.current = null }

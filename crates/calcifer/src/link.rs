@@ -166,12 +166,12 @@ impl Link {
     }
 
     /// This key's upcoming jobs there, nearest first (cl-967).
-    pub(crate) async fn upcoming(&self, list: &v1::Upcoming) -> Result<v1::AheadAnswer, LinkError> {
+    pub(crate) async fn upcoming(&self, list: &v1::Upcoming) -> Result<(), LinkError> {
         Ok(self.machine.upcoming(list).await?)
     }
 
     /// What this key expects demand for there with no job yet (cl-967).
-    pub(crate) async fn prepare(&self, list: &v1::Prepare) -> Result<v1::AheadAnswer, LinkError> {
+    pub(crate) async fn prepare(&self, list: &v1::Prepare) -> Result<(), LinkError> {
         Ok(self.machine.prepare(list).await?)
     }
 

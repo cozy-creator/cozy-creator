@@ -37,7 +37,7 @@ pub(crate) fn install(home: &Home, diagnostics: bool) -> Result<(), ::api::error
         .with_ansi(false)
         .with_target(false)
         .with_writer(Mutex::new(open(home.calcifer_health())?))
-        .with_filter(tracing_subscriber::filter::filter_fn(|meta| matches!(meta.target(), "cozy.service_health" | crate::took::TARGET)));
+        .with_filter(tracing_subscriber::filter::filter_fn(|meta| matches!(meta.target(), "cozy.service_health" | crate::took::TARGET | crate::prefetch::TARGET)));
     let warnings = diagnostics.then(|| open(home.calcifer().join("diagnostics.log"))).transpose()?.map(|file| {
         tracing_subscriber::fmt::layer()
             .with_ansi(false)

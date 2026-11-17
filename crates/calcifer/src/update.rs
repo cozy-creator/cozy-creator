@@ -207,7 +207,20 @@ impl Machines {
                     asked.push((member, distribution, Component::Version(version)));
                 }
             } else {
-                let target = self.hubs.anonymous(&hub)?.get_software().await.map_err(|e| hub_refusal(&hub, e))?;
+                // The Hub unreachable, its target as this computer last read it (cl-1127).
+                let target = match self.hubs.anonymous(&hub)?.get_software().await {
+                    Ok(software) => {
+                        crate::hub::held::keep_software(self.hubs.home(), &hub, &software);
+                        software
+                    }
+                    Err(e) => {
+                        let refused = hub_refusal(&hub, e);
+                        match crate::hub::held::software(self.hubs.home(), &hub).filter(|_| refused.transient()) {
+                            Some(kept) => kept,
+                            None => return Err(refused),
+                        }
+                    }
+                };
                 hub_torch = Some(target.torch.clone());
                 // An unpinned target older than the machine's software is no reason to go back.
                 let moves = |running: &str, wanted: &str| running != wanted && (target.pinned || newer(wanted, running));

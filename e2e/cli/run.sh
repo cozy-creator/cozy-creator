@@ -57,6 +57,7 @@ parse "$@"
 . "$(dirname "$0")/devstart.sh"
 . "$(dirname "$0")/standing.sh"
 . "$(dirname "$0")/llm.sh"
+. "$(dirname "$0")/hubdown.sh"
 
 # This proof owns its foreground Calcifer. Keep it out of the ordinary raw-log/body
 # collectors and never emit its private CLI data.
@@ -89,8 +90,9 @@ step candidates; candidates
 [ "$SHARD" != commands ] || { kept_calcifer; explicit_restart; idle_restart; }
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
 # web_serves reads what the gate costs from Calcifer's Server-Timing, which it sends only with its diagnostics on (cl-985); coming keeps
-# its project's walk log (.vault-calcifer/diagnostics/walk.log) with them on.
-case $SHARD in projectvault | projectvault-static | projectvault-unstarted | plan | plan-resent | stuck | coming | thumbs) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* ]] || calcifer_diagnostics ;; esac
+# its project's walk log (.vault-calcifer/diagnostics/walk.log) with them on, and so does a failed web cell (fixtures.js `leftovers`):
+# without them a web lane's artifact held nothing of what Calcifer planned or installed (account-rent, e2e 44011938933).
+case $SHARD in projectvault | projectvault-static | projectvault-unstarted | plan | plan-resent | stuck | coming | thumbs) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* && " $(echo $parts) " != *" web_lane "* && " $(echo $parts) " != *" web_alone "* ]] || calcifer_diagnostics ;; esac
 }
 
 # A vault failure names its reason, and web_serves reads the gate's Server-Timing: Calcifer started again with config.toml's
@@ -493,6 +495,7 @@ WEB_1=(
   references
   previews
   play-link
+  update
 )
 WEB_2=(
   fields
@@ -508,6 +511,7 @@ WEB_2=(
   notes
   fullscreen
   llm-reads
+  orbit
 )
 WEB_3=(
   focus
@@ -739,8 +743,9 @@ case $SHARD in
   plan-resent) parts="plan_resent logs" ;;
   # A box's tool gets its machine ready before Render (cl-1104): a guess switched, a request sent meanwhile, a box deleted; two boxes
   # of one function quoted each by its own checkpoint; a guess moved when its machine's load changes; on a short disk a guess
-  # evicts nothing, goes first, says so and comes again, and its install gives the line to a run's.
-  prefetch) parts="prefetch_switch prefetch_ready prefetch_quoted prefetch_yields prefetch_load prefetch_disk logs" ;;
+  # evicts nothing, goes first, says so and comes again, and its install gives the line to a run's; local code is carried to a fresh
+  # machine, which its box then says is ready.
+  prefetch) parts="prefetch_switch prefetch_ready prefetch_quoted prefetch_yields prefetch_load prefetch_local prefetch_disk logs" ;;
   entrypoints) parts="entrypoints hint_commands" ;;
   commands) parts="
     entrypoints
@@ -802,6 +807,11 @@ case $SHARD in
   " ;;
   # A project's run and its chosen machine, a rental chosen by its handle, follow its Hub's name for the host (cl-1089, cl-1106).
   rental-rename) parts="rental_rename logs" ;;
+  # A job queued for a rental order follows it through a Calcifer restart and its Hub's second name for the host; its end sends the job
+  # elsewhere (cl-1125, cl-1132).
+  rental-replan) parts="rental_replan logs" ;;
+  # A machine ends while it holds queued jobs: each completes on another machine (cl-1132).
+  rental-queued) parts="queued_elsewhere logs" ;;
   # A take's thumbnail asked for while its file is on its way here answers no error (cl-1108).
   thumb-arriving) parts="thumb_arriving logs" ;;
   # A dev build's Calcifer at the stack size it ships resumes a render walk and answers /fit (cl-1069: E2E_DEV_COZY, e2e.yaml).
@@ -875,7 +885,7 @@ case $SHARD in
     thumb_arriving
     logs
   " ;;
-  # A run a machine's end cut short, retried elsewhere from the CLI and the page's toast (cl-1085), alone.
+  # A run a machine's end cut short reruns elsewhere as its second attempt (cl-1085, cl-1132), alone.
   projectdb-retry) parts="retry_elsewhere logs" ;;
   # Deleted boxes' files after the undo window, Undo after the purge (cl-919), and a project closed once nothing reads it (cl-823).
   projectdb-deleted) parts="db_deleted_gc logs" ;;
@@ -921,6 +931,10 @@ case $SHARD in
   projectvault-reattach) parts="vault_reattach logs" ;;
   # A run its machine hasn't begun never holds a vault past its maximum (cl-1082), alone.
   projectvault-unstarted) parts="vault_unstarted logs" ;;
+  # An unlocked encrypted project's folder removed from outside (cl-1124), alone; on every OS.
+  projectvault-folder-gone) parts="folder_gone logs" ;;
+  # cozy's process trees never take a process that started before its supposed parent (Windows' stale parent ids), alone; every OS.
+  stale-parent) parts="stale_parent logs" ;;
   # An ended machine's own lines still read; a locked project's run nowhere outside it (cl-1012). Named projectvault-* for its driver.
   projectvault-ended-logs) parts="ended_logs logs" ;;
   # A deleted box's next purge kept for a plaintext project only, never an encrypted one's (cl-1010). Named projectvault-* for its driver.
@@ -956,7 +970,8 @@ case $SHARD in
   # Local code and every input by content (cl-817, cl-820): the CLI in a folder Calcifer can't see,
   # edits timed, a published cozy package called from local code (cl-871) and from an account's package (cl-872), a child
   # result's Latents in another package's caller (cr-276), a host path refused, a dev home's first-party packages from its
-  # packages checkout (xs-195); then a docker rental's end, signed out, with a revoked key and signed in (cl-875).
+  # packages checkout (xs-195) read once per change of it, the tools with the Hub away (cl-1126); then a docker rental's end, signed
+  # out, with a revoked key and signed in (cl-875).
   local-code) parts="
     uv_at_once
     unseen
@@ -964,6 +979,8 @@ case $SHARD in
     local_edits
     hub_dependency
     hub_published
+    git_url
+    hub_down_install
     rc_floor
     held_prerelease
     final_model
@@ -971,9 +988,12 @@ case $SHARD in
     child_latents
     path_manifest
     from_source
+    tools_offline
     rental_end
     rental_end_again
     rental_rename
+    rental_replan
+    queued_elsewhere
     run_on_new
     logs
   " ;;
@@ -998,6 +1018,8 @@ case $SHARD in
     self_update
     logs
   " ;;
+  # What works with the Hub unreachable, on a stand-in machine (cl-1127): measured, by dispatch.
+  hubdown) parts="hub_down_table logs" ;;
   # By hand: the control-plane audit's cells alone (control.sh).
   control) parts="
     machine_show_runs
@@ -1022,7 +1044,7 @@ esac
 # is the same lane there.
 if [ -z "$LOCAL" ] && [ "$parts" != "web_lane logs" ]; then
   case $SHARD in
-    entrypoints | projectvault | projectvault-native | web-serves | notraces | fresh | thumbs | typed-calls) ;;
+    entrypoints | projectvault | projectvault-native | projectvault-folder-gone | stale-parent | web-serves | notraces | fresh | thumbs | typed-calls) ;;
     web-*) parts="web_alone logs" ;;
     *) parts="
       entrypoints

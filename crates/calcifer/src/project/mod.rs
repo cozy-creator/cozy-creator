@@ -2131,7 +2131,7 @@ fn board_of(project: &Project) -> Option<api::calcifer::project::Board> {
 }
 
 /// The local code `id`'s assets name, each once: its path as they write it, and where that is. Not a checkout's first-party
-/// package, which is listed by its name (`toolbox::from_source`).
+/// package, which is listed by its name (`source_tools::listed`).
 pub(crate) fn local_code_named(api: &Arc<Api>, id: &str) -> Result<Vec<(String, PathBuf)>, Refusal> {
     let project = api.projects.get(api, id)?;
     let folder = &project.folder;
@@ -3820,24 +3820,32 @@ async fn settle(api: &Arc<Api>, project: &Arc<Project>) -> Vec<String> {
     let now = Ask::default();
     let mut tried: HashSet<String> = HashSet::new();
     loop {
-        let ready = (|| -> Result<_, Error> {
-            walker.measure()?;
+        let read = |measure: bool| -> Result<_, Error> {
+            if measure { walker.measure()?; }
             let (doc, lock) = (Doc::load(walker.folder())?, walker.folder().lock()?);
             let stand = doc.stand(&lock);
-            let tools = tools_ready(&doc, &stand, &lock);
-            Ok((doc, lock, stand, tools))
-        })();
-        let (doc, lock, stand, tools) = match ready {
+            let tools: Vec<usize> = tools_ready(&doc, &stand, &lock).into_iter().filter(|&i| !tried.contains(&doc.assets[i].name)).collect();
+            let cuts: Vec<usize> = (0..doc.assets.len()).filter(|&i| doc.tool(i) == Some(Tool::Cut)).collect();
+            Ok((doc, lock, stand, tools, cuts))
+        };
+        // A tool or a cut reads what it's made from at its measured size: measured first, for them only. An approval with neither waits on no
+        // ffprobe (a Windows runner's approve took 3-4 s starting ffmpeg and ffprobe, e2e 44022988318): measure_soon measures it off the answer.
+        let ready = read(false).and_then(|ready| match (ready.3.is_empty() && ready.4.is_empty()) || !ready.1.files.values().any(folder::File::unmeasured) {
+            true => Ok(ready),
+            false => read(true),
+        });
+        let (doc, lock, stand, tools, cuts) = match ready {
             Ok(ready) => ready,
             Err(error) => return vec![error.message],
         };
-        let tools: Vec<usize> = tools.into_iter().filter(|&i| tried.insert(doc.assets[i].name.clone())).collect();
         if tools.is_empty() {
-            for i in (0..doc.assets.len()).filter(|&i| doc.tool(i) == Some(Tool::Cut)) {
+            for i in cuts {
                 walker.film_follows(&doc, &stand, &lock, i).await;
             }
+            if lock.files.values().any(folder::File::unmeasured) { measure_soon(api, project); }
             return vec![];
         }
+        tried.extend(tools.iter().map(|&i| doc.assets[i].name.clone()));
         for i in tools {
             if let Err(error) = walker.tool(&now, &doc, &stand, &lock, i).await {
                 return vec![error.message];
@@ -4052,15 +4060,16 @@ impl Asking {
 }
 
 impl Project {
-    /// The seed box `name`'s draft is predicted with (cl-1123), drawn once: a render of it takes it (`take_draft_seed`), so the
-    /// request a machine made ready is the one it is sent.
+    /// The seed box `name`'s draft is predicted with (cl-1123), drawn once and kept: its render sends it, so the request a machine
+    /// made ready is the one it is sent, and nothing about the render changes the item it names.
     pub(super) fn draft_seed(&self, name: &str) -> u64 {
         *self.drafts.lock().expect("drafts lock").entry(name_key(name)).or_insert_with(new_seed)
     }
 
-    /// Box `name`'s draft seed, for its render, which takes it: its next draft is predicted with another.
-    fn take_draft_seed(&self, name: &str) -> Option<u64> {
-        self.drafts.lock().expect("drafts lock").remove(&name_key(name))
+    /// Box `name`'s render was answered by its machine (`prefetch::Lists::answered`): its next draft is predicted with a seed of its
+    /// own, as its next render takes one.
+    pub(crate) fn rotate_draft_seed(&self, name: &str) {
+        self.drafts.lock().expect("drafts lock").remove(&name_key(name));
     }
 }
 
@@ -4088,6 +4097,19 @@ fn predicted(renderer: &Renderer, made: &Map<String, Value>, request: Option<Val
     let models = choices::wire(&choices.into_choices())?;
     let payload = v1::Json::parse(Value::Object(payload).to_string()).map_err(|e| Error::new(Kind::Internal, "payload", e.to_string()))?;
     Ok(v1::RunSpec { kind: v1::RunKind::Call, source: Some(source), entrypoint: renderer.function.clone(), payload: Some(payload), models, ..Default::default() })
+}
+
+/// The files `spec`'s payload reads (`tools::files_in`) as a run of it lists them (`Walk::submit`), and as they're written to a machine
+/// ahead of it (`Calcifer::ship`), so a predicted request is its render's to the byte (cl-1123). One not on this computer is left out.
+pub(super) fn predicted_inputs(folder: &Folder, lock: &Lock, spec: &v1::RunSpec) -> (Vec<v1::InputFile>, Vec<StagedInput>) {
+    let Some(payload) = spec.payload.as_ref().and_then(|payload| serde_json::from_str::<Value>(payload.get()).ok()) else { return (vec![], vec![]) };
+    let (mut inputs, mut staged) = (vec![], vec![]);
+    for (field, path, digest) in tools::files_in(&payload, folder, lock, &HashMap::new()) {
+        let (Ok(length), Ok(parsed)) = (std::fs::metadata(&path).map(|held| held.len()), digest.parse::<Digest>()) else { continue };
+        inputs.push(v1::InputFile { field: field.clone(), digest: digest.clone(), length, media_type: media_type(&path).to_owned(), order: order_of(&field) });
+        staged.push(StagedInput { path, digest: parsed, length });
+    }
+    (inputs, staged)
 }
 
 /// What a call of `function` of `package` wants of its models, by slot (cl-1103): its needs rules evaluated on `request` (none: no rule
@@ -4349,6 +4371,14 @@ impl Walk {
     /// tell me to rent a new one"): with every one gone (ended, ending, offline), where a render naming none goes, said once a render.
     fn live(&self, ask: &str, on: &[On]) -> Vec<On> {
         let api = self.host.api();
+        // Each by its name now: a rental asked by a name it had before goes where its order went (cl-1089, cl-1125).
+        let on: Vec<On> = (on.iter())
+            .map(|on| match on {
+                On::Machine(name) => On::Machine(api.calcifer.machine_name_now(name)),
+                other => other.clone(),
+            })
+            .collect();
+        let on = on.as_slice();
         let gone: Vec<String> = (on.iter())
             .filter_map(|on| match on {
                 On::Machine(name) => api.machines.gone(name),
@@ -4747,7 +4777,7 @@ impl Walk {
         let package = self.host.package(hub, with, &self.folder().dir, std::slice::from_ref(machine), host::Wait::Job(key, None)).await?;
         let Some(renderer) = package.first_making(kind) else { return Ok(None) };
         let source = match &renderer.local {
-            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: self.pinned(hub, &renderer)? }),
+            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: self.pinned(hub, &renderer)?, ..Default::default() }),
             Some(path) => {
                 // Staged in its project's storage scope, as its call's are; an encrypted project's code goes with the run that calls it.
                 let scope = crate::private_io::of_path(&self.folder().dir)?;
@@ -4757,8 +4787,13 @@ impl Walk {
                 v1::Source::Local(crate::private_io::context(scope, self.host.ready(path, machine, hub, host::Wait::Job(key, None))).await?.source)
             }
         };
-        let request = Asking::of(self.folder()).and_then(|asking| asking.request(asset, &package, &renderer.function));
-        let spec = predicted(&renderer, made, request, self.project.draft_seed(asset), source)?;
+        let asking = Asking::of(self.folder());
+        let request = asking.as_ref().and_then(|asking| asking.request(asset, &package, &renderer.function));
+        let mut spec = predicted(&renderer, made, request, self.project.draft_seed(asset), source)?;
+        // Its files as its run lists them, which that run writes there: the item is its request to the byte (cl-1123).
+        if let Some(asking) = &asking {
+            spec.inputs = predicted_inputs(self.folder(), &asking.lock, &spec).0;
+        }
         Ok(Some((v1::Predicted { key: key.to_owned(), spec }, package.name.clone() + "/" + &renderer.function)))
     }
 
@@ -5907,7 +5942,7 @@ impl Walk {
                 // Try again is a render of what failed on these inputs: the same seed, so its finished calls come from the memo.
                 let tried = now.asset(&name).and_then(|held| held.tried.as_ref()).filter(|tried| tried.inputs == inputs).map(|tried| tried.seed);
                 // Else the seed its draft was predicted with (cl-1123): the request its machine made ready is the one it is sent.
-                version.seed = Some(tried.or_else(|| self.project.take_draft_seed(&name)).unwrap_or_else(new_seed));
+                version.seed = Some(tried.unwrap_or_else(|| self.project.draft_seed(&name)));
             }
             version.pickup = pickup;
             // Its number now, whichever of several lands first.
@@ -6141,7 +6176,7 @@ impl Walk {
         // Local code is made ready on the machine the call goes to, its files and manifest sent
         // with every call: a machine that dropped them installs them in the call.
         let source = match &renderer.local {
-            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: self.pinned(&hub, &renderer).map_err(named)? }),
+            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: self.pinned(&hub, &renderer).map_err(named)?, ..Default::default() }),
             Some(path) => {
                 let began = std::time::Instant::now();
                 let prepared = self.again(|| async {
@@ -7049,14 +7084,83 @@ async fn pick(api: &Arc<Api>, on: &[On], offers: &[Offer], planned: Option<&Offe
         let (taken, said) = placement::takes(api, on, offers).await?;
         return Ok((taken, None, said));
     };
+    let chosen = well_placed(api, offers, soonest, hub, package, function, made, now);
+    Ok((chosen.machine.clone(), Some(chosen), None))
+}
+
+/// `soonest` of `offers`, unless it's this computer and would run `function` poorly or draw the screen meanwhile (`pick`): then the
+/// soonest elsewhere, if any.
+#[allow(clippy::too_many_arguments)]
+fn well_placed(api: &Arc<Api>, offers: &[Offer], soonest: &Offer, hub: &str, package: Option<&Package>, function: &str, made: &Map<String, Value>, now: i64) -> Offer {
     let poorly = soonest.machine.is_local()
         && (fit::draws_screen(api) || (soonest.basis != v1::Basis::Measured && package.is_some_and(|package| fit::poorly_now(api, hub, package, function, made))));
     let others: Vec<Offer> = offers.iter().filter(|offer| !offer.machine.is_local()).cloned().collect();
-    let chosen = match poorly {
-        true => placement::soonest(&others, now).unwrap_or(soonest),
-        false => soonest,
+    match poorly {
+        true => placement::soonest(&others, now).unwrap_or(soonest).clone(),
+        false => soonest.clone(),
+    }
+}
+
+/// Where a job of Calcifer's queue may go (cl-1132): its project's machines (`machines_of`), else where a run naming none goes.
+pub(crate) async fn queue_set(api: &Arc<Api>, row: &crate::store::RunRow) -> Vec<On> {
+    if row.project_root.is_some()
+        && let Ok(set) = machines_of(api, &row.owner)
+        && !set.is_empty()
+    {
+        return set;
+    }
+    crate::runs::unnamed_set(api, None).await.unwrap_or_else(|_| vec![On::Machine("local".into())])
+}
+
+/// Where a job of Calcifer's queue goes now (cl-1132, Paul 11-17: "it gives that queue of jobs to a machine. If that machine dies or
+/// disappears, it re-assigns that queued job to another machine"): of `set`, the soonest finish, as a render's job goes (`pick`). Never
+/// one that quoted no finish: a machine that doesn't answer is no candidate until it does. Else why none can take it now.
+pub(crate) async fn queued_on(api: &Arc<Api>, set: &[On], row: &crate::store::RunRow) -> Result<Offer, String> {
+    let hub = row.hub.as_ref().map_or_else(|| api.machines.hubs.default_origin(), ToString::to_string);
+    let function = row.spec.entrypoint.as_str();
+    let payload: Value = row.spec.payload.as_ref().and_then(|payload| serde_json::from_str(payload.get()).ok()).unwrap_or_default();
+    let (read, named, models, gpu) = match &row.spec.source {
+        Some(v1::Source::Release(release)) => {
+            let read = Host::new(api).published(&hub, &format!("{}@{}", release.package, release.release), set.first()).await.ok();
+            // What its request waits for, by its function's needs rules on its payload (cl-1103).
+            let models = match &read {
+                Some(read) => fit::checkpoints(api, &hub, read, function, &Map::new(), Some(&payload)).await,
+                None => vec![],
+            };
+            let gpu = read.as_ref().and_then(|read| api::interface::Interface::parse(read.document()).ok()).is_some_and(|interface| {
+                interface.callables.iter().find(|callable| callable.name == function).is_some_and(|callable| interface.needs_gpu(callable))
+            });
+            (read, format!("{}/{function}@{}", release.package, release.release), models, gpu)
+        }
+        // Local code: as its machine's estimate names it; one that builds models wants a GPU.
+        Some(v1::Source::Local(local)) => (None, format!("{}/{function}", local.manifest), vec![], !row.spec.models.is_empty()),
+        _ => (None, row.target.clone(), vec![], false),
     };
-    Ok((chosen.machine.clone(), Some(chosen.clone()), None))
+    let job = placement::Job {
+        key: row.id.to_string(),
+        target: row.target.clone(),
+        function: named,
+        models,
+        size: v1::JobSize::of(&payload),
+        gpus: row.spec.gpus,
+        gpu,
+        on: set.to_vec(),
+        scope: None,
+        source: None,
+    };
+    let (offers, said) = Box::pin(placement::offers(api, std::slice::from_ref(&job), true)).await;
+    let offers = offers.into_iter().next().unwrap_or_default();
+    let now = now_ms();
+    match placement::soonest(&offers, now) {
+        Some(soonest) => Ok(well_placed(api, &offers, soonest, &hub, read.as_ref(), function, &Map::new(), now)),
+        None => {
+            let why: Vec<String> = offers.iter().map(|offer| placement::said(offer, now)).chain(said).collect();
+            Err(match why.is_empty() {
+                true => "waiting for a machine that can take it".into(),
+                false => format!("waiting for a machine that can take it: {}", why.join("; ")),
+            })
+        }
+    }
 }
 
 /// Where `cozy run` of `function` goes among `set` (Paul, 11-06): as a render's job does (`pick`), each machine asked once, for `count`

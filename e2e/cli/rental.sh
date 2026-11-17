@@ -397,3 +397,134 @@ fi
 project_api "$P" /cancel -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: rename-cancel-$RANDOM$RANDOM" -d '{"names":["asked"]}' > "$OUT/rename-cancel-asked.json" 2>&1 || true
 cozy --json logout > /dev/null 2>&1 || true
 }
+
+# replan_name <rental id>: what machine ls calls the rental once its Hub named its host. replan_quit: the rental ended, signed out.
+replan_name() { cozy --json machine ls 2> /dev/null | jq -r --arg r "$1" '.machines[] | select(.rental_id == $r and .placeholder == null) | .name' 2> /dev/null || true; }
+replan_quit() { cozy --json machine end "$rental" -y > /dev/null 2>&1 || true; cozy --json logout > /dev/null 2>&1 || true; }
+# queue_run <project> <out name> <machine> <text>: the weightless echo asked of <machine> as `cozy run` asks it, followed in the background
+# (its follower's pid in $queued_pid), and its number once it is recorded (in $queued_number).
+queue_run() {
+  local _ before
+  before=$(in_project "$1" --json run ls --limit 20 2> /dev/null | jq '[.runs[]? | select(.target | test("/echo")) | .number] | max // 0' 2> /dev/null || true)
+  (cd "$1" && cozy --json -y run minimax-h3-tools/echo "text=$4" --on "$3") > "$OUT/$2.ndjson" 2> "$OUT/$2.err" & queued_pid=$!
+  queued_number=''
+  for _ in $(seq 120); do
+    queued_number=$(in_project "$1" --json run ls --limit 20 2> /dev/null | jq -r --argjson b "${before:-0}" \
+      '[.runs[]? | select(.kind == "call" and (.target | test("/echo")) and .number > $b)] | min_by(.number) | .number // empty' 2> /dev/null || true)
+    [ -n "$queued_number" ] && break
+    kill -0 "$queued_pid" 2> /dev/null || break
+    sleep 1
+  done
+}
+# queue_settled <project> <number> <file>: its record once it settles, at most 5 min.
+queue_settled() {
+  local _
+  for _ in $(seq 150); do
+    in_project "$1" --json run watch "$2" --once > "$3" 2>&1 || true
+    J '.status == "completed" or .status == "failed" or .status == "canceled"' "$3" && return
+    sleep 2
+  done
+}
+# queue_said <project> <number>: the run's log, as its events say it.
+queue_said() { project_api "$1" "/runs/$2/events" --max-time 10 -H 'Accept: text/event-stream' 2> /dev/null || true; }
+
+# rental_replan (cl-1125, cl-1132). Paul, 11-17: "I had a job queued on 'project' but that job disappeared or something for some reason.
+# It never ran, was just queued forever." "then it gave up and quit? ... or perhaps it was assigned and then the machine died or
+# something? bad experience either way." Then, of the fix: "the real fix should be like 'calcifer has a queue of jobs, it gives that
+# queue of jobs to a machine. If that machine dies or disappears, it re-assigns that queued job to another machine.' In this case, the
+# machine was in fact disappearing."
+# His RTX 5090's image pull stalled, and its Hub replanned the order onto another host, which it named again: rent-24713671, kigurumi,
+# then cecilia, with Calcifer restarted between. A job placed on a booting rental follows its order to the replacement host, waiting
+# there, never failed; and when the order ends for good, the job returns to Calcifer's queue and completes on this computer.
+# This Hub's docker provider has one host, which a replanned attempt is named by again: the second name is its record of the order's
+# host renamed in its own database, as a replan's attempt is named. The rental never gets ready here, so the job waits for it.
+rental_replan() {
+step "a job placed on a booting rental follows its order's replacement host through a restart; the order's end sends it elsewhere (cl-1125, cl-1132)"
+[ -n "${E2E_HUB_LOG:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] || { check "rental_replan: e2e/isolated.sh named no Hub log or email to sign in with"; return; }
+local rental='' handle='' first='' second="replan-$RANDOM" P=$OUT/replan-project pg='' number='' w=$OUT/replan-watch.json s=$OUT/replan-status.json queued_pid='' queued_number=''
+signin "$E2E_HUB_EMAIL" > "$OUT/replan-login.json" || { check "rental_replan: cozy login failed: $(tail -c 300 "$OUT/replan-login.json")"; return; }
+cozy --json new --unencrypted "$P" > "$OUT/replan-new.json" 2>&1 || check "rental_replan: new: $(tail -c 300 "$OUT/replan-new.json")"
+rename_order replan
+[ -n "$rental" ] && [[ $handle == rent-* ]] || { check "rental_replan: no rental accepted with a handle: $(tail -c 400 "$OUT/rename-rent-replan.ndjson")"; cozy --json logout > /dev/null 2>&1 || true; return; }
+# Preferred and asked of the order by its handle, as the page does seconds after it.
+in_project "$P" --json machine use "$handle" > "$OUT/replan-use.json" 2>&1 || true
+queue_run "$P" replan-run "$handle" replanned
+number=$queued_number
+[ -n "$number" ] || { check "rental_replan: the job asked of $handle made no run: $(tail -c 300 "$OUT/replan-run.err")"; replan_quit; return; }
+for _ in $(seq 120); do first=$(replan_name "$rental"); [ -n "$first" ] && [[ $first != rent-* ]] && break; sleep 1; done
+[ -n "$first" ] && [[ $first != rent-* ]] || { check "rental_replan: its Hub never named $rental's host in 2 min"; replan_quit; return; }
+for _ in $(seq 60); do in_project "$P" --json run watch "$number" --once > "$w" 2>&1 || true; J --arg n "$first" '.machine == $n' "$w" && break; sleep 2; done
+echo "rental_replan: run $number waits for $handle, named $first: $(jq -c '{machine, status, waiting}' "$w" 2> /dev/null)"
+# Calcifer restarts, as the laptop's did while Paul waited.
+systemctl --user restart cozy-calcifer || check "rental_replan: systemctl --user restart cozy-calcifer failed"
+for _ in $(seq 60); do cozy --json machine ls > /dev/null 2>&1 && break; sleep 1; done
+# Its Hub replans the order onto another host, named anew.
+pg=$(docker ps --filter name=cozy-skew-pg --format '{{.Names}}' | head -1)
+docker exec "$pg" psql -U postgres -v ON_ERROR_STOP=1 -tAc "UPDATE hub_v2.provider_resources r SET machine_name = '$second'
+  FROM hub_v2.rental_acquisition_attempts a WHERE a.rental_id = '$rental' AND a.provider_resource_id = r.id" > "$OUT/replan-hub.txt" 2>&1 \
+  && grep -q 'UPDATE [1-9]' "$OUT/replan-hub.txt" || check "rental_replan: the Hub's record of $rental's host wasn't renamed ($pg): $(tail -c 300 "$OUT/replan-hub.txt")"
+local now=''
+for _ in $(seq 120); do now=$(replan_name "$rental"); [ "$now" = "$second" ] && break; sleep 1; done
+[ "$now" = "$second" ] || check "rental_replan: Calcifer still calls $rental '${now:-nothing}' 2 min after its Hub named it $second"
+# The job follows the order to its replacement host, still waiting for it: never failed while the order stands.
+for _ in $(seq 30); do
+  in_project "$P" --json run watch "$number" --once > "$w" 2>&1 || true
+  J --arg n "$second" '.machine == $n or .status == "failed"' "$w" && break
+  sleep 2
+done
+echo "rental_replan: run $number after its order's host was named $first, then $second: $(jq -c '{machine, status, waiting, reason}' "$w" 2> /dev/null)"
+J --arg n "$second" '.machine == $n and .status == "queued"' "$w" \
+  || check "rental_replan: run $number, queued for $rental, didn't follow it from $first to $second: $(jq -c '{machine, status, reason}' "$w" 2> /dev/null)"
+status "$P" > "$s" || true
+J --arg n "$second" '.machines == [$n]' "$s" || check "rental_replan: the project preferred $handle; once named $first, then $second, its machines are $(jq -c '.machines' "$s" 2> /dev/null)"
+# The order ends for good: the job returns to Calcifer's queue and completes on this computer, never failed (cl-1132).
+cozy --json machine end "$rental" -y > "$OUT/replan-end.json" 2>&1 || check "rental_replan: machine end $rental: $(tail -c 300 "$OUT/replan-end.json")"
+queue_settled "$P" "$number" "$w"
+echo "rental_replan: run $number once $rental ended: $(jq -c '{machine, status, reason}' "$w" 2> /dev/null)"
+J '.status == "completed" and .machine == "local"' "$w" \
+  || check "rental_replan: run $number didn't complete on local once its order ($second) ended: $(jq -c '{machine, status, reason}' "$w" 2> /dev/null)"
+queue_said "$P" "$number" > "$OUT/replan-said.txt"
+grep -q "$second shut down before it took .*Cozy places it again" "$OUT/replan-said.txt" \
+  || check "rental_replan: run $number's log doesn't say $second shut down and it was placed again: $(grep -o '"text":"[^"]*"' "$OUT/replan-said.txt" | tail -5)"
+kill "$queued_pid" 2> /dev/null || true
+wait "$queued_pid" 2> /dev/null || true
+cozy --json logout > /dev/null 2>&1 || true
+}
+
+# queued_elsewhere (cl-1132). Paul, 11-17: "the real fix should be like 'calcifer has a queue of jobs, it gives that queue of jobs to a
+# machine. If that machine dies or disappears, it re-assigns that queued job to another machine.'" Two jobs of the weightless echo are
+# asked of a booting rental (this Hub's docker provider never gets it ready), which holds them; the rental ends. Each returns to
+# Calcifer's queue and completes on this computer, its log saying why; neither fails. Before, each failed `machine_lost`, "<rental>
+# shut down before it took <run>".
+queued_elsewhere() {
+step "a machine ends while it holds queued jobs: each completes on another machine (cl-1132)"
+[ -n "${E2E_HUB_LOG:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] || { check "queued_elsewhere: e2e/isolated.sh named no Hub log or email to sign in with"; return; }
+local rental='' handle='' P=$OUT/queued-project text number w pids=() numbers=() queued_pid='' queued_number=''
+signin "$E2E_HUB_EMAIL" > "$OUT/queued-login.json" || { check "queued_elsewhere: cozy login failed: $(tail -c 300 "$OUT/queued-login.json")"; return; }
+cozy --json new --unencrypted "$P" > "$OUT/queued-new.json" 2>&1 || check "queued_elsewhere: new: $(tail -c 300 "$OUT/queued-new.json")"
+rename_order queued
+[ -n "$rental" ] && [ -n "$handle" ] || { check "queued_elsewhere: no rental accepted: $(tail -c 400 "$OUT/rename-rent-queued.ndjson")"; cozy --json logout > /dev/null 2>&1 || true; return; }
+for text in first second; do
+  queue_run "$P" "queued-$text" "$handle" "$text"
+  pids+=("$queued_pid")
+  [ -n "$queued_number" ] && numbers+=("$queued_number") || check "queued_elsewhere: the job '$text' asked of $handle made no run: $(tail -c 300 "$OUT/queued-$text.err")"
+done
+in_project "$P" --json run ls --limit 10 > "$OUT/queued-runs.json" 2> /dev/null || true
+echo "queued_elsewhere: asked of $rental: $(jq -c '[.runs[]? | select(.target | test("/echo")) | {number, machine, status, waiting}]' "$OUT/queued-runs.json" 2> /dev/null)"
+J '[.runs[]? | select((.target | test("/echo")) and .status == "queued" and .machine != null and .machine != "local")] | length == 2' "$OUT/queued-runs.json" \
+  || check "queued_elsewhere: the two jobs aren't both queued on $rental: $(jq -c '[.runs[]? | {number, machine, status}]' "$OUT/queued-runs.json" 2> /dev/null)"
+# The machine ends while it holds them.
+cozy --json machine end "$rental" -y > "$OUT/queued-end.json" 2>&1 || check "queued_elsewhere: machine end $rental: $(tail -c 300 "$OUT/queued-end.json")"
+for number in "${numbers[@]}"; do
+  w=$OUT/queued-$number.json
+  queue_settled "$P" "$number" "$w"
+  echo "queued_elsewhere: run $number once $rental ended: $(jq -c '{machine, status, reason}' "$w" 2> /dev/null)"
+  J '.status == "completed" and .machine == "local"' "$w" \
+    || check "queued_elsewhere: run $number, queued on $rental, didn't complete on local once it ended: $(jq -c '{machine, status, reason}' "$w" 2> /dev/null)"
+  queue_said "$P" "$number" > "$OUT/queued-said-$number.txt"
+  grep -q "shut down before it took .*Cozy places it again" "$OUT/queued-said-$number.txt" \
+    || check "queued_elsewhere: run $number's log doesn't say its machine shut down and it was placed again: $(grep -o '"text":"[^"]*"' "$OUT/queued-said-$number.txt" | tail -5)"
+done
+for queued_pid in "${pids[@]}"; do kill "$queued_pid" 2> /dev/null || true; wait "$queued_pid" 2> /dev/null || true; done
+cozy --json logout > /dev/null 2>&1 || true
+}

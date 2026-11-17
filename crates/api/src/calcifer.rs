@@ -1122,6 +1122,9 @@ pub enum StreamEvent {
     /// The index changed (a project renamed or deleted): `GET /v1/projects` again.
     #[serde(rename = "projects.changed")]
     ProjectsChanged,
+    /// What `GET /v1/tools` lists changed: a dev home's first-party package read from its source (cl-1126). `GET /v1/tools` again.
+    #[serde(rename = "tools.changed")]
+    ToolsChanged,
     /// How the page looks everywhere (`GET /v1/appearance`) changed.
     #[serde(rename = "appearance")]
     Appearance { appearance: Appearance },
@@ -1680,7 +1683,7 @@ pub struct HeldPackage {
     pub runtime: String,
     pub level: String,
     pub hub: String,
-    /// `local`, `hub`, or another Hub's URL.
+    /// `local`, `hub`, another Hub's URL, or a repository's commit (`git+<url>@<commit>`, cl-1127).
     pub source: String,
     /// What its runs are told of the Runtime pair it holds (one of the machine's it did not take,
     /// and why); empty for nothing.
@@ -1762,7 +1765,10 @@ impl Machine {
             runtime: env.runtime.clone(),
             level: env.level.clone(),
             hub: env.hub.clone(),
-            source: package_source(&env.hub, hub),
+            source: match env.origin.as_str() {
+                "" => package_source(&env.hub, hub),
+                origin => origin.to_owned(),
+            },
             warning: env.warning.clone(),
         };
         MachinePackages { machine: self.name.clone(), packages: self.status.iter().flat_map(|s| &s.environments).map(held).collect() }
@@ -1815,6 +1821,9 @@ pub struct Environment {
     /// and why); empty for nothing.
     #[serde(default)]
     pub warning: String,
+    /// Local code fetched from a public repository: where, `git+<url>@<commit>[#subdirectory=<folder>]` (cl-1127); empty otherwise.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub origin: String,
 }
 
 /// One member of this controller's warm set on the machine.

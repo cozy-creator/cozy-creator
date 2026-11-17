@@ -40,9 +40,9 @@ enum Command {
         #[arg(long, value_name = "MACHINE")]
         on: Option<String>,
     },
-    /// Install a package, directory or script on a machine.
+    /// Install a package, directory, script or public repository on a machine.
     Install {
-        /// Package reference, ./directory or script.py.
+        /// Package reference, ./directory, script.py, or a repository's URL[@ref] (https://github.com/<owner>/<repository>).
         #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::local))]
         package: String,
         #[command(flatten)]
@@ -93,6 +93,10 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             Some(on) => machine::list(ctx, (on != "all").then(|| on.into()), &query).await,
             None => catalog::search(ctx, &query.join(" "), output::at_most("--limit", limit, 200), offset).await,
         },
+        // A public repository's URL: Calcifer fetches it at a commit and installs it as local code (cl-1127).
+        Command::Install { package, placement } if api::target::Git::parse(&package).is_some() => {
+            machine::install(ctx, package.trim().to_owned(), None, None, placement.on()?, None).await
+        }
         Command::Install { package, placement } => match local(ctx, &package)? {
             Some(path) => {
                 let on = placement.on()?;

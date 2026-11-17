@@ -34,6 +34,12 @@ use tracing::warn;
 
 use crate::{machines::Machines, project::Project};
 
+/// What Calcifer's log says of its predictions (cl-1123): each guess round, each box's guess, each list sent and how long each took.
+pub(crate) const TARGET: &str = "cozy.prefetch";
+
+/// How long a prepare item a render named stays listed for it at most, should its machine never answer the render.
+const PINNED: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// The prefixes the machine's runs of an upcoming and of a prepare list take (`tensord::ahead`).
 pub(crate) const UPCOMING: &str = "cozy:upcoming:";
 pub(crate) const PREPARE: &str = "cozy:prepare:";
@@ -67,6 +73,15 @@ pub(crate) struct Guess {
     /// Its key is its machine's list's to give (`Lists::key`).
     pub item: v1::Predicted,
     pub function: String,
+    pub placed: Placed,
+}
+
+/// Where a guess's render would finish when it was placed (`placement::Offer`): on its machine, and on each other machine that serves
+/// and fits it, with how long that one's line held it from GPUs. What a machine's load moving could change of it (`Lists::could_move`).
+#[derive(Clone, Default)]
+pub(crate) struct Placed {
+    pub finish_ms: i64,
+    pub others: HashMap<String, (i64, i64)>,
 }
 
 #[derive(Clone, Default, PartialEq)]
@@ -97,9 +112,24 @@ pub(crate) struct Lists {
     listings: AtomicU64,
     /// A prepare item its machine says it lost was given a new key: the lists go again at its next Status (`seen`).
     rekeyed: std::sync::atomic::AtomicBool,
-    /// By machine: what of its Status a quote of its load reads (`load`), and a count that moves whenever one's changes.
-    loads: Mutex<HashMap<String, (u64, u64)>>,
+    /// By machine: what of its Status a quote of its load reads (`weigh`), and a count that moves whenever one's changes.
+    loads: Mutex<HashMap<String, Load>>,
     pub(crate) load_moved: AtomicU64,
+    /// Each move of `load_moved`, the newest `MOVES`: its count, its machine and what moved.
+    moves: Mutex<std::collections::VecDeque<(u64, String, Moved)>>,
+    /// By machine and key: a prepare item a render names (`RunSpec::predicted`, cl-1123), kept on its list until the machine answers
+    /// that render (`answered`), whatever its box's guess is meanwhile: the request it made ready is the one the render adopts. With
+    /// its Hub, the project and box it was guessed for, and since when.
+    pinned: Mutex<HashMap<(String, String), Pinned>>,
+}
+
+#[derive(Clone)]
+struct Pinned {
+    hub: String,
+    item: v1::Predicted,
+    project: std::sync::Weak<Project>,
+    asset: String,
+    since: std::time::Instant,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -172,14 +202,36 @@ impl Lists {
     }
 
     /// The key of the item `machine`'s lists predict job `job` (box `asset`) of `project` by (cl-1123): its upcoming job's, else its box's
-    /// guess's. What its render names (`RunSpec::predicted`), so the machine knows the request it made ready is this one.
+    /// guess's, which stays listed until the machine answers the render (`answered`). What its render names (`RunSpec::predicted`), so
+    /// the machine knows the request it made ready is this one.
     pub(crate) fn predicted(&self, machine: &str, project: &str, asset: &str, job: &str) -> Option<String> {
         let planned = lock(&self.planned).get(machine).and_then(|lists| lists.get(project)).and_then(|listed| listed.iter().find(|listed| listed.item.key == job).map(|listed| listed.item.key.clone()));
         if planned.is_some() {
             return planned;
         }
-        let guess = lock(&self.guessed).get(project)?.iter().find(|guess| guess.asset == asset && guess.machine == machine)?.item.clone();
-        lock(&self.keys).get(&(machine.to_owned(), identity(&guess))).cloned()
+        let guess = lock(&self.guessed).get(project)?.iter().find(|guess| guess.asset == asset && guess.machine == machine)?.clone();
+        let key = lock(&self.keys).get(&(machine.to_owned(), identity(&guess.item))).cloned()?;
+        let pinned = Pinned { hub: guess.hub, item: v1::Predicted { key: key.clone(), ..guess.item }, project: guess.project, asset: asset.to_owned(), since: std::time::Instant::now() };
+        lock(&self.pinned).insert((machine.to_owned(), key.clone()), pinned);
+        tracing::info!(target: TARGET, "{asset}'s render names {key} on {machine}: it stays listed until the machine answers");
+        Some(key)
+    }
+
+    /// `machine` answered a render that named item `key`: the item goes as its box's guess says now, and that box's next draft is
+    /// predicted with a seed of its own (`Project::rotate_draft_seed`), as its next render takes one.
+    pub(crate) fn answered(&self, machines: &Arc<Machines>, machine: &str, key: &str) {
+        let Some(pinned) = lock(&self.pinned).remove(&(machine.to_owned(), key.to_owned())) else { return };
+        if let Some(project) = pinned.project.upgrade() {
+            project.rotate_draft_seed(&pinned.asset);
+        }
+        tracing::info!(target: TARGET, "{machine} answered {}'s render, which named {key}", pinned.asset);
+        self.send(machines);
+    }
+
+    /// `project`'s guesses as last made, for a box whose guess couldn't be made this time (a read that didn't answer, a machine
+    /// between frames): it keeps the one it had, so its item keeps its key.
+    pub(crate) fn last_guess(&self, project: &str, asset: &str) -> Option<Guess> {
+        lock(&self.guessed).get(project)?.iter().find(|guess| guess.asset == asset).cloned()
     }
 
     /// The key `machine`'s prepare list has for what `item` makes ready, given now if it isn't on that list.
@@ -248,7 +300,13 @@ impl Lists {
             let mut prepare: Vec<(String, String, v1::Predicted)> = vec![];
             let asked = (guessed.iter().filter(|guess| guess.machine == name).map(|guess| (guess.hub.clone(), guess.item.clone())))
                 .chain(demand(&planned, &name, &frame, upcoming.is_empty()));
-            for (hub, item) in asked {
+            // And what a render named, until the machine answers it (`answered`).
+            lock(&self.pinned).retain(|_, pinned| pinned.since.elapsed() < PINNED);
+            let pinned: Vec<(String, v1::Predicted)> = (lock(&self.pinned).iter())
+                .filter(|((machine, _), _)| *machine == name)
+                .map(|(_, pinned)| (pinned.hub.clone(), v1::Predicted { key: String::new(), ..pinned.item.clone() }))
+                .collect();
+            for (hub, item) in asked.chain(pinned) {
                 let made = identity(&item);
                 if !prepare.iter().any(|(held, ..)| *held == made) {
                     prepare.push((made, hub, item));
@@ -271,6 +329,8 @@ impl Lists {
                 continue;
             }
             lock(&self.sent).insert(name.clone(), now);
+            let keys: Vec<&str> = prepare.iter().map(|(_, item)| item.key.as_str()).collect();
+            tracing::info!(target: TARGET, "lists to {name}: {} upcoming, prepare {keys:?}", upcoming.len());
             let hubs: Vec<String> = upcoming.iter().map(|listed| listed.hub.clone()).chain(prepare.iter().map(|(hub, _)| hub.clone())).collect();
             let upcoming: Vec<(String, v1::Predicted)> = upcoming.iter().map(|listed| (listed.hub.clone(), listed.item.clone())).collect();
             let machines = machines.clone();
@@ -321,6 +381,7 @@ impl Lists {
                 stage: (!ended).then(|| match ops.first() {
                     Some(op) if op.kind == "install" => "installing it".to_owned(),
                     Some(op) => format!("downloading {}", op.subject),
+                    None if run.readiness.as_ref().is_some_and(|ready| ready.stage == "planning") => "planning it".to_owned(),
                     None => "preparing it".to_owned(),
                 }),
                 // How far its machine says it is (cl-1123), else what its downloads there come to.
@@ -371,34 +432,151 @@ impl Lists {
         keys.len() != before
     }
 
-    /// What of `machine`'s Status a quote of its load reads (cl-1104): the roots in its queue, each where it stands but for its bytes
-    /// still to come, the update it may wait on, its phase and its GPUs out of service. Where that changed, `load_moved` moves: each
-    /// open project's guesses are made again, so the machine made ready is still the one a render would go to.
+    /// What of `machine`'s Status could change where a render goes (cl-1104, cl-1123): the runs in its line (each where it stands),
+    /// the update it may wait on, its phase and its GPUs out of service; and how long the weights its line waits for take at its
+    /// link. `load_moved` moves when one of the first changed, or that time by the move threshold (`plan::STAY_MS`), and each open
+    /// project's guesses are placed again. An install's or a model's download comes and goes in the line with each download, and
+    /// its bytes tick down: neither moves it (44068453992: 26 of 30 rounds came of them, every 1–2 s).
     fn weigh(&self, machine: &str, frame: &v1::StatusFrame) {
         use std::hash::{Hash as _, Hasher as _};
         let mut loads = lock(&self.loads);
         let was = loads.get(machine).copied();
+        let theirs = |root: &&v1::Queued| !root.run.starts_with(PREPARE) && !root.run.starts_with(UPCOMING);
         // A stream sends its queue only when it changed: absent, as its last frame said.
-        let queue = match &frame.queue {
+        let (line, runs, waits_ms) = match &frame.queue {
             Some(queue) => {
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                for root in queue.iter().filter(|root| !root.run.starts_with(PREPARE) && !root.run.starts_with(UPCOMING)) {
+                // A run of a function, or one on GPUs; not an install or a model's download, which names no function and holds none.
+                let line: Vec<&v1::Queued> =
+                    queue.iter().filter(theirs).filter(|root| !root.function.is_empty() || !root.widths.is_empty() || root.width > 0).collect();
+                for root in &line {
                     (&root.run, &root.function, root.running, root.width, root.gpu_waits, root.started_at_unix_ms).hash(&mut hasher);
                 }
-                hasher.finish()
+                let bytes: u64 = queue.iter().filter(theirs).map(|root| root.bytes_left).sum();
+                let waits_ms = match frame.link_bytes_per_s > 0.0 {
+                    true => (bytes as f64 / frame.link_bytes_per_s * 1000.0) as i64,
+                    false => 0,
+                };
+                (hasher.finish(), line.len(), waits_ms)
             }
-            None => was.map_or(0, |(queue, _)| queue),
+            None => was.map_or((0, 0, 0), |load| (load.line, load.runs, load.waits_ms)),
         };
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         let update = frame.update.as_ref().map(|update| update.state.as_str());
         let lost: Vec<_> = frame.gpus.iter().map(|gpu| &gpu.out_of_service).collect();
-        (queue, &frame.phase, update, lost).hash(&mut hasher);
-        let load = (queue, hasher.finish());
-        if was != Some(load) {
-            loads.insert(machine.to_owned(), load);
-            if was.is_some() {
-                self.load_moved.fetch_add(1, Ordering::AcqRel);
+        (&frame.phase, update, lost).hash(&mut hasher);
+        let state = hasher.finish();
+        let moved = match was {
+            None => None,
+            Some(was) if was.line != line => Some(Moved::Line(runs.cmp(&was.runs))),
+            Some(was) if was.state != state => Some(Moved::State),
+            Some(was) if (waits_ms - was.waits_ms).abs() >= crate::plan::STAY_MS => Some(Moved::Waits(waits_ms - was.waits_ms)),
+            Some(_) => return,
+        };
+        // The time its line waits stands as last weighed until it moves by the threshold, so a slow drift moves it once.
+        loads.insert(machine.to_owned(), Load { line, runs, state, waits_ms });
+        drop(loads);
+        if let Some(moved) = moved {
+            let count = self.load_moved.fetch_add(1, Ordering::AcqRel) + 1;
+            let mut moves = lock(&self.moves);
+            moves.push_back((count, machine.to_owned(), moved));
+            while moves.len() > MOVES {
+                moves.pop_front();
             }
+            tracing::info!(target: TARGET, "{machine}'s load moved: {}", moved.said());
+        }
+    }
+
+    /// Of the machines' loads that moved since `load_moved` was `since`, one that could change where a guess of `project` goes, said:
+    /// its machine got later while another could finish it clearly sooner; or another got sooner by enough to (its GPU wait gone,
+    /// for one with fewer runs in its line; its weights' wait, by how much it fell). Its phase, update or GPUs moving always could.
+    pub(crate) fn could_move(&self, project: &str, since: u64, now: i64) -> Option<String> {
+        #[derive(Default)]
+        struct Since {
+            fewer: bool,
+            later: bool,
+            state: bool,
+            waits_ms: i64,
+        }
+        let mut by_machine: HashMap<String, Since> = HashMap::new();
+        {
+            let moves = lock(&self.moves);
+            if moves.front().is_some_and(|(count, ..)| *count > since + 1) {
+                return Some("more machines' loads moved than are kept".to_owned());
+            }
+            for (_, machine, moved) in moves.iter().filter(|(count, ..)| *count > since) {
+                let at = by_machine.entry(machine.clone()).or_default();
+                match moved {
+                    Moved::Line(std::cmp::Ordering::Less) => at.fewer = true,
+                    Moved::Line(_) => at.later = true,
+                    Moved::State => at.state = true,
+                    Moved::Waits(by) => at.waits_ms += by,
+                }
+            }
+        }
+        let sooner = crate::plan::finishes_clearly_sooner;
+        let guessed = lock(&self.guessed);
+        let guesses = guessed.get(project).map(Vec::as_slice).unwrap_or_default();
+        for (machine, moved) in by_machine {
+            let could = moved.state
+                || guesses.iter().any(|guess| {
+                    let placed = &guess.placed;
+                    match guess.machine == machine {
+                        true => {
+                            (moved.later && !placed.others.is_empty())
+                                || (moved.waits_ms > 0 && placed.others.values().any(|(other, _)| sooner(*other, placed.finish_ms + moved.waits_ms, now)))
+                        }
+                        false => placed.others.get(&machine).is_some_and(|(finish, gpu_wait)| {
+                            (moved.fewer && sooner(finish - gpu_wait, placed.finish_ms, now))
+                                || (moved.waits_ms < 0 && sooner(finish + moved.waits_ms, placed.finish_ms, now))
+                        }),
+                    }
+                });
+            if could {
+                let what = [(moved.state, "its phase, update or GPUs"), (moved.fewer, "fewer runs in its line"), (moved.later, "more runs in its line")];
+                let mut said: Vec<String> = what.iter().filter(|(held, _)| *held).map(|(_, what)| (*what).to_owned()).collect();
+                if moved.waits_ms != 0 {
+                    said.push(format!("its weights' wait by {} s", moved.waits_ms / 1000));
+                }
+                return Some(format!("{machine}: {}", said.join(", ")));
+            }
+        }
+        None
+    }
+}
+
+/// What of a machine's Status could change where a render goes (`Lists::weigh`): its line's runs (and how many), its phase, update
+/// and GPUs, and its weights' wait as last moved.
+#[derive(Clone, Copy)]
+struct Load {
+    line: u64,
+    runs: usize,
+    state: u64,
+    waits_ms: i64,
+}
+
+/// The most moves of machines' loads kept (`Lists::could_move`).
+const MOVES: usize = 4096;
+
+/// What of a machine's load moved (`Lists::weigh`).
+#[derive(Clone, Copy)]
+enum Moved {
+    /// The runs in its line changed: fewer of them, more, or as many.
+    Line(std::cmp::Ordering),
+    /// Its phase, update or GPUs out of service.
+    State,
+    /// The time the weights its line waits for take, by this much (ms).
+    Waits(i64),
+}
+
+impl Moved {
+    fn said(self) -> String {
+        match self {
+            Self::Line(std::cmp::Ordering::Less) => "fewer runs in its line".to_owned(),
+            Self::Line(std::cmp::Ordering::Greater) => "more runs in its line".to_owned(),
+            Self::Line(std::cmp::Ordering::Equal) => "the runs in its line moved".to_owned(),
+            Self::State => "its phase, update or GPUs changed".to_owned(),
+            Self::Waits(by) => format!("its weights' wait moved {} s", by / 1000),
         }
     }
 }
@@ -429,9 +607,9 @@ fn demand(planned: &HashMap<String, HashMap<String, Vec<Listed>>>, machine: &str
 
 /// Sends `machine` its lists, each item under the access its Hub gives that machine.
 async fn put(machines: &Arc<Machines>, machine: &str, hubs: Vec<String>, upcoming: Vec<(String, v1::Predicted)>, prepare: Vec<(String, v1::Predicted)>) -> Result<(), String> {
+    let began = std::time::Instant::now();
     let (_, link) = machines.linked(machine).map_err(|e| e.message)?;
-    let mut access: HashMap<String, Option<v1::HubAccess>> = HashMap::new();
-    let mut owners: HashMap<String, Option<String>> = HashMap::new();
+    let mut access: HashMap<String, (Option<v1::HubAccess>, Option<String>)> = HashMap::new();
     for hub in hubs {
         if access.contains_key(&hub) {
             continue;
@@ -440,24 +618,22 @@ async fn put(machines: &Arc<Machines>, machine: &str, hubs: Vec<String>, upcomin
             .filter(|(held, _)| *held == hub)
             .map(|(_, item)| item.spec.clone())
             .collect();
-        access.insert(hub.clone(), machines.list_access(&hub, machine, &specs).await?);
-        owners.insert(hub.clone(), machines.list_owner(&hub).await);
+        access.insert(hub.clone(), (machines.list_access(&hub, machine, &specs).await?, machines.list_owner(&hub).await));
     }
-    // Each its Hub's access, and local code the account its render names (`Calcifer::finish_spec`): one request with its render.
+    // Each item with what its run's send gives a run (`finish_spec`): its Hub access, and for local code the account it names.
     let with = |(hub, item): (String, v1::Predicted)| {
-        let owner = match (&item.spec.source, owners.get(&hub).cloned().flatten()) {
-            (Some(v1::Source::Local(_)), Some(owner)) if item.spec.owner.is_empty() => owner,
+        let (hub, owner) = access.get(&hub).cloned().unwrap_or_default();
+        let local = matches!(item.spec.source, Some(v1::Source::Local(_))) && item.spec.owner.is_empty();
+        let owner = match (local, owner) {
+            (true, Some(owner)) => owner,
             _ => item.spec.owner.clone(),
         };
-        v1::Predicted { spec: v1::RunSpec { hub: access.get(&hub).cloned().flatten(), owner, ..item.spec }, ..item }
+        v1::Predicted { spec: v1::RunSpec { hub, owner, ..item.spec }, ..item }
     };
-    let answer = link.upcoming(&v1::Upcoming { jobs: upcoming.into_iter().map(with).collect() }).await.map_err(|e| e.to_string())?;
-    for refused in answer.items.iter().filter_map(|item| item.refusal.as_ref()) {
-        warn!(machine, "an upcoming job won't be ready ahead: {}", refused.message);
-    }
-    let answer = link.prepare(&v1::Prepare { items: prepare.into_iter().map(with).collect() }).await.map_err(|e| e.to_string())?;
-    for refused in answer.items.iter().filter_map(|item| item.refusal.as_ref()) {
-        warn!(machine, "a guess won't be ready ahead: {}", refused.message);
-    }
+    let accessed = began.elapsed().as_millis();
+    // Each is taken at once and admitted behind the answer: one refused says so in its readiness (cl-1123).
+    link.upcoming(&v1::Upcoming { jobs: upcoming.into_iter().map(with).collect() }).await.map_err(|e| e.to_string())?;
+    link.prepare(&v1::Prepare { items: prepare.into_iter().map(with).collect() }).await.map_err(|e| e.to_string())?;
+    tracing::info!(target: TARGET, "lists put on {machine} in {} ms ({accessed} ms for their access)", began.elapsed().as_millis());
     Ok(())
 }

@@ -415,7 +415,7 @@ pub fn ffmpeg(tools: &Path, path: &[PathBuf]) -> Option<(Found, PathBuf)> {
             if !executable(&ffmpeg) || !executable(&ffprobe) {
                 return None;
             }
-            let version = first_line(&ffmpeg, &["-hide_banner", "-version"])?;
+            let version = version_of(&ffmpeg)?;
             Some((
                 Found {
                     path: ffmpeg,
@@ -528,6 +528,24 @@ fn executable(file: &Path) -> bool {
     {
         file.is_file()
     }
+}
+
+/// ffmpeg's version line, run once for each build of it: a lookup is asked for every file measured and every thumbnail, and starting a
+/// 100 MB static binary took seconds of an approval on Windows (e2e 44022988318). Read again once the file there is another.
+fn version_of(ffmpeg: &Path) -> Option<String> {
+    use std::{collections::HashMap, sync::Mutex};
+    type Build = (u64, Option<std::time::SystemTime>);
+    static READ: Mutex<Option<HashMap<PathBuf, (Build, String)>>> = Mutex::new(None);
+    let meta = std::fs::metadata(ffmpeg).ok()?;
+    let build = (meta.len(), meta.modified().ok());
+    if let Some((was, version)) = READ.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).get(ffmpeg)
+        && *was == build
+    {
+        return Some(version.clone());
+    }
+    let version = first_line(ffmpeg, &["-hide_banner", "-version"])?;
+    READ.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(ffmpeg.to_owned(), (build, version.clone()));
+    Some(version)
 }
 
 fn first_line(program: &Path, args: &[&str]) -> Option<String> {

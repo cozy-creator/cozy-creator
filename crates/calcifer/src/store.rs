@@ -165,6 +165,10 @@ const ENDED_KEPT_MS: i64 = 60_000;
 const GIVEN_UP_MS: i64 = 30 * 24 * 3600 * 1000;
 /// The newest run number whose measurements `drop_measurements` has gone past.
 const MEASUREMENTS_DROPPED: &str = "CREATE TABLE IF NOT EXISTS measurements_dropped (through INTEGER NOT NULL) STRICT;";
+/// Each name a rental had before its current one (cl-1125): a project's run keeps the name it was sent by, and an order replanned onto
+/// another host is named again.
+const MACHINE_NAMES: &str =
+    "CREATE TABLE IF NOT EXISTS machine_names (name TEXT NOT NULL, rental_id TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (name, rental_id)) STRICT, WITHOUT ROWID;";
 /// Projects whose files left on a machine were gone before the legacy cut could copy them in (cl-1003), said by `cozy doctor`
 /// and the project's page.
 pub(crate) const LOST: &str = "CREATE TABLE IF NOT EXISTS lost_before_upgrade (path TEXT PRIMARY KEY, files INTEGER NOT NULL) STRICT;";
@@ -1292,20 +1296,6 @@ macro_rules! journal_methods {
         })
     }
 
-    /// Returns an unsent `any` run to the outbox, to be placed again.
-    pub(crate) fn unplace(&self, id: &str) -> Result<Vec<Event>> {
-        self.write(|tx| {
-            let unplaced = tx.execute(
-                "UPDATE runs SET machine = NULL WHERE id = ?1 AND state = 'queued' AND wants = 'any'",
-                [id],
-            )?;
-            Ok(match unplaced {
-                1 => vec![lifecycle(tx, id)?],
-                _ => vec![],
-            })
-        })
-    }
-
     /// The send boundary: the run may reach `machine` only if this wins against a cancel.
     pub(crate) fn mark_sent(&self, id: &str, machine: &str) -> Result<bool> {
         self.write(|tx| {
@@ -1505,38 +1495,12 @@ macro_rules! journal_methods {
         })
     }
 
-    /// Settles a run its machine answered it has no record of: canceled when that was asked, else
-    /// failed. It is never sent again, since the machine may have run part of it.
-    pub(crate) fn lost(&self, id: &str, machine: &str) -> Result<Vec<Event>> {
+    /// Returns run `id` to Calcifer's queue, its machine lost, saying `why` (`requeue_in`, cl-1132). `unsent`: only one never sent,
+    /// as a machine that doesn't answer may hold one it was sent.
+    pub(crate) fn requeue(&self, id: &str, why: &str, unsent: bool) -> Result<Vec<Event>> {
         self.write(|tx| match run_in(tx, id)? {
-            Some(row) if row.state == State::Settled => Ok(vec![]),
-            Some(row) if row.cancel_requested => {
-                let message = format!("canceled; {machine} has no record of the run");
-                end(
-                    tx,
-                    id,
-                    Status::Canceled,
-                    Some(Reason {
-                        code: "canceled".into(),
-                        message,
-                        ..Default::default()
-                    }),
-                )
-            }
-            Some(_) => {
-                let message = format!("{machine} has no record of the run, and the run was not retried");
-                end(
-                    tx,
-                    id,
-                    Status::Failed,
-                    Some(Reason {
-                        code: "machine_lost_run".into(),
-                        message,
-                        ..Default::default()
-                    }),
-                )
-            }
-            None => Ok(vec![]),
+            Some(row) if row.state != State::Settled && (!unsent || row.state == State::Queued) => requeue_in(tx, &row, why),
+            _ => Ok(vec![]),
         })
     }
 
@@ -1621,11 +1585,9 @@ macro_rules! journal_methods {
         self.write(|tx| cancel_in(tx, id))
     }
 
-    /// Records `machine` as gone for good and settles what it owed: a run it accepted fails (or
-    /// ends canceled when that was asked) and is never run again; one it never confirmed goes back
-    /// to the outbox under the same id when Calcifer placed it and the machine had served, and
-    /// otherwise fails. Answers the events, by run.
-    pub(crate) fn runs_on_ended_machine(&self, machine: &str, served: bool, reason: &str) -> Result<Vec<(RunId, Event)>> {
+    /// Returns every unsettled run on `machine` to Calcifer's queue, saying `why` (`requeue_in`, cl-1132): it ended, or is no machine
+    /// here. Answers the events, by run.
+    pub(crate) fn requeue_machine(&self, machine: &str, why: &str) -> Result<Vec<(RunId, Event)>> {
         self.write(|tx| {
             let mut statement = tx.prepare(&format!(
                 "SELECT {RUN_COLUMNS} FROM runs WHERE machine = ?1 AND state <> 'settled' AND (?2 IS NULL OR owner=?2) ORDER BY number"
@@ -1634,28 +1596,7 @@ macro_rules! journal_methods {
             let mut events = vec![];
             for row in rows {
                 let row = row?;
-                let id = row.id.to_string();
-                let ended = if row.cancel_requested {
-                    let reason = Reason { code: "canceled".into(), message: format!("canceled; {reason}"), ..Default::default() };
-                    end(tx, &id, Status::Canceled, Some(reason))?
-                } else if row.state != State::Accepted && !row.pinned && served {
-                    tx.execute(
-                        "UPDATE runs SET machine = NULL, state = 'queued', cursor = 0, machine_state = NULL
-                         WHERE id = ?1",
-                        [&id],
-                    )?;
-                    vec![lifecycle(tx, &id)?]
-                } else {
-                    // Said plainly; asked again elsewhere by `cozy run retry` or the page's Retry (cl-1085). Why its machine ended is the machine's.
-                    let run = run_name(tx, &row);
-                    let message = match row.state {
-                        State::Accepted if reason == "released_by_pod" => format!("{machine} accepted {run}, but its result never reached Cozy, and {machine} ended itself after 15 idle minutes, so the result is lost."),
-                        State::Accepted => format!("{machine} shut down, so {run} stopped"),
-                        _ => format!("{machine} shut down before it took {run}"),
-                    };
-                    end(tx, &id, Status::Failed, Some(Reason { code: api::calcifer::MACHINE_LOST.into(), message, ..Default::default() }))?
-                };
-                events.extend(ended.into_iter().map(|event| (row.id.clone(), event)));
+                events.extend(requeue_in(tx, &row, why)?.into_iter().map(|event| (row.id.clone(), event)));
             }
             Ok(events)
         })
@@ -1977,14 +1918,14 @@ impl Store {
     }
 
     pub(crate) fn machine_ended(&self, machine: &str, reason: &str) -> Result<Vec<(RunId, Event)>> {
-        let row = self.machine(machine)?.ok_or_else(|| StoreError::UnknownMachine(machine.into()))?;
+        self.machine(machine)?.ok_or_else(|| StoreError::UnknownMachine(machine.into()))?;
         self.write(|tx| {
             tx.execute("UPDATE machines SET state = 'ended', reason = ?2, ended_at = coalesce(ended_at, ?3) WHERE name = ?1", params![machine, reason, now_ms()])?;
             // Its warm set goes; the jobs it ran stay with it, what it did, until it goes (cl-1028).
             tx.execute("DELETE FROM machine_warm WHERE machine = ?1", [machine])?;
             Ok(())
         })?;
-        let ended = self.runs_on_ended_machine(machine, row.served, reason);
+        let ended = self.requeue_machine(machine, &ended_why(machine, reason));
         // A machine that ends takes out a few ended past 90 days.
         if let Err(e) = self.prune_machines(PRUNED_EACH) { tracing::warn!("ended machines past 90 days: {e}"); }
         ended
@@ -2015,6 +1956,7 @@ impl Store {
                 while forget_jobs(&tx, "id IN (SELECT run FROM ended_jobs WHERE machine IN (SELECT name FROM temp.pruned_machines))", [])? > 0 {}
                 tx.execute("DELETE FROM machine_logs WHERE machine IN (SELECT name FROM temp.pruned_machines)", [])?;
                 let pruned = tx.execute("DELETE FROM machines WHERE name IN (SELECT name FROM temp.pruned_machines)", [])?;
+                tx.execute("DELETE FROM machine_names WHERE rental_id NOT IN (SELECT rental_id FROM machines WHERE rental_id IS NOT NULL)", [])?;
                 if pruned > 0 { tx.execute_batch("PRAGMA incremental_vacuum(256)")?; }
                 tx.commit()?;
                 Ok(pruned)
@@ -2062,6 +2004,7 @@ impl Store {
         writer.execute_batch(ANSWERS)?;
         writer.execute_batch(LOST)?;
         writer.execute_batch(MEASUREMENTS_DROPPED)?;
+        writer.execute_batch(MACHINE_NAMES)?;
         writer.execute_batch(crate::project::journal::PLACEMENTS)?;
         writer.execute_batch(crate::maintenance_source::TABLES)?;
         writer.execute_batch(crate::project::vault_operation::TABLES)?;
@@ -2308,13 +2251,14 @@ impl Store {
         })
     }
 
-    /// The machines a name, a former name (alias) or a rental id names, in any state; one with
-    /// that very name first.
+    /// The machines a name, a former name (its order's handle, or a host its Hub named before) or a rental id names, in any state;
+    /// one with that very name first.
     pub(crate) fn machines_named(&self, text: &str) -> Result<Vec<MachineRow>> {
         self.read(|conn| {
             let mut statement = conn.prepare(&format!(
                 "SELECT {MACHINE_COLUMNS} FROM machines
                  WHERE name = ?1 COLLATE NOCASE OR alias = ?1 COLLATE NOCASE OR rental_id = ?1 COLLATE NOCASE
+                    OR rental_id IN (SELECT rental_id FROM machine_names WHERE name = ?1 COLLATE NOCASE)
                  ORDER BY name = ?1 COLLATE NOCASE DESC, rowid DESC"
             ))?;
             let rows = statement.query_map([text], machine_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2350,8 +2294,8 @@ impl Store {
         })
     }
 
-    /// Renames a machine that has not served (its Hub named it): its runs move with it, and the
-    /// old name stays its alias. An ended machine that held the name gives it up: its history
+    /// Renames a machine that has not served (its Hub named it): its runs move with it, the
+    /// old name stays its alias, and every name it had finds it. An ended machine that held the name gives it up: its history
     /// keeps it as `<name>@<when it was recorded>`.
     pub(crate) fn rename_machine(&self, old: &str, new: &str) -> Result<bool> {
         self.write(|tx| {
@@ -2373,6 +2317,11 @@ impl Store {
                 None => {}
             }
             move_machine(tx, old, new, Some(old))?;
+            // Its alias keeps only the first: a host named after a replan (cl-1125) leaves a project's runs under the one before.
+            tx.execute(
+                "INSERT OR REPLACE INTO machine_names (name, rental_id, at) SELECT ?1, rental_id, ?3 FROM machines WHERE name = ?2 AND rental_id IS NOT NULL",
+                params![old, new, now_ms()],
+            )?;
             Ok(true)
         })
     }
@@ -3086,6 +3035,58 @@ fn again(tx: &Transaction, row: &RunRow, elsewhere: bool, said: &str) -> Result<
         params![id, row.attempt + 1, elsewhere],
     )?;
     let text = format!("attempt {} {said}, attempt {} of {ATTEMPTS}", row.attempt, row.attempt + 1);
+    let (seq, at_ms) = (next_seq(tx, id)?, now_ms());
+    tx.execute(
+        "INSERT INTO run_logs (run, seq, at_ms, level, text) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, seq as i64, at_ms, "warning", seal_run_text(tx, id, &log_context(id, seq), &text)?],
+    )?;
+    Ok(vec![log_event(seq, at_ms, "warning".to_owned(), text), lifecycle(tx, id)?])
+}
+
+/// Why a machine's runs leave it once it ended (`reason`, its end's): said in each one's log.
+pub(crate) fn ended_why(machine: &str, reason: &str) -> String {
+    match reason {
+        "released_by_pod" => format!("{machine} ended itself after 15 idle minutes"),
+        _ => format!("{machine} shut down"),
+    }
+}
+
+/// Returns `row` to Calcifer's queue, its machine lost (cl-1132, Paul 11-17: "If that machine dies or disappears, it re-assigns that
+/// queued job to another machine"), saying `why` in its log. A call goes back to be placed wherever it finishes soonest
+/// (`Machines::place_unplaced`), never renting on its own; one its machine took, as its next attempt. Past its last attempt, or a
+/// machine's own job (an install, a warm set, an update: it was for that machine, and what asked for it places its work again), it
+/// fails in one line. One its asker canceled ends canceled.
+fn requeue_in(tx: &Transaction, row: &RunRow, why: &str) -> Result<Vec<Event>> {
+    let id = row.id.as_str();
+    if row.cancel_requested {
+        return end(tx, id, Status::Canceled, Some(Reason { code: "canceled".into(), message: format!("canceled; {why}"), ..Default::default() }));
+    }
+    let run = match run_name(tx, row) {
+        name if name.is_empty() => row.target.clone(),
+        name => name,
+    };
+    let taken = row.state == State::Accepted;
+    let lost = |message: String| end(tx, id, Status::Failed, Some(Reason { code: api::calcifer::MACHINE_LOST.into(), message, ..Default::default() }));
+    if row.kind != Kind::Call {
+        return lost(match taken {
+            true => format!("{why}, so {run} stopped"),
+            false => format!("{why} before it took {run}"),
+        });
+    }
+    if taken && row.attempt >= ATTEMPTS {
+        return lost(format!("{why}, so {run} stopped on its last attempt ({ATTEMPTS} of {ATTEMPTS})"));
+    }
+    let attempt = row.attempt.max(1) + u32::from(taken);
+    tx.execute(
+        "UPDATE runs SET state = 'queued', attempt = ?2, cursor = 0, machine_state = NULL, accepted_at = NULL, started_at = NULL,
+            machine = NULL, wants = 'any', pinned = 0
+         WHERE id = ?1",
+        params![id, attempt],
+    )?;
+    let text = match taken {
+        true => format!("attempt {} stopped: {why}; attempt {attempt} of {ATTEMPTS} goes wherever it finishes soonest", row.attempt.max(1)),
+        false => format!("{why} before it took {run}; Cozy places it again, wherever it finishes soonest"),
+    };
     let (seq, at_ms) = (next_seq(tx, id)?, now_ms());
     tx.execute(
         "INSERT INTO run_logs (run, seq, at_ms, level, text) VALUES (?1, ?2, ?3, ?4, ?5)",

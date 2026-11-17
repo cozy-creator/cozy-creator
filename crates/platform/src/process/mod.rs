@@ -300,17 +300,31 @@ pub fn parent_of(pid: u32) -> Result<u32> {
 
 /// Every process descended from `pid` (children, theirs, and so on), read now. Empty where
 /// nothing could be read.
+///
+/// A child counts only if it started no earlier than its parent: Windows keeps the parent id a
+/// process was created with, which goes stale when that parent exits, so a long-lived process
+/// whose first parent once had this pid (Explorer, a browser) would otherwise read as its child.
+/// One whose start, or its parent's, can't be read isn't counted.
 pub(crate) fn descendants(pid: u32) -> Vec<u32> {
     let table = sys::parents();
-    let mut tree = vec![pid];
+    let start = |pid: u32| Birth::of(pid).ok().map(|birth| birth.start_ticks);
+    let mut tree = vec![(pid, start(pid))];
     let mut at = 0;
     while at < tree.len() {
-        let parent = tree[at];
-        tree.extend(table.iter().filter(|(_, p)| *p == parent).map(|(c, _)| *c));
+        let (parent, parent_start) = tree[at];
+        if let Some(parent_start) = parent_start {
+            let children = table.iter().filter(|(child, p)| *p == parent && *child != parent).map(|(child, _)| *child);
+            let born_after: Vec<_> = children
+                .filter(|child| !tree.iter().any(|(known, _)| known == child))
+                .map(|child| (child, start(child)))
+                .filter(|(_, child_start)| child_start.is_some_and(|child_start| child_start >= parent_start))
+                .collect();
+            tree.extend(born_after);
+        }
         at += 1;
     }
     tree.remove(0);
-    tree
+    tree.into_iter().map(|(pid, _)| pid).collect()
 }
 
 /// `pid` and every process it started, as handles that outlive their PIDs: what to wait on before
