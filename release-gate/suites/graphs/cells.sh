@@ -8,6 +8,8 @@
 #                       replay it, their images byte-identical to 1's as written
 #   graphs-anima-*      Anima three times: its text encoder (2-D token ids, held out of idle recording until cr-300's hold
 #                       went) replays in the third, its image byte-identical to the first's; again at 6 GiB
+#   graphs-sdxl-*       SDXL at one size, then another twice with an idle period between: the new size's UNet records at
+#                       idle (its device reads answered by its call as written) and replays, its image byte-identical
 #   graphs-klein-283    Klein upsampled on cr-283's prompt and seed (gate 44006460875 run 17, rtx-4090): a decode graph
 #                       that differs names its cause in the record (analyze.py fails the cell either way)
 #   graphs-h3-upscale-* Regenerate-2K of a 5 s plate at 1080p, three prompts: the latent upscaler captures its graph (its
@@ -35,7 +37,8 @@ gcap off
 gcopy() {
   rm -rf "${G:?}/$1"; mkdir -p "$G/$1"
   tar -C "$PKGS/$1" --exclude=.venv --exclude=__pycache__ -cf - . | tar -C "$G/$1" -xf - &&
-    { grep -rlE --include='*.py' '^ *memoize=' "$G/$1" || true; } | xargs -r sed -i -E '/^ *memoize=(True|Memoize\(requires=\["seed"\]\)),$/d'
+    { grep -rlE --include='*.py' 'memoize=' "$G/$1" || true; } |
+    xargs -r sed -i -E -e '/^ *memoize=(True|Memoize\(requires=\["seed"\]\)),$/d' -e 's/, *memoize=True//; s/memoize=True, *//'
 }
 # grun <cell> <package> <function> <args...>: a run of the copy (its record graphs/<cell>.json via run_cell).
 grun() { local name=$1 package=$2 function=$3; shift 3; run_cell "$OUT" "$name" "./graphs/$package/$function" --on "$M" "$@"
@@ -49,9 +52,12 @@ gsame() {
     expect "$1" FAIL "$2 ${a:-did not complete} against $3 ${b:-did not complete}"
 }
 gfact() { jq "$2" "$1.json" 2>/dev/null || echo 0; }
+# gwant <tag>: whether --only (if any) asks for this part (graphs-ph3, graphs-anima, graphs-sdxl).
+gwant() { [ -z "$ONLY" ] || [[ $ONLY == *",$1,"* ]]; }
 # gregion <regex> <field jq>: over every region of a record whose name matches, the field's values in a list.
 gregion() { echo "[.. | objects | .graphs? // empty | objects | to_entries[] | select(.key | test(\"$1\")) | .value | $2]"; }
-if gcopy p-h3-image; then
+if ! gwant graphs-ph3; then :
+elif gcopy p-h3-image; then
   # A text-to-image records its DiT in the call; another prompt's key then moved, so a short step (under the
   # Runtime's 1 s idle bound: a 4090's edit DiT step is past it) records at idle on its own call's inputs.
   grun graphs-ph3-t2i p-h3-image generate prompt_upsampling:=false seed:=$((R + 601)) \
@@ -71,7 +77,24 @@ if gcopy p-h3-image; then
 else
   expect graphs-ph3 FAIL "no copy of p-h3-image"
 fi
-if gcopy anima; then
+if gwant graphs-sdxl && gcopy sdxl; then
+  # SDXL at one size, then another (its key moved: its UNet records at idle, a call's device reads answered by its run as
+  # written, once declined at idle), then that size again, replaying from its first step: its image byte-identical.
+  grun graphs-sdxl-a sdxl generate prompt="$OBJECT on a wooden table, photo" seed:=$((R + 621))
+  gsize=(prompt="$SCENE at dusk, wide shot, photo" seed:=$((R + 622)) aspect_ratio=16:9)
+  grun graphs-sdxl-b-1 sdxl generate "${gsize[@]}"
+  sleep 15  # an idle period: the new size's UNet records
+  grun graphs-sdxl-b-2 sdxl generate "${gsize[@]}"
+  gsame graphs-sdxl-idle-bytes graphs-sdxl-b-1 graphs-sdxl-b-2
+  idle=$(gfact graphs-sdxl-b-2 "$(gregion unet '.graph.measured[]? | select(.replay_ms == null)') | length")
+  replays=$(gfact graphs-sdxl-b-2 "$(gregion unet '.replays // 0') | add // 0")
+  eager=$(gfact graphs-sdxl-b-2 "$(gregion unet '.graph.eager // [] | .[]') | join(\"; \")")
+  [ "$replays" -gt 0 ] && [ "$idle" -gt 0 ] && [ "$eager" = '""' ] &&
+    expect graphs-sdxl-idle PASS "the new size's UNet recorded at idle ($idle) and replayed $replays steps" ||
+    expect graphs-sdxl-idle FAIL "the new size's UNet: idle recordings $idle, replays $replays, as written for $eager"
+fi
+if ! gwant graphs-anima; then :
+elif gcopy anima; then
   gsays="masterpiece, best quality, anime illustration of $CHAR"
   for i in 1 2 3; do grun graphs-anima-$i anima generate prompt="$gsays" seed:=$((R + 611)); [ "$i" != 1 ] || sleep 20; done
   gsame graphs-anima-repeat graphs-anima-1 graphs-anima-3
@@ -86,18 +109,20 @@ if gcopy anima; then
 else
   expect graphs-anima FAIL "no copy of anima"
 fi
-cell graphs-klein-283 "$(pkg flux.3-klein generate_turbo)" prompt_upsampling:=true seed:=241107249 \
+[ -n "$ONLY" ] || cell graphs-klein-283 "$(pkg flux.3-klein generate_turbo)" prompt_upsampling:=true seed:=241107249 \
   prompt="a vintage tin robot playing a saxophone on a small stage in a smoky jazz club"
 log "graphs-klein-283: decode $(jq -c '[.measurements.residency.graphs // {} | to_entries[] | select(.value.decode) | {lm: .key, captures: .value.decode.captures, refused: .value.decode.refused}]' graphs-klein-283.json 2>/dev/null)"
-gplate=$(box graphs_plate "$(plate 5)" "A test pattern with a tone")
-for i in 1 2 3; do
-  cell graphs-h3-upscale-$i "$(pkg minimax-h3 upscale)" video="$gplate" to=1080p prompt="$SCENE, take $i, slow push-in, ambient sound"
-done
-up="$(gregion 'upscaler$' '.captures // 0') | add // 0"
-refused=$(cat graphs-h3-upscale-[123].json 2>/dev/null | jq -s -r '[.[] | .. | objects | .capture_refused? // empty | .[] | select(test("upscaler"))] | join(" | ")')
-captures=$(( $(gfact graphs-h3-upscale-2 "$up") + $(gfact graphs-h3-upscale-3 "$up") ))
-[ "$captures" -gt 0 ] && [ -z "$refused" ] && expect graphs-h3-upscaler PASS "the latent upscaler captured $captures graphs" ||
-  expect graphs-h3-upscaler FAIL "the latent upscaler captured $captures; refused: ${refused:-none}"
+if gwant graphs-h3; then
+  gplate=$(box graphs_plate "$(plate 5)" "A test pattern with a tone")
+  for i in 1 2 3; do
+    cell graphs-h3-upscale-$i "$(pkg minimax-h3 upscale)" video="$gplate" to=1080p prompt="$SCENE, take $i, slow push-in, ambient sound"
+  done
+  up="$(gregion 'upscaler$' '.captures // 0') | add // 0"
+  refused=$(cat graphs-h3-upscale-[123].json 2>/dev/null | jq -s -r '[.[] | .. | objects | .capture_refused? // empty | .[] | select(test("upscaler"))] | join(" | ")')
+  captures=$(( $(gfact graphs-h3-upscale-2 "$up") + $(gfact graphs-h3-upscale-3 "$up") ))
+  [ "$captures" -gt 0 ] && [ -z "$refused" ] && expect graphs-h3-upscaler PASS "the latent upscaler captured $captures graphs" ||
+    expect graphs-h3-upscaler FAIL "the latent upscaler captured $captures; refused: ${refused:-none}"
+fi
 audited=0 mismatched=()
 for f in graphs-*.json; do
   [ -f "$f" ] || continue
