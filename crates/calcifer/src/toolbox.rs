@@ -87,7 +87,7 @@ async fn list_tools(api: &Arc<Api>, asked: Asked) -> Result<Json<Tools>, Refusal
     };
     // A dev home's checkout's first-party packages are their source's, not the Hub's (xs-195), read once per state of it (cl-1126).
     let source = crate::source_tools::listed(api, &hub);
-    let held: Vec<Tool> = held(api, &hub).await.into_iter().filter(|tool| !checkout::holds(&tool.package)).collect();
+    let held: Vec<Tool> = held(api, &hub).await.into_iter().filter(|tool| !checkout::holds(&tool.package)).chain(fetched(api).await).collect();
     let installed: BTreeSet<String> = held.iter().map(|tool| tool.package.clone()).collect();
     let catalog = api.listing.tools(api, &hub);
     let listed = catalog.iter().filter(|tool| !installed.contains(&tool.package) && !checkout::holds(&tool.package)).cloned();
@@ -313,6 +313,29 @@ fn says(tool: &Tool, q: &str) -> bool {
 /// The tools of what this computer has installed from `hub`, each package at its newest there, by its kept card.
 async fn held(api: &Arc<Api>, hub: &str) -> Vec<Tool> {
     kept_tools(api, hub, installed_releases(api, hub).await)
+}
+
+/// The tools of what this computer has installed from public repositories (cl-1127), each at the commit it holds: named as a box
+/// names it there (`<url>@<commit>/<folder>/<fn>`), said from its repository (`source`, `git+<url>@<commit>`).
+async fn fetched(api: &Arc<Api>) -> Vec<Tool> {
+    let Some((_, environments)) = api.machines.holds(&On::Machine("local".into()), false).await else { return vec![] };
+    let home = api.machines.hubs.home();
+    let mut tools = vec![];
+    for env in &environments {
+        let Some(origin) = crate::git_code::origin_of_manifest(&env.manifest) else { continue };
+        let Some(document) = local_code::kept_for(home, &env.package, &env.manifest) else { continue };
+        let Ok(interface) = Interface::parse(&document) else { continue };
+        let summary = origin.folder_here().map(|dir| checkout::description(&dir)).unwrap_or_default();
+        let (package, source) = (origin.target(), origin.spelled());
+        tools.extend(tool::tools_of(&package, &env.release, &interface, &summary).into_iter().map(|tool| Tool {
+            id: format!("{package}/{}", tool.function),
+            package: package.clone(),
+            installs: Some(env.package.clone()),
+            source: Some(source.clone()),
+            ..tool
+        }));
+    }
+    tools
 }
 
 /// A Hub's one spelling.

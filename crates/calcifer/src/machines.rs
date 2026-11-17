@@ -1241,7 +1241,10 @@ impl Machines {
             seen.stopped &= frame.phase == "releasing";
             seen.streaming = true;
             // What this computer has installed is in the tool list: a change there is told (cl-1126).
-            let installs = |frame: &v1::StatusFrame| frame.environments.iter().map(|env| (env.package.clone(), env.release.clone(), env.hub.clone())).collect::<std::collections::BTreeSet<_>>();
+            // A public repository's code moved to another commit is another install (cl-1127).
+            let installs = |frame: &v1::StatusFrame| frame.environments.iter()
+                .map(|env| (env.package.clone(), env.release.clone(), env.hub.clone(), crate::git_code::installed_from(&env.manifest)))
+                .collect::<std::collections::BTreeSet<_>>();
             installed = name == "local" && seen.frame.as_ref().is_none_or(|last| installs(last) != installs(&frame));
             seen.frame = Some(frame);
             seen.heard = Some(crate::store::now_ms());

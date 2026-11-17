@@ -294,10 +294,32 @@ pub(crate) fn link(tree: &Digest, manifest: &Digest) {
 
 /// The repository a machine's installation of the manifest `manifest` (`sha256:<hex>`) came from, as `Origin::spelled`.
 pub(crate) fn installed_from(manifest: &str) -> Option<String> {
+    origin_of_manifest(manifest).map(|origin| origin.spelled())
+}
+
+/// The repository, commit and folder the manifest `manifest` was made from, when a repository's.
+pub(crate) fn origin_of_manifest(manifest: &str) -> Option<Origin> {
     if manifest.is_empty() {
         return None;
     }
-    kept("manifests", manifest).map(|origin| origin.spelled())
+    kept("manifests", manifest)
+}
+
+impl Origin {
+    /// As a box or `cozy run` names it, at its exact commit: `<url>@<commit>[/<folder>]`.
+    pub(crate) fn target(&self) -> String {
+        match self.folder.as_str() {
+            "" => format!("{}@{}", self.url, self.commit),
+            folder => format!("{}@{}/{folder}", self.url, self.commit),
+        }
+    }
+
+    /// Its package's folder here, when this computer still holds the commit.
+    pub(crate) fn folder_here(&self) -> Option<PathBuf> {
+        let dir = root().ok()?.join(hex(&self.url)).join(&self.commit);
+        let dir = self.folder.split('/').filter(|part| !part.is_empty()).fold(dir, |dir, part| dir.join(part));
+        dir.exists().then_some(dir)
+    }
 }
 
 fn keep(kind: &str, digest: &Digest, origin: &Origin) {

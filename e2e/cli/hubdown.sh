@@ -4,7 +4,8 @@
 # A remote machine here is a stand-in (another user's cozy on this runner, machineset.sh's `stand_in`), added to this computer.
 #   hub_down_table   what works with the Hub unreachable, on a machine that exists: measured, one row a line in hubdown.md (dispatch)
 #   git_url          Paul: "ideally users should be able to install code from arbitrary public github links": a package installed
-#                    from a public repository's URL at a tag, listed with its URL and commit, run, and installed again at another ref
+#                    from a public repository's URL at a tag, listed with its URL and commit, run, and installed again at another ref;
+#                    a package of tools installed so is in the canvas's tool list at its commit
 #   hub_down_install with the Hub down, a release this computer holds installed on a stand-in machine from here, and run there
 here_hubdown=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
@@ -156,6 +157,20 @@ git_url() {
   cozy --json package ls --on local > "$OUT/git-moved.json" 2>&1
   said=$(jq -r '[.packages[] | select(.package == "local/ci-hub-pkg") | .source | select(startswith("git+"))] | unique | join(" ")' "$OUT/git-moved.json") || said=
   [ "$said" = "git+$repo@$now#subdirectory=$folder" ] || check "git url: installed again at $now, it's listed from '${said:-nothing}'"
+  # A repository's tools are in the canvas's list (`GET /v1/tools`) once installed, named at their commit and said from it.
+  local boxed=e2e/cli/project/boxed holder=$HOME/.cozy/calcifer/calcifer.lock.holder id
+  cozy --json package install "$repo/tree/$now/$boxed" --on local > "$OUT/git-tools.ndjson" 2> "$OUT/git-tools.err" \
+    || { check "git url: installing $boxed at $now failed: $(hd_said "$OUT/git-tools.ndjson" "$OUT/git-tools.err")"; return; }
+  id="$repo@$now/$boxed/plain"
+  for _ in $(seq 12); do
+    curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$(jq -r .address "$holder")/v1/tools" > "$OUT/git-tools.json" 2>&1 \
+      && J --arg id "$id" '[.tools[] | select(.id == $id)] != []' "$OUT/git-tools.json" && break
+    sleep 5
+  done
+  said=$(jq -r --arg id "$id" '[.tools[]? | select(.id == $id) | .source] | join(" ")' "$OUT/git-tools.json" 2> /dev/null) || said=
+  echo "git url: the tool list has $id from ${said:-nothing}"
+  [ "$said" = "git+$repo@$now#subdirectory=$boxed" ] \
+    || check "git url: the tool list doesn't list $id from git+$repo@$now#subdirectory=$boxed: '${said:-nothing}' $(jq -c '[.tools[]? | select(.source // "" | startswith("git+")) | .id]' "$OUT/git-tools.json" 2> /dev/null | head -c 300)"
 }
 
 # hub_down_install (cl-1127; Paul, 11-17: "if tensorhub is down, or unable to be reached, ideally the host machine (here) should be able

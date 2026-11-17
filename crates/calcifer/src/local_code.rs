@@ -873,6 +873,21 @@ pub(crate) fn kept(home: &Home, filed: &Filed, runtime: &str) -> Option<Value> {
     interface(&document).then_some(document)
 }
 
+/// The interface kept for `package`'s source of manifest `manifest`, as any Runtime described it, the newest: what this computer's
+/// installs of it list (`toolbox`). Not a project's.
+pub(crate) fn kept_for(home: &Home, package: &str, manifest: &str) -> Option<Value> {
+    let mut dir = home.root().join("packages");
+    dir.extend(package.split('/'));
+    let named = format!("-{}-", manifest.trim_start_matches("sha256:"));
+    let mut kept: Vec<(SystemTime, PathBuf)> = (fs::read_dir(dir).into_iter().flatten().flatten())
+        .filter(|entry| entry.file_name().to_string_lossy().contains(&named))
+        .filter_map(|entry| Some((entry.metadata().ok()?.modified().ok()?, entry.path())))
+        .collect();
+    kept.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+    let document: Value = serde_json::from_slice(&fs::read(&kept.first()?.1).ok()?).ok()?;
+    interface(&document).then_some(document)
+}
+
 /// Whether some kept source of this package has the same environment inputs: a changed source
 /// is a sync, not an install.
 fn synced(home: &Home, filed: &Filed) -> bool {
