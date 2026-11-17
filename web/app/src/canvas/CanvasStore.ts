@@ -1017,8 +1017,10 @@ export class CanvasStore {
           this.reshape(asset.name)
         }
         if (landing && !this.lookedAt(asset.name, landing.number)) this.sayLater(asset.name, landing.id || undefined, landing.number, landing.main?.sha256)
-      } else if (this.adding === 0) {
-        // While an import is being asked, a new name may be that import's: its answer says, then this runs again.
+      } else if (this.adding === 0 && !this.renames.has(asset.name)) {
+        // While an import is being asked, a new name may be that import's: its answer says, then this runs again. A box's old name while
+        // its rename is on its way is that box, under its new name here: never another box of it (e2e 44094179191: `named` was drawn again
+        // beside `renamed`, which went).
         fresh.push({ name: asset.name, asset, queued: queued.has(asset.name), warnings: warnings.get(asset.name) })
       }
     }
@@ -1031,7 +1033,7 @@ export class CanvasStore {
           this.patch(entity.name, { entity, linked, ...said(view, entity.name) })
           this.reshape(entity.name)
         }
-      } else if (this.adding === 0) {
+      } else if (this.adding === 0 && !this.renames.has(entity.name)) {
         fresh.push({ name: entity.name, entity, linked, warnings: warnings.get(entity.name) })
       }
     }
