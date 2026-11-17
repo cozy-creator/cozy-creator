@@ -283,17 +283,6 @@ pkg() {
     ln -sfn "$d" "$OUT/${d##*/}"; echo "./${d##*/}/$2"
   else echo "$1/$2"; fi
 }
-# earlier <package> <release> <log>: installs on $M the newest release before <release> this machine's Runtime runs, and
-# prints it. One built for an older Runtime minor is refused runtime_unmet (the hard cut: after a Runtime minor a package's
-# earlier releases need the old one; 44053333998, anima 0.8.0 on Runtime 0.46.0), and the next is tried; nothing printed
-# means none runs here. Any other failure returns 1.
-earlier() {
-  local r
-  for r in $(package_details "$1" 2> /dev/null | jq -r --arg n "$2" '[.releases[].release] | .[(index($n) // -1) + 1:][:3][]'); do
-    "$CLI" package install "$1@$r" --on "$M" -y > "$3" 2>&1 && { echo "$r"; return 0; }
-    grep -q runtime_unmet "$3" || return 1
-  done
-}
 output() { run_output "$OUT" "$1" "$2"; }
 # box <name> <file> <description>: the file as a described box of the gate's project (run_box), its mention; nothing without a file.
 box() { local b; [ -f "$2" ] && b=$(run_box "$@" 2>> box.err) && echo "<$b>"; }

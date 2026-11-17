@@ -40,7 +40,7 @@ NGPU=$("$CLI" --json machine show "$M" 2>/dev/null | jq '.status.gpus | length')
 # Generations: install, update and roll back a package; then the Runtime back a release and forward to the candidate.
 # sdxl is the package the rest of this suite runs, at $NEW.
 read -r NEW _ <<< "$(released sdxl)"
-# The rollback is anima's: its newest release and the newest earlier one this Runtime runs (gate.sh `earlier`). After a
+# The rollback is anima's: its newest release and the newest earlier one this Runtime runs (machines.sh `earlier`). After a
 # Runtime minor every earlier release needs the old one (the hard cut), so until anima ships a second, nothing is judged.
 read -r ANEW _ <<< "$(released anima)"
 if ! AOLD=$(earlier anima "$ANEW" "$T/install.log"); then

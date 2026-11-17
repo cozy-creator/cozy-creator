@@ -1,4 +1,5 @@
-# release-gate/machines.sh: the machine listing every pod guard reads (gate.sh, sessions/lib.sh, the workflows' cleanup).
+# release-gate/machines.sh: the machine listing every pod guard reads (gate.sh, sessions/lib.sh, the workflows' cleanup), and what
+# a machine can install (`tag_built`, `earlier`).
 # `machine ls` since cozy v0.13.9, `machine list` before it. A listing that does not answer counts every pod as live.
 
 # machines_json [cli]: the listing as JSON; fails when neither verb answers with one.
@@ -99,4 +100,17 @@ sys.stdout.buffer.write(base64.b64decode(raw))' "$dir/SHA256SUMS.sigstore.jsonl"
   esac
   echo "$1 $2's prerelease is signed by ${signer:-no $workflow certificate}, not master or refs/tags/$tag: build it from the tag (gh workflow run $workflow -R $repo --ref $tag), or pass the wheel as a URL#sha256"
   return 1
+}
+
+# earlier <package> <release> <log>: installs on $M (with $CLI) the newest release before <release> this machine's Runtime runs, and
+# prints it. One built for an older Runtime minor is refused runtime_unmet (the hard cut: after a Runtime minor a package's
+# earlier releases need the old one; 44053333998, anima 0.8.0 on Runtime 0.46.0), and the next is tried; nothing printed
+# means none runs here. Any other failure returns 1.
+# Needs e2e/run.sh's package_details.
+earlier() {
+  local r
+  for r in $(package_details "$1" 2> /dev/null | jq -r --arg n "$2" '[.releases[].release] | .[(index($n) // -1) + 1:][:3][]'); do
+    "$CLI" package install "$1@$r" --on "$M" -y > "$3" 2>&1 && { echo "$r"; return 0; }
+    grep -q runtime_unmet "$3" || return 1
+  done
 }
