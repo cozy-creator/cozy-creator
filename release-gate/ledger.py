@@ -2,12 +2,13 @@
 """The benchmark ledger (tracker design/benchmark-ledger.md, xs-211): one row per timed request, append-only in the private
 tracker as `benchmarks/<sku>/<YYYY-MM>.jsonl`, so a new version is compared with what is recorded instead of re-running the old.
 
-    ledger.py rows <dir> [--source gate|bench|session:<script>] [--packages DIR] [--cap CAP] [--flaw CELL=FLAW]   to stdout
+    ledger.py rows <dir> [--source gate|bench|session:<script>] [--sku SKU] [--packages DIR] [--cap CAP] [--flaw CELL=FLAW]   to stdout
     ledger.py append <rows.jsonl>            one commit to the tracker; a push race fetches the new tip and appends again
     ledger.py backfill <artifact id>         a run's ledger.jsonl that could not be pushed (no key, or the push kept racing)
     ledger.py query --sku SKU [--target PKG/FN]
     ledger.py compare <rows.jsonl> [--against runtime=0.46.0]   each row against the newest comparable recorded row
-    ledger.py skip --sku SKU --want KEY=VALUE ... <cells>      the cells (name, request, package) a recorded row already answers
+    ledger.py ask [--stop N] [--harness DIGEST] <target> <args>   a gate cell's request, its files by content (gate.sh `cell`)
+    ledger.py skip <gate dir> <rows.jsonl> <cell> <target> <ask> [--packages DIR]   SKIP and the row it stands on, or why it runs
     ledger.py fetch <artifact id> <dir> [GLOB ...]             an artifact's small files, read by HTTP ranges (for seeding)
 
 `<dir>` is a gate's or a session's output: every `<name>.json` run record (ab.sh's states.tsv gives its cells' state). Each
@@ -200,7 +201,35 @@ def tree(packages: str | None, commit: str | None, package: str) -> str:
     return f'local@{commit}'
 
 
-def rows(d: str, source: str, run: str | None, packages: str | None, cap: str | None, flaws: dict[str, list[str]]) -> Iterator[Row]:
+def built(d: str) -> dict[str, JSON]:
+    """A gate's versions known before its first cell: the candidate's digests (a dev build's version string does not name its
+    build), its attention table, the cozy, Runtime and TensorFS the machine reported and the held model releases. Its rows
+    carry them, and `skip` holds a cell to them."""
+    cand = obj(load(os.path.join(d, 'candidate.json')))
+    b: dict[str, JSON] = {f'{k}_sha256': cand.get(f'{k}_sha256') for k in ('cozy', 'runtime', 'tensorfs')}
+    if os.path.exists(os.path.join(d, 'attention-table.json')):
+        b['attention_table'] = 'sha256:' + hashlib.sha256(open(os.path.join(d, 'attention-table.json'), 'rb').read()).hexdigest()[:32]
+    b['machine'] = obj(load(os.path.join(d, 'reported.json'))) or None
+    b['held'] = arr(cand.get('models')) or None
+    return b
+
+
+def verdicts(d: str, names: list[str]) -> dict[str, JSON]:
+    """Each cell's verdict from analyze.py's verdict.txt: FAIL when a FAIL line names it, first (the longest cell name the line
+    starts with, as `h3-1080p-av:` does) or as a word of it (`pixels klein:`). A line that names no cell is the machine's or
+    another check's, not a cell's. None before a verdict."""
+    said = open(os.path.join(d, 'verdict.txt'), errors='replace').read().splitlines() if os.path.exists(os.path.join(d, 'verdict.txt')) else []
+    if not any(l.startswith('VERDICT ') for l in said):
+        return {}
+    failed: set[str] = set()
+    for line in (l[5:] for l in said if l.startswith('FAIL ')):
+        first = [n for n in names if line.startswith(n) and line[len(n):len(n) + 1] in ('', ':', ' ', '-')]
+        failed |= {max(first, key=len)} if first else {n for n in names if re.search(rf'(?:^|\s){re.escape(n)}(?=[:\s]|$)', line)}
+    return {n: 'FAIL' if n in failed else 'PASS' for n in names}
+
+
+def rows(d: str, source: str, run: str | None, packages: str | None, cap: str | None, flaws: dict[str, list[str]],
+         sku: str | None = None) -> Iterator[Row]:
     """Each package run record in `d` (a session's or a gate's directory), as ledger rows. A cell's state is ab.sh's
     states.tsv when there is one; otherwise the rental was fresh and a function's first request is `cold`, the rest `warm`."""
     def file(name: str) -> str:
@@ -209,9 +238,7 @@ def rows(d: str, source: str, run: str | None, packages: str | None, cap: str | 
     machines = [obj(m.get('machine')) or m for m in machines]
     by_name = {text(m.get('name')): m for m in machines}
     cand = obj(load(file('candidate.json')))
-    built: dict[str, JSON] = {f'{k}_sha256': cand.get(f'{k}_sha256') for k in ('cozy', 'runtime', 'tensorfs')}
-    if os.path.exists(file('attention-table.json')):
-        built['attention_table'] = 'sha256:' + hashlib.sha256(open(file('attention-table.json'), 'rb').read()).hexdigest()[:32]
+    gate = built(d)
     temps: dict[str, list[str]] = {}
     if os.path.exists(file('states.tsv')):
         for line in open(file('states.tsv')).read().splitlines()[1:]:
@@ -232,12 +259,15 @@ def rows(d: str, source: str, run: str | None, packages: str | None, cap: str | 
     else:
         order = sorted(((n[:-5], '') for n in os.listdir(d) if n.endswith('.json')),
                        key=lambda c: num(obj(load(file(c[0] + '.json'))).get('created_at_ms')) or 0)
+    asks = dict(l.rstrip('\n').split('\t')[:2] for l in open(file('asks.tsv')) if '\t' in l) if os.path.exists(file('asks.tsv')) else {}
+    verdict = verdicts(d, [n for n, _ in order])
     seen: set[str] = set()
     for name, target in order:
         rec = obj(load(file(name + '.json')))
         if not rec or 'number' not in rec or target.startswith('/') or name.endswith(('-weights', '-weights-off')):
             continue  # not a run record, or a suite's own driver (kernels, gemm) rather than a package's function
         w = workload(rec, caps.get(name) or arm_caps.get(arm(name)) or cap)
+        w['ask'] = asks.get(name)
         st = state(rec)
         fn = f"{arm(name)} {w['package']}/{w['function']}"
         t = temps.get(name)
@@ -260,12 +290,13 @@ def rows(d: str, source: str, run: str | None, packages: str | None, cap: str | 
             'v': 1, 'id': f'{source}:{run}:{name}:{rec.get("number")}',
             'at': datetime.datetime.fromtimestamp(at / 1000, datetime.UTC).strftime('%Y-%m-%dT%H:%M:%SZ') if at else None,
             'source': {'kind': source, 'run': run, 'cell': name, 'record': rec.get('number')},
-            'sku': text(obj(machine.get('rental')).get('sku')) or re.sub(r'^(nvidia )?(geforce )?', '', str(rec.get('gpu') or '').lower()).replace(' ', '-'),
-            'workload': w, 'versions': versions(rec, tree(packages, commits.get(name) or text(cand.get('packages_ref')), str(w['package'])), built),
+            'sku': sku or text(obj(machine.get('rental')).get('sku')) or re.sub(r'^(nvidia )?(geforce )?', '', str(rec.get('gpu') or '').lower()).replace(' ', '-'),
+            'workload': w, 'versions': versions(rec, tree(packages, commits.get(name) or text(cand.get('packages_ref')), pkgdir(target) or str(w['package'])), gate),
             'state': st, 'phases': ph,
             'memory': {'peak_vram_gib': round(max(peaks or [0]) / 2**30, 2), 'peak_allocated_gib': round(max(procs or [0]) / 2**30, 2)},
             'host': host(rec, machine),
-            'outcome': {'status': rec.get('status'), 'output': [obj(o).get('sha256') for o in arr(rec.get('output')) if obj(o).get('sha256')]},
+            'outcome': {'status': rec.get('status'), 'verdict': verdict.get(name),
+                        'output': [obj(o).get('sha256') for o in arr(rec.get('output')) if obj(o).get('sha256')]},
             'flaws': list[JSON](flaws.get(name, []) + flaws.get('*', []))}
 
 
@@ -437,16 +468,63 @@ def compare(path: str, repo: str, against: list[str]) -> None:
         print(f'{name}: {classify(c, mean)} against {", ".join(str(r.get("id")) for r in same)}')
 
 
-def skip(sku: str, want: dict[str, str], cells: list[list[str]], repo: str) -> None:
-    """Of `cells` (name, request digest, package code), those a completed, unflawed row on this SKU already answers at the
-    same versions (`want`: cozy_sha256, runtime_sha256, tensorfs_sha256, attention_table): what the gate can leave out,
-    each with the row it stands on."""
-    done = [r for r in recorded(repo, sku) if obj(r.get('outcome')).get('status') == 'completed' and not arr(r.get('flaws'))]
-    for name, request, package in cells:
-        hit = [r for r in done if obj(r.get('source')).get('cell') == name and obj(r.get('workload')).get('request') == request
-               and obj(r.get('versions')).get('package') == package and all(str(obj(r.get('versions')).get(k)) == v for k, v in want.items())]
-        if hit:
-            print(f'{name}\t{hit[-1].get("id")}')
+# Skipping (design §4): a gate cell whose request and versions match a row of its last PASS on the SKU.
+PATHS = re.compile(r'(?<![\w.:/])\.{0,2}/[^\s"\',;\]}]+')
+SKIP_KEY = ('machine', 'cozy_sha256', 'runtime_sha256', 'tensorfs_sha256', 'attention_table', 'held', 'package')
+
+
+def digest(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for block in iter(lambda: f.read(1 << 20), b''):
+            h.update(block)
+    return 'sha256:' + h.hexdigest()
+
+
+def ask(target: str, stop: str, harness: str, args: list[str]) -> str:
+    """A cell's request before it runs: its function, its arguments with each file (a path, or a box mention gate.sh's `box`
+    made, boxes.tsv) by its content, its STOP and its suite's or product's code. A pinned scenario and seed make it the same
+    from gate to gate; any input that differs makes it differ."""
+    boxes = dict(l.rstrip('\n').split('\t')[:2] for l in open('boxes.tsv') if '\t' in l) if os.path.exists('boxes.tsv') else {}
+    words = [re.sub(r'<([\w.-]+)>', lambda m: f'<{m[1]}={boxes[m[1]]}>' if m[1] in boxes else m[0],
+                    PATHS.sub(lambda m: digest(m[0]) if os.path.isfile(m[0]) else m[0], a)) for a in args]
+    return 'sha256:' + hashlib.sha256(json.dumps([target, stop, harness, words]).encode()).hexdigest()[:32]
+
+
+def pkgdir(target: str) -> str:
+    """The --packages checkout's dir a gate cell's target `./<dir>/<function>` runs (gate.sh `pkg`), else ''."""
+    return target.split('/')[1] if target.startswith('./') and target.count('/') == 2 else ''
+
+
+def skip(d: str, path: str, name: str, target: str, asked: str, packages: str | None) -> bool:
+    """SKIP and the row it stands on, or why the cell runs: the newest PASS row of this cell (its own SKU's rows, `path`)
+    that asked the same and ran the same versions as this gate (`built`) and the same package code."""
+    want = built(d)
+    pkg = pkgdir(target)
+    # Its committed code: a tracked file changed by hand is not (a lock a run writes, untracked, is no change).
+    dirty = subprocess.run(['git', '-C', packages, 'status', '--porcelain', '--untracked-files=no', '--', pkg],
+                           capture_output=True, text=True).stdout if pkg and packages else ''
+    want['package'] = tree(packages, 'HEAD', pkg) if pkg and packages and not dirty else None
+    if not str(want['package']).startswith('tree:'):
+        print(f'{name}: runs: its code is not a committed package of the --packages checkout')
+        return False
+    passed = sorted((r for r in (json.loads(l) for l in open(path) if l.strip()) if obj(r.get('source')).get('cell') == name
+                     and obj(r.get('outcome')).get('verdict') == 'PASS' and not arr(r.get('flaws'))), key=lambda r: str(r.get('at')))
+    same = [r for r in passed if obj(r.get('workload')).get('ask') == asked]
+    if not same:
+        print(f'{name}: runs: ' + (f'its request differs from its last PASS, {passed[-1].get("id")}' if passed else 'no PASS of it is recorded'))
+        return False
+
+    def changed(r: Row) -> list[str]:
+        v = obj(r.get('versions'))
+        return [f'{k} {v.get(k) or "-"} -> {want.get(k) or "-"}' for k in SKIP_KEY if (v.get(k) or None) != (want.get(k) or None)]
+    for r in reversed(same):
+        if not changed(r):
+            src = obj(r.get('source'))
+            print(f'{name}: SKIP, unchanged since {r.get("id")} (run {src.get("run")}, record {src.get("record")}, {r.get("at")})')
+            return True
+    print(f'{name}: runs: since {same[-1].get("id")}, ' + '; '.join(changed(same[-1])))
+    return False
 
 
 # A GitHub Actions artifact's small files, read by HTTP ranges from its zip: a backfill or a seed needs records, not outputs.
@@ -515,6 +593,7 @@ def main() -> None:
     r.add_argument('--run', default=os.environ.get('GITHUB_RUN_ID') or f'local-{int(time.time())}')
     r.add_argument('--packages', help="the packages checkout, for each package's code digest")
     r.add_argument('--cap', help='the VRAM cap every cell ran under, when the harness set one for the machine')
+    r.add_argument('--sku', help="the harness's SKU, when the machine was not rented as one (gate.sh --on)")
     r.add_argument('--flaw', action='append', default=[], help='CELL=FLAW (CELL * for every row)')
     for name in ('append', 'backfill'):
         a = sub.add_parser(name)
@@ -529,11 +608,15 @@ def main() -> None:
     c.add_argument('rows')
     c.add_argument('--against', action='append', default=[], help='VERSION=VALUE the base rows must have (runtime=0.46.0)')
     c.add_argument('--repo')
+    a = sub.add_parser('ask')
+    a.add_argument('target')
+    a.add_argument('--stop', default='')
+    a.add_argument('--harness', default='', help="the digest of the code that makes the cell (its suite's or product's)")
+    a.add_argument('args', nargs=argparse.REMAINDER)
     k = sub.add_parser('skip')
-    k.add_argument('--sku', required=True)
-    k.add_argument('--want', action='append', default=[], help='VERSION=VALUE the candidate runs (runtime_sha256=...)')
-    k.add_argument('cells', help='a file of name<TAB>request digest<TAB>package code (tree:<git tree> or a release)')
-    k.add_argument('--repo')
+    for n in ('gate', 'rows', 'cell', 'target', 'ask'):
+        k.add_argument(n)
+    k.add_argument('--packages')
     f = sub.add_parser('fetch')
     f.add_argument('artifact')
     f.add_argument('dir')
@@ -544,7 +627,7 @@ def main() -> None:
         for spec in args.flaw:
             cell, _, flaw = spec.partition('=')
             flaws.setdefault(cell, []).append(flaw)
-        for row in rows(args.dir, args.source, args.run, args.packages, args.cap, flaws):
+        for row in rows(args.dir, args.source, args.run, args.packages, args.cap, flaws, args.sku):
             print(json.dumps(row, sort_keys=True, separators=(',', ':')))
     elif args.cmd == 'append':
         append(args.rows, repo_url(args.repo), args.message)
@@ -559,9 +642,10 @@ def main() -> None:
                 print(json.dumps(row, sort_keys=True))
     elif args.cmd == 'compare':
         compare(args.rows, repo_url(args.repo), args.against)
+    elif args.cmd == 'ask':
+        print(ask(args.target, args.stop, args.harness, args.args))
     elif args.cmd == 'skip':
-        cells = [f[:3] for f in (l.rstrip('\n').split('\t') for l in open(args.cells)) if len(f) > 2]
-        skip(args.sku, dict(w.split('=', 1) for w in args.want), cells, repo_url(args.repo))
+        sys.exit(0 if skip(args.gate, args.rows, args.cell, args.target, args.ask, args.packages) else 1)
     else:
         fetch(args.artifact, args.dir, args.globs)
 
