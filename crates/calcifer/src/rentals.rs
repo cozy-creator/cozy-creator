@@ -48,6 +48,8 @@ pub(crate) struct Hubs {
     pub(crate) facts: Mutex<HashMap<config::Origin, crate::access::Facts>>,
 }
 
+/// How often an ended rental's Hub is asked whether it's gone, once it took the release.
+const END_READ_EVERY: Duration = Duration::from_secs(2);
 /// A boot its Hub keeps no history for: about this long from its attempt's start to serving (cl-915).
 pub(crate) const BOOT_MS: i64 = 240_000;
 /// A boot past its expected time is expected to take as long again as it is overdue, and at least this.
@@ -1493,7 +1495,12 @@ impl Machines {
         }
         let (mut released, mut noted) = (None::<tokio::time::Instant>, false);
         loop {
-            pause = (pause * 2).clamp(Duration::from_secs(2), Duration::from_secs(30));
+            // Released, its Hub is asked each couple of seconds whether it's gone: the person who ended it watches "Shutting down" (web-solo
+            // account-rent: a 30 s backoff noticed the fixture Hub's proof 11 s late). Before that, a Hub not answering is backed off from.
+            pause = match released {
+                Some(_) => END_READ_EVERY,
+                None => (pause * 2).clamp(Duration::from_secs(2), Duration::from_secs(30)),
+            };
             let client = match self.hubs.client(&ask.hub) {
                 Ok(client) => client,
                 Err(e) => return settle(Err(said(&e))),

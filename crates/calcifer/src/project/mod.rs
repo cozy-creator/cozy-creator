@@ -5829,15 +5829,7 @@ impl Walk {
                 version.seed = Some(tried.unwrap_or_else(new_seed));
             }
             version.pickup = pickup;
-            // Its number now, whichever of several lands first.
-            let listed = now.listed_number(&name);
-            let number = std::cell::Cell::new(0);
-            self.folder().update_walk(|walk| {
-                let last = walk.walk.numbered.entry(name_key(&name)).or_default();
-                *last = (*last).max(listed) + 1;
-                number.set(*last);
-            })?;
-            version.number = number.get();
+            // Numbered as it's sent (`submit`), in the write that records it: a turn that doesn't send it numbers nothing.
             let words = (asset.kind == format::TEXT).then(|| api::calcifer::tool::text_field(&callable).map(str::to_owned)).flatten();
             let pending = Pending { job: key.clone(), kind: asset.kind.clone(), ask: ask.id.clone(), asset: name.clone(), version, run: 0, approve, unpin: next.unpin.then(|| asset.kind.clone()), words, target: target.clone() };
             let settling = |walk: &mut folder::WalkFile| settle(&mut walk.walk);
@@ -6100,10 +6092,16 @@ impl Walk {
             stays: package.callable(&renderer.function).map(|callable| api::calcifer::tool::stays(&callable)).unwrap_or_default(),
         };
         let _on_the_way = OnTheWay::new(&self.on_the_way, key);
-        // Canceled while it was made ready: nothing is sent.
+        // Canceled while it was made ready: nothing is sent. Its number is the next, whichever of several lands first, given only here, in
+        // the write that records it on its way: one planned twice at once, or not sent, took a number no take got (projectdb's "mara take
+        // 2", a first render's box landing as take 2 with nothing deleted).
         let mut stopped = false;
+        let listed = self.folder().lock()?.listed_number(&name);
         self.folder().update_walk(|walk| match stands(&walk.walk) {
             true => {
+                let last = walk.walk.numbered.entry(name_key(&name)).or_default();
+                *last = (*last).max(listed) + 1;
+                pending.version.number = *last;
                 walk.pending.insert(key.into(), pending.clone());
                 settle(walk);
             }
