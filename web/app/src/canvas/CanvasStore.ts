@@ -1715,12 +1715,12 @@ export class CanvasStore {
 
   /** `row` over what its row says, now, until a read begun after the answer says for itself, as `overlay`, and asked of Calcifer under `edit`. Refused, it goes, and the rest stays.
    *  With none yet, `send` shows it as it goes (`show`), or answers nothing when there's nothing to ask, and its step goes. */
-  private over<T extends { stale?: string[]; etag?: string | null }>(name: string, row: Partial<Asset> | null, send: (served: string, write: Write, show: (row: Partial<Asset>) => void) => Promise<T | null>, what: string, edit: string | undefined, then?: { done?(answer: T): void; refused?(): void }) {
+  private over<T extends { stale?: string[]; etag?: string | null }>(name: string, row: Partial<Asset> | null, send: (served: string, write: Write, show: (row: Partial<Asset>) => void) => Promise<T | null>, what: string, edit: string | undefined, then?: { done?(answer: T): void; refused?(): void; gone?(): void }) {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view?.asset) return
     const id = this.ids.get(key)
-    const now = () => this.views.get(this.namesById.get(id ?? "") ?? "")
+    const now = () => this.views.get((id && this.namesById.get(id)) || this.resolveName(key))
     let shown = row ? this.overlay(key, row) : undefined
     const show = (later: Partial<Asset>) => {
       const held = now()
@@ -1747,6 +1747,11 @@ export class CanvasStore {
         if (edit) this.history.forget(edit)
         say(`Couldn't ${what} ${name}`, error)
         then?.refused?.()
+      },
+      gone: () => {
+        shown?.drop()
+        if (edit) this.history.forget(edit)
+        then?.gone?.()
       },
     })
   }
@@ -1881,10 +1886,10 @@ export class CanvasStore {
     this.over<VersionMoved>(key, null, async (served, write, show) => {
       if (asked === undefined) {
         const source = await held.finally(end)
-        const view = this.views.get(this.namesById.get(id ?? "") ?? "")
+        const view = this.views.get((id && this.namesById.get(id)) || this.resolveName(key))
         const next = view?.asset && nextVersion(view.asset, { sha256: source.slice("sha256:".length), field })
         if (!view || !next) {
-          if (view) say(`${view.name} already has that image`)
+          say(view ? `${view.name} already has that image` : `Couldn't add ${what} to ${key}: the box is gone`)
           return null
         }
         show(next.row)
@@ -1895,13 +1900,18 @@ export class CanvasStore {
       return this.client.addVersion(this.projectId!, served, asked, write)
     }, "add to", edit, {
       done: (answer) => {
-        const now = this.namesById.get(id ?? "")
+        const now = (id && this.namesById.get(id)) || this.resolveName(key)
         if (answer.already) dismiss(note)
-        else if (now) this.view(now, answer.number)
+        else if (this.views.has(now)) this.view(now, answer.number)
       },
       refused: () => {
         end()
         dismiss(note)
+      },
+      gone: () => {
+        end()
+        dismiss(note)
+        say(`Couldn't add ${what} to ${key}: the box is gone`)
       },
     })
   }
@@ -3224,13 +3234,16 @@ export class CanvasStore {
   }
 
   /** Whatever's done to `name`, in its turn, under what it's called by then. Gone by then, there's nothing to do. */
-  private act<T>(name: string, action: Omit<Action<T>, "send"> & { send(name: string, write: Write): Promise<T>; edit?: string }): Action<T | typeof NOT_THERE> {
-    const id = this.ids.get(this.resolveName(name))
+  private act<T>(name: string, action: Omit<Action<T>, "send"> & { send(name: string, write: Write): Promise<T>; edit?: string; gone?(): void }): Action<T | typeof NOT_THERE> {
+    let id = this.ids.get(this.resolveName(name))
     const inTurn = {
       ...action,
       send: async (once: AbortSignal, outboxed: string) => {
         let refusedAs: string | undefined
         for (;;) {
+          // Its node made again since (a read can draw a box anew), it's found by its name, as the page's renames carried it (offline, e2e
+          // 44027468586: a picture dropped on a box renamed offline was never sent, and nothing said so).
+          if (!id || !this.namesById.has(id)) id = this.ids.get(this.resolveName(name))
           const served = id && this.namesById.has(id) ? this.served.get(id) : undefined
           if (!id || !served) return NOT_THERE
           try {
@@ -3251,6 +3264,7 @@ export class CanvasStore {
       },
       done: (answer: T | typeof NOT_THERE) => {
         if (answer !== NOT_THERE) action.done?.(answer as T)
+        else action.gone?.()
       },
     } as Action<T | typeof NOT_THERE>
     this.outbox.add(inTurn)
