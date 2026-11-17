@@ -160,14 +160,26 @@ install_cozy() {
 # hubcheck between cozy and tensorhub.com, before the installer starts Calcifer: every cozy process (the CLI, Calcifer,
 # the machine) reads config.toml's hub_url, and scripts that call the Hub themselves read $COZY_HUB_URL.
 HUB_CHECK='' HUB_CHECK_UPSTREAM=''
+# hubcheck_on <listen>: hubcheck in the background ($HUB_CHECK), printing its address; each start adds to $OUT's record.
+hubcheck_on() {
+  local exe=''
+  [ "${RUNNER_OS:-}" != Windows ] || exe=.exe
+  "${RUNNER_TEMP:-$OUT}/hubcheck$exe" --hub "${HUB_CHECK_UPSTREAM:?}" --out "$OUT" --listen "$1" \
+    --keep 'POST /v1/run-reports,POST /v1/rental-quotes' 2>> "$OUT/hubcheck.log" &
+  HUB_CHECK=$!
+}
+# hub_check_again <addr>: hubcheck at the address cozy knows again, after a cell stopped it: what follows is checked and kept as before.
+hub_check_again() {
+  hubcheck_on "$1" > /dev/null
+  for _ in $(seq 30); do curl -sS -m 5 -o /dev/null "http://$1/openapi.yaml" 2> /dev/null && break; sleep 1; done
+}
 hub_check() {
   local exe='' addr='' hub=${COZY_HUB_URL:-https://tensorhub.com}
   require_ci_test_hub "$hub" || return $?
   HUB_CHECK_UPSTREAM=$hub
   [ "${RUNNER_OS:-}" != Windows ] || exe=.exe
   go build -C "$E2E/hubcheck" -o "${RUNNER_TEMP:-$OUT}/hubcheck$exe" . || fail "e2e/hubcheck does not build"
-  "${RUNNER_TEMP:-$OUT}/hubcheck$exe" --hub "$hub" --out "$OUT" --keep 'POST /v1/run-reports,POST /v1/rental-quotes' > "$OUT/hubcheck.addr" 2> "$OUT/hubcheck.log" &
-  HUB_CHECK=$!
+  hubcheck_on 127.0.0.1:0 > "$OUT/hubcheck.addr"
   for _ in $(seq 60); do
     addr=$(head -1 "$OUT/hubcheck.addr" 2> /dev/null) && [ -n "$addr" ] && break
     kill -0 "$HUB_CHECK" 2> /dev/null || break
@@ -198,9 +210,8 @@ hub_checked() {
   kill "$HUB_CHECK" 2> /dev/null || true
   HUB_CHECK=''
   echo "the Hub's operations called: $(jq -c . "$OUT/hub-calls.json" 2> /dev/null)"
-  # A cell that stopped the Hub started another hubcheck at its address, writing into a folder of its own.
   local found
-  found=$(cat "$OUT/hub-mismatches.jsonl" "$OUT"/*/hub-mismatches.jsonl 2> /dev/null || true)
+  found=$(cat "$OUT/hub-mismatches.jsonl" 2> /dev/null || true)
   [ -n "$found" ] || return 0
   jq -r '"\(.side) \(.method) \(.route // .path) \(.status // "") \(.field // ""): \(.message)"' <<< "$found" \
     | sort | uniq -c | while read -r n what; do check "the Hub's API document, ${n}x: $what"; done
