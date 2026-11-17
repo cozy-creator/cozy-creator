@@ -21,7 +21,8 @@
 //!   link; then the rest go on (cl-966). Software (order 1: an install's or an update's files) never waits for it.
 //!   While a need is under way (a weight before `BACKGROUND`: what a run reads before it starts), no background weight
 //!   starts and one in flight gives way at its next bytes, in every downloader of the process too: a guess never takes
-//!   the link from what a run waits on (cl-1101).
+//!   the link from what a run waits on (cl-1101). They wait the same while a call starts cold ([`starting`]), until its
+//!   first pass has read its weights: an extra takes no disk, link or page cache from a request's start (cl-1117).
 //! - **Sharing (cl-1007).** Orders 0 and 1 are never paced. Weights (every later order) take the whole link, except while an
 //!   install downloads beside them ([`installing`]): its process group's own sockets, read once a second
 //!   ([`install_received`]), tell when it does and at what rate. Then the weights yield at once to a sixteenth of the most
@@ -226,16 +227,22 @@ pub struct Fetching {
 static DOWNLOADERS: AtomicU64 = AtomicU64::new(0);
 
 /// The one link every downloader of this process shares, whichever store each fills (TensorD's: one per project's
-/// store): how many have an emergency under way, how many a need, and each of them, woken when the last one ends.
-/// While any has an emergency, every other downloader's requests wait as its own do; while any has a need, every
-/// other's background weights do.
+/// store): how many have an emergency under way, how many a need, how many calls start cold ([`starting`]), and each
+/// downloader, woken when the last one ends. While any has an emergency, every other downloader's requests wait as its
+/// own do; while any has a need or a call starts cold, every background weight does.
 struct Link {
     urgent: AtomicUsize,
     needing: AtomicUsize,
+    starting: AtomicUsize,
     sharers: Mutex<Vec<std::sync::Weak<Shared>>>,
 }
 
-static LINK: Link = Link { urgent: AtomicUsize::new(0), needing: AtomicUsize::new(0), sharers: Mutex::new(Vec::new()) };
+static LINK: Link = Link {
+    urgent: AtomicUsize::new(0),
+    needing: AtomicUsize::new(0),
+    starting: AtomicUsize::new(0),
+    sharers: Mutex::new(Vec::new()),
+};
 
 impl Link {
     /// A downloader's emergencies ended; the last on the link, what waits in every downloader asks again.
@@ -253,9 +260,10 @@ impl Link {
     }
 
     /// Whether a weight at `order` waits for another downloader's work: any weight for an emergency, a background
-    /// one for a need.
+    /// one for a need or a call starting cold.
     fn holds(&self, order: u64) -> bool {
-        self.urgent.load(Ordering::Acquire) > 0 || order >= BACKGROUND && self.needing.load(Ordering::Acquire) > 0
+        self.urgent.load(Ordering::Acquire) > 0
+            || order >= BACKGROUND && (self.needing.load(Ordering::Acquire) > 0 || self.starting.load(Ordering::Acquire) > 0)
     }
 
     fn calmed(&self) {
@@ -307,6 +315,28 @@ impl Drop for Installing {
     fn drop(&mut self) {
         if SHARE.installs.fetch_sub(1, Ordering::AcqRel) == 1 {
             SHARE.whole("the install ended");
+        }
+    }
+}
+
+/// A call starting cold on this computer, until it drops ([`starting`]).
+pub struct Starting(());
+
+/// Until the guard drops, a call starts cold on this computer (TensorD's: its executor new or its models not loaded, until
+/// its first step): no background weight of any downloader of the process starts, and one in flight gives way at its next
+/// bytes, as while a need downloads (cl-1117). They go on the moment the last such call has loaded.
+pub fn starting() -> Starting {
+    if LINK.starting.fetch_add(1, Ordering::AcqRel) == 0 {
+        tracing::info!("background downloads wait: a call starts cold");
+    }
+    Starting(())
+}
+
+impl Drop for Starting {
+    fn drop(&mut self) {
+        if LINK.starting.fetch_sub(1, Ordering::AcqRel) == 1 {
+            tracing::info!("background downloads go on: every call that started cold has loaded");
+            LINK.calmed();
         }
     }
 }

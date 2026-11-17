@@ -3062,7 +3062,7 @@ impl Pool {
             }
         };
         let key = plan.executor.clone();
-        let result = self.call(engine, "", held, plan, &mut session, true, None, fetch);
+        let result = self.call(engine, "", held, plan, &mut session, true, None, fetch, None);
         if let Some(cancel) = cancellation.lock().unwrap().as_ref() { cancel.disable(); }
         drop(halt);
         match result {
@@ -3652,6 +3652,12 @@ impl Pool {
                 self.sessions.lock().unwrap().remove(&key)
             }
         };
+        // A request that loads models and starts cold (a new executor, or its models not loaded in the one it takes): from here
+        // until they are loaded, no background download takes the disk, the link or the page cache from it (cl-1117).
+        let request = engine.get(id).is_ok_and(|record| !record.invocation.background);
+        let loads = request && (!plan.slots.is_empty() || !plan.sources.is_empty());
+        let cold = loads && retained.as_ref().is_none_or(|session| !session.started || !session.loaded.contains_key(&plan.construction));
+        let starting = cold.then(tensorfs::fetch::starting);
         let session = match retained {
             Some(session) => {
                 *disposition = Disposition::Unknown(executor_births(&session.executor.birth, &session.followers));
@@ -3735,7 +3741,7 @@ impl Pool {
         let error = {
             let mut session = session;
             let fetch = calls.map(|calls| engine.get(id).map(|record| calls.fetch(&record))).transpose()?;
-            match self.call(engine, id, &held, plan, &mut session, false, calls, fetch) {
+            match self.call(engine, id, &held, plan, &mut session, false, calls, fetch, starting) {
                 Ok(post) => {
                     // Serialize against any old in-flight Halt before the executor becomes
                     // available to a new invocation. Late clones are harmless after this.
@@ -3887,7 +3893,8 @@ impl Pool {
 
     /// Start the process once, load the plan's construction into it once and invoke it, active
     /// (unless `load_only`: a prewarm). A known outcome stays in the journal until run_on returns
-    /// its executor idle or proves its teardown ended.
+    /// its executor idle or proves its teardown ended. `cold` holds every background download until
+    /// its models are loaded (cl-1117).
     #[allow(clippy::too_many_arguments)]
     fn call(
         &self,
@@ -3899,6 +3906,7 @@ impl Pool {
         load_only: bool,
         calls: Option<&Arc<crate::calls::Calls>>,
         _fetch: Option<Arc<crate::access::Fetch>>,
+        cold: Option<tensorfs::fetch::Starting>,
     ) -> io::Result<Option<Postprocess>> {
         let (start, degree) = (session.start, plan.degree);
         let construction = plan.construction.clone();
@@ -4065,6 +4073,8 @@ impl Pool {
                 leader.constructions.insert(construction.clone());
             }
         }
+        // Its models are loaded: the background downloads go on at once (cl-1117).
+        drop(cold);
         if load_only {
             return Ok(None);
         }
