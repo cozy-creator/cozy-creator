@@ -134,6 +134,8 @@ def main() -> None:
                 failures.append(f"the lock asked of a project whose folder is gone didn't answer within {ANSWER} s ({seconds} s)")
             if mounted(view):
                 failures.append(f"its view {view} is still mounted after the lock")
+            if "folder is gone" not in said:
+                failures.append(f"the lock asked of a project whose folder is gone didn't say so: {said.strip()[-300:]}")
         else:
             locked["state"] = cell.state(folder)
             cell.put_away(folder)
