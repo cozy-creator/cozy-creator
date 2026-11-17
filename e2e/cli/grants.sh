@@ -7,6 +7,9 @@
 # on with each attempt, and once they run out reads anonymously (it's public) and lands, within GRANT_S.
 GRANT_S=240
 
+# grant_held: how many redemptions the ingress has held so far.
+grant_held() { local n; n=$(grep -c '"held":true' "${COZY_TEST_HUB_REQUEST_LOG:-/dev/null}" 2> /dev/null) || true; echo "${n:-0}"; }
+
 # grant_events <ndjson>: what the run said it waited on, one line each, in order.
 grant_events() {
   grep '^{' "$1" 2> /dev/null | jq -r 'select(.type? == "run.progress" or .type? == "run.waiting") | (.progress.stage? // .reason? // empty)' 2> /dev/null | uniq
@@ -30,7 +33,7 @@ if [ -z "$commit" ]; then
   [ -n "$signed" ] || cozy --json logout > /dev/null 2>&1
   return
 fi
-held=$(grep -c '"held":true' "${COZY_TEST_HUB_REQUEST_LOG:-/dev/null}" 2> /dev/null || true)
+held=$(grant_held)
 touch "$COZY_TEST_HUB_HOLD"
 began=$SECONDS
 run_submit "$dir" grant model install "$model@$commit" --on local > /dev/null
@@ -38,7 +41,7 @@ pid=$(cat "$dir/grant.pid" 2> /dev/null || true)
 until run_ended "$dir/grant.ndjson" || ! run_alive "${pid:-0}" || [ $((SECONDS - began)) -ge "$GRANT_S" ]; do sleep 1; done
 took=$((SECONDS - began))
 rm -f "$COZY_TEST_HUB_HOLD"
-held=$(( $(grep -c '"held":true' "${COZY_TEST_HUB_REQUEST_LOG:-/dev/null}" 2> /dev/null || echo 0) - ${held:-0} ))
+held=$(( $(grant_held) - held ))
 grant_events "$dir/grant.ndjson" > "$dir/said.txt"
 echo "grant silent: the ingress held $held redemptions; in $took s the run said:"; sed 's/^/  /' "$dir/said.txt" | cut -c1-240
 if ! run_ended "$dir/grant.ndjson"; then
