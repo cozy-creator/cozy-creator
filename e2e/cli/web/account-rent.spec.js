@@ -405,7 +405,7 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
         await priced();
         for (const [width, height] of [[1280, 800], [1920, 1080], [390, 844]]) {
           await page.setViewportSize({ width, height });
-          await notice.scrollIntoViewIfNeeded();
+          await agree.scrollIntoViewIfNeeded();
           await canvasIdle(page);
           await page.screenshot({ path: join(shots, `render-on-new-${width}x${height}-${theme}.png`) });
         }

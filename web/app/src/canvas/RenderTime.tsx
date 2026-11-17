@@ -3,7 +3,7 @@ import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore } from "./context"
-import { RenderOnNew, useClosesInPlace } from "./RenderOnNew"
+import { CloseInPlace, RenderOnNew, useClosesInPlace } from "./RenderOnNew"
 
 /** A render this long or longer shows how long it takes; a shorter one needs no estimate (Paul, 11-15). */
 const SHOWN_MS = 15_000
@@ -82,7 +82,8 @@ export function SlowNotice({ name, view }: { name: string; view: ElementView }) 
     <div ref={own} className="status slow-notice canvas-control" role="group" aria-label="Slow here">
       <p>{faster.line}</p>
       <p>{faster.rent.line}</p>
-      <RenderOnNew name={name} sku={faster.rent.sku} onClose={close} />
+      <RenderOnNew name={name} sku={faster.rent.sku} onDone={close} />
+      <CloseInPlace onClose={close} />
     </div>
   )
 }

@@ -1921,9 +1921,10 @@ video.preview.on {
 }
 .status.slow-notice,
 .status.new-notice {
+  position: relative;
   display: grid;
   gap: 8px;
-  max-width: 460px;
+  max-width: 560px;
   margin: 8px 0;
   padding: 12px 14px;
   border: 1px solid color-mix(in srgb, var(--ood) 45%, transparent);
@@ -1940,8 +1941,26 @@ video.preview.on {
   margin: 0;
 }
 .status.slow-notice > p:first-child {
+  padding-right: 34px;
   color: var(--ood);
   font-weight: 600;
+}
+.status.new-notice .on-new .row {
+  padding-right: 40px;
+}
+/* A notice's ✕, top right, clear of its first line. */
+.in-place-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  min-width: 30px;
+  height: 30px;
+  padding: 0;
+  justify-content: center;
+}
+.in-place-close .icon {
+  width: 16px;
+  height: 16px;
 }
 /* Render on a new rental, in place (cl-1066): the product, its stated price on the button that agrees to it, then what the quote says. */
 .on-new {
@@ -1967,16 +1986,6 @@ video.preview.on {
   padding: 4px 14px;
   white-space: normal;
   text-align: left;
-}
-.on-new .in-place-close {
-  min-width: 34px;
-  margin-left: auto;
-  padding: 0;
-  justify-content: center;
-}
-.on-new .in-place-close .icon {
-  width: 16px;
-  height: 16px;
 }
 .on-new .quoted {
   margin: 0;

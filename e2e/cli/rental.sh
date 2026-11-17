@@ -240,7 +240,7 @@ echo "run_on_new: run ${run:-none}: $(jq -c '{status, machine, waiting, reason: 
   || check "run_on_new: the project's run --on new:cpu rented nothing for it: $(jq -c '{status, machine, reason}' "$w" 2> /dev/null)"
 [ -z "$rental" ] || cozy --json machine end "$rental" --force -y > "$OUT/on-new-end.json" 2>&1 || check "run_on_new: its rental didn't end: $(tail -c 300 "$OUT/on-new-end.json")"
 on_new_encrypted
-cozy --json logout > /dev/null 2>&1 || true
+# Left signed in for render_on_new, the next cell: a second code so soon is refused for minutes (e2e 44074455632: 185 s).
 }
 # on_new_encrypted: the same from an encrypted project; once it locks, Calcifer's own store holds nothing that ties the rental to it (no
 # traces, cl-984): its rent asks name neither the run, the project's id nor its code (coordinator, 11-17).
@@ -295,7 +295,8 @@ render_on_new() {
 step "a project's render --on new rents one machine for it and goes there (cl-1066)"
 [ -n "${E2E_HUB_LOG:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] || { check "render_on_new: e2e/isolated.sh named no Hub log or email"; return; }
 local P=$OUT/render-new-plain E=$OUT/render-new-sealed pass=$OUT/render-new-pass id='' code=''
-signin "$E2E_HUB_EMAIL" > "$OUT/render-new-login.json" || { check "render_on_new: cozy login failed: $(tail -c 300 "$OUT/render-new-login.json")"; return; }
+cozy --json whoami 2> /dev/null | J '.logged_in' \
+  || signin "$E2E_HUB_EMAIL" > "$OUT/render-new-login.json" || { check "render_on_new: cozy login failed: $(tail -c 300 "$OUT/render-new-login.json")"; return; }
 cozy --json new --unencrypted "$P" > "$OUT/render-new-plain.json" 2>&1 || check "render_on_new: new: $(tail -c 300 "$OUT/render-new-plain.json")"
 render_new plain "$P"
 printf 'render-new-%s%s\n' "$RANDOM" "$RANDOM" > "$pass"

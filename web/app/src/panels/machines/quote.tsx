@@ -8,11 +8,12 @@ export const offered = (quote: RunQuote) => `${quote.gpus ?? 1}× ${quote.sku.to
 export const agreeable = (quote: RunQuote | null | undefined) => Boolean(quote?.quote.agreed)
 
 /** What a quote says beside its price: why the Hub picked it, what it changed, a price it didn't confirm, the machines it would rent
- *  instead (`onOther` picks one), and what renting costs. The run form's and a render's new rental alike (cl-1066). */
-export function QuoteNotes({ quote, onOther }: { quote: RunQuote; onOther?: (other: Alternative) => void }) {
+ *  instead (`onOther` picks one), and what renting costs. The run form's and a render's new rental alike (cl-1066); `why` false where
+ *  what's around it already says why (Slow here). */
+export function QuoteNotes({ quote, onOther, why = true }: { quote: RunQuote; onOther?: (other: Alternative) => void; why?: boolean }) {
   return (
     <div className="quoted">
-      {quote.why && <p className="muted">{quote.why}</p>}
+      {why && quote.why && <p className="muted">{quote.why}</p>}
       {[...(quote.quote.warnings ?? []), ...(quote.warnings ?? [])].map((warning) => (
         <p className="warn" key={warning}>
           {warning}

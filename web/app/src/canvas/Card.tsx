@@ -19,7 +19,7 @@ import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { VideoEditor } from "./timeline/VideoEditor"
 import { ToolLine } from "./ToolLine"
 import { FocusFrame, useFocusResize } from "./FocusFrame"
-import { RenderOnNew, useClosesInPlace } from "./RenderOnNew"
+import { CloseInPlace, RenderOnNew, useClosesInPlace } from "./RenderOnNew"
 import { SlowNotice } from "./RenderTime"
 import { TakeProgress } from "./TakeProgress"
 
@@ -302,7 +302,8 @@ function WaitsNotice({ name, view }: { name: string; view: ElementView }) {
   if (!open) return null
   return (
     <div ref={own} className="status new-notice canvas-control" role="group" aria-label="Render on a new rental">
-      <RenderOnNew name={name} onClose={close} />
+      <RenderOnNew name={name} onDone={close} />
+      <CloseInPlace onClose={close} />
     </div>
   )
 }

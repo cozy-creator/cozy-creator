@@ -9,6 +9,15 @@ import { Icon } from "../ui/Icon"
 import { pressBeganOutside } from "../ui/press"
 import { useCanvasStore } from "./context"
 
+/** A notice's ✕, top right. */
+export function CloseInPlace({ onClose }: { onClose: () => void }) {
+  return (
+    <button type="button" className="tb canvas-control in-place-close" aria-label="Close" title="Close" onClick={onClose}>
+      <Icon name="close" />
+    </button>
+  )
+}
+
 /** A surface opened in place closes on Escape, or on a click whose press began outside it and its opener (`inside`): a press that begins
  *  inside and ends outside leaves it open (Paul, 11-12). Slow here's and Waits for a machine's alike. */
 export function useClosesInPlace(open: boolean, inside: (element: Element) => boolean, close: () => void) {
@@ -39,9 +48,9 @@ export function useClosesInPlace(open: boolean, inside: (element: Element) => bo
  * Render `name` on a new rental, in place where it's offered (Slow here, Waits for a machine: cl-1066). Its price is Calcifer's for exactly
  * this render (`render-quote`: one rental for all it sends), said on its button as the run form says one, and pressing it agrees to that
  * price and renders there. `sku`: the product offered, Slow here's card; none, the run form's choice of new rentals. Another product takes
- * the price away until its own comes. Never a pop-up: it sits where it was opened, and ✕ closes it.
+ * the price away until its own comes. Never a pop-up: it sits in the notice it was opened in, whose ✕ closes it; agreed, `onDone`.
  */
-export function RenderOnNew({ name, sku, onClose }: { name: string; sku?: string; onClose: () => void }) {
+export function RenderOnNew({ name, sku, onDone }: { name: string; sku?: string; onDone: () => void }) {
   const store = useCanvasStore()
   const { client } = useConnection()
   const [on, setOn] = useState(sku ? `new:${sku.toLowerCase()}` : "new")
@@ -80,17 +89,14 @@ export function RenderOnNew({ name, sku, onClose }: { name: string; sku?: string
             onClick={() => {
               if (!answer?.quote.agreed) return
               store.run(name, { on, agreed: answer.quote.agreed })
-              onClose()
+              onDone()
             }}
           >
             {answer ? `Render on a new ${offered(answer)}` : error ? "No price" : "Getting the price…"}
           </button>
         )}
-        <button type="button" className="tb canvas-control in-place-close" aria-label="Close" title="Close" onClick={onClose}>
-          <Icon name="close" />
-        </button>
       </div>
-      {answer && <QuoteNotes quote={answer} onOther={(other) => setOn(`new:${other.sku.toLowerCase()}`)} />}
+      {answer && <QuoteNotes quote={answer} why={false} />}
       <Failure error={error} lead="Couldn't get a price" />
     </div>
   )
