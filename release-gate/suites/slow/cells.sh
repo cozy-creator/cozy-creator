@@ -53,9 +53,10 @@ run_cell "$OUT" slow-kernels-back "$(pkg sdxl generate)" --on "$M" megapixels:=1
 [ -s "$S/moved.txt" ] || bad+=("no kernel module found to move")
 expect slow-kernel-less "$([ ${#bad[@]} -eq 0 ] && echo PASS || echo FAIL)" "${bad[*]:-each run on the kernel-less Runtime said so, machine show too (${shown:0:120}), none once back}; ${said[*]}"
 
-# Power: one real SDXL long enough to load the card (20 s busy), on its own readings.
+# Power: one real SDXL long enough to load the card (20 s busy; SDXL takes at most 50 steps, which at 1 MP kept a 5060 Ti busy 16 s),
+# on its own readings.
 bad=()
-run_cell "$OUT" slow-power "$(pkg sdxl generate)" --on "$M" megapixels:=1.0 steps:=80 prompt="$OBJECT, power" seed:=$((R + 917)) > /dev/null 2>&1 || bad+=("the run did not complete")
+run_cell "$OUT" slow-power "$(pkg sdxl generate)" --on "$M" megapixels:=2.5 steps:=50 prompt="$OBJECT, power" seed:=$((R + 917)) > /dev/null 2>&1 || bad+=("the run did not complete")
 gpu=$(jq -c '[.calls[]?.measurements.memory.driver[]?, .measurements.memory.driver[]?] | max_by(.busy_ms // 0) // {}' "$OUT/slow-power.json" 2>/dev/null)
 read -r busy limit default capped heat mhz < <(jq -r '"\(.busy_ms // 0) \(.power_limit_w // 0) \(.power_default_w // 0) \(.capped_share // 0) \(.heat_share // 0) \(.sm_mhz_mean // 0)"' <<< "${gpu:-{\}}")
 [ "${busy:-0}" -ge 20000 ] || bad+=("not loaded: ${busy:-0} ms busy, so it judges nothing")
