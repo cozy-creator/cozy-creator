@@ -6,10 +6,10 @@
 # working. Making sure its GPUs are working, and making sure disc space isn't too full, is probably the top thing we need to get right".
 # A dev home on this runner's RC cozy (pod-session `cozy`: a dev-build or rc-dev run of rc/<x>), its first-party packages from the
 # packages_refs checkout `tree`, as Paul's laptop runs them (xs-195). The rental moves to the RC's builds (its TensorD's GET /v1/gpus, its
-# Runtime's vlm.TextBox) before anything runs on it.
+# Runtime's vlm.TextBox) before anything runs on it, and is held there for the session.
 #   cli    Qwen3.5's and Qwen3.6's `write` (their defaults, 9B and 35B-A3B) by `cozy run --on` the rental, from the checkout: each asked
 #          about a photo (teapot.jpg) and a video (clip-1s-360p.mp4, a lighthouse at dusk) by mention, boxes named `photo` and `clip`
-#          so their names say nothing; each answer must say what it shows. Photos first (cold: install, download), then the videos.
+#          so their names say nothing; each answer must say what it shows (SEES_*). Photos first (cold: install, download), then the videos.
 #   gpus   cl-1100: both write a long story at once while the drawer (`machine-details: GPU use`, GPU_MACHINE) is read twice a second
 #          and the pod's nvidia-smi once a second: each GPU's busy % and memory within 10 points and 200 MB, and the drawer showing the
 #          reading it heard (fixtures/llm-tools/gpu_use.py); the GPUs section at 1440×900 and 1920×1080, paper and dark.
@@ -30,7 +30,9 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 WEB=$ROOT/e2e/cli/web FIX=$HERE/fixtures/llm-tools
 PICTURE=$HERE/fixtures/ltx-images/teapot.jpg VIDEO=$ROOT/release-gate/suites/bench/fixtures/clip-1s-360p.mp4
-SEES_PICTURE='tea ?pot|kettle' SEES_VIDEO='lighthouse'
+# What an answer that saw each says: the photo is a teapot on a tray by a rainy window, a lamp behind it (43992085255's caption said "warm
+# tea, and a glowing lamp" and no teapot).
+SEES_PICTURE='\b(tea|kettle|lamp|rain|window|ceramic)' SEES_VIDEO='lighthouse'
 for tool in jq node npm google-chrome python3; do command -v "$tool" > /dev/null || fail "no $tool"; done
 [ -f "$PICTURE" ] && [ -f "$VIDEO" ] || fail "no $PICTURE or $VIDEO (pod-session.yaml's sparse checkout)"
 TREE=$(param tree '') GPUS=$(param gpus 2) BUSY_S=$(param busy_s 60) ONLY=$(param only cli,gpus,page)
@@ -99,6 +101,21 @@ for _ in $(seq 180); do
 done
 [ "$(jq -r '.rc.state // empty' "$OUT/show-rc.json")" = current ] || fail "$NAME isn't on the RC's builds in 15 min: $(jq -c .rc "$OUT/show-rc.json")"
 say "on the RC: $(jq -r '"cozy \(.status.version) · Runtime \(.status.runtime) · TensorFS \(.status.tensorfs) · " + ([.status.gpus[] | "GPU \(.index) \(.name) \(.memory_bytes / 1073741824 | floor) GiB"] | join(", "))' "$OUT/show-rc.json")"
+# Held there for the session, by an update naming its Runtime (cl-952's hold by hand): the dev home's RC follower moved it to each newer RC
+# build between renders, and each move restarted its TensorD, which built Qwen3.6 again, 4-7 min a render (43985932697, 43992085255).
+# The RC moving on meanwhile refuses the version (`rc_build_absent`): the follower moves it, and it's held there.
+for try in 1 2 3; do
+  step "hold-$try" machine update "$NAME" --runtime "$(jq -r '.status.runtime' "$OUT/show-rc.json")" -y
+  for _ in $(seq 180); do
+    cozy machine show "$NAME" --json > "$OUT/show-rc.json" 2> /dev/null
+    [ "$(jq -r '.state // empty' "$OUT/show-rc.json")" = ready ] && { [ -n "$(jq -r '.held // empty' "$OUT/show-rc.json")" ] || [ "$(jq -r '.rc.state // empty' "$OUT/show-rc.json")" = current ]; } && break
+    sleep 5
+  done
+  [ -z "$(jq -r '.held // empty' "$OUT/show-rc.json")" ] || break
+done
+held=$(jq -r '.held // empty' "$OUT/show-rc.json")
+[ -n "$held" ] || fail "$NAME isn't held on the RC's builds: $(tail -c 300 "$OUT/hold-$try.txt")"
+say "held: $held"
 
 # cli: each package asked about the photo and the video, by mention.
 if part cli; then

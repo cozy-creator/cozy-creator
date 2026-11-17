@@ -2212,14 +2212,18 @@ export class CanvasStore {
     return this.state?.headsOf?.[name] ?? this.state?.heads ?? []
   }
 
-  /** Typing begins in `field` of `key`: what its words go as splices of, the field as read and its heads, unless it's kept them already. */
+  /** Typing begins in `field` of `key`: what its words go as splices of, the field as read and its heads, unless it's kept them already. Only a
+   *  read the box's row stands on: one this page made and hasn't read since (`pending`) isn't in those heads, and splices on them merge with
+   *  its words as if typed on nothing, in either order (xs-204: " write a caption<photo>"); a field with a write on its way is past them. Those
+   *  go whole, and the write's answer is what typing goes on from (`typedAnswered`). */
   private begin(key: string, field: string) {
     const id = this.ids.get(key)
-    const heads = this.headsOf(this.served.get(id ?? "") ?? key)
-    if (!id || !heads.length) return
-    const from = this.typedFrom.get(id) ?? new Map()
-    if (!from.has(field)) from.set(field, { value: this.views.get(key)?.asset?.fields?.[field] ?? null, heads })
-    this.typedFrom.set(id, from)
+    const view = this.views.get(key)
+    if (!id || !view || this.typedFrom.get(id)?.has(field)) return
+    if (view.pending !== undefined || (view.sent && field in view.sent)) return
+    const heads = this.headsOf(this.served.get(id) ?? key)
+    if (!heads.length) return
+    this.typedFrom.set(id, (this.typedFrom.get(id) ?? new Map()).set(field, { value: view.asset?.fields?.[field] ?? null, heads }))
   }
 
   /** A write of `fields` of box `id`: what of its words changed as splices on what they began from, wherever they are in it; the rest as it is.
@@ -2251,13 +2255,15 @@ export class CanvasStore {
   }
 
   /** Calcifer answered a write of box `id`: what each field typed in came to is what typing goes on from, and what was typed meanwhile is moved onto
-   *  it. */
-  private typedAnswered(id: string, answer: AssetPatched) {
-    const from = this.typedFrom.get(id)
+   *  it. `whole`: what was typed and went whole, with no read to begin from (`begin`). */
+  private typedAnswered(id: string, answer: AssetPatched, whole?: Record<string, unknown>) {
+    if (!answer.heads?.length) return
+    const from = this.typedFrom.get(id) ?? new Map<string, { value: unknown; heads: string[]; sent?: unknown }>()
     const name = this.namesById.get(id)
     for (const [field, merged] of Object.entries(answer.fields ?? {})) {
-      const base = from?.get(field)
-      if (!base || base.sent === undefined || !answer.heads?.length) continue
+      if (!from.has(field) && whole && field in whole) from.set(field, { value: whole[field], heads: answer.heads, sent: whole[field] })
+      const base = from.get(field)
+      if (!base || base.sent === undefined) continue
       const view = name ? this.views.get(name) : undefined
       if (name && view && !same(merged, base.sent)) {
         const onto = (local: unknown) => mergeValue(base.sent, local, merged)
@@ -2267,6 +2273,7 @@ export class CanvasStore {
       }
       Object.assign(base, { value: merged, heads: answer.heads, sent: undefined })
     }
+    if (from.size) this.typedFrom.set(id, from)
   }
 
   /** Someone's words, read: what each typed field goes on from, and what's typed and not yet on its way moved onto them. With a write on its way,
@@ -2399,7 +2406,7 @@ export class CanvasStore {
         },
         edit,
         done: (answer) => {
-          this.typedAnswered(id, answer)
+          this.typedAnswered(id, answer, opts.typed ? fields : undefined)
           const held = now()
           if (held) {
             this.wrote(held.name, answer)
