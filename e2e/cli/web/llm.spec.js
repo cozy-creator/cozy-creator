@@ -314,8 +314,15 @@ test('llm: real models on a GPU', { tag: '@gpu' }, async ({ page, project, api, 
       const words = page.locator(`.card.here[data-asset=${JSON.stringify(made.name)}] .in-frame .mention-text[data-field="instructions"]`);
       await expect(words, 'opened on its words').toBeFocused();
       await page.keyboard.type(' write a caption');
-      await expect.poll(async () => (await project.asset(made.name))?.fields?.instructions, { message: "what's typed is after it" }).toBe(`<${name}> write a caption`);
-      await page.keyboard.press('ControlOrMeta+Enter');
+      // The caret after the mention: on Qwen3.6 from a checkout the words went before it, " write a caption<photo>" (43985932697), where
+      // the CPU fixture's go after it. Said, and the caption asked either way: the prompt still mentions the picture.
+      await expect.poll(async () => (await project.asset(made.name))?.fields?.instructions ?? '', { message: "what's typed lands" }).toContain('write a caption');
+      const typed = (await project.asset(made.name)).fields?.instructions;
+      kept.typed = { ...kept.typed, [kind]: typed };
+      expect.soft(typed, "what's typed is after the mention, the caret there").toBe(`<${name}> write a caption`);
+      const focused = page.getByRole('region', { name: 'Focused asset' });
+      if (await focused.count()) await focused.getByRole('button', { name: 'Render', exact: true }).click();
+      else await page.keyboard.press('ControlOrMeta+Enter');
       await lands(made.name, 1);
       const [version] = (await project.asset(made.name)).prefixes;
       const digest = String((await project.asset(name)).sha256 ?? '').replace(/^sha256:/, '');
@@ -326,7 +333,10 @@ test('llm: real models on a GPU', { tag: '@gpu' }, async ({ page, project, api, 
       expect.soft(one.carries, `its run's input carries the ${kind} (${digest})`).toBe(true);
       expect.soft(one.machine, `it ran on ${machine}`).toBe(machine);
       expect.soft(one.text, `its answer describes the ${kind}`).toMatch(sees[kind]);
-      await page.keyboard.press('Escape');
+      if (await focused.count()) {
+        await page.screenshot({ path: join(shots, `focus-${kind}.png`) });
+        await leave(page);
+      } else await page.keyboard.press('Escape');
       await canvasIdle(page);
       await shoot(`beside-${kind}`);
     });
