@@ -589,7 +589,18 @@ WEB_NATIVE=(
   open
 )
 web_cells=()
-web_lane() { web_suite "${SHARD#web-}" ${web_cells[@]+"${web_cells[@]}"}; }
+# On Windows, each second, its eight busiest processes (web/cpu.txt): a stall says whose it is (44022988318: Chrome, Calcifer and the fixture
+# Hub's Postgres stalled 15-20 s at once).
+web_lane() {
+  local stop=$OUT/web/cpu.stop said=0
+  if [ "${RUNNER_OS:-}" = Windows ]; then
+    mkdir -p "$OUT/web" && rm -f "$stop"
+    powershell -NoProfile -Command "while (-not (Test-Path '$(cygpath -w "$stop")')) { \$s = (Get-Counter '\\Process(*)\\% Processor Time' -ErrorAction SilentlyContinue).CounterSamples | Where-Object InstanceName -notin '_total','idle' | Sort-Object CookedValue -Descending | Select-Object -First 8; Add-Content '$(cygpath -w "$OUT/web/cpu.txt")' ((Get-Date).ToUniversalTime().ToString('HH:mm:ss') + ' ' + ((\$s | ForEach-Object { '{0}={1:N0}' -f \$_.InstanceName, \$_.CookedValue }) -join ' ')) }" > "$OUT/web/cpu.log" 2>&1 &
+  fi
+  web_suite "${SHARD#web-}" ${web_cells[@]+"${web_cells[@]}"} || said=$?
+  [ "${RUNNER_OS:-}" != Windows ] || touch "$stop"
+  return "$said"
+}
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
