@@ -13,6 +13,7 @@ const PLACES = { shot: { x: 0, y: 0 }, named: { x: 0, y: 420 }, spare: { x: 360,
 const STILL = `${fixtureTool('tool.py')}/still`;
 const LATE = png(77);
 const JOINED = png(55);
+const JOINED_HEX = createHash('sha256').update(JOINED).digest('hex');
 const FIRST = 'A lighthouse at dusk.';
 const SECOND = 'A lighthouse at dawn.';
 const BEFORE = 'Typed through a restart:';
@@ -152,6 +153,20 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
   });
 
   let moved;
+  // The two files dropped while it's away have their bytes held back until the reconnect's first reads are in, so the drops' turns come
+  // after those reads (e2e 44027468586: a picture dropped on a box renamed offline was never sent once they had, and nothing said so).
+  let releaseDrops;
+  const dropsHeld = new Promise((release) => { releaseDrops = release; });
+  const hold = (bytes) => page.route(`**/v1/project-files/sha256:${createHash('sha256').update(bytes).digest('hex')}*`, async (route) => { await dropsHeld; await route.continue(); });
+  // When Calcifer answered the rename, and when each read of the project's state the page asked began.
+  let renamedAt = Infinity;
+  const readsBegan = [];
+  page.on('response', (response) => {
+    const { pathname } = new URL(response.url());
+    const method = response.request().method();
+    if (method === 'POST' && pathname.endsWith('/rename') && response.ok()) renamedAt = Math.min(renamedAt, Date.now());
+    if ((method === 'GET' && /^\/v1\/projects\/[^/]+$/.test(pathname)) || (method === 'POST' && pathname.endsWith('/read'))) readsBegan.push(response.request().timing().startTime);
+  });
   await test.step('typed twice, moved twice, renamed, approved, a picture dropped, one dropped on a box, one deleted and undone, a tab away and back', async () => {
     for (const words of [FIRST, SECOND]) {
       const { region, text } = await typeOver(page, 'words', words);
@@ -185,6 +200,8 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
     await expect.soft(take, 'the approval shows at once').toHaveAttribute('aria-current', 'true', AT_ONCE);
     await leave(page, region);
 
+    await hold(LATE);
+    await hold(JOINED);
     await drop(page, 'late.png', LATE, await openPoint(page));
     await expect(page.getByRole('textbox', { name: 'Name' })).toBeFocused();
     await page.keyboard.press('Enter');
@@ -223,6 +240,8 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
   await test.step('Calcifer started (cozy machine ls)', async () => {
     await calciferControl.start();
     await back();
+    await expect.poll(() => readsBegan.some((began) => began > renamedAt), { message: 'the page read the project after its rename landed', timeout: 30_000 }).toBe(true);
+    releaseDrops();
     const landed = async () => {
       const assets = Object.fromEntries((await project.assets()).map((asset) => [asset.name, asset]));
       const { cards } = await api.get(project.at('/canvas'));
@@ -240,7 +259,7 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
       words: SECOND, shot: { approved: approve, pinned: true, at: moved }, renamed: true, named: false, spare: true,
       late: `sha256:${createHash('sha256').update(LATE).digest('hex')}`,
     });
-    const joined = createHash('sha256').update(JOINED).digest('hex');
+    const joined = JOINED_HEX;
     await expect.configure({ soft: true }).poll(async () => (await project.asset('renamed'))?.prefixes?.some((version) => version.main?.sha256?.endsWith(joined)) ?? false, { message: 'the picture dropped on renamed landed, its next version' }).toBe(true);
     const stored = held(project.path);
     expect.soft(stored.boxes.words?.text, 'project.db holds the last words').toBe(SECOND);
