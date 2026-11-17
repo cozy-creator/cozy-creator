@@ -280,6 +280,24 @@ function watchBoxes() {
 }
 
 /** WebKit's words for a page's fetch that failed, its reason masked: the URL it asked. */
+/** Pages in a screenshot, by how many. Every WebKit screenshot appends a `<style>body {}</style>` to sync the page's animations
+ *  (Playwright's screenshotter), which the page's CSP (`style-src 'self'`) refuses: a console error and a violation, said while the
+ *  screenshot is taken. That refusal is Playwright's; any other fails the cell, and Chrome's and Firefox's never add one (cl-1045). */
+const shooting = new Map();
+const SYNC_STYLE = /^(console error: Refused to apply a stylesheet because its hash, its nonce, or 'unsafe-inline' does not appear in the style-src directive of the Content Security Policy\. |CSP violation: style-src-elem blocked inline$)/;
+function countShots(page) {
+  for (const kind of [Object.getPrototypeOf(page), Object.getPrototypeOf(page.locator('html'))]) {
+    if (Object.hasOwn(kind, 'shots')) continue;
+    const shoot = kind.screenshot;
+    kind.screenshot = async function (...options) {
+      const of = typeof this.page === 'function' ? this.page() : this;
+      shooting.set(of, (shooting.get(of) ?? 0) + 1);
+      try { return await shoot.apply(this, options); } finally { shooting.set(of, shooting.get(of) - 1); }
+    };
+    kind.shots = true;
+  }
+}
+
 const CUT_FETCH = /^Fetch API cannot load (\S+) due to access control checks\.$/;
 
 const test = base.extend({
@@ -332,15 +350,18 @@ const test = base.extend({
     const allowed = [];
     let over = false;
     const say = (line) => { if (!over && !allowed.some((re) => re.test(line))) said.push(line); };
+    const saidOn = (webkit) => (page, line) => { if (!(webkit && shooting.get(page) > 0 && SYNC_STYLE.test(line))) say(line); };
     await use({
       allow: (...patterns) => { allowed.push(...patterns); },
       /** The cell is over: what its pages say from here is Playwright's doing as it closes them (WebKit's screenshot adds a
        *  `<style>body {}</style>`, which the page's CSP refuses), not the page's. */
       over: () => { over = true; },
       async watch(context) {
-        await context.exposeBinding('__cozyGuard', (_, line) => say(line));
+        const sayOn = saidOn(context.browser()?.browserType().name() === 'webkit');
+        await context.exposeBinding('__cozyGuard', ({ page }, line) => sayOn(page, line));
         await context.addInitScript(guardPage);
         const watch = (page) => {
+          countShots(page);
           // From a main-frame navigation until the next document's DOMContentLoaded, the last document is ending. WebKit says a fetch of
           // its own Calcifer's /v1 cut as it ends (and caught by the page: its event stream, a read in flight) as a page error in its masked
           // words: only that is the document's end. Anywhere else in a document's life it fails the cell (run 43730578847: `open`'s goto
@@ -362,7 +383,7 @@ const test = base.extend({
             if (cut(error)) return;
             say(`page error: ${error.message}`);
           });
-          page.on('console', (message) => { if (message.type() === 'error') say(`console error: ${message.text()} ${message.location().url}`); });
+          page.on('console', (message) => { if (message.type() === 'error') sayOn(page, `console error: ${message.text()} ${message.location().url}`); });
         };
         context.pages().forEach(watch);
         context.on('page', watch);
