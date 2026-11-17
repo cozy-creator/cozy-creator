@@ -519,8 +519,9 @@ class Broker:
 
 
 def missed(interface: Path, function: str, request: dict[str, Json], reply: Reply, called: list[str]) -> list[str]:
-    """What a call read on demand or called that its function's needs rules say its request doesn't use (cl-1103): each a miss,
-    which a machine fetches only when it's read. The rules are answered by TensorD's evaluator (crates/needs' needs-answers)."""
+    """What a call read on demand (the models its own request built: the Runtime's `execution.on_demand`) or called that its
+    function's needs rules say its request doesn't use (cl-1103): each a miss, which a machine fetches only when it's read. The
+    rules are answered by TensorD's evaluator (crates/needs' needs-answers)."""
     answers = os.environ.get("NEEDS_ANSWERS", "")
     if not answers:
         return []

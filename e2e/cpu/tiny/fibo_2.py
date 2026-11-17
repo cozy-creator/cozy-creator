@@ -7,6 +7,7 @@ Bria's prompt-to-JSON VLMs (Qwen3-VL as-is uploads, their head tied to the embed
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import torch
@@ -50,11 +51,17 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
     torch.manual_seed(1)
     _fibo(root / "fibo-2-edit-turbo")
     torch.manual_seed(2)
-    vlm = root / "fibo-vlm"
+    vlm, edit_vlm = root / "fibo-vlm", root / "fibo-edit-vlm"
     save(module(Qwen3VLForConditionalGeneration(_shared.qwen3_vl(2, TEXT_WIDTH, tie_word_embeddings=True))).to(torch.bfloat16),
          vlm)
     _shared.qwen_processor(vlm)
-    return {DEV: root / "fibo-2-dev", TURBO: root / "fibo-2-edit-turbo", VLM: vlm, EDIT_VLM: vlm}
+    # Two checkpoints, as Bria's two releases are: the same tiny weights (their cells' references stand), each config naming
+    # its own release, so a machine tells the slots apart (TensorD's need for one is never the other's).
+    shutil.copytree(vlm, edit_vlm)
+    for folder, name in ((vlm, VLM), (edit_vlm, EDIT_VLM)):
+        config = json.loads((folder / "config.json").read_text())
+        (folder / "config.json").write_text(json.dumps({**config, "cozy_e2e_release": name}, indent=2))
+    return {DEV: root / "fibo-2-dev", TURBO: root / "fibo-2-edit-turbo", VLM: vlm, EDIT_VLM: edit_vlm}
 
 
 def _prompt(text: str, *keys: str) -> dict[str, Json]:
