@@ -272,29 +272,30 @@ timeout 60 "$COZY" --json machine end stand-w --force -y > "$OUT/stand-w-end.jso
 # plan_resent (cl-1116; release blocker, the user flow's 43996197790: a moved H3 take, done on kubera, read as `run_not_found` and was
 # lost; Paul: a finished take is never lost). A run sent again, here moved from one machine to another that finishes it sooner
 # (cl-1073), is its next attempt there, which its machine knows as `<id>~2`. Every word Calcifer says to the machine about it uses that
-# name: its events, its cancel, its outputs' reads. stand-a holds as many runs as it has CPU slots, and stand-b more, so `moved` and
-# `canceled` (on both) go to stand-a and wait in its queue. stand-b's runs are canceled: both move to stand-b, now clearly sooner, as
-# their attempt 2. `canceled` is canceled there; `moved` completes there, its take lands, and its events say the move and its end.
+# name: its events, its cancel, its outputs' reads. stand-a's CPU slots are held, so `moved` and `canceled` (on stand-a or stand-b,
+# stand-a quoted sooner, as stand-b would install their code first) wait in stand-a's queue. Then stand-a's own cozy updates it: the
+# update waits for what runs there, so stand-a is quoted after it and its install (cl-1073), and both move to stand-b, clearly sooner,
+# as their attempt 2. `canceled` is canceled there; `moved`
+# completes there, its take lands, and its events say the move and its end.
 plan_resent_run() { status "$P" | jq -r --arg a "$1" '[.board.jobs[]? | select(.asset == $a) | .run // empty] | last // empty'; }
 plan_resent_show() { project_api "$P" "/runs/$1" 2> /dev/null || echo null; }
 plan_resent() {
 step "plan (cl-1116): a run moved to another machine is that machine's to cancel and follow, and its take lands"
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "resent: its stand-ins are other users of a fresh GitHub runner"; return; }
-local P=$OUT/resent tool=$here/project/waits.py/wait r=$RANDOM slots a b name n run moved='' canceled='' watcher end
+local P=$OUT/resent tool=$here/project/waits.py/wait r=$RANDOM slots a name n run moved='' canceled='' watcher end updating=''
 slots=$(( $(nproc) / 4 )); [ "$slots" -ge 1 ] || slots=1
-a=$(seq -s ' ' 1 "$slots") b=$(seq -s ' ' 1 $((slots + 2)))
+a=$(seq -s ' ' 1 "$slots")
 cozy --json machine show local > "$OUT/set-local.json" || { check "resent: machine show local"; return; }
 stand_in stand-a || return
 stand_in stand-b || return
 cozy --json new --unencrypted "$P" > "$OUT/resent-new.json" 2>&1 || { check "resent: new: $(tail -c 300 "$OUT/resent-new.json")"; return; }
-jq -n --arg t "$tool" --arg r "$r" --argjson a "[$(tr ' ' , <<< "$a")]" --argjson b "[$(tr ' ' , <<< "$b")]" '
+jq -n --arg t "$tool" --arg r "$r" --argjson a "[$(tr ' ' , <<< "$a")]" '
   [$a[] | {name: "hold_a\(.)", tool: $t, kind: "image", fields: {instructions: "Holds stand-a, \(.), \($r).", megapixels: 0.25, seconds: 590}}]
-  + [$b[] | {name: "hold_b\(.)", tool: $t, kind: "image", fields: {instructions: "Holds stand-b, \(.), \($r).", megapixels: 0.25, seconds: 590}}]
   + [{name: "moved", tool: $t, kind: "image", fields: {instructions: "Moves to stand-b and lands, \($r).", megapixels: 0.25, seconds: 1}},
      {name: "canceled", tool: $t, kind: "image", fields: {instructions: "Moves to stand-b and is canceled there, \($r).", megapixels: 0.25, seconds: 590}}]' \
   | boxes_in "$P" || return
 
-# stand-a's CPU slots taken first, then stand-b's and more queued behind them: stand-a is the sooner of the two.
+# stand-a's CPU slots taken, its code installed for them; stand-b has none, so it's quoted its install too.
 for n in $a; do coming_go "hold_a$n" '["stand-a"]'; done
 for _ in $(seq 600); do
   cozy --json machine show stand-a > "$OUT/resent-stand-a.json" 2> /dev/null || true
@@ -303,20 +304,6 @@ for _ in $(seq 600); do
 done
 J --argjson s "$slots" '[.status.runs[]? | select(.state == "running")] | length >= $s' "$OUT/resent-stand-a.json" \
   || { check "resent: stand-a never ran its $slots holds: $(jq -c '[.status.runs[]? | {id, state, waiting}]' "$OUT/resent-stand-a.json")"; return; }
-for n in $b; do coming_go "hold_b$n" '["stand-b"]'; done
-for _ in $(seq 600); do
-  cozy --json machine show stand-b > "$OUT/resent-stand-b.json" 2> /dev/null || true
-  J --argjson s "$slots" '[.status.runs[]? | select(.state == "running")] | length >= $s' "$OUT/resent-stand-b.json" && break
-  sleep 0.5
-done
-J --argjson s "$slots" '[.status.runs[]? | select(.state == "running")] | length >= $s' "$OUT/resent-stand-b.json" \
-  || { check "resent: stand-b never ran its holds: $(jq -c '[.status.runs[]? | {id, state, waiting}]' "$OUT/resent-stand-b.json")"; return; }
-for _ in $(seq 60); do
-  cozy --json machine show stand-b > "$OUT/resent-stand-b.json" 2> /dev/null || true
-  J --argjson n "$((slots + 2))" '[.status.runs[]?] | length >= $n' "$OUT/resent-stand-b.json" && break
-  sleep 0.5
-done
-echo "resent: stand-a: $(jq -c '[.status.runs[]? | {id, state}]' "$OUT/resent-stand-a.json"); stand-b: $(jq -c '[.status.runs[]? | {id, state}]' "$OUT/resent-stand-b.json")"
 
 coming_go moved '["stand-a","stand-b"]'
 coming_go canceled '["stand-a","stand-b"]'
@@ -334,22 +321,20 @@ else
   name=$(jq -r .name "$OUT/resent-moved.json")
   (in_project "$P" --json run watch "$name" > "$OUT/resent-moved-events.ndjson" 2> "$OUT/resent-moved-events.err") & watcher=$!
 
-  # stand-b's runs end: it is free, and both move there as their attempt 2.
-  for n in $b; do
-    run=$(plan_resent_run "hold_b$n")
-    [ -z "$run" ] || in_project "$P" --json run cancel "$(plan_resent_show "$run" | jq -r .name)" > "$OUT/resent-cancel-b$n.json" 2>&1 || true
-  done
+  # stand-a's own cozy updates it (a setting, so a restart): the update waits for its holds, and stand-a is quoted after it.
+  (stand_as stand-a --json machine update local --gpu-memory-limit off -y > "$OUT/resent-update.json"; echo $? > "$OUT/resent-update.code") &
+  updating=$!
   for _ in $(seq 360); do
     plan_resent_show "$moved" > "$OUT/resent-moved.json"
     plan_resent_show "$canceled" > "$OUT/resent-canceled.json"
     J '.machine == "stand-b"' "$OUT/resent-moved.json" && J '.machine == "stand-b" and .accepted_at_ms != null' "$OUT/resent-canceled.json" && break
     sleep 0.5
   done
-  echo "resent: after stand-b freed: $(jq -c '{name, machine, status, machine_state, reason}' "$OUT/resent-moved.json" "$OUT/resent-canceled.json" 2> /dev/null | paste -sd ' ')"
+  echo "resent: after stand-a's update began: $(jq -c '{name, machine, status, machine_state, reason}' "$OUT/resent-moved.json" "$OUT/resent-canceled.json" 2> /dev/null | paste -sd ' ')"
   cp "$P/.vault-calcifer/diagnostics/walk.log" "$OUT/resent-walk.log" 2> /dev/null || true
   grep -E ' moves from ' "$OUT/resent-walk.log" 2> /dev/null | tail -n 4 || true
   if ! J '.machine == "stand-b" and .accepted_at_ms != null' "$OUT/resent-canceled.json"; then
-    check "resent: canceled never went to stand-b and was accepted there, so its attempt 2 can't be canceled: $(jq -c '{name, machine, status, machine_state, reason}' "$OUT/resent-canceled.json")"
+    check "resent: canceled never went to stand-b and was accepted there, so its attempt 2 can't be canceled: $(jq -c '{name, machine, status, machine_state, reason}' "$OUT/resent-canceled.json") $(tail -n 4 "$OUT/resent-walk.log" 2> /dev/null)"
   else
     # Canceled there, by the name stand-b knows it by: stand-b ends it and says so. A cancel of another name is recorded there as a
     # run never received while its attempt 2 runs on, its 590 s, and a machine with no record of it reads as one.
@@ -370,7 +355,7 @@ else
   plan_resent_show "$moved" > "$OUT/resent-moved.json"
   echo "resent: moved: $(jq -c '{name, machine, status, reason, output: [.output[]? | {name, status, export_error}]}' "$OUT/resent-moved.json")"
   J '.machine == "stand-b"' "$OUT/resent-moved.json" \
-    || check "resent: moved never moved to stand-b once stand-b was free: $(jq -c '{name, machine, status}' "$OUT/resent-moved.json") $(tail -n 4 "$OUT/resent-walk.log" 2> /dev/null)"
+    || check "resent: moved never moved to stand-b once stand-a updated: $(jq -c '{name, machine, status}' "$OUT/resent-moved.json") $(tail -n 4 "$OUT/resent-walk.log" 2> /dev/null)"
   J '.status == "completed" and .reason == null and ([.output[]? | select(.export_error != null)] | length == 0)' "$OUT/resent-moved.json" \
     || check "resent: moved ran on stand-b as its attempt 2 but its take was lost: $(jq -c '{status, reason, output: [.output[]? | {name, export_error}]}' "$OUT/resent-moved.json")"
   [ "$(made "$P" moved)" -ge 1 ] || check "resent: moved has no take after its run on stand-b"
@@ -386,6 +371,11 @@ for n in $a; do
   run=$(plan_resent_run "hold_a$n")
   [ -z "$run" ] || in_project "$P" --json run cancel "$(plan_resent_show "$run" | jq -r .name)" > /dev/null 2>&1 || true
 done
+# stand-a's update goes once its holds end; both stand-ins end after.
+if [ -n "$updating" ]; then
+  for _ in $(seq 240); do kill -0 "$updating" 2> /dev/null || break; sleep 1; done
+  kill "$updating" 2> /dev/null || true
+fi
 timeout 60 "$COZY" --json machine end stand-a --force -y > "$OUT/stand-a-end.json" 2>&1 || true
 timeout 60 "$COZY" --json machine end stand-b --force -y > "$OUT/stand-b-end.json" 2>&1 || true
 }
