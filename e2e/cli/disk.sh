@@ -4,7 +4,8 @@
 # runs at once, each reading a model not here, as a session queues them, while a reader holds the store's fence for 15 s (as
 # the pod's checkpoint opens and holds each did for a moment): the machine's room for their weights waits for it, never
 # refused `model data is in use` (#2858 made it refuse; 0.25.0 waited). Then one more of the first model. Each completes,
-# the idle models' weights evicted, least recently used first, to make its room. Last, a 2 GiB model, more than the disk can
+# the idle models' weights evicted, least recently used first, to make its room, their executor told to let go of them and
+# kept up (tfs-303). Last, a 2 GiB model, more than the disk can
 # make free, is refused `machine_disk_full` naming the sizes, nothing of it kept.
 
 # disk_store <config.toml> <dir>: config.toml with `machine.store` at <dir>.
@@ -25,7 +26,7 @@ PY
 
 disk_full() {
 [ "$RUNNER_OS" = Linux ] || return 0
-local script=$here/script/disk.py img=$RUNNER_TEMP/tfs-disk.img mnt=/mnt/tfs-disk name i used
+local script=$here/script/disk.py img=$RUNNER_TEMP/tfs-disk.img mnt=/mnt/tfs-disk name i used pid
 step "tfs-150: the machine's store on a 2.5 GiB disk, filled with three idle models"
 truncate -s 2560M "$img" && mkfs.ext4 -q -F -m 0 "$img" && sudo mkdir -p "$mnt" && sudo mount -o loop "$img" "$mnt" \
   && sudo chown "$(id -u):$(id -g)" "$mnt" || { check "disk: the 2.5 GiB disk was not made"; return 0; }
@@ -58,7 +59,27 @@ for i in 4 5 6; do
     || check "disk: disk-$i (e2e/disk-$i) $(run_get "$OUT" "disk-$i" .status): $(run_get "$OUT" "disk-$i" .reason.message | head -c 300)"
 done
 wait "$reader" || check "disk: the reader holding the store failed"
+# tfs-303 (coordinator 11-17: "make idle executors let go of what's needed instead of being ended"): the idle executor that ran
+# disk-1..3 let go of them for these runs' room and is still up, its process warm.
+for name in disk-1 disk-2 disk-3; do
+  pid=$(run_get "$OUT" "$name" '.measurements.execution.gpus[0].pid')
+  [ -n "$pid" ] && [ "$pid" != null ] || { check "disk: $name's record names no executor pid"; continue; }
+  [ -d "/proc/$pid" ] || check "disk: the idle executor $pid that ran $name was ended for the disk's room, not told to let go"
+done
 cell disk-1-again "$script" --model "weights=e2e/disk-1@0.1.0" text=again || true
+# The disk at its reserve, three runs at once each reading a model not here, five rounds: each round's models evicted the round
+# before, so every round's admits race each other's evictions (43982726077: one refused 0.2 MiB short with an idle model left).
+# tfs-302 (44054015865): a run's model, resolved, was evicted for another run's room before its fetch held it. tfs-303
+# (44054038558): an executor that ran disk-1 and runs disk-5 kept both, and a run was refused disk-1's room; it lets go now.
+local round set i
+for round in 1 2 3 4 5; do
+  if [ $((round % 2)) = 1 ]; then set="4 5 6"; else set="1 2 3"; fi
+  for i in $set; do run_submit "$OUT" "race-$round-$i" run "$script" --model "weights=e2e/disk-$i@0.1.0" text=race$round --on local > /dev/null; done
+  for i in $set; do
+    run_wait "$OUT" "race-$round-$i" && [ "$(run_get "$OUT" "race-$round-$i" .status)" = completed ] \
+      || check "disk: round $round's disk-$i $(run_get "$OUT" "race-$round-$i" .status): $(run_get "$OUT" "race-$round-$i" .reason.message | head -c 300)"
+  done
+done
 step "tfs-150: a model bigger than the disk can make free is refused, naming the sizes, nothing of it kept"
 local before said
 before=$(df -B1 --output=used "$mnt" | tail -1 | tr -d ' ')
@@ -70,7 +91,7 @@ echo "disk-big: $(run_get "$OUT" disk-big .status): ${said:0:400}"
 [ "$(df -B1 --output=used "$mnt" | tail -1 | tr -d ' ')" -le $((before + (64 << 20))) ] || check "disk: the refused e2e/disk-big left bytes on the disk"
 df -B1 --output=used,avail "$mnt" | tail -1 | sed "s/^/after: used, free: /"
 cozy machine logs local --lines 0 --since 1h > "$OUT/disk.tensord.log" 2>&1 || check "disk: machine logs local failed"
-grep -E "evicted|freed|fetch refused .*CAPACITY|disk is full|making room|short for this render|ended the idle|doesn't fit|held it" "$OUT/disk.tensord.log" | cut -c1-300 | head -60 || true
+grep -E "evicted|freed|fetch refused .*CAPACITY|disk is full|making room|short for this render|ended the idle|let go of|doesn't fit|held it|released construction|no executor let go|taken for a call before" "$OUT/disk.tensord.log" | cut -c1-300 | head -60 || true
 for name in disk-4 disk-5 disk-6 disk-1-again; do
   jq -r --arg n "$name" '.warnings[]? | "\($n) warning: \(.message)"' "$OUT/$name.json" 2> /dev/null | cut -c1-300 || true
   ! jq -e '[.warnings[]?.message] | any(test("model data is in use"))' "$OUT/$name.json" > /dev/null 2>&1 \
@@ -80,13 +101,50 @@ grep "making room in $mnt waited" "$OUT/disk.tensord.log" | cut -c1-200 \
   || check "disk: the machine's room for the runs' weights never waited for the reader"
 disk_below_reserve
 disk_run_object
+disk_in_use
+}
+
+# Paul 11-17: "Clearly we should never evict models from disc that are being used." A model's checkpoint, open from its load, holds
+# its objects in the store (retention.rs: a live hold), and every varena page source keeps that open checkpoint while its region is
+# registered, resident or paged out; the store collects nothing held. Here a 2.5 GiB disk (1 GiB reserve) holds e2e/disk-1, which
+# a call has read and holds mid-call (script/hold.py); a file leaves 128 MiB past the reserve, so e2e/disk-2 (384 MiB) fits only if
+# disk-1 goes. disk-2's run is refused `machine_disk_full`, naming disk-1 in use; the call then reads disk-1 again, the same sum.
+disk_in_use() {
+local hold=$here/script/hold.py img=$RUNNER_TEMP/tfs-inuse.img mnt=/mnt/tfs-inuse size avail reserve said i
+step "Paul 11-17: a model a call holds is never evicted for another render's room: that room is refused"
+truncate -s 2560M "$img" && mkfs.ext4 -q -F -m 0 "$img" && sudo mkdir -p "$mnt" && sudo mount -o loop "$img" "$mnt" \
+  && sudo chown "$(id -u):$(id -g)" "$mnt" || { check "disk: the in-use disk was not made"; return 0; }
+disk_store "$HOME/.cozy/config.toml" "$mnt"
+machine_stop || check "disk: the local machine did not stop"
+machine_ready
+run_submit "$OUT" inuse-hold run "$hold" --model "weights=e2e/disk-1@0.1.0" seconds=180 --on local > /dev/null
+for i in $(seq 240); do
+  grep -qw holding "$OUT/inuse-hold.ndjson" 2> /dev/null && break
+  run_ended "$OUT/inuse-hold.ndjson" && break
+  sleep 1
+done
+grep -qw holding "$OUT/inuse-hold.ndjson" 2> /dev/null \
+  || { check "disk: inuse-hold never held e2e/disk-1 mid-call: $(tail -c 300 "$OUT/inuse-hold.ndjson")"; return 0; }
+read -r size avail < <(df -B1 --output=size,avail "$mnt" | tail -1)
+reserve=$((size / 50)); [ "$reserve" -ge $((1 << 30)) ] || reserve=$((1 << 30))
+fallocate -l $((avail - reserve - (128 << 20))) "$mnt/inuse-filler" || { check "disk: the in-use filler was not made"; return 0; }
+df -B1 --output=used,avail "$mnt" | tail -1 | sed "s/^/e2e\/disk-1 in use, 128 MiB past the reserve: used, free: /"
+ALLOW=machine_disk_full cell inuse-other "$here/script/disk.py" --model "weights=e2e/disk-2@0.1.0" text=other || true
+said=$(run_get "$OUT" inuse-other '.reason.message')
+echo "inuse-other: $(run_get "$OUT" inuse-other .status): ${said:0:500}"
+{ [ -f "$OUT/inuse-other.refused" ] && grep -q 'e2e/disk-1' <<< "$said"; } \
+  || check "disk: e2e/disk-2's room, which only e2e/disk-1 in use by a call could give, was not refused naming it: ${said:0:300}"
+rm -f "$mnt/inuse-filler"
+run_wait "$OUT" inuse-hold && [ "$(run_get "$OUT" inuse-hold .status)" = completed ] \
+  || check "disk: inuse-hold $(run_get "$OUT" inuse-hold .status), its model read again: $(run_get "$OUT" inuse-hold .reason.message | head -c 300)"
+cozy machine logs local --lines 0 --since 10m 2>&1 | grep -E "evicted|let go of|doesn't have room" | cut -c1-300 | tail -6 || true
 }
 
 # cl-1076 (11-16): kamitsure's disk sat at its reserve for an hour while an idle LTX executor held 71.5 GB open, and its
 # outputs went instead. Below its reserve the machine ended idle executors only for the bytes coming in, never for the
 # reserve too: it ended one, whose model alone couldn't make the room, and so evicted nothing. Here four idle executors
 # (one script each) hold a 384 MiB model apiece on a fresh 4 GiB store disk (1 GiB reserve), the disk 576 MiB below its
-# reserve. A run of a fifth model completes: the idle executors it needs end, their models evicted.
+# reserve. A run of a fifth model completes: the idle executors it needs let go of their models (tfs-303), evicted.
 disk_below_reserve() {
 local script=$here/script/disk.py img=$RUNNER_TEMP/tfs-reserve.img mnt=/mnt/tfs-reserve dir=$OUT/cl1076 i avail size reserve
 step "cl-1076: a disk below its reserve evicts as many idle executors' models as it lacks"
@@ -118,7 +176,7 @@ rm -f "$mnt/cl-1076-filler"
 # this runner: this computer's own runs keep their files in their project, not in the machine's store) has its store on a
 # 2.5 GiB disk, 1 GiB of it the reserve. e2e-tokenizer runs there from source: it carries the vocab.json its model
 # e2e/disk-tokenizer holds as an asset (isolated.sh's `disk`), and its executor goes idle. A file then leaves 32 MiB free
-# past the reserve, and a run of another 384 MiB model completes: the idle executor ended, e2e/disk-tokenizer evicted.
+# past the reserve, and a run of another 384 MiB model completes: the idle executor let go of it or ended, e2e/disk-tokenizer evicted.
 disk_run_object() {
 step "cl-1076: a model holding a file its package carries too is evicted for a render's room"
 [ "${GITHUB_ACTIONS:-}" = true ] || { echo "disk: a run's file: its stand-in is another user of a fresh GitHub runner"; return 0; }

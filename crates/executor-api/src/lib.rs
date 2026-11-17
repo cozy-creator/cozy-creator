@@ -37,12 +37,15 @@ pub enum Command {
     /// A client watches a call's previews (`author.preview`); consumed out of band, without a
     /// reply. Sent only to an executor whose hello says `previews`.
     Preview(Preview),
+    /// Constructions no call of its needs go (tfs-303); consumed out of band, without a reply. Sent
+    /// only to an executor whose hello says `releases`.
+    Release(Release),
 }
 
 impl Command {
     /// Every `cmd` TensorD sends.
-    pub const NAMES: [&'static str; 9] =
-        ["hello", "start", "load", "prepare_request", "cancel", "invoke", "map", "fork", "preview"];
+    pub const NAMES: [&'static str; 10] =
+        ["hello", "start", "load", "prepare_request", "cancel", "invoke", "map", "fork", "preview", "release"];
 
     /// One command from its wire bytes. An unknown member is ignored and a missing one takes its
     /// default; the error names a needed member's path (`spool`, `bits`) or an unknown `cmd`.
@@ -62,6 +65,7 @@ impl Command {
             "map" => Command::Map(one(fields)?),
             "fork" => Command::Fork(one(fields)?),
             "preview" => Command::Preview(one(fields)?),
+            "release" => Command::Release(one(fields)?),
             other => return Err(format!("unknown command `{other}`")),
         })
     }
@@ -78,6 +82,7 @@ impl Command {
             Self::Map(_) => "map",
             Self::Fork(_) => "fork",
             Self::Preview(_) => "preview",
+            Self::Release(_) => "release",
         }
     }
 }
@@ -189,6 +194,14 @@ pub struct PrepareRequest {
 pub struct Preview {
     pub request_id: String,
     pub for_ms: u64,
+}
+
+/// Loaded constructions the machine's disk needs the room of and no call of this executor's runs on: they go, their
+/// models' store holds and open chunk files with them, and a later call on one loads it anew (tfs-303).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
+pub struct Release {
+    pub constructions: Vec<String>,
 }
 
 /// The queued preparation to discard, by its request id.
@@ -442,6 +455,8 @@ pub struct Hello {
     pub sealed: BTreeMap<String, String>,
     /// It takes `preview` (cr-282): 1; 0 for an executor that makes none.
     pub previews: u32,
+    /// It takes `release` (tfs-303): 1; 0 for one that keeps every construction it loaded.
+    pub releases: u32,
 }
 
 /// One preview of a call's latents (`author.preview`): the step it shows, and its picture.
@@ -1280,6 +1295,7 @@ mod python {
         PrepareRequest => Command::PrepareRequest,
         Cancel => Command::Cancel,
         Preview => Command::Preview,
+        Release => Command::Release,
         Invoke => |c| Command::Invoke(Box::new(c)),
         Map => Command::Map,
         Fork => Command::Fork

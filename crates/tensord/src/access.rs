@@ -326,6 +326,11 @@ impl Fetch {
         remote(&self.machine, hub, header)
     }
 
+    /// `checkpoints` held until it ends, as its own: a run's models from their resolution on, before it wants any (tfs-302).
+    pub(crate) fn hold(&self, checkpoints: Vec<Checkpoint>) {
+        self.held.lock().unwrap().extend(checkpoints);
+    }
+
     /// `previous` (a run's preparation's fetches) ends with the call.
     pub(crate) fn replaces(&self, previous: Option<Arc<Fetch>>) {
         *self.replaced.lock().unwrap() = previous;
