@@ -1,0 +1,1 @@
+A run that waits says what for, not the stage it waits in ("Preparing, time left unknown", read as stuck) (cl-1197): its box says `Waiting for 2 GPUs`, and its machine's tab and queue say all of it, as its drawer and the run list do: `Waiting for 2 GPUs, held by run PRO6-60, about 2 min`. A run waiting on a download still says `Waiting for download`.

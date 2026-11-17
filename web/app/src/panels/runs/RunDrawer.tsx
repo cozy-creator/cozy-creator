@@ -11,7 +11,7 @@ import { masked, usd, when } from "../format"
 import { Outputs } from "./Outputs"
 import { Report } from "./Report"
 import { RunLog } from "./RunLog"
-import { attemptWords, eta, progressWords, runName, runTime, settled, stalledWords, statusClass, statusWord, target } from "./words"
+import { attemptWords, eta, progressWords, runName, runTime, settled, stalledWords, statusClass, statusWord, target, waitReason, waitWords } from "./words"
 
 /** A run's name, `SE-5` (cl-987): a link from anywhere. */
 const NAMED = /^[A-Za-z][A-Za-z0-9]{1,9}-\d+$/
@@ -114,7 +114,7 @@ function NumberedRun() {
         rows={[
           ["Machine", run.machine && <Link className="more" to={to(`machines/${encodeURIComponent(run.machine)}`)}>{run.machine}</Link>],
           ["Attempt", run.retry && attemptWords(run.retry).replace(/^attempt /, "")],
-          ["Waiting", run.queue_position == null ? run.waiting : `${run.queue_position === 1 ? "Next in line" : `${run.queue_position - 1} ahead of it`}${run.waiting ? ` (${run.waiting})` : ""}`],
+          ["Waiting", run.queue_position == null ? waitWords(run.waiting) : `${run.queue_position === 1 ? "Next in line" : `${run.queue_position - 1} ahead of it`}${run.waiting ? ` (${waitReason(run.waiting)})` : ""}`],
           ["Time left", live ? eta(run) : null],
           ["Run time", runTime(run, now)],
           ["Requested", when(run.created_at_ms)],

@@ -8,7 +8,7 @@ import { useTo } from "../app/project"
 import { useNow } from "../panels/common"
 import { anchorOf, packageWords, useDownloadsOf, useInstalling, useWaitsOn } from "../panels/machines/activity"
 import { ordinal } from "../panels/format"
-import { attemptWords, bytesKind, rateWords, size, stageParts } from "../panels/runs/words"
+import { attemptWords, bytesKind, rateWords, size, stageParts, waitFor, waitReason, waitWords } from "../panels/runs/words"
 import { useSignal } from "../ui/signal"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore, useElement } from "./context"
@@ -55,13 +55,6 @@ const moving = (done: number, total: number, rate?: number | null) => `${size(do
 
 /** The whole job's time left, Calcifer's: once it ended, its result coming here. */
 const leftOf = (run: Run) => (run.status === "completed" ? run.arriving?.eta_s : run.progress?.eta_s) ?? undefined
-
-/** What it waits on as its machine says it, without the machine's state its reason repeats, each run it names by its box. */
-const reason = (run: Run, boxOf: (run: number) => string | undefined) =>
-  run.waiting?.replace(/^(queued|preparing|running): /, "").replace(/\brun (\d+)/g, (said, number: string) => {
-    const box = boxOf(Number(number))
-    return box ? `<${box}>` : said
-  })
 
 /** The run whose take is shown before its file is here, while that file comes: its box says so (Paul, 11-12: no take looks done before
  *  it's here). None for a file a machine keeps. */
@@ -124,7 +117,7 @@ function faceNow(seen: Seen): Face {
     if (view.queued) return face("queued", "Queued,", "Choosing a machine", `${ordinal((ahead?.length ?? 0) + 1)} in line`)
     return face("queued", "Queued", "Choosing a machine")
   }
-  const waiting = reason(run, seen.boxOf)
+  const waiting = waitReason(run.waiting, seen.boxOf)
   if (!run.machine) {
     const renting = waiting?.match(/^renting (.+)$/)
     return renting ? face("renting", "Placing the order", `Renting ${renting[1]}`) : run.queue_position != null ? face("queued", "Queued,", where, `${ordinal(run.queue_position)} in line`) : face("queued", "Queued")
@@ -143,13 +136,16 @@ function faceNow(seen: Seen): Face {
   }
   const progress = run.progress
   if (progress?.waiting_on?.length) return { ...face("download", "Waiting for download"), leads: { machine: run.machine, download: progress.waiting_on[0] } }
+  // Waiting on anything else, it says what for, not the stage it waits in (cl-1197: "Preparing, time left unknown" read as stuck
+  // through a 96 s wait for 2 GPUs): `Waiting for 2 GPUs`, whole on a box's line. Who holds them and about how long, its machine's rows
+  // and its drawer say.
+  if (waiting) return face("queued", waitFor(run.waiting))
   if (progress?.stage || progress?.total) {
     const { words, count } = stageParts(progress)
     const phase = bytesKind(progress) === "download" ? "download" : /install/i.test(progress.stage) ? "install" : "work"
     const numbers = [count, progress.bytes_per_s ? rateWords(progress.bytes_per_s) : ""].filter(Boolean).join(", ")
     return face(phase, count || !numbers ? words : `${words},`, where, numbers || undefined)
   }
-  if (waiting) return face("queued", sentence(waiting))
   return face("work", run.machine_state === "preparing" ? "Preparing" : "Starting")
 }
 
@@ -180,7 +176,7 @@ function prepared(state: string, row?: Ahead): Face {
   // Its bytes are its count, which never gives way; with what it waits on after them, all of it is words, as it reads.
   if (counted && !row.waiting) return { phase, machine: row.machine, state: `${state}. Getting ready: ${row.stage},`, count: moving(row.done, row.total) }
   const ready = `Getting ready: ${row.stage}${counted ? `, ${moving(row.done, row.total)}` : ""}`
-  return { phase, machine: row.machine, state: [state, ready, row.waiting ? sentence(row.waiting) : ""].filter(Boolean).join(". ") }
+  return { phase, machine: row.machine, state: [state, ready, waitWords(row.waiting)].filter(Boolean).join(". ") }
 }
 
 /** A render on its way, two plain lines (Paul, 11-12): its machine and time, then what it's doing with how far and how fast; Cancel
