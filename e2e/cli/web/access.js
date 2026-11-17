@@ -305,6 +305,8 @@ async function devMode(context, base, project, token) {
   const vite = spawn(join(WEB, 'node_modules/.bin/vite'), ['--host', '127.0.0.1', '--port', '5173', '--strictPort'], { cwd: WEB, detached: true, stdio: 'ignore' });
   const tokens = join(WEB, 'src/ui/tokens.css');
   const css = readFileSync(tokens, 'utf8');
+  const code = join(WEB, 'src/app/view.ts');
+  const source = readFileSync(code, 'utf8');
   try {
     await until('Vite answers', () => fetch('http://127.0.0.1:5173/@vite/client').then((r) => r.status, () => 0), (status) => status === 200, 2 * STEP_MS);
     const api = await fetch('http://127.0.0.1:5173/v1/status').then(async (r) => ({ status: r.status, body: await r.text() }));
@@ -326,6 +328,8 @@ async function devMode(context, base, project, token) {
     const fetched = [];
     page.on('console', (message) => said.push(message.text()));
     page.on('request', (request) => { if (/^(https?|wss?):/.test(request.url())) fetched.push(new URL(request.url()).origin); });
+    const navigated = [];
+    page.on('framenavigated', (frame) => { if (frame === page.mainFrame()) navigated.push(frame.url()); });
     await page.goto(`${base}/p/${project.code}`);
     await page.waitForSelector('.top');
     await until('the hot reload connects', async () => said.some((line) => line.includes('[vite] connected')), Boolean);
@@ -333,6 +337,12 @@ async function devMode(context, base, project, token) {
     writeFileSync(tokens, `${css}\n/* access.js: a hot update */\n`);
     await until('a hot update arrives', async () => said.some((line) => line.includes('hot updated') && line.includes('tokens.css')), Boolean);
     check('dev_hot_reload_through_calcifer', true);
+    // A change to the page's code reaches it too, through Calcifer alone, with no reload by hand (Paul, 11-17: "it should auto-refresh as
+    // well when the frontend changes"): Vite updates the module in place, or loads the page again itself.
+    writeFileSync(code, `${source}\n// access.js: a change to the page's code\n`);
+    const loads = navigated.length;
+    await until('the page takes the changed code', async () => navigated.length > loads || said.some((line) => /hot updated|page reload/.test(line) && line.includes('view.ts')), Boolean);
+    check('dev_code_change_through_calcifer', true);
     check('dev_page_still_works', (await page.evaluate(async (id) => (await fetch(`/v1/projects/${id}?assets=false`)).status, project.id)) === 200);
     await page.close();
 
@@ -365,6 +375,7 @@ async function devMode(context, base, project, token) {
     check('dev_mode', false, String(error));
   } finally {
     writeFileSync(tokens, css);
+    writeFileSync(code, source);
     if (original === null) rmSync(CONFIG, { force: true });
     else writeFileSync(CONFIG, original);
     try { process.kill(-vite.pid, 'SIGKILL'); } catch { /* gone */ }
