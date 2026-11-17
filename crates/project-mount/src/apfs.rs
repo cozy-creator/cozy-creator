@@ -222,8 +222,9 @@ fn current_device(provider: &Provider, image: &Path) -> Result<Option<String>> {
     Ok(None)
 }
 
-/// Where the image at `image` has its volumes mounted now, as the image registry says (it follows a mount point that moved).
-fn mount_points(provider: &Provider, image: &Path) -> Result<Vec<PathBuf>> {
+/// Where the image attached as `device` has its volumes mounted now, as the image registry says (it follows a mount point that
+/// moved). Picked by the device this lease attached, never by path: another image unlocked at the same folder since is not this one.
+fn mount_points(provider: &Provider, device: &str) -> Result<Vec<PathBuf>> {
     let mut command = provider.command("info");
     command.arg("-plist");
     let info = decode(run(provider, command, "read attached native images", None, CONTROL_ACK)?)?;
@@ -232,13 +233,9 @@ fn mount_points(provider: &Provider, image: &Path) -> Result<Vec<PathBuf>> {
         .and_then(|dictionary| dictionary.get("images"))
         .and_then(Value::as_array)
         .ok_or(Error::Invalid("the native image registry is unavailable"))?;
-    let ours = images.iter().filter_map(Value::as_dictionary).find(|candidate| {
-        candidate.get("image-path").and_then(Value::as_string).is_some_and(|path| {
-            fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)) == image
-        })
-    });
+    let ours = images.iter().find(|candidate| base_device(candidate).as_deref() == Some(device));
     Ok(ours
-        .and_then(|candidate| candidate.get("system-entities")?.as_array())
+        .and_then(|candidate| candidate.as_dictionary()?.get("system-entities")?.as_array())
         .into_iter()
         .flatten()
         .filter_map(|entity| entity.as_dictionary()?.get("mount-point")?.as_string())
@@ -326,7 +323,7 @@ impl Lease {
         {
             // A volume whose mount point moved with its folder (cl-1124: dragged to the Trash) refuses a detach, which unmounts it by
             // Disk Arbitration: the kernel unmounts it where it is now, then the image detaches.
-            for point in mount_points(&self.provider, &self.image)? {
+            for point in mount_points(&self.provider, &current)? {
                 let _ = unix_unmount(&point, true, CONTROL_ACK);
             }
             let mut forced = self.provider.command("detach");
