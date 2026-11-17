@@ -13,7 +13,7 @@ test.use({ projectOptions: { encrypted } });
 
 const holder = () => JSON.parse(readFileSync(join(homedir(), '.cozy', 'calcifer', 'calcifer.lock.holder'), 'utf8'));
 
-test('swap', { tag: '@solo' }, async ({ page, project, api, cli, signIn }) => {
+test('swap', { tag: '@solo' }, async ({ page, project, api, cli, signIn, guards }) => {
   // Every refused /v1 answer the page met, with its body: what a guard's console line can't say.
   const refused = [];
   page.on('response', async (response) => {
@@ -44,7 +44,12 @@ test('swap', { tag: '@solo' }, async ({ page, project, api, cli, signIn }) => {
   console.log(`swap: refused answers the page met: ${refused.length ? refused.join(' | ') : 'none'}`);
   if (!encrypted) return;
   expect(await api.get(project.at('/vault')), 'the project stayed unlocked').toMatchObject({ encrypted: true, state: 'unlocked' });
-  // The view the next generation took locks as any does: its mount ends, and the project's folder can go.
+  // The view the next generation took locks as any does: its mount ends, and the project's folder can go. Locked while the page shows it,
+  // its reads then are refused (as in restart.spec), and only then: the swap above allowed nothing.
+  let locking = false;
+  const refusedOnLock = new RegExp(`status of (409|423)\\b.*(/v1/projects/(${project.id}|${project.code})\\b|[?&]project=${project.id}\\b)`);
+  guards.allow({ test: (line) => locking && refusedOnLock.test(line) });
+  locking = true;
   await api.post(project.at('/vault'), { action: 'lock' });
   await expect.poll(async () => (await api.get(project.at('/vault'))).state, { message: 'the carried view locked', timeout: 30_000 }).toBe('locked');
 });
