@@ -198,6 +198,9 @@ impl std::fmt::Debug for Providers {
 /// Where a preparation's stage and bytes are reported as they change.
 pub(crate) type Observer = Box<dyn Fn(&str, u64, u64) + Send + Sync>;
 
+/// How long a resolve's read of a checkpoint's structure goes before its run says what it waits behind (cl-1185).
+const SAY_AHEAD: std::time::Duration = std::time::Duration::from_secs(3);
+
 #[derive(Default)]
 pub(crate) struct Job {
     /// The stage its byte counts are reported under.
@@ -728,7 +731,7 @@ impl Publisher {
         // A header by hash is recorded under a tree naming it alone.
         let tree = match &named.tree {
             Some(tree) => {
-                let landed = self.machine.objects(&remote, std::slice::from_ref(tree), order, &stop).map_err(failed)?;
+                let landed = self.machine.objects(&remote, std::slice::from_ref(tree), origin::priority::metadata(order), &stop).map_err(failed)?;
                 (structure.landed.origin, structure.landed.volume) = (structure.landed.origin + landed.origin, structure.landed.volume + landed.volume);
                 structure.landed.local += landed.local;
                 tree.clone()
@@ -776,8 +779,26 @@ impl Publisher {
     /// A Hub checkpoint's header, landed at once: which of its chunks come, and when, its calls
     /// direct (`access`). A held header asks the Hub nothing.
     fn structure(&self, source: &hub::Source, named: &Named, job: &Job) -> Result<(), Failure> {
-        job.stage(format!("resolving {}", named.shown()));
-        self.pull(source, named, Some(&[]), job.order, job.stop.as_ref(), None, &|_, _| ()).map(drop)
+        let said = format!("resolving {}", named.shown());
+        job.stage(said.clone());
+        // One that waits says what it waits behind, another run's download or install, not a bare "Finding the model" (cl-1185:
+        // PRO6-37 said that for 31 s). It goes ahead of every run's weights (`priority::metadata`), so this is rare.
+        let (done, waited) = std::sync::mpsc::channel::<()>();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                if waited.recv_timeout(SAY_AHEAD) != Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+                    return;
+                }
+                if let Some(ahead) = crate::activity::ahead_of(&job.caller) {
+                    job.waiting(Some(format!("waiting for {ahead}, then {said}")));
+                    let _ = waited.recv();
+                    job.waiting(None);
+                }
+            });
+            let pulled = self.pull(source, named, Some(&[]), job.order, job.stop.as_ref(), None, &|_, _| ()).map(drop);
+            drop(done);
+            pulled
+        })
     }
 
     /// The checkpoint `named` is: one by hash as given, a name as the Hub resolves its release and

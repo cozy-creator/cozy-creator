@@ -758,10 +758,10 @@ impl Runs {
         let mut record = self.record(actor, id)?;
         let quiet = |record: &Execution| !record.state.terminal() && record.revision <= after && !engine.texts_untold(&record.id, heard);
         if quiet(&record) {
-            let epoch = engine.activity_epoch();
+            let epoch = engine.observed_epoch();
             record = self.record(actor, id)?;
             if quiet(&record) {
-                engine.wait_activity(epoch, Some(Duration::from_secs(30)));
+                engine.wait_observed(epoch, Some(Duration::from_secs(30)));
                 record = self.record(actor, id)?;
             }
         }
