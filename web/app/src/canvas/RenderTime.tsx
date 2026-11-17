@@ -1,12 +1,9 @@
 import { useEffect, useRef } from "react"
 import { Icon } from "../ui/Icon"
-import { pressBeganOutside } from "../ui/press"
 import { useSignal } from "../ui/signal"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore } from "./context"
-
-/** "an RTX 4090", "a B200": by how the card's first letter is said. */
-const article = (card: string) => (/^[aefhilmnorsx]/i.test(card) ? "an" : "a")
+import { RenderOnNew, useClosesInPlace } from "./RenderOnNew"
 
 /** A render this long or longer shows how long it takes; a shorter one needs no estimate (Paul, 11-15). */
 const SHOWN_MS = 15_000
@@ -70,56 +67,22 @@ export function RenderTime({ name, view }: { name: string; view: ElementView }) 
   )
 }
 
-/** Slow here, opened under the box's fields: how long it takes where it would go against a rented GPU, then Rent it, which opens Machines
- *  with that GPU chosen (cl-1004). Closes on its ✕, Escape, or a click whose press began outside it. */
+/** Slow here, opened under the box's fields: how long it takes where it would go against a rented GPU, then Render on a new one of that GPU,
+ *  its price asked for this render and agreed in place (cl-1004, cl-1066). Closes on its ✕, Escape, or a click whose press began outside it. */
 export function SlowNotice({ name, view }: { name: string; view: ElementView }) {
   const store = useCanvasStore()
   const estimates = useSignal(store.estimates)
   const faster = estimates.get(store.resolveName(name))?.faster
   const own = useRef<HTMLDivElement>(null)
   const open = Boolean(view.slowOpen && faster)
-  useEffect(() => {
-    if (!open) return
-    const close = () => store.patch(store.resolveName(name), { slowOpen: undefined })
-    const inside = (element: Element) => Boolean(own.current?.contains(element) || element.closest(".slow-here")?.getAttribute("data-box") === name)
-    const click = (event: MouseEvent) => {
-      if (event.button === 0 && event.target instanceof Element && !inside(event.target) && pressBeganOutside(inside)) close()
-    }
-    const key = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.defaultPrevented) return
-      event.preventDefault()
-      event.stopPropagation()
-      close()
-    }
-    document.addEventListener("click", click, true)
-    window.addEventListener("keydown", key, true)
-    return () => {
-      document.removeEventListener("click", click, true)
-      window.removeEventListener("keydown", key, true)
-    }
-  }, [store, name, open])
-  if (!open || !faster) return null
-  const card = faster.rent.card
   const close = () => store.patch(store.resolveName(name), { slowOpen: undefined })
+  useClosesInPlace(open, (element) => Boolean(own.current?.contains(element) || element.closest(".slow-here")?.getAttribute("data-box") === name), close)
+  if (!open || !faster) return null
   return (
     <div ref={own} className="status slow-notice canvas-control" role="group" aria-label="Slow here">
       <p>{faster.line}</p>
       <p>{faster.rent.line}</p>
-      <div className="row">
-        <button
-          type="button"
-          className="tb primary canvas-control"
-          onClick={() => {
-            close()
-            store.rent(faster.rent)
-          }}
-        >
-          Rent {article(card)} {card}
-        </button>
-        <button type="button" className="tb canvas-control slow-close" aria-label="Close" title="Close" onClick={close}>
-          <Icon name="close" />
-        </button>
-      </div>
+      <RenderOnNew name={name} sku={faster.rent.sku} onClose={close} />
     </div>
   )
 }
