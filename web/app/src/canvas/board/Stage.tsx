@@ -60,6 +60,8 @@ export interface StageProps {
 const SLOW_FRAME_MS = 40
 /** A wheel event this soon after the last is the same gesture: a trackpad's stream, its glide after the hand has gone. */
 const WHEEL_GAP_MS = 200
+/** And this many frames: a stalled page draws none, so its stall is no pause. */
+const WHEEL_GAP_FRAMES = 3
 
 /** The canvas: one renderer, frames drawn on demand, the scene, the camera, input, and DOM only where text is typed. */
 export function Stage(props: StageProps) {
@@ -124,11 +126,32 @@ export function Stage(props: StageProps) {
     const media = new Media({ client, project: store.projectId ?? "", changed: () => invalidate() })
     const visible = () => latest.current.active && tabShown.get() && !lost
     const invalidate = () => { dirty = true; if (!stopped && renderer && visible()) start() }
+    // A trackpad's wheel goes on after the hand has gone (cl-955): a stream that began while the canvas was held (Focus, its way back from
+    // Focus) is one gesture, all of it held, until it pauses. It's followed on the whole page, as it begins over Focus, which isn't the
+    // canvas's. A pause is WHEEL_GAP_MS and WHEEL_GAP_FRAMES frames with no wheel, counted from its last event or from when the canvas is
+    // given back, whichever is later: a page that stalls as Focus closes (400-600 ms on a runner) draws few frames, and the glide's events
+    // held up behind it are the same gesture, not a new one on a canvas no longer held (focus cell, e2e 43977862491, 43983471717,
+    // 43986572620, 43989518296: the canvas scrolled 63-72 px, or zoomed).
+    let wheelLast = -Infinity, wheelFrames = WHEEL_GAP_FRAMES, wheelHeld = false, counting = 0, wasDisabled = latest.current.disabled
+    const countFrames = () => { wheelFrames++; counting = wheelFrames < WHEEL_GAP_FRAMES ? requestAnimationFrame(countFrames) : 0 }
+    const followWheel = () => {
+      const now = performance.now()
+      if (now - wheelLast > WHEEL_GAP_MS && wheelFrames >= WHEEL_GAP_FRAMES) wheelHeld = latest.current.disabled
+      wheelLast = now
+      wheelFrames = 0
+      counting ||= requestAnimationFrame(countFrames)
+    }
     const enable = () => {
       const on = visible()
       media.setVisible(on)
       board.camera.setInteractionEnabled(on && !latest.current.disabled)
       if (!on) interaction?.cancel()
+      if (wasDisabled && !latest.current.disabled && wheelHeld && performance.now() - wheelLast < 1000) {
+        wheelLast = performance.now()
+        wheelFrames = 0
+        counting ||= requestAnimationFrame(countFrames)
+      }
+      wasDisabled = latest.current.disabled
     }
     live.current = { invalidate, enable }
     /** The renderer chosen and why, or why none started: what inspection reports. */
@@ -253,17 +276,11 @@ export function Stage(props: StageProps) {
       scene = new Scene({ world: layer, overlay, board, store, client, media, software: taken.backend === "canvas", invalidate, contextOf })
       board.camera.wake = invalidate
       stops.push(board.camera.bind(element, viewport), () => { board.camera.wake = () => {} })
-      // A trackpad's wheel goes on after the hand has gone (cl-955): a stream that began while the canvas was held (Focus, its way back from
-      // Focus) is one gesture, all of it held, until it pauses. Not left to the glide back outlasting it: a glide runs in real time.
-      let wheelLast = -Infinity, wheelHeld = false
-      const wheel = (event: WheelEvent) => {
-        const now = performance.now()
-        if (now - wheelLast > WHEEL_GAP_MS) wheelHeld = latest.current.disabled
-        wheelLast = now
-        if (wheelHeld) { event.stopImmediatePropagation(); event.preventDefault() }
-      }
+      // The held stream's events stop here; the page's own (Focus's zoom) go on.
+      const wheel = (event: WheelEvent) => { if (wheelHeld) { event.stopImmediatePropagation(); event.preventDefault() } }
+      addEventListener("wheel", followWheel, { capture: true, passive: true })
       element.addEventListener("wheel", wheel, { capture: true, passive: false })
-      stops.push(() => element.removeEventListener("wheel", wheel, { capture: true }))
+      stops.push(() => { removeEventListener("wheel", followWheel, { capture: true }); element.removeEventListener("wheel", wheel, { capture: true }); cancelAnimationFrame(counting) })
       interaction = createInteraction({
         root: element, stage, viewport, camera: board.camera, board, store, hitOf,
         scene: {
