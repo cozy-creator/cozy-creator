@@ -50,6 +50,17 @@ def place(source: Path, at: Path) -> None:
     os.replace(staged, at)
 
 
+def mounted(view: str) -> bool:
+    """Whether an encrypted view is still mounted, as this OS's mount table says (Windows: its drive letter)."""
+    if sys.platform == "win32":
+        return Path(view).exists()
+    if sys.platform == "darwin":
+        table = subprocess.run(["mount"], capture_output=True, text=True).stdout
+        return any(f" on {view} (" in line or f" on /private{view} (" in line for line in table.splitlines())
+    escaped = view.replace("\\", "\\134").replace(" ", "\\040")
+    return any(line.split()[4] == escaped for line in Path("/proc/self/mountinfo").read_text().splitlines())
+
+
 def installed() -> Path:
     record = HOME / "installed"
     if record.is_file() and Path(record.read_text().strip()).is_file():
@@ -203,6 +214,39 @@ def main() -> None:
             assert unlocked.returncode == 0, f"unlock: {unlocked.stdout}{unlocked.stderr}"
         assert vault() == "unlocked", f"the encrypted project isn't unlocked: {vault()}"
 
+        def removed_from_outside(name: str, swap_first: bool) -> dict[str, object]:
+            """An unlocked encrypted project's folder removed by another program, as a person's file manager would: whether it goes,
+            and whether its view is still mounted after. A swap carries it first when asked."""
+            folder = out / name
+            shutil.rmtree(folder, ignore_errors=True)
+            made = cozy("--json", "new", str(folder), "--passphrase-file", str(out / "passphrase"), "--recovery-out", str(out / f"{name}.recovery"))
+            assert made.returncode == 0, f"cozy new {name}: {made.stdout}{made.stderr}"
+            status = json.loads(cozy("--json", "vault", "status", cwd=folder).stdout)["vault"]
+            assert status.get("state") == "unlocked" and status.get("view"), f"{name} isn't unlocked with a view: {status}"
+            view = str(status["view"])
+            if swap_first:
+                swapped = cozy("--json", "restart")
+                assert swapped.returncode == 0, f"cozy restart before removing {name}: {swapped.stdout}{swapped.stderr}"
+            began = time.monotonic()
+            while time.monotonic() - began < 20:
+                shutil.rmtree(folder, ignore_errors=True)
+                if not folder.exists():
+                    break
+                time.sleep(0.5)
+            gone = not folder.exists()
+            seen: dict[str, object] = {"removed": gone, "s": round(time.monotonic() - began, 1), "mounted": mounted(view)}
+            if not gone:
+                said = cozy("--json", "vault", "status", cwd=folder)
+                seen["state"] = json.loads(said.stdout)["vault"].get("state") if said.returncode == 0 else "unreadable"
+                # Put away, as the person would next: locked, then removed.
+                cozy("--json", "vault", "lock", cwd=folder)
+                shutil.rmtree(folder, ignore_errors=True)
+            return seen
+
+        # 0. Removed from outside before any swap, the way it behaves today.
+        outside_before = removed_from_outside("outside-before", swap_first=False)
+        results["outside"] = {"before": outside_before}
+
         # 1. A swap onto the installed cozy, busy.
         before = holder()
         fresh = Asking(before["address"], before["token"], keep_alive=False).start()
@@ -249,6 +293,13 @@ def main() -> None:
         locked = cozy("--json", "vault", "lock", cwd=project)
         results["lock_after"] = {"code": locked.returncode, "said": (locked.stdout + locked.stderr)[-1500:], "state": vault()}
         assert locked.returncode == 0 and vault() == "locked", f"the carried view didn't lock: {results['lock_after']}"
+
+        # 3. Removed from outside after a swap carried it: as before one.
+        outside_after = removed_from_outside("outside-after", swap_first=True)
+        results["outside"] = {"before": outside_before, "after": outside_after}
+        compared = ("removed", "mounted", "state")
+        assert [outside_before.get(k) for k in compared] == [outside_after.get(k) for k in compared], (
+            f"an unlocked encrypted project removed from outside behaves otherwise after a swap: {results['outside']}")
 
         # 2. An installed cozy that can't start: the running one serves on, its binary put back.
         target = installed()

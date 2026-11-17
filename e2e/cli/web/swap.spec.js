@@ -11,6 +11,7 @@ const { test, expect } = require('./fixtures');
 const encrypted = process.platform !== 'win32';
 test.use({ projectOptions: { encrypted } });
 
+const SWAPS = 3;
 const holder = () => JSON.parse(readFileSync(join(homedir(), '.cozy', 'calcifer', 'calcifer.lock.holder'), 'utf8'));
 
 test('swap', { tag: '@solo' }, async ({ page, project, api, cli, signIn, guards }) => {
@@ -23,6 +24,15 @@ test('swap', { tag: '@solo' }, async ({ page, project, api, cli, signIn, guards 
   });
   await signIn(page, project.url());
   await expect(page.locator('header.top'), 'the project page shows').toBeVisible({ timeout: 30_000 });
+  // The control: the page's first reads, the burst a swap's reconnect makes, three times against one generation.
+  for (let reload = 1; reload <= SWAPS; reload++) {
+    await page.waitForTimeout(3_000);
+    expect(refused, `reload ${reload - 1}, no swap: no answer the page met was refused`).toEqual([]);
+    await page.reload();
+    await expect(page.locator('header.top'), `reload ${reload}: the project page shows`).toBeVisible({ timeout: 30_000 });
+  }
+  await page.waitForTimeout(3_000);
+  expect(refused, 'before any swap: no answer the page met was refused').toEqual([]);
   // What the page says from here on, and whether it is still this document after: a reload loses `__swap`.
   await page.evaluate(() => {
     window.__swap = { offline: 0 };
@@ -31,17 +41,20 @@ test('swap', { tag: '@solo' }, async ({ page, project, api, cli, signIn, guards 
     };
     new MutationObserver(look).observe(document.body, { subtree: true, childList: true, characterData: true });
   });
-  const was = holder();
-  const restarted = await cli.json('restart');
-  expect(restarted.restarted, 'cozy restart restarted Calcifer').toBe(true);
-  const now = holder();
-  expect(now.pid, 'another generation answers').not.toBe(was.pid);
-  expect([now.address, now.token], 'at the same address, with the same bearer').toEqual([was.address, was.token]);
-  // Past the page's 2 s quiet: a stream not back by then would say so.
-  await page.waitForTimeout(3_000);
-  expect(await page.evaluate(() => window.__swap?.offline), 'the same page, never offline').toBe(0);
-  await expect(page.locator('header.top .pill').filter({ hasText: /offline|Trying again/ }), 'nothing left waiting').toHaveCount(0);
-  console.log(`swap: refused answers the page met: ${refused.length ? refused.join(' | ') : 'none'}`);
+  // Three in a row, each a fresh chance at the page's first reads meeting the next generation.
+  for (let swap = 1; swap <= SWAPS; swap++) {
+    const was = holder();
+    const restarted = await cli.json('restart');
+    expect(restarted.restarted, `swap ${swap}: cozy restart restarted Calcifer`).toBe(true);
+    const now = holder();
+    expect(now.pid, `swap ${swap}: another generation answers`).not.toBe(was.pid);
+    expect([now.address, now.token], `swap ${swap}: at the same address, with the same bearer`).toEqual([was.address, was.token]);
+    // Past the page's 2 s quiet: a stream not back by then would say so.
+    await page.waitForTimeout(3_000);
+    expect(await page.evaluate(() => window.__swap?.offline), `swap ${swap}: the same page, never offline`).toBe(0);
+    await expect(page.locator('header.top .pill').filter({ hasText: /offline|Trying again/ }), `swap ${swap}: nothing left waiting`).toHaveCount(0);
+    expect(refused, `swap ${swap}: no answer the page met was refused`).toEqual([]);
+  }
   if (!encrypted) return;
   expect(await api.get(project.at('/vault')), 'the project stayed unlocked').toMatchObject({ encrypted: true, state: 'unlocked' });
   // The view the next generation took locks as any does: its mount ends, and the project's folder can go. Locked while the page shows it,
