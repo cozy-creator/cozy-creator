@@ -252,8 +252,9 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .route("/v1/runs/{id}/outputs/{name}", get(crate::outputs::serve))
         .route("/v1/runs/{id}/preview", get(crate::previews::serve))
         .route("/v1/runs/{id}/play", get(crate::play::play))
-        .route("/v1/responses", post(crate::responses::create).layer(DefaultBodyLimit::max(crate::responses::MAX_BODY)))
-        .route("/v1/models", get(crate::responses::models))
+        // OpenAI's API, under its own base (`/v1/openai`): its paths (`models`, `files`) are Cozy's own under `/v1` (xs-209).
+        .route("/v1/openai/responses", post(crate::responses::create).layer(DefaultBodyLimit::max(crate::responses::MAX_BODY)))
+        .route("/v1/openai/models", get(crate::responses::models))
         .route("/v1/down", post(down))
         .route("/v1/status", get(status))
         .route("/v1/cut", get(cut))

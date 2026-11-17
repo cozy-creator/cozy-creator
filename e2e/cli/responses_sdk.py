@@ -1,5 +1,5 @@
-"""xs-209: OpenAI's own Python SDK against Calcifer's Responses API (GET /v1/models, POST /v1/responses), with the CLI's bearer as its
-API key.
+"""xs-209: OpenAI's own Python SDK against Calcifer's OpenAI base (`/v1/openai`: GET models, POST responses), with the CLI's bearer as
+its API key.
 
 Streamed, the answer comes as Responses events in their order, its words as deltas well before it completes, which add up to
 its text; not streamed, a question about a picture sent as a data: URL answers as the Response whole. Prints one FAIL line a

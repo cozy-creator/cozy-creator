@@ -70,7 +70,7 @@ pub(crate) async fn list(State(api): State<Arc<Api>>, query: Result<Query<Asked>
     vault::project_reply(&api, project.as_deref(), list_tools(&api, asked)).await
 }
 
-/// Every tool `GET /v1/tools` lists with nothing asked: those `GET /v1/models` names (xs-209).
+/// Every tool `GET /v1/tools` lists with nothing asked: those `GET /v1/openai/models` names (xs-209).
 pub(crate) async fn listed(api: &Arc<Api>) -> Result<Vec<Tool>, Refusal> {
     Ok(list_tools(api, Asked::default()).await?.0.tools)
 }

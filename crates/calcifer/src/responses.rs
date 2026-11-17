@@ -1,4 +1,5 @@
-//! `POST /v1/responses` (xs-209): OpenAI's Responses API over Calcifer's runs, for any program that speaks it (the official SDKs).
+//! `POST /v1/openai/responses` (xs-209): OpenAI's Responses API over Calcifer's runs, for any program that speaks it (the official SDKs,
+//! their base URL `http://<Calcifer>/v1/openai`: OpenAI's own paths, `models` and `files`, are Cozy's under `/v1`).
 //! A request is one ordinary run of the function `model` names, in the project `metadata.project` names: recorded, placed and followed
 //! as any run is, so `cozy run list` shows it. Its words come as its machine makes them (`Event::OutputTextDelta`); `stream: true` says
 //! each as a server-sent event as it comes, else the Response is answered once the run ends. A client that leaves a streamed response
@@ -31,8 +32,8 @@ use tokio::sync::{broadcast, watch};
 
 use crate::api::{Api, Refusal};
 
-/// `GET /v1/models` (xs-209): the tools that write words, as OpenAI's model list says them, each by the name `cozy run` and
-/// `POST /v1/responses` take it (`qwen3/write`), so a program that lists models first finds them.
+/// `GET /v1/openai/models` (xs-209): the tools that write words, as OpenAI's model list says them, each by the name `cozy run` and
+/// `POST /v1/openai/responses` take it (`qwen3/write`), so a program that lists models first finds them.
 pub(crate) async fn models(State(api): State<Arc<Api>>) -> Result<Response, Refusal> {
     let tools = crate::toolbox::listed(&api).await?;
     let data: Vec<Value> = (tools.iter().filter(|tool| tool.makes == "text"))
@@ -131,7 +132,7 @@ fn invalid(code: &str, message: impl Into<String>) -> Refusal {
     Refusal(Error::new(Kind::Validation, code, message))
 }
 
-/// `POST /v1/responses`.
+/// `POST /v1/openai/responses`.
 pub(crate) async fn create(State(api): State<Arc<Api>>, body: Result<Bytes, BytesRejection>) -> Result<Response, Refusal> {
     let body = body?;
     let asked: Asked = serde_json::from_slice(&body).map_err(|e| invalid("invalid_request", format!("Cozy couldn't read this Responses request: {e}")))?;

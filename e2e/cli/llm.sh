@@ -73,7 +73,7 @@ step "OpenAI's SDK streams an answer from Calcifer's Responses API (xs-209)"
 local holder=$HOME/.cozy/calcifer/calcifer.lock.holder package=qwen3.5 said
 [ -z "$PACKAGES" ] || [ ! -d "$PACKAGES/qwen3" ] || package=qwen3
 # Its project by its folder, as a run names one.
-if ! uv run -q --no-project --with 'openai>=1.80' python3 "$here/responses_sdk.py" --base "http://$(jq -r .address < "$holder")/v1" \
+if ! uv run -q --no-project --with 'openai>=1.80' python3 "$here/responses_sdk.py" --base "http://$(jq -r .address < "$holder")/v1/openai" \
   --key "$(jq -r .token < "$holder")" --project "$RUN_PROJECT" --model "$package/write:qwen/qwen3.5-0.8b@0.1.0" > "$OUT/responses.txt" 2>&1; then
   said=$(grep '^FAIL ' "$OUT/responses.txt" | sed 's/^FAIL //' | paste -sd ';' - || true)
   check "responses: ${said:-$(tail -c 600 "$OUT/responses.txt")}"
