@@ -597,6 +597,51 @@ struct Leader {
     lookahead: Option<device_executor::Lookahead>,
 }
 
+/// Each live executor's loaded constructions, the models (headers) each reads, and those its calls run on now: what its holds
+/// in the store are for (tfs-303). One that takes `release` lets an idle one go while it runs another.
+#[derive(Default)]
+struct ExecutorModels {
+    /// What tells it constructions go (`Command::Release`); None: it keeps all it loaded (an older Runtime, a group).
+    line: Option<device_executor::Line>,
+    constructions: BTreeMap<String, Vec<String>>,
+    /// Each construction a call of its runs on, and how many.
+    live: BTreeMap<String, usize>,
+}
+
+/// Executor `pid`'s entry in `Pool::models`, gone when its process has exited.
+struct ModelsEntry(Weak<Mutex<BTreeMap<u32, ExecutorModels>>>, u32);
+impl Drop for ModelsEntry {
+    fn drop(&mut self) {
+        if let Some(models) = self.0.upgrade() {
+            let mut models = models.lock().unwrap();
+            models.remove(&self.1);
+        }
+    }
+}
+
+/// Construction `construction` of executor `pid` runs a call while it lives.
+struct Live(Weak<Mutex<BTreeMap<u32, ExecutorModels>>>, u32, String);
+impl Drop for Live {
+    fn drop(&mut self) {
+        let Some(models) = self.0.upgrade() else { return };
+        let mut models = models.lock().unwrap();
+        let Some(entry) = models.get_mut(&self.1) else { return };
+        if let Some(count) = entry.live.get_mut(&self.2) {
+            *count -= 1;
+            if *count == 0 {
+                entry.live.remove(&self.2);
+            }
+        }
+    }
+}
+
+/// A busy executor's models as the disk sees them (`Pool::busy_models`): the headers its calls run on, and each idle
+/// construction's.
+pub(crate) struct BusyModels {
+    pub live: std::collections::BTreeSet<String>,
+    pub idle: BTreeMap<String, std::collections::BTreeSet<String>>,
+}
+
 /// What this call proved about the executor it returned. A cache handoff is never inferred
 /// from the pool map later: another call in its family may already have borrowed it.
 enum Disposition {
@@ -889,6 +934,8 @@ pub(crate) struct Pool {
     stopped: std::sync::atomic::AtomicBool,
     /// Exact live executor lane leaders by PID, including sessions taken out for a call.
     leaders: Mutex<BTreeMap<u32, Leader>>,
+    /// Every live executor's constructions and what its calls run on (tfs-303), by PID.
+    models: Arc<Mutex<BTreeMap<u32, ExecutorModels>>>,
     /// Every live GPU executor process (leaders and followers), with exact exit ownership.
     tenants: memory::Tenants,
     /// Per generation, the import-only executor sessions fork from. Declared after
@@ -1171,6 +1218,7 @@ impl Pool {
                 deviceless: Mutex::new(Vec::new()),
                 stopped: Default::default(),
                 leaders: Mutex::default(),
+                models: Arc::default(),
                 tenants,
                 zygotes: Mutex::new(BTreeMap::new()),
                 kernel_boots: Mutex::new(BTreeMap::new()),
@@ -1921,6 +1969,61 @@ impl Pool {
         idle.sort_by_key(|(_, used)| *used);
         idle
     }
+    /// Each busy executor that lets an idle construction go (`release`), with the models its calls run on and each idle
+    /// construction's, by their headers' digests (a view's, its base's): what its holds in the store are for (tfs-303).
+    pub(crate) fn busy_models(&self) -> BTreeMap<u32, BusyModels> {
+        let idle: std::collections::BTreeSet<u32> = self.idle_executors().into_iter().flat_map(|(pids, _)| pids).collect();
+        let header = |manifest: &String| match crate::storage::view(manifest) {
+            Some(view) => view.recipe.base.trim_start_matches("sha256:").to_owned(),
+            None => manifest.trim_start_matches("sha256:").to_owned(),
+        };
+        let models = self.models.lock().unwrap();
+        (models.iter())
+            .filter(|(pid, entry)| entry.line.is_some() && !idle.contains(*pid))
+            .map(|(pid, entry)| {
+                let (live, idle): (Vec<_>, Vec<_>) = entry.constructions.iter().partition(|(c, _)| entry.live.contains_key(*c));
+                let live = live.into_iter().flat_map(|(_, manifests)| manifests.iter().map(header)).collect();
+                let idle = idle.into_iter().map(|(c, manifests)| (c.clone(), manifests.iter().map(header).collect())).collect();
+                (*pid, BusyModels { live, idle })
+            })
+            .filter(|(_, busy)| !busy.idle.is_empty())
+            .collect()
+    }
+    /// Tells executor `pid` its idle constructions `which` go, their models' holds with them (tfs-303): its next call on one
+    /// loads it anew. False when it can't be told, or one is running a call now.
+    pub(crate) fn release_constructions(&self, pid: u32, which: &[String]) -> bool {
+        let mut models = self.models.lock().unwrap();
+        let Some(entry) = models.get_mut(&pid) else { return false };
+        if which.iter().any(|c| entry.live.contains_key(c)) {
+            return false;
+        }
+        let Some(line) = &entry.line else { return false };
+        if !line.send(&Command::Release(executor_api::Release { constructions: which.to_vec() })) {
+            return false;
+        }
+        for construction in which {
+            entry.constructions.remove(construction);
+        }
+        true
+    }
+    /// What `session` loaded and its executor let go since (`release`) is no longer loaded: its next call loads it again.
+    fn released(&self, session: &mut Session) {
+        let pid = session.executor.birth.pid;
+        let Some(kept) = self.models.lock().unwrap().get(&pid).filter(|entry| entry.line.is_some()).map(|entry| entry.constructions.clone()) else {
+            return;
+        };
+        session.loaded.retain(|construction, _| kept.contains_key(construction));
+        if let Some(leader) = self.leaders.lock().unwrap().get_mut(&pid) {
+            leader.constructions.retain(|construction| kept.contains_key(construction));
+        }
+    }
+    /// Construction `construction` of executor `pid` runs a call until the guard drops: it isn't let go meanwhile.
+    fn live(&self, pid: u32, construction: &str) -> Live {
+        if let Some(entry) = self.models.lock().unwrap().get_mut(&pid) {
+            *entry.live.entry(construction.to_owned()).or_default() += 1;
+        }
+        Live(Arc::downgrade(&self.models), pid, construction.to_owned())
+    }
     /// Ends the idle executor of process `pid` and waits, as long as `EXIT_WAIT`, for every process of it to exit: what
     /// they hold open goes only then (pod-session 43861913736: H3's group ended, its model still held a moment later, and
     /// the install was refused). Whether one was.
@@ -2070,6 +2173,8 @@ impl Pool {
         let Some(mut session) = self.sessions.lock().unwrap().remove(&session_key(&plan.executor, start)) else {
             return Ok("its executor ended");
         };
+        let _live = self.live(session.executor.birth.pid, &plan.construction);
+        self.released(&mut session);
         if !session.loaded.contains_key(&plan.construction) {
             self.keep_idle(engine, session)?;
             return Ok("its executor no longer holds it");
@@ -2301,6 +2406,10 @@ impl Pool {
     /// Whether the store holds the structure of every model `plan` binds.
     pub(crate) fn holds(&self, plan: &Plan) -> bool {
         plan.selections().iter().all(|selected| crate::storage::held(&self.store, &selected.manifest).is_ok())
+    }
+    /// Every model `plan` binds, open: the store keeps each until these close (tfs-302). An error when one's structure is gone.
+    pub(crate) fn hold(&self, plan: &Plan) -> io::Result<Vec<tensorfs::store::Checkpoint>> {
+        plan.selections().iter().map(|selected| crate::storage::checkpoint(&self.store, &selected.manifest)).collect()
     }
     /// Every object its calls may read is here, on-demand slots' too: `downloaded`.
     pub(crate) fn downloaded(&self, plan: &Plan) -> bool {
@@ -3732,10 +3841,11 @@ impl Pool {
             return Ok(None);
         }
         let fresh = plan.clone();
+        // Its models stay held until its executor holds them, a fresh one's too when this one never started it (tfs-302).
+        let fetch = calls.map(|calls| engine.get(id).map(|record| calls.fetch(&record))).transpose()?;
         let error = {
             let mut session = session;
-            let fetch = calls.map(|calls| engine.get(id).map(|record| calls.fetch(&record))).transpose()?;
-            match self.call(engine, id, &held, plan, &mut session, false, calls, fetch) {
+            match self.call(engine, id, &held, plan, &mut session, false, calls, fetch.clone()) {
                 Ok(post) => {
                     // Serialize against any old in-flight Halt before the executor becomes
                     // available to a new invocation. Late clones are harmless after this.
@@ -3840,6 +3950,10 @@ impl Pool {
         };
         executor.retain_until_exit(directory);
         executor.retain_until_exit(WakeOnExit(Arc::downgrade(engine)));
+        // A single process's Runtime that takes `release` lets an idle construction go while it runs another (tfs-303).
+        let line = (executor.hello.releases > 0 && plan.degree <= 1).then(|| executor.line());
+        self.models.lock().unwrap().insert(executor.birth.pid, ExecutorModels { line, ..Default::default() });
+        executor.retain_until_exit(ModelsEntry(Arc::downgrade(&self.models), executor.birth.pid));
         executor.keep_memo(self.memo.clone());
         if plan.degree > 0 {
             let exact = Exact::open(&executor.birth)?.ok_or_else(|| io::Error::other("executor exited before its start"))?;
@@ -3902,6 +4016,9 @@ impl Pool {
     ) -> io::Result<Option<Postprocess>> {
         let (start, degree) = (session.start, plan.degree);
         let construction = plan.construction.clone();
+        // Live before what it let go is read: a release after this refuses its construction (tfs-303).
+        let _live = self.live(session.executor.birth.pid, &construction);
+        self.released(session);
         let gpus = self.lane(start, degree)?;
         if !session.ledger && degree > 0 {
             self.room_outside_ledger(session.lane(), !session.loaded.contains_key(&construction));
@@ -4061,6 +4178,9 @@ impl Pool {
             };
             command_ok(session.executor.command(&load, &mut callbacks).map_err(before_entry)?)?;
             session.loaded.insert(construction.clone(), Level::Host);
+            if let Some(entry) = self.models.lock().unwrap().get_mut(&session.executor.birth.pid) {
+                entry.constructions.insert(construction.clone(), plan.selections().into_iter().map(|s| s.manifest).collect());
+            }
             if let Some(leader) = self.leaders.lock().unwrap().get_mut(&session.executor.birth.pid) {
                 leader.constructions.insert(construction.clone());
             }

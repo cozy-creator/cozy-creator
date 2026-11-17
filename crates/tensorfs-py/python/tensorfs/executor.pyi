@@ -43,6 +43,7 @@ __all__ = [
     'Preview',
     'Publish',
     'PublishPart',
+    'Release',
     'Request',
     'SavedFile',
     'StageMemoLookup',
@@ -157,6 +158,17 @@ class Preview:
     def __new__(cls, /, **fields: Unpack[_PreviewFields]) -> Self: ...
     def json(self) -> str: ...
     def replace(self, /, **changes: Unpack[_PreviewChanges]) -> Self: ...
+
+_ReleaseFields = TypedDict("_ReleaseFields", {'constructions': Sequence[str]})
+_ReleaseChanges = TypedDict("_ReleaseChanges", {'constructions': Sequence[str]}, total=False)
+
+@final
+class Release:
+    @property
+    def constructions(self) -> list[str]: ...
+    def __new__(cls, /, **fields: Unpack[_ReleaseFields]) -> Self: ...
+    def json(self) -> str: ...
+    def replace(self, /, **changes: Unpack[_ReleaseChanges]) -> Self: ...
 
 _CancelFields = TypedDict("_CancelFields", {'request_id': str})
 _CancelChanges = TypedDict("_CancelChanges", {'request_id': str}, total=False)

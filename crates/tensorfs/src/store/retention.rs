@@ -599,6 +599,13 @@ pub struct RoomLane {
     digests: BTreeSet<String>,
 }
 
+impl RoomLane {
+    /// Whether it keeps object `sha256`: a checkpoint's lane keeps its header.
+    pub fn keeps(&self, sha256: &str) -> bool {
+        self.digests.contains(sha256)
+    }
+}
+
 impl Room {
     /// The bytes dropping every lane `may` takes would free, with what nothing keeps: an object
     /// goes only once no other lane keeps it.
