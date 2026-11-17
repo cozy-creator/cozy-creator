@@ -142,13 +142,8 @@ impl Catalog {
         let now = SystemTime::now();
         let times = fs::FileTimes::new().set_accessed(now).set_modified(now);
         let _ = platform::durable::set_times(&directory.join(".hold"), times);
-        let mut record = self.read(&directory, identity)?;
+        let record = self.read(&directory, identity)?;
         let expected = platform::paths::venv_python(&directory.join("env"));
-        // A project's own generations are kept in it (cl-984): moved with its folder, the record names this one where it was (cl-1066).
-        let generations = directory.parent().unwrap_or(&directory);
-        if record.python != expected && expected.strip_prefix(generations).is_ok_and(|tail| record.python.ends_with(tail)) {
-            record.python = expected.clone();
-        }
         // The venv's interpreter may be a symlink into uv's immutable interpreter store.
         if record.python != expected {
             return Err(invalid(&format!(

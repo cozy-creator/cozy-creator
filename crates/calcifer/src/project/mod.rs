@@ -619,7 +619,7 @@ fn take_over(api: &Arc<Api>, project: &Arc<Project>, was: &FsPath) {
     match api.calcifer.attach_project(&store) {
         Ok(true) => {}
         // A request took it over first, and its walk goes on.
-        Ok(false) => return tracing::warn!("{}: moved; a request took its walk over first", project.root.display()),
+        Ok(false) => return tracing::info!("{}: moved; a request took its walk over first", project.root.display()),
         Err(error) => return warn!("{}: its runs stay where it was: {error}", project.root.display()),
     }
     let (stopped, restarted) = match restart_local(project, &store) {
@@ -630,7 +630,7 @@ fn take_over(api: &Arc<Api>, project: &Arc<Project>, was: &FsPath) {
         }
     };
     drop(store);
-    tracing::warn!("{}: moved from {}; {} of its runs here stopped, {} restarted", project.root.display(), was.display(), stopped.len(), restarted.join(", "));
+    tracing::info!("{}: moved from {}; {} of its runs here stopped, {} restarted", project.root.display(), was.display(), stopped.len(), restarted.join(", "));
     for id in &stopped {
         if let Err(error) = api.calcifer.cancel(id) { warn!(run = %id, "a run of a moved project goes on where it was: {error}"); }
     }
