@@ -83,11 +83,14 @@ fi
 # it answered says `memoized`, and ab.sh never compares one. No `cozy` verb clears any of this (tfs-299): the root shell
 # is the only way in.
 DERIVED=''
+# The pod-side script is checked before anything is rented: a session without it fails here, at no cost.
+[ -f "$POD_DERIVED_SCRIPT" ] || fail "no $POD_DERIVED_SCRIPT (pod-session.yaml's sparse checkout)"
 derived_state() {
-  local try line=''
+  local try line='' code
   for try in 1 2 3 4 5 6; do
-    line=$(pod_derived cozy "$NAME" "$2" 2> "$OUT/derived-$1-$2.err")
+    line=$(pod_derived cozy "$NAME" "$2" 2> "$OUT/derived-$1-$2.err"); code=$?
     [ -z "$line" ] || break
+    [ "$code" != 2 ] || fail "$1: $(head -c 200 "$OUT/derived-$1-$2.err")"
     say "$1: derived state $2, try $try: $(grep -v '^Warning: Permanently added' "$OUT/derived-$1-$2.err" | head -c 200)"; sleep 10
   done
   [ -n "$line" ] || fail "$1: no derived-state $2 from $NAME"

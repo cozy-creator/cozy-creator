@@ -75,6 +75,7 @@ jobs:
         with:
           sparse-checkout: |
             release-gate/sessions
+            release-gate/derived-state.sh
             release-gate/ref
             release-gate/suites/bench/vram.py
             release-gate/suites/bench/fixtures
