@@ -110,6 +110,8 @@ struct Pending<'a> {
     output_bytes: u64,
     parts: Vec<(String, Dtype, Vec<u64>)>,
     nvfp4: bool,
+    /// The encoded parts stay in memory until the put (ggml's blocks): no staging file.
+    in_memory: bool,
     error_fraction: f64,
     required_buffer_bytes: usize,
     fit: Option<fitting::PendingFit>,
@@ -315,6 +317,7 @@ impl Writer {
                         output_bytes: bytes,
                         parts,
                         nvfp4: false,
+                        in_memory: false,
                         error_fraction: 0.25,
                         required_buffer_bytes: fit.required_buffer_bytes,
                         fit: Some(fit),
@@ -328,10 +331,19 @@ impl Writer {
                     "fit references require the explicit SVDQ fitting strategy",
                 );
             }
+            let ggml = (spec.strategy == encode::GGML_REF_STRATEGY)
+                .then(|| encode::ggml_written(&spec.encoding.scheme))
+                .flatten()
+                .filter(|ty| spec.encoding == ty.encoding());
             let (nvfp4, block, error_fraction) = match (
                 spec.encoding.scheme.as_str(),
                 spec.strategy.as_str(),
             ) {
+                // A tripwire for a broken producer: a block's step over the tensor's amax.
+                (_, encode::GGML_REF_STRATEGY) if ggml.is_some() => {
+                    let ty = ggml.expect("matched");
+                    (false, ty.block, if ty.name == "q4_k" { 0.25 } else { 0.125 })
+                }
                 ("int8.convrot", encode::CONVROT_STRATEGY)
                     if spec.encoding == Encoding::int8_convrot(256) =>
                 {
@@ -377,7 +389,9 @@ impl Writer {
                 .map_err(|_| invalid("tensor shape exceeds this platform's address space"))?;
             // Source + F32 input + every encoded part coexist. ConvRot additionally owns
             // one F64 row; the fixed allowance covers block arithmetic/metadata scratch.
-            let row_output = if nvfp4 || w4a8 {
+            let row_output = if let Some(ty) = ggml {
+                checked((cols / ty.block).checked_mul(ty.size))?
+            } else if nvfp4 || w4a8 {
                 checked(
                     cols.checked_div(2)
                         .and_then(|n| n.checked_add(cols / 16))
@@ -434,7 +448,9 @@ impl Writer {
                     0
                 })
             }))?;
-            let parts = if nvfp4 {
+            let parts = if let Some(ty) = ggml {
+                vec![("blocks".into(), Dtype::U8, vec![*rows, *cols / ty.block, ty.size])]
+            } else if nvfp4 {
                 vec![
                     ("weight".into(), Dtype::F4, spec.shape.clone()),
                     ("scale".into(), Dtype::F8_E4M3, vec![*rows, *cols / 16]),
@@ -480,8 +496,12 @@ impl Writer {
                     output_bytes: bytes,
                     parts,
                     nvfp4,
+                    in_memory: ggml.is_some(),
                     error_fraction,
-                    required_buffer_bytes: (scratch + rows_per_chunk * row_memory) as usize,
+                    required_buffer_bytes: (scratch
+                        + rows_per_chunk * row_memory
+                        + if ggml.is_some() { bytes } else { 0 })
+                        as usize,
                     fit: None,
                 });
             }
@@ -569,7 +589,10 @@ impl Writer {
         let mut staged = pending
             .parts
             .iter()
-            .map(|_| self.scratch())
+            .map(|_| match pending.in_memory {
+                true => Ok(Staged::Memory(std::io::Cursor::new(Vec::new()))),
+                false => self.scratch().map(Staged::File),
+            })
             .collect::<Result<Vec<_>>>()?;
         let mut measured = encode::QuantizationStats::default();
         for start in (0..rows).step_by(pending.rows_per_chunk) {
@@ -625,7 +648,7 @@ impl Writer {
                 if !shared || start == 0 {
                     options.control.check()?;
                     staged[index]
-                        .file()
+                        .io()
                         .write_all(&part.bytes)
                         .map_err(|e| super::io_failure("quantization staging", e))?;
                 }
@@ -654,17 +677,16 @@ impl Writer {
         }
         for (file, (_, dtype, shape)) in staged.iter_mut().zip(&pending.parts) {
             if file
-                .file()
-                .metadata()
+                .io()
+                .seek(SeekFrom::End(0))
                 .map_err(|e| super::io_failure("quantization staging", e))?
-                .len()
                 != dtype
                     .byte_len(shape)
                     .ok_or_else(|| invalid("encoded part size overflows"))?
             {
                 return fail(Kind::Integrity, "quantizer emitted a different part length");
             }
-            file.file()
+            file.io()
                 .seek(SeekFrom::Start(0))
                 .map_err(|e| super::io_failure("quantization staging", e))?;
         }
@@ -672,7 +694,7 @@ impl Writer {
         let mut readers: Vec<_> = staged
             .iter_mut()
             .map(|part| CheckedRead {
-                source: part.file(),
+                source: part.io(),
                 control: options.control,
             })
             .collect();
@@ -896,8 +918,24 @@ async fn read_named_part(
     Ok(bytes)
 }
 
+/// A tensor's encoded part between the producer and the put: a scratch file, or memory.
+enum Staged {
+    File(crate::writer::Scratch),
+    Memory(std::io::Cursor<Vec<u8>>),
+}
+trait Stage: Read + Write + Seek {}
+impl<T: Read + Write + Seek> Stage for T {}
+impl Staged {
+    fn io(&mut self) -> &mut dyn Stage {
+        match self {
+            Staged::File(scratch) => scratch.file(),
+            Staged::Memory(bytes) => bytes,
+        }
+    }
+}
+
 struct CheckedRead<'a> {
-    source: &'a mut std::fs::File,
+    source: &'a mut dyn Stage,
     control: &'a ConversionControl,
 }
 impl Read for CheckedRead<'_> {

@@ -28,8 +28,8 @@ mod svdq;
 mod fp8_blockwise;
 mod mxfp4;
 
-// gguf
-pub mod gguf;
+// ggml
+pub mod ggml;
 
 // gptq, awq, ct
 pub(crate) mod awq;
@@ -59,21 +59,21 @@ pub static SCHEMES: &[&Scheme] = &[
     // fp8.blockwise, mxfp4
     &fp8_blockwise::BLOCKWISE,
     &mxfp4::MXFP4,
-    // gguf.*
-    &gguf::Q4_0,
-    &gguf::Q4_1,
-    &gguf::Q5_0,
-    &gguf::Q5_1,
-    &gguf::Q8_0,
-    &gguf::Q2_K,
-    &gguf::Q3_K,
-    &gguf::Q4_K,
-    &gguf::Q5_K,
-    &gguf::Q6_K,
-    &gguf::MXFP4,
-    &gguf::NVFP4,
-    &gguf::Q1_0,
-    &gguf::Q2_0,
+    // ggml.*
+    &ggml::Q4_0,
+    &ggml::Q4_1,
+    &ggml::Q5_0,
+    &ggml::Q5_1,
+    &ggml::Q8_0,
+    &ggml::Q2_K,
+    &ggml::Q3_K,
+    &ggml::Q4_K,
+    &ggml::Q5_K,
+    &ggml::Q6_K,
+    &ggml::MXFP4,
+    &ggml::NVFP4,
+    &ggml::Q1_0,
+    &ggml::Q2_0,
     // gptq.*, awq.*, ct.*
     &gptq::INT2,
     &gptq::INT3,
