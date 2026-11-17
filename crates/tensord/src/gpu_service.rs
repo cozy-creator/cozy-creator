@@ -3769,8 +3769,9 @@ impl Pool {
                     // available to a new invocation. Late clones are harmless after this.
                     if let Some(cancel) = cancellation.lock().unwrap().as_ref() { cancel.disable(); }
                     // A caller can submit again as soon as finish publishes. Its predecessor
-                    // must already be idle, or gone if it cannot be reused.
-                    *disposition = if post.is_none() && degree > 0 && engine.get(id)?.cancel_actor.is_some() {
+                    // must already be idle, or gone if it cannot be reused. A call that stopped when
+                    // asked leaves its executor as a failure does (cl-1154).
+                    *disposition = if post.is_none() && degree > 0 && session.executor.killed() && engine.get(id)?.cancel_actor.is_some() {
                         self.retire_canceled(engine, id, session)
                     } else {
                         engine.returned_managed(id, &session.executor.birth)?;
@@ -4197,6 +4198,9 @@ impl Pool {
         }
         session.executor.codec().prestart();
         let invoking = session.executor.lookahead().invoking(id);
+        // A call alone in its process is asked to stop on a cancel, so its reply keeps what it measured
+        // (cl-1154). A group's ranks are killed: its followers could wait on a collective rank 0 left.
+        let stoppable = session.followers.is_empty().then(|| session.executor.stoppable(id));
         engine.watch_previews(id, session.executor.previews(id));
         engine.notify_activity(); // Queued work may have arrived before this executor became ready.
         let reply = session.executor.command(
@@ -4228,7 +4232,7 @@ impl Pool {
             })),
             &mut callbacks,
         );
-        drop(invoking);
+        drop((invoking, stoppable));
         engine.watch_previews(id, None);
         let reply = reply?;
         // When the reply came (with the executor's handler and device-lease times) and when it
