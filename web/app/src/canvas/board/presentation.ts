@@ -7,6 +7,7 @@ import { faceOf as runFace, short, type Face } from "../RunFace"
 import { orbitOf } from "../Orbit"
 import { type NodeState, viewState } from "../StateDot"
 import { aspectOf, HEAD, hexOf, isPicture, makes, ratioOf, shownOf, toolName, valueIn, valuesOf } from "../shown"
+import { streamedWords } from "../streamed"
 import { clock, lineAt, mentionsIn } from "../text"
 
 export interface RunContext {
@@ -171,6 +172,9 @@ export function present(store: CanvasStore, node: SceneNode, now = Date.now()): 
     else if (words) references.push(...store.mentionedPictures(name, mentionsIn(words)).map((picture) => ({ sha256: picture.sha256, kind: "image", shape: picture.shape })))
   }
   const arriving = shown?.absent && run?.status === "completed" && run.output.some((item) => !item.stays && !item.checkpoint && !item.url)
+  // Its run writing words: they stand in for what it showed, growing as they come, until its version lands with them (xs-209).
+  const writing = asset?.tool && (onItsWay || arriving) ? streamedWords(run) : undefined
+  if (writing) { words = writing; at = undefined }
   let progress: Presentation["progress"]
   if (asset && !view.placing && (onItsWay || arriving) && asset.rendering == null) {
     const waits = asset.standing === "making" || !onItsWay ? null : store.waitsFor(name)

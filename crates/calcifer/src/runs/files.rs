@@ -187,6 +187,18 @@ pub(crate) fn hold(bytes: &[u8]) -> Result<Digest, Error> {
     Ok(Digest::of(bytes))
 }
 
+/// `bytes` as a file the runs of `project` read, held where its uploads are (`project_put`): a Responses request's pictures and videos
+/// sent as `data:` URLs (xs-209).
+pub(crate) fn hold_in(api: &Arc<Api>, project: &str, bytes: &[u8]) -> Result<Digest, Error> {
+    let root = crate::project::private_upload_root(api, project)?
+        .ok_or_else(|| Error::new(Kind::Conflict, "project_storage_required", "The project's storage isn't available right now."))?;
+    let unwritable = |e: tensorfs::store::Error| Error::new(Kind::Internal, "file_unwritable", e.to_string());
+    let store = private_store(&root)?;
+    let object = store.put_bytes(bytes).map_err(unwritable)?;
+    store.used(&object.sha256, [&object]).map_err(unwritable)?;
+    Ok(Digest::of(bytes))
+}
+
 /// `digest`'s upload as `length` bytes: going, or begun from what the store kept of an earlier one.
 fn open(storage: Arc<Store>, digest: Digest, length: u64) -> Result<Arc<Upload>, Refusal> {
     let mut uploads = UPLOADS.lock().expect("uploads lock");

@@ -1,0 +1,1 @@
+An LLM tool's words appear on its box as they are written, at rest and in Focus, for a typed prompt and for a caption of a picture or video; its version lands as before. Calcifer also answers OpenAI's Responses API (`POST /v1/responses`, streamed or not) for other programs, with the CLI's bearer as the API key.

@@ -2152,6 +2152,11 @@ checkpoint?: CheckpointRef | null,
 stays?: boolean, };
 
 /**
+ * A text output's words so far, as its machine streams them (xs-209): `index` 0 for a single output, from 1 a list's item.
+ */
+export type OutputText = { output: string, index: number, text: string, };
+
+/**
  * `GET /v1/packages/{org}/{name}?release=`: a package's releases newest first, or the one named
  * with what its publish warned of (its owner sees the warnings).
  */
@@ -2952,6 +2957,10 @@ waiting?: string | null,
  */
 progress?: Progress | null,
 /**
+ * Live, while it runs: the words each text output has so far (xs-209), from Calcifer's memory alone; its result holds them whole.
+ */
+text?: Array<OutputText>,
+/**
  * With `?detail=full`: verified video segment frame ranges and published completion, when available.
  */
 video_progress?: VideoProgress | null,
@@ -3022,7 +3031,7 @@ seed?: number | null, };
 /**
  * One event of a run's stream.
  */
-export type RunEvent = { "type": "run.created", sequence_number: number, run: Run, } | { "type": "run.queued", sequence_number: number, run: Run, } | { "type": "run.in_progress", sequence_number: number, run: Run, } | { "type": "run.completed", sequence_number: number, run: Run, } | { "type": "run.failed", sequence_number: number, run: Run, } | { "type": "run.canceled", sequence_number: number, run: Run, } | { "type": "output_item.added", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "output_item.delta", sequence_number: number, output_index: number, item_id: string, rev: number, length: number, appended_from?: number | null, checkpoint?: CheckpointRef | null, } | { "type": "output_item.done", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "output_item.landed", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "run.log", sequence_number: number, at_ms: number, level: string, text: string, } | { "type": "run.call", sequence_number: number, call: Call, } | { "type": "run.progress", progress: Progress, } | { "type": "run.waiting", reason: string, } | { "type": "run.arriving", progress: Progress, };
+export type RunEvent = { "type": "run.created", sequence_number: number, run: Run, } | { "type": "run.queued", sequence_number: number, run: Run, } | { "type": "run.in_progress", sequence_number: number, run: Run, } | { "type": "run.completed", sequence_number: number, run: Run, } | { "type": "run.failed", sequence_number: number, run: Run, } | { "type": "run.canceled", sequence_number: number, run: Run, } | { "type": "output_item.added", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "output_item.delta", sequence_number: number, output_index: number, item_id: string, rev: number, length: number, appended_from?: number | null, checkpoint?: CheckpointRef | null, } | { "type": "output_item.done", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "output_item.landed", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "run.log", sequence_number: number, at_ms: number, level: string, text: string, } | { "type": "run.call", sequence_number: number, call: Call, } | { "type": "run.progress", progress: Progress, } | { "type": "run.waiting", reason: string, } | { "type": "run.arriving", progress: Progress, } | { "type": "output_text.delta", output_index: number, item_id: string, delta: string, };
 
 /**
  * A run's id: the caller's id on the machine (`RunRequest.id`), the same in Calcifer, the CLI

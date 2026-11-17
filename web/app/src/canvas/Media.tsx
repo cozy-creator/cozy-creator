@@ -16,6 +16,7 @@ import { tabShown, useSignal } from "../ui/signal"
 import { aspectOf, faceOf, hexOf, makes, makingRun, type Shown, shownOf, valueIn, valuesOf, watched } from "./shown"
 import { chipWords, clock, lineOf, mentionsIn, withMentions } from "./text"
 import { isSelf } from "./versions"
+import { streamedWords } from "./streamed"
 import { OrbitView, orbitOf } from "./Orbit"
 import { BufferedImage } from "./BufferedImage"
 import type { VideoPlayback } from "./timeline/Player"
@@ -606,6 +607,30 @@ function LatentPreview({ view, number }: { view: ElementView; number: number }) 
   )
 }
 
+/** A tool's words, to read and select. While they are written, the end stays in view once it was read to there. */
+function Answer({ words, version, writing }: { words: string; version?: number; writing: boolean }) {
+  const box = useRef<HTMLDivElement>(null)
+  const atEnd = useRef(true)
+  useLayoutEffect(() => {
+    const held = box.current
+    if (held && writing && atEnd.current) held.scrollTop = held.scrollHeight
+  }, [words, writing])
+  return (
+    <div
+      ref={box}
+      className="answer"
+      data-version={version}
+      data-writing={writing ? "" : undefined}
+      onScroll={(event) => {
+        const held = event.currentTarget
+        atEnd.current = held.scrollHeight - held.scrollTop - held.clientHeight < 24
+      }}
+    >
+      {words}
+    </div>
+  )
+}
+
 /** The picture in a box's frame, one take's alone. At rest, as wide as it's drawn, in line with the rest. Open, its small thumbnail at once, the one
  *  its tile and its box at rest already have, scaled up, and its own resolution over it as soon as that's decoded. Another take's picture is
  *  never what stands in. */
@@ -858,6 +883,8 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children, 
   // Made, with its file still on its way here: it says so, as a render on its way does.
   const arriving = useArriving(view)
   const run = onItsWay ? makingRun(view) : arriving
+  // Its run writing words: they show as they come, until its version lands with them (xs-209).
+  const writing = asset?.tool && field === "text" && run !== undefined && view.run?.number === run ? streamedWords(view.run) : undefined
   // What a render showed so far: only the run its frame is on's, never another take's (cl-945).
   const glimpse = view.glimpse && (run === undefined || view.glimpse.number === run) ? view.glimpse : undefined
   const here = shown && !shown.absent ? shown : null
@@ -893,11 +920,11 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children, 
   // An image or video being made at rest says what it's made from, in its frame (cl-940, cl-947), over what it shows; an image too, open on
   // a take of it being made (cl-945).
   const makingMedia = (!view.here || (asset?.kind === "image" && Boolean(watch && watch.number === undefined) && !view.hereWords)) && (asset?.kind === "image" || asset?.kind === "video") && !asset.timeline && onItsWay && asset.rendering == null && makes(view)
-  const madeFrom = blank && busy && makes(view) && !asset?.timeline && !view.hereWords && view.viewed === undefined && !glimpse && !makingMedia
+  const madeFrom = blank && busy && makes(view) && !asset?.timeline && !view.hereWords && view.viewed === undefined && !glimpse && !makingMedia && writing === undefined
   const glyph = blank && !words && !clips && faceOf(view) === "edit" && !making && field ? GLYPHS[field] : undefined
   // On its way, its face says so whole, unless a take is looked at, a glimpse of what it's making shows or its words are being written:
   // then along its bottom.
-  const full = (busy || arriving !== undefined) && view.viewed === undefined && !glimpse && !(view.here && view.hereWords)
+  const full = (busy || arriving !== undefined) && view.viewed === undefined && !glimpse && !(view.here && view.hereWords) && writing === undefined
   return (
     <div className={`media ${glimpsed ? "glimpsed" : ""} ${asset?.kind === "image" ? "image-asset" : ""} ${pendingImage ? "pending-image" : ""} ${asset?.kind === "image" && view.hereWords ? "image-editing" : ""} ${view.here && view.hereWords ? "writing" : ""} ${shown?.alpha ? "alpha" : ""} ${slid ? "slid" : ""} ${blank ? "blank" : ""}`} style={{ aspectRatio: aspectOf(view) }} onAnimationEnd={() => slid && store.patch(name, { slid: undefined })} {...hover}>
       <div className="media-pixels" data-image-reference={asset?.kind === "image" && shown && !view.hereWords ? "" : undefined}>
@@ -916,12 +943,12 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children, 
         {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.here && !focused ? view.scrub : undefined} previewing={previewing} />}
         {nearImage && field === "image" && !own && <BufferedImage sha256={drawnImage?.sha256 ?? null} originalPath={drawnImage?.path} neighborPaths={neighborPaths} neighbors={nearImage.absent || nearImage === drawnImage ? neighbors : [nearImage.sha256, ...neighbors]} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
         {here && field !== "video" && field !== "image" && field !== "text" && <FramePicture key={here.sha256} sha256={here.sha256} open={Boolean(view.here)} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
-        {/* What a tool wrote, whole, to read and select (xs-204). */}
-        {here && field === "text" && asset?.tool && <div className="answer" data-version={here.number}>{here.text ?? ""}</div>}
+        {/* What a tool wrote, whole, to read and select (xs-204), and its words as they come (xs-209): one element, so it reads on. */}
+        {(writing !== undefined || here) && field === "text" && asset?.tool && <Answer words={writing ?? here?.text ?? ""} version={writing === undefined ? here?.number : undefined} writing={writing !== undefined} />}
         {shown?.absent && arriving === undefined && <span className="media-note">{shown.machine ? `Stored on ${shown.machine}` : "Stored on another computer"}</span>}
         {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}
       </div>
-      {blank && words && !madeFrom && !makingMedia && <Said words={words} view={view} name={name} />}
+      {blank && words && !madeFrom && !makingMedia && writing === undefined && <Said words={words} view={view} name={name} />}
       {blank && !words && clips && <span className="media-note">Drag videos and images here</span>}
       {blank && !words && field === "file" && <span className="media-note">A file</span>}
       {glyph && (
@@ -934,7 +961,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children, 
       {madeFrom && <MadeFrom view={view} name={name} run={run} cardWidth={cardWidth} />}
       {makingMedia && <Making view={view} name={name} run={run} cardWidth={cardWidth} />}
       {/* At rest it keeps its size (cl-936): what's being made fades in over it, unless what it shows is approved; an image's covers its references (cl-940). */}
-      {(busy || (!view.here && making && (!asset?.pinned || makingMedia))) && run !== undefined && view.viewed === undefined && !glimpse && <LatentPreview view={view} number={run} />}
+      {(busy || (!view.here && making && (!asset?.pinned || makingMedia))) && run !== undefined && view.viewed === undefined && !glimpse && field !== "text" && <LatentPreview view={view} number={run} />}
       {busy && asset?.rendering != null && <Progress fraction={asset.rendering} says={`Rendering ${Math.round(asset.rendering * 100)}%`} rendering />}
       {/* What it can do is in Focus: at rest a box is its name, its picture, its tool and shape, and how its render goes (cl-932). */}
       {view.here && asset?.kind === "image" && asset.tool && !view.hereWords && !pendingImage && shown && <button type="button" className="image-edit-action canvas-control" aria-label="Edit image" onClick={(event) => { event.stopPropagation(); store.beginImageEdit(name) }}>Edit</button>}

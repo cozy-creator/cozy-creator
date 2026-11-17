@@ -424,6 +424,8 @@ pub enum Kind {
     Log,
     /// A `progress` event carrying a preview (`author.preview`): its `preview`.
     Preview,
+    /// A `progress` event carrying words a text output made (`vlm`, xs-209): its `text`.
+    Text,
     #[default]
     #[serde(other)]
     Unknown,
@@ -458,6 +460,16 @@ pub struct PreviewFrame {
     pub frames: u32,
     #[serde(with = "base64_bytes")]
     pub data: Vec<u8>,
+}
+
+/// Words a call's text output made since its last (`Context._text`): appended to what came before.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct TextFrame {
+    /// The result's field, and the item of it: 0 for a single output, from 1 a list's.
+    pub output: String,
+    pub index: u32,
+    pub delta: String,
 }
 
 /// The result document the invoke wrote to its spool (`RESULT_DOCUMENT`): its digest and length.
@@ -636,6 +648,9 @@ pub struct Frame {
     /// A `preview` progress frame's picture.
     #[serde(deserialize_with = "lenient")]
     pub preview: Option<PreviewFrame>,
+    /// A `text` progress frame's words.
+    #[serde(deserialize_with = "lenient")]
+    pub text: Option<TextFrame>,
     /// A retained observation (`kind` log): `name` is its message, `value` its level and `fields`
     /// its scalars.
     pub value: Value,

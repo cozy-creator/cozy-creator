@@ -5069,6 +5069,12 @@ impl Services for Callbacks<'_> {
         if let Some(host) = self.host {
             host.nudge();
         }
+        if let (device_executor::Kind::Text, Some(text)) = (frame.kind, &frame.text) {
+            if frame.request_id.is_empty() || frame.request_id == self.id {
+                self.engine.observe_text(self.id, text);
+            }
+            return;
+        }
         if let (device_executor::Kind::Preview, Some(preview)) = (frame.kind, &frame.preview) {
             if frame.request_id.is_empty() || frame.request_id == self.id {
                 if let Err(error) = self.engine.observe_preview(self.id, preview) {
