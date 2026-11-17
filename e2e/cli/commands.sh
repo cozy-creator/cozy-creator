@@ -11,6 +11,14 @@ entrypoints() {
     || check "entrypoints: see $OUT/entrypoints/results.json"
 }
 
+# cl-1179 (Paul, 11-17: "we should also open the webui anyway, because they can select between different projects in it anyway"): `cozy open`
+# outside a project folder opens Cozy Creator's root, says so in one line, and exits 0 (e2e/cli/open_outside.py).
+open_outside() {
+  step "cozy open outside a project opens Cozy Creator (cl-1179)"
+  ARGV_LOG="$OUT/argv.log" python3 "$here/open_outside.py" --cozy "$COZY" --out "$OUT/open-outside" \
+    || check "open outside a project: see $OUT/open-outside"
+}
+
 # Every command a hint names is one this cozy has: each `cozy …` its code, page and docs tell someone to type, walked down its help.
 hint_commands() {
   step "every command a hint, a next line or a doc names parses"
