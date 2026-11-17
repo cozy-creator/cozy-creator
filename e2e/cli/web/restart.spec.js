@@ -4,6 +4,8 @@
 // Cozy's own browser was made to. A Calcifer restart leaves the tabs open: a plain project's reconnects and saves what's typed next, an
 // encrypted one's shows the locked page with Unlock, and neither loads again.
 const { randomBytes } = require('crypto');
+/** How long a tab is busy once it has answered the stop's ask: past the next Calcifer's start. */
+const BUSY_MS = 2500;
 const { dirname, join } = require('path');
 const { test, expect, canvasIdle, canvasVisible, focus } = require('./fixtures');
 
@@ -81,6 +83,20 @@ test('restart', { tag: '@solo' }, async ({ context, page, project, api, cli, sig
 
     await test.step('a Calcifer restart leaves both tabs open, each where it was', async () => {
       stopped = true;
+      // Each tab busy once it has answered the stop's ask for what was typed, as a page on a slow computer is: what Calcifer said last
+      // (its project locked, its stream's end) is read once the next Calcifer is up. Telling that one what it shows on the stream that
+      // ended, a tab was answered 404, which the browser logs (e2e 44073749095).
+      await Promise.all([page, second].map((tab) => tab.evaluate((ms) => {
+        const real = window.fetch.bind(window);
+        window.fetch = async (input, init) => {
+          const answer = await real(input, init);
+          if (/^\/v1\/events\/[^/]+\/saved$/.test(new URL(input instanceof Request ? input.url : String(input), location.href).pathname)) {
+            const until = performance.now() + ms;
+            while (performance.now() < until);
+          }
+          return answer;
+        };
+      }, BUSY_MS)));
       await calciferControl.stop();
       await calciferControl.start();
       await expect(bar(second), "the plain project's tab is back with Calcifer").toHaveCount(0, { timeout: 60_000 });
