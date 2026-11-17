@@ -67,29 +67,33 @@ fi
 # a timed call. A lone frame meets only each causal conv's last temporal tap.
 # - A Runtime whose plan reports `"lone_frame": "last_tap"` runs that tap alone: its `vae_encode` is held to
 #   h3-vae-picture.tsv's on this SKU (that path's own time), scaled by the call's SM clock against that pod's, within x1.5.
-#   All three taps take about 2.3x (pod-session 44172763099). A pod whose `read_image` takes 3x the reference's is a slow
-#   host: noted, not judged.
+#   All three taps take about 2.3x (pod-session 44172763099). A slow host is h3-vae's own (that call's `read_video` at 3x
+#   h3-vae.tsv's): noted, not judged. The picture's own `read_image` (a Lanczos resize) is no measure of one: 3.7x the
+#   reference's on a pod whose `read_video` was 2.3x (release-gate 44180357050).
 # - A Runtime without it (before cr-323), or a minimax-h3 without the fused encoder, is logged, not judged.
 # A minimax-h3 with no `vae_encode_picture` (before cr-323) is not run.
-# h3_vae_picture_judge <run record>: the verdict of one timed call (CPU-only: no cell, no rental).
+# h3_vae_picture_judge <run record> [h3-vae's run record]: the verdict of one timed call (CPU-only: no cell, no rental).
 h3_vae_picture_judge() {
-  local enc rd sm path c_enc c_sm c_rd source scaled
-  read -r enc rd sm path < <(jq -r '[.measurements, .calls[]?.measurements] as $m | [$m[] | .attribution.stages? // {}] as $s
+  local enc sm path c_enc c_sm source scaled rd c_rd
+  read -r enc sm path < <(jq -r '[.measurements, .calls[]?.measurements] as $m | [$m[] | .attribution.stages? // {}] as $s
     | [$m[] | .execution.plan_reports? // {} | .[] | to_entries[] | select(.key | startswith("fused.minimaxh3videocausalconv3d"))
        | .value] as $f
-    | "\(([$s[].vae_encode.total_ms // empty] | add // 0) / 1000) \(([$s[].read_image.total_ms // empty] | add // 0) / 1000)"
-      + " \([$m[] | .memory.driver[]?.sm_mhz_mean // empty] | first // 0)"
+    | "\(([$s[].vae_encode.total_ms // empty] | add // 0) / 1000) \([$m[] | .memory.driver[]?.sm_mhz_mean // empty] | first // 0)"
       + " \(if ($f | length) == 0 or any($f[]; .applied != true) then "eager"
             elif all($f[]; .lone_frame == "last_tap") then "last_tap" else "three_taps" end)"' "$1")
   if [ "$path" != last_tap ]; then
     log "h3-vae-picture: encode ${enc}s on $SKU, its encoder $path (no cr-323 lone-frame path): logged, not judged"
     return 0
   fi
-  read -r _ c_enc c_sm c_rd source < <(awk -F'\t' -v s="$SKU" '$1 == s' "$HERE/suites/runtime/h3-vae-picture.tsv")
+  read -r _ c_enc c_sm source < <(awk -F'\t' -v s="$SKU" '$1 == s' "$HERE/suites/runtime/h3-vae-picture.tsv")
   if [ -z "${c_enc:-}" ]; then log "h3-vae-picture: encode ${enc}s on $SKU; h3-vae-picture.tsv has no time for it"; return 0; fi
-  if awk -v r="$rd" -v c="$c_rd" 'BEGIN { exit !(r >= 3 * c) }'; then
-    log "h3-vae-picture: encode ${enc}s at ${sm} MHz on a slow host (read_image ${rd}s against ${c_rd}s): noted, not judged"
-    return 0
+  if [ -f "${2:-}" ]; then
+    rd=$(jq -r '[.measurements, .calls[]?.measurements] | map(.attribution.stages?.read_video.total_ms // empty) | (add // 0) / 1000' "$2")
+    read -r _ _ _ _ c_rd _ < <(awk -F'\t' -v s="$SKU" '$1 == s' "$HERE/suites/runtime/h3-vae.tsv")
+    if [ -n "${c_rd:-}" ] && awk -v r="$rd" -v c="$c_rd" 'BEGIN { exit !(r >= 3 * c) }'; then
+      log "h3-vae-picture: encode ${enc}s at ${sm} MHz on a slow host (h3-vae's read_video ${rd}s against ${c_rd}s): noted, not judged"
+      return 0
+    fi
   fi
   [ "${sm:-0}" != 0 ] || sm=$c_sm  # no clock read: unscaled
   scaled=$(awk -v o="$enc" -v m="$sm" -v c="$c_sm" 'BEGIN { printf "%.3f", o * m / c }')
@@ -111,7 +115,7 @@ if [ -z "$ONLY" ] || [[ $ONLY == *",h3-vae,"* || $ONLY == *",h3-vae-picture,"* |
       if [ "$(run_get "$OUT" h3-vae-picture .status)" != completed ]; then
         expect h3-vae-picture FAIL "run $(cat h3-vae-picture.number 2>/dev/null) $(run_get "$OUT" h3-vae-picture .status)"
       else
-        h3_vae_picture_judge "$OUT/h3-vae-picture.json"
+        h3_vae_picture_judge "$OUT/h3-vae-picture.json" "$OUT/h3-vae.json"
       fi
     fi
   fi

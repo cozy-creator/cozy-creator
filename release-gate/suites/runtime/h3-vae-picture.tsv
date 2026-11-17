@@ -1,2 +1,2 @@
-sku	encode_s	sm_mhz	read_s	source
-rtx-5090	0.135	2572	0.038	the lone-frame path (cozy-runtime#2234) over minimax-h3 0.16.0rc4's batched tiles: pod-session 44172763099 (grizzly, 5090), vae_encode_picture warm, 135.0-135.2 ms; sm_mhz and read_s are its calls'
+sku	encode_s	sm_mhz	source
+rtx-5090	0.135	2572	the lone-frame path (cozy-runtime#2234) over minimax-h3 0.16.0rc4's batched tiles: pod-session 44172763099 (grizzly, 5090), vae_encode_picture warm, 135.0-135.2 ms; sm_mhz is its calls'
