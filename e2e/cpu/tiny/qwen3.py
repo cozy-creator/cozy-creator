@@ -23,8 +23,8 @@ from transformers.models.qwen3_5_moe import modeling_qwen3_5_moe
 from cell import NARROW, Cell, answers, module, packages, qwen_tokenizer, save, wrote
 
 #: The package's default (dense) and the mixture of experts a cell picks.
-MODEL, MOE = "llmfan46/qwen3.8-27b-uncensored-heretic-native-mtp-preserved@0.1.0",
-              "llmfan46/qwen3.6-35b-a3b-uncensored-heretic-native-mtp-preserved@0.1.0"
+MODEL = "llmfan46/qwen3.8-27b-uncensored-heretic-native-mtp-preserved@0.1.0"
+MOE = "llmfan46/qwen3.6-35b-a3b-uncensored-heretic-native-mtp-preserved@0.1.0"
 
 
 def config() -> Qwen3_5Config:
