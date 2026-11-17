@@ -973,7 +973,44 @@ impl Drop for Mounted {
             }
         }
         let _ = self.guard.seal();
+        // A view whose folder moved (cl-1124: dragged to the Trash) is unmounted nowhere it was: detached where it is now.
+        #[cfg(target_os = "linux")]
+        if let Some(at) = self.identity.as_deref().and_then(linux_mounted_at) {
+            let _ = unix_unmount(&at, true, CONTROL_ACK);
+        }
     }
+}
+
+/// Where the mount `identity` names (`linux_identity`) is now, wherever its folder moved: None once it's gone.
+#[cfg(target_os = "linux")]
+fn linux_mounted_at(identity: &str) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    let table = fs::read("/proc/self/mountinfo").ok()?;
+    table.split(|byte| *byte == b'\n').find_map(|line| {
+        let fields: Vec<_> = line.split(|byte| *byte == b' ').collect();
+        let separator = fields.iter().position(|field| *field == b"-")?;
+        let named = format!("{}:{}", String::from_utf8_lossy(fields.first()?), String::from_utf8_lossy(fields.get(2)?));
+        let at = fields.get(4)?;
+        (named == identity && fields.get(separator + 1) == Some(&b"fuse.securefs".as_slice()))
+            .then(|| PathBuf::from(std::ffi::OsString::from_vec(unescape_mount_path(at))))
+    })
+}
+
+/// A mountinfo path as written, its octal escapes (`\\040` for a space) undone.
+#[cfg(target_os = "linux")]
+fn unescape_mount_path(encoded: &[u8]) -> Vec<u8> {
+    let mut decoded = Vec::new();
+    let mut at = 0;
+    while at < encoded.len() {
+        if encoded[at] == b'\\' && at + 3 < encoded.len() && encoded[at + 1..at + 4].iter().all(|byte| (b'0'..=b'7').contains(byte)) {
+            decoded.push((encoded[at + 1] - b'0') * 64 + (encoded[at + 2] - b'0') * 8 + encoded[at + 3] - b'0');
+            at += 4;
+        } else {
+            decoded.push(encoded[at]);
+            at += 1;
+        }
+    }
+    decoded
 }
 
 /// Detaches a view an earlier, ended process left mounted, so its runtime folder can go. Only the
