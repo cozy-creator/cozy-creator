@@ -62,3 +62,57 @@ if [ -z "$ONLY" ] || [[ $ONLY == *",h3-vae,"* || $ONLY == *",minimax-h3,"* ]]; t
     fi
   fi
 fi
+# A picture through the same encoder (cr-323): minimax-h3's `vae_encode_picture` encodes one as ref2va encodes a picture
+# reference at `high` fidelity, one frame at a 2048 px short edge (release-gate/ref/seed.jpg, 2048x2048), a warm-up then
+# a timed call. A lone frame meets only each causal conv's last temporal tap.
+# - A Runtime whose plan reports `"lone_frame": "last_tap"` runs that tap alone: its `vae_encode` is held to
+#   h3-vae-picture.tsv's on this SKU (that path's own time), scaled by the call's SM clock against that pod's, within x1.5.
+#   All three taps take about 2.3x (pod-session 44172763099). A pod whose `read_image` takes 3x the reference's is a slow
+#   host: noted, not judged.
+# - A Runtime without it (before cr-323), or a minimax-h3 without the fused encoder, is logged, not judged.
+# A minimax-h3 with no `vae_encode_picture` (before cr-323) is not run.
+# h3_vae_picture_judge <run record>: the verdict of one timed call (CPU-only: no cell, no rental).
+h3_vae_picture_judge() {
+  local enc rd sm path c_enc c_sm c_rd source scaled
+  read -r enc rd sm path < <(jq -r '[.measurements, .calls[]?.measurements] as $m | [$m[] | .attribution.stages? // {}] as $s
+    | [$m[] | .execution.plan_reports? // {} | .[] | to_entries[] | select(.key | startswith("fused.minimaxh3videocausalconv3d"))
+       | .value] as $f
+    | "\(([$s[].vae_encode.total_ms // empty] | add // 0) / 1000) \(([$s[].read_image.total_ms // empty] | add // 0) / 1000)"
+      + " \([$m[] | .memory.driver[]?.sm_mhz_mean // empty] | first // 0)"
+      + " \(if ($f | length) == 0 or any($f[]; .applied != true) then "eager"
+            elif all($f[]; .lone_frame == "last_tap") then "last_tap" else "three_taps" end)"' "$1")
+  if [ "$path" != last_tap ]; then
+    log "h3-vae-picture: encode ${enc}s on $SKU, its encoder $path (no cr-323 lone-frame path): logged, not judged"
+    return 0
+  fi
+  read -r _ c_enc c_sm c_rd source < <(awk -F'\t' -v s="$SKU" '$1 == s' "$HERE/suites/runtime/h3-vae-picture.tsv")
+  if [ -z "${c_enc:-}" ]; then log "h3-vae-picture: encode ${enc}s on $SKU; h3-vae-picture.tsv has no time for it"; return 0; fi
+  if awk -v r="$rd" -v c="$c_rd" 'BEGIN { exit !(r >= 3 * c) }'; then
+    log "h3-vae-picture: encode ${enc}s at ${sm} MHz on a slow host (read_image ${rd}s against ${c_rd}s): noted, not judged"
+    return 0
+  fi
+  [ "${sm:-0}" != 0 ] || sm=$c_sm  # no clock read: unscaled
+  scaled=$(awk -v o="$enc" -v m="$sm" -v c="$c_sm" 'BEGIN { printf "%.3f", o * m / c }')
+  expect h3-vae-picture "$(awk -v o="$scaled" -v t="$c_enc" 'BEGIN { print (o > 0 && o <= t * 1.5) ? "PASS" : "FAIL" }')" \
+    "vae_encode ${enc}s at ${sm} MHz, ${scaled}s at ${c_sm} MHz, against the last tap's ${c_enc}s (bar x1.5) on $SKU, one 2048x2048 picture ($source)"
+}
+if [ -z "$ONLY" ] || [[ $ONLY == *",h3-vae,"* || $ONLY == *",h3-vae-picture,"* || $ONLY == *",minimax-h3,"* ]]; then
+  PIC_FN=$(pkg minimax-h3 vae_encode_picture)
+  if [[ $PIC_FN == ./* ]] && ! grep -qs 'def vae_encode_picture' "$OUT/$(dirname "${PIC_FN#./}")/h3.py"; then
+    log "h3-vae-picture: this minimax-h3 has no vae_encode_picture (before cr-323): not run"
+  elif [[ $PIC_FN != ./* ]] && ! "$CLI" run "$PIC_FN" --describe > /dev/null 2>&1; then
+    log "h3-vae-picture: $PIC_FN has no vae_encode_picture (a release before cr-323): not run"
+  else
+    SAVED=$ONLY; [ -z "$ONLY" ] || ONLY="$ONLY,h3-vae-picture-warmup,h3-vae-picture,"
+    cell h3-vae-picture-warmup "$PIC_FN" --file image="$HERE/ref/seed.jpg" --lane int8
+    cell h3-vae-picture "$PIC_FN" --file image="$HERE/ref/seed.jpg" --lane int8
+    ONLY=$SAVED
+    if [ -f h3-vae-picture.json ]; then
+      if [ "$(run_get "$OUT" h3-vae-picture .status)" != completed ]; then
+        expect h3-vae-picture FAIL "run $(cat h3-vae-picture.number 2>/dev/null) $(run_get "$OUT" h3-vae-picture .status)"
+      else
+        h3_vae_picture_judge "$OUT/h3-vae-picture.json"
+      fi
+    fi
+  fi
+fi
