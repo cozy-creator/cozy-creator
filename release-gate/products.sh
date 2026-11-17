@@ -12,11 +12,19 @@ product() {
 }
 
 H3_SEED=2026102801
+# plate <seconds>: a synthetic 1344x768, 24 fps clip with a tone, made once: the source of an upscale whose shot was stopped
+# before its video (gate.sh STOP).
+plate() {
+  local f=$OUT/plate-$1s.mp4
+  [ -s "$f" ] || nice -n 19 ffmpeg -v error -y -f lavfi -i "testsrc2=size=1344x768:rate=24:duration=$1" \
+    -f lavfi -i "sine=frequency=440:duration=$1" -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest "$f"
+  echo "$f"
+}
 # av <cell> <height>: its tallest mp4 is <height>p and carries a soundtrack as long as its picture (within 0.1 s).
 # seedvr2 0.1.0 wrote a batch's audio after all its frames, past the writer's interleave buffer (run 20347).
 av() {
   local c=$1${TWIN:-} f v a
-  [ -f "$c.number" ] || return 0
+  [ -f "$c.number" ] && whole "$c" || return 0
   f=$(run_outputs "$OUT" "$c" | grep -E '\.mp4$' | while read -r p; do
     echo "$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$p") $p"; done | sort -n | tail -1)
   v=$(ffprobe -v error -select_streams v:0 -show_entries stream=duration -of csv=p=0 "${f#* }" 2>/dev/null)
@@ -42,20 +50,22 @@ product_minimax_h3() {
     prompt="<$name> $motion" seed:=$H3_SEED duration_s:=15
   ONLY=$SAVED
   CLIP=$(output h3 mp4)
+  [ -n "$CLIP" ] || whole h3 || CLIP=$(plate 15)
   # Above 768p a take is re-rendered whole by Regenerate-2K (UPSCALE.md) with its soundtrack. A file of a box has no
   # latents and no text (a mention's description is off, cl-900): it goes from its frames and the prompt given, else
   # from no text, with a warning (se-138).
   [[ $ONLY == *",h3-1080p,"* || $ONLY == *",h3-1440p,"* || $ONLY == *",h3-notext-1080p,"* || $ONLY == *",h3-take-1080p,"* ]] && ONLY="$ONLY,h3-5s,"
   cell h3-5s "$(pkg minimax-h3 generate)" prompt="$p" seed:=$((R + 16)) duration_s:=5
   ONLY=$SAVED
-  v=$(box h3_5s "$(output h3-5s mp4)" "$p")
+  v=$(output h3-5s mp4); [ -n "$v" ] || whole h3-5s || v=$(plate 5)
+  v=$(box h3_5s "$v" "$p")
   for r in 1080 1440; do
     cell "h3-${r}p" "$(pkg minimax-h3 upscale)" video="$v" to=${r}p prompt="$p"
     av "h3-${r}p" $r
   done
   cell h3-notext-1080p "$(pkg minimax-h3 upscale)" video="$v" to=1080p
   av h3-notext-1080p 1080
-  if [ -f "h3-notext-1080p${TWIN:-}.number" ]; then
+  if [ -f "h3-notext-1080p${TWIN:-}.number" ] && whole "h3-notext-1080p${TWIN:-}"; then
     r=$(run_get "$OUT" "h3-notext-1080p${TWIN:-}" '[.result.warnings[]? | select(startswith("no text to guide"))] | first')
     expect "h3-notext-1080p${TWIN:-}-warns" "$([ -n "$r" ] && echo PASS || echo FAIL)" "${r:-no warning of missing text}"
   fi
@@ -65,7 +75,7 @@ product_minimax_h3() {
   # cr-259). About 11 min and $0.22 on a 5090 (run 28788), about 18 min and $0.30 on a 4090, past the shot it starts from.
   cell regen-1440p-15s "$(pkg minimax-h3 upscale)" video="$(box h3_15s "$CLIP" "$who. $motion")" to=1440p prompt="$who. $motion"
   av regen-1440p-15s 1440
-  if [ -f "regen-1440p-15s${TWIN:-}.number" ]; then
+  if [ -f "regen-1440p-15s${TWIN:-}.number" ] && whole "regen-1440p-15s${TWIN:-}"; then
     r=$(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/frames.py" regen "$CLIP" "$(output "regen-1440p-15s${TWIN:-}" mp4)" 2>&1 | tail -1)
     expect "regen-1440p-15s${TWIN:-}-frames" "$(jq -r 'if .structure_psnr >= 18 and .structure_ssim >= 0.5 and .flicker <= 2 and .corr >= 0.95 then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "$r"
   fi
@@ -83,7 +93,7 @@ h3_take() {
     { expect h3-take-1080p FAIL "the take: $(tail -c 300 h3-take.err)"; return; }
   cell h3-take-1080p "$(pkg minimax-h3 upscale)" video='<h3_take>' to=1080p
   av h3-take-1080p 1080
-  [ -f h3-take-1080p.number ] || return 0
+  [ -f h3-take-1080p.number ] && whole h3-take-1080p || return 0
   r=$(run_get "$OUT" h3-take-1080p '{latents: .request.input.video.latents, warnings: [.result.warnings[]?]} | tostring')
   expect h3-take-1080p-text "$(jq -r 'if (.latents // "" | startswith("sha256:")) and ([.warnings[] | select(startswith("no text"))] | length) == 0
     then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "${r:-no record}"
@@ -131,7 +141,7 @@ qwen_lora() {
   if [ -n "$commit" ]; then
     cell qwen-lora "$(pkg qwen-image-2 generate_turbo)" --lora "$model@$commit" seed:=$((R + 28)) prompt="A low-angle shot looking up at $OBJECT, wide lens"
     said=$(grep -o 'do not apply[^"]*' qwen-lora.ndjson 2>/dev/null | head -1)
-    expect qwen-lora-applied "$([ "$(run_get "$OUT" qwen-lora .status)" = completed ] && [ -z "$said" ] && echo PASS || echo FAIL)" \
+    expect qwen-lora-applied "$({ [ "$(run_get "$OUT" qwen-lora .status)" = completed ] || ! whole qwen-lora; } && [ -z "$said" ] && echo PASS || echo FAIL)" \
       "run $(cat qwen-lora.number): $(run_get "$OUT" qwen-lora .status) ${said:-every layer applied}"
   fi
   "$CLI" model delete "$model" -y > qwen-lora-delete.log 2>&1 || log "qwen-lora: $model not deleted: $(tail -c 200 qwen-lora-delete.log)"
