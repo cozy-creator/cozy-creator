@@ -435,13 +435,25 @@ SQL
       answer=$(curl -sS -o "$S/listing.json" -w '%{http_code} %{time_total}' -m 60 -H "Authorization: Bearer $token" "$COZY_HUB_URL/v1/rentals?$q") || true
       read -r status secs <<< "$answer" || true
       count=$(jq '.rentals | length' "$S/listing.json" 2> /dev/null || echo '?')
-      echo "hub history: GET /v1/rentals?${q%%&since=*}${q#*since=*}$([[ $q == *since=* ]] && echo '&since=-1h') try $try: $status in ${secs:-?} s, $count rentals"
+      echo "hub history: GET /v1/rentals?${q/since=*/since=-1h} try $try: $status in ${secs:-?} s, $count rentals"
       [ "$status" = 200 ] || check "hub history: GET /v1/rentals?$q: HTTP ${status:-none}: $(head -c 300 "$S/listing.json")"
     done
     [[ $q == *since=* ]] && { [ "$count" != '?' ] && [ "$count" -le 100 ] && [ "$count" -ge 1 ] \
       || check "hub history: the last hour of $((n + 1)) rentals listed $count, not the about 60 created in it"; } || true
     [[ $q == *since=* ]] && { awk -v s="$secs" 'BEGIN { exit !(s < 0.5) }' \
       || check "hub history: the last hour of $((n + 1)) rentals took $secs s"; } || true
+  done
+  # The same rows ended failed, which are projected (a failure has more to say), on this runner: what a released one's projection cost.
+  local ended_as
+  for ended_as in failed released; do
+    sql -v src="$rental" -v state="$ended_as" > "$S/state.out" 2>&1 <<'SQL' || fail "hub history: marking the copies $ended_as: $(tail -c 300 "$S/state.out")"
+UPDATE hub_v2.private_rentals SET state = :'state' WHERE id LIKE :'src' || '-c%';
+SQL
+    for try in 1 2 3; do
+      answer=$(curl -sS -o "$S/listing.json" -w '%{http_code} %{time_total}' -m 60 -H "Authorization: Bearer $token" "$COZY_HUB_URL/v1/rentals?state=all") || true
+      read -r status secs <<< "$answer" || true
+      echo "hub history: GET /v1/rentals?state=all, the copies $ended_as, try $try: $status in ${secs:-?} s, $(jq '.rentals | length' "$S/listing.json" 2> /dev/null) rentals"
+    done
   done
   # End to end, as `cozy machine ls --history` reads it.
   for args in "--history" "--history --since 1h"; do
