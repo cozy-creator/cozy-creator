@@ -22,6 +22,8 @@ SEAM = 6
 # Past the 20 s undo window, with room for the purge after it.
 HOLD_S = 50
 RUN_S = 900
+# How long a take's extras may take to land from its machine.
+LANDS_S = 60
 
 
 def main() -> int:
@@ -72,6 +74,12 @@ def main() -> int:
     first = cozy("render", "src", "--on", "local")
     taken = versions("src")
     check("src_take", first.returncode == 0 and len(taken) == 1, first.stderr[-500:])
+    # A take's extras (its latents) come from the machine after its answer, never waited for: here once they've landed (e2e 44142655129: read
+    # at once, `latents` was still `absent` on the machine, and was in files/ moments later).
+    landed = time.monotonic() + LANDS_S
+    while taken and not all(in_files(sha) for sha in files_of(taken[0])) and time.monotonic() < landed:
+        time.sleep(1)
+        taken = versions("src")
     check("src_files_here", bool(taken) and bool(files_of(taken[0])) and all(in_files(sha) for sha in files_of(taken[0])), taken)
     if failures:
         done()
