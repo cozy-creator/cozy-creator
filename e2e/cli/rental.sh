@@ -8,7 +8,8 @@
 #                a rental"). `logout` revokes a key this computer enrolled, never one installed with `login --key`,
 #                which another computer may hold; a pod signs in with a key of its own (`login --export`).
 #   hub_blob_reads  th-382: a weight download's range reads answer with Postgres nearly out of connections: the fixture Hub
-#                restarted, a few connections left free, 400 range GETs of 20 public objects 80 at once each answer a redirect.
+#                restarted, 6 connections left free and Postgres slow for 3 s, 400 range GETs of 20 public objects 80 at once each
+#                answer a redirect.
 #   rental_end_again  cl-977: an end that failed (signed out) is asked again by Calcifer itself, paced: signed in again, the
 #                rental ends with no second `machine end`, and its container goes.
 
@@ -401,8 +402,8 @@ cozy --json logout > /dev/null 2>&1 || true
 
 # th-382: one pod's weight download (106 objects in 16 MiB ranges) took production's Postgres past its connections (53300) for a
 # minute: each range read ran two queries, and a workload GET spent its DPoP proof with an INSERT. The fixture Hub is restarted (its
-# pools empty), Postgres is left a few free connections, and 400 range GETs of 20 public objects go 80 at once: each answers its
-# redirect, none a 5xx.
+# pools empty), Postgres is left 6 free connections and made slow for 3 s, and 400 range GETs of 20 public objects go 80 at once:
+# each answers its redirect, none a 5xx.
 hub_blob_reads() (
   step "a weight download's range reads answer with Postgres nearly out of connections (th-382)"
   [ -n "${COZY_TEST_HUB_COMMAND_FILE:-}" ] && [ -n "${COZY_HUB_URL:-}" ] || fail "hub blob reads: e2e/isolated.sh named no Hub command or URL"
@@ -414,7 +415,7 @@ hub_blob_reads() (
   container=$(docker ps --filter "publish=$port" --format '{{.Names}}' 2> /dev/null | head -1 || true)
   [ -n "$container" ] || fail "hub blob reads: no Postgres container publishes $port"
   sql() { docker exec -i -e PGAPPNAME=th382 "$container" psql -v ON_ERROR_STOP=1 -qtA -U postgres "$@"; }
-  release() { sql -c "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE application_name IN ('th382-hold')" > /dev/null 2>&1 || true; }
+  release() { sql -c "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE application_name IN ('th382-hold', 'th382-slow')" > /dev/null 2>&1 || true; }
   forget() { sql -c "DELETE FROM hub_v2.verified_objects WHERE bucket = 'th382'" > /dev/null 2>&1 || true; }
   trap 'release; forget' EXIT
   # 20 public objects as the Hub records them (the fixture publishes none here). A read is the Hub's answer, a redirect to where the
@@ -431,7 +432,8 @@ SQL
   bash "$here/../skew/rehub.sh" > "$S/rehub.log" 2>&1 || fail "hub blob reads: restarting the Hub: $(tail -c 300 "$S/rehub.log")"
   sleep 3
   max=$(sql -c "SHOW max_connections") used=$(sql -c "SELECT count(*) FROM pg_stat_activity")
-  hold=$((max - used - free - 1))
+  # Its own session, the holder's and the one that slows the reads.
+  hold=$((max - used - free - 2))
   sql -c "CREATE EXTENSION IF NOT EXISTS dblink" > /dev/null || fail "hub blob reads: no dblink in the fixture's Postgres"
   docker exec -i -e PGAPPNAME=th382-hold "$container" psql -qtA -U postgres -v n="$hold" > "$S/hold.out" 2>&1 <<'SQL' &
 SELECT count(dblink_connect('hold' || i, 'dbname=postgres user=postgres application_name=th382-hold')) FROM generate_series(1, :n) i;
@@ -442,10 +444,28 @@ SQL
     sleep 0.5
   done
   echo "hub blob reads: Postgres max_connections $max, $used used after the Hub's restart, $hold more held: $free free"
+  # Postgres slow for 3 s, as production's was under the download (a vacuum, a standby's lag, a disk): the object reads wait,
+  # each on whatever connection it took.
+  docker exec -i -e PGAPPNAME=th382-slow "$container" psql -qtA -U postgres > "$S/slow.out" 2>&1 <<'SQL' &
+BEGIN;
+LOCK TABLE hub_v2.verified_objects IN ACCESS EXCLUSIVE MODE;
+SELECT pg_sleep(3);
+COMMIT;
+SQL
+  for _ in $(seq 50); do
+    [ "$(sql -c "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid) WHERE a.application_name = 'th382-slow' AND l.mode = 'AccessExclusiveLock'" 2> /dev/null || echo 0)" -ge 1 ] && break
+    sleep 0.1
+  done
+  # The connections every process but these holds, sampled while the reads go.
+  (while :; do sql -c "SELECT count(*) FROM pg_stat_activity WHERE coalesce(application_name, '') NOT LIKE 'th382%' AND backend_type = 'client backend'" 2> /dev/null; sleep 0.2; done) > "$S/conns.txt" &
+  local sampler=$!
   # 400 range GETs, 20 per object, 80 at once, as TensorFS reads a closure.
   for _ in $(seq 20); do printf '%s\n' $shas; done > "$S/reads.txt"
   xargs -P 80 -I{} curl -s -o /dev/null -w '%{http_code}\n' -m 60 -H 'Range: bytes=0-1023' \
     "$COZY_HUB_URL/blobs/{}" < <(sed -E 's#^(..)(..)(.*)$#\1/\2/\1\2\3#' "$S/reads.txt") > "$S/codes.txt" 2>&1 || true
+  kill "$sampler" 2> /dev/null || true
+  wait "$sampler" 2> /dev/null || true
+  echo "hub blob reads: the Hub's connections while they went: $(sort -n "$S/conns.txt" | head -1) to $(sort -n "$S/conns.txt" | tail -1)"
   release
   forget
   codes=$(sort "$S/codes.txt" | uniq -c | awk '{printf "%s×%s ", $2, $1}')
