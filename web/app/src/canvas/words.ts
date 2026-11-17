@@ -28,6 +28,18 @@ export function merge(base: string, ours: string, theirs: string): string {
 
 const isMap = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value)
 
+/** What Rust's `trim_end` cuts: Unicode White_Space (JavaScript's `trimEnd` also cuts U+FEFF and keeps U+0085). */
+const TRAILING = /[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+$/u
+
+/** `value` as Calcifer keeps it: each text with nothing after its last word, in lists and maps too (written.rs `end_trimmed`, the one change
+ *  its write makes to words). */
+export function endTrimmed(value: unknown): unknown {
+  if (typeof value === "string") return value.replace(TRAILING, "")
+  if (Array.isArray(value)) return value.map(endTrimmed)
+  if (isMap(value)) return Object.fromEntries(Object.entries(value).map(([key, held]) => [key, endTrimmed(held)]))
+  return value
+}
+
 /** The same value however its keys were ordered. */
 export function same(a: unknown, b: unknown): boolean {
   if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((held, i) => same(held, b[i]))

@@ -41,7 +41,7 @@ import { clipOf, wire } from "./timeline/model"
 import { PageHistory, type Target } from "./history"
 import { comingOff, goingOn, holdsPictures, readsBox, startsFrom, type ToolStep, wontGoOn } from "./toolchange"
 import { isSelf, mentionFrom, numbersOf, SELF, versionIn, versionOf } from "./versions"
-import { mergeValue, same, spliceOf, wordsChanged } from "./words"
+import { endTrimmed, mergeValue, same, spliceOf, wordsChanged } from "./words"
 import { plainProject } from "../app/view"
 
 /** The body width in this geometry publication; the node width may be an opened envelope. */
@@ -383,6 +383,8 @@ export class CanvasStore {
   private nextId = 0
   private state: Project | null = null
   private began = 0
+  /** When the last read of the whole project began: only one such begun after a rename's answer can say it landed. */
+  private wholeBegan = 0
   private rows: Map<string, Card> | null = null
   /** Canonical rows, including an unadopted card and an unsaved corner pull. Never the presentation envelope. */
   private poses = new Map<string, Card>()
@@ -782,6 +784,7 @@ export class CanvasStore {
     if (this.retired) return
     this.state = state
     this.began = state.began ?? 0
+    this.wholeBegan = state.wholeBegan ?? this.began
     const ahead = state.board?.ahead ?? []
     if (ahead.length || this.ahead.get().size) this.ahead.set(new Map(ahead.map((row) => [row.run, row])))
     if (this.rows && this.viewport) this.reconcile()
@@ -915,10 +918,12 @@ export class CanvasStore {
     }
     for (const name of this.deleting.keys()) present.delete(name)
     if (again) this.readWhole()
-    // A rename on its way has landed once Calcifer answered it before this read began, or has the new name and not the old. With both,
-    // another writer took the name meanwhile: that box isn't this one, and the answer says what becomes of this one.
+    // A rename on its way has landed once a read of the whole project began after Calcifer answered it, or the project has the new name and
+    // not the old. With both, another writer took the name meanwhile: that box isn't this one, and the answer says what becomes of this one.
+    // A read of some boxes alone, begun after the answer, says nothing of this one: it stays where it is, Focus, typing and what's on its way
+    // to it included (offline, e2e 44082601717: read without it, it went, and a picture dropped on it found no box).
     for (const [from, to] of this.renames) {
-      if ((this.renamedAt.get(from) ?? Infinity) < this.began || (present.has(to) && !present.has(from))) {
+      if ((this.renamedAt.get(from) ?? Infinity) < this.wholeBegan || (present.has(to) && !present.has(from))) {
         this.renames.delete(from)
         this.renamedAt.delete(from)
       }
@@ -2275,8 +2280,11 @@ export class CanvasStore {
       const base = from.get(field)
       if (!base || base.sent === undefined) continue
       const view = name ? this.views.get(name) : undefined
-      if (name && view && !same(merged, base.sent)) {
-        const onto = (local: unknown) => mergeValue(base.sent, local, merged)
+      // What was sent as Calcifer keeps it: the space it cuts after the last word is no one's edit. Taken for one, it was merged into what
+      // was typed since, and a space typed there went (e2e 44122550502: "A " sent, then "Aharbour at dusk.").
+      const kept = endTrimmed(base.sent)
+      if (name && view && !same(merged, kept)) {
+        const onto = (local: unknown) => mergeValue(kept, local, merged)
         const sent = view.sent && field in view.sent ? { sent: { ...view.sent, [field]: onto(view.sent[field]) } } : {}
         const drafts = view.drafts && field in view.drafts ? { drafts: { ...view.drafts, [field]: onto(view.drafts[field]) } } : {}
         this.patch(name, { ...sent, ...drafts })

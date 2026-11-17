@@ -35,7 +35,7 @@ export function withAssets(state: Project, rows: Asset[], gone: Iterable<string>
   })
   assets.push(...fresh.values())
   // A head/asset delta cannot claim that every cached asset covers its newer position.
-  return { ...(head ?? state), assets, covered: state.covered, heads: state.heads, headsOf: { ...state.headsOf, ...heads } }
+  return { ...(head ?? state), assets, covered: state.covered, heads: state.heads, headsOf: { ...state.headsOf, ...heads }, wholeBegan: state.wholeBegan }
 }
 
 const openingWarningsKey = (id: string) => ["project-opening-warnings", id]
@@ -63,9 +63,9 @@ export const projectQuery = (client: Client, stream: EventStream, id: string) =>
       signal.throwIfAborted()
       const key = openingWarningsKey(id)
       const opening = queries.getQueryData<ProjectWarning[]>(key)
-      if (!opening) return { ...state, began }
+      if (!opening) return { ...state, began, wholeBegan: began }
       queries.removeQueries({ queryKey: key, exact: true })
-      return { ...state, began, warnings: mergeWarnings(state.warnings ?? [], opening) }
+      return { ...state, began, wholeBegan: began, warnings: mergeWarnings(state.warnings ?? [], opening) }
     },
     structuralSharing: keepAssets,
   })

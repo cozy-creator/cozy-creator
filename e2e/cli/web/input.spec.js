@@ -48,8 +48,11 @@ test('input', { tag: '@engines' }, async ({ page, project, browserName }) => {
   await project.add({ name: 'pasted', kind: 'text', fields: { text: '', node_kind: 'text' }, at: { x: 420, y: 420 } });
   await project.add({ name: 'ime', kind: 'text', fields: { text: '', node_kind: 'text' }, at: { x: 840, y: 420 } });
   const names = [...Object.keys(BOXES), 'words', 'pasted', 'ime'];
-  for (const name of names) await expect.poll(() => canvasVisible(page, name)).toBe(true);
+  // Every box on the page, then the view fitted to them, then each drawn in it: the page's first view fits what it had when it opened,
+  // and a box the API added after may be outside it (44011761575, Firefox: c and ime off the right edge for 15 s).
+  await expect.poll(async () => { const on = await canvasNames(page); return names.every((name) => on.includes(name)); }).toBe(true);
   await fit(page);
+  for (const name of names) await expect.poll(() => canvasVisible(page, name)).toBe(true);
   const region = page.getByRole('region', { name: 'Focused asset' });
 
   await test.step("a trackpad's pinch zooms about the pointer, nothing moving under it", async () => {

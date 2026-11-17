@@ -1,7 +1,7 @@
 name: rc-nightly
-# Nightly, every e2e suite on the open RC's head, on Linux, macOS and Windows (Paul, 11-12; tracker cl-885): it dispatches
-# rc-e2e.yaml on the newest rc/<x.y.z>, whose pushes run it too. A schedule runs only from the default branch, so this lives
-# here.
+# Nightly, every e2e suite on the open RC's head (Paul, 11-12; tracker cl-885), for a day with no push: it dispatches rc-e2e.yaml
+# (Linux) and rc-os.yaml (macOS, Windows) on the newest rc/<x.y.z>, whose pushes run both. A schedule runs only from the default
+# branch, so this lives here.
 on:
   schedule:
     - cron: '0 10 * * *'
@@ -20,5 +20,6 @@ jobs:
         run: |
           rc=$(gh api "repos/$GITHUB_REPOSITORY/branches?per_page=100" --paginate -q '.[].name' | grep -E '^rc/[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
           [ -n "$rc" ] || { echo "no open rc/<x.y.z>"; exit 0; }
-          gh workflow run rc-e2e.yaml -R "$GITHUB_REPOSITORY" --ref "$rc" -f select='cli imports cpu model os:macos os:windows'
-          echo "dispatched rc-e2e.yaml on $rc" | tee -a "$GITHUB_STEP_SUMMARY"
+          gh workflow run rc-e2e.yaml -R "$GITHUB_REPOSITORY" --ref "$rc" -f select='cli imports cpu model'
+          gh workflow run rc-os.yaml -R "$GITHUB_REPOSITORY" --ref "$rc"
+          echo "dispatched rc-e2e.yaml and rc-os.yaml on $rc" | tee -a "$GITHUB_STEP_SUMMARY"

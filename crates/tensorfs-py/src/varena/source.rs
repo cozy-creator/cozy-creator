@@ -646,6 +646,167 @@ impl varena::Source for PageSource {
     }
 }
 
+/// Bytes a batch admits before its first read, so the reads start while the rest are admitted.
+const TOGETHER: usize = 512 << 20;
+
+/// cr-318: a binding's absent Regions, each bound to its `Inner`, filled together for `consumer`.
+/// Each whose bytes all come from its store (no kept page, no derive, no item another Region
+/// holds) is one placement of a single store read per batch: every Region's pieces pipelined over
+/// the readers, one completion. Any other fills alone, through its Source. Batches of `TOGETHER`
+/// bytes are admitted on one thread while the one before is read on another. In order, each
+/// Region's Pin, or why it has none (`Busy`: another fill of it runs, which its `use` waits for).
+pub(super) fn fill_together(batch: &[(Arc<varena::Region>, Arc<Inner>)], consumer: u64) -> Vec<varena::Result<varena::Pin>> {
+    type Read = Vec<(usize, Arc<Inner>, varena::Fill)>;
+    let mut out: Vec<Option<varena::Result<varena::Pin>>> = (0..batch.len()).map(|_| None).collect();
+    let (send, receive) = std::sync::mpsc::sync_channel::<(Arc<Store>, Mode, Read)>(2);
+    let read = std::thread::scope(|scope| {
+        let reader = scope.spawn(move || {
+            let mut done = Vec::new();
+            for (store, mode, fills) in receive {
+                done.extend(read_together(&store, mode, fills, consumer));
+            }
+            done
+        });
+        let mut groups: Vec<(Arc<Store>, Mode, Read, usize)> = Vec::new();
+        for (index, (region, inner)) in batch.iter().enumerate() {
+            // SAFETY: the caller's live stream, which reads nothing before this returns.
+            let fill = match unsafe { region.admit_on(consumer) } {
+                Ok(Ok(pin)) => {
+                    out[index] = Some(Ok(pin));
+                    continue;
+                }
+                Ok(Err(fill)) => fill,
+                Err(error) => {
+                    out[index] = Some(Err(error));
+                    continue;
+                }
+            };
+            let Some((store, mode)) = inner.together(&fill) else {
+                let alone = <PageSource as varena::Source>::fill(&PageSource(Arc::clone(inner)), fill, Some(consumer));
+                out[index] = Some(alone.and_then(|pin| pin.ok_or(varena::Error::Invalid("a Source returned no pin to its consumer"))));
+                continue;
+            };
+            let at = match groups.iter().position(|(s, m, ..)| Arc::ptr_eq(s, &store) && *m == mode) {
+                Some(at) => at,
+                None => {
+                    groups.push((store, mode, Vec::new(), 0));
+                    groups.len() - 1
+                }
+            };
+            let group = &mut groups[at];
+            group.3 += fill.len();
+            group.2.push((index, Arc::clone(inner), fill));
+            if group.3 >= TOGETHER {
+                let (store, mode, fills, _) = groups.swap_remove(at);
+                if let Err(unsent) = send.send((store, mode, fills)) {
+                    let (store, mode, fills) = unsent.0;
+                    for (index, result) in read_together(&store, mode, fills, consumer) {
+                        out[index] = Some(result);
+                    }
+                }
+            }
+        }
+        for (store, mode, fills, _) in groups {
+            if let Err(unsent) = send.send((store, mode, fills)) {
+                let (store, mode, fills) = unsent.0;
+                for (index, result) in read_together(&store, mode, fills, consumer) {
+                    out[index] = Some(result);
+                }
+            }
+        }
+        drop(send);
+        reader.join().unwrap_or_default()
+    });
+    for (index, result) in read {
+        out[index] = Some(result);
+    }
+    out.into_iter()
+        .map(|result| result.unwrap_or(Err(varena::Error::Invalid("a Region was neither filled nor admitted"))))
+        .collect()
+}
+
+/// One store read of `fills` (`fill_together`), then each published, or each declined on a failure.
+fn read_together(store: &Store, mode: Mode, fills: Vec<(usize, Arc<Inner>, varena::Fill)>, consumer: u64) -> Vec<(usize, varena::Result<varena::Pin>)> {
+    let control = Arc::new(ReadControl::default());
+    for (_, inner, _) in &fills {
+        *inner.reading.lock().unwrap_or_else(|e| e.into_inner()) = Some(control.clone());
+    }
+    let placements: Vec<Placement> = fills.iter().map(|(_, inner, fill)| Placement {
+        items: &inner.stored.as_ref().expect("a store read's Source has stored bytes").items,
+        origin: 0,
+        dst: Dst::Device { device: fill.device(), ptr: fill.ptr(), len: fill.len(), stream: 0 },
+    }).collect();
+    // SAFETY: each Fill is exclusive and the Regions disjoint; a failed read drains (`abort`)
+    // before any Fill's pages are released.
+    let read = unsafe { store.read_placements_cancelable(&placements, READERS, mode, &IoTally::default(), &control) };
+    drop(placements);
+    for (_, inner, _) in &fills {
+        *inner.reading.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+    let stats = match read {
+        Ok(stats) => stats,
+        Err(error) => {
+            let (error, failed) = storage(error);
+            if !matches!(error, varena::Error::Busy) {
+                FAILED.with_borrow_mut(|slot| *slot = failed);
+            }
+            return fills.into_iter().map(|(index, inner, fill)| {
+                let error = if matches!(error, varena::Error::Busy) {
+                    inner.tier.canceled();
+                    decline(fill); // A canceled read joined what it had submitted.
+                    error.clone()
+                } else {
+                    abort(fill, error.clone())
+                };
+                (index, Err(error))
+            }).collect();
+        }
+    };
+    let total = fills.iter().map(|(_, _, fill)| fill.len() as u64).sum::<u64>().max(1);
+    fills.into_iter().map(|(index, inner, fill)| {
+        // Each Region's share of the one read, by its bytes: its row in the record.
+        let share = |n: u64| (u128::from(n) * fill.len() as u128 / u128::from(total)) as u64;
+        let mine = io::ReadStats {
+            bytes: fill.len() as u64, ns: share(stats.ns), direct: share(stats.direct), cached: share(stats.cached),
+            ..Default::default()
+        };
+        inner.tier.row(Row {
+            set: inner.set.clone(), block: inner.block, bytes: mine.bytes, origin: "store", ahead: false,
+            ns: mine.ns, at_ms: pages::now_ms(),
+        });
+        inner.tier.read_source(&inner.set, inner.block, &mine);
+        if let Some(key) = &inner.page {
+            inner.tier.want(key, &inner.set, Arc::downgrade(&inner), Arc::downgrade(fill.target()));
+        }
+        let pin = publish(fill, Some(consumer))
+            .and_then(|pin| pin.ok_or(varena::Error::Invalid("a published fill returned no pin")));
+        (index, pin)
+    }).collect()
+}
+
+impl Inner {
+    /// Where `fill_together` reads it from, if one store read covers it: its stored bytes, with no
+    /// page of it kept, no derive to run and no item another Region or page already holds.
+    fn together(self: &Arc<Self>, fill: &varena::Fill) -> Option<(Arc<Store>, Mode)> {
+        let stored = self.stored.as_ref()?;
+        if self.derive.is_some() && !self.plain.load(Ordering::Acquire) {
+            return None;
+        }
+        if self.page.as_ref().is_some_and(|key| self.tier.holds(key)) {
+            return None;
+        }
+        if self.tier.holders(self, &stored.items).iter().any(|held| !held.is_empty()) {
+            return None;
+        }
+        // A refill reads this disk: its bytes landed for the first read (`read`'s rule).
+        Some(if fill.target().refilled() {
+            (Arc::clone(&stored.local), Mode::Buffered)
+        } else {
+            (Arc::clone(&stored.fetching), Mode::Cache)
+        })
+    }
+}
+
 fn items_of(checkpoint: &tensorfs::Checkpoint, parts: Vec<(String, usize, usize)>, bytes: usize) -> PyResult<Vec<Item>> {
     let invalid = |detail: &str| PyRuntimeError::new_err(detail.to_owned());
     let names: Vec<String> = parts.iter().map(|part| part.0.clone()).collect();

@@ -1035,6 +1035,15 @@ struct Device {
 }
 
 impl Device {
+    /// What its executors hold.
+    #[cfg(target_os = "linux")]
+    fn executors_hold(&self) -> u64 {
+        self.ledger.as_ref().map_or(0, |table| table.held())
+    }
+    #[cfg(not(target_os = "linux"))]
+    fn executors_hold(&self) -> u64 {
+        0
+    }
     /// What its executors hold and could give back.
     #[cfg(target_os = "linux")]
     fn idle_bytes(&self) -> u64 {
@@ -1338,6 +1347,15 @@ impl Pool {
         let given = 0;
         self.notes.note(serde_json::json!({"event": "room_outside_ledger", "gpus": lane, "loading": loading,
             "ended": ended, "given": given, "free": self.free(&lane)}));
+    }
+    /// The lane's least room now: each GPU's size less what its executors hold (their ledger), 0
+    /// where the inventory doesn't name it. How `place` ranks lanes for a new executor; a reading
+    /// only, varena decides every byte.
+    fn lane_room(&self, lane: std::ops::Range<usize>) -> u64 {
+        lane.map(|index| self.devices.get(index).map_or(0, |device| {
+            let size = self.inventory(&device.entry).map_or(0, |gpu| gpu.memory_bytes);
+            size.saturating_sub(device.executors_hold())
+        })).min().unwrap_or(0)
     }
     /// Current minimum driver free bytes, used only for exit diagnostics.
     fn free(&self, lane: &std::ops::Range<usize>) -> Option<u64> {
@@ -2790,9 +2808,11 @@ impl Pool {
     }
     /// Where `plan` runs now, with its lane's call slots: inside its root's `lane` when it has
     /// one, else (a standalone call, or warming with no root) on GPUs no root holds or older
-    /// request claims. Prefer a lane hosting its executor, then any lane whose call permits
-    /// are available. None: it waits, and a standalone call claims those GPUs from later requests.
-    /// Actual allocations decide capacity; measured peaks never block a permitted family call.
+    /// request claims. Prefer a lane hosting its executor, then of the lanes whose call permits
+    /// are available the one with the most room (`lane_room`): a new model takes an empty GPU
+    /// before one where another's weights stay warm (cl-1119). None: it waits, and a standalone call
+    /// claims those GPUs from later requests. Actual allocations decide capacity; measured peaks
+    /// never block a permitted family call.
     fn place(
         self: &Arc<Self>,
         plan: &Plan,
@@ -2807,10 +2827,16 @@ impl Pool {
             self.permit(root, family, start..start + degree, claims).map(|permit| (start, permit))
         };
         let hosts: Vec<usize> = self.hosting(plan).into_iter().map(|(start, _)| start).filter(|s| starts.contains(s)).collect();
+        let mut others: Vec<usize> = starts.clone().filter(|start| !hosts.contains(start)).collect();
+        let room: BTreeMap<usize, u64> = match others.len() > 1 {
+            true => others.iter().map(|&start| (start, self.lane_room(start..start + degree))).collect(),
+            false => BTreeMap::new(),
+        };
+        others.sort_by_key(|start| (std::cmp::Reverse(room.get(start).copied().unwrap_or(0)), *start));
         let placed = hosts
             .iter()
             .find_map(|start| take(*start, claims))
-            .or_else(|| starts.clone().filter(|start| !hosts.contains(start)).find_map(|start| take(start, claims)));
+            .or_else(|| others.iter().find_map(|start| take(*start, claims)));
         match (&placed, root) {
             (None, Some(root)) if lane.is_none() && hosts.is_empty() => {
                 self.allocations.claim(root, degree, claims);
@@ -2821,7 +2847,8 @@ impl Pool {
             (Some((start, _)), _) if !hosts.contains(start) => {
                 self.notes.note(serde_json::json!({"event": "place", "plan": plan.construction,
                     "gpus": self.lane_devices(*start, plan.degree).unwrap_or_default(), "running_on": hosts.iter()
-                        .map(|d| &self.devices[*d].entry).collect::<Vec<_>>()}));
+                        .map(|d| &self.devices[*d].entry).collect::<Vec<_>>(), "room": room.iter()
+                        .map(|(s, free)| (self.devices[*s].entry.clone(), *free)).collect::<BTreeMap<_, _>>()}));
             }
             _ => {}
         }
@@ -2899,32 +2926,18 @@ impl Pool {
         // Count CPU output owners after this GPU slot is held. A prior call can return while
         // preparation resolves; it cannot turn a stale pre-placement count into a new grant.
         if !admit()? { return Ok(false); }
-        // A speculative run's call slots are given back the moment a real call wants them, not when it ends (cl-1123 D).
-        let speculative = record.submission.as_ref().is_some_and(|submission| crate::ahead::speculative(&submission.request_id));
-        let pool = permit.pool.clone();
-        let permit = Arc::new(Mutex::new(Some(permit)));
-        if speculative {
-            pool.speculation_dispatched(&record.id, &plan.construction, permit.clone());
-        }
-        let ours = pool.clone();
-        let dispatched = engine.dispatch_managed(&record.id, plan.degree, move |engine, id| {
+        engine.dispatch_managed(&record.id, plan.degree, move |engine, id| {
+            let pool = permit.pool.clone();
             let result = pool.run(&engine, &id, held, plan, start, calls.as_ref());
             // Session return and process detachment are already proven. CPU encoding uses
             // the existing managed worker after the next GPU call is allowed to start.
-            drop(permit.lock().unwrap().take());
-            if speculative {
-                pool.speculation_ended(&id);
-            }
+            drop(permit);
             let result = result.and_then(|post| post.map_or(Ok(()), |post| post.finish(&engine, &id)));
             if let Err(error) = &result { settle(&engine, &id, error)?; }
             if let Some(calls) = &calls { calls.ended(&id); }
             pool.keep_all(&engine);
             result
-        });
-        if speculative && !matches!(dispatched, Ok(true)) {
-            ours.speculation_ended(&record.id);
-        }
-        dispatched
+        })
     }
     /// The host watcher looks now (a nudge; the host's own events wake it too).
     fn nudge_host(&self) {
@@ -3725,12 +3738,7 @@ impl Pool {
         }
         // A shared executor's memoized stages are this run's project's, or the machine's for a run of none (cl-984).
         let mut session = session;
-        let submission = engine.get(id).ok().and_then(|record| record.submission);
-        // A speculative run's executor, which a real call's arrival tells to stop (cl-1123 D).
-        if submission.as_ref().is_some_and(|submission| crate::ahead::speculative(&submission.request_id)) {
-            self.speculation_executor(id, session.executor.line());
-        }
-        let actor = submission.map(|s| s.actor).unwrap_or_default();
+        let actor = engine.get(id).ok().and_then(|record| record.submission).map(|s| s.actor).unwrap_or_default();
         session.user = Some((actor, private.as_ref().map(|scope| scope.project_id.clone())));
         session.executor.keep_memo(match &private { Some(scope) => self.memo_for_private(scope)?, None => self.memo.clone() });
         // A development Runtime build is named by its build, not only its version.
@@ -4120,7 +4128,7 @@ impl Pool {
             )
         {
             // Canceled while it waited for its attention kernel's compile (Runtime 0.23.4).
-            if prepared.terminal == "canceled" && (engine.get(id)?.cancel_actor.is_some() || crate::ahead::speculative(&engine.caller_id(id))) {
+            if prepared.terminal == "canceled" && engine.get(id)?.cancel_actor.is_some() {
                 defer_completion(engine, id, &session.executor.birth, &session.followers, Outcome::Canceled)?;
                 return Ok(None);
             }
@@ -4302,8 +4310,7 @@ impl Pool {
                         Outcome::Failed(Failure::custody(&error.to_string())))?,
                 }
             }
-            // A speculative run told to stop (cl-1123 D) ends canceled, its executor kept.
-            "canceled" if engine.get(id)?.cancel_actor.is_some() || crate::ahead::speculative(&engine.caller_id(id)) => {
+            "canceled" if engine.get(id)?.cancel_actor.is_some() => {
                 defer_completion(engine, id, &session.executor.birth, &session.followers, Outcome::Canceled)?;
             }
             _ => {
@@ -5095,6 +5102,12 @@ impl Services for Callbacks<'_> {
         }
         if let Some(host) = self.host {
             host.nudge();
+        }
+        if let (device_executor::Kind::Text, Some(text)) = (frame.kind, &frame.text) {
+            if frame.request_id.is_empty() || frame.request_id == self.id {
+                self.engine.observe_text(self.id, text);
+            }
+            return;
         }
         if let (device_executor::Kind::Preview, Some(preview)) = (frame.kind, &frame.preview) {
             if frame.request_id.is_empty() || frame.request_id == self.id {

@@ -47,6 +47,7 @@ mod play;
 mod project;
 mod rentals;
 mod reports;
+mod responses;
 mod runs;
 pub mod serve;
 mod slow;
@@ -59,7 +60,7 @@ mod took;
 mod update;
 
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     io::{Read as _, Write as _},
     path::{Path, PathBuf},
     pin::Pin,
@@ -69,7 +70,7 @@ use std::{
 };
 
 use ::api::{
-    calcifer::{Event, On, Progress, Reason, Run, Stalled, StagedInput, Status as RunStatus, SubmitRun, Submitted, Warning},
+    calcifer::{Event, On, OutputText, Progress, Reason, Run, Stalled, StagedInput, Status as RunStatus, SubmitRun, Submitted, Warning},
     config::Origin,
     ids::{Digest, RunId},
     machine as v1,
@@ -204,6 +205,13 @@ struct Live {
     slow_asked: Option<Instant>,
     /// The last wait its machine named that its log kept (`wait_said`).
     said_wait: Option<String>,
+    /// Each text output's words so far, by (output, item), while it runs (xs-209): memory only, never its record's.
+    text: BTreeMap<(String, u32), String>,
+}
+
+/// A run's text outputs so far, as its record shows them.
+fn texts(text: &BTreeMap<(String, u32), String>) -> Vec<OutputText> {
+    text.iter().map(|((output, index), text)| OutputText { output: output.clone(), index: *index, text: text.clone() }).collect()
 }
 
 /// A log line at a level its followers are warned at, as `cozy run` says it.
@@ -236,6 +244,10 @@ fn same_warm(left:&v1::WarmItem,right:&v1::WarmItem)->bool {
 
 /// How long a run goes without moving before its record says so, with what that costs.
 const STALLED_MS: i64 = 10 * 60 * 1000;
+/// How a run of a locked or locking project is said outside it (cl-1130): never by its key or number, which are its project's.
+pub(crate) const LOCKED_RUN: &str = "a locked project's run";
+/// How a run of one project says a run of another (cl-1130): projects keep apart, so never by its key or number.
+const ANOTHER_RUN: &str = "another project's run";
 /// How often a run waiting behind other runs' downloads says its progress moved with theirs: well inside the
 /// minute a follower waits before it says "no progress".
 const LINE_MOVED_MS: i64 = 30_000;
@@ -737,7 +749,19 @@ impl Calcifer {
     }
     /// How a message names `row`: `run KEY-N`, or what one of Calcifer's jobs does (cl-1028: no one's run, it has no name).
     pub(crate) fn named(&self,row:&RunRow)->String {
-        match row.project_root { Some(_)=>format!("run {}",self.run_name(row)), None=>row.target.clone() }
+        match row.project_root { Some(_) if project::vault::hidden(&row.out_dir)=>LOCKED_RUN.into(), Some(_)=>format!("run {}",self.run_name(row)), None=>row.target.clone() }
+    }
+    /// How what's said of run `about` names `row` (cl-1130): as `named` within one project, a project's run outside it as only another
+    /// project's.
+    fn named_for(&self, row: &RunRow, about: &str) -> String {
+        match row.project_root.is_some() && !self.same_project(row, about) {
+            true => ANOTHER_RUN.into(),
+            false => self.named(row),
+        }
+    }
+    /// Whether run `about` is of `row`'s project.
+    fn same_project(&self, row: &RunRow, about: &str) -> bool {
+        lock(&self.run_owners).get(store::calcifer_id(about)).cloned().flatten().is_some_and(|owner| owner.project_id() == row.owner)
     }
     pub(crate) fn row_store(&self,row:&RunRow)->store::Result<store::RunStore<'_>> {
         match self.row_owner(row)? { Some(owner)=>owner.store().map(store::RunStore::Project),None=>Ok(store::RunStore::Maintenance(self.maintenance_store())) }
@@ -920,7 +944,8 @@ impl Calcifer {
         loop {
             match tail.recv().await {
                 Ok((run, event)) if run == *id && !matches!(event,
-                    Event::Log { .. } | Event::Progress { .. } | Event::Waiting { .. } | Event::Arriving { .. } | Event::OutputDelta { .. } | Event::Call { .. }) => return,
+                    Event::Log { .. } | Event::Progress { .. } | Event::Waiting { .. } | Event::Arriving { .. } | Event::OutputDelta { .. } | Event::Call { .. }
+                    | Event::OutputTextDelta { .. }) => return,
                 Ok(_) => {}
                 Err(broadcast::error::RecvError::Lagged(_)) => return,
                 Err(broadcast::error::RecvError::Closed) => std::future::pending().await,
@@ -1210,6 +1235,7 @@ impl Calcifer {
             run.waiting.clone_from(&live.waiting);
             place = live.place;
             run.progress.clone_from(&live.progress);
+            run.text = texts(&live.text);
             let said: Vec<Warning> = (live.warned.iter())
                 .filter(|text| !run.warnings.iter().any(|warning| warning.message == **text))
                 .map(|text| Warning { code: "log".into(), message: text.clone() })
@@ -1298,7 +1324,13 @@ impl Calcifer {
             .progress
             .clone()
             .map(|progress| Event::Progress { progress });
-        waiting.into_iter().chain(progress).collect()
+        // Its words so far, whole, from where a follower opening now begins (xs-209).
+        let words = live.text.iter().map(|((output, index), text)| Event::OutputTextDelta {
+            output_index: index.saturating_sub(1),
+            item_id: if *index == 0 { output.clone() } else { format!("{output}/{index}") },
+            delta: text.clone(),
+        });
+        waiting.into_iter().chain(progress).chain(words).collect()
     }
 
     /// Records or updates a machine and wakes the runs waiting on it.
@@ -1454,7 +1486,7 @@ impl Calcifer {
                 continue;
             }
             let mut names: Vec<String> = (ahead.iter().flat_map(|op| &op.runs))
-                .map(|id| self.with_run_store(id, |store| store.run(id)).ok().flatten().map_or_else(|| "another run".to_owned(), |row| self.named(&row)))
+                .map(|id| self.with_run_store(id, |store| store.run(id)).ok().flatten().map_or_else(|| "another run".to_owned(), |row| self.named_for(&row, run)))
                 .collect();
             names.sort();
             names.dedup();
@@ -1522,9 +1554,9 @@ impl Calcifer {
 
     /// Sends the run's events; a lifecycle event says why the run waits now, as its record does.
     fn publish(&self, id: &RunId, events: Vec<Event>) {
-        let (waiting, progress) = lock(&self.live)
+        let (waiting, progress, text) = lock(&self.live)
             .get(id)
-            .map_or((None, None), |live| (live.waiting.clone(), live.progress.clone()));
+            .map_or((None, None, vec![]), |live| (live.waiting.clone(), live.progress.clone(), texts(&live.text)));
         for mut event in events {
             // An update settling frees the runs held behind it.
             if let Event::Completed { run, .. } | Event::Failed { run, .. } | Event::Canceled { run, .. } = &event
@@ -1539,11 +1571,37 @@ impl Calcifer {
             {
                 run.waiting.clone_from(&waiting);
                 run.progress.clone_from(&progress);
+                run.text.clone_from(&text);
                 run.stalled = self.stalled(run);
                 self.live_gpu(run);
             }
             let _ = self.events.send((id.clone(), event));
         }
+    }
+
+    /// What a text output of run `id` says now, as a stream from its machine heard it whole (`heard`, xs-209): what Calcifer holds
+    /// of it grows to it, and the run's followers hear what it added. A stream that says what was held already (attached again) adds
+    /// nothing; one that says another text (the run began again) stands in for it, heard once it grows.
+    fn words(&self, id: &RunId, key: (String, u32), heard: &str, output_index: u32) {
+        let delta = {
+            let mut live = lock(&self.live);
+            let held = live.entry(id.clone()).or_default().text.entry(key.clone()).or_default();
+            if heard.len() > held.len() && heard.starts_with(held.as_str()) {
+                let delta = heard[held.len()..].to_owned();
+                heard.clone_into(held);
+                delta
+            } else {
+                if !held.starts_with(heard) {
+                    heard.clone_into(held);
+                }
+                return;
+            }
+        };
+        let item_id = match key.1 {
+            0 => key.0,
+            n => format!("{}/{n}", key.0),
+        };
+        let _ = self.events.send((id.clone(), Event::OutputTextDelta { output_index, item_id, delta }));
     }
 
     /// The run waits no longer: its record says so, and its followers hear an empty reason.
@@ -2419,6 +2477,8 @@ impl Calcifer {
     ) -> Result<(), Stop> {
         use v1::Event as Frame;
         let (mut batch, mut frames) = (Batch::default(), 0u64);
+        // Each text output's words as this stream heard them: one attached again hears them whole first (xs-209).
+        let mut heard: BTreeMap<(String, u32), String> = BTreeMap::new();
         // Why its machine says a finished run's outcome isn't sent, when it says (cl-806).
         let mut unsent = String::new();
         let unsent_said = |state_now: &str, unsent: &str| match unsent.is_empty() {
@@ -2530,7 +2590,7 @@ impl Calcifer {
                         n => format!("{n} GPUs"),
                     };
                     let holder = match self.with_run_store(&gpu.behind, |store| store.run(&gpu.behind)) {
-                        Ok(Some(holder)) => self.named(&holder),
+                        Ok(Some(holder)) => self.named_for(&holder, id.as_str()),
                         _ => "another run".to_owned(),
                     };
                     let reason = format!("waiting for {gpus}, held by {holder}");
@@ -2544,6 +2604,14 @@ impl Calcifer {
                         lock(&self.live).entry(id.clone()).or_default().width = gpu.width;
                     }
                     self.not_waiting(id)
+                }
+                Frame::OutputTextDelta(delta) => {
+                    let (output, index) = delta.output();
+                    let key = (output.to_owned(), index);
+                    let words = heard.entry(key.clone()).or_default();
+                    words.push_str(&delta.delta);
+                    self.words(id, key, words, delta.output_index);
+                    continue;
                 }
                 Frame::Progress(p) => {
                     // Each stage it enters is kept with the run, so a run whose machine is lost
@@ -2587,7 +2655,7 @@ impl Calcifer {
                 }
                 Frame::Outcome(mut outcome) => {
                     if let Some(reason) = outcome.reason.as_mut() {
-                        reason.message = self.runs_named(&reason.message);
+                        reason.message = self.runs_named_for(&reason.message, Some(id.as_str()));
                     }
                     // Canceled there to go where it finishes sooner (`move_to`): sent again, there.
                     let moving = lock(&self.moving).remove(id);
@@ -2675,7 +2743,7 @@ impl Calcifer {
                 None
             }
             waiting => {
-                let reason = self.runs_named(waiting);
+                let reason = self.runs_named_for(waiting, Some(id.as_str()));
                 self.waiting(id, reason.clone());
                 Some(reason)
             }
@@ -2685,6 +2753,11 @@ impl Calcifer {
     /// `text` from a machine with each run id this computer sent (`run-<hex>`, `~<attempt>` a resend's) as people name that run
     /// (`LAB2-12`); one it doesn't know (another computer's) is "another render" (cl-1084).
     pub(crate) fn runs_named(&self, text: &str) -> String {
+        self.runs_named_for(text, None)
+    }
+
+    /// `runs_named`, said of run `about` (cl-1130): a run of another project than its own is only another project's run.
+    pub(crate) fn runs_named_for(&self, text: &str, about: Option<&str>) -> String {
         let (mut named, mut rest) = (String::with_capacity(text.len()), text);
         while let Some(at) = rest.find("run-") {
             named.push_str(&rest[..at]);
@@ -2695,10 +2768,19 @@ impl Calcifer {
             if word || hex.len() < 8 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
                 named.push_str(id);
             } else {
-                match self.active_run(store::calcifer_id(id)) {
-                    Some(row) => named.push_str(&self.run_name(&row)),
-                    None if named.trim_end().is_empty() || named.trim_end().ends_with('.') => named.push_str("Another render"),
-                    None => named.push_str("another render"),
+                let said = match self.active_run(store::calcifer_id(id)) {
+                    // Another project's run, or a locked project's, is only that (cl-1130).
+                    Some(row) if about.is_some_and(|about| row.project_root.is_some() && !self.same_project(&row, about)) => Err(ANOTHER_RUN),
+                    Some(row) if project::vault::hidden(&row.out_dir) => Err(LOCKED_RUN),
+                    Some(row) => Ok(self.run_name(&row)),
+                    None => Err("another render"),
+                };
+                match said {
+                    Ok(name) => named.push_str(&name),
+                    Err(said) if named.trim_end().is_empty() || named.trim_end().ends_with('.') => {
+                        named.extend(said.chars().next().map(|first| first.to_ascii_uppercase()).into_iter().chain(said.chars().skip(1)));
+                    }
+                    Err(said) => named.push_str(said),
                 }
             }
             rest = &token[id.len()..];
@@ -2818,6 +2900,13 @@ impl Calcifer {
             written?;
         }
         Ok(())
+    }
+
+    /// Whether `machine` holds object `digest`, `length` bytes, whole: what a guess would carry, there already (a run of it carried it).
+    pub(crate) async fn holds(&self, machine: &str, digest: &Digest, length: u64) -> bool {
+        let Some(machines) = self.machines() else { return false };
+        let Ok((_, link)) = machines.linked(machine) else { return false };
+        length > 0 && link.held(digest, length).await.is_ok_and(|held| held >= length)
     }
 
     /// `inputs` written to `machine`, each it doesn't hold whole, one write of an object at a time as a run's are (`writing`): local

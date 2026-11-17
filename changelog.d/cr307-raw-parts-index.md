@@ -1,0 +1,1 @@
+TensorFS `raw.parts` finds a tensor by the header's index, not a scan of its component's tensors (cr-307). A release-gate session `lm-construct` measures Qwen3.6-35B-A3B's start-up (download, executor, construction, load) against the pod's disk and H2D ceilings, arm by arm on one pod, with SDXL beside it.

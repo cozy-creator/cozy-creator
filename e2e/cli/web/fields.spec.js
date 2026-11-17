@@ -50,6 +50,8 @@ const undeclared = (region, tool) => region.locator('.focus-card').evaluate((car
 }, { names: tool.fields.map((field) => field.field), labels: tool.fields.map((field) => field.label) });
 
 test('fields', async ({ page, project, api, cli, guards }) => {
+  // Its local tools' reading alone took up to 25 s in web-2 (e2e 44134428394), beside its own ~2.5 min.
+  test.setTimeout(360_000);
   // The tiny Qwen fixture's slots default to models the fixture Hub doesn't publish (e2e/cpu/tiny/qwen_image_2.py): a slot's picker asks for
   // its default's card and is told there is none, and the browser logs each 404 itself.
   guards.allow(/status of 404\b.*\/v1\/models\//);
@@ -67,7 +69,7 @@ test('fields', async ({ page, project, api, cli, guards }) => {
     const tools = await listed();
     [every, when] = [EVERY, WHEN].map((id) => tools.find((tool) => tool.local && tool.id === id));
     return Boolean(every && when);
-  }, { message: 'the project lists its local tools' }).toBe(true);
+  }, { message: 'the project lists its local tools', timeout: 180_000 }).toBe(true);
   for (const name of ['walk', 'coast', 'every', 'when', 'scene', 'still']) await expect.poll(() => canvasVisible(page, name)).toBe(true);
   await fit(page);
   const region = page.getByRole('region', { name: 'Focused asset' });
@@ -222,11 +224,11 @@ test('fields', async ({ page, project, api, cli, guards }) => {
       return top && row.contains(top) ? [] : [row.getAttribute('data-model-slot')];
     }));
     expect.soft(covered, 'no slot row is covered by the frame').toEqual([]);
-    // Every slot the tool declares is a row (Qwen shows one prompt helper: the expander, as nothing here edits a picture), and each opens.
+    // Every slot the tool declares is a row (Qwen shows one prompt helper: the one for words, as nothing here edits a picture), and each opens.
     const rows = picker.locator('button[data-model-slot]');
     await expect(rows, 'one row per slot').toHaveCount(5);
-    expect.soft(await rows.evaluateAll((all) => all.map((row) => row.getAttribute('data-model-slot')).sort()), 'its slots').toEqual(['expander', 'model', 'text_encoder', 'turbo_lora', 'vae']);
-    for (const slot of ['expander', 'model', 'text_encoder', 'turbo_lora']) {
+    expect.soft(await rows.evaluateAll((all) => all.map((row) => row.getAttribute('data-model-slot')).sort()), 'its slots').toEqual(['expander_t2i', 'model', 'text_encoder', 'turbo_lora', 'vae']);
+    for (const slot of ['expander_t2i', 'model', 'text_encoder', 'turbo_lora']) {
       await picker.locator(`button[data-model-slot="${slot}"]`).click();
       const opened = picker.locator(`section.model-picker-slot[data-model-slot="${slot}"]`);
       await expect(opened, `${slot} opens`).toBeVisible();

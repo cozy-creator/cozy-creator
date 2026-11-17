@@ -760,6 +760,12 @@ impl Lock {
         self.assets.get(&self.row_of(name))
     }
 
+    /// A version says file `sha256` is an orbit (xs-180): its poster is its front, frame 0 (cl-1131).
+    pub(crate) fn turns(&self, sha256: &str) -> bool {
+        let said = |version: &Version| version.files.iter().any(|(output, held)| held == sha256 && version.metadata.get(output).is_some_and(|said| said.contains_key("orbit")));
+        self.assets.values().flat_map(|asset| &asset.versions).any(said)
+    }
+
     /// Where `name`'s row is: under its name, else what a rename made it.
     fn row_of(&self, name: &str) -> String {
         let key = name_key(name);
@@ -1205,7 +1211,11 @@ impl Folder {
     pub(crate) fn close_connections(&self, checkpoint: bool) -> Result<(), Error> {
         let busy = || Error::new(api::error::Kind::Conflict, "project_busy", "Cozy is still working on this project's database. Try again in a moment.");
         if self.shared.checkpointing.load(std::sync::atomic::Ordering::Acquire) { return Err(busy()); }
+        // In the one order every path takes them, writing, held, reading, journal (`held()` takes held then reading, a write writing
+        // then held), and none waited on: a read between its `held` and its `reading` met a blocking `held` here, taken while this
+        // held `reading`, and each waited on the other for good (e2e 44106684078: a stop hung closing a project it had used).
         let mut writer = self.shared.writing.try_lock().map_err(|_| busy())?;
+        let mut held = self.shared.held.try_lock().map_err(|_| busy())?;
         let mut reader = self.shared.reading.try_lock().map_err(|_| busy())?;
         let mut journal = self.shared.journal.try_lock().map_err(|_| busy())?;
         if journal.reading > 0 { return Err(busy()); }
@@ -1228,8 +1238,9 @@ impl Folder {
             if occupied != 0 { return Err(busy()); }
         }
         let writing = writer.take();
-        *self.shared.held.lock().expect("held lock") = None;
+        *held = None;
         drop(reader);
+        drop(held);
         drop(writer);
         drop(writing);
         *self.shared.book.lock().expect("history cache") = None;
@@ -2080,7 +2091,7 @@ impl Folder {
                 }
                 // What the canvas draws of it, made now (cl-982): an open never waits on it.
                 if let Some(measured) = measured.filter(|measured| measured.width > 0) {
-                    super::thumbs::landed(at.clone(), digest, measured.field(), measured.lasts_ms() as f64 / 1000.0);
+                    super::thumbs::landed(at.clone(), digest, measured.field(), measured.lasts_ms() as f64 / 1000.0, false);
                 }
             }
             let old = std::cell::RefCell::new(vec![]);
@@ -2258,12 +2269,13 @@ impl Folder {
             return Ok(());
         }
         for (sha256, probed) in &measured {
+            let front = lock.turns(sha256);
             if let Some(file) = lock.files.get_mut(sha256) {
                 file.measured_as(probed);
                 // A video that landed: the page plays its preview on a hover. A picture's is made as it lands (`adopt`, an import), not as an
                 // older project's files are measured: thousands at once would hold up its pages (web-scale 43380245255).
                 if file.field() == "video" && file.width > 0 {
-                    super::thumbs::landed(self.dir.join(&file.path), sha256, "video", file.lasts_ms() as f64 / 1000.0);
+                    super::thumbs::landed(self.dir.join(&file.path), sha256, "video", file.lasts_ms() as f64 / 1000.0, front);
                 }
             }
         }

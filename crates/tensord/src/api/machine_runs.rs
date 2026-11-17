@@ -93,7 +93,9 @@ async fn log(
         for mut event in events {
             ended |= matches!(event.event, v1::Event::Outcome(_));
             let hidden = limit.as_ref().is_some_and(|grant| !visible(grant, &mut event));
-            if event.sequence <= cursor || hidden {
+            // Words are each follower's own (xs-209), heard from where it is, whatever its cursor.
+            let words = matches!(event.event, v1::Event::OutputTextDelta(_));
+            if (event.sequence <= cursor && !words) || hidden {
                 continue;
             }
             if sender.send(Ok(event)).await.is_err() {

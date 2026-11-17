@@ -97,46 +97,6 @@ pub(crate) fn identity(spec: v1::RunSpec) -> Result<String, Error> {
     spec_of(spec).map(|(spec, _)| spec.digest)
 }
 
-/// The value run `spec`'s identity digest is of (`identity`): to say which of its fields another request differs in.
-pub(crate) fn identity_value(mut spec: v1::RunSpec) -> Option<Value> {
-    let input = match &spec.payload {
-        None => serde_json::json!({}),
-        Some(payload) => crate::boundary_json::parse(payload.get().as_bytes()).ok()?,
-    };
-    let (hub, tensorfs) = (spec.hub.take(), spec.tensorfs.take());
-    spec.providers = None;
-    Some(identified(&spec, &input, hub.as_ref(), tensorfs.as_ref(), crate::private_io::current().as_ref()))
-}
-
-/// What run `spec` is, not how it reaches its sources (`hub`, `tensorfs`, taken out of it): a spec re-sent with other access or a
-/// reformatted payload names the same run. A JSON value's objects are sorted maps and its numbers exact: one spelling per spec.
-fn identified(spec: &v1::RunSpec, input: &Value, hub: Option<&v1::HubAccess>, tensorfs: Option<&v1::TensorFSOptions>,
-    local_private: Option<&v1::LocalPrivateStorage>) -> Value {
-    let mut identity = spec.clone();
-    identity.payload = None;
-    // The item it is the request of, if any, is no part of what it is (cl-1123): the two have one identity.
-    identity.predicted = None;
-    identity.hub = hub.map(|hub| v1::HubAccess {
-        origin: hub.origin.trim_end_matches('/').into(),
-        ..Default::default()
-    });
-    identity.tensorfs = tensorfs.map(|options| v1::TensorFSOptions {
-        endpoint: options.endpoint.trim_end_matches('/').into(),
-        ..Default::default()
-    });
-    // Auto transport for the existing Hub is the same run as the older caller's None.
-    // A genuinely distinct endpoint remains part of the identity.
-    if identity.tensorfs.as_ref().is_some_and(|options| {
-        identity.hub.as_ref().is_some_and(|hub| hub.origin == options.endpoint)
-    }) {
-        identity.tensorfs = None;
-    }
-    let mut identity = serde_json::to_value(&identity).expect("a run spec serializes");
-    identity["payload"] = input.clone();
-    if let Some(scope) = local_private { identity["local_private_project"] = scope.project_id.clone().into(); }
-    identity
-}
-
 /// A Run spec as this machine's run sources (`runs`), and the Hub it reads. Its digest (the
 /// Hub's origin alone) makes the id idempotent: the same id with another spec is refused.
 fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAccess>), Error> {
@@ -160,7 +120,29 @@ fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAc
     // What the run is, not how it reaches its sources: a spec re-sent with other access or a
     // reformatted payload names the same run.
     let (identity_digest, legacy_digest) = {
-        let mut identity = identified(&spec, &input, hub.as_ref(), tensorfs.as_ref(), local_private.as_ref());
+        let mut identity = spec.clone();
+        identity.payload = None;
+        // The item it is the request of, if any, is no part of what it is (cl-1123): the two have one identity.
+        identity.predicted = None;
+        identity.hub = hub.as_ref().map(|hub| v1::HubAccess {
+            origin: hub.origin.trim_end_matches('/').into(),
+            ..Default::default()
+        });
+        identity.tensorfs = tensorfs.as_ref().map(|options| v1::TensorFSOptions {
+            endpoint: options.endpoint.trim_end_matches('/').into(),
+            ..Default::default()
+        });
+        // Auto transport for the existing Hub is the same run as the older caller's None.
+        // A genuinely distinct endpoint remains part of the identity.
+        if identity.tensorfs.as_ref().is_some_and(|options| {
+            identity.hub.as_ref().is_some_and(|hub| hub.origin == options.endpoint)
+        }) {
+            identity.tensorfs = None;
+        }
+        // A JSON value's objects are sorted maps and its numbers exact: one spelling per spec.
+        let mut identity = serde_json::to_value(&identity).expect("a run spec serializes");
+        identity["payload"] = input.clone();
+        if let Some(scope) = &local_private { identity["local_private_project"] = scope.project_id.clone().into(); }
         let encoded = crate::boundary_json::exact(&identity);
         let current = format!("sha256:{}", tensorfs::sha256::hex_digest(&encoded));
         // Old accepted requests included this retired option in their identity. Comparing
@@ -382,17 +364,10 @@ impl Runs {
         let (mut answers, mut sent, mut serving) = (vec![], vec![], vec![]);
         for request in requests {
             let predicted = request.spec.predicted.clone();
-            let asked = predicted.as_ref().map(|_| request.spec.clone());
             match spec_of(request.spec).and_then(|(spec, hub)| reach(&signer, spec, hub)) {
                 Ok(spec) => {
-                    if let (Some(key), Some(asked)) = (&predicted, asked) {
-                        // The request the item predicted: what its speculative run made, going or done, is this run's (cl-1123 D).
-                        match crate::ahead::adopts(key, &request.id, &spec.digest) {
-                            true => {
-                                crate::speculate::adopt(self, &signer, key, &request.id);
-                            }
-                            false => crate::ahead::differs(key, &request.id, identity_value(asked)),
-                        }
+                    if let Some(key) = &predicted {
+                        crate::ahead::adopts(key, &request.id, &spec.digest);
                     }
                     // Renewed from before it prepares: its first reads wait for the token.
                     let capability = spec.hub.as_ref().and_then(|hub| hub.capability.as_ref());

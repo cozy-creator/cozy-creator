@@ -396,10 +396,20 @@ impl Projects {
 
     /// Every project held after its last request let go, its connections closed and its WAL emptied first: Calcifer stops.
     pub(crate) fn close_lingering(&self) {
-        let lingering: Vec<Lingering> = self.lingering.lock().expect("lingering lock").drain().map(|(_, held)| held).collect();
-        for held in lingering {
-            if let Err(error) = held.project.folder.close_connections(true) {
-                warn!(code = %error.code, "a project held after its request didn't close as Calcifer stopped");
+        let mut lingering: Vec<Lingering> = self.lingering.lock().expect("lingering lock").drain().map(|(_, held)| held).collect();
+        // A read under way leaves its project busy for that moment: tried again until `CLOSE_TRIES`, then left with its WAL.
+        let until = Instant::now() + CLOSE_TRIES;
+        while !lingering.is_empty() {
+            lingering.retain(|held| match held.project.folder.close_connections(true) {
+                Err(error) if error.code == "project_busy" && Instant::now() < until => true,
+                Err(error) => {
+                    warn!(code = %error.code, "a project held after its request didn't close as Calcifer stopped");
+                    false
+                }
+                Ok(()) => false,
+            });
+            if !lingering.is_empty() {
+                std::thread::sleep(std::time::Duration::from_millis(50));
             }
         }
     }
@@ -550,6 +560,8 @@ const HEARD_FOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 /// call), it isn't loaded again (cl-1010: each run list of a 3,000-box project loaded its whole document, 50–60 ms, 200 four at once).
 /// An encrypted one closes with its request, as every project did.
 const LINGER: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long a stop tries again to close a project a read keeps busy (`close_lingering`).
+const CLOSE_TRIES: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// A project held open after a request (`Projects::linger`).
 struct Lingering {
@@ -2048,13 +2060,13 @@ async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<J
     let projects = (known.into_iter().take(limit))
         .map(unlocked)
         .map(|entry| Known {
+            key: readable_key(&entry.path, entry.key),
             name: entry.name,
             busy: open.get(&entry.id).is_some_and(|project| *project.walking.lock().expect("walking lock")),
             path: entry.path,
             used_at_ms: entry.used_at_ms,
             id: entry.id,
             code: entry.code,
-            key: entry.key,
         })
         .collect();
     Ok(Json(Listed { projects, older }))
@@ -2067,7 +2079,13 @@ async fn address(State(api): State<Arc<Api>>, Path(reference): Path<String>) -> 
         return Ok(Json(api::calcifer::project::Address { id: project.id.clone(), code: project.code.clone(), key: project.key(), gone: None }));
     }
     let entry = known(&api, &reference).map_err(Refusal)?;
-    Ok(Json(api::calcifer::project::Address { id: entry.id, code: entry.code, key: entry.key, gone: None }))
+    Ok(Json(api::calcifer::project::Address { id: entry.id, code: entry.code, key: readable_key(&entry.path, entry.key), gone: None }))
+}
+
+/// A project's key (its `KEY-N`) from the index, said only while the project can be read: a locking one's is its project.db's, as a
+/// locked one's is (cl-1130).
+fn readable_key(path: &FsPath, key: String) -> String {
+    if !key.is_empty() && vault::encrypted(path) && vault::hidden(path) { String::new() } else { key }
 }
 
 /// Where its rows differ from its document (cl-885): nowhere, always. What e2e checks after each write.
@@ -3700,7 +3718,7 @@ async fn import(
         Ok(answer)
     }).map_err(Refusal)?;
     // What the canvas draws of it, made now (cl-982): its page asks for it in a moment.
-    thumbs::landed(landing.0, &landing.1, landing.2, 0.0);
+    thumbs::landed(landing.0, &landing.1, landing.2, 0.0, false);
     measure_soon(&api, &project);
     Ok(Json(answer))
 }

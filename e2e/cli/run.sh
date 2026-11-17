@@ -558,7 +558,6 @@ WEB_ENGINES=(
   input
   fullscreen
   play-link
-  drawers
 )
 # What stops, restarts or re-points Calcifer, or needs the job to itself (`@solo`), one at a time, with the filesystem driver.
 WEB_SOLO=(
@@ -570,6 +569,8 @@ WEB_SOLO=(
   restart
   secret-account
   project-settings
+  drawers
+  locked-reveals
 )
 # The timing and memory cells, `@solo`, in 2D: a runner's software GL drawing the WebGL path with MSAA is no computer's path, and the 2D
 # path is a computer with no GPU's (aa315b64, 11-16: large in 2D found a 1.1 MB-a-cycle heap leak).
@@ -608,6 +609,9 @@ case $SHARD in
     describe
     first_run
     llm_write
+    llm_stream
+    responses_sdk
+    llm_cli_words
     previews
     second_executor
     lifetime
@@ -680,6 +684,9 @@ case $SHARD in
     describe
     first_run
     llm_write
+    llm_stream
+    responses_sdk
+    llm_cli_words
     previews
     run_flags
     run_playback
@@ -975,7 +982,8 @@ case $SHARD in
   # Local code and every input by content (cl-817, cl-820): the CLI in a folder Calcifer can't see,
   # edits timed, a published cozy package called from local code (cl-871) and from an account's package (cl-872), a child
   # result's Latents in another package's caller (cr-276), a host path refused, a dev home's first-party packages from its
-  # packages checkout (xs-195) read once per change of it, the tools with the Hub away (cl-1126); then a docker rental's end, signed
+  # packages checkout (xs-195) read once per change of it, the tools with the Hub away (cl-1126), a Runtime 0.46 package's call with
+  # files on a machine still on 0.46 (cl-1160); then a docker rental's end, signed
   # out, with a revoked key and signed in (cl-875).
   local-code) parts="
     uv_at_once
@@ -990,6 +998,7 @@ case $SHARD in
     held_prerelease
     final_model
     runtime_floor
+    old_call_files
     child_latents
     path_manifest
     from_source

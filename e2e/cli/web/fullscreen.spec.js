@@ -91,6 +91,8 @@ async function letterboxedFull(page, aspect, what) {
 }
 
 test('fullscreen', { tag: '@engines' }, async ({ page, project, api, cli }) => {
+  // Its local tool's reading alone took up to 25 s in web-2 (e2e 44134428394), beside its own ~2.8 min.
+  test.setTimeout(360_000);
   await cli.json('machine', 'use', 'local');
   const shots = join(need('OUT'), 'web', 'fullscreen', test.info().project.name);
   mkdirSync(shots, { recursive: true });
@@ -101,7 +103,7 @@ test('fullscreen', { tag: '@engines' }, async ({ page, project, api, cli }) => {
   await expect.poll(async () => (await project.asset('spin'))?.duration_ms ?? 0, { message: "spin's file read" }).toBeGreaterThan(0);
   await api.patch(project.at('/assets/spin/versions/0'), { metadata: { orbit: { degrees: 360, direction: 'cw', loops: true } } });
   await project.add({ name: 'shot', tool: SEGMENTS, kind: 'video', fields: { summary: 'Along the coast.', beats: [{ description: 'The cliffs.', duration: BEAT_S }, { description: 'The harbour.', duration: BEAT_S }], wait: 0 }, at: { x: 1350, y: 0 } });
-  await expect.poll(async () => (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`)).tools.some((tool) => tool.local && tool.id === SEGMENTS), { message: 'the project lists its local tool' }).toBe(true);
+  await expect.poll(async () => (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`)).tools.some((tool) => tool.local && tool.id === SEGMENTS), { message: 'the project lists its local tool', timeout: 180_000 }).toBe(true);
   for (const name of ['wide', 'tall', 'spin', 'shot']) await expect.poll(() => canvasVisible(page, name)).toBe(true);
   await fit(page);
   const region = page.getByRole('region', { name: 'Focused asset' });

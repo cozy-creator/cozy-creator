@@ -627,8 +627,48 @@ fn _varena_core_identity() -> u64 {
     varena::abi::vr_v1_core_identity()
 }
 
+/// cr-318: `regions`, each bound to the matching one of `sources`, pinned for `stream`: the absent
+/// ones filled together (`source::fill_together`), one store read for all that one covers. None
+/// for one not filled here: its `use_on` fills it, waits for the fill running, or raises why not.
+#[cfg(feature = "store")]
+#[pyfunction]
+fn _varena_fill(
+    py: Python<'_>,
+    regions: Vec<PyRef<'_, PyRegion>>,
+    sources: Vec<PyRef<'_, source::PySource>>,
+    stream: u64,
+) -> PyResult<Vec<Option<PyUse>>> {
+    if regions.len() != sources.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err("one source per region"));
+    }
+    let batch: Vec<(Arc<varena::Region>, Arc<source::Inner>)> = regions
+        .iter()
+        .zip(&sources)
+        .map(|(region, source)| (Arc::clone(&region.region), Arc::clone(&source.inner)))
+        .collect();
+    // SAFETY (fill_together's): the caller's live stream, which reads nothing before this returns.
+    let pins = py.detach(|| source::fill_together(&batch, stream));
+    let _ = source::take_failure(py); // A Region not filled here raises at its own `use`.
+    pins.into_iter()
+        .zip(&batch)
+        .map(|(pin, (region, _))| {
+            let Ok(pin) = pin else { return Ok(None) };
+            let consumers = Consumers::new(region.device());
+            consumers.declare(stream).map_err(|error| raise(py, error))?;
+            Ok(Some(PyUse {
+                preparation: Mutex::new(Some(UsePreparation::Resident(SharedPin::new(pin, consumers.clone())))),
+                device: region.device(),
+                pid: std::process::id(),
+                consumers,
+            }))
+        })
+        .collect()
+}
+
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_core_identity, module)?)?;
+    #[cfg(feature = "store")]
+    module.add_function(wrap_pyfunction!(_varena_fill, module)?)?;
     cache_owner::install(module)?;
     working::install(module)?;
     tensor_export::install(module)?;

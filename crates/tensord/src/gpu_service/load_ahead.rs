@@ -38,8 +38,6 @@ pub(super) struct Ahead {
     /// Each item planned (by actor and caller id) since this machine started, or since its list last named it.
     planned: Mutex<BTreeSet<(String, String)>>,
     loading: Mutex<Option<Loading>>,
-    /// The speculative run on a GPU now (cl-1123 D, `crate::speculate`).
-    speculating: Mutex<Option<Speculating>>,
     /// Its thread, started with the first item.
     serving: std::sync::OnceLock<()>,
 }
@@ -59,17 +57,6 @@ struct ItemState {
     loaded: Option<(u32, u64)>,
     /// Its load failed: it isn't tried again until it comes anew.
     failed: bool,
-}
-
-/// A speculative run dispatched to a GPU: its execution, its call slots (shared with its dispatch, which gives them back when it ends,
-/// unless a call took them first) and, once its executor is its, the line to tell that executor to stop.
-struct Speculating {
-    id: String,
-    construction: String,
-    permit: Arc<Mutex<Option<Permit>>>,
-    line: Option<device_executor::Line>,
-    /// When it was told to stop, and why.
-    stopped: Option<(Instant, &'static str)>,
 }
 
 struct Loading {
@@ -152,94 +139,9 @@ impl Pool {
         self.ahead.loading.lock().unwrap().is_some()
     }
 
-    /// A machine whose idle GPU loads and runs predicted requests ahead: a dedicated one (a rental, or a computer its owner gave to
-    /// Cozy: `machine.mode`).
-    pub(crate) fn dedicated(&self) -> bool {
-        self.config.host.mode == HostMode::Dedicated
-    }
-
-    /// `actor`'s item `caller` is on a GPU now, its on-demand models built: a speculative run of it builds and loads nothing.
-    pub(crate) fn item_loaded(&self, actor: &str, caller: &str) -> bool {
-        let item = self.ahead.items.lock().unwrap().iter().find(|item| item.predicted.actor == actor && item.predicted.caller == caller).cloned();
-        item.is_some_and(|item| self.on_gpu(&item) == Some(true))
-    }
-
-    /// A speculative run holds a GPU now (`yield_to` ends it for any real call).
-    pub(crate) fn speculating(&self) -> bool {
-        self.ahead.speculating.lock().unwrap().as_ref().is_some_and(|speculating| speculating.stopped.is_none())
-    }
-
-    /// Speculative run `id` dispatched, its call slots `permit`.
-    pub(super) fn speculation_dispatched(&self, id: &str, construction: &str, permit: Arc<Mutex<Option<Permit>>>) {
-        let construction = construction.to_owned();
-        *self.ahead.speculating.lock().unwrap() = Some(Speculating { id: id.to_owned(), construction, permit, line: None, stopped: None });
-    }
-
-    /// Speculative run `id`'s executor is its now: told to stop at once if it was meanwhile.
-    pub(super) fn speculation_executor(&self, id: &str, line: device_executor::Line) {
-        let mut speculating = self.ahead.speculating.lock().unwrap();
-        let Some(speculating) = speculating.as_mut().filter(|speculating| speculating.id == id) else { return };
-        match speculating.stopped {
-            Some(_) => {
-                let _ = line.send(&Command::Cancel(executor_api::Cancel { request_id: id.to_owned() }));
-            }
-            None => speculating.line = Some(line),
-        }
-    }
-
-    /// Speculative run `id`'s dispatch ended: no longer on a GPU.
-    pub(super) fn speculation_ended(&self, id: &str) {
-        let mut speculating = self.ahead.speculating.lock().unwrap();
-        if speculating.as_ref().is_some_and(|speculating| speculating.id == id) {
-            *speculating = None;
-        }
-    }
-
-    /// Speculative run `id` is to be a call's (`crate::speculate::adopt`): nothing ends it for a call from now. False once it was told
-    /// to stop: it ends canceled.
-    pub(crate) fn adopted(&self, id: &str) -> bool {
-        let mut speculating = self.ahead.speculating.lock().unwrap();
-        match speculating.as_ref().filter(|speculating| speculating.id == id) {
-            Some(speculating) if speculating.stopped.is_some() => false,
-            Some(_) => {
-                *speculating = None;
-                true
-            }
-            None => true,
-        }
-    }
-
-    /// The speculative run on a GPU (`id`'s, else whichever) ends, `by` what: its executor told to stop at its next step (Runtime's
-    /// call-keyed cancel, which leaves the executor and what it holds), and its call slots given back now, not once it stopped, so a
-    /// call waiting for them starts at once (cl-1123: the same as a load's yield). One `waiting` for its own construction keeps them
-    /// until it stopped, and then takes its executor, as a load's. Whether one was.
-    pub(crate) fn stop_speculation(&self, id: Option<&str>, by: &'static str, waiting: &[String]) -> bool {
-        let (run, line, permit) = {
-            let mut speculating = self.ahead.speculating.lock().unwrap();
-            let Some(speculating) = speculating.as_mut().filter(|s| s.stopped.is_none() && id.is_none_or(|id| s.id == id)) else { return false };
-            speculating.stopped = Some((Instant::now(), by));
-            let other = waiting.is_empty() || waiting.iter().any(|construction| *construction != speculating.construction);
-            (speculating.id.clone(), speculating.line.take(), other.then(|| speculating.permit.lock().unwrap().take()).flatten())
-        };
-        let began = Instant::now();
-        let told = line.is_some_and(|line| line.send(&Command::Cancel(executor_api::Cancel { request_id: run.clone() })));
-        let gave = permit.is_some();
-        drop(permit);
-        if let Some(engine) = self.engine.get().and_then(Weak::upgrade) {
-            crate::speculate::stopped(&run, &engine);
-            engine.notify_activity();
-        }
-        tracing::info!(run = %run, "speculative run ended for {by}: {} its GPU {} in {} µs", if told { "told to stop at its next step," } else { "stopped as its executor starts," },
-            if gave { "given back" } else { "kept for the run of its model, which takes its executor once it stopped" }, began.elapsed().as_micros());
-        true
-    }
-
     /// The calls left waiting for a GPU this dispatch pass, by construction: a load of any other ends now; one of theirs goes on,
-    /// and the call takes its executor. Any waiting call ends a speculative run (cl-1123 D): its adopter is no call waiting.
+    /// and the call takes its executor.
     pub(crate) fn yield_to(&self, waiting: &[String]) {
-        if !waiting.is_empty() {
-            self.stop_speculation(None, "a run", waiting);
-        }
         let (stop, permit) = {
             let mut loading = self.ahead.loading.lock().unwrap();
             let other = |loading: &&mut Loading| loading.halted.is_none() && waiting.iter().any(|construction| *construction != loading.construction);

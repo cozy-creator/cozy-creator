@@ -245,7 +245,7 @@ async fn held_now(identity: &Arc<MachineIdentity>, runs: &Arc<Runs>, actor: Veri
                 let listed = crate::ahead::listed(&reader);
                 let mut states = listed.iter().filter_map(|id| runs.listed_state(actor, id).ok()).collect();
                 crate::ahead::planning(&listed, &mut states);
-                crate::ahead::readiness(runs, actor, crate::ahead::standing(&service.engine.store, busy, states))
+                crate::ahead::readiness(service.pool().as_deref(), &reader, crate::ahead::standing(&service.engine.store, busy, states))
             },
             runs: runs.live(actor)?,
             environments: runs.environments(actor)?,
