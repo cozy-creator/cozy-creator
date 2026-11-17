@@ -2611,6 +2611,18 @@ impl Journal {
         })
     }
 
+    /// The GPUs root `id` took as its first call bound its lane (cl-1187): what its later calls and its time count.
+    pub(crate) fn set_width(&mut self, id: &str, width: u32) -> io::Result<()> {
+        self.update(id, |record| {
+            let changed = !record.state.terminal() && record.width != width;
+            if changed {
+                record.width = width;
+            }
+            Ok(changed)
+        })
+        .map(drop)
+    }
+
     /// Its weights downloaded from `from` to `to` (Unix ms) while it waited on them (`access::meter`).
     pub(crate) fn fetched(&mut self, id: &str, from: u64, to: u64) -> io::Result<()> {
         self.update(id, |record| {

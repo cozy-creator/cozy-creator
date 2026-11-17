@@ -696,8 +696,10 @@ impl Service {
             }
             source_ready.push(record);
         }
-        // The widths of roots the machine chooses for, from its packing of the whole queue (cl-816).
-        let choosing = pool.width() > 1 && source_ready.iter().any(crate::estimate::chooses);
+        // The widths of roots the machine chooses for, from its packing of the whole queue (cl-816): a root's as it starts, an
+        // orchestrator's as its first call goes (cl-1187).
+        let open = |record: &Execution| !record.invocation.parent.is_empty() && record.invocation.degree > 0 && pool.open(record.root_seq());
+        let choosing = pool.width() > 1 && source_ready.iter().any(|record| crate::estimate::chooses(record) || open(record));
         let widths = match choosing {
             true => crate::estimate::widths(self, &pool).unwrap_or_else(|error| {
                 tracing::warn!("the queue was not packed, so its roots run at their narrowest: {error}");
@@ -718,7 +720,10 @@ impl Service {
                 used < self.parallelism
             } else { used <= self.parallelism });
             let root = invocation.parent.is_empty();
-            let width = widths.get(&record.id).copied();
+            let width = widths.get(&record.id).map(|start| start.width);
+            if let Some(start) = widths.get(&invocation.root).filter(|_| open(&record)) {
+                pool.choose(record.root_seq(), start.width, start.wait_ms);
+            }
             if !(held && root || invocation.degree > 0 && gpu_fenced) && admit()?
                 && self.offer(&pool, &record, width, &mut claims, calls.clone(), admit)? {
                 if crate::queue::job(&record) {
