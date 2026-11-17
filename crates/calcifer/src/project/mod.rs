@@ -179,6 +179,9 @@ pub(crate) struct Project {
     walker: Mutex<Walker>,
     /// Whether its one walker is going. Admission and the terminal board share this lock.
     walking: Mutex<bool>,
+    /// Its folder moved while it rendered, opened where it is now (cl-1066): its walker lets go at its next step, and the open there
+    /// takes its walk and its runs over. Never set for an encrypted one.
+    moved: std::sync::atomic::AtomicBool,
     /// Whether its files are being measured (`measure_soon`), and if so whether more landed meanwhile, measured once it ends.
     measuring: Mutex<Option<bool>>,
     /// The installs its walk's jobs wait on (`host::Installs`).
@@ -445,22 +448,33 @@ impl Projects {
         let physical = current_view(&root)?;
         let dir = physical.as_path();
         self.let_go_replaced(dir);
-        let (folder, Identified { id, name, code, key }) = tokio::task::block_in_place(|| Folder::open_with(dir, api.machines.hubs.home(), |folder| {
+        let mut rendering = None;
+        let opened = tokio::task::block_in_place(|| Folder::open_with(dir, api.machines.hubs.home(), |folder| {
             let identified = identify_loaded(api, dir, folder)?;
             let id = &identified.id;
-            // Validate a move before inherited local work can be unbound or resumed. A
-            // rendering project keeps its original physical folder until its runs land.
             let moved = self.open.lock().expect("projects lock").get(id).and_then(Weak::upgrade)
                 .filter(|open| open.root != root || open.mount_id != mount_id || open.folder.dir != dir);
             if let Some(open) = moved {
                 if *open.walking.lock().expect("walking lock") {
-                    let said = format!("Project {id} was moved out of {} while it was rendering. Move it back, or wait until its renders finish before moving it.", open.folder.dir.display());
-                    return Err(Error::new(Kind::Conflict, "project_busy", said));
+                    if vault::encrypted(&open.root) || vault::encrypted(&root) {
+                        return Err(Error::new(Kind::Conflict, "project_busy", format!("Lock {} before moving its folder.", open.root.display())));
+                    }
+                    rendering = Some(open);
+                    return Err(Error::new(Kind::Conflict, "project_moving", "its walk is handed over"));
                 }
                 self.open.lock().expect("projects lock").remove(id);
             }
             Ok(identified)
-        }))?;
+        }));
+        let (folder, Identified { id, name, code, key }) = match (opened, rendering) {
+            (Err(error), Some(old)) if error.code == "project_moving" => {
+                // Moved while it rendered (cl-1066): its walker lets go at a step's end, and it opens here, its walk and runs taken over.
+                tokio::task::block_in_place(|| hand_over(api, &old, &root, dir))?;
+                self.open.lock().expect("projects lock").remove(&old.id);
+                return self.open(api, dir);
+            }
+            (opened, _) => opened?,
+        };
         IDENTITIES.lock().expect("identities lock").insert(dir.to_owned(), (id.clone(), name));
         crate::events::project_opened(dir);
         let mut open = self.open.lock().expect("projects lock");
@@ -487,6 +501,7 @@ impl Projects {
                     told: Mutex::default(),
                     walker: Mutex::default(),
                     walking: Mutex::new(false),
+                    moved: Default::default(),
                     measuring: Mutex::new(None),
                     installs: Arc::default(),
                     asked: Notify::new(),
@@ -566,6 +581,27 @@ fn db_file(dir: &FsPath) -> Option<(u64, u64)> {
         let _ = dir;
         None
     }
+}
+
+/// How long an open where a moved project is now waits for its old walker to let go.
+const HANDOVER: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// `old`, a plaintext project that rendered as its folder moved to `root` (`dir`, as it reads now), let go of (cl-1066): its walker ends
+/// at its next step, this computer's machine reads its runs' files where it is now, and its runs are routed to the open there as it
+/// attaches. Busy, briefly, if the walker doesn't end in time.
+fn hand_over(api: &Arc<Api>, old: &Arc<Project>, root: &FsPath, dir: &FsPath) -> Result<(), Error> {
+    old.moved.store(true, std::sync::atomic::Ordering::Release);
+    old.asked.notify_one();
+    let due = Instant::now() + HANDOVER;
+    while *old.walking.lock().expect("walking lock") {
+        if Instant::now() >= due {
+            return Err(Error::new(Kind::Conflict, "project_busy", format!("{} is moving; try again in a moment.", root.display())));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    crate::private_io::moved(&old.root, dir)?;
+    tokio::runtime::Handle::current().block_on(crate::private_io::reprove(api, &old.id, dir));
+    Ok(())
 }
 
 /// Where a run of the project in `dir` lands its outputs.
@@ -4356,6 +4392,13 @@ impl Walk {
     }
 
     /// Publish and keep the old board before another request can admit a new walk.
+    /// Its folder moved, and an open where it is now takes its walk (`hand_over`): it ends here keeping nothing, its board and its
+    /// project.db as they are, for that walk to go on from.
+    fn let_go(&self, following: &tokio::task::JoinHandle<()>) {
+        following.abort();
+        *self.project.walking.lock().expect("walking lock") = false;
+    }
+
     fn end(&self, walking: &mut bool, error: Option<Error>, following: &tokio::task::JoinHandle<()>) {
         following.abort();
         let asks = std::mem::take(&mut *self.ended.lock().expect("ended lock"));
@@ -4497,6 +4540,10 @@ impl Walk {
             work.push(async move { Done::Arrived { name, result: self.arrived_owed(&run.id, coming).await } }.boxed());
         }
         loop {
+            if self.project.moved.load(std::sync::atomic::Ordering::Acquire) {
+                self.let_go(following);
+                return Ok(());
+            }
             self.deletions()?;
             self.joined(&mut first).await?;
             self.arrivals(&mut first)?;

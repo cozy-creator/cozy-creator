@@ -47,6 +47,8 @@ impl RunOwner {
     pub(super) fn of(project: &Arc<Project>, calcifer: &Arc<crate::Calcifer>) -> Self { Self { project: project.clone(), controller: Arc::downgrade(calcifer) } }
     pub(crate) fn open(&self, attached: bool, known: bool) -> OpenProject { OpenProject { project: Arc::downgrade(&self.project), controller: self.controller.clone(), attached, known } }
     pub(crate) fn same_view(&self, other:&Self)->bool { Arc::ptr_eq(&self.project,&other.project) }
+    /// Its folder moved while it rendered, and the open where it is now takes its runs (cl-1066, `hand_over`).
+    pub(crate) fn moved(&self) -> bool { self.project.moved.load(std::sync::atomic::Ordering::Acquire) }
     pub(crate) fn project_id(&self) -> &str { &self.project.id }
     pub(crate) fn key(&self) -> String { self.project.key() }
     pub(crate) fn root(&self) -> &std::path::Path { &self.project.root }

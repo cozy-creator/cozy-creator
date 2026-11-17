@@ -339,6 +339,30 @@ J '.board.ended != null and .board.elapsed_ms != null' <<< "$(status "$W")" || c
 }
 
 
+# cl-1066: a project folder moved while it renders opens where it is now; its walk goes on there, and what lands lands there. It was
+# refused `project_busy` ("Move it back, or wait until its renders finish before moving it").
+moved_rendering() {
+step "a project: moved while it renders, it opens where it is now and its renders land there (cl-1066)"
+local M=$OUT/moving N=$OUT/moved id run answer
+jq -n --arg shots "$here/project/shots.py/slow" --arg draw "$here/project/draw.py/draw" '[
+  {name: "long", tool: $shots, kind: "video", fields: {seconds: 30}},
+  {name: "after", tool: $draw, kind: "image", fields: {instructions: "From <long>, queued while it moves."}}]' | boxes_in "$M" || return
+id=$(status "$M" | jq -r .id)
+api -f -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: moving-$RANDOM$RANDOM" \
+  -d '{"names":["all"],"on":["local"]}' "http://$ADDR/v1/projects/$id/runs" > "$OUT/moving-queue.txt" 2>&1 || { check "moved: render: $(tail -c 300 "$OUT/moving-queue.txt")"; return; }
+for _ in $(seq 240); do run=$(status "$M" | jq -r '.board.jobs[] | select(.asset == "long") | .run // empty'); [ -n "$run" ] && [ "$(in_project "$M" --json run watch "$run" --once | jq -r .status)" = in_progress ] && break; sleep 0.25; done
+[ "$(in_project "$M" --json run watch "$run" --once | jq -r .status)" = in_progress ] || { check "moved: long isn't running: $(status "$M" | jq -c '.board.jobs')"; return; }
+mv "$M" "$N"
+# A handover that's still letting go answers busy for a moment, as a page retries.
+for _ in $(seq 30); do answer=$(project_api "$N" '' 2>&1) && break; sleep 1; done
+J --arg i "$id" '.id == $i' <<< "$answer" || { check "moved: it doesn't open where it is now: $(head -c 300 <<< "$answer")"; return; }
+for _ in $(seq 240); do J '.busy | not' <<< "$(status "$N")" && break; sleep 0.5; done
+{ [ "$(made "$N" long)" = 1 ] && [ "$(made "$N" after)" = 1 ]; } \
+  || check "moved: its renders didn't land where it is now: $(status "$N" | jq -c '{busy, jobs: [.board.jobs[] | {asset, state, error: .error.message}]}')"
+[ ! -e "$M" ] || check "moved: something was made again where it was: $(find "$M" -maxdepth 3 | head -5)"
+drop_folder "$N"
+}
+
 # sse <file>: what a stream wrote, one JSON object a line.
 sse() { sed -n 's/^data: //p' "$1"; }
 # revs <file> <id>: each `rev` the stream told of that project.
@@ -359,6 +383,7 @@ project_stream() {
   local holder=$HOME/.cozy/calcifer/calcifer.lock.holder ADDR TOKEN
   ADDR=$(jq -er .address "$holder") && TOKEN=$(jq -er .token "$holder") || fail "project stream: no Calcifer lock record"
   walking
+  moved_rendering
   event_stream
 }
 

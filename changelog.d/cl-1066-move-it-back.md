@@ -1,0 +1,1 @@
+A project folder moved while it renders opens where it is now: its walk is handed over at a step's end (within 10 s), its runs go on, and what they make lands in the moved folder. Before, it was refused until it was moved back. An encrypted project moved while it renders is still refused, in one line: lock it before moving its folder.

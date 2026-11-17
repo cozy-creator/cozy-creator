@@ -208,6 +208,17 @@ pub(crate) fn moved(from: &Path, to: &Path) -> Result<(), Error> {
     platform::durable::replace(&to.join(LOCAL_PRIVATE_MARKER), &encoded, 0o600).map_err(|_| error("cannot retain the private execution marker"))
 }
 
+/// Project `id`'s folder moved while this computer's machine ran its work (cl-1066): its scope, renamed by `moved`, proved there again
+/// now, so what its runs going there write lands where it is now. Unproved, its next run proves it as it goes.
+pub(crate) async fn reprove(api: &Arc<crate::api::Api>, id: &str, root: &Path) {
+    PROVED.lock().unwrap().retain(|(project, _, _)| project != id);
+    if !api.machines.local.running() { return; }
+    let Ok(Some(base)) = api.calcifer.link("local") else { return };
+    if let Err(error) = execution_link(id, root, "local", &base).await {
+        tracing::warn!("{}: this computer's machine still reads it where it was: {}", root.display(), error.message);
+    }
+}
+
 fn read_marker(view: &Path) -> Result<LocalPrivateMarker, Error> {
     let path = view.join(LOCAL_PRIVATE_MARKER);
     if fs::symlink_metadata(&path)

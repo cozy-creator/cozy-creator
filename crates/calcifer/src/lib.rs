@@ -532,7 +532,8 @@ impl Calcifer {
             Ok(stmt.query_map([store.project_id()],|row|row.get(0))?.collect::<rusqlite::Result<_>>()?)
         })?;
         let mut routes=lock(&self.run_owners);
-        if ids.iter().any(|id|routes.get(id).is_some_and(|prior|match prior {Some(prior)=>!prior.same_view(&owner),None=>true})) { return Err(StoreError::Protected("active_run_owner_ambiguous".into())); }
+        // A run of its folder before it moved is this open's (cl-1066).
+        if ids.iter().any(|id|routes.get(id).is_some_and(|prior|match prior {Some(prior)=>!prior.same_view(&owner)&&!(prior.moved()&&prior.project_id()==owner.project_id()),None=>true})) { return Err(StoreError::Protected("active_run_owner_ambiguous".into())); }
         let fresh={
             let mut owners=lock(&self.project_owners);
             let fresh=!owners.get(owner.project_id()).is_some_and(|open|open.attached&&open.is(&owner));
