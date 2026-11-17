@@ -369,7 +369,8 @@ hub_history() (
     if [ -n "$container" ]; then docker exec -i "$container" psql -v ON_ERROR_STOP=1 -q -U postgres "$@"
     else psql "$db" -v ON_ERROR_STOP=1 -q "$@"; fi
   }
-  # Each row of the rental, its attempts, their provider resources, windows and receipts, copied with new ids (a window takes its own).
+  # Each row of the rental, its attempts, their provider resources, operations, windows and receipts, copied with new ids (a window
+# takes its own).
   sql -v src="$rental" -v n="$n" > "$S/clone.out" 2>&1 <<'SQL' || fail "hub history: copying $rental: $(tail -c 600 "$S/clone.out")"
 CREATE FUNCTION pg_temp.clone(tbl regclass, src jsonb) RETURNS void LANGUAGE plpgsql AS $f$
 DECLARE cols text;
@@ -381,7 +382,7 @@ END $f$;
 SELECT set_config('clone.src', :'src', false), set_config('clone.n', :'n', false);
 DO $do$
 DECLARE s text := current_setting('clone.src'); n int := current_setting('clone.n')::int;
-        src jsonb; a jsonb; r jsonb; w jsonb; c jsonb; i int; rid text; aid text; pid text;
+        src jsonb; a jsonb; r jsonb; o jsonb; w jsonb; c jsonb; i int; rid text; aid text; pid text;
         sfx text;
 BEGIN
   SET CONSTRAINTS ALL DEFERRED;
@@ -404,6 +405,10 @@ BEGIN
         PERFORM pg_temp.clone('hub_v2.provider_resources', r || jsonb_build_object('id', pid, 'acquisition_attempt_id', aid,
           'absent_observation_id', NULL, 'provider_resource_id', (r->>'provider_resource_id') || sfx,
           'provider_name', (r->>'provider_name') || sfx, 'state', 'absent'));
+        FOR o IN SELECT to_jsonb(x) FROM hub_v2.provider_operations x WHERE resource_id = a->>'provider_resource_id' LOOP
+          PERFORM pg_temp.clone('hub_v2.provider_operations', o || jsonb_build_object('idempotency_key', (o->>'idempotency_key') || sfx,
+            'resource_id', pid));
+        END LOOP;
         FOR w IN SELECT to_jsonb(x) - 'id' FROM hub_v2.rental_windows x WHERE acquisition_attempt_id = a->>'id' LOOP
           PERFORM pg_temp.clone('hub_v2.rental_windows', w || jsonb_build_object('acquisition_attempt_id', aid, 'resource_id', pid));
         END LOOP;
@@ -414,8 +419,8 @@ BEGIN
     END LOOP;
   END LOOP;
 END $do$;
-ANALYZE hub_v2.private_rentals, hub_v2.rental_acquisition_attempts, hub_v2.provider_resources, hub_v2.rental_windows,
-        hub_v2.rental_readiness_receipts;
+ANALYZE hub_v2.private_rentals, hub_v2.rental_acquisition_attempts, hub_v2.provider_resources, hub_v2.provider_operations,
+        hub_v2.rental_windows, hub_v2.rental_readiness_receipts;
 SELECT 'copied', count(*) FROM hub_v2.private_rentals WHERE id LIKE :'src' || '-c%';
 SELECT 'attempts', count(*) FROM hub_v2.rental_acquisition_attempts WHERE rental_id LIKE :'src' || '-c%';
 SQL
