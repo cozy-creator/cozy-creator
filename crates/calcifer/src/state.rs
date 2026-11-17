@@ -500,7 +500,8 @@ impl Store {
             tx.pragma_update(None, "secure_delete", "ON")?;
             tx.execute("DELETE FROM machine_owed WHERE machine = ?1 AND view = ?2", params![machine, view.to_string_lossy()])?;
             Ok(())
-        })
+        })?;
+        self.empty_wal()
     }
 
     /// The WAL checkpointed into state.db and emptied, retried while a reader holds an older snapshot: no deleted row's page outlives

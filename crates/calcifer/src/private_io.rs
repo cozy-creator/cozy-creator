@@ -106,7 +106,11 @@ pub(crate) fn check_project_placement(
 pub(crate) fn scope_for_project(project_id: &str, project_root: &Path) -> Result<Scope, Error> {
     let logical = crate::project::vault::logical(project_root);
     let scope = if crate::project::vault::encrypted(&logical) {
-        of_output(&crate::project::landing(&logical))?.ok_or_else(|| error("This encrypted project's files aren't available. Unlock it, then try again."))?
+        // "Unlock it" only to a locked project: one closing or converting its storage has a moment to wait (cl-1064).
+        of_output(&crate::project::landing(&logical))?.ok_or_else(|| match crate::project::vault::is_locked(&logical) {
+            true => error("This encrypted project's files aren't available. Unlock it, then try again."),
+            false => error("This encrypted project's storage is changing (it's locking or converting). Try again when that finishes."),
+        })?
     } else {
         let view = platform::durable::canonical(project_root).map_err(|_| error("This project's files aren't available right now. Try again in a moment."))?;
         if crate::project::vault::plain_project_id(&view).as_deref() != Some(project_id) {

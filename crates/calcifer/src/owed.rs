@@ -96,6 +96,11 @@ impl Machines {
         Ok(())
     }
 
+    /// Whether `local` is owed a clean-up of the project in `folder` (cl-1064): only that project's runs wait for it.
+    pub(crate) fn owes(&self, folder: &Path) -> bool {
+        self.maybe_owed() && self.store().owed_to("local").is_ok_and(|owed| owed.iter().any(|(_, owed)| owed == folder))
+    }
+
     /// Whether `local` may still be owed a clean-up (cheap: no read once one found none).
     pub(crate) fn maybe_owed(&self) -> bool {
         MAYBE_OWED.load(Ordering::Relaxed)
@@ -126,6 +131,10 @@ impl Machines {
                     if let Err(e) = self.store().paid("local", &view) {
                         warn!(folder = %folder.display(), "local did a locked project's clean-up, not yet recorded: {e}");
                         return false;
+                    }
+                    // Only now its sealed view goes: nothing local ran there is left to write into it.
+                    if let Err(e) = crate::project::vault::retire_owed_view(&folder, &view) {
+                        warn!(folder = %folder.display(), "a locked project's ended view stays in its folder: {}", e.code);
                     }
                     info!(folder = %folder.display(), "local did the clean-up a lock owed it for this project");
                 }

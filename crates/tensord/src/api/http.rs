@@ -196,13 +196,17 @@ async fn project_gone_at(State(m): State<Machine>, headers: HeaderMap, body: Byt
     m.call(move |runs| {
         let projects = runs.service.engine.projects_at(&gone.view).map_err(|error| Error::conflict("private_storage_busy", error.to_string()))?;
         for project in projects {
-            runs.service.engine.end_project(&project, &actor).map_err(|error| match error.kind() {
+            // Its executors go first, so its stopped runs end; while they don't close, the clean-up isn't done and Calcifer asks again.
+            if let Some(pool) = runs.service.pool() {
+                pool.close_project_namespace(&project).map_err(|error| {
+                    tracing::warn!("a vault view a lock ended: its executors: {error}");
+                    Error::conflict("private_storage_busy", "the project's executors there didn't close; asked again")
+                })?;
+            }
+            runs.service.engine.end_project(&project, &actor, &gone.view).map_err(|error| match error.kind() {
                 std::io::ErrorKind::AlreadyExists => Error::conflict("project_present", error.to_string()),
                 _ => Error::conflict("private_storage_busy", error.to_string()),
             })?;
-            if let Some(pool) = runs.service.pool() {
-                if let Err(error) = pool.close_project_namespace(&project) { tracing::warn!("a vault view a lock ended: its executors: {error}"); }
-            }
         }
         Ok(())
     }).await?;

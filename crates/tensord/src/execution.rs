@@ -214,6 +214,8 @@ fn stop_preparation(
 }
 
 type Halt = Arc<dyn Fn() -> io::Result<()> + Send + Sync>;
+/// How long the clean-up a lock owed waits for its stopped runs' threads to end (cl-1064); past it, Calcifer asks again.
+const ENDED_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 type Settled = Box<dyn Fn(&Execution) + Send + Sync>;
 
 impl Engine {
@@ -326,8 +328,13 @@ impl Engine {
     /// Refused while a folder it ran in still holds it. Its runs still going are canceled, as a lock ends them, and it goes as
     /// the last of them settles (`retire_if_gone`). Answers whether it went now.
     pub(crate) fn forget_project(&self, project_id: &str, actor: &str) -> io::Result<bool> {
+        self.forget_project_but(project_id, actor, None)
+    }
+    /// [`Engine::forget_project`], `ended` (a view a lock ended without this machine, cl-1064) not counted as holding it: its
+    /// sealed mount point refuses every read, which reads as held.
+    fn forget_project_but(&self, project_id: &str, actor: &str, ended: Option<&std::path::Path>) -> io::Result<bool> {
         let roots = self.journal.lock().unwrap().project_roots()?.remove(project_id);
-        if roots.is_some_and(|roots| roots.iter().any(|root| holds_project(root, project_id))) {
+        if roots.is_some_and(|roots| roots.iter().any(|root| ended != Some(root.as_ref()) && holds_project(root, project_id))) {
             return Err(io::Error::new(io::ErrorKind::AlreadyExists, "a folder this project ran in still holds it"));
         }
         self.gone.lock().unwrap().insert(project_id.to_owned());
@@ -337,11 +344,13 @@ impl Engine {
         }
         self.retire_if_gone(project_id)
     }
-    /// A project a lock that couldn't reach this machine ended (cl-1064): its runs here stopped and every record of it gone now,
-    /// not as the last of them settles. None can settle: their view is gone and its workspace locked, so their rows can't be
-    /// written, and Calcifer settled them as the lock ended them. Refused, as `forget_project` is, while a folder still holds it.
-    pub(crate) fn end_project(&self, project_id: &str, actor: &str) -> io::Result<()> {
-        if self.forget_project(project_id, actor)? {
+    /// A project a lock that couldn't reach this machine ended in vault view `view` (cl-1064): its runs here stopped and every
+    /// record of it gone now, not as the last of them settles. None can settle: their view is gone and its workspace locked, so
+    /// their rows can't be written, and Calcifer settled them as the lock ended them. Their threads end first: one still unwinding
+    /// would write rows keyed by the project, or take this machine's own root for custody once its record is gone. Refused while
+    /// they don't within `ENDED_WAIT` (Calcifer asks again), and, as `forget_project` is, while another folder holds it.
+    pub(crate) fn end_project(&self, project_id: &str, actor: &str, view: &std::path::Path) -> io::Result<()> {
+        if self.forget_project_but(project_id, actor, Some(view))? {
             return Ok(());
         }
         let active = self.journal.lock().unwrap().private_active_ids(project_id)?;
@@ -351,13 +360,24 @@ impl Engine {
             if let Some(stop) = stop {
                 stopped += usize::from(stop().is_ok());
             }
+        }
+        let began = std::time::Instant::now();
+        while active.iter().any(|id| self.owned.lock().unwrap().contains(id)) {
+            if began.elapsed() >= ENDED_WAIT {
+                tracing::warn!("a view a lock ended: {} run(s) still going there, {stopped} stopped, not yet ended; asked again", active.len());
+                return Err(io::Error::new(io::ErrorKind::WouldBlock, "the project's runs there are still stopping"));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        for id in &active {
             self.progress.lock().unwrap().remove(id);
+            self.active.lock().unwrap().remove(id);
         }
         self.private_roots.lock().unwrap().remove(project_id);
         crate::private_io::forget(project_id);
         self.journal.lock().unwrap().retire_project(project_id)?;
         self.gone.lock().unwrap().remove(project_id);
-        tracing::warn!("a view a lock ended: {} run(s) still going there, {stopped} stopped; its records retired", active.len());
+        tracing::warn!("a view a lock ended: {} run(s) still going there, {stopped} stopped and ended; its records retired", active.len());
         Ok(())
     }
     /// The projects journaled here as having run in vault view `view` (cl-1064).

@@ -356,14 +356,26 @@ pub(crate) fn conflict(key: &str) -> Error {
         .remedy("Send a different run with a new key.")
 }
 
+/// A project journal that can't be read now, by why (`StoreError::Locked`): "unlock it" only when the project is locked.
+fn locked(code: &str) -> Error {
+    let (code, said) = match code {
+        "project_busy" => ("project_busy", "The project's storage is busy for a moment. Try again."),
+        "project_view_changed" => ("project_view_changed", "The project was locked and unlocked again while this was asked. Try again."),
+        "project_inspection" => ("project_busy", "Cozy is checking the project's storage for a moment. Try again."),
+        "project_acting" => ("project_acting", "The project is busy with another change to it. Try again when that finishes."),
+        "project_transition" => ("project_transition", "The project's storage is changing (it's locking, unlocking or converting). Try again when that finishes."),
+        "project_not_open" | "run_owner_required" => ("project_not_open", "The project isn't open in Cozy right now. Open it, then try again."),
+        _ => ("project_locked", "The project is locked. Unlock it to see its run history."),
+    };
+    Error::new(Kind::Conflict, code, said)
+}
+
 impl From<crate::Error> for Refusal {
     fn from(e: crate::Error) -> Self {
         Refusal(match e {
             crate::Error::Store(StoreError::Conflict(key)) => conflict(&key),
-            // A moment's busy storage or a view changed under the ask is never "locked": nothing asks the user to unlock (cl-1064).
-            crate::Error::Store(StoreError::Locked(code)) if code == "project_busy" => Error::new(Kind::Conflict, "project_busy", "The project's storage is busy for a moment. Try again."),
-            crate::Error::Store(StoreError::Locked(code)) if code == "project_view_changed" => Error::new(Kind::Conflict, "project_view_changed", "The project was locked and unlocked again while this was asked. Try again."),
-            crate::Error::Store(StoreError::Locked(_)) => Error::new(Kind::Conflict, "project_locked", "The project is locked. Unlock it to see its run history."),
+            // Only a locked project's journal says "unlock it"; each other refusal says what it is (cl-1064).
+            crate::Error::Store(StoreError::Locked(code)) => locked(&code),
             crate::Error::Store(StoreError::UnknownMachine(name)) => Error::new(
                 Kind::NotFound,
                 "machine_not_found",

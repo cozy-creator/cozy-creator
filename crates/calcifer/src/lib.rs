@@ -2056,12 +2056,14 @@ impl Calcifer {
                 }
                 continue;
             };
-            // Nothing new goes to local before what a lock owes it is done (cl-1064): the runs it held in a view the lock ended are
-            // cancelled and retired first, so none of them writes again, least of all into the project unlocked anew.
+            // Nothing new of a project goes to local before what a lock owes it for that project is done (cl-1064): the runs it held
+            // in a view the lock ended are cancelled and retired first, so none of them writes again into the project unlocked anew.
+            // Another project's runs don't wait on it.
             if run.state == State::Queued
                 && name == "local"
                 && let Some(machines) = self.machines()
                 && machines.maybe_owed()
+                && lock(&self.run_owners).get(id.as_str()).cloned().flatten().is_some_and(|owner| machines.owes(owner.root()))
                 && !machines.pay_owed().await
             {
                 self.waiting(id, "waiting for local to finish a locked project's clean-up".into());

@@ -128,6 +128,11 @@ fn key(e: project_vault::Error) -> Error {
     }
 }
 fn held(root: &FsPath) -> Option<Held> { SESSIONS.lock().expect("vault sessions").get(root).cloned() }
+
+/// Whether the encrypted project at `root` is locked: no session, and no conversion of its storage going (cl-1064).
+pub(crate) fn is_locked(root: &FsPath) -> bool {
+    status(root).state == "locked" && !CONVERTING.lock().expect("vault conversions").contains(root)
+}
 pub(crate) fn mount_identity(root: &FsPath) -> Option<MountIdentity> { held(root).map(|session| session.lock().expect("vault session").identity.clone()) }
 /// Whether `view` is an unencrypted project's own folder: no keybag behind it and no mounted view's place.
 pub(crate) fn ordinary_storage(view: &FsPath) -> bool {
@@ -562,6 +567,26 @@ fn project_runtime(root: &FsPath) -> Result<PathBuf, Error> {
     Ok(runtime)
 }
 
+/// In an owed view's runtime folder (cl-1064): its sealed mount point stays until the machine that didn't answer has done the
+/// clean-up a lock owes it, so nothing that machine still runs can write plaintext where the view was.
+const OWED_MARK: &str = "owed";
+
+/// An owed view's runtime folder once its machine did the clean-up (cl-1064): its mark and sealed mount point go.
+pub(crate) fn retire_owed_view(folder: &FsPath, view: &FsPath) -> Result<(), Error> {
+    let Some(runtime) = view.parent() else { return Ok(()) };
+    let base = folder.join(RUNTIME_DIR);
+    let same = |left: &FsPath, right: &FsPath| left == right || platform::durable::canonical(left).ok().zip(platform::durable::canonical(right).ok()).is_some_and(|(left, right)| left == right);
+    if !runtime.parent().is_some_and(|parent| same(parent, &base)) {
+        return Err(error("vault_runtime", "an owed view isn't in its project's runtime folder"));
+    }
+    match fs::remove_file(runtime.join(OWED_MARK)) {
+        Ok(()) => {}
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => {}
+        Err(why) => return Err(io(why)),
+    }
+    retire_runtime(runtime)
+}
+
 fn retire_runtime(runtime: &FsPath) -> Result<(), Error> {
     #[cfg(not(windows))]
     match fs::remove_dir(runtime.join("view")) {
@@ -594,6 +619,8 @@ fn retire_orphaned_views(root: &FsPath) -> Result<(), Error> {
     for entry in fs::read_dir(&base).map_err(io)? {
         let entry = entry.map_err(io)?;
         if !entry.file_type().map_err(io)?.is_dir() { continue; }
+        // An owed view stays sealed until its machine's clean-up is paid (cl-1064), which retires it.
+        if entry.path().join(OWED_MARK).exists() { continue; }
         project_mount::detach_stale(&project_mount::view_path(&entry.path()).map_err(provider)?);
         retire_runtime(&entry.path())?;
     }
@@ -892,7 +919,10 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Resul
             // Owed before the view ends, so a Calcifer stopped between them still tells the machine; let go if it doesn't end.
             crate::private_io::Sealed::Owed(view) => {
                 api.machines.owe(view, root).map_err(|e| error("vault_index", e.to_string()))?;
+                // Its sealed mount point stays, marked before the view ends, until the machine's clean-up is paid (`retire_owed_view`).
+                fs::write(session.runtime.join(OWED_MARK), b"").map_err(io)?;
                 if let Err(why) = session.mount.end() {
+                    let _ = fs::remove_file(session.runtime.join(OWED_MARK));
                     let _ = api.calcifer.store().paid("local", view);
                     return Err(provider(why));
                 }
@@ -900,7 +930,7 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Resul
                 say(root, "owed", || OWED_LINE.into());
             }
         }
-        retire_runtime(&session.runtime)?;
+        if matches!(sealed, crate::private_io::Sealed::Closed) { retire_runtime(&session.runtime)?; }
         drop(session);
         SESSIONS.lock().expect("vault sessions").remove(root);
         LOCK_RETRIES.lock().expect("lock retries").remove(root);
