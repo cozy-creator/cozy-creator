@@ -137,9 +137,13 @@ done
 if [ "$(jq length <<<"$COMFY")" != 0 ]; then
   # ComfyUI alone on the GPU: a restart ends Cozy's executors.
   step free machine update "$NAME" --gpu-memory-limit off -y || say "freeing the GPU: $(tail -2 "$OUT/free.txt")"
+  # No Cozy run moves from here on: the rental's 15-minute idle clock is renewed by hand (pod-session 44069065274's pod
+  # ended mid-ship).
+  ( while sleep 240; do cozy machine keepalive "$NAME" > /dev/null 2>&1; done ) 9>&- & BG=$!
   for i in $(seq 1 20); do pod true < /dev/null > /dev/null 2>&1 && break; sleep 15; done
   t0=$SECONDS
-  tar -C "$W" -I "gzip -1" -cf - . | T=3600 pod "mkdir -p $W && tar -xzf - --no-same-owner -C $W" || fail "shipping ComfyUI to the pod"
+  tar -C "$W" -I "gzip -1" -cf - . | T=3600 pod "mkdir -p $W && tar -xzf - --no-same-owner -C $W" 2> "$OUT/ship.err" ||
+    fail "shipping ComfyUI to the pod: $(tail -c 300 "$OUT/ship.err")"
   say "ComfyUI on the pod in $((SECONDS - t0)) s"
   clips=$(printf " $W/clip%s.mp4" "${COUNTS[@]}")
   mapfile -t CONFIGS < <(jq -c '.configs[]' <<<"$COMFY")
