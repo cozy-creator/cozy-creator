@@ -602,15 +602,18 @@ impl Machines {
             return Err(refusal);
         }
         // TensorD admits this controller's key from the home as it starts.
-        self.owner_key()?;
+        let key = self.owner_key()?;
         let me = self.clone();
         let answered = move |endpoint| match me.put_local(Some(endpoint), true) {
             Ok(()) => me.calcifer.machine_changed(),
             Err(e) => warn!("this computer's machine serves, late: {}", e.message),
         };
+        // Said as it's judged, whether or not this caller still waits (cl-1066).
+        let me = self.clone();
+        let silent = move |refusal: Error| me.local_silent(&refusal);
         let started = match self.local.serving().await {
             Ok(Some(endpoint)) => Ok(endpoint),
-            Ok(None) => self.local.start(answered).await,
+            Ok(None) => self.local.start(key, answered, silent).await,
             Err(refusal) => Err(refusal),
         };
         let endpoint = started.inspect_err(|refusal| {
