@@ -380,7 +380,7 @@ jobs:
           else s=$(cd src && ../.creator/ci/affected "$REPO" "$BASE" "$REF" --json); fi
           echo "selection=$s" >> "$GITHUB_OUTPUT"
           # A Linux suite takes the candidate jobs' set.
-          echo "linux=$(echo "$s" | jq 'any(.suites[]; . == "cli" or . == "imports" or . == "cli-release" or . == "cpu")')" >> "$GITHUB_OUTPUT"
+          echo "linux=$(echo "$s" | jq 'any(.suites[]; . == "cli" or . == "imports" or . == "cli-release" or . == "cpu" or . == "skew-candidate")')" >> "$GITHUB_OUTPUT"
           # The cli suite's other runners: macOS arm64 (Intel Macs aren't supported), Windows x64; a release run's installer
           # on Windows arm64 too.
           arm=$([ -z "$PUBLISH_RUN" ] || echo '"windows-11-arm"')
@@ -1309,9 +1309,76 @@ jobs:
           path: ${{ runner.temp }}/e2e
           retention-days: 14
 
+  # The candidate cozy against the Hub production runs (tensorhub master, the line its tags are cut from), while the suites'
+  # Hub follows tensorhub's RC (cl-1109): a new client × the production Hub, by the Hub suite's cells (e2e/skew/run.sh:
+  # account, catalog, package publish, install and run, weights uploaded by the machine, publish, download, delete), about
+  # 5 min. `skew-candidate`; rc-e2e runs it on every RC push. Old clients × the next Hub stay `skew`'s, at release.
+  skew-candidate:
+    name: skew candidate × tensorhub master
+    needs: [affected, candidate]
+    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'skew-candidate')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      BUILD: ${{ join(fromJSON(needs.affected.outputs.selection).build, ' ') }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/cozy-creator
+          ref: ${{ needs.affected.outputs.creator }}
+          path: .creator
+      - uses: ./.creator/e2e/candidates
+        with:
+          packages_ref: ${{ needs.affected.outputs.packages }}
+          repo: ${{ needs.affected.outputs.repo }}
+          ref: ${{ needs.affected.outputs.ref }}
+          build: ${{ env.BUILD }}
+          from: artifacts
+          stack_ref: ${{ needs.affected.outputs.stack }}
+          runtime_ref: ${{ needs.affected.outputs.runtime }}
+          tensord: ${{ inputs.tensord }}
+          tensorfs: ${{ inputs.tensorfs }}
+          runtime: ${{ inputs.runtime }}
+          release: ${{ inputs.publish_run }}
+      - uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/tensorhub
+          ref: master
+          ssh-key: ${{ secrets.TENSORHUB_READ_KEY }}
+          persist-credentials: false
+          path: .tensorhub
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .tensorhub/go.mod
+          cache-dependency-path: .tensorhub/go.sum
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/skew-tools
+          key: skew-minio-RELEASE.2025-09-07T16-13-09Z
+      - name: skew candidate × tensorhub master
+        env:
+          SKEW_TOOLS: ${{ runner.temp }}/skew-tools
+        run: |
+          echo "tensorhub master at $(git -C .tensorhub rev-parse --short=12 HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
+          sudo loginctl enable-linger "$(id -un)"
+          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+          until [ -S "$XDG_RUNTIME_DIR/bus" ]; do sleep 1; done
+          export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+          bash .creator/e2e/skew/run.sh --hub-src .tensorhub --candidates "$CANDIDATES" --out "$RUNNER_TEMP/e2e"
+      - if: always()
+        uses: ./.creator/e2e/publish
+        with:
+          name: e2e-skew-candidate
+          path: ${{ runner.temp }}/e2e
+          retention-days: 14
+
   e2e:
     if: always()
-    needs: [affected, candidate, candidate-os, projectvault-archive, hub, cli, cli-os, cli-release, imports, cpu]
+    needs: [affected, candidate, candidate-os, projectvault-archive, hub, cli, cli-os, cli-release, imports, cpu, skew-candidate]
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs sends no signal.
     timeout-minutes: 10
