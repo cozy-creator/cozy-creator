@@ -86,8 +86,8 @@ while IFS=$'\t' read -r name group cap warm seed target args before _; do
   [ -z "$ONLY_ASKED" ] || [[ $ONLY_ASKED == *",$name,"* ]] || continue
   want=off; [ "$cap" = - ] || want=$cap
   # Each cell's cold run starts from a cold pod: what earlier cells left (LoRA bakes, memos, learned peaks, kernels, the
-  # store's page cache) goes before a restart ends their executors (machines.sh `pod_derived`), and a census after it must
-  # find none. Weights stay, as do the host hog and the pod scripts. Earlier, a cell's "cold" run read an earlier cell's
+  # store's page cache) goes before a restart ends their executors (machines.sh `pod_derived`), and a settle after it
+  # clears what the ended executors wrote behind their last run; its census must find none. Weights stay, as do the host hog and the pod scripts. Earlier, a cell's "cold" run read an earlier cell's
   # bakes and kernels, and h3-g2 read h3-g1's text encodings (tfs-299).
   [ -n "$(pod_derived "$CLI" "$M" reset)" ] || log "$name: no derived-state reset: its cold run may read what earlier cells left"
   # The VRAM holder ends before the restart (TensorD sets aside a GPU another program holds at its start) and comes back
@@ -108,7 +108,7 @@ while IFS=$'\t' read -r name group cap warm seed target args before _; do
     CAPNOW=$want
   fi
   if [ "$LEVEL_OK" = 0 ]; then expect "$name" FAIL "no holder for a ${want} GiB card"; continue; fi
-  census=$(pod_derived "$CLI" "$M" census); echo "$name	$census" >> bench-derived.tsv
+  census=$(pod_derived "$CLI" "$M" settle); echo "$name	$census" >> bench-derived.tsv
   pod_derived_zero "$census" || expect "$name-cold" FAIL "its cold run starts with derived state it did not make: ${census:-no census}"
   t=$(pkg "${target%/*}" "${target##*/}")
   for ((i = 0; i <= warm; i++)); do
