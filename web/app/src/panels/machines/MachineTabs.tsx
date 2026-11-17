@@ -10,7 +10,7 @@ import { Bar } from "../common"
 import { ordinal } from "../format"
 import { runName as runLabel, workWords } from "../runs/words"
 import { Checks, Spec } from "./RenderHere"
-import { type Doing, doingOf, fetchedWords, fractionOf, operationName, runName, waits, working } from "./activity"
+import { clientFraction, clientFrom, clientFunction, clientWords, type Doing, doingOf, fetchedWords, fractionOf, operationName, runName, waits, working } from "./activity"
 import type { MachinesAsk } from "./Machines"
 import { called, gpusWords, slowWords, stableName, stateWords } from "./words"
 import "./MachineTabs.css"
@@ -24,7 +24,23 @@ function marksOf(machine: Machine, doing: Doing[]): Mark[] {
   if (machine.state === "booting" || machine.state === "ending") return ["up"]
   if (machine.state !== "ready" && machine.state !== "stopped") return ["broken"]
   const kinds = new Set(
-    doing.map((one) => (one.kind === "run" ? (working(one.run, one.on) ? "work" : "waits") : one.kind === "other" ? (one.state === "running" ? "work" : "waits") : one.kind)),
+    doing.map((one) =>
+      one.kind === "run"
+        ? working(one.run, one.on)
+          ? "work"
+          : "waits"
+        : one.kind === "other"
+          ? one.state === "running"
+            ? "work"
+            : "waits"
+          : one.kind === "client"
+            ? one.other.running
+              ? "work"
+              : one.other.bytes_left
+                ? "download"
+                : "waits"
+            : one.kind,
+    ),
   )
   const marks: Mark[] = (["download", "install", "work"] as const).filter((kind) => kinds.has(kind))
   return [...(slowWords(machine).length ? (["slow"] as const) : []), ...(marks.length ? marks : (["idle"] as const))]
@@ -40,9 +56,10 @@ function MarkOf({ mark }: { mark: Mark }) {
   return <span className={`dot ${mark}`} />
 }
 
-/** A tab's marks, name and how many function runs, its GPUs' work: an install or a download is listed, not counted (cl-889). */
+/** A tab's marks, name and how many function runs, its GPUs' work, every computer's: an install or a download is listed, not counted
+ *  (cl-889). */
 function Face({ machine, doing }: { machine: Machine; doing: Doing[] }) {
-  const total = doing.filter((one) => one.kind === "run" && one.run.kind === "call").length
+  const total = doing.filter((one) => (one.kind === "run" && one.run.kind === "call") || one.kind === "client").length
   return (
     <>
       {marksOf(machine, doing).map((mark) => (
@@ -71,6 +88,26 @@ function Row({ doing, boxes, to }: { doing: Doing; boxes: Map<number, string>; t
         <span className="said">{doing.words}</span>
       </li>
     )
+  if (doing.kind === "hold")
+    return (
+      <li className="doing" data-doing="hold">
+        <MarkOf mark="idle" />
+        <b>{doing.words}</b>
+      </li>
+    )
+  if (doing.kind === "client") {
+    const { other } = doing
+    const fraction = clientFraction(other)
+    return (
+      <li className="doing" data-doing="client">
+        <MarkOf mark={other.running ? "work" : other.bytes_left ? "download" : "idle"} />
+        <b title={other.function}>{clientFunction(other)}</b>
+        <span className="kind">{clientFrom(other)}</span>
+        {fraction !== undefined && <Bar fraction={fraction} />}
+        <span className="said">{clientWords(other, Date.now())}</span>
+      </li>
+    )
+  }
   if (doing.kind === "other")
     return (
       <li className="doing" data-doing="other">
@@ -193,9 +230,9 @@ export function MachineTabs({ to, projectId, readable, locked }: { to: (rest?: s
   const sizes = useRef<HTMLDivElement>(null)
   const renting = !client.transport.channel
   const chosen = project?.machines ?? []
-  // Every machine of this computer's, a rental still booting too, and any the project prefers.
+  // Every machine, every rental of the account whoever rented it (cl-1193), one still booting too.
   const machines = (data?.machines ?? [])
-    .filter((machine) => machine.kind !== "rental" || (machine.state !== "ended" && (machine.ordered !== false || chosen.includes(machine.name))))
+    .filter((machine) => machine.kind !== "rental" || machine.state !== "ended")
     .sort((a, b) => Number(b.kind === "local") - Number(a.kind === "local"))
   const tabs = machines.slice(0, Math.max(count, 1))
   const hidden = machines.slice(tabs.length)

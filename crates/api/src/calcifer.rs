@@ -1293,7 +1293,8 @@ pub struct Machine {
     /// A booting rental's acquisition attempt, as its Hub says it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempt: Option<Attempt>,
-    /// Calcifer's function runs on it, its GPUs' work: installs, downloads, updates and removals aren't counted (cl-889).
+    /// Its function runs, its GPUs' work, every client's: this computer's by its records, another's as the machine says (cl-1193).
+    /// Installs, downloads, updates and removals aren't counted (cl-889).
     #[serde(default)]
     pub running: u32,
     #[serde(default)]
@@ -1543,6 +1544,15 @@ pub struct MachineStatus {
     /// This controller's predicted requests there (`PUT /v1/upcoming`, `/v1/prepare`), and how ready it is for each.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ahead: Vec<Readied>,
+    /// The runs other clients sent there, as the machine says them (cl-1193): whose, and how far, never their project's content.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub others: Vec<ClientRun>,
+    /// SSH sessions open there now (cl-1193).
+    #[serde(default)]
+    pub ssh_sessions: u32,
+    /// When a keepalive last restarted its idle clock, while the clock counts from it (cl-1193).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept_alive_ms: Option<i64>,
 }
 
 /// A predicted request on a machine (cl-1123): its item's id there (`cozy:upcoming:<key>`, `cozy:prepare:<key>`), its run's state
@@ -1673,6 +1683,40 @@ impl LiveRun {
     pub fn locked(state: String) -> Self {
         Self { state, locked: true, ..Self::default() }
     }
+}
+
+/// A run another client sent a machine, as the machine says it (cl-1193): what it runs, for which computer, and how far it is. Nothing of
+/// its project's: no inputs or outputs, and an encrypted project's names no function, stage or models.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ClientRun {
+    /// `<package>/<function>`; empty: an encrypted project's.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub function: String,
+    /// The computer that sent it, as it names itself; empty: unnamed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub client: String,
+    /// It left its queue: it starts or runs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub running: bool,
+    /// When it began executing (unix ms).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<i64>,
+    /// The GPUs it holds.
+    #[serde(default)]
+    pub width: u32,
+    /// How far it is: its stage, and its step of `steps` (0: none said).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub stage: String,
+    #[serde(default)]
+    pub step: u64,
+    #[serde(default)]
+    pub steps: u64,
+    /// The models it waits to download, and their bytes still to come.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<String>,
+    #[serde(default)]
+    pub bytes_left: u64,
 }
 
 /// One of a machine's GPUs: its name, memory, driver and family.

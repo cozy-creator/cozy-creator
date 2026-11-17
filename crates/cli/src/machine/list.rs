@@ -2,7 +2,7 @@
 use std::process::ExitCode;
 
 use api::{
-    calcifer::{GpuReading, GpuUse, LiveRentals, LiveRun, Machine, MachineKind, MachineList, MachineState, MachineStatus, Rental},
+    calcifer::{ClientRun, GpuReading, GpuUse, LiveRentals, LiveRun, Machine, MachineKind, MachineList, MachineState, MachineStatus, Rental},
     error::Error,
 };
 
@@ -24,6 +24,7 @@ pub(crate) const FIELDS: &[&str] = &[
     "machines.rental.usd_micros_per_hour", "machines.rental.spend_usd_micros", "machines.rental.spend_basis",
     "machines.rental.rented_at_ms", "machines.status.version", "machines.status.phase", "machines.status.gpus.index",
     "machines.status.gpus.name", "machines.status.gpus.memory_bytes", "machines.status.idle_deadline_ms", "machines.held", "machines.unheld",
+    "machines.status.others", "machines.status.ssh_sessions", "machines.status.kept_alive_ms",
 ];
 /// The columns of `HEADERS` a view shows without `--full`.
 const SHOWN: [usize; 8] = [0, 1, 2, 4, 5, 6, 8, 10];
@@ -383,6 +384,31 @@ fn live_run(held: &LiveRun) -> (String, String) {
     (format!("run {}", run::handle(run)), cell)
 }
 
+/// A run another computer sent there, as the machine says it (cl-1193): what it runs, for which computer, how far it is.
+fn other_run(other: &ClientRun) -> (String, String) {
+    let from = match other.client.as_str() {
+        "" => "another computer",
+        client => client,
+    };
+    let function = match other.function.as_str() {
+        "" => "an encrypted project's run",
+        function => function,
+    };
+    let mut cells = vec![if other.running { "running" } else { "queued" }.to_owned(), function.to_owned()];
+    match other.steps {
+        0 if !other.stage.is_empty() => cells.push(other.stage.clone()),
+        0 => {}
+        steps => cells.push(format!("{} {}/{steps}", other.stage, other.step).trim_start().to_owned()),
+    }
+    if let Some(at) = other.started_at_ms.filter(|_| other.running) {
+        cells.push(format!("{} in", clock(now_ms() - at)));
+    }
+    if other.bytes_left > 0 {
+        cells.push(format!("{} of {} to download", crate::output::bytes(other.bytes_left), other.models.join(", ")));
+    }
+    (format!("run from {from}"), cells.join(" · "))
+}
+
 /// What a machine reports of itself, one fact per line, GPUs by number.
 pub(crate) fn status_fields(status: &MachineStatus) -> Vec<(String, String)> {
     let mut fields = vec![
@@ -472,6 +498,13 @@ pub(crate) fn status_fields(status: &MachineStatus) -> Vec<(String, String)> {
         }
     }
     fields.extend(status.runs.iter().map(live_run));
+    fields.extend(status.others.iter().map(other_run));
+    if status.ssh_sessions > 0 {
+        fields.push(("ssh".into(), format!("{} session{} open", status.ssh_sessions, if status.ssh_sessions == 1 { "" } else { "s" })));
+    }
+    if let Some(at) = status.kept_alive_ms {
+        fields.push(("kept alive".into(), format!("by a keepalive {} ago", clock(now_ms() - at))));
+    }
     if !status.mode.is_empty() {
         fields.push(("mode".into(), status.mode.clone()));
     }
@@ -671,11 +704,19 @@ fn uptime(m: &Machine) -> String {
 /// When an idle machine ends itself: a rental with work names no deadline and ends after it.
 fn ends_cell(m: &Machine) -> String {
     match (m.status.as_ref().map(|s| s.idle_deadline_ms), m.kind) {
-        (Some(Some(at)), _) if at > now_ms() => format!("in {}", clock(at - now_ms())),
+        (Some(Some(at)), _) if at > now_ms() => format!("in {}{}", clock(at - now_ms()), holds(m)),
         (Some(Some(_)), _) => "now".into(),
         (Some(None), MachineKind::Rental) => "after its jobs".into(),
         _ => "—".into(),
     }
+}
+
+/// What keeps an idle machine up that is no job (cl-1193): a keepalive, an SSH session.
+fn holds(m: &Machine) -> String {
+    let Some(status) = &m.status else { return String::new() };
+    let kept = status.kept_alive_ms.map(|_| " · kept alive");
+    let ssh = (status.ssh_sessions > 0).then_some(" · ssh open");
+    [kept, ssh].into_iter().flatten().collect()
 }
 
 /// Since when the Hub cannot reach a live rental its provider reports running.

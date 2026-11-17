@@ -963,7 +963,7 @@ impl Machines {
             machine.state = MachineState::Ending;
             machine.reason = Some(reason);
         }
-        let (mut held, mut activity) = (vec![], vec![]);
+        let (mut held, mut activity, mut queue) = (vec![], vec![], vec![]);
         // Copied under the lock and worked out after it: a picture never holds up what a machine's Status says.
         let seen = lock(&self.seen).get(&row.name).map(|seen| Seen { frame: seen.frame.clone(), boot: seen.boot.clone(), attempt: seen.attempt.clone(), unreachable: seen.unreachable.clone(), silent: seen.silent.clone(), vouched: seen.vouched.clone(), unanswered: seen.unanswered, ..*seen });
         if let Some(seen) = seen {
@@ -973,6 +973,7 @@ impl Machines {
             machine.status = seen.frame.as_ref().map(|frame| self.visible(&row.name, frame));
             held = seen.frame.as_ref().map(|f| f.runs.clone()).unwrap_or_default();
             activity = seen.frame.as_ref().map(|f| f.activity.clone()).unwrap_or_default();
+            queue = seen.frame.as_ref().and_then(|f| f.queue.clone()).unwrap_or_default();
             if row.kind == MachineKind::Local {
                 let followed = lock(&self.project_activity);
                 activity.extend(projects.iter().filter_map(|project| followed.get(project)).flatten().cloned());
@@ -1003,6 +1004,11 @@ impl Machines {
                 });
             }
             status.activity = activity.iter().filter_map(|operation| self.operation(operation, projects)).collect();
+            // Every other client's runs there, as the machine says them (cl-1193): counted with this computer's.
+            status.others = queue.iter().filter(|root| !self.sent_here(root)).map(client_run).collect();
+            let going = status.others.iter().filter(|run| run.running).count() as u32;
+            machine.running += going;
+            machine.queued += status.others.len() as u32 - going;
         }
         let frame = self.frame(&row.name);
         machine.rc = self.rc_follow(&row.name, frame.as_ref());
@@ -1015,6 +1021,12 @@ impl Machines {
         self.hubs.describe(&mut machine, asked.as_ref());
         machine.ssh = self.ssh(&machine);
         Ok(machine)
+    }
+
+    /// Whether this computer sent `root`: the machine says so, or (a machine before cl-1193) its id is one of this computer's runs.
+    fn sent_here(&self, root: &v1::Queued) -> bool {
+        let id = crate::store::calcifer_id(&root.run);
+        root.own || (!id.is_empty() && (crate::prefetch::listed(id) || self.calcifer.active_run(id).is_some()))
     }
 
     /// `frame` as this controller's own views show it. Its models and installed packages are the machine's, whoever's run put them
@@ -2541,6 +2553,25 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
                 held_back: item.held_back.clone(),
             })
             .collect(),
+        others: vec![],
+        ssh_sessions: frame.ssh_sessions,
+        kept_alive_ms: (frame.kept_alive_unix_ms > 0).then_some(frame.kept_alive_unix_ms),
+    }
+}
+
+/// Another client's run as the machine says it (cl-1193): what it runs and for whom, how far it is.
+fn client_run(root: &v1::Queued) -> wire::ClientRun {
+    wire::ClientRun {
+        function: root.function.clone(),
+        client: root.client.clone(),
+        running: root.running,
+        started_at_ms: (root.started_at_unix_ms > 0).then_some(root.started_at_unix_ms),
+        width: root.width,
+        stage: root.stage.clone(),
+        step: root.step,
+        steps: root.steps,
+        models: root.models.clone(),
+        bytes_left: root.bytes_left,
     }
 }
 

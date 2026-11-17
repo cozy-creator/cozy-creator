@@ -277,7 +277,11 @@ impl Machine {
                 refusal => Error::credential("capability_invalid", refusal.to_string()),
             })?;
         let owner = authority.keys.granted(&signer);
-        Ok(Caller { actor: VerifiedActor { public_key: signer.to_bytes(), owner }, grant })
+        let actor = VerifiedActor { public_key: signer.to_bytes(), owner };
+        if let Some(said) = headers.get(v1::CLIENT).and_then(|value| value.to_str().ok()) {
+            crate::clients::heard(&crate::runs::actor_id(actor), said);
+        }
+        Ok(Caller { actor, grant })
     }
 
     /// A response stream lives until its key stops authorizing; a play link's also until its

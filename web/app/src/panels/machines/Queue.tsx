@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
 import { Link } from "react-router-dom"
-import type { LiveRun, Machine, MachineStatus, Operation, Run } from "../../api/calcifer"
+import type { ClientRun, LiveRun, Machine, MachineStatus, Operation, Run } from "../../api/calcifer"
 import { projectQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
 import { useProjectId, useTo } from "../../app/project"
@@ -8,7 +8,7 @@ import { Icon } from "../../ui/Icon"
 import { Bar, Section } from "../common"
 import { ordinal } from "../format"
 import { runName as runLabel, workWords } from "../runs/words"
-import { fetchedWords, fractionOf, operationName, ownActivity, runName, waitsOnOf } from "./activity"
+import { clientFraction, clientFrom, clientFunction, clientWords, fetchedWords, fractionOf, operationName, ownActivity, runName, waitsOnOf } from "./activity"
 
 const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
 
@@ -83,6 +83,20 @@ function RunRow({ held, activity, project, boxes }: { held: LiveRun; activity: O
   )
 }
 
+/** A run another computer sent, as the machine says it (cl-1193): what it runs, from which computer, how far. */
+function ClientRow({ other }: { other: ClientRun }) {
+  const fraction = clientFraction(other)
+  return (
+    <li className="qrow" data-queue="client" data-state={other.running ? "running" : "queued"}>
+      <span className={`dot ${other.running ? "work" : "idle"}`} />
+      <b title={other.function}>{clientFunction(other)}</b>
+      <span className="kind">{clientFrom(other)}</span>
+      {fraction !== undefined && <Bar fraction={fraction} />}
+      <span className="said">{clientWords(other, Date.now())}</span>
+    </li>
+  )
+}
+
 /** What it's doing and what waits (Paul 11-16, "it's run queue, list of jobs / operations queued up / in progress"): its downloads and
  *  installs with how far they are, then its runs in the order they go, each once. Kept by the machines' stream. */
 export function Queue({ machine, status }: { machine: Machine; status: MachineStatus }) {
@@ -94,15 +108,19 @@ export function Queue({ machine, status }: { machine: Machine; status: MachineSt
   const activity = ownActivity(machine, project)
   const operations = [...activity].sort((a, b) => Number(a.kind === "download") - Number(b.kind === "download"))
   const runs = [...(status.runs ?? [])].sort(order)
+  const others = [...(status.others ?? [])].sort((a, b) => Number(Boolean(b.running)) - Number(Boolean(a.running)))
   return (
     <Section title="Queue">
-      {operations.length || runs.length ? (
+      {operations.length || runs.length || others.length ? (
         <ul className="queue">
           {operations.map((operation) => (
             <OperationRow key={operation.id} operation={operation} />
           ))}
           {runs.map((held, at) => (
             <RunRow key={held.id || `locked ${at}`} held={held} activity={activity} project={project} boxes={boxes} />
+          ))}
+          {others.map((other, at) => (
+            <ClientRow key={`client ${at}`} other={other} />
           ))}
         </ul>
       ) : (

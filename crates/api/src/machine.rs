@@ -30,6 +30,8 @@ pub const LOCAL_PRIVATE_PREFIX: &str = "/v1/local-private";
 pub const LOCAL_PRIVATE_DESCRIPTOR: &str = "cozy-local-private-storage";
 pub const LOCAL_PRIVATE_TOKEN: &str = "cozy-local-private-token";
 pub const LOCAL_PRIVATE_MARKER: &str = ".vault-local-execution.json";
+/// The computer a request comes from, as it names itself (its host name): what Status says sent each run (`Queued::client`, cl-1193).
+pub const CLIENT: &str = "cozy-client";
 
 /// A project's machine area in its own storage (`DIR`): TensorD's state for the project's runs.
 /// Its journal, results and objects are the project's. What `rebuildable` names TensorD makes
@@ -1268,6 +1270,12 @@ pub struct StatusFrame {
     /// An idle rental's release, 15 min after its last job; 0: none (a job is queued or running,
     /// or it never releases).
     pub idle_deadline_unix_ms: i64,
+    /// When a keepalive last restarted that idle clock, while the clock counts from it (no job ended since); 0: none (cl-1193).
+    #[serde(skip_serializing_if = "is_zero_i64")]
+    pub kept_alive_unix_ms: i64,
+    /// SSH sessions open on it now, a development rental's (`cozy machine ssh`): use that holds no job (cl-1193).
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub ssh_sessions: u32,
     /// The caller's live runs.
     pub runs: Vec<RunState>,
     /// An update in progress here; none without one.
@@ -1407,7 +1415,7 @@ pub fn log_tail(text: &str, lines: u64, bytes: usize) -> &str {
 pub struct Queued {
     /// The caller's id for it; empty: another caller's.
     pub run: String,
-    /// `<package>/<function>`, as `Timed::function` names it; empty: a private run's.
+    /// `<package>/<function>`, as `Timed::function` names it; empty: an encrypted project's run.
     pub function: String,
     pub size: JobSize,
     /// The widths it may run at, smallest first; none: no GPU.
@@ -1435,6 +1443,19 @@ pub struct Queued {
     pub models: Vec<String>,
     /// Its weights' bytes still to come, its calls' included.
     pub bytes_left: u64,
+    /// The caller sent it (cl-1193).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub own: bool,
+    /// The computer that sent it, as that computer named itself ([`CLIENT`]); empty: unnamed since this machine started (cl-1193).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub client: String,
+    /// How far it is: its latest progress' stage (none for an encrypted project's run), and its step of `steps` (0: none said yet).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub stage: String,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub step: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub steps: u64,
 }
 
 fn is_zero_i64(n: &i64) -> bool {
