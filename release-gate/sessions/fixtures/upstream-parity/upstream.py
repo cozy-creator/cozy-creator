@@ -160,8 +160,9 @@ def pan2(out: Path, fixtures: Path) -> None:
     # Diffusers' PAN2 docs: `ModularPipeline.from_pretrained("IFM/PAN2")`, `load_components(dtype=torch.bfloat16)`
     # (the VAE too, as the native pipeline loads it). The guardrail is a separate package, off here as in the package.
     pipe = ModularPipeline.from_pretrained(PAN2[0], revision=PAN2[1])
-    pipe.load_components(names=["transformer", "text_encoder", "vae", "scheduler", "tokenizer"], dtype=torch.bfloat16,
-                         revision=PAN2[1])
+    bf16 = torch.bfloat16
+    pipe.load_components(names=["transformer", "text_encoder", "vae", "scheduler", "tokenizer"],
+                         dtype={"transformer": bf16, "text_encoder": bf16, "vae": bf16}, revision=PAN2[1])
     pipe.disable_safety_checker()
     say("dtypes: vae", pipe.vae.dtype, "text encoder", pipe.text_encoder.dtype,
         "modulation", pipe.transformer.transformer_blocks[0].norm1.linear.weight.dtype)
