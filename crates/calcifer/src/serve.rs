@@ -458,8 +458,9 @@ pub(crate) async fn serve(loaded: &Loaded, taken: platform::generation::Taken) -
         }
         Stopped::HandedOver => {
             accepting.send_replace(false);
-            let streams = crate::events::streams();
             let views = hand_over(&api, server, server6).await;
+            // Listed now it answers nothing more: a stream opened as it handed over is among them.
+            let streams = crate::events::streams();
             // Kept until the next one serves (Windows: the parent duplicates them out of this process meanwhile).
             let _kept = link.release(views, streams).inspect_err(|e| warn!("handing the open views over: {e}"));
             // Until the next one serves: the parent says `Exit`, or ends.

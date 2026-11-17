@@ -325,9 +325,15 @@ static SHOWN: LazyLock<Mutex<HashMap<String, Shows>>> = LazyLock::new(Mutex::def
 /// with nothing held rather than refused, as its `hello` here names its own.
 static HANDED: LazyLock<Mutex<std::collections::HashSet<String>>> = LazyLock::new(Mutex::default);
 
-/// Every stream open now, to hand over (cl-1113).
+/// The streams this generation made lately, open or not (cl-1113): one a page opens over a kept connection as the hand-over ends is
+/// handed over too.
+static MADE: LazyLock<Mutex<VecDeque<String>>> = LazyLock::new(Mutex::default);
+/// How many of them are kept: a few pages' reconnects.
+const MADE_MOST: usize = 256;
+
+/// The streams this generation made, to hand over once it no longer answers (cl-1113).
 pub(crate) fn streams() -> Vec<String> {
-    SHOWN.lock().expect("shown lock").keys().cloned().collect()
+    MADE.lock().expect("made lock").iter().cloned().collect()
 }
 
 /// The streams the last generation handed over.
@@ -434,6 +440,11 @@ impl Showing {
     fn new(page: bool) -> Self {
         let id = stream_id();
         SHOWN.lock().expect("shown lock").insert(id.clone(), Shows { page, ..Shows::default() });
+        let mut made = MADE.lock().expect("made lock");
+        if made.len() == MADE_MOST {
+            made.pop_front();
+        }
+        made.push_back(id.clone());
         Self(id)
     }
 
