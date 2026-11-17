@@ -20,7 +20,7 @@ const adaptersOf = (value: unknown): unknown[] => Array.isArray(value) ? value :
 const identityOf = (ref: string) => ref.split("@")[0]
 const SPELLED = new Map([["lora", "LoRA"], ["vae", "VAE"]])
 const title = (value: string) => value.split(/[-_]+/).filter(Boolean).map((part) => SPELLED.get(part.toLowerCase()) ?? (!/[aeiou]/i.test(part) ? part.toUpperCase() : part[0].toUpperCase() + part.slice(1))).join(" ")
-const slotName = (slot: PickerSlot, qwen: boolean, slots: PickerSlot[]) => qwen && slot.slot === "rewriter" ? "Prompt-Enhancer I2I" : qwen && slot.slot === "expander" ? "Prompt-Enhancer T2I"
+const slotName = (slot: PickerSlot, qwen: boolean, slots: PickerSlot[]) => qwen && slot.slot === "expander_i2i" ? "Prompt-Enhancer I2I" : qwen && slot.slot === "expander_t2i" ? "Prompt-Enhancer T2I"
   : slots.filter((held) => held.param === slot.param).length > 1 ? `${title(slot.param)} (${title(slot.slot.split(".models.")[0])})` : title(slot.param)
 const modelName = (ref: string) => title(identityOf(ref).split("/").filter(Boolean).at(-1)?.replace(/\.safetensors$/, "") ?? ref)
 export const modelChoiceLabel = (ref: string) => {
@@ -77,8 +77,8 @@ export function ModelPicker({ name, onClose }: { name: string; onClose(): void }
   const qwen = tool?.package.split("/").at(-1) === "qwen-image-2"
   const funAcc = Boolean(qwen && slotsOf(tool).some((slot) => slot.slot === "turbo_lora" && (slot.class?.split(".").at(-1) === "FunAccLoRA" || identityOf(slot.default ?? "") === "alibaba-pai/qwen-image-2.1-fun-acc")))
   const imageEdit = store.mentionedPictures(name).length > 0
-  const helper = imageEdit ? "rewriter" : "expander"
-  const slots = slotsOf(tool).filter((slot) => !qwen || (slot.slot !== "expander" && slot.slot !== "rewriter") || slot.slot === helper)
+  const helper = imageEdit ? "expander_i2i" : "expander_t2i"
+  const slots = slotsOf(tool).filter((slot) => !qwen || (slot.slot !== "expander_t2i" && slot.slot !== "expander_i2i") || slot.slot === helper)
   if (qwen) {
     const order = [helper, "model", "text_encoder", "vae", "turbo_lora"]
     const at = (slot: PickerSlot) => order.includes(slot.slot) ? order.indexOf(slot.slot) : order.length

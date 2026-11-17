@@ -224,11 +224,11 @@ test('fields', async ({ page, project, api, cli, guards }) => {
       return top && row.contains(top) ? [] : [row.getAttribute('data-model-slot')];
     }));
     expect.soft(covered, 'no slot row is covered by the frame').toEqual([]);
-    // Every slot the tool declares is a row (Qwen shows one prompt helper: the expander, as nothing here edits a picture), and each opens.
+    // Every slot the tool declares is a row (Qwen shows one prompt helper: the one for words, as nothing here edits a picture), and each opens.
     const rows = picker.locator('button[data-model-slot]');
     await expect(rows, 'one row per slot').toHaveCount(5);
-    expect.soft(await rows.evaluateAll((all) => all.map((row) => row.getAttribute('data-model-slot')).sort()), 'its slots').toEqual(['expander', 'model', 'text_encoder', 'turbo_lora', 'vae']);
-    for (const slot of ['expander', 'model', 'text_encoder', 'turbo_lora']) {
+    expect.soft(await rows.evaluateAll((all) => all.map((row) => row.getAttribute('data-model-slot')).sort()), 'its slots').toEqual(['expander_t2i', 'model', 'text_encoder', 'turbo_lora', 'vae']);
+    for (const slot of ['expander_t2i', 'model', 'text_encoder', 'turbo_lora']) {
       await picker.locator(`button[data-model-slot="${slot}"]`).click();
       const opened = picker.locator(`section.model-picker-slot[data-model-slot="${slot}"]`);
       await expect(opened, `${slot} opens`).toBeVisible();
