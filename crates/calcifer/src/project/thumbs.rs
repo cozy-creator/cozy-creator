@@ -261,8 +261,8 @@ pub(crate) fn previews(api: Arc<Api>) {
                 {
                     let mut queue = QUEUE.0.lock().expect("thumbnail queue");
                     queue.held.remove(&key);
-                    // What a lock or an unlock cut short is drawn when it's asked again; what else failed isn't tried again.
-                    if made.as_ref().is_err_and(|error| !matches!(error.kind, Kind::Conflict)) {
+                    // What a lock or an unlock cut short, or no ffmpeg here yet, is drawn when it's asked again; what else failed isn't.
+                    if made.as_ref().is_err_and(|error| !matches!(error.kind, Kind::Conflict | Kind::Unavailable)) {
                         queue.failed.insert(key);
                     }
                 }
@@ -329,10 +329,10 @@ async fn make(host: Host, mut drawing: Drawing) -> Result<Option<PathBuf>, Error
             return Ok(Some(at));
         }
     }
-    // Its turn and ffmpeg first, holding nothing of the project: finding ffmpeg runs it, and blocks, so that too is a few at a time,
-    // and a lock queued on the project waits for neither (cl-1025).
-    let permit = FFMPEGS.acquire().await.expect("ffmpeg's turns never close");
+    // ffmpeg first, holding no turn and nothing of the project, then its turn: waiting for the ffmpeg Calcifer's start installs never
+    // holds up another project's thumbnail (red 44170838119), and a lock queued on the project waits for neither (cl-1025).
     let (ffmpeg, ffprobe) = host.ffmpeg().await?;
+    let permit = FFMPEGS.acquire().await.expect("ffmpeg's turns never close");
     let Some(access) = admitted(&drawing)? else { return Ok(None) };
     let dir = super::vault::resolve_path(&drawing.root)?.join(STORE);
     drawing.source = super::vault::resolve_path(&drawing.source)?;

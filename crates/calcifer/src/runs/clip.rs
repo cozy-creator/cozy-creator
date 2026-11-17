@@ -1,6 +1,6 @@
 //! A part of a video a mention names (`<take3:48-336>`, an orbit's `<cat:120deg>`): cut once with ffmpeg into
 //! its project's clip cache, frame-accurate, and sent in its source's place. Calcifer cuts it, with
-//! cozy's ffmpeg (`crate::tools::ffmpeg`, fetched on first need).
+//! cozy's ffmpeg (`crate::tools::ready_ffmpeg`, installed, never fetched on first need).
 use std::{
     fmt,
     fs::{self, FileTimes},
@@ -106,9 +106,9 @@ impl fmt::Display for Cut {
 impl Clips {
     /// `range` of `source`, whose rate is `fps`, as a clip or a picture: the one cut before for this version of the file, else
     /// cut now. What it did is said in `notes`.
-    /// ffmpeg, found or fetched: before the project's gate is taken for a cut, so a lock queued on it never waits for a download (cl-1025).
+    /// ffmpeg, found (never fetched here): before the project's gate is taken for a cut, so a lock queued on it never waits (cl-1025).
     pub(crate) async fn ffmpeg(&self) -> Result<crate::tools::Ffmpeg, Error> {
-        crate::tools::ffmpeg(&self.home, &|line| tracing::info!("{line}")).await
+        crate::tools::ready_ffmpeg(&self.home).await
     }
 
     pub(crate) async fn cut(&self, field: &str, source: &Path, range: Range, fps: f64, notes: &mut Vec<Note>, ffmpeg: crate::tools::Ffmpeg, access: OwnedRwLockReadGuard<()>) -> Result<Cut, Error> {

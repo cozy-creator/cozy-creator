@@ -539,10 +539,9 @@ impl Host {
         platform::paths::cache().unwrap_or_else(|| self.api.machines.hubs.home().root().join("cache"))
     }
 
-    /// cozy's ffmpeg and ffprobe: the pinned build `cozy` fetched, else PATH's.
+    /// cozy's ffmpeg and ffprobe: the pinned build its install (or Calcifer's start) fetched, else PATH's; never fetched here.
     pub(crate) async fn ffmpeg(&self) -> Result<(PathBuf, PathBuf), Error> {
-        let home = self.api.machines.hubs.home();
-        let found = crate::tools::ffmpeg(home, &|line| tracing::info!("{line}")).await?;
+        let found = crate::tools::ready_ffmpeg(self.api.machines.hubs.home()).await?;
         Ok((found.ffmpeg, found.ffprobe))
     }
 }

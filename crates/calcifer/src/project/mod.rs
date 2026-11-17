@@ -3653,13 +3653,13 @@ async fn measure_once(host: &Host, project: &Arc<Project>) {
         let Ok(_access) = vault::admit_root(&project.root).await else { return; };
         if !unmeasured() { return; }
     }
-    // Its turn and ffmpeg first, holding nothing of the project, then the project, holding no turn: a lock queued on it waits for
-    // neither, and while it waits no other project's thumbnails or measures wait for it (cl-1025).
+    // ffmpeg first, holding nothing, then its turn, holding nothing of the project, then the project, holding no turn: a lock queued
+    // on it waits for none of them, and while it waits no other project's thumbnails or measures wait for it (cl-1025).
+    if let Err(error) = host.ffmpeg().await {
+        return warn!("measuring a project's files: {}", error.message);
+    }
     let (access, permit) = loop {
         let permit = MEASURES.acquire().await.expect("measuring's turn never closes");
-        if let Err(error) = host.ffmpeg().await {
-            return warn!("measuring a project's files: {}", error.message);
-        }
         if let Ok(access) = vault::try_admit_root(&project.root) {
             break (access, permit);
         }
@@ -4399,18 +4399,20 @@ impl Walk {
         automatic
     }
 
-    /// Sizes a function reads are ffprobe's: with files to measure and none here, this computer's first need fetches it behind the walk, which
-    /// waits for no download here, or says what goes without.
+    /// Sizes a function reads are ffprobe's: with files to measure and none here, the walk goes on while Calcifer's start installs it,
+    /// or says what goes without and how to install it.
     fn measuring(&self, lock: &Lock) {
         if !self.folder().wants_ffprobe(lock) || self.measuring.swap(true, Ordering::Relaxed) {
             return;
         }
-        self.say(Told::Said { message: "Downloading ffmpeg and ffprobe, which Cozy uses to measure this project's files.".into(), name: None });
+        if crate::tools::installing_ffmpeg() {
+            self.say(Told::Said { message: "Installing ffmpeg and ffprobe, which Cozy uses to measure this project's files.".into(), name: None });
+        }
         let (api, project) = (self.host.api(), self.project.clone());
         tokio::spawn(async move {
             match Host::new(&api).ffmpeg().await {
                 Ok(_) => project.asked.notify_one(),
-                Err(error) => project.jobs.told(Told::Warning { message: format!("Cozy couldn't get ffprobe, so tools can't see the sizes of this project's files: {}. Restart Cozy to try again.", inner(&error.message)), name: None }),
+                Err(error) => project.jobs.told(Told::Warning { message: format!("Cozy has no ffprobe, so tools can't see the sizes of this project's files: {}. Run `cozy doctor --fix`.", inner(&error.message)), name: None }),
             }
         });
     }
