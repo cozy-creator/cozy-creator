@@ -283,13 +283,13 @@ for _ in $(seq 240); do
   fi
   sleep 0.5
 done
-described=$(grep -c ' describe$' "$log" || true)
-echo "source reads: e2e-boxed changed: the page's stream was told tools.changed $told times; uv ran $described describes" \
-  "($(grep ' describe$' "$log" | grep -o '[^/ ]*/[^/ ]* describe$' | tr '\n' ' ')), listed: $(jq -c '[.tools[]? | select(.id | startswith("e2e-boxed/")) | {id, source}]' "$OUT/source-reads-edited.json" 2> /dev/null)"
+# What each describe read: the package its folder's pyproject.toml names.
+described=$(sed -n 's/.* --dir \([^ ]*\) describe$/\1/p' "$log" | while read -r dir; do sed -n 's/^name = "\(.*\)"$/\1/p' "$dir/pyproject.toml" | head -1; done | paste -sd, -)
+echo "source reads: e2e-boxed changed: the page's stream was told tools.changed $told times; uv described ${described:-nothing}; listed:" \
+  "$(jq -c '[.tools[]? | select(.id | startswith("e2e-boxed/")) | {id, source}]' "$OUT/source-reads-edited.json" 2> /dev/null)"
 J '[.tools[] | select(.id == "e2e-boxed/edited")] != []' "$OUT/source-reads-edited.json" 2> /dev/null \
   || check "source reads: e2e-boxed's new tool wasn't listed after the page was told tools.changed $told times in 2 min"
-[ "$described" = 1 ] && grep ' describe$' "$log" | grep -q 'e2e-boxed' \
-  || check "source reads: one changed file of e2e-boxed ran uv $described describes, not 1 of e2e-boxed: $(grep ' describe$' "$log" | cut -c1-200 | head -3 | tr '\n' ';')"
+[ "$described" = e2e-boxed ] || check "source reads: one changed file of e2e-boxed described ${described:-nothing}, not e2e-boxed once"
 kill "$page" 2> /dev/null || true
 mv -f "$real" "$uv" || check "source reads: Calcifer's uv wasn't put back"
 # The checkout as it was, for what follows: listed at its commit again.
