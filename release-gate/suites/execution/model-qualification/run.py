@@ -531,7 +531,8 @@ def main() -> None:
             cozy,
             output,
             "queued-before",
-            ["run", "list", "--on", args.machine, "--state", "queued", "--limit", "0"],
+            # Every project's (cl-1028: a run is its project's, and this controller's folder is none).
+            ["run", "list", "--all", "--on", args.machine, "--state", "queued", "--limit", "0"],
         ))
         assert not queued["runs"], "machine already has queued work"
         report["machine_before"] = before
