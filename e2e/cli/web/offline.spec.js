@@ -221,8 +221,10 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
     await reach(other);
     await reach(project);
     await expect.poll(() => canvasVisible(page, 'shot'), {  }).toBe(true);
-    const names = (await canvasNames(page)).sort();
-    expect.soft(names, 'a tab away and back keeps every box').toEqual(['late', 'renamed', 'shot', 'spare', 'still', 'words']);
+    // Read until each is drawn under its name: a file still on its way is keyed `placing:N` until it lands, and its name is what its card
+    // draws, a frame or more after the canvas is back (e2e 44094179191: read at once, it was its key).
+    await expect.configure({ soft: true }).poll(async () => (await canvasNames(page)).sort(), { message: 'a tab away and back keeps every box' })
+      .toEqual(['late', 'renamed', 'shot', 'spare', 'still', 'words']);
     expect.soft(await placeOf(page, 'shot'), 'and the move').toEqual(moved);
     await expect.configure({ soft: true }).poll(() => canvasText(page, 'words'), { message: 'and the words',  }).toContain(SECOND);
     await expect.configure({ soft: true }).poll(() => canvasLabel(page, 'shot', 'version'), { message: 'and the approval' }).toBe(`v${approve}`);
