@@ -6,7 +6,8 @@
 # 0. The rental has qwen-image-2 installed, as one that has run it has (Paul's hougetsu had): a cold one installs it before it can
 #    plan an item of it, which the first run says (44188035440: a cold runner's first guess took 9.1 s, the rental's install 10.2 s).
 # 1. A page shows the project. `photo`, an imported picture, gets Qwen Image 2.1, then an edit typed (`<self.1> …`, as the page
-#    writes it): its machine plans the item with expander_i2i needed within 3 s of each, and lands it whole; expander_t2i never comes.
+#    writes it): its machine plans the item with expander_i2i needed within 3 s of each (of the tool's going on, from its answer: the
+#    request checks the tool's models first, which is no guess's), and lands it whole; expander_t2i never comes.
 # 2. photo rendered: its run is the request the item predicted, its quote downloads nothing, it waits for nothing, and its machine
 #    fetches nothing while it runs.
 # 3. `draw`, a text-to-image box, added: planned with expander_t2i needed (expander_i2i not) within 3 s; expander_t2i lands whole;
@@ -172,8 +173,10 @@ say "step 0: qwen-image-2 installed on $NAME in $((SECONDS - began)) s"
 say "step 1: a page shows the project; photo, an imported picture, gets Qwen Image 2.1, then an edit"
 page
 sleep 2
-ATTACH_MS=$(date +%s%3N)
+ASKED_MS=$(date +%s%3N)
 run_page set photo --tool qwen-image-2/image --fields '{}' > "$OUT/attach.json" 2>&1 || fail "Qwen on photo: $(tail -c 300 "$OUT/attach.json")"
+ATTACH_MS=$(date +%s%3N)
+say "Qwen on photo: asked at $ASKED_MS, answered $((ATTACH_MS - ASKED_MS)) ms later (Unix ms)"
 WRITTEN=$(run_page asset photo | jq -r '.asset.fields.instructions // empty')
 [[ $WRITTEN == "<self."* ]] || fail "photo's instructions don't start from its picture: '$WRITTEN'"
 sleep 2
@@ -182,7 +185,7 @@ run_page set photo --fields "$(jq -nc --arg w "$WRITTEN The same scene at night,
   fail "photo's edit: $(tail -c 300 "$OUT/edit.json")"
 ready_ahead photo "$I2I" "$OUT/photo-ready.json"
 [ "$(held "$OUT/photo-ready.json" "$T2I")" -le "$HEADER" ] || MISMATCH+=("expander_t2i came for photo's edit")
-judged photo "$ATTACH_MS" expander_i2i "Qwen put on it"
+judged photo "$ATTACH_MS" expander_i2i "Qwen put on it (answered)"
 judged photo "$EDIT_MS" expander_i2i "its edit typed"
 say "step 2: photo rendered on $NAME"
 rendered photo
