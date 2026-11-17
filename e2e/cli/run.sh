@@ -604,6 +604,7 @@ case $SHARD in
   '') parts="
     uv_at_once
     entrypoints
+    open_outside
     weightless
     script_package
     one_name_two_paths
@@ -763,9 +764,10 @@ case $SHARD in
   prefetch) parts="prefetch_switch prefetch_ready prefetch_quoted prefetch_yields prefetch_load prefetch_local prefetch_disk prefetch_retry logs" ;;
   # A failed guess tried again or saying why it stays failed, and a guess's install on the machine's activity (cl-1104), alone.
   prefetch-retry) parts="prefetch_retry logs" ;;
-  entrypoints) parts="entrypoints hint_commands" ;;
+  entrypoints) parts="entrypoints open_outside hint_commands" ;;
   commands) parts="
     entrypoints
+    open_outside
     hint_commands
     outside_refuses
     catalog
@@ -1071,6 +1073,7 @@ if [ -z "$LOCAL" ] && [ "$parts" != "web_lane logs" ]; then
     web-*) parts="web_alone logs" ;;
     *) parts="
       entrypoints
+      open_outside
       refusals
       web_serves
       completions

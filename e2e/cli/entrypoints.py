@@ -217,7 +217,6 @@ def main() -> None:
 
         for name, words in (
             ("status requires project", ["--json", "status"]),
-            ("open requires project", ["--json", "open"]),
             ("run requires project", ["--json", "run", "example/generate", "prompt=test"]),
             ("run list requires project", ["--json", "run", "ls"]),
         ):

@@ -98,7 +98,7 @@ First-party packages have no owner (`sdxl/generate`); everyone else's are `owner
 machine, which starts when used and stops after 15 minutes idle; without an NVIDIA GPU here, add
 `--on new` to run on a rented one. macOS and Windows don't run models locally yet: add `--on new` to
 rent a Linux GPU, or `--on <machine>` for one you have. Run project commands from the project directory. `cozy new [directory]` creates a project explicitly.
-`cozy open`, `cozy run` and `cozy status` use an existing project. Outputs land in its `files/` directory.
+`cozy run` and `cozy status` use an existing project. `cozy open` opens it; outside a project folder, it opens Cozy Creator, where you can pick one. Outputs land in its `files/` directory.
 
 `cozy` lists the main commands. `cozy <verb> --help` shows a command's options.
 `cozy open` uses local port 8818 by default. `cozy open --port 9000` selects and remembers another loopback port. Project links use `/p/` followed by a stable nine-character uppercase code.
