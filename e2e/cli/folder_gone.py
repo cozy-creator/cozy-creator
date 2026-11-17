@@ -64,6 +64,21 @@ def answer(said: str) -> dict[str, object]:
     return {}
 
 
+def left(folder: Path) -> list[str]:
+    """What stays of `folder` after a removal failed: each path, its mode and kind (at most 30), and mounts under it (macOS, Linux)."""
+    found: list[str] = []
+    for path in [folder, *sorted(folder.rglob("*"))][:30]:
+        try:
+            status = path.lstat()
+            found.append(f"{path.relative_to(folder)} {oct(status.st_mode & 0o7777)} {'dir' if path.is_dir() else 'file'}")
+        except OSError as error:
+            found.append(f"{path.relative_to(folder)} unreadable: {error.strerror}")
+    if sys.platform != "win32":
+        table = subprocess.run(["mount"], capture_output=True, text=True).stdout
+        found += [line for line in table.splitlines() if str(folder) in line or f"/private{folder}" in line]
+    return found
+
+
 class Cell:
     def __init__(self, cozy: Path, out: Path) -> None:
         self.cozy_binary, self.out = cozy, out
@@ -194,6 +209,7 @@ def main() -> None:
             if moved["state"] == "unlocked":
                 failures.append("moved: Calcifer still says the project is unlocked after its folder moved away")
             if not moved["then_removed"]:
+                moved["left"] = left(trash / "project")
                 failures.append(f"moved: its folder can't be removed from where it went: {moved}")
         else:
             cell.put_away(folder)
