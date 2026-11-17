@@ -401,16 +401,16 @@ cozy --json logout > /dev/null 2>&1 || true
 # replan_name <rental id>: what machine ls calls the rental once its Hub named its host. replan_quit: the rental ended, signed out.
 replan_name() { cozy --json machine ls 2> /dev/null | jq -r --arg r "$1" '.machines[] | select(.rental_id == $r and .placeholder == null) | .name' 2> /dev/null || true; }
 replan_quit() { cozy --json machine end "$rental" -y > /dev/null 2>&1 || true; cozy --json logout > /dev/null 2>&1 || true; }
-# queue_run <project> <out name> <machine> <text>: e2e-final's echo asked of <machine> as `cozy run` asks it, followed in the background
+# queue_run <project> <out name> <machine> <text>: the weightless echo asked of <machine> as `cozy run` asks it, followed in the background
 # (its follower's pid in $queued_pid), and its number once it is recorded (in $queued_number).
 queue_run() {
   local _ before
-  before=$(in_project "$1" --json run ls --limit 20 2> /dev/null | jq '[.runs[]? | select(.target | test("e2e-final")) | .number] | max // 0' 2> /dev/null || true)
-  (cd "$1" && cozy --json -y run "$E2E_FINAL/echo@0.1.0" "text=$4" --on "$3") > "$OUT/$2.ndjson" 2> "$OUT/$2.err" & queued_pid=$!
+  before=$(in_project "$1" --json run ls --limit 20 2> /dev/null | jq '[.runs[]? | select(.target | test("/echo")) | .number] | max // 0' 2> /dev/null || true)
+  (cd "$1" && cozy --json -y run minimax-h3-tools/echo "text=$4" --on "$3") > "$OUT/$2.ndjson" 2> "$OUT/$2.err" & queued_pid=$!
   queued_number=''
   for _ in $(seq 120); do
     queued_number=$(in_project "$1" --json run ls --limit 20 2> /dev/null | jq -r --argjson b "${before:-0}" \
-      '[.runs[]? | select(.kind == "call" and (.target | test("e2e-final")) and .number > $b)] | min_by(.number) | .number // empty' 2> /dev/null || true)
+      '[.runs[]? | select(.kind == "call" and (.target | test("/echo")) and .number > $b)] | min_by(.number) | .number // empty' 2> /dev/null || true)
     [ -n "$queued_number" ] && break
     kill -0 "$queued_pid" 2> /dev/null || break
     sleep 1
@@ -440,7 +440,7 @@ queue_said() { project_api "$1" "/runs/$2/events" --max-time 10 -H 'Accept: text
 # host renamed in its own database, as a replan's attempt is named. The rental never gets ready here, so the job waits for it.
 rental_replan() {
 step "a job placed on a booting rental follows its order's replacement host through a restart; the order's end sends it elsewhere (cl-1125, cl-1132)"
-[ -n "${E2E_HUB_LOG:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] && [ -n "${E2E_FINAL:-}" ] || { check "rental_replan: e2e/isolated.sh named no Hub log, email or e2e-final"; return; }
+[ -n "${E2E_HUB_LOG:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] || { check "rental_replan: e2e/isolated.sh named no Hub log or email to sign in with"; return; }
 local rental='' handle='' first='' second="replan-$RANDOM" P=$OUT/replan-project pg='' number='' w=$OUT/replan-watch.json s=$OUT/replan-status.json queued_pid='' queued_number=''
 signin "$E2E_HUB_EMAIL" > "$OUT/replan-login.json" || { check "rental_replan: cozy login failed: $(tail -c 300 "$OUT/replan-login.json")"; return; }
 cozy --json new --unencrypted "$P" > "$OUT/replan-new.json" 2>&1 || check "rental_replan: new: $(tail -c 300 "$OUT/replan-new.json")"
@@ -492,13 +492,13 @@ cozy --json logout > /dev/null 2>&1 || true
 }
 
 # queued_elsewhere (cl-1132). Paul, 11-17: "the real fix should be like 'calcifer has a queue of jobs, it gives that queue of jobs to a
-# machine. If that machine dies or disappears, it re-assigns that queued job to another machine.'" Two jobs of e2e-final's echo are
+# machine. If that machine dies or disappears, it re-assigns that queued job to another machine.'" Two jobs of the weightless echo are
 # asked of a booting rental (this Hub's docker provider never gets it ready), which holds them; the rental ends. Each returns to
 # Calcifer's queue and completes on this computer, its log saying why; neither fails. Before, each failed `machine_lost`, "<rental>
 # shut down before it took <run>".
 queued_elsewhere() {
 step "a machine ends while it holds queued jobs: each completes on another machine (cl-1132)"
-[ -n "${E2E_HUB_LOG:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] && [ -n "${E2E_FINAL:-}" ] || { check "queued_elsewhere: e2e/isolated.sh named no Hub log, email or e2e-final"; return; }
+[ -n "${E2E_HUB_LOG:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] || { check "queued_elsewhere: e2e/isolated.sh named no Hub log or email to sign in with"; return; }
 local rental='' handle='' P=$OUT/queued-project text number w pids=() numbers=() queued_pid='' queued_number=''
 signin "$E2E_HUB_EMAIL" > "$OUT/queued-login.json" || { check "queued_elsewhere: cozy login failed: $(tail -c 300 "$OUT/queued-login.json")"; return; }
 cozy --json new --unencrypted "$P" > "$OUT/queued-new.json" 2>&1 || check "queued_elsewhere: new: $(tail -c 300 "$OUT/queued-new.json")"
@@ -510,8 +510,8 @@ for text in first second; do
   [ -n "$queued_number" ] && numbers+=("$queued_number") || check "queued_elsewhere: the job '$text' asked of $handle made no run: $(tail -c 300 "$OUT/queued-$text.err")"
 done
 in_project "$P" --json run ls --limit 10 > "$OUT/queued-runs.json" 2> /dev/null || true
-echo "queued_elsewhere: asked of $rental: $(jq -c '[.runs[]? | select(.target | test("e2e-final")) | {number, machine, status, waiting}]' "$OUT/queued-runs.json" 2> /dev/null)"
-J '[.runs[]? | select((.target | test("e2e-final")) and .status == "queued" and .machine != null and .machine != "local")] | length == 2' "$OUT/queued-runs.json" \
+echo "queued_elsewhere: asked of $rental: $(jq -c '[.runs[]? | select(.target | test("/echo")) | {number, machine, status, waiting}]' "$OUT/queued-runs.json" 2> /dev/null)"
+J '[.runs[]? | select((.target | test("/echo")) and .status == "queued" and .machine != null and .machine != "local")] | length == 2' "$OUT/queued-runs.json" \
   || check "queued_elsewhere: the two jobs aren't both queued on $rental: $(jq -c '[.runs[]? | {number, machine, status}]' "$OUT/queued-runs.json" 2> /dev/null)"
 # The machine ends while it holds them.
 cozy --json machine end "$rental" -y > "$OUT/queued-end.json" 2>&1 || check "queued_elsewhere: machine end $rental: $(tail -c 300 "$OUT/queued-end.json")"
