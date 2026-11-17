@@ -18,14 +18,16 @@ step "a run whose Hub never answers its capability's redemption says each attemp
 [ "${RUNNER_OS:-}" = Linux ] || return 0
 [ -n "${COZY_TEST_HUB_HOLD:-}" ] || { check "grant silent: e2e/skew/run.sh named no ingress hold (COZY_TEST_HUB_HOLD)"; return; }
 [ -n "${E2E_HUB_LOG:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] || { check "grant silent: e2e/isolated.sh named no Hub log or email to sign in with"; return; }
-local dir=$OUT/grant-silent model=e2e/final-model commit began took held pid status
+local dir=$OUT/grant-silent model=e2e/final-model commit began took held pid status signed
 rm -rf "$dir"; mkdir -p "$dir"
-signin "$E2E_HUB_EMAIL" > "$dir/login.json" || { check "grant silent: cozy login failed: $(tail -c 300 "$dir/login.json")"; return; }
+# Signed in, as a run's reads carry a capability only then; signed out again after, when it found it so.
+signed=$(cozy --json whoami 2> /dev/null | jq -r '.account // empty' 2> /dev/null || true)
+[ -n "$signed" ] || signin "$E2E_HUB_EMAIL" > "$dir/login.json" || { check "grant silent: cozy login failed: $(tail -c 300 "$dir/login.json")"; return; }
 cozy --json model show "$model@0.2.0-rc.1" > "$dir/show.json" 2>&1
 commit=$(jq -r '.lanes[0].checkpoint // empty' "$dir/show.json" 2> /dev/null)
 if [ -z "$commit" ]; then
   check "grant silent: model show $model@0.2.0-rc.1 named no checkpoint: $(head -c 300 "$dir/show.json")"
-  cozy --json logout > /dev/null 2>&1
+  [ -n "$signed" ] || cozy --json logout > /dev/null 2>&1
   return
 fi
 held=$(grep -c '"held":true' "${COZY_TEST_HUB_REQUEST_LOG:-/dev/null}" 2> /dev/null || true)
@@ -61,5 +63,5 @@ if [ "$took" -lt "$GRANT_S" ]; then
   [ "$status" = completed ] || check "grant silent: $model@$commit ended $status: $(run_get "$dir" grant '.reason.message' | head -c 300)"
   grep -qE 'attempt [0-9]+/[0-9]+' "$dir/said.txt" || check "grant silent: the run never said an attempt while its Hub answered no redemption"
 fi
-cozy --json logout > "$dir/logout.json" 2>&1 || check "grant silent: logout: $(tail -c 300 "$dir/logout.json")"
+[ -n "$signed" ] || cozy --json logout > "$dir/logout.json" 2>&1 || check "grant silent: logout: $(tail -c 300 "$dir/logout.json")"
 }
