@@ -434,19 +434,20 @@ n=$(run_submit "$OUT" pre-oldest model install e2e/pre-ask --on "$name")
 pre_project "$P" "$name" || { pre_disk_end; return 0; }
 asked=''
 jq -n --arg t e2e-prefetched/still '[{name: "kept", tool: $t, kind: "image", fields: {instructions: "A still stand-q gets ready on a short disk."}}]' | boxes_in "$P" || { pre_disk_end; return 0; }
+# Its machine building the tool's environment for the guess: an install in its activity, nothing else asked of it.
 for _ in $(seq 240); do
-  row=$(pre_row "$P" kept)
-  J '.stage == "installing it"' <<< "${row:-null}" && break
-  J '.ready == true' <<< "${row:-null}" && break
+  pre_machine "$name" "$OUT/pre-disk-building.json"
+  J '[.status.activity[]? | select(.kind == "install")] | length > 0' "$OUT/pre-disk-building.json" && break
+  J '.ready == true' <<< "$(pre_row "$P" kept)" && break
   sleep 0.5
 done
-if J '.stage == "installing it"' <<< "${row:-null}"; then
+if J '[.status.activity[]? | select(.kind == "install")] | length > 0' "$OUT/pre-disk-building.json"; then
   asked=$(date -u +%s%3N)
   n=$(run_submit "$OUT" pre-line run "$here/project/waits.py/wait" seconds=0 --on "$name")
   [ -n "$n" ] && run_wait "$OUT" pre-line && [ "$(run_get "$OUT" pre-line .status)" = completed ] \
     || check "prefetch disk: the run sent while the guess built didn't complete: $(run_get "$OUT" pre-line .reason.message | head -c 300)"
 else
-  check "prefetch disk: $name never said it was installing the box's tool: its row: ${row:-none}"
+  check "prefetch disk: $name never said it was installing the box's tool: its activity $(jq -c '[.status.activity[]? | {kind, subject}]' "$OUT/pre-disk-building.json" 2> /dev/null); its row: $(pre_row "$P" kept)"
 fi
 pre_ready "$P" kept "$name" 300 || { pre_disk_end; return 0; }
 if [ -n "$asked" ]; then
