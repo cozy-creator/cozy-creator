@@ -85,23 +85,42 @@ struct Listing {
 
 impl Hubs {
     pub(crate) fn new(home: &Home, hub: config::Origin) -> Self {
-        let kept = std::fs::read(kept_listings(home)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
         Self {
             http: ::api::hub::http(None).expect("the webpki roots alone"),
             home: home.clone(),
             hub,
-            listings: Mutex::new(kept),
+            listings: Mutex::default(),
             listing_now: std::sync::atomic::AtomicBool::new(false),
             facts: Mutex::default(),
         }
     }
 
-    /// Each Hub's last word, kept for the next start.
-    fn keep_listings(&self) {
-        let kept = serde_json::to_vec(&*lock(&self.listings)).expect("a listing serializes");
-        if let Err(e) = platform::durable::replace(&kept_listings(&self.home), &kept, 0o600) {
-            warn!("keeping the Hubs' last listing: {e}");
+    /// Each Hub's last word as state.db kept it (`hub_listings`), what a start answers until its own listing: of the Hubs in
+    /// use only (the configured one and those of live rentals), as a listing keeps.
+    pub(crate) fn load_listings(&self, kept: Vec<(String, String)>, rows: &[MachineRow]) {
+        let in_use = self.origins(rows);
+        let mut listings = lock(&self.listings);
+        for (hub, listing) in kept.into_iter().filter(|(hub, _)| in_use.contains(hub)) {
+            // Signed out there since (no key), what it said then is no one's now.
+            let keyed = config::Origin::parse(&hub).is_ok_and(|origin| origin.device_key(&self.home).exists());
+            match serde_json::from_str::<Listing>(&listing) {
+                Ok(_) if !keyed => {
+                    listings.entry(hub).or_insert(Listing { signed_out: true, ..Listing::default() });
+                }
+                Ok(listing) => {
+                    listings.entry(hub).or_insert(listing);
+                }
+                Err(e) => warn!(hub, "a kept Hub listing reads as nothing: {e}"),
+            }
         }
+    }
+
+    /// Each Hub in use's last word, as state.db keeps it; a Hub no longer in use (one a rental that ended was asked of) is
+    /// forgotten, as its word is no one's now: reported signed out, it held Rent off on the page for good.
+    fn kept_listings(&self, in_use: &[String]) -> Vec<(String, String)> {
+        let mut listings = lock(&self.listings);
+        listings.retain(|hub, _| in_use.contains(hub));
+        (listings.iter()).map(|(hub, listing)| (hub.clone(), serde_json::to_string(listing).expect("a listing serializes"))).collect()
     }
 
     /// This computer's Hub, as its config names it.
@@ -159,6 +178,7 @@ impl Hubs {
     fn rental(&self, origin: &str, id: &str) -> Option<types::Rental> {
         lock(&self.listings)
             .get(origin)
+            .filter(|listing| !listing.signed_out)
             .and_then(|listing| listing.rentals.get(id).cloned())
     }
 
@@ -199,12 +219,14 @@ impl Hubs {
         let ordered = asked.and_then(|ask| RentBody::of(ask).ok()).map(|body| body.request);
         let listings = lock(&self.listings);
         let listing = listings.get(&machine.hub);
-        let rental = (machine.rental_id.as_ref()).and_then(|id| listing?.rentals.get(id));
+        // Signed out there, a listing kept from before says nothing of the rental now (cl-1010, #3618).
+        let heard = listing.filter(|listing| !listing.signed_out);
+        let rental = (machine.rental_id.as_ref()).and_then(|id| heard?.rentals.get(id));
         machine.placeholder = placeholder(machine, rental, ordered.as_ref());
         let Some(listing) = listing else {
             return;
         };
-        machine.unverified = listing.problem.is_some();
+        machine.unverified = listing.problem.is_some() || listing.signed_out;
         if let Some(rental) = rental {
             machine.rental = Some(view(rental, ordered.map(|request| request.sku)));
         }
@@ -1143,13 +1165,16 @@ impl Machines {
             Ok(rows) => rows,
             Err(e) => return warn!("reading the machines: {e}"),
         };
+        let in_use = self.hubs.origins(&rows);
         let mut lists = tokio::task::JoinSet::new();
-        for origin in self.hubs.origins(&rows) {
+        for origin in in_use.clone() {
             let me = self.clone();
             lists.spawn(async move { me.list_hub(&origin).await });
         }
         lists.join_all().await;
-        self.hubs.keep_listings();
+        if let Err(e) = self.store().keep_hub_listings(&self.hubs.kept_listings(&in_use)) {
+            warn!("keeping the Hubs' last listing: {e}");
+        }
         self.hubs.learn().await;
         self.calcifer.machine_changed();
     }
@@ -1180,8 +1205,8 @@ impl Machines {
             Ok(client) => client,
             Err(_) => {
                 let mut listings = lock(&self.hubs.listings);
-                let listing = listings.entry(origin.to_owned()).or_default();
-                (listing.signed_out, listing.problem) = (true, None);
+                // Signed out, what the Hub last said of this account's rentals is no one's now: nothing of it is shown.
+                *listings.entry(origin.to_owned()).or_default() = Listing { signed_out: true, ..Listing::default() };
                 return;
             }
         };
@@ -1192,6 +1217,10 @@ impl Machines {
                 let mut listings = lock(&self.hubs.listings);
                 let listing = listings.entry(origin.to_owned()).or_default();
                 listing.signed_out = error.kind == Kind::Credential;
+                if listing.signed_out {
+                    // A key the Hub refused (revoked, another account's) reads no rental of this account.
+                    (listing.listed_at_ms, listing.rentals) = (None, HashMap::new());
+                }
                 listing.problem = Some(HubProblem {
                     hub: origin.to_owned(),
                     code: error.cause.unwrap_or(error.code),
@@ -2100,9 +2129,4 @@ mod retired_image_tests {
         assert_eq!(serde_json::to_value(request).unwrap()["image"], "sha256:old-image");
         assert!(serde_json::to_value(types::RentalRequest::default()).unwrap().get("image").is_none());
     }
-}
-
-/// Where the Hubs' last listing is kept between starts, in Calcifer's home.
-fn kept_listings(home: &Home) -> std::path::PathBuf {
-    home.calcifer().join("kept-hub-listings.json")
 }
