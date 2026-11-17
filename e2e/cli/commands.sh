@@ -1942,17 +1942,21 @@ keys=$("$probe" -v error -select_streams v:0 -show_entries frame=key_frame -of c
 [ "$keys" = " 24 1" ] || check "orbit: not every frame of $file is a keyframe (count key_frame): ${keys:-no frames}"
 }
 
-# cl-840's one retry rule, on an install a person waits on, against a Hub this part stands up (Calcifer on it, then back): a Hub that
-# takes the request and never answers is asked again by the backoff, each attempt a line, and given up within a minute, saying hub_slow;
-# a 503 is asked again by the backoff, then named in the Hub's own words; a 404 is the Hub's refusal, failed at once, asked once.
+# cl-840's one retry rule, on an install a person waits on, against the suite's Hub behind a fault proxy (Calcifer on it, then back): a Hub
+# that takes the request and never answers is asked again by the backoff, each attempt a line, and given up within a minute, saying
+# hub_slow; a 503 (what a load balancer before a Hub that's down answers) is asked again by the backoff, then named in its words; the
+# Hub's own 404 for a package it never published is failed at once, asked once. All else the proxy passes to the Hub (cl-1128: a
+# stand-in Hub answered 404 to everything).
 install_retries() {
 step "a package install against a Hub that's silent, down or says it has none: asked again, said, or failed at once (cl-840)"
 local config=$HOME/.cozy/config.toml dir=$OUT/install-retries hub pid
 mkdir -p "$dir"
-python3 -I - "$dir" > "$dir/hub.log" 2>&1 <<'PY' &
-import http.server, json, pathlib, sys, threading
-dir = pathlib.Path(sys.argv[1])
-class Hub(http.server.BaseHTTPRequestHandler):
+python3 -I - "$dir" "$COZY_HUB_URL" > "$dir/hub.log" 2>&1 <<'PY' &
+import http.client, http.server, json, pathlib, sys, threading, urllib.parse
+dir, upstream = pathlib.Path(sys.argv[1]), urllib.parse.urlsplit(sys.argv[2])
+HOP = {"connection", "keep-alive", "transfer-encoding", "te", "trailer", "upgrade", "proxy-authorization", "proxy-authenticate", "host"}
+class Proxy(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
     def answer(self, status, body):
         data = json.dumps(body).encode()
         self.send_response(status)
@@ -1960,7 +1964,7 @@ class Hub(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
-    def do_GET(self):
+    def forward(self):
         mode = (dir / "mode").read_text().strip() if (dir / "mode").exists() else ""
         with open(dir / "asked", "a") as asked:
             asked.write(f"{mode} {self.command} {self.path}\n")
@@ -1969,22 +1973,35 @@ class Hub(http.server.BaseHTTPRequestHandler):
             return
         if mode == "down":
             return self.answer(503, {"error": {"kind": "unavailable", "code": "down", "message": "this Hub is down"}})
-        self.answer(404, {"error": {"kind": "not_found", "code": "absent", "message": f"no {self.path} here"}})
-    do_POST = do_GET
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        kind = http.client.HTTPSConnection if upstream.scheme == "https" else http.client.HTTPConnection
+        conn = kind(upstream.netloc, timeout=120)
+        conn.request(self.command, self.path, body=body or None, headers={k: v for k, v in self.headers.items() if k.lower() not in HOP})
+        reply = conn.getresponse()
+        data = reply.read()
+        self.send_response(reply.status)
+        for k, v in reply.getheaders():
+            if k.lower() not in HOP and k.lower() != "content-length":
+                self.send_header(k, v)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+        conn.close()
+    do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = do_HEAD = forward
     def log_message(self, *args):
         pass
-server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Hub)
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
 (dir / "addr").write_text(f"127.0.0.1:{server.server_address[1]}")
 server.serve_forever()
 PY
 pid=$!
 for _ in $(seq 50); do [ -s "$dir/addr" ] && break; sleep 0.1; done
-[ -s "$dir/addr" ] || { check "install retries: the stand-in Hub didn't start: $(tail -c 300 "$dir/hub.log")"; kill "$pid"; return; }
+[ -s "$dir/addr" ] || { check "install retries: the fault proxy didn't start: $(tail -c 300 "$dir/hub.log")"; kill "$pid"; return; }
 hub=http://$(cat "$dir/addr")
 cp "$config" "$dir/config.toml"
 # Top-level: after a [table] it would be that table's.
 { echo "hub_url = \"$hub\""; grep -v '^hub_url' "$dir/config.toml" || true; } > "$config"
-cozy --json restart > "$dir/restart.json" 2>&1 || check "install retries: cozy restart onto the stand-in Hub: $(tail -c 300 "$dir/restart.json")"
+cozy --json restart > "$dir/restart.json" 2>&1 || check "install retries: cozy restart onto the fault proxy: $(tail -c 300 "$dir/restart.json")"
 install_retry silent e2e/e2e-boxed
 grep -q hub_slow "$dir/silent.said" || check "install retries: a silent Hub isn't said hub_slow: $(tail -c 400 "$dir/silent.said")"
 [ "$(grep -oE 'attempt [0-9]/5 in [0-9]' "$dir/silent.said" | cut -c9 | paste -sd' ')" = '2 3 4 5' ] && [ "$(grep -c '^silent ' "$dir/asked")" = 5 ] \
@@ -2001,7 +2018,7 @@ cp "$dir/config.toml" "$config"
 cozy --json restart > "$dir/restart-back.json" 2>&1 || check "install retries: cozy restart back onto the suite's Hub: $(tail -c 300 "$dir/restart-back.json")"
 kill "$pid" 2> /dev/null || true
 }
-# install_retry <mode> <package>: `cozy package install` with the stand-in Hub in that mode: what it said, and its seconds.
+# install_retry <mode> <package>: `cozy package install` through the fault proxy in that mode: what it said, and its seconds.
 install_retry() {
   local dir=$OUT/install-retries began=$SECONDS
   echo "$1" > "$dir/mode"
