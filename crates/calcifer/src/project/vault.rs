@@ -627,6 +627,10 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     let mounted = secret.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: false })).map_err(mounting)?;
     drop(took);
     let canonical_view = platform::durable::canonical(mounted.view()).map_err(provider)?;
+    match mounted.ender() {
+        Ok(ender) => { ENDERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(root.to_owned(), ender); }
+        Err(e) => tracing::warn!("{}: a stop past its deadline can't end this view: {e}", root.display()),
+    }
     ROOTS.lock().expect("vault roots").insert(mounted.view().to_owned(), root.to_owned());
     ROOTS.lock().expect("vault roots").insert(canonical_view.clone(), root.to_owned());
     crate::private_io::descriptor_for_mounted(&canonical_view, &keybag.info().project_id, keybag.info().generation)?;
@@ -864,6 +868,19 @@ fn end_if_gone(api: &Arc<Api>, root: &FsPath) -> bool {
     CLOSED.notify_waiters();
     let _ = std::thread::Builder::new().name("vault-let-go".into()).spawn(move || drop(session));
     true
+}
+
+/// Each view mounted here, by its project, to be ended past a stop's deadline whoever holds its session. One whose mount ended is
+/// left as it is.
+static ENDERS: LazyLock<Mutex<BTreeMap<PathBuf, project_mount::Ender>>> = LazyLock::new(Mutex::default);
+
+/// A stop past its deadline (`serve::stop_deadline`): every view this Calcifer mounted ended now, its provider killed by its handle and
+/// its view unmounted, so none outlives it mounted or with its key held.
+pub(crate) fn end_all_now() {
+    let enders: Vec<_> = ENDERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).drain().collect();
+    for (_, ender) in enders {
+        ender.end();
+    }
 }
 
 pub(crate) fn close_all(api: &Arc<Api>) -> Result<(), Error> {
