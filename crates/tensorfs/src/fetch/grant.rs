@@ -104,9 +104,10 @@ impl Granted {
             let now = date.and_then(|date| jiff::fmt::rfc2822::DateTimeParser::new().parse_timestamp(&date).ok());
             let now = now.map_or_else(|| SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64, |t| t.as_second());
             granted.until = granted.until.min(asked + Duration::from_secs(expires.saturating_sub(now).max(0) as u64));
-            granted.urls.extend(answer.objects.into_iter().map(|o| (o.digest.trim_start_matches("sha256:").to_owned(), o.url)));
-            granted.refused.extend(answer.refused.iter().map(|r| format!("{}: {}", r.reason, r.detail)));
-            granted.unknown |= answer.refused.iter().any(|r| r.reason == "not_found");
+            let (objects, refused) = (answer.objects.unwrap_or_default(), answer.refused.unwrap_or_default());
+            granted.urls.extend(objects.into_iter().map(|o| (o.digest.trim_start_matches("sha256:").to_owned(), o.url)));
+            granted.refused.extend(refused.iter().map(|r| format!("{}: {}", r.reason, r.detail)));
+            granted.unknown |= refused.iter().any(|r| r.reason == "not_found");
         }
         granted.unknown &= granted.urls.is_empty();
         Ok(granted)
@@ -123,9 +124,11 @@ fn parse(at: &str) -> Result<i64> {
 pub(crate) struct Answer {
     expires_at: String,
     pub(crate) next: Option<String>,
-    objects: Vec<Listed>,
+    // A Go Hub writes an empty list as null.
     #[serde(default)]
-    refused: Vec<Refused>,
+    objects: Option<Vec<Listed>>,
+    #[serde(default)]
+    refused: Option<Vec<Refused>>,
 }
 
 #[derive(Deserialize)]
