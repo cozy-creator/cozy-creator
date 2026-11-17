@@ -27,9 +27,9 @@ say "tree $TREE: $(git -C "$SRC" rev-parse --short HEAD); $(for p in sdxl anima 
 
 # The prompts, and the settings both sides share (each package's defaults where upstream has the same).
 SP='a red fox sitting in fresh snow at golden hour, detailed fur, photograph'
-AP='masterpiece, best quality, 1girl, silver hair, rain, neon city at night'
+AP='masterpiece, best quality, safe, 1girl, silver hair, yellow raincoat, rain, neon city at night'
 AN='worst quality, low quality, score_1, score_2, score_3, artist name, blurry, jpeg artifacts, chromatic aberration'
-AIP='masterpiece, best quality, a porcelain teapot on a wooden table, anime style illustration'
+AIP='masterpiece, best quality, safe, a porcelain teapot on a wooden table, anime style illustration'
 MP='A sticky note on a fridge, handwritten: "Buy milk and eggs"'
 PEARL=$IMGS/pearl.jpg TEAPOT=$IMGS/teapot.jpg
 # sdxl `upscale` of pearl.jpg (648x768) at 2 MP: _SIZES.fit on the 64 px grid.
@@ -52,11 +52,13 @@ fi
 if [[ $MODELS == *" anima "* ]]; then
   ref ref-anima ra anima-t2i --prompt "$AP" --negative "$AN" --seed "$SEED" --steps 30 --guidance 4.5
   ref ref-anima-math ra anima-t2i --prompt "$AP" --negative "$AN" --seed "$SEED" --steps 30 --guidance 4.5 --attn math
+  ref ref-anima-wide ra anima-t2i --prompt "$AP" --negative "$AN" --seed "$SEED" --steps 30 --guidance 4.5 --attn wide
   ref ref-anima-i2i ra anima-i2i --image teapot.jpg --prompt "$AIP" --negative "$AN" --strength 0.9 --seed "$SEED" --steps 30 --guidance 4.5
 fi
 if [[ $MODELS == *" moss "* ]]; then
   ref ref-moss rm moss-t2i --prompt "$MP" --negative '' --seed "$SEED" --steps 50 --guidance 3
   ref ref-moss-math rm moss-t2i --prompt "$MP" --negative '' --seed "$SEED" --steps 50 --guidance 3 --attn math
+  ref ref-moss-wide rm moss-t2i --prompt "$MP" --negative '' --seed "$SEED" --steps 50 --guidance 3 --attn wide
 fi
 REFSH+=$'\n  *) echo "no reference $1"; exit 2 ;;\nesac'
 
@@ -99,6 +101,7 @@ fi
 if [[ $MODELS == *" anima "* ]]; then
   pair anima-impl ours-anima-exact.png ref-anima.png "ours bf16 exact, full-range CFG vs Diffusers"
   pair anima-floor ref-anima.png ref-anima-math.png "Diffusers vs itself on math SDPA: the rounding floor"
+  pair anima-floor-wide ref-anima.png ref-anima-wide.png "Diffusers vs itself, math SDPA and full-precision GEMM reductions"
   pair anima-interval ours-anima-exact-interval.png ours-anima-exact.png "ours: CFG interval 0.15-0.70 vs full-range CFG"
   pair anima-lane ours-anima-default.png ours-anima-exact-interval.png "ours default lane vs bf16 exact (both the interval)"
   pair anima-upstream ours-anima-default.png ref-anima.png "ours at its defaults vs Diffusers"
@@ -107,6 +110,7 @@ fi
 if [[ $MODELS == *" moss "* ]]; then
   pair moss-impl ours-moss-exact.png ref-moss.png "ours bf16 exact vs upstream's pipeline"
   pair moss-floor ref-moss.png ref-moss-math.png "upstream vs itself on math SDPA: the rounding floor"
+  pair moss-floor-wide ref-moss.png ref-moss-wide.png "upstream vs itself, math SDPA and full-precision GEMM reductions"
   pair moss-lane ours-moss-default.png ours-moss-exact.png "ours default lane (int8, 8-bit attention) vs bf16 exact"
 fi
 

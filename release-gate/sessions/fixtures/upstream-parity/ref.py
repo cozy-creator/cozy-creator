@@ -6,7 +6,8 @@
 
 Every cell draws its noise from a CPU generator at --seed, as cozy_runtime.rng does, so a reference and our run
 start from the same noise. --attn math runs PyTorch's math SDPA instead of its fused kernels: the same pipeline
-with only rounding moved, the floor any two runs of one model differ by.
+with only rounding moved, the floor any two runs of one model differ by. --attn wide also turns off every GEMM's
+reduced-precision reduction: rounding moved everywhere, as a fused kernel or another batch shape moves it.
 """
 
 import argparse
@@ -31,6 +32,8 @@ SDXL_FILES = [
 ]
 MOSS_FILES = ["*.json", "*.py", "scheduler/*", "tokenizer/*", "text_encoder/*", "transformer/*", "vae/*"]
 #: sdxl's `upscale` prompt and negative (sdxl/__init__.py UPSCALE_PROMPT, UPSCALE_NEGATIVE).
+#: What `fetch` takes of each repo, and so what a cached snapshot of it holds.
+PATTERNS = {SDXL: SDXL_FILES, ANIMA: None, MOSS: MOSS_FILES}
 UPSCALE_PROMPT = "a high quality, highly detailed, sharp picture"
 UPSCALE_NEGATIVE = "blurry, lowres, jpeg artifacts, noise, out of focus"
 
@@ -42,11 +45,15 @@ def say(**row: object) -> None:
 def snapshot(repo: str) -> str:
     from huggingface_hub import snapshot_download
 
-    return snapshot_download(repo, local_files_only=True)
+    return snapshot_download(repo, local_files_only=True, allow_patterns=PATTERNS[repo])
 
 
 def attention(mode: str) -> None:
-    if mode == "math":
+    if mode == "wide":
+        # Every GEMM's reduction in full precision too: a perturbation as broad as a fused kernel's.
+        torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
+        torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
+    if mode in ("math", "wide"):
         torch.backends.cuda.enable_flash_sdp(False)
         torch.backends.cuda.enable_mem_efficient_sdp(False)
         torch.backends.cuda.enable_cudnn_sdp(False)
@@ -59,7 +66,7 @@ def generator(seed: int) -> torch.Generator:
 def fetch() -> None:
     from huggingface_hub import HfApi, snapshot_download
 
-    for repo, patterns in ((SDXL, SDXL_FILES), (ANIMA, None), (MOSS, MOSS_FILES)):
+    for repo, patterns in PATTERNS.items():
         t = time.time()
         path = snapshot_download(repo, allow_patterns=patterns)
         size = sum(os.path.getsize(os.path.join(d, f)) for d, _, fs in os.walk(path) for f in fs)
@@ -258,7 +265,7 @@ def main() -> None:
     p.add_argument("--image")
     p.add_argument("--strength", type=float, default=1.0)
     p.add_argument("--encode", choices=("mode", "sample"), default="mode")
-    p.add_argument("--attn", choices=("sdpa", "math"), default="sdpa")
+    p.add_argument("--attn", choices=("sdpa", "math", "wide"), default="sdpa")
     a = p.parse_args()
     attention(a.attn)
     t = time.time()
