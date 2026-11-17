@@ -1,0 +1,1 @@
+A model download's last pieces no longer crawl behind one slow request. As soon as nothing is left to start, free connections split what is still downloading at storage-chunk boundaries, and a piece that falls behind the typical request is asked again on two other connections at once; the first to finish wins. A download asks for at most 64 MiB twice.
