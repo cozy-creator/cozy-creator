@@ -59,6 +59,17 @@ for i in 4 5 6; do
 done
 wait "$reader" || check "disk: the reader holding the store failed"
 cell disk-1-again "$script" --model "weights=e2e/disk-1@0.1.0" text=again || true
+# The disk at its reserve, three runs at once each reading a model not here, five rounds: each round's models evicted the round
+# before, so every round's admits race each other's evictions (43982726077: one refused 0.2 MiB short with an idle model left).
+local round set i
+for round in 1 2 3 4 5; do
+  if [ $((round % 2)) = 1 ]; then set="4 5 6"; else set="1 2 3"; fi
+  for i in $set; do run_submit "$OUT" "race-$round-$i" run "$script" --model "weights=e2e/disk-$i@0.1.0" text=race$round --on local > /dev/null; done
+  for i in $set; do
+    run_wait "$OUT" "race-$round-$i" && [ "$(run_get "$OUT" "race-$round-$i" .status)" = completed ] \
+      || check "disk: round $round's disk-$i $(run_get "$OUT" "race-$round-$i" .status): $(run_get "$OUT" "race-$round-$i" .reason.message | head -c 300)"
+  done
+done
 step "tfs-150: a model bigger than the disk can make free is refused, naming the sizes, nothing of it kept"
 local before said
 before=$(df -B1 --output=used "$mnt" | tail -1 | tr -d ' ')
