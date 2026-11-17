@@ -2309,7 +2309,7 @@ impl Calcifer {
         let (state, stream) = match run.state {
             State::Settled => return Ok(()),
             State::Queued => {
-                let carried = self.write_inputs(link, run, machine).await?;
+                let carried = self.write_inputs(link, run, machine, CARRIED_TOTAL).await?;
                 let _turn = sending.lock().await;
                 match self.deliver(run, machine, link, carried).await? {
                     Some(delivered) => delivered,
@@ -2325,7 +2325,7 @@ impl Calcifer {
                 // It may be there: attach first, and send again only to a machine that never got it.
                 match self.answered(&run.id, machine, link.attach(&sent, run.cursor)).await {
                     Err(LinkError::NoRun | LinkError::NotFound) if run.state == State::Sent => {
-                        let carried = self.write_inputs(link, run, machine).await?;
+                        let carried = self.write_inputs(link, run, machine, CARRIED_TOTAL).await?;
                         let _turn = sending.lock().await;
                         match self.deliver(run, machine, link, carried).await? {
                             Some(delivered) => delivered,
@@ -2418,8 +2418,9 @@ impl Calcifer {
                 return Ok(None);
             }
             let spec = async {
+                let room = CARRIED_TOTAL.saturating_sub(carried.iter().map(|object| object.data.len() as u64).sum());
                 let carried = match own {
-                    false => self.write_inputs(link, &row, machine).await?,
+                    false => self.write_inputs(link, &row, machine, room).await?,
                     true => vec![],
                 };
                 self.known_warm(&row, machine, link).await?;
@@ -2842,7 +2843,7 @@ impl Calcifer {
     /// What the machine already holds is asked once for all of them. One object is written to one
     /// machine once at a time: a run naming an object another run is writing there waits its
     /// turn (named by that run's number), then asks again what is held.
-    async fn write_inputs(&self, link: &Link, run: &RunRow, machine: &str) -> Result<Vec<v1::CarriedObject>, Stop> {
+    async fn write_inputs(&self, link: &Link, run: &RunRow, machine: &str, room: u64) -> Result<Vec<v1::CarriedObject>, Stop> {
         if run.inputs.is_empty() {
             return Ok(vec![]);
         }
@@ -2850,13 +2851,13 @@ impl Calcifer {
             .map(|i| (i.digest.as_str(), i.field.as_str()))
             .collect();
         let input_root = self.run_input_root(run).map_err(Stop::from)?;
-        // Its small inputs go with its admission to a machine that takes them there (cl-1172): no round trip asks what it
-        // holds of them, and none writes them.
+        // Its small inputs go with its admission to a machine that takes them there, while the batch has `room` (cl-1172): no round
+        // trip asks what it holds of them, and none writes them.
         let mut carried = vec![];
         let mut inputs: Vec<(Digest, u64)> = vec![];
         let carries = self.machines().and_then(|machines| machines.live_frame(machine)).is_some_and(|frame| frame.carried_objects);
         for (digest, length) in run.inputs.iter().copied() {
-            let room = CARRIED_TOTAL.saturating_sub(carried.iter().map(|object: &v1::CarriedObject| object.data.len() as u64).sum());
+            let room = room.saturating_sub(carried.iter().map(|object: &v1::CarriedObject| object.data.len() as u64).sum());
             let read = match carries && length > 0 && length <= CARRIED_EACH.min(room) {
                 true => tokio::fs::read(input_root.join(hex::encode(digest.bytes()))).await.ok().filter(|data| data.len() as u64 == length),
                 false => None,
