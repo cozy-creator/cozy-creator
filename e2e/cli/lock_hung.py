@@ -14,8 +14,9 @@ one exception, named. Once the machine goes on (SIGCONT), what it held of that v
    the clock asks local, which doesn't answer; the vault locks and the run settles canceled.
 4. The maximum's deadline with a run's output coming in, local stopped until the clock has judged it gone and the vault is locking,
    then going on at once (back mid-drain): the save is judged by its progress, so it lands; the run reads completed.
-5. The same, local then slow (stopped and going on in turn): it misses its status pings while its save's bytes still come, and the
-   save lands (review 6939581151).
+5. Local slow from the moment the output starts coming (1.5 s stopped, 0.5 s going): slow, each status ping still answered within
+   its 2 s, its save's bytes still coming. It is never judged gone, its save lands, and the vault locks once it has (re-review
+   6939581151).
 
 A step that doesn't lock takes the release note's workaround, as a person does (the hung machine ended, the lock asked again), and
 the cell goes on: a red names each way it hangs. The machine always goes on at the end."""
@@ -360,8 +361,9 @@ def slow_local(going: threading.Event) -> None:
 
 
 def judged_gone_then_back(cell: Cell, label: str, slow: bool, facts: dict[str, object], scanner: Scanner) -> list[str]:
-    """Step 4 (`slow` False) or 5: the deadline with a run's output coming in, local stopped until the clock judged it gone (the
-    vault reads locking), then going on at once or slowly. The save lands and the run reads completed."""
+    """Step 4 (`slow` False): the deadline with a run's output coming in, local stopped until the clock judged it gone (the vault
+    reads locking), then going on at once. Step 5 (`slow`): local slow from the output's start, never judged gone. In both the save
+    lands and the run reads completed."""
     failures = []
     mark = f"CL1064_{label.upper()}_{secrets.token_hex(12)}"
     scanner.add(mark)
@@ -372,18 +374,19 @@ def judged_gone_then_back(cell: Cell, label: str, slow: bool, facts: dict[str, o
     assert waiting(stdout, process, ARRIVING), f"{label}: the run's output never started coming: {stdout.read_bytes()[-400:]!r}"
     number = number_of(stdout)
     facts[f"{label}_stopped"] = stop(view)
-    judged = facts[f"{label}_judged_s"] = until_state(cell, "locking", MAXIMUM_SAVING + DEADLINE_BOUND + 30)
     going = threading.Event()
     if slow:
         threading.Thread(target=slow_local, args=(going,), daemon=True).start()
+        judged = None
     else:
+        judged = facts[f"{label}_judged_s"] = until_state(cell, "locking", MAXIMUM_SAVING + DEADLINE_BOUND + 30)
         go_on()
-    locked = facts[f"{label}_locked_after_s"] = cell.locked_by(time.monotonic(), 180)
+    locked = facts[f"{label}_locked_after_s"] = cell.locked_by(time.monotonic(), MAXIMUM_SAVING + 180)
     going.set()
     time.sleep(0.6)
     go_on()
     finish(process)
-    if judged is None:
+    if judged is None and not slow:
         failures.append(f"{label}: the clock never judged local gone (the vault never read locking)")
     if locked is None:
         failures.append(f"{label}: the vault never locked once local was back")
