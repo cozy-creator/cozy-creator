@@ -20,8 +20,10 @@ import sys
 import time
 from typing import cast
 
-# Processes started (suspended, each holding a pid) until one gets A's: all kept until then, so freed pids below A's are used up.
-LIMIT = 5000
+# Processes started and ended at once (suspended: no work) until one gets A's pid. Windows hands freed pids out again in turn, not at
+# once, so it takes as many starts as there were free pids ahead of A's: up to these, or this long.
+LIMIT = 60000
+LIMIT_S = 900
 
 
 def probe(binary: Path, pid: int) -> list[int]:
@@ -75,21 +77,19 @@ def windows(binary: Path, facts: dict[str, object], failures: list[str]) -> None
     gc.collect()
     facts.update({"a_pid": a_pid, "c_pid": c_pid})
 
-    # Processes until one gets A's pid: T. Suspended, they hold a pid and little else.
+    # Processes until one gets A's pid: T.
     target: subprocess.Popen[bytes] | None = None
-    held_pids: list[subprocess.Popen[bytes]] = []
-    while target is None and len(held_pids) < LIMIT:
+    spawned, began = 0, time.monotonic()
+    while target is None and spawned < LIMIT and time.monotonic() - began < LIMIT_S:
         started = subprocess.Popen(["ping", "-n", "900", "127.0.0.1"], stdout=subprocess.DEVNULL, creationflags=no_window | suspended)
+        spawned += 1
         if started.pid == a_pid:
             target = started
         else:
-            held_pids.append(started)
-    spawned = facts["spawned"] = len(held_pids) + (1 if target is not None else 0)
-    for other in held_pids:
-        other.kill()
-        other.wait()
-    del held_pids
-    gc.collect()
+            started.kill()
+            started.wait()
+            del started
+    facts.update({"spawned": spawned, "spawning_s": round(time.monotonic() - began, 1)})
     if target is None:
         kernel.TerminateProcess(c, 1)
         failures.append(f"no process got A's pid {a_pid} in {spawned} starts: the collision wasn't made")
