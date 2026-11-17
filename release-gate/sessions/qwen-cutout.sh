@@ -9,18 +9,21 @@
 # A tree whose qwen-image-2 takes its checkout's birefnet from the Hub runs from a copy taking it by path (lib.sh `step`).
 # params:
 #   cells    a JSON list, run in order, of {name, tree, input?, fields}: `tree` a packages_refs checkout, `input` a fixture
-#            (pearl, teapot) or `@<cell>` (that cell's picture), given as <p1>; `fields` the image tool's inputs (`key:=value`
-#            each; `instructions` names <p1>). Every cell runs `qwen-image-2/image`.
+#            (pearl, teapot; stray, Pearl as RGBA with 40 pixels at alpha 215-250, as an opaque Qwen edit leaves them) or
+#            `@<cell>` (that cell's picture), given as <p1>; `fields` the image tool's inputs (`key:=value` each;
+#            `instructions` names <p1>). Every cell runs `qwen-image-2/image`.
+#   install  `true`: before the quote, each tree's qwen-image-2 is installed on this runner's own machine (`local`, $0),
+#            through `step` as a run is: its lock and its first-party dependencies, with no rental
 #   judged   the cells judge.py holds to a clean cutout (comma-separated; default every cell with an input): judge.py's bars,
 #            a FAIL fails the session
 #   seconds  what the cap must buy (default 3600)
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/qwen-cutout WORK=${RUNNER_TEMP:-$OUT/..}/qwen-cutout
-CELLS=$(param cells '[]') JUDGED=$(param judged '') NEED=$(param seconds 3600)
+CELLS=$(param cells '[]') JUDGED=$(param judged '') NEED=$(param seconds 3600) INSTALL=$(param install false)
 for tool in jq uv; do command -v "$tool" > /dev/null || fail "no $tool"; done
 jq -e 'type == "array" and length > 0 and all(.[]; (.name | test("^[a-z0-9-]+$")) and (.tree | type == "string") and
-  ((.input // "") | test("^(|pearl|teapot|@[a-z0-9-]+)$")) and (.fields | type == "object"))' <<<"$CELLS" > /dev/null ||
+  ((.input // "") | test("^(|pearl|teapot|stray|@[a-z0-9-]+)$")) and (.fields | type == "object"))' <<<"$CELLS" > /dev/null ||
   fail "cells: a JSON list of {name, tree, input?, fields}"
 V=$(cozy --version | awk '{print $2}')
 [[ $V == *-dev* ]] || fail "cozy $V is no RC build: dispatch with cozy=<a dev-build or rc-dev run of rc/<x>>"
@@ -36,6 +39,10 @@ uv venv -q --python 3.12 "$WORK/py" > "$OUT/py.log" 2>&1 && uv pip install -q --
   fail "the judge's Python: $(tail -c 400 "$OUT/py.log")"
 PY=$WORK/py/bin/python
 "$PY" -I "$FIX/judge.py" --self-check "$FIX/../ltx-images/teapot.jpg" > "$OUT/judge-check.txt" 2>&1 || fail "judge.py: $(tail -c 400 "$OUT/judge-check.txt")"
+"$PY" -I -c 'import sys; import numpy as np; from PIL import Image
+a = np.dstack([np.asarray(Image.open(sys.argv[1]).convert("RGB")), np.full(Image.open(sys.argv[1]).size[::-1], 255, np.uint8)])
+r = np.random.default_rng(0); a[r.integers(0, a.shape[0], 40), r.integers(0, a.shape[1], 40), 3] = r.integers(215, 251, 40)
+Image.fromarray(a).save(sys.argv[2])' "$HERE/fixtures/ltx-images/pearl.jpg" "$WORK/stray.png" || fail "the stray-alpha picture"
 
 # A dev home: the rental moves to the RC's builds.
 cfg=$HOME/.cozy/config.toml
@@ -44,6 +51,13 @@ mkdir -p "${cfg%/*}" && touch "$cfg" || fail "no $cfg"
 cozy restart > "$OUT/restart.txt" 2>&1 || fail "cozy restart: $(tail -c 300 "$OUT/restart.txt")"
 run_project "$RUN_PROJECT" || fail "project at $RUN_PROJECT"
 [ -z "$(own)" ] || fail "this runner's Calcifer already holds a rental: $(own | paste -sd' ')"
+if [ "$INSTALL" = true ]; then
+  for tree in $(jq -r '.[].tree' <<<"$CELLS" | sort -u); do
+    step "install-$tree" package install "$PACKAGES/$tree/qwen-image-2" --on local -y ||
+      fail "tree $tree's qwen-image-2 did not install here: $(grep -v '^ *$' "$OUT/install-$tree.txt" | tail -5 | tr '\n' ' ' | cut -c1-600)"
+    say "tree $tree's qwen-image-2 installed here: $(tail -2 "$OUT/install-$tree.txt" | tr '\n' ' ' | cut -c1-300)"
+  done
+fi
 trap 'code=$?; claim; (exit "$code"); finish' EXIT
 
 quote "$NEED"
@@ -80,6 +94,7 @@ for i in $(seq 0 $(($(jq length <<<"$CELLS") - 1))); do
   case $input in
     '') ;;
     @*) src=$(find "$WORK/raw/${input#@}" -type f \( -name '*.webp' -o -name '*.png' \) 2> /dev/null | head -1) ;;
+    stray) src=$WORK/stray.png ;;
     *) src=$HERE/fixtures/ltx-images/$input.jpg ;;
   esac
   [ -z "$input" ] || [ -f "$src" ] || { say "SKIP $name: no input $input"; bad=1; continue; }

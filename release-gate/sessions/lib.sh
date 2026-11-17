@@ -193,11 +193,11 @@ step() {
     case $t in /* | .*) if [ -d "$t" ]; then kernels "$t"; else kernels "$(dirname "$t")"; fi ;; esac
     # One that takes another package of its checkout from the Hub (`{ index = "tensorhub" }`), which holds no release of an
     # RC's package, runs from a copy taking it by path (local-sources.sh), as a dev home's checkout stages it (xs-195, se-154).
-    local d=$t; [ -d "$d" ] || d=$(dirname "$t")
-    if [ "$1" = run ] && [[ $t == /* ]] && grep -qs '= *{ *index *= *"tensorhub"' "$d/pyproject.toml"; then
+    local d=$t at=1; [ -d "$d" ] || d=$(dirname "$t"); [ "$1" = run ] || at=2
+    if [[ $t == /* ]] && grep -qs '= *{ *index *= *"tensorhub"' "$d/pyproject.toml"; then
       local copy=${RUNNER_TEMP:-$OUT/..}/sourced/$(basename "$(dirname "$d")")/$(basename "$d")
       [ -d "$copy" ] || "$(dirname "${BASH_SOURCE[0]}")/../local-sources.sh" "$d" "$copy" "$(dirname "$d")" > /dev/null || copy=$d
-      words[1]=$copy${t#"$d"}
+      words[$at]=$copy${t#"$d"}
     fi
   fi
   say "step $n: cozy ${words[*]}"
