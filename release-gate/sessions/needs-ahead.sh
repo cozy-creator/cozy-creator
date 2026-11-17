@@ -70,11 +70,12 @@ if [ -n "$LINK" ]; then
 fi
 quote "$(param need_s 3600)" "$SKU" ${CPU_SKU:+"$CPU_SKU"}
 
-# shown <file>: what the machine says it holds now. held <file> <repository>: its bytes there (`total_bytes`; a checkpoint whose
-# header alone landed, as a plan's resolution brings every slot's, holds a few hundred KiB); whole: a checkpoint of it is complete.
+# shown <file>: what the machine says it holds now. held <file> <repository>: its own bytes there (`unique_bytes`, what no other
+# model shares: the two enhancers share 357 MiB, which either one's download brings; a checkpoint whose header alone landed, as a
+# plan's resolution brings every slot's, holds a few hundred KiB); whole: a checkpoint of it is complete.
 # total: what it holds of every model, each object once (each one's own bytes, and what they share once).
 shown() { cozy --json machine show "$NAME" > "$1" 2> /dev/null || true; }
-held() { jq -r --arg m "$2" '[.status.models[]? | select(.repository == $m) | .total_bytes // 0] | add // 0' "$1" 2> /dev/null || echo 0; }
+held() { jq -r --arg m "$2" '[.status.models[]? | select(.repository == $m) | .unique_bytes // 0] | add // 0' "$1" 2> /dev/null || echo 0; }
 whole() { jq -e --arg m "$2" '[.status.models[]? | select(.repository == $m) | .checkpoints[]?.complete] | any' "$1" > /dev/null 2>&1; }
 models() { jq -c '[.status.models[]? | {repository, total_bytes, unique_bytes, complete: [.checkpoints[]?.complete]}]' "$1" 2> /dev/null; }
 total() { jq -r '([.status.models[]?.unique_bytes // 0] | add // 0) as $own | ([.status.models[]? | (.total_bytes // 0) - (.unique_bytes // 0)] | max // 0) as $shared | $own + $shared' "$1" 2> /dev/null || echo 0; }
@@ -183,6 +184,9 @@ shaped() {
   [ -n "$LINK" ] || return 0
   local dev _
   for _ in $(seq 20); do timeout 120 cozy machine ssh "$NAME" true < /dev/null > /dev/null 2>&1 && break; sleep 15; done
+  # A worker image has no tc: iproute2 comes first.
+  timeout 300 cozy machine ssh "$NAME" "command -v tc > /dev/null || { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iproute2; }" \
+    < /dev/null > "$OUT/iproute2.txt" 2>&1 || say "iproute2 not installed on $NAME: $(tail -c 200 "$OUT/iproute2.txt")"
   dev=$(timeout 120 cozy machine ssh "$NAME" "ip route show default | awk '{print \$5; exit}'" < /dev/null 2> /dev/null | tr -d '\r')
   if timeout 120 cozy machine ssh "$NAME" "tc qdisc add dev $dev handle ffff: ingress && tc filter add dev $dev parent ffff: protocol ip u32 match u32 0 0 police rate ${LINK}mbit burst 4m drop flowid :1" \
       < /dev/null > "$OUT/link.txt" 2>&1; then
