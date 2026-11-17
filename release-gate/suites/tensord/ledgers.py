@@ -1,4 +1,5 @@
-"""Each GPU's ledger on this machine, read from its page: live rows by GPU uuid. Runs on the machine."""
+"""Each GPU's ledger on this machine, read from its page: live rows by GPU uuid. Runs on the machine. Host RAM's page
+(`v6-host`, varena owns host RAM since faa55e0646) is no GPU's."""
 import glob
 import json
 import os
@@ -7,6 +8,8 @@ import struct
 HEADER, ROW, ROWS = 3, 9, 32
 tables: dict[str, list[dict[str, int]]] = {}
 for path in glob.glob("/dev/shm/cozy-varena-*/v6-*"):
+    if path.endswith("/v6-host"):
+        continue
     words = struct.unpack("<512Q", open(path, "rb").read(4096))
     rows = (words[HEADER + i * ROW : HEADER + (i + 1) * ROW] for i in range(ROWS))
     tables[os.path.basename(path)[3:]] = [
