@@ -1455,7 +1455,10 @@ def h3_latent_upscaler() -> Table[TableRow]:
     with torch.device("meta"):
         census = list(node.LatentResizer3D(**config).state_dict())
     assert sorted(census) == sorted(keys), "the upscaler's header is not LatentResizer3D's state_dict"
-    return {"name": "h3.latent_upscaler", "files": {"config.json": {"architecture": "minimax-h3-latent-upscaler-3d-conv-v1"}},
+    # The node's own latent statistics (`LATENTS_MEAN`, `LATENTS_STD`), which the package normalizes by.
+    normalization = {"enabled": True, "mean": list(node.LATENTS_MEAN), "std": list(node.LATENTS_STD)}
+    written = {"architecture": "minimax-h3-latent-upscaler-3d-conv-v1", "latent_normalization": normalization}
+    return {"name": "h3.latent_upscaler", "files": {"config.json": written},
             "components": [{"name": "upscaler", "rows": [(k,) for k in census]}]}
 
 
