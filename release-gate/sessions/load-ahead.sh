@@ -175,8 +175,16 @@ arms = {arm: json.load(open(f"{out}/report-{arm}.json")) for arm in names}
 after = [row["status"].get("idle_deadline_ms") for row in rows if row["at_ms"] > sent]
 print(json.dumps({"readiness": seen, "arms": arms, "idle_deadlines_after_other": sorted(set(d for d in after if d))}, indent=1))
 PY
-[ "$(jq '[.stages // {} | keys[] | select(test("executor start|construction|loading"))] | length' "$OUT/report-predicted.json")" = 0 ] ||
-  { say "FAIL: the predicted render's run started an executor, or built or loaded a model"; RC=1; }
+# Its first step (the run's first stage) starts with nothing to start, build or load: no executor start, no construction, no
+# on-demand model built (`loading <slot>`), nothing loaded inside that stage. What varena pages in later, a model it let go to make
+# room for another's working memory on a full card, is said, not judged (44060442909: the transformer at Turbo's first step).
+jq -r '[.report.measured[0].stages[]?.name]' "$OUT/run-predicted.json" > "$OUT/stages-predicted.json"
+first=$(jq -r 'map(select(test("^(executor start|construction)$|^loading ") | not)) | first // ""' "$OUT/stages-predicted.json")
+built=$(jq -r 'map(select(test("^(executor start|construction)$|^loading "))) | join(", ")' "$OUT/stages-predicted.json")
+inside=$(jq -r --arg f "$first" 'map(select(startswith($f + " / loading"))) | join(", ")' "$OUT/stages-predicted.json")
+later=$(jq -r --arg f "$first" 'map(select(contains(" / loading") and (startswith($f + " /") | not))) | join(", ")' "$OUT/stages-predicted.json")
+say "the predicted render's first step: $first; started or built: ${built:-nothing}; loaded in it: ${inside:-nothing}; paged in later: ${later:-nothing}"
+[ -z "$built" ] && [ -z "$inside" ] || { say "FAIL: the predicted render's first step started an executor, or built or loaded a model"; RC=1; }
 [ "$YIELD" = false ] || grep -q "load ahead: ended for a run" "$OUT/load-ahead.log" || { say "FAIL: no load yielded to SDXL"; RC=1; }
 yielded=''; [ "$YIELD" = false ] || yielded='; the load yielded to SDXL'
-[ "$RC" = 0 ] && say "PASS: loaded ahead (turbo $TURBO, upsampling $UPSAMPLING); the render built and loaded nothing$yielded"
+[ "$RC" = 0 ] && say "PASS: loaded ahead (turbo $TURBO, upsampling $UPSAMPLING); the render's first step built and loaded nothing$yielded"

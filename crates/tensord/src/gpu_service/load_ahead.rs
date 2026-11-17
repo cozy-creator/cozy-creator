@@ -53,8 +53,8 @@ struct Item {
 struct ItemState {
     /// Why it isn't loading now.
     held_back: String,
-    /// Once loaded: its executor.
-    loaded: Option<u32>,
+    /// Once loaded: its executor, and the most varena's ledger has said it holds since.
+    loaded: Option<(u32, u64)>,
     /// Its load failed: it isn't tried again until it comes anew.
     failed: bool,
 }
@@ -177,8 +177,8 @@ impl Pool {
     }
 
     /// Whether `item`'s models are on a GPU (an executor holds its construction there): None if not; false once a run took that
-    /// memory from the executor its load left idle, as varena's ledger shows: what it holds there under 90% of its weights. An
-    /// idle executor says what it holds only once asked for memory, as a run's ask takes it: before, it holds them.
+    /// memory from the executor its load left idle, as varena's ledger shows: what it holds there under 90% of the most it has
+    /// said it held since. An idle executor says what it holds only once asked for memory, as a run's ask takes it.
     fn on_gpu(&self, item: &Item) -> Option<bool> {
         let construction = &item.predicted.plan.construction;
         let (start, pid) = {
@@ -192,12 +192,12 @@ impl Pool {
         if idle == Some(false) {
             return None;
         }
-        let Some(loaded) = item.state.lock().unwrap().loaded else { return Some(true) };
+        let mut state = item.state.lock().unwrap();
         // A call or a warm set made it, or a call has it now: the pool's own account stands.
-        if loaded != pid || idle.is_none() {
-            return Some(true);
-        }
-        Some(self.holdings(start, pid).is_none_or(|(held, _)| held == 0 || held.saturating_mul(10) >= item.need.saturating_mul(9)))
+        let Some((_, most)) = state.loaded.as_mut().filter(|(loaded, _)| *loaded == pid && idle.is_some()) else { return Some(true) };
+        let held = self.holdings(start, pid).map_or(0, |(held, _)| held);
+        *most = (*most).max(held);
+        Some(held.saturating_mul(10) >= most.saturating_mul(9))
     }
 
     /// What process `pid` holds on GPU `device`, and of it what is idle, as varena's ledger says.
@@ -332,7 +332,7 @@ impl Pool {
                 if let Some(session) = self.sessions.lock().unwrap().get_mut(&session_key(&plan.executor, start)) {
                     session.user = Some(item.scope());
                 }
-                item.state.lock().unwrap().loaded = Some(pid);
+                item.state.lock().unwrap().loaded = Some((pid, held));
                 tracing::info!(run = %caller, "load ahead: its models are on GPU {gpus} in {ms} ms, its on-demand {:?} built ahead ({} free before)",
                     item.predicted.build, free.map_or("?".into(), gib));
                 self.notes.note(serde_json::json!({"event": "load_ahead", "run": caller, "plan": construction, "gpus": gpus,
