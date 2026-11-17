@@ -1,0 +1,17 @@
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "ggml-logits"
+version = "0.1.0"
+description = "ggml-decode's logits check: one lane's next-token distributions against another's on the same text"
+requires-python = ">=3.12"
+dependencies = ["cozy-runtime[media]>=0.48.0.dev0,<0.49", "msgspec>=0.19"]
+
+[project.entry-points."cozy.application"]
+default = "ggml_logits:app"
+
+[tool.uv.build-backend]
+module-name = "ggml_logits"
+module-root = ""
