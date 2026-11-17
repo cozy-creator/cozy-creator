@@ -14,7 +14,7 @@ function countAsked() {
   const asked = new Map();
   const request = window.requestAnimationFrame.bind(window);
   window.requestAnimationFrame = (callback) => {
-    const at = (new Error().stack ?? '').split('\n').slice(2, 4).map((line) => line.trim().replace(/\?[^:)]*/, '')).join(' < ');
+    const at = (new Error().stack ?? '').split('\n').slice(2, 8).map((line) => line.trim().replace(/\?[^:)]*/, '')).join(' < ');
     asked.set(at, (asked.get(at) ?? 0) + 1);
     return request(callback);
   };
