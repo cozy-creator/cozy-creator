@@ -74,6 +74,11 @@ paths:
         '409':
           description: This machine has no idle deadline
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+  /v1/project-gone:
+    post:
+      summary: What a lock that couldn't reach this machine owes it (cl-1064). Every project it ran in the vault view named has its runs there cancelled and its records retired, as a lock's close would have.
+      description: This computer's controller only (the machine capability), on the local machine. Body {"view":"<path>"}, the view's path, new at each unlock.
+      responses: {'204': {description: Nothing it ran there is left, or its last runs take it with them}, '403': {description: Not this computer's controller}, '409': {description: A folder it ran in still holds it}}
   /v1/project-gone/{project_id}:
     post:
       summary: A project whose folder is gone (cl-1031). Every record of it here goes, as a lock's does; its active runs are canceled, and it goes as the last settles.

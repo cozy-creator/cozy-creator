@@ -36,6 +36,7 @@ mod machines;
 mod machine_client;
 mod old_outputs;
 mod outputs;
+mod owed;
 mod page;
 mod placement;
 mod plan;
@@ -110,6 +111,9 @@ pub(crate) struct Calcifer {
     drivers: Mutex<HashMap<RunId, Arc<Notify>>>,
     /// Each driver whose task is going, kept by the task itself (`Driving`): what a run's writes into its project count of it.
     driving: Mutex<HashSet<RunId>>,
+    /// Runs a lock settled here because their machine didn't answer (cl-1064): their drivers, blocked on it, write nothing, so they
+    /// hold no lock (`writing_into`). Each goes as its driver ends.
+    let_go: Mutex<HashSet<RunId>>,
     /// Runs told to cancel whose request is still to be kept: a project's edit held its writer when it asked.
     canceling: Mutex<HashSet<String>>,
     /// Queued runs told to cancel on their machine to go to another that finishes them sooner (cl-1073), by id: where each goes.
@@ -292,6 +296,7 @@ struct Driving {
 impl Drop for Driving {
     fn drop(&mut self) {
         lock(&self.calcifer.driving).remove(&self.id);
+        lock(&self.calcifer.let_go).remove(&self.id);
     }
 }
 
@@ -324,6 +329,7 @@ impl Calcifer {
             live: Mutex::default(),
             drivers: Mutex::default(),
             driving: Mutex::default(),
+            let_go: Mutex::default(),
             canceling: Mutex::default(),
             moving: Mutex::default(),
             machines: Mutex::default(),
@@ -591,7 +597,7 @@ impl Calcifer {
     /// its machine) or its exporter moving its outputs, latents among them, into the project (`export_moving`). The project's vault
     /// clock and every lock wait for it; an exporter that stalls stops holding them.
     pub(crate) fn writing_into(&self, project: &str) -> Option<RunId> {
-        self.routed(project).into_iter().find(|id| lock(&self.driving).contains(id) || self.export_moving(id))
+        self.routed(project).into_iter().find(|id| (lock(&self.driving).contains(id) && !lock(&self.let_go).contains(id)) || self.export_moving(id))
     }
 
     /// A run of `project` whose exporter is moving its outputs into it (`writing_into` without the drivers, cl-1082).
@@ -610,6 +616,11 @@ impl Calcifer {
         lock(&self.run_owners).iter()
             .filter(|(_, owner)| owner.as_ref().is_some_and(|owner| owner.project_id() == project))
             .filter_map(|(id, _)| RunId::try_from(id.clone()).ok()).collect()
+    }
+
+    /// Whether `project` has runs routed to it now (cl-1064): a lock reads its journal for runs on a machine only then.
+    pub(crate) fn has_runs(&self, project: &str) -> bool {
+        !self.routed(project).is_empty()
     }
 
     /// The runs of `project` whose drivers' tasks are going (cl-1060): sending, settling, handing on.
@@ -724,7 +735,9 @@ impl Calcifer {
     pub(crate) fn row_owner(&self,row:&RunRow)->store::Result<Option<project::RunOwner>> {
         let Some(root)=&row.project_root else { return Ok(None); };
         let open=self.live_owners().into_iter().find(|owner|owner.root()==root);
-        open.or_else(||self.opened(&row.owner).filter(|owner|owner.root()==root)).map(Some).ok_or_else(||StoreError::Locked("project_not_open".into()))
+        // Not open: an encrypted one locked says so (it unlocks), any other isn't open (it opens).
+        let closed=||StoreError::Locked(if crate::project::vault::is_locked(root) { "project_locked" } else { "project_not_open" }.into());
+        open.or_else(||self.opened(&row.owner).filter(|owner|owner.root()==root)).map(Some).ok_or_else(closed)
     }
     /// What names `row` to a person (cl-987): `KEY-N`, its project's key and its number there; its number alone while its project
     /// isn't open. Naming a run never opens its project (a lock may be closing it). A job of Calcifer's has none (cl-1028).
@@ -886,6 +899,35 @@ impl Calcifer {
             let Some(row)=store.run(id.as_str())? else {continue;};
             let events=store.request_cancel(id.as_str())?;
             self.publish(&id,events); self.wake(&id); canceled.push(row.number);
+        }
+        Ok(canceled)
+    }
+
+    /// Whether `project` has a run on `machine` not yet settled.
+    pub(crate) fn unsettled_on(&self, project: &str, machine: &str) -> Result<bool, Error> {
+        let Some(owner) = self.owner_of(project) else { return Ok(false) };
+        let store = owner.store()?;
+        for id in store.unsettled()? {
+            if store.run(id.as_str())?.is_some_and(|row| row.machine.as_deref() == Some(machine)) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// A lock ends `project`'s runs on `machine`, which doesn't answer (cl-1064): each settles here as canceled, never waiting for
+    /// it; the machine cancels them when it next answers, before anything else is sent to it.
+    pub(crate) fn cancel_unanswered_for_lock(&self, project: &str, machine: &str) -> Result<Vec<u64>, Error> {
+        let Some(owner) = self.owner_of(project) else { return Ok(vec![]) };
+        let store = owner.store()?;
+        let mut canceled = vec![];
+        for id in store.unsettled()? {
+            let Some(row) = store.run(id.as_str())? else { continue };
+            if row.machine.as_deref() != Some(machine) { continue; }
+            let mut events = store.request_cancel(id.as_str())?;
+            events.extend(store.cancel_unanswered(id.as_str(), machine, "machine_not_answering", "the project was locked")?);
+            if lock(&self.driving).contains(&id) { lock(&self.let_go).insert(id.clone()); }
+            self.publish(&id, events); self.wake(&id); canceled.push(row.number);
         }
         Ok(canceled)
     }
@@ -2016,6 +2058,23 @@ impl Calcifer {
                 }
                 continue;
             };
+            // Nothing new of a project goes to local before what a lock owes it for that project is done (cl-1064): the runs it held
+            // in a view the lock ended are cancelled and retired first, so none of them writes again into the project unlocked anew.
+            // Another project's runs don't wait on it.
+            if run.state == State::Queued
+                && name == "local"
+                && let Some(machines) = self.machines()
+                && machines.maybe_owed()
+                && lock(&self.run_owners).get(id.as_str()).cloned().flatten().is_some_and(|owner| machines.owes(owner.root()))
+                && !machines.pay_owed().await
+            {
+                self.waiting(id, "waiting for local to finish a locked project's clean-up".into());
+                tokio::select! {
+                    _ = changed.changed() => {}
+                    _ = wake.notified() => {}
+                }
+                continue;
+            }
             // Work goes to a machine of any version; one on an older minor this computer may move is updated first (cl-1069).
             if run.state == State::Queued
                 && run.kind != ::api::calcifer::Kind::Update

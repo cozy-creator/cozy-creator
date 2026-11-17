@@ -36,6 +36,12 @@ pub(crate) const TABLES: &str = "
         code TEXT NOT NULL,
         path TEXT NOT NULL
     ) STRICT;
+    CREATE TABLE IF NOT EXISTS machine_owed (
+        machine TEXT NOT NULL,
+        view TEXT NOT NULL,
+        folder TEXT NOT NULL,
+        PRIMARY KEY (machine, view)
+    ) STRICT;
     DROP TABLE IF EXISTS sessions;
     DROP TABLE IF EXISTS session_codes;
     CREATE TABLE IF NOT EXISTS purge_due (
@@ -465,6 +471,34 @@ impl Store {
             // The handles of its last lock go: each lock's is new.
             tx.execute("DELETE FROM project_handles WHERE path = ?1", [&path])?;
             tx.execute("INSERT INTO projects (id, path, code, used_at_ms) VALUES (?1, ?2, '', ?3)", params![handle, path, used])?;
+            Ok(())
+        })?;
+        self.empty_wal()
+    }
+
+    /// A machine's clean-up a lock owes (cl-1064): the lock couldn't reach `machine`, so what it held of the project at `folder`,
+    /// mounted at `view` (a path new at each unlock), is cancelled and retired when it next answers. Nothing else of the project.
+    pub(crate) fn owe(&self, machine: &str, view: &Path, folder: &Path) -> Result<()> {
+        self.write(|tx| {
+            tx.execute("INSERT OR REPLACE INTO machine_owed (machine, view, folder) VALUES (?1, ?2, ?3)", params![machine, view.to_string_lossy(), folder.to_string_lossy()])?;
+            Ok(())
+        })
+    }
+
+    /// What `machine` is owed: each view and its project's folder.
+    pub(crate) fn owed_to(&self, machine: &str) -> Result<Vec<(PathBuf, PathBuf)>> {
+        self.read(|conn| {
+            let mut statement = conn.prepare("SELECT view, folder FROM machine_owed WHERE machine = ?1 ORDER BY view")?;
+            let rows = statement.query_map([machine], |row| Ok((PathBuf::from(row.get::<_, String>(0)?), PathBuf::from(row.get::<_, String>(1)?))))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    /// `machine` did the clean-up owed for `view`.
+    pub(crate) fn paid(&self, machine: &str, view: &Path) -> Result<()> {
+        self.write(|tx| {
+            tx.pragma_update(None, "secure_delete", "ON")?;
+            tx.execute("DELETE FROM machine_owed WHERE machine = ?1 AND view = ?2", params![machine, view.to_string_lossy()])?;
             Ok(())
         })?;
         self.empty_wal()

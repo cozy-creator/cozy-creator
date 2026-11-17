@@ -949,6 +949,30 @@ impl Mounted {
         self.guard.seal()?;
         Ok(())
     }
+
+    /// Ends the view whatever still holds it, for a lock whose machine doesn't answer and so can't let go of the files it has open
+    /// there (cl-1064): the supervisor stops its provider, and the key goes with it. Whatever has files open in the view gets
+    /// errors from then on; the dead mount is detached.
+    pub fn end(&mut self) -> Result<()> {
+        let transition = transition(&self.view);
+        let _transition = transition
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.reconcile()?;
+        if self.retired {
+            return Ok(());
+        }
+        self.input.take();
+        if !self.owner.wait_for(CONTROL_ACK)? {
+            return Err(Error::StillRunning);
+        }
+        self.child
+            .try_wait()
+            .map_err(io_error("wait for filesystem shutdown"))?;
+        self.reconcile()?;
+        self.guard.seal()?;
+        Ok(())
+    }
 }
 
 /// How long letting go of a view waits on what serves it before it ends it (cl-1124): a provider under a backing removed from outside
