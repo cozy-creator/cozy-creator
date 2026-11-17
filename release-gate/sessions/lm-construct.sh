@@ -1,0 +1,120 @@
+# lm-construct (cr-307): Qwen3.6-35B-A3B's start-up on one rental: download, executor, construction, the load it answers from.
+# cr-307, from xs-204's GPU proof: Qwen3.6-35B-A3B (int8) took 3.7-7 min to construct its executor on an RTX A6000 before it
+# answered anything (PRO-4: prepare 223 s, `construct.fill` 209 s; a fresh pod's render 342 s; a second executor ~5.5 min).
+# Paul 11-15: "fix known problems now". The coordinator 11-17: the same bookkeeping serves every model with many blocks, so
+# SDXL runs beside it as the non-LLM twin.
+# Per arm, in order on the one pod (its Runtime and TensorFS by `cozy machine update`, which restarts its TensorD):
+#   cold   Qwen3.6's `write` (the packages checkout's) on a photo, a new executor, its weights out of the page cache; the
+#          first arm's downloads them too
+#   warm   the same on a new executor (the package uninstalled first), its weights in the page cache
+#   hot    the same executor again
+#   sdxl   SDXL's generate (1 MP, 20 steps) on a new executor, then again on it
+# Every row's parts against the ceilings TensorFS measures on the pod (disk, pinned H2D) are in table.md and the job summary.
+# A judged arm must construct warm in `prepare_s` and run cold in `x` times its weights' read at the disk's ceiling plus
+# `fixed_s` (legs.py). With `profile`, py-spy samples each executor of the Qwen3.6 rows (spy/*.json, speedscope).
+# params:
+#   tree     the packages_refs checkout qwen3.6 and sdxl run from (required)
+#   arms     [{"name": "rc", "runtime": "<cozy-runtime run id or https wheel>", "tensorfs": "<artifact:<run>/<name> or https
+#            wheel>", "judged": false}, {"name": "fix", ..., "judged": true}]
+#   bar      {"prepare_s": 30, "x": 2, "fixed_s": 45}
+#   profile  true: py-spy on the Qwen3.6 rows' executors
+#   sdxl     false: no SDXL rows
+#   need_s   seconds the guard must buy (default 3600)
+. "$(dirname "$0")/lib.sh"
+HERE=$(cd "$(dirname "$0")" && pwd)
+FIX=$HERE/fixtures/lm-construct PICTURE=$HERE/fixtures/ltx-images/teapot.jpg
+TREE=$(param tree '') ARMS=$(param arms '[]') BAR=$(param bar '{"prepare_s": 30, "x": 2, "fixed_s": 45}')
+[ -n "$TREE" ] && [ -f "$PACKAGES/$TREE/qwen3.6/pyproject.toml" ] && [ -f "$PACKAGES/$TREE/sdxl/pyproject.toml" ] ||
+  fail "dispatch with -f packages_refs=<name>=<the packages RC> and params.tree=<name>"
+SOURCE=$(cd "$PACKAGES/$TREE" && pwd)
+mapfile -t names < <(jq -r '.[].name' <<<"$ARMS")
+[ "${#names[@]}" -gt 0 ] || fail "no arms"
+for tool in jq python3; do command -v "$tool" > /dev/null || fail "no $tool"; done
+V=$(cozy --version | awk '{print $2}')
+[[ $V == *-dev* ]] || fail "cozy $V is no RC build: dispatch with cozy=<a dev-build of rc/<x>>"
+# Each arm's wheels, fetched before renting.
+declare -A RT=() TF=()
+for a in "${names[@]}"; do
+  [[ $a =~ ^[a-z0-9-]+$ ]] || fail "arm name $a"
+  RT[$a]=$(wheel_from "$OUT/wheels/$a-runtime" "$(jq -r --arg a "$a" '.[] | select(.name == $a) | .runtime' <<<"$ARMS")")
+  TF[$a]=$(wheel_from "$OUT/wheels/$a-tensorfs" "$(jq -r --arg a "$a" '.[] | select(.name == $a) | .tensorfs' <<<"$ARMS")")
+  [ -n "${RT[$a]}" ] && [ -n "${TF[$a]}" ] || fail "arm $a: no Runtime or TensorFS wheel"
+  say "arm $a: ${RT[$a]##*/}, ${TF[$a]##*/}"
+done
+jq -n --argjson arms "$ARMS" --argjson bar "$BAR" '[$arms[] | {key: .name, value: ($bar + {judged: (.judged // false)})}] | from_entries' \
+  > "$OUT/bar.json" || fail "bar: $BAR"
+PROFILE=$(param profile false)
+if [ "$PROFILE" = true ]; then
+  python3 -m pip download -q --no-deps --only-binary=:all: -d "$OUT/py-spy" py-spy==0.4.0 > /dev/null 2>&1 &&
+    (cd "$OUT/py-spy" && python3 -m zipfile -e py_spy-*.whl x) && SPY=$(find "$OUT/py-spy/x" -name py-spy -type f | head -1)
+  [ -n "${SPY:-}" ] || fail "no py-spy"
+fi
+kernels "$SOURCE/qwen3.6"; kernels "$SOURCE/sdxl"
+[ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
+RENT_ARGS=--ssh
+quote "$(param need_s 3600)"
+rent
+pod() { timeout "${T:-120}" cozy machine ssh "$NAME" "$@"; }
+for i in $(seq 1 20); do pod true < /dev/null > /dev/null 2>&1 && break; [ "$i" = 20 ] && fail "no SSH into $NAME"; sleep 15; done
+T=60 pod "cat > /tmp/lm.py" < "$FIX/pod.py" || fail "pod.py"
+[ -z "${SPY:-}" ] || T=120 pod "cat > /tmp/py-spy && chmod +x /tmp/py-spy" < "$SPY" || fail "py-spy to the pod"
+
+run_page import "$PICTURE" --name photo > "$OUT/import-photo.json" 2>&1 || fail "import the photo: $(tail -c 300 "$OUT/import-photo.json")"
+photo=$(jq -r '.sha256 // empty' "$OUT/import-photo.json"); [ -n "$photo" ] || fail "the import holds no file"
+ON_PHOTO=$(jq -cn --arg f "sha256:${photo#sha256:}" '{text: "What is in <photo>? Answer in two sentences.", references: [{key: "photo", type: "image", file: $f}]}')
+jq -n '{prompt: "a lighthouse keeper'"'"'s desk at dawn, watercolor", megapixels: 1.0, aspect_ratio: "1:1", steps: 20, seed: 7}' > "$OUT/sdxl.json"
+RECORDS=()
+# record <label>: the run its step named, its whole record as <label>.json.
+record() {
+  local n; n=$(runno "$1")
+  [ -n "$n" ] && (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$OUT/$1.json" 2> "$OUT/$1.err"
+  RECORDS+=("$1=$OUT/$1.json")
+  say "$1: run ${n:-none} $(jq -r '.status // "unrecorded"' "$OUT/$1.json" 2> /dev/null), executing $(jq -r '.execution_ms // "?"' "$OUT/$1.json" 2> /dev/null) ms, prepare $(jq -r '.measurements.execution.construction.prepare_ms // "?"' "$OUT/$1.json" 2> /dev/null) ms: $(jq -r '.result.text // empty' "$OUT/$1.json" 2> /dev/null | tr '\n' ' ' | cut -c1-200)"
+}
+# write <label>: Qwen3.6 answers the photo, greedily, watched on the pod (disk reads, each new executor sampled).
+write() {
+  local w
+  (T=2400 pod "python3 /tmp/lm.py watch $1 2300" < /dev/null > "$OUT/watch-$1.txt" 2>&1) & w=$!
+  sleep 3
+  step "$1" run "$SOURCE/qwen3.6/write" "instructions:=$ON_PHOTO" max_tokens:=200 temperature:=0 --on "$NAME"
+  T=60 pod "touch /tmp/lm-$1.stop" < /dev/null > /dev/null 2>&1; wait "$w"
+  record "$1"
+}
+# fresh <package>: its executor ends: the package uninstalled (the next run installs it from the checkout again), else every
+# executor on the pod ended by its pid.
+fresh() {
+  local p
+  p=$(cozy package ls --on "$NAME" --json 2> /dev/null | jq -r --arg p "$1" '[.packages[] | .package | select(. == $p or endswith("/" + $p))] | first // empty')
+  [ -n "$p" ] && step "rm-$1" package uninstall "$p" --on "$NAME" -y && return 0
+  say "fresh $1: not uninstalled (${p:-not listed}); ending the pod's executors: $(T=60 pod "python3 /tmp/lm.py end" < /dev/null 2>&1)"
+}
+
+for a in "${names[@]}"; do
+  step "update-$a" machine update "$NAME" --tensord "$(command -v cozy)" --runtime "${RT[$a]}" --tensorfs "${TF[$a]}" -y || fail "$a: the update"
+  say "$a: $(cozy machine show "$NAME" --json | jq -r '"cozy \(.status.version) · Runtime \(.status.runtime) · TensorFS \(.status.tensorfs) · GPU 0 \(.status.gpus[0].name)"')"
+  [ -s "$OUT/ceiling.json" ] || { T=600 pod "python3 /tmp/lm.py ceiling" < /dev/null > "$OUT/ceiling.json" 2> "$OUT/ceiling.err"; say "ceiling: $(cat "$OUT/ceiling.json")"; }
+  T=300 pod "python3 /tmp/lm.py evict" < /dev/null > "$OUT/$a-evict.json" 2>&1; say "$a: evicted $(cat "$OUT/$a-evict.json")"
+  write "$a-cold"
+  [ -s "$OUT/ceiling.json" ] && jq -e .disk_gbps "$OUT/ceiling.json" > /dev/null 2>&1 ||
+    { T=600 pod "python3 /tmp/lm.py ceiling" < /dev/null > "$OUT/ceiling.json" 2> "$OUT/ceiling.err"; say "ceiling: $(cat "$OUT/ceiling.json")"; }
+  fresh qwen3.6
+  write "$a-warm"
+  write "$a-hot"
+  if [ "$(param sdxl true)" = true ]; then
+    fresh qwen3.6
+    step "$a-sdxl-new" run "$SOURCE/sdxl/generate" --input "$OUT/sdxl.json" --on "$NAME"; record "$a-sdxl-new"
+    step "$a-sdxl-warm" run "$SOURCE/sdxl/generate" --input "$OUT/sdxl.json" --on "$NAME"; record "$a-sdxl-warm"
+  fi
+done
+
+cozy machine logs "$NAME" --since 3h -n 0 > "$OUT/machine.log" 2>&1
+grep -aE 'floor moved .*to=none' "$OUT/machine.log" | awk '{for (i = 1; i <= NF; i++) if ($i ~ /^(bytes|seconds|mb_s)=/) printf "%s ", $i; print ""}' |
+  awk '{split($1, b, "="); if (b[2] > 1e9) print "download: " $0}' | tee -a "$R"
+T=600 pod "cd /tmp/lm && tar czf - . | base64 -w0" < /dev/null 2> "$OUT/spy.err" | base64 -d > "$OUT/pod-lm.tgz" 2>> "$OUT/spy.err"
+mkdir -p "$OUT/pod" && tar xzf "$OUT/pod-lm.tgz" -C "$OUT/pod" 2>> "$OUT/spy.err"
+say "pod files: $(ls "$OUT/pod" 2> /dev/null | paste -sd' ')"
+[ -s "$OUT/ceiling.json" ] || echo '{}' > "$OUT/ceiling.json"
+python3 -I "$FIX/legs.py" "$OUT/ceiling.json" "$OUT/bar.json" "${RECORDS[@]}" > "$OUT/table.txt" 2>&1 || RC=1
+grep -v '^{' "$OUT/table.txt" | tee -a "$R"
+{ echo "## lm-construct on $NAME ($SKU)"; echo; echo "ceiling: $(cat "$OUT/ceiling.json")"; echo; grep -v '^{' "$OUT/table.txt"; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+exit "$RC"
