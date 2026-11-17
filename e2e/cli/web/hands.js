@@ -64,8 +64,10 @@ async function toolRow(page, operation, id) {
   const tools = page.getByRole('complementary', { name: 'Tools' });
   const category = tools.getByRole('button', { name: operation, exact: true });
   const row = tools.locator(`li[data-implementation][data-tool=${JSON.stringify(id)}]`);
-  await expect(row.or(category).first()).toBeVisible();
-  if (await category.count()) {
+  // The palette read: its tool, or its group with tools in it. A group with none is a list not read yet, which comes as the tool's own
+  // row when it's the only one (web-llm, e2e 44088809798: a click on the empty group waited out its time as the row took its place).
+  await expect.poll(async () => (await row.count()) > 0 || ((await category.count()) > 0 && await category.isEnabled()), { message: `the palette offers ${operation}` }).toBe(true);
+  if (!(await row.count()) && await category.count()) {
     if ((await category.getAttribute('aria-expanded')) !== 'true') await category.click();
     await expect(category).toHaveAttribute('aria-expanded', 'true');
   }
