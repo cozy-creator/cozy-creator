@@ -49,9 +49,11 @@
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR; and
 #              their seconds, cold or warm (pairs.tsv)
 #   order      optional: `abba` (default: each two builds compared run in both orders) or `one-way`
-#   need_s     seconds the cap must buy (3600)
+#   need_s     seconds the cap must buy (3600), at most 19800: a hosted job ends at 6 h with nothing kept
 #   max_failures  optional: cells that may fail before the session ends (2)
 #   gpus       optional: the pod's GPU count (1); a cell's `--gpus=<n>` arg runs it on that many
+#   file       optional: a JSON file in this checkout (from its root) holding all of these, for a matrix past the
+#              dispatch input's 65,535 characters
 #   free_gib   optional: before the first cell another program (suites/bench/vram.py, raw driver allocations by a
 #              root shell over ssh) takes all of GPU 0 but this many GiB and holds it to the end, a card as full as
 #              the 0.25.0 gate's RTX 5090 kazune was (about 3 GiB outside cozy; cr-293)
@@ -124,7 +126,10 @@ for k in "${names[@]}"; do
   c=$(jq -c --arg k "$k" 'map(select(.name==$k)) | first' <<<"$CELLS"); tree=$(jq -r '.tree // empty' <<<"$c")
   [ -z "$tree" ] || kernels "$PACKAGES/$tree/$(jq -r '.target | split("/") | first' <<<"$c")"
 done
-quote "$(param need_s 3600)"
+NEED=$(param need_s 3600)
+# A hosted job ends at 6 h and keeps no log and no artifact then (43459786225): a session must end well inside it.
+[ "$NEED" -le 19800 ] || fail "need_s $NEED: past 5.5 h, a hosted job's 6 h end would lose every result; split the session"
+quote "$NEED"
 rent
 # A dev home on an RC build moves its rental to the RC's builds once it's ready: no cell starts before that ends.
 cozy machine show "$NAME" --json > "$OUT/show-rc.json" 2> /dev/null
@@ -144,8 +149,7 @@ held() {
   cozy model ls --on "$NAME" --json --full > "$OUT/$1-models-$2.json" 2>&1
   say "$1 disk $2: $(jq -r '[.models[]? | "\(.model) \(.lane) \((.bytes // 0) / 1e8 | floor / 10) GB\(if .complete == false then " partial" else "" end)"] | join(", ")' "$OUT/$1-models-$2.json" 2>/dev/null)"
 }
-# gpu: the processes holding GPU 0 and the card's reading, from the pod's root shell.
-gpu() { timeout 60 cozy machine ssh "$NAME" "nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader; nvidia-smi --query-gpu=memory.used,memory.free --format=csv,noheader" 2>&1 | grep -v '^Warning: Permanently added'; }
+. "$(dirname "$0")/gpu-reader.sh"
 # listeners: the pod's listening TCP sockets as `address:port process`, `ss -Hltnp`'s, else read from /proc.
 LISTENERS='import glob, os, socket, struct
 owners = {}
@@ -170,9 +174,9 @@ for name, family in (("/proc/net/tcp", socket.AF_INET), ("/proc/net/tcp6", socke
 listeners() { timeout 60 cozy machine ssh "$NAME" "if command -v ss > /dev/null; then ss -Hltnp | awk '{print \$4, \$6}'; else echo $(base64 -w0 <<< "$LISTENERS") | base64 -d | python3 -; fi" 2>&1 | grep -v '^Warning: Permanently added'; }
 echo -e "utc\tshow_ms\tshow_rc\tstate\trun\trunshow_ms\trunshow_rc\tstatus\tunreachable" > "$OUT/probe.tsv"
 ( p=0; while :; do
-    # Each minute, what holds the card (gpu.log): a stalled cell's other holder is named there; and the pod's listeners.
-    [ $((p++ % 4)) != 0 ] || { echo "$(date -u +%T) $(gpu | paste -sd';')" >> "$OUT/gpu.log"
-      k=$(cat "$OUT/current" 2>/dev/null); [ -z "$k" ] || listeners | sed "s/^/$k /" >> "$OUT/listeners.log"; }
+    # Every 5 min the pod's own GPU readings (gpu-pod.log: a stalled cell's other holder is named there); each minute its listeners.
+    [ $((p % 20)) != 10 ] || readings
+    [ $((p++ % 4)) != 0 ] || { k=$(cat "$OUT/current" 2>/dev/null); [ -z "$k" ] || listeners | sed "s/^/$k /" >> "$OUT/listeners.log"; }
     t=$(date +%s%3N); s=$(timeout 120 cozy machine show "$RID" --json 2>&1); src=$?; sm=$(( $(date +%s%3N) - t ))
     k=$(cat "$OUT/current" 2>/dev/null); N=''; [ -z "$k" ] || N=$(current "$k")
     rs='' rms='' rrc='' rst=''
@@ -265,6 +269,7 @@ for k in "${names[@]}"; do
     derived_state "$k" settle
     [ "$keep" = true ] || derived_zero || fail "$k: its arm starts with derived state it did not make: $DERIVED"
     SEEN=()
+    gpuwatch
   fi
   [ -z "$FREE_GIB" ] || { [ -z "${UPDATE[$k]:-}" ] && [ "$k" != "${names[0]}" ]; } || hold "$k" on
   mapfile -t gone < <(jq -r '.uninstall // [] | .[]' <<<"$c")
@@ -291,6 +296,7 @@ for k in "${names[@]}"; do
   held "$k" before
   cd "$PACKAGES/$tree" || fail "no tree for $k"
   [ -z "$tree" ] || target=./$target
+  say "$k: start"  # what each process held as it started: gpu-pod.log's last reading before this (cr-297)
   step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?
   N=$(runno "$k"); [ -n "$N" ] || N=$(current "$k")  # a failed run's output names it only in its first line
   # `step` runs every cell from the session's project (lib.sh RUN_PROJECT): its runs are known there alone.

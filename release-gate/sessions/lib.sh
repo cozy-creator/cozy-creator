@@ -21,6 +21,12 @@ RIDS=()  # every rental this session ordered; $OUT/rental lists them, one a line
 fail() { say "FAIL: $*"; RC=1; exit 1; }
 # param <key> [default]: the session's setting from PARAMS (a non-string as JSON).
 param() { jq -r --arg k "$1" --arg d "${2-}" 'if has($k) then (.[$k] | if type == "string" then . else tojson end) else $d end' <<<"$PARAMS"; }
+# `file`: PARAMS are a JSON file in this checkout (from its root), for a matrix past the dispatch input's 65,535 characters;
+# read before any other param, so lib.sh's own (floor_mb_s, runtime, tensorfs) come from it too.
+PF=$(param file '')
+if [ -n "$PF" ]; then
+  PF=$(dirname "${BASH_SOURCE[0]}")/../../$PF; jq -e 'type == "object"' "$PF" > /dev/null 2>&1 || fail "params file $PF"; PARAMS=$(cat "$PF")
+fi
 # The slow-host floor (`floor_mb_s`, 0 for none; `floor_after_s`): a step whose upload to the pod or weights download still
 # reports under it that long in ends the session, `host too slow`, before the host's link eats the cap (th-377).
 FLOOR_MBS=$(param floor_mb_s 50) FLOOR_AFTER=$(param floor_after_s 120)
@@ -60,6 +66,8 @@ finish() {
   trap 'RC=1' INT TERM HUP
   # The helpers stop first, each one's children before itself: a watcher whose sleep is killed exits without acting.
   for p in $DL $WD $BG; do pkill -P "$p"; kill "$p"; done 2>/dev/null
+  # A session's last reads from a live pod (ab.sh: the pod's GPU readings).
+  if declare -F before_end > /dev/null && [ "${#RIDS[@]}" -gt 0 ] && ! gone "${RIDS[0]}"; then before_end; fi
   local r
   for r in "${RIDS[@]}"; do
     local tries=0
