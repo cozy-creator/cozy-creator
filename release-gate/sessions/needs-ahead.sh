@@ -119,29 +119,57 @@ guess_ready() {
   whole "$1" "$2" || fail "$2 isn't whole on $NAME after $3 min: $(models "$1"); row: ${READY:-none}"
   fail "draw isn't ready on $NAME: ${READY:-no row}"
 }
+# sample <file> <tsv>: what $NAME holds now, into <file>, and a line of <tsv>: the runner's clock (Unix ms), each enhancer's own bytes.
+sample() { shown "$1"; printf '%s\t%s\t%s\n' "$(date +%s%3N)" "$(held "$1" "$T2I")" "$(held "$1" "$I2I")" >> "$2"; }
+# MISMATCH: what didn't match, said at the end; each step runs all the same.
+MISMATCH=()
 # switch: steps 2 and 3 on $NAME, this project's machine.
 switch() {
   say "step 2: a page shows the project; draw, drafted text-to-image, is guessed on $NAME"
   page
-  # expander_t2i coming, not yet whole: the moment to change the draft. expander_i2i never comes meanwhile.
-  local began=$SECONDS guessed='' had
+  # expander_t2i's own bytes coming: 1 s on, the draft changes, most of its 11 GB still to come. expander_i2i never comes meanwhile.
+  local began=$SECONDS guessed='' had series=$OUT/t2i-series.tsv
+  printf 'unix_ms\tt2i_own\ti2i_own\n' > "$series"
   while [ $((SECONDS - began)) -lt 1800 ]; do
-    shown "$OUT/guess.json"; guessed=$(row)
+    sample "$OUT/guess.json" "$series"
     [ "$(held "$OUT/guess.json" "$I2I")" -le "$HEADER" ] || fail "expander_i2i came for a text-to-image draft: $(models "$OUT/guess.json")"
     ! whole "$OUT/guess.json" "$T2I" || fail "expander_t2i was whole before the edit could cut it (no unfinished bytes to stop): $(models "$OUT/guess.json")"
-    [ "$(held "$OUT/guess.json" "$T2I")" -gt $((64 << 20)) ] && break
-    sleep 1
+    [ "$(held "$OUT/guess.json" "$T2I")" -gt "$HEADER" ] && break
+    sleep 0.5
   done
   had=$(held "$OUT/guess.json" "$T2I")
-  [ "$had" -gt "$HEADER" ] || fail "draw's guess brought no expander_t2i to $NAME in 30 min: $(models "$OUT/guess.json"); its row: ${guessed:-none}"
-  say "draw's guess on $NAME: ${guessed}; it holds $had bytes of expander_t2i, none of expander_i2i: $(models "$OUT/guess.json")"
+  [ "$had" -gt "$HEADER" ] || fail "draw's guess brought no expander_t2i to $NAME in 30 min: $(models "$OUT/guess.json")"
+  sleep 1
+  sample "$OUT/guess.json" "$series"
+  guessed=$(row)
+  say "draw's guess on $NAME: ${guessed}; it holds $(held "$OUT/guess.json" "$T2I") bytes of expander_t2i's own, none of expander_i2i's: $(models "$OUT/guess.json")"
   say "step 3: draw's draft mentions <pic>"
+  EDIT_MS=$(date +%s%3N)
   run_page set draw --fields "$(jq -nc --arg w "$PICTURED" '{instructions: $w}')" > "$OUT/set.json" 2>&1 || fail "draw's edit: $(tail -c 300 "$OUT/set.json")"
-  guess_ready "$OUT/switch.json" "$I2I" 30
-  T2I_LEFT=$(held "$OUT/switch.json" "$T2I")
-  ! whole "$OUT/switch.json" "$T2I" || fail "expander_t2i came whole after the draft stopped needing it: $(models "$OUT/switch.json")"
-  say "after the edit: expander_t2i stopped at $T2I_LEFT bytes, unfinished; expander_i2i whole; draw ready on $NAME: $(models "$OUT/switch.json")"
+  say "draw's draft changed at $EDIT_MS (Unix ms) with $(held "$OUT/guess.json" "$T2I") bytes of expander_t2i's own here"
+  # Each second until draw is ready with expander_i2i whole: where expander_t2i's own bytes stop.
+  began=$SECONDS
+  while [ $((SECONDS - began)) -lt 1800 ]; do
+    sample "$OUT/switch.json" "$series"; READY=$(row)
+    whole "$OUT/switch.json" "$I2I" && jq -e --arg m "$NAME" '.ready == true and .machine == $m' <<< "${READY:-null}" > /dev/null 2>&1 && break
+    sleep 1
+  done
   cozy machine logs "$NAME" --since 2h -n 0 > "$OUT/tensord-$NAME.log" 2>&1 || true
+  whole "$OUT/switch.json" "$I2I" || fail "expander_i2i isn't whole on $NAME 30 min after the edit: $(models "$OUT/switch.json"); row: ${READY:-none}"
+  jq -e --arg m "$NAME" '.ready == true and .machine == $m' <<< "${READY:-null}" > /dev/null || fail "draw isn't ready on $NAME: ${READY:-no row}"
+  T2I_LEFT=$(held "$OUT/switch.json" "$T2I")
+  # When expander_t2i's own bytes last grew, by the runner's clock, and the drop as TensorD logged it (its own clock).
+  local grew dropped at_edit
+  at_edit=$(awk -F'\t' -v e="$EDIT_MS" 'NR > 1 && $1 <= e {b = $2} END {print b + 0}' "$series")
+  grew=$(awk -F'\t' 'NR > 1 {if ($2 != last) {at = $1; last = $2}} END {print at + 0}' "$series")
+  dropped=$(grep -m1 -E "list item cozy:prepare:[^ ]* dropped: its run ends" "$OUT/tensord-$NAME.log" | cut -c1-40)
+  say "expander_t2i's own bytes: $at_edit at the edit, $T2I_LEFT at the end; last grew at $grew (Unix ms), $((grew - EDIT_MS)) ms after the edit; TensorD's drop: ${dropped:-not in its log}; series in t2i-series.tsv"
+  if whole "$OUT/switch.json" "$T2I"; then
+    MISMATCH+=("expander_t2i came whole after the draft stopped needing it ($((grew - EDIT_MS)) ms after the edit)")
+  elif [ $((grew - EDIT_MS)) -gt 5000 ] || [ $((T2I_LEFT - at_edit)) -gt $((1 << 30)) ]; then
+    MISMATCH+=("expander_t2i's own bytes grew $((T2I_LEFT - at_edit)) bytes for $((grew - EDIT_MS)) ms after the edit")
+  fi
+  say "after the edit: expander_t2i $([ ${#MISMATCH[@]} = 0 ] && echo stopped, unfinished || echo "${MISMATCH[-1]}"); expander_i2i whole; draw ready on $NAME: $(models "$OUT/switch.json")"
 }
 
 if [ -n "$CPU_SKU" ]; then
@@ -218,4 +246,5 @@ jq -e '.measurements.weights.needs == 0' "$OUT/draw.json" > /dev/null || fail "d
 [ "$after" = "$before" ] || fail "$NAME holds $((after - before)) bytes more after draw's render"
 [ "$(held "$OUT/after-draw.json" "$T2I")" = "$T2I_LEFT" ] || fail "draw's render fetched expander_t2i"
 cozy machine logs "$NAME" --since 2h -n 0 > "$OUT/tensord-$NAME.log" 2>&1 || true
+[ ${#MISMATCH[@]} = 0 ] || fail "what didn't match: ${MISMATCH[*]}"
 say "PASS: each machine fetched what each request's rules said, Calcifer's word ahead of the render, and the cold quote was what landed"
