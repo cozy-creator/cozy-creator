@@ -96,7 +96,8 @@ test('mention', async ({ page, project, api, cli }) => {
   await test.step("a video the tool can't use is struck through, saying why", async () => {
     const walk = words.locator('.chip[data-mention="walk"]');
     await expect(walk).toHaveClass(/\bunsupported\b/);
-    expect.soft(await walk.evaluate((el) => getComputedStyle(el).textDecorationLine), 'struck through').toContain('line-through');
+    // Read afresh each time: the chips are made anew as the paste's read lands (walk.1 struck too), and a chip replaced under a read says "".
+    await expect.configure({ soft: true }).poll(() => walk.evaluate((el) => getComputedStyle(el).textDecorationLine), { message: 'struck through' }).toContain('line-through');
     await expect.soft(walk, 'why, on hover').toHaveAttribute('title', /doesn't support reference videos/);
     await expect.soft(words.locator('.chip[data-mention="amy"]').first(), 'a picture it uses').not.toHaveClass(/\bunsupported\b/);
   });
