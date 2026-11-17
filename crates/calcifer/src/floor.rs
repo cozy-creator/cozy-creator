@@ -366,11 +366,13 @@ pub(crate) fn requirement_of(src: &Path) -> Option<VersionSpecifiers> {
     api::release::required(dependencies.into_iter().flatten().filter_map(toml::Value::as_str), "cozy-runtime")
 }
 
-/// The Runtime `src` takes where its `cozy-runtime` floor is an RC build that no release meets (`>=0.47.0.dev0`): the open RC's
-/// newest (xs-194), unless the developer explicitly selected a wheel. The completed lock binds that selection;
-/// the floor check never replaces it with a newer rolling build.
-/// None: it names no RC floor, a release meets it, or no RC build does.
-pub(crate) async fn rc_runtime(src: &Path) -> Result<Option<Wheel>, Error> {
+/// The Runtime `src` takes where its `cozy-runtime` floor is an RC build that no release meets (`>=0.47.0.dev0`, xs-194), unless
+/// the developer explicitly selected a wheel, which the completed lock binds. The RC build the first of `held` (locks it holds)
+/// takes while that build meets the floor, the RC still serves it and its lock's TensorFS is this cozy's series; else the RC's
+/// newest build that meets the floor and runs on this cozy's TensorFS (cl-1199). A new RC build alone moves no lock: a relock is a
+/// new environment on every machine and a new key for every guess made of it, and a machine following the RC runs its own
+/// build over the lock's anyway (TensorD's `stands_in`). None: it names no RC floor, a release meets it, or no RC build does.
+pub(crate) async fn rc_runtime(src: &Path, held: &[&str]) -> Result<Option<Wheel>, Error> {
     let Some(requirement) = requirement_of(src) else { return Ok(None) };
     if !requirement.iter().any(|s| s.version().is_dev()) {
         return Ok(None);
@@ -392,35 +394,68 @@ pub(crate) async fn rc_runtime(src: &Path) -> Result<Option<Wheel>, Error> {
         return Ok(selected.filter(|wheel| wheel.url == url && Version::from_str(&wheel.version)
             .is_ok_and(|version| requirement.contains(&version.without_local()))));
     }
-    let Some((build, url)) = crate::rc::runtime_now().await? else { return Ok(None) };
-    let meets = Version::from_str(&build.version).is_ok_and(|version| requirement.contains(&version.without_local()));
-    Ok(meets.then_some(Wheel { version: build.version, url, sha256: build.sha256 }))
+    let meets = |version: &str| Version::from_str(version).is_ok_and(|version| requirement.contains(&version.without_local()));
+    let kept: Vec<Wheel> = held.iter().filter_map(|lock| rc_locked(lock)).filter(|wheel| meets(&wheel.version)).collect();
+    let builds = match crate::rc::runtime_builds().await {
+        Ok(builds) => builds,
+        // The RC unread: a lock it holds stands as it was made (cl-1127).
+        Err(e) => return kept.into_iter().next().map(Some).ok_or(e),
+    };
+    let served = |wheel: &Wheel| builds.iter().any(|(build, url)| *url == wheel.url && (wheel.sha256.is_empty() || build.sha256 == wheel.sha256));
+    if let Some(wheel) = kept.into_iter().find(served) {
+        return Ok(Some(wheel));
+    }
+    let mut newest = None;
+    for (build, url) in builds.iter().filter(|(build, _)| meets(&build.version)) {
+        let wheel = Wheel { version: build.version.clone(), url: url.clone(), sha256: build.sha256.clone() };
+        let needs = rc_tensorfs(&wheel).await;
+        if this_series(needs.as_ref()) {
+            return Ok(Some(wheel));
+        }
+        newest.get_or_insert((wheel, needs));
+    }
+    // None runs on this cozy's TensorFS: the newest, which a machine on the RC runs its own build over, and one with no pair of its
+    // own refuses in a line (TensorD's `unspoken`).
+    Ok(newest.map(|(wheel, needs)| {
+        let needs = needs.map_or_else(String::new, |needs| needs.to_string());
+        tracing::warn!("no open RC build that meets cozy-runtime{requirement} runs on this cozy's TensorFS {}: the newest, {}, needs tensorfs{needs}",
+            tensorfs::VERSION, prerelease::shown(&wheel.version));
+        wheel
+    }))
+}
+
+/// A uv.lock, as far as the floor reads it.
+#[derive(Deserialize)]
+struct Lock {
+    #[serde(default)]
+    package: Vec<Row>,
+}
+
+#[derive(Deserialize)]
+struct Row {
+    name: String,
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    source: BTreeMap<String, toml::Value>,
+    #[serde(default)]
+    wheels: Vec<LockedWheel>,
+}
+
+#[derive(Deserialize)]
+struct LockedWheel {
+    url: String,
+    #[serde(default)]
+    hash: String,
 }
 
 /// The Runtime wheel a lock holds: the explicit URL source, else the index's pure wheel.
 fn locked(lock: &str) -> Option<Wheel> {
-    #[derive(Deserialize)]
-    struct Lock {
-        #[serde(default)]
-        package: Vec<Row>,
-    }
-    #[derive(Deserialize)]
-    struct Row {
-        name: String,
-        #[serde(default)]
-        version: String,
-        #[serde(default)]
-        source: BTreeMap<String, toml::Value>,
-        #[serde(default)]
-        wheels: Vec<Locked>,
-    }
-    #[derive(Deserialize)]
-    struct Locked {
-        url: String,
-        #[serde(default)]
-        hash: String,
-    }
     let lock: Lock = toml::from_str(lock).ok()?;
+    runtime_wheel(lock)
+}
+
+fn runtime_wheel(lock: Lock) -> Option<Wheel> {
     let row = lock.package.into_iter().find(|row| row.name == "cozy-runtime")?;
     let source = row.source.get("url").and_then(toml::Value::as_str);
     let wheel = row.wheels.into_iter().find(|wheel| source.map_or_else(
@@ -428,8 +463,85 @@ fn locked(lock: &str) -> Option<Wheel> {
     Some(Wheel { version: row.version, url: wheel.url, sha256: wheel.hash.trim_start_matches("sha256:").to_owned() })
 }
 
+/// The RC build a lock takes by URL, when the TensorFS it holds is this cozy's series: what a machine with no pair of its own runs
+/// it on (TensorD's `speaks`).
+fn rc_locked(lock: &str) -> Option<Wheel> {
+    let lock: Lock = toml::from_str(lock).ok()?;
+    let tensorfs = lock.package.iter().find(|row| row.name == "tensorfs").map(|row| row.version.clone());
+    let wheel = runtime_wheel(lock).filter(|wheel| prerelease::dev(&wheel.version))?;
+    let pinned = tensorfs.and_then(|version| VersionSpecifiers::from_str(&format!("=={version}")).ok());
+    this_series(pinned.as_ref()).then_some(wheel)
+}
+
+/// A release's series, as TensorD speaks it: its major from 1.0, its minor before.
+fn series(version: &Version) -> Vec<u64> {
+    let release = version.release();
+    let parts = if release.first().is_some_and(|major| *major > 0) { 1 } else { 2 };
+    (0..parts).map(|at| release.get(at).copied().unwrap_or(0)).collect()
+}
+
+/// Whether a `tensorfs` requirement admits a TensorFS of this cozy's series, whose protocol a machine with no pair of its own
+/// speaks (TensorD's `speaks`). None admits any.
+fn this_series(requirement: Option<&VersionSpecifiers>) -> bool {
+    let (Some(requirement), Ok(ours)) = (requirement, Version::from_str(tensorfs::VERSION)) else { return true };
+    let ours = ours.without_local();
+    let top = series(&ours);
+    let mut tried = vec![Version::new(top.iter().copied().chain([0, 0]).take(3)), ours];
+    for specifier in requirement.iter() {
+        let release = specifier.version().release().to_vec();
+        let mut next = release.clone();
+        if let Some(last) = next.last_mut() {
+            *last += 1;
+        }
+        tried.extend([specifier.version().clone(), Version::new(release), Version::new(next)]);
+    }
+    tried.iter().filter(|version| series(version) == top).any(|version| requirement.contains(version))
+}
+
+/// What each RC Runtime build requires of TensorFS, by version, as its wheel said once: a build never changes.
+static RC_TENSORFS: Mutex<BTreeMap<String, Option<VersionSpecifiers>>> = Mutex::new(BTreeMap::new());
+
+/// What the RC Runtime build `wheel` requires of TensorFS (its METADATA's `Requires-Dist`), read once: None when it names none, or
+/// its wheel couldn't be read (read again next time), which holds nothing back.
+async fn rc_tensorfs(wheel: &Wheel) -> Option<VersionSpecifiers> {
+    if let Some(needs) = RC_TENSORFS.lock().expect("rc tensorfs lock").get(&wheel.version) {
+        return needs.clone();
+    }
+    let bytes = download(wheel).await.inspect_err(|e| tracing::warn!("{}", e.message)).ok()?;
+    let requires = tokio::task::spawn_blocking(move || requires_dist(&bytes)).await.ok()??;
+    let needs = api::release::required(requires.iter().map(String::as_str), "tensorfs");
+    RC_TENSORFS.lock().expect("rc tensorfs lock").insert(wheel.version.clone(), needs.clone());
+    needs
+}
+
+/// A wheel's `Requires-Dist` lines, from its `.dist-info/METADATA`.
+fn requires_dist(wheel: &[u8]) -> Option<Vec<String>> {
+    use std::io::Read as _;
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(wheel)).ok()?;
+    let mut text = String::new();
+    for at in 0..archive.len() {
+        let mut file = archive.by_index(at).ok()?;
+        let name = file.name().ok()?.into_owned();
+        if name.ends_with(".dist-info/METADATA") && name.matches('/').count() == 1 {
+            file.read_to_string(&mut text).ok()?;
+            break;
+        }
+    }
+    let headers = text.lines().take_while(|line| !line.is_empty());
+    Some(headers.filter_map(|line| line.strip_prefix("Requires-Dist:")).map(|line| line.trim().to_owned()).collect())
+}
+
 /// `wheel` fetched into `dir`, held to its sha256.
 async fn fetched(wheel: &Wheel, dir: &Path) -> Result<PathBuf, Error> {
+    let bytes = download(wheel).await?;
+    let found = hex::encode(Sha256::digest(&bytes));
+    let path = dir.join(format!("cozy-runtime-{}.whl", &found[..16]));
+    tokio::fs::write(&path, &bytes).await.map_err(|e| Error::new(Kind::Unavailable, "runtime_unfetched", e.to_string()))?;
+    Ok(path)
+}
+
+/// `wheel`'s bytes, held to its sha256.
+async fn download(wheel: &Wheel) -> Result<Vec<u8>, Error> {
     let failed = |why: String| Error::new(Kind::Unavailable, "runtime_unfetched", format!("Couldn't download cozy-runtime {} from {}: {why}", wheel.version, wheel.url));
     // A selected wheel may be at the same private origin uv trusts (the isolated Hub's ingress).
     // Match TensorD's wheel fetch: this trust applies to package bytes, not Hub clients or release discovery.
@@ -444,9 +556,7 @@ async fn fetched(wheel: &Wheel, dir: &Path) -> Result<PathBuf, Error> {
     if !wheel.sha256.is_empty() && found != wheel.sha256 {
         return Err(failed(format!("the file's sha256 is {found}, not {}", wheel.sha256)));
     }
-    let path = dir.join(format!("cozy-runtime-{}.whl", &found[..16]));
-    tokio::fs::write(&path, &bytes).await.map_err(|e| failed(e.to_string()))?;
-    Ok(path)
+    Ok(bytes.to_vec())
 }
 
 /// One name a package imports that a Runtime lacks: its module, the name (none: the module itself), and where.
@@ -473,9 +583,10 @@ fn lacks(uv: &Path, dir: &Path, python: &str, runtime: &Path, package: &Path) ->
 pub(crate) async fn check(api: &Arc<Api>, uv: &Path, python: &str, src: &Path, package: &Path, label: &str) -> Result<(), Error> {
     let refuse = |code: &str, why: String| Error::new(Kind::Validation, code, why);
     let Some(requirement) = requirement_of(src) else { return Ok(()) };
-    let lock = std::fs::read_to_string(src.join("uv.lock")).ok().and_then(|lock| locked(&lock));
-    let floor = match rc_runtime(src).await? {
-        // An unreleased floor: the explicitly selected wheel, else the open RC's newest build.
+    let own = std::fs::read_to_string(src.join("uv.lock")).ok();
+    let lock = own.as_deref().and_then(locked);
+    let floor = match rc_runtime(src, own.as_deref().as_slice()).await? {
+        // An unreleased floor: the explicitly selected wheel, else the RC build its lock takes (`rc_runtime`).
         Some(rc) => rc,
         None => {
             let released = released().await?;

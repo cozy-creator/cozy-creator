@@ -138,9 +138,10 @@ impl Stage {
         Ok(Self { _dir: dir, root, src, uv, offline: false })
     }
 
-    /// A floor only the open RC meets (`cozy-runtime>=0.47.0.dev0`) takes the RC's newest build, its wheel by URL in this copy
-    /// alone (`floor::rc_runtime`, xs-194). An explicitly selected SDK source stays authoritative.
-    async fn rc_runtime(&self, say: Say<'_>) -> Result<(), Error> {
+    /// A floor only the open RC meets (`cozy-runtime>=0.47.0.dev0`) takes an RC build, its wheel by URL in this copy alone
+    /// (`floor::rc_runtime`, xs-194): the one its own lock takes while it stands, unless `upgrade` names cozy-runtime (cl-1199). An
+    /// explicitly selected SDK source stays authoritative.
+    async fn rc_runtime(&self, upgrade: &[String], say: Say<'_>) -> Result<(), Error> {
         let path = self.src.join("pyproject.toml");
         let authored = fs::read_to_string(&path).map_err(|e| refuse("stage_unavailable", e))?;
         let mut doc: toml_edit::DocumentMut = authored.parse().map_err(|e| refuse("project_invalid", e))?;
@@ -149,7 +150,8 @@ impl Stage {
         if selected {
             return Ok(());
         }
-        let Some(rc) = crate::floor::rc_runtime(&self.src).await? else { return Ok(()) };
+        let own = fs::read_to_string(self.src.join("uv.lock")).ok().filter(|_| !upgrade.iter().any(|name| distribution(name) == "cozy-runtime"));
+        let Some(rc) = crate::floor::rc_runtime(&self.src, own.as_deref().as_slice()).await? else { return Ok(()) };
         let sources = (doc["tool"]["uv"]["sources"].or_insert(toml_edit::table()))
             .as_table_like_mut()
             .ok_or_else(|| refuse("project_invalid", "tool.uv.sources is not a table"))?;
@@ -157,7 +159,7 @@ impl Stage {
         source.insert("url", rc.url.as_str().into());
         sources.insert("cozy-runtime", toml_edit::value(source));
         fs::write(&path, doc.to_string()).map_err(|e| refuse("stage_unavailable", e))?;
-        say(&format!("cozy-runtime {}: the open RC's newest build, which its machines run (no release meets its floor)", api::prerelease::shown(&rc.version)));
+        say(&format!("cozy-runtime {}: the open RC's build (no release meets its floor)", api::prerelease::shown(&rc.version)));
         Ok(())
     }
 
@@ -380,7 +382,7 @@ pub(crate) async fn locked(hubs: &Hubs, hub: &Origin, project: &Project, within:
     -> Result<Locked, Error> {
     let uv_path = tools(hubs.home(), project, say).await?;
     let mut stage = blocking(|| Stage::new(project, within, uv_path, say))?;
-    stage.rc_runtime(say).await?;
+    stage.rc_runtime(upgrade, say).await?;
     let own = blocking(|| fs::read_to_string(project.root.join("uv.lock")).ok());
     let bound = match project.hub_sources.is_empty() {
         true => Bound::new(),
@@ -480,8 +482,8 @@ pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask:
     }
     let uv_path = tools(api.machines.hubs.home(), &project, say).await?;
     let stage = blocking(|| Stage::new(&project, &within, uv_path, say))?;
-    stage.rc_runtime(say).await?;
     fs::write(stage.src.join("uv.lock"), &committed).map_err(|e| refuse("stage_unavailable", e))?;
+    stage.rc_runtime(&[], say).await?;
     // Locking the copy is a no-op for a lock made for this Hub. For another, it moves each Hub
     // package to this Hub's index for its namespace, pinned to the versions the lock holds: a pin
     // this Hub cannot meet is refused by name, never re-resolved to a newer release.

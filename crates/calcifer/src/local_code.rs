@@ -594,15 +594,34 @@ struct SharedLock {
     lock: String,
 }
 
-/// Where the machine keeps the lock of `code` for `hub` (cl-1011): `<calcifer>/code-locks/<key>.json`, the key the SHA-256 of the
-/// Hub, the tree's digest and the package's path in it, so the same code locks once. An encrypted project's stays inside it
-/// (none here): an entry named by its content would outlive its lock.
-fn shared_lock(home: &Home, code: &LocalCode, hub: &Origin) -> Result<Option<PathBuf>, Error> {
+/// Where the machine keeps the lock of the copy `within` (its package at `sent`) for `hub` (cl-1011): `<calcifer>/code-locks/<key>.json`,
+/// the key the SHA-256 of the Hub and what the lock is made from (`lock_inputs`), so the same inputs lock once whatever code beside
+/// them changes (cl-1199). An encrypted project's stays inside it (none here): an entry named by its content would outlive its lock.
+fn shared_lock(home: &Home, within: &Path, sent: &Path, hub: &Origin) -> Result<Option<PathBuf>, Error> {
     if crate::private_io::current().is_some_and(|scope| !scope.storage.ordinary) { return Ok(None); }
     let dir = home.calcifer().join("code-locks");
     fs::create_dir_all(&dir).map_err(|e| refuse("code_unwritable", format!("{}: {e}", dir.display())))?;
-    let key = Digest::of(format!("{}\n{}\n{}", hub.as_str(), hex(&code.tree), code.at).as_bytes());
+    let key = Digest::of(format!("{}\n{}", hub.as_str(), lock_inputs(within, sent)?).as_bytes());
     Ok(Some(dir.join(format!("{}.json", &hex(&key)[..32]))))
+}
+
+/// What a lock of the copy `within` (its package at `sent`) is made from: every project's metadata in it (the package's own, its
+/// path dependencies', the checkout's packages it calls), its lock, the wheels it carries, and the package's place in the tree. The
+/// package's own code is none of it: an edit to that locks nothing again.
+fn lock_inputs(within: &Path, sent: &Path) -> Result<Digest, Error> {
+    const NAMED: [&str; 6] = ["pyproject.toml", "uv.lock", "uv.toml", ".python-version", "setup.py", "setup.cfg"];
+    let mut inputs = vec![];
+    for file in source_files(within, &mut vec![])? {
+        let name = file.file_name().unwrap_or_default().to_string_lossy();
+        let input = NAMED.contains(&name.as_ref()) || name.ends_with(".whl") || name.ends_with(".tar.gz");
+        if !input || !(file.starts_with("tree") || file.starts_with("script")) {
+            continue;
+        }
+        let bytes = fs::read(within.join(&file)).map_err(|e| refuse("code_unreadable", format!("{}: {e}", file.display())))?;
+        inputs.push((file.to_string_lossy().replace('\\', "/"), Digest::of(&bytes).to_string()));
+    }
+    let at = sent.strip_prefix(within).unwrap_or(sent).to_string_lossy().replace('\\', "/");
+    Ok(Digest::of(serde_json::json!({"at": at, "inputs": inputs}).to_string().as_bytes()))
 }
 
 fn lock_dir(home: &Home, code: &LocalCode, hub: &Origin) -> Result<PathBuf, Error> {
@@ -628,7 +647,7 @@ static LOCKING: LazyLock<Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> =
 /// Local code locked as `cargo run` locks (cl-871, cl-878): every project gets the uv.lock uv makes, or brings up to date keeping
 /// the tree's own pins, for `hub` (`hub::author::locked`), whatever its sources name (a Hub index, a path dependency beside it in
 /// the tree, git), before anything describes or installs it. Its cozy dependencies are then read and called at the releases or
-/// sources it names (`callees`). Once per copy and Hub, beside the copy (`lock_dir`). A lock uv can't make fails the run in uv's
+/// sources it names (`callees`). Once per copy and Hub, beside the copy (`lock_dir`), and once per lock inputs (`shared_lock`). A lock uv can't make fails the run in uv's
 /// words. The package's folder to describe and install, and the lock when it is not the tree's own: its client writes it into
 /// the package's folder (`made`).
 pub(crate) async fn locked(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Origin) -> Result<(PathBuf, Option<String>), Error> {
@@ -637,27 +656,29 @@ pub(crate) async fn locked(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
     let done = lock_dir(home, code, hub)?;
     let turn = LOCKING.lock().expect("locking lock").entry(done.clone()).or_default().clone();
     let _turn = turn.lock().await;
-    // A lock that took the open RC's build by URL (its floor no release meets, xs-194) names a wheel the next Runtime merge
-    // removes: one that isn't the RC's newest is made again.
-    let rc = crate::floor::rc_runtime(&sent).await?;
-    if let Some(rc) = &rc {
-        let made = fs::read_to_string(done.join("lock")).ok().filter(|made| !made.is_empty());
-        let held = made.or_else(|| fs::read_to_string(sent.join("uv.lock")).ok());
-        if done.is_dir() && !held.is_some_and(|lock| lock.contains(&rc.url)) {
-            let _ = fs::remove_dir_all(&done);
-        }
+    let own = fs::read_to_string(sent.join("uv.lock")).ok();
+    let made = fs::read_to_string(done.join("lock")).ok().filter(|made| !made.is_empty());
+    // The same lock inputs for the same Hub lock once on this machine (cl-1011, cl-1199): another copy of them (its code edited, or
+    // another unencrypted project's) takes the lock the first made, so it builds no new environment for a release that went up
+    // meanwhile. Read for a copy not locked yet.
+    let mut shared = if done.is_dir() { None } else { shared_lock(home, &within, &sent, hub)? };
+    let kept = shared.as_ref().and_then(|at| fs::read(at).ok()).and_then(|bytes| serde_json::from_slice::<SharedLock>(&bytes).ok());
+    // A lock on the open RC's build (its floor no release meets, xs-194) keeps it until it no longer meets the floor, runs on this
+    // cozy's TensorFS or is served: the lock it holds (this copy's, else its inputs', then the tree's own) is made again only then,
+    // never for a new RC build alone (cl-1199).
+    let held: Vec<&str> = made.as_deref().into_iter().chain(kept.as_ref().map(|kept| kept.lock.as_str())).chain(own.as_deref()).collect();
+    let rc = crate::floor::rc_runtime(&sent, &held).await?;
+    let takes = |lock: &str| rc.as_ref().is_none_or(|rc| lock.contains(&rc.url));
+    if rc.is_some() && done.is_dir() && !made.as_deref().or(own.as_deref()).is_some_and(takes) {
+        let _ = fs::remove_dir_all(&done);
+        shared = shared_lock(home, &within, &sent, hub)?;
     }
     if !done.is_dir() {
         let project = Project::read(sent.clone())?;
         // A project's own code is the project's: nothing of it in Calcifer's log (cl-984).
         let private = crate::private_io::current().is_some();
         let say = |line: &str| if !private { tracing::info!("{}: {line}", project.name) };
-        // The same code for the same Hub locks once on this machine (cl-1011): another unencrypted project's copy of it takes the lock
-        // the first made, so a second project builds no new environment for a release that went up meanwhile.
-        let shared = shared_lock(home, code, hub)?;
-        let kept = shared.as_ref().and_then(|at| fs::read(at).ok()).and_then(|bytes| serde_json::from_slice::<SharedLock>(&bytes).ok())
-            .filter(|kept| rc.as_ref().is_none_or(|rc| kept.lock.contains(&rc.url)));
-        let made = match kept {
+        let made = match kept.filter(|kept| takes(&kept.lock)) {
             Some(kept) => kept,
             None => {
                 let made = crate::hub::author::locked(hubs, hub, &project, &within, false, &[], &say).await?;

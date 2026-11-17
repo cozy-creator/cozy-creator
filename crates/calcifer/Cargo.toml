@@ -45,6 +45,7 @@ tracing-subscriber.workspace = true
 tensorfs = { workspace = true, features = ["net"] }
 toml.workspace = true
 toml_edit.workspace = true
+zip.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["fs", "process", "net"] }
