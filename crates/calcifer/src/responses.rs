@@ -31,6 +31,19 @@ use tokio::sync::{broadcast, watch};
 
 use crate::api::{Api, Refusal};
 
+/// `GET /v1/models` (xs-209): the tools that write words, as OpenAI's model list says them, each by the name `cozy run` and
+/// `POST /v1/responses` take it (`qwen3/write`), so a program that lists models first finds them.
+pub(crate) async fn models(State(api): State<Arc<Api>>) -> Result<Response, Refusal> {
+    let tools = crate::toolbox::listed(&api).await?;
+    let data: Vec<Value> = (tools.iter().filter(|tool| tool.makes == "text"))
+        .map(|tool| {
+            let owner = tool.package.split_once('/').map_or("cozy", |(org, _)| org);
+            json!({"id": tool.id, "object": "model", "created": 0, "owned_by": owner})
+        })
+        .collect();
+    Ok(Json(json!({"object": "list", "data": data})).into_response())
+}
+
 /// The most a request's body holds: its pictures and videos ride in it as `data:` URLs.
 pub(crate) const MAX_BODY: usize = 256 << 20;
 

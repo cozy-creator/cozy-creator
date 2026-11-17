@@ -53,7 +53,7 @@ const ASK_AGAIN: Duration = Duration::from_secs(10);
 /// The longest one read of a Hub's catalog goes on.
 const CATALOG_MOST: Duration = Duration::from_secs(120);
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 pub(crate) struct Asked {
     /// Words: what's installed by its name and what it does, and the Hub's own search.
     q: Option<String>,
@@ -68,6 +68,11 @@ pub(crate) async fn list(State(api): State<Arc<Api>>, query: Result<Query<Asked>
     let Query(asked) = query?;
     let project = asked.project.clone();
     vault::project_reply(&api, project.as_deref(), list_tools(&api, asked)).await
+}
+
+/// Every tool `GET /v1/tools` lists with nothing asked: those `GET /v1/models` names (xs-209).
+pub(crate) async fn listed(api: &Arc<Api>) -> Result<Vec<Tool>, Refusal> {
+    Ok(list_tools(api, Asked::default()).await?.0.tools)
 }
 
 async fn list_tools(api: &Arc<Api>, asked: Asked) -> Result<Json<Tools>, Refusal> {

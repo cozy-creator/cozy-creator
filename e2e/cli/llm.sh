@@ -80,3 +80,23 @@ if ! uv run -q --no-project --with 'openai>=1.80' python3 "$here/responses_sdk.p
 fi
 tail -n 1 "$OUT/responses.txt" | cut -c1-2000
 }
+
+# xs-209 (the lead, 11-17, after Paul's "all llm-output should be streaming where possible"): `cozy run` writes an LLM's words on stdout
+# as they come, its answer only, and its record after them leaves them out. Qwen3.5 0.8B on the CPU through the qwen3 package's Write tool
+# (qwen3.5's before it): its first words reach stdout well before `cozy run` ends.
+llm_cli_words() {
+[ -n "$LOCAL" ] || return 0
+step "cozy run writes an LLM's words as they come (xs-209)"
+local package=qwen3.5 said
+[ -z "$PACKAGES" ] || [ ! -d "$PACKAGES/qwen3" ] || package=qwen3
+if ! (cd "$RUN_PROJECT" && cozy run "$package/write" 'instructions=Write eight sentences about a lighthouse at night.' \
+  --model model=qwen/qwen3.5-0.8b@0.1.0 max_tokens:=240 seed:=7 temperature:=0 --on local 2> "$OUT/cli-words.err") \
+  | python3 -I "$here/timed.py" > "$OUT/cli-words.json"; then
+  check "cli-words: cozy run failed: $(tail -c 400 "$OUT/cli-words.err")"
+  return
+fi
+said=$(jq -r '"first words at \(.first_s) s of \(.end_s) s, \(.chunks) writes"' "$OUT/cli-words.json")
+echo "cli-words: $said: $(jq -r .text "$OUT/cli-words.json" | head -c 200)"
+J '.chunks >= 3 and .first_s < .end_s - 2' "$OUT/cli-words.json" \
+  || check "cli-words: its words came only at its end ($said): $(jq -r .text "$OUT/cli-words.json" | head -c 300)"
+}

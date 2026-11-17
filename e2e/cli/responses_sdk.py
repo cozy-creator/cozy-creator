@@ -1,4 +1,5 @@
-"""xs-209: OpenAI's own Python SDK against Calcifer's Responses API (POST /v1/responses), with the CLI's bearer as its API key.
+"""xs-209: OpenAI's own Python SDK against Calcifer's Responses API (GET /v1/models, POST /v1/responses), with the CLI's bearer as its
+API key.
 
 Streamed, the answer comes as Responses events in their order, its words as deltas well before it completes, which add up to
 its text; not streamed, a question about a picture sent as a data: URL answers as the Response whole. Prints one FAIL line a
@@ -36,6 +37,12 @@ def main() -> int:
     client = OpenAI(base_url=args.base, api_key=args.key, max_retries=0, timeout=900)
     failed: list[str] = []
     seen: dict[str, object] = {}
+
+    # A stock client lists models first: the function it asks is among them, as `cozy run` names it.
+    listed = [str(model.id) for model in client.models.list().data]
+    seen["models"] = listed
+    if args.model.split(":")[0] not in listed:
+        failed.append(f"models: {args.model.split(':')[0]} isn't among {listed}")
 
     began = time.monotonic()
     events: list[tuple[str, int, float]] = []

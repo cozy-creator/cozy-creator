@@ -1,5 +1,5 @@
-//! Following a run: live progress on stderr, each output named by its digest as it lands, and the run's record
-//! on stdout at the end; NDJSON of Calcifer's events with `--json`, its terminal event last. A
+//! Following a run: live progress on stderr, each output named by its digest as it lands, an LLM's words on stdout as they come
+//! (xs-209), and the run's record on stdout at the end; NDJSON of Calcifer's events with `--json`, its terminal event last. A
 //! followed run is over once it ended and each output's last revision landed in Calcifer (checked
 //! against its digest) or failed, but for what stays on its machine; an output not saved fails the follow.
 //! `--output` downloads them here (`fetch`). Ctrl-C (Esc or q in
@@ -151,9 +151,9 @@ pub(crate) async fn follow_until(
     run: Run,
     stop: impl Future<Output = ()>,
 ) -> Result<Run, Error> {
-    let (run, interrupted) = watch(ctx, run, ctx.json, stop).await?;
+    let (run, interrupted, wrote) = watch(ctx, run, ctx.json, stop).await?;
     if !ctx.json {
-        record(ctx, &run);
+        record_after(ctx, &run, wrote.as_deref());
     }
     match interrupted {
         true => Ok(run),
@@ -165,7 +165,7 @@ pub(crate) async fn follow_until(
 /// quantize`): a run that failed or was canceled is the command's refusal, said once as a typed error with its reason's code and
 /// remedy (`--json`: the envelope after the run's events, cl-998).
 pub(crate) async fn carry_out(ctx: &Context, run: Run) -> Result<Run, Error> {
-    let (run, interrupted) = watch(ctx, run, ctx.json, interrupt()).await?;
+    let (run, interrupted, wrote) = watch(ctx, run, ctx.json, interrupt()).await?;
     if matches!(run.status, Status::Failed | Status::Canceled) {
         let reason = run.reason.clone().unwrap_or_default();
         let code = if reason.code.is_empty() { "run_failed" } else { reason.code.as_str() };
@@ -176,7 +176,7 @@ pub(crate) async fn carry_out(ctx: &Context, run: Run) -> Result<Run, Error> {
         return Err(failure_next(&run).into_iter().fold(Error::new(Kind::Unavailable, code, line), Error::next));
     }
     if !ctx.json {
-        record(ctx, &run);
+        record_after(ctx, &run, wrote.as_deref());
     }
     match interrupted {
         true => Ok(run),
@@ -251,13 +251,13 @@ pub(crate) async fn settle(ctx: &Context, run: Run) -> Result<Run, Error> {
 
 /// Renders `run`'s events until it ended and its outputs landed or failed (NDJSON with `events`,
 /// its terminal event held back to come last, as the run then stands); `stop` ends it early and
-/// says so.
+/// says so. Also the output whose words it wrote on stdout as they came (xs-209).
 async fn watch(
     ctx: &Context,
     run: Run,
     events_out: bool,
     stop: impl Future<Output = ()>,
-) -> Result<(Run, bool), Error> {
+) -> Result<(Run, bool, Option<String>), Error> {
     let calcifer = ctx.calcifer().await?;
     let address = RunAddress::of(&run);
     let mut events = calcifer.events_until_landed(&address, 0);
@@ -290,7 +290,7 @@ async fn watch(
                             true => format!("stopped following: {n} ended and its outputs are still being saved; `{again}` follows them"),
                             false => format!("stopped following: {n} keeps running; `{again}` follows it again, `cozy run cancel {id}` cancels it"),
                         });
-                        return Ok((run, true));
+                        return Ok((run, true, view.writing.clone()));
                     }
                     event = &mut reading => break event,
                 }
@@ -314,7 +314,7 @@ async fn watch(
                 if let Some(sequence_number) = terminal {
                     output::ndjson(&Event::lifecycle(sequence_number, run.clone(), false));
                 }
-                return Ok((run, false));
+                return Ok((run, false, view.writing.clone()));
             }
             Some(Err(error)) => {
                 view.done();
@@ -386,6 +386,11 @@ pub(crate) fn settled(run: &Run) -> bool {
 
 /// The run's record: number, status, machine, outputs, the result's scalars, and why it ended.
 pub(crate) fn record(ctx: &Context, run: &Run) {
+    record_after(ctx, run, None);
+}
+
+/// [`record`], less the field whose words were written as they came (`wrote`, xs-209): they are on stdout already.
+fn record_after(ctx: &Context, run: &Run, wrote: Option<&str>) {
     if ctx.json {
         output::json(run);
         return;
@@ -405,7 +410,7 @@ pub(crate) fn record(ctx: &Context, run: &Run) {
         }
         return output::failure(ctx, &line, &failure_next(run));
     }
-    fields(ctx, run).print(ctx);
+    fields_after(ctx, run, wrote).print(ctx);
     next(ctx, run);
 }
 
@@ -467,6 +472,10 @@ fn placed_words(placed: &api::calcifer::Placed) -> String {
 
 /// The record's fields, for a person.
 pub(super) fn fields(ctx: &Context, run: &Run) -> output::Record {
+    fields_after(ctx, run, None)
+}
+
+fn fields_after(ctx: &Context, run: &Run, wrote: Option<&str>) -> output::Record {
     let mut record = output::Record::new()
         .field("run", handle(&run))
         .field("target", &run.target)
@@ -532,7 +541,7 @@ pub(super) fn fields(ctx: &Context, run: &Run) -> output::Record {
     if let Some(serde_json::Value::Object(result)) = &run.result {
         for (key, value) in result {
             let named = run.output.iter().any(|item| &item.name == key);
-            if named || value.is_object() || value.is_array() || value.is_null() {
+            if named || wrote == Some(key.as_str()) || value.is_object() || value.is_array() || value.is_null() {
                 continue;
             }
             let text = value.as_str().map_or_else(|| value.to_string(), str::to_owned);
@@ -653,6 +662,10 @@ struct View {
     last: Option<(Progress, Instant)>,
     /// The run has stopped moving, as Calcifer says.
     stalled: Option<Stalled>,
+    /// The output whose words it writes on stdout as they come (xs-209): one, the first that says any. Then they are its progress,
+    /// and no status line crosses them; `written` once its line was ended.
+    writing: Option<String>,
+    written: bool,
 }
 
 impl View {
@@ -681,6 +694,8 @@ impl View {
             warned: HashSet::new(),
             last: None,
             stalled: None,
+            writing: None,
+            written: false,
         };
         view.lifecycle(run);
         view
@@ -752,6 +767,7 @@ impl View {
                 let _ = write!(line, ": {} in {}", call.status, output::span(((took + 500) / 1000) as i64));
                 self.line(&line);
             }
+            Event::OutputTextDelta { item_id, delta, .. } => self.words(item_id, delta),
             _ => {}
         }
     }
@@ -800,6 +816,9 @@ impl View {
     }
 
     fn status(&mut self, text: &str) {
+        if self.writing.is_some() {
+            return;
+        }
         self.last = None; // a status says where the run is now, not its last progress
         match &self.bar {
             Some(bar) => {
@@ -842,8 +861,16 @@ impl View {
 
     fn show_progress(&mut self) {
         let Some((progress, stepped)) = self.last.clone() else { return };
+        if self.writing.is_some() {
+            return;
+        }
         let fraction = progress.done_fraction;
-        let mut text = said(&progress);
+        // A model thinking says only that: its thought is never shown (xs-209).
+        let thinking = progress.stage.rsplit(" / ").next() == Some("thinking");
+        let mut text = match thinking {
+            true => format!("Thinking… {} tokens", progress.completed),
+            false => said(&progress),
+        };
         // At what rate bytes move: a download that crawls says so. Then how long the run has left.
         if let Some(rate) = progress.bytes_per_s {
             let _ = write!(text, " at {}/s", output::bytes(rate as u64));
@@ -886,6 +913,26 @@ impl View {
         if let Some(bar) = self.bar.take() {
             bar.finish_and_clear();
         }
+        if self.writing.is_some() && !self.written {
+            self.written = true;
+            anstream::println!();
+        }
+    }
+
+    /// Words an output made (xs-209), on stdout as they come: the first output that says any, which ends the status line.
+    fn words(&mut self, item: &str, delta: &str) {
+        if let Some(writing) = &self.writing {
+            if writing != item {
+                return;
+            }
+        } else {
+            if let Some(bar) = self.bar.take() {
+                bar.finish_and_clear();
+            }
+            self.writing = Some(item.to_owned());
+        }
+        anstream::print!("{delta}");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
     }
 }
 
