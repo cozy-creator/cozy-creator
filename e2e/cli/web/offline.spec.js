@@ -3,7 +3,7 @@
 // away and back, counted in the top bar, with nothing over the canvas and nothing in project.db; started, all of it lands in order with no
 // reload (a picture dropped on a box as its next version too, whatever its bytes waited for), and history keeps Redo. Killed with -9 while
 // words are typed, the page says so and comes back with every character, and nothing to sign in again (cl-985).
-// With no Hub, the page loads, the palette says it lists only what's installed, a local tool renders, and Rent says why it lists nothing.
+// With no Hub, the page loads, the palette lists what's installed, a local tool renders, and Rent says why it lists nothing.
 const { execFileSync } = require('child_process');
 const { createHash, randomBytes } = require('crypto');
 const { dirname, join } = require('path');
@@ -311,7 +311,7 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
     expect.soft(held(project.path).boxes.words?.text, 'in project.db').toBe(BEFORE + AFTER);
   });
 
-  await test.step('no Hub: the page loads, the palette says so, a local tool renders, Rent says why it lists nothing; the Hub again', async () => {
+  await test.step('no Hub: the page loads, the palette lists what is installed, a local tool renders, Rent says why it lists nothing; the Hub again', async () => {
     // Its rental list is the Hub's, asked through Calcifer, which says it can't: as the browser says it in its console, on purpose, while
     // there's no Hub.
     const unlisted = new RegExp(`^console error: Failed to load resource: the server responded with a status of 50[234] .* ${origin}/v1/rental-skus$`);
@@ -324,7 +324,9 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
     await expect(page.locator('.stage')).toBeVisible();
     await fitAll(page);
     await expect.configure({ soft: true }).poll(() => canvasVisible(page, 'words'), { message: 'the page loads with no Hub',  }).toBe(true);
-    await expect.soft(page.getByRole('complementary', { name: 'Tools' }).getByText(/^only what's installed/), 'the palette says what it lists').toBeVisible();
+    // Its tools are what's installed, with no note (cl-1126: "with the Hub away it lists what's installed"): the local tool's own, there to
+    // choose.
+    await expect.soft(page.getByRole('complementary', { name: 'Tools' }).locator('button[data-operation="image"]'), 'the palette lists what is installed').toBeEnabled();
 
     const region = await focus(page, 'still');
     await region.getByRole('button', { name: 'Render', exact: true }).click();
