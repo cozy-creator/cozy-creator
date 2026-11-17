@@ -60,6 +60,26 @@ for k in "${!NAMES[@]}"; do
   KERNELS[$d]=1; say "kernels $a: built in $((SECONDS - t0)) s"
 done
 TENSORD=(); [[ $(cozy --version) != *-* ]] || TENSORD=(--tensord "$(command -v cozy)")
+# ComfyUI, its environment (with its own Python, for any glibc >= 2.28) and its VAE file are built here, where the network is
+# good, and shipped to the pod at the same path, as the benchmarks runner does (`bench.py ship`): a pod in Asia spent 40 min
+# of pod-session 44049887315 fetching them itself.
+W=/var/tmp/h3vae-comfy
+if [ "$(jq length <<<"$COMFY")" != 0 ]; then
+  C=$(jq -r .commit <<<"$COMFY") KV=$(jq -r .kitchen <<<"$COMFY") TV=$(jq -r '.torch // "2.14.1"' <<<"$COMFY")
+  VV=$(jq -r '.torchvision // "0.29.1"' <<<"$COMFY") REV=$(jq -r .revision <<<"$COMFY") VAE=$(jq -r .vae <<<"$COMFY")
+  [[ $C =~ ^[0-9a-f]{40}$ && $REV =~ ^[0-9a-f]{40}$ && $KV =~ ^[0-9.]+$ && $VAE =~ ^[a-z0-9_.]+$ ]] || fail "comfy params"
+  rm -rf "$W" && mkdir -p "$W" || fail "$W"
+  ( set -e; cd "$W"; export UV_PYTHON_INSTALL_DIR=$W/python UV_PYTHON_PREFERENCE=only-managed UV_HTTP_TIMEOUT=300 UV_NO_CACHE=1
+    P=(--python "$W/venv/bin/python" --python-platform x86_64-manylinux_2_28)
+    git init -q ComfyUI && git -C ComfyUI fetch -q --depth 1 https://github.com/Comfy-Org/ComfyUI.git "$C" && git -C ComfyUI checkout -q FETCH_HEAD
+    uv venv -q --python 3.12 venv
+    uv pip install -q "${P[@]}" "torch==$TV" "torchvision==$VV" --index-url https://download.pytorch.org/whl/cu130
+    uv pip install -q "${P[@]}" -r ComfyUI/requirements.txt "comfy-kitchen==$KV"
+    curl -fsSL --retry 5 -o vae.safetensors "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/$REV/vae/$VAE"
+    cp "$FX/comfy_vae.py" . && for n in "${COUNTS[@]}"; do cp "$OUT/clip$n.mp4" .; done
+  ) > "$OUT/comfy-setup.log" 2>&1 || fail "ComfyUI's environment: $(tail -5 "$OUT/comfy-setup.log")"
+  say "ComfyUI $C with comfy-kitchen $KV, torch $TV: $(du -sh "$W" | cut -f1) to ship"
+fi
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh
 quote "$(param need_s 3600)"
@@ -118,27 +138,15 @@ if [ "$(jq length <<<"$COMFY")" != 0 ]; then
   # ComfyUI alone on the GPU: a restart ends Cozy's executors.
   step free machine update "$NAME" --gpu-memory-limit off -y || say "freeing the GPU: $(tail -2 "$OUT/free.txt")"
   for i in $(seq 1 20); do pod true < /dev/null > /dev/null 2>&1 && break; sleep 15; done
-  C=$(jq -r .commit <<<"$COMFY") KV=$(jq -r .kitchen <<<"$COMFY") TV=$(jq -r '.torch // "2.14.1"' <<<"$COMFY")
-  VV=$(jq -r '.torchvision // "0.29.1"' <<<"$COMFY") REV=$(jq -r .revision <<<"$COMFY") VAE=$(jq -r .vae <<<"$COMFY")
-  [[ $C =~ ^[0-9a-f]{40}$ && $REV =~ ^[0-9a-f]{40}$ && $KV =~ ^[0-9.]+$ && $VAE =~ ^[a-z0-9_.]+$ ]] || fail "comfy params"
-  for n in "${COUNTS[@]}"; do T=600 pod "mkdir -p /root/h3vae && cat > /root/h3vae/clip$n.mp4" < "$OUT/clip$n.mp4" || fail "clip $n to the pod"; done
-  pod "cat > /root/h3vae/comfy_vae.py" < "$FX/comfy_vae.py" || fail "comfy_vae.py to the pod"
-  # Its environment and weights, built on the pod while nothing of Cozy's runs.
-  T=2400 pod "set -e; cd /root/h3vae; command -v uv > /dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null; export PATH=\$HOME/.local/bin:\$PATH
-    git init -q ComfyUI && git -C ComfyUI fetch -q --depth 1 https://github.com/Comfy-Org/ComfyUI.git $C && git -C ComfyUI checkout -q FETCH_HEAD
-    uv venv -q -p 3.12 env
-    uv pip install -q -p env torch==$TV torchvision==$VV --index-url https://download.pytorch.org/whl/cu130
-    uv pip install -q -p env -r ComfyUI/requirements.txt comfy-kitchen==$KV
-    curl -fsSL --retry 5 -o vae.safetensors https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/$REV/vae/$VAE
-    env/bin/python -c 'import comfy_kitchen, torch; print(\"kitchen\", comfy_kitchen.__version__, \"torch\", torch.__version__)'" \
-    < /dev/null > "$OUT/comfy-setup.log" 2>&1 || fail "ComfyUI's setup: $(tail -5 "$OUT/comfy-setup.log")"
-  say "ComfyUI $C: $(tail -1 "$OUT/comfy-setup.log")"
-  clips=$(printf ' /root/h3vae/clip%s.mp4' "${COUNTS[@]}")
+  t0=$SECONDS
+  tar -C "$W" -I "gzip -1" -cf - . | T=3600 pod "mkdir -p $W && tar -xzf - --no-same-owner -C $W" || fail "shipping ComfyUI to the pod"
+  say "ComfyUI on the pod in $((SECONDS - t0)) s"
+  clips=$(printf " $W/clip%s.mp4" "${COUNTS[@]}")
   mapfile -t CONFIGS < <(jq -c '.configs[]' <<<"$COMFY")
   for cfg in "${CONFIGS[@]}"; do
     cn=$(jq -r .name <<<"$cfg") fast=$(jq -r 'if .fast then 1 else 0 end' <<<"$cfg")
     [[ $cn =~ ^[a-z0-9-]+$ ]] || fail "comfy config name $cn"
-    T=3600 pod "cd /root/h3vae && env/bin/python comfy_vae.py /root/h3vae/ComfyUI /root/h3vae/vae.safetensors $RUNS $fast$clips" \
+    T=3600 pod "cd $W && venv/bin/python comfy_vae.py $W/ComfyUI $W/vae.safetensors $RUNS $fast$clips" \
       < /dev/null > "$OUT/comfy-$cn.log" 2>&1 || fail "ComfyUI $cn: $(tail -5 "$OUT/comfy-$cn.log")"
     say "ComfyUI $cn: $(grep -m1 '"facts"' "$OUT/comfy-$cn.log")"
     grep '^{"clip"' "$OUT/comfy-$cn.log" | jq -r --arg c "$cn" '["comfyui", $c, (.frames | tostring), (.pass | tostring), (.encode_s | tostring), (.decode_s | tostring), "-"] | @tsv' >> "$TSV"
