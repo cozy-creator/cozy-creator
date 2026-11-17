@@ -148,7 +148,7 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
     let failed: std::collections::BTreeSet<&str> = rows.iter().filter_map(|row| Some(row.failure.as_ref()?.message.as_str())).collect();
     warnings.retain(|warning| !failed.contains(warning.message.as_str()));
     let notes = rows.iter().flat_map(|row| row.unused.iter().map(|unused| api::calcifer::project::Warning::of(&row.name, unused.line(&row.name)))).collect();
-    let head = ProjectState { covered: None, id: project.id.clone(), code: project.code.clone(), key: project.key(), path: folder.dir.clone(), assets: vec![], heads, queue: vec![], missing, stale, orphans, busy: false, absent, run_files, cuts, warnings, notes, next, board: None, unsent: vec![], machines: vec![] };
+    let head = ProjectState { covered: None, id: project.id.clone(), code: project.code.clone(), key: project.key(), path: folder.dir.clone(), assets: vec![], heads, queue: vec![], missing, stale, orphans, busy: false, absent, run_files, cuts, warnings, notes, next, board: None, unsent: vec![], machines: vec![], appearance: None };
     Ok(Model { rev, heard, doc, lock, head, rows, stand, ids })
 }
 
@@ -166,11 +166,8 @@ fn overlaid(row: &mut Row, key: &str, rendering: &BTreeMap<String, f64>, making:
     }
     // Sent and its run not numbered yet, as while it binds, installs or fetches weights, it's being made all the same (cl-945).
     if let Some(takes) = takes.get(&name_key(&row.name)) {
-        // What's on its way, then what failed of it (the row's own), each once: one just failed is the failed one.
-        let failed: Vec<TakeNow> = std::mem::take(&mut row.takes);
-        let ended: std::collections::HashSet<String> = failed.iter().map(|take| take.id.clone()).collect();
-        row.takes = takes.iter().filter(|take| !ended.contains(&take.id)).cloned().chain(failed).collect();
-        if takes.iter().any(|take| !take.queued && !row.takes.iter().any(|held| held.id == take.id && held.failure.is_some())) {
+        row.takes.clone_from(takes);
+        if takes.iter().any(|take| !take.queued) {
             row.standing = RowStanding::Making;
         }
     }
@@ -179,8 +176,8 @@ fn overlaid(row: &mut Row, key: &str, rendering: &BTreeMap<String, f64>, making:
         row.standing = RowStanding::Making;
         row.failure = None;
         row.status = match runs.as_slice() {
-            [run] => format!("making (run {key}-{run})"),
-            runs => format!("making (runs {})", runs.iter().map(|run| format!("{key}-{run}")).collect::<Vec<_>>().join(", ")),
+            [run] => format!("rendering (run {})", ::api::calcifer::project::run_label(key, *run)),
+            runs => format!("rendering (runs {})", runs.iter().map(|run| ::api::calcifer::project::run_label(key, *run)).collect::<Vec<_>>().join(", ")),
         };
     }
 }
@@ -219,11 +216,19 @@ impl Model {
     }
 
     pub(super) fn row(&self, project: &Project, i: usize) -> Row {
-        let mut row = self.rows[i].clone();
+        self.rows_of(project, &[i]).remove(0)
+    }
+
+    /// Assets `is` of the doc, as they stand this moment, read together.
+    pub(super) fn rows_of(&self, project: &Project, is: &[usize]) -> Vec<Row> {
         let walk = project.folder.walk_now().unwrap_or_default();
         let (making, takes) = (making_now(&walk), takes_now(project, &walk));
-        overlaid(&mut row, &project.key(), &project.rendering.lock().expect("rendering lock"), &making, &takes, &self.ids, &project.unseen.lock().expect("unseen lock"));
-        row
+        let (key, rendering, unseen) = (project.key(), project.rendering.lock().expect("rendering lock"), project.unseen.lock().expect("unseen lock"));
+        is.iter().map(|&i| {
+            let mut row = self.rows[i].clone();
+            overlaid(&mut row, &key, &rendering, &making, &takes, &self.ids, &unseen);
+            row
+        }).collect()
     }
 }
 

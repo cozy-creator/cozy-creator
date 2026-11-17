@@ -1,6 +1,7 @@
 """Tiny MiniMax H3: the package's own constructors (the AdaLN-pruned dual DiT, the truncated Qwen3-VL conditioner, the
 video and audio VAEs, the PDD turbo overlay) at a few channels, with timestep plans of 2 and 3 evaluations, written as the
-five-root checkpoint and the turbo LoRA by TensorFS's own writer.
+five-root checkpoint and the turbo LoRA by TensorFS's own writer, beside Alissonerdx's VFX edit LoRA, which `edit` stacks
+on Ref2VA as a caller LoRA (drive.py `compose`).
 
 The release geometry (56 heads x 128, 50 layers, a 5120-wide conditioner) is pinned by `_validate_model_contract`;
 a tiny model cannot meet it, so that one check is waived (WAIVE) and stays GPU-only. The canvas (768 short edge) and the
@@ -10,6 +11,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Callable
 from importlib.resources import files
 from pathlib import Path
@@ -20,7 +22,7 @@ import tensorfs
 import torch
 from cozy_runtime.author import Config
 from diffusers import AutoencoderKLMiniMaxH3Audio, MiniMaxH3Scheduler
-from minimax_h3 import latent_upscaler, official
+from minimax_h3 import latent_upscaler, official, shot_latents
 from minimax_h3.conditioner import build_text_conditioner
 from minimax_h3.latent_upscaler.architecture import LatentResizer3D
 from minimax_h3.official import Schedule, TimestepPlan, Trunk
@@ -29,11 +31,19 @@ from minimax_h3.vae_tiles import TileBatchedVideoVAE
 from PIL import Image
 
 from tiny._shared import qwen_processor
-from cell import Cell, Json, module, quantize
+from cell import Cell, Check, Json, module, quantize
 
 WAIVE = {"minimax_h3.official:_validate_model_contract": "the release geometry: 56x128 heads, 50 layers, 5120 text width"}
 H3 = "minimaxai/minimax-h3@1.0.0-rc.8"
 REGENERATE, UPSCALER = "efficient-large-model/open-h3-regenerate-2k@0.1.0", "lbh-123-ai/h3-latent-upscaler@0.1.1"
+VFX_EDIT = "alissonerdx/minimax-h3-vfx-edit@0.1.0"
+#: The linears Alissonerdx's edit LoRAs adapt, as the Hub's mirror lists them (`target_modules`): each refiner and
+#: transformer block's attention four and feed-forward two.
+_EDIT_SITES = re.compile(r"(?:token_refiner\.refiner_blocks|transformer_blocks)\.\d+\."
+                         r"(?:attn\.(?:to_q|to_k|to_v|to_out\.0)|ff\.net\.(?:0\.proj|2))")
+#: Its rank and factors' spread: an update under the tiny weights' own, so its bake's last bits stay in a reference's
+#: tolerance (moss_image `_FACTOR`).
+_EDIT_RANK, _EDIT_FACTOR = 4, 0.2
 #: LatentResizer3D's defaults (in_channels, in_blocks, out_blocks, channels, dropout, temporal_every, temporal_kernel):
 #: the release's 12 + 12 blocks of 512 channels (345M) shrunk to 1 + 1 of 32.
 _UPSCALER_DEFAULTS = (24, 1, 1, 32, 0.1, 2, 5)
@@ -155,10 +165,11 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
     audio = module(AutoencoderKLMiniMaxH3Audio.from_config(sections["audio_vae"]).eval())
     _fill(audio, 3)
     _write(base, "audio_vae", audio, sections["audio_vae"], {})
+    dits: dict[str, torch.nn.Module] = {}
     for seed, trunk in enumerate(_TRUNKS, 4):
         config = {**DIT, "cozy_h3": {"task": trunk, "modulation": "adaln-pruned", "table_keys": _keys(plans[trunk])}}
         spec = official._dit_spec(Config({_DIT[trunk]: config}), trunk)
-        dit = module(official._build_dit(*spec))
+        dit = dits[trunk] = module(official._build_dit(*spec))
         _fill(dit, seed)
         _write(base, _DIT[trunk], dit, config, {official.PLAN_ASSET: plans[trunk].canonical_bytes()})
     lora = tensorfs.Writer(cache_dir=store)
@@ -174,7 +185,30 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
         _fill(overlay, seed)
         _write(lora, _TURBO[trunk], overlay, overlays[_TURBO[trunk]], {official.PLAN_ASSET: turbo[trunk].canonical_bytes()})
     return {H3: base.commit().id, "alibaba-pai/minimax-h3-turbo-lora@1.0.1": lora.commit().id,
-            REGENERATE: _regenerate(store), UPSCALER: _upscaler(store)}
+            REGENERATE: _regenerate(store), UPSCALER: _upscaler(store), VFX_EDIT: _edit_lora(store, dits["ref2va"])}
+
+
+def _edit_lora(store: Path, dit: torch.nn.Module) -> str:
+    """VFX edit laid out as the Hub's mirror is: one `transformer` component of PEFT factors under the DiT's names,
+    `adapter_config.json` stating `r`, `lora_alpha` and its `target_modules`, bf16. Ref2VA runs `transformer_ref`, which
+    its layers fit, so it adapts that (drive.py `compose`, as TensorD's)."""
+    sites: dict[str, torch.nn.Linear] = {}
+    for name, layer in dit.named_modules():
+        if isinstance(layer, torch.nn.Linear) and _EDIT_SITES.fullmatch(name):
+            sites[name] = layer
+    if not sites:
+        raise ValueError("the tiny DiT has none of the linears an edit LoRA adapts")
+    targets: list[Json] = list(sites)
+    writer = tensorfs.Writer(cache_dir=store)
+    component = writer.component("transformer", cls=None, config_file="adapter_config.json", config={
+        "lora_alpha": _EDIT_RANK, "peft_type": "LORA", "r": _EDIT_RANK, "target_modules": targets})
+    generator = torch.Generator().manual_seed(10)
+    for name, layer in sites.items():
+        for factor, shape in (("lora_A", [_EDIT_RANK, layer.in_features]), ("lora_B", [layer.out_features, _EDIT_RANK])):
+            data = (torch.randn(shape, generator=generator) * _EDIT_FACTOR).to(torch.bfloat16).contiguous()
+            component.put(f"{name}.{factor}.weight", memoryview(data.view(torch.uint8).numpy()).cast("B"), dtype="BF16",
+                          shape=shape)
+    return writer.commit().id
 
 
 def _regenerate(store: Path) -> str:
@@ -226,7 +260,7 @@ _REGENERATE: dict[str, Json] = {"prompt": "a red fox runs across a snowy field",
 
 
 def clip(frames: int) -> Callable[[Path], Path]:
-    """A second of 320x180 video at 24 fps with a tone, each frame a shifted gradient and a disc."""
+    """`frames` of 320x180 video at 24 fps with a tone, each frame a shifted gradient and a disc."""
 
     def make(folder: Path) -> Path:
         import av
@@ -252,6 +286,35 @@ def clip(frames: int) -> Callable[[Path], Path]:
         return path
 
     return make
+
+
+#: An edit's summary and two beats on a 5 s plate.
+_EDIT: dict[str, Json] = {
+    "edit": "vfx_edit", "summary": {"text": "A red fox crosses a winter field at dusk."}, "seed": 7, "quality": "full",
+    "beats": [{"duration": 2, "description": {"text": "a red fox runs across a snowy field"}},
+              {"duration": 3, "description": {"text": "the fox stops and looks back"}}],
+}
+#: What H3 is told, in order, in the text the take's latents keep (`shot.upscale_prompt`): the summary, then each beat at
+#: its time on the plate's clock, the edit LoRA's trigger opening each.
+_EDIT_SAID = ("A red fox crosses a winter field at dusk.", "[Shot 1] vfx_edit: a red fox runs across a snowy field",
+              "At 00:02.000, vfx_edit: the fox stops and looks back")
+
+
+def told(*said: str) -> Check:
+    """The text the take's latents keep holds `said`, in order."""
+
+    def check(result: Json, outputs: list[Path]) -> str | None:
+        held = [path.read_bytes() for path in outputs]
+        texts = [shot_latents.text(data) for data in held if shot_latents.metadata_or_none(data).get("format") == shot_latents.FORMAT]
+        if len(texts) != 1:
+            return f"{len(texts)} latents files, not one"
+        at = [texts[0].find(line) for line in said]
+        if -1 in at or at != sorted(at):
+            return f"its text {texts[0]!r} does not say {list(said)} in order"
+        return None
+
+    return check
+
 
 #: The preparation jobs a tiny (AdaLN-pruned) H3 cannot feed.
 _FULL_ONLY: list[Cell] = [{"entry": job, "name": "lane", "payload": {}, "skip": _FULL} for job in (
@@ -279,8 +342,9 @@ CELLS: list[Cell] = [
     {"entry": "upscale", "name": "1080p", "payload": {"video": {"description": "a red fox in the snow"}, "to": "1080p",
                                                       "strength": 0.7},
      "files": {"video.file": clip(25)}},
-    {"entry": "edit", "name": "plate", "payload": {},
-     "skip": "an edit calls its segment with an edit LoRA as a model choice, which TensorD binds from the Hub"},
+    # cl-1078, Paul 11-16: "I think the video edit mode should also get a summary, as well as beats, just like how video
+    # nodes get summary + beats." The summary and both beats reach H3 as a shot's do, its VFX edit LoRA on Ref2VA.
+    {"entry": "edit", "name": "beats", "payload": _EDIT, "files": {"plate": clip(120)}, "check": told(*_EDIT_SAID)},
     {"entry": "regenerate_shot", "name": "native", "payload": _REGENERATE,
      "files": {"video": clip(25)}},
     # The refine overlay on every rank (5ac8a48e armed it on rank 0 alone).

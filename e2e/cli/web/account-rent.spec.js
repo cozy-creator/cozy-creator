@@ -1,24 +1,30 @@
-// account-rent (cl-973 core cell 24, solo): the account and renting, as a person does them in the page. Signed out by Account's inline
+// account-rent (cl-973 core cell 24, solo): the account and renting, as a person does them in the page. On the stand-in too, render-time
+// (cl-1004): beside Render, how long a box takes where it would go, from 15 s (a slow box once it ran, none for a fast one), and Slow here
+// on an H3 shot this computer, which has no GPU, would run on its CPU: its release's benchmark of the stand-in's rtx-4090, what a render
+// there costs, and Rent with it. Signed out by Account's inline
 // confirm, Rent says to sign in; a wrong code stays in the form in plain words, the code the isolated Hub logs signs in, and nothing of
 // the Hub's is in the browser. On localfit's GPU stand-in (a proxy in front of the isolated Hub that sells an rtx-4090 and places runs on
-// it), a box this computer would render poorly asks on itself, Rent a GPU first: Run here anyway renders here and is kept (canceled as it
-// waits on its fresh install, that install ends with it, and the next Render installs again), and Rent opens Machines with the card chosen,
-// rendering nothing. Then the docker provider's cpu, rented from Machines at its quoted price, listed as the CLI lists it, made the
+// it), a box this computer would render poorly renders here at once, asking nothing (cl-1066: Slow here already offers the rental),
+// canceled as it waits on its fresh install, that install ending with it, and the next Render installs again. Then the docker provider's cpu, rented from Machines at its quoted price, listed as the CLI lists it, made the
 // project's machine and ended: nothing of it left running. Never paid: that provider starts a container here that never gets ready
-// (e2e/cli/rental.sh).
+// (e2e/cli/rental.sh). In a dev home whose packages checkout holds H3 (an RC build), the checkout's H3 is timed by its source's
+// benchmarks.json before any run (cl-1024).
 // $E2E_HUB_EMAIL and $E2E_HUB_LOG (e2e/isolated.sh): the suite's account, and the isolated Hub's log of the codes it would mail.
 const { execFile, spawn } = require('child_process');
-const { appendFileSync, readFileSync, readdirSync } = require('fs');
+const { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } = require('fs');
 const http = require('http');
 const { dirname, join } = require('path');
 const { promisify } = require('util');
-const { test, expect, box, canvasIdle, focus } = require('./fixtures');
+const { test, expect, themed, canvasCard, canvasIdle, focus, canvasVisible, openPoint } = require('./fixtures');
 
 const need = (name) => process.env[name] || (() => { throw new Error(`$${name} is not set: web.sh's web_suite runs where e2e/isolated.sh sets it`); })();
 const run = promisify(execFile);
 const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /** A tool that composes a GPU function loading BiRefNet (heavy.py): local code, so the Hub places no card for it. */
 const HEAVY = `${join(__dirname, 'heavy.py')}/heavy`;
+/** Weightless local code that takes `seconds`, never run on this job's machine before (render-time's slow box), and one the setup warmed. */
+const WAITS = `${join(__dirname, '..', 'project', 'waits.py')}/wait`;
+const DRAW = `${join(__dirname, '..', 'project', 'draw.py')}/draw`;
 /** What the isolated Hub's docker provider runs, here on this runner. */
 const CONTAINERS = ['ps', '-aq', '--filter', 'label=com.cozy.tensorhub.provider=docker'];
 
@@ -160,8 +166,14 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
   // Two boxes this computer would render poorly, on the open canvas.
   await project.add({ name: 'heavy', tool: HEAVY, kind: 'image', fields: { instructions: 'a lantern in fog', seconds: 8 }, at: { x: 0, y: 0 } });
   await project.add({ name: 'kite', tool: kite, kind: 'image', fields: { instructions: 'a red kite over dunes' }, at: { x: 420, y: 0 } });
-  await expect(box(page, 'heavy')).toBeVisible();
-  await expect(box(page, 'kite')).toBeVisible();
+  // render-time's: a slow box, a fast one, and a 15 s H3 shot from the Hub.
+  const shotTool = (seeded['minimax-h3'] ?? []).find((id) => /\/generate$/.test(id));
+  expect(shotTool, `the seed's H3 shot among ${JSON.stringify(seeded['minimax-h3'])}`).toBeDefined();
+  await project.add({ name: 'slow', tool: WAITS, kind: 'image', fields: { instructions: 'a slow lamp', seconds: 24 }, at: { x: 840, y: 0 } });
+  await project.add({ name: 'quick', tool: DRAW, kind: 'image', fields: { instructions: 'a quick lamp' }, at: { x: 0, y: 460 } });
+  await project.add({ name: 'shot', tool: shotTool, kind: 'video', fields: { beats: [{ description: 'Waves roll onto a beach at dusk.', duration: 15 }], turbo: true }, at: { x: 420, y: 460 } });
+  await expect.poll(() => canvasVisible(page, 'heavy')).toBe(true);
+  await expect.poll(() => canvasVisible(page, 'kite')).toBe(true);
 
   try {
     await test.step('Account › Sign out, an inline confirm; signed in again, a wrong code first, then the code the Hub logs', async () => {
@@ -178,7 +190,7 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await drawer.getByRole('button', { name: 'Sign out', exact: true }).click();
       const confirm = drawer.locator('.confirm');
       await expect(confirm, 'Sign out asks in the drawer').toBeVisible();
-      await expect.soft(confirm.locator('.says')).toHaveText(`Sign this computer out of ${email}? Its key is revoked at the Hub and erased here. Rentals go on billing until they end, and it can't rent or end them until it signs in again.`);
+      await expect.soft(confirm.locator('.says')).toHaveText(`Sign this computer out of ${email}? The Hub revokes this computer's key, and Cozy deletes it here. Your rentals keep running and costing money until they end, and you can't rent or end one from this computer until you sign in again.`);
       await confirm.getByRole('button', { name: 'Sign out', exact: true }).click();
       const address = drawer.getByLabel('Email', { exact: true });
       await expect(address, "AuthKit's form, signed out").toBeVisible();
@@ -199,7 +211,7 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await expect(field).toBeVisible();
       // cozy login's code went out moments ago, and the Hub spaces codes to one email: the page says how long, and Resend opens once it
       // may ask again.
-      await expect.soft(drawer.getByText(/^Check your email\. You can ask for another code in \d+ s\.$/), 'the wait, said in words').toBeVisible();
+      await expect.soft(drawer.getByText(/^Check your email\. You can ask for another code in \d+s\.$/), 'the wait, said in words').toBeVisible();
       const resend = drawer.getByRole('button', { name: 'Resend', exact: true });
       await expect(resend).toBeEnabled({ timeout: 75_000 });
       const before = codesFor(email).length;
@@ -237,24 +249,175 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await expect.poll(async () => (await api.get('/v1/machines/local')).status?.gpus, { message: "local's GPUs", timeout: 60_000 }).toEqual([]);
     });
 
-    await test.step('A heavy box asks first; Run here anyway renders here, then Cancel; Render again, and again after a reload', async () => {
+    await test.step('Render time: a slow box says how long beside Render, a fast one nothing; Slow here on an H3 shot opens Rent with its card', async () => {
+      const fits = `/v1/projects/${encodeURIComponent(project.id)}/fit`;
+      /** The next estimate the page asks for `name`, as Calcifer answers it. */
+      const estimated = async (name) => {
+        const answer = await page.waitForResponse((one) => one.request().method() === 'POST' && new URL(one.url()).pathname === fits && one.request().postDataJSON()?.names?.[0] === name, { timeout: 60_000 });
+        return (await answer.json()).estimates?.[0];
+      };
+      const shots = join(need('OUT'), 'web', 'render-time');
+      mkdirSync(shots, { recursive: true });
+      /** The page at 1440×900 and 1920×1080, on paper and dark (each a reload, as the page's own switch keeps it), for a person to look
+       *  at (look-at-your-own-ui); `again` puts back what's looked at after each reload. */
+      const look = async (what, again) => {
+        for (const theme of ['dark', 'paper']) {
+          await project.look(theme);
+          await page.reload();
+          await themed(page, theme);
+          await again();
+          for (const [width, height] of [[1440, 900], [1920, 1080]]) {
+            await page.setViewportSize({ width, height });
+            await canvasIdle(page);
+            await page.screenshot({ path: join(shots, `${what}-${width}x${height}-${theme}.png`) });
+          }
+        }
+        await page.setViewportSize({ width: 1600, height: 1000 });
+      };
       await page.goto(project.url());
-      await expect(box(page, 'heavy')).toBeVisible();
-      await expect(box(page, 'kite')).toBeVisible();
+      await expect.poll(() => canvasVisible(page, 'slow')).toBe(true);
+      await zoomToFit(page);
+      const leave = async () => {
+        await page.getByRole('region', { name: 'Focused asset' }).getByRole('button', { name: 'Back to canvas' }).click();
+        await expect(page.getByRole('region', { name: 'Focused asset' })).toHaveCount(0);
+        await canvasIdle(page);
+      };
+
+      // Never run here: nothing to say. Once rendered, it says about how long beside Render.
+      let answered = estimated('slow');
+      let region = await focus(page, 'slow');
+      const time = region.getByRole('note', { name: 'Render time' });
+      expect.soft(await answered, 'the slow box before it ran: nothing measured').toMatchObject({ machine: 'local', run_ms: 0, basis: 'none' });
+      await expect.soft(time, 'no time before it ran').toHaveCount(0);
+      await region.getByRole('button', { name: 'Render', exact: true }).click();
+      await expect.poll(async () => (await project.asset('slow')).versions ?? 0, { message: "slow's first take", timeout: 240_000 }).toBe(1);
+      await expect.soft(time, 'beside Render once it ran, about how long').toHaveText(/^about (2\d|3\d) s$/, { timeout: 30_000 });
+      const timed = async () => {
+        await expect(await focus(page, 'slow')).toBeVisible();
+        await expect.soft(page.getByRole('region', { name: 'Focused asset' }).getByRole('note', { name: 'Render time' })).toBeVisible({ timeout: 30_000 });
+      };
+      // This computer's runs are its project's own (xs-160), so its machine times none of them: the estimate stands on the
+      // project's run here, a measurement of this machine all the same (`measured`, cl-1047).
+      const ran = (await api.post(project.at('/fit'), { names: ['slow'] })).estimates?.[0];
+      expect.soft(ran, "by this project's run here").toMatchObject({ machine: 'local', basis: 'measured' });
+      expect.soft(ran?.run_ms, 'its run here, about its 24 s').toBeGreaterThanOrEqual(20_000);
+      await look('slow', timed);
+      await leave();
+
+      // Fast: once rendered here, under 15 s, so nothing is said.
+      region = await focus(page, 'quick');
+      await region.getByRole('button', { name: 'Render', exact: true }).click();
+      await expect.poll(async () => (await project.asset('quick')).versions ?? 0, { message: "quick's first take", timeout: 120_000 }).toBe(1);
+      const quick = (await api.post(project.at('/fit'), { names: ['quick'] })).estimates?.[0];
+      expect.soft({ basis: quick?.basis, fast: (quick?.run_ms ?? 0) > 0 && (quick?.run_ms ?? 0) < 15_000 }, 'the fast box, timed and short').toEqual({ basis: 'measured', fast: true });
+      await expect.soft(region.getByRole('note', { name: 'Render time' }), 'a short render says no time').toHaveCount(0);
+      await expect.soft(region.getByRole('button', { name: 'Slow here' })).toHaveCount(0);
+      await leave();
+
+      // An H3 shot: this computer has no GPU, and the stand-in's rtx-4090, the Hub's pick, takes our measurement of it there.
+      answered = estimated('shot');
+      region = await focus(page, 'shot');
+      const shot = await answered;
+      expect.soft(shot, 'H3 on this computer, which has no GPU').toMatchObject({ machine: 'local', card: '', faster: { rent: { sku: CARD.name, card: 'RTX 4090' } } });
+      // release-gate 43211705140: 335.1 s for the 15 s shot on one RTX 4090, its release's benchmark as the isolated Hub serves it.
+      expect.soft(shot?.faster?.run_ms, 'the 15 s shot on a rented RTX 4090, as we measured it').toBe(335_100);
+      const slowHere = region.getByRole('button', { name: 'Slow here', exact: true });
+      await expect(slowHere, 'Slow here beside Render').toBeVisible();
+      await expect.soft(region.getByRole('note', { name: 'Render time' }), 'no time on a CPU nothing measured').toHaveCount(0);
+      const shown = async () => {
+        await focus(page, 'shot');
+        await expect(slowHere).toBeVisible({ timeout: 30_000 });
+      };
+      await look('shot', shown);
+      const notice = page.getByRole('group', { name: 'Slow here', exact: true });
+      const opened = async () => {
+        await shown();
+        if (!(await notice.count())) await slowHere.click();
+        await expect(notice).toBeVisible();
+        await notice.scrollIntoViewIfNeeded();
+      };
+      await slowHere.click();
+      await expect(notice, 'it opens under the box').toBeVisible();
+      await expect.soft(notice, 'in view, next to Render').toBeInViewport();
+      // Its release's benchmark of the RTX 4090 (benchmarks-seed.json, published with it by isolated.sh), at the stand-in's $0.69/h.
+      await expect.soft(notice.locator('p').first()).toHaveText('This computer has no GPU, so this would run on its CPU, slowly. On a rented RTX 4090, about 6 min and about $0.06 a render.');
+      await expect.soft(notice.locator('p').nth(1)).toHaveText('A rented RTX 4090 runs it for $0.69/h.');
+      await look('shot-notice', opened);
+      // A press that begins inside and ends outside leaves it open; a click outside closes it; Slow here opens it again.
+      const inside = await notice.locator('p').first().boundingBox();
+      await page.mouse.move(inside.x + 4, inside.y + inside.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(inside.x + 4, inside.y - 120, { steps: 4 });
+      await page.mouse.up();
+      await expect.soft(notice, 'a drag out of it leaves it open').toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect.soft(notice, 'Escape closes it').toHaveCount(0);
+      await expect(page.getByRole('region', { name: 'Focused asset' }), 'and only it').toHaveAttribute('data-focused-asset', 'shot');
+      await slowHere.click();
+      await expect(notice).toBeVisible();
+      await notice.getByRole('button', { name: 'Rent an RTX 4090', exact: true }).click();
+      await expect(page, 'Machines, the card asked for').toHaveURL(`${project.url('machines')}?rent=${CARD.name}&gpus=1`);
+      expect.soft(asked.filter((one) => one.names?.includes('shot')), 'Rent renders nothing').toEqual([]);
+    });
+
+    await test.step("Render time from source: a packages checkout's H3 is timed by its own benchmarks.json before any run", async () => {
+      // A dev home (`dev = true`, an RC build) runs first-party packages from its checkout (`[calcifer] packages`, xs-195); unpublished,
+      // their benchmarks are their source's `benchmarks.json`, the file `cozy package publish` attaches (cl-1024). Its RTX 4090 row here
+      // (300 s) isn't the release's (335.1 s): the estimate stands on the source's.
+      const version = (await run(need('COZY'), ['--version'])).stdout;
+      if (!/-dev\+g/.test(version) || !process.env.E2E_PACKAGES) {
+        testInfo.annotations.push({ type: 'skipped', description: `from source: ${version.trim()} ${process.env.E2E_PACKAGES ? 'is no RC build' : 'and no $E2E_PACKAGES'}` });
+        return;
+      }
+      const co = join(need('OUT'), 'web', 'packages-rc');
+      await run('rm', ['-rf', co]);
+      mkdirSync(co, { recursive: true });
+      await run('cp', ['-r', join(process.env.E2E_PACKAGES, 'minimax-h3'), join(co, 'minimax-h3')]);
+      const row = { function: 'generate', gpu: 'NVIDIA GeForce RTX 4090', gpus: 1, request: { refs: 0, seconds: 15 }, warm_ms: 300_000, note: 'account-rent: the source' };
+      writeFileSync(join(co, 'minimax-h3', 'benchmarks.json'), JSON.stringify([row], null, 2));
+      await run('git', ['-C', co, 'init', '-q', '-b', 'rc/e2e']);
+      await run('git', ['-C', co, 'add', '-A']);
+      await run('git', ['-C', co, '-c', 'user.name=e2e', '-c', 'user.email=e2e@localhost', 'commit', '-qm', 'checkout']);
+      // local stays on the candidates the suite put on it by hand (e2e/lib.sh's `candidates`), which hold it: a dev home's local would
+      // otherwise follow the RC's builds at rest.
+      const config = calciferControl.config;
+      const before = readFileSync(config, 'utf8');
+      const lines = before.split('\n').filter((line) => !/^dev\s*=/.test(line));
+      const table = lines.findIndex((line) => /^\[calcifer\]\s*$/.test(line));
+      if (table < 0) lines.push('', '[calcifer]', `packages = "${co}"`);
+      else lines.splice(table + 1, 0, `packages = "${co}"`);
+      writeFileSync(config, ['dev = true', ...lines].join('\n'));
+      try {
+        await page.goto('about:blank');
+        await calciferControl.stop();
+        await calciferControl.start();
+        await project.add({ name: 'source_shot', tool: 'minimax-h3/generate', kind: 'video', fields: { beats: [{ description: 'Waves roll onto a beach at dusk.', duration: 15 }], turbo: true }, at: { x: 840, y: 460 } });
+        let sourced = null;
+        await expect.poll(async () => {
+          sourced = (await api.post(project.at('/fit'), { names: ['source_shot'] })).estimates?.[0] ?? null;
+          return sourced?.faster?.run_ms ?? 0;
+        }, { message: "the checkout's H3 on a rented RTX 4090, by its source's benchmark", timeout: 240_000, intervals: [5_000] }).toBe(300_000);
+        expect.soft(sourced, 'H3 from source on this computer, which has no GPU').toMatchObject({ machine: 'local', card: '', faster: { rent: { sku: CARD.name, card: 'RTX 4090' } } });
+        expect.soft(sourced?.faster?.line).toBe('This computer has no GPU, so this would run on its CPU, slowly. On a rented RTX 4090, about 5 min and about $0.06 a render.');
+      } finally {
+        await api.delete(project.at('/assets/source_shot')).catch(() => {});
+        writeFileSync(config, before);
+        await calciferControl.stop();
+        await calciferControl.start();
+      }
+    });
+
+    await test.step('A heavy box renders here at once, asking nothing; then Cancel; Render again, and again after a reload', async () => {
+      await page.goto(project.url());
+      await expect.poll(() => canvasVisible(page, 'heavy')).toBe(true);
       await zoomToFit(page);
       let region = await focus(page, 'heavy');
-      const asking = region.getByRole('group', { name: 'Render here?' });
+      const asking = page.getByRole('group', { name: 'Render here?' });
+      const first = page.waitForRequest(renderOf('heavy'), { timeout: 30_000 });
       await region.getByRole('button', { name: 'Render', exact: true }).click();
-      await expect(asking, 'it asks on the box itself').toBeVisible({ timeout: 60_000 });
-      await expect.soft(asking.locator('p').first()).toHaveText(/^This computer has no GPU, so .+ would run on its CPU, slowly\./);
-      expect.soft(await asking.getByRole('button').allInnerTexts(), 'Rent a GPU first, Run here anyway second').toEqual(['Rent a GPU', 'Run here anyway']);
-      expect.soft(asked.filter((one) => one.names?.includes('heavy')), 'no render sent before the choice').toEqual([]);
-
-      const first = page.waitForRequest(renderOf('heavy'));
-      await asking.getByRole('button', { name: 'Run here anyway', exact: true }).click();
       const sent = await first;
-      expect.soft(sent.postDataJSON().on, 'Run here anyway renders here').toEqual(['local']);
-      expect((await sent.response())?.ok(), 'its render asked').toBe(true);
+      expect((await sent.response())?.ok(), 'its render asked at once').toBe(true);
+      await expect.soft(asking, 'nothing asked first (cl-1066)').toHaveCount(0);
       // Cancel as a person presses it, as soon as its face offers it. Run 43401337115: pressed 80 ms after its 202, Calcifer answered
       // {"dropped":["heavy"]}, and the run went on to complete with its take. Since #3259 a job dropped as it's sent is never sent (no
       // run), and a run it was making is canceled at its machine: settled once nothing is asked, queued or running.
@@ -273,15 +436,14 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await expect.poll(async () => (await installsOf(project)).every((one) => ended.includes(one.status)), { message: "heavy's install settled", timeout: 60_000 }).toBe(true);
       const dropped = await installsOf(project);
       expect.soft(dropped.map((one) => `${one.target}: ${one.status}`), 'its install, which only the canceled render waited on, canceled with it').toEqual(['install local/heavy: canceled']);
-      expect.soft((await api.post(project.at('/fit'), { names: ['heavy'] })).tools, 'Run here anyway, kept by Calcifer').toMatchObject([{ here: true }]);
 
       /** Render, asking nothing: sent to this computer, and one more take lands. */
       const again = async (what) => {
         const had = (await project.asset('heavy')).versions ?? 0;
         const next = page.waitForRequest(renderOf('heavy'));
         await region.getByRole('button', { name: 'Render', exact: true }).click();
-        expect.soft((await next).postDataJSON().on, `${what} renders here, asking nothing`).toEqual(['local']);
-        await expect.soft(asking).toHaveCount(0);
+        await next;
+        await expect.soft(asking, `${what} asks nothing`).toHaveCount(0);
         await expect.poll(async () => (await project.asset('heavy')).versions ?? 0, { message: `${what}: heavy's take ${had + 1}`, timeout: 120_000 }).toBe(had + 1);
       };
       await again('Render again');
@@ -294,27 +456,6 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await again('Render after a reload');
       const later = (await runsOf(project, 'heavy')).filter((one) => !canceled.some((was) => was.number === one.number));
       expect.soft(later.map((one) => `${one.status} on ${one.machine}`), 'the later renders, each on this computer').toEqual(['completed on local', 'completed on local']);
-    });
-
-    await test.step("Rent a GPU on another heavy box: Machines opens with the stand-in's rtx-4090 chosen, and nothing renders", async () => {
-      // heavy.py is local code, whose card no Hub places, and Run here anyway is kept for its tool: the other box is the Hub's Qwen Image 2.
-      await page.getByRole('region', { name: 'Focused asset' }).getByRole('button', { name: 'Back to canvas' }).click();
-      await expect(page.getByRole('region', { name: 'Focused asset' })).toHaveCount(0);
-      await canvasIdle(page);
-      // Asked first: were it not said to render poorly here, its Render would run Qwen Image 2 on this runner's CPU.
-      expect(await api.post(project.at('/fit'), { names: ['kite'] }), 'the Hub, by the stand-in, places it on the rtx-4090').toMatchObject({ tools: [{ names: ['kite'] }], rent: { sku: CARD.name, card: 'RTX 4090' } });
-      const region = await focus(page, 'kite');
-      const asking = region.getByRole('group', { name: 'Render here?' });
-      await region.getByRole('button', { name: 'Render', exact: true }).click();
-      await expect(asking, 'it asks on the box itself').toBeVisible({ timeout: 60_000 });
-      expect.soft(await asking.getByRole('button').allInnerTexts(), 'Rent a GPU first, Run here anyway second').toEqual(['Rent an RTX 4090', 'Run here anyway']);
-      await asking.getByRole('button', { name: 'Rent an RTX 4090', exact: true }).click();
-      await expect(page, 'Machines, the card asked for').toHaveURL(`${project.url('machines')}?rent=${CARD.name}&gpus=1`);
-      await expect.soft(rent.getByRole('listitem').filter({ has: page.getByText(CARD.name, { exact: true }) }), 'the rtx-4090 chosen').toHaveAttribute('aria-current', 'true');
-      expect.soft(asked.filter((one) => one.names?.includes('kite')), 'Rent renders nothing').toEqual([]);
-      expect.soft(await runsOf(project, 'image'), 'no run of it').toEqual([]);
-      expect.soft((await project.asset('kite')).versions ?? 0, 'no take of it').toBe(0);
-      testInfo.annotations.push({ type: 'stand-in', description: stand.asked.join(', ') });
     });
 
     await test.step('Machines › Rent a machine › cpu › Rent, then Rent 1× CPU at its price', async () => {
@@ -332,7 +473,7 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await expect.soft(row.locator('small'), 'its vCPUs').toHaveText(`${width.vcpu_count} vCPU, no GPU`);
       await expect.soft(row.locator('.price'), 'its price').toHaveText(`$${(width.price_usd_micros_per_hour / 1e6).toFixed(2)}/h`);
       await row.getByRole('button', { name: 'Rent', exact: true }).click();
-      await expect.soft(rent.getByText('It bills until you end it, or after 15 minutes idle.', { exact: true }), 'what the quote bills').toBeVisible();
+      await expect.soft(rent.getByText('You pay for it until you end it. It also ends by itself after 15 minutes idle.', { exact: true }), 'what the quote costs').toBeVisible();
       const order = rent.getByRole('button', { name: /^Rent 1× CPU at \$\d+\.\d{2}\/h$/ });
       await expect(order, 'one click on its stated price').toBeEnabled();
       const placed = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === '/v1/machines');
@@ -369,10 +510,10 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
 
       await drawer.getByRole('button', { name: 'End', exact: true }).click();
       const confirm = drawer.locator('.confirm');
-      await expect.soft(confirm.locator('.says'), 'End asks in the drawer').toHaveText(/^End (this rental|\S+)\? Outputs of its runs that haven't landed here land first, then it shuts down\. Its files on the pod go\./);
-      await confirm.getByRole('button', { name: 'End it', exact: true }).click();
+      await expect.soft(confirm.locator('.says'), 'End asks in the drawer').toHaveText(/^End (this rental|\S+)\? Cozy downloads any results still on it first, then shuts it down and deletes its files\./);
+      await confirm.getByRole('button', { name: 'End rental', exact: true }).click();
       await expect.soft(drawer.getByText(/^Shutting down\./), 'ending').toBeVisible();
-      await expect(drawer.getByText('Ended. Nothing of it bills now, and what landed here stays.', { exact: true }), 'ended').toBeVisible({ timeout: 90_000 });
+      await expect(drawer.getByText('Ended. It costs nothing more, and results already downloaded stay on this computer.', { exact: true }), 'ended').toBeVisible({ timeout: 90_000 });
       const record = (await cli.json('machine', 'ls', '--history')).rentals.find((one) => one.rental_id === rental);
       expect.soft(record?.ended_at_ms, "ended once its Hub says it's gone").toBeGreaterThan(0);
       await expect.poll(async () => (await run('docker', CONTAINERS)).stdout.trim(), { message: "the docker provider's containers", timeout: 90_000 }).toBe('');

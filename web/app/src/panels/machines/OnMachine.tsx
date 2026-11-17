@@ -89,31 +89,31 @@ export function OnMachine<Body extends object, Answer>({
     <div className="onmachine">
       <div className="row center">
         <label className="check">
-          On
+          Machine
           <select
             className="field"
-            aria-label="Which machine"
+            aria-label="Machine"
             value={on}
             onChange={(event) => {
               setChosen(event.target.value)
               setGpus(undefined)
             }}
           >
-            <option value="">where Calcifer picks</option>
-            {status.local_usable && <option value="local">this computer</option>}
+            <option value="">Cozy picks</option>
+            {status.local_usable && <option value="local">This computer</option>}
             {machines
               .filter((machine) => machine.kind !== "local")
               .map((machine) => (
                 <option key={machine.name} value={machine.name}>
-                  {[called(machine), gpusWords(machine), machine.rental && `${usd(machine.rental.usd_micros_per_hour)}/h`, machine.state === "booting" && "booting"].filter(Boolean).join(" · ")}
+                  {[called(machine), gpusWords(machine), machine.rental && `${usd(machine.rental.usd_micros_per_hour)}/h`, machine.state === "booting" && "starting up"].filter(Boolean).join(" · ")}
                 </option>
               ))}
-            {machines.length > 1 && <option value="any">any of these</option>}
-            {signedIn && <option value="new">a new machine, the Hub's pick</option>}
+            {machines.length > 1 && <option value="any">Any of these</option>}
+            {signedIn && <option value="new">A new rental (the Hub picks)</option>}
             {signedIn &&
               skus?.map((sku) => (
                 <option key={sku.name} value={`new:${sku.name.toLowerCase()}`}>
-                  a new {sku.name}, {usd(sku.widths[0]?.price_usd_micros_per_hour ?? 0)}/h
+                  A new {sku.name} rental, {usd(sku.widths[0]?.price_usd_micros_per_hour ?? 0)}/h
                 </option>
               ))}
           </select>
@@ -146,7 +146,7 @@ export function OnMachine<Body extends object, Answer>({
               {warning}
             </p>
           ))}
-          {!stated.quote.agreed && <p className="warn">This Calcifer didn't say what's agreed at this price, so it can't be ordered from here.</p>}
+          {!stated.quote.agreed && <p className="warn">Cozy didn't confirm this price, so you can't rent it from here.</p>}
           {stated.alternatives?.map((other) => (
             <button
               type="button"
@@ -158,14 +158,14 @@ export function OnMachine<Body extends object, Answer>({
               }}
             >
               or {other.gpus}× {other.sku.toUpperCase()}
-              {other.label ? ` (${other.label})` : ""}: {other.time.toFixed(2)}× the time, {usd(other.usd_micros_per_hour)}/h
+              {other.label ? ` (${other.label})` : ""}: {other.time.toFixed(2)}× the time at {usd(other.usd_micros_per_hour)}/h
             </button>
           ))}
-          <p className="muted">It bills until you end it and the Hub affirms it gone, or after 15 minutes idle.</p>
+          <p className="muted">You pay for it until you end it. It also ends by itself after 15 minutes idle.</p>
         </div>
       )}
-      <Failure error={pricing.error} lead="No price" />
-      <Failure error={sending.error} lead={isNew(on) && lost(sending.error) ? "It may have been asked, since no answer came. Asking again is the same ask" : undefined} />
+      <Failure error={pricing.error} lead="Couldn't get a price" />
+      <Failure error={sending.error} lead={isNew(on) && lost(sending.error) ? "No answer came back, so it may have gone through. Trying again won't send it twice" : undefined} />
     </div>
   )
 }

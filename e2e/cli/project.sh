@@ -13,7 +13,7 @@ project_api() {
   cozy --json machine ls > /dev/null || return
   local holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded arg wrote=
   encoded=$(python3 -c 'from urllib.parse import quote; import os,sys; print(quote(os.path.abspath(sys.argv[1]), safe=""))' "$directory")
-  curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' "$@" "http://$(jq -r .address "$holder")/v1/projects/$encoded$suffix" || return
+  curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" "$@" "http://$(jq -r .address "$holder")/v1/projects/$encoded$suffix" || return
   for arg in "$@"; do case $arg in POST|PATCH|PUT|DELETE|-d|--data*) wrote=1 ;; esac; done
   [ -z "$wrote" ] || project_integrity "$directory" "$suffix"
 }
@@ -22,7 +22,7 @@ project_api() {
 project_integrity() {
   local directory=$1 after=${2:-a write} holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded found code
   encoded=$(python3 -c 'from urllib.parse import quote; import os,sys; print(quote(os.path.abspath(sys.argv[1]), safe=""))' "$directory")
-  found=$(curl -sS -w '\n%{http_code}' -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' "http://$(jq -r .address "$holder")/v1/projects/$encoded/integrity") \
+  found=$(curl -sS -w '\n%{http_code}' -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$(jq -r .address "$holder")/v1/projects/$encoded/integrity") \
     || { check "rows_equal_document after $after in $directory: the integrity read failed: $found"; return 0; }
   code=${found##*$'\n'} found=${found%$'\n'*}
   if [ "$code" = 404 ] && [ "$(jq -r '.error.code? // empty' <<< "$found" 2> /dev/null)" = unknown_route ]; then
@@ -41,7 +41,7 @@ project_upload() {
   source="sha256:$(sha "$file")"
   encoded=$(python3 -c 'from urllib.parse import quote; import os,sys; print(quote(os.path.abspath(sys.argv[1]), safe=""))' "$directory")
   address=$(jq -r .address "$holder") token=$(jq -r .token "$holder") said=$(mktemp)
-  code=$(curl -sS -o "$said" -w '%{http_code}' -X PUT -H "Authorization: Bearer $token" -H 'cozy-project-storage: 3' \
+  code=$(curl -sS -o "$said" -w '%{http_code}' -X PUT -H "Authorization: Bearer $token" \
     --data-binary "@$file" "http://$address/v1/project-files/$source?project=$encoded") || { rm -f "$said"; return 1; }
   # A Calcifer from before project storage (0.24.0, in a migration cell's place) has no such route: it holds files for any project.
   if [ "$code" = 404 ] && jq -e '.error.code == "unknown_route"' "$said" > /dev/null 2>&1; then
@@ -72,7 +72,7 @@ fixture_calcifer() {
 fixture_projects() {
   cozy --json machine ls > /dev/null || return
   local holder=$HOME/.cozy/calcifer/calcifer.lock.holder
-  curl -fsS -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' "http://$(jq -r .address "$holder")/v1/projects"
+  curl -fsS -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$(jq -r .address "$holder")/v1/projects"
 }
 # The starter film is fixture data, created through Calcifer's existing project API.
 starter_project() {
@@ -81,7 +81,7 @@ starter_project() {
   directory=$(cd "$directory" && pwd)
   [ "${RUNNER_OS:-}" != Windows ] || directory=$(cygpath -w "$directory")
   cozy --json machine ls > /dev/null || return
-  curl -fsS -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' -H 'Content-Type: application/json' \
+  curl -fsS -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'Content-Type: application/json' \
     -d "$(jq -n --arg path "$directory" '{path: $path, starter: true, unencrypted: true}')" "http://$(jq -r .address "$holder")/v1/projects"
 }
 
@@ -95,16 +95,6 @@ version_skew() {
   cat "$OUT/skew.txt"
   { { [ "$code" = 0 ] || grep -q calcifer_outdated "$OUT/skew.txt"; } && ! grep -qiE 'untyped_answer|answered 404' "$OUT/skew.txt"; } \
     || check "skew: the candidate CLI against $(cozy --version)'s Calcifer neither worked nor said calcifer_outdated (exit $code)"
-  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder address capability fresh=$OUT/skew-new-$RANDOM
-  address=$(jq -r .address "$holder")
-  capability=$(curl -fsS -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$address/v1/status" | jq -r '.encrypted_project_creation // false')
-  if [ "$capability" != true ]; then
-    # The missing file also proves the capability refusal precedes reading a credential.
-    code=0
-    "$CAND_COZY" --json new "$fresh" --passphrase-file "$fresh.missing" > "$OUT/skew-encryption.txt" 2>&1 || code=$?
-    { [ "$code" != 0 ] && grep -q calcifer_outdated "$OUT/skew-encryption.txt" && [ ! -e "$fresh" ]; } \
-      || check "skew: unsupported encrypted creation was not refused before credential read/project creation"
-  fi
 }
 
 # calcifer_record <field>: the running Calcifer's lock record's field, after a command made sure one runs (a candidate's update may
@@ -123,12 +113,12 @@ open_page() {
   address=$(calcifer_record address) token=$(calcifer_record token)
   [ -n "$address" ] || { check "page: no Calcifer runs"; return 1; }
   curl --fail-with-body -sSN -H "Host: $address" -H 'Sec-Fetch-Site: same-origin' -H 'Sec-Fetch-Mode: cors' -H 'Sec-Fetch-Dest: empty' \
-    -H 'cozy-project-storage: 3' -H 'Accept: text/event-stream' "http://$address/v1/events" > "$OUT/page.sse" 2>&1 & PAGE_PID=$!
+    -H 'Accept: text/event-stream' "http://$address/v1/events" > "$OUT/page.sse" 2>&1 & PAGE_PID=$!
   sleep 2
-  if ! kill -0 "$PAGE_PID" 2> /dev/null && code=$(curl -fsS -X POST -H "Authorization: Bearer $token" -H 'cozy-project-storage: 3' "http://$address/v1/session-codes" 2> /dev/null | jq -er .code); then
+  if ! kill -0 "$PAGE_PID" 2> /dev/null && code=$(curl -fsS -X POST -H "Authorization: Bearer $token" "http://$address/v1/session-codes" 2> /dev/null | jq -er .code); then
     session=$(curl -fsS -X POST -H 'Content-Type: application/json' -d "$(jq -n --arg c "$code" '{code: $c}')" "http://$address/v1/session" | jq -r .token) ||
       { check "page: no browser session from the release's Calcifer at $address"; return 1; }
-    curl -sSN -H "Authorization: Bearer $session" -H 'cozy-project-storage: 3' -H 'Accept: text/event-stream' "http://$address/v1/events" > "$OUT/page.sse" 2>&1 & PAGE_PID=$!
+    curl -sSN -H "Authorization: Bearer $session" -H 'Accept: text/event-stream' "http://$address/v1/events" > "$OUT/page.sse" 2>&1 & PAGE_PID=$!
     sleep 2
     kill -0 "$PAGE_PID" 2> /dev/null || { check "page: its events stream did not stay open on the release's Calcifer: $(tail -c 300 "$OUT/page.sse")"; return 1; }
     return 0
@@ -273,8 +263,8 @@ PY
 }
 # owed <project>: how many runs its walk has pending.
 owed() { sql1 "$1" "SELECT count(*) FROM walk, json_each(walk.record, '\$.pending')"; }
-# api <curl args…>: Calcifer, with the bearer of its lock record, on project storage protocol 3.
-api() { curl -sS -H "Authorization: Bearer $TOKEN" -H 'cozy-project-storage: 3' "$@"; }
+# api <curl args…>: Calcifer, with the bearer of its lock record.
+api() { curl -sS -H "Authorization: Bearer $TOKEN" "$@"; }
 # status <project>: what status says. Why it can't be read goes to the log, and an answer the CLI can't read is a failure of its own.
 status() { project_api "$1" '' 2> "$OUT/status.err"; }
 # row <project> <asset> <jq>: that of its row in status.
@@ -376,15 +366,18 @@ project_stream() {
 # machine, a comment when nothing happens, and the routes it replaced gone.
 event_stream() {
 step "a project: GET /v1/events"
-local R=$OUT/stream log=$OUT/events.sse other=$OUT/events-unrelated.sse stream other_stream id code state n seen boxes
+local R=$OUT/stream log=$OUT/events.sse other=$OUT/events-unrelated.sse runs=$OUT/events-runs.sse stream other_stream runs_stream id code state n seen boxes
 starter_project "$R" > /dev/null || check "stream: project new"
 state=$(status "$R") || fail "stream: project state unavailable"
 id=$(jq -er .id <<< "$state") && code=$(jq -er .code <<< "$state") || fail "stream: project identity or link code unavailable"
-curl -sSN -H "Authorization: Bearer $TOKEN" -H 'cozy-project-storage: 3' "http://$ADDR/v1/events" > "$log" 2> "$OUT/events.err" & stream=$!
+curl -sSN -H "Authorization: Bearer $TOKEN" "http://$ADDR/v1/events" > "$log" 2> "$OUT/events.err" & stream=$!
 # Register with the public link code; deliveries still use the stable project ID.
 show_events "$log" "$code" || check "stream: project interest not held: $(head -c 300 "$log"; cat "$OUT/events.err")"
-curl -sSN -H "Authorization: Bearer $TOKEN" -H 'cozy-project-storage: 3' "http://$ADDR/v1/events" > "$other" 2> "$OUT/events-unrelated.err" & other_stream=$!
+curl -sSN -H "Authorization: Bearer $TOKEN" "http://$ADDR/v1/events" > "$other" 2> "$OUT/events-unrelated.err" & other_stream=$!
 soon told "$other" '.type == "hello"' || check "stream: no hello on unrelated connection"
+# The CLI's runs-only stream hears every run (cl-973).
+curl -sSN -H "Authorization: Bearer $TOKEN" "http://$ADDR/v1/events?scope=runs" > "$runs" 2> "$OUT/events-runs.err" & runs_stream=$!
+soon told "$runs" '.type == "hello"' || check "stream: no hello on the runs-only connection"
 sse "$log" | sed -n 1p | J --arg v "$(fixture_calcifer | jq -r .calcifer.version)" '.type == "hello" and .version == $v' || check "stream: its first event: $(sse "$log" | sed -n 1p)"
 
 seen=$(revs "$log" "$id" | wc -l)
@@ -400,7 +393,8 @@ n=$(cd "$R" && in_project "$R" --json run ls --limit 1 | jq -r '.runs[0].number'
 soon told_more "$log" "$id" "$seen" || check "stream: a landing's lock told nothing"
 soon told "$log" ".type == \"run.updated\" and .run.number == $n and .run.status == \"completed\" and .run.project_id == \"$id\"" \
   || check "stream: no run.updated says run $n completed in $id: $(sse "$log" | jq -c 'select(.type == "run.updated") | [.run.number, .run.status, .run.project_id]' | tail -5)"
-soon told "$other" ".type == \"run.updated\" and .run.number == $n and .run.status == \"completed\"" || check "stream: a connection with no projects missed the global run"
+soon told "$runs" ".type == \"run.updated\" and .run.number == $n and .run.status == \"completed\" and .run.project_id == \"$id\"" \
+  || check "stream: the runs-only connection (?scope=runs, the CLI's) missed run $n: $(sse "$runs" | jq -c 'select(.type == "run.updated") | [.run.number, .run.status]' | tail -5)"
 # Another program's change (xs-189: Calcifer watches the folder, it no longer looks): a file leaving files/, as a sync tool's would,
 # and coming back.
 local kept aside=$OUT/stream-aside
@@ -412,12 +406,15 @@ seen=$(revs "$log" "$id" | wc -l)
 [ -z "$kept" ] || mv "$aside" "$kept"
 soon told_more "$log" "$id" "$seen" || check "stream: a file back in files/ told nothing"
 [ -z "$(revs "$other" "$id")" ] || check "stream: project changes reached a connection with no interest"
+# A project's runs are its own (cl-973): a page showing no project hears none of them.
+[ "$(sse "$other" | jq -R -c --arg id "$id" 'fromjson? | select(.type == "run.updated" and .run.project_id == $id)' | wc -l)" = 0 ] \
+  || check "stream: a connection showing no project heard $id's run $n"
 soon told "$log" '.type == "machine.updated" and .machine.name == "local"' || check "stream: a run on local moved no machine.updated"
 [ -z "$(revs "$log" "$id" | sort | uniq -d)" ] || check "stream: a rev told twice: $(revs "$log" "$id" | sort | uniq -d)"
 
 soon grep -q '^:' "$log" || check "stream: no comment after 20 s"
 kill -0 "$stream" 2> /dev/null || check "stream: it ended: $(cat "$OUT/events.err")"
-kill "$stream" "$other_stream" 2> /dev/null || true
+kill "$stream" "$other_stream" "$runs_stream" 2> /dev/null || true
 for route in runs machines "projects/$id"; do
   [ "$(api -o /dev/null -w '%{http_code}' "http://$ADDR/v1/$route/events")" = 404 ] || check "stream: /v1/$route/events still answers"
 done

@@ -16,7 +16,7 @@ use std::{
 
 use futures_util::{StreamExt as _, TryStreamExt as _};
 use platform::paths::Home;
-use ::api::hub::types::{PackageDeclaredFile, PackageFileGrant, PresignedUpload};
+use ::api::hub::types::{PackageBenchmark, PackageDeclaredFile, PackageFileGrant, PresignedUpload};
 use api::{
     config::Origin,
     error::{Error, Kind},
@@ -60,6 +60,9 @@ fn git_missing() -> Error {
         .next(platform::tools::install_hint(tool, &crate::tools::path()))
         .next("cozy doctor")
 }
+
+/// The platform every rental runs (cl-1011): a lock requires its wheels unless the author declares environments.
+const RENTAL_ENVIRONMENT: &str = "sys_platform == 'linux' and platform_machine == 'x86_64'";
 
 /// A private copy of the project to lock and build in.
 struct Stage {
@@ -122,24 +125,32 @@ impl Stage {
                 excluded.push(name);
             }
         }
+        // A lock takes only versions every rental can install (cl-1011): one still uploading, its Linux wheels not up yet, is passed
+        // over, never shipped. An author's own environments stand.
+        let declared = doc.get("tool").and_then(|tool| tool.get("uv"))
+            .is_some_and(|uv| uv.get("environments").is_some() || uv.get("required-environments").is_some());
+        if !declared {
+            doc["tool"]["uv"]["required-environments"] = toml_edit::value(toml_edit::Array::from_iter([RENTAL_ENVIRONMENT]));
+        }
         fs::write(&path, doc.to_string()).map_err(|e| refuse("stage_unavailable", e))?;
         Ok(Self { _dir: dir, root, src, uv })
     }
 
     /// A floor only the open RC meets (`cozy-runtime>=0.47.0.dev0`) takes the RC's newest build, its wheel by URL in this copy
-    /// alone (`floor::rc_runtime`, xs-194): the build every machine of the RC runs, never a wheel the package names, which each
-    /// Runtime merge replaces.
+    /// alone (`floor::rc_runtime`, xs-194). An explicitly selected SDK source stays authoritative.
     async fn rc_runtime(&self, say: Say<'_>) -> Result<(), Error> {
-        let Some(rc) = crate::floor::rc_runtime(&self.src).await? else { return Ok(()) };
         let path = self.src.join("pyproject.toml");
         let authored = fs::read_to_string(&path).map_err(|e| refuse("stage_unavailable", e))?;
         let mut doc: toml_edit::DocumentMut = authored.parse().map_err(|e| refuse("project_invalid", e))?;
+        let selected = doc.get("tool").and_then(|tool| tool.get("uv")).and_then(|uv| uv.get("sources"))
+            .and_then(toml_edit::Item::as_table_like).is_some_and(|sources| sources.contains_key("cozy-runtime"));
+        if selected {
+            return Ok(());
+        }
+        let Some(rc) = crate::floor::rc_runtime(&self.src).await? else { return Ok(()) };
         let sources = (doc["tool"]["uv"]["sources"].or_insert(toml_edit::table()))
             .as_table_like_mut()
             .ok_or_else(|| refuse("project_invalid", "tool.uv.sources is not a table"))?;
-        if sources.contains_key("cozy-runtime") {
-            return Ok(());
-        }
         let mut source = toml_edit::InlineTable::new();
         source.insert("url", rc.url.as_str().into());
         sources.insert("cozy-runtime", toml_edit::value(source));
@@ -453,17 +464,21 @@ pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask:
             blocking(|| stage.relock_pinned(python.request.as_str(), &pins)).map_err(|e| unmet(e, &pins, &account, hub))?;
         }
     }
-    let reader = rc_reader(api, &project.version).await?;
-    let files = blocking(|| built(&stage, &python.request, &committed, &result.package, hub, reader.as_deref()))?;
+    let files = blocking(|| built(&stage, &python.request, &committed, &result.package, hub))?;
     // What it imports from the Runtime, its floor has (cl-952).
     let wheel = single(&stage.root.join("dist"), ".whl")?;
     crate::floor::check(api, &stage.uv, &python.request, &stage.src, &wheel, &result.package).await?;
     let declared: Vec<PackageDeclaredFile> = (files.iter())
         .map(|f| PackageDeclaredFile { digest: f.digest.clone(), length: f.length, path: f.path.clone() })
         .collect();
+    let interface = files.iter().find(|f| f.path == INTERFACE).ok_or_else(|| refuse("package_interface_missing", "the build described nothing"))?;
+    let benchmarks = blocking(|| benchmarks(&project.root, &interface.local))?;
+    if !benchmarks.is_empty() {
+        say(&format!("with {} benchmarks from {BENCHMARKS}", benchmarks.len()));
+    }
     let (org, name, release) = (&account, &project.name, &project.version);
-    let grants = client.begin_package_release(org, name, release, &declared).await.map_err(hub_error)?;
-    let declaration = Declaration { hub, client: &client, org, name, release, files: &declared };
+    let grants = client.begin_package_release(org, name, release, &declared, &benchmarks).await.map_err(hub_error)?;
+    let declaration = Declaration { hub, client: &client, org, name, release, files: &declared, benchmarks: &benchmarks };
     result.uploaded_bytes = upload(&files, &grants.files, &declaration, say).await?;
     let mut state = (client.finalize_package_release(org, name, release, &grants.publication_id, &python.full).await)
         .map_err(hub_error)?;
@@ -491,29 +506,14 @@ pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask:
     Ok(result)
 }
 
-/// The Runtime that reads a prerelease's interface from a dev home or an RC build of cozy (the e2e's candidates): the open
-/// RC's, which it is built for and runs on (cl-922), so it may declare what only that Runtime has (`When`). None: its lock's.
-async fn rc_reader(api: &Api, version: &str) -> Result<Option<String>, Error> {
-    let prerelease = version.parse::<pep440_rs::Version>().is_ok_and(|version| version.any_prerelease());
-    if !(api.machines.dev || crate::update::dev_build()) || !prerelease {
-        return Ok(None);
-    }
-    // Its pure wheel, which any platform reads; the RC's prerelease keeps a wheel an hour after the push that replaced it, so a
-    // SHA256SUMS read a moment before the RC moved still names one that's there (e2e 43206615800 read a 404).
-    let sums = api.machines.rc.now().await?;
-    let platform = format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH);
-    Ok(sums.pure_runtime().or_else(|| sums.build("runtime", &platform)).map(|(_, url)| url))
-}
-
 /// The staged project locked for this Hub, held to the committed lock, built, its git
-/// dependencies' wheels built, and described (by `reader`, else its locked Runtime): the release's files.
+/// dependencies' wheels built, and described by that lock's Runtime: the release's files.
 fn built(
     stage: &Stage,
     python: &str,
     committed: &str,
     package: &str,
     hub: &Origin,
-    reader: Option<&str>,
 ) -> Result<Vec<File>, Error> {
     run(uv(&stage.uv, &stage.src).args(["lock", "--no-progress", "--python", python]), "lock_failed", "uv lock")?;
     let bound = fs::read_to_string(stage.src.join("uv.lock")).map_err(|e| refuse("lock_failed", e))?;
@@ -540,7 +540,7 @@ fn built(
         "uv build",
     )?;
     let git_wheels = git_wheels(stage, python)?;
-    let runtime = reader.map(str::to_owned).or_else(|| crate::local_code::locked_runtime(&stage.src));
+    let runtime = crate::local_code::locked_runtime(&stage.src);
     let (said, document) = describe_with(&stage.uv, &stage.src, python, runtime.as_deref())?;
     // A model default with no org stays as written: it names a first-party model (a machine reads
     // `sdxl@1.0.0` as `_/sdxl@1.0.0`), and the Runtime's interface parser refuses an org of `_`.
@@ -558,7 +558,7 @@ fn built(
     let mut files = vec![
         File::new(named("artifacts/project/", &wheel), wheel.clone())?,
         File::new(named("artifacts/source/", &sdist), sdist.clone())?,
-        File::new("metadata/package-interface.json".into(), interface_path)?,
+        File::new(INTERFACE.into(), interface_path)?,
     ];
     for document in ["pyproject.toml", "uv.lock"] {
         files.push(File::new(document.into(), stage.src.join(document))?);
@@ -584,6 +584,44 @@ fn unmet(error: Error, pins: &BTreeMap<String, String>, account: &str, hub: &Ori
     }
 }
 
+/// Where a release's package interface goes.
+const INTERFACE: &str = "metadata/package-interface.json";
+/// The package's benchmarks, beside its pyproject.toml (cl-1024): optional, written by `cozy package benchmarks` or a release's gate.
+pub(crate) const BENCHMARKS: &str = "benchmarks.json";
+
+/// The benchmarks a release of the package at `root` declares (cl-1024): its `benchmarks.json`, every row whole and naming a function
+/// of its interface (`interface`, as the build described it), refused by row before anything uploads. None without the file.
+fn benchmarks(root: &Path, interface: &Path) -> Result<Vec<PackageBenchmark>, Error> {
+    let path = root.join(BENCHMARKS);
+    let Ok(text) = fs::read(&path) else { return Ok(vec![]) };
+    let wrong = |why: String| refuse("benchmarks_invalid", format!("{BENCHMARKS}: {why}"));
+    let mut unknown = vec![];
+    let rows: Vec<PackageBenchmark> = serde_ignored::deserialize(&mut serde_json::Deserializer::from_slice(&text), |at| unknown.push(at.to_string()))
+        .map_err(|e| wrong(format!("not a list of benchmarks: {e}")))?;
+    if let Some(at) = unknown.first() {
+        return Err(wrong(format!("{at} is no field of a benchmark")));
+    }
+    let document: serde_json::Value = serde_json::from_slice(&fs::read(interface).map_err(|e| refuse("package_interface_unreadable", e))?)
+        .map_err(|e| refuse("package_interface_unreadable", e))?;
+    let callables = ::api::interface::Interface::parse(&document).map_err(|e| refuse("package_interface_unreadable", e.to_string()))?.callables;
+    if rows.len() > 512 {
+        return Err(wrong(format!("{} rows, at most 512", rows.len())));
+    }
+    for (at, row) in rows.iter().enumerate() {
+        let why = match row {
+            row if !callables.iter().any(|callable| callable.name == row.function) => Some(format!("{:?} is no function of this package", row.function)),
+            row if row.gpu.is_empty() || row.gpu.len() > 128 => Some("its gpu is empty or longer than 128 bytes".into()),
+            row if !(1..=8).contains(&row.gpus) => Some(format!("gpus {} is not 1 to 8", row.gpus)),
+            row if row.warm_ms == 0 || row.warm_ms > 86_400_000 => Some(format!("warm_ms {} is not 1 ms to a day", row.warm_ms)),
+            _ => None,
+        };
+        if let Some(why) = why {
+            return Err(wrong(format!("row {at}: {why}")));
+        }
+    }
+    Ok(rows)
+}
+
 /// A release's file declaration, which the Hub answers with a grant for each file it lacks: declared
 /// again (the same declaration is the same publication), it grants anew.
 struct Declaration<'a> {
@@ -593,12 +631,13 @@ struct Declaration<'a> {
     name: &'a str,
     release: &'a str,
     files: &'a [PackageDeclaredFile],
+    benchmarks: &'a [PackageBenchmark],
 }
 
 impl Declaration<'_> {
     /// A new grant for the file at `path`; none once the Hub holds its bytes.
     async fn regrant(&self, path: &str) -> Result<Option<PresignedUpload>, Error> {
-        let grants = (self.client.begin_package_release(self.org, self.name, self.release, self.files).await)
+        let grants = (self.client.begin_package_release(self.org, self.name, self.release, self.files, self.benchmarks).await)
             .map_err(|e| refusal(self.hub, e).0)?;
         let grant = grants.files.into_iter().find(|g| g.path == path)
             .ok_or_else(|| refuse("release_grant_invalid", format!("the Hub granted nothing for {path}")))?;

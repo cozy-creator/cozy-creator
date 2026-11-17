@@ -1,0 +1,19 @@
+[package]
+name = "needs"
+description = "Which of a function's models a request needs: the CEL rules of its package's interface, checked and evaluated the same by Calcifer and TensorD"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+api.workspace = true
+# The CEL parser and interpreter (cel-rust, MIT), exact: a rule means the same on every cozy of a release. No regex, time
+# or encoders: a rule reads a request's fields and nothing else.
+cel = { version = "=0.15.0", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

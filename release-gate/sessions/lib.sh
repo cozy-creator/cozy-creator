@@ -3,7 +3,8 @@
 # `rent` once per pod (or `order` each, then `ready` each, to boot them together), and works on $NAME; the EXIT trap
 # ends every rental by its own rental id and checks each is gone. RENT_ARGS: more `machine rent` flags (`--ssh`).
 # From the workflow: OUT, SKU, DISK, CAP (USD, all in), RENT, PARAMS (a JSON object), PACKAGES (packages/<name>
-# checkouts), REF (release-gate/ref), HUB (prod or isolated: e2e/test-hub.sh require_ci_rental_hub).
+# checkouts), REF (release-gate/ref), HUB (prod or isolated: e2e/test-hub.sh require_ci_rental_hub). PARAMS'
+# `floor_mb_s` (50; 0 for none) and `floor_after_s` (120) set the slow-host floor (`step`).
 # Every failure is handled here (the trap ends the rental), not by bash -e.
 set +e -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../../e2e/test-hub.sh"
@@ -14,22 +15,45 @@ mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd); R=$OUT/results.txt
 say() { echo "$(date -u +%T) $*" | tee -a "$R"; }
 # Made up, and here so each published session shows its scrub ran (e2e/publish): in its log, results.txt and this file it reads `Bearer [scrubbed]`.
 say 'scrub canary: authorization: Bearer 0000-made-up-0000' | tee "$OUT/canary.err"
-RC=0 RID='' NAME='' WD='' BG='' RENT_ARGS=''  # BG: a session's own background loop, ended with it
+RC=0 RID='' NAME='' WD='' BG='' DL='' RENT_ARGS=''  # BG: a session's own background loop, ended with it
 RIDS=()  # every rental this session ordered; $OUT/rental lists them, one a line
 fail() { say "FAIL: $*"; RC=1; exit 1; }
 # param <key> [default]: the session's setting from PARAMS (a non-string as JSON).
 param() { jq -r --arg k "$1" --arg d "${2-}" 'if has($k) then (.[$k] | if type == "string" then . else tojson end) else $d end' <<<"$PARAMS"; }
+# The slow-host floor (`floor_mb_s`, 0 for none; `floor_after_s`): a step whose upload to the pod or weights download still
+# reports under it that long in ends the session, `host too slow`, before the host's link eats the cap (th-377).
+FLOOR_MBS=$(param floor_mb_s 50) FLOOR_AFTER=$(param floor_after_s 120)
+[[ $FLOOR_MBS =~ ^[0-9]+$ && $FLOOR_AFTER =~ ^[0-9]+$ ]] || fail "floor_mb_s $FLOOR_MBS, floor_after_s $FLOOR_AFTER"
 state() { cozy machine show "$1" --json 2>/dev/null | jq -r '.state // empty'; }
 . "$(dirname "${BASH_SOURCE[0]}")/../machines.sh"
 gone() { local s; s=$(state "$1"); { [ "$s" = ended ] || [ -z "$s" ]; } && ! listed "$1"; }
+# wheel_from <dir> <source>: a manylinux x86_64 wheel fetched into dir, its path printed. source: an https URL,
+# `artifact:<run id>/<name>` of a cozy-creator run (a dev-build's tensorfs-wheel-<sha>) or a cozy-runtime dev-build run id
+# (its cozy-runtime-<sha> carries the kernels a machine's Runtime must have: a pure wheel is `runtime_without_kernels`).
+wheel_from() {
+  mkdir -p "$1"
+  case $2 in
+    https://*) curl -fsSL --retry 5 -o "$1/${2##*/}" "$2" || return 1 ;;
+    artifact:*/*) local a=${2#artifact:}; gh run download "${a%%/*}" -R cozy-creator/cozy-creator -n "${a#*/}" -D "$1" >/dev/null 2>&1 || return 1 ;;
+    *) gh run download "$2" -R cozy-creator/cozy-runtime -p 'cozy-runtime-*' -D "$1" >/dev/null 2>&1 || return 1 ;;
+  esac
+  find "$1" -name '*manylinux*x86_64*.whl' | head -1
+}
 # made <name>: the checkpoint a step's upload or quantize made, as sha256:<hex>: its `checkpoint <org/name>@sha256:…` line
 # (a machine's own `checkpoint sha256:…` line names no model); cozy 0.24's quantize says `commit`.
 made() { awk '($1=="checkpoint" || $1=="commit") && $2 ~ /@sha256:/ {c=$2} END{sub(/.*@/, "", c); print c}' "$OUT/$1.txt"; }
-# runno <name>: the run a step's output names last (its own, after a local source's sync run).
+# runno <name>: the run a step's output names last (its own, after a local source's sync run): its KEY-N.
 runno() { awk '$1=="run" && NF==2{print $2}' "$OUT/$1.txt" | tail -1; }
+# handle <ndjson>: what names the run or job its events tell of from any folder: a run's KEY-N (cl-987), a job's id (cl-1028: no
+# project's run, it has no name or number of a person's). A line may lead with the runner's clock.
+handle() { sed 's/^[0-9.]* {/{/' "$1" 2>/dev/null | grep '^{' | jq -r 'select(.run.number != null) | if (.run.name // "") != "" then .run.name else .run.id end' 2>/dev/null | head -1; }
 finish() {
   local status=$?; [ "$RC" != 0 ] || RC=$status
-  for p in $WD $BG; do pkill -P "$p"; kill "$p"; done 2>/dev/null
+  # From here a signal is noted, not obeyed: nothing the session started (the deadline watcher, a helper) or a cancel stops
+  # the rental ends below. 43971316155's watcher TERMed this trap and the session exited without its RESULT.
+  trap 'RC=1' INT TERM HUP
+  # The helpers stop first, each one's children before itself: a watcher whose sleep is killed exits without acting.
+  for p in $DL $WD $BG; do pkill -P "$p"; kill "$p"; done 2>/dev/null
   local r
   for r in "${RIDS[@]}"; do
     local tries=0
@@ -47,6 +71,12 @@ finish() {
 }
 trap finish EXIT
 trap 'RC=1; exit 1' INT TERM HUP
+# The step's deadline (SESSION_UNTIL, pod-session.yaml): 5 min before it the session ends itself, so its trap ends its rentals and
+# says END, GONE and the bill before the step is killed.
+if [ -n "${SESSION_UNTIL:-}" ]; then
+  ( left=$((SESSION_UNTIL - $(date +%s) - 300)); [ "$left" -le 0 ] || sleep "$left" || exit 0  # killed by `finish`
+    say "DEADLINE: the step ends in 5 min; this session ends now"; kill -TERM $$ ) 9>&- & DL=$!
+fi
 # claim: what this runner's Calcifer ordered (machines.sh `own`) joins RIDS and $OUT/rental, for a session whose own work
 # orders too (a page's Rent). Only on a runner, whose Calcifer started with none.
 claim() {
@@ -77,11 +107,44 @@ kernels() {
   "$root/scripts/triton.sh" "$d" > "$OUT/kernels-${d##*/}.log" 2>&1 || fail "${d##*/}'s Triton sets did not build: $(tail -c 400 "$OUT/kernels-${d##*/}.log")"
   say "kernels ${d##*/}: $(find "$d" -path '*/_triton/manifest.json' -printf '%P ' 2>/dev/null)built in $((SECONDS - t0)) s"
 }
+# floor FILE KINDS: the transfer of KINDS (`downloading`, `uploading|downloading`) FILE reports last, when it is a link's
+# measure (16 MiB or more; a result's never) still in progress and under FLOOR_MBS MB/s. A finished or small transfer
+# judges nothing: a run's small input uploads report a few KiB/s.
+floor() {
+  grep -aoE "($2) .{0,160} [0-9.]+ (B|KiB|MiB|GiB)/[0-9.]+ (B|KiB|MiB|GiB) at [0-9.]+ (B|KiB|MiB|GiB)/s" "$1" |
+    grep -v 'the result' | awk -v f="$FLOOR_MBS" '
+      function b(x, u) { return x * (u == "GiB" ? 2^30 : u == "MiB" ? 2^20 : u == "KiB" ? 2^10 : 1) }
+      { n = split($0, w, /[ \/]+/); done = b(w[n - 7], w[n - 6]); total = b(w[n - 5], w[n - 4])
+        if (total >= 16 * 2^20) { last = $0; rate = b(w[n - 2], w[n - 1]) / 1e6; open = done < total } }
+      END { if (last != "" && open && rate < f) { printf "%.1f MB/s, under the %s MB/s floor (%s)", rate, f, last; exit 0 } exit 1 }'
+}
+# heard SLOW|ended: whether a slow host can end now, and why (HEARD). The Hub learns a host is slow only from the pod's own
+# speed report, which TensorD sends once 1 GiB of weights has arrived (machine/speed.rs): a weights download in flight is
+# let reach it (the guard still ends the pod at the cap); a slow upload with no report sent ends at once, unrecorded.
+heard() {
+  local line
+  line=$(cozy machine logs "$NAME" --since 6h -n 0 2>/dev/null |
+    grep -aoE "reported this host's download speed to the Hub|the Hub took no download speed report: .{0,200}" | tail -1)
+  case $line in
+    reported*) HEARD="its speed report reached the Hub" ;;
+    the\ Hub*) HEARD="${line}" ;;
+    *) [ "$1" != ended ] || { HEARD="host not recorded slow at the Hub (its step ended before a speed report)"; return 0; }
+       [[ $1 != *downloading* ]] || return 1
+       HEARD="host not recorded slow at the Hub (a slow upload, no speed report sent)" ;;
+  esac
+}
 step() {
   local n=$1 directory=$PWD; shift
   local words=("$@")
   if [ "$1" = run ]; then
     [[ ${words[1]:-} != .* ]] || words[1]="$PWD/${words[1]}"
+    directory=$RUN_PROJECT
+  elif [ "$1" = model ] && [ "${2:-}" = quantize ]; then
+    # A recipe from local code runs in a project (`project_required`): the session's, its package by absolute path.
+    local i
+    for i in "${!words[@]}"; do
+      [ "${words[$i]}" = --package ] && [[ ${words[$((i + 1))]:-} == .* ]] && words[$((i + 1))]="$PWD/${words[$((i + 1))]}"
+    done
     directory=$RUN_PROJECT
   fi
   # A package run or installed from a packages checkout: its kernels first.
@@ -90,13 +153,26 @@ step() {
     case $t in /* | .*) if [ -d "$t" ]; then kernels "$t"; else kernels "$(dirname "$t")"; fi ;; esac
   fi
   say "step $n: cozy ${words[*]}"
-  (cd "$directory" && cozy "${words[@]}") > "$OUT/$n.txt" 2>&1 & local p=$! last=-1 still=0 size t=0
+  # The floor judges the pod's link: a machine update's uploads to it, and the weights a step on it downloads.
+  local kinds=''
+  if [ "$1" = machine ] && [ "${2:-}" = update ]; then kinds='uploading|downloading'; elif [[ " ${words[*]} " == *" --on "* ]]; then kinds=downloading; fi
+  (cd "$directory" && cozy "${words[@]}") > "$OUT/$n.txt" 2>&1 & local p=$! last=-1 still=0 size t=0 slow=''
   while kill -0 "$p" 2>/dev/null; do
-    sleep 1; t=$((t + 1)); [ $((t % 30)) = 0 ] || continue
+    sleep 1; t=$((t + 1))
+    if [ "$FLOOR_MBS" != 0 ] && [ -n "$kinds" ] && [ "$t" -ge "$FLOOR_AFTER" ] && [ $((t % 2)) = 0 ]; then
+      if [ -z "$slow" ] && slow=$(floor "$OUT/$n.txt" "$kinds"); then
+        say "$n: host too slow: $slow on $NAME ($RID)"; [[ $slow == *downloading* ]] && say "$n: its download goes on until the pod's log shows its speed report (checked every 30 s)"
+      fi
+      if [ -n "$slow" ] && { [ $((t % 30)) = 0 ] || [[ $slow != *downloading* ]]; } && heard "$slow"; then
+        kill "$p"; fail "host too slow: $(floor "$OUT/$n.txt" "$kinds" || echo "$slow") on $NAME ($RID): $HEARD"
+      fi
+    fi
+    [ $((t % 30)) = 0 ] || continue
     size=$(stat -c %s "$OUT/$n.txt")
     if [ "$size" = "$last" ]; then still=$((still + 30)); else still=0; last=$size; fi
     [ "$still" -lt 900 ] || { kill "$p"; say "$n: no output for 15 min"; return 124; }
   done
+  [ -z "$slow" ] || { heard ended; fail "host too slow: $slow on $NAME ($RID): $HEARD"; }
   wait "$p"; local c=$?
   tail -6 "$OUT/$n.txt" | cut -c1-300 | sed 's/^/    /' >> "$R"
   return $c
@@ -139,28 +215,29 @@ billed() {
     '.rentals[] | select(.rental_id == $r) | "\(.spend_usd_micros // 0) micro-USD \(.spend_basis // "?"), the provider \(.provider_cost_usd_micros // "?") \(.provider_cost_basis // ""), \(.ran_s // "?") s"'
 }
 
-# quote <seconds> [SKU…]: the quote and the guard for one rental of each SKU named ($SKU by default): the Hub's one price
-# an hour, the machine with its disk and traffic, which its order carries as its cap; fails unless CAP buys the seconds.
-# Ends the $0 pre-flight unless RENT=true.
+# quote <seconds> [SKU[:GPUS]…]: the quote and the guard for one rental of each SKU named ($SKU by default; GPUS of it, else one):
+# the Hub's one price an hour, the machine with its disk and traffic, which its order carries as its cap; fails unless CAP buys the
+# seconds. Ends the $0 pre-flight unless RENT=true.
 quote() {
   local need=$1; shift
-  local skus=("${@:-$SKU}") s price hourly=0 said=''
+  local skus=("${@:-$SKU}") s price hourly=0 said='' f gpus
   say "cozy $(cozy --version); $(cozy whoami 2>&1 | grep -E '^account')"
   ! listed pr-pod-session-probe || fail "gone-check: a rental that never existed reads live (no machine listing answers?)"
   for s in "${skus[@]}"; do
     # A SKU no provider has is often offered again within minutes: asked again, six times over about 6 min, as `order` does.
     local try=1 pause=15
-    while cozy machine rent "$s" --disk-gb "$DISK" $RENT_ARGS --json < /dev/null > "$OUT/quote-$s.json" 2>&1 || true
-      grep -q sku_out_of_stock "$OUT/quote-$s.json" && [ "$try" -lt 6 ]; do
+    f=$OUT/quote-${s/:/x}.json gpus=(); [[ $s != *:* ]] || gpus=(--gpus "${s#*:}")
+    while cozy machine rent "${s%%:*}" "${gpus[@]}" --disk-gb "$DISK" $RENT_ARGS --json < /dev/null > "$f" 2>&1 || true
+      grep -q sku_out_of_stock "$f" && [ "$try" -lt 6 ]; do
       say "no provider has $s now (attempt $try/6): asking again in ${pause}s"
       sleep "$pause"; try=$((try + 1)); pause=$((pause * 2 > 120 ? 120 : pause * 2))
     done
-    grep -q quote_unagreed "$OUT/quote-$s.json" || fail "a quote without --yes did not refuse: $(tail -c 300 "$OUT/quote-$s.json")"
-    price=$(jq -r 'select(.quote) | .quote.usd_micros_per_hour' "$OUT/quote-$s.json" 2>/dev/null | head -1)
-    [ -n "$price" ] || fail "no quote for $s: $(tail -c 300 "$OUT/quote-$s.json")"
+    grep -q quote_unagreed "$f" || fail "a quote without --yes did not refuse: $(tail -c 300 "$f")"
+    price=$(jq -r 'select(.quote) | .quote.usd_micros_per_hour' "$f" 2>/dev/null | head -1)
+    [ -n "$price" ] || fail "no quote for $s: $(tail -c 300 "$f")"
     hourly=$((hourly + price)); said="$said $s $price"
   done
-  cp "$OUT/quote-${skus[0]}.json" "$OUT/quote.json"
+  cp "$OUT/quote-${skus[0]/:/x}.json" "$OUT/quote.json"
   CAP_S=$(awk -v c="$CAP" -v h="$hourly" 'BEGIN{printf "%d", c*1e6 / h * 3600}')
   [ "$CAP_S" -ge "$need" ] || fail "\$$CAP leaves only ${CAP_S}s for$said micro-USD/h"
   say "quote$said micro-USD/h, $DISK GB each: \$$CAP buys about ${CAP_S}s; the guard ends them by what the Hub bills"

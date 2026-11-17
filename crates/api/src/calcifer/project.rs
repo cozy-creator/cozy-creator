@@ -9,10 +9,6 @@ use serde_json::{Map, Value};
 
 use crate::{calcifer::On, error::Error};
 
-/// Project mutation storage protocol; clients without this fence cannot mutate project state.
-pub const PROJECT_STORAGE_HEADER: &str = "cozy-project-storage";
-pub const PROJECT_STORAGE_VERSION: &str = "3";
-
 /// The canvas view, saved inside its project's database.
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -93,16 +89,19 @@ pub struct Opened {
 /// CLI project commands resolve their current directory and send its absolute path.
 pub const NAMED_BY: &str = "a project's name, id or public code, or its folder on Calcifer's computer by its absolute path";
 
-/// What Calcifer's own runs (an update, an install, a download) are named by: `COZY-12` (cl-987). No project takes it.
-pub const MACHINE_KEY: &str = "COZY";
-/// Keys no project takes: the machine's, and `RUN`, as a run's id starts `run-`.
-pub const RESERVED_KEYS: &[&str] = &[MACHINE_KEY, "RUN"];
+/// Keys no project takes: `RUN`, as a run's id starts `run-`.
+pub const RESERVED_KEYS: &[&str] = &["RUN"];
 
 /// A project key as written, in any case (cl-987, as Jira's): A–Z and 0–9, a letter first, 2 to 10 long. Upper case.
 pub fn key(text: &str) -> Option<String> {
     let key = text.trim().to_ascii_uppercase();
     let spelled = key.bytes().all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit());
     ((2..=10).contains(&key.len()) && spelled && key.starts_with(|c: char| c.is_ascii_uppercase())).then_some(key)
+}
+
+/// What names run `number` of the project keyed `key` (cl-987, cl-1075): `KEY-N`, N its number there, counted from 1.
+pub fn run_label(key: &str, number: u64) -> String {
+    format!("{key}-{number}")
 }
 
 /// A run's name, `KEY-N` in any case: its project's key and its number there.
@@ -122,10 +121,9 @@ pub struct Key {
     pub former: Vec<String>,
 }
 
-/// A request in no project, which needs one.
+/// A run asked in no project (cl-1028): every run is kept in its project.
 pub fn unnamed() -> Error {
-    Error::new(crate::error::Kind::Usage, "not_in_a_project", "run this command from an existing project directory. Use cozy new to create one")
-        .next("cozy new")
+    Error::new(crate::error::Kind::Usage, "not_in_a_project", "Run this from inside a project folder, or create a project first.").next("cozy new")
 }
 
 /// Where a card sits on a project's canvas: one row of its canvas.
@@ -169,6 +167,14 @@ pub struct Asked {
     pub board: Board,
 }
 
+/// `POST /v1/projects/{id}/runs/{run}/retry` (cl-1085): a box's take rendered again, answered as its render is, or another run asked again.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Retried {
+    Render(Box<Asked>),
+    Run(Box<crate::calcifer::Submitted>),
+}
+
 /// One thing an ask queued, and the names ahead of it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -189,8 +195,7 @@ pub struct Queued {
     pub run: Option<u64>,
 }
 
-/// `POST /v1/projects/{id}/cancel`: these assets' queued work dropped and their runs canceled, or `all`; and these takes, by id: one
-/// that failed is dismissed.
+/// `POST /v1/projects/{id}/cancel`: these assets' queued work dropped and their runs canceled, or `all`; and these takes, by id.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Cancel {
     #[serde(default)]
@@ -200,7 +205,8 @@ pub struct Cancel {
 }
 
 /// A take of an asset that hasn't landed, by its id, from the render that asked it to its version (`VersionPrefix::id`): queued
-/// until its turn, then sent, with its run once that has a number (cl-945); or one that failed, with why (cl-954).
+/// until its turn, then sent, with its run once that has a number (cl-945). One that fails is gone: its failure is its asset's, said
+/// once as it happens (cl-1070).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct TakeNow {
@@ -209,9 +215,6 @@ pub struct TakeNow {
     pub queued: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<u64>,
-    /// It ended with no version, and why: listed until it's dismissed (`Cancel::takes`), as it failed (cl-954).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failure: Option<Error>,
 }
 
 /// What a cancel did: the names dropped from the queue, and the runs asked to stop.
@@ -325,6 +328,9 @@ pub struct State {
     /// The machines its runs go to, each to the one of them that finishes it soonest; none: any machine (`ProjectMachines`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub machines: Vec<String>,
+    /// How the page looks with it open, over `GET /v1/appearance`; none: as everywhere (`ProjectAppearance`, cl-1097).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appearance: Option<super::Appearance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub covered: Option<super::ProjectEventCursor>,
 }
@@ -383,14 +389,14 @@ pub struct Unused {
     pub mention: String,
     /// Where: `instructions`, `beats.0.description`.
     pub at: String,
-    /// For people: `Moss Image can't use images`.
+    /// For people: `MOSS-Image doesn't support reference images`.
     pub why: String,
 }
 
 impl Unused {
     /// The one line said of it for `of`, a box or a run.
     pub fn line(&self, of: &str) -> String {
-        format!("{of}: <{}> is left out: {}", self.mention, self.why)
+        format!("{of}: <{}> was left out because {}", self.mention, self.why)
     }
 }
 
@@ -616,8 +622,11 @@ pub struct MainFile {
     pub output: String,
     pub path: String,
     pub sha256: String,
-    /// The field that names one of its type: `image`, `video`, `audio`.
+    /// The field that names one of its type: `image`, `video`, `audio`, `text`.
     pub field: String,
+    /// A box of words' version: its words, as its file holds them (xs-204).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub width: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -808,6 +817,25 @@ pub struct Asset {
     pub unseen: Vec<u32>,
 }
 
+/// `POST /v1/projects/{id}/read`: these boxes, as they stand, at once: what a page reads of what the stream said changed.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ReadAssets {
+    pub names: Vec<String>,
+}
+
+/// Its answer: each box named that's there, as a project read has it, and each that isn't. Gone is an answer, never a 404, which a browser
+/// logs as an error.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct AssetsRead {
+    pub found: Vec<Asset>,
+    pub gone: Vec<String>,
+    /// The project document's heads they were read at.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub heads: Vec<String>,
+}
+
 /// `GET /v1/projects/{id}/assets/{name}`: an asset and each of its versions, 1 first.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -847,6 +875,10 @@ pub struct NewAsset {
     /// What the tool makes, or image/video/audio for an empty-tool container. Calcifer persists this as reserved `fields.node_kind`; intrinsic cozy/edit uses video_edit. Absent: infer the tool or text kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+    /// A box of another kind its tool was let go on (xs-204): its mention goes where the tool reads that kind, its first required slot of it,
+    /// else the start of its first prompt that takes it. Refused where the tool can't read that kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reads: Option<String>,
     /// What its drop pushed aside, written with it, each only if no other client wrote it after the revision in `placed`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub moves: BTreeMap<String, Card>,
@@ -1078,8 +1110,8 @@ fn one() -> u32 {
     1
 }
 
-/// `POST /v1/projects/{id}/fit` and `…/fit/here`: what a render of `names` on this computer (`local`) asks of it, `all` and `outdated` as
-/// a render reads them.
+/// `POST /v1/projects/{id}/fit`: what a render of `names` on this computer (`local`) would do poorly, `all` and `outdated` as
+/// a render reads them; and how long each box named takes where a render of it would go now.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct FitAsk {
@@ -1098,6 +1130,53 @@ pub struct Fit {
     /// What the Hub places them all on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rent: Option<RentFor>,
+    /// Each box named (not `all`), where a render of it would go now and how long it runs there (cl-1004).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub estimates: Vec<BoxEstimate>,
+}
+
+/// `GET /v1/projects/{id}/benchmarks?package=`: a package's benchmarks from this project's runs of it (cl-1024).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct BenchmarksAsk {
+    /// `[org/]name`: its functions' runs in this project, whichever release or local copy ran.
+    pub package: String,
+}
+
+/// What `GET /v1/projects/{id}/benchmarks` answers: each function, GPU, count and request this project ran warm, as a release declares
+/// it (`benchmarks.json`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Benchmarks {
+    pub benchmarks: Vec<crate::estimate::Benchmark>,
+}
+
+/// A box's typical inference time where a render of it would go now (cl-1004): the machine placement would choose, quoted from what each
+/// machine last said, nothing started, updated or rented.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct BoxEstimate {
+    pub name: String,
+    pub machine: String,
+    /// Its GPU in a person's words: `RTX 4090`. Empty: none, so its CPU.
+    pub card: String,
+    /// The run itself there, at the GPUs it would take: no queue, install, download or load. 0: unknown.
+    pub run_ms: u64,
+    pub basis: crate::machine::Basis,
+    /// The tool's recommended GPU (the Hub's pick for its release), when a rented one runs it more than 3× faster and a minute sooner,
+    /// or it would run here on a CPU.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub faster: Option<Faster>,
+}
+
+/// A rented GPU that runs a box far faster than where it would go.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Faster {
+    /// Its run there, as `BoxEstimate::run_ms`.
+    pub run_ms: u64,
+    /// Both times, in a line: `On this computer's RTX 4070 this takes about 38 min; on a rented RTX 5090, about 6 min.`
+    pub line: String,
+    pub rent: RentFor,
 }
 
 /// One tool this computer would run poorly.
@@ -1113,9 +1192,6 @@ pub struct ToolFit {
     /// Its weights' bytes, as its machine would load them; 0: unknown.
     #[serde(default)]
     pub bytes: u64,
-    /// Render here was said of it on this computer, for weights as big: nothing asks again.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub here: bool,
 }
 
 /// A GPU to rent for it, as `POST /v1/machines` `{kind: rent}` names one.
@@ -1192,6 +1268,35 @@ pub struct Unpinned {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ProjectMachines"))]
 pub struct Machines {
     pub machines: Vec<String>,
+}
+
+/// `PUT /v1/projects/{id}/appearance` (cl-1097): how the page looks with this project open; none: as everywhere. Kept in its
+/// `project.db`, no history step and no export, as its machines are.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ProjectAppearance"))]
+pub struct AppearanceKept {
+    #[serde(default)]
+    pub appearance: Option<super::Appearance>,
+}
+
+/// `PUT /v1/projects/{id}/name` (cl-1097): the project called `name`. Its folder is its name, so the folder is renamed beside where it is.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ProjectName"))]
+pub struct Name {
+    pub name: String,
+}
+
+/// A project renamed, or moved to the trash: where it is now.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ProjectMoved"))]
+pub struct Moved {
+    pub id: String,
+    pub name: String,
+    /// Its folder: renamed, or where it was before the trash.
+    pub path: PathBuf,
+    /// Where the trash keeps it, when the OS says (not the Windows Recycle Bin).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trashed: Option<PathBuf>,
 }
 
 /// `POST /v1/projects/{id}/rename`: box `from` called `to`, with its versions, its canvas row and every `<from>` in the
@@ -1331,8 +1436,9 @@ pub struct Ended {
     pub asks: Vec<String>,
 }
 
-/// One upcoming job's code and weights its machine has ready ahead of it (cl-967): no job's run; wrong, it costs bytes, and the job's
-/// run fetches what it needs.
+/// The code and weights a machine has ready ahead of a job (cl-967): an upcoming job's, or with no job yet a guess's, what a render of
+/// the boxes it names would run on the machine it would go to (cl-1104). No job's run; wrong, it costs bytes, and the job's run
+/// fetches what it needs.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Ahead {
@@ -1341,7 +1447,7 @@ pub struct Ahead {
     pub machine: String,
     /// Its run, kept out of the list people read.
     pub run: u64,
-    /// The boxes it prepares for: each shows it as its own preparation while it waits.
+    /// The boxes it prepares for: each shows it as its own preparation while it waits. None: a guess that is one no more.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub names: Vec<String>,
     /// `installing it`, `downloading its weights`, …; none once it ended.
@@ -1360,6 +1466,9 @@ pub struct Ahead {
     /// Why it stopped short: the disk has no room, or it was canceled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_back: Option<String>,
+    /// A guess's, with no job yet: ready, its boxes say so beside Render.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub guess: bool,
 }
 
 /// How a job stands.
@@ -1584,6 +1693,12 @@ pub struct VaultChanged {
     /// Already-missing retained media skipped during conversion. Their project records remain missing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skipped_files: Vec<PathBuf>,
+    /// The runs whose outputs a lock cut, their save gone silent, by name (cl-1060): not saved, each run failed saying so.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unsaved: Vec<String>,
+    /// The runs whose save a lock stopped while their remote machine didn't answer (cl-1060): still owed, saved when it answers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deferred: Vec<String>,
 }
 
 /// A private vault-operation stream. Progress counts copied bytes and completed files, not an estimated percentage.

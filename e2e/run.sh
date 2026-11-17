@@ -34,7 +34,7 @@ import urllib.request
 holder = json.loads((Path.home() / '.cozy/calcifer/calcifer.lock.holder').read_text())
 body = json.dumps({'path': str(Path.cwd()), 'unencrypted': True}).encode()
 request = urllib.request.Request('http://' + holder['address'] + '/v1/projects', data=body, method='POST',
-    headers={'Authorization': 'Bearer ' + holder['token'], 'cozy-project-storage': '3', 'Content-Type': 'application/json'})
+    headers={'Authorization': 'Bearer ' + holder['token'], 'Content-Type': 'application/json'})
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 with opener.open(request, timeout=30) as response:
     if not json.load(response).get('id'):
@@ -52,7 +52,7 @@ run_page() { local verb=$1; shift; python3 "$RUN_PAGE" "$verb" "$RUN_PROJECT" "$
 # mention (`video=<name>`) with its description. The CLI attaches a file but can't describe it.
 run_box() { run_page import "$2" --name "$1" --description "$3" | jq -r .name; }
 
-# run_submit <dir> <name> <cozy args...>: starts `cozy --json <args>` (a verb that makes a numbered run) in the
+# run_submit <dir> <name> <cozy args...>: starts `cozy --json <args>` (a verb that makes a run or a job) in the
 # background and prints the run's number once its events name one; nothing when the command ended without one, or
 # when none came in RUN_NUMBER_S (default 1860 s: local code installs before its call is sent, cold on a new pod). Each doubling wait
 # without one is said on stderr (attempt k/5, with the follower's last line); after the fifth the follower is ended,
@@ -124,7 +124,7 @@ run_warm_cell() {
 # Its events' lines (a merged stderr's are not JSON).
 run_number() { { grep '^{' "$1" 2> /dev/null | jq -r 'select(.run.number != null) | .run.number' 2> /dev/null || true; } | head -1; }
 # run_handle <ndjson>: the run's name (`KEY-N`, cl-987), else its id: either names it from any folder, where a bare number names a
-# run of the project it is asked in (a model upload's run is no project's: its number read in one names another run or none).
+# run of the project it is asked in. A job (a model's download or upload, an install: cl-1028) is no project's run: only its id names it.
 run_handle() {
   { grep '^{' "$1" 2> /dev/null | jq -r 'select(.run.number != null) | if (.run.name // "") != "" then .run.name else .run.id // empty end' 2> /dev/null || true; } | head -1
 }

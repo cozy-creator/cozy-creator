@@ -22,7 +22,7 @@ web_chrome() {
 # 1-minute load as it ended. <lane>: 1, 2, 3 (Chrome), engines (Firefox's `@engines` cells, and `@vault`), solo (`@solo`, one at a time),
 # native (one at a time, as it holds `@solo` tests), or a cell's own name (by hand: whichever project takes it, one at a time).
 web_suite() {
-  local lane=$1 pw=$OUT/playwright-test chrome cell engine code line web=$OUT/web
+  local lane=$1 pw=$OUT/playwright-test chrome cell engine code line web=$OUT/web xvfb=
   local projects=() workers=() filters=()
   shift
   [ $# -gt 0 ] || { echo "web-$lane: no cells written yet"; return 0; }
@@ -42,8 +42,16 @@ web_suite() {
       projects=(firefox vault)
       # H.264 is the system's libavcodec on Linux: with none, Firefox says "This browser can't play it" (41966978063).
       bash "$here/install-browser-deps.sh" "$pw" > "$OUT/web-firefox-deps.log" 2>&1 \
-        || { check "web-$lane: Firefox's dependencies failed: $(tail -c 300 "$OUT/web-firefox-deps.log")"; return; } ;;
+        || { check "web-$lane: Firefox's dependencies failed: $(tail -c 300 "$OUT/web-firefox-deps.log")"; return; }
+      # Headless Firefox makes no WebGL context on Linux, so the canvas can't start: it runs on a virtual display, with Mesa's GL (config).
+      if [ "$(uname -s)" = Linux ] && command -v Xvfb > /dev/null; then
+        Xvfb :97 -screen 0 1920x1080x24 -nolisten tcp > "$OUT/web-xvfb.log" 2>&1 & xvfb=$!
+      fi ;;
     solo) projects=(solo) workers=(--workers=1) ;;
+    # A computer with no GPU (run.sh sets WEB_RENDERER=2d): the browser left as it is, so the canvas draws in 2D (fixtures.js names software
+    # WebGL as hardware elsewhere).
+    2d) projects=(chrome) ;;
+    2d-solo) projects=(solo) workers=(--workers=1) ;;
     # Native and by hand, one test at a time: a `@solo` test stops the Calcifer the others share.
     native) projects=(chrome solo) workers=(--workers=1); [ "${RUNNER_OS:-}" != macOS ] || projects+=(webkit) ;;
     *) projects=(chrome vault solo) workers=(--workers=1) ;;
@@ -62,12 +70,14 @@ web_suite() {
     until grep -q '^ready' "$OUT/web-busy.out" 2> /dev/null; do kill -0 "$busy" 2> /dev/null || { check "web-$lane: busy.js ended: $(tail -c 300 "$OUT/web-busy.out")"; return; }; sleep 0.2; done
   fi
   {
+    [ -z "$xvfb" ] || export FIREFOX_DISPLAY=:97
     HOLDER=$(web_path "$HOME/.cozy/calcifer/calcifer.lock.holder") COZY=$(web_path "$COZY") CHROME=$chrome OUT=$(web_path "$OUT") ARGV_LOG=$(web_path "$OUT/argv.log") \
       NODE_PATH=$(web_path "$pw/node_modules") node "$(web_path "$pw/node_modules/@playwright/test/cli.js")" test -c "$(web_path "$here/web/playwright.config.js")" \
       "${projects[@]/#/--project=}" ${workers[@]+"${workers[@]}"} "${filters[@]}" 2>&1 && echo 0 > "$web/$lane.code" || echo $? > "$web/$lane.code"
   } | tee "$web/$lane.log"
   code=$(cat "$web/$lane.code")
   [ -z "$busy" ] || { kill "$busy" 2> /dev/null; wait "$busy" 2> /dev/null || true; }
+  [ -z "$xvfb" ] || { kill "$xvfb" 2> /dev/null; wait "$xvfb" 2> /dev/null || true; }
   # A trace is a zip, which e2e/publish's scrub can't read: unpacked, its bearers and codes are scrubbed like any text.
   find "$web/results" -name trace.zip 2> /dev/null | while read -r trace; do
     python3 -m zipfile -e "$trace" "${trace%.zip}" && rm -f "$trace"
@@ -138,6 +148,7 @@ HOLDER=$(web_path "$lock") ARGV_LOG=$(web_path "$OUT/argv.log") CHROME=$chrome P
 [ "$code" = 0 ] || check "web-serves: the browser failed: $(tail -c 500 "$OUT/web.err")"
 J '(.minted | length) == 0 and (.authorization | length) == 0 and .gate == 0' "$OUT/web.json" \
   || check "web-serves: the page asked for or sent a credential, or wasn't answered: $(jq -c '{minted, authorization, gate}' "$OUT/web.json")"
+J '(.proofs | length) == 0' "$OUT/web.json" || check "web-serves: the page asked Calcifer for a storage proof first (cl-1066): $(jq -c .proofs "$OUT/web.json")"
 
 J '.document.status == 200 and .document.referrer_policy == "no-referrer"' "$OUT/web.json" || check "web-serves: GET /: $(jq -c .document "$OUT/web.json")"
 for directive in "default-src 'none'" "script-src 'self' 'wasm-unsafe-eval'" "style-src 'self'" "img-src 'self' blob: data:" "media-src 'self' blob:" "font-src 'self'" "connect-src 'self'" "base-uri 'none'" "form-action 'none'" "frame-ancestors 'none'"; do
@@ -152,11 +163,6 @@ J '.page_stream.status == 200 and (.page_stream.content_type // "" | startswith(
   || check "web-serves: the page did not open GET /v1/events as its own page: $(jq -c .page_stream "$OUT/web.json")"
 J --arg id "$id" '.stream_status == 200 and .streamed[0].type == "hello" and (.streamed | any(.type == "project.changed" and .id == $id))' "$OUT/web.json" \
   || check "web-serves: no hello then project.changed on GET /v1/events: $(jq -c '{stream_status, streamed}' "$OUT/web.json")"
-if [ "${RUNNER_OS:-}" = Windows ]; then
-  J '.storage.version == 3 and (.storage.principal | startswith("user:S-1-"))' "$OUT/web.json" || check "web-serves: project storage isn't this account's: $(jq -c .storage "$OUT/web.json")"
-else
-  J --arg p "user:$(id -u)" '.storage.version == 3 and .storage.principal == $p' "$OUT/web.json" || check "web-serves: project storage isn't this account's: $(jq -c .storage "$OUT/web.json")"
-fi
 J '.typed.status == 403 and .typed.site == "none" and .typed.page == 200' "$OUT/web.json" || check "web-serves: a /v1 URL opened in the address bar isn't refused, or the page's is: $(jq -c .typed "$OUT/web.json")"
 
 # What isn't Calcifer's own page, or this computer's cozy with its bearer, is refused in one line.
@@ -196,7 +202,7 @@ if [ -n "$file" ]; then
   answers "the page's HEAD of a file" 200 - -I -H 'Sec-Fetch-Site: same-origin' "${img[@]}" "$base/v1/projects/$id/files/$file"
   answers "another site's <img> of a file" 403 not_own_page -H 'Sec-Fetch-Site: cross-site' "${img[@]}" "$base/v1/projects/$id/files/$file"
   answers "another port's <img> of a file" 403 not_own_page -H 'Sec-Fetch-Site: same-site' "${img[@]}" "$base/v1/projects/$id/files/$file"
-  answers "the CLI's read of a file" 200 - "${B[@]}" -H 'cozy-project-storage: 3' "$base/v1/projects/$id/files/$file"
+  answers "the CLI's read of a file" 200 - "${B[@]}" "$base/v1/projects/$id/files/$file"
   answers "a file read with neither" 401 unauthenticated "$base/v1/projects/$id/files/$file"
 else
   check "web-serves: the import named no file: $(jq -c .imported "$OUT/web.json")"

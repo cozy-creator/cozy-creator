@@ -12,6 +12,10 @@
     bench.py noise <gate dir>...     each cell's run-to-run spread over its warm runs
     bench.py chart <gate dir>... [--out FILE] [--title T]   the ComfyUI comparison as an SVG grid (model x GPU)
     bench.py scaling <gate dir>...   each multi-GPU cell against its one-GPU cell: transport, dense and sparse steps, speed-up
+    bench.py references <baselines/version.json | benchmarks-seed.json> [--packages DIR] [--cells FILE]
+        a release's stored numbers as each package's benchmarks (cl-1024): its uncapped cells on the card's own lane and kernels,
+        each one's request, the pictures it reads, its warm and cold totals; with --packages, each package's into its folder's
+        benchmarks.json, which `cozy package publish` attaches (promote.sh), else printed
 A gate dir is gate.sh's --out after suite `bench` (suites/bench/cells.sh): bench.tsv names each cell's runs
 (cell, cold|warm, record, the VRAM holder's MiB), bench-group its group (<sku>x<gpus>), calibrate-{before,after}.json the reference workload.
 Outputs are judged with numpy and ffmpeg: uv run -q --no-project --with numpy python -I bench.py ..."""
@@ -20,6 +24,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import statistics
 import subprocess
@@ -405,8 +410,9 @@ def read_gate(d: str, judged: bool = True) -> Gate:
     # The machine lists each call as `<run id>/<call>` with no record attached, this gate's own included: a run is
     # another controller's only when its id is none of the gate's records'.
     own = {i for f in glob.glob(os.path.join(d, '*.json')) if (i := record_id(f))}
-    # Every run this gate's Calcifer made (its updates too): its run list, else (a cozy before the health log) its log.
-    own |= set(re.findall(r'run-[0-9a-f]{24}', (text(d, 'runs.json') or '') + (text(d, 'calcifer.log') or '')))
+    # Every run this gate's Calcifer made: its run list, its machine's jobs at the end (its updates: cl-1028), else (a cozy before
+    # the health log) its log.
+    own |= set(re.findall(r'run-[0-9a-f]{24}', (text(d, 'runs.json') or '') + (text(d, 'machine-end.json') or '') + (text(d, 'calcifer.log') or '')))
     foreign = [(int(f[0]), f[1]) for line in (text(d, 'foreign.tsv') or '').splitlines()
                if len(f := line.split('\t')) >= 2 and f[0].isdigit() and f[1].split('/')[0] not in own]
 
@@ -939,6 +945,116 @@ def baseline(version: str, gates: list[Gate], refs: str) -> Baseline:
     return out
 
 
+def request_of(args: str) -> tuple[dict[str, object], int, int | None] | None:
+    """A cell's arguments as its run's input, the pictures and videos it reads (`<still>`, `--file`) and the GPUs it asks
+    (`--gpus`); None when it pins a lane or kernels, which no person's request does."""
+    words = shlex.split(args.replace('$FX/', '').replace('$HERE/', ''))
+    if any(word.split('=')[0] in ('--lane', '--attention-kernel', '--gemm-kernel') for word in words):
+        return None
+    fields: dict[str, object] = {}
+    files, gpus = 0, None
+    for i, word in enumerate(words):
+        if word == '--file':
+            files += 1
+        elif word.startswith('--gpus'):
+            value = word.split('=', 1)[1] if '=' in word else (words[i + 1] if i + 1 < len(words) else '')
+            gpus = int(value) if value.isdigit() else None
+        elif i > 0 and words[i - 1] in ('--file', '--gpus'):
+            continue
+        elif ':=' in word:
+            key, value = word.split(':=', 1)
+            fields[key] = json.loads(value)
+        elif '=' in word and not word.startswith('--'):
+            key, value = word.split('=', 1)
+            fields[key] = value
+    mentions = set(re.findall(r'<(still|lead|photo|teapot)>', json.dumps(fields)))
+    return fields, files + len(mentions), gpus
+
+
+def durations(value: object) -> float:
+    """Every `duration` under `value`, summed: as `JobSize::of` reads a request's media seconds."""
+    if isinstance(value, dict):
+        return sum(float(v) if k == 'duration' and isinstance(v, (int, float)) else durations(v) for k, v in value.items())
+    if isinstance(value, list):
+        return sum(durations(v) for v in value)
+    return 0.0
+
+
+Benchmark = dict[str, object]  # one row as a release declares it (tensorhub's PackageBenchmark, cozy's estimate::Benchmark)
+
+
+def references(base: Baseline, defs: list[CellDef]) -> dict[str, list[Benchmark]]:
+    """`base`'s uncapped cells on one GPU, or on the count they ask (`--gpus`), as each package's benchmarks (cl-1024), on the GPU its
+    pod's driver names: the request it ran, its warm total and its cold one."""
+    out: dict[str, list[Benchmark]] = {}
+    by_name = {d['name']: d for d in defs}
+    for group, g in sorted(base['groups'].items()):
+        width = re.fullmatch(r'[^.]+x(\d+)', group)
+        gpu = (g['reference'].get('gpu') or '').strip()
+        if not width or not gpu:
+            continue
+        for name, c in sorted(g['cells'].items()):
+            d = by_name.get(name)
+            total = c['warm'].get('total_ms')
+            if not d or not total or d['cap'] or d['before'] or c['failed']:
+                continue
+            read = request_of(d['args'])
+            if read is None:
+                continue
+            fields, refs, gpus = read
+            gpus = gpus or int(width.group(1))
+            if gpus > 1 and not d['args'].count('--gpus'):
+                continue  # the machine chose its width: no count to say
+
+            def number(key: str) -> float | None:
+                value = fields.get(key)
+                return float(value) if isinstance(value, (int, float)) and value > 0 else None
+            width_px, height_px = number('width'), number('height')
+            request: dict[str, object] = {'refs': refs}
+            megapixels = number('megapixels') or (width_px * height_px / 1e6 if width_px and height_px else None)
+            for key, value in (('megapixels', megapixels), ('frames', number('frames')), ('steps', number('steps')),
+                               ('tokens', number('tokens')), ('seconds', durations(fields) or None)):
+                if value is not None:
+                    request[key] = value if key in ('megapixels', 'seconds') else int(value)
+            package, function = d['target'].rsplit('/', 1)
+            row: Benchmark = {'function': function, 'gpu': gpu, 'gpus': gpus, 'request': request, 'warm_ms': round(total),
+                              'note': f"release-gate baseline {base['version']} ({group}, {g['pod'] or 'pod'})"}
+            cold = c['cold']['numbers'].get('total_ms') if c['cold'] else None
+            if cold:
+                row['cold_ms'] = round(cold)
+            label = g.get('label') or ''
+            ran = dict(re.findall(r'(cozy|rt)([0-9][^-]*)', label))
+            if ran:
+                row['ran_on'] = {k: v for k, v in (('cozy', ran.get('cozy', '')), ('runtime', ran.get('rt', ''))) if v}
+            out.setdefault(package, []).append(row)
+    return out
+
+
+def package_dirs(checkout: str) -> dict[str, str]:
+    """Each package of a packages checkout by its normalized name (PEP 503), as its pyproject names it: its folder."""
+    dirs: dict[str, str] = {}
+    for pyproject in glob.glob(os.path.join(checkout, '*', 'pyproject.toml')):
+        found = re.search(r'^name\s*=\s*"([^"]+)"', open(pyproject).read(), re.M)
+        if found:
+            dirs[re.sub(r'[-_.]+', '-', found.group(1).lower())] = os.path.dirname(pyproject)
+    return dirs
+
+
+def write_references(rows: dict[str, list[Benchmark]], checkout: str) -> list[str]:
+    """Each package's rows into its folder's `benchmarks.json` in `checkout`, which its publish attaches; what was written."""
+    dirs, said = package_dirs(checkout), []
+    for package, benchmarks in sorted(rows.items()):
+        folder = dirs.get(re.sub(r'[-_.]+', '-', package.rsplit('/', 1)[-1].lower()))
+        if folder is None:
+            said.append(f'{package}: no such package in {checkout}')
+            continue
+        with open(os.path.join(folder, 'benchmarks.json'), 'w') as f:
+            json.dump(benchmarks, f, indent=2)
+            f.write('\n')
+        said.append(f'{package}: {len(benchmarks)} benchmarks')
+    return said
+
+
 def known_issues(path: str | None = None) -> list[Known]:
     path = path or os.path.join(BENCH, 'known-issues.json')
     return cast(list[Known], load_json(path)) if os.path.exists(path) else []  # rows of Known
@@ -960,7 +1076,7 @@ def check(gate: GateDir) -> tuple[list[str], list[str]]:
 
 
 def main(argv: list[str]) -> int:
-    flags = ('--baseline', '--cells', '--known', '--comfyui', '--comfyui-out', '--refs', '--out', '--title')
+    flags = ('--baseline', '--cells', '--known', '--comfyui', '--comfyui-out', '--refs', '--out', '--title', '--packages')
     opt = {f: argv[argv.index(f) + 1] for f in flags if f in argv}
     skip = {i for f in opt for i in (argv.index(f), argv.index(f) + 1)}
     args = [a for i, a in enumerate(argv) if i not in skip and not a.startswith('--')]
@@ -1010,6 +1126,15 @@ def main(argv: list[str]) -> int:
         with open(path, 'w') as f:
             json.dump(written, f, indent=1, sort_keys=True)
         print(path)
+        return 0
+    if verb == 'references':
+        # A stored baseline (bench.py baseline's own file), else rows by package as a release declares them (benchmarks-seed.json).
+        source = cast(dict[str, object], load_json(rest[0]))
+        benches = references(cast(Baseline, source), defs) if 'groups' in source else cast(dict[str, list[Benchmark]], source)
+        if '--packages' in opt:
+            print('\n'.join(write_references(benches, opt['--packages'])))
+        else:
+            print(json.dumps(benches, indent=2))
         return 0
     if verb == 'admit':
         g = read_gate(rest[0], judged=False)

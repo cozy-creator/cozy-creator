@@ -1,6 +1,6 @@
 import { type ClipboardEvent, type KeyboardEvent, type MouseEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
-import type { Unused } from "../api/calcifer"
+import type { ToolField, Unused } from "../api/calcifer"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
 import type { CanvasStore } from "./CanvasStore"
@@ -11,6 +11,7 @@ import { Thumb } from "./Media"
 import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, retext, timecode } from "./ranges"
 import { chipWords, mentionsIn, withMentions } from "./text"
 import { paintTriggers, takesWords, typedIn, unpaint, useTriggers } from "./triggers"
+import { UNSUPPORTED, UnsupportedNote, usable } from "./Unsupported"
 import { isSelf, mentionFrom, NO_BARE_SELF } from "./versions"
 
 /** What a chip says: its name in its brackets, a range of a video as timecode, and an orbit's angle in degrees. */
@@ -30,7 +31,7 @@ const leftOut = (unused: Unused[], name: string): string | null => unused.find((
 /** A name as a chip: one gone is struck through, saying whether it was deleted, and so is one its tool can't use here, `unused`, saying why. */
 function chip(name: string, words: string, missing: boolean, unused: string | null, deleted = false): HTMLElement {
   const el = document.createElement("span")
-  el.className = missing ? "chip missing" : unused ? "chip unused" : "chip"
+  el.className = missing ? "chip missing" : unused ? `chip ${UNSUPPORTED}` : "chip"
   el.contentEditable = "false"
   el.dataset.mention = name
   el.textContent = words
@@ -114,7 +115,13 @@ function placeIn(box: HTMLElement, x: number, y: number): Place {
   const [start, end] = [{ node: box, offset: 0 }, { node: box, offset: box.childNodes.length }]
   if (y > rect.bottom || (y >= rect.top && x > rect.right)) return end
   if (y < rect.top || x < rect.left) return start
-  const at = caretFromPoint(x, y)
+  // In its padding, above its first line or below its last, a point is taken on that line, as a browser's own selection takes it: asked
+  // there, the browser answered the words' start for every point, and a drag along the top of a box selected nothing (cl-1051).
+  const words = document.createRange()
+  words.selectNodeContents(box)
+  const lines = words.getBoundingClientRect()
+  if (lines.height && y > lines.bottom) return end
+  const at = caretFromPoint(x, lines.height ? Math.max(lines.top + 1, y) : y)
   if (!at || !box.contains(at.node)) return end
   const name = (at.node instanceof Element ? at.node : at.node.parentElement)?.closest("[data-mention]")
   if (name?.parentNode && box.contains(name)) return { node: name.parentNode, offset: [...name.parentNode.childNodes].indexOf(name) + 1 }
@@ -163,6 +170,7 @@ interface Menu {
 export function MentionText({
   asset,
   place,
+  field,
   value,
   label,
   placeholder,
@@ -175,6 +183,8 @@ export function MentionText({
 }: {
   asset: string
   place: string
+  /** The tool's field it is: `<` offers only what that can use. None: a Text box's words, which take anything. */
+  field?: ToolField
   value: string
   label: string
   /** What it reads when it's empty, its label if nothing else. */
@@ -394,7 +404,7 @@ export function MentionText({
       return put(closed[1], range)
     }
     const open = before.match(/<([^<>\s]*)$/)
-    const options = open ? store.namesLike(open[1], asset).slice(0, 8) : []
+    const options = open ? store.namesLike(open[1], asset).filter((name) => usable(field, store.kindOf(name, asset))).slice(0, 8) : []
     if (!open || !options.length) return setMenu(null)
     const range = document.createRange()
     range.setStart(at, selection.anchorOffset - open[0].length)
@@ -506,7 +516,7 @@ export function MentionText({
     <>
       <div
         ref={box}
-        className="mention-text nodrag nopan nowheel"
+        className="mention-text canvas-control"
         role="textbox"
         aria-multiline="true"
         aria-label={label}
@@ -554,6 +564,7 @@ export function MentionText({
           onSave()
         }}
       />
+      <UnsupportedNote unused={unused} />
     </>
   )
 }
@@ -563,7 +574,8 @@ function MentionThumb({ name, asset, unused, pictures, onRange }: { name: string
   const said = store.mentionOf(name, asset)
   useElement(said?.name ?? baseOf(name))
   const shown = store.fileOf(name, asset)
-  if (!shown || shown.absent || shown.field === "audio" || leftOut(unused, name)) return null
+  // Words go in as words (xs-204): no picture of them.
+  if (!shown || shown.absent || shown.field === "audio" || shown.field === "text" || leftOut(unused, name)) return null
   // An orbit's angle has no in and out to drag: its chip says it.
   if (angleOf(name)) return null
   if (shown.field === "video") {

@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { holderToken, projectFolder, BARS, DARK_OPEN, MP4, STEP_MS, boxOf, calcifer, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, openCanvas, png, projectFromPage, settled, signIn, until, upload } = require('./page');
+const { holderToken, projectFolder, BARS, DARK_OPEN, MP4, STEP_MS, calcifer, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, openCanvas, png, projectFromPage, settled, signIn, until, upload, canvasBox, canvasView } = require('./page');
 
 const FIRST_RUN_MS = 300_000;
 const SIZES = [[1440, 900], [1920, 1080]];
@@ -24,9 +24,10 @@ import os
 import time
 
 import msgspec
-from cozy_runtime.author import Adjustments, App, Context, ImageFrame, Outputs, Seed, Telemetry
+from cozy_runtime.author import Adjustments, App, Context, ImageFrame, Seed, Telemetry
 from cozy_runtime.fields import Image, Prompt
 from cozy_runtime.image import ImageRequest, ImageResult, Sizes
+from cozy_runtime.media import ImageFile
 
 app = App()
 SIZES = Sizes((0.25, 4.0), (64, 8192), 16, "the still's 0.25-4 MP")
@@ -41,7 +42,7 @@ class Drawing(msgspec.Struct, kw_only=True):
 
 
 @app.tool(label="Still", named="still", accelerator=False)
-def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Telemetry) -> ImageResult:
+def draw(ctx: Context, payload: Drawing, adj: Adjustments, tel: Telemetry) -> ImageResult:
     width, height = ImageRequest(payload.instructions.text, None, None, payload.seed).size(adj, None, SIZES, megapixels=0.25)
     with tel.stage("denoise"):
         for step in range(payload.steps):
@@ -49,7 +50,7 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
             ctx.progress(step, payload.steps)
     if payload.fail:
         raise RuntimeError("asked to fail, as the look cell wants: a long error line, so a person sees how one reads when it wraps")
-    image = out.save_image(ImageFrame(width, height, os.urandom(3) * (width * height)), format="png")
+    image = ImageFile.from_image(ImageFrame(width, height, os.urandom(3) * (width * height)), format="png")
     return ImageResult(image, width, height, payload.seed or 0, payload.instructions.text)
 `;
 
@@ -69,7 +70,6 @@ async function died(why) {
   const pages = {};
   for (const theme of ['paper', 'dark']) {
     const context = await browser.newContext({ viewport: { width: SIZES[0][0], height: SIZES[0][1] } });
-    await context.addInitScript((dark) => { try { localStorage.setItem('cozy.theme', dark ? 'dark' : 'paper'); } catch {} }, theme === 'dark');
     const page = await context.newPage();
     page.setDefaultTimeout(STEP_MS);
     page.on('pageerror', (error) => (seen.page_errors ??= []).push(`${theme}: ${error.message}`));
@@ -78,7 +78,12 @@ async function died(why) {
     pages[theme] = page;
   }
   lookAt(pages.paper);
-  const both = async (what) => { for (const [theme, page] of Object.entries(pages)) await what(page, theme); };
+  /** This Calcifer's appearance is `theme`, which `page` shows (cl-1097): look runs alone, so it's set for each page's turn. */
+  const looks = async (page, theme) => {
+    await page.evaluate((theme) => fetch('/v1/appearance', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ theme }) }), theme);
+    await page.waitForFunction((dark) => (document.documentElement.dataset.theme === 'dark') === dark, theme === 'dark');
+  };
+  const both = async (what) => { for (const [theme, page] of Object.entries(pages)) { await looks(page, theme); await what(page, theme); } };
   const out = (name) => `${process.env.SHOT}-${name}.png`;
 
   /** `name` on both pages at both sizes: `open` once a page, `prepare` after each resize. What can't be reached is said under `missed`. */
@@ -87,6 +92,7 @@ async function died(why) {
     for (const [theme, page] of Object.entries(pages)) {
       try {
         if (open) await open(page, theme);
+        await looks(page, theme);
       } catch (why) {
         seen.missed[`${name} ${theme}`] = String(why.message ?? why).slice(0, 400);
         continue;
@@ -115,8 +121,15 @@ async function died(why) {
       try {
         await page.setViewportSize({ width: SIZES[0][0], height: SIZES[0][1] });
         if (open) await open(page, theme);
+        await looks(page, theme);
         await settled(page);
-        const box = await locate(page).evaluate((el, pad) => {
+        const target = await locate(page);
+        if (target === null) throw new Error('not on the canvas');
+        // Partly off the window, a crop is a strip of it: listed as missed instead.
+        if (target?.bounds && (target.bounds.x < 0 || target.bounds.y < 0 || target.bounds.x + target.bounds.width > page.viewportSize().width || target.bounds.y + target.bounds.height > page.viewportSize().height)) {
+          throw new Error(`partly off the window: ${JSON.stringify(target.bounds)}`);
+        }
+        const box = target?.bounds ? { x: Math.max(0,target.bounds.x-pad), y: Math.max(0,target.bounds.y-pad), right: Math.min(page.viewportSize().width,target.bounds.x+target.bounds.width+pad), bottom: Math.min(page.viewportSize().height,target.bounds.y+target.bounds.height+pad) } : await target.evaluate((el, pad) => {
           // A box's lines under it hang outside its node.
           const rects = [el, ...el.querySelectorAll('.tile-under')].map((one) => one.getBoundingClientRect());
           const r = { left: Math.min(...rects.map((one) => one.left)), top: Math.min(...rects.map((one) => one.top)), right: Math.max(...rects.map((one) => one.right)), bottom: Math.max(...rects.map((one) => one.bottom)) };
@@ -161,7 +174,7 @@ async function died(why) {
   const paper = pages.paper;
   const held = { token: holderToken() };
   const api = (path, init = {}) => paper.evaluate(async ({ path, init }) => {
-    const answer = await fetch(path, { ...init, headers: { 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...(init.method === 'POST' ? { 'Idempotency-Key': `look-${Date.now()}-${Math.random()}` } : {}) } });
+    const answer = await fetch(path, { ...init, headers: { 'Content-Type': 'application/json', ...(init.method === 'POST' ? { 'Idempotency-Key': `look-${Date.now()}-${Math.random()}` } : {}) } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   }, { path, init });
   const post = async (path, body) => {
@@ -171,7 +184,8 @@ async function died(why) {
   };
 
   during = 'a project';
-  await goto(paper, '/projects');
+  await goto(paper, '/');
+  await paper.getByRole('button', { name: 'New project', exact: true }).click();
   await paper.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-look-${Date.now()}`));
   await paper.getByLabel('Create without encryption', { exact: true }).check();
   await paper.click('form button[type=submit]');
@@ -238,7 +252,7 @@ async function died(why) {
     if (new URL(page.url()).pathname !== projectPath) await goto(page, projectPath);
     await until(`every box drawn (${page === paper ? 'paper' : 'dark'})`, async () => {
       await fitCanvas(page);
-      return page.evaluate((names) => names.filter((name) => !document.querySelector(`.react-flow__node .card[data-asset="${name}"]`)), boxes);
+      return page.evaluate((names) => names.filter((name) => !document.querySelector('.canvas-root')?.canvasInspection?.card(name)?.rendered), boxes);
     }, (missing) => missing.length === 0, 30_000);
   });
 
@@ -269,7 +283,7 @@ async function died(why) {
       await post(`${at}/runs`, { names: ['fresh'], on: ['local'] });
       await until('fresh\'s next take unseen', () => assetOf('fresh'), (row) => row.versions === 2 && row.unseen?.length > 0, FIRST_RUN_MS);
     });
-    await toastShot('toast-finished', 'fresh finished');
+    await toastShot('toast-finished', 'of fresh is ready');
     await tryStep('broken fails', async () => {
       await post(`${at}/runs`, { names: ['broken'], on: ['local'] });
       await until('broken failed', () => assetOf('broken'), (row) => row?.failure, FIRST_RUN_MS);
@@ -278,10 +292,11 @@ async function died(why) {
     await tryStep('slow rendering', async () => {
       await post(`${at}/runs`, { names: ['slow'], on: ['local'] });
       await post(`${at}/runs`, { names: ['waits'], on: ['local'] });
-      await until('slow saying how far it is', () => boxOf(paper, 'slow').evaluate((node) => node.querySelectorAll('.tile-under .run-face p').length), (n) => n >= 2, FIRST_RUN_MS);
+      // The canvas draws a box at rest (cl-991): its run's line is the scene's, not a DOM card's.
+      await until('slow saying how far it is', () => canvasBox(paper, 'slow').then((card) => card?.rendered?.progress ?? null), (progress) => Boolean(progress?.state && progress?.time), FIRST_RUN_MS);
       await paper.waitForTimeout(6000);
     });
-    seen.states = Object.fromEntries(await Promise.all(['slow', 'waits', 'fresh', 'broken'].map(async (name) => [name, await boxOf(paper, name).locator('.state-dot').getAttribute('aria-label').catch(() => null)])));
+    seen.states = Object.fromEntries(await Promise.all(['slow', 'waits', 'fresh', 'broken'].map(async (name) => [name, await canvasBox(paper, name).then((card) => card?.rendered?.state ?? null).catch(() => null)])));
   }
 
   // The canvas: fitted (as it opens), at 100%, far out.
@@ -290,7 +305,7 @@ async function died(why) {
     await page.getByRole('menuitem', { name: item }).click();
     await settled(page);
   };
-  const zoomOf = (page) => page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a);
+  const zoomOf = (page) => canvasView(page).then(view => view.zoom);
   await shoot('canvas-fit', { open: (page) => leave(page), prepare: (page) => fitCanvas(page) });
   await shoot('canvas-100', { prepare: async (page) => { await fitCanvas(page); await zoomMenu(page, /^Zoom to 100%/); } });
   // Past the far band (below 20%): a box is its picture and its name.
@@ -313,14 +328,58 @@ async function died(why) {
     },
   });
 
-  // Each box close, at 100%: selected, then at rest.
-  const tileOf = (page, name) => boxOf(page, name);
+  // The selection as Figma draws it (Paul, 11-16): one box selected, then every box, fitted and at 25%, 100% and 200% about it.
+  const select = { one: async (page) => {
+    await leave(page);
+    await fitCanvas(page);
+    const { x, y, width, height } = (await canvasBox(page, 'still')).body;
+    await page.mouse.click(x + width / 2, y + height / 2);
+    await settled(page);
+  }, all: async (page) => {
+    await leave(page);
+    await fitCanvas(page);
+    await page.keyboard.press('ControlOrMeta+a');
+    await settled(page);
+  } };
+  for (const [which, open] of Object.entries(select)) {
+    for (const [at, zoom] of [['fit', null], ['25', 0.25], ['100', 1], ['200', 2]]) {
+      await shoot(`select-${which}-${at}`, {
+        open,
+        prepare: async (page) => {
+          await fitCanvas(page);
+          if (zoom === null) return;
+          await page.keyboard.press('Shift+2');
+          await settled(page);
+          await zoomMenu(page, /^Zoom to 100%/);
+          // The zoom's steps, out or in, until the canvas is at `zoom`.
+          for (let i = 0; i < 16 && (await zoomOf(page)) > zoom * 1.01; i++) { await page.click('button[aria-label="Zoom out"]'); await settled(page); }
+          for (let i = 0; i < 16 && (await zoomOf(page)) < zoom * 0.99; i++) { await page.click('button[aria-label="Zoom in"]'); await settled(page); }
+          (seen.select_zoom ??= {})[`${which}-${at}`] = await zoomOf(page);
+          await page.mouse.move(4, 600);
+          await settled(page);
+        },
+      });
+    }
+  }
+  await both((page) => leave(page).then(() => fitCanvas(page)));
+
+  // Each box close, at 100%: selected, then at rest. A box at rest is the scene's (cl-991): its card's bounds with what hangs off them, its
+  // name above and its lines under it, from what the canvas drew.
+  const tileOf = (page, name) => page.evaluate((name) => {
+    const card = document.querySelector('.canvas-root')?.canvasInspection?.card(name);
+    if (!card) return null;
+    const drawn = card.rendered;
+    const rects = [card.bounds, ...(drawn ? [...Object.values(drawn.labels), ...drawn.controls, drawn.stateDot, drawn.meter].filter(Boolean) : [])]
+      .filter((r) => r.width > 0 && r.height > 0);
+    const left = Math.min(...rects.map((r) => r.x)), top = Math.min(...rects.map((r) => r.y));
+    const right = Math.max(...rects.map((r) => r.x + r.width)), bottom = Math.max(...rects.map((r) => r.y + r.height));
+    return { bounds: { x: left, y: top, width: right - left, height: bottom - top } };
+  }, name);
   for (const name of boxes) {
     const centre = async (page) => {
       await leave(page);
       await fitCanvas(page);
-      const media = page.locator(`.react-flow__node .card[data-asset="${name}"] .media`).first();
-      const { x, y, width, height } = await media.boundingBox();
+      const { x, y, width, height } = (await canvasBox(page, name)).body;
       await page.mouse.click(x + width / 2, y + height / 2);
       await page.keyboard.press('Shift+2');
       await settled(page);
@@ -349,8 +408,8 @@ async function died(why) {
     open: async (page) => {
       await leave(page);
       await fitCanvas(page);
-      const media = page.locator('.react-flow__node .card[data-asset="still"] .media, .react-flow__node .card[data-asset="slow"] .media').first();
-      const { x, y, width, height } = await media.boundingBox();
+      const held = await canvasBox(page, 'still') ?? await canvasBox(page, 'slow');
+      const { x, y, width, height } = held.body;
       await page.mouse.click(x + width / 2, y + height / 2, { button: 'right' });
       await page.locator('[role=menu]').first().waitFor();
     },
@@ -374,18 +433,20 @@ async function died(why) {
   if (slowRun) await shoot('drawer-run', { open: (page) => goto(page, `${projectPath}/runs/${slowRun}`) });
   const failedRun = await tryStep('the failed run', async () => ((await api(`/v1/projects/${id}/runs?limit=50`)).body?.runs ?? []).find((run) => run.project_id === id && run.status === 'failed')?.number);
   if (failedRun) await shoot('drawer-run-failed', { open: (page) => goto(page, `${projectPath}/runs/${failedRun}`) });
-  await shoot('drawer-files', { open: (page) => goto(page, `${projectPath}/files`) });
+  await shoot('drawer-assets', { open: (page) => goto(page, `${projectPath}/assets`) });
   await shoot('drawer-account', { open: (page) => goto(page, `${projectPath}/account`) });
+  await shoot('drawer-project-settings', { open: (page) => goto(page, `${projectPath}/project-settings`) });
+  await shoot('drawer-settings', { open: (page) => goto(page, `${projectPath}/settings`) });
   await shoot('drawer-projects-open', { open: (page) => goto(page, `${projectPath}/projects`) });
-  // The open project's own tab: Projects, ready for a new one's name (cl-958: the bar's one + is Add files).
+  // The open project's own tab: Projects, most recently used first.
   await shoot('drawer-projects-from-tab', {
     open: async (page) => {
       await goto(page, projectPath);
       await page.click('nav.ptabs a.ptab.on');
-      await page.locator('.drawer input[aria-label="New project\'s folder"]').waitFor();
+      await page.locator('.drawer ul.list a').first().waitFor();
     },
   });
-  await shoot('drawer-library', { open: (page) => goto(page, `${projectPath}/packages`) });
+  await shoot('drawer-installations', { open: (page) => goto(page, `${projectPath}/packages`) });
   await shoot('drawer-models', { open: (page) => goto(page, `${projectPath}/models`) });
   await both((page) => goto(page, projectPath));
 

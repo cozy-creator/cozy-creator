@@ -199,6 +199,9 @@ pub(crate) struct PlanSource {
     pub lane: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub precision: String,
+    /// The components its function reads of it, as a quote counts them (`api::interface::Slot::fetched_components`); none: all.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<String>,
 }
 
 /// A prepared call: its entrypoint, its construction (the package's generation, App, constructed
@@ -315,17 +318,48 @@ impl Plan {
         let raw = self.sources.iter().map(|s| row(&s.parameter, (&s.model, &s.release), (&s.lane, &s.precision), &s.manifest));
         constructed.chain(raw).collect()
     }
-    /// What a call reads before its function runs: every slot's components but an on-demand
-    /// one's.
-    pub(crate) fn upfront(&self) -> Vec<(String, Vec<String>)> {
-        merged(self.slots.iter().filter(|slot| !slot.on_demand)).into_iter().map(|s| (s.manifest, s.components)).collect()
+    /// What a call reads before its function runs: every slot's components but an on-demand one's, and those of one its rule
+    /// says the request needs (`ruled`).
+    fn upfront(&self, ruled: &needs::Answers) -> Vec<(String, Vec<String>)> {
+        let waited = |slot: &&PlanSlot| !slot.on_demand || ruled.needed.contains(&slot.binding.model_parameter_name);
+        merged(self.slots.iter().filter(waited)).into_iter().map(|s| (s.manifest, s.components)).collect()
     }
-    /// What its on-demand slots read once a stage asks: guessed ahead, never waited on (Paul, 11-12).
-    pub(crate) fn possible(&self) -> Vec<(String, Vec<String>)> {
-        merged(self.slots.iter().filter(|slot| slot.on_demand)).into_iter().map(|s| (s.manifest, s.components)).collect()
+    /// What its on-demand slots read once a stage asks: guessed ahead, never waited on (Paul, 11-12). Not one its rule answers
+    /// for the request (`ruled`): a needed one is waited on, and an unneeded one isn't fetched.
+    fn possible(&self, ruled: &needs::Answers) -> Vec<(String, Vec<String>)> {
+        let guessed = |slot: &&PlanSlot| {
+            let parameter = &slot.binding.model_parameter_name;
+            slot.on_demand && !ruled.needed.contains(parameter) && !ruled.unneeded.contains(parameter)
+        };
+        merged(self.slots.iter().filter(guessed)).into_iter().map(|s| (s.manifest, s.components)).collect()
+    }
+    /// What a call of it loads (`access::Needs`, cl-1102). `ruled` is what its interface's rules say of the request (cl-1103;
+    /// none for a call with no request): a slot a rule answers is needed or not fetched, as it says. Every other slot is as its
+    /// function declares it. Needed: every slot's components but an on-demand one's, and its raw weights' (its function read those
+    /// through its own executor's fetch, inside its run, outside the download line). Extras: its on-demand slots', which a stage
+    /// may read.
+    pub(crate) fn needs(&self, ruled: &needs::Answers) -> crate::access::Needs {
+        let mut needed = self.upfront(ruled);
+        for source in &self.sources {
+            match needed.iter_mut().find(|(manifest, _)| *manifest == source.manifest) {
+                // No components named is the checkpoint whole.
+                Some((_, components)) if source.components.is_empty() => components.clear(),
+                Some((_, components)) if components.is_empty() => {}
+                Some((_, components)) => {
+                    let more: Vec<String> = source.components.iter().filter(|c| !components.contains(c)).cloned().collect();
+                    components.extend(more);
+                }
+                None => needed.push((source.manifest.clone(), source.components.clone())),
+            }
+        }
+        let extras = match self.possible(ruled) {
+            possible if possible.is_empty() => vec![],
+            possible => vec![("its on-demand models".to_owned(), possible)],
+        };
+        crate::access::Needs { needed, extras }
     }
     /// All its calls may read, on-demand slots too: what a `downloaded` warm set member holds,
-    /// asked for by name (`cozy machine warm`), so its first call waits on no download (cl-790).
+    /// asked for by name, so its first call waits on no download (cl-790).
     pub(crate) fn read(&self) -> Vec<(String, Vec<String>)> {
         merged(&self.slots).into_iter().map(|s| (s.manifest, s.components)).collect()
     }
@@ -376,6 +410,21 @@ fn merged<'a>(slots: impl IntoIterator<Item = &'a PlanSlot>) -> Vec<SelectedMani
         }
     }
     rows
+}
+
+/// The components a slot's function reads (`components=`), else every one its class's methods use; none: all of its checkpoint.
+fn declared_components(model: &serde_json::Value) -> Vec<String> {
+    let names = |value: &serde_json::Value| -> Vec<String> {
+        value.as_array().into_iter().flatten().filter_map(|name| name.as_str().map(str::to_owned)).collect()
+    };
+    match model.get("components") {
+        Some(declared) => names(declared),
+        None => {
+            let used = model.get("component_use").and_then(serde_json::Value::as_object);
+            let used: std::collections::BTreeSet<String> = used.into_iter().flatten().flat_map(|(_, components)| names(components)).collect();
+            used.into_iter().collect()
+        }
+    }
 }
 
 /// A model row of an interface entry that is constructed: not a `Weights[M]` argument.
@@ -910,6 +959,8 @@ pub(crate) struct Foreign {
 
 /// What a GPU uses with nothing on it (the driver's own reserve) stays under this.
 const IDLE_USE: u64 = 1 << 30;
+/// The most an executor ended for disk is waited on to exit (a rank's CUDA teardown took 14.5 s on an A40).
+const EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Whether `pid`, as this machine sees it, is a Cozy executor of an earlier run of it: a Runtime
 /// executor or trampoline that doesn't descend from this run.
@@ -1365,13 +1416,17 @@ impl Pool {
     pub(crate) fn problems(&self) -> Vec<String> {
         self.config.problems.clone()
     }
-    /// The first `degree` GPUs' current capability and free bytes, counting what idle peers hold:
-    /// they give it back when asked, so it is room a new model can plan on.
+    /// The first `degree` GPUs' capability, as a lane resolves for them. Memory is no part of it:
+    /// at an 8- or 16-bit floor the 8-bit lane always serves (Paul 11-06, xs-154 Q1).
     pub(crate) fn hardware(&self, degree: u32) -> tensorfs::fetch::Hardware {
-        let devices: Vec<&Device> = self.devices.iter().take(degree as usize).collect();
-        let gpus = devices.iter().filter_map(|d| self.inventory(&d.entry)).map(|g| g.compute_cap.clone()).filter(|cc| !cc.is_empty()).collect();
-        let free_vram = devices.iter().filter_map(|d| Some(d.memory.as_ref()?.free()? + d.idle_bytes())).min();
-        tensorfs::fetch::Hardware { gpus, free_vram, ..Default::default() }
+        let gpus = self.devices.iter().take(degree as usize).filter_map(|d| self.inventory(&d.entry))
+            .map(|g| g.compute_cap.clone()).filter(|cc| !cc.is_empty()).collect();
+        tensorfs::fetch::Hardware { gpus, ..Default::default() }
+    }
+    /// The first `degree` GPUs' least free bytes, counting what idle peers hold: they give it back
+    /// when asked, so it is room a new model can plan on. Only a 4-bit floor's lane resolves by it.
+    pub(crate) fn free_vram(&self, degree: u32) -> Option<u64> {
+        self.devices.iter().take(degree as usize).filter_map(|d| Some(d.memory.as_ref()?.free()? + d.idle_bytes())).min()
     }
     fn inventory(&self, entry: &str) -> Option<&crate::machine::receipt::Gpu> {
         self.config.inventory.iter().find(|g| g.device_index.to_string() == entry || g.device_uuid == entry)
@@ -1686,7 +1741,7 @@ impl Pool {
             let left = foreign.len();
             drop(foreign);
             for d in &back {
-                tracing::info!("GPU {}: the memory held at start is back; in service", pool.index(*d));
+                tracing::info!(target: crate::config::MACHINE, "GPU {}: the memory held at start is back; in service", pool.index(*d));
             }
             if !back.is_empty() || settled {
                 pool.refresh_out();
@@ -1728,7 +1783,8 @@ impl Pool {
         };
         blocked.then(|| {
             let why: Vec<String> = settled.iter().map(|d| format!("GPU {}: {}", self.index(*d), out[d].0)).collect();
-            format!("its {width} GPU(s) aren't in service on this machine: {}", why.join("; "))
+            let gpus = if width == 1 { "a working GPU".to_owned() } else { format!("{width} working GPUs side by side") };
+            format!("This machine doesn't have {gpus} for this run ({}).", why.join("; "))
         })
     }
 
@@ -1846,26 +1902,55 @@ impl Pool {
             }
         }
     }
-    /// Each idle executor's process and when it last came back idle, least recently used first:
-    /// what a full disk may end to let the models it holds open go (`Service::room_for`).
-    pub(crate) fn idle_executors(&self) -> Vec<(u32, Instant)> {
-        let mut idle: Vec<(u32, Instant)> = self.sessions.lock().unwrap().values().map(|s| (s.executor.birth.pid, s.used)).collect();
-        idle.extend(self.deviceless.lock().unwrap().iter().map(|s| (s.executor.birth.pid, s.used)));
+    /// Each idle executor's processes, its leader first, and when it last came back idle, least
+    /// recently used first: what a full disk may end to let the models they hold open go
+    /// (`Service::room_for`). Each rank of a group opens what it loads under its own pid
+    /// (Runtime's `_follower_load`), so its followers' holds are the group's.
+    pub(crate) fn idle_executors(&self) -> Vec<(Vec<u32>, Instant)> {
+        let each = |s: &Session| {
+            let mut pids = vec![s.executor.birth.pid];
+            for birth in executor_births(&s.executor.birth, &s.followers) {
+                if !pids.contains(&birth.pid) {
+                    pids.push(birth.pid);
+                }
+            }
+            (pids, s.used)
+        };
+        let mut idle: Vec<(Vec<u32>, Instant)> = self.sessions.lock().unwrap().values().map(each).collect();
+        idle.extend(self.deviceless.lock().unwrap().iter().map(each));
         idle.sort_by_key(|(_, used)| *used);
         idle
     }
-    /// Ends the idle executor of process `pid` and observes its exit; whether one was.
+    /// Ends the idle executor of process `pid` and waits, as long as `EXIT_WAIT`, for every process of it to exit: what
+    /// they hold open goes only then (pod-session 43861913736: H3's group ended, its model still held a moment later, and
+    /// the install was refused). Whether one was.
     pub(crate) fn end_idle_executor(&self, pid: u32) -> bool {
+        let of = |s: &Session| (s.executor.birth.pid == pid).then(|| executor_births(&s.executor.birth, &s.followers));
+        let births = self.sessions.lock().unwrap().values().find_map(of);
+        let births = births.or_else(|| self.deviceless.lock().unwrap().iter().find_map(of)).unwrap_or_default();
         let key = self.sessions.lock().unwrap().iter().find(|(_, s)| s.executor.birth.pid == pid).map(|(key, s)| (key.clone(), s.start, s.degree));
-        if let Some((key, start, degree)) = key {
-            let Some(permit) = self.allocations.upkeep(start..start + degree as usize) else {
-                return false;
-            };
-            let ended = self.end_session(&key);
-            drop(permit);
-            return ended;
+        let ended = match key {
+            Some((key, start, degree)) => {
+                let Some(permit) = self.allocations.upkeep(start..start + degree as usize) else {
+                    return false;
+                };
+                let ended = self.end_session(&key);
+                drop(permit);
+                ended
+            }
+            None => self.end_idle_deviceless(|s| s.executor.birth.pid == pid),
+        };
+        if ended {
+            let deadline = Instant::now() + EXIT_WAIT;
+            for birth in &births {
+                let Ok(Some(process)) = platform::process::Exact::open(birth) else { continue };
+                if !process.wait_for(deadline.saturating_duration_since(Instant::now())).unwrap_or(true) {
+                    tracing::warn!("pid {} hadn't exited {} s after its executor ended: what it holds stays", birth.pid, EXIT_WAIT.as_secs());
+                    break;
+                }
+            }
         }
-        self.end_idle_deviceless(|s| s.executor.birth.pid == pid)
+        ended
     }
     /// Every idle executor `which` names ends.
     fn end_idle_executors(&self, which: impl Fn(&Session) -> bool) {
@@ -2427,6 +2512,7 @@ impl Pool {
                     release: grant.release.clone(),
                     lane: grant.lane.clone(),
                     precision: precision(&self.store, &grant.manifest),
+                    components: declared_components(model).into_iter().filter(|c| grant.components.contains(c)).collect(),
                 });
                 continue;
             }
@@ -2615,7 +2701,7 @@ impl Pool {
                         && !engine.root_in_flight(seq) && self.allocations.holds(seq)
                     {
                         let name = holder.and_then(|record| record.submission.map(|s| s.request_id))
-                            .filter(|id| !id.is_empty()).unwrap_or_else(|| format!("request {seq}"));
+                            .filter(|id| !id.is_empty()).unwrap_or_else(|| "Another render".into());
                         // Nothing else will release its lane, and no command restarts a rented TensorD.
                         if let Some(lane) = self.allocations.release(seq) {
                             tracing::warn!(root, holder = seq, "the GPU lane {lane:?} of {name}, which has ended, was never released: released now");
@@ -2623,8 +2709,8 @@ impl Pool {
                         }
                         // A call slot is a thread's, which may still be on the card: that one isn't ours to take.
                         if self.allocations.holds(seq) {
-                            return Err(Some(format!("its GPU is held by a call of {name}, which has ended, and nothing \
-                                will release it; this call fails instead of waiting")));
+                            return Err(Some(format!("{name} ended but still holds the GPU this run needs, and nothing will \
+                                free it, so this run failed instead of waiting.")));
                         }
                         return self.root_lane(engine, root, claims);
                     }
@@ -2768,7 +2854,7 @@ impl Pool {
         if plan.degree == 0 {
             if !admit()? { return Ok(false); }
             let width = match record.invocation.gpus {
-                // Unpacked, it takes its narrowest width: never wider than proven (cr-268).
+                // Unpacked (its queue's packing failed), its narrowest width.
                 0 => width.or_else(|| record.invocation.widths.first().copied())
                     .unwrap_or_else(|| held.record.widest_group(self.serving_width()).min(1)) as usize,
                 gpus => gpus as usize,
@@ -3079,7 +3165,7 @@ impl Pool {
                 }
             });
         if let Err(error) = started {
-            tracing::warn!("kernel boot: {error}");
+            tracing::warn!(target: crate::config::MACHINE, "kernel boot: {error}");
         }
     }
 
@@ -3162,7 +3248,7 @@ impl Pool {
             }
             Err(error) => line["failed"] = error.to_string().into(),
         }
-        tracing::info!("kernel boot: {line}");
+        tracing::info!(target: crate::config::MACHINE, "kernel boot: {line}");
         let written = fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -3484,7 +3570,12 @@ impl Pool {
 
     /// The caller first proves this project has no active work/finalization. Public executors are untouched.
     pub(crate) fn close_private_namespace(&self, scope: &api::machine::LocalPrivateStorage) -> io::Result<()> {
-        let id = &scope.project_id;
+        self.close_project_namespace(&scope.project_id)
+    }
+
+    /// Project `id`'s executors and memo tier go: its storage closes, or its folder is gone (cl-1031).
+    pub(crate) fn close_project_namespace(&self, id: &str) -> io::Result<()> {
+        let id = &id.to_owned();
         let keys: Vec<_> = self.sessions.lock().unwrap().iter()
             .filter(|(_, session)| session.private_project.as_ref() == Some(id)).map(|(key, _)| key.clone()).collect();
         for key in keys { self.end_session(&key); }
@@ -3608,6 +3699,17 @@ impl Pool {
             }
         };
         *disposition = Disposition::Unknown(executor_births(&session.executor.birth, &session.followers));
+        // A project's call keeps its files in its project only on a Runtime with per-call scratch (cl-1055): on an older one they'd land
+        // in this executor's own folders, so it doesn't start. Calcifer moves the machine first; this is for what got past that.
+        if private.is_some() && !api::release::on_runtime_minor(&session.executor.hello.runtime_version) {
+            let said = format!("this machine's Runtime {} can't keep a project's files in the project: `cozy machine update local` moves it",
+                session.executor.hello.runtime_version);
+            if let Some(cancel) = cancellation.lock().unwrap().as_ref() { cancel.disable(); }
+            engine.returned_managed(id, &session.executor.birth)?;
+            *disposition = self.keep_idle(engine, session)?;
+            engine.finish(id, Outcome::Failed(Failure::machine("runtime_outdated", said)))?;
+            return Ok(None);
+        }
         // A shared executor's memoized stages are this run's project's, or the machine's for a run of none (cl-984).
         let mut session = session;
         session.executor.keep_memo(match &private { Some(scope) => self.memo_for_private(scope)?, None => self.memo.clone() });
@@ -4437,7 +4539,7 @@ fn with_end(error: io::Error, ended: &device_executor::Ended, stderr: &str) -> i
     let why = match (oom, &crash) {
         (true, _) => host_out_of_memory(),
         (false, Some(crash)) => crash.clone(),
-        (false, None) => format!("the executor ended on its own ({})", ended.status),
+        (false, None) => format!("The process running this ended unexpectedly ({}).", ended.status),
     };
     match refused(&error) {
         Some(_) => error,
@@ -4463,8 +4565,8 @@ fn crashed(signal: i32, stderr: &str) -> Option<String> {
     };
     let frame = stderr.lines().rev().find_map(|line| line.strip_prefix("executor crashed: ")?.strip_prefix(name)?.strip_prefix(" in "));
     Some(match frame {
-        Some(frame) => format!("executor crashed: {name} in {}", crate::triage::ends(frame.trim(), 240)),
-        None => format!("executor crashed: {name}"),
+        Some(frame) => format!("The process running this crashed ({name} in {}).", crate::triage::ends(frame.trim(), 240)),
+        None => format!("The process running this crashed ({name})."),
     })
 }
 #[cfg(not(unix))]
@@ -4474,16 +4576,16 @@ fn crashed(_: i32, _: &str) -> Option<String> {
 
 /// Why the kernel killed an executor for host memory, in this machine's numbers.
 fn host_out_of_memory() -> String {
-    let gib = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;
+    let size = crate::reclaim::size;
     match platform::contain::budget() {
         Some(budget) => format!(
-            "the computer ran out of memory for this run: the kernel stopped its executor at this machine's \
-             {:.1} GiB limit, which keeps {:.1} GiB for the computer's other programs",
-            gib(budget.max), gib(budget.reserve)
+            "This computer ran out of memory for this run, so the system stopped it at this machine's {} limit, which keeps {} \
+             for the computer's other programs.",
+            size(budget.max), size(budget.reserve)
         ),
         None => format!(
-            "the host ran out of memory for this run: the kernel stopped its executor at {:.1} GiB",
-            gib(u64::try_from(host_memory::read().bound).unwrap_or(0))
+            "This machine ran out of memory for this run, so the system stopped it at {}.",
+            size(u64::try_from(host_memory::read().bound).unwrap_or(0))
         ),
     }
 }
@@ -4499,7 +4601,7 @@ fn unsettled(reply: &Frame, lost: &str) -> Refused {
         Some(o) if !o.code.is_empty() && o.code != "ok" => (o.code.as_str(), o.message.as_str()),
         _ if !reply.ok && !reply.code.is_empty() => (reply.code.as_str(), reply.detail.as_str()),
         _ if !reply.poisoned.is_empty() => ("executor_poisoned", reply.poisoned.as_str()),
-        _ => ("executor_poisoned", "the executor named no reason"),
+        _ => ("executor_poisoned", "The process running this stopped without saying why."),
     };
     Refused { code: code.into(), detail: detail.into() }
 }
@@ -4847,8 +4949,14 @@ fn refused(error: &io::Error) -> Option<&Refused> {
 /// kernels that served, Sol's dense and sparse calls), its residency (graph counters) and the
 /// models it ran, as resolved.
 pub(crate) fn record_measurements(engine: &Engine, id: &str, plan: &Plan, reply: &Frame, driver: &[platform::gpu::Used]) {
-    let software = engine.get(id).ok().and_then(|run| run.executor.map(|executor| executor.software(run.attempt)));
-    let measurements = measured(plan, reply, software, call_memory(reply, driver));
+    let run = engine.get(id).ok();
+    // What the machine had of its weights and what it fetched for it (`journal::Account`, cl-1102).
+    let weights = run.as_ref().and_then(|run| run.needs);
+    let software = run.and_then(|run| run.executor.map(|executor| executor.software(run.attempt)));
+    let mut measurements = measured(plan, reply, software, call_memory(reply, driver));
+    if let Some(weights) = weights {
+        measurements["weights"] = serde_json::json!(weights);
+    }
     let recorded = serde_json::to_vec(&measurements)
         .map_err(io::Error::other)
         .and_then(|bytes| engine.with_journal(|journal| journal.record_measurements(id, &bytes)));

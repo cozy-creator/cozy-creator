@@ -95,14 +95,16 @@ impl Sums {
 
 /// The RC's prereleases, read at most once a [`FRESH`].
 #[derive(Default)]
-pub(crate) struct Rc {
+pub(crate) struct Rc(Arc<Read>);
+
+#[derive(Default)]
+struct Read {
     read: tokio::sync::Mutex<Option<(Instant, Arc<Sums>)>>,
     last: Mutex<Option<Arc<Sums>>>,
 }
 
-impl Rc {
-    /// What the RC's prereleases name now.
-    pub(crate) async fn now(&self) -> Result<Arc<Sums>, Error> {
+impl Read {
+    async fn now(&self) -> Result<Arc<Sums>, Error> {
         let mut read = self.read.lock().await;
         if let Some((_, sums)) = read.as_ref().filter(|(at, _)| at.elapsed() < FRESH) {
             return Ok(sums.clone());
@@ -115,15 +117,38 @@ impl Rc {
         *self.last.lock().expect("rc lock") = Some(sums.clone());
         Ok(sums)
     }
+}
+
+impl Rc {
+    /// What the RC's prereleases name now: as last read, read again behind the answer when older than [`FRESH`], one read at a time.
+    /// Only a Calcifer that never read them waits for a read. A submit on an RC machine waited 12 s behind `follow_rcs`' read, which
+    /// held the lock across GitHub (cl-1010).
+    pub(crate) async fn now(&self) -> Result<Arc<Sums>, Error> {
+        let Some(last) = self.last() else { return self.0.now().await };
+        let stale = match self.0.read.try_lock() {
+            Ok(read) => read.as_ref().is_none_or(|(at, _)| at.elapsed() >= FRESH),
+            // A read is going: what was read stands meanwhile.
+            Err(_) => false,
+        };
+        if stale {
+            let read = self.0.clone();
+            tokio::spawn(async move {
+                if let Err(e) = read.now().await {
+                    warn!("the open RC's builds: {}", e.message);
+                }
+            });
+        }
+        Ok(last)
+    }
 
     /// What they named when last read, without reading them.
     pub(crate) fn last(&self) -> Option<Arc<Sums>> {
-        self.last.lock().expect("rc lock").clone()
+        self.0.last.lock().expect("rc lock").clone()
     }
 }
 
-/// How long a read of the RC's newest Runtime build stands for a lock or a floor check: each Runtime merge replaces the RC's
-/// prerelease, its older wheels gone with it.
+/// How long a read of the RC's newest Runtime build stands for a lock or a floor check: each Runtime merge makes a newer one
+/// (the prerelease keeps the newest 20, so a lock on one read before stays good).
 const RUNTIME_FRESH: Duration = Duration::from_secs(20);
 
 /// The open RC's newest Runtime build: its pure wheel and that wheel's URL (cl-952), read at most once a [`RUNTIME_FRESH`]. What
@@ -181,26 +206,9 @@ pub(crate) async fn held_cozy(build: &Build, url: &str) -> Result<DevBuild, Erro
     Ok(held)
 }
 
-/// Whether an update's words (`runtime 0.45.0 (prerelease), mode dedicated`) read as software named by hand: a component
-/// not marked `(RC)` or `(Hub)`, as one with nothing named moves it. Only a store from before holds were kept reads words
-/// this way (`hold_of`); an update now says whether it named anything (`mind_hold`).
-fn by_hand(target: &str) -> bool {
-    target.split(", ").any(|named| software(named) && !named.ends_with("(RC)") && !named.ends_with("(Hub)"))
-}
-
 /// Whether an update under `key` is one Calcifer made itself: to the RC, to this cozy's minor, for a package's floor.
 fn calcifers(key: &str) -> bool {
     ["rc-", "minor-", FLOOR].iter().any(|prefix| key.starts_with(prefix))
-}
-
-/// The hold a completed update (under `key`, named `target`) leaves its machine: its words when it named software by hand, none
-/// when it named software otherwise, and nothing to say when it named none. What a store from before holds were kept reads
-/// its machines' holds from (`store::held_column`).
-pub(crate) fn hold_of(key: &str, target: &str) -> Option<Option<String>> {
-    if calcifers(key) || !target.split(", ").any(software) {
-        return None;
-    }
-    Some(by_hand(target).then(|| target.to_owned()))
 }
 
 /// Whether an update's named component is software (`runtime 0.45.0`), not a mode or a GPU memory limit.
@@ -242,6 +250,15 @@ impl Machines {
         (self.dev && (rental || local)).then_some(row)
     }
 
+    /// Whether `name` is a rental that follows the RC and hasn't said it's ready (cl-1069): it moves to the RC at boot, before it
+    /// takes work, and until it is ready it can't be told behind or not. Work sent now would run on its image's software
+    /// (LAB2-47826: a checkout package needing the RC's Runtime, refused on the 0.25.0 image's 0.46.0).
+    pub(crate) fn booting_for_rc(&self, name: &str) -> bool {
+        self.follows(name).is_some_and(|row| row.kind == MachineKind::Rental)
+            && self.held_by_hand(name).is_none()
+            && self.frame(name).is_none_or(|frame| frame.phase == "booting")
+    }
+
     /// Moves `name` to the open RC's builds when it follows the RC, is behind it, isn't held by hand and has no work going (nor,
     /// unless `sending`, any waiting for it): the update run to wait for. None when nothing moves, or the RC can't be read
     /// (its runs go on what it runs).
@@ -267,11 +284,17 @@ impl Machines {
             None => self.rc.now().await.inspect_err(|e| warn!(machine = name, "the open RC's builds: {}", e.message)).ok()?,
         };
         let behind = sums.behind(&frame.platform, [frame.runtime.as_str(), frame.tensorfs.as_str(), frame.version.as_str()], local);
-        if behind.is_empty() {
+        // `local` runs the cozy installed here (xs-195, cl-1029): once an install replaced it, its TensorD moves to it at rest, whether or not
+        // the RC's Runtime and TensorFS moved too (the update carries it: `cozy X (installed)`).
+        let installed = match local {
+            true => crate::update::installed(self).await.filter(|installed| *installed != frame.version),
+            false => None,
+        };
+        if behind.is_empty() && installed.is_none() {
             return None;
         }
         let rental = row.rental_id.as_deref().unwrap_or(name);
-        let wanted: Vec<&str> = behind.iter().map(|(_, version)| version.as_str()).collect();
+        let wanted: Vec<&str> = behind.iter().map(|(_, version)| version.as_str()).chain(installed.as_deref()).collect();
         let key = format!("rc-{rental}-{}-{}", frame.boot_id, wanted.join("-"));
         match self.update(&key, name, MachineUpdate::default()).await {
             Ok((updating, fresh)) => {
@@ -295,7 +318,7 @@ impl Machines {
     pub(crate) async fn follow_rcs(self: Arc<Self>) {
         loop {
             let took = crate::took::Took::new("follow_rcs");
-            let up = match self.store().machines() {
+            let up = match self.store().live_machines() {
                 Ok(rows) => {
                     let local = |row: &&crate::store::MachineRow| {
                         row.kind == MachineKind::Local && crate::checkout::configured() && self.frame(&row.name).is_some_and(|frame| frame.phase == "ready")
@@ -335,15 +358,24 @@ impl Machines {
         if said.is_empty() {
             return follow("none", format!("rc-{} holds no build for {}", sums.rc, frame.platform));
         }
-        match sums.behind(&frame.platform, [frame.runtime.as_str(), frame.tensorfs.as_str(), frame.version.as_str()], local).is_empty() {
-            true => follow("current", said),
-            false if local => follow("behind", format!("moves to {said} once this computer has been at rest for {} s", AT_REST.as_secs())),
-            false => follow("behind", format!("moves to {said} once it has no work")),
+        // `local`'s cozy is the one installed here, as the follower last read it.
+        let installed = local.then(|| crate::update::installed_known(self)).flatten().filter(|installed| *installed != frame.version);
+        let behind = sums.behind(&frame.platform, [frame.runtime.as_str(), frame.tensorfs.as_str(), frame.version.as_str()], local);
+        match (behind.is_empty(), installed) {
+            (true, None) => follow("current", said),
+            (current, Some(installed)) => {
+                let cozy = format!("cozy {} (installed)", prerelease::shown(&installed));
+                let to = if current { cozy } else { format!("{said} · {cozy}") };
+                follow("behind", format!("moves to {to} once this computer has been at rest for {} s", AT_REST.as_secs()))
+            }
+            (false, None) if local => follow("behind", format!("moves to {said} once this computer has been at rest for {} s", AT_REST.as_secs())),
+            (false, None) => follow("behind", format!("moves to {said} once it has no work")),
         }
     }
 
     /// Whether a run to `machine` (`on`'s, or none yet for a rental to come) runs the open RC's Runtime: it does now, or in a
-    /// dev home it is (or will be) a rental that moves to the RC before its run. It takes packages built for the RC.
+    /// dev home it is (or will be) a rental that moves to the RC before its run. Its package releases resolve as any machine's
+    /// (cl-1109): being on the RC takes no prerelease.
     pub(crate) fn takes_rc(&self, machine: &str, on: &api::calcifer::On) -> bool {
         if let Some(frame) = self.frame(machine) {
             if prerelease::dev(&frame.runtime) {
@@ -361,14 +393,4 @@ impl Machines {
         prerelease::dev(&frame.runtime) || self.follows(name).is_some()
     }
 
-    /// The line a run on `name` says when it runs dev builds: `RC: Runtime 0.47.0.dev2260 · cozy 1a2b3c4d`.
-    pub(crate) fn rc_line(&self, name: &str) -> Option<String> {
-        let frame = self.frame(name)?;
-        let built: Vec<String> = [("Runtime", &frame.runtime), ("TensorFS", &frame.tensorfs), ("cozy", &frame.version)]
-            .into_iter()
-            .filter(|(_, version)| prerelease::dev(version))
-            .map(|(label, version)| format!("{label} {}", prerelease::shown(version)))
-            .collect();
-        (!built.is_empty()).then(|| format!("{name} runs RC builds: {}", built.join(" · ")))
-    }
 }

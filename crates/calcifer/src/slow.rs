@@ -1,6 +1,6 @@
 //! A run far slower than its function is known to take on its card and lane says so, naming the likely cause (cl-913). What it's
-//! known to take, its bar: this machine's runs of it, else runs on other machines of its card, else runs on another card scaled by
-//! the Hub's per-SKU speeds; at its lane and size (megapixels and steps as its time left reads them, and frames, tokens and media
+//! known to take, its bar: this machine's runs of it, else runs on other machines of its card, else its release's benchmarks (cl-1024:
+//! of its card, else another's scaled by the Hub's per-SKU speeds); at its lane and size (megapixels and steps as its time left reads them, and frames, tokens and media
 //! duration asked), never from a run itself slow or slowed (a hot GPU, a Runtime without its kernels). A run whose bar has stages is
 //! timed from its first one, so a cold start's load is no slowness, and what a run spends downloading weights is never counted. Far is 1.4× the bar and 20 s more: said once, as soon as its
 //! time so far is and a cause is known (`tick`), else at its end with what its record measured.
@@ -125,10 +125,7 @@ fn parts(target: &str) -> Option<(&str, &str, &str)> {
 }
 
 fn minutes(ms: f64) -> String {
-    match ms / 1e3 {
-        s if s < 90.0 => format!("{s:.0} s"),
-        s => format!("{:.1} min", s / 60.0),
-    }
+    ::api::calcifer::clock(ms as i64)
 }
 
 impl Calcifer {
@@ -162,26 +159,21 @@ impl Calcifer {
             };
             return Some(Self::barred(prior.with_steps(steps), steps, &of, basis, 1.0, extent));
         }
-        // Another card's, scaled by the Hub's per-SKU speeds.
-        let machines = self.machines()?;
+        // Its release's benchmark (cl-1024): of its card, else another's scaled to it (estimated); at what it asks.
         let hub = row.hub.as_ref()?.to_string();
         let (package, release, function) = parts(&row.target)?;
-        let speeds = tokio::time::timeout(crate::toolbox::HUB_LATE, fit::speeds(&machines.hubs, &hub, package, release, function)).await.ok()?;
-        let to = *speeds.get(&card).filter(|speed| **speed > 0.0)?;
-        let mut cards: Vec<&str> = like.iter().map(|took| took.gpu.as_str()).filter(|other| !other.is_empty()).collect();
-        cards.sort_unstable();
-        cards.dedup();
-        (cards.into_iter())
-            .filter_map(|other| {
-                let speed = *speeds.get(&fit::card(other))?;
-                let prior = eta::Prior::of(&like, "", other, megapixels)?;
-                let of: Vec<&eta::Took> = like.iter().filter(|took| took.gpu == other).collect();
-                let basis = format!("{} runs on an {} scaled by the Hub's speeds", prior.runs, fit::card(other));
-                let extent = extent_of(&|took| took.gpu == other);
-                Some((prior.runs, Self::barred(prior.with_steps(steps), steps, &of, basis, speed / to, extent)))
-            })
-            .max_by_key(|(runs, _)| *runs)
-            .map(|(_, bar)| bar)
+        let machines = self.machines()?;
+        // The Hub's speeds for it, read as its placement is, so a speed-scaled benchmark has them.
+        let _ = tokio::time::timeout(crate::toolbox::HUB_LATE, fit::speeds(&machines.hubs, &hub, package, release, function)).await;
+        let references = crate::placement::references(&machines.hubs, std::slice::from_ref(&row.target));
+        let size = v1::JobSize::of(&Value::Object(asked.clone()));
+        let (warm_ms, _) = references.time(&row.target, &gpu, &size)?;
+        // Timed from its start, load and all: a cold run is held to the cold time where the benchmark has one.
+        let (total_ms, basis) = match references.measured(&row.target, &gpu, &size) {
+            Some((_, bench)) => (warm_ms * bench.cold_ms.map_or(1.0, |cold| cold as f64 / bench.warm_ms.max(1) as f64).max(1.0), format!("its release's benchmark of an {card}")),
+            None => (warm_ms, format!("an estimate from its release's benchmarks on other cards, scaled to an {card}")),
+        };
+        Some(Bar { total_ms, lead_ms: None, stages: vec![], width: 1, basis, extent: Extent::of(&asked) })
     }
 
     fn barred(prior: eta::Prior, steps: Option<u64>, of: &[&eta::Took], basis: String, scale: f64, extent: Extent) -> Bar {
@@ -243,7 +235,7 @@ impl Calcifer {
             return;
         }
         let message = format!(
-            "run {} has run {} so far, {times:.1}× the {} {} takes here ({}){}",
+            "Run {} has been running for {}, {times:.1}× the {} that {} usually takes here (based on {}){}",
             self.run_name(&row),
             minutes(took),
             minutes(allowed),
@@ -251,7 +243,7 @@ impl Calcifer {
             bar.basis,
             likely(&causes)
         );
-        self.say_slow(id, message);
+        self.say_slow(id, message, crate::project::vault::encrypted_within(&row.out_dir));
     }
 
     /// As it ends with `outcome`, before it settles (what lands of it carries its warnings): far past its bar, it says so with what
@@ -282,7 +274,7 @@ impl Calcifer {
         let width = lock(&self.live).get(id).map_or(0, |live| live.width);
         let causes = self.causes(&row, &machine, Some(outcome), width, &bar);
         let message = format!(
-            "run {} took {}, {times:.1}× the {} {} takes here ({}){}",
+            "Run {} took {}, {times:.1}× the {} that {} usually takes here (based on {}){}",
             self.run_name(&row),
             minutes(took_ms),
             minutes(allowed),
@@ -290,18 +282,20 @@ impl Calcifer {
             bar.basis,
             likely(&causes)
         );
-        self.say_slow(id, message);
+        self.say_slow(id, message, crate::project::vault::encrypted_within(&row.out_dir));
     }
 
-    fn say_slow(&self, id: &RunId, message: String) {
+    /// Said on the run's own record; logged too unless it's an encrypted project's, whose runs no log outside it names (cl-1060).
+    fn say_slow(&self, id: &RunId, message: String, private: bool) {
         if let Some(live) = lock(&self.live).get_mut(id) {
             live.slow_said = true;
         }
-        tracing::warn!(run = %id, "{message}");
+        if !private { tracing::warn!(run = %id, "{message}"); }
         let warning = Warning { code: SLOW_RUN.into(), message };
         match self.with_run_store(id.as_str(), |store| store.warn(id.as_str(), &warning)) {
             Ok(events) => self.publish(id, events),
-            Err(error) => tracing::warn!(run = %id, "{SLOW_RUN} not kept: {error}"),
+            Err(error) if !private => tracing::warn!(run = %id, "{SLOW_RUN} not kept: {error}"),
+            Err(error) => tracing::warn!("{SLOW_RUN} not kept: {error}"),
         }
     }
 
@@ -346,22 +340,22 @@ impl Calcifer {
         hot.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.total_cmp(&a.1)));
         hot.dedup_by_key(|(gpu, _)| *gpu);
         for (gpu, share) in hot {
-            causes.push(format!("GPU {gpu} throttled for heat {:.0}% of the time", share * 100.0));
+            causes.push(format!("GPU {gpu} slowed down from heat {:.0}% of the time", share * 100.0));
         }
         if codes.contains(&"gpu_throttled") && causes.is_empty() {
-            causes.push("a GPU throttled for heat".into());
+            causes.push("a GPU slowed down from heat".into());
         }
         if without {
-            causes.push("its machine's Runtime serves no native kernels (slower GEMMs, no FlashAttention-3)".into());
+            causes.push("the machine's Runtime has no native kernels (slower GEMMs, no FlashAttention-3)".into());
         }
         if building > 0 {
-            causes.push(format!("Sol attention ran dense in {building} calls while its kernel built"));
+            causes.push(format!("Sol attention ran dense in {building} calls while its kernel was building"));
         }
         if compiled > 0 {
-            causes.push(format!("{compiled} kernels compiled during it"));
+            causes.push(format!("{compiled} kernels compiled during the run"));
         }
         if degree > 0 && degree != bar.width {
-            causes.push(format!("it ran on {degree} GPUs, its bar's runs on {}", bar.width));
+            causes.push(format!("it ran on {degree} GPUs, but the runs it's compared with used {}", bar.width));
         }
         causes
     }
@@ -369,7 +363,7 @@ impl Calcifer {
 
 fn likely(causes: &[String]) -> String {
     match causes {
-        [] => ". No cause found in its record: cozy run watch --full shows it".into(),
-        causes => format!(". Likely: {}", causes.join("; ")),
+        [] => ". Cozy found no cause in its record.".into(),
+        causes => format!(". Likely cause: {}.", causes.join("; ")),
     }
 }

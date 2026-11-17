@@ -3,7 +3,8 @@
 //! that does not start, answers nothing while its process makes no progress, or runs another cozy
 //! than the installed one is restarted, which never stops work (machines run what they accepted).
 //! Then project folders other accounts may open, this computer's tools, and a machine's driver, GPUs,
-//! toolchain and kernels as its Status reports them. Exit 1 while a problem remains.
+//! toolchain and kernels as its Status reports them. Exit 1 while a problem remains. `--fix` first installs what this computer
+//! lacks of what cozy needs, as the installers do (cl-1030): `tools::fix`.
 use std::{
     path::Path,
     process::{Command, ExitCode, Stdio},
@@ -39,6 +40,10 @@ pub(crate) struct Args {
     /// Machine to check. Defaults to this computer.
     #[arg(long)]
     on: Option<String>,
+    /// Install what this computer lacks first: system packages (asking once before sudo) and the tools cozy
+    /// otherwise fetches when a feature first needs them. The installers run it.
+    #[arg(long)]
+    fix: bool,
 }
 
 /// One finding: what was looked at, what it is, and what doctor did about it.
@@ -64,6 +69,9 @@ impl Check {
 }
 
 pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
+    if args.fix {
+        crate::tools::fix(ctx).await;
+    }
     let mut checks = calcifer(ctx).await;
     let up = checks.iter().all(|c| c.ok);
     checks.push(service(ctx));
@@ -77,7 +85,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         None => match api::calcifer::local_usable("local") {
             Ok(()) => Some("local".to_owned()),
             Err(off) => {
-                checks.push(Check::ok("machine", format!("{}; {}", off.message, off.remedy.unwrap_or_default())));
+                checks.push(Check::ok("machine", [off.message, off.remedy.unwrap_or_default()].join(" ").trim_end().to_owned()));
                 None
             }
         },
@@ -151,17 +159,34 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     Ok(code)
 }
 
-/// Each project folder other accounts on this computer may open, a line each: Calcifer makes them its account's alone.
+/// Each project folder accounts outside its owner's (and their group) may open, shut to them; a line only for one that couldn't be.
 async fn folders(ctx: &Context) -> Vec<Check> {
     let Ok(client) = ctx.calcifer().await else { return vec![] };
     let Ok(listed) = client.get::<api::calcifer::project::Projects>("/v1/projects?limit=1000").await else { return vec![] };
-    let loosened = listed.projects.into_iter().filter(|project| platform::durable::others_may_open(&project.path).unwrap_or(false));
-    loosened.map(|project| {
-        let path = project.path.display();
-        let fix = if cfg!(windows) { "give only your account access to it".to_owned() } else { format!("chmod 700 {path}") };
+    // What the legacy cut keeps for projects (cl-1003): files gone before it could copy them in (said, nothing to fix), and the files
+    // it holds for projects not opened since, with how to let them go.
+    let cut = client.get::<api::calcifer::CutFiles>("/v1/cut").await.unwrap_or_default();
+    let mut lost: Vec<Check> = cut.lost.into_iter()
+        .map(|lost| Check::ok("project files", format!("warning: {} files of {} were lost before this upgrade", lost.files, lost.path.display()))).collect();
+    if cut.held_projects > 0 {
+        lost.push(Check::ok("project files", format!(
+            "{} of old files are held on this computer for {} projects not opened since the upgrade (moved, deleted or still locked): \
+             open or unlock each at the folder it had then to copy them in, or delete {} to let them go (an encrypted project not \
+             unlocked since loses its old files kept on this computer too)",
+            crate::output::bytes(cut.held_bytes), cut.held_projects, cut.kept.display())));
+    }
+    if cut.old_outputs_waiting > 0 {
+        lost.push(Check::ok("project files", format!(
+            "the old landing folder {} stays for {} projects not opened since the upgrade (still locked, or unreadable), which may show \
+             files in it: open or unlock each, or delete {} to let it go",
+            cut.old_outputs.display(), cut.old_outputs_waiting, cut.old_outputs.display())));
+    }
+    let loosened = listed.projects.into_iter().filter(|project| platform::durable::open_to_others(&project.path).unwrap_or(false));
+    loosened.filter_map(|project| {
+        let e = platform::durable::shut_to_others(&project.path).err()?;
         // A warning: the project still opens, as it did.
-        Check::ok("project folder", format!("warning: other accounts on this computer can open {path}: {fix}"))
-    }).collect()
+        Some(Check::ok("project folder", format!("warning: other accounts on this computer can open {}, and it couldn't be shut to them: {e}", project.path.display())))
+    }).chain(lost).collect()
 }
 
 /// Calcifer's lock record and whether it answers, running the installed cozy: each problem found,
@@ -174,15 +199,7 @@ async fn calcifer(ctx: &Context) -> Vec<Check> {
     let mut checks = vec![];
     // What it needs, and why.
     let (stop, why) = match client.lock_state() {
-        Lock::Free { stale } => {
-            if stale {
-                checks.push(Check::ok(
-                    "lock record",
-                    "named a Calcifer killed before it let go; the next one replaces it",
-                ));
-            }
-            (false, "not running".to_owned())
-        }
+        Lock::Free => (false, "not running".to_owned()),
         Lock::Captive => match captive(ctx, &mut checks, None) {
             Some(why) => (false, why),
             None => return checks,

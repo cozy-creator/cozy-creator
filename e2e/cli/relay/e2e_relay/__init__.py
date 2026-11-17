@@ -1,9 +1,10 @@
 """An account's package that calls a root package: `relay` answers with the root stand-in minimax-h3-tools's `echo`."""
 
-import minimax_h3_tools
 import msgspec
 
 from cozy_runtime.author import App, call
+
+from .echo_calls import Text, echo
 
 app = App()
 
@@ -18,7 +19,7 @@ class Relayed(msgspec.Struct):
 
 
 async def relay(payload: Relay) -> Relayed:
-    echoed = await call(minimax_h3_tools.echo, payload=minimax_h3_tools.Text(text=payload.text))
+    echoed = await call(echo, Text(text=payload.text))
     return Relayed(text=echoed.text, release=echoed.release)
 
 

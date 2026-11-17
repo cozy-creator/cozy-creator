@@ -18,8 +18,16 @@
 //!   its place up at its next bytes to one waiting at an earlier job's order, and asks again from the byte it reached.
 //!   While an object at order 0 is under way (an emergency: what a running call reads now), every other request gives
 //!   way at its next bytes and nothing else starts, in every downloader of the process (`LINK`), so it has the whole
-//!   link; then the rest go on (cl-966). A transfer outside the downloader at an order (an install's packages, from
-//!   their own index) holds what comes after it in that downloader the same way while it lasts ([`Shared::give_way`]).
+//!   link; then the rest go on (cl-966). Software (order 1: an install's or an update's files) never waits for it.
+//!   While a need is under way (a weight before `BACKGROUND`: what a run reads before it starts), no background weight
+//!   starts and one in flight gives way at its next bytes, in every downloader of the process too: a guess never takes
+//!   the link from what a run waits on (cl-1101).
+//! - **Sharing (cl-1007).** Orders 0 and 1 are never paced. Weights (every later order) take the whole link, except while an
+//!   install downloads beside them ([`installing`]): its process group's own sockets, read once a second
+//!   ([`install_received`]), tell when it does and at what rate. Then the weights yield at once to a sixteenth of the most
+//!   the link has carried, and grow into whatever room the install leaves beyond its own rate: their reads are paced (the
+//!   receive window slows the sender) and their requests in flight capped. Where the install's sockets can't be read (macOS,
+//!   Windows), the weights take half the link while it runs.
 //! - **Tiers.** The local store, then the volume (when one is bound), then the origin. Every byte
 //!   enters the store's admission, which hashes it: wrong bytes are never admitted. A process sharing
 //!   the store that is fetching an object is waited for, not raced (tfs-142).
@@ -87,6 +95,25 @@ const GAIN: f64 = 1.1;
 /// The job a queue order names: its high 32 bits.
 fn job(priority: u64) -> u64 {
     priority >> 32
+}
+
+/// What a running call reads now (`model_need`): first, and every weight waits for it in every downloader (cl-966).
+pub const EMERGENCY: u64 = 0;
+/// Software: an install's or a machine update's files. Never held or paced; weights yield to it (cl-1007).
+pub const SOFTWARE: u64 = 1;
+
+/// Background weights: every order from here on (TensorD's: fetched ahead, guesses, prepared, warm sets). They wait for
+/// every need (cl-1101).
+pub const BACKGROUND: u64 = 2 + (1 << 62);
+
+/// Weights: every order after software's, the ones that wait for an emergency and share the link with an install.
+fn weights(order: u64) -> bool {
+    order > SOFTWARE
+}
+
+/// A need: a weight a run waits on before it starts, which every background weight waits for.
+fn need(order: u64) -> bool {
+    weights(order) && order < BACKGROUND
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -199,14 +226,16 @@ pub struct Fetching {
 static DOWNLOADERS: AtomicU64 = AtomicU64::new(0);
 
 /// The one link every downloader of this process shares, whichever store each fills (TensorD's: one per project's
-/// store): how many have an emergency under way, and each of them, woken when the last one ends. While any has
-/// one, every other downloader's requests wait as its own do.
+/// store): how many have an emergency under way, how many a need, and each of them, woken when the last one ends.
+/// While any has an emergency, every other downloader's requests wait as its own do; while any has a need, every
+/// other's background weights do.
 struct Link {
     urgent: AtomicUsize,
+    needing: AtomicUsize,
     sharers: Mutex<Vec<std::sync::Weak<Shared>>>,
 }
 
-static LINK: Link = Link { urgent: AtomicUsize::new(0), sharers: Mutex::new(Vec::new()) };
+static LINK: Link = Link { urgent: AtomicUsize::new(0), needing: AtomicUsize::new(0), sharers: Mutex::new(Vec::new()) };
 
 impl Link {
     /// A downloader's emergencies ended; the last on the link, what waits in every downloader asks again.
@@ -214,6 +243,19 @@ impl Link {
         if self.urgent.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.calmed();
         }
+    }
+
+    /// A downloader's needs ended; the last on the link, the background weights of every downloader ask again.
+    fn met(&self) {
+        if self.needing.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.calmed();
+        }
+    }
+
+    /// Whether a weight at `order` waits for another downloader's work: any weight for an emergency, a background
+    /// one for a need.
+    fn holds(&self, order: u64) -> bool {
+        self.urgent.load(Ordering::Acquire) > 0 || order >= BACKGROUND && self.needing.load(Ordering::Acquire) > 0
     }
 
     fn calmed(&self) {
@@ -225,6 +267,358 @@ impl Link {
             }
             None => false,
         });
+    }
+}
+
+/// The weights' share of the link (cl-1007), across every downloader of the process.
+static SHARE: std::sync::LazyLock<Share> = std::sync::LazyLock::new(Share::default);
+
+/// An install under way on this computer, until it drops ([`installing`]).
+pub struct Installing(());
+
+/// Until the guard drops, an install is under way: while it downloads (its packages from their index, its files here at
+/// [`SOFTWARE`]), the weights of every downloader of the process leave it the link but a share (cl-1007). What it downloads
+/// comes from [`install_received`]; where that can't be read, the weights take half the link while it runs.
+pub fn installing() -> Installing {
+    if SHARE.installs.fetch_add(1, Ordering::AcqRel) == 0 {
+        *lock(&SHARE.install) = Install::default();
+    }
+    Installing(())
+}
+
+/// What the install under way received over the network since its last word, its process group's own sockets read once a second
+/// (`platform::net::Received`); None where they can't be read.
+pub fn install_received(bytes: Option<u64>) {
+    let mut install = lock(&SHARE.install);
+    let now = Instant::now();
+    match bytes {
+        Some(bytes) => {
+            // Over the time since its last word, a second when that is long ago (a step's first).
+            let seconds = install.at.map_or(1.0, |at| now.duration_since(at).as_secs_f64()).clamp(0.2, 1.0);
+            (install.rate, install.at, install.readable) = (bytes as f64 / seconds, Some(now), Some(true));
+        }
+        None => {
+            install.readable.get_or_insert(false);
+        }
+    }
+}
+
+impl Drop for Installing {
+    fn drop(&mut self) {
+        if SHARE.installs.fetch_sub(1, Ordering::AcqRel) == 1 {
+            SHARE.whole("the install ended");
+        }
+    }
+}
+
+/// Whether a weight at `order` reads at its share now.
+fn paced(order: u64) -> bool {
+    weights(order) && SHARE.paced()
+}
+
+/// A paced weight's tokens may gather for this long at most: a pause earns no flood after it.
+const BURST: f64 = 0.1;
+/// The share grows only after the install's rate held this long: a TCP flow takes seconds to grow into new room, and a share
+/// that grew faster would fill that room first.
+const STEADY: Duration = Duration::from_secs(2);
+/// The link's highest rate halves over this while the weights get less than they may: what it carries now soon outweighs an
+/// old high (an earlier, faster link; a congested host), which would let the weights grow into room that isn't there.
+const FORGET: Duration = Duration::from_secs(3);
+
+/// While an install downloads, the weights read at an allowance, on as few requests as it needs. It is judged once a ramp
+/// window (`Share::judge`) from what the install's own sockets received (`install_received`) and what ours did.
+#[derive(Default)]
+struct Share {
+    installs: AtomicUsize,
+    /// Bytes every downloader received: weights', and the rest (emergencies, software).
+    weights: AtomicU64,
+    others: AtomicU64,
+    /// The weights' allowance in bytes/s (f64 bits); 0 while they take the whole link.
+    allowance: AtomicU64,
+    /// Weight requests receiving across every downloader, and the most there may be while paced.
+    flights: AtomicUsize,
+    cap: AtomicUsize,
+    /// What one weight request moves at full speed, bytes/s (f64 bits): the cap's unit.
+    connection: AtomicU64,
+    /// The install under way, as it says what it received.
+    install: Mutex<Install>,
+    judged: Mutex<Measured>,
+    /// The allowance moved: a paced read waits for it no longer.
+    changed: Notify,
+}
+
+/// One weight request's pace: what it read beyond what its share of the allowance has earned is a debt it waits out before it
+/// reads again, so its kernel buffer fills and the receive window holds the sender to that pace.
+#[derive(Default)]
+struct Pacer {
+    tokens: f64,
+    at: Option<Instant>,
+}
+
+impl Pacer {
+    /// Earned at `rate` since the last look, at most `BURST` of it.
+    fn earn(&mut self, rate: f64) {
+        let now = Instant::now();
+        let earned = self.at.map_or(0.0, |at| now.duration_since(at).as_secs_f64() * rate);
+        (self.tokens, self.at) = ((self.tokens + earned).min(rate * BURST), Some(now));
+    }
+
+    fn spend(&mut self, bytes: usize) {
+        self.tokens -= bytes as f64;
+    }
+}
+
+#[derive(Default)]
+struct Install {
+    /// Bytes/s its sockets received at its last word, and when that came; whether they can be read here.
+    rate: f64,
+    at: Option<Instant>,
+    readable: Option<bool>,
+}
+
+#[derive(Default)]
+struct Measured {
+    at: Option<Instant>,
+    /// The weights' and the others' bytes at the last window.
+    seen: Option<(u64, u64)>,
+    /// The most the link has carried, ours and the install's (bytes/s).
+    capacity: f64,
+    /// The weights' rate and the install's, each smoothed over about two seconds: a paced request reads in whole frames.
+    weights: f64,
+    install: f64,
+    /// When the share last moved on its own, and the install's rate then (`STEADY`).
+    decided: Option<Instant>,
+    install_then: f64,
+    /// An install's download is under way, and the quiet windows in a row since.
+    downloading: bool,
+    quiet: u32,
+}
+
+impl Share {
+    fn paced(&self) -> bool {
+        self.allowance.load(Ordering::Acquire) != 0
+    }
+
+    /// Every request the paced weights may have is receiving: no other starts.
+    fn full(&self) -> bool {
+        self.paced() && self.flights.load(Ordering::Acquire) >= self.cap.load(Ordering::Acquire)
+    }
+
+    fn counted(&self, order: u64, bytes: usize) {
+        match weights(order) {
+            true => &self.weights,
+            false => &self.others,
+        }
+        .fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+
+    /// A weight range that moved at `rate` unpaced: one request's worth.
+    fn connected(&self, rate: f64) {
+        let was = f64::from_bits(self.connection.load(Ordering::Acquire));
+        let now = if was > 0.0 { 0.8 * was + 0.2 * rate } else { rate };
+        self.connection.store(now.to_bits(), Ordering::Release);
+    }
+
+    /// Whether `pacer`'s request may read: its debt is earned back at its share of the allowance (each request's equal share).
+    /// False when the allowance or the cap moved meanwhile: the caller sees first whether it is now one request too many.
+    async fn earned(&self, pacer: &mut Pacer) -> bool {
+        loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            let allowance = f64::from_bits(self.allowance.load(Ordering::Acquire));
+            if allowance <= 0.0 {
+                *pacer = Pacer::default();
+                return true;
+            }
+            let rate = allowance / self.flights.load(Ordering::Acquire).max(1) as f64;
+            pacer.earn(rate);
+            if pacer.tokens >= 0.0 {
+                return true;
+            }
+            tokio::select! {
+                () = tokio::time::sleep(Duration::from_secs_f64(-pacer.tokens / rate)) => {}
+                () = changed => return false,
+            }
+        }
+    }
+
+    /// The weights take the whole link again; what waited for room starts.
+    fn whole(&self, why: &str) {
+        if self.allowance.swap(0, Ordering::AcqRel) == 0 {
+            return;
+        }
+        self.cap.store(usize::MAX, Ordering::Release);
+        self.changed.notify_waiters();
+        LINK.calmed();
+        tracing::info!(why, "weights take the whole link");
+    }
+
+    /// The weights read at `allowance` bytes/s on as many requests as that needs, two at least: one alone, its few packets
+    /// in flight lost at a full queue, waits out TCP's retransmission timer with the weights at nothing.
+    fn pace_at(&self, allowance: f64) {
+        let connection = f64::from_bits(self.connection.load(Ordering::Acquire));
+        let cap = match connection > 0.0 {
+            true => (allowance / connection).ceil().max(2.0) as usize,
+            false => 2,
+        };
+        let was = self.cap.swap(cap, Ordering::AcqRel);
+        let before = f64::from_bits(self.allowance.swap(allowance.max(1.0).to_bits(), Ordering::AcqRel));
+        // Fewer requests: each paced one wakes to give its place up if it is one too many (`Flying::shed`), before it reads.
+        if cap < was {
+            self.changed.notify_waiters();
+        }
+        if before == 0.0 || cap > was {
+            LINK.calmed();
+        }
+    }
+
+    /// A weight request ended: one under a full cap lets another start.
+    fn landed(&self) {
+        let was = self.flights.fetch_sub(1, Ordering::AcqRel);
+        if self.paced() && was == self.cap.load(Ordering::Acquire) {
+            LINK.calmed();
+        }
+    }
+
+    /// One window of the link, judged by whichever downloader's ramp comes first.
+    fn judge(&self) {
+        let mut judged = lock(&self.judged);
+        let now = Instant::now();
+        if judged.at.is_some_and(|at| now.duration_since(at) < WINDOW / 2) {
+            return;
+        }
+        let since = judged.at.replace(now).map(|at| now.duration_since(at));
+        let counts = (self.weights.load(Ordering::Relaxed), self.others.load(Ordering::Relaxed));
+        let (Some(seen), Some(since)) = (judged.seen.replace(counts), since) else { return };
+        // The downloaders were idle between: measured from this window on, and what the link carried before counts for as
+        // little as that long ago does (another network, another cell's shaped link).
+        if since > 2 * WINDOW {
+            judged.capacity *= 0.5f64.powf(since.as_secs_f64() / FORGET.as_secs_f64());
+            return;
+        }
+        let seconds = since.as_secs_f64();
+        let (weights, others) = (counts.0.saturating_sub(seen.0) as f64 / seconds, counts.1.saturating_sub(seen.1) as f64 / seconds);
+        let (rate, readable) = {
+            let install = lock(&self.install);
+            // A word more than two of its seconds old: the step that said it ended, and nothing downloads.
+            (install.at.filter(|at| now.duration_since(*at) < 2 * Duration::from_secs(1)).map_or(0.0, |_| install.rate), install.readable)
+        };
+        // The install's download: its own sockets', with our software and emergency reads.
+        let install = rate + others;
+        let link = weights + install;
+        // The most the link carries. Weights with requests out that get less than they may (unpaced, or under their
+        // allowance) are held back by the link, which carries what it moved now: an old high halves every `FORGET`. Held to
+        // their allowance, they leave room by design, and only a higher rate moves it.
+        let allowance = f64::from_bits(self.allowance.load(Ordering::Acquire));
+        (judged.weights, judged.install) = (0.7 * judged.weights + 0.3 * weights, 0.7 * judged.install + 0.3 * install);
+        let limited = self.flights.load(Ordering::Acquire) > 0 && (allowance == 0.0 || judged.weights < 0.8 * allowance);
+        let link = link.min(judged.weights + judged.install);
+        judged.capacity = match limited {
+            true => link.max(judged.capacity * 0.5f64.powf(seconds / FORGET.as_secs_f64())),
+            false => link.max(judged.capacity),
+        };
+        let capacity = judged.capacity;
+        if self.installs.load(Ordering::Acquire) == 0 || capacity <= 0.0 {
+            judged.downloading = false;
+            drop(judged);
+            return self.whole("no install under way");
+        }
+        // Its sockets can't be read here: half the link while it runs, so neither starves the other.
+        if readable != Some(true) {
+            let blind = !self.paced();
+            drop(judged);
+            self.pace_at(capacity / 2.0);
+            if blind {
+                tracing::info!(capacity_mb_s = capacity / 1e6, "an install runs and its downloads can't be read here: weights take half the link");
+            }
+            return;
+        }
+        let quiet = install <= capacity / 1024.0;
+        let floor = (capacity / 16.0).max(1.0);
+        let next = match (judged.downloading, quiet) {
+            (false, true) => {
+                drop(judged);
+                return self.whole("the install downloads nothing now");
+            }
+            (true, true) => {
+                judged.quiet += 1;
+                if judged.quiet < 2 {
+                    return;
+                }
+                judged.downloading = false;
+                drop(judged);
+                return self.whole("the install's download paused");
+            }
+            // It started: the weights yield at once, then grow into what it leaves.
+            (false, false) => {
+                (judged.downloading, judged.quiet, judged.decided, judged.install_then) = (true, 0, Some(now), install);
+                floor
+            }
+            // Each `STEADY`: the install slowed, so the weights took what it needed: half as much, never under the floor. It held
+            // steady (it takes no more) with room beyond what it moves: a floor more. Rising, it is growing into the room: as is.
+            (true, false) => {
+                judged.quiet = 0;
+                if judged.decided.is_some_and(|at| now.duration_since(at) < STEADY) {
+                    allowance
+                } else {
+                    let (rate, then) = (judged.install, judged.install_then);
+                    (judged.decided, judged.install_then) = (Some(now), rate);
+                    let spare = (capacity - judged.weights - rate).max(0.0);
+                    if rate < 0.8 * then {
+                        allowance / 2.0
+                    } else if rate <= 1.1 * then && spare > rate {
+                        allowance + floor
+                    } else {
+                        allowance
+                    }
+                }
+            }
+        }
+        .clamp(floor, capacity.max(floor));
+        drop(judged);
+        self.pace_at(next);
+        let mb = |rate: f64| (rate / 1e4).round() / 1e2;
+        tracing::info!(install_mb_s = mb(install), weights_mb_s = mb(weights), capacity_mb_s = mb(capacity), allowance_mb_s = mb(next),
+            requests = self.cap.load(Ordering::Acquire), "link shared with an install");
+    }
+}
+
+/// A weight range's request, among the share's (`Share::flights`) until it ends or gives its place up.
+struct Flying(bool);
+
+impl Flying {
+    /// A place among the weights' requests for a range at `order` (any other needs none): None while the paced weights
+    /// have every request they may.
+    fn reserve(order: u64) -> Option<Flying> {
+        if !weights(order) {
+            return Some(Flying(false));
+        }
+        if !SHARE.paced() {
+            SHARE.flights.fetch_add(1, Ordering::AcqRel);
+            return Some(Flying(true));
+        }
+        let cap = SHARE.cap.load(Ordering::Acquire);
+        SHARE.flights.try_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < cap).then_some(n + 1)).ok().map(|_| Flying(true))
+    }
+
+    /// Whether it gives its place up: the paced weights have more requests receiving than their cap, one each surplus.
+    fn shed(&mut self, order: u64) -> bool {
+        if !self.0 || !weights(order) || !SHARE.paced() {
+            return false;
+        }
+        let cap = SHARE.cap.load(Ordering::Acquire);
+        let shed = SHARE.flights.try_update(Ordering::AcqRel, Ordering::Acquire, |n| (n > cap).then(|| n - 1)).is_ok();
+        self.0 &= !shed;
+        shed
+    }
+}
+
+impl Drop for Flying {
+    fn drop(&mut self) {
+        if self.0 {
+            SHARE.landed();
+        }
     }
 }
 
@@ -253,30 +647,14 @@ impl Waiter {
 }
 
 impl Drop for Shared {
-    /// Gone with an emergency still counted, it leaves the link.
+    /// Gone with an emergency or a need still counted, it leaves the link.
     fn drop(&mut self) {
         if self.on_link.swap(false, Ordering::AcqRel) {
             LINK.left();
         }
-    }
-}
-
-/// A transfer outside the downloader at its order (`Shared::give_way`): dropped, what waited for it goes on.
-pub struct GiveWay {
-    shared: Arc<Shared>,
-    order: u64,
-}
-
-impl Drop for GiveWay {
-    fn drop(&mut self) {
-        let mut queue = lock(&self.shared.queue);
-        if let Some(count) = queue.aside.get_mut(&self.order) {
-            *count -= 1;
-            if *count == 0 {
-                queue.aside.remove(&self.order);
-            }
+        if self.needing.swap(false, Ordering::AcqRel) {
+            LINK.met();
         }
-        self.shared.calmed(&queue);
     }
 }
 
@@ -295,16 +673,27 @@ struct Queue {
     seq: u64,
     /// Its tasks at order 0 (emergencies).
     urgent: usize,
-    /// Transfers outside the downloader, by order (`Shared::give_way`).
-    aside: BTreeMap<u64, usize>,
+    /// Its tasks at a need's order (`need`), started or not.
+    needed: usize,
 }
 
 impl Queue {
-    /// The order past which every request waits: 0 during an emergency, else the most urgent transfer outside.
+    /// The order past which every weight waits: 0 during an emergency, the last need's order while a need is under
+    /// way, else none.
     fn floor(&self) -> u64 {
-        match self.urgent {
-            0 => self.aside.keys().next().copied().unwrap_or(u64::MAX),
-            _ => 0,
+        match (self.urgent, self.needed) {
+            (0, 0) => u64::MAX,
+            (0, _) => BACKGROUND - 1,
+            _ => EMERGENCY,
+        }
+    }
+
+    /// A task at `order` joins its count (`by` 1) or leaves it (-1): an emergency's, or a need's.
+    fn count(&mut self, order: u64, by: isize) {
+        if order == EMERGENCY {
+            self.urgent = self.urgent.saturating_add_signed(by);
+        } else if need(order) {
+            self.needed = self.needed.saturating_add_signed(by);
         }
     }
 
@@ -312,9 +701,7 @@ impl Queue {
     fn remove(&mut self, task: &Arc<Task>) {
         if self.tasks.get(&task.object.sha256).is_some_and(|t| Arc::ptr_eq(t, task)) {
             self.tasks.remove(&task.object.sha256);
-            if task.priority.load(Ordering::Acquire) == 0 {
-                self.urgent -= 1;
-            }
+            self.count(task.priority.load(Ordering::Acquire), -1);
         }
     }
 
@@ -336,7 +723,7 @@ pub(crate) struct Shared {
     pub volume: Option<VolumeOrigin>,
     queue: Mutex<Queue>,
     queued: Notify,
-    /// A task's order moved earlier (`want`), or the floor rose: what waits for a place asks again.
+    /// A task's order moved earlier (`want`), the floor rose or the weights' share widened: what waits for a place asks again.
     moved: Notify,
     /// `Queue::floor`, read without the queue's lock.
     floor: AtomicU64,
@@ -348,6 +735,8 @@ pub(crate) struct Shared {
     id: u64,
     /// Whether it counts in `LINK.urgent`: an emergency of its own is under way.
     on_link: AtomicBool,
+    /// Whether it counts in `LINK.needing`: a need of its own is under way.
+    needing: AtomicBool,
     closed: AtomicBool,
     closing: Notify,
     /// Requests in flight, across every object, as many as the ramp allows (`Pace`).
@@ -375,10 +764,12 @@ pub(crate) struct Counters {
     pub steals: AtomicU64,
     /// Slow tails asked again on another connection (`HEDGES`).
     pub hedges: AtomicU64,
-    /// Bytes received from the origin, and the pacing windows (in ms) any of them arrived in: the
-    /// time the machine was pulling, with no wait in a queue or between pulls in it.
+    /// Bytes received from the origin, and the pacing windows (in ms) any of them arrived in, with the bytes of those
+    /// windows: the time the machine was pulling, with no wait in a queue or between pulls in it, nor a window the
+    /// weights were paced in (cl-1007).
     pub received: AtomicU64,
     pub receiving_ms: AtomicU64,
+    pub unpaced: AtomicU64,
     pub volume_written: AtomicU64,
     pub volume_skipped: AtomicU64,
     /// Answers that were not 2xx, by status.
@@ -611,6 +1002,10 @@ struct Pace {
     max: usize,
     /// The rate at the last doubling, and the bytes received when it last looked.
     last: Option<f64>,
+    /// The level before the last doubling: settling gives that doubling back when it didn't pay.
+    before: usize,
+    /// The last window received something: this one, if it did too, was spent whole on the transfer and measures it.
+    flowing: bool,
     seen: u64,
     /// Windows in a row since the last doubling that grew under `GAIN`.
     flat: u32,
@@ -663,7 +1058,7 @@ impl Slots {
     }
 
     /// Whether a range in flight at `order` gives its place up: every place is taken, and a range waits for one at an
-    /// earlier job's order, or at 0 (what a running call reads now).
+    /// earlier job's order, or at an emergency's or software's.
     fn outranked(&self, order: u64) -> bool {
         let mut places = lock(&self.0);
         if places.free > 0 {
@@ -675,7 +1070,7 @@ impl Slots {
                 continue;
             }
             let urgent = first.key().0;
-            return urgent < order && (urgent == 0 || job(urgent) < job(order));
+            return urgent < order && (!weights(urgent) || job(urgent) < job(order));
         }
         false
     }
@@ -751,6 +1146,7 @@ impl Shared {
             runtime: tokio::runtime::Handle::current(),
             id: DOWNLOADERS.fetch_add(1, Ordering::Relaxed),
             on_link: AtomicBool::new(false),
+            needing: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             closing: Notify::new(),
             slots: Slots::new(START.min(requests.max(1))),
@@ -844,21 +1240,24 @@ impl Shared {
         }
     }
 
-    /// One window of the ramp: true when nothing downloads.
+    /// One window of the ramp: true when nothing downloads. The link's share is judged on it too (`Share::judge`).
     fn window(&self) -> bool {
+        SHARE.judge();
         self.steal();
         self.hedge();
         let received = self.stats.received.load(Ordering::Relaxed);
         let mut pace = lock(&self.pace);
         let rate = (received - pace.seen) as f64 / WINDOW.as_secs_f64();
-        if received > pace.seen {
+        // What the link moves (th-364's report): a window the weights were paced in measures the share, not the link.
+        if received > pace.seen && !SHARE.paced() {
             self.stats.receiving_ms.fetch_add(WINDOW.as_millis() as u64, Ordering::Relaxed);
+            self.stats.unpaced.fetch_add(received - pace.seen, Ordering::Relaxed);
         }
         pace.seen = received;
         if self.busy.load(Ordering::Acquire) == 0 {
             let gone = pace.level.saturating_sub(START.min(pace.max));
             self.shrink(&mut pace, gone);
-            (pace.last, pace.settled, pace.flat) = (None, false, 0);
+            (pace.last, pace.settled, pace.flat, pace.flowing) = (None, false, 0, false);
             return true;
         }
         // Demand is requests waiting, or ranges in flight with halves left to take; the tail is a new
@@ -869,21 +1268,28 @@ impl Shared {
             (pace.last, pace.settled, pace.flat) = (None, false, 0);
         }
         pace.tail = tail;
-        if !(waiting || tail) || pace.settled || pace.level >= pace.max {
+        // Only a window spent whole on the transfer measures it: one that received nothing, or the first that did, is the requests'
+        // latency (th-378: cale's ramp doubled on 0 MB/s, then again on anything against that, to 64 streams on 28 MB/s).
+        let measured = rate > 0.0 && pace.flowing;
+        pace.flowing = rate > 0.0;
+        if !(waiting || tail) || pace.settled || pace.level >= pace.max || !measured {
             return false;
         }
-        // A doubling's new requests take more than a window to deliver: two flat windows settle it.
+        // A doubling's new requests take more than a window to deliver: two flat windows settle it, giving it back, as it
+        // bought nothing.
         if pace.last.is_some_and(|last| rate < last * GAIN) {
             pace.flat += 1;
             if pace.flat >= 2 {
                 pace.settled = true;
+                let gone = pace.level.saturating_sub(pace.before);
+                self.shrink(&mut pace, gone);
                 tracing::info!(streams = pace.level, mb_s = rate / 1e6, "streams settled");
             }
             return false;
         }
         pace.flat = 0;
         let grow = (pace.level * 2).min(pace.max) - pace.level;
-        (pace.level, pace.last) = (pace.level + grow, Some(rate));
+        (pace.before, pace.level, pace.last) = (pace.level, pace.level + grow, Some(rate));
         self.slots.add(grow);
         tracing::info!(streams = pace.level, mb_s = rate / 1e6, "more streams");
         false
@@ -899,15 +1305,15 @@ impl Shared {
         }
     }
 
-    /// `slot` takes the back half of the in-flight range with the most left of those not held whose object is an
-    /// earlier job's than order `before` (of any, when None), while that half is at least `STEAL`. The
-    /// slot back when there is none.
+    /// `slot` takes the back half of the in-flight range with the most left of those neither held nor paced whose object is
+    /// an earlier job's than order `before` (of any, when None), while that half is at least `STEAL`. The slot back when
+    /// there is none.
     fn take_half(&self, slot: Slot, before: Option<u64>) -> Option<Slot> {
         let flights = lock(&self.flights).clone();
         let urgent = |flight: &&Arc<Flight>| {
             flight.taken.as_ref().is_some_and(|(task, _)| {
                 let order = task.priority.load(Ordering::Acquire);
-                !self.held(order) && before.is_none_or(|before| job(order) < job(before))
+                !self.held(order) && !paced(order) && before.is_none_or(|before| job(order) < job(before))
             })
         };
         let most = flights.iter().filter(urgent).max_by_key(|flight| {
@@ -950,7 +1356,9 @@ impl Shared {
             }
             let rate = front.saturating_sub(judged.seen) as f64 / took.as_secs_f64();
             (judged.seen, judged.since) = (front, Instant::now());
-            if flight.stopped() || self.held(task.priority.load(Ordering::Acquire)) || reached >= end || end - reached >= 2 * STEAL || rate >= floor || judged.hedges >= HEDGES {
+            let order = task.priority.load(Ordering::Acquire);
+            // A paced weight is slow by design: asked again on another connection it would take more of the link.
+            if flight.stopped() || self.held(order) || paced(order) || reached >= end || end - reached >= 2 * STEAL || rate >= floor || judged.hedges >= HEDGES {
                 continue;
             }
             if sent >= HEDGES_AT_ONCE {
@@ -1004,12 +1412,12 @@ impl Shared {
         let task = match queue.tasks.get(&object.sha256).cloned() {
             Some(task) => {
                 task.waiters.fetch_add(1, Ordering::AcqRel);
-                if priority < task.priority.load(Ordering::Acquire) {
+                let was = task.priority.load(Ordering::Acquire);
+                if priority < was {
                     task.priority.store(priority, Ordering::Release);
-                    if priority == 0 {
-                        queue.urgent += 1;
-                        self.calmed(&queue);
-                    }
+                    queue.count(was, -1);
+                    queue.count(priority, 1);
+                    self.calmed(&queue);
                     if !task.started.load(Ordering::Acquire) {
                         queue.seq += 1;
                         let seq = queue.seq;
@@ -1046,10 +1454,8 @@ impl Shared {
                 let seq = queue.seq;
                 queue.heap.push(Reverse((priority, seq, object.sha256.clone())));
                 queue.tasks.insert(object.sha256.clone(), Arc::clone(&task));
-                if priority == 0 {
-                    queue.urgent += 1;
-                    self.calmed(&queue);
-                }
+                queue.count(priority, 1);
+                self.calmed(&queue);
                 self.busy_one();
                 self.queued.notify_one();
                 task
@@ -1091,6 +1497,14 @@ impl Shared {
                 LINK.left();
             }
         }
+        let needing = queue.needed > 0;
+        if needing != self.needing.swap(needing, Ordering::AcqRel) {
+            if needing {
+                LINK.needing.fetch_add(1, Ordering::AcqRel);
+            } else {
+                LINK.met();
+            }
+        }
         if was != floor {
             self.floor_moved(was, floor);
         }
@@ -1118,24 +1532,20 @@ impl Shared {
         });
     }
 
-    /// Whether a request at `order` waits: an emergency (order 0, this downloader's or another's on the link) or a
-    /// transfer outside comes before it.
+    /// Whether a weight in flight at `order` gives way at its next bytes: an emergency is under way, or it is a background
+    /// weight and a need is, this downloader's or another's on the link.
     fn held(&self, order: u64) -> bool {
-        order > self.floor.load(Ordering::Acquire) || order != 0 && LINK.urgent.load(Ordering::Acquire) > 0
+        weights(order) && (order > self.floor.load(Ordering::Acquire) || LINK.holds(order))
     }
 
-    /// It shares the process's link (`LINK`): another downloader's last emergency ending wakes what waits here.
+    /// Whether nothing at `order` starts: it is held, or it is a weight and the weights' share has every request it may.
+    fn waits(&self, order: u64) -> bool {
+        self.held(order) || weights(order) && SHARE.full()
+    }
+
+    /// It shares the process's link (`LINK`): another downloader's last emergency or need ending wakes what waits here.
     pub(crate) fn join_link(self: &Arc<Self>) {
         lock(&LINK.sharers).push(Arc::downgrade(self));
-    }
-
-    /// Until the guard drops, what comes after `order` waits as during an emergency: a transfer outside the
-    /// downloader at that order (an install's packages, from their index) has the link.
-    pub(crate) fn give_way(self: &Arc<Self>, order: u64) -> GiveWay {
-        let mut queue = lock(&self.queue);
-        *queue.aside.entry(order).or_default() += 1;
-        self.calmed(&queue);
-        GiveWay { shared: Arc::clone(self), order }
     }
 
     /// The most urgent task nobody has started that someone still wants, unless the floor holds it:
@@ -1157,7 +1567,7 @@ impl Shared {
                 queue.heap.pop();
                 continue;
             }
-            if priority > queue.floor() || priority != 0 && LINK.urgent.load(Ordering::Acquire) > 0 {
+            if weights(priority) && (priority > queue.floor() || LINK.holds(priority) || SHARE.full()) {
                 break;
             }
             queue.heap.pop();
@@ -1221,7 +1631,7 @@ impl Shared {
                 tokio::pin!(notified);
                 notified.as_mut().enable();
                 let next = self.next();
-                if next.is_some_and(|next| self.held(next)) {
+                if next.is_some_and(|next| self.waits(next)) {
                     tokio::select! {
                         () = notified => continue,
                         () = self.closed() => return,
@@ -1422,35 +1832,38 @@ impl Shared {
     async fn part(&self, task: &Task, mut part: Part<'_>, here: &HttpLocation<'_>, slot: Option<Slot>) -> Result<()> {
         let mut slot = slot;
         loop {
-            let _place = match slot.take() {
-                Some(place) => place,
+            let reserved = slot.take().and_then(|place| Some((place, Flying::reserve(task.priority.load(Ordering::Acquire))?)));
+            let (_place, mut flying) = match reserved {
+                Some(reserved) => reserved,
                 None => self.place(task).await,
             };
-            if self.range(task, here, &mut part).await? {
+            if self.range(task, here, &mut part, &mut flying).await? {
                 return Ok(());
             }
         }
     }
 
-    /// A place for one of `task`'s ranges at its order, asked again when that order moves earlier (`want`).
-    async fn place(&self, task: &Task) -> Slot {
+    /// A place for one of `task`'s ranges at its order, asked again when that order moves earlier (`want`), and a weight's
+    /// among the paced weights' requests (`Flying::reserve`).
+    async fn place(&self, task: &Task) -> (Slot, Flying) {
         let mut asked: Option<(u64, Asking<'_>)> = None;
         loop {
             let moved = self.moved.notified();
             tokio::pin!(moved);
             moved.as_mut().enable();
             let order = task.priority.load(Ordering::Acquire);
-            if self.held(order) {
+            let flying = (!self.held(order)).then(|| Flying::reserve(order)).flatten();
+            let Some(flying) = flying else {
                 asked = None;
                 moved.await;
                 continue;
-            }
+            };
             if asked.as_ref().is_none_or(|(at, _)| *at != order) {
                 asked = Some((order, Box::pin(self.slots.take(order))));
             }
             let (_, waiting) = asked.as_mut().expect("asked above");
             tokio::select! {
-                place = waiting => return place,
+                place = waiting => return (place, flying),
                 () = moved => {}
             }
         }
@@ -1458,13 +1871,13 @@ impl Shared {
 
     /// One range, asked again by the one rule (`ask`) from the byte reached, to its end. False: it gave its place up
     /// (`Failed::GaveWay`), its bytes so far written.
-    async fn range(&self, task: &Task, here: &HttpLocation<'_>, part: &mut Part<'_>) -> Result<bool> {
+    async fn range(&self, task: &Task, here: &HttpLocation<'_>, part: &mut Part<'_>, flying: &mut Flying) -> Result<bool> {
         let (mut backoff, mut attempt, mut still) = (Backoff::transfer(), 0, 0);
         let (began, first) = (Instant::now(), part.reached);
         loop {
             attempt += 1;
             let from = part.reached;
-            let failed = self.request(task, here, part, attempt).await;
+            let failed = self.request(task, here, part, flying, attempt).await;
             let (why, wait, moved) = match failed {
                 Ok(()) => {
                     part.flush().await?;
@@ -1480,10 +1893,11 @@ impl Shared {
                             *slowest = (took, bytes);
                         }
                     }
-                    if bytes >= 4 << 20 {
+                    if bytes >= 4 << 20 && !paced(task.priority.load(Ordering::Acquire)) {
                         let rate = bytes as f64 / took.as_secs_f64().max(1e-3);
                         let mut typical = lock(&self.typical);
                         *typical = Some(typical.map_or(rate, |was| 0.8 * was + 0.2 * rate));
+                        SHARE.connected(rate);
                     }
                     return Ok(true);
                 }
@@ -1514,7 +1928,7 @@ impl Shared {
     }
 
     /// One GET of what `part` still lacks, its body read to the end, or until another of its race reaches the end.
-    async fn request(&self, task: &Task, here: &HttpLocation<'_>, part: &mut Part<'_>, attempt: u32) -> std::result::Result<(), Failed> {
+    async fn request(&self, task: &Task, here: &HttpLocation<'_>, part: &mut Part<'_>, flying: &mut Flying, attempt: u32) -> std::result::Result<(), Failed> {
         let (object, length) = (&task.object.sha256, task.object.length);
         let (from, end) = (part.reached, part.end());
         // Nothing left to ask: a range past the end is refused (R2: 400 for `bytes=N-(N-1)`).
@@ -1592,19 +2006,41 @@ impl Shared {
             }
             _ => return Err(mismatch(format!("{status} to a GET"))),
         }
-        loop {
+        let mut pacer = Pacer::default();
+        'frames: loop {
+            // A weight beside an install's download reads at its share, one more request than the cap gives its place up
+            // before it reads; the receive window slows the sender.
+            let order = task.priority.load(Ordering::Acquire);
+            while weights(order) {
+                if flying.shed(order) {
+                    return Err(Failed::GaveWay);
+                }
+                let earned = tokio::select! {
+                    earned = SHARE.earned(&mut pacer) => earned,
+                    () = part.flight.stop.notified() => break 'frames,
+                };
+                if earned {
+                    break;
+                }
+            }
+            // A paced weight waiting for bytes hears the cap narrow too: one too many gives its place up then, not only
+            // once its next bytes come (a stalled one may wait a retransmission timer out first).
+            let changed = SHARE.changed.notified();
             let frame = tokio::select! {
                 frame = answer.frame() => frame,
                 () = part.flight.stop.notified() => break,
+                () = changed, if weights(order) && SHARE.paced() => continue 'frames,
             };
             match frame {
                 Ok(Some(data)) => {
                     self.stats.received.fetch_add(data.len() as u64, Ordering::Relaxed);
+                    let order = task.priority.load(Ordering::Acquire);
+                    SHARE.counted(order, data.len());
+                    pacer.spend(data.len());
                     // A steal moved the end back: what is past it is another request's.
                     if !part.push(task, &data).await? {
                         break;
                     }
-                    let order = task.priority.load(Ordering::Acquire);
                     if self.held(order) || self.slots.outranked(order) {
                         return Err(Failed::GaveWay);
                     }
@@ -1675,6 +2111,8 @@ impl Shared {
                 return FileRead::Absent;
             }
             file = back;
+            // Ours on the link when the volume is across the network: never an install's download.
+            SHARE.counted(task.priority.load(Ordering::Acquire), buffer.len());
             if let Err(refusal) = part.push(task, &buffer).await {
                 return FileRead::Failed(refusal);
             }

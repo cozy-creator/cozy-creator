@@ -3,7 +3,10 @@
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use api::{
@@ -53,6 +56,11 @@ pub(crate) struct Jobs {
     held: Mutex<Held>,
     /// The project's id, which its events name.
     project: String,
+    /// Its guesses' rows (cl-1104), by the id their machine's downloads name: what the machine a render of each one's boxes would go
+    /// to has ready for them, whether or not a walk goes. Its board lists them with its upcoming jobs' rows.
+    guesses: Mutex<Vec<(String, Ahead)>>,
+    /// The number the next row takes (`Ahead::run`), an upcoming job's or a guess's: the page keys them by it.
+    rows: AtomicU64,
 }
 
 #[derive(Default)]
@@ -101,12 +109,51 @@ struct Live {
 
 impl Jobs {
     pub(crate) fn new(project: String) -> Self {
-        Self { held: Mutex::default(), project }
+        Self { held: Mutex::default(), project, guesses: Mutex::default(), rows: AtomicU64::new(0) }
     }
 
     pub(crate) fn board(&self) -> Board {
         let held = self.held.lock().expect("jobs lock");
-        Board { ahead: held.ahead.iter().map(|(.., row)| row.clone()).collect(), ..held.board.clone() }
+        Board { ahead: self.ahead(&held), ..held.board.clone() }
+    }
+
+    /// The rows of what machines have ready ahead: the walk's upcoming jobs', then its guesses'.
+    fn ahead(&self, held: &Held) -> Vec<Ahead> {
+        let guesses = self.guesses.lock().expect("guesses lock");
+        held.ahead.iter().map(|(.., row)| row.clone()).chain(guesses.iter().map(|(_, row)| row.clone())).collect()
+    }
+
+    /// A guess's row (cl-1104), as `id` its machine names it: shown on the boxes it names, and said when it moved.
+    pub(crate) fn guessed(&self, id: &str, row: Ahead) {
+        let row = {
+            let mut guesses = self.guesses.lock().expect("guesses lock");
+            match guesses.iter_mut().find(|(held, _)| held == id) {
+                Some((_, was)) if (Ahead { run: was.run, ..row.clone() }) == *was => return,
+                Some((_, was)) => {
+                    *was = Ahead { run: was.run, ..row };
+                    was.clone()
+                }
+                None => {
+                    let row = Ahead { run: self.rows.fetch_add(1, Ordering::Relaxed) + 1, ..row };
+                    guesses.push((id.to_owned(), row.clone()));
+                    row
+                }
+            }
+        };
+        crate::events::ahead_updated(&self.project, &row);
+    }
+
+    /// The guesses' rows, but those of `ids`, go: each is a guess no more, so it is said once more naming no box, and no box shows it.
+    pub(crate) fn guesses_kept(&self, ids: &HashSet<String>) {
+        let gone: Vec<Ahead> = {
+            let mut guesses = self.guesses.lock().expect("guesses lock");
+            let (kept, gone): (Vec<_>, Vec<_>) = std::mem::take(&mut *guesses).into_iter().partition(|(id, _)| ids.contains(id));
+            *guesses = kept;
+            gone.into_iter().map(|(_, row)| Ahead { names: vec![], stage: None, waiting: None, ready: false, ..row }).collect()
+        };
+        for row in &gone {
+            crate::events::ahead_updated(&self.project, row);
+        }
     }
 
     pub(crate) fn active(&self) -> Option<u64> {
@@ -233,7 +280,7 @@ impl Jobs {
                 match (unchanged, retimed.as_slice()) {
                     (true, _) => why.push("(unchanged)".to_owned()),
                     (false, []) => {}
-                    (false, takes) => why.push(format!("it retimes {} to {fps} fps", takes.join(", "))),
+                    (false, takes) => why.push(format!("{} retimed to {fps} fps", takes.join(", "))),
                 }
                 if !without.is_empty() {
                     why.push(format!("(without {})", without.join("; ")));
@@ -330,8 +377,7 @@ impl Jobs {
     pub(crate) fn upcoming(&self, id: &str, key: &str, row: Ahead) {
         let Ok(id) = RunId::try_from(id.to_owned()) else { return };
         let mut held = self.held.lock().expect("jobs lock");
-        // Each row its own number, as the page keys them, the newest the greatest.
-        let next = held.ahead.iter().map(|(.., row)| row.run).max().unwrap_or(0) + 1;
+        // Each row its own number, as the page keys them, the newest the greatest: a guess's row takes them too (`rows`).
         let row = match held.ahead.iter_mut().find(|(run, ..)| *run == id) {
             Some((.., was)) if Ahead { run: was.run, ..row.clone() } == *was => return,
             Some((.., was)) => {
@@ -339,7 +385,7 @@ impl Jobs {
                 was.clone()
             }
             None => {
-                let row = Ahead { run: next, ..row };
+                let row = Ahead { run: self.rows.fetch_add(1, Ordering::Relaxed) + 1, ..row };
                 held.ahead.push((id, String::new(), key.to_owned(), row.clone()));
                 row
             }
@@ -352,7 +398,7 @@ impl Jobs {
     pub(crate) fn upcoming_kept(&self, keys: &HashSet<String>) {
         let mut held = self.held.lock().expect("jobs lock");
         let before = held.ahead.len();
-        held.ahead.retain(|(id, _, key, _)| !id.as_str().starts_with(crate::ahead::UPCOMING) || keys.contains(key));
+        held.ahead.retain(|(id, _, key, _)| !id.as_str().starts_with(crate::prefetch::UPCOMING) || keys.contains(key));
         if held.ahead.len() != before {
             self.publish(&mut held);
         }
@@ -445,7 +491,7 @@ impl Jobs {
             }
         }
         held.told = jobs.iter().map(|job| (job.id.clone(), job.clone())).collect();
-        let ahead = held.ahead.iter().map(|(.., row)| row.clone()).collect();
+        let ahead = self.ahead(held);
         let (said, errors, ended) = (held.said.clone(), held.errors.clone(), held.end.clone());
         held.board = Board { seq, on: held.on.clone(), began_at_ms: held.began_at_ms, elapsed_ms: held.elapsed_ms, shots, jobs, ahead, said, errors, ended };
         if !same_head {
@@ -519,7 +565,7 @@ impl Live {
             job.state = if run.started_at_ms.is_some() { JobState::Running } else { JobState::Waiting };
             job.took_ms = Some(self.earlier_ms + run.execution_ms.unwrap_or(0));
             job.why = (run.status == Status::Canceled).then(|| CANCELED.to_owned());
-            (job.fraction, job.detail, job.stage) = (None, None, Some("saving its file here".to_owned()));
+            (job.fraction, job.detail, job.stage) = (None, None, Some("saving the result".to_owned()));
             (self.landed, job.preview) = (None, None);
             return;
         }

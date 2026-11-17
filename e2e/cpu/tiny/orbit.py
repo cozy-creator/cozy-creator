@@ -1,7 +1,7 @@
 """Orbit: one tool, which turns the camera around a picture by calling minimax-h3's `render_shot` with MATLOWAI's ORB360
-LoRA. That call hands the LoRA over as a model choice, which TensorD binds from the Hub, as minimax-h3's `edit` does with
-its edit LoRA, so its cell is skipped as that one is; the package still builds, imports, type-checks and describes on the
-candidate Runtime here. A turn runs in the release gate (se-116)."""
+LoRA. That call is to another package, which this driver's child executor (the calling package's own functions) does
+not run, so its cell is skipped; the package still builds, imports, type-checks and describes on the candidate Runtime
+here. A turn runs in the release gate (se-116)."""
 
 from __future__ import annotations
 
@@ -16,6 +16,5 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
 
 CELLS: list[Cell] = [
     {"entry": "orbit", "name": "turn", "payload": {},
-     "skip": "orbit calls minimax-h3's render_shot with its ORB360 LoRA as a model choice, which TensorD binds from the "
-             "Hub (as minimax-h3's edit)"},
+     "skip": "orbit calls minimax-h3's render_shot, another package's function, which this driver does not run"},
 ]

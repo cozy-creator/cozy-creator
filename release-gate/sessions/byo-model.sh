@@ -35,7 +35,7 @@ step dl-lora model install "$LORA" local/byo-lora --on "$NAME" || fail "the LoRA
 step lora-local run "$SDXL" --on "$NAME" --lora model=local/byo-lora,0.8 prompt="a lighthouse on a cliff at dusk, pixel art" seed:=$RANDOM
 check lora-local completed
 step lora-absent run "$SDXL" --on "$NAME" --lora model=local/byo-never-downloaded,0.8 prompt="a red bicycle, pixel art" seed:=$RANDOM
-check lora-absent failed "this machine holds no local/byo-never-downloaded"
+check lora-absent failed "doesn't have the model local/byo-never-downloaded"
 step dl-whole model install "$WHOLE" local/byo-whole --on "$NAME" || fail "the checkpoint's download"
 step whole-local run "$SDXL" --on "$NAME" model.model=local/byo-whole prompt="a portrait of an old fisherman, photo" seed:=$RANDOM
 check whole-local completed

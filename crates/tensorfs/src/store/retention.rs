@@ -10,13 +10,15 @@
 //! keeps them and `snapshots/<name>/` for [`TTL`]; a use a live hold names is in use now. On a low
 //! disk the least recently used go first. Nothing is pinned, by hand or forever.
 
+use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, SystemTime};
+use std::thread::{self, ThreadId};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +30,13 @@ use crate::format::{Header, ObjectRef, Model};
 pub(crate) const TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// How often maintenance expires uses.
 const SWEEP: Duration = Duration::from_secs(10 * 60);
+/// Under `uses/`: the headers of the checkpoints only a guess brought (`Store::guess`).
+pub(super) const GUESSED: &str = ".guessed";
+/// The most a collection that bytes wait on waits for the fence's readers, who hold it only between reading metadata and
+/// holding what it names.
+const FENCE_WAIT: Duration = Duration::from_secs(30);
+/// The most an admit waits for the holds of processes `on_short` ended to go as they exit.
+const HOLDS_WAIT: Duration = Duration::from_secs(10);
 
 /// Digests kept while a process holds them: never unlocked by hand, so a forked child that
 /// inherited the descriptor keeps holding them until it exits or execs.
@@ -81,9 +90,32 @@ impl Hold {
 }
 
 /// Held shared by whoever reads metadata and then holds or uses what it names; exclusive by a
-/// collection, which skips while any is held and never waits.
+/// collection: upkeep skips while any is held; one that bytes wait on waits for them (`collect_fence`).
 #[derive(Debug)]
-pub(crate) struct Fence(#[allow(dead_code)] File);
+pub(crate) struct Fence {
+    _file: File,
+    thread: ThreadId,
+}
+
+thread_local! {
+    /// The fences this thread holds: a collection it runs never waits on its own.
+    static HELD: Cell<u32> = const { Cell::new(0) };
+}
+
+impl Fence {
+    fn new(file: File) -> Fence {
+        HELD.with(|n| n.set(n.get() + 1));
+        Fence { _file: file, thread: thread::current().id() }
+    }
+}
+
+impl Drop for Fence {
+    fn drop(&mut self) {
+        if self.thread == thread::current().id() {
+            HELD.with(|n| n.set(n.get().saturating_sub(1)));
+        }
+    }
+}
 
 pub(super) fn fence_file(store: &Store) -> Result<File> {
     let path = store.root.join("holds").join("gc.lock");
@@ -94,15 +126,43 @@ pub(super) fn fence_file(store: &Store) -> Result<File> {
 pub(crate) fn acquire(store: &Store) -> Result<Fence> {
     let file = fence_file(store)?;
     file.lock_shared().map_err(fail("lock", &store.root))?;
-    Ok(Fence(file))
+    Ok(Fence::new(file))
 }
 
 pub(crate) fn try_collect(store: &Store) -> Result<Option<Fence>> {
     let file = fence_file(store)?;
     match file.try_lock() {
-        Ok(()) => Ok(Some(Fence(file))),
+        Ok(()) => Ok(Some(Fence::new(file))),
         Err(TryLockError::WouldBlock) => Ok(None),
         Err(TryLockError::Error(e)) => Err(fail("lock", &store.root)(e)),
+    }
+}
+
+/// The fence for a collection that bytes wait on: its readers let go within moments, so it waits for them, up to
+/// `FENCE_WAIT`, and says how long it waited; never on a fence this thread holds itself. None: still held then.
+pub(crate) fn collect_fence(store: &Store) -> Result<Option<Fence>> {
+    let file = fence_file(store)?;
+    let (began, mut pause) = (Instant::now(), Duration::from_millis(1));
+    loop {
+        match file.try_lock() {
+            Ok(()) => {
+                if began.elapsed() >= Duration::from_millis(100) {
+                    tracing::info!("tensorfs: making room in {} waited {} ms for its readers", store.root.display(), began.elapsed().as_millis());
+                }
+                return Ok(Some(Fence::new(file)));
+            }
+            Err(TryLockError::WouldBlock) => {}
+            Err(TryLockError::Error(error)) => return Err(fail("lock", store.root())(error)),
+        }
+        if HELD.with(Cell::get) > 0 {
+            return Ok(None);
+        }
+        if began.elapsed() >= FENCE_WAIT {
+            tracing::warn!("tensorfs: {}'s readers held it {} s: its room isn't made", store.root.display(), FENCE_WAIT.as_secs());
+            return Ok(None);
+        }
+        thread::sleep(pause);
+        pause = (pause * 2).min(Duration::from_millis(100));
     }
 }
 
@@ -110,7 +170,7 @@ pub(crate) fn try_collect(store: &Store) -> Result<Option<Fence>> {
 pub(super) fn exclusive(store: &Store) -> Result<Fence> {
     let file = fence_file(store)?;
     match file.try_lock() {
-        Ok(()) => Ok(Fence(file)),
+        Ok(()) => Ok(Fence::new(file)),
         Err(TryLockError::WouldBlock) => Err(fail("modify", store.root())(io::Error::new(
             io::ErrorKind::WouldBlock, "model data is in use; retry after current work finishes",
         ))),
@@ -188,6 +248,32 @@ impl Store {
         self.commit(&path, text.as_bytes(), false)
     }
 
+    /// Says the checkpoint whose header is `header` (a digest) came for a guess (`guessed`), or that a call read it: on a short
+    /// disk what only a guess brought goes first, before a derived page or any checkpoint a call read (`collect_guessed`, cl-1104).
+    pub fn guess(&self, header: &str, guessed: bool) -> Result<()> {
+        let dir = self.root.join("uses").join(GUESSED);
+        let path = dir.join(header);
+        if !is_digest(header) {
+            return Err(invalid(&path, "a guess is named by its header's digest"));
+        }
+        match guessed {
+            true => {
+                fs::create_dir_all(&dir).map_err(fail("create", &dir))?;
+                File::create(&path).map(drop).map_err(fail("create", &path))
+            }
+            false => match fs::remove_file(&path) {
+                Err(e) if e.kind() != io::ErrorKind::NotFound => Err(fail("remove", &path)(e)),
+                _ => Ok(()),
+            },
+        }
+    }
+
+    /// The headers of the checkpoints only a guess brought (`guess`).
+    pub(super) fn guesses(&self) -> BTreeSet<String> {
+        let marked = list(&self.root.join("uses").join(GUESSED)).unwrap_or_default();
+        marked.iter().filter_map(|path| path.file_name()?.to_str().map(str::to_owned)).collect()
+    }
+
     /// Roots `header` while the file at `path` (absolute) holds it: one record per path, so saving
     /// another header there replaces it.
     pub fn root_file(&self, path: &Path, header: &ObjectRef) -> Result<()> {
@@ -203,6 +289,19 @@ impl Store {
     /// What the roots keep, each digest once; reaps dead holds and files that let go.
     pub(super) fn roots(&self) -> Result<BTreeSet<String>> {
         Ok(self.holders()?.into_keys().collect())
+    }
+
+    /// Every object a header file root keeps (`root_file`): the files a project's client holds for it, a header file a project shows.
+    /// No `local/` ref's or live hold's. A record that no longer reads is skipped (`holders` reaps it).
+    pub fn file_rooted(&self) -> Result<std::collections::HashSet<String>> {
+        let mut rooted = std::collections::HashSet::new();
+        for record in list(&self.root.join("files"))? {
+            let Some(file) = fs::read(&record).ok().and_then(|bytes| serde_json::from_slice::<FileRoot>(&bytes).ok()) else { continue };
+            if let Some(header) = file_header(&file) {
+                header.iter().flat_map(Header::objects).for_each(|object| { rooted.insert(object.sha256.clone()); });
+            }
+        }
+        Ok(rooted)
     }
 
     /// What the roots keep, with the processes whose live holds keep each: 0 for a header file
@@ -280,8 +379,11 @@ impl Store {
     /// expire uses past the TTL; then, while the disk is short of `incoming` bytes and a reserve,
     /// drop the least recently used. False when `incoming` still does not fit: skip the write.
     /// An origin's handle runs none. A handle collects once at a time: an admit that finds one
-    /// collecting waits for it and judges the disk by what it freed, never refused meanwhile.
-    /// Short, the machine's garbage goes first (`on_short`), then the store's own.
+    /// collecting waits for it, judges the disk again and, still short, collects for its own bytes.
+    /// Short, in this order (cl-1081): the machine's garbage (`on_short`, which also ends idle executors
+    /// whose open models alone keep the room), then what cut fetches kept, then what only a guess brought
+    /// (`collect_guessed`, cl-1104), then derived pages least recently used first (`drop_derived`), then the
+    /// least recently used models no queued or running call holds (`collect_locked`); only then is the write refused.
     pub fn maintain(&self, incoming: u64) -> Result<bool> {
         if !self.cache {
             return Ok(true);
@@ -294,22 +396,65 @@ impl Store {
         if !due() && short()? == 0 {
             return Ok(true);
         }
-        let seen = *self.collections.lock().unwrap_or_else(PoisonError::into_inner);
         let mut collections = self.collections.lock().unwrap_or_else(PoisonError::into_inner);
-        if *collections == seen {
+        // Judged again once another's collection ends: what it freed was for its own bytes.
+        if due() || short()? > 0 {
             // The machine's garbage goes before any model (`on_short`).
-            if let (Some(reclaim), 1..) = (self.reclaim.get(), short()?) {
-                (reclaim.0)(incoming);
-            }
-            if let Some(_gc) = try_collect(self)? {
+            let reclaim = || -> Result<bool> {
+                Ok(match (self.reclaim.get(), short()?) {
+                    (Some(reclaim), 1..) => (reclaim.0)(incoming),
+                    _ => false,
+                })
+            };
+            let mut ended = reclaim()?;
+            // Bytes coming in wait for the fence; a checkpoint's open (none coming) never does.
+            let fence = if incoming > 0 && short()? > 0 { collect_fence(self)? } else { try_collect(self)? };
+            let mut held_off = fence.is_none();
+            if let Some(_gc) = fence {
                 // A store GC cannot walk (a ref or header of another format) keeps all it holds.
                 if let Err(e) = self.upkeep(due(), &stamp, &short) {
                     tracing::warn!("tensorfs: cache upkeep skipped: {e}");
                 }
             }
+            // Still short, the last lever: idle executors holding what's left end (`on_short`), and what they held goes as
+            // each exits, collected again meanwhile, for as long as `HOLDS_WAIT`.
+            if incoming > 0 && !ended {
+                ended = reclaim()?;
+            }
+            let began = Instant::now();
+            while ended && short()? > 0 && began.elapsed() < HOLDS_WAIT {
+                thread::sleep(Duration::from_millis(200));
+                let fence = collect_fence(self)?;
+                held_off = fence.is_none();
+                if fence.is_some() {
+                    if let Err(e) = self.upkeep(false, &stamp, &short) {
+                        tracing::warn!("tensorfs: cache upkeep skipped: {e}");
+                        break;
+                    }
+                }
+            }
+            if incoming > 0 && short()? > 0 {
+                let why = if held_off { "its readers held off the collection" } else { "what's left is in use" };
+                tracing::warn!("tensorfs: {} doesn't fit in {} ({} short): {why}", super::gc::size(incoming), self.root.display(), super::gc::size(short()?));
+            }
             *collections += 1;
         }
         drop(collections);
+        Ok(short()? == 0)
+    }
+
+    /// Room for a derived page of `incoming` bytes: free space, else older derived pages, never a
+    /// model or an executor (`maintain` drops lanes and ends idle executors for bytes a download
+    /// brings; a bake is cheaper to make again than either). False: no room, and nothing is kept.
+    pub(super) fn room_for_derived(&self, incoming: u64) -> Result<bool> {
+        let short = || shortfall(&self.root, incoming);
+        if !self.cache || short()? == 0 {
+            return Ok(true);
+        }
+        let _collections = self.collections.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(_fence) = collect_fence(self)? {
+            self.drop_derived(&short)?;
+        }
         Ok(short()? == 0)
     }
 
@@ -322,11 +467,24 @@ impl Store {
         }
         let short = || shortfall(&self.root, incoming);
         let mut collections = self.collections.lock().unwrap_or_else(PoisonError::into_inner);
-        // Refuse promptly while a read-only borrower protects this source store.
-        let _fence = exclusive(self)?;
+        // Waits out readers that are taking holds, so what they hold is judged, as long as `FENCE_WAIT`.
+        let Some(_fence) = collect_fence(self)? else {
+            return Err(fail("make room in", self.root())(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!("its readers held it {} s; retry after current work finishes", FENCE_WAIT.as_secs()),
+            )));
+        };
         let mut all = Collected::default();
         if short()? > 0 {
             self.drop_partials()?;
+        }
+        // What only a guess brought, which no call has read, goes before anything a call made or read.
+        if short()? > 0 {
+            all.add(self.collect_guessed(short()?)?);
+        }
+        // A bake is made again from what is on this disk: derived pages go before any model.
+        if short()? > 0 {
+            self.drop_derived(&short)?;
         }
         loop {
             let need = short()?;
@@ -357,8 +515,15 @@ impl Store {
         let lanes = super::gc::lanes(&uses);
         let count = super::gc::keepers(&lanes);
         let kept: BTreeSet<&str> = count.keys().copied().collect();
+        // Derived pages go first whatever lane keeps them (`drop_derived`): one no reader has open is spare,
+        // counted once and out of its lane; one a reader has open stays in its lane, freed when its reader ends.
+        let derived: BTreeSet<String> = self.derived_pages()?.into_iter().filter_map(|(_, object)| object).map(|o| o.sha256).collect();
+        let unheld: BTreeSet<&str> = derived.iter()
+            .filter(|sha| objects.contains_key(*sha) && self.blob(sha).ok().and_then(|blob| File::open(blob).ok()).is_some_and(|f| f.try_lock().is_ok()))
+            .map(String::as_str).collect();
         let mut spare: u64 = objects.iter()
-            .filter(|(sha, (_, modified))| *modified < cutoff && !kept.contains(sha.as_str()) && !roots.contains(*sha))
+            .filter(|(sha, (_, modified))| unheld.contains(sha.as_str())
+                || (*modified < cutoff && !kept.contains(sha.as_str()) && !roots.contains(*sha)))
             .map(|(_, (length, _))| length).sum();
         for entry in list(&self.root.join("tmp"))? {
             if entry.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("partial-")) {
@@ -371,7 +536,7 @@ impl Store {
                 .unwrap_or_else(|| format!("cache entry {}", &lane.uses[0].name[..12])),
             used: lane.used,
             holders: holders.iter().filter(|(digest, _)| lane.held_by(digest, &count)).flat_map(|(_, pids)| pids.iter().copied()).collect(),
-            digests: lane.digests.iter().map(|d| d.to_string()).collect(),
+            digests: lane.digests.iter().filter(|d| !unheld.contains(**d)).map(|d| d.to_string()).collect(),
         }).collect();
         let lengths = objects.into_iter().map(|(sha, (length, _))| (sha, length)).collect();
         Ok(Room { lanes, spare, lengths })
@@ -396,9 +561,16 @@ impl Store {
             self.sweep_writers(TTL)?;
             self.collect_locked(u64::MAX, TTL)?;
         }
-        // What a cut fetch kept can be asked for again, so it goes before any model.
+        // What a cut fetch kept can be asked for again, what only a guess brought no call has read, and a bake is made again
+        // from what is on this disk: each goes before any model a call read.
         if short()? > 0 {
             self.drop_partials()?;
+        }
+        if short()? > 0 {
+            self.collect_guessed(short()?)?;
+        }
+        if short()? > 0 {
+            self.drop_derived(short)?;
         }
         loop {
             let need = short()?;
@@ -444,9 +616,14 @@ fn local(model: &Model) -> bool {
 
 /// Bytes missing for `incoming` and a reserve of 2% of the disk, within 1 to 10 GiB.
 fn shortfall(root: &Path, incoming: u64) -> Result<u64> {
+    let (free, reserve) = room_on(root)?;
+    Ok(reserve.saturating_add(incoming.max(1)).saturating_sub(free))
+}
+
+/// The disk's free bytes under `root`, and the reserve no write takes: 2% of the disk, within 1 to 10 GiB.
+pub(super) fn room_on(root: &Path) -> Result<(u64, u64)> {
     let space = platform::durable::space(root).map_err(platform("measure space", root))?;
-    let reserve = (space.total / 50).clamp(1 << 30, 10 << 30);
-    Ok(reserve.saturating_add(incoming.max(1)).saturating_sub(space.free))
+    Ok((space.free, (space.total / 50).clamp(1 << 30, 10 << 30)))
 }
 
 fn touch(path: &Path) -> Result<()> {

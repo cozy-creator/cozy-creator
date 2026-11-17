@@ -71,7 +71,8 @@ function Row({ id, asset, waiting }: { id: string; asset: Asset; waiting: boolea
   )
 }
 
-/** The project's assets (cl-892): what's starred first, with a ★, then the rest as the project lists them. A click opens one on the canvas. */
+/** The project's assets (cl-892; "Assets", Paul 11-16): what's starred first, with a ★, then the rest as the project lists them. A click
+ *  opens one on the canvas. */
 export function Files() {
   const { client, stream } = useConnection()
   const id = useProjectId()!
@@ -81,8 +82,8 @@ export function Files() {
   // In the project's line and not started: queued (its dot, as on the canvas).
   const queued = new Set((data?.queue ?? []).filter((item) => !item.running).map((item) => item.name))
   return (
-    <DrawerFrame title="Files">
-      {data && !listed.length && <p className="muted">Nothing in this project yet.</p>}
+    <DrawerFrame title="Assets">
+      {data && !listed.length && <p className="muted">No assets yet. Drop a file on the canvas to add one.</p>}
       <ul className="assetlist">
         {listed.map((asset) => (
           <Row key={asset.name} id={id} asset={asset} waiting={queued.has(asset.name)} />

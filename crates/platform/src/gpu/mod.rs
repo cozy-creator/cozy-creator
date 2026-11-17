@@ -236,6 +236,14 @@ impl Device {
         memory(device.memory_info()).map(|(_, free)| free)
     }
 
+    /// How busy it is now (cl-1100): the share of its last sample period a kernel ran, as `nvidia-smi`'s GPU-Util, and its bytes in
+    /// use, as [`Self::used`].
+    pub fn busy(&self) -> Result<(u32, u64)> {
+        let device = self.nvml.device_by_index(self.index).map_err(failed("open device"))?;
+        let busy = device.utilization_rates().map_err(failed("utilization"))?.gpu;
+        Ok((busy.min(100), self.used()?))
+    }
+
     /// Its bytes in use now, every process's, as `nvidia-smi` shows them (not the driver's reserve;
     /// an integrated GPU's: total less free).
     pub(crate) fn used(&self) -> Result<u64> {

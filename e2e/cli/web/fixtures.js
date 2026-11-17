@@ -10,15 +10,15 @@ const { appendFileSync, readFileSync, rmSync, writeFileSync } = require('fs');
 const { homedir, loadavg } = require('os');
 const { basename, join } = require('path');
 const { DARK_OPEN, MP4, photo, png, wav } = require('./media');
+const { screenshotPixels } = require('./page');
 
-const STORAGE = { 'cozy-project-storage': '3' };
 // What a cell may remove: only what this suite made.
 const MADE = 'web-';
 
 const need = (name) => process.env[name] || (() => { throw new Error(`$${name} is not set: web.sh's web_suite sets it`); })();
 const slug = (title) => title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24);
 
-/** Calcifer's HTTP API as the holder (its lock record's bearer), on project storage protocol 3. */
+/** Calcifer's HTTP API as the holder (its lock record's bearer). */
 class Api {
   constructor(origin, token) {
     this.origin = origin;
@@ -30,7 +30,7 @@ class Api {
     const sent = body === undefined || typeof body === 'string' || body instanceof Uint8Array ? body : JSON.stringify(body);
     return fetch(this.origin + path, {
       method,
-      headers: { Authorization: `Bearer ${this.token}`, ...STORAGE, ...(sent === undefined ? {} : { 'Content-Type': type }), ...headers },
+      headers: { Authorization: `Bearer ${this.token}`, ...(sent === undefined ? {} : { 'Content-Type': type }), ...headers },
       body: sent,
       signal: AbortSignal.timeout(60_000),
     });
@@ -66,6 +66,10 @@ class Project {
   /** A box exactly named, as the page posts one: `{name, tool, kind, fields, at}`. A box with no tool needs `fields.text` or a `kind`. */
   add(box) { return this.api.post(this.at('/assets'), { tool: '', exact: true, ...box }); }
 
+  /** Its own appearance (cl-1097): `paper` or `dark` over everywhere's; null, as everywhere. A cell's theme is its project's, as
+   *  every cell on the job shares the Calcifer's own. */
+  look(theme) { return this.api.call('PUT', this.at('/appearance'), { appearance: theme ? { theme } : null }); }
+
   /** Bytes held in its own content store, as the page sends a file: their `sha256:`. */
   async upload(bytes) {
     const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
@@ -91,7 +95,7 @@ function holderNow() {
 }
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
 /** Whether `holder`'s Calcifer answers its status, as its bearer. */
-const answers = (holder) => fetch(`http://${holder.address}/v1/status`, { headers: { Authorization: `Bearer ${holder.token}`, ...STORAGE }, signal: AbortSignal.timeout(2_000) })
+const answers = (holder) => fetch(`http://${holder.address}/v1/status`, { headers: { Authorization: `Bearer ${holder.token}` }, signal: AbortSignal.timeout(2_000) })
   .then((answer) => answer.ok, () => false);
 /** Whether anything listens at `address`. */
 const listens = (address) => fetch(`http://${address}/v1/status`, { signal: AbortSignal.timeout(2_000) }).then(() => true, () => false);
@@ -217,6 +221,22 @@ async function removeFolder(folder) {
 }
 
 /** In every page of a guarded context: CSP violations and modal dialogs, said to the fixture as they happen. */
+/** Test-only, in this file and nowhere in the product (no setting or URL reaches it; coordinator, 11-16): a runner has no GPU, and the canvas
+ *  draws in 2D when WebGL is only software (cl-1048). Every lane but web-2d and web-2d-solo names the runner's software WebGL as a hardware GPU, so the
+ *  canvas takes the WebGL path most people's computers take, still drawn by the runner's software GL; those two (WEB_RENDERER=2d, run.sh)
+ *  leave the browser as it is, the path of a computer with no GPU. */
+function hardwareGl() {
+  for (const Context of [globalThis.WebGLRenderingContext, globalThis.WebGL2RenderingContext].filter(Boolean)) {
+    const read = Context.prototype.getParameter;
+    Context.prototype.getParameter = function (name) {
+      // RENDERER, and WEBGL_debug_renderer_info's UNMASKED_RENDERER_WEBGL.
+      if (name === 0x1f01 || name === 0x9246) return 'Test GPU (hardware, for the web suite)';
+      return read.call(this, name);
+    };
+  }
+}
+const WEBGL_PATH = process.env.WEB_RENDERER !== '2d';
+
 function guardPage() {
   addEventListener('securitypolicyviolation', (event) => window.__cozyGuard(`CSP violation: ${event.violatedDirective} blocked ${event.blockedURI}`));
   const showModal = HTMLDialogElement.prototype.showModal;
@@ -233,10 +253,10 @@ function watchBoxes() {
     log.push(`${Math.round(performance.now())} ${line}`);
     if (log.length > 300) log.shift();
   };
-  const boxOf = (el) => el?.closest?.('.react-flow__node')?.querySelector('.card')?.dataset.asset ?? null;
+  const boxOf = (el) => el?.closest?.('.canvas-node')?.querySelector('.card')?.dataset.asset ?? el?.closest?.('[data-focused-asset]')?.dataset.focusedAsset ?? null;
   let under = null;
   document.addEventListener('pointerover', ({ target, clientX, clientY }) => {
-    const now = boxOf(target);
+    const now = boxOf(target) ?? document.querySelector('.canvas-root')?.canvasInspection?.hitTest({ x: clientX, y: clientY })?.name ?? null;
     if (now !== under) say(`pointer ${under} -> ${now} at ${clientX},${clientY}`);
     under = now;
   }, true);
@@ -246,18 +266,21 @@ function watchBoxes() {
   document.addEventListener('focusin', ({ target }) => say(`focus ${boxOf(target)} ${target.tagName}.${target.className}`), true);
   new MutationObserver((records) => {
     for (const { type, target, attributeName, oldValue, addedNodes, removedNodes } of records) {
-      for (const node of addedNodes) if (node.classList?.contains('react-flow__node')) say(`added ${boxOf(node)} ${node.style.transform}`);
-      for (const node of removedNodes) if (node.classList?.contains('react-flow__node')) say(`removed ${node.dataset.id}`);
+      for (const node of addedNodes) if (node.classList?.contains('canvas-node')) say(`native mounted ${boxOf(node)} ${node.style.left},${node.style.top}`);
+      for (const node of removedNodes) if (node.classList?.contains('canvas-node')) say(`native unmounted ${node.dataset.id}`);
       if (type !== 'attributes') continue;
       if (attributeName === 'data-moving') say(`canvas ${target.hasAttribute('data-moving') ? 'moving' : 'still'}`);
       if (attributeName === 'aria-selected') say(`${target.dataset.asset} selected=${target.getAttribute('aria-selected')}`);
       if (attributeName === 'style' && !oldValue?.includes(target.style.transform)) {
-        if (target.classList.contains('react-flow__viewport')) say(`canvas at ${target.style.transform}`);
-        if (target.classList.contains('react-flow__node')) say(`${boxOf(target)} at ${target.style.transform}`);
+        if (target.classList.contains('canvas-world')) say(`canvas at ${target.style.transform}`);
+        if (target.classList.contains('canvas-node')) say(`${boxOf(target)} native at ${target.style.left},${target.style.top}`);
       }
     }
   }).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['style', 'data-moving', 'aria-selected'], attributeOldValue: true });
 }
+
+/** WebKit's words for a page's fetch that failed, its reason masked: the URL it asked. */
+const CUT_FETCH = /^Fetch API cannot load (\S+) due to access control checks\.$/;
 
 const test = base.extend({
   /** This job's Calcifer, from its lock record ($HOLDER), read once a worker. */
@@ -282,10 +305,12 @@ const test = base.extend({
 
   /** Calcifer stopped, started, killed or put on another Hub (CalciferControl): the solo project's alone, as every other cell shares this
    *  Calcifer. Put back as it was after the cell, however it ended. */
-  calciferControl: async ({ calcifer, api }, use, testInfo) => {
+  calciferControl: async ({ calcifer, api, guards }, use, testInfo) => {
     if (testInfo.project.name !== 'solo') throw new Error(`calciferControl is the solo project's: ${testInfo.project.name}'s cells share this Calcifer`);
     const control = new CalciferControl(calcifer, api);
     await use(control);
+    // Put back with the cell over: what its pages say as Calcifer restarts is this teardown's doing.
+    guards.over();
     await control.restore();
   },
 
@@ -316,7 +341,27 @@ const test = base.extend({
         await context.exposeBinding('__cozyGuard', (_, line) => say(line));
         await context.addInitScript(guardPage);
         const watch = (page) => {
-          page.on('pageerror', (error) => say(`page error: ${error.message}`));
+          // From a main-frame navigation until the next document's DOMContentLoaded, the last document is ending. WebKit says a fetch of
+          // its own Calcifer's /v1 cut as it ends (and caught by the page: its event stream, a read in flight) as a page error in its masked
+          // words: only that is the document's end. Anywhere else in a document's life it fails the cell (run 43730578847: `open`'s goto
+          // from a project to /).
+          let ending = null;
+          page.on('request', (request) => {
+            if (!request.isNavigationRequest() || request.frame() !== page.mainFrame()) return;
+            const was = new URL(page.url());
+            ending = /^https?:$/.test(was.protocol) ? was.origin : null;
+          });
+          page.on('domcontentloaded', () => { ending = null; });
+          const cut = (error) => {
+            const asked = (error.stack ?? '').split('\n')[0].match(CUT_FETCH)?.[1];
+            if (!ending || !asked || !error.message.endsWith(' due to access control checks.')) return false;
+            const url = new URL(asked);
+            return url.origin === ending && url.pathname.startsWith('/v1/');
+          };
+          page.on('pageerror', (error) => {
+            if (cut(error)) return;
+            say(`page error: ${error.message}`);
+          });
           page.on('console', (message) => { if (message.type() === 'error') say(`console error: ${message.text()} ${message.location().url}`); });
         };
         context.pages().forEach(watch);
@@ -328,6 +373,7 @@ const test = base.extend({
 
   context: async ({ context, guards }, use) => {
     await guards.watch(context);
+    if (WEBGL_PATH) await context.addInitScript(hardwareGl);
     await context.addInitScript(watchBoxes);
     await use(context);
     guards.over();
@@ -340,23 +386,60 @@ const test = base.extend({
       const context = await browser.newContext(options);
       made.push(context);
       await guards.watch(context);
+      if (WEBGL_PATH) await context.addInitScript(hardwareGl);
       return context;
     });
     guards.over();
     for (const context of made) await context.close();
   },
 
-  /** Opens `to` in a tab, as `cozy open` does: the page holds no session, and Calcifer answers it as its own page, for the user it runs as,
-   *  which this runner's is (cl-985). The document's answer. */
-  signIn: async ({}, use) => {
-    await use((page, to) => page.goto(to.replace(/#.*$/, '')));
+  /** Optional frozen candidate delivery. Chromium keeps normal HTTP caching; the other engines use an explicit functional-only route. */
+  candidate: async ({ browserName }, use, testInfo) => {
+    const receipts = new Set();
+    const fallbackPages = new WeakSet();
+    await use(async (page, origin) => {
+      if (!process.env.CANDIDATE_DIST) return;
+      if (browserName === 'chromium') {
+        const receipt = await require('./candidate-cdp').candidateCDP(page, origin, process.env.CANDIDATE_DIST);
+        receipts.add(receipt);
+      } else {
+        if (/^opens(?:\s|$)/.test(testInfo.title)) throw new Error('candidate open timings require Chromium CDP delivery with normal HTTP caching');
+        if (!fallbackPages.has(page)) {
+          testInfo.annotations.push({ type: 'candidate', description: `${browserName}: functional-only Playwright routing; HTTP caching disabled` });
+          fallbackPages.add(page);
+        }
+        await require('./candidate').candidateUI(page, origin);
+      }
+    });
+    for (const receipt of receipts) {
+      await receipt.dispose();
+      expect.soft(receipt.errors, 'candidate delivery errors').toEqual([]);
+      expect.soft(receipt.documents.some(document => document.replaced), 'the candidate replaced a real Calcifer HTML/CSP response').toBe(true);
+    }
+    if (receipts.size) await testInfo.attach('candidate-delivery', { body: Buffer.from(JSON.stringify([...receipts], null, 2)), contentType: 'application/json' });
+  },
+
+  /** Open Calcifer's sessionless page as its own local user, preserving real origin/auth/CSP and optional candidate delivery. */
+  signIn: async ({ candidate }, use) => {
+    await use(async (page, to) => {
+      await candidate(page, new URL(to).origin);
+      return page.goto(to.replace(/#.*$/, ''));
+    });
   },
 
   /** A tab open at the cell's project, its canvas up. The box log is attached when the cell fails. */
-  page: async ({ page, project, signIn }, use, testInfo) => {
+  page: async ({ page, project, signIn, guards }, use, testInfo) => {
     await signIn(page, project.url());
     await expect(page.locator('.stage')).toBeVisible();
     await use(page);
+    // Torn down before the context, which closes this page: the cell is over from here.
+    guards.over();
+    // Which renderer drew the cell, and how many frames it drew in how long: read on every runner, kept with its result.
+    const drew = page.isClosed() ? null : await page.evaluate(() => {
+      const resources = document.querySelector('.canvas-root')?.canvasInspection?.resources();
+      return resources ? { graphics: resources.graphics, frames: resources.frames, ms: Math.round(performance.now()) } : null;
+    }).catch(() => null);
+    if (drew) testInfo.annotations.push({ type: 'renderer', description: JSON.stringify(drew) });
     if (testInfo.status !== testInfo.expectedStatus && !page.isClosed()) {
       const said = await page.evaluate(() => ({ url: location.href, log: window.boxLog?.slice(-60), focus: `${document.activeElement?.tagName}.${document.activeElement?.className}` }));
       await testInfo.attach('boxes', { body: JSON.stringify(said, null, 2), contentType: 'application/json' });
@@ -378,54 +461,294 @@ const test = base.extend({
   },
 });
 
-/** A box on the canvas by its name: its card, which says `aria-selected`. */
-const box = (page, name) => page.locator(`.react-flow__node .card[data-asset=${JSON.stringify(name)}]`);
+/** A mounted native card: Focus or the one under the pointer. Passive cards use canvasCard; controls require hoverBox. */
+const box = (page, name) => page.locator(`.canvas-node .card[data-asset=${JSON.stringify(name)}], [data-focused-asset=${JSON.stringify(name)}] .card[data-asset=${JSON.stringify(name)}]`).first();
 
-/** The middle of what `locator` shows on screen, where a person points: a locator's own click can scroll the canvas from under it. */
-async function middle(locator) {
-  const { x, y, width, height } = await locator.boundingBox();
+/** Read-only product geometry and logical names. Neither is evidence that the GPU presented the expected pixels.
+ *  A file still on its way to Calcifer is drawn under the name it was given while the scene and its card key it `placing:N` (place.ts):
+ *  these helpers take and give the name a person sees, from its drawn title or, mounted under the pointer, its card's. */
+const SHOWN = `(inspection, key) => {
+  if (!key.startsWith('placing:')) return key;
+  const title = inspection.card(key)?.rendered?.labels?.title?.title;
+  if (title) return title;
+  // Mounted under the pointer, its card says the name it's drawn under (Card.tsx data-asset is the view's name).
+  const native = inspection.interaction().nativeHover === key ? document.querySelector('.canvas-node .card[data-asset]') : null;
+  return native?.dataset.asset || key;
+}`;
+const KEY = `(inspection, name) => inspection.card(name) ? name : inspection.names().find((key) => key.startsWith('placing:') && (${SHOWN})(inspection, key) === name)`;
+const canvasCard = (page, name) => page.evaluate(`((name) => {
+  const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+  const key = inspection && (${KEY})(inspection, name);
+  return key ? inspection.card(key) : null;
+})(${JSON.stringify(name)})`);
+const canvasNames = (page) => page.evaluate(`(() => {
+  const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+  return inspection?.names().map((key) => (${SHOWN})(inspection, key)) ?? [];
+})()`);
+const selectedNames = (page) => page.evaluate(() => [...(document.querySelector('.canvas-root')?.canvasInspection?.selectedNames() ?? [])].sort());
+const canvasVisible = (page, name) => page.evaluate(`((name) => {
+  const root = document.querySelector('.canvas-root'), inspection = root?.canvasInspection;
+  const key = inspection && (${KEY})(inspection, name);
+  const card = key && inspection.card(key);
+  const native = key && document.querySelector('.canvas-node .card[data-asset=' + JSON.stringify(name) + ']');
+  if (!root || !card || (!card.rendered && !native?.checkVisibility())) return false;
+  const r = native?.getBoundingClientRect() ?? card.bounds, view = root.getBoundingClientRect();
+  return r.width > 0 && r.height > 0 && r.x + r.width > view.left && r.y + r.height > view.top && r.x < view.right && r.y < view.bottom;
+})(${JSON.stringify(name)})`);
+
+/** Text held by actual rendered labels/words, or the committed native card; never read from the document store. */
+const canvasText = (page, name) => page.evaluate((name) => {
+  const native = document.querySelector(`.canvas-node .card[data-asset=${JSON.stringify(name)}], [data-focused-asset=${JSON.stringify(name)}] .card[data-asset=${JSON.stringify(name)}]`);
+  if (native) return native.textContent;
+  const shown = document.querySelector('.canvas-root')?.canvasInspection?.card(name)?.rendered;
+  return shown ? [shown.words, ...Object.values(shown.labels).map(label => label.fullText)].filter(Boolean).join(' ') : null;
+}, name);
+
+const canvasLabel = (page, name, key) => page.evaluate(({ name, key }) => {
+  const shown = document.querySelector('.canvas-root')?.canvasInspection?.card(name)?.rendered;
+  if (shown) return shown.labels[key]?.fullText ?? null;
+  const native = document.querySelector(`.canvas-node .card[data-asset=${JSON.stringify(name)}], [data-focused-asset=${JSON.stringify(name)}] .card[data-asset=${JSON.stringify(name)}]`);
+  const selector = { title: '.head .nm', version: '.node-version-label', tool: '.node-tool', shape: '.ratio-rest', progress: '.prog-state' }[key];
+  return selector ? native?.querySelector(selector)?.textContent ?? null : null;
+}, { name, key });
+
+/** The middle of a rectangle, or a real native control. No locator click scrolls the canvas from under the pointer. */
+async function middle(subject) {
+  const { x, y, width, height } = typeof subject.boundingBox === 'function' ? await subject.boundingBox() : await subject;
   return { x: x + width / 2, y: y + height / 2 };
 }
 
-/** The canvas's scale now. */
-const zoomOf = (page) => page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a);
-
-/** The canvas still: no camera move under way (`data-moving`) and no Focus drawing in. */
-async function canvasIdle(page) {
-  await expect(page.locator('.stage')).not.toHaveAttribute('data-moving');
-  await expect(page.locator('[data-focused-asset][data-entering]')).toHaveCount(0);
+/** A reachable body/title point from the current renderer geometry, after layout is available. */
+async function canvasPoint(page, name, part = 'body') {
+  let point;
+  await expect.poll(async () => {
+    point = await page.evaluate(({ name, part }) => {
+      const root = document.querySelector('.canvas-root'), inspection = root?.canvasInspection, card = inspection?.card(name);
+      const nativeTitle = part === 'title' && document.querySelector(`.canvas-node .card[data-asset=${JSON.stringify(name)}] .head .nm`);
+      // The new canvas (cl-1048) says where each of a card's parts is drawn; the old one, its title label and its body.
+      const rect = card?.rendered?.parts?.[part] ?? (part === 'title' ? nativeTitle?.getBoundingClientRect() ?? card?.rendered?.labels.title ?? card?.title : card?.[part]);
+      if (!rect || !rect.width || !rect.height) return null;
+      const point = { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+      const target = document.elementFromPoint(point.x, point.y);
+      return target && root.contains(target) && inspection.hitTest(point)?.name === name ? point : null;
+    }, { name, part });
+    return Boolean(point);
+  }, { message: `${name}'s ${part} is reachable` }).toBe(true);
+  return point;
 }
 
-/** A box opened by a double click on its middle: Focus names it, has drawn in, and the canvas is still. Focus's region. Measured once the
- *  canvas is still: a camera on its way back from Focus moves the box from under the pointer. */
+/** Whether the page draws the new canvas (cl-1048): every card drawn by the scene, none mounted as a DOM card under the pointer. */
+const newCanvas = (page) => page.evaluate(() => typeof document.querySelector('.canvas-root')?.canvasInspection?.cards === 'function');
+
+/** The pointer on a box. The old canvas mounts its DOM card there (returned); the new draws it hovered, and has no DOM card: act on it with
+ *  partPoint, renameField, cornerPoint and previewState. An existing Focus stays open so another card can be carried into it. */
+async function hoverBox(page, name) {
+  const focused = page.locator(`[data-focused-asset=${JSON.stringify(name)}]`);
+  if (await focused.count()) return box(page, name);
+  const point = await canvasPoint(page, name);
+  await page.mouse.move(point.x, point.y);
+  if (await newCanvas(page)) {
+    await expect.poll(() => page.evaluate((name) => {
+      const card = document.querySelector('.canvas-root').canvasInspection.cards().find((one) => one.name === name);
+      return Boolean(card) && card.hovered !== false;
+    }, name), { message: `${name} hovered` }).toBe(true);
+    return box(page, name);
+  }
+  await expect(box(page, name)).toBeVisible();
+  return box(page, name);
+}
+
+/** Where a box's drawn part is on the screen (body, title, delete, cancel, corner), read with nothing under the pointer. */
+async function partPoint(page, name, part) {
+  const away = await openPoint(page);
+  await page.mouse.move(away.x, away.y);
+  let point = null;
+  await expect.poll(async () => {
+    point = await page.evaluate(({ name, part }) => {
+      const card = document.querySelector('.canvas-root')?.canvasInspection?.card(name), shown = card?.rendered;
+      const rect = shown?.parts?.[part]
+        ?? (part === 'delete' || part === 'cancel' ? shown?.controls?.find((one) => one.part === part) : part === 'title' ? shown?.labels?.title ?? card?.title : part === 'body' ? shown?.body ?? card?.body : null);
+      return rect && rect.width && rect.height ? { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 } : null;
+    }, { name, part });
+    return Boolean(point);
+  }, { message: `${name}'s ${part} drawn` }).toBe(true);
+  return point;
+}
+
+/** Its name where a hand takes it, to drag it by or click to rename it: the old canvas's hover card's name, the new canvas's drawn title. */
+async function titlePoint(page, name) {
+  if (await newCanvas(page)) return partPoint(page, name, 'title');
+  return middle((await hoverBox(page, name)).locator('.nm'));
+}
+
+/** Its name field, opened as a person opens it, a click on its name, and focused. The same NameField on both canvases. */
+async function renameField(page, name) {
+  const at = await titlePoint(page, name);
+  await page.mouse.click(at.x, at.y);
+  const field = page.getByRole('textbox', { name: 'Name', exact: true });
+  await expect(field).toBeFocused();
+  return field;
+}
+
+/** Its trash where a hand presses it: the old canvas's hover card's Delete, the new canvas's drawn one. */
+async function trashPoint(page, name) {
+  if (await newCanvas(page)) return partPoint(page, name, 'delete');
+  const head = await middle((await hoverBox(page, name)).locator('.nm'));
+  await page.mouse.move(head.x, head.y);
+  return middle((await hoverBox(page, name)).getByRole('button', { name: 'Delete', exact: true }));
+}
+
+/** Its corner, shown with the pointer on it: the old canvas's hover card's grip, the new canvas's drawn one. */
+async function cornerPoint(page, name) {
+  if (!(await newCanvas(page))) return middle((await hoverBox(page, name)).locator('.corner').first());
+  await hoverBox(page, name);
+  let point = null;
+  await expect.poll(async () => {
+    point = await page.evaluate((name) => {
+      const rect = document.querySelector('.canvas-root').canvasInspection.card(name)?.rendered?.parts?.corner;
+      return rect && rect.width && rect.height ? { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 } : null;
+    }, name);
+    return Boolean(point);
+  }, { message: `${name}'s corner drawn as it's hovered` }).toBe(true);
+  return point;
+}
+
+/** The shape said as a corner is pulled: the old canvas's `.ratio-live`, the new canvas's ratio label on the card being pulled. Null when none. */
+const liveRatio = (page) => page.evaluate(() => {
+  const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+  if (typeof inspection?.cards === 'function') {
+    const name = inspection.interaction().resizing;
+    return name ? inspection.card(name)?.rendered?.labels?.ratio?.text ?? null : null;
+  }
+  const said = document.querySelector('.ratio-live');
+  return said ? said.innerText.trim() : null;
+});
+
+/** Its hover preview as a person sees it. Old canvas: the hover card's `<video>`, its time, muted and loop. New: the canvas's preview texture,
+ *  up once its first frame is (no `<video>`: muted and loop are the scene's, null here). */
+const previewState = (page, name) => page.evaluate((name) => {
+  const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+  if (typeof inspection?.cards === 'function') {
+    const preview = inspection.card(name)?.rendered?.preview;
+    return { canvas: 'new', mounted: Boolean(preview?.active), playing: Boolean(preview?.active && preview?.ready), at: null, muted: preview?.muted ?? null, loop: preview?.loop ?? null };
+  }
+  const video = document.querySelector(`.canvas-node .card[data-asset=${JSON.stringify(name)}] video.preview.on`);
+  return { canvas: 'old', mounted: Boolean(video), playing: Boolean(video && video.currentTime > 0.3), at: video?.currentTime ?? null, muted: video?.muted ?? null, loop: video?.loop ?? null };
+}, name);
+
+/** A long name with the pointer on it: whether it's cut at rest, what it says of itself under the pointer (the old canvas's hover card's
+ *  title attribute; the new canvas's drawn title, or another label saying it whole), and whether the pointer is on the name. */
+async function nameUnderPointer(page, name) {
+  if (!(await newCanvas(page))) {
+    const nm = (await hoverBox(page, name)).locator('.head .nm');
+    const point = await middle(nm);
+    await page.mouse.move(point.x, point.y);
+    return nm.evaluate((nm, name) => {
+      const r = nm.getBoundingClientRect(), hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return { name, cut: nm.scrollWidth > nm.clientWidth, title: nm.title, whole: nm.scrollWidth <= nm.clientWidth + 1, text: nm.textContent.trim(), under_pointer: hit === nm || nm.contains(hit) };
+    }, name);
+  }
+  const point = await partPoint(page, name, 'title');
+  const rest = await page.evaluate((name) => document.querySelector('.canvas-root').canvasInspection.card(name)?.rendered?.labels?.title ?? null, name);
+  // Hovered first, then the pointer on its title, as a person reads a name (hoverBox rests on the body).
+  await hoverBox(page, name);
+  await page.mouse.move(point.x, point.y);
+  await expect.poll(() => page.evaluate((name) => {
+    const state = document.querySelector('.canvas-root').canvasInspection.interaction?.()?.state?.();
+    return !state || (state.hover?.name === name && state.hover?.part === 'title');
+  }, name), { message: `${name}'s title under the pointer` }).toBe(true);
+  // The canvas redraws a hovered title whole on its next frame: read it after two.
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  return page.evaluate(({ name, point, rest }) => {
+    const inspection = document.querySelector('.canvas-root').canvasInspection, labels = inspection.card(name)?.rendered?.labels ?? {};
+    const title = labels.title, full = title?.fullText ?? rest?.fullText ?? name;
+    // The whole name, said where the pointer is: the canvas's own tooltip (its root's title) or a label drawn whole.
+    const tooltip = document.querySelector('.canvas-root').getAttribute('title') ?? '';
+    const said = tooltip === full || title?.text === full || Object.entries(labels).some(([key, label]) => key !== 'title' && label?.text === full);
+    const hit = inspection.hitTest(point);
+    return { name, cut: Boolean(rest) && rest.text !== rest.fullText, title: said ? full : tooltip || title?.text || '', whole: title?.text === full, text: title?.text ?? '', under_pointer: hit?.name === name && hit?.part === 'title' };
+  }, { name, point, rest });
+}
+
+/** How many hover previews play anywhere on the canvas. */
+const previewsPlaying = (page) => page.evaluate(() => {
+  const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+  if (typeof inspection?.cards === 'function') return inspection.cards().filter((one) => inspection.card(one.name)?.rendered?.preview?.active).length;
+  return document.querySelectorAll('video.preview.on').length;
+});
+
+/** The canvas's scale now. */
+const zoomOf = (page) => page.evaluate(() => document.querySelector('.canvas-root')?.canvasInspection?.camera().zoom ?? null);
+
+/** No camera/Focus move or input barrier under way; three unchanged camera samples, so a not-yet-started transition cannot pass. */
+async function canvasIdle(page) {
+  let previous, still = 0;
+  await expect.poll(async () => {
+    const state = await page.evaluate(() => {
+      const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+      return { ready: Boolean(inspection?.resources()?.frames), camera: inspection?.camera(), interaction: inspection?.interaction(), moving: Boolean(document.querySelector('.stage[data-moving], [data-focused-asset][data-entering]')) };
+    });
+    const current = JSON.stringify(state.camera);
+    const busy = !state.ready || state.moving || !state.camera || state.interaction?.locked || state.interaction?.pointerDown || state.interaction?.dragging || state.interaction?.marquee;
+    still = !busy && current === previous ? still + 1 : 0;
+    previous = current;
+    return still >= 3;
+  }, { message: 'the canvas is still and accepts input', intervals: [100] }).toBe(true);
+}
+
+/** Double-click the real card body; Focus names it and finishes drawing in. */
 async function focus(page, name) {
   await canvasIdle(page);
-  const { x, y } = await middle(box(page, name).locator('.media').first());
-  await page.mouse.dblclick(x, y);
   const region = page.getByRole('region', { name: 'Focused asset' });
+  if (await region.count()) {
+    if (await region.getAttribute('data-focused-asset') === name) return region;
+    await region.getByRole('button', { name: 'Back to canvas', exact: true }).click();
+    await expect(region).toHaveCount(0);
+    await canvasIdle(page);
+  }
+  const { x, y } = await canvasPoint(page, name);
+  await page.mouse.dblclick(x, y);
   await expect(region).toHaveAttribute('data-focused-asset', name);
   await canvasIdle(page);
   return region;
 }
 
-/** A point on open canvas, clear of every box and what floats over it. */
-const openPoint = (page) => page.evaluate(() => {
-  for (let y = innerHeight - 60; y > 120; y -= 30) for (let x = innerWidth - 60; x > 320; x -= 30) if (document.elementFromPoint(x, y)?.classList.contains('react-flow__pane')) return { x, y };
-  throw new Error('no open canvas to point at');
-});
+/** A point on the actual hit canvas, clear of cards and native overlays. */
+const openPoint = async (page) => {
+  let point;
+  await expect.poll(async () => {
+    point = await page.evaluate(() => {
+      const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+      if (!inspection) return null;
+      for (let y = innerHeight - 60; y > 120; y -= 30) for (let x = innerWidth - 60; x > 320; x -= 30) {
+        if (document.elementFromPoint(x, y)?.classList.contains('canvas-pane') && !inspection.hitTest({ x, y })) return { x, y };
+      }
+      return null;
+    });
+    return Boolean(point);
+  }, { message: 'open canvas available to point at' }).toBe(true);
+  return point;
+};
 
-/** Every box that moved, resized, came or went over `ms`, frame by frame in the page: [] when nothing did. The one declared window. */
-const observeStill = (page, ms, selector = '.react-flow__node .card[data-asset]') => page.evaluate(({ ms, selector }) => new Promise((done) => {
-  const look = () => new Map([...document.querySelectorAll(selector)].map((el) => {
-    const { x, y, width, height } = el.getBoundingClientRect();
-    return [el.dataset.asset ?? el.id, [x, y, width, height]];
-  }));
-  const began = performance.now();
-  const changes = [];
+/** Every displayed card that moved, resized, came or went over ms. Explicit selectors observe native controls instead. */
+const observeStill = (page, ms, selector = null) => page.evaluate(({ ms, selector }) => new Promise((done) => {
+  const look = () => {
+    if (selector) return new Map([...document.querySelectorAll(selector)].map((el) => {
+      const { x, y, width, height } = el.getBoundingClientRect();
+      return [el.dataset.asset ?? el.id, [x, y, width, height]];
+    }));
+    const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+    if (!inspection) throw new Error('canvas unavailable while observing its geometry');
+    return new Map(inspection.names().flatMap(name => {
+      const card = inspection.card(name), native = document.querySelector(`.canvas-node .card[data-asset=${JSON.stringify(name)}]`);
+      const r = native?.querySelector('.media')?.getBoundingClientRect() ?? card?.rendered?.body;
+      return r ? [[name, [r.x, r.y, r.width, r.height]]] : [];
+    }));
+  };
+  const began = performance.now(), changes = [];
   let last = look();
   const frame = (now) => {
-    const seen = look();
-    const at_ms = Math.round(now - began);
+    const seen = look(), at_ms = Math.round(now - began);
     for (const [name, rect] of seen) {
       const was = last.get(name);
       if (!was) changes.push({ at_ms, name, came: rect.map(Math.round) });
@@ -468,4 +791,10 @@ const TEXT_END = process.platform === 'darwin' ? 'Meta+ArrowDown' : 'Control+End
 /** A local fixture tool (e2e/cli/project/<file>/<function>), as a box or `cozy run` names it. */
 const fixtureTool = (path) => join(__dirname, '..', 'project', path);
 
-module.exports = { test, expect, box, canvasIdle, focus, middle, observeStill, openPoint, recordAddress, stays, zoomOf, fixtureTool, TEXT_END, TEXT_START, DARK_OPEN, MP4, photo, png, wav };
+/** Once `page` shows `theme` (`paper` or `dark`). */
+async function themed(page, theme) {
+  await expect.poll(() => page.evaluate(() => document.documentElement.dataset.theme ?? 'paper'), { message: `the page shows ${theme}` }).toBe(theme);
+}
+
+module.exports = { test, expect, themed, canvasCard, canvasNames, canvasText, canvasLabel, canvasPoint, canvasVisible, selectedNames, hoverBox, screenshotPixels, box,
+  newCanvas, partPoint, titlePoint, renameField, trashPoint, cornerPoint, liveRatio, previewState, previewsPlaying, nameUnderPointer, canvasIdle, focus, middle, observeStill, openPoint, recordAddress, stays, zoomOf, fixtureTool, TEXT_END, TEXT_START, DARK_OPEN, MP4, photo, png, wav };

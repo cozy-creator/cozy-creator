@@ -227,10 +227,12 @@ fn run_machine(
     // A tool that composes holds a CPU slot while it computes, and every run's output work takes one: one slot for every four cores.
     let cpu_slots = std::thread::available_parallelism().map_or(1, |cores| (cores.get() / 4).max(1));
     let service = crate::service::Service::open(&engine, &generations, cpu_slots, store.clone())?;
+    // Its runs from before projects kept their own, at the first start of this version (cl-1003): no project's and none Calcifer keeps.
+    service.engine.cut_legacy(!rental, &logs, &store.root().join("logs"));
     crate::objects::restore(&service.engine, &engine.join("writes"))?;
     // A short store admit frees the machine's garbage before the store evicts a model.
     let reclaimer = Arc::downgrade(&service);
-    store.on_short(move |incoming| reclaimer.upgrade().into_iter().for_each(|service| service.reclaim_for(incoming)));
+    store.on_short(move |incoming| reclaimer.upgrade().is_some_and(|service| service.reclaim_for(incoming)));
     // The jobs this root held (a preparation the restart ended counts as ended now): Status
     // reports the true deadline from the first frame.
     let (working, ended_ms) = service.engine.jobs(0)?;
@@ -375,11 +377,20 @@ fn run_machine(
         let service = service.clone();
         let provider = grant.provider.clone();
         let (state, origin) = (layout.state.clone(), machine.clone());
+        // Its check-ins (reads of its keys) on a thread and runtime of their own: the Hub hears it while it serves, whatever its
+        // API or a download or an install does meanwhile, and releases it only once it falls silent (cl-977).
+        let check_ins = crate::machine::hub::Hub::for_check_ins(&hub)?;
+        let leased = state.clone();
+        std::thread::Builder::new().name("rental-check-ins".into()).spawn(move || {
+            match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                Ok(own) => own.block_on(crate::machine::lifecycle::keep_authority(Arc::new(check_ins), keys, leased)),
+                Err(error) => tracing::error!("no runtime for the rental's check-ins ({error}): its Hub releases it once it hears nothing"),
+            }
+        })?;
         std::thread::Builder::new()
             .name("rental-lifecycle".into())
             .spawn(move || {
                 runtime.block_on(async {
-                    tokio::spawn(crate::machine::lifecycle::keep_authority(hub.clone(), keys, state.clone()));
                     crate::machine::speed::serve(hub.clone(), state, origin);
                     crate::machine::lifecycle::release_when_idle(lifecycle, hub, provider, service.engine.clone()).await;
                 });
@@ -465,6 +476,7 @@ fn start_api(
     use crate::api;
     let publisher = crate::published::Publisher::new(sdk, machine.clone(), root);
     service.configure_publisher(publisher.clone());
+    identity.updates.installs_with(publisher.clone());
     let objects = Arc::new(crate::objects::Objects::new(service.engine.clone()));
     service.engine.hold_memos(&objects);
     let runs = Arc::new(crate::runs::Runs {

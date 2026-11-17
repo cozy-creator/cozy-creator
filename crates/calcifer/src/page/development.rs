@@ -11,7 +11,28 @@ pub(crate) const HMR_PATH: &str = "/__cozy_hmr";
 const NONCE: &str = "__COZY_DEVELOPMENT_NONCE__";
 const MAX_HTML: usize = 2 << 20;
 
-fn unavailable() -> Refusal { api::refuse(::api::error::Kind::Unavailable, "development_web_unavailable", "The configured Vite development server is not answering") }
+const UNAVAILABLE: &str = "development_web_unavailable";
+fn unavailable() -> Refusal { api::refuse(::api::error::Kind::Unavailable, UNAVAILABLE, "The configured Vite development server is not answering") }
+
+/// Said once an outage: Vite stopped answering and the page built into this cozy is served (cl-1087).
+static FELL_BACK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether `refusal` is Vite not answering: the page built into this cozy stands in for it.
+pub(super) fn down(refusal: &Refusal) -> bool {
+    refusal.0.code == UNAVAILABLE
+}
+
+/// The built page answers in Vite's place: said once until Vite answers again (`answered`).
+pub(super) fn fell_back(address: SocketAddr) {
+    if !FELL_BACK.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::warn!("Vite at {address} isn't answering: serving the page built into this cozy, which may be older than the checkout");
+    }
+}
+
+/// Vite answered: a later outage is said again.
+pub(super) fn answered() {
+    FELL_BACK.store(false, std::sync::atomic::Ordering::Relaxed);
+}
 fn no_store(headers: &mut HeaderMap) {
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));

@@ -266,7 +266,7 @@ impl Detached {
 /// std's spawn hands a child every inheritable handle this process holds, a pipe its caller reads
 /// to the end among them (`out=$(cozy status)`): a child that outlives this process would hold that
 /// end open forever. So CreateProcessW here, with a handle list of exactly the child's own.
-pub(super) fn detach(program: &Path, args: &[OsString], log: Option<File>) -> io::Result<Detached> {
+pub(super) fn detach(program: &Path, args: &[OsString], log: Option<File>, dir: &Path) -> io::Result<Detached> {
     let null = File::options().read(true).write(true).open("NUL")?;
     let out = log.as_ref().unwrap_or(&null);
     let mut handles = vec![null.as_raw_handle(), out.as_raw_handle()];
@@ -289,14 +289,17 @@ pub(super) fn detach(program: &Path, args: &[OsString], log: Option<File>) -> io
         .encode_utf16()
         .chain(iter::once(0))
         .collect();
+    let dir: Vec<u16> = std::os::windows::ffi::OsStrExt::encode_wide(dir.as_os_str())
+        .chain(iter::once(0))
+        .collect();
     let mut flags = CREATE_NEW_PROCESS_GROUP
         | DETACHED_PROCESS
         | CREATE_BREAKAWAY_FROM_JOB
         | EXTENDED_STARTUPINFO_PRESENT;
     loop {
         let mut process = PROCESS_INFORMATION::default();
-        // SAFETY: a writable, nul-terminated command line; the startup information and its
-        // attribute list outlive the call.
+        // SAFETY: a writable, nul-terminated command line and a nul-terminated directory; the
+        // startup information and its attribute list outlive the call.
         let created = unsafe {
             CreateProcessW(
                 ptr::null(),
@@ -306,7 +309,7 @@ pub(super) fn detach(program: &Path, args: &[OsString], log: Option<File>) -> io
                 1,
                 flags,
                 ptr::null(),
-                ptr::null(),
+                dir.as_ptr(),
                 &info.StartupInfo,
                 &mut process,
             )

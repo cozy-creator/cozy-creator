@@ -1,6 +1,6 @@
-//! Which release a name resolves to: one rule for Calcifer and TensorD, for packages and models (xs-183, cl-952, se-128).
-//! A prerelease (`0.10.0rc1`) is built for the open RC's Runtime (cl-922), so it counts only on a machine on the RC (`rc`), or
-//! after a prerelease named (a model's `1.0.0-rc.8`); on the RC the newest by PEP 440 alone, elsewhere finals only.
+//! Which release a name resolves to: one rule for Calcifer and TensorD, for packages and models (xs-183, cl-952, se-128, cl-1109).
+//! A package or model asked with no release takes its newest final, as pip does (`tensorfs::format::newest_by`), on every machine:
+//! a pre- or dev release (`0.13.0rc2`, `1.1.0-rc.1`) only when it is named exactly, or when there is no final at all.
 //!
 //! A package release runs only on a Runtime its `cozy-runtime` requirement admits (`runs`). The open RC's Runtime is a dev
 //! release of the minor it makes (`0.47.0.dev2260+g1a2b3c4d`), so a floor can name it. `choose` decides a run's release with its machine:
@@ -11,46 +11,75 @@
 use std::{future::Future, str::FromStr};
 
 use pep440_rs::{Operator, Version, VersionSpecifier, VersionSpecifiers};
+use tensorfs::format::{newest_by, newest_first};
 
 /// A PEP 440 pre- or dev release. An unparsable one is no prerelease.
 pub fn prerelease(release: &str) -> bool {
     Version::from_str(release).is_ok_and(|version| version.any_prerelease())
 }
 
-/// The newest of `releases` a machine runs: on the RC (`rc`) by PEP 440 alone, elsewhere finals only. Unparsable ones don't count.
-pub fn newest<'a>(releases: impl IntoIterator<Item = &'a str>, rc: bool) -> Option<&'a str> {
-    newest_where(releases, |_| true, rc)
+/// The newest of `releases` a package asked with no release takes (`newest_by`). Unparsable ones don't count.
+pub fn newest<'a>(releases: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    newest_by(releases, |release| release)
 }
 
 /// The release `release` resolves to forward (xs-183): the newest of `releases` in its series and after it, when one is. A
-/// named prerelease moves on to a newer one; a named final to finals, or prereleases too on the RC (`rc`).
-pub fn newest_fix<'a>(release: &str, releases: impl IntoIterator<Item = &'a str>, rc: bool) -> Option<&'a str> {
+/// named prerelease moves on to a newer one; a named final to finals only.
+pub fn newest_fix<'a>(release: &str, releases: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
     let named = Version::from_str(release).ok()?;
     let series = &named.release()[..named.release().len().saturating_sub(1).max(1)];
-    newest_where(releases, |version| version.release().starts_with(series) && *version > named, rc || named.any_prerelease())
-}
-
-/// The releases a machine takes, newest first: on the RC (`rc`) every one, elsewhere finals. Unparsable ones don't count.
-pub fn candidates<'a>(releases: impl IntoIterator<Item = &'a str>, rc: bool) -> Vec<&'a str> {
-    let mut kept: Vec<(Version, &str)> = (releases.into_iter())
+    (releases.into_iter())
         .filter_map(|text| Some((Version::from_str(text).ok()?, text)))
-        .filter(|(version, _)| rc || !version.any_prerelease())
-        .collect();
-    kept.sort_by(|(a, _), (b, _)| b.cmp(a));
-    kept.into_iter().map(|(_, text)| text).collect()
-}
-
-fn newest_where<'a>(releases: impl IntoIterator<Item = &'a str>, keep: impl Fn(&Version) -> bool, pre: bool) -> Option<&'a str> {
-    releases
-        .into_iter()
-        .filter_map(|text| Some((Version::from_str(text).ok()?, text)))
-        .filter(|(version, _)| keep(version) && (pre || !version.any_prerelease()))
+        .filter(|(version, _)| version.release().starts_with(series) && *version > named && (named.any_prerelease() || !version.any_prerelease()))
         .max_by(|(a, _), (b, _)| a.cmp(b))
         .map(|(_, text)| text)
 }
 
+/// The releases a package asked with no release may take, newest first (`choose` walks them): its finals, or with none, its
+/// prereleases. Unparsable ones don't count.
+pub fn candidates<'a>(releases: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
+    let read: Vec<&str> = newest_first(releases, |release| release).into_iter().filter(|release| Version::from_str(release).is_ok()).collect();
+    let finals = read.iter().any(|release| !prerelease(release));
+    read.into_iter().filter(|release| !finals || !prerelease(release)).collect()
+}
+
+/// Of a model's `releases` as the Hub lists them (newest first), the one asked with no release takes
+/// (`tensorfs::format::newest_by`); the first when no label parses as a version.
+pub fn newest_listed<'a, R: 'a>(releases: impl IntoIterator<Item = &'a R, IntoIter: Clone>, version: impl Fn(&R) -> &str) -> Option<&'a R> {
+    let releases = releases.into_iter();
+    newest_by(releases.clone(), |release| version(release)).or_else(|| releases.clone().next())
+}
+
 /// What `requires` (a wheel's `Requires-Dist`) asks of `distribution` outside any extra (`cozy-runtime[media]<0.46,>=0.45.0`):
 /// the versions it admits. None: it names none with a version, or one that doesn't parse.
+/// The Runtime minor this cozy's line runs, as a floor (cl-1055): machines run on Calcifer's minor, with no capability fallbacks, and
+/// every build of it keeps a project's call in its project (per-call scratch). A project's run on an older Runtime moves its machine up
+/// first; held by hand, it is refused. A candidate or source build (`0.47.0.dev0+dev.g…`) meets it. Bump it with the Runtime's minor
+/// when a cozy minor is released (the RC's cozy-runtime pyproject, `0.<n>.0.dev0`).
+pub const RUNTIME_MINOR: &str = ">=0.47.0.dev0";
+
+/// `needs` with this cozy's Runtime minor (`RUNTIME_MINOR`) added: what a project's run needs of its Runtime.
+pub fn for_project(needs: Option<VersionSpecifiers>) -> VersionSpecifiers {
+    let floor = VersionSpecifiers::from_str(RUNTIME_MINOR).expect("RUNTIME_MINOR is a specifier");
+    needs.iter().flat_map(|needs| needs.iter().cloned()).chain(floor.iter().cloned()).collect()
+}
+
+/// Whether a Runtime `version` is of this cozy's minor itself (`RUNTIME_MINOR`'s major and minor): what a machine below the minor may
+/// move to, never a later minor's.
+pub fn of_runtime_minor(version: &str) -> bool {
+    let floor = VersionSpecifiers::from_str(RUNTIME_MINOR).expect("RUNTIME_MINOR is a specifier");
+    let minor = |version: &Version| (version.release().first().copied().unwrap_or(0), version.release().get(1).copied().unwrap_or(0));
+    let ours = floor.iter().next().map(|specifier| minor(specifier.version()));
+    Version::from_str(version).is_ok_and(|version| Some(minor(&version)) == ours)
+}
+
+/// Whether a Runtime `version` is on this cozy's minor (`RUNTIME_MINOR`), so it keeps a project's call in its project. A version
+/// that doesn't read isn't.
+pub fn on_runtime_minor(version: &str) -> bool {
+    let floor = VersionSpecifiers::from_str(RUNTIME_MINOR).expect("RUNTIME_MINOR is a specifier");
+    Version::from_str(version).is_ok() && runs(&floor, version)
+}
+
 pub fn required<'a>(requires: impl IntoIterator<Item = &'a str>, distribution: &str) -> Option<VersionSpecifiers> {
     let wanted = normalized(distribution);
     let mut found: Vec<VersionSpecifier> = vec![];

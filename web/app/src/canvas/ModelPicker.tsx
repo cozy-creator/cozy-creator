@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
-import { useDeferredValue, useEffect, useRef, useState } from "react"
+import { useDeferredValue, useEffect, useLayoutEffect, useRef, useState } from "react"
 import type { FoundModel, ModelDetail, Tool, ToolModel } from "../api/calcifer"
 import { useConnection } from "../app/Connection"
 import { Icon } from "../ui/Icon"
@@ -76,7 +76,7 @@ export function ModelPicker({ name, onClose }: { name: string; onClose(): void }
   const tool = tools.get(view?.asset?.tool ?? "")
   const qwen = tool?.package.split("/").at(-1) === "qwen-image-2"
   const funAcc = Boolean(qwen && slotsOf(tool).some((slot) => slot.slot === "turbo_lora" && (slot.class?.split(".").at(-1) === "FunAccLoRA" || identityOf(slot.default ?? "") === "alibaba-pai/qwen-image-2.1-fun-acc")))
-  const imageEdit = view?.operation === "edit_image" || store.mentionedPictures(name).length > 0
+  const imageEdit = store.mentionedPictures(name).length > 0
   const helper = imageEdit ? "rewriter" : "expander"
   const slots = slotsOf(tool).filter((slot) => !qwen || (slot.slot !== "expander" && slot.slot !== "rewriter") || slot.slot === helper)
   if (qwen) {
@@ -85,7 +85,6 @@ export function ModelPicker({ name, onClose }: { name: string; onClose(): void }
     slots.sort((a, b) => at(a) - at(b))
   }
   const active = slots.find((slot) => slot.slot === page)
-  const restricted = Boolean(qwen && active?.slot === "turbo_lora")
   const legacy = adaptersOf(store.valueOf(name, "lora"))
   useEffect(() => {
     const project = store.projectId
@@ -97,7 +96,7 @@ export function ModelPicker({ name, onClose }: { name: string; onClose(): void }
     if (signedOut.get()) close.current()
     return () => { unwatch(); unsign() }
   }, [store, bridge, privateViewEpoch, signedOut])
-  // In place under the tool, over nothing (Paul 11-05: no pop-ups): Esc closes it, and so does a press that begins outside it (Paul 11-12:
+  // Under the tool, or in Focus in front of the picture (Paul 11-15): Esc closes it, and so does a press that begins outside it (Paul 11-12:
   // a press from inside let go outside dismisses nothing). Models & LoRAs itself toggles it.
   useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
@@ -110,6 +109,10 @@ export function ModelPicker({ name, onClose }: { name: string; onClose(): void }
     const away = (event: PointerEvent) => {
       const target = event.target as Element | null
       if (!target || dialog.current?.contains(target) || target.closest(".image-models, .name-menu")) return
+      // The press that closes the picker does only that: its click doesn't also act on what's under it (Focus's background closes Focus).
+      const swallow = (click: Event) => { click.stopPropagation(); click.preventDefault() }
+      window.addEventListener("click", swallow, { capture: true, once: true })
+      window.addEventListener("pointerup", () => setTimeout(() => window.removeEventListener("click", swallow, { capture: true })), { capture: true, once: true })
       close.current()
     }
     window.addEventListener("keydown", key, true)
@@ -128,10 +131,26 @@ export function ModelPicker({ name, onClose }: { name: string; onClose(): void }
     focus?.focus()
   }, [page])
   useEffect(() => { if (page && page !== "__legacy" && !active) setPage(null) }, [page, active])
+  // In Focus it rises over the picture from its button: as tall as the picture's room above the button, never off the screen.
+  useLayoutEffect(() => {
+    const element = dialog.current
+    const card = element?.closest(".focus-card")
+    const viewer = card?.querySelector(".focus-viewer")
+    const controls = element?.parentElement
+    if (!element || !viewer || !controls) return
+    const fit = () => {
+      const room = controls.getBoundingClientRect().top - Math.max(viewer.getBoundingClientRect().top, 0) - 16
+      element.style.maxHeight = `${Math.max(240, Math.min(640, room))}px`
+    }
+    fit()
+    const watch = new ResizeObserver(fit)
+    watch.observe(viewer)
+    return () => watch.disconnect()
+  }, [])
   useEffect(() => { if (!view?.asset) close.current() }, [view?.asset])
   if (!view?.asset) return null
   return (
-      <div ref={dialog} className="model-picker nodrag nopan nowheel" role="dialog" aria-label="Models and LoRAs" tabIndex={-1} onKeyDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
+      <div ref={dialog} className="model-picker canvas-control" role="dialog" aria-label="Models and LoRAs" tabIndex={-1} onKeyDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
         <header className="model-picker-head">
           {page && <button type="button" className="iconb model-picker-back" aria-label="Back to model slots" title="Back" onClick={() => setPage(null)}><Icon name="back" /></button>}
           <div className="model-picker-title"><h2>{active ? slotName(active, qwen, slots) : page === "__legacy" ? "Existing LoRAs" : "Models & LoRAs"}</h2></div>
@@ -144,7 +163,7 @@ export function ModelPicker({ name, onClose }: { name: string; onClose(): void }
               {slots.length !== 1 && legacy.length > 0 && <li><button type="button" onClick={() => setPage("__legacy")}><span>Existing LoRAs</span><Icon name="forward" /></button></li>}
             </ul>
           </>}
-          {active && <Slot key={active.slot} name={name} slot={active} restricted={restricted} funAcc={funAcc} showNsfw={showNsfw} legacy={slots.length === 1 ? legacy : []} />}
+          {active && <Slot key={active.slot} name={name} slot={active} funAcc={funAcc} showNsfw={showNsfw} legacy={slots.length === 1 ? legacy : []} />}
           {page === "__legacy" && <section className="model-picker-slot">
             <AdapterList name={name} slot={null} families={slots.flatMap((slot) => slot.family ? [slot.family] : [])} adapters={legacy} />
           </section>}
@@ -182,7 +201,7 @@ export function withTriggers(store: ReturnType<typeof useCanvasStore>, name: str
   return field && text ? { [field]: text } : {}
 }
 
-function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: string; slot: PickerSlot; restricted: boolean; funAcc: boolean; showNsfw: boolean; legacy: unknown[] }) {
+function Slot({ name, slot, funAcc, showNsfw, legacy }: { name: string; slot: PickerSlot; funAcc: boolean; showNsfw: boolean; legacy: unknown[] }) {
   const store = useCanvasStore()
   const { client } = useConnection()
   useElement(name)
@@ -203,27 +222,24 @@ function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: stri
   const { data, error, isPending } = useQuery({
     queryKey: ["models", "picker", slot.family, role, q, limit, showNsfw],
     queryFn: ({ signal }) => client.models(q, limit, signal, { family: slot.family ?? undefined, role, noTag: showNsfw ? undefined : NSFW }),
-    enabled: Boolean(slot.family) && !restricted, staleTime: 60_000,
+    enabled: Boolean(slot.family), staleTime: 60_000,
   })
   const found: PickerModel[] = data?.models.filter((model) => model.family === slot.family && (showNsfw || !isNsfw(model.tags))) ?? []
   const listed = found.find((model) => model.model === identityOf(selected))
   const { data: detail, isPending: checking } = useQuery({
     queryKey: ["model", identityOf(selected)],
     queryFn: ({ signal }) => client.model(identityOf(selected), signal),
-    enabled: Boolean(selected && !listed && (!restricted || !showNsfw)), staleTime: 60_000, retry: false,
+    enabled: Boolean(selected && !listed), staleTime: 60_000, retry: false,
   })
-  const selectedValid = restricted ? selected === slot.default : fitsSlot(listed ?? detail, selected, slot, kind, funAcc)
-  const selectionState = selectedValid ? "" : restricted ? " (compatibility unverified)" : checking && !listed ? " (checking compatibility)" : !(listed ?? detail) ? " (compatibility unavailable)" : " (incompatible)"
-  const alternatives = restricted ? [] : found.filter((model) => fitsSlot(model, model.model, slot, kind, funAcc) && model.model !== identityOf(selected))
+  const selectedValid = fitsSlot(listed ?? detail, selected, slot, kind, funAcc)
+  const selectionState = selectedValid ? "" : checking && !listed ? " (checking compatibility)" : !(listed ?? detail) ? " (compatibility unavailable)" : " (incompatible)"
+  const alternatives = found.filter((model) => fitsSlot(model, model.model, slot, kind, funAcc) && model.model !== identityOf(selected))
   const adapters = adaptersOf(held.lora)
   const defaultVisible = !slot.default || showNsfw || Boolean(defaultModel && !isNsfw(defaultModel.tags))
   const selectedMeta = listed ?? detail ?? (identityOf(selected) === identityOf(slot.default ?? "") ? defaultModel : undefined)
   const selectedVisible = showNsfw || Boolean(selectedMeta && !isNsfw(selectedMeta.tags))
   const availableLoras = kind ? found.filter((model) => adapterFits(model, slot) && !adapters.some((adapter) => identityOf(String(entryOf(adapter).ref ?? "")) === model.model)) : []
-  const clearBase = () => changeSlot(store, name, slot, ({ ref: _, ...rest }) => {
-    if (restricted) delete rest.lora
-    return rest
-  })
+  const clearBase = () => changeSlot(store, name, slot, ({ ref: _, ...rest }) => rest)
   // Without a strength it runs at its recommended one, which Calcifer reads from its card.
   // Added, its triggers go after the box's prompt, in the same step (cl-968).
   const addLora = async (model: PickerModel) => {
@@ -234,16 +250,16 @@ function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: stri
     changeSlot(store, name, slot, (held) => on(held) ? held : ({ ...held, lora: [...adaptersOf(held.lora), adapter] }), withTriggers(store, name, triggers))
   }
   return <section className="model-picker-slot" data-model-slot={slot.slot}>
-    {!restricted && <div className="model-picker-tabs" role="group" aria-label={`Choices for ${slot.slot}`}>
+    <div className="model-picker-tabs" role="group" aria-label={`Choices for ${slot.slot}`}>
       <button type="button" aria-pressed={tab === "models"} onClick={() => { setTab("models"); setTyped(""); setLimit(50) }}>Models</button>
       <button type="button" aria-pressed={tab === "loras"} onClick={() => { setTab("loras"); setTyped(""); setLimit(50) }}>LoRAs</button>
-    </div>}
-    {!restricted && <input type="search" className="field model-picker-search" aria-label={`Search models for ${slot.slot}`} placeholder={tab === "models" ? "Find a model" : "Find a LoRA"} value={typed} disabled={!slot.family} onChange={(event) => { setTyped(event.target.value); setLimit(50) }} />}
-    {!restricted && !slot.family && <p className="muted">Compatible choices aren't available for this slot.</p>}
-    {!restricted && slot.family && !kind && <p className="muted">Model compatibility is not available yet.</p>}
-    {!restricted && Boolean(slot.family) && isPending && <p className="muted">Loading choices…</p>}
-    {!restricted && error && <p className="warn">Couldn't load models.</p>}
-    {tab === "models" || restricted ? <>
+    </div>
+    <input type="search" className="field model-picker-search" aria-label={`Search models for ${slot.slot}`} placeholder={tab === "models" ? "Find a model" : "Find a LoRA"} value={typed} disabled={!slot.family} onChange={(event) => { setTyped(event.target.value); setLimit(50) }} />
+    {!slot.family && <p className="muted">Compatible choices aren't available for this slot.</p>}
+    {slot.family && !kind && <p className="muted">Model compatibility is not available yet.</p>}
+    {Boolean(slot.family) && isPending && <p className="muted">Loading choices…</p>}
+    {error && <p className="warn">Couldn't load models.</p>}
+    {tab === "models" ? <>
       <ul className="model-picker-choices" role="radiogroup" aria-label={`Base model for ${slot.slot}`}>
         <li><button type="button" role="radio" aria-checked={!selected && !malformed} disabled={!defaultVisible} onClick={clearBase}>
           <span>{defaultVisible ? slot.default ? modelChoiceLabel(slot.default) : "No model selected" : defaultModel ? "Default model hidden" : "Default model"}<small>Default</small></span><span className="model-picker-choice-mark" aria-hidden="true" />
@@ -257,8 +273,6 @@ function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: stri
         </button></li>)}
       </ul>
       {(selected || malformed) && <button type="button" className="tb model-picker-reset" title={slot.default ? "Use tool default" : "Remove base model"} onClick={clearBase}>{slot.default ? "Reset to default" : "Remove model"}</button>}
-      {restricted && <p className="muted">Only the default Turbo LoRA is verified.</p>}
-      {restricted && adapters.length > 0 && <button type="button" className="tb model-picker-reset" onClick={clearBase}>Reset Turbo LoRA</button>}
     </> : <>
       {adapters.length > 0 && <><h4>Added LoRAs</h4><AdapterList name={name} slot={slot} families={slot.family ? [slot.family] : []} adapters={adapters} /></>}
       {legacy.length > 0 && <div className="model-picker-legacy"><h4>Existing LoRAs</h4><AdapterList name={name} slot={null} families={slot.family ? [slot.family] : []} adapters={legacy} /></div>}
@@ -268,7 +282,7 @@ function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: stri
       </ul>
       {!availableLoras.length && !isPending && <p className="muted model-picker-empty">No compatible LoRAs found.</p>}
     </>}
-    {!restricted && Boolean(data?.older) && (limit < 100 ? <button type="button" className="tb" onClick={() => setLimit(Math.min(100, limit + 25))}>Show more choices</button> : <p className="muted">Refine the search to see more choices.</p>)}
+    {Boolean(data?.older) && (limit < 100 ? <button type="button" className="tb" onClick={() => setLimit(Math.min(100, limit + 25))}>Show more choices</button> : <p className="muted">Refine the search to see more choices.</p>)}
   </section>
 }
 

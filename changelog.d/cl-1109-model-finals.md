@@ -1,0 +1,1 @@
+A model asked for with no release takes its newest final, as a package does: `cozy model show`, `cozy model ls`, the model picker, quantize and fit, and TensorFS offline. A prerelease label (`1.1.0-rc.1`) is taken only when named, or when the model has no final (minimaxai/minimax-h3's `1.0.0-rc.N`) (cl-1109).

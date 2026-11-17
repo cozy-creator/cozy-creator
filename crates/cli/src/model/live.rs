@@ -280,7 +280,7 @@ impl Preview {
             lines.extend(model.triggers.iter().map(|trigger| format!("Trigger: {trigger}")));
             if let Some(strength) = model.strength { lines.push(format!("Suggested strength: {strength}")); }
         }
-        if let Some(release) = model.releases.first() {
+        if let Some(release) = api::release::newest_listed(&model.releases, |release| &release.version) {
             lines.push(format!("Release: {}{}", release.version, if release.visibility == api::model_ref::ReleaseVisibility::Private { " (private)" } else { "" }));
             for lane in &release.lanes { lines.push(format!("{}: {}", lane.lane, output::bytes(lane.bytes.max(0) as u64))); }
         } else if !self.metadata_missing {
@@ -321,7 +321,7 @@ impl Destinations {
 }
 
 pub(crate) async fn remove(ctx: &Context, model: &str) -> Result<api::calcifer::RemovedModel, Error> {
-    super::machine::remove_local(ctx, model).await
+    super::machine::remove_from(ctx, model, "local").await
 }
 
 pub(crate) async fn download(ctx: &Context, choice: DownloadChoice) -> Result<std::process::ExitCode, Error> {

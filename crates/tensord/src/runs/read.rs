@@ -151,6 +151,35 @@ impl Runs {
         let records = (self.service.engine.actor_page(Some(&own), 0, 0, false, &LIVE.map(String::from), usize::MAX)).map_err(problem)?;
         records.iter().filter(|record| scope_allows(record)).map(|record| self.state_of(record).map(|state| state.id)).collect()
     }
+    /// The runs here not ended that read `model` (org/name), each once by the id its sender gave it: one downloading it now, and
+    /// one whose plan binds it (a child by its root's).
+    pub(crate) fn reading(&self, model: &str) -> Result<Vec<String>, Error> {
+        let engine = &self.service.engine;
+        let named = |name: &str| name.eq_ignore_ascii_case(model);
+        let mut runs: Vec<String> = crate::activity::downloading().into_iter()
+            .filter(|(_, models)| models.iter().any(|m| named(m)))
+            .map(|(run, _)| run)
+            .collect();
+        for record in engine.nonterminal(usize::MAX).map_err(problem)? {
+            let Some(submission) = record.submission.as_ref().filter(|s| !s.preparation_id.is_empty()) else { continue };
+            // A closed project's runs run nothing now.
+            let Ok(scope) = engine.private_storage(&record.id) else { continue };
+            let preparation = crate::private_io::within(scope, || engine.preparation(&submission.actor, &submission.preparation_id))
+                .map_err(problem)?;
+            let Some(plan) = preparation.map(|p| crate::gpu_service::Plan::of(&p)).transpose().map_err(problem)? else { continue };
+            let reads = plan.models().iter().any(|row| {
+                let adapters = row["adapters"].as_array().into_iter().flatten().map(|adapter| &adapter["model"]);
+                std::iter::once(&row["repository"]).chain(adapters).filter_map(|name| name.as_str()).any(named)
+            });
+            if reads {
+                let root = if record.invocation.root.is_empty() { &record.id } else { &record.invocation.root };
+                runs.push(engine.caller_id(root));
+            }
+        }
+        runs.sort();
+        runs.dedup();
+        Ok(runs)
+    }
     /// Cancels `actor`'s run `id`; an id this machine never received is recorded canceled.
     pub(crate) fn cancel(&self, actor: VerifiedActor, id: &str) -> Result<v1::RunState, Error> {
         match self.service.engine.get_public(reader(actor).as_deref(), id) {
@@ -277,9 +306,7 @@ impl Runs {
                     sha256: artifact.sha256.clone(),
                     length: artifact.length,
                 };
-                let owner = identity(
-                    &json!({"workspace":self.workspace_id(),"actor":context.actor,"request":context.request_id,"asset":binding.asset_ref}),
-                )?;
+                let owner = retention_owner(&self.workspace_id(), &context.actor, &context.request_id, &binding.asset_ref)?;
                 let mut source = self
                     .service
                     .engine
@@ -539,7 +566,7 @@ impl Runs {
             .into_iter()
             .map(|r| {
                 let object = ObjectRef { sha256: sha256::hex(&r.digest), length: r.length };
-                let file = crate::storage::file(&store, &object).map_err(problem)?;
+                let file = crate::storage::file(&store, &object).map_err(gone(problem))?;
                 Ok((file, r.length))
             })
             .collect::<Result<Vec<_>, Error>>()?;
@@ -576,7 +603,7 @@ impl Runs {
         let (sha, length) = (object.sha256.as_str(), object.length);
         let record = self.record(actor, id)?;
         let store = self.service.engine.store_for(&record.id).map_err(problem)?;
-        let file = crate::storage::file(&store, object).map_err(storage)?;
+        let file = crate::storage::file(&store, object).map_err(gone(storage))?;
         Ok(OutputSnapshot {
             parts: vec![(file, length)],
             length,
@@ -598,7 +625,7 @@ impl Runs {
         };
         let object = ObjectRef { sha256: sha256.to_string(), length };
         let store = self.objects.store().map_err(problem)?;
-        crate::storage::file(&store, &object).map_err(storage)
+        crate::storage::file(&store, &object).map_err(gone(storage))
     }
     /// `actor`'s installations, each with what it holds now (`StatusFrame.environments`).
     pub(crate) fn environments(&self, actor: VerifiedActor) -> Result<Vec<v1::Environment>, Error> {
@@ -762,10 +789,11 @@ impl Runs {
             // A run preparing inside itself (`runs`) shows its stage and bytes as progress.
             let preparing = record.state == State::Queued
                 && record.waiting_reason.as_deref() == Some(crate::journal::PREPARING);
-            // What a queued run waits for (another run's install, its place in the queue) is its state,
+            // What a queued run waits for (another run's install, a GPU) and its place in line are its state,
             // until its weights arrive meanwhile: then their bytes are its progress, the client
             // saying both.
             let waiting = record.waiting.clone().filter(|_| record.state == State::Queued);
+            let place = record.place.filter(|_| waiting.is_some());
             let payload = record.progress.as_ref().map(|progress| {
                 serde_json::from_str::<Value>(progress)
                     .ok()
@@ -788,7 +816,7 @@ impl Runs {
             } else {
                 // Every cursor up to the head is answered, or a waiting client would spin.
                 let waiting = waiting.or_else(|| record.waiting_reason.clone()).or(starting);
-                events.push(event(record.revision, "state", &json!({"state":state_name(&record),"completed_units":record.completed_units,"waiting_reason":waiting}))?);
+                events.push(event(record.revision, "state", &json!({"state":state_name(&record),"completed_units":record.completed_units,"waiting_reason":waiting,"place":place}))?);
             }
         }
         events.sort_by_key(|event| event.sequence);
@@ -825,6 +853,51 @@ fn canonical(value: &Value) -> Result<Vec<u8>, Error> {
     serde_json_canonicalizer::to_vec(value)
         .map_err(|_| Error::validation("invalid_request", "JSON value is outside canonical profile"))
 }
+/// A kept legacy run's made outcome without its words (cl-1035), as `journal::wordless` leaves its record: each product's label, every
+/// string of its inline result but its assets' references and digests, a failure's words and detail, and its adjustments, which become
+/// the one note saying so (`journal::cleared_note`); its outcome's digest and id made again as `terminal` makes them. Its products'
+/// references and retained outputs stay, so a late collection still reads its files.
+pub(crate) fn wordless_terminal(page: &[u8], references: &std::collections::HashSet<String>) -> Result<Vec<u8>, Error> {
+    let corrupt = || Error::internal("custody_corrupt", "durable event projection is corrupt");
+    let mut page: stored::LogPage = stored::decode(page).map_err(|_| corrupt())?;
+    for event in &mut page.events {
+        if let Some(product) = &mut event.product {
+            product.label.clear();
+            event.body_canonical_bytes = product_document(product)?;
+        }
+        let Some(outcome) = &mut event.outcome else { continue };
+        let mut body: Value = serde_json::from_slice(&outcome.outcome_canonical_bytes).map_err(|_| corrupt())?;
+        if let Some(inline) = body.pointer("/result/inline_result").and_then(Value::as_str) {
+            let bytes = STANDARD.decode(inline).map_err(|_| corrupt())?;
+            let mut value: Value = serde_json::from_slice(&bytes).map_err(|_| corrupt())?;
+            crate::journal::blank_words(&mut value, references);
+            body["result"]["inline_result"] = json!(STANDARD.encode(crate::boundary_json::exact(&value)));
+        }
+        if body["status"] != json!(1) {
+            body["safe_message"] = json!("");
+            if let Some(cause) = body.get_mut("cause").and_then(Value::as_object_mut) { cause.remove("detail"); }
+        }
+        if let Some(fields) = body.as_object_mut() { fields.remove("failure_detail"); }
+        body["adjustments"] = json!([crate::journal::cleared_note()]);
+        let bytes = canonical(&body)?;
+        let digest = sha256::digest(&bytes);
+        outcome.outcome_id = format!("out-{}", sha256::hex(&digest));
+        outcome.outcome_digest = digest.to_vec();
+        outcome.outcome_canonical_bytes = bytes;
+        let state = serde_json::from_slice::<Value>(&event.body_canonical_bytes).ok().and_then(|said| said.get("state").cloned()).unwrap_or(json!("completed"));
+        event.body_canonical_bytes = canonical(&json!({
+            "state": state,
+            "outcome_id": outcome.outcome_id,
+            "outcome_digest": format!("sha256:{}", sha256::hex(&outcome.outcome_digest))
+        }))?;
+    }
+    Ok(stored::encode(&page))
+}
+
+/// What a run's retained asset is kept by (`products::retain`): its `native_outputs` row's owner.
+pub(crate) fn retention_owner(workspace: &str, actor: &str, request: &str, asset: &str) -> Result<String, Error> {
+    identity(&json!({"workspace":workspace,"actor":actor,"request":request,"asset":asset}))
+}
 fn identity(value: &Value) -> Result<String, Error> {
     Ok(format!(
         "sha256:{}",
@@ -857,6 +930,14 @@ fn problem(error: io::Error) -> Error {
         io::ErrorKind::InvalidInput => Error::validation("invalid_request", error.to_string()),
         io::ErrorKind::PermissionDenied => Error::forbidden("capability_scope", error.to_string()),
         _ => Error::conflict("precondition_failed", error.to_string()),
+    }
+}
+/// An object's bytes absent from the store (collected, or let go of once copied into a project) as what they are: gone, said so
+/// (`object_not_found`), which a reader settles as lost and asks for no more; any other failure as `otherwise` says it.
+fn gone(otherwise: fn(io::Error) -> Error) -> impl Fn(io::Error) -> Error {
+    move |error| match error.kind() {
+        io::ErrorKind::NotFound => Error::not_found("object_not_found", error.to_string()),
+        _ => otherwise(error),
     }
 }
 fn storage(error: impl std::fmt::Display) -> Error {
@@ -1094,6 +1175,7 @@ impl Log {
                     sequence: event.sequence,
                     attempt: event.attempt_ordinal as u32,
                     waiting: body["waiting_reason"].as_str().unwrap_or_default().into(),
+                    place: body["place"].as_u64().map(|place| place as u32),
                     ..Default::default()
                 })
             }

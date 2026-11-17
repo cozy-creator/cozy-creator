@@ -15,7 +15,15 @@ use platform::{
 };
 
 /// What a fetch says as it goes ("fetching ffmpeg: <url>"): the CLI prints it, Calcifer logs it.
-pub(crate) type Say<'a> = &'a (dyn Fn(&str) + Sync);
+pub type Say<'a> = &'a (dyn Fn(&str) + Sync);
+
+/// What cozy otherwise fetches at its first need, fetched now (`cozy doctor --fix`, which the installers run, cl-1030): each tool and
+/// what it came to, its build or why not. One that fails is fetched again at its first need, as before.
+pub async fn prefetch(home: &Home, say: Say<'_>) -> Vec<(&'static str, Result<String, String>)> {
+    let ffmpeg = ffmpeg(home, say).await.map(|found| found.build).map_err(|error| error.message);
+    let uv = uv(home, say).await.map(|path| path.display().to_string()).map_err(|error| error.message);
+    vec![("ffmpeg", ffmpeg), ("uv", uv)]
+}
 
 /// ffmpeg and ffprobe, with the build that answers (`ffmpeg -version`'s first line).
 #[derive(Clone, Debug)]
@@ -190,20 +198,35 @@ pub(crate) fn path() -> Vec<PathBuf> {
 static FETCHING_FFMPEG: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static FETCHING_UV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// An ffmpeg that encodes libx264 here, the pinned build first.
-fn usable_ffmpeg(home: &Home) -> Option<Ffmpeg> {
-    let (found, ffprobe) = tools::ffmpeg(&home.tools(), &path())?;
-    tools::ffmpeg_encodes(&found.path, "libx264").then_some(Ffmpeg { ffmpeg: found.path, ffprobe, build: found.version })
+/// The ffmpeg found usable, by the tools folder it was looked for in: finding it runs it twice (`-version`, `-encoders`), seconds on a
+/// Mac, so it's found once, not on every thumbnail and measure (cl-1054: that held up every request while 100 pictures were imported).
+static USABLE: std::sync::Mutex<Option<(PathBuf, Ffmpeg)>> = std::sync::Mutex::new(None);
+
+/// An ffmpeg that encodes libx264 here, the pinned build first: the one found before while its files are there, else found now, from
+/// the blocking pool.
+async fn usable_ffmpeg(home: &Home) -> Option<Ffmpeg> {
+    let tools = home.tools();
+    let kept = USABLE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some((_, found)) = kept.filter(|(at, found)| *at == tools && found.ffmpeg.is_file() && found.ffprobe.is_file()) {
+        return Some(found);
+    }
+    let found = tokio::task::spawn_blocking(move || {
+        let (found, ffprobe) = tools::ffmpeg(&tools, &path())?;
+        let usable = tools::ffmpeg_encodes(&found.path, "libx264").then_some(Ffmpeg { ffmpeg: found.path, ffprobe, build: found.version })?;
+        *USABLE.lock().unwrap_or_else(|e| e.into_inner()) = Some((tools, usable.clone()));
+        Some(usable)
+    });
+    found.await.ok().flatten()
 }
 
 /// ffmpeg for work that needs it: the pinned build, else PATH's when it encodes libx264, else the
 /// pinned build fetched now, on this first need.
 pub(crate) async fn ffmpeg(home: &Home, say: Say<'_>) -> Result<Ffmpeg, Error> {
-    if let Some(found) = usable_ffmpeg(home) {
+    if let Some(found) = usable_ffmpeg(home).await {
         return Ok(found);
     }
     let _one = FETCHING_FFMPEG.lock().await;
-    if let Some(found) = usable_ffmpeg(home) {
+    if let Some(found) = usable_ffmpeg(home).await {
         return Ok(found);
     }
     let archives = tools::ffmpeg_build();
@@ -212,8 +235,8 @@ pub(crate) async fn ffmpeg(home: &Home, say: Say<'_>) -> Result<Ffmpeg, Error> {
     }
     let dir = tools::ffmpeg_dir(&home.tools());
     fetch(say, "ffmpeg", archives, &dir).await?;
-    usable_ffmpeg(home).ok_or_else(|| {
-        Error::new(Kind::Internal, "ffmpeg_unavailable", format!("the pinned ffmpeg in {} does not answer", dir.display()))
+    usable_ffmpeg(home).await.ok_or_else(|| {
+        Error::new(Kind::Internal, "ffmpeg_unavailable", format!("The ffmpeg Cozy installed in {} doesn't run.", dir.display()))
     })
 }
 
@@ -233,7 +256,7 @@ pub(crate) async fn uv(home: &Home, say: Say<'_>) -> Result<PathBuf, Error> {
     fetch(say, "uv", std::slice::from_ref(&archive), &dir).await?;
     let found: Option<Found> = tools::uv(&home.tools(), &[]);
     found.map(|found| found.path).ok_or_else(|| {
-        Error::new(Kind::Internal, "uv_unavailable", format!("the pinned uv in {} does not answer", dir.display()))
+        Error::new(Kind::Internal, "uv_unavailable", format!("The uv Cozy installed in {} doesn't run.", dir.display()))
     })
 }
 
@@ -243,7 +266,7 @@ fn unpinned(name: &'static str) -> Error {
     Error::new(
         Kind::Unavailable,
         format!("{name}_unavailable"),
-        format!("cozy pins no {name} build for {} {}", std::env::consts::OS, std::env::consts::ARCH),
+        format!("Cozy has no {name} build for {} {}. Install it with your system's package manager.", std::env::consts::OS, std::env::consts::ARCH),
     )
     .next(install_hint(&Tool { install: Install::System(name), ..*tool }, &path()))
     .next("cozy doctor")
@@ -254,7 +277,7 @@ fn unpinned(name: &'static str) -> Error {
 async fn fetch(say: Say<'_>, name: &str, archives: &[Archive], dir: &Path) -> Result<(), Error> {
     let failed = |e: String| {
         Error::new(Kind::Unavailable, format!("{name}_unavailable"), e)
-            .remedy("the next command that needs it fetches it again")
+            .remedy("Cozy tries to download it again the next time it's needed.")
             .next("cozy doctor")
     };
     let parent = dir.parent().expect("a tool's directory has a parent");
@@ -270,7 +293,7 @@ async fn fetch(say: Say<'_>, name: &str, archives: &[Archive], dir: &Path) -> Re
             return Err(Error::new(
                 Kind::Validation,
                 format!("{name}_digest_mismatch"),
-                format!("{} is sha256:{got}, not the pinned sha256:{}", archive.url, archive.sha256),
+                format!("The download from {} doesn't match (sha256:{got}, not sha256:{}).", archive.url, archive.sha256),
             )
         .next("cozy doctor"));
         }

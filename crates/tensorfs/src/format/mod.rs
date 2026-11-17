@@ -19,7 +19,7 @@ pub use doc::{
     Body, ClassRef, Component, Encoding, Header, Location, Metadata, ObjectRef, Part, Provenance,
     Span, Tensor,
 };
-pub use model::{label, newest_by, Release, ReleaseVisibility, Model, Tree, CHUNKS_DIR, ROOT_ORG};
+pub use model::{label, newest_by, newest_first, Release, ReleaseVisibility, Model, Tree, CHUNKS_DIR, ROOT_ORG};
 pub use doc::{is_digest, segment};
 pub use model::{check_file, model_name};
 pub use dtype::Dtype;

@@ -46,7 +46,7 @@ pub async fn install(dir: &str, download_url: bool, release: &Release, binary: &
     }
     // Its folder takes the new binary beside it before anything is fetched: one that isn't this user's says so at once.
     let folder = binary.parent().unwrap_or(Path::new("."));
-    tempfile::Builder::new().prefix(".cozy-writable-").tempfile_in(folder).map_err(|e| unwritable(binary, "write beside", e))?;
+    tempfile::Builder::new().prefix(".cozy-writable-").tempfile_in(folder).map_err(|e| unwritable(binary, "write next to", e))?;
     let url = match download_url {
         true => format!("{dir}/{}", release.archive),
         false => release.url(),
@@ -57,9 +57,9 @@ pub async fn install(dir: &str, download_url: bool, release: &Release, binary: &
     let (archive, sha256) = tensorfs::fetch::get_pinned_into(&url, &part, moved).await.map_err(|e| unavailable(&url, e))?;
     if sha256 != release.sha256 {
         let _ = std::fs::remove_file(&part);
-        return Err(Error::new(Kind::Validation, "checksum_mismatch", format!("{url} has sha256 {sha256}, not the one its release names")));
+        return Err(Error::new(Kind::Validation, "checksum_mismatch", format!("The download from {url} doesn't match its release (sha256 {sha256}). Try the update again.")));
     }
-    let new = unpack(release, archive, binary).map_err(|e| unwritable(binary, "unpack it beside", e))?;
+    let new = unpack(release, archive, binary).map_err(|e| unwritable(binary, "unpack the update next to", e))?;
     let _ = std::fs::remove_file(&part);
     let version = &release.version;
     let runs = std::process::Command::new(&new).arg("--version").output().map_err(|e| local("run the new binary", e))?;
@@ -67,10 +67,10 @@ pub async fn install(dir: &str, download_url: bool, release: &Release, binary: &
         return Err(Error::new(
             Kind::Validation,
             "new_binary_refused",
-            format!("cozy {version} for {TARGET} does not run here: {}", String::from_utf8_lossy(&runs.stderr).trim()),
+            format!("cozy {version} for {TARGET} doesn't run on this computer: {}", String::from_utf8_lossy(&runs.stderr).trim()),
         ));
     }
-    keep_previous(binary).map_err(|e| unwritable(binary, "keep the binary it replaces beside", e))?;
+    keep_previous(binary).map_err(|e| unwritable(binary, "keep a backup next to", e))?;
     platform::durable::replace_program(binary, &new).map_err(|e| unwritable(binary, "replace", e))?;
     Ok(Installed { to: version.clone(), binary: binary.to_owned(), archive: release.archive.clone(), sha256, signer })
 }
@@ -104,7 +104,7 @@ async fn brew_upgrade(stable: &Path, wanted: &str) -> Result<Installed, Error> {
     let upgrade = format!("brew upgrade {formula}");
     let pinned = run(vec!["list".into(), "--pinned".into()]).await.map_err(|e| brew_failed(&upgrade, e.to_string()))?;
     if String::from_utf8_lossy(&pinned.stdout).lines().any(|line| line.trim() == formula) {
-        return Err(Error::new(Kind::Conflict, "homebrew_pinned", format!("Homebrew holds {formula} where it is (brew pin): cozy {wanted} isn't installed"))
+        return Err(Error::new(Kind::Conflict, "homebrew_pinned", format!("Homebrew has {formula} pinned, so cozy {wanted} wasn't installed. Unpin it, then upgrade."))
             .next(format!("brew unpin {formula} && {upgrade}")));
     }
     let out = run(vec!["upgrade".into(), formula.clone()]).await.map_err(|e| brew_failed(&upgrade, e.to_string()))?;
@@ -115,13 +115,13 @@ async fn brew_upgrade(stable: &Path, wanted: &str) -> Result<Installed, Error> {
     let runs = std::process::Command::new(stable).arg("--version").output().map_err(|e| local("run Homebrew's cozy", e))?;
     let said = String::from_utf8_lossy(&runs.stdout).trim().trim_start_matches("cozy ").to_owned();
     if !newer(&said, wanted) && said != wanted {
-        return Err(brew_failed(&upgrade, format!("it left cozy {said}, not {wanted}: its tap may not have {wanted} yet")));
+        return Err(brew_failed(&upgrade, format!("it left cozy {said}, not {wanted}; its tap may not have {wanted} yet")));
     }
     Ok(Installed { to: said, binary: stable.to_owned(), archive: String::new(), sha256: String::new(), signer: "Homebrew".into() })
 }
 
 fn brew_failed(upgrade: &str, why: String) -> Error {
-    Error::new(Kind::Unavailable, "homebrew_upgrade_failed", format!("`{upgrade}` didn't update cozy: {why}")).next(upgrade.to_owned())
+    Error::new(Kind::Unavailable, "homebrew_upgrade_failed", format!("Homebrew couldn't update cozy: {why}.")).next(upgrade.to_owned())
 }
 
 /// Whether release `a` is newer than `b` (`0.26.0` over `0.25.3`), build metadata aside. Unparsable: not newer.
@@ -173,7 +173,7 @@ async fn text(url: &str) -> Result<String, Error> {
     };
     match tensorfs::fetch::get_pinned(url, 0, &mut sink).await {
         Ok(()) => String::from_utf8(body).map_err(|e| unavailable(url, e)),
-        Err(e) if e.code == tensorfs::err::Code::REF_NOT_FOUND => Err(Error::new(Kind::NotFound, "release_not_found", format!("{url}: not found"))),
+        Err(e) if e.code == tensorfs::err::Code::REF_NOT_FOUND => Err(Error::new(Kind::NotFound, "release_not_found", format!("Cozy couldn't find {url}."))),
         Err(e) => Err(unavailable(url, e)),
     }
 }
@@ -188,19 +188,19 @@ fn refused(e: release::Refused) -> Error {
 }
 
 fn unavailable(url: &str, error: impl std::fmt::Display) -> Error {
-    Error::new(Kind::Unavailable, "release_unavailable", format!("{url}: {error}"))
+    Error::new(Kind::Unavailable, "release_unavailable", format!("Cozy couldn't download {url}: {error}"))
 }
 
 /// The installed binary's folder isn't this user's to write (a system-wide install): its owner updates it.
 fn unwritable(binary: &Path, op: &str, error: io::Error) -> Error {
     match error.kind() {
         io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem => {
-            Error::new(Kind::Conflict, "cozy_unwritable", format!("cozy can't {op} {}: {error}", binary.display())).next("sudo cozy update")
+            Error::new(Kind::Conflict, "cozy_unwritable", format!("Cozy doesn't have permission to {op} {}: {error}. Run the update with sudo.", binary.display())).next("sudo cozy update")
         }
         _ => local(&format!("{op} {}", binary.display()), error),
     }
 }
 
 fn local(op: &str, error: io::Error) -> Error {
-    Error::new(Kind::Internal, "update_failed", format!("{op}: {error}"))
+    Error::new(Kind::Internal, "update_failed", format!("The update couldn't {op}: {error}."))
 }

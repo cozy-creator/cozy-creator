@@ -206,15 +206,21 @@
   padding: 6px 12px;
   font-size: 18px;
 }
-/* Models & LoRAs open: the tool line widens to hold the picker, which takes the fields' room; the frame gives way to it (cl-958). */
+/* Models & LoRAs in Focus opens in front of the picture, rising from its button, so the picture keeps its size (Paul, 11-15). */
+/* Open, the tool line and its picker lie over the frame's own corner controls (zoom, shape: z-index 8-10), so every row takes its click. */
 .focus-card > .image-controls:has(> .model-picker) {
-  width: min(780px, 100%);
+  z-index: 12;
 }
-.card.focus-card:has(> .image-controls > .model-picker) {
-  grid-template-rows: minmax(160px, 1fr) auto 0px;
-}
-.card.focus-card:has(> .image-controls > .model-picker) > .here-under {
-  display: none;
+.focus-card > .image-controls > .model-picker {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  translate: -50% 0;
+  width: min(640px, 100%);
+  max-height: min(70vh, 640px);
+  margin: 0;
+  z-index: 3;
+  box-shadow: 0 10px 40px var(--shadow);
 }
 /* What makes it reads as its name, not a field being typed in: a plain edge, as tall as Models & LoRAs beside it. */
 .focus-card .image-tool {
@@ -385,6 +391,23 @@ body:has(.focus-viewport) .zoom {
   width: 20px;
   height: 20px;
 }
+.focus-actions .render-at {
+  gap: 12px;
+}
+.focus-actions .render-time,
+.focus-actions .ready-on {
+  color: var(--ink);
+  font-size: 17px;
+}
+.focus-actions .slow-here {
+  min-height: 44px;
+  padding: 0 14px;
+  font-size: 17px;
+}
+.focus-actions .slow-here .icon {
+  width: 18px;
+  height: 18px;
+}
 .focus-actions .take.add.focus-new {
   width: auto;
   height: 44px;
@@ -408,7 +431,126 @@ body:has(.focus-viewport) .zoom {
 .focus-viewport:has(.focus-actions) .focus-title {
   padding-right: 360px;
 }
+/* The render's time and Slow here beside Render take the title's room too (cl-1004). */
+.focus-viewport:has(.focus-actions .render-time) .focus-title {
+  padding-right: 480px;
+}
+.focus-viewport:has(.focus-actions .slow-here) .focus-title {
+  padding-right: 520px;
+}
+.focus-viewport:has(.focus-actions .render-time):has(.focus-actions .slow-here) .focus-title {
+  padding-right: 640px;
+}
+/* "Ready on kamitsure" beside them takes it as well (cl-1104). */
+.focus-viewport:has(.focus-actions .ready-on) .focus-title {
+  padding-right: 600px;
+}
+.focus-viewport:has(.focus-actions .ready-on):has(.focus-actions .render-time) .focus-title {
+  padding-right: 720px;
+}
+.focus-viewport:has(.focus-actions .ready-on):has(.focus-actions .slow-here) .focus-title {
+  padding-right: 760px;
+}
+.focus-viewport:has(.focus-actions .ready-on):has(.focus-actions .render-time):has(.focus-actions .slow-here) .focus-title {
+  padding-right: 880px;
+}
 @media (max-width: 760px) {
   .focus-card > .focus-actions { right: calc(min(25vw, 150px) + 8px); }
   .focus-viewport:has(.focus-actions) .focus-title { padding-right: 260px; }
+}
+/* A video in Focus shows its own frame at its own size (cl-1080; Paul, 11-16): until it's decoded the poster stands in, no larger than it is,
+   and the player over it shows nothing rather than black. Nothing over the picture blurs it. */
+.focus-image-transform .scrub > img:not(.strip) {
+  object-fit: scale-down;
+}
+.focus-image-transform .media .live:not([data-drawn]) {
+  background: none;
+}
+/* Full screen (cl-1080): the picture letterboxed on black at its own aspect, its track and transport over its bottom, dark whatever the
+   theme, as a player's are. While it plays they go once the pointer rests, and come back as it moves. */
+.focus-viewer[data-full] {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  background: #000;
+  --bg: #141415;
+  --panel: #121316;
+  --card: #17181b;
+  --card2: #26282d;
+  --well: #0a0a0b;
+  --line: #ffffff33;
+  --line2: #ffffff59;
+  --ink: #f2f2f2;
+  --mute: #c4c6cc;
+  --faint: #a3a5ac;
+  --ember: #ff8a3d;
+  --on-ember: #1b1006;
+  --select: #3d8bff;
+  --scrim: #000a;
+  --shadow: #0009;
+  --tint: #ffffff14;
+  --halo: 0 0 2px #000, 0 0 6px #000;
+  color-scheme: dark;
+}
+.focus-viewer[data-full] > .focus-stack {
+  position: static;
+}
+.focus-viewer[data-full] .focus-under {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 48px 24px 14px;
+  background: linear-gradient(to top, #000000b3, #0000);
+  transition: opacity 0.2s;
+}
+.focus-viewer[data-full] .focus-under:empty {
+  display: none;
+}
+.focus-viewer[data-full] .tl-transport {
+  flex: none;
+  padding: 0;
+  background: none;
+}
+/* Its buttons light on the picture, in paper too: no drawn frame (paper.css), as a player's are. */
+.focus-viewer[data-full] .tl-transport .tb {
+  border-color: transparent;
+  border-image-source: none;
+  background: none;
+  color: #fff;
+}
+.focus-viewer[data-full] .tl-transport .tb:hover {
+  background: #ffffff26;
+}
+.focus-viewer[data-full] .tl-take {
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+.focus-viewer[data-full] .tl-take .tl-bar,
+.focus-viewer[data-full] .tl-take .tl-rail {
+  display: none;
+}
+.focus-viewer[data-full] .tl-take .tl-scroll {
+  background: none;
+}
+.focus-viewer[data-full] .tl-take .tl-track {
+  padding-bottom: 0;
+}
+.focus-viewer[data-full] .tl-take .tl-clips,
+.focus-viewer[data-full] .tl-take .tl-span {
+  height: 22px;
+  margin-top: 0;
+}
+.focus-viewer[data-resting]:has(.tl-transport[data-playing]) .focus-under {
+  opacity: 0;
+  pointer-events: none;
+}
+.focus-viewer[data-resting]:has(.tl-transport[data-playing]),
+.focus-viewer[data-resting]:has(.tl-transport[data-playing]) * {
+  cursor: none;
 }

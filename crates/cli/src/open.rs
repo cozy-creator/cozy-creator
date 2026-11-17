@@ -1,6 +1,8 @@
-//! Open the current project in a browser and print its local URL. A `--json` caller is a program: it gets the link, and no browser starts.
+//! Open the current project in a private window of the user's own browser and print its local URL. A `--json` caller is a program: it
+//! gets the link, and no browser starts.
+mod window;
+
 use std::{
-    io::IsTerminal as _,
     net::{Ipv4Addr, TcpListener},
     process::ExitCode,
 };
@@ -20,7 +22,7 @@ use crate::{
 };
 
 #[derive(clap::Args, Debug)]
-#[command(after_help = "With --json it prints the link and opens no browser.\n\nExamples:\n  cd my-project && cozy open\n  cozy open --port 8818")]
+#[command(after_help = "It opens a private window of your browser ($BROWSER, else the default). With --json it prints the link and opens no browser.\n\nExamples:\n  cd my-project && cozy open\n  cozy open --port 8818")]
 pub(crate) struct Args {
     /// Use this loopback port for Calcifer, and keep it for later commands.
     #[arg(long, value_name = "PORT", value_parser = clap::value_parser!(u16).range(1..))]
@@ -31,54 +33,35 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     let (calcifer, project) = match args.port {
         Some(port) => select_port(ctx, port).await?,
         None => {
-            let project = identity_or_unlock(ctx).await?;
+            let project = project::identity(ctx).await?;
             (ctx.calcifer().await?, project)
         }
     };
+    let url = page_url(&calcifer, &project)?;
     // A `--json` caller is a program: it gets the page's address, and no browser starts.
-    let opened = if ctx.json {
-        json!({ "url": page_url(&calcifer, &project)?, "private": false })
-    } else { match calcifer.post::<_, Opened>("/v1/browser/open", &json!({ "project": project.id }), None).await {
-        // The printed URL is reference-only; authority was injected through the owned native pipe.
-        Ok(opened) => json!({ "url": opened.url, "private": true }),
-        // No display, no Chrome, or its launch failed: any browser on this computer opens the page, Calcifer's own (cl-980).
-        Err(error) if error.code == "private_browser_unavailable" => {
-            let reason = error.cause.clone().unwrap_or(error.code);
-            let url = page_url(&calcifer, &project)?;
-            let name = match crate::project::current(ctx).await {
-                Ok(state) => state.path.file_name().map(|name| name.to_string_lossy().into_owned()),
-                Err(_) => None,
-            }.unwrap_or_else(|| project.code.clone());
-            output::warn(&format!("Cozy's private browser couldn't start ({reason}): open {name} at this address in any browser, which isn't private"));
-            json!({ "url": url, "private": false, "reason": reason })
+    if ctx.json {
+        output::document(ctx, &json!({ "url": url }));
+        return Ok(ExitCode::SUCCESS);
+    }
+    match window::open(&url).await {
+        Ok(browser) => output::document(ctx, &json!({ "url": url, "browser": browser })),
+        Err(why) => {
+            // Never a normal window: the point is that nothing of the project lands in the browser's history or cache.
+            output::warn(&format!("no browser with a private window could be started ({why}): open this address in one"));
+            output::document(ctx, &json!({ "url": url }));
         }
-        Err(error) => return Err(error),
-    } };
-    output::document(ctx, &opened);
+    }
     Ok(ExitCode::SUCCESS)
 }
 
-/// A locked project unlocks at a terminal, then opens (cl-1002). `--json` and pipes never ask for a credential: they get
-/// `project_locked`, which names `cozy vault unlock`.
-async fn identity_or_unlock(ctx: &Context) -> Result<Address, Error> {
-    match project::identity(ctx).await {
-        Err(error) if error.code == "project_locked" && !ctx.json && std::io::stdin().is_terminal() && ctx.term.stderr => {
-            project::vault::unlock_for_open(ctx).await?;
-            project::identity(ctx).await
-        }
-        answer => answer,
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct Opened {
-    url: String,
-}
-
-/// The project's page on this Calcifer, as the owned browser opens it: any browser of this account opens it as Calcifer's own page.
+/// The project's page on this Calcifer by its short code, as the page's own links say it (`/p/<code>`; Paul 11-16, of `/projects/<id>`:
+/// "where did this dumb other url come from?"). Any browser of this account opens it as Calcifer's own page.
 fn page_url(calcifer: &Client, project: &Address) -> Result<String, Error> {
     let holder = calcifer.holder().ok_or_else(|| Error::new(Kind::Unavailable, "calcifer_unavailable", "Calcifer isn't running").next("cozy open"))?;
-    Ok(format!("http://{}/projects/{}", holder.address, project.id))
+    Ok(match project.code.is_empty() {
+        false => format!("http://{}/p/{}", holder.address, project.code),
+        true => format!("http://{}/projects/{}", holder.address, project.id),
+    })
 }
 
 fn reserve_port(port: u16) -> Result<TcpListener, Error> {
@@ -96,7 +79,7 @@ async fn select_port(ctx: &Context, port: u16) -> Result<(Client, Address), Erro
         .lock(LockKind::Exclusive).map_err(port_error)?;
     let unconnected = Client::unconnected(ctx)?;
     let running = match unconnected.lock_state() {
-        Lock::Free { .. } => None,
+        Lock::Free => None,
         _ => Client::running(ctx).await?,
     };
     let was_running = running.is_some();
@@ -115,7 +98,7 @@ async fn select_port(ctx: &Context, port: u16) -> Result<(Client, Address), Erro
                 Kind::Conflict, "calcifer_port", format!("Calcifer did not start on the requested port {port}"),
             ));
         }
-        identity_or_unlock(ctx).await
+        project::identity(ctx).await
     }.await;
     match selected {
         Ok(project) => Ok((calcifer, project)),

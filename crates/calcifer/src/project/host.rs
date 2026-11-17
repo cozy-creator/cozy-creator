@@ -45,6 +45,8 @@ pub(crate) struct Package {
     pub named: Option<String>,
     /// A published release's digest, as its card says (xs-196); empty: local code, or a Hub before it.
     pub digest: String,
+    /// What it does in a line, its pyproject's description as its card or its checkout says: what spells its name (`title`).
+    pub summary: String,
     document: Value,
 }
 
@@ -52,6 +54,11 @@ impl Package {
     /// Its interface, as its card or its source says.
     pub(crate) fn document(&self) -> &Value {
         &self.document
+    }
+
+    /// It in words, as what's said of it names it: MiniMax H3 (`tool::title`).
+    pub(crate) fn title(&self) -> String {
+        tool::title(&self.name, &self.summary)
     }
 
     /// `function` of it as a machine's estimate names it: `org/pkg/fn@release`, local code by its manifest.
@@ -73,16 +80,16 @@ impl Package {
             return self.function(function).ok();
         }
         let interface = self.interface();
-        let makes = |name: &&str| interface.callables.iter().find(|callable| callable.name == **name).and_then(tool::output_kind) == Some(kind);
+        let makes = |name: &&str| interface.callables.iter().find(|callable| callable.name == **name).and_then(tool::makes) == Some(kind);
         let first = interface.public().into_iter().find(makes)?;
         self.function(first).ok()
     }
 
-    /// What its named function makes: `image`, `video` or `audio`. None: it names none, or its output says no media.
+    /// What its named function makes: `image`, `video`, `audio` or `text`. None: it names none, or its output says none of those.
     pub(crate) fn named_kind(&self) -> Option<String> {
         let interface = self.interface();
         let callable = interface.callables.iter().find(|callable| Some(&callable.name) == self.named.as_ref())?;
-        tool::output_kind(callable).map(str::to_owned)
+        tool::makes(callable).map(str::to_owned)
     }
 
     /// The typed inputs of `function`.
@@ -136,7 +143,7 @@ impl Renderer {
         document: &Value,
         local: Option<PathBuf>,
     ) -> Result<Self, Error> {
-        let unknown = || format!("{package}@{release} has no function {function}");
+        let unknown = || format!("{package}@{release} has no function called {function}.");
         let entry = (interface::entrypoints(document).find(|entry| interface::name(entry) == Some(function)))
             .ok_or_else(|| Error::new(Kind::NotFound, "callable_unknown", unknown()).next(format!("cozy package install {}", shown(package))))?;
         let read = |slots: Vec<&Value>| slots.into_iter().filter_map(|slot| Slot::read(slot).ok()).collect();
@@ -243,7 +250,7 @@ impl Host {
                 let Some(run) = &prepared.install else { return Ok(prepared) };
                 if let Wait::Quote(job) = wait {
                     self.installs.asked(&self.api, &run.id, job)?;
-                    return Err(Error::new(Kind::Unavailable, INSTALLING, format!("its install, run {}, is going", run.number)));
+                    return Err(Error::new(Kind::Unavailable, INSTALLING, format!("Its install (run {}) is still going.", run.number)));
                 }
                 let mut told = self.installs.told.subscribe();
                 let _waiting = match job {
@@ -290,13 +297,14 @@ impl Host {
         if let Some(found) = local_code::target(with, Some(folder), &home) {
             let (path, named) = found?;
             let on = on.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
-            let prepared = self.ready(&path, &on, hub, wait).await?;
+            let prepared = crate::stages::stage("local code", self.ready(&path, &on, hub, wait)).await?;
             let Some(document) = prepared.interface else {
-                let said = format!("{with} is not described on {on:?} yet: its first render installs it");
+                let said = format!("{with} isn't installed on {on:?} yet, so its first render installs it.");
                 return Err(Error::new(Kind::Unavailable, "renderer_not_described", said));
             };
             let release = prepared.source.manifest.trim_start_matches("sha256:").chars().take(12).collect();
-            return Ok(Package { name: prepared.package, release, local: Some(path), manifest: prepared.source.manifest, moved: None, named, digest: String::new(), document });
+            let summary = prepared.from.map(|from| from.summary).unwrap_or_default();
+            return Ok(Package { name: prepared.package, release, local: Some(path), manifest: prepared.source.manifest, moved: None, named, digest: String::new(), summary, document });
         }
         let first = on.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
         self.published(hub, with, Some(&first)).await
@@ -319,7 +327,8 @@ impl Host {
             let manifest = local_code::source(hubs.home(), &code, hubs, &Origin::parse(&hub)?).await?.source.manifest;
             let (name, document) = local_code::describe(&self.api, &code, &first, &hub).await?;
             let release = manifest.trim_start_matches("sha256:").chars().take(12).collect();
-            Ok(Package { name, release, local: Some(path), manifest, moved: None, named, digest: String::new(), document })
+            let summary = crate::checkout::of(&code).map(|from| from.summary).unwrap_or_default();
+            Ok(Package { name, release, local: Some(path), manifest, moved: None, named, digest: String::new(), summary, document })
         }).await
     }
 
@@ -327,7 +336,7 @@ impl Host {
     pub(crate) async fn described(&self, with: &str, folder: &Path) -> Result<Package, Error> {
         let hub = self.api.machines.hubs.default_origin();
         let found = crate::runs::target::describe(&self.api, &hub, with, None, Some(folder), &crate::runs::default_on(&self.api)).await?;
-        Ok(Package { name: found.package, release: found.release, local: None, manifest: String::new(), moved: None, named: found.function, digest: String::new(), document: found.interface })
+        Ok(Package { name: found.package, release: found.release, local: None, manifest: String::new(), moved: None, named: found.function, digest: String::new(), summary: found.summary, document: found.interface })
     }
 
     /// A published package, by `[org/]package[@release]`, for a run `on` its machine (of several, the
@@ -340,7 +349,7 @@ impl Host {
         }
         // As `cozy run` resolves it.
         let hub = crate::runs::hub(&self.api, hub);
-        let Resolved::Release { package, function, card, mut moved, upgrade, cozy, .. } = target::published(&self.api, &hub, with, on, true).await? else {
+        let Resolved::Release { package, function, card, mut moved, upgrade, cozy, .. } = crate::stages::stage("release", target::published(&self.api, &hub, with, on, true)).await? else {
             unreachable!("a published target resolves to a release");
         };
         // cozy updates itself first for a release only a newer cozy's line runs (cl-978): the render waits behind it, and Calcifer
@@ -361,11 +370,11 @@ impl Host {
         }
         // Its machine's Runtime moves first to one that runs the release (cl-952): the render waits behind that update.
         if let Some(upgrade) = &upgrade
-            && self.api.machines.upgrade(upgrade).await?.is_some()
+            && crate::stages::stage("runtime move", self.api.machines.upgrade(upgrade)).await?.is_some()
         {
             moved = Some(upgrade.note());
         }
-        let found = Package { name: package, release: card.release.clone(), local: None, manifest: String::new(), moved: None, named: function, digest: card.digest().unwrap_or_default().to_owned(), document: card.interface_document().clone() };
+        let found = Package { name: package, release: card.release.clone(), local: None, manifest: String::new(), moved: None, named: function, digest: card.digest().unwrap_or_default().to_owned(), summary: card.summary().to_owned(), document: card.interface_document().clone() };
         self.packages.lock().expect("packages lock").insert(at, found.clone());
         Ok(Package { moved, ..found })
     }
@@ -380,7 +389,7 @@ impl Host {
 
     /// Sends `run` under `key`: one key is one run, however often it is sent.
     pub(crate) async fn submit(&self, key: &str, run: SubmitRun) -> Result<Run, Error> {
-        Ok(self.api.calcifer.submit(key, run).await.map_err(refused)?.run)
+        Ok(self.api.calcifer.submit(key, run, crate::store::Task::None).await.map_err(refused)?.run)
     }
 
     /// Runs a turn of its walk sends `on` one machine: they go together (`Together`).
@@ -417,7 +426,7 @@ impl Host {
         let mut tail = calcifer.subscribe();
         loop {
             let row = calcifer.maintenance_store().run(id.as_str()).map_err(|e| refused(e.into()))?;
-            let row = row.ok_or_else(|| Error::new(Kind::NotFound, "run_not_found", format!("Calcifer holds no run {id}")))?;
+            let row = row.ok_or_else(|| Error::new(Kind::NotFound, "run_not_found", format!("Cozy has no run {id}.")))?;
             let run = calcifer.record(&row).map_err(refused)?;
             if matches!(run.status, RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled) {
                 return Ok(run);
@@ -432,7 +441,7 @@ impl Host {
         loop {
             let row = self.journal().and_then(|store|store.run(id.as_str())).map_err(|e| refused(e.into()))?;
             let row =
-                row.ok_or_else(|| Error::new(Kind::NotFound, "run_not_found", format!("Calcifer holds no run {id}")))?;
+                row.ok_or_else(|| Error::new(Kind::NotFound, "run_not_found", format!("Cozy has no run {id}.")))?;
             let run = calcifer.record(&row).map_err(refused)?;
             if matches!(run.status, RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled) && and(&run) {
                 return Ok(run);
@@ -546,7 +555,7 @@ pub(crate) const INSTALLING: &str = "renderer_installing";
 pub(crate) const CANCELED: &str = "render_canceled";
 
 fn canceled() -> Error {
-    Error::new(Kind::Conflict, CANCELED, "canceled while it waited for its install")
+    Error::new(Kind::Conflict, CANCELED, "Canceled while it was waiting for its install.")
 }
 
 /// The installs a project's walk asks for its local code (`Host::ready`), and the jobs waiting on each or whose quotes asked for it. An
@@ -791,7 +800,7 @@ impl Member {
 
     /// Submits `run` under `key` with the others: its run, once they all have.
     pub(crate) async fn submit(self, key: &str, run: SubmitRun) -> Result<Run, Error> {
-        let unsent = || Error::new(Kind::Unavailable, UNSENT, "the runs it went with were dropped before they were sent");
+        let unsent = || Error::new(Kind::Unavailable, UNSENT, "The runs it was grouped with were dropped before they were sent.");
         let Some(together) = self.take() else { return Err(unsent()) };
         let (answer, answered) = tokio::sync::oneshot::channel();
         together.left(Some((key.to_owned(), run, answer)));

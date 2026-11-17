@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "The kernels suite's calls of the Runtime's kernel exercisers (cozy_runtime.bench)"
 requires-python = ">=3.12"
 # The exercisers run in this environment: the Runtime's kernels need torch, Triton and Diffusers' attention dispatch.
-dependencies = ["cozy-runtime>=0.45", "diffusers>=0.41,<0.42", "msgspec>=0.19", "torch>=2.14", "triton>=3"]
+dependencies = ["cozy-runtime>=0.47.0.dev0,<0.48", "diffusers>=0.41,<0.42", "msgspec>=0.19", "torch>=2.14", "triton>=3"]
 
 [project.entry-points."cozy.application"]
 default = "kernels_drive:app"

@@ -5,6 +5,7 @@ name: rc-e2e
 # dispatches it with macOS and Windows too, and its rc-siblings.yaml dispatches it when cozy-runtime's or packages' RC moves.
 # A red lists what merged since the last green run, here and in those two, each with its issue, to find the commit that
 # caused it (tracker cl-885).
+# `skew-candidate` is the RC's cozy against the production Hub's line (tensorhub master), as the suites' Hub is tensorhub's RC.
 # By hand: gh workflow run rc-e2e.yaml -R cozy-creator/cozy-creator --ref rc/<x.y.z> [-f select='cli os:macos os:windows']
 on:
   push:
@@ -14,7 +15,7 @@ on:
       select:
         description: The suites (ci/suites.toml tokens)
         type: string
-        default: cli imports cpu model
+        default: cli imports cpu model skew-candidate
 
 concurrency:
   group: rc-e2e-${{ github.ref_name }}
@@ -31,7 +32,7 @@ jobs:
     with:
       repo: cozy-creator
       ref: ${{ github.sha }}
-      select: ${{ inputs.select || 'cli imports cpu model' }}
+      select: ${{ inputs.select || 'cli imports cpu model skew-candidate' }}
 
   since:
     name: merged since green

@@ -20,7 +20,7 @@ use crate::ids::{Digest, RunId};
 
 pub mod hub;
 pub mod project;
-pub use crate::machine::{HeldAnswer, HeldObject, HeldRequest, RemoveModel, RemovedModel};
+pub use crate::machine::{GpuReading, GpuUse, HeldAnswer, HeldObject, HeldRequest, RemoveModel, RemovedModel};
 pub mod report;
 pub mod node;
 pub mod tool;
@@ -127,6 +127,10 @@ pub struct Warning {
 
 /// A run's `Warning` code for a mention its function can't use, left out (cl-944): a note, nothing to act on.
 pub const MENTION_UNUSED: &str = "mention_unused";
+
+/// A run's `Reason` code when its machine ended under it (shut down, released, or lost), and a box's failure for it (cl-1085): `cozy run
+/// retry` and the page's Retry ask it again where it finishes soonest now.
+pub const MACHINE_LOST: &str = "machine_lost";
 
 /// A run's `Warning` code for a first-party package run from a dev home's packages checkout (xs-195): its branch and commit, a
 /// note.
@@ -409,7 +413,7 @@ pub enum Status {
     Canceled,
 }
 
-/// Where the plan sent a run, and what that machine's offer quoted when it went (cl-967): `cozy run show`'s `placed`.
+/// Where the plan sent a run, and what that machine's offer quoted when it went (cl-967): `cozy run watch --once`'s `placed`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Placed {
@@ -427,6 +431,13 @@ pub struct Placed {
     /// Its weights' bytes it downloads there first.
     #[serde(default)]
     pub fetch_bytes: u64,
+    /// Of its weights fetched only when the function first reads them, the most it may download there besides: in no time (cl-1071).
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub on_demand_bytes: u64,
+}
+
+fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
 }
 
 /// One run as Calcifer holds it.
@@ -437,8 +448,8 @@ pub struct Run {
     pub id: RunId,
     /// This controller's number for it; 0 for one another client sent.
     pub number: u64,
-    /// What names it to a person from any folder (cl-987): `KEY-N`, its project's key and its number there, `COZY-N` for Calcifer's
-    /// own; its id for one another client sent.
+    /// What names it to a person from any folder (cl-987): `KEY-N`, its project's key and its number there; empty for one of
+    /// Calcifer's jobs (cl-1028) or one another client sent, which its id names.
     #[serde(default)]
     pub name: String,
     /// One another client of this account sent, as the machine it runs on numbers it: read there,
@@ -1035,10 +1046,13 @@ pub struct RunList {
 }
 
 /// `PUT /v1/events/{stream}`: the projects a page on that stream shows, which Calcifer holds open
-/// while it lasts or until it shows others.
+/// while it lasts or until it shows others, and whether it shows a machine's view: its runs that
+/// are no project's (installs, updates). A page stream hears a run only of what it shows.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Shown {
     pub projects: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub machines: bool,
 }
 
 /// The Readers installed by `PUT /v1/events/{stream}`. IDs not in `held` are not acknowledged;
@@ -1104,10 +1118,20 @@ pub enum StreamEvent {
     /// Public protection metadata reaches every tab, including tabs showing another project.
     #[serde(rename = "project.vault")]
     ProjectVault { id: String, state: String },
+    /// Before a lock, a storage change or a stop closes the project, to each page showing it: send what's typed of it now, then answer
+    /// `POST /v1/events/{stream}/saved` (cl-1067). A page that doesn't know it skips it, as any type it doesn't know.
+    #[serde(rename = "project.saving")]
+    ProjectSaving { id: String },
     /// Its folder is gone (deleted, moved away, on a drive that isn't there): where it was. Nothing of it reads, so a stream showing it
-    /// is told this in place of `project.changed`, and asks it nothing more (cl-980).
+    /// is told this in place of `project.changed`, and asks it nothing more (cl-980). Deleted here, every stream hears it (cl-1097).
     #[serde(rename = "project.gone")]
     ProjectGone { id: String, path: String },
+    /// The index changed (a project renamed or deleted): `GET /v1/projects` again.
+    #[serde(rename = "projects.changed")]
+    ProjectsChanged,
+    /// How the page looks everywhere (`GET /v1/appearance`) changed.
+    #[serde(rename = "appearance")]
+    Appearance { appearance: Appearance },
     /// The rows of a project's canvas that changed, at revision `seq`; none is a row gone.
     #[serde(rename = "canvas")]
     Canvas { id: String, seq: u64, cards: BTreeMap<String, Option<crate::calcifer::project::Card>> },
@@ -1232,6 +1256,13 @@ pub struct Machine {
     pub running: u32,
     #[serde(default)]
     pub queued: u32,
+    /// Calcifer's jobs on it (an install, a download, an upload, a quantization, an update, a removal; on `local` also its own:
+    /// a lock, a publication, cozy's update), cl-1028: those going, and the last that ended of each job type (install, download,
+    /// upload, quantize, warm, remove, update, lock, publish) and outcome (completed, failed, canceled). They are no project's runs: none is
+    /// listed with runs, and an ended one is kept until a newer one of its type and outcome ends here a minute or more after it, or its
+    /// machine goes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jobs: Vec<Run>,
     /// False: a rental another client of this account ordered. This controller reaches it as its
     /// own (the Hub grants it every device the account signed in on), but places no run on it unasked.
     #[serde(default = "yes")]
@@ -1252,12 +1283,20 @@ pub struct Machine {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ending: Option<String>,
     /// Why its last end failed (this computer's sign-in, or the Hub's refusal): nothing was ended,
-    /// and a rental may still bill. Ending it again asks again.
+    /// and a rental may still bill. Ending it again asks again; Calcifer also asks again, paced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_failed: Option<String>,
+    /// An ending rental its Hub took the release of minutes ago and has not said is gone: it may still
+    /// bill, and Calcifer keeps asking (cl-977).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_unconfirmed: Option<String>,
     /// In a dev home (`dev = true`), a rental this computer ordered and the open RC's builds (cl-922).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rc: Option<RcFollow>,
+    /// The software an update by hand gave it, in that update's words, which it keeps: it moves to neither the open RC nor a
+    /// package's floor until `cozy machine update <name>` names nothing (cl-952).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<String>,
 }
 
 /// A dev home's rental and the open RC's newest builds (cl-922).
@@ -1277,13 +1316,15 @@ fn yes() -> bool {
     true
 }
 
-/// A duration as a clock reads: `41s`, `14m`, `1h12m`.
+/// A duration as Paul writes it: `41s`, `3m 12s`, `2h 5m`.
 pub fn clock(ms: i64) -> String {
     let s = (ms / 1000).max(0);
-    match s {
-        0..60 => format!("{s}s"),
-        60..3600 => format!("{}m", s / 60),
-        _ => format!("{}h{:02}m", s / 3600, s % 3600 / 60),
+    match (s / 3600, s % 3600 / 60, s % 60) {
+        (0, 0, s) => format!("{s}s"),
+        (0, m, 0) => format!("{m}m"),
+        (0, m, s) => format!("{m}m {s}s"),
+        (h, 0, _) => format!("{h}h"),
+        (h, m, _) => format!("{h}h {m}m"),
     }
 }
 
@@ -1442,6 +1483,10 @@ pub struct MachineStatus {
     /// Why its Runtime serves its GPUs none of its native kernels; empty: it does.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub runtime_kernels: String,
+    /// When its GPUs are free of the runs it holds, on this computer's clock to 10 s, as placement's quotes count them
+    /// (`api::estimate::busy_ms`, cl-1107); none: none holds or waits for one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub busy_until_ms: Option<i64>,
 }
 
 impl MachineStatus {
@@ -1450,7 +1495,7 @@ impl MachineStatus {
         let heat = self.heat.iter().map(|hot| {
             let replayed = if hot.replayed { " (replayed readings)" } else { "" };
             format!(
-                "GPU {} ran throttled for heat {:.0}% of its last run ({} °C, {} of {} MHz){replayed}",
+                "GPU {} slowed down from heat for {:.0}% of its last run ({} °C, {} of {} MHz){replayed}",
                 hot.gpu,
                 hot.share * 100.0,
                 hot.temperature_max_c,
@@ -1458,7 +1503,7 @@ impl MachineStatus {
                 hot.sm_mhz_limit
             )
         });
-        let kernels = (!self.runtime_kernels.is_empty()).then(|| format!("its Runtime {} serves no native kernels: {}", self.runtime, self.runtime_kernels));
+        let kernels = (!self.runtime_kernels.is_empty()).then(|| format!("Its Runtime {} has no native kernels: {}", self.runtime, self.runtime_kernels));
         heat.chain(kernels).collect()
     }
 
@@ -1477,8 +1522,8 @@ pub fn kernel_less_runtime(machine: &str, what: &str, commit: Option<&str>) -> c
         crate::error::Kind::Validation,
         "runtime_without_kernels",
         format!(
-            "{what} carries none of the Runtime's kernels: {machine}'s GPUs would run slower GEMMs and no FlashAttention-3. \
-             The dev-build of {commit} makes its wheel with them (artifact cozy-runtime-<sha>, the manylinux wheel)"
+            "{what} doesn't include the Runtime's kernels, so {machine}'s GPUs would run slower GEMMs and no FlashAttention-3. \
+             The dev-build of {commit} makes a wheel that has them (artifact cozy-runtime-<sha>, the manylinux wheel)."
         ),
     )
     .next(format!("gh workflow run dev-build.yaml -R cozy-creator/cozy-runtime -f ref={commit}"))
@@ -1516,6 +1561,9 @@ pub struct Operation {
     /// The runs waiting on it, by number: this computer's own runs, or those of `project`.
     #[serde(default)]
     pub runs: Vec<u64>,
+    /// The same runs by name, `KEY-N` (cl-987).
+    #[serde(default)]
+    pub names: Vec<String>,
     /// The project whose runs wait on it, shown to its own views only; none for this computer's own work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
@@ -2040,6 +2088,10 @@ pub struct MachineUpdate {
     /// Shared/Dedicated category, applied after the ordinary drain and restart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<crate::config::MachineMode>,
+    /// The machine's own PyTorch base at the version its Hub names, installed now rather than at its first run
+    /// (`cozy doctor --fix`, `cozy update`; cl-1030). An update naming nothing asks it too.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub torch: bool,
 }
 
 /// One component of a `MachineUpdate`: `{"version": "0.33.1"}`, or a dev build sent first
@@ -2074,8 +2126,6 @@ pub struct Updating {
     pub run: Option<Run>,
     /// What it asks for, in words: `runtime 0.33.1 (prerelease), cozy 0.16.2 (installed)`.
     pub target: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub warnings: Vec<String>,
 }
 
 /// `PUT` or `DELETE /v1/machines/local/authorized-keys/{key}`: whether the file changed, and
@@ -2250,6 +2300,38 @@ pub struct Down {
     pub owed: Vec<String>,
 }
 
+/// How the page looks (cl-1097): a theme, and that theme's own options by name (Paper's `landscape`: `shown` or `hidden`). `GET` and
+/// `PUT /v1/appearance` keep it for every page of this Calcifer; a project's own (`ProjectAppearance`) is over it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Appearance {
+    pub theme: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub options: BTreeMap<String, String>,
+}
+
+impl Appearance {
+    /// Fit to keep: a theme and options named in lower-case letters, digits and `-`, their values short. Refused, it's a client's bug.
+    pub fn check(&self) -> Result<(), String> {
+        let word = |text: &str| (1..=32).contains(&text.len()) && text.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+        if !word(&self.theme) { return Err(format!("{:?} isn't a theme's name", self.theme)); }
+        if self.options.len() > 16 { return Err("a theme has at most 16 options".into()); }
+        match self.options.iter().find(|(name, value)| !word(name) || value.len() > 64) {
+            Some((name, _)) => Err(format!("the option {name:?} isn't one a theme can keep")),
+            None => Ok(()),
+        }
+    }
+}
+
+/// `GET` and `PUT /v1/settings`: this computer's settings Calcifer holds, in config.toml's `[calcifer]`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Settings {
+    /// Each run's function, package, versions, GPU, size and times go to the Hub anonymously: never its prompts, inputs,
+    /// outputs or names, and nothing that says who ran it (cl-1006).
+    pub send_performance_data: bool,
+}
+
 /// `GET /v1/status`: this Calcifer at a glance. It never waits on a Hub.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -2265,12 +2347,38 @@ pub struct CalciferStatus {
     /// allocator keeps of what was freed.
     #[serde(default)]
     pub heap_bytes: u64,
-    /// Whether the encrypted-creation protocol is supported. Native driver requirements still apply; older controllers omit this.
-    #[serde(default)]
-    pub encrypted_project_creation: bool,
     /// This person's home folder on Calcifer's computer: where the page's New suggests a first project's folder (cl-980).
     #[serde(default)]
     pub home: PathBuf,
+    /// The OS account Calcifer runs as (uid, or SID on Windows): the CLI and the page read it before a passphrase or recovery secret
+    /// leaves, which goes only to their own account's Calcifer (cl-1066).
+    #[serde(default)]
+    pub os_user: String,
+}
+
+/// `GET /v1/cut`: what the legacy cut (cl-1003) still keeps for projects on this computer, for `cozy doctor`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CutFiles {
+    /// Each project whose files left on a machine were gone from it before the cut could copy them in.
+    pub lost: Vec<LostFiles>,
+    /// How many projects' old files are held on this computer until each opens again at the folder it had at the cut (moved,
+    /// deleted, or still locked), and their bytes.
+    pub held_projects: u64,
+    pub held_bytes: u64,
+    /// Where the holds are: deleting it lets those files go.
+    pub kept: PathBuf,
+    /// How many projects the old landing folder, set aside, waits for (cl-1036), and where it is: deleting it lets it go.
+    #[serde(default)]
+    pub old_outputs_waiting: u64,
+    #[serde(default)]
+    pub old_outputs: PathBuf,
+}
+
+/// A project's files left on a machine that were gone from it before the legacy cut could copy them in: its folder, and how many.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LostFiles {
+    pub path: PathBuf,
+    pub files: u64,
 }
 
 /// The header each request of a `cozy` process carries: its pid, so Calcifer tells its requests from everyone else's (cl-962).
@@ -2353,9 +2461,10 @@ pub fn local_usable(machine: &str) -> Result<(), crate::error::Error> {
     if !machine.eq_ignore_ascii_case("local") || os.local_inference() {
         return Ok(());
     }
-    let message = format!("local runs aren't available on {os} yet");
+    let message = format!("This computer can't run models on {os} yet.");
     Err(crate::error::Error::new(crate::error::Kind::Unavailable, "local_unavailable", message)
-        .remedy("add `--on new` to rent a Linux GPU, or `--on <machine>` for one you have")
+        .remedy("Rent a Linux GPU, or run it on a machine you already have.")
+        .next("cozy run … --on new")
         .next("cozy machine rent"))
 }
 
@@ -2377,7 +2486,7 @@ pub fn machine_set(set: &[On]) -> Result<(), crate::error::Error> {
     if set.len() < 2 || set.iter().all(|on| matches!(on, On::Machine(_))) {
         return Ok(());
     }
-    let said = format!("{} names machines: `any` and `new` stand alone", set.iter().map(On::to_string).collect::<Vec<_>>().join(","));
+    let said = format!("`{}` mixes machine names with `any` or `new`. List machines by name, or use `any` or `new` on its own.", set.iter().map(On::to_string).collect::<Vec<_>>().join(","));
     Err(crate::error::Error::new(crate::error::Kind::Usage, "on_set", said).next("cozy machine ls"))
 }
 
@@ -2429,7 +2538,7 @@ pub fn gpu_count(text: &str) -> Result<u32, String> {
                 .into(),
         ),
         Ok(n) => Ok(n),
-        Err(_) => Err(format!("{text:?} is not a number of GPUs")),
+        Err(_) => Err(format!("{text:?} isn't a number of GPUs")),
     }
 }
 

@@ -35,7 +35,7 @@ pub(crate) struct OpenProject {
     controller: Weak<crate::Calcifer>,
     /// This open's attach (`Calcifer::attach_project`): its unended runs routed, driven and exported.
     pub(crate) attached: bool,
-    /// Attached once in this Calcifer's life (its legacy history checked): it may open again by itself once it closed.
+    /// Attached once in this Calcifer's life: it may open again by itself once it closed.
     pub(crate) known: bool,
 }
 impl OpenProject {
@@ -50,6 +50,15 @@ impl RunOwner {
     pub(crate) fn project_id(&self) -> &str { &self.project.id }
     pub(crate) fn key(&self) -> String { self.project.key() }
     pub(crate) fn root(&self) -> &std::path::Path { &self.project.root }
+    /// Once the project takes reads again: at once, else when a lock queued on it has it, or gives up. Err: it's locked or gone.
+    pub(crate) async fn when_admitted(&self) -> Result<(), Error> {
+        vault::admit_work(&self.project).await.map(drop)
+    }
+    /// A read of the project for one write into it (cl-1060), waited for behind a lock that has its turn: the lock waits for the
+    /// write, and none starts into a view the lock took.
+    pub(crate) async fn writing(&self) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Error> {
+        vault::admit_work(&self.project).await
+    }
     pub(crate) fn store(&self) -> store::Result<ProjectStore> {
         let view = vault::try_admit_work(&self.project).map_err(project_error)?;
         Ok(ProjectStore { project: self.project.clone(), controller: self.controller.clone(), _view: view, access:Access::Work })
@@ -59,31 +68,36 @@ impl RunOwner {
 pub(crate) struct SealingStore<'a> {
     project: Arc<Project>,
     controller: Weak<crate::Calcifer>,
-    transition: &'a vault::ProjectTransition,
+    authority: Authority<'a>,
+}
+/// What a [`SealingStore`] reads and writes under: a storage transition, or an inspection beside the project's readers, which only reads.
+enum Authority<'a> {
+    Transition(&'a vault::ProjectTransition),
+    Inspection(&'a vault::ProjectInspection),
+}
+impl Authority<'_> {
+    fn validate(&self, project: &Project) -> Result<(), Error> {
+        match self { Self::Transition(transition) => transition.validate(project), Self::Inspection(inspection) => inspection.validate(project) }
+    }
 }
 impl SealingStore<'_> {
-    pub(crate) fn keep_worker_migration_receipt(&self,machine:&str,receipt:&api::machine::ProjectExecutionMigrationReceipt)->store::Result<usize> {self.write(|tx|keep_worker_receipt(tx,self.project_id(),machine,receipt))}
     pub(crate) fn owner_id(&self)->Option<&str> {Some(&self.project.id)}
-    pub(crate) fn legacy_worker_pending(&self)->store::Result<bool> { self.read(|conn|Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE owner=?1 AND custody='legacy_pending')",[self.project_id()],|row|row.get(0))?)) }
-    pub(crate) fn legacy_worker_requests(&self)->store::Result<Vec<(String,String,Option<u64>)>> {
-        self.read(|conn| {let mut stmt=conn.prepare("SELECT id,machine,machine_number FROM runs WHERE owner=?1 AND custody='legacy_pending' ORDER BY number")?;Ok(stmt.query_map([self.project_id()],|row|Ok((row.get(0)?,row.get(1)?,row.get::<_,Option<i64>>(2)?.map(|value|value as u64))))?.collect::<rusqlite::Result<_>>()?)})
-    }
-    pub(crate) fn project_id(&self) -> &str { &self.project.id }
-    pub(crate) fn execution_scope(&self) -> (&str,&std::path::Path) { (&self.project.id,&self.project.root) }
-    pub(crate) fn input_root(&self) -> store::Result<PathBuf> {
-        self.transition.validate(&self.project).map_err(project_error)?;
-        let path=self.project.folder.dir.join(".vault-inputs");
-        std::fs::create_dir_all(&path).map_err(|_|StoreError::Protected("project_input_storage".into()))?;
-        platform::durable::set_mode(&path,0o700).map_err(|_|StoreError::Protected("project_input_storage".into()))?;
-        Ok(path)
-    }
     pub(crate) fn read<T>(&self, read: impl FnOnce(&Connection) -> store::Result<T>) -> store::Result<T> {
-        self.transition.validate(&self.project).map_err(project_error)?;
+        self.authority.validate(&self.project).map_err(project_error)?;
         self.project.folder.journal_read(read)
     }
     pub(crate) fn write<T>(&self, write: impl FnOnce(&Transaction<'_>) -> store::Result<T>) -> store::Result<T> {
-        self.transition.validate(&self.project).map_err(project_error)?;
+        self.writable()?;
         self.project.folder.journal_write(write)
+    }
+    /// `write` of what the project's held rows keep too (`Folder::journal_write_held`).
+    pub(crate) fn write_held<T>(&self, write: impl FnOnce(&Transaction<'_>) -> store::Result<T>) -> store::Result<T> {
+        self.writable()?;
+        self.project.folder.journal_write_held(write)
+    }
+    fn writable(&self) -> store::Result<()> {
+        if matches!(self.authority, Authority::Inspection(_)) { return Err(StoreError::Locked("project_inspection".into())); }
+        self.authority.validate(&self.project).map_err(project_error)
     }
     pub(crate) fn admit_submission(&self, _new: &store::NewRun) -> store::Result<()> {
         Err(StoreError::Locked("project_transition".into()))
@@ -137,40 +151,29 @@ impl Projects {
             .filter(|project| transition.validate(project).is_ok());
         let project = match open { Some(project) => project, None => self.get(api, named).map_err(|error| error.0)? };
         transition.validate(&project)?;
-        Ok(SealingStore { project, controller: Arc::downgrade(&api.calcifer), transition })
+        Ok(SealingStore { project, controller: Arc::downgrade(&api.calcifer), authority: Authority::Transition(transition) })
+    }
+
+    /// [`Projects::transition_store`] for reading alone, beside the project's other readers (`vault::ProjectInspection`).
+    pub(super) fn inspection_store<'a>(&self, api: &Arc<Api>, named: &str, inspection: &'a vault::ProjectInspection) -> Result<SealingStore<'a>, Error> {
+        let open = self.open.lock().expect("projects lock").get(named).and_then(Weak::upgrade)
+            .filter(|project| inspection.validate(project).is_ok());
+        let project = match open { Some(project) => project, None => self.get(api, named).map_err(|error| error.0)? };
+        inspection.validate(&project)?;
+        Ok(SealingStore { project, controller: Arc::downgrade(&api.calcifer), authority: Authority::Inspection(inspection) })
     }
 
     pub(crate) async fn store(&self, api: &Arc<Api>, named: &str) -> Result<ProjectStore, Error> {
         let view = vault::admit_project(api, named).await?;
         let project = self.get(api, named).map_err(|error| error.0)?;
         project.require_view()?;
-        let mut store = ProjectStore { project, controller: Arc::downgrade(&api.calcifer), _view: view, access:Access::Viewing };
-        api.calcifer.maintenance_store().migrate_project(&store, &api.calcifer.inputs).map_err(|_| Error::new(api::error::Kind::Conflict,"project_migration_pending","legacy project history could not be verified; its source is preserved"))?;
+        let store = ProjectStore { project, controller: Arc::downgrade(&api.calcifer), _view: view, access:Access::Viewing };
         super::unseen::refresh(&store.project)?;
-        // A history read never starts a worker. If the registered local worker is
-        // already available, resolve actual bindings without retaining this view lease.
-        if store.legacy_worker_pending().map_err(|_|Error::new(api::error::Kind::Conflict,"project_migration_pending","legacy custody remains unresolved"))? && api.machines.local.running() {
-            if let Ok(selectors)=api.calcifer.maintenance_store().verify_legacy_worker_requests(&store) {
-                if !selectors.is_empty() && selectors.iter().all(|(_,machine,_)|machine=="local") {
-                    if let Ok(scope)=crate::private_io::scope_for_project(store.project_id(),store.execution_scope().1) {
-                        let owner=store.owner();
-                        let _activity=self.track_request(api,store.execution_scope().1);
-                        drop(store);
-                        if let Ok(receipt)=super::legacy_worker::migrate(api,scope,&selectors).await {
-                            let work=owner.store().map_err(|_|Error::new(api::error::Kind::Conflict,"project_migration_pending","the original view changed during worker migration"))?;
-                            work.keep_worker_migration_receipt("local",&receipt).map_err(|_|Error::new(api::error::Kind::Conflict,"project_migration_pending","worker coverage could not be recorded"))?;
-                            api.calcifer.maintenance_store().migrate_project(&work,&api.calcifer.inputs).map_err(|_|Error::new(api::error::Kind::Conflict,"project_migration_pending","verified source retirement remains pending"))?;
-                            let fresh=api.calcifer.attach_project(&work).map_err(|_|Error::new(api::error::Kind::Conflict,"project_migration_pending","verified work could not be resumed"))?;
-                            if fresh {tokio::spawn(crate::hub::jobs::resume_project(api.clone(),work.project_id().into()));}
-                        }
-                        let view=vault::admit_project(api,named).await?;
-                        let project=self.get(api,named).map_err(|error|error.0)?;
-                        store=ProjectStore {project,controller:Arc::downgrade(&api.calcifer),_view:view,access:Access::Viewing};
-                    }
-                }
-            }
-        }
-        let fresh=api.calcifer.attach_project(&store).map_err(|_| Error::new(api::error::Kind::Unavailable, "project_journal", "the project journal is unavailable"))?;
+        // A lock revokes the view without the gate: one that lands while this reads says so (409), not that the journal is gone.
+        let fresh=api.calcifer.attach_project(&store).map_err(|error| match error {
+            StoreError::Locked(code) => Error::new(api::error::Kind::Conflict, code, "the project was locked, or its view changed, while it was read"),
+            _ => Error::new(api::error::Kind::Unavailable, "project_journal", "the project journal is unavailable"),
+        })?;
         if fresh {
             tokio::spawn(crate::hub::jobs::resume_project(api.clone(),store.project_id().into()));
             if store.resume_allowed().map_err(|_|Error::new(api::error::Kind::Conflict,"project_journal","the project journal is unavailable"))? && store.project.folder.lock()?.owes() { super::walk(api,&store.project); }
@@ -191,20 +194,15 @@ impl Projects {
 }
 
 impl ProjectStore {
-    pub(crate) fn keep_worker_migration_receipt(&self,machine:&str,receipt:&api::machine::ProjectExecutionMigrationReceipt)->store::Result<usize> {self.write(|tx|keep_worker_receipt(tx,self.project_id(),machine,receipt))}
     fn validate(&self)->store::Result<()> {
         match self.access {
             Access::Viewing=>self.project.require_view().map_err(project_error),
             Access::Work=>vault::try_admit_work(&self.project).map(drop).map_err(project_error),
         }
     }
-    pub(crate) fn admit_new_work(&self)->store::Result<()> {self.project.require_view().map_err(project_error)?;if self.legacy_worker_pending()? {return Err(StoreError::Protected("legacy_worker_custody_pending".into()));} Ok(())}
+    pub(crate) fn admit_new_work(&self)->store::Result<()> {self.project.require_view().map_err(project_error)}
     pub(crate) fn owner_id(&self)->Option<&str> {Some(&self.project.id)}
-    pub(crate) fn resume_allowed(&self)->store::Result<bool> { if self.legacy_worker_pending()? {return Ok(false);} self.read(|conn|Ok(!conn.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE owner<>?1)",[self.project_id()],|row|row.get::<_,bool>(0))?)) }
-    pub(crate) fn legacy_worker_pending(&self)->store::Result<bool> { self.read(|conn|Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE owner=?1 AND custody='legacy_pending')",[self.project_id()],|row|row.get(0))?)) }
-    pub(crate) fn legacy_worker_requests(&self)->store::Result<Vec<(String,String,Option<u64>)>> {
-        self.read(|conn| {let mut stmt=conn.prepare("SELECT id,machine,machine_number FROM runs WHERE owner=?1 AND custody='legacy_pending' ORDER BY number")?;Ok(stmt.query_map([self.project_id()],|row|Ok((row.get(0)?,row.get(1)?,row.get::<_,Option<i64>>(2)?.map(|value|value as u64))))?.collect::<rusqlite::Result<_>>()?)})
-    }
+    pub(crate) fn resume_allowed(&self)->store::Result<bool> { self.read(|conn|Ok(!conn.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE owner<>?1)",[self.project_id()],|row|row.get::<_,bool>(0))?)) }
     pub(crate) fn project_id(&self) -> &str { &self.project.id }
     pub(crate) fn owner(&self) -> RunOwner { RunOwner { project: self.project.clone(), controller: self.controller.clone() } }
     pub(crate) fn input_root(&self) -> store::Result<PathBuf> {
@@ -249,6 +247,12 @@ impl ProjectStore {
         self.project.folder.journal_write(write)
     }
 
+    /// `write` of what the project's held rows keep too (`Folder::journal_write_held`).
+    pub(crate) fn write_held<T>(&self, write: impl FnOnce(&Transaction<'_>) -> store::Result<T>) -> store::Result<T> {
+        self.validate()?;
+        self.project.folder.journal_write_held(write)
+    }
+
     /// Whether this thread is inside one of the project's own edits, which holds its writer until it commits.
     pub(crate) fn acting(&self) -> bool { self.project.folder.acting_here() }
 
@@ -277,12 +281,6 @@ impl ProjectStore {
         self.project.folder.keep_answer(key, &answer.digest, answer.status, &answer.content_type, &answer.body).map_err(project_error)
     }
 
-    pub(crate) fn rendered_here(&self, machine: &str) -> store::Result<std::collections::HashMap<String,u64>> {
-        self.read(|conn| { let mut stmt=conn.prepare("SELECT tool,bytes FROM project_rendered_here WHERE machine=?1")?; Ok(stmt.query_map([machine], |row| Ok((row.get(0)?,row.get::<_,i64>(1)? as u64)))?.collect::<rusqlite::Result<_>>()?) })
-    }
-    pub(crate) fn keep_rendered_here(&self, machine: &str, tools: &[(String,u64)]) -> store::Result<()> {
-        self.write(|tx| { for (tool,bytes) in tools { tx.execute("INSERT OR REPLACE INTO project_rendered_here(tool,machine,bytes) VALUES(?1,?2,?3)",params![tool,machine,*bytes as i64])?; } Ok(()) })
-    }
 
     pub(crate) fn append_diagnostic(&self, code: &'static str, detail: &str) -> store::Result<()> {
         self.write(|tx| {
@@ -297,27 +295,6 @@ fn project_error(error: Error) -> StoreError {
         "project_locked" | "project_view_changed" | "project_busy" => StoreError::Locked(error.code.to_owned()),
         _ => StoreError::Protected(error.code.to_owned()),
     }
-}
-
-/// Called only after the selected authenticated worker returned its COMPLETE
-/// migration receipt. A computation memo or a client-supplied spec hash is not a binding.
-fn keep_worker_receipt(tx:&Transaction<'_>,project:&str,machine:&str,receipt:&api::machine::ProjectExecutionMigrationReceipt)->store::Result<usize> {
-    if machine!="local" {return Err(StoreError::Protected("legacy_remote_worker_pending".into()));}
-    let mut covered=0;
-    for binding in &receipt.bindings {
-        let canonical=tx.query_row("SELECT EXISTS(SELECT 1 FROM runs JOIN journal_migrations ON journal_migrations.source='controller-v7:run:'||runs.id WHERE runs.id=?1 AND runs.owner=?2 AND runs.machine=?3)",params![binding.request_id,project,machine],|row|row.get::<_,bool>(0))?;
-        if !canonical {continue;}
-        let digest=binding.invocation_spec_digest.strip_prefix("sha256:").unwrap_or(&binding.invocation_spec_digest);
-        if binding.source_workspace_id.is_empty() || digest.len()!=64 || !digest.bytes().all(|byte|byte.is_ascii_hexdigit()) {return Err(StoreError::Protected("legacy_worker_binding_invalid".into()));}
-        let source=format!("worker-custody:{}",binding.request_id);
-        let record=serde_json::to_string(binding).map_err(|_|StoreError::Protected("legacy_worker_binding_invalid".into()))?;
-        let prior=tx.query_row("SELECT record FROM journal_migrations WHERE source=?1",[&source],|row|row.get::<_,String>(0)).optional()?;
-        if prior.as_ref().is_some_and(|prior|prior!=&record) {return Err(StoreError::Protected("legacy_worker_binding_changed".into()));}
-        tx.execute("INSERT OR IGNORE INTO journal_migrations(source,digest,record) VALUES(?1,?2,?3)",params![source,binding.invocation_spec_digest,record])?;
-        tx.execute("UPDATE runs SET custody='owned' WHERE id=?1 AND owner=?2 AND machine=?3",params![binding.request_id,project,machine])?;
-        covered+=1;
-    }
-    Ok(covered)
 }
 
 /// Where the plan sent each run, and its offer there (cl-967): beside `runs`, so a journal of any version takes it.
@@ -363,7 +340,6 @@ pub(super) const SCHEMA: &str = "    CREATE TABLE runs (
         batch TEXT NOT NULL DEFAULT '',
         job BLOB,
         owner TEXT NOT NULL DEFAULT '',
-        custody TEXT NOT NULL DEFAULT 'owned' CHECK(custody IN ('owned','legacy_pending')),
         attempt INTEGER NOT NULL DEFAULT 1
     ) STRICT;
     CREATE INDEX runs_owed ON runs (machine) WHERE state <> 'settled';
@@ -416,6 +392,5 @@ pub(super) const SCHEMA: &str = "    CREATE TABLE runs (
     CREATE TABLE journal_migrations (source TEXT PRIMARY KEY, digest TEXT NOT NULL, record TEXT NOT NULL) STRICT;
     CREATE TABLE after_steps (key_sha256 TEXT PRIMARY KEY, step TEXT NOT NULL) STRICT;
     CREATE TABLE project_headers (hub TEXT NOT NULL, sha256 TEXT NOT NULL, families TEXT NOT NULL, lora INTEGER NOT NULL, family TEXT, PRIMARY KEY (hub, sha256)) STRICT, WITHOUT ROWID;
-    CREATE TABLE project_rendered_here (tool TEXT NOT NULL, machine TEXT NOT NULL, bytes INTEGER NOT NULL, PRIMARY KEY (tool, machine)) STRICT, WITHOUT ROWID;
     CREATE TABLE project_vault_operations (id TEXT PRIMARY KEY, binding TEXT NOT NULL, state TEXT NOT NULL) STRICT;
 ";

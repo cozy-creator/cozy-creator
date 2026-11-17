@@ -43,7 +43,7 @@ static PRIVATE_STORES: LazyLock<Mutex<HashMap<PathBuf, Arc<Store>>>> = LazyLock:
 pub(crate) fn release_private(root: &Path) -> Result<(), Error> {
     let active = UPLOADS.lock().expect("uploads lock").iter().any(|((path, _), (_, upload))|
         crate::project::vault::logical(path).starts_with(root) && upload.strong_count() > 0);
-    if active { return Err(Error::new(Kind::Conflict, "project_busy", "a private file upload is still finishing")); }
+    if active { return Err(Error::new(Kind::Conflict, "project_busy", "A file upload is still finishing. Try again in a moment.")); }
     let mut stores = PRIVATE_STORES.lock().expect("private upload stores");
     let keys: Vec<_> = stores.keys().filter(|path| crate::project::vault::logical(path) == root).cloned().collect();
     let gone: Vec<_> = keys.into_iter().filter_map(|path| stores.remove(&path)).collect();
@@ -54,7 +54,7 @@ pub(crate) fn release_private(root: &Path) -> Result<(), Error> {
 
 fn scoped(api: &Arc<Api>, scope: &UploadScope) -> Result<Arc<Store>, Refusal> {
     let Some(project) = &scope.project else { return Ok(store().map_err(Refusal)?.clone()) };
-    let root = crate::project::private_upload_root(api, project).map_err(Refusal)?.ok_or_else(|| Refusal(Error::new(Kind::Conflict,"project_storage_required","the project storage is unavailable")))?;
+    let root = crate::project::private_upload_root(api, project).map_err(Refusal)?.ok_or_else(|| Refusal(Error::new(Kind::Conflict,"project_storage_required","The project's storage isn't available right now.")))?;
     private_store(&root).map_err(Refusal)
 }
 
@@ -71,13 +71,6 @@ fn private_store(root: &Path) -> Result<Arc<Store>, Error> {
 /// The one place a file is held, for an import, an apply, a run's binder and the held probe alike.
 pub(crate) fn held_for(root: &Path, digest: &Digest) -> Option<PathBuf> {
     private_store(root).ok().and_then(|store| held_in(&store, digest)).or_else(|| held(digest))
-}
-
-/// Read-only source for the one-way legacy migration. The digest and length
-/// must come from the unchanged canonical old run; this does not mark global
-/// use, admit a new project upload, or provide an ordinary execution fallback.
-pub(crate) fn legacy_input_source(digest:&Digest,length:u64)->Option<PathBuf> {
-    store().ok()?.path(&object(digest,length)).ok()
 }
 
 fn held_in(store: &Store, digest: &Digest) -> Option<PathBuf> {
@@ -104,7 +97,7 @@ pub(crate) fn store() -> Result<&'static Arc<Store>, Error> {
     if let Some(store) = STORE.get() {
         return Ok(store);
     }
-    let unusable = |why: String| Error::new(Kind::Unavailable, "file_store_unusable", format!("this computer's TensorFS store: {why}"));
+    let unusable = |why: String| Error::new(Kind::Unavailable, "file_store_unusable", format!("Cozy can't use this computer's file store: {why}."));
     let root = tensorfs::home::resolve(None).map_err(|e| unusable(e.to_string()))?;
     let store = Arc::new(Store::open(root).map_err(|e| unusable(e.to_string()))?);
     let _ = platform::durable::set_mode(store.root(), 0o700);
@@ -200,7 +193,7 @@ fn open(storage: Arc<Store>, digest: Digest, length: u64) -> Result<Arc<Upload>,
     let key = (storage.root().to_owned(), digest);
     if let Some((was, upload)) = uploads.get(&key).and_then(|(was, upload)| Some((*was, upload.upgrade()?))) {
         if was != length {
-            let said = format!("{digest} is being written as {was} bytes, not {length}");
+            let said = format!("{digest} is already being uploaded as {was} bytes, not {length}.");
             return Err(Refusal(Error::new(Kind::Conflict, "file_length_conflict", said)));
         }
         return Ok(upload);
@@ -219,10 +212,10 @@ async fn opened(storage: Arc<Store>, digest: Digest, length: u64) -> Result<Arc<
 /// A PUT's `[start, end)` of a file of `length` bytes: its `Content-Range`, else the whole file its `Content-Length` measures.
 fn span(headers: &HeaderMap) -> Result<(u64, u64, u64), Refusal> {
     let text = |name| headers.get(name).and_then(|value: &HeaderValue| value.to_str().ok());
-    let invalid = || Refusal(Error::new(Kind::Usage, "invalid_range", "a part is `Content-Range: bytes a-b/length`"));
+    let invalid = || Refusal(Error::new(Kind::Usage, "invalid_range", "Each part needs a `Content-Range: bytes a-b/length` header."));
     let Some(range) = text(header::CONTENT_RANGE) else {
         let length = text(header::CONTENT_LENGTH).and_then(|length| length.parse().ok());
-        let length = length.ok_or_else(|| Refusal(Error::new(Kind::Usage, "file_length_required", "a whole file's PUT carries its Content-Length").remedy("or send it as parts, with `Content-Range: bytes a-b/length`")))?;
+        let length = length.ok_or_else(|| Refusal(Error::new(Kind::Usage, "file_length_required", "Uploading a whole file needs its Content-Length.").remedy("Or send it in parts, each with `Content-Range: bytes a-b/length`.")))?;
         return Ok((0, length, length));
     };
     let (span, length) = range.trim().strip_prefix("bytes ").and_then(|range| range.split_once('/')).ok_or_else(invalid)?;
@@ -242,16 +235,36 @@ fn held_header(ranges: &[(u64, u64)]) -> (axum::http::HeaderName, HeaderValue) {
 /// The file `name`: a whole body or one part (`Content-Range`). A part leaves it unnamed: `204`, with what is held in `Cozy-Held`.
 /// The write that completes it answers `201` once its bytes hash to its name, and one that finds it held `200`.
 pub(crate) async fn project_put(State(api): State<Arc<Api>>, Query(scope): Query<UploadScope>, UrlPath(name): UrlPath<String>, headers: HeaderMap, body: Body) -> Result<Response, Refusal> {
-    if scope.project.is_none() { return Err(Refusal(Error::new(Kind::Usage, "project_upload_scope", "a project upload must name its project"))); }
-    let _admission = crate::project::vault::admit_project(&api, scope.project.as_deref().expect("checked scope")).await.map_err(Refusal)?;
-    put_in(scoped(&api, &scope)?, name, headers, body).await
+    if scope.project.is_none() { return Err(Refusal(Error::new(Kind::Usage, "project_upload_scope", "A project upload needs to name its project."))); }
+    let (root, held) = crate::project::vault::admit_project_root(&api, scope.project.as_deref().expect("checked scope")).await.map_err(Refusal)?;
+    put_in(scoped(&api, &scope)?, name, headers, body, Some(Gate { root, held })).await
 }
 
 pub(crate) async fn put(UrlPath(name): UrlPath<String>, headers: HeaderMap, body: Body) -> Result<Response, Refusal> {
-    put_in(store().map_err(Refusal)?.clone(), name, headers, body).await
+    put_in(store().map_err(Refusal)?.clone(), name, headers, body, None).await
 }
 
-async fn put_in(storage: Arc<Store>, name: String, headers: HeaderMap, body: Body) -> Result<Response, Refusal> {
+/// A project upload's hold on its project's gate: let go while a lock waits for the project, and asked for again, so a long body never
+/// holds the lock up (cl-1025). The lock has the project first; locked, the upload ends, and resumes from what's held once it's unlocked.
+struct Gate {
+    root: PathBuf,
+    held: tokio::sync::OwnedRwLockReadGuard<()>,
+}
+
+impl Gate {
+    /// Still held, or held again after a lock that waited let go: Err, it locked.
+    fn kept(self) -> Result<Self, Refusal> {
+        if !crate::project::vault::lock_waiting(&self.root) {
+            return Ok(self);
+        }
+        let Gate { root, held } = self;
+        drop(held);
+        let held = tokio::runtime::Handle::current().block_on(crate::project::vault::admit_root(&root)).map_err(Refusal)?;
+        Ok(Gate { root, held })
+    }
+}
+
+async fn put_in(storage: Arc<Store>, name: String, headers: HeaderMap, body: Body, gate: Option<Gate>) -> Result<Response, Refusal> {
     let digest = named(&name)?;
     let (start, end, length) = span(&headers)?;
     let answer = |status: StatusCode, path: &Path| -> Result<Response, Refusal> {
@@ -261,8 +274,11 @@ async fn put_in(storage: Arc<Store>, name: String, headers: HeaderMap, body: Bod
     if let Some(path) = held_in(&storage, &digest) {
         let held = file(digest, &path)?;
         if held.length != length {
-            return Err(Refusal(Error::new(Kind::Conflict, "file_length_conflict", format!("{digest} is held as {} bytes, not {length}", held.length))));
+            return Err(Refusal(Error::new(Kind::Conflict, "file_length_conflict", format!("Cozy already has {digest} as {} bytes, not {length}.", held.length))));
         }
+        let answered = answer(StatusCode::OK, &path);
+        // Nothing of the project is written: the rest of the body is read with no hold on it.
+        drop(gate);
         // An already-held object needs no write, but the caller still sends this body. Leaving
         // it unread makes HTTP/1 close the connection when the remainder is not buffered yet.
         let mut stream = body.into_data_stream();
@@ -277,18 +293,26 @@ async fn put_in(storage: Arc<Store>, name: String, headers: HeaderMap, body: Bod
         if at != end {
             return Err(Refusal(Error::new(Kind::Usage, "invalid_range", "the body is shorter than its Content-Range")));
         }
-        return answer(StatusCode::OK, &path);
+        return answered;
     }
     let upload = opened(storage.clone(), digest, length).await?;
     let (sender, mut receiver) = tokio::sync::mpsc::channel::<Bytes>(8);
     let landing = upload.clone();
-    let writer = tokio::task::spawn_blocking(move || -> Result<Settled, Refusal> {
-        let (mut at, mut wrote) = (start, Ok(()));
-        let mut writer = landing.partial.lock().expect("partial lock").as_ref().map(Partial::writer).transpose().map_err(refused)?;
+    let writer = tokio::task::spawn_blocking(move || -> Result<(Settled, Option<Gate>), Refusal> {
+        let (mut at, mut wrote, mut gate) = (start, Ok(()), gate);
+        let open = || landing.partial.lock().expect("partial lock").as_ref().map(Partial::writer).transpose().map_err(refused);
+        let mut writer = open()?;
         while let Some(data) = receiver.blocking_recv() {
             if at + data.len() as u64 > end {
                 wrote = Err(Refusal(Error::new(Kind::Usage, "invalid_range", "the body is longer than its Content-Range")));
                 break;
+            }
+            // A lock waits for the project: what this holds of it is let go, its file closed, until the lock has had its turn.
+            if gate.as_ref().is_some_and(|gate| crate::project::vault::lock_waiting(&gate.root)) {
+                drop(writer.take());
+                // Locked meanwhile: what's written stays held, and the upload goes on from it once the project is unlocked.
+                gate = Some(gate.take().expect("a gate").kept()?);
+                writer = open()?;
             }
             // An upload that ended meanwhile takes no more.
             let live = writer.as_mut().filter(|_| !landing.ended.load(Ordering::Acquire));
@@ -299,8 +323,12 @@ async fn put_in(storage: Arc<Store>, name: String, headers: HeaderMap, body: Bod
             at += data.len() as u64;
         }
         drop(receiver);
+        let gate = match (gate, &wrote) {
+            (Some(gate), Ok(())) => Some(gate.kept()?),
+            (gate, _) => gate,
+        };
         let settled = landing.settle()?;
-        wrote.map(|()| settled)
+        wrote.map(|()| (settled, gate))
     });
     let (mut stream, mut unread) = (body.into_data_stream(), None);
     while let Some(frame) = stream.next().await {
@@ -318,7 +346,7 @@ async fn put_in(storage: Arc<Store>, name: String, headers: HeaderMap, body: Bod
         }
     }
     drop(sender);
-    let settled = writer.await.map_err(|e| Refusal(Error::new(Kind::Internal, "file_unwritable", e.to_string())))??;
+    let (settled, _gate) = writer.await.map_err(|e| Refusal(Error::new(Kind::Internal, "file_unwritable", e.to_string())))??;
     if let Some(refusal) = unread {
         return Err(refusal);
     }
@@ -326,7 +354,7 @@ async fn put_in(storage: Arc<Store>, name: String, headers: HeaderMap, body: Bod
         Settled::Partly(held) => Ok((StatusCode::NO_CONTENT, [held_header(&held)]).into_response()),
         Settled::Whole | Settled::Held => {
             let status = if matches!(settled, Settled::Whole) { StatusCode::CREATED } else { StatusCode::OK };
-            let path = held_in(&storage, &digest).ok_or_else(|| Refusal(Error::new(Kind::Internal, "file_unwritable", format!("{digest} was named and is gone"))))?;
+            let path = held_in(&storage, &digest).ok_or_else(|| Refusal(Error::new(Kind::Internal, "file_unwritable", format!("{digest} disappeared while Cozy was saving it."))))?;
             answer(status, &path)
         }
     }
@@ -335,7 +363,7 @@ async fn put_in(storage: Arc<Store>, name: String, headers: HeaderMap, body: Bod
 /// Whether Calcifer holds `name`: `200` with its length and media type, else `404`; `Cozy-Held` says which bytes either way. A page asks
 /// `POST /v1/project-files/held`, which answers either way, as a browser logs each 404 as an error.
 pub(crate) async fn project_head(State(api): State<Arc<Api>>, Query(scope): Query<UploadScope>, UrlPath(name): UrlPath<String>) -> Result<Response, Refusal> {
-    if scope.project.is_none() { return Err(Refusal(Error::new(Kind::Usage, "project_upload_scope", "a project upload must name its project"))); }
+    if scope.project.is_none() { return Err(Refusal(Error::new(Kind::Usage, "project_upload_scope", "A project upload needs to name its project."))); }
     let _admission = crate::project::vault::admit_project(&api, scope.project.as_deref().expect("checked scope")).await.map_err(Refusal)?;
     head_in(scoped(&api, &scope)?, name).await
 }
@@ -371,7 +399,7 @@ pub(crate) async fn held_files(Json(ask): Json<HeldRequest>) -> Result<Json<Held
 
 /// As [`held_files`], of a project's own content store.
 pub(crate) async fn project_held_files(State(api): State<Arc<Api>>, Query(scope): Query<UploadScope>, Json(ask): Json<HeldRequest>) -> Result<Json<HeldAnswer>, Refusal> {
-    if scope.project.is_none() { return Err(Refusal(Error::new(Kind::Usage, "project_upload_scope", "a project upload must name its project"))); }
+    if scope.project.is_none() { return Err(Refusal(Error::new(Kind::Usage, "project_upload_scope", "A project upload needs to name its project."))); }
     let _admission = crate::project::vault::admit_project(&api, scope.project.as_deref().expect("checked scope")).await.map_err(Refusal)?;
     held_all(scoped(&api, &scope)?, ask).await
 }
@@ -418,7 +446,7 @@ async fn held_of(storage: &Arc<Store>, digest: Digest) -> Result<(Option<PathBuf
 
 fn named(name: &str) -> Result<Digest, Refusal> {
     name.parse().map_err(|why: &str| {
-        Refusal(Error::new(Kind::Usage, "file_name_invalid", format!("{name:?}: {why}")).remedy("name a file sha256:<hex>"))
+        Refusal(Error::new(Kind::Usage, "file_name_invalid", format!("{name:?} isn't a file name Cozy knows: {why}.")).remedy("Name a file as sha256:<hex>."))
     })
 }
 

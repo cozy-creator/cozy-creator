@@ -6,6 +6,7 @@ use std::process::ExitCode;
 use api::{
     error::{Error, Kind},
     calcifer::hub::{At, PackageDeleted, PackagePublish, PackageUnyanked, PackageYanked, Published, job},
+    calcifer::project::{Benchmarks, BenchmarksAsk},
 };
 
 use super::PackageRef;
@@ -16,9 +17,6 @@ use crate::{Context, calcifer_client::path, output, run};
 async fn sent(ctx: &Context) -> Result<(std::path::PathBuf, api::code::LocalCode, Option<String>), Error> {
     let dir = std::env::current_dir().map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
     let (code, project) = crate::send::Sender::local_code(ctx, &dir).await?;
-    if project.is_some() {
-        output::warn("publishing exports this package's source: the published copy leaves its project's protection");
-    }
     Ok((dir, code, project))
 }
 
@@ -56,6 +54,45 @@ pub(crate) async fn publish(ctx: &Context, root: bool) -> Result<ExitCode, Error
         output::next(ctx, &["bump [project] version in pyproject.toml to publish a change"]);
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// `cozy package benchmarks` (cl-1024): `package`'s benchmarks from this project's warm runs of its functions on GPUs, as Calcifer
+/// reads them (`GET /v1/projects/{id}/benchmarks`), written to `out` (default `benchmarks.json` here), which `cozy package publish`
+/// attaches to the next release. Nothing is run.
+pub(crate) async fn benchmarks(ctx: &Context, package: Option<String>, out: Option<std::path::PathBuf>) -> Result<ExitCode, Error> {
+    let dir = std::env::current_dir().map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
+    let package = match package {
+        Some(package) => package,
+        None => named_here(&dir)?,
+    };
+    let Some(project) = crate::project::here(ctx).await? else {
+        return Err(Error::new(Kind::Usage, "not_in_a_project", "benchmarks come from a project's runs: run this inside the project that ran them")
+            .next("cozy run ls"));
+    };
+    let at = path(&["v1", "projects", &project, "benchmarks"]);
+    let found: Benchmarks = ctx.calcifer().await?.get_query(&at, &BenchmarksAsk { package: package.clone() }).await?;
+    if found.benchmarks.is_empty() {
+        return Err(Error::new(Kind::NotFound, "no_benchmarks", format!("this project has no warm run of {package} on a GPU"))
+            .remedy("run each function to measure twice on the card, the second warm")
+            .next(format!("cozy run {package}/<function> … --on <machine>")));
+    }
+    let path = out.unwrap_or_else(|| dir.join("benchmarks.json"));
+    let text = serde_json::to_string_pretty(&found.benchmarks).expect("benchmarks serialize") + "\n";
+    platform::durable::replace(&path, text.as_bytes(), 0o644)
+        .map_err(|e| Error::new(Kind::Unavailable, "benchmarks_unwritable", format!("{}: {e}", path.display())))?;
+    match ctx.json {
+        true => output::json(&found),
+        false => output::say(ctx, &format!("wrote {} benchmarks of {package} to {}", found.benchmarks.len(), path.display())),
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The package `dir` is: its pyproject.toml's `[project] name`.
+fn named_here(dir: &std::path::Path) -> Result<String, Error> {
+    let none = || Error::new(Kind::Usage, "package_unnamed", "no package here: name one, or run this in a package's folder").next("cozy package benchmarks <package>");
+    let text = std::fs::read_to_string(dir.join("pyproject.toml")).map_err(|_| none())?;
+    let document: toml::Table = text.parse().map_err(|_| none())?;
+    document.get("project").and_then(|project| project.get("name")).and_then(toml::Value::as_str).map(str::to_owned).ok_or_else(none)
 }
 
 pub(crate) async fn yank(ctx: &Context, package: &PackageRef, undo: bool) -> Result<ExitCode, Error> {

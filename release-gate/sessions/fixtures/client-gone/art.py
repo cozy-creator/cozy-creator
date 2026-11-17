@@ -32,14 +32,14 @@ class Made(msgspec.Struct):
 
 
 @app.entrypoint()
-def make(payload: Make, out: Outputs) -> Made:
+def make(payload: Make) -> Made:
     picture = next(iter(payload.prompt.references.values()), None)
     if picture is not None:
         held = picture.file.read()
-        return Made(out.save_image(ImageFrame(8, 8, os.urandom(8 * 8 * 3)), format="png"), 8, held.width * held.height)
+        return Made(ImageFile.from_image(ImageFrame(8, 8, os.urandom(8 * 8 * 3)), format="png"), 8, held.width * held.height)
     time.sleep(payload.seconds)
     side = payload.side
-    return Made(out.save_image(ImageFrame(side, side, os.urandom(side * side * 3)), format="png"), side)
+    return Made(ImageFile.from_image(ImageFrame(side, side, os.urandom(side * side * 3)), format="png"), side)
 
 
 class Film(msgspec.Struct):

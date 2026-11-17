@@ -492,7 +492,8 @@ impl Objects {
         let storage = self.store()?;
         let private = crate::private_io::current();
         let full = |refusal: Refused| match refusal.code {
-            "machine_disk_full" => refused("machine_disk_full", format!("no room for the object's {length} bytes{}", crate::reclaim::advice(storage.root(), length))),
+            "machine_disk_full" => refused("machine_disk_full", format!("This machine's disk doesn't have room for this {} file.{}",
+                crate::reclaim::size(length), crate::reclaim::advice(storage.root(), length))),
             _ => refusal,
         };
         let open = || storage.partial(&object).map_err(|error| full(store_refused(error.refusal())));

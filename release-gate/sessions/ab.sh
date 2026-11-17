@@ -16,27 +16,42 @@
 #              which the open RC's Runtime needs, `rc_runtime_needs_rc_cozy`), and "gpu_memory_limit" (`10GiB`,
 #              `off`: the development VRAM cap); the pod's `machine update` before this cell, so cells before and
 #              after compare two pairs)}];
+#              "wait_s" (optional: seconds the machine is left idle before the cell); "until_idle" (optional:
+#              {"region", "step_s", "max"}: while the cell's record shows the idle queue hadn't reached the region before it,
+#              wait step_s more and run it again with the next seed, as <cell>-w<i>, up to max);
 #              "expect" (optional: the status the cell must end in, `completed` by default; `failed` for a refusal it proves);
+#              "uninstall" (optional: [org/name, …] removed from the pod first with `cozy model uninstall`, or `"*"` for every
+#              model and LoRA it holds, so the cell's run starts cold: a before/after pair each fetches its own);
 #              "download" (optional: [[model ref, `cozy model install` flags…], …] made present on the pod first, so
 #              the cell's run starts with its weights on disk, as a machine whose package was installed earlier does);
-#              in args, `{ref}` is release-gate/ref and `{out:<cell>}` an earlier cell's image or video;
+#              in args, `{ref}` is release-gate/ref, `{clip}` a 4 s 640x360 24 fps clip of its seed.jpg panned (made on
+#              the runner, for a video tool's input) and `{out:<cell>}` an earlier cell's image or video;
 #              two failed cells stop the session
+#              "floor_mb_s", "floor_after_s" (optional: this cell's slow-host floor, lib.sh `step`; the session's by default);
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR
 #   need_s     seconds the cap must buy (3600)
+#   max_failures  optional: cells that may fail before the session ends (2)
 #   gpus       optional: the pod's GPU count (1); a cell's `--gpus=<n>` arg runs it on that many
 #   free_gib   optional: before the first cell another program (suites/bench/vram.py, raw driver allocations by a
 #              root shell over ssh) takes all of GPU 0 but this many GiB and holds it to the end, a card as full as
 #              the 0.25.0 gate's RTX 5090 kazune was (about 3 GiB outside cozy; cr-293)
 . "$(dirname "$0")/lib.sh"
-CELLS=$(param cells '[]') COMPARE=$(param compare '[]') FREE_GIB=$(param free_gib '') GPUS=$(param gpus 1)
+CELLS=$(param cells '[]') COMPARE=$(param compare '[]') FREE_GIB=$(param free_gib '') GPUS=$(param gpus 1) MOST=$(param max_failures 2)
+[[ $MOST =~ ^[1-9][0-9]*$ ]] || fail "max_failures $MOST"
 [[ -z $FREE_GIB || $FREE_GIB =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "free_gib $FREE_GIB"
 [[ $GPUS =~ ^[1-8]$ ]] || fail "gpus $GPUS"
+FLOOR0=$FLOOR_MBS AFTER0=$FLOOR_AFTER
 VRAM=$(cd "$(dirname "$0")/../suites/bench" && pwd)/vram.py
 [ -z "$FREE_GIB" ] || [ -f "$VRAM" ] || fail "no suites/bench/vram.py"
 # ssh for the holder and for what holds the GPU when a cell fails (`gpu`)
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh; [ "$GPUS" = 1 ] || RENT_ARGS="--ssh --gpus $GPUS"
 command -v ffmpeg > /dev/null || fail "no ffmpeg (pod-session.yaml installs it from the tool cache)"
+CLIP=$OUT/clip.mp4
+if jq -e 'any(.[].args[]?; contains("{clip}"))' <<<"$CELLS" > /dev/null; then
+  ffmpeg -v error -y -loop 1 -i "$REF/seed.jpg" -vf "scale=1280:-2,crop=640:360:'(iw-640)*t/4':'(ih-360)/2',fps=24,format=yuv420p" \
+    -t 4 -c:v libx264 -crf 18 "$CLIP" || fail "the clip"
+fi
 mapfile -t names < <(jq -r '.[].name' <<<"$CELLS")
 [ "${#names[@]}" -gt 0 ] || fail "no cells"
 for k in "${names[@]}"; do
@@ -50,15 +65,7 @@ done
 jq -e --argjson n "$(jq -c 'map(.name)' <<<"$CELLS")" 'all(.[]; length == 2 and all(.[]; . as $x | $n | index($x)))' <<<"$COMPARE" >/dev/null ||
   fail "compare names cells that are not there"
 # Each update's wheels, fetched before renting so a missing one costs nothing.
-wheel() {
-  local d=$OUT/wheels/$1-$2; mkdir -p "$d"
-  case $3 in
-    https://*) curl -fsSL --retry 5 -o "$d/${3##*/}" "$3" || return 1 ;;
-    artifact:*/*) local a=${3#artifact:}; gh run download "${a%%/*}" -R cozy-creator/cozy-creator -n "${a#*/}" -D "$d" >/dev/null 2>&1 || return 1 ;;
-    *) gh run download "$3" -R cozy-creator/cozy-runtime -p 'cozy-runtime-*' -D "$d" >/dev/null 2>&1 || return 1 ;;
-  esac
-  find "$d" -name '*manylinux*x86_64*.whl' | head -1
-}
+wheel() { wheel_from "$OUT/wheels/$1-$2" "$3"; }
 declare -A UPDATE=()
 for k in "${names[@]}"; do
   w=()
@@ -78,8 +85,23 @@ done
 printf 'run 5 · sync local/x (source changed)\nrun 6 · local/x/f\nrun      6\n' > "$OUT/probe-cell.txt"
 current() { awk '$1=="run" && $3=="·" && $4!="sync"{n=$2} END{print n}' "$OUT/$1.txt" 2>/dev/null; }
 [ "$(runno probe-cell)" = 6 ] && [ "$(current probe-cell)" = 6 ] || fail "parsers"
+# Each tree's package carries its Triton sets before renting: a build at its first cell bills the pod while the runner compiles.
+for k in "${names[@]}"; do
+  c=$(jq -c --arg k "$k" 'map(select(.name==$k)) | first' <<<"$CELLS"); tree=$(jq -r '.tree // empty' <<<"$c")
+  [ -z "$tree" ] || kernels "$PACKAGES/$tree/$(jq -r '.target | split("/") | first' <<<"$c")"
+done
 quote "$(param need_s 3600)"
 rent
+# A dev home on an RC build moves its rental to the RC's builds once it's ready: no cell starts before that ends.
+cozy machine show "$NAME" --json > "$OUT/show-rc.json" 2> /dev/null
+if [ -n "$(jq -r '.rc.state // empty' "$OUT/show-rc.json")" ]; then
+  for _ in $(seq 180); do
+    [ "$(jq -r '.rc.state // empty' "$OUT/show-rc.json")" = current ] && [ "$(jq -r '.state // empty' "$OUT/show-rc.json")" = ready ] && break
+    sleep 5; cozy machine show "$NAME" --json > "$OUT/show-rc.json" 2> /dev/null
+  done
+  [ "$(jq -r '.rc.state // empty' "$OUT/show-rc.json")" = current ] || fail "$NAME isn't on the RC's builds in 15 min: $(jq -c .rc "$OUT/show-rc.json")"
+fi
+say "pod: $(jq -r '"cozy \(.status.version) · Runtime \(.status.runtime) · TensorFS \(.status.tensorfs)"' "$OUT/show-rc.json" 2> /dev/null)"
 
 
 # gpu: the processes holding GPU 0 and the card's reading, from the pod's root shell.
@@ -176,8 +198,9 @@ fails=0
 declare -A MADE=()
 for k in "${names[@]}"; do
   c=$(jq -c --arg k "$k" 'map(select(.name==$k)) | first' <<<"$CELLS"); mapfile -t args < <(jq -r '.args[]' <<<"$c")
+  FLOOR_MBS=$(jq -r --arg d "$FLOOR0" '.floor_mb_s // $d' <<<"$c") FLOOR_AFTER=$(jq -r --arg d "$AFTER0" '.floor_after_s // $d' <<<"$c")
   for i in "${!args[@]}"; do
-    a=${args[$i]//\{ref\}/$REF}
+    a=${args[$i]//\{ref\}/$REF}; a=${a//\{clip\}/$CLIP}
     while [[ $a =~ \{out:([A-Za-z0-9_-]+)\} ]]; do
       [ -n "${MADE[${BASH_REMATCH[1]}]:-}" ] || fail "cell $k: ${BASH_REMATCH[1]} made no image or video"
       a=${a//"${BASH_REMATCH[0]}"/"${MADE[${BASH_REMATCH[1]}]}"}
@@ -191,11 +214,24 @@ for k in "${names[@]}"; do
     say "$k: pod Runtime $(cozy machine show "$NAME" --json | jq -r .status.runtime), TensorFS $(cozy machine show "$NAME" --json | jq -r .status.tensorfs)"
   fi
   [ -z "$FREE_GIB" ] || { [ -z "${UPDATE[$k]:-}" ] && [ "$k" != "${names[0]}" ]; } || hold "$k" on
+  mapfile -t gone < <(jq -r '.uninstall // [] | .[]' <<<"$c")
+  if [ "${gone[0]:-}" = '*' ]; then
+    mapfile -t gone < <(cozy model ls --on "$NAME" --json 2> /dev/null | jq -r '[.models[]? | "\(.role // "model") \(.model)"] | unique | .[]')
+  else
+    gone=("${gone[@]/#/model }")
+  fi
+  for i in "${!gone[@]}"; do
+    read -r role ref <<<"${gone[$i]}"; [ "$role" = lora ] || role=model
+    step "uninstall-$k-$i" "$role" uninstall "$ref" --on "$NAME" -y < /dev/null || say "$k: $ref stays on the pod: $(tail -c 200 "$OUT/uninstall-$k-$i.txt")"
+  done
   mapfile -t downloads < <(jq -c '.download // [] | .[]' <<<"$c")
   for i in "${!downloads[@]}"; do
     mapfile -t dl < <(jq -r '.[]' <<<"${downloads[$i]}")
     step "download-$k-$i" model install "${dl[@]}" --on "$NAME" < /dev/null || fail "$k: the download of ${dl[0]}"
   done
+  # wait_s: the executor left idle this long before the cell (an idle period's work runs); its record says whether it did
+  w=$(jq -r '.wait_s // 0' <<<"$c"); [[ $w =~ ^[0-9]+$ ]] || fail "cell $k: wait_s $w"
+  [ "$w" = 0 ] || { say "$k: the machine left idle ${w}s"; sleep "$w"; }
   echo "$k" > "$OUT/current"
   say "$k: GPU before: $(gpu | paste -sd';')"
   tree=$(jq -r '.tree // empty' <<<"$c") target=$(jq -r .target <<<"$c")
@@ -210,6 +246,25 @@ for k in "${names[@]}"; do
   st=$(jq -r '.status // "none"' "$OUT/$k.json" 2>/dev/null); st=${st:-none}
   MADE[$k]=$(ls "$OUT/$k.out"/* 2> /dev/null | grep -E '[.](png|webp|jpg|mp4)$' | sort | head -1)
   say "$k run ${N:-none} ${st:-none} (exit $code): $(summary "$k")"
+  # until_idle {region, step_s, max}: while this request's record says the idle queue hadn't reached `region` before it
+  # (`graphs.<region>.idle.queued` > 0), wait step_s more and ask again with the next seed (`<cell>-w<i>`), up to max
+  ui=$(jq -c '.until_idle // empty' <<<"$c")
+  if [ -n "$ui" ]; then
+    reg=$(jq -r .region <<<"$ui") stp=$(jq -r '.step_s // 30' <<<"$ui") most=$(jq -r '.max // 4' <<<"$ui") i=0 kk=$k waited=$(jq -r '.wait_s // 0' <<<"$c")
+    while q=$(jq -r --arg r "$reg" '.measurements.residency.graphs[$r].idle.queued // "none"' "$OUT/$kk.json" 2>/dev/null); [ "$q" != 0 ] && [ "$q" != none ] && [ "$i" -lt "$most" ]; do
+      i=$((i + 1)); kk=$k-w$i; waited=$((waited + stp))
+      say "$k: $reg's idle queue held $q before it; the machine left idle ${stp}s more (${waited}s in all), then $kk"
+      sleep "$stp"; mapfile -t again < <(printf '%s\n' "${args[@]}" | awk -v i="$i" '/^seed:=[0-9]+$/ {split($0, a, "="); print "seed:=" a[2] + i; next} {print}')
+      cd "$PACKAGES/$tree" || fail "no tree for $kk"
+      step "$kk" run "$target" "${again[@]}" --on "$NAME"; NN=$(runno "$kk"); [ -n "$NN" ] || NN=$(current "$kk")
+      cd "$RUN_PROJECT" || fail "no $RUN_PROJECT"
+      [ -z "$NN" ] || { cozy run watch "$NN" --once --json --full > "$OUT/$kk.json" 2>/dev/null; cozy run watch "$NN" --once -o "$OUT/$kk.out" > /dev/null 2>&1; }
+      cd "$OUT" || fail "no $OUT"
+      say "$kk run ${NN:-none} $(jq -r '.status // "none"' "$OUT/$kk.json" 2>/dev/null): $(summary "$kk")"
+    done
+    [ "$q" != none ] || say "$k: the record has no region $reg (graphs: $(jq -r '.measurements.residency.graphs // {} | keys | join(", ")' "$OUT/$kk.json" 2>/dev/null))"
+    say "$k: $reg's idle queue before the last request: $q (after ${waited}s idle; the last request is $kk)"
+  fi
   say "$k weights: $(weights "$k")"
   want=$(jq -r '.expect // "completed"' <<<"$c")
   if [ "$st" != completed ]; then
@@ -220,7 +275,7 @@ for k in "${names[@]}"; do
   fi
   # A refusal before any run (st none) is the failure an `expect: failed` cell proves.
   [ "$st" = "$want" ] || { [ "$want" = failed ] && [ "$st" = none ] && [ "$code" != 0 ]; } ||
-    { fails=$((fails + 1)); [ "$fails" -lt 2 ] || fail "two cells failed"; }
+    { fails=$((fails + 1)); [ "$fails" -lt "$MOST" ] || fail "$fails cells failed"; }
 done
 rm -f "$OUT/current"
 

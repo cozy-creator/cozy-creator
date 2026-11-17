@@ -30,7 +30,7 @@ settled() {
   wait "$begun" 2> /dev/null || true
 }
 # update_waiting <name>: `cozy machine update local --gpu-memory-limit off` (a restart) in the background, its pid in
-# $updating, until `machine show` and `run ls` say it waits for run $n.
+# $updating, until `machine show` says it waits, on the machine and as its update job (cl-1028: a job, no project's run).
 update_waiting() {
   (cozy --json machine update local --gpu-memory-limit off -y > "$OUT/$1.update.json" 2>&1; echo $? > "$OUT/$1.update.code") &
   updating=$!
@@ -43,9 +43,8 @@ update_waiting() {
   done
   J --arg w "$said" '.status.update == $w' "$OUT/$1.machine.json" \
     || check "$1: machine show local never said \"$said\": $(jq -c .status.update "$OUT/$1.machine.json")"
-  cozy --json run ls --all --on local > "$OUT/$1.list.json" || true
-  J --arg w "$said" 'any(.runs[]; .kind == "update" and ((.waiting // "") | contains($w)))' "$OUT/$1.list.json" \
-    || check "$1: run ls shows no update $said: $(jq -c '[.runs[] | select(.kind == "update") | .waiting]' "$OUT/$1.list.json")"
+  J --arg w "$said" 'any(.jobs[]?; .kind == "update" and ((.waiting // "") | contains($w)))' "$OUT/$1.machine.json" \
+    || check "$1: machine show local has no update job $said: $(jq -c '[.jobs[]? | select(.kind == "update") | .waiting]' "$OUT/$1.machine.json")"
 }
 # update_done <name>: the update's end (at most 5 min), and the machine ready after its restart.
 update_done() {
@@ -263,31 +262,31 @@ kept_restore "$gate" "$config" "$OUT/kept/config.toml"
 queued_download() {
 [ "$RUNNER_OS" = Linux ] || return 0
 step "a download queued behind another run's says whose, and how much is ahead (cl-849)"
-local first second n1='' n2='' said='' behind
+local first second id1='' id2='' t1='' said='' behind
 cozy --json model install qwen/qwen3.5-0.8b --on local > "$OUT/queued-first.ndjson" 2>&1 &
 first=$!
 # The second goes once the first's bytes move: its objects queue behind all of the first's.
 for _ in $(seq 240); do grep -qE '"bytes_done": *[1-9]' "$OUT/queued-first.ndjson" && break; sleep 0.25; done
 cozy --json model install lilylilith/fontbox --on local > "$OUT/queued-second.ndjson" 2>&1 &
 second=$!
+# A download is a job of the machine's, no project's run (cl-1028): it has no name, its id names it, and a run says it by what it does.
+job_of() { { grep '^{' "$1" 2> /dev/null | jq -r "select(.run.id != null) | .run.$2" 2> /dev/null || true; } | head -1; }
 for _ in $(seq 80); do
-  n1=$(grep -oE '"number": *[0-9]+' "$OUT/queued-first.ndjson" | head -1 | grep -oE '[0-9]+$') || true
-  n2=$(grep -oE '"number": *[0-9]+' "$OUT/queued-second.ndjson" | head -1 | grep -oE '[0-9]+$') || true
-  [ -n "$n1" ] && [ -n "$n2" ] && break
+  id1=$(job_of "$OUT/queued-first.ndjson" id) id2=$(job_of "$OUT/queued-second.ndjson" id) t1=$(job_of "$OUT/queued-first.ndjson" target)
+  [ -n "$id1" ] && [ -n "$id2" ] && break
   sleep 0.25
 done
-behind="waiting for run COZY-$n1's download ("
-# A download is the machine's own run, not this project's: its number is read outside any project.
+behind="waiting for $t1 to finish downloading ("
 for _ in $(seq 240); do
-  (cd / && cozy --json run watch "${n2:-0}" --once) > "$OUT/queued-show.json" 2> /dev/null || true
+  (cd / && cozy --json run watch "${id2:-none}" --once) > "$OUT/queued-show.json" 2> /dev/null || true
   said=$(jq -r '.waiting // empty' "$OUT/queued-show.json" 2> /dev/null) || said=
-  [[ $said == "$behind"*" ahead)" ]] && break
+  [[ $said == "$behind"*" to go)" ]] && break
   J '.status == "completed"' "$OUT/queued-show.json" 2> /dev/null && break
   sleep 0.25
 done
-echo "queued: run ${n2:-?} said: ${said:-nothing}"
-[[ $said == "$behind"*" ahead)" ]] || check "queued: run ${n2:-?} never said it waits for run ${n1:-?}'s download: ${said:-nothing}"
-J '.stalled == null' "$OUT/queued-show.json" || check "queued: run ${n2:-?} reads stalled while it waits"
+echo "queued: job ${id2:-?} said: ${said:-nothing}"
+[[ $said == "$behind"*" to go)" ]] || check "queued: job ${id2:-?} never said it waits for $t1's download: ${said:-nothing}"
+J '.stalled == null' "$OUT/queued-show.json" || check "queued: job ${id2:-?} reads stalled while it waits"
 
 # A machine's jobs are its function runs, its GPUs' work (Paul 11-11, cl-889): beside the downloads, local counts the one
 # run, in `machine show`, `machine ls` and the page's list alike (they read one count). `wait` runs no model: a function's run.
@@ -297,7 +296,8 @@ local call busy='' live jobs ls
 for _ in $(seq 160); do
   cozy --json run ls --all --limit 20 > "$OUT/busy-runs.json" 2> /dev/null || true
   cozy --json machine show local > "$OUT/busy-local.json" 2> /dev/null || true
-  live=$(jq -c '[.runs[] | select(.machine == "local" and (.status == "queued" or .status == "in_progress")) | .kind] | group_by(.) | map({(.[0]): length}) | add // {}' "$OUT/busy-runs.json" 2> /dev/null || echo '{}')
+  # The call is the project's run; the downloads are local's jobs (cl-1028).
+  live=$(jq -cs '[.[0].runs[]?, .[1].jobs[]? | select(.machine == "local" and (.status == "queued" or .status == "in_progress")) | .kind] | group_by(.) | map({(.[0]): length}) | add // {}' "$OUT/busy-runs.json" "$OUT/busy-local.json" 2> /dev/null || echo '{}')
   jq -e '.call == 1 and (.warm // 0) >= 1' <<< "$live" > /dev/null && { busy=1; break; }
   sleep 0.25
 done

@@ -95,7 +95,8 @@ pub(super) fn keepers<'a>(lanes: &[Lane<'a>]) -> HashMap<&'a str, u32> {
 }
 
 /// `uses` as lanes: a use named by a digest another use keeps (a header its commit keeps, a
-/// commit a snapshot keeps) is that one's lane. Least recently used first.
+/// commit a snapshot keeps) is that one's lane; one that keeps only its own object (a run's input
+/// or output) is its own, whatever model holds the same bytes. Least recently used first.
 pub(super) fn lanes(uses: &[Use]) -> Vec<Lane<'_>> {
     let at: HashMap<&str, usize> = uses.iter().enumerate().map(|(i, u)| (u.name.as_str(), i)).collect();
     let mut parent: Vec<usize> = (0..uses.len()).collect();
@@ -106,8 +107,11 @@ pub(super) fn lanes(uses: &[Use]) -> Vec<Lane<'_>> {
         }
         i
     }
+    // A run's object equal to a model's file (H3's tokenizer, in the package run from source) made the model's whole lane
+    // the run's, held by TensorD while it keeps the run's objects (group-disk 43875722356).
+    let alone = |u: &Use| u.digests.len() == 1 && u.digests.contains(&u.name);
     for (i, u) in uses.iter().enumerate() {
-        for j in u.digests.iter().filter_map(|d| at.get(d.as_str()).copied()) {
+        for j in u.digests.iter().filter_map(|d| at.get(d.as_str()).copied()).filter(|&j| j == i || !alone(&uses[j])) {
             let (a, b) = (root(&mut parent, i), root(&mut parent, j));
             parent[a] = b;
         }
@@ -198,8 +202,11 @@ impl Store {
 
     /// Retire only caller-proven use keys and object candidates after their verified copy.
     /// Uses containing an unrequested digest are retained, as are independent refs, header
-    /// roots, live holds, authoritative peer requests and open file readers. No grace or TTL
-    /// is used to infer ownership. This reuses the normal collection/deletion engine.
+    /// roots, live holds, authoritative peer requests and open file readers. A use past the
+    /// TTL keeps nothing: only a root kept it from the last collection, and what a root holds
+    /// is retained above. A use naming candidates beside nothing but manifests listing only
+    /// candidates (a machine's record of a run's held files, `[manifest, files]`) goes with
+    /// them, its manifests too; one naming anything else keeps what it names.
     pub fn retire_objects(
         &self,
         objects: &[ObjectRef],
@@ -241,17 +248,19 @@ impl Store {
         }
         let mut retired = RetiredObjects::default();
         let uses = self.uses(&BTreeSet::new())?;
+        let expired = SystemTime::now().checked_sub(super::retention::TTL).unwrap_or(SystemTime::UNIX_EPOCH);
+        let mut manifests = BTreeSet::new();
         for used in uses {
-            if requested.contains(&used.name)
-                && !keep.contains(&used.name)
-                && used
-                    .digests
-                    .iter()
-                    .all(|digest| candidates.contains(digest))
-            {
+            let others: Vec<&String> = used.digests.iter().filter(|digest| !candidates.contains(*digest)).collect();
+            let free = !keep.contains(&used.name) && used.digests.iter().all(|digest| !keep.contains(digest));
+            let owned = requested.contains(&used.name) && free && others.is_empty();
+            let listing = free && others.len() < used.digests.len() && !others.is_empty()
+                && others.iter().all(|digest| self.lists_only(digest, &candidates));
+            if owned || listing {
                 self.remove_record(&self.root.join("uses").join(&used.name))?;
+                manifests.extend(others.into_iter().cloned());
                 retired.removed_uses.push(used.name);
-            } else {
+            } else if used.used >= expired {
                 keep.insert(used.name);
                 keep.extend(used.digests);
             }
@@ -279,11 +288,42 @@ impl Store {
                 None => retired.retained.push(object.clone()),
             }
         }
+        for manifest in manifests.into_iter().filter(|manifest| !keep.contains(manifest)) {
+            match self.discard(&manifest, before)? {
+                Some(length) => retired.removed.push(ObjectRef { sha256: manifest, length }),
+                // A reader still has it: kept, said, for the caller to retire again.
+                None => if let Ok(metadata) = fs::metadata(self.blob(&manifest)?) {
+                    retired.retained.push(ObjectRef { sha256: manifest, length: metadata.len() });
+                }
+            }
+        }
         if !retired.removed.is_empty() {
             self.stamp_eviction()?;
         }
         *collections += 1;
         Ok(retired)
+    }
+
+    /// Whether `digest` is a small JSON document listing files by their digests (a tree, or a machine's manifest of a run's held
+    /// files), every one of them in `files`.
+    fn lists_only(&self, digest: &str, files: &BTreeSet<String>) -> bool {
+        fn named(value: &serde_json::Value, found: &mut BTreeSet<String>) {
+            match value {
+                serde_json::Value::Object(map) => map.iter().for_each(|(key, value)| match (key.as_str(), value) {
+                    ("sha256", serde_json::Value::String(digest)) => { found.insert(digest.trim_start_matches("sha256:").to_owned()); }
+                    _ => named(value, found),
+                }),
+                serde_json::Value::Array(items) => items.iter().for_each(|item| named(item, found)),
+                _ => {}
+            }
+        }
+        let Ok(path) = self.blob(digest) else { return false };
+        let Ok(bytes) = fs::read(&path) else { return false };
+        if bytes.len() > 1 << 16 || bytes.first() != Some(&b'{') { return false; }
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return false };
+        let mut found = BTreeSet::new();
+        named(&value, &mut found);
+        !found.is_empty() && found.is_subset(files)
     }
 
     /// What `root` keeps alive, each once: `root`, and for a tree its files and its header's
@@ -383,13 +423,27 @@ impl Store {
 
     /// The caller holds the collection fence for the whole mark and sweep.
     pub(super) fn collect_locked(&self, need: u64, older_than: Duration) -> Result<Collected> {
+        self.collect(need, older_than, false)
+    }
+
+    /// As `collect_locked`, of the checkpoints only a guess brought (`Store::guess`) alone, least recently used first, as far
+    /// as `need` asks: they go whether or not they free it all.
+    pub(super) fn collect_guessed(&self, need: u64) -> Result<Collected> {
+        // With none, as on any store no guess has reached, there is nothing to walk for.
+        if self.guesses().is_empty() {
+            return Ok(Collected::default());
+        }
+        self.collect(need, Duration::ZERO, true)
+    }
+
+    fn collect(&self, need: u64, older_than: Duration, guessed_only: bool) -> Result<Collected> {
         let now = SystemTime::now();
         let cutoff = now.checked_sub(self.grace).unwrap_or(SystemTime::UNIX_EPOCH);
         self.restore_trash()?;
         let mut marked = self.roots()?;
         let mut uses = self.uses(&marked)?;
         let objects = self.objects()?;
-        let (dropped, evicted, lanes) = self.drop_uses(&mut uses, &marked, &objects, need, older_than, cutoff)?;
+        let (dropped, evicted, lanes) = self.drop_uses(&mut uses, &marked, &objects, need, older_than, cutoff, guessed_only)?;
         for kept in uses {
             marked.extend(kept.digests);
             marked.insert(kept.name);
@@ -436,8 +490,9 @@ impl Store {
     /// Removes the lanes `need` asks for from the store and from `uses`, each logged: their
     /// names, and the objects only they kept, which go now. The least recently used unused for
     /// `older_than` go first, and only when, with the unreferenced objects past the grace, they
-    /// free `need` (`u64::MAX`: every one, the TTL's). A lane a root holds any of stays.
-    #[allow(clippy::type_complexity)]
+    /// free `need` (`u64::MAX`: every one, the TTL's). A lane a root holds any of stays. What only a guess brought
+    /// (`Store::guess`) goes before any a call read; `guessed_only`: those alone, as far as `need` asks.
+    #[allow(clippy::type_complexity, clippy::too_many_arguments)]
     fn drop_uses(
         &self,
         uses: &mut Vec<Use>,
@@ -446,12 +501,16 @@ impl Store {
         need: u64,
         older_than: Duration,
         cutoff: SystemTime,
+        guessed_only: bool,
     ) -> Result<(BTreeSet<String>, BTreeSet<String>, Vec<Evicted>)> {
         let none = (BTreeSet::new(), BTreeSet::new(), vec![]);
         let Some(since) = SystemTime::now().checked_sub(older_than).filter(|_| need > 0) else {
             return Ok(none);
         };
-        let lanes = lanes(uses);
+        let guessed = self.guesses();
+        let is_guess = |lane: &Lane<'_>| lane.digests.iter().any(|digest| guessed.contains(*digest));
+        let mut lanes = lanes(uses);
+        lanes.sort_by_key(|lane| !is_guess(lane));
         let mut count = keepers(&lanes);
         let length = |sha: &str| objects.get(sha).map_or(0, |(length, _)| *length);
         let old = |sha: &str| objects.get(sha).is_some_and(|(_, modified)| *modified < cutoff);
@@ -463,7 +522,7 @@ impl Store {
         let in_use: Vec<bool> = lanes.iter().map(|l| {
             l.uses.iter().any(|u| roots.contains(&u.name)) || l.digests.iter().any(|d| count[d] == 1 && roots.contains(*d))
         }).collect();
-        for (lane, _) in lanes.iter().zip(&in_use).filter(|(l, held)| l.used <= since && !**held) {
+        for (lane, _) in lanes.iter().zip(&in_use).filter(|(l, held)| l.used <= since && !**held && (!guessed_only || is_guess(*l))) {
             if free >= need {
                 break;
             }
@@ -479,7 +538,7 @@ impl Store {
             free = free.saturating_add(bytes);
             plan.push((lane, bytes));
         }
-        if free < need && need != u64::MAX {
+        if free < need && need != u64::MAX && !guessed_only {
             return Ok(none);
         }
         let names = if plan.is_empty() { HashMap::new() } else { self.names() };
@@ -487,6 +546,9 @@ impl Store {
         for (lane, bytes) in &plan {
             for u in &lane.uses {
                 self.remove_record(&self.root.join("uses").join(&u.name))?;
+            }
+            for digest in lane.digests.iter().filter(|digest| guessed.contains(**digest)) {
+                let _ = fs::remove_file(self.root.join("uses").join(super::retention::GUESSED).join(digest));
             }
             let name = lane.uses.iter().find_map(|u| names.get(&u.name)).cloned()
                 .unwrap_or_else(|| format!("cache entry {}", &lane.uses[0].name[..12]));
@@ -571,6 +633,58 @@ impl Store {
         Ok(())
     }
 
+    /// Derived pages (`Store::keep_derived`), least recently used first, while `short()` says the
+    /// disk needs bytes; what they freed. A bake is made again from bytes already on this disk, so
+    /// a short disk gives them up before any model, whatever lane keeps them: a lane in use is never
+    /// dropped, and its bakes of every LoRA it ran with held 61 GB of kamitsure's 200 (cl-1081). One a
+    /// reader has open stays (`discard`).
+    pub(super) fn drop_derived(&self, short: &dyn Fn() -> Result<u64>) -> Result<u64> {
+        self.restore_trash()?;
+        let mut freed = 0;
+        for (page, object) in self.derived_pages()? {
+            if short()? == 0 {
+                break;
+            }
+            if let Some(object) = &object {
+                match self.discard(&object.sha256, SystemTime::now())? {
+                    Some(bytes) => freed += bytes,
+                    None if self.holds(object) => continue, // a reader has it open
+                    None => {}
+                }
+            }
+            self.remove_record(&page)?;
+        }
+        let _ = fs::remove_dir(self.root.join("tmp").join("gc"));
+        if freed > 0 {
+            self.stamp_eviction()?;
+            tracing::info!("tensorfs: freed {} of derived pages, least recently used first", size(freed));
+        }
+        Ok(freed)
+    }
+
+    /// Every derived page's record and the object it names (None: not one), least recently used first.
+    pub(super) fn derived_pages(&self) -> Result<Vec<(std::path::PathBuf, Option<ObjectRef>)>> {
+        let mut pages: Vec<(SystemTime, std::path::PathBuf)> = Vec::new();
+        for slot in list(&self.root.join("derived"))? {
+            for page in list(&slot)? {
+                if page.file_name().and_then(|n| n.to_str()).is_some_and(is_digest) {
+                    let used = fs::metadata(&page).and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
+                    pages.push((used, page));
+                }
+            }
+        }
+        pages.sort();
+        let mut named = Vec::with_capacity(pages.len());
+        for (_, page) in pages {
+            match fs::read(&page) {
+                Ok(bytes) => named.push((page, serde_json::from_slice::<ObjectRef>(&bytes).ok())),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(fail("read", &page)(error)),
+            }
+        }
+        Ok(named)
+    }
+
     /// Removes what fetches that ended unfinished kept, those running aside. Their ranges hold no
     /// lock: a fetch that finds one gone asks for it again.
     pub(super) fn drop_partials(&self) -> Result<()> {
@@ -622,7 +736,7 @@ fn exclusive(path: &std::path::Path) -> Result<Option<File>> {
 mod removal_tests;
 
 /// Bytes for people: MiB to a tenth below a GiB, else GiB to a hundredth.
-fn size(bytes: u64) -> String {
+pub(super) fn size(bytes: u64) -> String {
     match bytes < 1 << 30 {
         true => format!("{:.1} MiB", bytes as f64 / (1u64 << 20) as f64),
         false => format!("{:.2} GiB", bytes as f64 / (1u64 << 30) as f64),

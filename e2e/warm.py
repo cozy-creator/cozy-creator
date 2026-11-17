@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 import uuid
 
-# A warm names no project: its runs are Calcifer's own, read outside any project.
+# A warm names no project: it is a job of Calcifer's (cl-1028), no project's run, followed by its id from outside any project.
 OUTSIDE = Path.home()
 
 

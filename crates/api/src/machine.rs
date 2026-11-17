@@ -94,35 +94,6 @@ impl ProjectExecutionCapabilities {
     }
 }
 
-/// Actual legacy acceptances covered by complete inside-project migration receipts.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProjectExecutionMigrationReceipt { pub bindings: Vec<ProjectExecutionMigrationBinding> }
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProjectExecutionMigrationBinding {
-    pub request_id: String,
-    pub source_workspace_id: String,
-    pub invocation_spec_digest: String,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProjectExecutionMigrationRequest { pub legacy_requests: Vec<ProjectExecutionMigrationBinding> }
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProjectExecutionLegacyLookup { pub request_ids: Vec<String> }
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProjectExecutionLegacyLookupAnswer { pub bindings: Vec<ProjectExecutionLegacyBinding> }
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProjectExecutionLegacyBinding {
-    pub binding: ProjectExecutionMigrationBinding,
-    pub source_number: u64,
-}
-
 /// A proof file written only INSIDE the live encrypted mount. Its random token is sent
 /// as a private authentication header, never as RunSpec, URL, log or global journal data.
 #[derive(Clone, Serialize, Deserialize)]
@@ -150,16 +121,15 @@ pub mod path {
     pub const PROJECT_EXECUTION: &str = "/v1/project-execution/{project_id}/{*rest}";
     /// Close only this project's idle local execution namespace before unmount.
     pub const PRIVATE_CLOSE: &str = "/v1/project-execution/{project_id}/close";
-    /// Native proof-owned local legacy migration. Empty body; no unscoped attribution is inferred.
-    pub const PROJECT_MIGRATE: &str = "/v1/project-execution/{project_id}/migrate";
-    /// Lookup actual actor-owned acceptances; this never adopts or retires them.
-    pub const PROJECT_LEGACY_BINDINGS: &str = "/v1/project-execution/{project_id}/migration-bindings";
     /// `GET` with no credential: 204 while the machine serves.
     pub const HEALTH: &str = "/v1/health";
     /// `GET`: one JSON [`super::StatusFrame`]; SSE `status` frames with `Accept: text/event-stream`.
     pub const STATUS: &str = "/v1/status";
     /// `POST`: renews a rental's idle deadline; answers the frame.
     pub const KEEPALIVE: &str = "/v1/keepalive";
+    /// `POST` by this computer's controller: a project whose folder is gone (cl-1031). Every record of it here goes, as a lock's
+    /// does: 204 once nothing of it is here, 409 while a folder it ran in still holds it or its runs are active.
+    pub const PROJECT_GONE: &str = "/v1/project-gone/{project_id}";
     /// `POST` a [`super::RunRequest`] of [`super::RunKind::Update`], the one request a controller of
     /// another release sends; `GET` a [`super::RunList`], `?before=<number>&limit=`.
     pub const RUNS: &str = "/v1/runs";
@@ -186,6 +156,8 @@ pub mod path {
     pub const PREPARE: &str = "/v1/prepare";
     /// Remove one repository's locally cached model copies; never changes its origin.
     pub const MODELS_REMOVE: &str = "/v1/models/remove";
+    /// `GET` as SSE: `gpus` events, a [`super::GpuUse`] each second while the caller stays, its GPUs read only then (cl-1100).
+    pub const GPUS: &str = "/v1/gpus";
 }
 
 /// A preview's step, `<position>/<total>` (`path::PREVIEW`).
@@ -733,8 +705,12 @@ pub struct RunState {
     /// The log's head.
     pub sequence: u64,
     pub attempt: u32,
-    /// Why a queued run waits, for people.
+    /// Why a queued run waits, for people. A run another of this machine's clients sent is named by its id there
+    /// (`run-<hex>`), which its client names as people know it.
     pub waiting: String,
+    /// Its place in this machine's line while it waits there, 1 next.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub place: Option<u32>,
     /// The runs it waits for, by id (an update waits for those in flight).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub waiting_for: Vec<String>,
@@ -952,8 +928,11 @@ pub struct Upcoming {
     pub jobs: Vec<Ahead>,
 }
 
-/// `PUT /v1/prepare` (cl-967): what the caller expects demand for here with no job yet (many shots of one function queued
-/// elsewhere, and this machine new), its whole set, replacing its last; each behind every upcoming job.
+/// `PUT /v1/prepare` (cl-967): what the caller expects demand for here with no job yet, its whole set, replacing its last: its
+/// guesses (cl-1104: what a render of a box would run, from the moment a tool is on it), and many shots of one function queued
+/// elsewhere with this machine new. Each behind every upcoming job and every run's guesses, and no job: it holds no rental, gives
+/// the install line and the disk to any run, and what only it brought is the first to go. One the set drops stops once what the
+/// set replaced it with is in the download line, so what both read never stops; what landed stays.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prepare {
@@ -1005,12 +984,24 @@ pub struct EstimateJob {
     /// The caller's time for it on one GPU of this kind, from runs elsewhere; 0: none. Used when
     /// this machine has measured none of the function.
     pub prior_ms: u64,
+    /// How many of this machine's own runs `prior_ms` is, which its frame doesn't time (a project's private runs, cl-1047): its quote
+    /// is then Measured. 0: runs elsewhere.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub prior_runs: u32,
+    /// Of its weights fetched only when the function first reads them (on demand), the most it may download, beside those it waits for
+    /// before it starts: in no time, as a quote can't know which it reads (cl-1071).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub on_demand_bytes: u64,
     /// The soonest it can start, ms from now: when what it reads is made.
     #[serde(skip_serializing_if = "is_zero")]
     pub after_ms: u64,
 }
 
 fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+fn is_zero_u32(n: &u32) -> bool {
     *n == 0
 }
 
@@ -1030,6 +1021,10 @@ pub struct ModelRef {
     /// unknown.
     #[serde(skip_serializing_if = "is_zero")]
     pub reads: u64,
+    /// The components its slot reads (cl-1104): of what a machine's runs of the function read of the checkpoint, those this job
+    /// fetches. None: all it reads of it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<String>,
 }
 
 /// What a job makes, in the units a function's time scales with; each unknown one is absent.
@@ -1044,19 +1039,42 @@ pub struct JobSize {
     pub steps: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens: Option<u64>,
+    /// Its media's seconds: every `duration` in its input, summed (a shot's beats).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<f64>,
+    /// The pictures and videos it reads, where its caller counted them (a box's mentions and slots): no unit of its time, but which
+    /// measured request it is most like (`estimate::References`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refs: Option<u32>,
 }
 
 impl JobSize {
     /// A run's size as its input says: `megapixels`, else `width` by `height`; `frames`, `steps`,
-    /// `tokens`. The one reading, for callers and the machine's history alike.
+    /// `tokens`, and every `duration` summed. The one reading, for callers and the machine's history alike.
     pub fn of(input: &serde_json::Value) -> Self {
+        fn durations(value: &serde_json::Value) -> f64 {
+            match value {
+                serde_json::Value::Object(map) => map
+                    .iter()
+                    .map(|(key, value)| match (key.as_str(), value.as_f64()) {
+                        ("duration", Some(seconds)) => seconds.max(0.0),
+                        _ => durations(value),
+                    })
+                    .sum(),
+                serde_json::Value::Array(items) => items.iter().map(durations).sum(),
+                _ => 0.0,
+            }
+        }
         let number = |key: &str| input.get(key).and_then(serde_json::Value::as_f64).filter(|n| *n > 0.0);
         let count = |key: &str| input.get(key).and_then(serde_json::Value::as_u64).filter(|n| *n > 0);
+        let seconds = durations(input);
         JobSize {
             megapixels: number("megapixels").or_else(|| Some(number("width")? * number("height")? / 1e6)),
             frames: count("frames"),
             steps: count("steps"),
             tokens: count("tokens"),
+            seconds: (seconds > 0.0).then_some(seconds),
+            refs: None,
         }
     }
 
@@ -1067,8 +1085,9 @@ impl JobSize {
             self.frames.zip(other.frames).map(|(a, b)| (a as f64, b as f64)),
             self.steps.zip(other.steps).map(|(a, b)| (a as f64, b as f64)),
             self.tokens.zip(other.tokens).map(|(a, b)| (a as f64, b as f64)),
+            self.seconds.zip(other.seconds),
         ];
-        each.into_iter().flatten().map(|(a, b)| a / b).product()
+        each.into_iter().flatten().filter(|(_, b)| *b > 0.0).map(|(a, b)| a / b).product()
     }
 }
 
@@ -1107,8 +1126,14 @@ pub struct Quote {
 pub enum Basis {
     /// Runs of the function on this machine.
     Measured,
-    /// The caller's `prior_ms`.
+    /// Runs of it elsewhere on this card: the caller's `prior_ms`, else another of the caller's machines' (cl-1107).
     Prior,
+    /// Its release's benchmark of this card (`estimate::References`, cl-1024), scaled to its size.
+    Reference,
+    /// Estimated: another of the caller's machines' runs of it on another card (cl-1107), else its release's benchmark of another
+    /// card, scaled to this one by how the two compare across the functions both were measured on, else by the Hub's spec speeds
+    /// (`References::time`; Paul 11-15, "a rough guess"). Never counted as measured.
+    Scaled,
     /// Nothing: a minute is assumed.
     #[default]
     None,
@@ -1150,6 +1175,12 @@ pub struct StatusFrame {
     pub phase: String,
     /// os/arch
     pub platform: String,
+    /// Its distribution and kernel major.minor (`Ubuntu 24.04 (6.8)`); empty: unread.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub os_release: String,
+    /// Its host's memory; 0: unread.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub memory_bytes: u64,
     pub started_at_unix_ms: i64,
     /// Measured at boot.
     pub gpus: Vec<Gpu>,
@@ -1157,8 +1188,8 @@ pub struct StatusFrame {
     /// The executors' cozy-runtime.
     pub runtime: String,
     pub tensorfs: String,
-    /// The PyTorch its packages use (`2.15.0+cu132`): its image's, else the one its Hub names
-    /// (`/v1/software`); empty until a machine with no image installs one.
+    /// The PyTorch its packages use (`2.15.0+cu132`): its image's, else its own base's; empty while a machine with no
+    /// image holds none.
     pub torch: String,
     /// The caller's held package installations.
     pub environments: Vec<Environment>,
@@ -1230,6 +1261,36 @@ pub struct StatusFrame {
     /// The caller's lists' items (`PUT /v1/upcoming`, `/v1/prepare`), each as its run stands: ready once it succeeded.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub ahead: Vec<RunState>,
+    /// The newest lines of its `machine.log` (at most [`MACHINE_LOG_LINES`] and [`MACHINE_LOG_BYTES`]): its boot, software,
+    /// service, GPUs, disk, Hub lease and end, never a run or a project's content. Calcifer keeps them after the machine is
+    /// gone (cl-1012). On a stream, absent: as its last frame said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub machine_log: Option<String>,
+}
+
+/// What `cozy machine logs` prints by default: what Calcifer keeps of a machine's own lines (`StatusFrame::machine_log`).
+pub const MACHINE_LOG_LINES: u64 = 200;
+/// Its kernel-boot lines are about 2 KB.
+pub const MACHINE_LOG_BYTES: usize = 64 << 10;
+
+/// The newest `lines` whole lines of `text` (0: all), within `bytes`.
+pub fn log_tail(text: &str, lines: u64, bytes: usize) -> &str {
+    let mut start = text.len().saturating_sub(bytes);
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    if start > 0 {
+        start = text[start..].find('\n').map_or(text.len(), |i| start + i + 1);
+    }
+    let kept = &text[start..];
+    if lines == 0 {
+        return kept;
+    }
+    let body = kept.strip_suffix('\n').unwrap_or(kept);
+    match body.rmatch_indices('\n').nth(lines as usize - 1) {
+        Some((i, _)) => &kept[i + 1..],
+        None => kept,
+    }
 }
 
 /// A root not ended (`StatusFrame::queue`).
@@ -1253,11 +1314,23 @@ pub struct Queued {
     pub width: u32,
     /// When it began executing, this machine's clock; 0 before.
     pub started_at_unix_ms: i64,
-    /// The repositories it waits to download.
+    /// When its work took its GPUs, this machine's clock: its own claim of them, or, for a root on no GPU of its own (an
+    /// orchestrator), its first call's (cl-1107). 0: not yet, or a machine that doesn't say.
+    #[serde(skip_serializing_if = "is_zero_i64")]
+    pub gpu_at_unix_ms: i64,
+    /// It runs on its CPU alone while its GPU work waits to begin: an orchestrator whose calls wait for their weights or a GPU
+    /// (cl-1107). All its work is still ahead of it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub gpu_waits: bool,
+    /// The repositories it waits to download, its calls' included.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub models: Vec<String>,
-    /// Its weights' bytes still to come.
+    /// Its weights' bytes still to come, its calls' included.
     pub bytes_left: u64,
+}
+
+fn is_zero_i64(n: &i64) -> bool {
+    *n == 0
 }
 
 /// A function's newest runs here (`StatusFrame::times`).
@@ -1272,7 +1345,7 @@ pub struct Timed {
     pub reads: Vec<Read>,
 }
 
-/// Of one model, the components a function's run read: their bytes, and of them those this machine lacks now.
+/// Of one model, the components a function's runs read: their bytes, and of them those this machine lacks now.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Read {
@@ -1282,6 +1355,30 @@ pub struct Read {
     pub checkpoint: String,
     pub bytes: u64,
     pub missing: u64,
+    /// Each component, as runs of the function read it (cl-1104): two boxes of one function may read different ones of a checkpoint,
+    /// and a quote of each counts its own (`ModelRef::components`). None: its header isn't here.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<ReadComponent>,
+}
+
+/// One component of a checkpoint a function reads: its bytes, and of them those this machine lacks now.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReadComponent {
+    pub name: String,
+    pub bytes: u64,
+    pub missing: u64,
+}
+
+impl Read {
+    /// Of what it names, the bytes of `components` and of them those missing; None when it doesn't name each of them. None asked: all.
+    pub fn of(&self, components: &[String]) -> Option<(u64, u64)> {
+        if components.is_empty() || self.components.is_empty() {
+            return Some((self.bytes, self.missing));
+        }
+        let parts: Vec<&ReadComponent> = self.components.iter().filter(|part| components.contains(&part.name)).collect();
+        (parts.len() == components.len()).then(|| (parts.iter().map(|part| part.bytes).sum(), parts.iter().map(|part| part.missing).sum()))
+    }
 }
 
 /// What one completed root took: its width, its size as its input said, its compute, and what it spent putting weights on its
@@ -1515,6 +1612,26 @@ pub struct Gpu {
     /// machine's start by processes it doesn't run. Empty: in service.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub out_of_service: String,
+}
+
+/// What a machine's NVIDIA GPUs are doing now (`path::GPUS`, cl-1100): one reading each; none from a machine without one.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(default)]
+pub struct GpuUse {
+    pub at_unix_ms: i64,
+    pub gpus: Vec<GpuReading>,
+}
+
+/// One GPU's reading: the share of its last sample period a kernel ran (`nvidia-smi`'s GPU-Util), and its memory in use, every
+/// process's.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(default)]
+pub struct GpuReading {
+    pub index: u32,
+    pub busy_percent: u32,
+    pub memory_used_bytes: u64,
 }
 
 /// A GPU's page accounting, as its memory manager holds it now.

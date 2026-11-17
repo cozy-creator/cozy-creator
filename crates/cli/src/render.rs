@@ -3,7 +3,6 @@
 //! again never pays twice, and killing it never cancels the render.
 use std::{
     collections::{HashMap, HashSet},
-    io::{BufRead as _, Write as _},
     path::{Path, PathBuf},
     process::ExitCode,
 };
@@ -11,7 +10,7 @@ use std::{
 use api::{
     calcifer::{
         NoteLevel, ProjectShowReply, Shown, StreamEvent,
-        project::{Asked, AssetVersions, Board, Fit, FitAsk, Job, JobState, Pickup, Runs, Said, Standing, State},
+        project::{Asked, AssetVersions, Board, Job, JobState, Pickup, Runs, Said, Standing, State},
         tool::Tools,
     },
     error::{Error, Kind},
@@ -83,10 +82,11 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     };
     let on = match &args.on {
         Some(on) => api::calcifer::on_set(on)?,
-        None => project.here_only(ctx, &state, &args).await?,
+        // Where Calcifer places it, this computer's alone too: a render there that may be slow says so as it goes (cl-1066).
+        None => vec![],
     };
     // The page's stream, showing this project, from before the board is read: no change falls between.
-    let mut watch = project.watch().await?;
+    let watch = project.watch().await?;
     let head: State = project.calcifer.get(&format!("{}?assets=false", project.at(&[]))).await?;
     let board = head.board.unwrap_or_default();
     let mut follow = Follow::new(ctx, &args.names, &board);
@@ -119,9 +119,14 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         return Ok(follow.nothing(&said));
     }
     follow.begin(&state, &said);
+    landed(follow, &project, watch, ask.as_deref()).await
+}
+
+/// Until what `follow` follows has landed, as the project's stream says: then its answer.
+async fn landed(mut follow: Follow<'_>, project: &Project, mut watch: Watch<StreamEvent>, ask: Option<&str>) -> Result<ExitCode, Error> {
     loop {
-        follow.land(&project).await?;
-        if follow.done(ask.as_deref()) {
+        follow.land(project).await?;
+        if follow.done(ask) {
             break;
         }
         match watch.change().await {
@@ -142,6 +147,45 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     follow.end()
 }
 
+/// A project's stream and board, opened before an ask whose takes are then followed with nothing missed: `cozy run retry` of a box's
+/// take (cl-1085).
+pub(crate) struct Watching<'a> {
+    ctx: &'a Context,
+    project: Project,
+    watch: Watch<StreamEvent>,
+    state: State,
+    board: Board,
+}
+
+impl<'a> Watching<'a> {
+    pub(crate) async fn begin(ctx: &'a Context, id: &str) -> Result<Self, Error> {
+        let calcifer = ctx.calcifer().await?;
+        let state: State = calcifer.get(&path(&["v1", "projects", id])).await?;
+        let project = Project { id: state.id.clone(), dir: state.path.clone(), calcifer };
+        let watch = project.watch().await?;
+        let head: State = project.calcifer.get(&format!("{}?assets=false", project.at(&[]))).await?;
+        Ok(Self { ctx, project, watch, state, board: head.board.unwrap_or_default() })
+    }
+
+    /// What `asked` added, followed by its boxes as `cozy render` follows them, until their takes land.
+    pub(crate) async fn follow(self, asked: Asked) -> Result<ExitCode, Error> {
+        let mut names: Vec<String> = vec![];
+        for job in asked.board.jobs.iter().filter(|job| !self.board.jobs.iter().any(|before| before.id == job.id)) {
+            if !names.contains(&job.asset) {
+                names.push(job.asset.clone());
+            }
+        }
+        let mut follow = Follow::new(self.ctx, &names, &self.board);
+        follow.adopt();
+        follow.board(asked.board.clone());
+        if follow.mine.is_empty() {
+            return Ok(follow.nothing(&asked.said));
+        }
+        follow.begin(&self.state, &asked.said);
+        landed(follow, &self.project, self.watch, asked.ask.as_deref()).await
+    }
+}
+
 /// The current project, as its routes name it.
 struct Project {
     id: String,
@@ -160,7 +204,7 @@ impl Project {
         let Some(StreamEvent::Hello { stream, .. }) = watch.change().await else {
             return Err(Error::new(Kind::Unavailable, "events_unanswered", "Calcifer's event stream ended before it began").next("cozy doctor"));
         };
-        let shown: ProjectShowReply = self.calcifer.put(&path(&["v1", "events", &stream]), &Shown { projects: vec![self.id.clone()] }).await?;
+        let shown: ProjectShowReply = self.calcifer.put(&path(&["v1", "events", &stream]), &Shown { projects: vec![self.id.clone()], machines: false }).await?;
         match shown.refused.into_values().next() {
             Some(refused) => Err(refused.error),
             None => Ok(watch),
@@ -202,52 +246,10 @@ impl Project {
         Ok(Pickup { take: format!("<{}.{number}>", source.name), out_frame: at, beats_from: Some(if own { f64::from(at) / fps } else { 0.0 }) })
     }
 
-    /// The machines a render naming none goes to, as Calcifer places it (cl-894): with this computer's alone, whether it would do it
-    /// poorly is asked first, as the page asks, and off a terminal that is a refusal naming what to run instead.
-    async fn here_only(&self, ctx: &Context, state: &State, args: &Args) -> Result<Vec<api::calcifer::On>, Error> {
-        let set = match state.machines.is_empty() {
-            false => state.machines.clone(),
-            true => self.calcifer.machines().await?.render_set().iter().map(ToString::to_string).collect(),
-        };
-        if set != ["local"] {
-            return Ok(vec![]);
-        }
-        let ask = FitAsk { names: args.names.clone(), outdated: args.outdated };
-        let fit: Fit = self.calcifer.post(&self.at(&["fit"]), &ask, None).await?;
-        let poorly: Vec<_> = fit.tools.iter().filter(|tool| !tool.here).collect();
-        if poorly.is_empty() {
-            return Ok(vec![]);
-        }
-        let names: Vec<&str> = poorly.iter().flat_map(|tool| tool.names.iter().map(String::as_str)).collect();
-        let lines: Vec<&str> = poorly.iter().map(|tool| tool.line.as_str()).collect();
-        let here = format!("cozy render {} --on local", args.names.join(" "));
-        let rent = fit.rent.as_ref().map_or_else(|| "cozy machine rent".to_owned(), |rent| format!("cozy machine rent {}", rent.sku));
-        if ctx.yes || (output::can_ask(ctx) && here_anyway(&lines, fit.rent.as_ref().map(|rent| rent.line.as_str()))) {
-            let _: Fit = self.calcifer.post(&self.at(&["fit", "here"]), &ask, None).await?;
-            return Ok(vec![api::calcifer::On::Machine("local".into())]);
-        }
-        let said = format!("{} may not fit this computer's GPU, and nothing is rented: {}", and(&names), lines.join("; "));
-        Err(Error::new(Kind::Capacity, "local_fit", said).next(format!("{here}, or {rent}")))
-    }
-
     /// One take of `name`, as the project holds it now.
     async fn versions(&self, name: &str) -> Result<AssetVersions, Error> {
         self.calcifer.get(&self.at(&["assets", name])).await
     }
-}
-
-/// The page's question, on a terminal: render here anyway?
-fn here_anyway(lines: &[&str], rent: Option<&str>) -> bool {
-    for line in lines {
-        anstream::eprintln!("{line}");
-    }
-    if let Some(rent) = rent {
-        anstream::eprintln!("{rent}");
-    }
-    anstream::eprint!("Render here anyway? [y/N] ");
-    let _ = std::io::stderr().flush();
-    let mut answer = String::new();
-    std::io::stdin().lock().read_line(&mut answer).is_ok() && matches!(answer.trim(), "y" | "Y" | "yes")
 }
 
 /// What this render follows, as the board says it: each job of the named nodes and of what they wait for, said once as it lands.
@@ -559,7 +561,7 @@ impl<'a> Follow<'a> {
             let mut error = job.error.clone().unwrap_or_else(|| Error::new(Kind::Unavailable, "render_stopped", format!("{} {}", job.asset, job.why.clone().unwrap_or_else(|| "stopped".into()))));
             error.message = format!("{} did not render: {}", and(&names), own(&job.asset, &error.message));
             if error.next.is_empty() && let Some(run) = job.run {
-                error = error.next(format!("cozy run show {run}"));
+                error = error.next(format!("cozy run watch {run} --once"));
             }
             return Err(error);
         }

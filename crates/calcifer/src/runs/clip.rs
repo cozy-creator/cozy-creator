@@ -106,7 +106,12 @@ impl fmt::Display for Cut {
 impl Clips {
     /// `range` of `source`, whose rate is `fps`, as a clip or a picture: the one cut before for this version of the file, else
     /// cut now. What it did is said in `notes`.
-    pub(crate) async fn cut(&self, field: &str, source: &Path, range: Range, fps: f64, notes: &mut Vec<Note>, access: OwnedRwLockReadGuard<()>) -> Result<Cut, Error> {
+    /// ffmpeg, found or fetched: before the project's gate is taken for a cut, so a lock queued on it never waits for a download (cl-1025).
+    pub(crate) async fn ffmpeg(&self) -> Result<crate::tools::Ffmpeg, Error> {
+        crate::tools::ffmpeg(&self.home, &|line| tracing::info!("{line}")).await
+    }
+
+    pub(crate) async fn cut(&self, field: &str, source: &Path, range: Range, fps: f64, notes: &mut Vec<Note>, ffmpeg: crate::tools::Ffmpeg, access: OwnedRwLockReadGuard<()>) -> Result<Cut, Error> {
         fn say(notes: &mut Vec<Note>, message: String) {
             notes.push(Note { level: NoteLevel::Info, message });
         }
@@ -114,7 +119,7 @@ impl Clips {
             Error::new(
                 Kind::NotFound,
                 "input_file_unreadable",
-                format!("input file {}", source.display()),
+                format!("Cozy can't read the input file {}.", source.display()),
             )
         })?;
         let extension = if matches!(range, Range::Frame(_)) { "png" } else { "mp4" };
@@ -130,13 +135,12 @@ impl Clips {
                 .write(true)
                 .open(&clip)
                 .and_then(|f| f.set_times(FileTimes::new().set_accessed(SystemTime::now())));
-            say(notes, format!("{field}: {} of {}, cut before: {}", range.timed(fps), source.display(), clip.display()));
+            say(notes, format!("{field}: using {} of {}, already cut: {}", range.timed(fps), source.display(), clip.display()));
             return Ok(cut);
         }
-        let ffmpeg = crate::tools::ffmpeg(&self.home, &|line| tracing::info!("{line}")).await?;
         let past = within(&ffmpeg, field, source, range, fps)?;
         if let Some(end) = past {
-            notes.push(Note { level: NoteLevel::Warning, message: format!("{field}: {} runs past the end of {}: cut to its end, {}", range.timed(fps), source.display(), clock(end)) });
+            notes.push(Note { level: NoteLevel::Warning, message: format!("{field}: {} runs past the end of {}, so Cozy cut it at the end ({}).", range.timed(fps), source.display(), clock(end)) });
         }
         say(notes, format!("{field}: cutting {} of {}", range.timed(fps), source.display()));
         let began = Instant::now();
@@ -148,7 +152,7 @@ impl Clips {
         .await
         .map_err(|e| Error::new(Kind::Internal, "clip_cut", e.to_string()))?;
         encoded?;
-        say(notes, format!("{field}: cut in {:.1} s: {}", began.elapsed().as_secs_f64(), cut.clip.display()));
+        say(notes, format!("{field}: cut in {:.1}s: {}", began.elapsed().as_secs_f64(), cut.clip.display()));
         Ok(cut)
     }
 }
@@ -163,7 +167,7 @@ fn within(ffmpeg: &crate::tools::Ffmpeg, at: &str, source: &Path, range: Range, 
     };
     let start = f64::from(first) / fps;
     if start >= duration {
-        return Err(invalid(format!("{at}: frame {first} at {} is past the end of {} ({})", clock(start), source.display(), clock(duration))));
+        return Err(invalid(format!("{at}: frame {first} at {} is past the end of {}, which is {} long.", clock(start), source.display(), clock(duration))));
     }
     Ok(last.filter(|&to| Range::end(to, fps) > duration + 0.0005).map(|_| duration))
 }
@@ -219,14 +223,14 @@ fn encode(ffmpeg: &crate::tools::Ffmpeg, source: &Path, range: Range, fps: f64, 
             Kind::Validation,
             "clip_cut",
             format!(
-                "ffmpeg could not cut {}: {}",
+                "ffmpeg couldn't cut {}: {}",
                 source.display(),
                 tail.join(" | ")
             ),
         ));
     }
     if part.as_file().metadata().map_err(failed)?.len() == 0 {
-        return Err(invalid(format!("{range} of {} holds no frame", source.display())));
+        return Err(invalid(format!("{range} of {} has no frames.", source.display())));
     }
     part.persist(clip).map_err(|e| failed(e.error))?;
     Ok(())
@@ -259,7 +263,7 @@ fn probe(ffprobe: &Path, source: &Path) -> Result<f64, Error> {
         .filter(|d| d.is_finite() && *d > 0.0)
         .ok_or_else(|| {
             invalid(format!(
-                "ffprobe reads no duration from {}",
+                "ffprobe couldn't read how long {} is.",
                 source.display()
             ))
         })

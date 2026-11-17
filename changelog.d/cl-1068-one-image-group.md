@@ -1,0 +1,1 @@
+The tools panel lists every tool that makes a picture under one group, Image; Edit Image is gone. Let go on a picture with no tool, a tool that reads it goes on and starts from it (`<self.N>`), as before. A box's tool comes off by an X on its tool line, not a trash can: nothing is deleted, and Undo puts it back (cl-1068).

@@ -27,7 +27,7 @@ async fn bound_calls_require_readable_current_native_storage() {
     let home = platform::paths::Home::under(&directory.path().join("controller"));
     home.open().unwrap();
     std::fs::create_dir_all(home.calcifer()).unwrap();
-    let calcifer = crate::Calcifer::open(&home.calcifer(), &home.outputs()).unwrap();
+    let calcifer = crate::Calcifer::open(&home.calcifer()).unwrap();
     let clips = crate::runs::clip::Clips { dir: directory.path().join("clips"), home };
     let callable: api::interface::Callable = serde_json::from_value(json!({"name": "call", "request": {}})).unwrap();
     for kind in ["schema1", "corrupt", "current"] {
@@ -46,7 +46,7 @@ async fn bound_calls_require_readable_current_native_storage() {
         }
         let before = entries(&root);
         let result = Holding::new(calcifer.clone(), root.clone())
-            .bound("fixture/call", "fixture", &callable, Map::new(), &clips, &[]).await;
+            .bound("fixture/call", "fixture", "Fixture", &callable, Map::new(), &clips, &[]).await;
         if kind == "current" {
             let (fields, files, _, _) = result.unwrap();
             assert!(fields.is_empty() && files.is_empty());

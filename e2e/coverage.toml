@@ -45,6 +45,15 @@ test = "pr: entrypoints, current-project health counts and warnings with an expa
 [key]
 test = "pr: project_keys, two projects' keys shown, one changed, its old KEY-N still resolving from outside both"
 
+[config]
+test = "pr: performance_data, the settings listed: send_performance_data on by default"
+["config list"]
+test = "pr: performance_data, the settings listed"
+["config get"]
+test = "pr: performance_data, send_performance_data read back off"
+["config set"]
+test = "pr: performance_data, send_performance_data off (none of a run's report reaches the Hub) and on (one does, anonymous)"
+
 [update]
 test = "pr: update, the candidate to the newest release"
 
@@ -144,9 +153,11 @@ test = "release: owner release visibility and scoped private-version install"
 ["lora unpublish"]
 test = "release: retained LoRA release visibility and checkpoint-reference protection"
 ["model uninstall"]
-test = "pending: local model removal backend fixture"
+test = "pr: uninstall_on, refused naming the run that reads it, then removed with its bytes freed"
+"--on" = "pr: uninstall_on, --on local through the route a rental takes"
 ["lora uninstall"]
-test = "pending: shared local model removal backend fixture"
+test = "pending: shared model removal route, as model uninstall"
+"--on" = "pending: shared model removal route, as model uninstall --on"
 ["lora edit"]
 test = "release: LoRA metadata fixture"
 "--family" = "release: LoRA metadata fixture"
@@ -203,7 +214,7 @@ test = "pr: a weightless request; BiRefNet on the CPU"
 "--model" = "pr: entrypoints rejects malformed model overrides; run flags forwards a model slot"
 "--gpus" = "gate: cli cells"
 "--attention-kernel" = "gate: cli cells"
-"--lora" = "gate: cli cells"
+"--lora" = "pr: lora reads, a LoRA'd call downloads only the components its slot reads (tfs-300)"
 "--output" = "pr: the CLI in a folder Calcifer can't see: a script's still, downloaded by its digest (-o)"
 "--previews" = "pr: previews: a denoise loop on the CPU, its previews saved while it runs"
 ["run watch"]
@@ -220,6 +231,8 @@ test = "pr: run ls filters"
 "--limit" = "pr: run ls filters"
 ["run cancel"]
 test = "pr: a run followed, a snapshot, a cancel"
+["run retry"]
+test = "pr: retry_elsewhere, a box's take its stand-in's end cut short rendered again on local, its seed kept"
 ["render"]
 test = "pr: agent_render, a chain from what it reads, nothing to render, -n forcing nothing, a joined render, a killed CLI rejoined, a failure stopping its readers"
 "--on" = "pr: agent_render, on local; without it, where Calcifer places it once the local-fit question says nothing"
@@ -248,7 +261,11 @@ test = "pr: agent, the file, a kind, a tool's block and one field of it in words
 [hidden]
 "machine rent --provider" = "pending: dev-only (`dev = true`, crates/cli/DEV.md); release-gate/suites/hub rents cpu once per provider where the config has it, ended and checked gone"
 "run --attention-capture" = "manual: dev-only (`dev = true`, crates/cli/DEV.md); release-gate/suites/attention-corpus captures with it on a rented pod (xs-171 M-B)"
+"model show --gpu" = "pending: dev-only (`dev = true`, crates/cli/DEV.md); the cpu suite's lanes cell (e2e/cpu/lanes.py, cl-1076) resolves every first-party slot's default per GPU family on each run, which the cli suite's coverage doesn't read"
+"model show --components" = "pending: dev-only; the cpu suite's lanes cell (e2e/cpu/lanes.py, cl-1076) gives each slot's components, which the cli suite's coverage doesn't read"
 "package publish" = "release: isolated package publication; TensorHub admins only in v1"
+"package benchmarks" = "pr: commands, unseen: a project with no warm GPU run of the package refused no_benchmarks (rows: the release gate's pod, cl-1024)"
+"package benchmarks --out" = "pending: writes the same rows elsewhere; rows need a GPU pod (cl-1024)"
 "model upload" = "release: isolated model upload; TensorHub admins only in v1"
 "model publish" = "release: isolated model publication; TensorHub admins only in v1"
 "model quantize" = "manual: package-defined quantization; TensorHub admins only in v1"
@@ -257,7 +274,7 @@ test = "pr: agent, the file, a kind, a tool's block and one field of it in words
 
 [open]
 "--port" = "pr: entrypoint parser, loopback listener and preserved config tests"
-test = "pr: entrypoints, local authenticated URL and expiry; web-open redeems the link in a browser; page_http (commands) refuses what must be; open_unlocks (projectvault), a locked project unlocked at a terminal by passphrase or recovery secret, refused with --json or from a pipe"
+test = "pr: entrypoints, a private window of $BROWSER's Chrome started at the page's address, --json starting none, and with no private-window browser nothing opened, the address and one line; web-open opens the link in a browser; web-restart, a tab through a Calcifer restart and what's typed as cozy locks; page_http (commands) refuses what must be; open_unlocks (projectvault), a locked project unlocked at a terminal by passphrase or recovery secret, refused with --json or from a pipe"
 
 ["vault"]
 "--directory" = "pr: projectvault: convert and rekey from outside the backing folder"

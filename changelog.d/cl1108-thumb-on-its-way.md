@@ -1,0 +1,1 @@
+A take's thumbnail asked for while its file is still on its way here from its rental answers `202 thumb_pending`, as one not drawn yet does, and is drawn as the file lands. Before, it answered 404, which the browser logged as a console error.

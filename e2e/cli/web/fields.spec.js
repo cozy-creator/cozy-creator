@@ -8,7 +8,7 @@
 // (project/rounded.py sizes as H3: 16:9 at 1344x768, 1.37:1 at 1024x768, which is 4:3 in pixels), still once its box's shape is cleared;
 // a file its pixels' nearest standard ratio within about 2%, else the simplest whole one; a corner pulled near 4:3 sets 4:3, and far from
 // any sets the ratio as pulled and says it. Dark says the same.
-const { test, expect, box, canvasIdle, focus, middle, fixtureTool, MP4, png } = require('./fixtures');
+const { test, expect, themed, canvasCard, canvasIdle, cornerPoint, focus, liveRatio, middle, newCanvas, fixtureTool, MP4, png, canvasVisible, canvasLabel, hoverBox, zoomOf } = require('./fixtures');
 const { carry } = require('./geometry');
 const { fit, leave } = require('./hands');
 
@@ -23,12 +23,11 @@ const ratioOf = (shape) => shape.split(':').map(Number).reduce((w, h) => w / h);
 
 /** A point of `name`'s picture on the canvas a hand can press to carry it: not under what floats over it, nor on a button. */
 const reach = (page, name) => page.evaluate((name) => {
-  const node = document.querySelector(`.react-flow__node:has(.card[data-asset="${name}"])`);
-  const at = (node?.querySelector('.card > .media') ?? node)?.getBoundingClientRect();
+  const root = document.querySelector('.canvas-root'), scene = root?.canvasInspection, at = scene?.card(name)?.body;
   if (!at) return null;
-  for (let y = at.top + 4; y < Math.min(at.bottom, innerHeight); y += 8) for (let x = at.left + 4; x < Math.min(at.right, innerWidth); x += 8) {
+  for (let y = at.y + 4; y < Math.min(at.y + at.height, innerHeight); y += 8) for (let x = at.x + 4; x < Math.min(at.x + at.width, innerWidth); x += 8) {
     const el = document.elementFromPoint(x, y);
-    if (el?.closest('.react-flow__node')?.querySelector('.card')?.dataset.asset === name && !el.closest('button')) return { x, y };
+    if (el && root.contains(el) && scene.hitTest({ x, y })?.name === name && !el.closest('button')) return { x, y };
   }
   return null;
 }, name);
@@ -41,7 +40,7 @@ const undeclared = (region, tool) => region.locator('.focus-card').evaluate((car
   for (const el of scope.flatMap((part) => [...part.querySelectorAll('[data-field]')])) {
     if (!names.includes(el.dataset.field.split('.')[0])) odd.push(`data-field ${el.dataset.field}`);
   }
-  const controls = scope.flatMap((part) => [...part.querySelectorAll('input, select, [role=radiogroup], [role=switch], [role=slider], [role=textbox], button.dropdown')]);
+  const controls = scope.flatMap((part) => [...part.querySelectorAll('input, select, [role=radiogroup], [role=switch], [role=slider], [role=textbox]')]);
   for (const el of controls) {
     if (el.closest('.beats-edit, .group-block')) continue;
     const label = (el.getAttribute('aria-label') ?? '').split(': ')[0];
@@ -50,7 +49,10 @@ const undeclared = (region, tool) => region.locator('.focus-card').evaluate((car
   return [...new Set(odd)];
 }, { names: tool.fields.map((field) => field.field), labels: tool.fields.map((field) => field.label) });
 
-test('fields', async ({ page, project, api, cli }) => {
+test('fields', async ({ page, project, api, cli, guards }) => {
+  // The tiny Qwen fixture's slots default to models the fixture Hub doesn't publish (e2e/cpu/tiny/qwen_image_2.py): a slot's picker asks for
+  // its default's card and is told there is none, and the browser logs each 404 itself.
+  guards.allow(/status of 404\b.*\/v1\/models\//);
   const listed = async () => (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`)).tools;
   const qwen = (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}&q=qwen`)).tools.find((tool) => tool.package === 'qwen-image-2' && tool.makes === 'image' && (tool.models?.length || tool.model));
   expect(qwen, 'the Hub lists Qwen Image 2 with its models').toBeTruthy();
@@ -66,13 +68,14 @@ test('fields', async ({ page, project, api, cli }) => {
     [every, when] = [EVERY, WHEN].map((id) => tools.find((tool) => tool.local && tool.id === id));
     return Boolean(every && when);
   }, { message: 'the project lists its local tools' }).toBe(true);
-  for (const name of ['walk', 'coast', 'every', 'when', 'scene', 'still']) await expect(box(page, name)).toBeVisible();
+  for (const name of ['walk', 'coast', 'every', 'when', 'scene', 'still']) await expect.poll(() => canvasVisible(page, name)).toBe(true);
   await fit(page);
   const region = page.getByRole('region', { name: 'Focused asset' });
   const fieldsOf = async (name) => (await project.asset(name))?.fields ?? {};
 
   const steps = region.getByRole('slider', { name: 'Steps', exact: true });
   const resolution = region.getByRole('combobox', { name: 'Resolution', exact: true });
+  const edit = region.getByRole('combobox', { name: 'Edit', exact: true });
   const turbo = region.getByRole('switch', { name: 'Turbo', exact: true });
   const quality = region.getByRole('radiogroup', { name: 'Quality', exact: true });
   const megapixels = region.getByRole('slider', { name: 'Megapixels', exact: true });
@@ -94,6 +97,14 @@ test('fields', async ({ page, project, api, cli }) => {
     await expect.poll(async () => (await fieldsOf('every')).steps, { message: 'the slider, in the API' }).toBe(9);
     await resolution.selectOption({ label: '1080p' });
     await expect.poll(async () => (await fieldsOf('every')).resolution, { message: 'the menu, in the API' }).toBe('1080p');
+    // Options that say what they are (cl-1066, Paul 11-16: a list drawn inside the box was "clipped by the bounding box it's inside of"):
+    // the browser's own menu, which nothing clips, and what the chosen one does on a line under it.
+    await expect.soft(edit, 'a described choice is a menu').toHaveJSProperty('tagName', 'SELECT');
+    expect.soft(await chosen(edit), 'at its default').toBe('Character swap');
+    await edit.selectOption({ label: 'Head swap' });
+    await expect.poll(async () => (await fieldsOf('every')).edit, { message: 'the described menu, in the API' }).toBe('head');
+    await expect.soft(region.locator('.described-says'), 'what the chosen one does, under it').toHaveText('Only the head');
+    await expect.soft(page.locator('.dropdown-list'), 'no list drawn inside the box').toHaveCount(0);
     await turbo.click();
     await expect.poll(async () => (await fieldsOf('every')).turbo, { message: 'the switch, in the API' }).toBe(false);
     await quality.getByRole('radio', { name: 'full', exact: true }).click();
@@ -135,7 +146,7 @@ test('fields', async ({ page, project, api, cli }) => {
     const before = await runs();
     const ran = await cli('--json', 'run', WHEN, 'instructions=a lighthouse', 'prompt_upsampling=false', 'creativity=wild', '--on', 'local');
     expect.soft(ran.code, 'cozy run').toBe(0);
-    expect.soft(ran.stderr, 'cozy run says it ignores it').toContain('creativity: "wild" is ignored: it applies only with prompt_upsampling on');
+    expect.soft(ran.stderr, 'cozy run says it ignores it').toContain('creativity applies only with prompt_upsampling on, so Cozy ignored wild and used the default.');
     let made;
     await expect.poll(async () => (made = (await runs()).find((number) => !before.includes(number))), { message: 'its run', timeout: RUN_MS }).toBeTruthy();
     expect.soft((await api.get(project.at(`/runs/${made}`))).result?.given, 'the function got its default').toBe('creativity=balanced temporal_overlap=0');
@@ -148,9 +159,9 @@ test('fields', async ({ page, project, api, cli }) => {
     await slot.scrollIntoViewIfNeeded();
     // The canvas right of what Focus shows, where walk is carried from.
     const strip = await page.evaluate(() => {
-      const at = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
+      const root = document.querySelector('.canvas-root'), at = root.canvasInspection.camera(), pane = root.getBoundingClientRect();
       const right = Math.max(...[...document.querySelectorAll('.focus-viewport .focus-card > .here-under, .focus-viewport .focus-card .media')].map((el) => el.getBoundingClientRect().right));
-      return { x: Math.round((right + 24 - at.e) / at.a), y: Math.round((innerHeight / 2 - at.f) / at.a) };
+      return { x: Math.round((right + 24 - pane.x - at.x) / at.zoom), y: Math.round((innerHeight / 2 - pane.y - at.y) / at.zoom) };
     });
     await project.api.patch(project.at('/canvas'), { cards: { walk: strip } });
     const stood = async () => {
@@ -161,8 +172,8 @@ test('fields', async ({ page, project, api, cli }) => {
     let from;
     await expect.poll(async () => (from = await reach(page, 'walk')), { message: 'walk in reach beside Focus' }).toBeTruthy();
     const said = await carry(page, from, await middle(slot), async () => ({ refuses: /\brefuses\b/.test(await slot.getAttribute('class')), why: await slot.locator('.refusal').textContent() }));
-    expect.soft(said, 'said as it is carried over').toMatchObject({ refuses: true, why: expect.stringContaining('takes a picture') });
-    await expect.soft(page.locator('.notes .note .line', { hasText: 'takes a picture' }), 'and said once let go').toHaveCount(1);
+    expect.soft(said, 'said as it is carried over').toMatchObject({ refuses: true, why: expect.stringContaining('takes an image') });
+    await expect.soft(page.locator('.notes .note .line', { hasText: 'takes an image' }), 'and said once let go').toHaveCount(1);
     expect.soft(await fieldsOf('every'), 'refused').not.toHaveProperty('first_frame');
     expect.soft(await stood(), 'refused, walk stays where it was: a drop is no move').toEqual(strip);
 
@@ -185,11 +196,59 @@ test('fields', async ({ page, project, api, cli }) => {
     await leave(page);
     await fit(page);
     await focus(page, 'still');
+    const viewer = region.locator('.focus-viewer').first();
+    const before = await viewer.boundingBox();
     await region.getByRole('button', { name: 'Models and LoRAs', exact: true }).click();
     const picker = page.getByRole('dialog', { name: 'Models and LoRAs', exact: true });
+    await expect(picker).toBeVisible();
+    // Paul, 11-15: in Focus the picker opens in front of the picture; the picture keeps its size.
+    const after = await viewer.boundingBox();
+    expect.soft(after, 'the picture keeps its size and place with the picker open').toEqual(before);
+    const box = await picker.boundingBox();
+    expect.soft(box && after && box.y < after.y + after.height && box.y + box.height > after.y, 'the picker lies over the picture').toBe(true);
+    const front = await picker.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const top = document.elementFromPoint(rect.left + rect.width / 2, rect.top + 20);
+      return Boolean(top && element.contains(top));
+    });
+    expect.soft(front, 'the picker is in front of the picture').toBe(true);
+    // Every row takes its own click: nothing of the frame (its zoom or shape controls) lies over any of them.
+    const covered = await picker.locator('button[data-model-slot]').evaluateAll((rows) => rows.flatMap((row) => {
+      row.scrollIntoView({ block: 'nearest' });
+      const r = row.getBoundingClientRect();
+      const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return top && row.contains(top) ? [] : [row.getAttribute('data-model-slot')];
+    }));
+    expect.soft(covered, 'no slot row is covered by the frame').toEqual([]);
+    // Every slot the tool declares is a row (Qwen shows one prompt helper: the expander, as nothing here edits a picture), and each opens.
+    const rows = picker.locator('button[data-model-slot]');
+    await expect(rows, 'one row per slot').toHaveCount(5);
+    expect.soft(await rows.evaluateAll((all) => all.map((row) => row.getAttribute('data-model-slot')).sort()), 'its slots').toEqual(['expander', 'model', 'text_encoder', 'turbo_lora', 'vae']);
+    for (const slot of ['expander', 'model', 'text_encoder', 'turbo_lora']) {
+      await picker.locator(`button[data-model-slot="${slot}"]`).click();
+      const opened = picker.locator(`section.model-picker-slot[data-model-slot="${slot}"]`);
+      await expect(opened, `${slot} opens`).toBeVisible();
+      // Every slot lists what fits it, Turbo's LoRA too (cl-1066: no "only the default is verified").
+      await expect.soft(opened.getByRole('searchbox', { name: `Search models for ${slot}`, exact: true }), `${slot}: its choices, searchable`).toBeVisible();
+      await expect.soft(opened.getByText('Only the default Turbo LoRA is verified.'), `${slot}: no default-only notice`).toHaveCount(0);
+      await picker.getByRole('button', { name: 'Back to model slots', exact: true }).click();
+    }
     await picker.locator('button[data-model-slot]', { hasText: /^VAE$/ }).click();
     await expect(picker.locator('.model-picker-choices [role="radio"]').filter({ hasText: 'madebyollin / Texture Fix VAE' })).toHaveCount(1);
-    await picker.getByRole('button', { name: 'Close model picker', exact: true }).click();
+    await page.keyboard.press('Escape');
+    await expect(picker, 'Escape closes it').toHaveCount(0);
+    await region.getByRole('button', { name: 'Models and LoRAs', exact: true }).click();
+    await expect(picker).toBeVisible();
+    const open = await picker.boundingBox();
+    // A press that begins inside and lets go outside dismisses nothing; one that begins outside does.
+    await page.mouse.move(open.x + 40, open.y + 30);
+    await page.mouse.down();
+    await page.mouse.move(open.x - 40, open.y + open.height + 60, { steps: 4 });
+    await page.mouse.up();
+    await expect.soft(picker, 'a press from inside let go outside keeps it').toBeVisible();
+    await page.mouse.click(after.x + 8, after.y + after.height - 8);
+    await expect(picker, 'a press outside closes it').toHaveCount(0);
+    await expect(region, 'and only it: Focus stays').toBeVisible();
     await leave(page);
   });
 
@@ -202,6 +261,22 @@ test('fields', async ({ page, project, api, cli }) => {
     const input = (await cli.json('--full', 'run', 'watch', String(run), '--once')).request?.input ?? {};
     expect.soft(input, "the run's request").toMatchObject({ steps: 9, resolution: '1080p', turbo: false, megapixels: saved.megapixels, negative: 'blurry', aspect_ratio: '16:9' });
     expect.soft(input.quality ?? 'standard', 'the field reset goes as its default').toBe('standard');
+  });
+
+  await test.step('a picture mentioned in words its tool reads as text only: said once as Render is pressed (cl-1066)', async () => {
+    // Paul, 11-16, of a character in LTX-2.5's words-only prompt: "it did not do anything with the character … complete fail". Not
+    // only struck through: a note when Render is pressed, once.
+    await project.add({ name: 'plain', tool: EVERY, kind: 'video', fields: { negative: 'soft <coast>' }, at: { x: 1080, y: 0 } });
+    await expect.poll(async () => (await project.asset('plain'))?.unused?.length ?? 0, { message: 'Calcifer finds <coast> unused there' }).toBe(1);
+    await fit(page);
+    const region = await focus(page, 'plain');
+    // As Calcifer words it (cl-1084), on the box's name: `plain: <Tool> doesn't support reference images here`.
+    const note = page.locator('.notes .note .line', { hasText: /^plain: .+ doesn't support reference images( here)?$/ });
+    await region.getByRole('button', { name: 'Render', exact: true }).click();
+    await expect.soft(note, 'said as Render is pressed').toHaveCount(1);
+    await page.waitForTimeout(2000);
+    await expect.soft(note, 'and once').toHaveCount(1);
+    await leave(page);
   });
 
   await test.step('a box says its shape as film and media say it: a take what it asked, a file its pixels\' nearest, a corner what it set', async () => {
@@ -226,29 +301,35 @@ test('fields', async ({ page, project, api, cli }) => {
     expect.soft(made, 'each take its rounded size, and the shape it asked').toEqual({ widescreen: { aspect_ratio: '16:9', width: 1344, height: 768 }, academy: { aspect_ratio: '1.37:1', width: 1024, height: 768 } });
     await fit(page);
     /** What a box at rest says under it of its shape. */
-    const says = (name) => page.locator(`.react-flow__node:has(.card[data-asset="${name}"]) .tile-line .ratio-rest`).first();
-    for (const [name, , , want] of imports) await expect.soft(says(name), `${name}, a file, says its pixels' ${want}`).toHaveText(want);
-    await expect.soft(says('widescreen'), 'a 16:9 render of 1344x768 says 16:9').toHaveText('16:9');
-    await expect.soft(says('academy'), 'a 1.37:1 render of 1024x768 says 1.37:1').toHaveText('1.37:1');
+    const says = (name) => canvasLabel(page, name, 'shape');
+    for (const [name, , , want] of imports) await expect.configure({ soft: true }).poll(() => says(name), { message: `${name}, a file, says its pixels' ${want}` }).toBe(want);
+    await expect.configure({ soft: true }).poll(() => says('widescreen'), { message: 'a 16:9 render of 1344x768 says 16:9' }).toBe('16:9');
+    await expect.configure({ soft: true }).poll(() => says('academy'), { message: 'a 1.37:1 render of 1024x768 says 1.37:1' }).toBe('1.37:1');
     // Its box's shape cleared, its take still says what it asked for, never its pixels' 4:3.
     await api.patch(project.at('/assets/academy'), { fields: { aspect_ratio: null } });
     await expect.poll(async () => (await fieldsOf('academy')).aspect_ratio ?? null, { message: 'academy cleared' }).toBe(null);
-    await expect.soft(says('academy'), 'its take says what it asked, once its box is cleared').toHaveText('1.37:1');
+    await expect.configure({ soft: true }).poll(() => says('academy'), { message: 'its take says what it asked, once its box is cleared' }).toBe('1.37:1');
 
     /** `pulled`'s corner pulled until its picture is `ratio` wide to 1 tall: what it said as it was held, and what it saved. */
     const pull = async (ratio) => {
-      const node = page.locator('.react-flow__node:has(.card[data-asset="pulled"])');
-      const corner = await node.locator('.corner').first().boundingBox();
-      const media = await node.locator('.media').first().boundingBox();
+      // Its corner and picture: the old canvas's hover card's, the new canvas's drawn ones.
+      let from, media;
+      if (await newCanvas(page)) {
+        from = await cornerPoint(page, 'pulled');
+        media = (await canvasCard(page, 'pulled')).body;
+      } else {
+        const node = await hoverBox(page, 'pulled');
+        const corner = await node.locator('.corner').first().boundingBox();
+        media = await node.locator('.media').first().boundingBox();
+        from = { x: corner.x + corner.width / 2, y: corner.y + corner.height / 2 };
+      }
       const before = (await fieldsOf('pulled')).aspect_ratio;
-      const from = { x: corner.x + corner.width / 2, y: corner.y + corner.height / 2 };
       const by = 80;
       await page.mouse.move(from.x, from.y);
       await page.mouse.down();
       await page.mouse.move(from.x + by, from.y + ((media.width + by) / ratio - media.height), { steps: 20 });
-      const said = page.locator('.ratio-live');
-      await expect.soft(said, `its shape said as it's pulled to ${ratio}`).toHaveCount(1);
-      const live = (await said.count()) ? (await said.first().innerText()).trim() : null;
+      await expect.configure({ soft: true }).poll(() => liveRatio(page), { message: `its shape said as it's pulled to ${ratio}` }).not.toBeNull();
+      const live = await liveRatio(page);
       await page.mouse.up();
       let saved;
       await expect.poll(async () => (saved = (await fieldsOf('pulled')).aspect_ratio) !== before, { message: `its shape saved, pulled to ${ratio}` }).toBe(true);
@@ -257,20 +338,26 @@ test('fields', async ({ page, project, api, cli }) => {
     };
     const near = await pull(1.32);
     expect.soft(near, 'pulled near 4:3, it sets 4:3').toEqual({ live: '4:3', saved: '4:3' });
-    await expect.soft(says('pulled'), 'and says it').toHaveText('4:3');
+    await expect.configure({ soft: true }).poll(() => says('pulled'), { message: 'and says it' }).toBe('4:3');
     const free = await pull(1.6);
     const off = (a, b) => Math.abs(Math.log(ratioOf(a) / (typeof b === 'number' ? b : ratioOf(b))));
     const as = free.saved;
     expect.soft(typeof as === 'string' && !STANDARD.includes(as) && off(as, 1.6) < 0.03 && !STANDARD.some((shape) => off(as, shape) <= 0.02), `pulled far from any, it stays as pulled: ${JSON.stringify(free)}`).toBe(true);
     expect.soft(free.live, 'said as pulled').toBe(as);
-    await expect.soft(says('pulled'), 'and says it').toHaveText(String(as));
+    await expect.configure({ soft: true }).poll(() => says('pulled'), { message: 'and says it' }).toBe(String(as));
 
-    await page.evaluate(() => localStorage.setItem('cozy.theme', 'dark'));
+    await project.look('dark');
     await page.reload();
-    await expect(box(page, 'pulled')).toBeVisible();
+    await expect.poll(() => canvasVisible(page, 'pulled')).toBe(true);
+    await themed(page, 'dark');
     await fit(page);
+    // Under 45% a box is drawn with its name only, by design: its tool and shape are read once the canvas is at 45% or more.
+    for (let i = 0; i < 4 && (await zoomOf(page)) < 0.45; i++) {
+      await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
+      await canvasIdle(page);
+    }
     const wanted = { wide: '16:9', tall: '9:16', square: '1:1', odd: '3:1', widescreen: '16:9', academy: '1.37:1', pulled: String(as) };
-    for (const [name, want] of Object.entries(wanted)) await expect.soft(says(name), `dark: ${name} says ${want}`).toHaveText(want);
+    for (const [name, want] of Object.entries(wanted)) await expect.configure({ soft: true }).poll(() => says(name), { message: `dark: ${name} says ${want}` }).toBe(want);
   });
 
   // Last: a Hub whose LoRA cards hold no triggers fails it, with every step before it already reported.

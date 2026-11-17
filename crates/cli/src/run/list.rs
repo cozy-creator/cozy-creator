@@ -100,9 +100,10 @@ pub(crate) fn table(ctx: &Context, runs: &[&Run], projects: bool) -> output::Tab
 /// The runs `query` asks for, page by page.
 pub(crate) async fn runs(ctx: &Context, query: &Query) -> Result<RunList, Error> {
     let calcifer = ctx.calcifer().await?;
+    // Every run is a project's (cl-1028): `--all` is every project's.
     let projects = match &query.project {
-        Some(project) => vec![Some(project.clone())],
-        None => std::iter::once(None).chain(known_projects(&calcifer).await?.into_iter().map(Some)).collect(),
+        Some(project) => vec![project.clone()],
+        None => known_projects(&calcifer).await?,
     };
     let mut out = RunList {
         runs: vec![],
@@ -119,11 +120,7 @@ pub(crate) async fn runs(ctx: &Context, query: &Query) -> Result<RunList, Error>
       page.before = query.before;
       let began = out.runs.len();
       loop {
-        let list = match &project {
-            Some(project) => calcifer.runs(project, &page).await,
-            None => calcifer.get_query("/v1/runs", &page).await,
-        };
-        let list = match list {
+        let list = match calcifer.runs(&project, &page).await {
             Err(error) if query.project.is_none() && matches!(error.code.as_str(), "project_locked" | "project_busy" | "project_unknown") => continue_list(&mut out, error),
             other => other?,
         };

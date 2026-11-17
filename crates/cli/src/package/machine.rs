@@ -33,7 +33,7 @@ struct Installed {
 /// Calcifer names the newest release when none is given, and retires the older ones the machine holds once it is in.
 pub(crate) async fn install(ctx: &Context, package: String, code: Option<api::code::LocalCode>, release: Option<String>, on: Option<On>, project: Option<String>) -> Result<ExitCode, Error> {
     let submitted = run::job(ctx, job::PACKAGE_INSTALL, &PackageInstall { package, release }, on, code, project).await?;
-    let settled = run::follow(ctx, submitted).await?;
+    let settled = run::carry_out(ctx, submitted).await?;
     if ctx.json || settled.status != Status::Completed {
         return Ok(run::exit_code(&settled));
     }
@@ -85,7 +85,7 @@ async fn held(ctx: &Context, on: Option<&On>) -> Result<Vec<HeldPackage>, Error>
     let path = format!("{}/packages", route(&machine.name.to_ascii_lowercase())?);
     let mut query = vec![("fresh", "true".to_owned()), ("hub", ctx.hub().to_string())];
     // Inside a project, what its own runs installed there too (a project's local code is its own).
-    if let Ok(project) = crate::project::identity(ctx).await {
+    if let Ok(project) = crate::project::address(ctx).await {
         query.push(("project", project.id));
     }
     let held: MachinePackages = calcifer.get_query(&path, &query).await?;

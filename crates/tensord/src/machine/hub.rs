@@ -7,15 +7,19 @@ use ed25519_dalek::VerifyingKey;
 use ::api::hub::{types, Credential, WorkerSigner};
 use std::{
     io,
-    sync::atomic::{AtomicI64, Ordering},
+    sync::{
+        atomic::{AtomicI64, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
 pub(crate) struct Hub {
     grant: HubGrant,
+    sign: WorkerSigner,
     client: ::api::hub::Client,
-    /// When the Hub last answered anything (0: never in this process).
-    contact_ms: AtomicI64,
+    /// When the Hub last answered anything (0: never in this process), whichever client it answered.
+    contact_ms: Arc<AtomicI64>,
 }
 
 #[derive(Debug)]
@@ -33,13 +37,19 @@ pub(crate) enum Refusal {
 
 impl Hub {
     pub(crate) fn new(grant: HubGrant, sign: WorkerSigner) -> io::Result<Self> {
-        let http = crate::hub::http(grant.ca_der.as_deref()).map_err(|e| io::Error::other(e.0))?;
-        let credential = Credential::Worker { id: grant.worker_id.clone(), sign };
-        Ok(Self {
-            client: ::api::hub::Client::connect(&grant.origin, http, credential),
-            grant,
-            contact_ms: AtomicI64::new(0),
-        })
+        let http = crate::hub::rental_http(grant.ca_der.as_deref()).map_err(|e| io::Error::other(e.0))?;
+        Ok(Self::with(grant, sign, http, Arc::new(AtomicI64::new(0))))
+    }
+
+    fn with(grant: HubGrant, sign: WorkerSigner, http: reqwest::Client, contact_ms: Arc<AtomicI64>) -> Self {
+        let credential = Credential::Worker { id: grant.worker_id.clone(), sign: sign.clone() };
+        Self { client: ::api::hub::Client::connect(&grant.origin, http, credential), grant, sign, contact_ms }
+    }
+
+    /// The same Hub for check-ins, on a client of their own (`crate::hub::check_in_http`), whose answers count as contact here too.
+    pub(crate) fn for_check_ins(&self) -> io::Result<Self> {
+        let http = crate::hub::check_in_http(self.grant.ca_der.as_deref()).map_err(|e| io::Error::other(e.0))?;
+        Ok(Self::with(self.grant.clone(), self.sign.clone(), http, self.contact_ms.clone()))
     }
 
     /// When the Hub itself last answered this machine, whatever it said; 0: never in this process.

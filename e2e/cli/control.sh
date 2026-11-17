@@ -90,7 +90,7 @@ id=$(status "$P" | jq -r '.id // empty')
 addr=$(jq -r .address < "$lock") token=$(jq -r .token < "$lock")
 [ -n "$id" ] || { check "once: the project has no id"; return; }
 for try in first second; do
-  curl -sS -D "$OUT/once-$try.headers" -o "$OUT/once-$try.json" -H "Authorization: Bearer $token" -H 'cozy-project-storage: 3' -H 'Content-Type: application/json' \
+  curl -sS -D "$OUT/once-$try.headers" -o "$OUT/once-$try.json" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
     -H "Idempotency-Key: $key" -X POST -d '{}' "http://$addr/v1/projects/$id/history/undo" || check "once: the $try undo got no answer"
 done
 first=$(jq -c '[.entries[].id]' "$OUT/once-first.json") second=$(jq -c '[.entries[].id]' "$OUT/once-second.json")
@@ -128,7 +128,7 @@ fi
 # The Hub back, at the same address, for what follows.
 [ "${RUNNER_OS:-}" != Windows ] || exe=.exe
 mkdir -p "$OUT/hub-again"
-"${RUNNER_TEMP:-$OUT}/hubcheck$exe" --hub "${HUB_CHECK_UPSTREAM:?}" --out "$OUT/hub-again" --listen "$addr" > /dev/null 2> "$OUT/hub-again/hubcheck.log" &
+"${RUNNER_TEMP:-$OUT}/hubcheck$exe" --hub "${HUB_CHECK_UPSTREAM:?}" --out "$OUT/hub-again" --listen "$addr" --keep 'POST /v1/run-reports' > /dev/null 2> "$OUT/hub-again/hubcheck.log" &
 HUB_CHECK=$!
 for _ in $(seq 30); do curl -sS -m 5 -o /dev/null "http://$addr/openapi.yaml" 2> /dev/null && break; sleep 1; done
 }
@@ -177,7 +177,7 @@ for _ in $(seq 400); do
   cozy --json run watch "$n" --once > "$OUT/broken.show.json" 2> /dev/null || true
   status=$(jq -r .status "$OUT/broken.show.json")
   [ "$status" = in_progress ] || break
-  if [ "$since" = 0 ] && jq -e '.waiting // "" | test("fails when asked")' "$OUT/broken.show.json" > /dev/null; then
+  if [ "$since" = 0 ] && jq -e '.waiting // "" | test("failing to report on this run")' "$OUT/broken.show.json" > /dev/null; then
     since=$SECONDS said=$(jq -r .waiting "$OUT/broken.show.json")
   fi
   [ "$since" = 0 ] || [ $((SECONDS - since)) -lt 150 ] || break
@@ -185,7 +185,7 @@ for _ in $(seq 400); do
 done
 journal_table run_measurements_away run_measurements || check "broken: the journal's table couldn't be put back"
 echo "broken: run $n $status after $((SECONDS - since)) s of '$said'; now: $(jq -r '.waiting // empty' "$OUT/broken.show.json")"
-[ "$since" != 0 ] || check "broken: run $n never said local fails when asked about it ($status)"
+[ "$since" != 0 ] || check "broken: run $n never said local is failing to report on it ($status)"
 [ "$status" = in_progress ] || check "broken: run $n settled $status while its machine failed to answer: $(jq -c .reason "$OUT/broken.show.json")"
 settled broken 120
 J '.status == "completed"' "$OUT/broken.show.json" || check "broken: run $n is $(jq -c '[.status, .reason]' "$OUT/broken.show.json"), not completed as its machine says"

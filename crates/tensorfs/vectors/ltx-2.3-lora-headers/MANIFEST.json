@@ -1,0 +1,50 @@
+{
+ "note": "Five published LTX-2.3 LoRAs, ungated, in LTX's native names under diffusion_model. (lora_A/lora_B, no .alpha): Lightricks' Union Control and Motion Track Control IC-LoRAs (reference_downscale_factor 2 in their metadata) and its distilled LoRA, which adapts every linear of the DiT (adaln_single, patchify_proj, prompt_adaln_single and av_ca_* among them); vrgamedevgirl84's Claymation (musubi-tuner, to_gate_logits too) and fal's audio-reactive v2 (AI-Toolkit, the audio and audio-video attention). LTX-2.3's DiT is LTX-2.5's but for 2.5's keyframe embedding and its video feed-forward without biases: every linear is the same; ltx2.lora maps them",
+ "members": [
+  {
+   "source": "Lightricks/LTX-2.3-22b-IC-LoRA-Union-Control@20a580c8606c06a0988d40375a61309e0fe5893d",
+   "member": "ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors",
+   "header_file": "ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors.header",
+   "header_sha256": "00723bc137be5db2a679ea3f44fa6bf58f9d7c015bf230434ee5ee42f6dd7f36",
+   "header_bytes": 153928,
+   "full_length": 654465352,
+   "declared_source_sha256": "a1b888a87f661d27f08b394ae559e8e1050be33900bcc36a5cdf659e48f88d18"
+  },
+  {
+   "source": "Lightricks/LTX-2.3-22b-IC-LoRA-Motion-Track-Control@022bf183b6da565fd2e2800e135ba0b46db57d32",
+   "member": "ltx-2.3-22b-ic-lora-motion-track-control-ref0.5.safetensors",
+   "header_file": "ltx-2.3-22b-ic-lora-motion-track-control-ref0.5.safetensors.header",
+   "header_sha256": "e320740a6434cc70fe254b4e71f11cb33c32234c2180fa9b83d11251fc8ac2fa",
+   "header_bytes": 153602,
+   "full_length": 327309314,
+   "declared_source_sha256": "e279807ee3aa3db1ce60188d665ff83342860367dcd6bac19f8bd5a99a9e1dca"
+  },
+  {
+   "source": "Lightricks/LTX-2.3@c1521179de480464f366a98a9d9b2acc4cc097b9",
+   "member": "ltx-2.3-22b-distilled-lora-384-1.1.safetensors",
+   "header_file": "ltx-2.3-22b-distilled-lora-384-1.1.safetensors.header",
+   "header_sha256": "b8749193e5a4d701a1d1a2fa2575aa3b214fc87212104814f8122b52fe29348a",
+   "header_bytes": 513208,
+   "full_length": 7605507256,
+   "declared_source_sha256": "f5d4953f3386197a4b4f5abdb17616ff256171e8075c111d6e7d2dfa6e823b3a"
+  },
+  {
+   "source": "vrgamedevgirl84/LTX_2.3_Clay_Mation_Style_LoRa@bbf7937db81244e7855adadc459ec7f1813b34ac",
+   "member": "Claymation.safetensors",
+   "header_file": "Claymation.safetensors.header",
+   "header_sha256": "ccccd519c489414c9afb0e057ef6d03e407ee60f2f193b5f7bfe8bf18ec407f7",
+   "header_bytes": 161736,
+   "full_length": 352679880,
+   "declared_source_sha256": "e1098c8b7e6f8bc6a183ce21f5aa9b7f528e3de1c9294eecc4d82d0c3dc3f923"
+  },
+  {
+   "source": "fal/ltx2.3-audio-reactive-lora@2c8770cd2b9c747be18b5232cc212fa90d13a139",
+   "member": "ltx2.3_audio_reactive_lora_v2.safetensors",
+   "header_file": "ltx2.3_audio_reactive_lora_v2.safetensors.header",
+   "header_sha256": "9340f45a545a7acafbedcdb27df063a1273e1ccb143a95b449f0f5d6ed762377",
+   "header_bytes": 476392,
+   "full_length": 1348027624,
+   "declared_source_sha256": "c483e3fc85d75115f0c91d1e3d1723462107a363b6b33816f6fe4dc348ffb227"
+  }
+ ]
+}

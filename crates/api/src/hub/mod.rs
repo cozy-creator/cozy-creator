@@ -114,8 +114,8 @@ impl Error {
             Self::Call(message) => {
                 // A timeout is the Hub keeping quiet; only what never connected says anything of this computer.
                 let (code, remedy) = match message.contains("timed out") {
-                    true => ("hub_slow", "the Hub took too long to answer: it is busy or down, and asking again is safe"),
-                    false => ("hub_unreachable", "this computer couldn't reach the Hub: its connection, or the Hub being down. Asking again is safe"),
+                    true => ("hub_slow", "The Hub took too long to answer. It may be busy or down; try again."),
+                    false => ("hub_unreachable", "Cozy couldn't reach the Hub. Check this computer's internet connection, or the Hub may be down; try again."),
                 };
                 (Refusal::unavailable(code, message), remedy.into())
             }
@@ -141,14 +141,14 @@ impl Error {
         // Asking again meets the same certificate.
         if cause.to_string().contains("certificate") {
             let origin = error.url().map_or_else(|| "the Hub".to_owned(), |url| url.origin().ascii_serialization());
-            return Self::Answer(format!("{origin}'s certificate isn't trusted: {cause}"));
+            return Self::Answer(format!("Cozy doesn't trust {origin}'s certificate: {cause}"));
         }
         Self::Call(match error.url() {
             Some(url) => format!(
-                "no answer from {}: {cause}",
+                "Couldn't reach {}: {cause}",
                 url.origin().ascii_serialization()
             ),
-            None => format!("no answer: {cause}"),
+            None => format!("Couldn't reach the Hub: {cause}"),
         })
     }
 

@@ -1,21 +1,24 @@
 import { useQuery } from "@tanstack/react-query"
 import { type FormEvent, useRef, useState } from "react"
-import { Link, useNavigate, useParams } from "react-router-dom"
+import { useParams } from "react-router-dom"
 import { machineQuery, machinesQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
 import { useTo } from "../../app/Shell"
 import type { Machine, MachineUpdate } from "../../api/calcifer"
 import { Copyable } from "../../ui/Copyable"
-import { say } from "../../ui/notes"
 import { Failure, KV, Section, useAsk, useNow } from "../common"
 import { DrawerFrame } from "../Drawer"
-import { bytes, shown, span } from "../format"
+import { span } from "../format"
+import { Disk } from "./Disk"
 import { End } from "./End"
-import { Installed } from "./Installed"
+import { Gpus } from "./Gpus"
+import { Models, Packages } from "./Installed"
 import { MachineLogs } from "./MachineLogs"
+import { Queue } from "./Queue"
 import { RenderCheck, Spec, useRenderMachines } from "./RenderHere"
-import { runName } from "../runs/words"
-import { brokenWords, called, endsWords, kindWords, named, slowWords, spentWords } from "./words"
+import { statusWord, target } from "../runs/words"
+import { brokenWords, called, endsWords, kindWords, kernelsWords, named, spentWords } from "./words"
+import "./MachineDrawer.css"
 
 /** Its idle clock renewed (`cozy machine keepalive`), which only a person asks for: a rental ends 15 minutes after its last job. */
 function KeepRunning({ machine }: { machine: Machine }) {
@@ -24,7 +27,7 @@ function KeepRunning({ machine }: { machine: Machine }) {
   if (machine.kind !== "rental" || machine.state !== "ready" || machine.ordered === false) return null
   return (
     <>
-      <button type="button" className="tb" title="Starts its 15 idle minutes again" disabled={ask.busy} onClick={() => void ask.run(() => client.keepAlive(machine.name))}>
+      <button type="button" className="tb" title="Restart its 15-minute idle timer" disabled={ask.busy} onClick={() => void ask.run(() => client.keepAlive(machine.name))}>
         Keep running
       </button>
       <Failure error={ask.error} lead="Couldn't keep it running" />
@@ -35,8 +38,6 @@ function KeepRunning({ machine }: { machine: Machine }) {
 /** To a release, by version: dev builds stay in the CLI. Nothing named moves each to its Hub's target. */
 function Update({ machine }: { machine: Machine }) {
   const { client } = useConnection()
-  const navigate = useNavigate()
-  const to = useTo()
   const ask = useAsk()
   const [runtime, setRuntime] = useState("")
   const [tensorfs, setTensorfs] = useState("")
@@ -56,9 +57,9 @@ function Update({ machine }: { machine: Machine }) {
     void ask.run(async () => {
       const updating = await client.updateMachine(machine.name, body, key)
       asked.current = null
-      updating.warnings?.forEach((warning) => say(warning))
-      if (updating.run) navigate(to(`runs/${updating.run.number}`))
-      else setSaid(`It runs ${updating.target}: nothing to update.`)
+      // Its update is a job of the machine's (cl-1028), listed under its jobs as it goes.
+      if (updating.run) setSaid(`Updating to ${updating.target}: it shows under Its jobs.`)
+      else setSaid(`Already up to date (${updating.target}).`)
     })
   }
 
@@ -69,119 +70,94 @@ function Update({ machine }: { machine: Machine }) {
       <form className="stack" onSubmit={update}>
         <label>
           Runtime
-          <input className="field" spellCheck={false} placeholder={status?.runtime || "the Hub's target"} value={runtime} onChange={(event) => setRuntime(event.target.value)} />
+          <input className="field" spellCheck={false} placeholder={status?.runtime || "The Hub's recommended version"} value={runtime} onChange={(event) => setRuntime(event.target.value)} />
         </label>
         <label>
           TensorFS
-          <input className="field" spellCheck={false} placeholder={status?.tensorfs || "the Hub's target"} value={tensorfs} onChange={(event) => setTensorfs(event.target.value)} />
+          <input className="field" spellCheck={false} placeholder={status?.tensorfs || "The Hub's recommended version"} value={tensorfs} onChange={(event) => setTensorfs(event.target.value)} />
         </label>
         <label>
-          cozy
-          <input className="field" spellCheck={false} placeholder={status?.version || "the Hub's target"} value={tensord} onChange={(event) => setTensord(event.target.value)} />
+          Cozy
+          <input className="field" spellCheck={false} placeholder={status?.version || "The Hub's recommended version"} value={tensord} onChange={(event) => setTensord(event.target.value)} />
         </label>
         <div className="row end">
           <button type="submit" className="tb" disabled={ask.busy}>
-            {runtime || tensorfs || tensord ? "Update" : "Update to the Hub's target"}
+            {runtime || tensorfs || tensord ? "Update" : "Update to the recommended versions"}
           </button>
         </div>
       </form>
-      {machine.kind === "local" && tensord.trim() && <p className="muted">Calcifer itself moves to that cozy at the next `cozy` command in a terminal.</p>}
+      {machine.kind === "local" && tensord.trim() && <p className="muted">Cozy switches to that version the next time you use it from a terminal.</p>}
       {said && <p className="muted">{said}</p>}
-      <Failure error={ask.error} lead="Couldn't update it" />
+      <Failure error={ask.error} lead="Couldn't update this machine" />
     </details>
   )
 }
 
-/** Under a tenth of its disk free, said before a render finds out: what a render does about it, and what holds more. */
-function DiskShort({ machine }: { machine: Machine }) {
-  const status = machine.status
-  if (machine.state === "ended" || !status?.disk_total_bytes || (status.disk_free_bytes ?? 0) >= status.disk_total_bytes / 10) return null
-  const models = status.disk_models_bytes ? `, models take ${bytes(status.disk_models_bytes)}` : ""
-  return (
-    <p className="warn">
-      Short of disk: {bytes(status.disk_free_bytes ?? 0)} free of {bytes(status.disk_total_bytes)}{models}. A render evicts the models no queued or running job is using; one that still doesn't fit is refused before it starts. For more, rent a machine with a larger disk.
-    </p>
-  )
-}
-
-/** All the rest it knows, shown when its Details is: versions, disk, addresses and keys, its runs one by one, updating it, what it holds,
- *  its logs (Paul 11-12: its face is its spec, what it's doing, when it ends, and what to do with it). */
+/** All the rest it knows, shown when its Details is: versions, addresses and keys, updating it, its logs (Paul 11-12: its face is its
+ *  spec, what it's doing, when it ends, and what to do with it; 11-16: then its GPUs, disk, queue, packages and models). */
 function Details({ machine, now }: { machine: Machine; now: number }) {
-  const to = useTo()
   const ended = machine.state === "ended"
   const status = machine.status
   const rental = machine.rental
-  const disk = status?.disk_total_bytes ? `${bytes(status.disk_free_bytes ?? 0)} free of ${bytes(status.disk_total_bytes)}` : rental?.disk_gb ? `${rental.disk_gb} GB` : ""
   return (
     <div className="sect machine-details">
       <KV
       rows={[
-        ["Kind", kindWords(machine)],
-        ...(status?.gpus ?? []).map((gpu): [string, string] => [`GPU ${gpu.index}`, `${gpu.name} · ${bytes(gpu.memory_bytes)}${gpu.driver ? ` · driver ${gpu.driver}` : ""}`]),
-        ["Up", rental ? span((now - rental.rented_at_ms) / 1000) : status && span((now - status.started_at_ms) / 1000)],
-        ["cozy", status && `${status.version}${status.dev ? " (dev)" : ""}`],
+        ["Type", kindWords(machine)],
+        ["Running for", rental ? span((now - rental.rented_at_ms) / 1000) : status && span((now - status.started_at_ms) / 1000)],
+        ["Cozy", status && `${status.version}${status.dev ? " (dev)" : ""}`],
         ["Runtime", status?.runtime],
         ["TensorFS", status?.tensorfs],
         ["RC", machine.rc && `${machine.rc.rc} ${machine.rc.state}: ${machine.rc.detail}`],
         ["PyTorch", status?.torch],
         ["Update", status?.update],
-        ["Disk", disk],
+        ["Disk", !status?.disk_total_bytes && rental?.disk_gb ? `${rental.disk_gb}GB` : ""],
         ["Address", machine.address],
         ["Fingerprint", machine.fingerprint],
-        ["Controller key", machine.controller_key],
-        ["Add it at", machine.reach],
-        ["Placed", rental?.placement_note],
-        ["Failure", rental?.failure],
-        ["Reason", machine.reason],
-        ["End failed", machine.end_failed],
+        ["Public key", machine.controller_key],
+        ["Address for other computers", machine.reach],
+        ["Location", rental?.placement_note],
+        ["Why it failed", rental?.failure],
+        ["Why it ended", machine.reason],
+        ["Couldn't end", machine.end_failed],
       ]}
       />
       {machine.ssh && (
-        <Section title="Log in">
+        <Section title="SSH">
           <Copyable text={machine.ssh.line} />
         </Section>
       )}
-      {Boolean(machine.status?.runs?.length) && (
-        <Section title="Its runs now">
+      {Boolean(machine.jobs?.length) && (
+        <Section title="Its jobs">
           <ul className="rows">
-            {machine.status?.runs?.map((held) => (
-              <li className="heldrow" key={held.id}>
-                {held.run ? (
-                  <Link className="more" to={to(`runs/${held.run.number}`)}>
-                    {runName(held.run)} {shown(held.run.target)}
-                  </Link>
-                ) : (
-                  <span className="nm">No record of it here</span>
-                )}
-                <small>{[held.state, held.waiting].filter(Boolean).join(" · ")}</small>
+            {machine.jobs?.map((job) => (
+              <li className="heldrow" key={job.id} data-job={job.target}>
+                <span className="nm">{target(job)}</span>
+                <small>{[statusWord(job), job.progress?.stage, job.waiting, job.reason?.message].filter(Boolean).join(" · ")}</small>
               </li>
             ))}
           </ul>
         </Section>
       )}
-      {!ended && (
-        <p>
-          <Link className="more" to={`${to("runs")}?all&machine=${encodeURIComponent(machine.name)}`}>
-            Its runs
-          </Link>
-        </p>
-      )}
       {machine.state === "ready" && <Update machine={machine} />}
-      {!ended && <Installed machine={machine} />}
       {!ended && <MachineLogs machine={machine} />}
     </div>
   )
 }
 
-/** What it's doing, in jobs, its GPUs' work (cl-889), what it's cost so far, and when it ends. */
+/** What it's doing, in jobs, its GPUs' work (cl-889), what it's cost so far, and when it ends. Calcifer counts a job it sent as running;
+ *  the machine says which of those it runs now and which wait there, as its queue does. */
 function Doing({ machine, now }: { machine: Machine; now: number }) {
-  const jobs = machine.running || machine.queued ? `${machine.running} running, ${machine.queued} queued` : "No jobs"
+  const runs = machine.status?.runs
+  const total = machine.running + machine.queued
+  const running = runs ? Math.min(total, runs.filter((held) => held.state === "running" && (!held.run || held.run.kind === "call")).length) : machine.running
+  const jobs = total ? `${running} running, ${total - running} queued` : "Nothing running"
   const ends = endsWords(machine, now)
   const spent = spentWords(machine)
   return (
     <p className="doing-now">
       <span>{jobs}</span>
-      {spent && <span className="muted">{spent} so far</span>}
+      {spent && <span className="muted">{spent}</span>}
       {ends && <span className={machine.status?.idle_deadline_ms ? "warn" : "muted"}>{ends}</span>}
     </p>
   )
@@ -221,45 +197,38 @@ export function MachineDrawer() {
           </button>
         </div>
       </div>
-      {ended && <p className="muted">Ended. Nothing of it bills now, and what landed here stays.</p>}
+      {ended && <p className="muted">Ended. It costs nothing more, and results already downloaded stay on this computer.</p>}
       {machine.state === "booting" && (
         <p className="muted">
-          Still trying{machine.attempt ? `, attempt ${machine.attempt.number}` : ""}. It bills once it's ready, and goes on with this page closed.
-          {machine.attempt?.replaced && ` The last attempt ended: ${machine.attempt.replaced.failure}.`}
+          Starting up{machine.attempt ? ` (attempt ${machine.attempt.number})` : ""}. You pay only once it's ready, and it keeps going if you close this page.
+          {machine.attempt?.replaced && ` The last attempt failed: ${machine.attempt.replaced.failure}.`}
         </p>
       )}
-      {machine.offline && <p className="warn">It's offline and refuses runs. It returns if its provider resumes it, and ends after 15 minutes idle.</p>}
+      {machine.offline && <p className="warn">It's offline, so it can't take runs. It comes back if its provider resumes it, and ends after 15 minutes idle.</p>}
       {brokenWords(machine) && <p className="warn">{brokenWords(machine)}</p>}
-      {machine.unreachable && !ended && <p className="muted">It didn't answer just now ({machine.unreachable}). This is from its last report.</p>}
+      {machine.unreachable && !ended && <p className="muted">It didn't respond just now ({machine.unreachable}), so this is from its last report.</p>}
       {!ended && <Doing machine={machine} now={now} />}
       <div className="machine-actions">
         <KeepRunning machine={machine} />
         <End machine={machine} />
       </div>
-      <DiskShort machine={machine} />
-      {slowWords(machine).map((line) => (
-        <p className="warn slow" key={line}>
-          {line}
-        </p>
-      ))}
-      {machine.status?.gpu_problems?.map((problem) => (
-        <p className="warn" key={problem}>
-          {problem}
-        </p>
-      ))}
-      {machine.status?.gpus
-        .filter((gpu) => gpu.out_of_service)
-        .map((gpu) => (
-          <p className="warn" key={`out-${gpu.index}`}>
-            GPU {gpu.index} is out of service: {gpu.out_of_service}. Runs go to its other GPUs or machines.
-          </p>
-        ))}
+      {machine.status && kernelsWords(machine.status) && !ended && <p className="warn slow">{kernelsWords(machine.status)}</p>}
       {machine.status?.stuck?.map((stuck) => (
         <p className="warn" key={stuck.pid}>
-          Pid {stuck.pid} ({stuck.command}) was killed and is stuck in the kernel{stuck.wchan ? ` (${stuck.wchan})` : ""}: what it holds stays held until it exits.
+          Process {stuck.pid} ({stuck.command}) was stopped but is stuck in the kernel{stuck.wchan ? ` (${stuck.wchan})` : ""}. What it's using stays in use until it exits.
         </p>
       ))}
       {details && <Details machine={machine} now={now} />}
+      {!ended && machine.status && (
+        <>
+          <Gpus machine={machine} status={machine.status} />
+          <Disk machine={machine} status={machine.status} />
+          <Queue machine={machine} status={machine.status} />
+          <Packages status={machine.status} />
+          <Models status={machine.status} />
+        </>
+      )}
+      {!ended && !machine.status && <p className="muted">Its GPUs, disk, queue, packages and models show here once it reports in.</p>}
     </DrawerFrame>
   )
 }

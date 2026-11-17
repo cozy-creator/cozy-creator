@@ -129,14 +129,9 @@ impl Link {
         self.machine.probe_private().await.map_err(LinkError::from)
     }
 
-    pub(crate) async fn migrate_private(&self) -> Result<(), LinkError> { self.machine.migrate_private().await.map_err(LinkError::from) }
-
-    pub(crate) async fn legacy_project_bindings(&self, request_ids: &[String]) -> Result<api::machine::ProjectExecutionLegacyLookupAnswer, LinkError> { self.machine.legacy_project_bindings(request_ids).await.map_err(LinkError::from) }
-
-    pub(crate) async fn legacy_bindings(&self, request_ids: &[String]) -> Result<api::machine::ProjectExecutionLegacyLookupAnswer, LinkError> { self.machine.legacy_bindings(request_ids).await.map_err(LinkError::from) }
-    pub(crate) async fn migrate_private_bindings(&self, verified: &api::machine::ProjectExecutionMigrationReceipt) -> Result<(), LinkError> { self.machine.migrate_private_bindings(verified).await.map_err(LinkError::from) }
-
-    pub(crate) async fn migration_receipt(&self) -> Result<api::machine::ProjectExecutionMigrationReceipt, LinkError> { self.machine.migration_receipt().await.map_err(LinkError::from) }
+    pub(crate) async fn project_gone(&self, id: &str) -> Result<(), LinkError> {
+        self.machine.project_gone(id).await.map_err(LinkError::from)
+    }
 
     pub(crate) async fn close_private(&self) -> Result<(), LinkError> {
         self.machine.close_private().await.map_err(LinkError::from)
@@ -244,6 +239,12 @@ impl Link {
     ) -> Result<Live<v1::LogLines>, LinkError> {
         let lines = self.machine.follow_log(log, lines, after).await?;
         Ok(Box::pin(lines.map_err(LinkError::from)))
+    }
+
+    /// Its GPUs' readings, once a second while followed (cl-1100).
+    pub(crate) async fn follow_gpus(&self) -> Result<Live<v1::GpuUse>, LinkError> {
+        let readings = self.machine.follow_gpus().await?;
+        Ok(Box::pin(readings.map_err(LinkError::from)))
     }
 
     /// The run's newest preview; none while it has none. Asking keeps the machine making them.

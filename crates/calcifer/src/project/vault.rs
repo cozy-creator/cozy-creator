@@ -1,9 +1,9 @@
 //! Optional local encrypted project sessions. A registered path never becomes a plaintext fallback mount.
-use std::{collections::{BTreeMap, BTreeSet}, fs, io::Read as _, path::{Path as FsPath, PathBuf}, sync::{Arc, LazyLock, Mutex, atomic::{AtomicBool, Ordering}}, time::Duration};
+use std::{collections::{BTreeMap, BTreeSet}, fs, io::Read as _, path::{Path as FsPath, PathBuf}, sync::{Arc, LazyLock, Mutex, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant, SystemTime}};
 use axum::{body::Bytes, extract::{Path, State, rejection::BytesRejection}, http::{HeaderValue, header}, response::{IntoResponse, Response}};
 use api::{calcifer::project::{VaultAsk, VaultChanged, VaultStatus}, error::{Error, Kind}};
 use project_mount::{MountOptions, Mounted, Provider};
-use project_vault::{Credential, Keybag, ProjectSecret, SecretString, SessionPolicy, SessionTimer, KEYBAG_FILE};
+use project_vault::{Credential, Hold, Keybag, ProjectSecret, SecretString, SessionPolicy, SessionTimer, KEYBAG_FILE};
 use sha2::{Digest as _, Sha256};
 use crate::api::{Api, Refusal, parse};
 use super::vault_operation::{self, Progress};
@@ -34,13 +34,24 @@ static ROOTS: LazyLock<Mutex<BTreeMap<PathBuf, PathBuf>>> = LazyLock::new(Mutex:
 static OPERATIONS: LazyLock<Mutex<BTreeMap<PathBuf, Arc<Mutex<()>>>>> = LazyLock::new(Mutex::default);
 static ACCESS: LazyLock<Mutex<BTreeMap<PathBuf, Arc<tokio::sync::RwLock<()>>>>>= LazyLock::new(Mutex::default);
 static CONVERTING: LazyLock<Mutex<BTreeSet<PathBuf>>> = LazyLock::new(Mutex::default);
-/// A session began, or work on a project began or ended: the sweep (`start`) looks now.
-static HELD: tokio::sync::Notify = tokio::sync::Notify::const_new();
+/// What wakes the vault clock (`start`) before its next deadline: a session began or is closing, its mount ended, work on its project
+/// began or ended (`stir`). A wall-clock alarm, which a suspend or a clock change doesn't put off.
+static CLOCK: LazyLock<Option<platform::alarm::Alarm>> = LazyLock::new(|| {
+    platform::alarm::Alarm::new().inspect_err(|e| tracing::warn!("vaults have no alarm, so the vault clock looks each second: {e}")).ok()
+});
+/// How soon the clock looks at a vault again while what holds it or puts off its lock says nothing when it ends: a cut or a file
+/// move, a reader, an operation, a close a busy view or an unsaved page puts off.
+const AGAIN: Duration = Duration::from_secs(1);
 /// A session closed: a shutdown waiting on the views to close tries again.
 pub(crate) static CLOSED: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 pub(crate) fn stir() {
-    HELD.notify_one();
+    if let Some(clock) = &*CLOCK { clock.wake(); }
+}
+
+/// Work on the project at `root` ended (a request answered, a tool's process gone): its vault's clocks go on.
+pub(crate) fn work_ended(root: &FsPath) {
+    if SESSIONS.lock().expect("vault sessions").contains_key(root) { stir(); }
 }
 
 struct Session {
@@ -61,8 +72,32 @@ struct Session {
 fn error(code: &'static str, why: impl std::fmt::Display) -> Error { Error::new(Kind::Unavailable, code, why.to_string()) }
 fn io(e: std::io::Error) -> Error { error("vault_io", e) }
 fn provider(e: impl std::fmt::Display) -> Error { error("vault_provider", e) }
-/// A mount's failure; one whose supervisor this cozy can't start, as an update replaced it, names the restart (cl-981).
+/// The provider found and checked: what it needs that this computer lacks is a refusal naming its install command, never a 503
+/// (cl-1000).
+fn unusable(e: project_mount::Error) -> Error {
+    match e {
+        project_mount::Error::DependencyMissing { ref install, .. } => {
+            install.iter().cloned().fold(Error::new(Kind::Conflict, "vault_dependency_missing", e.to_string()), Error::next)
+        }
+        project_mount::Error::DriverMissing(_) | project_mount::Error::HelperMissing => Error::new(Kind::Conflict, "vault_dependency_missing", e.to_string()),
+        other => provider(other),
+    }
+}
+
+/// `unusable`, said to one creating a project: an unencrypted one still works here.
+fn unusable_for_creation(e: project_mount::Error) -> Error {
+    let refused = unusable(e);
+    match refused.code == "vault_dependency_missing" {
+        true => Error { message: format!("{}; or create the project unencrypted", refused.message), ..refused }.next("cozy new --unencrypted"),
+        false => refused,
+    }
+}
+/// A provider's create or mount failure: its cause on one line for the person, all it said in the log (cl-1049). One whose
+/// supervisor this cozy can't start, as an update replaced it, names the restart (cl-981).
 fn mounting(e: project_mount::Error) -> Error {
+    if let Some(detail) = e.provider_detail() {
+        tracing::warn!(error = %e, provider_said = detail, "encrypted filesystem provider failed");
+    }
     match e {
         project_mount::Error::Platform(e @ platform::Error::Updated { .. }) => crate::cozy::updated(e),
         other => provider(other),
@@ -142,6 +177,11 @@ pub(crate) fn register_plain_root(root: &FsPath, id: &str) -> Result<(), Error> 
 }
 
 /// Logical registered path of an unlocked mount, including any relative subpath.
+/// Whether `path` is inside an encrypted project: what no log outside it may name a run of (cl-1060).
+pub(crate) fn encrypted_within(path: &FsPath) -> bool {
+    logical(path).ancestors().any(encrypted)
+}
+
 pub(crate) fn logical(path: &FsPath) -> PathBuf {
     for (view, root) in ROOTS.lock().expect("vault roots").iter() {
         if let Ok(rest) = path.strip_prefix(view) { return root.join(rest); }
@@ -200,16 +240,40 @@ impl ProjectTransition {
     pub(super) fn root(&self) -> &FsPath { &self.root }
 
     pub(super) fn validate(&self, project: &super::Project) -> Result<(), Error> {
-        if self.root != project.root || project.mount_id != mount_identity(&self.root) {
-            return Err(Error::new(Kind::Conflict, "project_view_changed", "the project's mounted view changed; reopen this project"));
-        }
-        let view = if encrypted(&self.root) { work_view(&self.root)? }
-            else { platform::durable::canonical(&self.root).map_err(provider)? };
-        if view != project.folder.dir {
-            return Err(Error::new(Kind::Conflict, "project_view_changed", "the project's mounted view changed; reopen this project"));
-        }
-        Ok(())
+        validate_authority(&self.root, project)
     }
+}
+
+/// Read authority over this exact project's journal, beside its other readers: what the vault clock looks at a project's work under
+/// (`working`). It took the transition (`exclusive`) once, and a tool starting then was refused: its run failed `lock_failed` (cl-1066).
+pub(super) struct ProjectInspection {
+    root: PathBuf,
+    _access: tokio::sync::OwnedRwLockReadGuard<()>,
+}
+
+impl ProjectInspection {
+    pub(super) fn validate(&self, project: &super::Project) -> Result<(), Error> {
+        validate_authority(&self.root, project)
+    }
+}
+
+/// `project` is `root`'s, on the mount and view it was opened on.
+fn validate_authority(root: &FsPath, project: &super::Project) -> Result<(), Error> {
+    if root != project.root || project.mount_id != mount_identity(root) {
+        return Err(Error::new(Kind::Conflict, "project_view_changed", "the project's mounted view changed; reopen this project"));
+    }
+    let view = if encrypted(root) { work_view(root)? }
+        else { platform::durable::canonical(root).map_err(provider)? };
+    if view != project.folder.dir {
+        return Err(Error::new(Kind::Conflict, "project_view_changed", "the project's mounted view changed; reopen this project"));
+    }
+    Ok(())
+}
+
+/// [`ProjectInspection`], now: none while a transition holds the project or waits for it.
+fn inspection(root: &FsPath) -> Result<ProjectInspection, Error> {
+    let guard = access(root).try_read_owned().map_err(|_| Error::new(Kind::Conflict, "project_busy", "the project's storage is changing"))?;
+    Ok(ProjectInspection { root: root.to_owned(), _access: guard })
 }
 
 fn exclusive(root: &FsPath) -> Result<ProjectTransition, Error> {
@@ -217,15 +281,18 @@ fn exclusive(root: &FsPath) -> Result<ProjectTransition, Error> {
     Ok(ProjectTransition { root: root.to_owned(), _access: guard })
 }
 
-/// [`exclusive`], waiting up to `within` for a request that holds the project (a read, a measurement) to finish.
-fn exclusive_within(root: &FsPath, within: Duration) -> Result<ProjectTransition, Error> {
-    let until = std::time::Instant::now() + within;
-    loop {
-        match exclusive(root) {
-            Err(busy) if busy.code == "project_busy" && std::time::Instant::now() < until => std::thread::sleep(Duration::from_millis(200)),
-            done => return done,
-        }
-    }
+/// [`exclusive`], queued: what asks for the project after it waits behind it, so it has the project once the requests already
+/// holding it end, or `project_busy` after `within`. Only from a blocking thread (`block_in_place`, `spawn_blocking`) holding no
+/// read of the project: it would wait for itself.
+fn exclusive_within(api: &Api, root: &FsPath, within: Duration) -> Result<ProjectTransition, Error> {
+    let queued = tokio::time::timeout(within, access(root).write_owned());
+    let Ok(guard) = tokio::runtime::Handle::current().block_on(queued) else {
+        let holder = if api.projects.active_requests(root) { "a project request" }
+            else if crate::local_code::private_process_active(root) { "a project tool" }
+            else { "a project read (an upload, a thumbnail or a measurement)" };
+        return Err(Error::new(Kind::Conflict, "project_busy", format!("{holder} is still running; retry after it finishes")));
+    };
+    Ok(ProjectTransition { root: root.to_owned(), _access: guard })
 }
 
 /// Upload routes are outside the project router, but must hold the same storage transition
@@ -233,6 +300,13 @@ fn exclusive_within(root: &FsPath, within: Duration) -> Result<ProjectTransition
 pub(crate) async fn admit_project(api: &Api, named: &str) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Error> {
     let root = location(api, named)?;
     admit_root(&root).await
+}
+
+/// [`admit_project`], with the project's root: an upload that lets go of the gate while a lock waits asks for it again by it.
+pub(crate) async fn admit_project_root(api: &Api, named: &str) -> Result<(PathBuf, tokio::sync::OwnedRwLockReadGuard<()>), Error> {
+    let root = location(api, named)?;
+    let held = admit_root(&root).await?;
+    Ok((root, held))
 }
 
 pub(crate) async fn admit_root(root: &FsPath) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Error> {
@@ -247,6 +321,11 @@ pub(crate) fn try_admit_root(root: &FsPath) -> Result<tokio::sync::OwnedRwLockRe
     let guard = access(root).try_read_owned().map_err(|_| Error::new(Kind::Conflict, "project_busy", "the project's storage is changing; retry after it finishes"))?;
     view(root)?;
     Ok(guard)
+}
+
+/// Whether a lock waits for this project, or holds it: what holds a read of it for long (an upload's body) lets go then, and asks again.
+pub(crate) fn lock_waiting(root: &FsPath) -> bool {
+    access(root).try_read_owned().is_err()
 }
 
 /// An already accepted walker may finish while viewing is closing, but only on its own mount.
@@ -348,7 +427,8 @@ static LOCK_RETRIES: LazyLock<Mutex<BTreeMap<PathBuf, LockRetry>>> = LazyLock::n
 fn idle_lock_failed(root: &FsPath, failure: &Error) {
     let mut retries = LOCK_RETRIES.lock().expect("lock retries");
     let retry = retries.entry(root.to_owned()).or_insert_with(|| LockRetry { backoff: tensorfs::fetch::Backoff::background(), at: std::time::Instant::now(), next: vec![] });
-    let why = format!("{} did not lock at its deadline: {}", root.display(), failure.message);
+    // Its code alone, with the folder: what refused it can name a run, which no log outside the project carries (cl-1060).
+    let why = format!("{} did not lock at its deadline: {}", root.display(), failure.code);
     let (wait, said) = retry.backoff.again(&why, false, None).unwrap_or_else(|| {
         // Never left unlocked quietly: say the spent round and start another.
         let spent = retry.backoff.spent(&why);
@@ -375,7 +455,7 @@ fn status(root: &FsPath) -> VaultStatus {
             if state == "unlocked" { view = Some(session.mount.view().to_owned()); }
             let idle_at = (session.idle > 0).then(|| session.active_ms.saturating_add(milliseconds(session.idle)));
             // Work in progress defers the maximum until it ends.
-            let max_at = (session.maximum > 0 && !session.timer.held()).then(|| session.began_ms.saturating_add(milliseconds(session.maximum)));
+            let max_at = (session.maximum > 0 && session.timer.held() != Hold::Working).then(|| session.began_ms.saturating_add(milliseconds(session.maximum)));
             expires = match (idle_at, max_at) { (Some(a), Some(b)) => Some(a.min(b)), (a,b) => a.or(b) };
         }
     }
@@ -391,22 +471,6 @@ fn status(root: &FsPath) -> VaultStatus {
         _ => vec![],
     };
     VaultStatus { encrypted: encrypted(root), state: state.into(), path: root.to_owned(), view, expires_at_ms: expires, idle_timeout_s: idle, next }
-}
-
-/// Whether the legacy source still holds this project's own history; another project's never holds it.
-fn own_migration_pending(api: &Api, root: &FsPath) -> Result<bool, Error> {
-    let Some(id) = project_id(root).or_else(|| plain_project_id(root)) else { return Ok(false) };
-    api.calcifer.maintenance_store().project_migration_required(root, &id)
-        .map_err(|_| error("project_migration_pending", "legacy project storage could not be checked"))
-}
-
-fn reported_status(api: &Api, root: &FsPath) -> VaultStatus {
-    let mut state = status(root);
-    if state.state == "locked" && own_migration_pending(api, root).unwrap_or(true) {
-        state.state = "storage_update_required".into();
-        state.next = vec!["cozy vault unlock".into()];
-    }
-    state
 }
 
 fn milliseconds(seconds: u64) -> i64 { i64::try_from(seconds).unwrap_or(i64::MAX).saturating_mul(1000) }
@@ -549,8 +613,10 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     }
     let runtime = project_runtime(root)?;
     let view = project_mount::view_path(&runtime).map_err(provider)?;
-    let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(provider)?;
+    let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(unusable)?;
+    let took = crate::took::Took::new("vault mount");
     let mounted = secret.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: false })).map_err(mounting)?;
+    drop(took);
     let canonical_view = platform::durable::canonical(mounted.view()).map_err(provider)?;
     ROOTS.lock().expect("vault roots").insert(mounted.view().to_owned(), root.to_owned());
     ROOTS.lock().expect("vault roots").insert(canonical_view.clone(), root.to_owned());
@@ -560,13 +626,29 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     let idle = ask.idle_timeout_s.unwrap_or(DEFAULT_IDLE);
     let maximum = ask.max_duration_s.unwrap_or(0);
     let session = Session { identity: MountIdentity(Arc::new(())), mount: mounted, secret, keybag, idle, maximum, timer: timer(idle, maximum), active_ms: super::now_ms(), began_ms: super::now_ms(), closing: false, readable: Arc::new(AtomicBool::new(true)), runtime };
+    // Its supervisor's exit is its mount's end: a lock, its provider dying, an unmount from outside.
+    let supervisor = session.mount.supervisor();
     SESSIONS.lock().expect("vault sessions").insert(root.to_owned(), Arc::new(Mutex::new(session)));
-    // A session began: the sweep below watches its clocks and mount.
-    HELD.notify_one();
+    match supervisor {
+        Ok(supervisor) => {
+            let _ = std::thread::Builder::new().name("vault-mount".into()).spawn(move || {
+                let _ = supervisor.wait();
+                stir();
+            });
+        }
+        Err(e) => tracing::warn!("{}: its mount's end is seen at its next deadline: {e}", root.display()),
+    }
+    stir();
     Ok(())
 }
 
 fn forget(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Result<(), Error> {
+    forget_with(api, root, transition, true)
+}
+
+/// [`forget`], `snapshot` when what's next reads its files as they are (a conversion, a lock): project.db's WAL checkpointed into it.
+/// A folder moved whole (cl-1097) takes its WAL with it, and waits on no reader for that.
+fn forget_with(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, snapshot: bool) -> Result<(), Error> {
     let available = !encrypted(root) || held(root).is_some_and(|session| session.lock().expect("vault session").mount.is_mounted().unwrap_or(false));
     if api.projects.active_requests(root) || crate::local_code::private_process_active(root) {
         return Err(Error::new(Kind::Conflict, "project_busy", "a project request or tool is still finishing; retry after it stops"));
@@ -575,6 +657,8 @@ fn forget(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Resu
         let store = api.projects.transition_store(api, &project.id, transition)?;
         if !store.unsettled().map_err(|_| error("project_journal", "the project journal could not be checked"))?.is_empty()
             || !store.unsettled_here().map_err(|_| error("project_journal", "the project journal could not be checked"))?.is_empty()
+            // A finished call's outputs still being saved into it (cl-1060).
+            || api.calcifer.writing_into(&project.id).is_some()
         {
             return Err(Error::new(Kind::Conflict, "project_busy", "the project's work is still stopping; retry after it settles"));
         }
@@ -590,11 +674,11 @@ fn forget(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Resu
         *project.told.lock().expect("project told") = None;
         crate::events::release_project_readers(&project.id);
         crate::local_code::forget_readings(&project.id);
-        project.folder.close_connections(available)?;
+        project.folder.close_connections(available && snapshot)?;
         api.projects.open.lock().expect("projects lock").remove(&project.id);
         crate::events::project_closed(&project.id);
     }
-    if available {
+    if available && snapshot {
         // A vault may have no retained Project/Folder reader at all. Still checkpoint it before
         // a read-only source mount: immutable SQLite must never ignore committed WAL frames.
         let source = if encrypted(root) { work_view(root)? } else { root.to_owned() };
@@ -611,21 +695,100 @@ fn mark_closing(session: &mut Session) {
     let changed = !session.closing;
     session.closing = true;
     revoke(&session.readable);
-    if changed { crate::events::project_vault(session.secret.project_id(), "locking"); }
-}
-
-fn prepare_browser(api: &Arc<Api>) -> Result<Option<crate::browser::PreparedBrowserClose>, Error> {
-    tokio::runtime::Handle::current().block_on(api.browser.prepare_close()).map(Some).map_err(|error| error.0)
-}
-
-fn retire_browser(api: &Arc<Api>, browser: &mut Option<crate::browser::PreparedBrowserClose>) -> Result<(), Error> {
-    if let Some(prepared) = browser.take() {
-        tokio::runtime::Handle::current().block_on(api.browser.close(prepared)).map_err(|error| error.0)?;
+    if changed {
+        crate::events::project_vault(session.secret.project_id(), "locking");
+        stir();
     }
-    Ok(())
 }
 
-fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser: &mut Option<crate::browser::PreparedBrowserClose>) -> Result<(), Error> {
+/// The pages showing the project at `root` send what they typed of it, before it closes: how many didn't answer `within`.
+fn save_first(root: &FsPath, within: Duration) -> usize {
+    let Some(id) = project_id(root).or_else(|| plain_project_id(root)) else { return 0 };
+    tokio::runtime::Handle::current().block_on(crate::events::save_first(&[id], within))
+}
+
+/// A run still writing into the project, as a deadline's or a stop's lock waits on it (cl-1060). It names no run and no project:
+/// this refusal is logged, outside the project.
+fn saving(api: &Arc<Api>, root: &FsPath) -> Option<Error> {
+    let projects = api.projects.now_open();
+    let project = projects.iter().find(|project| project.root == root)?;
+    api.calcifer.writing_into(&project.id)?;
+    Some(Error::new(Kind::Conflict, "project_busy", "a run is still writing into the project; it locks once that's done"))
+}
+
+/// Before a lock closes the machine's side of the project (cl-1060), which forgets what the machine still holds for it: every
+/// output its runs still owe lands first, judged by progress, never a timer. The lock waits while those saves move bytes; a save
+/// silent for `EXPORT_SILENCE` (its machine not answering, its exporter unable to go on) is cut: its exporter ends, its half-written
+/// files go. A local run's outputs, which the machine's close then forgets, are recorded not saved and its run reads failed, saying
+/// why. A remote machine's run keeps its outputs across a lock (the lock closes only this computer's machine,
+/// `private_io::close_private_project`), so its save stays owed and resumes when that machine answers. The runs it cut and the runs
+/// it left owed, by name, for the lock's answer to its own client and nothing else (no log). One rule for every lock.
+fn drain_saves(api: &Arc<Api>, root: &FsPath, mut saving: impl FnMut()) -> Result<(Vec<String>, Vec<String>), Error> {
+    let journal = |_: crate::store::StoreError| error("project_journal", "the project journal could not be checked");
+    let projects = api.projects.now_open();
+    let Some(project) = projects.iter().find(|project| project.root == root).cloned() else { return Ok((vec![], vec![])) };
+    let owner = super::RunOwner::of(&project, &api.calcifer);
+    let (mut said, mut busy) = (false, None::<Instant>);
+    loop {
+        let owed = match owner.store() {
+            Ok(store) => { busy = None; store.exports_owed().map_err(journal)? }
+            // Another lock's turn ahead of it on the project: looked at again shortly, no longer than a save may go silent.
+            Err(crate::store::StoreError::Locked(code)) if code == "project_busy" => {
+                if busy.get_or_insert_with(Instant::now).elapsed() >= crate::outputs::EXPORT_SILENCE {
+                    return Err(Error::new(Kind::Conflict, "project_busy", "the project stayed busy; lock again in a moment"));
+                }
+                std::thread::sleep(Duration::from_millis(200));
+                continue;
+            }
+            Err(e) => return Err(journal(e)),
+        };
+        if owed.is_empty() { return Ok((vec![], vec![])); }
+        // An exporter missing is started; one going is left alone: waking it is no progress, and cuts its pause.
+        for (id, _) in &owed { if !api.calcifer.exporting(id) { api.calcifer.export(id); } }
+        if !said { saving(); said = true; }
+        if owed.iter().any(|(id, _)| api.calcifer.export_moving(id)) {
+            std::thread::sleep(Duration::from_millis(250));
+            continue;
+        }
+        // Silent past `EXPORT_SILENCE`: cut, said so on the run and its items.
+        let ids: Vec<crate::RunId> = owed.iter().map(|(id, _)| id.clone()).collect();
+        api.calcifer.end_exports_of(&ids);
+        let store = owner.store().map_err(journal)?;
+        let (mut cut, mut deferred) = (vec![], vec![]);
+        for (id, number) in owed {
+            let Ok(Some(row)) = store.run(id.as_str()) else { continue };
+            let items = store.outputs_to_export(id.as_str()).unwrap_or_default();
+            crate::outputs::drop_partials(&row, &items);
+            // Its machine keeps the outputs: owed, saved when it answers (a rental's paid work is never thrown away).
+            if row.machine.as_deref() != Some("local") {
+                deferred.push(format!("{}-{number}", project.key()));
+                continue;
+            }
+            let why = "not saved: its save stopped moving before the project locked";
+            for item in &items {
+                if let Ok(events) = store.export_failed(id.as_str(), &item.name, item.index, item.rev, why) { api.calcifer.publish(&id, events); }
+            }
+            let reason = ::api::calcifer::Reason { code: "output_not_saved".into(), message: "the project locked while its outputs' save had stopped moving: they were not saved".into(), ..Default::default() };
+            if let Ok(events) = store.outputs_not_saved(id.as_str(), &reason) { api.calcifer.publish(&id, events); }
+            cut.push(format!("{}-{number}", project.key()));
+        }
+        return Ok((cut, deferred));
+    }
+}
+
+/// Every unlocked vault's pages send what they typed, before a stop closes them all.
+pub(crate) async fn save_open() {
+    // `project_id` takes SESSIONS itself: the roots are read first.
+    let roots: Vec<PathBuf> = SESSIONS.lock().expect("vault sessions").keys().cloned().collect();
+    let ids: Vec<String> = roots.iter().filter_map(|root| project_id(root)).collect();
+    let unanswered = crate::events::save_first(&ids, LOCK_DRAIN).await;
+    if unanswered > 0 { tracing::warn!("stopping: {unanswered} page(s) didn't say they sent what was typed in {} s", LOCK_DRAIN.as_secs()); }
+}
+
+fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Result<(), Error> {
+    // Under the project's turn and before anything is revoked: a run that still writes into it (one `drain_saves` didn't see
+    // start) holds it (cl-1060).
+    if let Some(error) = saving(api, root) { return Err(error); }
     if let Some(session) = held(root) {
         let mut session = session.lock().expect("vault session");
         mark_closing(&mut session);
@@ -636,12 +799,6 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser:
     tokio::runtime::Handle::current().block_on(crate::private_io::close_private_project(api, root))?;
     crate::runs::files::release_private(root)?;
     if let Some(id) = project_id(root).or_else(|| plain_project_id(root)) { api.calcifer.retire_project(&id); }
-    let pending = api.calcifer.maintenance_store().migration_required()
-        .map_err(|_| error("project_migration_pending", "legacy storage could not be checked before closing"))?;
-    if !pending {
-        api.calcifer.maintenance_store().cleanup_private_journal()
-            .map_err(|_| error("project_migration_pending", "legacy database pages could not be retired before closing"))?;
-    }
     if let Some(session) = held(root) {
         let mut session = session.lock().expect("vault session");
         session.mount.try_unmount().map_err(|why| match why {
@@ -650,18 +807,16 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser:
         })?;
         retire_runtime(&session.runtime)?;
         drop(session);
-        // Only after the view is gone: a busy refusal above leaves the owned pages as they were.
-        retire_browser(api, browser)?;
         SESSIONS.lock().expect("vault sessions").remove(root);
         LOCK_RETRIES.lock().expect("lock retries").remove(root);
         CLOSED.notify_waiters();
         ROOTS.lock().expect("vault roots").retain(|_, logical| logical != root);
         if let Ok(keybag) = Keybag::load(&root.join(KEYBAG_FILE)) {
-            let state = reported_status(api, root);
+            let state = status(root);
             crate::events::project_vault(&keybag.info().project_id, &state.state);
             let converting = CONVERTING.lock().expect("vault conversions").contains(root);
             if state.state != "locked" && !converting {
-                return Err(error("project_migration_pending", "the project is closed, but legacy data outside it still needs a verified storage update"));
+                return Err(error("project_storage_pending", "the project is closed; its storage change finishes at its next unlock"));
             }
             // Locked, nothing of it stays here but its folder (cl-984): not its id, code or keys, so its KEY-N is unknown here (cl-987).
             if !converting {
@@ -669,107 +824,143 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser:
             }
         }
     }
-    retire_browser(api, browser)?;
     Ok(())
 }
 
 pub(crate) fn close_all(api: &Arc<Api>) -> Result<(), Error> {
-    let mut browser = prepare_browser(api)?;
-    close_all_prepared(api, &mut browser)
-}
-
-pub(crate) fn close_all_prepared(api: &Arc<Api>, browser: &mut Option<crate::browser::PreparedBrowserClose>) -> Result<(), Error> {
     let roots: Vec<_> = SESSIONS.lock().expect("vault sessions").keys().cloned().collect();
     for root in roots {
         let op = operation(&root);
         let _operation = op.lock().expect("vault operation");
         if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
+        drain_saves(api, &root, || {})?;
         let transition = exclusive(&root)?;
-        close(api, &root, &transition, browser)?;
+        close(api, &root, &transition)?;
     }
-    retire_browser(api, browser)?;
     Ok(())
 }
 
-/// The vault sweep: each second while a vault is open, its idle and maximum clocks and its mount; with none open it waits for one.
+/// The vault clock: each open vault's idle and maximum clocks and its mount, looked at on its next deadline or a stir, never each
+/// second. With no vault open it waits for one.
 pub(crate) fn start(api: &Arc<Api>) {
-    let api = Arc::downgrade(api);
+    // A run created or settling holds or frees its project's vault.
+    let mut runs = api.calcifer.subscribe();
     tokio::spawn(async move {
         loop {
-            // Each second while a vault is open, its idle and maximum clocks and its mount; nothing at all with none.
-            while SESSIONS.lock().expect("vault sessions").is_empty() {
-                HELD.notified().await;
-            }
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            let Some(api) = api.upgrade() else { return };
-            vault_operation::expire();
-            let roots: Vec<PathBuf> = SESSIONS.lock().expect("vault sessions").keys().cloned().collect();
-            for root in roots {
-                let api = api.clone();
-                // One slow export/unmount must not delay another project's deadline.
-                tokio::task::spawn_blocking(move || idle_sweep(&api, &root));
+            match runs.recv().await {
+                Ok((_, api::calcifer::Event::Created { .. } | api::calcifer::Event::InProgress { .. } | api::calcifer::Event::Completed { .. } | api::calcifer::Event::Failed { .. } | api::calcifer::Event::Canceled { .. }))
+                | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => stir(),
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             }
         }
     });
+    let runtime = tokio::runtime::Handle::current();
+    let api = Arc::downgrade(api);
+    let clock = std::thread::Builder::new().name("vault-clock".into()).spawn(move || {
+        let _runtime = runtime.enter();
+        loop {
+            let Some(api) = api.upgrade() else { return };
+            let roots: Vec<PathBuf> = SESSIONS.lock().expect("vault sessions").keys().cloned().collect();
+            let next = roots.into_iter().filter_map(|root| look(&api, &runtime, root)).min();
+            drop(api);
+            wait(next);
+        }
+    });
+    if let Err(e) = clock { tracing::warn!("no vault clock, so no vault locks itself: {e}"); }
+}
+
+/// Until `at` passes or a stir. With no alarm, each second at most, so a vault still locks at its deadline.
+fn wait(at: Option<SystemTime>) {
+    let Some(clock) = &*CLOCK else {
+        return std::thread::sleep(at.map_or(AGAIN, |at| at.duration_since(SystemTime::now()).unwrap_or_default().min(AGAIN)));
+    };
+    if let Err(e) = clock.wait(at) {
+        tracing::warn!("the vault clock's alarm failed, so it looks again in a second: {e}");
+        std::thread::sleep(AGAIN);
+    }
 }
 
 /// How long an explicit lock, its view revoked, waits for what still holds its project to finish before it refuses.
 const LOCK_DRAIN: Duration = Duration::from_secs(10);
-/// How long past an idle or maximum deadline a vault waits for Cozy's browser to confirm its edits are saved before it
-/// locks anyway: the deadline is a security one.
+/// How long past an idle or maximum deadline a lock that failed waits out its retry backoff: after it, each look tries again, as the
+/// deadline is a security one.
 const SAVE_GRACE: Duration = Duration::from_secs(30);
 /// When each open vault was first seen past its deadline and not yet locked.
 static DUE: LazyLock<Mutex<BTreeMap<PathBuf, std::time::Instant>>> = LazyLock::new(Mutex::default);
 
-/// One second of a vault's clocks: it locks once its deadline has passed, in order (the browser's edits saved, its
-/// requests drained) and, past `SAVE_GRACE`, whatever is unsaved.
-fn idle_sweep(api: &Arc<Api>, root: &FsPath) {
-    let op = operation(root);
-    let Ok(_operation) = op.try_lock() else { say(root, "operation", || "its clocks wait for a vault operation".into()); return; };
-    let working = working(api, root);
-    let needs = held(root).is_some_and(|session| {
+/// Vaults whose lock is going on a thread of its own.
+static LOCKING: LazyLock<Mutex<BTreeSet<PathBuf>>> = LazyLock::new(Mutex::default);
+
+/// One open vault's clocks and mount: when to look at it again (none: on a stir alone). Past its deadline, its lock begins on a thread
+/// of its own, as one slow close must not delay another vault's deadline.
+fn look(api: &Arc<Api>, runtime: &tokio::runtime::Handle, root: PathBuf) -> Option<SystemTime> {
+    let again = || Some(SystemTime::now() + AGAIN);
+    if LOCKING.lock().expect("vault locks").contains(&root) { return again(); }
+    let op = operation(&root);
+    let Ok(operation) = op.try_lock() else { say(&root, "operation", || "its clocks wait for a vault operation".into()); return again(); };
+    let work = working(api, &root);
+    let (needs, deadline) = held(&root).map_or((false, None), |session| {
         let mut session = session.lock().expect("vault session");
         if session.mount.reconcile().is_err() { mark_closing(&mut session); }
-        // Work in progress holds it open, its maximum included: the clocks go on when the last of it
-        // ends. Only an explicit lock ends work (owner 11-11: "runs count as activity").
-        session.timer.hold(working.is_some());
-        if let Some(why) = working.filter(|_| !session.closing) {
+        // Work going holds it open, its maximum included: the clocks go on when the last of it ends. Only an explicit lock ends
+        // it (owner 11-11: "runs count as activity"). A run its machine hasn't begun holds the idle clock alone (cl-1082).
+        session.timer.hold(work.map_or(Hold::Nothing, |work| work.held));
+        if let Some(work) = work.filter(|_| !session.closing) {
             session.active_ms = super::now_ms();
-            if session.idle > 0 { say(root, "held", || format!("its idle clock is held by {why}")); }
+            if session.idle > 0 { say(&root, "held", || format!("its idle clock is held by {}", work.why)); }
         }
-        lapsed(&session)
+        (lapsed(&session), session.timer.deadline())
     });
-    if !needs { DUE.lock().expect("vault deadlines").remove(root); return; }
-    let due = *DUE.lock().expect("vault deadlines").entry(root.to_owned()).or_insert_with(std::time::Instant::now);
+    drop(operation);
+    if !needs {
+        DUE.lock().expect("vault deadlines").remove(&root);
+        return match work { Some(Work { told: false, .. }) => again(), _ => deadline };
+    }
+    let due = *DUE.lock().expect("vault deadlines").entry(root.clone()).or_insert_with(Instant::now);
     let forced = due.elapsed() >= SAVE_GRACE;
-    if !forced && LOCK_RETRIES.lock().expect("lock retries").get(root).is_some_and(|retry| std::time::Instant::now() < retry.at) { return; }
-    // The browser's save acknowledgements may include activity writes
-    // under this operation mutex. Never wait for them while owning it.
-    drop(_operation);
-    let mut browser = match prepare_browser(api) {
-        Ok(browser) => browser,
-        Err(why) if forced => {
-            let unsent = tokio::runtime::Handle::current().block_on(api.browser.unsent());
-            let unsent = unsent.map_or("an unknown number of".to_owned(), |count| count.to_string());
-            say(root, "forced", || format!("its deadline passed {} s ago and Cozy's browser has not confirmed its edits are saved ({}): locking anyway, {unsent} unsent edits left", due.elapsed().as_secs(), why.message));
-            if let Some(id) = project_id(root) { crate::events::project_vault(&id, "locking"); }
-            None
-        }
-        Err(why) => { say(root, "browser", || format!("its lock waits for Cozy's browser to save its edits: {}", why.message)); return; }
-    };
+    let retry = LOCK_RETRIES.lock().expect("lock retries").get(&root).map(|retry| retry.at).filter(|at| Instant::now() < *at);
+    if let Some(at) = retry.filter(|_| !forced) { return Some(SystemTime::now() + at.saturating_duration_since(Instant::now())); }
+    LOCKING.lock().expect("vault locks").insert(root.clone());
+    let api = api.clone();
+    runtime.spawn_blocking(move || {
+        lock_lapsed(&api, &root);
+        LOCKING.lock().expect("vault locks").remove(&root);
+    });
+    // Looked at again while it stays: a busy view or an unsaved page puts its lock off.
+    again()
+}
+
+/// A vault past its deadline locks once what holds it has ended or drained. Its pages aren't asked to send what they typed: a lapsed
+/// view takes no write.
+fn lock_lapsed(api: &Arc<Api>, root: &FsPath) {
+    let op = operation(root);
     let Ok(_operation) = op.try_lock() else { say(root, "operation", || "its lock waits for a vault operation".into()); return; };
     let still_needs = held(root).is_some_and(|session| {
         let session = session.lock().expect("vault session");
         lapsed(&session)
     });
     if !still_needs { return; }
-    if let Some(session) = held(root) { mark_closing(&mut session.lock().expect("vault session")); }
+    // A run its machine hasn't begun doesn't keep it open past its deadline (cl-1082): it ends before anything else, before a queued
+    // run can begin. An explicit lock (closing) has ended the project's runs its own way.
+    let clocked = held(root).is_some_and(|session| { let session = session.lock().expect("vault session"); !session.closing && expired(&session) });
+    if let Some(id) = project_id(root).filter(|_| clocked) {
+        if let Err(failure) = api.calcifer.end_unstarted(&id).map_err(|_| error("run_cancel", "the project's runs not begun could not be ended")) {
+            idle_lock_failed(root, &failure);
+            return;
+        }
+    }
+    // No page's save is waited for: the view has lapsed, so a page can't save into it, and a wait only lets queued work begin past the
+    // deadline (cl-1082 review). Its pages find it locked.
+    // What its runs still owe lands first, judged by progress (cl-1060); then the project's turn, and `close` revokes nothing while
+    // a writer is still active.
+    if let Err(failure) = drain_saves(api, root, || {}) { idle_lock_failed(root, &failure); return; }
     let Ok(transition) = exclusive(root) else {
         say(root, "gate", || "locking waits for a request still holding the project".into());
         return;
     };
-    match close(api, root, &transition, &mut browser) {
-        Ok(()) => { DUE.lock().expect("vault deadlines").remove(root); }
+    match close(api, root, &transition) {
+        Ok(_) => { DUE.lock().expect("vault deadlines").remove(root); }
         Err(failure) => idle_lock_failed(root, &failure),
     }
 }
@@ -777,7 +968,7 @@ fn idle_sweep(api: &Arc<Api>, root: &FsPath) {
 pub(super) async fn read(State(api): State<Arc<Api>>, Path(named): Path<String>) -> Result<Response, Refusal> {
     let root = location(&api, &named).map_err(Refusal)?;
     let _access = access(&root).read_owned().await;
-    Ok(private(axum::Json(reported_status(&api, &root)).into_response()))
+    Ok(private(axum::Json(status(&root)).into_response()))
 }
 
 pub(super) async fn write(State(api): State<Arc<Api>>, Path(named): Path<String>, body: Result<Bytes, BytesRejection>) -> Result<Response, Refusal> {
@@ -788,19 +979,32 @@ pub(super) async fn write(State(api): State<Arc<Api>>, Path(named): Path<String>
 }
 
 pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Progress) -> Result<VaultChanged, Error> {
+    // A page's activity only restarts the idle clock, under the session's own lock: it never waits for or refuses on the project's
+    // gate, which any request in flight holds (that request restarted the clock itself).
+    if ask.action == "activity" {
+        if let Some(session) = held(root) {
+            let mut session = session.lock().expect("vault session");
+            if !session.closing && !expired(&session) && session.timer.activity() {
+                session.active_ms = super::now_ms();
+                say(root, "activity op", || "its idle clock restarts on a page's activity".into());
+            }
+        }
+        return Ok(VaultChanged { vault: status(root), recovery_secret: None, ended: vec![], skipped_files: vec![], unsaved: vec![], deferred: vec![] });
+    }
     if ask.action == "lock" && !encrypted(root) {
         return Err(Error::new(Kind::Usage, "project_plain", "unencrypted projects cannot be locked"));
     }
     progress.phase("waiting");
-    let mut browser = if matches!(ask.action.as_str(), "lock" | "encrypt" | "decrypt" | "rotate") { prepare_browser(api)? } else { None };
+    // What its pages typed goes in first, while edits are still admitted.
+    if matches!(ask.action.as_str(), "lock" | "encrypt" | "decrypt" | "rotate") { save_first(root, LOCK_DRAIN); }
     let op = operation(&root); let _guard = op.lock().expect("vault operation");
-    let mut ended = vec![];
+    let (mut ended, mut cut, mut deferred) = (vec![], vec![], vec![]);
     if ask.action == "lock" {
         // A lock that found the project busy already revoked its view: this one finishes it, and admits no receipt into
         // a view that can no longer be opened.
         let revoked = held(root).is_some_and(|session| lapsed(&session.lock().expect("vault session")));
         // A read that holds it a moment is no reason to refuse: the lock waits for it, as it does below for what ends.
-        let busy = match held(root).filter(|_| !revoked).map(|_| exclusive_within(root, LOCK_DRAIN)) {
+        let busy = match held(root).filter(|_| !revoked).map(|_| exclusive_within(api, root, LOCK_DRAIN)) {
             Some(Ok(transition)) => {
                 let id = project_id(root).ok_or_else(|| error("vault_identity", "the project has no verified identity"))?;
                 let store = api.projects.transition_store(api, &id, &transition)?;
@@ -813,52 +1017,62 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
         if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
         // An explicit lock ends the project's work first, so nothing goes on billing behind a locked vault.
         ended = end_work(&api, &root)?;
+        // What the project's runs still owe lands before the machine's side closes, judged by progress (cl-1060).
+        (cut, deferred) = drain_saves(api, root, || progress.phase("saving its outputs first"))?;
         // A request still holds the project: its view is revoked, and the sweeper locks once it ends.
         if let Some(busy) = busy {
             if ended.is_empty() { return Err(busy); }
             progress.readable = readable_token(root);
-            return Ok(VaultChanged { vault: reported_status(api, &root), recovery_secret: None, ended, skipped_files: vec![] });
+            return Ok(VaultChanged { vault: status(&root), recovery_secret: None, ended, skipped_files: vec![], unsaved: vec![], deferred: vec![] });
         }
     }
-    // What the lock ended is still settling (its runs' last writes hold the project a moment): it waits for that as the drain
-    // above does, else answers locking with what it ended, and the sweeper locks once it has settled.
+    // A lock waits for the project as the drain above does: for the requests let in before its view was revoked (each now
+    // refused), and for what it ended, still settling (its runs' last writes hold the project a moment), else it answers
+    // locking with what it ended, and the sweeper locks once it has settled.
+    // A decrypt reads the view it converts after its own close revoked it (a retried close revokes it first): the view must be
+    // open when it's asked.
+    if ask.action == "decrypt" && held(root).is_some() { view(root)?; }
     let settling = !ended.is_empty();
-    let gate = if settling { exclusive_within(&root, LOCK_DRAIN) } else { exclusive(&root) };
+    // A storage change closes the machine's side as a lock does: what the project's runs still owe lands first (cl-1060).
+    if matches!(ask.action.as_str(), "encrypt" | "decrypt" | "rotate") {
+        let (more_cut, more_deferred) = drain_saves(api, root, || progress.phase("saving its outputs first"))?;
+        cut.extend(more_cut);
+        deferred.extend(more_deferred);
+    }
+    let gate = if settling || matches!(ask.action.as_str(), "lock" | "decrypt") { exclusive_within(api, &root, LOCK_DRAIN) } else { exclusive(&root) };
     let mut transition = match gate {
         Ok(transition) => transition,
         Err(busy) if settling && busy.code == "project_busy" => {
             progress.readable = readable_token(root);
-            return Ok(VaultChanged { vault: reported_status(api, &root), recovery_secret: None, ended, skipped_files: vec![] });
+            return Ok(VaultChanged { vault: status(&root), recovery_secret: None, ended, skipped_files: vec![], unsaved: vec![], deferred: vec![] });
         }
         Err(error) => return Err(error),
     };
     progress.phase("preparing");
     let draining = std::time::Instant::now() + LOCK_DRAIN;
+    let (drains, decrypting) = (matches!(ask.action.as_str(), "lock" | "decrypt"), ask.action == "decrypt");
+    let failed = |error: Error| if decrypting { decrypt_failed(root, error) } else { error };
     let mut changed = loop {
-        match change(&api, &root, ask, progress, &transition, &mut browser) {
+        match change(&api, &root, ask, progress, &transition) {
             // What it ended is still settling: the session is closing, and the sweeper locks it once it has.
-            Err(busy) if !ended.is_empty() && busy.code == "project_busy" => break VaultChanged { vault: reported_status(api, &root), recovery_secret: None, ended: vec![], skipped_files: vec![] },
-            // Its view is revoked, so nothing new opens it: what still holds it (a journal read, a measurement) is
-            // finishing. A lock waits for that a moment rather than refuse; Cozy's browser was asked already.
-            Err(busy) if ask.action == "lock" && busy.code == "project_busy" && std::time::Instant::now() < draining => {
-                say(root, "lock drain", || format!("its lock waits: {}", busy.message));
+            Err(busy) if !ended.is_empty() && busy.code == "project_busy" => break VaultChanged { vault: status(&root), recovery_secret: None, ended: vec![], skipped_files: vec![], unsaved: vec![], deferred: vec![] },
+            // Its view is revoked, so nothing new opens it: what still holds it (a request, a journal read, a measurement) is
+            // finishing. A lock or a decrypt waits for that a moment rather than refuse; its pages sent what they typed already.
+            Err(busy) if drains && busy.code == "project_busy" && std::time::Instant::now() < draining => {
+                say(root, "drain", || format!("its {} waits: {}", ask.action, busy.message));
                 drop(transition);
-                transition = loop {
-                    std::thread::sleep(Duration::from_millis(200));
-                    match exclusive(&root) {
-                        Ok(transition) => break transition,
-                        Err(busy) if std::time::Instant::now() >= draining => return Err(busy),
-                        Err(_) => {}
-                    }
-                };
+                // What refused it says nothing when it ends: a moment, then the project again, queued.
+                std::thread::sleep(Duration::from_millis(200));
+                transition = exclusive_within(api, &root, draining.saturating_duration_since(std::time::Instant::now())).map_err(failed)?;
             }
-            changed => break changed?,
+            changed => break changed.map_err(failed)?,
         }
     };
     changed.ended = ended;
     // Capture this exact mount's revocation token while the operation still
     // holds the transition guard, so a later lock cannot revive its reply.
     progress.readable = readable_token(root);
+    (changed.unsaved, changed.deferred) = (cut, deferred);
     Ok(changed)
 }
 
@@ -870,8 +1084,8 @@ pub(super) fn private(mut response: Response) -> Response {
 
 /// Refuse missing providers/drivers before creating a new project's directory or reserved storage.
 pub(super) fn preflight_creation(api: &Api) -> Result<Provider, Error> {
-    let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(provider)?;
-    engine.check_driver().map_err(provider)?;
+    let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(unusable_for_creation)?;
+    engine.check_driver().map_err(unusable_for_creation)?;
     Ok(engine)
 }
 
@@ -880,18 +1094,26 @@ pub(super) fn create_new(api: &Api, root: &FsPath, id: &str, name: &str, written
     let operation = operation(root);
     let _operation = operation.lock().expect("vault operation");
     let _access = exclusive(root)?;
+    let took = crate::took::Took::new("vault keys");
     let created = Keybag::create(id, passphrase).map_err(key)?;
+    drop(took);
     let recovery = created.recovery_secret.expose().to_owned();
     let outcome = (|| {
-        created.secret.with_bytes(|bytes| engine.create(&root.join(BACKING), bytes)).map_err(provider)?;
+        let took = crate::took::Took::new("vault filesystem");
+        created.secret.with_bytes(|bytes| engine.create(&root.join(BACKING), bytes)).map_err(mounting)?;
+        drop(took);
         // Persist the wrapping slots before writing any project state: the user's known passphrase
         // can reopen this backing even if setup or delivery of the recovery response is interrupted.
         created.keybag.save(&root.join(KEYBAG_FILE)).map_err(key)?;
         let runtime = project_runtime(root)?;
         let view = project_mount::view_path(&runtime).map_err(provider)?;
+        let took = crate::took::Took::new("vault mount");
         let mut target = created.secret.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes,
             MountOptions { idle_timeout: None, read_only: false })).map_err(mounting)?;
+        drop(took);
+        let took = crate::took::Took::new("vault project database");
         let initialized = super::new_database(target.view(), id, name, written);
+        drop(took);
         target.try_unmount().map_err(provider)?;
         retire_runtime(&runtime)?;
         initialized?;
@@ -908,7 +1130,7 @@ pub(super) fn create_new(api: &Api, root: &FsPath, id: &str, name: &str, written
     Ok(recovery)
 }
 
-fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Progress, transition: &ProjectTransition, browser: &mut Option<crate::browser::PreparedBrowserClose>) -> Result<VaultChanged, Error> {
+fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Progress, transition: &ProjectTransition) -> Result<VaultChanged, Error> {
     recover_under_guards(root)?;
     require_transition_ready(root, &ask.action)?;
     if ask.action == "encrypt" && encrypted(root) {
@@ -921,12 +1143,12 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
     if matches!(ask.action.as_str(), "decrypt" | "rotate" | "passphrase" | "recovery") && held(root).is_none() {
         return Err(locked(root));
     }
-    if matches!(ask.action.as_str(), "encrypt" | "decrypt" | "rotate" | "passphrase" | "recovery") {
+    // Once an operation: a decrypt's retry finds its view revoked, which opens no project to admit a receipt into.
+    if !progress.prepared && matches!(ask.action.as_str(), "encrypt" | "decrypt" | "rotate" | "passphrase" | "recovery") {
         let id = project_id(root).or_else(|| plain_project_id(root)).ok_or_else(|| error("vault_identity", "the project has no verified identity"))?;
         let store = api.projects.transition_store(api, &id, transition)?;
         progress.admit_receipt(&store)?;
-        api.calcifer.maintenance_store().migrate_project_sealing(&store, &api.calcifer.inputs)
-            .map_err(|_| error("project_migration_pending", "legacy project history must be verified before changing its storage"))?;
+        progress.prepared = true;
     }
     let mut recovery_secret = None;
     match ask.action.as_str() {
@@ -940,14 +1162,16 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
             let generation = plain_generation_for_encrypt(root, &id)?;
             let created = Keybag::create_generation(&id, generation, new_passphrase(ask)?).map_err(key)?;
             recovery_secret = Some(created.recovery_secret.expose().to_owned());
-            convert(api, root, created.keybag, created.secret, ask, progress, transition, browser)?;
+            convert(api, root, created.keybag, created.secret, ask, progress, transition)?;
             drop(project);
         }
         "unlock" => {
             progress.phase("opening");
             if !encrypted(root) { return Err(Error::new(Kind::Usage, "project_plain", "this project is not encrypted")); }
             let keybag = Keybag::load(&root.join(KEYBAG_FILE)).map_err(key)?;
+            let took = crate::took::Took::new("vault keys");
             let secret = keybag.unlock(credential(ask)?).map_err(key)?;
+            drop(took);
             if let Some(session) = held(root) {
                 let mut session = session.lock().expect("vault session");
                 if session.mount.is_mounted().map_err(provider)? {
@@ -981,41 +1205,15 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
             let store = api.projects.transition_store(api, &id, transition)?;
             drop(opened);
             progress.admit_receipt(&store)?;
-            if api.calcifer.maintenance_store().migration_required().map_err(|_| error("project_migration_pending", "legacy project storage could not be checked"))? {
-                progress.phase("updating_project_storage");
-                api.calcifer.maintenance_store().migrate_project_sealing(&store, &api.calcifer.inputs)
-                    .map_err(|_| error("project_migration_pending", "the project is open, but its legacy history still needs a verified storage update"))?;
-            }
-            let completing = receipt_path(root).is_file();
-            if completing || journal_cleanup_pending(root)? {
-                if own_migration_pending(api, root)? {
-                    return Err(error("project_migration_pending", "the project is open; verified legacy ownership is still required before storage cleanup"));
-                }
-                // Compaction copies the whole store: it waits while any project's history is still pending there.
-                if !api.calcifer.maintenance_store().migration_required().map_err(|_| error("project_migration_pending", "legacy project storage could not be checked"))? {
-                    progress.phase("compacting_history");
-                    api.calcifer.maintenance_store().cleanup_private_journal().map_err(|_| error("project_migration_pending", "the project is open, but legacy journal cleanup is still pending"))?;
-                    progress.phase("cleaning_up");
-                    journal_cleanup_done(root)?;
-                }
-                if completing { finish_conversion(root)?; }
-            }
+            if receipt_path(root).is_file() { finish_conversion(root)?; }
+            let _ = fs::remove_file(root.join(JOURNAL_CLEANUP_FILE));
             if let Some(session) = held(root) { crate::events::project_vault(session.lock().expect("vault session").secret.project_id(), "unlocked"); }
             progress.finish_receipt(&store, "completed")?;
         }
         "lock" => {
             if !encrypted(root) { return Err(Error::new(Kind::Usage, "project_plain", "unencrypted projects cannot be locked")); }
             // Locking a locked project is a no-op, after retiring what a dead Calcifer's views left.
-            if held(root).is_some() { close(api, root, transition, browser)?; } else { retire_orphaned_views(root)?; }
-        }
-        "activity" => {
-            if let Some(session) = held(root) {
-                let mut session = session.lock().expect("vault session");
-                if !session.closing && !expired(&session) && session.timer.activity() {
-                    session.active_ms = super::now_ms();
-                    say(root, "activity op", || "its idle clock restarts on a page's activity".into());
-                }
-            }
+            if held(root).is_some() { close(api, root, transition)?; } else { retire_orphaned_views(root)?; }
         }
         "passphrase" | "recovery" => {
             let session = held(root).ok_or_else(|| locked(root))?;
@@ -1028,12 +1226,12 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
             session.keybag = keybag;
             if session.timer.activity() { session.active_ms = super::now_ms(); }
         }
-        "decrypt" => decrypt(api, root, progress, transition, browser)?,
+        "decrypt" => decrypt(api, root, progress, transition)?,
         "rotate" => {
             let session = held(root).ok_or_else(|| locked(root))?;
             let created = session.lock().expect("vault session").keybag.new_generation(new_passphrase(ask)?).map_err(key)?;
             recovery_secret = Some(created.recovery_secret.expose().to_owned());
-            convert(api, root, created.keybag, created.secret, ask, progress, transition, browser)?;
+            convert(api, root, created.keybag, created.secret, ask, progress, transition)?;
         }
         _ => return Err(Error::new(Kind::Usage, "vault_action", "unknown local vault action")),
     }
@@ -1044,24 +1242,43 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
         let store = api.projects.transition_store(api, &id, transition)?;
         progress.finish_receipt(&store, "completed")?;
     }
-    Ok(VaultChanged { vault: reported_status(api, root), recovery_secret, ended: vec![], skipped_files: progress.skipped() })
+    Ok(VaultChanged { vault: status(root), recovery_secret, ended: vec![], skipped_files: progress.skipped(), unsaved: vec![], deferred: vec![] })
 }
 
-/// Whether the project has work in progress: a run not settled, or a render, cut or file move going.
-/// What holds an unlocked vault open now, if anything.
-fn working(api: &Arc<Api>, root: &FsPath) -> Option<&'static str> {
-    if FOLLOWING.lock().expect("vault followers").contains_key(root) { return Some("a client following a run"); }
-    if api.projects.active_requests(root) { return Some("a project request being answered"); }
-    if crate::local_code::private_process_active(root) { return Some("a private process"); }
+/// What holds an unlocked vault open: why, whether its end stirs the vault clock (one that doesn't is looked at again shortly), and how
+/// (cl-1082): work going holds both clocks; a run its machine hasn't begun, its driver or a client following it, only the idle one.
+#[derive(Clone, Copy)]
+struct Work { why: &'static str, told: bool, held: Hold }
+
+/// What holds an unlocked vault open now, if anything: a request, a private process, a run saving its outputs, a render, cut or file
+/// move, a reader, a run not settled or its driver, a client following a run, a run's submission.
+fn working(api: &Arc<Api>, root: &FsPath) -> Option<Work> {
+    let going = |why, told| Some(Work { why, told, held: Hold::Working });
+    let waiting = Some(Work { why: "a run its machine hasn't begun", told: true, held: Hold::Waiting });
+    if api.projects.active_requests(root) { return going("a project request being answered", true); }
+    if crate::local_code::private_process_active(root) { return going("a private process", true); }
+    let following = FOLLOWING.lock().expect("vault followers").contains_key(root);
     let projects = api.projects.now_open();
-    let project = projects.iter().find(|project| project.root == root)?;
-    if *project.walking.lock().expect("walking lock") || project.moving.try_lock().is_err() || project.cutting.try_lock().is_err() { return Some("a render, move or cut"); }
-    let Ok(transition) = exclusive(root) else { return Some("a reader holding the project") };
-    let Ok(store) = api.projects.transition_store(api, &project.id, &transition) else { return Some("a journal it cannot read") };
-    // The transition authority can inspect already-accepted work even if an idle
+    let submitting = api.projects.submitting(root);
+    let Some(project) = projects.iter().find(|project| project.root == root) else {
+        return if following { going("a client following a run", true) } else if submitting { waiting } else { None };
+    };
+    if api.calcifer.exporting_into(&project.id).is_some() { return going("a run saving its outputs", false); }
+    if *project.walking.lock().expect("walking lock") { return going("a render", true); }
+    if project.moving.try_lock().is_err() || project.cutting.try_lock().is_err() { return going("a move or cut", false); }
+    let Ok(inspection) = inspection(root) else { return going("a storage change", false) };
+    let Ok(store) = api.projects.inspection_store(api, &project.id, &inspection) else { return going("a journal it cannot read", false) };
+    // The inspection authority can read already-accepted work even if an idle
     // deadline just expired. Public viewing admission is deliberately stricter.
-    (store.unsettled().map_or(true, |runs| !runs.is_empty()) || store.unsettled_here().map_or(true, |runs| !runs.is_empty()))
-        .then_some("runs not settled")
+    let (Ok(sent), Ok(here), Ok(unstarted)) = (store.unsettled(), store.unsettled_here(), store.unsettled_unstarted()) else {
+        return going("a journal it cannot read", false);
+    };
+    // A run its machine began holds both clocks (owner 11-11: "runs count as activity"), and so does a driver whose run did: one
+    // settling or handing on its outputs (cl-1060).
+    if !here.is_empty() || sent.len() > unstarted.len() { return going("runs not settled", true); }
+    let driven = api.calcifer.driven_into(&project.id);
+    if driven.iter().any(|id| !unstarted.contains(id)) { return going("a run not yet settled", false); }
+    if !unstarted.is_empty() || !driven.is_empty() || following || submitting { waiting } else { None }
 }
 
 /// A sweeper's reason, said at most every 10 seconds per project: a test's diagnostics name what kept a vault open.
@@ -1088,6 +1305,74 @@ fn end_work(api: &Arc<Api>, root: &FsPath) -> Result<Vec<u64>, Error> {
         ended.extend(api.calcifer.cancel_for_lock(&id).map_err(|_| error("run_cancel", "the project's work could not be cancelled"))?);
     }
     Ok(ended.into_iter().collect())
+}
+
+/// Where a project's folder goes (cl-1097): renamed where it is, or to the OS trash.
+pub(super) enum Relocation { Rename(PathBuf), Trash }
+
+/// Project `root`'s folder moved as `to` says, once nothing of it is open (cl-1097), as a person would move it by hand: what the index
+/// keeps of it follows (a rename) or goes (the trash, as a folder found gone does). An unlocked encrypted project locks first, which
+/// needs no secret: its mounted view is bound to the folder. The trash ends its runs first; a rename ends none, and waits on no render:
+/// its results land by the folder's path. Where the trash keeps it, when the OS says.
+pub(super) fn relocate(api: &Arc<Api>, root: &FsPath, to: &Relocation) -> Result<Option<PathBuf>, Error> {
+    let busy = |why: &str| Error::new(Kind::Conflict, "project_busy", format!("It's {why}. Try again once that's done."));
+    if let Relocation::Rename(_) = to {
+        let projects = api.projects.now_open();
+        if let Some(project) = projects.iter().find(|project| project.root == root) {
+            if *project.walking.lock().expect("walking lock") { return Err(busy("rendering")); }
+            if api.calcifer.exporting_into(&project.id).is_some() || api.calcifer.writing_into(&project.id).is_some() { return Err(busy("saving a run's results")); }
+        }
+    }
+    if held(root).is_some() {
+        if let Relocation::Rename(_) = to { if let Some(work) = working(api, root).filter(|work| work.told) { return Err(busy(work.why)); } }
+        let mut ask = VaultAsk { action: "lock".into(), passphrase: None, recovery_secret: None, idle_timeout_s: None, max_duration_s: None };
+        operate(api, root, &mut ask, &mut Progress::quiet())?;
+        let due = Instant::now() + LOCK_DRAIN;
+        while held(root).is_some() {
+            if Instant::now() >= due { return Err(busy("still locking")); }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+    let op = operation(root);
+    let _guard = op.lock().expect("vault operation");
+    // From here no new request opens it (`view` answers `vault_busy`), and the index keeps it while it moves: a listing never takes the
+    // old path for a folder gone.
+    if matches!(to, Relocation::Trash) && !encrypted(root) { end_work(api, root)?; }
+    CONVERTING.lock().expect("vault conversions").insert(root.to_owned());
+    let _converting = Converting(root.to_owned());
+    let due = Instant::now() + LOCK_DRAIN;
+    let transition = loop {
+        let transition = exclusive_within(api, root, due.saturating_duration_since(Instant::now()))?;
+        match forget_with(api, root, &transition, false) {
+            Ok(()) => break transition,
+            Err(held) if held.code == "project_busy" && Instant::now() < due => {
+                drop(transition);
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err(held) => return Err(held),
+        }
+    };
+    let store = api.calcifer.store();
+    let moved = match to {
+        Relocation::Rename(next) => {
+            // Its machine side closes as a lock closes it: nothing there holds the old place (an encrypted one's closed as it locked).
+            if !encrypted(root) {
+                tokio::runtime::Handle::current().block_on(crate::private_io::close_private_project(api, root))?;
+                crate::runs::files::release_private(root)?;
+                if let Some(id) = plain_project_id(root) { api.calcifer.retire_project(&id); }
+            }
+            fs::rename(root, next).map_err(|e| Error::new(Kind::Conflict, "project_rename", format!("Couldn't rename {}: {e}", root.display())))?;
+            store.project_moved(root, next).map_err(|e| error("vault_index", e.to_string()))?;
+            if !encrypted(next) { crate::private_io::moved(root, next)?; }
+            if let Some(id) = plain_project_id(next).or_else(|| project_id(next)) {
+                if let Err(e) = register_plain_root(next, &id) { tracing::warn!("{}: {}", next.display(), e.message); }
+            }
+            None
+        }
+        Relocation::Trash => platform::trash::put(root).map_err(|e| Error::new(Kind::Unavailable, "project_trash", format!("Couldn't move {} to the trash: {e}", root.display())))?,
+    };
+    drop(transition);
+    Ok(moved)
 }
 
 fn require_transition_ready(root: &FsPath, action: &str) -> Result<(), Error> {
@@ -1540,10 +1825,11 @@ fn sync_plain_file(path: &FsPath) -> Result<(), Error> {
     }
 }
 
-fn decrypt(api: &Arc<Api>, root: &FsPath, progress: &mut Progress, transition: &ProjectTransition, browser: &mut Option<crate::browser::PreparedBrowserClose>) -> Result<(), Error> {
+fn decrypt(api: &Arc<Api>, root: &FsPath, progress: &mut Progress, transition: &ProjectTransition) -> Result<(), Error> {
     // This makes a retry after a completed or recovered switch harmless.
     if !encrypted(root) { return Ok(()); }
-    let published = view(root)?;
+    // `operate` found its view open. A close this decrypt retries has revoked it since, so it reads the mount as work does.
+    let published = work_view(root)?;
     let session = held(root).ok_or_else(|| locked(root))?;
     let (secret, info) = {
         let session = session.lock().expect("vault session");
@@ -1553,10 +1839,10 @@ fn decrypt(api: &Arc<Api>, root: &FsPath, progress: &mut Progress, transition: &
         return Err(error("vault_identity", "the unlocked project does not match its keybag"));
     }
     no_nested(api, root)?;
-    let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(provider)?;
+    let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(unusable)?;
     if !CONVERTING.lock().expect("vault conversions").insert(root.to_owned()) { return Err(error("vault_busy", "the project is already being converted")); }
     let converting = Converting(root.to_owned());
-    close(api, root, transition, browser)?;
+    close(api, root, transition)?;
     root.parent().ok_or_else(|| error("vault_root", "cannot decrypt a filesystem root"))?;
     let suffix = fresh();
     let staged = root.join(format!(".cozy-vault-stage-{suffix}"));
@@ -1582,7 +1868,7 @@ fn decrypt(api: &Arc<Api>, root: &FsPath, progress: &mut Progress, transition: &
         let source_view = project_mount::view_path(&runtime).map_err(provider)?;
         progress.phase("mounting");
         let mut source = secret.with_bytes(|bytes| engine.mount(&root.join(BACKING), &source_view, bytes,
-            MountOptions { idle_timeout: None, read_only: !cfg!(windows) })).map_err(provider)?;
+            MountOptions { idle_timeout: None, read_only: !cfg!(windows) })).map_err(mounting)?;
         progress.phase("validating");
         progress.begin_inventory();
         walk_tree(source.view(), None, FsPath::new(""), true, !cfg!(windows), progress)?;
@@ -1615,6 +1901,15 @@ fn decrypt(api: &Arc<Api>, root: &FsPath, progress: &mut Progress, transition: &
     Ok(())
 }
 
+/// A decrypt that failed after its close revoked the view leaves the project locking (its custody was being sealed, so the
+/// view isn't given back): it says so, and how to go on.
+fn decrypt_failed(root: &FsPath, failed: Error) -> Error {
+    let open = held(root).is_some_and(|session| !lapsed(&session.lock().expect("vault session")));
+    if !encrypted(root) || open { return failed; }
+    Error::new(failed.kind, failed.code.clone(), format!("{}; the project locked as decrypting closed it", failed.message))
+        .remedy("unlock the project, then decrypt it again").next("cozy vault unlock")
+}
+
 fn no_nested(api: &Api, root: &FsPath) -> Result<(), Error> {
     let nested = api.calcifer.maintenance_store().known_projects().map_err(|e| error("vault_journal", e))?
         .into_iter().any(|project| project.path != root && project.path.starts_with(root) && project.path.exists());
@@ -1624,7 +1919,7 @@ fn no_nested(api: &Api, root: &FsPath) -> Result<(), Error> {
     Ok(())
 }
 
-fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &VaultAsk, progress: &mut Progress, transition: &ProjectTransition, browser: &mut Option<crate::browser::PreparedBrowserClose>) -> Result<PathBuf, Error> {
+fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &VaultAsk, progress: &mut Progress, transition: &ProjectTransition) -> Result<PathBuf, Error> {
     let source = view(root)?;
     // A child project has its own activity, connections and transition gate. Never move/delete
     // its live storage as an incidental part of converting its parent.
@@ -1639,7 +1934,6 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     if !CONVERTING.lock().expect("vault conversions").insert(root.to_owned()) { return Err(error("vault_busy", "the project is already being converted")); }
     let _converting = Converting(root.to_owned());
     forget(api, root, transition)?;
-    retire_browser(api, browser)?;
     if old_secret.is_none() {
         tokio::runtime::Handle::current().block_on(crate::private_io::close_private_project(api, root))?;
         crate::runs::files::release_private(root)?;
@@ -1663,8 +1957,8 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
         source_key: Keybag::load(&root.join(KEYBAG_FILE)).ok().map(|bag| bag.info().key_id),
         backing_id: None, plain: None };
     save_conversion(&receipt)?;
-    let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(provider)?;
-    secret.with_bytes(|bytes| engine.create(&staged.join(BACKING), bytes)).map_err(provider)?;
+    let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(unusable)?;
+    secret.with_bytes(|bytes| engine.create(&staged.join(BACKING), bytes)).map_err(mounting)?;
     keybag.save(&staged.join(KEYBAG_FILE)).map_err(key)?;
     receipt.backing_id = Some(directory_id(&staged.join(BACKING))?);
     save_conversion(&receipt)?;
@@ -1675,10 +1969,10 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     let mut source_mount = None;
     let mut source_runtime = None;
     let source = if let Some(old) = &old_secret {
-        close(api, root, transition, browser)?;
+        close(api, root, transition)?;
         let runtime = project_runtime(root)?;
         let view = project_mount::view_path(&runtime).map_err(provider)?;
-        let mounted = old.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: !cfg!(windows) })).map_err(provider)?;
+        let mounted = old.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: !cfg!(windows) })).map_err(mounting)?;
         let path = mounted.view().to_owned();
         source_mount = Some(mounted);
         source_runtime = Some(runtime);
@@ -1687,7 +1981,7 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     let runtime = project_runtime(&staged)?;
     let view = project_mount::view_path(&runtime).map_err(provider)?;
     progress.phase("mounting");
-    let mut target = secret.with_bytes(|bytes| engine.mount(&staged.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: false })).map_err(provider)?;
+    let mut target = secret.with_bytes(|bytes| engine.mount(&staged.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: false })).map_err(mounting)?;
     progress.phase("copying");
     walk_tree(&source, Some(target.view()), FsPath::new(""), managed, source_mount.is_some() && !cfg!(windows), progress)?;
     progress.phase("verifying");
@@ -1869,43 +2163,10 @@ fn fresh() -> String { let mut bytes = [0u8;16]; getrandom::fill(&mut bytes).exp
 pub(crate) const PAYLOAD_PREFIX: &[u8] = b"cozy:vault:journal:2:";
 const JOURNAL_DIR: &str = ".vault-journal";
 const MAX_JOURNAL_BYTES: u64 = 32 << 20;
+/// The marker a 0.26 RC left beside an encrypted project while Calcifer's store still had to be compacted for it (cl-1003: none is now).
 const JOURNAL_CLEANUP_FILE: &str = "project.vault.journal-pending";
-const JOURNAL_CLEANUP_MARKER: &[u8] = b"cozy project journal cleanup 1\n";
 static KEY_ROOTS: LazyLock<Mutex<BTreeMap<String, PathBuf>>> = LazyLock::new(Mutex::default);
 static TRUSTED_KEYS: LazyLock<Mutex<BTreeMap<PathBuf, Keybag>>> = LazyLock::new(Mutex::default);
-
-fn journal_cleanup_pending(root: &FsPath) -> Result<bool, Error> {
-    let path = root.join(JOURNAL_CLEANUP_FILE);
-    let metadata = match fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(why) if why.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(why) => return Err(io(why)),
-    };
-    let mut bytes = Vec::new();
-    if metadata.file_type().is_file() {
-        fs::File::open(&path).map_err(io)?.take(JOURNAL_CLEANUP_MARKER.len() as u64 + 1).read_to_end(&mut bytes).map_err(io)?;
-    }
-    if bytes != JOURNAL_CLEANUP_MARKER {
-        return Err(error("vault_journal_cleanup", format!("unexpected {JOURNAL_CLEANUP_FILE}; preserve this file and resolve the conflict before retrying")));
-    }
-    Ok(true)
-}
-
-/// Durable before the global SQL rewrite commits; contains no private data or key material.
-pub(crate) fn mark_journal_cleanup(root: &FsPath) -> Result<(), Error> {
-    if !journal_cleanup_pending(root)? {
-        platform::durable::replace(&root.join(JOURNAL_CLEANUP_FILE), JOURNAL_CLEANUP_MARKER, 0o600).map_err(provider)?;
-    }
-    Ok(())
-}
-
-fn journal_cleanup_done(root: &FsPath) -> Result<(), Error> {
-    if journal_cleanup_pending(root)? {
-        fs::remove_file(root.join(JOURNAL_CLEANUP_FILE)).map_err(io)?;
-        platform::durable::sync_dir(root).map_err(provider)?;
-    }
-    Ok(())
-}
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ProtectedPayload {
@@ -1959,13 +2220,7 @@ pub(crate) fn seal_payload(path: &FsPath, context: &str, value: &[u8]) -> Result
 
 pub(crate) fn payload_root(value: &[u8]) -> Result<Option<PathBuf>, Error> { Ok(payload(value)?.map(|record| current_root(&record))) }
 
-/// The project a sealed record names and the root it was sealed under, before a move this Calcifer saw (`payload_root`).
-pub(crate) fn payload_owner(value: &[u8]) -> Result<Option<(String, PathBuf)>, Error> { Ok(payload(value)?.map(|record| (record.project_id, record.root))) }
 
-/// The projects this Calcifer saw move to `root` or below it: their sealed records' roots now read there.
-pub(crate) fn projects_moved_under(root: &FsPath) -> Vec<String> {
-    KEY_ROOTS.lock().expect("vault project roots").iter().filter(|(_, at)| at.starts_with(root)).map(|(id, _)| id.clone()).collect()
-}
 
 pub(crate) fn payload_path(value: &[u8], decoded: &FsPath) -> Result<PathBuf, Error> {
     let Some(reference) = payload(value)? else { return Ok(decoded.to_owned()) };
@@ -2000,13 +2255,6 @@ pub(crate) fn open_payload(context: &str, value: &[u8]) -> Result<Option<Vec<u8>
     Ok(Some(plain))
 }
 
-/// Full filesystem rekey already rewrites these blob bytes. Preserve their logical pointer identity.
-pub(crate) fn rekey_payload(context: &str, value: &[u8], old: &ProjectSecret, new: &Keybag) -> Result<Vec<u8>, Error> {
-    let Some(reference) = payload(value)? else { return Err(error("vault_journal", "expected a private journal pointer")) };
-    if reference.context != context || reference.project_id != old.project_id() || reference.project_id != new.info().project_id { return Err(error("vault_journal", "private journal rekey context mismatch")); }
-    if open_payload(context, value)?.is_none() { return Err(locked(&current_root(&reference))); }
-    Ok(value.to_vec())
-}
 
 /// Private responses never enter browser caches; an existing stream stops yielding new chunks once lock begins.
 pub(super) async fn privacy(
@@ -2032,7 +2280,8 @@ pub(super) async fn privacy(
             let mut session = session.lock().expect("vault session");
             if !session.closing && !expired(&session) && session.timer.activity() {
                 session.active_ms = super::now_ms();
-                say(&root, "activity", || format!("its idle clock restarts on {} {}", request.method(), request.uri().path()));
+                // The method alone: a request's path names its project, which a locked project leaves nowhere (cl-1031).
+                say(&root, "activity", || format!("its idle clock restarts on a {} request", request.method()));
             }
         }
     }

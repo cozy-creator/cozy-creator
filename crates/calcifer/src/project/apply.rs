@@ -971,7 +971,7 @@ fn or_list(words: &[String]) -> String {
 }
 
 fn empty_ask() -> NewAsset {
-    NewAsset { tool: String::new(), at: None, name: None, exact: true, fields: Map::new(), kind: None, moves: Default::default(), placed: Default::default() }
+    NewAsset { tool: String::new(), at: None, name: None, exact: true, fields: Map::new(), kind: None, reads: None, moves: Default::default(), placed: Default::default() }
 }
 
 /// One edit of some words: `start..end` of the old, by character, as `insert`.

@@ -1,13 +1,17 @@
 // mention (cl-973 core cell 9): names in a prompt, on a local picture tool (project/tool.py's still, which takes pictures only). `<am` offers
 // what it matches and a pick is a chip; a box let go on the box is its `<name>`; names pasted, plain or rich, are chips at once; the caret
-// never lands in a chip; a video it can't use is struck through, saying why on hover (Paul, 11-12); a rename is the chip's and the stored
-// field's; a selection of three let go on it appends three. Rendered, its prompt holds Amy's file and only Walk's name, and `cozy run watch`
-// says so once.
-const { test, expect, box, focus, middle, fixtureTool, MP4, png } = require('./fixtures');
+// never lands in a chip; a video it can't use is struck through, saying why on hover, and so on its box at rest (Paul, 11-12: universally);
+// a rename is the chip's and the stored field's; a selection of three let go on it appends three. Rendered, its prompt holds Amy's file and
+// only Walk's name, and `cozy run watch` says so once. `<` offers only what the box's tool can use (cl-1084; Paul, 11-16: "reference inputs
+// are offered only by tools that can use them (a text-to-image-only tool like SDXL shows none)"): still's lists Amy and Bea, never Walk, and
+// SDXL's, words only, lists a Text box and no picture or video.
+const { test, expect, canvasIdle, focus, fixtureTool, MP4, png, canvasCard, canvasPoint, canvasVisible, renameField, screenshotPixels, selectedNames, hoverBox } = require('./fixtures');
 const { carry } = require('./geometry');
 const { backAfter, carryBox, fit, leave } = require('./hands');
 
 const STILL = fixtureTool('tool.py/still');
+/** SDXL's Image, which the isolated Hub holds for every web job (setup.js SEED): its words take a Text box's words, no file. */
+const SDXL = 'sdxl/image';
 const RUN_MS = 120_000;
 
 /** A paste as a browser hands it over: plain text, and with `html` as a rich-text program copies it. */
@@ -32,23 +36,40 @@ const caret = (page) => page.evaluate(() => {
   return before?.dataset?.mention ? `after ${before.dataset.mention}` : 'in words';
 });
 
+/** Whether a line runs through the middle of `chip`, drawn on the canvas: a row across ≥85% of it unlike the chip's own fill. Letters
+ *  cross the middle row only here and there. */
+function struck(read, chip) {
+  const fill = read(chip.x + chip.width / 2, chip.y + 1.5);
+  const left = Math.ceil(chip.x + 4), right = Math.floor(chip.x + chip.width - 4);
+  let best = 0;
+  for (let dy = -2; dy <= 2; dy++) {
+    let unlike = 0;
+    for (let x = left; x <= right; x++) if (read(x, chip.y + chip.height / 2 + dy).reduce((sum, value, k) => sum + Math.abs(value - fill[k]), 0) > 60) unlike++;
+    best = Math.max(best, unlike / Math.max(1, right - left + 1));
+  }
+  return best >= 0.85;
+}
+
 test('mention', async ({ page, project, api, cli }) => {
   await project.import(png(160), { name: 'amy', at: { x: 0, y: 0 } });
   await project.import(MP4, { name: 'walk', at: { x: 360, y: 0 } });
   await project.import(png(60), { name: 'bea', at: { x: 720, y: 0 } });
   await project.add({ name: 'still', tool: STILL, kind: 'image', at: { x: 360, y: 460 } });
   await expect.poll(async () => (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`)).tools.some((tool) => tool.local && tool.id === STILL), { message: 'the project lists its local tool' }).toBe(true);
-  for (const name of ['amy', 'walk', 'bea', 'still']) await expect(box(page, name)).toBeVisible();
+  for (const name of ['amy', 'walk', 'bea', 'still']) await expect.poll(() => canvasVisible(page, name)).toBe(true);
   await fit(page);
   const region = page.getByRole('region', { name: 'Focused asset' });
   const words = region.locator('.in-frame .mention-text[data-field="instructions"]');
   const said = async () => (await project.asset('still'))?.fields?.instructions ?? '';
 
-  await test.step('`<am` offers what it matches, and a pick is a chip', async () => {
+  await test.step('`<` offers what the tool can use, `<am` what of that it matches, and a pick is a chip', async () => {
     await focus(page, 'still');
     await expect(words).toBeFocused();
-    await page.keyboard.type('A sheet of <am');
-    const offered = page.getByRole('listbox');
+    // The name list alone: the board's own list of boxes (#3504, for screen readers) is a listbox too.
+    const offered = page.locator('.name-menu[role="listbox"]');
+    await page.keyboard.type('A sheet of <');
+    await expect(offered.getByRole('option'), 'its pictures, never Walk, a video it can\'t use').toHaveText(['amy', 'bea']);
+    await page.keyboard.type('am');
     await expect(offered.getByRole('option')).toHaveText(['amy']);
     await page.keyboard.press('Enter');
     await expect(words.locator('.chip[data-mention="amy"]')).toHaveText('<Amy>');
@@ -60,7 +81,7 @@ test('mention', async ({ page, project, api, cli }) => {
 
   await test.step('Walk let go on the box, and names pasted plain and rich: chips at once', async () => {
     await leave(page);
-    await carryBox(page, 'walk', await middle(box(page, 'still').locator('.media')));
+    await carryBox(page, 'walk', await canvasPoint(page, 'still'));
     await expect.poll(said, { message: 'the drop is its name' }).toBe('A sheet of <amy> and <walk>');
     await focus(page, 'still');
     await expect(words).toBeFocused();
@@ -74,10 +95,10 @@ test('mention', async ({ page, project, api, cli }) => {
 
   await test.step("a video the tool can't use is struck through, saying why", async () => {
     const walk = words.locator('.chip[data-mention="walk"]');
-    await expect(walk).toHaveClass(/\bunused\b/);
+    await expect(walk).toHaveClass(/\bunsupported\b/);
     expect.soft(await walk.evaluate((el) => getComputedStyle(el).textDecorationLine), 'struck through').toContain('line-through');
-    await expect.soft(walk, 'why, on hover').toHaveAttribute('title', /can't use videos/);
-    await expect.soft(words.locator('.chip[data-mention="amy"]').first(), 'a picture it uses').not.toHaveClass(/\bunused\b/);
+    await expect.soft(walk, 'why, on hover').toHaveAttribute('title', /doesn't support reference videos/);
+    await expect.soft(words.locator('.chip[data-mention="amy"]').first(), 'a picture it uses').not.toHaveClass(/\bunsupported\b/);
   });
 
   await test.step('the caret never lands in a chip', async () => {
@@ -96,34 +117,57 @@ test('mention', async ({ page, project, api, cli }) => {
 
   await test.step('Amy renamed Ann: the chip and the stored field', async () => {
     await leave(page);
-    await box(page, 'amy').locator('.nm').click();
-    const field = page.getByRole('textbox', { name: 'Name', exact: true });
+    const field = await renameField(page, 'amy');
     await field.fill('ann');
     await field.press('Enter');
-    await expect(box(page, 'ann')).toBeVisible();
+    await expect.poll(() => canvasVisible(page, 'ann')).toBe(true);
     await expect.poll(said, { message: 'the stored field names Ann' }).toBe('A sheet of <ann> and <walk> with <ann> and <walk.1> with <ann> and <walk.1>');
     await focus(page, 'still');
     await expect.soft(words.locator('.chip[data-mention="ann"]')).toHaveText(['<Ann>', '<Ann>', '<Ann>']);
     await expect.soft(words.locator('.chip[data-mention="amy"]')).toHaveCount(0);
   });
 
+  await test.step("at rest on the canvas too, its <Walk> is struck through", async () => {
+    // Paul, 11-12: a mention its tool can't use is struck through in the web UI, universally: the box at rest as well as in Focus.
+    await leave(page);
+    const { x, y } = await canvasPoint(page, 'still');
+    await page.mouse.click(x, y);
+    await expect.poll(() => selectedNames(page)).toEqual(['still']);
+    await page.keyboard.press('Shift+Digit2');
+    await canvasIdle(page);
+    // Nothing under the pointer: the tile as drawn at rest, not the native card a hover mounts.
+    await page.mouse.move(4, 600);
+    let chips = [];
+    await expect.poll(async () => {
+      chips = (await canvasCard(page, 'still'))?.rendered?.chips ?? [];
+      return ['ann', 'walk'].filter((name) => chips.some((chip) => chip.text.toLowerCase().startsWith(`<${name}`)));
+    }, { message: 'the tile draws <Ann> and <Walk>' }).toEqual(['ann', 'walk']);
+    const read = screenshotPixels(await page.screenshot());
+    const [ann, walk] = ['ann', 'walk'].map((name) => chips.find((chip) => chip.text.toLowerCase().startsWith(`<${name}`)));
+    expect.soft(struck(read, ann), `<Ann>, a picture it uses, not struck: ${JSON.stringify(ann)}`).toBe(false);
+    expect.soft(struck(read, walk), `<Walk>, a video it can't use, struck on the tile: ${JSON.stringify(walk)}`).toBe(true);
+    await page.keyboard.press('Shift+Digit1');
+    await canvasIdle(page);
+    await focus(page, 'still');
+  });
+
   await test.step('a selection of three let go on it appends three', async () => {
     await leave(page);
-    const row = await Promise.all(['ann', 'walk', 'bea'].map((name) => box(page, name).boundingBox()));
+    const row = await Promise.all(['ann', 'walk', 'bea'].map(async (name) => (await canvasCard(page, name)).bounds));
     // From open canvas under the row's left end to past its top right: the rectangle touches the three and not the box under them.
     const from = { x: row[0].x - 16, y: Math.max(...row.map((at) => at.y + at.height)) + 16 };
     const to = { x: row[2].x + row[2].width + 16, y: Math.min(...row.map((at) => at.y)) - 16 };
-    expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.classList.contains('react-flow__pane'), from), 'the rectangle starts on open canvas').toBe(true);
+    expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.classList.contains('canvas-pane') && !document.querySelector('.canvas-root')?.canvasInspection?.hitTest({ x, y }), from), 'the rectangle starts on open canvas').toBe(true);
     await page.keyboard.down('Shift');
     await page.mouse.move(from.x, from.y);
     await page.mouse.down();
     await page.mouse.move(to.x, to.y, { steps: 8 });
     await page.mouse.up();
     await page.keyboard.up('Shift');
-    await expect(page.locator('.react-flow__node .card[aria-selected="true"]')).toHaveCount(3);
+    await expect.poll(() => selectedNames(page)).toEqual(['ann', 'bea', 'walk']);
     const was = await said();
-    const held = page.locator('.react-flow__nodesselection-rect');
-    await backAfter(page, ['ann', 'walk', 'bea'], async () => carry(page, await middle(held), await middle(box(page, 'still').locator('.media'))));
+    // Carry one selected member: the product moves the whole selection together.
+    await backAfter(page, ['ann', 'walk', 'bea'], async () => carry(page, await canvasPoint(page, 'walk', 'title'), await canvasPoint(page, 'still')));
     await expect.poll(async () => (await said()).startsWith(was) && (await said()).slice(was.length).match(/<[^>]+>/g)?.sort(), { message: 'three refs appended' }).toEqual(['<ann>', '<bea>', '<walk>']);
   });
 
@@ -142,9 +186,28 @@ test('mention', async ({ page, project, api, cli }) => {
     expect.soft(prompt, 'and Walk by name only').not.toMatch(/<walk/);
     expect.soft(prompt).toMatch(/\bwalk\b/);
     const told = await cli('run', 'watch', String(run));
-    const lines = `${told.stdout}\n${told.stderr}`.split('\n').filter((line) => line.includes('<walk> is left out:'));
+    const lines = `${told.stdout}\n${told.stderr}`.split('\n').filter((line) => line.includes('<walk> was left out because'));
     expect.soft(told.code, 'cozy run watch').toBe(0);
     expect.soft(lines, 'said once, as a note').toHaveLength(1);
     expect.soft(lines[0] ?? '', 'a note, not a warning').toMatch(/note: /);
   });
+});
+
+test("mention: SDXL's `<` offers no picture or video", async ({ page, project }) => {
+  await project.import(png(160), { name: 'amy', at: { x: 0, y: 0 } });
+  await project.import(MP4, { name: 'walk', at: { x: 360, y: 0 } });
+  await project.add({ name: 'caption', kind: 'text', fields: { text: 'A lighthouse at dusk.' }, at: { x: 720, y: 0 } });
+  await project.add({ name: 'words', tool: SDXL, kind: 'image', at: { x: 360, y: 460 } });
+  for (const name of ['amy', 'walk', 'caption', 'words']) await expect.poll(() => canvasVisible(page, name)).toBe(true);
+  await fit(page);
+  const typed = page.getByRole('region', { name: 'Focused asset' }).locator('.mention-text[data-field="instructions"]').first();
+  await focus(page, 'words');
+  await expect(typed).toBeVisible();
+  if (!(await typed.evaluate((el) => el === document.activeElement))) await typed.click();
+  await page.keyboard.type('A coast like <');
+  const offered = page.locator('.name-menu[role="listbox"]');
+  await expect(offered.getByRole('option'), 'the Text box, and neither Amy, a picture, nor Walk, a video').toHaveText(['caption']);
+  await page.keyboard.type('a');
+  await expect.soft(offered, '`<a` matches only Amy, which SDXL can\'t use: nothing is offered').toHaveCount(0);
+  await leave(page);
 });

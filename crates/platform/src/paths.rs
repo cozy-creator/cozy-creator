@@ -94,11 +94,6 @@ impl Home {
         self.root.join("machine")
     }
 
-    /// Where a run that is no person's lands what it makes: a person's runs land in their project.
-    pub fn outputs(&self) -> PathBuf {
-        self.root.join("tmp").join("outputs")
-    }
-
     /// Service definitions this home installed, and on Windows the birth of each one it started.
     pub(crate) fn services(&self) -> PathBuf {
         self.root.join("services")

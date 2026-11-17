@@ -108,7 +108,7 @@ impl Take {
     }
 }
 
-/// Asset `name`'s takes: each version that landed, its main file whole, then what failed, what runs and what waits.
+/// Asset `name`'s takes: each version that landed, its main file whole, then what runs and what waits.
 pub(super) fn takes(name: &str, lock: &Lock, dir: &FsPath, going: &[TakeNow]) -> Vec<Take> {
     let held = lock.asset(name);
     let file = |sha256: &String| lock.files.get(sha256).map(|file| {
@@ -118,8 +118,7 @@ pub(super) fn takes(name: &str, lock: &Lock, dir: &FsPath, going: &[TakeNow]) ->
     let mut takes: Vec<Take> = held.into_iter().flat_map(|held| &held.versions)
         .map(|version| Take { number: Some(version.number), state: "done", file: version.main().and_then(file), run: version.run })
         .collect();
-    takes.extend(held.into_iter().flat_map(|held| &held.ended).map(|ended| Take { number: None, state: "failed", file: None, run: ended.run }));
-    let (running, queued): (Vec<&TakeNow>, Vec<&TakeNow>) = going.iter().filter(|take| take.failure.is_none()).partition(|take| !take.queued);
+    let (running, queued): (Vec<&TakeNow>, Vec<&TakeNow>) = going.iter().partition(|take| !take.queued);
     takes.extend(running.into_iter().map(|take| Take { number: None, state: "running", file: None, run: take.run }));
     takes.extend(queued.into_iter().map(|_| Take { number: None, state: "queued", file: None, run: None }));
     takes
@@ -248,8 +247,8 @@ fn named(written: &Written, asked: &str) -> Result<(String, Option<u32>), Error>
     let base = asked.rsplit_once('.').filter(|(_, number)| number.parse::<u32>().is_ok()).map_or(asked, |(name, _)| name);
     let near = node::near(base, written.boxes.iter().map(|held| held.name.as_str()));
     let said = match near {
-        Some(near) => format!("the project has no node {base}: did you mean {near}?"),
-        None => format!("the project has no node {base}"),
+        Some(near) => format!("There's no box called {base} in this project. Did you mean {near}?"),
+        None => format!("There's no box called {base} in this project."),
     };
     Err(Error::new(Kind::NotFound, "node_unknown", said).next("cozy get"))
 }

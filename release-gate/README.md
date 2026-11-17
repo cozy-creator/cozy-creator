@@ -12,7 +12,7 @@ same SKU and suites; any FAIL blocks the promotion. Design: tracker `design/ci-v
 
 | Suite | Proves | Rentals (`skus`) | Cost · time | Pick it for |
 |---|---|---|---|---|
-| `runtime` | every first-party package's default call (H3 15 s with a described reference, SeedVR2, SDXL, Klein, Qwen, Anima, BiRefNet, the Qwen3.5 describer, Fibo, HiDream, MOSS, Qwen-Image and its one-release swap), then SDXL in a second executor, SDXL cold then two warm calls after each of three restarts and a loop step no capture records (cr-227), six SDXL child calls each with its own LoRA stack (cl-687) and an SDXL int8 quantize (a weights output), and Regenerate-2K over the whole 15 s shot at 1440p, the largest one forward takes (cr-259): kernels, times, VRAM, quality, LM coverage | rtx-4090, rtx-5090 | ~$6.5 · ~95 min, in parallel | a Runtime, TensorFS, varena or TensorD change; any rewrite |
+| `runtime` | every first-party package's default call (H3 15 s with a described reference, SeedVR2, SDXL, Klein, Qwen, Anima, BiRefNet, the Qwen3.5 describer, Gemma 4 E2B through VisionLM (cr-301), Fibo, HiDream, MOSS, Qwen-Image and its one-release swap), then SDXL in a second executor, SDXL cold then two warm calls after each of three restarts and a loop step no capture records (cr-227), six SDXL child calls each with its own LoRA stack (cl-687) and an SDXL int8 quantize (a weights output), and Regenerate-2K over the whole 15 s shot at 1440p, the largest one forward takes (cr-259): kernels, times, VRAM, quality, LM coverage | rtx-4090, rtx-5090 | ~$6.5 · ~95 min, in parallel | a Runtime, TensorFS, varena or TensorD change; any rewrite |
 | `packages` | from the `--packages` checkout's source, its candidates (each at a prerelease version) and what `--only` names, plus the SDXL smoke | rtx-4090, rtx-5090 | ~$1–3 · 15–30 min | a package bump |
 | `publish` | the Hub-publish path source runs skip: `packages_ref`'s candidates published to a throwaway Hub by `task publish -- --hub` (finals, locks rebound to its index, Triton sets, describe), each installed from it, and BiRefNet run from it on the runner (`suites/publish/run.sh`) | none: a runner (job `hub-fixture`) | $0 · ~30 min | every package promotion |
 | `varena` | the memory manager: cold load, co-residency, reload, 8/6/3 GiB caps, a real 8 GB card, host RAM, no backing left without a page (below), a warm call served by graphs, real models repeating byte for byte warm, capped, with memory unmapped and perturbed, and with a kept graph's weights gone or no room for them, and with graphs off (`differential/`), the memory authority's rules (`core`), `vt.offload` beside stock SDXL (`offload-*`) and deliberate faults over SSH (`fault-*`, `faults`); with it, run the `vram-yield` session: a game started next to cozy has its memory within 2 s, idle and mid-call, and the call completes (Sessions) | its `skus`; the session one rtx-3070 | session ~$0.5 · ~45 min | a varena, memory, TensorD or Runtime memory change |
@@ -72,7 +72,7 @@ Local-package (`--packages`) gates build a small source-staging helper from this
 3. Runs the chosen suites' cells, each once, with new prompts and seeds. Before a function's first cell, API warming to `downloaded`
    puts all its weights on the disk, its on-demand models' too (an upsampler), and `off` takes it out of the warm
    set: a cell times what a user who has used the function sees, never a download (cl-790). A slow run goes on; a hung one
-   stops: when no run on the machine moves for `--stall` minutes by the runs' own progress clock (15; the longest quiet in
+   stops: when no run or job on the machine moves for `--stall` minutes by their own progress clock (15; the longest quiet in
    786 real cells was 7.2), the gate cancels them, fails and ends the rental. It renews the rental's idle clock only while
    they move. A download that can't land before the job's cap (`--cap`, the workflow's `cap_minutes`) at the rate it has
    kept 4 to 8 minutes in fails the host, `host too slow: X MB/s, N GiB needs M min`: the pod ends, its files go to
@@ -170,14 +170,36 @@ A package a session runs or installs from a `packages_refs` checkout carries its
 `scripts/triton.sh` as a release ships them (`lib.sh` `kernels`). `parity` (xs-194) runs a package from source and its Hub release on one
 pod, each cold then warm on the same seed: the environments' distributions, their `_triton` kernels, cold execution and the output bytes must match.
 `tool-functions` (cl-774) takes `qwen-image-2/image`, `birefnet/remove_background`, `minimax-h3/generate`, `upscale` and `edit` from dropping the tool to accepting its output on one 4090, as the page does (`e2e/page.py`), a shape like `lab`'s beside them, from a `packages_refs` checkout `pk`, keeping frames to judge.
+`h3-upscale` (se-138) upscales the gate's 15 s Skater take as the page does, from `packages_refs` checkouts `was` and `now`: with no
+prompt both must give the same frames; an overriding prompt (0.7 and 0.909) must differ; the take's file as a box (no latents) runs with
+a prompt, and with no text it warns and holds the source by the gate's regen bar. Side-by-side frames in `frames/`.
 `h3-later-segments` (se-130) is a 26 s H3 shot of two segments whose summary names segment 1's event, then a redo from its seam, as the
 page does it (`e2e/page.py`), from a `packages_refs` checkout `pk`: segment 2's summary and the redo's say only that they continue,
 without the event, their prompts are the same, and their frames are kept to judge that the event isn't played again.
+`user-flow` (xs-203) is the release gate's main suite, Paul's flow through the page in Chrome (`e2e/cli/web/user-flow.spec.js`): an
+encrypted project unlocked, a plate dropped, H3's Shot and Edit from the Tools palette, machine A rented through the page, two renders,
+machine B (`sku_b`, `gpus_b`) rented, a third render, every take back and shown, both ended through the page. `fixtures/user-flow/judge.py`
+judges works, lean, fast (`bench.json`, 5%), placement and what the page says, one table per run and machine (`flow/report.md`, the job
+summary): `gh workflow run pod-session.yaml -R cozy-creator/cozy-creator --ref rc/<x> -f hub=prod -f script=user-flow -f sku=rtx-5090
+-f disk=300 -f cap=6 -f cozy=<dev-build run> -f params='{"sku_b": "rtx-4090", "gpus_b": 2}' -f rent=true`.
+`llm-tools` (xs-204, cl-1100) runs Qwen3.5's and Qwen3.6's `write` from a `packages_refs` checkout (`tree`) on one rental of two GPUs in a
+dev home on the session's RC cozy: each asked about a photo and a video by `cozy run`, each answer saying what it shows; both writing at
+once while the machine drawer's GPU use is held to the pod's nvidia-smi (10 points, 200 MB); and Qwen3.6 on the canvas in Chrome, a Text
+box rendered twice and a caption of the photo and of the video. Without `rent` its page cells run on the runner with the local LLM fixture:
+`gh workflow run pod-session.yaml -R cozy-creator/cozy-creator --ref rc/<x> -f hub=prod -f script=llm-tools -f packages_refs=rc=<the
+packages RC> -f sku=rtx-a6000 -f disk=200 -f cap=6 -f cozy=<dev-build run> -f params='{"tree": "rc", "gpus": 2}' -f rent=true`.
 `render-placement` (cl-774) is a render with the page's Run on at Automatically (`e2e/page.py render --on auto`) on a runner with no GPU and one rental: a tie and a model this computer has no GPU for go to the rental, nothing warns, and with the rental busy a weightless still goes here.
+`render-estimate` (cl-1004) is the bench's H3 Turbo 15 s shot as a box on one pod this runner never ran H3 on: the time `fit` gives
+the page before any run (its release's benchmark of that card) against the warm render's, within 35%, then `fit` again, measured there.
 `run-no-on` (tools.md) is `cozy run` with no `--on` on a runner with no GPU and one rental: a weightless still and a function that orchestrates a GPU model go to the rental, as a render does, and nothing warns; `e2e/cli/project.sh`'s `run_no_on` is the case with no rental.
+`lane-floor` (cl-1076) runs H3's generate on one card with FP4 tensor cores and less memory than H3's 8-bit lane, the session's
+cozy as TensorD, until H3's header lands: it resolves to int8, never to a 4-bit lane for want of free memory. Its `probes` judge
+other slots the same way (se-143: each prompt enhancer and VisionLM at int8), from a packages checkout and the session's Runtime.
 `disk` runs the `disk` suite's cells on one pod under the session's TensorD (its installs only with `installs: yes`);
 `disk-valentino` (cl-774) is a 100 GB 4090 past a full disk: Qwen-Image 2.1 and turbo, then H3, which makes its room by
 ending turbo's idle executor and evicting both, H3 untouched while it renders, H3 bf16 refused before it downloads.
+`derived-disk` (cl-1081) bakes four SDXL LoRA stacks beside an idle model, leaves the disk short, and installs Qwen-Image 2.1:
+its room comes from the bakes, every model kept (`runtime`, `tensorfs`: the pod's wheels).
 `probes` (cl-775, cl-633) measures on one cpu pod whether an executor can read TensorD's memory (a benign check of a mapping's first four bytes), and WebRTC from the published HTTPS player in Chromium, Firefox and WebKit, which isn't Safari.
 `multi-machine` (xs-126) rents two pods with SSH and works in a shell on each (`cozy machine ssh`): a pod's `cozy` uses
 the image's TensorD as `local` beside the runner's runs, one pod controls the other by `authorize`/`add`, and the
@@ -228,6 +250,10 @@ later call of the same model asks the Hub nothing, and a model the Hub has not i
 the pod's idle window: its release goes unaccepted, and it ends itself at its provider within one window of its deadline.
 `runtime-floor` (run 28075, one cheap GPU pod) puts a machine on an older numbered prerelease pair: a package whose floor
 that pair misses takes its own Runtime in its own environment, and the machine's pair stays.
+`rental-boot-first` (cl-1069, LAB2-47826; one cheap GPU pod) sends local code whose Runtime floor only the open RC meets to a
+rental as it boots, in a dev home on the session's RC cozy (`cozy=<dev-build run>`): the rental moves to the RC before it takes the code,
+which runs on the RC's Runtime; held by hand on the release pair, the code is refused `runtime_held` before any install; let go and
+busy on that pair, the code `--on any` is refused there `runtime_floor_unmet`, and Calcifer moves the rental and sends it again.
 `machine-end` (cl-946, `pods` cheap pods, 3 by default) ends each with `cozy machine end <name>`: what it printed must be its
 Hub's record of the rental (`released` or `failed`, with an end time, only once its provider holds no pod) and Calcifer's.
 

@@ -30,6 +30,7 @@ target's construction order (its `state_dict()`), never sorted (#624).
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import importlib
 import importlib.machinery
@@ -122,6 +123,7 @@ class Component[R](TypedDict, total=False):
     folders: dict[str, str]
     rows: Required[list[R]]
     keep: list[R]
+    modules_to_save: list[str]
 
 
 class Lora(TypedDict):
@@ -1040,6 +1042,40 @@ def comfy_single_file(name: str) -> Table[TableRow]:
     return {"name": name, "reference": spec["reference"], "components": [component]}
 
 
+
+# ------------------------------------------------------------------ PAN2
+
+PAN2_COMFY = VECTORS / "pan2-comfy-headers"
+PAN2_REFERENCE = "hf://IFM/PAN2@82f54c6cea3e20a9c451b61d7360016e5970503d"
+# A block's ComfyUI attention kernel, which the import drops (`carriers.json` `execution_tensors`).
+EXECUTION = (".comfy_attention.config",)
+# Each PAN2 layout in ComfyUI's one file, the family's form it holds, and Comfy-Org's published files in it.
+PAN2: dict[str, tuple[str, list[str]]] = {
+    "pan2.comfy": ("canonical", ["pan2_bf16"]),
+    "pan2.curve": ("curve", ["pan2_int8_convrot"]),
+}
+
+
+def pan2_comfy(name: str) -> Table[TableRow]:
+    """PAN2's DiT in ComfyUI's one file: the family's own names, bare, in one form (Comfy-Org's bf16 is canonical, its
+    int8_convrot the curve form, comfy/ldm/pan2/model.py), so every row is a rename, in the reference's order."""
+    form, vectors = PAN2[name]
+    family = json.loads((FAMILIES / "pan2.json").read_text())
+    keys = {k: list(shape) for k, shape in family["components"]["transformer"]["keys"]}
+    if form != "canonical":
+        edit = family["forms"][form]
+        keys = {k: s for k, s in keys.items() if not any(fnmatch.fnmatchcase(k, p) for p in edit["drop"])}
+        for pattern, shape in edit["set"]:
+            keys.update({k: shape for k in keys if fnmatch.fnmatchcase(k, pattern)})
+        keys.update(dict(edit["add"]))
+    for vector in vectors:
+        held = {k: list(s) for k, (_, s) in header(PAN2_COMFY / f"{vector}.safetensors.header").items()
+                if not k.endswith(COMPANIONS + EXECUTION)}
+        assert held == keys, (name, vector, sorted(set(held) ^ set(keys))[:4])
+    component: Component[TableRow] = {"name": "transformer", "rows": [row(k, k) for k in keys]}
+    return {"name": name, "reference": PAN2_REFERENCE, "components": [component]}
+
+
 # ------------------------------------------------------------------ FLUX.2, FLUX.3 Klein and FIBO 2 LoRAs
 
 #: PEFT's and Diffusers' factors (also under DiffSynth's and PEFT's adapter name), and kohya's.
@@ -1126,7 +1162,7 @@ def native_rows(census: dict[str, tuple[int, int]], rules: list[Rule], reference
 
 
 def dit_lora(name: str, family: str, native: list[LoraRow], keep: list[LoraRow], vectors: dict[str, bool],
-             extra: list[Component[LoraRow]] | None = None) -> Table[LoraRow]:
+             extra: list[Component[LoraRow]] | None = None, saved: tuple[str, ...] = ()) -> Table[LoraRow]:
     """LoRA factors onto every linear of a Diffusers DiT, in each spelling a published loader reads: Diffusers'
     names under `transformer.` (Diffusers' `save_lora_weights`, SimpleTuner), `diffusion_model.` or bare
     (ComfyUI, DiffSynth-Studio), `base_model.model.` (PEFT), and kohya's flattened `lora_unet_` and `lycoris_`,
@@ -1134,7 +1170,9 @@ def dit_lora(name: str, family: str, native: list[LoraRow], keep: list[LoraRow],
     AI-Toolkit) and flattened under `lora_unet_` (kohya), a fused module's B rows split among its targets. Each
     banked LoRA `vectors[path]` is one this table claims, every factor at its row's shape, or (False) one it
     leaves unclaimed: more than half its keys are no module's. A DoRA's magnitudes are read as its B's rows are.
-    `extra` adapt another component of the family (Anima's LLM adapter), each row one of its linears."""
+    `extra` adapt another component of the family (Anima's LLM adapter), each row one of its linears. `saved` are whole
+    modules an adapter may carry beside its factors (PEFT's `modules_to_save`), their keys as they are, in every spelling
+    but kohya's flattened ones."""
     census = family_linears(family)
 
     def spelled(d: str) -> list[str]:
@@ -1153,6 +1191,9 @@ def dit_lora(name: str, family: str, native: list[LoraRow], keep: list[LoraRow],
     components: list[Component[LoraRow]] = [{"name": "transformer", "prefix": prefix, "rows": rows} for prefix, rows in spellings.items()]
     if keep:
         components[-1]["keep"] = keep
+    for c in components:
+        if saved and c["prefix"] not in ("lora_unet_", "lycoris_"):
+            c["modules_to_save"] = list(saved)
     components += extra or []
     stem: str | None
     for c in components:
@@ -1170,6 +1211,9 @@ def dit_lora(name: str, family: str, native: list[LoraRow], keep: list[LoraRow],
             c = max((c for c in components if key.startswith(c["prefix"])), key=lambda c: len(c["prefix"]))
             local = key[len(c["prefix"]):]
             if any(local == r[1] and ("io" not in r[2] or tuple(shape[1:]) == tuple(r[2]["io"][::-1])) for r in c.get("keep", [])):
+                known += 1
+                continue
+            if any(local.startswith(f"{m}.") for m in c.get("modules_to_save", [])):
                 known += 1
                 continue
             spelling = (("a", DIT_A), ("b", DIT_B), ("m", MAGNITUDE), ("alpha", (".alpha",)))
@@ -1279,6 +1323,71 @@ def qwenimage_lora() -> Table[LoraRow]:
     every loader reads them, as `dit_lora` spells them."""
     vectors = {"qwen-image-lora-headers/qwen-image-edit-plus-nsfw-lora.safetensors.header": True}
     return dit_lora("qwenimage.lora", "qwen-image", [], [], vectors)
+
+
+# ------------------------------------------------------------------ LTX-2.5 LoRA
+
+#: ltx-2-5's reference, Cozy's mirror of Lightricks' gated release, as `tfs --json inspect` printed its header.
+LTX25 = VECTORS / "ltx-2.5-headers" / "lightricks-ltx-2.5-0.1.0-bf16.inspect.json"
+LTX23_LORAS = VECTORS / "ltx-2.3-lora-headers"
+#: Lightricks' distilled LoRA adapts every linear of the DiT: its keys are each one's native name.
+LTX23_DISTILLED = "ltx-2.3-22b-distilled-lora-384-1.1"
+#: Modules an LTX adapter adds and carries whole: LiconStudio's Multiple-Subject Reference's slot embedding per modality
+#: (a Fourier MLP from a reference's slot number to a token offset; liconstudio/ComfyUI-LTX2.5-MSR nodes.py
+#: `_slot_embedding`).
+LTX2_SAVED = ("reference_slot_embedding", "reference_audio_slot_embedding")
+
+
+class InspectedTensor(TypedDict):
+    key: str
+    shape: list[int]
+
+
+class InspectedComponent(TypedDict):
+    name: str
+    config: Config
+    tensors: list[InspectedTensor]
+
+
+def ltx2_lora() -> Table[LoraRow]:
+    """LTX-2.5's DiT is Diffusers' `LTX2VideoTransformer3DModel` (the mirror's config constructs ltx-2-5's transformer key for
+    key). Its LoRAs keep LTX's native names under `diffusion_model.` (Lightricks' trainer, ComfyUI, musubi-tuner, AI-Toolkit),
+    which are Diffusers' in the blocks; diffusers' `_convert_non_diffusers_ltx2_lora_to_diffusers` renames the rest
+    (`patchify_proj` to `proj_in`, `adaln_single.` to `time_embed.`, the `av_ca_*` and `prompt_adaln_single` modulations), each
+    native name read from Lightricks' distilled LoRA, which adapts every linear. LTX-2.3's linears are 2.5's, so its LoRAs
+    (Lightricks' IC-LoRAs, the community's) are read too; Diffusers' names as `dit_lora` spells them. No published LoRA adapts
+    the text connectors (`text_embedding_projection.`), which `connectors` would take. LiconStudio's MSR carries its
+    reference-slot embeddings whole (`LTX2_SAVED`), modules the DiT has not."""
+    census = family_linears("ltx-2-5")
+    components: list[InspectedComponent] = json.loads(LTX25.read_text())["components"]
+    (held,) = [c for c in components if c["name"] == "transformer"]
+    model = construct("diffusers:LTX2VideoTransformer3DModel", held["config"])
+    assert {k: list(v.shape) for k, v in model.state_dict().items()} == {t["key"]: t["shape"] for t in held["tensors"]}, (
+        "diffusers' construction is not the mirror's transformer")
+    linears = {n: (m.in_features, m.out_features) for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)}
+    assert linears == census, "the family's linears are not the model's"
+    source = header(LTX23_LORAS / f"{LTX23_DISTILLED}.safetensors.header")
+    stand_in = torch.zeros(1, 1)
+    native: list[LoraRow] = []
+    reached: set[str] = set()
+    for key, (_, a) in source.items():
+        if not key.endswith(".lora_A.weight"):
+            continue
+        stem = key.removeprefix("diffusion_model.").removesuffix(".lora_A.weight")
+        read: dict[str, torch.Tensor] = lora_conversion_utils._convert_non_diffusers_ltx2_lora_to_diffusers({key: stand_in})  # type: ignore[no-untyped-call]  # untyped
+        target = next(iter(read)).removeprefix("transformer.").removesuffix(".lora_A.weight")
+        b = source[key.replace(".lora_A.", ".lora_B.")][1]
+        assert census[target] == (a[1], b[0]) and target not in reached, (stem, target, census.get(target))
+        reached.add(target)
+        if stem != target:
+            native.append((target, stem, {"io": list(census[target])}))
+    assert reached == set(census), ("the distilled LoRA does not adapt", sorted(set(census) - reached)[:5])
+    vectors = {f"ltx-2.3-lora-headers/{v}.safetensors.header": True for v in (
+        "ltx-2.3-22b-ic-lora-union-control-ref0.5", "ltx-2.3-22b-ic-lora-motion-track-control-ref0.5", LTX23_DISTILLED,
+        "Claymation", "ltx2.3_audio_reactive_lora_v2")}
+    vectors["ltx-2.5-lora-headers/LTX-2.5-Licon-MSR-V2.safetensors.header"] = True
+    assert not any(k.startswith(f"{m}.") for m in LTX2_SAVED for k in model.state_dict()), "the DiT has a slot embedding"
+    return dit_lora("ltx2.lora", "ltx-2-5", native, [], vectors, saved=LTX2_SAVED)
 
 
 # ------------------------------------------------------------------ SeedVR2
@@ -1567,12 +1676,14 @@ def generate() -> dict[str, Generated]:
         "qwen3vl.comfy": qwen3vl_comfy(),
         "qwenimage21.lora": qwenimage21_lora(),
         **{name: comfy_single_file(name) for name in COMFY},
+        **{name: pan2_comfy(name) for name in PAN2},
         "flux2.lora": flux2_lora(),
         "flux3klein.lora": flux3klein_lora(),
         "fibo2.lora": fibo2_lora(),
         "moss.lora": moss_lora(),
         "anima.lora": anima_lora(anima),
         "qwenimage.lora": qwenimage_lora(),
+        "ltx2.lora": ltx2_lora(),
         "seedvr2": seedvr2(),
         "h3.latent_upscaler": h3_latent_upscaler(),
         "relayvsr": relayvsr(),

@@ -1,10 +1,9 @@
 import { type QueryClient, skipToken, useQuery, useQueryClient } from "@tanstack/react-query"
-import { createContext, type ReactNode, useCallback, useContext, useLayoutEffect, useRef } from "react"
+import { createContext, type ReactNode, useCallback, useContext, useEffect, useLayoutEffect, useRef } from "react"
 import { useLocation, useMatch, useNavigate } from "react-router-dom"
 import { ApiError, type Client } from "../api/client"
 import type { ProjectAddress } from "../api/calcifer"
 import { noHash } from "../canvas/text"
-import { Copyable } from "../ui/Copyable"
 import { useConnection } from "./Connection"
 import { privateProject } from "./view"
 
@@ -57,11 +56,13 @@ export function ProjectRoute({ children }: { children: ReactNode }) {
   const compact = useMatch("/p/:code/*")
   const legacy = useMatch("/projects/:id/*")
   const reference = compact?.params.code ?? legacy?.params.id ?? ""
-  const { client } = useConnection()
+  const { client, stream } = useConnection()
   const queries = useQueryClient()
   const location = useLocation()
   const navigate = useNavigate()
-  const { data, error } = useQuery({ ...referenceQuery(client, reference), enabled: Boolean(reference) })
+  const { data, error, refetch } = useQuery({ ...referenceQuery(client, reference), enabled: Boolean(reference) })
+  // A read that failed is asked again once Calcifer is back, never left standing until a reload.
+  useEffect(() => (error ? stream.subscribe((event) => { if (event.type === "hello") void refetch() }) : undefined), [error, stream, refetch])
 
   useLayoutEffect(() => {
     if (!data || !reference) return
@@ -83,6 +84,12 @@ export function ProjectRoute({ children }: { children: ReactNode }) {
   return <CurrentProject.Provider value={project}>{children}</CurrentProject.Provider>
 }
 
+/** Every project address the page has read, read again: an unlock turns a locked project's handle (`locked-…`, the Projects list's) into
+ *  the project's own address, which the page then goes on to (cl-1090). */
+export function readAddressesAgain(queries: QueryClient) {
+  return queries.invalidateQueries({ queryKey: ["project-reference"] })
+}
+
 /** A newly created project can be navigated to before the project list refetches. */
 export function rememberProject(queries: QueryClient, project: Pick<ProjectAddress, "id" | "code">) {
   queries.setQueryData(referenceKey(project.id), project)
@@ -98,7 +105,6 @@ export function Unopened({ error, gone }: { error?: unknown; gone?: string }) {
     <div>
       <h2>This project's folder is gone: {gone}</h2>
       <p>Move the folder back, or open another project.</p>
-      <Copyable text="cozy new <folder>" />
     </div>
   )
   const body = error instanceof ApiError ? error.body : undefined
@@ -107,10 +113,9 @@ export function Unopened({ error, gone }: { error?: unknown; gone?: string }) {
   const folderGone = body?.code === "project_folder_gone"
   return (
     <div>
-      <h2>{folderGone ? sentence(message) : "This project can't be opened yet"}</h2>
+      <h2>{folderGone ? sentence(message) : "Couldn't open this project"}</h2>
       {!folderGone && <p>{noHash(sentence(message))}</p>}
       {body?.remedy && <p>{noHash(sentence(body.remedy))}</p>}
-      {body?.next?.map((line) => <Copyable key={line} text={line} />)}
     </div>
   )
 }

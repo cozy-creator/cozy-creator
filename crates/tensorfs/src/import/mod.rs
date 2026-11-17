@@ -973,7 +973,11 @@ pub(crate) fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
     let mut adapters = match as_is {
         true => BTreeMap::new(),
         false => {
-            let tabled = recognized.claims.iter().map(|c| c.name.clone()).collect();
+            let mut tabled: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+            for c in &recognized.claims {
+                let carried = &tables[c.table].components[c.component].modules_to_save;
+                tabled.entry(c.name.clone()).or_default().extend(carried.iter().cloned());
+            }
             lora::normalize(&mut planned, &sources, &tabled, &mut files, &set)?
         }
     };

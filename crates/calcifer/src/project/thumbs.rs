@@ -4,7 +4,8 @@
 //! never changes. What the canvas draws of a file (a picture, a video's poster and its preview) is made as the file lands (cl-982; Paul,
 //! 11-13: "all thumbnails should be generated ahead of time, and stored in the project"). A request only reads: one not made yet is drawn
 //! next, in the background, and answered `202 thumb_pending` at once, and the `thumb` event tells the project's pages when it's made. So no
-//! request, and none of a browser's six connections to Calcifer, waits on ffmpeg.
+//! request, and none of a browser's six connections to Calcifer, waits on ffmpeg. A take's file still on its way here is answered the same
+//! (cl-1108): it's drawn as it lands.
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     ffi::OsString,
@@ -22,7 +23,7 @@ use serde::Deserialize;
 use tokio::sync::{Notify, Semaphore};
 use tracing::warn;
 
-use super::{folder, host::Host, media_type, tools};
+use super::{RunOwner, folder, host::Host, media_type, tools};
 use crate::{
     api::{Api, Refusal},
     tools::Media,
@@ -108,6 +109,9 @@ struct Queue {
     held: HashMap<String, bool>,
     /// What ffmpeg couldn't draw, for as long as this Calcifer runs: asked again, it's refused, not drawn again.
     failed: HashSet<String>,
+    /// By project: what waits for a lock queued on it, or holding it, to let go. Drawn then, or forgotten if it locked: no drawer waits
+    /// on one project's lock, so the others' thumbnails go on (cl-1025).
+    waiting: HashMap<PathBuf, Vec<Drawing>>,
 }
 
 pub(super) async fn thumb(
@@ -119,13 +123,19 @@ pub(super) async fn thumb(
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
     let hex = folder::hex_of(&named).to_ascii_lowercase();
-    let (field, seconds, source) = {
+    let here = {
         let lock = folder.lock().map_err(Refusal)?;
         let file = lock.files.get(&format!("sha256:{hex}")).filter(|file| folder.path(&file.path).is_file());
-        let Some(file) = file else {
-            return Err(Refusal(Error::new(Kind::NotFound, "file_missing", format!("the project has no file {named}"))));
-        };
-        (file.field(), file.lasts_ms() as f64 / 1000.0, folder.path(&file.path))
+        file.map(|file| (file.field(), file.lasts_ms() as f64 / 1000.0, folder.path(&file.path)))
+    };
+    let Some((field, seconds, source)) = here else {
+        // A take's file still on its way here, its run ended on its machine (cl-1108): not drawn yet, as one being drawn isn't. It's
+        // drawn as it lands, and the `thumb` event says so.
+        let digest = format!("sha256:{hex}");
+        if RunOwner::of(&project, &api.calcifer).store().and_then(|store| store.owes_file(&digest)).unwrap_or(false) {
+            return Ok(pending());
+        }
+        return Err(Refusal(Error::new(Kind::NotFound, "file_missing", format!("This project has no file {named}."))));
     };
     let preview = asked.preview && field == "video";
     let wave = asked.wave && field == "video" && !preview;
@@ -137,23 +147,27 @@ pub(super) async fn thumb(
     let name = drawing.name();
     let Some(at) = kept(&folder.dir.join(STORE), &name) else {
         // Drawn next: `202 thumb_pending` now, which is no picture and no error, and the page hears `thumb` when it's there.
-        let mut response = match ask(drawing, true) {
-            true => {
-                let mut pending = Refusal(Error::new(Kind::NotFound, "thumb_pending", "this thumbnail is being made; the thumb event says when it's there")).into_response();
-                *pending.status_mut() = StatusCode::ACCEPTED;
-                pending
-            }
-            false => Refusal(Error::new(Kind::Validation, "thumb_failed", "ffmpeg can't draw this file")).into_response(),
-        };
-        response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-        return Ok(response);
+        if ask(drawing, true) {
+            return Ok(pending());
+        }
+        let mut failed = Refusal(Error::new(Kind::Validation, "thumb_failed", "ffmpeg can't make a thumbnail of this file.")).into_response();
+        failed.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        return Ok(failed);
     };
-    let unreadable = |e: std::io::Error| Refusal(Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", at.display())));
+    let unreadable = |e: std::io::Error| Refusal(Error::new(Kind::Unavailable, "project_io", format!("Cozy couldn't read {}: {e}.", at.display())));
     let opened = std::fs::File::open(&at).map_err(unreadable)?;
     let len = opened.metadata().map_err(unreadable)?.len();
     let mut response = crate::files::send(opened, len, media_type(&at), &format!("\"{name}\""), &headers).map_err(unreadable)?;
     response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static(if private { "private, no-store" } else { crate::files::IMMUTABLE }));
     Ok(response)
+}
+
+/// `202 Accepted`, `thumb_pending`: a thumbnail not there yet, which the page waits for, its `thumb` event or a while, as no error.
+fn pending() -> Response {
+    let mut pending = Refusal(Error::new(Kind::NotFound, "thumb_pending", "Cozy is still making this thumbnail. The thumb event says when it's ready.")).into_response();
+    *pending.status_mut() = StatusCode::ACCEPTED;
+    pending.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    pending
 }
 
 /// A file that just landed at `source` (`<project>/files/<hex>.<ext>`), measured as a `field`: what the canvas draws of it is made soon,
@@ -227,7 +241,19 @@ pub(crate) fn previews(api: Arc<Api>) {
                     continue;
                 };
                 let (key, root, sha256) = (drawing.key(), drawing.root.clone(), drawing.sha256.clone());
-                let made = make(Host::new(&api), drawing).await;
+                let made = match make(Host::new(&api), drawing.clone()).await {
+                    Ok(Some(made)) => Ok(made),
+                    Ok(None) => {
+                        wait_for_project(drawing);
+                        continue;
+                    }
+                    Err(error) => {
+                        // Said, as a page only hears it failed (cl-1054: a Mac stored none, and nothing said why). Not an encrypted
+                        // project's: what failed can name its files.
+                        if !drawing.private { warn!("thumbnail {} not made: {}: {}", drawing.name(), error.code, error.message); }
+                        Err(error)
+                    }
+                };
                 {
                     let mut queue = QUEUE.0.lock().expect("thumbnail queue");
                     queue.held.remove(&key);
@@ -242,37 +268,80 @@ pub(crate) fn previews(api: Arc<Api>) {
     }
 }
 
+/// `drawing`, set aside until its project's lock lets go: then queued first again, or forgotten if the project locked, as a lock or an
+/// unlock forgets what it cut short (a page asks for it again). One waiter a project.
+fn wait_for_project(drawing: Drawing) {
+    let root = drawing.root.clone();
+    let mut queue = QUEUE.0.lock().expect("thumbnail queue");
+    let waiting = queue.waiting.entry(root.clone()).or_default();
+    let first = waiting.is_empty();
+    waiting.push(drawing);
+    drop(queue);
+    if !first {
+        return;
+    }
+    tokio::spawn(async move {
+        let open = super::vault::admit_root(&root).await.is_ok();
+        let mut queue = QUEUE.0.lock().expect("thumbnail queue");
+        for drawing in queue.waiting.remove(&root).unwrap_or_default() {
+            let key = drawing.key();
+            match open {
+                true => {
+                    queue.held.insert(key, false);
+                    queue.jobs.push_front(drawing);
+                }
+                false => drop(queue.held.remove(&key)),
+            }
+        }
+        drop(queue);
+        QUEUE.1.notify_waiters();
+    });
+}
+
+/// A moment's admission to `drawing`'s project, never waiting: `None` while a lock waits for it or holds it. A plain project has no gate.
+fn admitted(drawing: &Drawing) -> Result<Option<Option<tokio::sync::OwnedRwLockReadGuard<()>>>, Error> {
+    if !drawing.private {
+        return Ok(Some(None));
+    }
+    match super::vault::try_admit_root(&drawing.root) {
+        Ok(access) => Ok(Some(Some(access))),
+        Err(error) if error.code == "project_busy" => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 /// The thumbnail called `name` in `dir`, if it is there.
 fn kept(dir: &FsPath, name: &str) -> Option<PathBuf> {
     ["png", "jpg", "mp4"].iter().map(|ext| dir.join(format!("{name}.{ext}"))).find(|at| at.is_file())
 }
 
-/// `drawing` drawn into its project's store, unless it's there already.
-async fn make(host: Host, mut drawing: Drawing) -> Result<PathBuf, Error> {
-    let access = match drawing.private {
-        true => Some(super::vault::admit_root(&drawing.root).await?),
-        false => None,
-    };
-    let dir = super::vault::resolve_path(&drawing.root)?.join(STORE);
-    drawing.source = super::vault::resolve_path(&drawing.source)?;
+/// `drawing` drawn into its project's store, unless it's there already. `None`: a lock waits for its project, or holds it.
+async fn make(host: Host, mut drawing: Drawing) -> Result<Option<PathBuf>, Error> {
     let name = drawing.name();
-    if let Some(at) = kept(&dir, &name) {
-        return Ok(at);
+    {
+        let Some(_access) = admitted(&drawing)? else { return Ok(None) };
+        let dir = super::vault::resolve_path(&drawing.root)?.join(STORE);
+        if let Some(at) = kept(&dir, &name) {
+            return Ok(Some(at));
+        }
     }
-    // Its turn first: finding ffmpeg runs it, and blocks, so that too is a few at a time.
+    // Its turn and ffmpeg first, holding nothing of the project: finding ffmpeg runs it, and blocks, so that too is a few at a time,
+    // and a lock queued on the project waits for neither (cl-1025).
     let permit = FFMPEGS.acquire().await.expect("ffmpeg's turns never close");
     let (ffmpeg, ffprobe) = host.ffmpeg().await?;
+    let Some(access) = admitted(&drawing)? else { return Ok(None) };
+    let dir = super::vault::resolve_path(&drawing.root)?.join(STORE);
+    drawing.source = super::vault::resolve_path(&drawing.source)?;
     tokio::task::spawn_blocking(move || {
         let _access = access;
         let _permit = permit;
-        crate::tools::quietly(|| draw(&ffmpeg, &ffprobe, &drawing, &dir, &name)).map_err(|why| {
-            // The source path can disappear while waiting for FFmpeg. Only a successful draw is kept.
-            if !drawing.private { warn!("thumbnail {name} can't be drawn: {why}"); }
-            Error::new(Kind::Validation, "thumb_failed", format!("ffmpeg can't draw this file: {why}"))
-        })
+        // The source path can disappear while waiting for FFmpeg. Only a successful draw is kept; a failed one is said by its drawer.
+        crate::tools::quietly(|| draw(&ffmpeg, &ffprobe, &drawing, &dir, &name))
+            .map_err(|why| Error::new(Kind::Validation, "thumb_failed", format!("ffmpeg can't make a thumbnail of this file: {why}.")))
     })
     .await
     .map_err(|e| Error::new(Kind::Internal, "thumb_failed", e.to_string()))?
+    .map(Some)
 }
 
 /// Runs ffmpeg writing its one picture over `out`. Err: what it said.

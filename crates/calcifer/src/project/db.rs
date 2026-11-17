@@ -29,9 +29,14 @@ pub(crate) const DB: &str = "project.db";
 /// Its write-ahead log, where a commit lands first.
 pub(crate) const WAL: &str = "project.db-wal";
 /// This schema's `user_version`: 4's (cl-904's rows, each box's stable id on its row so the rows alone say what the document does,
-/// cl-885), with the project's run journal beside them (5) and the keys its runs are named by (6, cl-987). A database of another isn't
-/// read; an older one from 2 is migrated (`migrate`). A new schema is this number and its step in `migrate`.
-pub(super) const VERSION: i64 = 6;
+/// cl-885), with the project's run journal beside them (5), the keys its runs are named by (6, cl-987), and its runs numbered from 1
+/// (7, cl-1075). A database of another isn't read; an older one from 2 is migrated (`migrate`). A new schema is this number and its
+/// step in `migrate`.
+pub(super) const VERSION: i64 = 7;
+/// 6 has 7's tables: one whose runs couldn't be numbered from 1 (`migrate` says why) stays 6 and is read as it is.
+const UNNUMBERED: i64 = 6;
+/// What the keys a project held wait for, once (cl-1075): the next open names it by a key no other folder's name proposes.
+pub(super) const KEY_REVIEW: &str = "key_review";
 /// The keys its runs were named by, `KEY-N` (cl-987), in the order it took them: the last is its key now. It travels with the folder.
 const KEYS: &str = "CREATE TABLE IF NOT EXISTS project_keys (key TEXT PRIMARY KEY, ord INTEGER NOT NULL) STRICT;";
 const SCHEMA: &str = "
@@ -166,7 +171,7 @@ pub(crate) struct Keyed {
 }
 
 fn err(at: &Path, e: impl std::fmt::Display) -> Error {
-    Error::new(Kind::Unavailable, "project_db", format!("{}: {e}", at.display()))
+    Error::new(Kind::Unavailable, "project_db", format!("Cozy couldn't use {}: {e}.", at.display()))
 }
 
 /// A SQLite error at `at`. Its write lock held past the busy timeout is another program's open transaction: `file_held`, which the page says
@@ -181,7 +186,7 @@ fn sql(at: &Path, e: rusqlite::Error) -> Error {
 /// `at` held by another program: its write lock past the busy timeout.
 pub(crate) fn held(at: &Path) -> Error {
     let name = at.file_name().map_or_else(|| at.display().to_string(), |name| name.to_string_lossy().into_owned());
-    Error::new(Kind::Unavailable, "file_held", format!("{name} is open in another program")).remedy("close it, and save again")
+    Error::new(Kind::Unavailable, "file_held", format!("{name} is open in another program.")).remedy("Close it, then save again.")
 }
 
 fn json<T: serde::Serialize>(value: &T) -> String {
@@ -200,6 +205,19 @@ pub(crate) fn connect(path: &Path, read_only: bool) -> Result<Connection, Error>
     };
     let conn = Connection::open_with_flags(path, flags).map_err(|error| sql(path, error))?;
     conn.busy_timeout(WAIT).map_err(|error| sql(path, error))?;
+    Ok(conn)
+}
+
+/// A connection that only reads a project.db already opened (and so migrated) here: a run journal's (`Folder::journal_read`), with
+/// nothing checked or created, so a read that needs one more pays a file open, not an open's checks (cl-1010). It reads as any reader
+/// does (`query_only`): one opened read-only would rebuild the WAL's index from the WAL itself, a slower read each time.
+pub(crate) fn reader(path: &Path) -> Result<Connection, Error> {
+    let conn = connect(path, false)?;
+    // Only a current one: a project.db not yet migrated is opened as the project's reader opens it, which migrates it.
+    require_current(&conn, path)?;
+    conn.pragma_update(None, "query_only", "ON").map_err(|error| sql(path, error))?;
+    conn.pragma_update(None, "temp_store", "MEMORY").map_err(|error| sql(path, error))?;
+    crate::store::register_owner(&conn, path.parent().map(Path::to_owned)).map_err(|error| sql(path, error))?;
     Ok(conn)
 }
 
@@ -244,42 +262,55 @@ fn has_table(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
 /// stand, and the document's next change leaves them out. Schema 4 reads a project from its rows (cl-885): it adds each box's id to its
 /// row, and `rows_at` and `conflicts` to `meta`, and changes no row 3 has. Schema 5 adds the project's run journal beside them. A 3
 /// with the journal and no rows, from a candidate of 5, takes the rows too. Schema 6 adds `project_keys` (cl-987), and nothing else: a
-/// 5 takes it in place. One transaction from any older schema; the project as it was is kept beside it once,
-/// `project.db.pre-schema6`, never read.
+/// 5 takes it in place. Schema 7 numbers its runs from 1 (`number`). One transaction from any older schema to 6, then one to 7; the
+/// project as it was before either changes it is kept beside it once, `project.db.pre-schema7`, never read.
 fn migrate(path: &Path) -> Result<(), Error> {
+    structure(path)?;
+    number(path)
+}
+
+/// `project.db.pre-schema7`, made from `conn` once.
+fn keep_copy(path: &Path, conn: &Connection) -> Result<(), Error> {
+    let kept = path.with_file_name(format!("{DB}.pre-schema{VERSION}"));
+    if kept.exists() { return Ok(()); }
+    let part = path.with_file_name(format!("{DB}.pre-schema{VERSION}.part"));
+    conn.backup(rusqlite::MAIN_DB, &part, rusqlite::backup::NO_PROGRESS).map_err(|error| sql(path, error))?;
+    std::fs::rename(&part, &kept).map_err(|error| err(path, error))
+}
+
+fn user_version(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+}
+
+/// Any schema from 2 to 6's tables.
+fn structure(path: &Path) -> Result<(), Error> {
     let e = |error| sql(path, error);
-    let version = |conn: &Connection| conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0));
-    let older = |version: i64| (2..VERSION).contains(&version);
+    let older = |version: i64| (2..UNNUMBERED).contains(&version);
     let checked = connect(path, true)?;
-    if !older(version(&checked).map_err(e)?) {
+    if !older(user_version(&checked).map_err(e)?) {
         return Ok(());
     }
-    if version(&checked).map_err(e)? == 5 {
+    if user_version(&checked).map_err(e)? == 5 {
         drop(checked);
         let mut conn = connect(path, false)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(e)?;
-        if version(&tx).map_err(e)? == 5 {
+        if user_version(&tx).map_err(e)? == 5 {
             tx.execute_batch(KEYS).map_err(e)?;
-            tx.pragma_update(None, "user_version", VERSION).map_err(e)?;
+            tx.pragma_update(None, "user_version", UNNUMBERED).map_err(e)?;
         }
         return tx.commit().map_err(e);
     }
     // A 4 with the journal is a candidate's of 5, never released: refused as it is rather than read as #3198's 4.
-    if version(&checked).map_err(e)? == 4 && has_table(&checked, "runs").map_err(e)? {
-        return Err(Error::new(Kind::Validation, "project_db_version", format!("{} has an unreleased schema 4 with a run journal; only current CRDT schema {VERSION} is supported", path.display()))
-            .remedy("Preserve this database. Create a new current-format project in a separate empty directory"));
+    if user_version(&checked).map_err(e)? == 4 && has_table(&checked, "runs").map_err(e)? {
+        return Err(Error::new(Kind::Validation, "project_db_version", format!("{} uses an unreleased format (schema 4 with a run journal), and Cozy only opens schema {VERSION}.", path.display()))
+            .remedy("Keep this database safe, and make a new project in a separate empty folder."));
     }
-    let kept = path.with_file_name(format!("{DB}.pre-schema{VERSION}"));
-    if !kept.exists() {
-        let part = path.with_file_name(format!("{DB}.pre-schema{VERSION}.part"));
-        checked.backup(rusqlite::MAIN_DB, &part, rusqlite::backup::NO_PROGRESS).map_err(e)?;
-        std::fs::rename(&part, &kept).map_err(|error| err(path, error))?;
-    }
+    keep_copy(path, &checked)?;
     drop(checked);
     let mut conn = connect(path, false)?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(e)?;
     // Another process may have migrated it while this waited.
-    let from = version(&tx).map_err(e)?;
+    let from = user_version(&tx).map_err(e)?;
     if !older(from) || (from == 4 && has_table(&tx, "runs").map_err(e)?) {
         return Ok(());
     }
@@ -297,8 +328,49 @@ fn migrate(path: &Path) -> Result<(), Error> {
         tx.execute_batch("ALTER TABLE runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1").map_err(e)?;
     }
     tx.execute_batch(KEYS).map_err(e)?;
-    tx.pragma_update(None, "user_version", VERSION).map_err(e)?;
+    tx.pragma_update(None, "user_version", UNNUMBERED).map_err(e)?;
     tx.commit().map_err(e)
+}
+
+/// 6 to 7 (cl-1075): its runs numbered 1..n in the order made, each number it keeps of them moved with them (`numbers::renumber`),
+/// and its key looked at again as it opens (`KEY_REVIEW`). What `renumber` refuses rolls all of it back: the project opens as it was,
+/// on 6, and Calcifer says why, once.
+fn number(path: &Path) -> Result<(), Error> {
+    let e = |error| sql(path, error);
+    let checked = connect(path, true)?;
+    if user_version(&checked).map_err(e)? != UNNUMBERED {
+        return Ok(());
+    }
+    if !super::numbers::numbered(&checked).map_err(e)? {
+        keep_copy(path, &checked)?;
+    }
+    drop(checked);
+    let mut conn = connect(path, false)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(e)?;
+    if user_version(&tx).map_err(e)? != UNNUMBERED {
+        return Ok(());
+    }
+    match super::numbers::renumber(&tx) {
+        Ok(_) => {
+            tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, '1')", [KEY_REVIEW]).map_err(e)?;
+            tx.pragma_update(None, "user_version", VERSION).map_err(e)?;
+            tx.commit().map_err(e)
+        }
+        Err(why) => {
+            drop(tx);
+            unnumbered(path, &why);
+            Ok(())
+        }
+    }
+}
+
+/// The projects whose runs kept their numbers, each said once.
+static UNNUMBERED_SAID: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>> = std::sync::LazyLock::new(Default::default);
+
+fn unnumbered(path: &Path, why: &str) {
+    if UNNUMBERED_SAID.lock().unwrap_or_else(|e| e.into_inner()).insert(path.to_owned()) {
+        tracing::warn!(target: "cozy.service_health", code = "runs_not_renumbered", why, "a project's runs keep their numbers: they didn't hold once moved, so it opens as it was");
+    }
 }
 
 /// What a read takes, added beside the rows a project already has: each box's id on its row, and its identity and alternatives in
@@ -377,13 +449,13 @@ fn read_lock(conn: &Connection, at: &Path) -> Result<Lock, Error> {
 
 fn require_current(conn: &Connection, path: &Path) -> Result<(), Error> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).map_err(|error| sql(path, error))?;
-    if version != VERSION {
-        return Err(Error::new(Kind::Validation, "project_db_version", format!("{} has schema {version}; only current CRDT schema {VERSION} is supported", path.display()))
-            .remedy("Preserve this database. Create a new current-format project in a separate empty directory"));
+    if !(UNNUMBERED..=VERSION).contains(&version) {
+        return Err(Error::new(Kind::Validation, "project_db_version", format!("{} uses schema {version}, which this Cozy can't open (it opens up to schema {VERSION}).", path.display()))
+            .remedy("Keep this database safe, and make a new project in a separate empty folder."));
     }
     let format: i64 = conn.query_row("SELECT format FROM crdt_document WHERE id = 1", [], |row| row.get(0)).map_err(|error| sql(path, error))?;
     if format != crdt::FORMAT {
-        return Err(Error::new(Kind::Validation, "project_db_version", format!("{} has CRDT format {format}; only format {} is supported", path.display(), crdt::FORMAT)));
+        return Err(Error::new(Kind::Validation, "project_db_version", format!("{} uses format {format}, and Cozy only opens format {}.", path.display(), crdt::FORMAT)));
     }
     Ok(())
 }
@@ -404,7 +476,7 @@ fn configure(conn: &Connection, path: &Path) -> Result<(), Error> {
 /// Its identity, as its rows keep it beside its document; one from before schema 4 is the document's.
 pub(crate) fn identity(conn: &Connection) -> Option<(String, String)> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).ok()?;
-    if !(2..VERSION).contains(&version) {
+    if !(2..UNNUMBERED).contains(&version) {
         require_current(conn, Path::new(DB)).ok()?;
         // Never a project with no native document: its row stands beside what it keeps.
         document_at(conn, Path::new(DB)).ok()?;
@@ -456,13 +528,20 @@ pub(crate) fn keys(conn: &Connection) -> Vec<String> {
     rows.query_map([], |row| row.get(0)).map(|rows| rows.flatten().collect()).unwrap_or_default()
 }
 
-/// Keeps `key` as its key now, after those it had; `fresh`, those go first (a copy's were its original's). `seq` doesn't move.
+/// Whether its keys wait to be looked at again as it opens (`KEY_REVIEW`).
+pub(crate) fn key_review(conn: &Connection) -> bool {
+    meta(conn, KEY_REVIEW).is_some()
+}
+
+/// Keeps `key` as its key now, after those it had; `fresh`, those go first (a copy's were its original's, a reviewed one's no one
+/// names it by). Its review is done. `seq` doesn't move.
 pub(crate) fn set_key(conn: &Connection, at: &Path, key: &str, fresh: bool) -> Result<(), Error> {
     let e = |error| sql(at, error);
     let tx = Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate).map_err(e)?;
     if fresh {
         tx.execute("DELETE FROM project_keys", []).map_err(e)?;
     }
+    tx.execute("DELETE FROM meta WHERE key = ?1", [KEY_REVIEW]).map_err(e)?;
     tx.execute("INSERT INTO project_keys (key, ord) VALUES (?1, (SELECT COALESCE(MAX(ord), 0) + 1 FROM project_keys))
         ON CONFLICT (key) DO UPDATE SET ord = excluded.ord", [key]).map_err(e)?;
     tx.commit().map_err(e)
@@ -682,7 +761,7 @@ fn read_rows(conn: &Connection, at: &Path) -> Result<(Stored, Digest), Error> {
     let mut digest = Digest::default();
     let text = |value: &Sql| match value {
         Sql::Text(text) => Ok(text.clone()),
-        other => Err(err(at, format!("a row holds {other:?} where it holds text"))),
+        other => Err(err(at, format!("a row has {other:?} where text belongs"))),
     };
     let mut read = |table: &str, query: &str| -> Result<Vec<Vec<Sql>>, Error> {
         let mut statement = conn.prepare(query).map_err(e)?;
@@ -715,7 +794,7 @@ fn read_rows(conn: &Connection, at: &Path) -> Result<(Stored, Digest), Error> {
     let mut canvas = BTreeMap::new();
     let number = |value: &Sql| match value {
         Sql::Real(x) => Ok(*x),
-        other => Err(err(at, format!("a canvas row holds {other:?} where it holds a number"))),
+        other => Err(err(at, format!("a canvas row has {other:?} where a number belongs"))),
     };
     for row in read(CANVAS, "SELECT key, name, x, y, w, seq, by FROM canvas")? {
         let w = match &row[4] { Sql::Null => None, w => Some(number(w)?) };
@@ -802,7 +881,7 @@ fn rows_differ(rows: &Stored, document: &Stored) -> Vec<String> {
 fn read_document(conn: &Connection, at: &Path) -> Result<crdt::Document, Error> {
     let (format, bytes, heads): (i64, Vec<u8>, String) = conn.query_row("SELECT format, snapshot, heads FROM crdt_document WHERE id = 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).map_err(|e| sql(at, e))?;
     if format != crdt::FORMAT {
-        return Err(err(at, format!("unknown CRDT storage format {format}; update cozy")));
+        return Err(err(at, format!("it uses storage format {format}, which this version of Cozy doesn't know. Update Cozy")));
     }
     crdt::Document::load(&bytes, &heads, at)
 }
@@ -818,7 +897,7 @@ fn save_document(tx: &Transaction<'_>, at: &Path, doc: &mut crdt::Document, seq:
             tx.execute("INSERT OR REPLACE INTO crdt_document (id, format, snapshot, heads) VALUES (1, ?1, ?2, ?3)", params![crdt::FORMAT, bytes, json(&heads)]).map_err(|e| sql(at, e))?;
         }
         Some(base) => {
-            let changed = || Error::new(Kind::Conflict, "project_changed", "the project changed while this edit was being committed; read it again and retry");
+            let changed = || Error::new(Kind::Conflict, "project_changed", "The project changed while this edit was being committed. Reload it and try again.");
             let token: String = tx.query_row("SELECT heads FROM crdt_document WHERE id = 1", [], |row| row.get(0)).map_err(|e| sql(at, e))?;
             if crdt::head_set(&token)? != base.iter().copied().collect() { return Err(changed()); }
             // Explicit heads avoid AutoCommit::load's empty save cursor. The result is
@@ -909,7 +988,7 @@ pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &
             let doc = read_document(&tx, at)?;
             let stands: std::collections::BTreeSet<String> = doc.heads().into_iter().collect();
             if !before.heads.is_empty() && stands != before.heads.iter().cloned().collect::<std::collections::BTreeSet<_>>() {
-                return Err(Error::new(Kind::Conflict, "project_changed", "the project changed while this edit was being committed; read it again and retry"));
+                return Err(Error::new(Kind::Conflict, "project_changed", "The project changed while this edit was being committed. Reload it and try again."));
             }
             doc
         }
@@ -1175,7 +1254,7 @@ pub(crate) fn create(path: &Path, stored: &Stored, ops: &[OpRow], asked: &[(Stri
 pub(super) fn create_with_key(path:&Path,stored:&Stored,ops:&[OpRow],asked:&[(String,String)],key:Option<&(String,String)>)->Result<(),Error> {
     OpenOptions::new().write(true).create_new(true).open(path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::AlreadyExists {
-            Error::new(Kind::Conflict, "project_db_exists", format!("{} already exists; preserve it and choose a fresh database path", path.display()))
+            Error::new(Kind::Conflict, "project_db_exists", format!("{} already exists. Keep it, and choose a new path for the database.", path.display()))
         } else { err(path, error) }
     })?;
     let mut conn = connect(path, false)?;

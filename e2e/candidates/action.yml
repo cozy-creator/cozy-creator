@@ -99,6 +99,14 @@ runs:
         repository: cozy-creator/cozy-runtime
         ref: ${{ inputs.runtime_ref }}
         path: .rt
+    # Native-only CLI jobs still publish source packages into their isolated Hub.
+    # Their reader uses the same Runtime source even though they run no models.
+    - if: inputs.from == 'native-artifact' && inputs.runtime == ''
+      uses: actions/checkout@v5
+      with:
+        repository: cozy-creator/cozy-runtime
+        ref: ${{ inputs.repo == 'cozy-runtime' && inputs.ref || inputs.runtime_ref }}
+        path: .seed-rt
     # cozy as an earlier merge-group or dispatched run built it for this OS from the same build inputs (a PR's own
     # dispatch, for its queue entry), else built here and kept for the next (build.sh).
     - id: reuse
@@ -168,6 +176,8 @@ runs:
         RELEASE: ${{ inputs.release }}
         TENSORFS: ${{ inputs.tensorfs }}
         RUNTIME: ${{ inputs.runtime }}
+        RUNTIME_REF: ${{ inputs.repo == 'cozy-runtime' && inputs.ref || inputs.runtime_ref }}
+        PACKAGES_REF: ${{ inputs.repo == 'packages' && inputs.ref || inputs.packages_ref }}
         BUILD_SH: ${{ github.action_path }}/build.sh
         GH_TOKEN: ${{ github.token }}
         CARGO_INCREMENTAL: "0"
@@ -192,7 +202,10 @@ runs:
           [ "$REPO" != cozy-creator ] || creator=.src
           [ "$REPO" != cozy-runtime ] || runtime=.src
           [ -n "$TENSORFS" ] || [ -z "$machine" ] || bash "$BUILD_SH" tensorfs "$creator" "$out" > /dev/null
-          [ -n "$RUNTIME" ] || [ -z "$machine" ] || bash "$BUILD_SH" runtime "$runtime" "$out" > /dev/null
+          [ -n "$RUNTIME" ] || bash "$BUILD_SH" runtime "$runtime" "$out" > /dev/null
+        fi
+        if [ "$FROM" = native-artifact ] && [ -z "$RUNTIME" ]; then
+          bash "$BUILD_SH" runtime .seed-rt "$out" > /dev/null
         fi
         # The TensorD a rental takes, as the release's image will carry it: the version taken, else the Linux build.
         pod=$TENSORD
@@ -206,7 +219,12 @@ runs:
           args=(--tensord "$TENSORD")
         fi
         [ -z "$machine" ] || args+=(--tensorfs "${TENSORFS:-$(ls "$out"/tensorfs-*.whl)}" --runtime "${RUNTIME:-$(ls "$out"/cozy_runtime-*.whl)}")
-        [[ " $BUILD " != *" package "* ]] || args+=(--packages .src)
+        # A packages change is the packages checkout, whatever its selection's build tokens (a `select=cpu` dispatch has none).
+        [ "$REPO" != packages ] && [[ " $BUILD " != *" package "* ]] || args+=(--packages .src)
         [ -z "$pod" ] || args+=(--pod-tensord "$pod")
         echo "CANDIDATES=${args[*]}" >> "$GITHUB_ENV"
+        echo "E2E_SEED_RUNTIME=${RUNTIME:-$(ls "$out"/cozy_runtime-*.whl)}" >> "$GITHUB_ENV"
+        echo "E2E_SEED_TENSORFS=${TENSORFS:-$(ls "$out"/tensorfs-*.whl 2>/dev/null || true)}" >> "$GITHUB_ENV"
+        echo "E2E_SELECTED_RUNTIME_REF=$RUNTIME_REF" >> "$GITHUB_ENV"
+        echo "E2E_SELECTED_PACKAGES_REF=$PACKAGES_REF" >> "$GITHUB_ENV"
         echo "candidates: ${args[*]}"

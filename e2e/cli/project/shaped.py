@@ -110,11 +110,11 @@ class Still(msgspec.Struct):
     image: ImageFile
 
 
-def _still(out: Outputs) -> ImageFile:
-    return out.save_image(ImageFrame(SIDE, SIDE, b"\x20\x40\x60" * SIDE**2), format="png")
+def _still() -> ImageFile:
+    return ImageFile.from_image(ImageFrame(SIDE, SIDE, b"\x20\x40\x60" * SIDE**2), format="png")
 
 
 @app.tool(label="Shaped Picture")
-def picture(payload: PictureInput, out: Outputs) -> Still:
+def picture(payload: PictureInput) -> Still:
     """A picture of what it's told, reading each picture it names."""
-    return Still(_still(out))
+    return Still(_still())

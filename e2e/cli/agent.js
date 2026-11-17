@@ -41,7 +41,7 @@ function json(...words) {
 /** Its rows against the document they were written with (cl-885), after a write: a read takes the rows, so any difference is a fault. */
 async function integrity(project, after) {
   const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
-  const answer = await fetch(`http://${holder.address}/v1/projects/${encodeURIComponent(project)}/integrity`, { headers: { Authorization: `Bearer ${holder.token}`, 'cozy-project-storage': '3' } });
+  const answer = await fetch(`http://${holder.address}/v1/projects/${encodeURIComponent(project)}/integrity`, { headers: { Authorization: `Bearer ${holder.token}` } });
   const found = answer.ok ? (await answer.json()).differences : [`${answer.status} ${await answer.text()}`];
   check(`rows_equal_document_after_${after}`, found.length === 0, found);
 }
@@ -116,7 +116,7 @@ function page(verb, ...words) {
 
   // A name it doesn't have: refused in one line, with the name it likely meant.
   const typo = cozy('get', 'shot');
-  check('a_typo_is_refused_with_its_fix', typo.code !== 0 && /did you mean shot_1\?/.test(typo.err) && typo.err.trim().split('\n').length <= 2, typo);
+  check('a_typo_is_refused_with_its_fix', typo.code !== 0 && /[Dd]id you mean shot_1\?/.test(typo.err) && typo.err.trim().split('\n').length <= 2, typo);
 
   // Takes: three rendered, the newest shown and the rest counted; every one with --takes, and one by its number.
   page('render', '--on', 'local', '--n', '3', 'shot_1');

@@ -4,10 +4,13 @@
 mypy
 cryptography
 h2
-cozy-runtime==0.45.0
+# The Runtime of the open RC with the author API the fixtures use: its pure wheel, built from this commit.
+cozy-runtime @ https://github.com/cozy-creator/cozy-runtime/archive/30c6eb3efc2b479ee9e5073f504784372e73751a.tar.gz
 msgspec
 numpy
 pillow
+av
+xxhash
 torch @ https://download.pytorch.org/whl/cpu/torch-2.15.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl
 triton
 diffusers

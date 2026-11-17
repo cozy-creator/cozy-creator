@@ -2,6 +2,10 @@
 const STROKES = {
   menu: "M3 6h14M3 10h14M3 14h14",
   close: "M5.5 5.5l9 9M14.5 5.5l-9 9",
+  /** Copy, as everywhere: two sheets, one over the other. */
+  copy: "M7.5 7.5h8.5v8.5H7.5zM12.5 7.5V4H4v8.5h3.5",
+  /** Copied. */
+  check: "M4.5 10.5l3.5 3.5 7.5-8",
   /** What deletes or discards, which Undo brings back; ✕ only closes (Paul, 11-12). */
   trash: "M3.5 5.5h13M8 5.5V3.8h4v1.7M5.3 5.5l.8 11h7.8l.8-11M8.6 8.5v5.5M11.4 8.5v5.5",
   plus: "M10 4.5v11M4.5 10h11",
@@ -19,8 +23,13 @@ const STROKES = {
   redo: "M12.5 4.5L16 8l-3.5 3.5M16 8H8.5a4.5 4.5 0 000 9H12",
   history: "M10 3.5a6.5 6.5 0 110 13 6.5 6.5 0 010-13zM10 6.5V10l2.5 1.6",
   orbit: "M16.2 8.6A6.5 6.5 0 104 12.6M16.5 3.8v4.8h-4.8",
+  /** Something to know before going on: a render that would be slow where it goes (cl-1004). */
+  warning: "M10 3.2l7.3 13H2.7zM10 8.2v3.8M10 14.4v.1",
   /** Scissors: a clip cut in two at the playhead. */
   split: "M7.5 6a2 2 0 11-4 0 2 2 0 014 0zM7.5 14a2 2 0 11-4 0 2 2 0 014 0zM7.2 7.1L16 13.5M7.2 12.9L16 6.5",
+  /** A player full screen, and back (cl-1080): corners out, corners in. */
+  fullscreen: "M3.5 7.5v-4h4M12.5 3.5h4v4M16.5 12.5v4h-4M7.5 16.5h-4v-4",
+  windowed: "M7.5 3.5v4h-4M16.5 7.5h-4v-4M12.5 16.5v-4h4M3.5 12.5h4v4",
 } as const
 
 const FILLS = {

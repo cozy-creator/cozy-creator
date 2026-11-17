@@ -199,7 +199,7 @@ async fn retire(
 /// `submit` under `key`, waited for until it settles.
 pub(crate) async fn settled(calcifer: &std::sync::Arc<Calcifer>, key: &str, submit: SubmitRun) -> Result<wire::Run, crate::Error> {
     let mut events = calcifer.subscribe();
-    let run = calcifer.submit(key, submit).await?.run;
+    let run = calcifer.submit(key, submit, crate::store::Task::Remove).await?.run;
     loop {
         if let Some(row) = calcifer.run_store(run.id.as_str())?.run(run.id.as_str())?
             && row.state == crate::store::State::Settled
@@ -209,7 +209,7 @@ pub(crate) async fn settled(calcifer: &std::sync::Arc<Calcifer>, key: &str, subm
         match events.recv().await {
             Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
             Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                return Err(crate::Error::Invalid("Calcifer is stopping".into()));
+                return Err(crate::Error::Invalid("Cozy is stopping.".into()));
             }
         }
     }
@@ -220,6 +220,9 @@ pub(crate) fn failure(run: &wire::Run) -> String {
     let machine = run.machine.as_deref().unwrap_or("the machine");
     match &run.reason {
         Some(reason) => format!("{machine}: {} ({})", reason.message, reason.code),
-        None => format!("{machine}: the run ended {:?}", run.status).to_lowercase(),
+        None => {
+            let status = format!("{:?}", run.status).to_lowercase();
+            format!("{machine}: the run ended {status}")
+        }
     }
 }

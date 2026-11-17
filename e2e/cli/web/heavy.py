@@ -12,7 +12,7 @@ import asyncio
 import os
 
 import msgspec
-from cozy_runtime.author import App, Context, ImageFrame, Outputs, Seed, Weights, call
+from cozy_runtime.author import App, Context, ImageFrame, Seed, Weights, call
 from cozy_runtime.fields import Image, Prompt
 from cozy_runtime.image import ImageResult
 from cozy_runtime.media import ImageFile
@@ -25,10 +25,14 @@ class Painted(msgspec.Struct):
     image: ImageFile
 
 
-@app.entrypoint(private=True, defaults={"weights": "zhengpeng7/birefnet@0.1.0"})
-async def paint(ctx: Context, *, image: ImageFile, weights: Weights, out: Outputs) -> Painted:
+class PaintInput(msgspec.Struct):
+    image: ImageFile
+
+
+@app.entrypoint(private=True, accelerator=True, defaults={"weights": "zhengpeng7/birefnet@0.1.0"})
+async def paint(ctx: Context, payload: PaintInput, *, weights: Weights) -> Painted:
     """The model on a GPU that makes `heavy` one: a picture of its own, as every output is (the one it's given is its caller's)."""
-    return Painted(out.save_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png"))
+    return Painted(ImageFile.from_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png"))
 
 
 class Words(msgspec.Struct, kw_only=True):
@@ -38,10 +42,10 @@ class Words(msgspec.Struct, kw_only=True):
 
 
 @app.tool(label="Heavy", named="heavy", accelerator=False)
-async def heavy(ctx: Context, payload: Words, out: Outputs) -> ImageResult:
+async def heavy(ctx: Context, payload: Words) -> ImageResult:
     """A still of one colour, and each picture it mentions painted by the model."""
     await asyncio.sleep(payload.seconds)
     for picture in payload.instructions.references.values():
-        await call(paint, image=picture.file)
-    image = out.save_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png")
+        await call(paint, PaintInput(image=picture.file))
+    image = ImageFile.from_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png")
     return ImageResult(image, SIDE, SIDE, payload.seed or 0, payload.instructions.text)

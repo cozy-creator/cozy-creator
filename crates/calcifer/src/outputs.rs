@@ -5,8 +5,8 @@
 //! replace the file whole once they match the revision's digest; `.part.held` beside it keeps the
 //! stretches in place, so a transfer cut off resumes with the rest; a tree output is a directory
 //! replaced the same way. One exporter works per run with something to export, started by the
-//! run's output events or, at startup, from the store. What stays on its machine (`OutputItem::stays`)
-//! is no export's: `bring` fetches it when something needs it. `serve` answers
+//! run's output events or, at startup, from the store. What stays on another machine (`OutputItem::stays`)
+//! is no export's: `bring` fetches it when something needs it; a local run's lands as any output does (cl-1046). `serve` answers
 //! `GET /v1/runs/{id}/outputs/{name}` from the exported file.
 use std::{
     collections::HashMap,
@@ -96,6 +96,10 @@ pub(crate) struct Exports {
     arriving: Mutex<HashMap<RunId, (String, std::collections::VecDeque<(Instant, u64)>)>>,
     /// Each machine's bytes a second into here, as its last exports of a MiB or more came (cl-921: a run's time left counts its results).
     rates: Mutex<HashMap<String, f64>>,
+    /// Each exporter's bytes in place as last seen, and since when (cl-1060): whether it still moves them.
+    seen: Mutex<HashMap<RunId, (u64, Instant)>>,
+    /// Each exporter's task: a lock that goes on past a stalled one ends it, and with it its open files in the project.
+    tasks: Mutex<HashMap<RunId, tokio::task::AbortHandle>>,
 }
 
 /// What a run's results coming here are called, as its progress says them.
@@ -106,8 +110,9 @@ pub(crate) const ARRIVING: &str = "downloading the result";
 enum Failure {
     /// A newer revision is recorded: that one is exported instead.
     Superseded,
-    /// This revision's bytes cannot be had: recorded with the item and not tried again.
-    Lost(String),
+    /// This revision's bytes cannot be had: recorded with the item and not tried again. `code` types why, set where the loss is
+    /// decided, for the run's reason (cl-1060): never read back from `why`'s words.
+    Lost { code: &'static str, why: String },
     /// Tried again after a pause, or once the machine changes.
     Again(String),
     /// Read whole, and its bytes are not this revision's. Tried again [`WRONG_READS`] times in all:
@@ -141,6 +146,8 @@ impl Calcifer {
         lock(&self.exports.moving).retain(|(id,..),_|!ids.contains(id.as_str()));
         lock(&self.exports.arriving).retain(|id,_|!ids.contains(id.as_str()));
         lock(&self.exports.runs).retain(|id,wake| { if ids.contains(id.as_str()) { wake.notify_waiters(); false } else { true } });
+        lock(&self.exports.seen).retain(|id, _| !ids.contains(id.as_str()));
+        lock(&self.exports.tasks).retain(|id, task| { if ids.contains(id.as_str()) { task.abort(); false } else { true } });
     }
 
     /// Starts an exporter for each run that owes one, then for each run whose outputs change.
@@ -173,11 +180,8 @@ impl Calcifer {
                         | Event::OutputDelta { .. }
                         | Event::OutputDone { .. },
                     )) => me.export(&id),
-                    // Untyped bytes were waiting for this: they stay on the machine, or are all that came.
-                    Ok((id, event)) if event.is_terminal() => {
-                        me.note_stays(&id);
-                        me.export(&id);
-                    }
+                    // Untyped bytes were waiting for this: they stay on the machine (the driver noted it), or are all that came.
+                    Ok((id, event)) if event.is_terminal() => me.export(&id),
                     Ok(_) => {}
                     Err(RecvError::Lagged(_)) => match me.each_store(|store| store.exports_owed()).map(|lists| lists.into_iter().flatten().collect::<Vec<_>>()) {
                         Ok(owed) => owed.iter().for_each(|(id, _)| me.export(id)),
@@ -190,15 +194,48 @@ impl Calcifer {
         Ok(())
     }
 
-    fn spawn_task(&self, task: impl Future<Output = ()> + Send + 'static) {
+    /// A task of Calcifer's that ends with it (`close`).
+    pub(crate) fn spawn_task(&self, task: impl Future<Output = ()> + Send + 'static) {
         let mut tasks = lock(&self.tasks);
+        // Asked under the lock `close` aborts under: one closed spawns nothing a close wouldn't end.
+        if self.closed() { return; }
         while tasks.try_join_next().is_some() {}
         tasks.spawn(task);
+    }
+
+    /// Ends these runs' exporters (cl-1060), for a lock that cuts a save gone silent: each stops at its next write batch, which the
+    /// lock's turn holds off.
+    pub(crate) fn end_exports_of(&self, ids: &[RunId]) {
+        self.retire_exports(&ids.iter().map(|id| id.to_string()).collect());
     }
 
     /// Whether the run's exporter goes on.
     pub(super) fn exporting(&self, id: &RunId) -> bool {
         lock(&self.exports.runs).contains_key(id)
+    }
+
+    /// Its exports' bytes in place now, over every item in flight.
+    fn bytes_in_place(&self, id: &RunId) -> u64 {
+        lock(&self.exports.moving).iter().filter(|((run, ..), _)| run == id).map(|(_, (moved, _))| moved.load(Ordering::Relaxed)).sum()
+    }
+
+    /// An item of `id` landed (cl-1060): progress, as bytes past its high-water mark are; the mark starts again from what's left.
+    fn landed_progress(&self, id: &RunId) {
+        let left = self.bytes_in_place(id);
+        if let Some(seen) = lock(&self.exports.seen).get_mut(id) { *seen = (left, Instant::now()); }
+    }
+
+    /// Whether the run's exporter still moves its outputs into its project (cl-1060): bytes in place past their high-water mark, or
+    /// an item landed, within `EXPORT_SILENCE` (a new exporter has that long to start). Nothing else counts: an attempt that
+    /// starts again with nothing moved, a wake, a retry. One that stalls holds no vault open: its outputs stay owed.
+    pub(super) fn export_moving(&self, id: &RunId) -> bool {
+        if !self.exporting(id) { return false; }
+        let in_place = self.bytes_in_place(id);
+        let now = Instant::now();
+        let mut seen = lock(&self.exports.seen);
+        let mark = seen.entry(id.clone()).or_insert((in_place, now));
+        if in_place > mark.0 { *mark = (in_place, now); }
+        now.duration_since(mark.1) < EXPORT_SILENCE
     }
 
     /// Starts the run's exporter, or wakes it.
@@ -211,23 +248,37 @@ impl Calcifer {
             }
             let wake = Arc::new(Notify::new());
             runs.insert(id.clone(), wake.clone());
+            // A new exporter has `EXPORT_SILENCE` to move its first bytes; one started again keeps its run's mark (cl-1060).
+            lock(&self.exports.seen).entry(id.clone()).or_insert((0, Instant::now()));
             wake
         };
-        let (me, id) = (self.clone(), id.clone());
-        self.spawn_task(async move { me.export_run(&id, &wake).await });
+        let (me, run) = (self.clone(), id.clone());
+        let mut tasks = lock(&self.tasks);
+        // Closed (asked under the lock `close` aborts under, #3456): no exporter, and its entries go, so none holds a vault as work.
+        if self.closed() {
+            drop(tasks);
+            lock(&self.exports.runs).remove(id);
+            lock(&self.exports.seen).remove(id);
+            return;
+        }
+        while tasks.try_join_next().is_some() {}
+        let task = tasks.spawn(async move { me.export_run(&run, &wake).await });
+        lock(&self.exports.tasks).insert(id.clone(), task);
     }
 
-    /// A project's run that ended: what stays on its machine, in the project's lock with who holds it.
-    fn note_stays(&self, id: &RunId) {
-        let Ok(Some(row)) = self.with_run_store(id.as_str(), |store| store.run(id.as_str())) else { return };
-        let (Some(project), Some(machine)) = (crate::project::of_landing(&row.out_dir), &row.machine) else { return };
-        let Ok(run) = self.record(&row) else { return };
+    /// A project's run that ended: what stays on its machine, in the project's lock with who holds it. `project_busy` when a lock
+    /// had the project's turn: its driver waits it out and notes it again (`hand_on`).
+    pub(super) fn note_stays(&self, id: &RunId) -> Result<(), StoreError> {
+        let Some(row) = self.with_run_store(id.as_str(), |store| store.run(id.as_str()))? else { return Ok(()) };
+        let (Some(project), Some(machine)) = (crate::project::of_landing(&row.out_dir), &row.machine) else { return Ok(()) };
+        let Ok(run) = self.record(&row) else { return Ok(()) };
         for item in run.output.iter().filter(|item| item.stays && item.path.is_none()) {
             let Some(sha256) = &item.sha256 else { continue };
             if let Err(why) = crate::project::stays(project, &sha256.to_string(), machine, item.length) {
                 export_warning(&row, format_args!("output {} not in its project lock: {why}", item.name));
             }
         }
+        Ok(())
     }
 
     fn making_scoped(&self, digest: &str, machine: &str) -> crate::store::Result<Option<(RunRow, OutputRow)>> {
@@ -254,7 +305,7 @@ impl Calcifer {
         }
         let link = match self.reach(&run, &mut None).await {
             Ok(link) => link,
-            Err(Failure::Lost(_)) => return false,
+            Err(Failure::Lost { .. }) => return false,
             Err(_) => return true,
         };
         let Some(lane) = link.lane(0, false) else { return true };
@@ -267,7 +318,7 @@ impl Calcifer {
     pub(crate) async fn bring(&self, digest: &str, machine: &str) -> Result<(), String> {
         let made = self.making_scoped(digest, machine).map_err(|e| e.to_string())?;
         let Some((run, item)) = made else {
-            return Err(format!("Calcifer knows of no run on {machine} that made it"));
+            return Err(format!("Cozy doesn't know which run on {machine} made it"));
         };
         // On its way here already: that export's landing, and no second read of it.
         let mut events = self.subscribe();
@@ -297,8 +348,8 @@ impl Calcifer {
             };
             let why = match done {
                 Ok(()) => return Ok(()),
-                Err(Failure::Superseded) => return Err("a newer revision of it is recorded".into()),
-                Err(Failure::Lost(message) | Failure::Refused(message)) => return Err(message),
+                Err(Failure::Superseded) => return Err("a newer version of it was saved".into()),
+                Err(Failure::Lost { why: message, .. } | Failure::Refused(message)) => return Err(message),
                 Err(Failure::Again(message) | Failure::Wrong(message)) => message,
             };
             let Some((wait, said)) = backoff.again(&why, false, None) else { return Err(why) };
@@ -324,6 +375,13 @@ impl Calcifer {
                     continue;
                 }
             };
+            // A job of Calcifer's lands nothing on this computer (cl-1028): what it made stays where it went (a checkpoint, the Hub).
+            if run.project_root.is_none() {
+                for item in &items {
+                    let _ = self.with_run_store(id.as_str(), |store| store.export_failed(id.as_str(), &item.name, item.index, item.rev, "a job lands nothing here"));
+                }
+                continue;
+            }
             // Outputs left on this computer's machine after it exited idle: it starts for them.
             if run.machine.as_deref() == Some("local")
                 && let Some(machines) = self.machines()
@@ -352,13 +410,13 @@ impl Calcifer {
                 let (name, index, rev) = (&item.name, item.index, item.rev);
                 let exported = match exported {
                     Err(Failure::Refused(message)) if run.state == RunState::Settled => {
-                        Err(Failure::Lost(format!("the machine refused it ({message})")))
+                        Err(Failure::Lost { code: "output_refused", why: format!("the machine refused to send it ({message})") })
                     }
                     Err(Failure::Wrong(message)) => {
                         let reads = wrong.entry((name.clone(), index, rev)).or_default();
                         *reads += 1;
                         match *reads >= WRONG_READS {
-                            true => Err(Failure::Lost(format!("read {reads} times, never its bytes: {message}"))),
+                            true => Err(Failure::Lost { code: "output_unreadable", why: format!("Cozy tried {reads} times but never got the whole file: {message}") }),
                             false => Err(Failure::Again(message)),
                         }
                     }
@@ -366,7 +424,7 @@ impl Calcifer {
                 };
                 match exported {
                     Ok(()) | Err(Failure::Superseded) => {}
-                    Err(Failure::Lost(reason)) => {
+                    Err(Failure::Lost { code, why: reason }) => {
                         export_warning(&run, format_args!("output {name} revision {rev} not exported: {reason}"));
                         if let Ok(out_dir) = crate::project::vault::resolve_path(&run.out_dir) {
                             let dest = out_dir.join(file_name(run.number, name, index, &item.media_type));
@@ -381,6 +439,9 @@ impl Calcifer {
                                 again = true;
                             }
                         }
+                        // Its run never reads completed with an output that isn't saved (cl-1060), typed by why.
+                        let lost = ::api::calcifer::Reason { code: code.into(), message: format!("output {name} wasn't saved: {reason}"), ..Default::default() };
+                        if let Ok(events) = self.with_run_store(id.as_str(), |store| store.outputs_not_saved(id.as_str(), &lost)) { self.publish(id, events); }
                     }
                     Err(Failure::Again(message) | Failure::Refused(message) | Failure::Wrong(message)) => {
                         export_warning(&run, format_args!("output {name} revision {rev} waits: {message}"));
@@ -417,11 +478,14 @@ impl Calcifer {
             Ok(None) => {
                 runs.remove(id);
                 lock(&self.exports.appended).retain(|(run, ..), _| run != id);
+                lock(&self.exports.seen).remove(id);
+                lock(&self.exports.tasks).remove(id);
             }
             // Its project closed: the exporter ends, and the project's next opening starts another.
             Err(StoreError::Locked(code)) if code != "project_busy" => {
-                warn!(run = %id, "its exporter ends with its outputs owed: {code}");
+                warn!("an exporter ends with its outputs owed: {code}");
                 drop(runs.remove(id));
+                lock(&self.exports.tasks).remove(id);
             }
             _ => {}
         }
@@ -436,19 +500,21 @@ impl Calcifer {
         changed: &mut Option<watch::Receiver<()>>,
     ) -> Result<Link, Failure> {
         let Some(name) = &run.machine else {
-            return Err(Failure::Lost("the run never reached a machine".into()));
+            return Err(Failure::Lost { code: "machine_unreached", why: "the run never reached a machine".into() });
         };
         let (machine, link, watch, _) = self.machine(name).map_err(Failure::Again)?;
         *changed = Some(watch);
         if machine.state == MachineState::Ended {
-            let reason = machine.reason.as_deref().unwrap_or("no reason was given");
-            return Err(Failure::Lost(format!("its machine {name} ended: {reason}")));
+            let reason = machine.reason.as_deref().unwrap_or("no reason given");
+            return Err(Failure::Lost { code: "machine_ended", why: format!("{name} ended ({reason})") });
         }
-        let link = link.ok_or_else(|| Failure::Again(format!("waiting for {name} to start")))?;
-        let owner=self.row_owner(run).map_err(|_|Failure::Again("project storage owner is unavailable".into()))?;
+        let link = link.ok_or_else(|| Failure::Again(format!("waiting for {name} to start up")))?;
+        let owner=self.row_owner(run).map_err(|_|Failure::Again("the project isn't open right now".into()))?;
         if let Some(owner)=owner {
-            if run.owner!=owner.project_id() { return Err(Failure::Refused("copied execution history is inert".into())); }
-            return crate::private_io::execution_link(owner.project_id(),owner.root(),name,&link).await.map_err(|error|Failure::Refused(error.code));
+            if run.owner!=owner.project_id() { return Err(Failure::Refused("it was copied from another project's history".into())); }
+            // Not proven yet (a new view after an unlock, a machine restarting, its namespace sealed by a lock): asked again,
+            // proven afresh, never a loss (cl-1060).
+            return crate::private_io::execution_link(owner.project_id(),owner.root(),name,&link).await.map_err(|error|Failure::Again(error.code));
         }
         Ok(link)
     }
@@ -485,18 +551,21 @@ impl Calcifer {
         let moved = Arc::new(AtomicU64::new(0));
         let key = (run.id.clone(), item.name.clone(), item.index);
         lock(&self.exports.moving).insert(key.clone(), (moved.clone(), item.length));
+        // Its project, whose read each write batch holds (cl-1060): a lock and a write never interleave.
+        let gate = self.row_owner(run).ok().flatten();
         let work = async {
             tokio::fs::create_dir_all(&out_dir).await.map_err(|e| {
-                Failure::Again(format!("cannot create {}: {e}", out_dir.display()))
+                Failure::Again(format!("couldn't create {}: {e}", out_dir.display()))
             })?;
             let staged = if item.media_type == tree::MEDIA {
-                fetch_tree(link, &target, item, &dest, &moved).await?
+                fetch_tree(link, &target, item, &dest, &moved, &gate).await?
             } else {
                 let appended = (run.id.clone(), item_id(run.number, item), item.rev);
                 let appended = lock(&self.exports.appended).get(&appended).copied();
-                fetch_file(link, &target, item, &dest, appended, &moved).await?
+                fetch_file(link, &target, item, &dest, appended, &moved, &gate).await?
             };
             let measured = self.measured(item, &staged).await;
+            let _batch = batch(&gate).await.map_err(Failure::Again)?;
             // It waits on its project's turn and the store's commit: off the async workers, which answer the page.
             tokio::task::block_in_place(|| self.land(run, item, &staged, &dest, measured.as_ref()))?;
             remove(&suffixed(&dest, HELD));
@@ -522,8 +591,8 @@ impl Calcifer {
                         && let Ok(Some(machine)) = self.store.machine(name)
                         && machine.state == MachineState::Ended
                     {
-                        let reason = machine.reason.as_deref().unwrap_or("no reason was given");
-                        break Err(Failure::Lost(format!("its machine {name} ended: {reason}")));
+                        let reason = machine.reason.as_deref().unwrap_or("no reason given");
+                        break Err(Failure::Lost { code: "machine_ended", why: format!("{name} ended ({reason})") });
                     }
                     continue;
                 }
@@ -548,6 +617,7 @@ impl Calcifer {
             }
         };
         lock(&self.exports.moving).remove(&key);
+        if done.is_ok() { self.landed_progress(&run.id); }
         if done.is_ok()
             && let Some(machine) = &run.machine
         {
@@ -644,7 +714,7 @@ impl Calcifer {
         let began = Instant::now();
         let old = suffixed(dest, ".old");
         let unplaced =
-            |e: std::io::Error| Failure::Again(format!("cannot place {}: {e}", dest.display()));
+            |e: std::io::Error| Failure::Again(format!("couldn't save {}: {e}", dest.display()));
         let timings = {
             let _placing = lock(&self.exports.placing);
             let lock_ms = began.elapsed().as_secs_f64() * 1000.0;
@@ -679,7 +749,7 @@ impl Calcifer {
                         }
                         // The file stands where it landed if `files/` itself can't take it.
                         Err(why) => {
-                            unlisted = Some(format!("{name} stands in .runs/, and its project can't keep it: {why}"));
+                            unlisted = Some(format!("{name} is in .runs/, but the project couldn't keep it: {why}"));
                             dest.to_owned()
                         }
                     }
@@ -759,13 +829,13 @@ pub(crate) async fn serve(
         let _placing = lock(&api.calcifer.exports.placing);
         let item = api.calcifer.row_store(&row)?.output(row.id.as_str(), name, index)?;
         let item = item.ok_or_else(|| {
-            let message = format!("run {number} has no output {name} at index {index}");
+            let message = format!("Run {number} has no result {name} at index {index}.");
             Refusal(api::refuse(Kind::NotFound, "output_not_found", message).0.next(format!("cozy run watch {number}")))
         })?;
         let (file, landed_folder) = match (&item.checkpoint, &item.path, item.exported_rev) {
             (None, Some(path), Some(_)) if item.media_type == tree::MEDIA => (None, Some(crate::project::vault::resolve_path(path).map_err(Refusal)?)),
             (None, Some(path), Some(_)) => (Some(std::fs::File::open(crate::project::vault::resolve_path(path).map_err(Refusal)?).map_err(|e| {
-                let message = format!("its file {} is gone: {e}", path.display());
+                let message = format!("The result's file {} is gone: {e}.", path.display());
                 Refusal(api::refuse(Kind::NotFound, "output_file_missing", message).0.next(format!("cozy run watch {number}")))
             })?), None),
             _ => (None, None),
@@ -777,7 +847,7 @@ pub(crate) async fn serve(
     }
     if let Some(checkpoint) = &item.checkpoint {
         let message = format!(
-            "output {name} of run {number} is a TensorFS checkpoint reference: {}@{}",
+            "Result {name} of run {number} is a model checkpoint ({}@{}), not a file.",
             checkpoint.model_id, checkpoint.revision
         );
         return Err(api::refuse(
@@ -790,11 +860,11 @@ pub(crate) async fn serve(
         let record = api.calcifer.record(&row)?;
         if record.output.iter().any(|kept| kept.stays && kept.name == *name && kept.index == index) {
             let on = row.machine.as_deref().unwrap_or("its machine");
-            let message = format!("output {name} of run {number} stays on {on}: it isn't brought to this computer");
+            let message = format!("Result {name} of run {number} stays on {on} and isn't downloaded to this computer.");
             return Err(Refusal(api::refuse(Kind::Conflict, "output_on_its_machine", message).0.next(format!("cozy run watch {number}"))));
         }
         if let Some(reason) = item.export_error {
-            let message = format!("output {name} of run {number} will not land: {reason}");
+            let message = format!("Result {name} of run {number} can't be downloaded: {reason}.");
             return Err(Refusal(api::refuse(Kind::Unavailable, "output_not_exported", message).0.next(format!("cozy run watch {number}"))));
         }
         let state = match row.state {
@@ -802,7 +872,7 @@ pub(crate) async fn serve(
             RunState::Accepted => "is running",
             _ => "is queued",
         };
-        let message = format!("output {name} of run {number} has not landed yet; the run {state}");
+        let message = format!("Result {name} of run {number} hasn't downloaded yet; the run {state}.");
         let refusal = api::refuse(Kind::Conflict, "output_not_ready", message);
         return Err(Refusal(refusal.0.next(format!("cozy run watch {number}"))));
     };
@@ -839,7 +909,7 @@ fn protect(mut response: Response, readable: Option<Arc<AtomicBool>>) -> Respons
 /// A folder output: its tree document, or with `member` one of its files, each named by its content so a client caches it.
 async fn folder(dir: &Path, member: Option<&str>, number: &str, name: &str, headers: &HeaderMap) -> Result<Response, Refusal> {
     let gone = |e: std::io::Error| {
-        let message = format!("its folder {} is gone: {e}", dir.display());
+        let message = format!("The result's folder {} is gone: {e}.", dir.display());
         Refusal(api::refuse(Kind::NotFound, "output_file_missing", message).0.next(format!("cozy run watch {number}")))
     };
     let at = dir.to_owned();
@@ -860,7 +930,7 @@ async fn folder(dir: &Path, member: Option<&str>, number: &str, name: &str, head
             let path = parts.iter().fold(dir.to_owned(), |path, part| path.join(part));
             let held = staged.files.iter().find(|file| file.path == path).filter(|_| !parts.iter().any(|part| matches!(*part, "" | "." | "..")));
             let Some(held) = held else {
-                let message = format!("output {name} of run {number} holds no {member}");
+                let message = format!("Result {name} of run {number} has no {member}.");
                 return Err(Refusal(api::refuse(Kind::NotFound, "output_member_not_found", message).0.next(format!("cozy run watch {number}"))));
             };
             let media = crate::runs::bind::sniff(&held.path).map(|sniffed| sniffed.media_type).unwrap_or_else(|_| "application/octet-stream".into());
@@ -869,31 +939,6 @@ async fn folder(dir: &Path, member: Option<&str>, number: &str, name: &str, head
     };
     let len = file.metadata().map(|m| m.len()).unwrap_or(0);
     crate::files::send(file, len, &media_type, &etag, headers).map_err(|e| api::refuse(Kind::Internal, "output_unreadable", e.to_string()))
-}
-
-/// Where a run that names no directory puts its outputs: its package's folder, `<org>-<name>` as
-/// the Go CLI named it (`fidika-minimax-h3`, `local-my-script`), from a target
-/// `<org>/<name>/<function>[@release]` (a root package's: `<name>`); the outputs folder itself for
-/// any other target.
-pub(crate) fn package_outputs(outputs: &Path, target: &str) -> PathBuf {
-    let named = |part: &&str| {
-        !part.is_empty()
-            && !part.starts_with('.')
-            && part
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-    };
-    match target.split('/').collect::<Vec<_>>().as_slice() {
-        [org, name, function]
-            if *org == ::api::names::ROOT && named(name) && !function.is_empty() =>
-        {
-            outputs.join(name)
-        }
-        [org, name, function] if named(org) && named(name) && !function.is_empty() => {
-            outputs.join(format!("{org}-{name}"))
-        }
-        _ => outputs.to_owned(),
-    }
 }
 
 /// The item's name in its run's output directory (`api::calcifer::output_file_name`).
@@ -929,6 +974,35 @@ fn remove(path: &Path) {
     let _ = std::fs::remove_dir_all(path).or_else(|_| std::fs::remove_file(path));
 }
 
+
+/// How long an exporter may move no byte past its high-water mark and land no item, and still count as saving (cl-1060): a lock
+/// waits that long on it before it cuts it. Progress is counted per chunk written (one body read's bytes, never a whole file) and
+/// at each landing. It can misjudge a writer that moves nothing for this long on a slow or busy disk, or one checking or measuring a
+/// very large file it fetched; a lock then cuts it: a remote machine's output stays owed and is saved at the next unlock, a local
+/// one is recorded not saved, its run failed and the lock's answer saying so.
+pub(crate) const EXPORT_SILENCE: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// An ended save's half-written files in its project (cl-1060): none is seen half-written, and the next unlock fetches the outputs
+/// whole.
+pub(crate) fn drop_partials(run: &RunRow, owed: &[OutputRow]) {
+    let Ok(out_dir) = crate::project::vault::resolve_path(&run.out_dir) else { return };
+    for item in owed {
+        let dest = out_dir.join(file_name(run.number, &item.name, item.index, &item.media_type));
+        remove(&suffixed(&dest, ".part"));
+        remove(&suffixed(&dest, HELD));
+        remove(&suffixed(&dest, ".manifest.part"));
+    }
+}
+
+/// A read of the project for one write batch into it (cl-1060): a lock waits for the batch, and no batch starts into a view a lock
+/// has. None for Calcifer's own runs, which write into no project.
+async fn batch(gate: &Option<crate::project::RunOwner>) -> Result<Option<tokio::sync::OwnedRwLockReadGuard<()>>, String> {
+    match gate {
+        Some(owner) => owner.writing().await.map(Some).map_err(|e| e.message),
+        None => Ok(None),
+    }
+}
+
 /// This revision's bytes in `<file>.part`, checked against its digest. A revision that extends
 /// the one the file holds reads only its new tail; an attempt cut off before resumes with what it
 /// left in place (`.part.held`), cleared by a digest that doesn't match.
@@ -939,6 +1013,7 @@ async fn fetch_file(
     dest: &Path,
     appended: Option<u64>,
     moved: &Arc<AtomicU64>,
+    gate: &Option<crate::project::RunOwner>,
 ) -> Result<PathBuf, Failure> {
     let (part, journal) = (suffixed(dest, ".part"), suffixed(dest, HELD));
     let follows = item.exported_rev.is_some_and(|held| held + 1 == item.rev);
@@ -954,7 +1029,7 @@ async fn fetch_file(
             Ok(held) => held,
             Err(e) if from == 0 => {
                 return Err(Failure::Again(format!(
-                    "cannot write {}: {e}",
+                    "couldn't write {}: {e}",
                     part.display()
                 )));
             }
@@ -968,7 +1043,7 @@ async fn fetch_file(
             phase = "output_prepare_file", bytes = item.length, appended_from = from, in_place,
             elapsed_ms = prepare_began.elapsed().as_secs_f64() * 1000.0); }
         moved.store(in_place, Ordering::Relaxed);
-        fetch(link, target, item.rev, &held, item.length, &part, Some(&journal), moved).await?;
+        fetch(link, target, item.rev, &held, item.length, &part, Some(&journal), moved, gate).await?;
         match check(&part, item.length, &item.digest).await {
             Ok(()) => return Ok(part),
             // What was in place before (an earlier attempt's, the revision this one extends) was
@@ -993,10 +1068,13 @@ async fn fetch_tree(
     item: &OutputRow,
     dest: &Path,
     moved: &Arc<AtomicU64>,
+    gate: &Option<crate::project::RunOwner>,
 ) -> Result<PathBuf, Failure> {
     let (stage, manifest) = (suffixed(dest, ".part"), suffixed(dest, ".manifest.part"));
     let unwritable =
-        |e: std::io::Error| Failure::Again(format!("cannot write {}: {e}", stage.display()));
+        |e: std::io::Error| Failure::Again(format!("couldn't write {}: {e}", stage.display()));
+    // A write into the project, as each batch is: never into a view a lock has, nor after a lock dropped what it left (cl-1060).
+    let preparing = batch(gate).await.map_err(Failure::Again)?;
     let prepared = blocking({
         let (stage, manifest, length) = (stage.clone(), manifest.clone(), item.length);
         move || {
@@ -1007,13 +1085,14 @@ async fn fetch_tree(
         }
     });
     prepared.await.map_err(unwritable)?;
-    fetch(link, target, item.rev, &[], item.length, &manifest, None, moved).await?;
+    drop(preparing);
+    fetch(link, target, item.rev, &[], item.length, &manifest, None, moved, gate).await?;
     check(&manifest, item.length, &item.digest).await?;
     let listed = std::fs::read(&manifest).map_err(unwritable)?;
     let _ = std::fs::remove_file(&manifest);
     let mut read: HashMap<String, PathBuf> = HashMap::new();
     let members =
-        tree::parse(&listed).map_err(|e| Failure::Lost(format!("the tree's manifest: {e}")))?;
+        tree::parse(&listed).map_err(|e| Failure::Lost { code: "output_unreadable", why: format!("couldn't read the folder's manifest: {e}") })?;
     for (path, tree::Member { length, sha256, .. }) in members {
         let digest = format!("sha256:{sha256}");
         let file = stage.join(&path);
@@ -1030,7 +1109,7 @@ async fn fetch_tree(
             member: path,
             ..target.clone()
         };
-        fetch(link, &member, item.rev, &[], length, &file, None, moved).await?;
+        fetch(link, &member, item.rev, &[], length, &file, None, moved, gate).await?;
         check(&file, length, &digest).await?;
         read.insert(digest, file);
     }
@@ -1120,7 +1199,7 @@ async fn check(path: &Path, length: u64, digest: &str) -> Result<(), Failure> {
         let hash_ms = hash_began.elapsed().as_secs_f64() * 1000.0;
         if held != length || got != digest {
             return Ok(Err(Failure::Wrong(format!(
-                "read {held} bytes with digest {got}, not {length} with {digest}"
+                "got {held} bytes with digest {got}, not {length} with {digest}"
             ))));
         }
         let sync_began = Instant::now();
@@ -1148,17 +1227,18 @@ async fn fetch(
     part: &Path,
     journal: Option<&Path>,
     moved: &Arc<AtomicU64>,
+    gate: &Option<crate::project::RunOwner>,
 ) -> Result<(), Failure> {
     let ranges = lanes::parts(held, length, RANGES_PER_LANE * LANES, RANGE);
     let read = lanes::transfer(ranges, LANES, |leg| {
         let lane = link.lane(leg.lane, leg.fresh);
-        let (target, part, moved) = (target.clone(), part.to_owned(), moved.clone());
+        let (target, part, moved, gate) = (target.clone(), part.to_owned(), moved.clone(), gate.clone());
         let stretch = Stretch { journal: journal.map(Path::to_owned), first: leg.first, at: leg.at.clone() };
         async move {
             let _stretch = stretch;
             let lane = lane.ok_or_else(|| Ranged::Again("no connection to the machine".into()))?;
             let range = (leg.first, leg.end, length);
-            read_range(lane, target, rev, range, part, leg.at, &moved).await
+            read_range(lane, target, rev, range, part, leg.at, &moved, &gate).await
         }
     });
     match read.await {
@@ -1232,6 +1312,7 @@ async fn read_range(
     part: PathBuf,
     at: Arc<AtomicU64>,
     moved: &AtomicU64,
+    gate: &Option<crate::project::RunOwner>,
 ) -> Result<(), Ranged<Failure>> {
     let mut timing = RangeTiming {
         private: private_path(&part),
@@ -1255,20 +1336,20 @@ async fn read_range(
     timing.phase = "validate_headers";
     if output.length != length {
         let held = format!(
-            "the machine holds {} bytes of revision {rev}, not {length}",
+            "the machine has {} bytes of version {rev}, not {length}",
             output.length
         );
-        return Err(Ranged::Stop(Failure::Lost(held)));
+        return Err(Ranged::Stop(Failure::Lost { code: "output_mismatch", why: held }));
     }
     if output.range.0 != first {
         return Err(Ranged::Again(format!(
-            "the machine answered bytes from {}, not {first}",
+            "the machine sent bytes from {}, not {first}",
             output.range.0
         )));
     }
     let unwritable = |e: std::io::Error| {
         Ranged::Stop(Failure::Again(format!(
-            "cannot write {}: {e}",
+            "couldn't write {}: {e}",
             part.display()
         )))
     };
@@ -1291,7 +1372,7 @@ async fn read_range(
         let data = match next {
             Some(Ok(data)) => data,
             Some(Err(e)) => return Err(Ranged::Again(e.to_string())),
-            None => return Err(Ranged::Again("the machine ended the range early".into())),
+            None => return Err(Ranged::Again("the machine stopped sending early".into())),
         };
         timing
             .first_body_ms
@@ -1299,9 +1380,11 @@ async fn read_range(
         let data = &data[..data.len().min((end - done) as usize)];
         timing.phase = "write_file";
         let write_began = Instant::now();
+        let batch = batch(gate).await.map_err(Ranged::Again)?;
         file.write_all(data).await.map_err(unwritable)?;
         timing.phase = "flush_file";
         file.flush().await.map_err(unwritable)?;
+        drop(batch);
         timing.file_write_ms += write_began.elapsed().as_secs_f64() * 1000.0;
         timing.chunks += 1;
         done += data.len() as u64;
@@ -1316,15 +1399,15 @@ async fn read_range(
 /// A machine's refusal of a read, as the read acts on it.
 fn refused(e: machine_client::Error) -> Ranged<Failure> {
     match e {
-        machine_client::Error::Refused { status: 404, error } => Ranged::Stop(Failure::Lost(format!(
-            "the machine no longer holds it ({}: {})",
-            error.code, error.message
-        ))),
-        // Definitive: the machine will not serve this read (403, 400, 416, 501) or holds the
-        // output at another revision (412). While the run goes on, its events bring the newer
-        // one; once it ended, none comes.
+        // Gone, said so: the machine holds no such run, output or object any more. The only loss (cl-1060).
+        machine_client::Error::Refused { status: 404, error } if matches!(error.code.as_str(), "run_not_found" | "output_not_found" | "object_not_found") => {
+            Ranged::Stop(Failure::Lost { code: "output_gone", why: format!("the machine no longer has it ({}: {})", error.code, error.message) })
+        }
+        // Definitive for this read: the machine will not serve it (400, 416, 501) or holds the output at another revision
+        // (412). While the run goes on, its events bring the newer one; once it ended, none comes. A refusal of its scope
+        // (403: a private namespace a lock sealed, a view or proof not yet renewed) is asked again, re-proved (cl-1060).
         machine_client::Error::Refused {
-            status: 400 | 403 | 412 | 416 | 501,
+            status: 400 | 412 | 416 | 501,
             error,
         } => Ranged::Stop(Failure::Refused(format!(
             "{}: {}",

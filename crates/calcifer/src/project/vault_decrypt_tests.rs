@@ -389,7 +389,7 @@ async fn native_plain_recovery_fixture() {
     // and the actual GET handler must remain Pending while the writer owns ACCESS.
     let home = platform::paths::Home::under(&root.join("api-home")); home.open().unwrap();
     fs::create_dir_all(home.calcifer()).unwrap();
-    let calcifer = crate::Calcifer::open(&home.calcifer(), &home.outputs()).unwrap();
+    let calcifer = crate::Calcifer::open(&home.calcifer()).unwrap();
     let config = api::config::Config { hub_url: api::config::Origin::parse("http://127.0.0.1:9").unwrap(), ..Default::default() };
     let machines = crate::machines::Machines::start(calcifer.clone(), home, &root, &config);
     let api = crate::api::Api::new(calcifer, machines, "native-decrypt-fixture");
@@ -434,7 +434,7 @@ fn native_plain_journal_restart_fixture() {
     let pointer = fs::read(root.join("pointer")).unwrap();
     assert!(open_payload("retained-history", &pointer).unwrap().is_none());
     let controller = root.join("controller");
-    let calcifer = crate::Calcifer::open(&controller, &root.join("outputs")).unwrap();
+    let calcifer = crate::Calcifer::open(&controller).unwrap();
     assert_eq!(open_payload("retained-history", &pointer).unwrap().unwrap(), b"old journal bytes");
     assert!(open_payload("other-context", &pointer).is_err());
     let current = PathBuf::from(fs::read_to_string(root.join("current-root")).unwrap());

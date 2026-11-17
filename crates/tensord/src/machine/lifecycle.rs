@@ -334,6 +334,12 @@ impl Lifecycle {
         state.sampled = epoch;
     }
 
+    /// The journal could not be read after admission epoch `epoch`: its last reading stands for it, so the idle clock runs on
+    /// what was last known rather than stopping (cl-977).
+    pub(crate) fn keep_reading(&self, epoch: u64) {
+        self.state.lock().unwrap().sampled = epoch;
+    }
+
     /// The last job end this lifecycle has read.
     pub(crate) fn ended_ms(&self) -> i64 {
         self.state.lock().unwrap().jobs.ended_ms
@@ -435,7 +441,7 @@ fn keep_lease(state: &std::path::Path, keys: &[ed25519_dalek::VerifyingKey]) {
         .map_err(io::Error::from)
         .and_then(|raw| super::identity::write_atomic(&state.join("lease.json"), &raw, 0o600));
     if let Err(error) = written {
-        tracing::warn!("keeping the Hub's lease: {error}");
+        tracing::warn!(target: crate::config::MACHINE, "keeping the Hub's lease: {error}");
     }
 }
 
@@ -457,13 +463,13 @@ pub(crate) async fn keep_authority(hub: Arc<Hub>, keys: Keys, state: PathBuf) {
                 lease / 2
             }
             Err(Refusal::Ended) => {
-                tracing::error!("the Hub says this rental has ended; no new control is admitted, and its keys are asked for no more");
+                tracing::error!(target: crate::config::MACHINE, "the Hub says this rental has ended; no new control is admitted, and its keys are asked for no more");
                 keep_lease(&state, &[]);
                 keys.revoke();
                 return;
             }
             Err(Refusal::Denied(why)) => {
-                tracing::error!("the Hub denied rental authority ({why}); no new control is admitted");
+                tracing::error!(target: crate::config::MACHINE, "the Hub denied rental authority ({why}); no new control is admitted");
                 keep_lease(&state, &[]);
                 keys.revoke();
                 unanswered = (unanswered * 2).min(MOST);
@@ -489,15 +495,21 @@ pub(crate) async fn release_when_idle(
     provider: Option<super::provider::ProviderSelf>,
     engine: Arc<crate::execution::Engine>,
 ) {
-    let (mut next_ask, mut unanswered) = (0, 2_500);
+    let (mut next_ask, mut unanswered, mut unread) = (0, 2_500, false);
     loop {
         let (seen, epoch) = (engine.activity_epoch(), lifecycle.epoch());
         match engine.jobs(lifecycle.ended_ms()) {
-            Ok((working, ended_ms)) => lifecycle.observe(Jobs { working, ended_ms }, epoch),
+            Ok((working, ended_ms)) => {
+                lifecycle.observe(Jobs { working, ended_ms }, epoch);
+                unread = false;
+            }
+            // Its last reading stands, and the idle clock and the release run on it (cl-977): an unreadable journal never holds
+            // a rental, and it is read again at the next activity or deadline.
             Err(error) => {
-                tracing::warn!("cannot read this rental's jobs: {error}");
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                continue;
+                if !std::mem::replace(&mut unread, true) {
+                    tracing::warn!("cannot read this rental's jobs ({error}); its last reading stands, and its idle clock runs on");
+                }
+                lifecycle.keep_reading(epoch);
             }
         }
         let now = now_ms();
@@ -507,18 +519,18 @@ pub(crate) async fn release_when_idle(
                     Ok(()) => {
                         match lifecycle.broken.get() {
                             Some(why) => tracing::info!("broken ({why}); Tensorhub accepted the release"),
-                            None => tracing::info!("15 minutes without a job; Tensorhub accepted the release"),
+                            None => tracing::info!(target: crate::config::MACHINE, "15 minutes without a job; Tensorhub accepted the release"),
                         }
                         return;
                     }
                     // Its rental is over at the Hub, yet the pod is here: only it can end itself.
                     Err(Refusal::Ended) => {
-                        tracing::warn!("idle, and the Hub says this rental has ended; ending this pod itself");
+                        tracing::warn!(target: crate::config::MACHINE, "idle, and the Hub says this rental has ended; ending this pod itself");
                         end_itself(provider.as_ref()).await;
                         return;
                     }
                     Err(error) => {
-                        tracing::warn!("idle release not accepted; retrying without extending the deadline: {error}");
+                        tracing::warn!(target: crate::config::MACHINE, "idle release not accepted; retrying without extending the deadline: {error}");
                         unanswered = (unanswered * 2).min(60_000);
                         next_ask = now + match &error {
                             Refusal::Transport(_, Some(wait)) => wait.as_millis() as i64,
@@ -534,7 +546,7 @@ pub(crate) async fn release_when_idle(
         }
         // Read at each wake, not at each ask: an ask can wait as long as the Hub last said to.
         if lifecycle.released() && on_its_own(hub.contact_ms(), lifecycle.deadline_ms(), lifecycle.grace, now_ms()) {
-            tracing::warn!("released, and Tensorhub has not ended this rental: silent for a whole idle window, or a whole window past the deadline; ending it itself");
+            tracing::warn!(target: crate::config::MACHINE, "released, and Tensorhub has not ended this rental: silent for a whole idle window, or a whole window past the deadline; ending it itself");
             end_itself(provider.as_ref()).await;
             return;
         }
@@ -572,7 +584,10 @@ pub(crate) fn exit_when_idle(
         let (seen, epoch) = (engine.activity_epoch(), lifecycle.epoch());
         match engine.jobs(lifecycle.ended_ms()) {
             Ok((working, ended_ms)) => lifecycle.observe(Jobs { working, ended_ms }, epoch),
-            Err(error) => tracing::warn!("cannot read this machine's jobs: {error}"),
+            Err(error) => {
+                tracing::warn!("cannot read this machine's jobs ({error}); its last reading stands");
+                lifecycle.keep_reading(epoch);
+            }
         }
         let Some(since) = lifecycle.idle_since() else {
             engine.wait_activity(seen, None);
@@ -634,14 +649,11 @@ fn on_its_own(contact_ms: i64, deadline_ms: i64, grace: i64, now: i64) -> bool {
     now >= contact_ms.min(deadline_ms) + grace
 }
 
+/// Ends this pod at its provider, asking until the provider takes it (cl-977): returns only without a provider credential, when
+/// stopping is all it can do.
 async fn end_itself(provider: Option<&super::provider::ProviderSelf>) {
     match provider {
-        Some(provider) => match provider.end().await {
-            Ok(()) => tracing::info!("the provider accepted this pod's end"),
-            Err(error) => {
-                tracing::error!("the provider did not end this pod ({error}); stopping")
-            }
-        },
+        Some(provider) => provider.end_until_gone().await,
         None => tracing::error!("no provider credential; stopping"),
     }
 }

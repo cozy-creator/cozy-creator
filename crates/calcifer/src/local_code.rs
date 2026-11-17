@@ -68,6 +68,8 @@ pub(crate) struct Source {
     /// What the machine's environment is built from, apart from the project's own source: its
     /// metadata and lock, its path dependencies, carried wheels and indexes.
     pub environment: Digest,
+    /// Its `cozy-runtime` requirement, as its pyproject declares it: what its machine's Runtime moves for (cl-1069).
+    pub needs: Option<pep440_rs::VersionSpecifiers>,
 }
 
 /// What an install answered: the code's interface, the machine's name for the installation, and
@@ -110,11 +112,11 @@ pub(crate) fn target(text: &str, cwd: Option<&Path>, home: &Path) -> Option<Resu
         return crate::checkout::named(raw).map(Ok);
     };
     if !path.is_absolute() {
-        let said = format!("{raw} is relative, and names no folder of the project's");
-        return Some(Err(Error::new(Kind::Usage, "target_relative", said).remedy("name local code by its path from the project's folder")));
+        let said = format!("{raw} isn't a folder in this project.");
+        return Some(Err(Error::new(Kind::Usage, "target_relative", said).remedy("Name local code by its path from the project's folder.")));
     }
     Some(shared::split(&path).ok_or_else(|| {
-        Error::new(Kind::NotFound, "target_not_found", format!("{raw} is not a package directory or a script beside the project"))
+        Error::new(Kind::NotFound, "target_not_found", format!("{raw} isn't a package folder or a script in the project."))
     }))
 }
 
@@ -144,12 +146,12 @@ pub(crate) fn copied(home: &Home, code: &LocalCode) -> Result<PathBuf, Error> {
             None => crate::runs::files::held(digest),
         };
         let not_held = |what: String| {
-            Error::new(Kind::NotFound, "file_not_held", format!("Calcifer holds no {what}")).remedy("PUT its bytes to /v1/files/sha256:<hex> first")
+            Error::new(Kind::NotFound, "file_not_held", format!("Cozy doesn't have {what}.")).remedy("Upload it first (PUT /v1/files/sha256:<hex>).")
         };
         let document = held(&code.tree).ok_or_else(|| not_held(format!("tree document {}", code.tree)))?;
         let document = fs::read(&document).map_err(|e| refuse("code_unreadable", e))?;
         if Digest::of(&document) != code.tree {
-            return Err(refuse("code_invalid", format!("the file held as {} is not that tree", code.tree)));
+            return Err(refuse("code_invalid", format!("The file Cozy has as {} isn't that code's file list.", code.tree)));
         }
         let members = api::tree::parse(&document).map_err(|e| refuse("code_invalid", e))?;
         if let Some((name, member)) = members.iter().find(|(_, member)| held(&digest_of(member)).is_none()) {
@@ -202,7 +204,7 @@ pub(crate) fn materialize(home: &Home, tree: &Digest, members: &BTreeMap<String,
     durable::private_dir(&root).map_err(|e| refuse("code_unwritable", format!("{}: {e}", root.display())))?;
     for (name, member) in members {
         let to = part.join("tree").join(name);
-        let source = from(&digest_of(member)).ok_or_else(|| refuse("code_unreadable", format!("{name}: its bytes are gone")))?;
+        let source = from(&digest_of(member)).ok_or_else(|| refuse("code_unreadable", format!("Cozy no longer has the contents of {name}.")))?;
         fs::create_dir_all(to.parent().expect("a member's folder")).map_err(failed)?;
         fs::copy(source, &to).map_err(failed)?;
         mode(&to, member.executable).map_err(failed)?;
@@ -520,6 +522,10 @@ pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
         digest,
         length: document.len() as u64,
     });
+    let needs = crate::floor::requirement_of(&project_dir);
+    if let Some(needs) = &needs {
+        NEEDS.lock().expect("needs lock").insert(digest.to_string(), needs.clone());
+    }
     Ok(Source {
         package: manifest.package,
         source: v1::LocalSource {
@@ -527,12 +533,40 @@ pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
         },
         inputs,
         environment,
+        needs,
     })
+}
+
+/// Each local source's `cozy-runtime` requirement by its manifest, as `source` read it while Calcifer runs: what a machine that
+/// refused its install for its Runtime moves for (cl-1069, `Machines::refloored`).
+static NEEDS: LazyLock<Mutex<HashMap<String, pep440_rs::VersionSpecifiers>>> = LazyLock::new(Mutex::default);
+
+/// The `cozy-runtime` requirement of the local source `manifest` names, as `source` read it.
+pub(crate) fn needs_of(manifest: &str) -> Option<pep440_rs::VersionSpecifiers> {
+    NEEDS.lock().expect("needs lock").get(manifest).cloned()
 }
 
 /// What a lock of `code`'s copy for `hub` leaves beside the copy (`locked`): `lock`, the lock it made or nothing when the tree's
 /// own stood, and with one made, `copy`, the tree again with that lock in the package's folder. The copy itself stays the tree
 /// as it was sent, which a lock or publication asked of it reads.
+/// What `locked` made for a code and Hub, kept machine-wide for unencrypted projects (`shared_lock`).
+#[derive(Serialize, Deserialize)]
+struct SharedLock {
+    changed: bool,
+    lock: String,
+}
+
+/// Where the machine keeps the lock of `code` for `hub` (cl-1011): `<calcifer>/code-locks/<key>.json`, the key the SHA-256 of the
+/// Hub, the tree's digest and the package's path in it, so the same code locks once. An encrypted project's stays inside it
+/// (none here): an entry named by its content would outlive its lock.
+fn shared_lock(home: &Home, code: &LocalCode, hub: &Origin) -> Result<Option<PathBuf>, Error> {
+    if crate::private_io::current().is_some_and(|scope| !scope.storage.ordinary) { return Ok(None); }
+    let dir = home.calcifer().join("code-locks");
+    fs::create_dir_all(&dir).map_err(|e| refuse("code_unwritable", format!("{}: {e}", dir.display())))?;
+    let key = Digest::of(format!("{}\n{}\n{}", hub.as_str(), hex(&code.tree), code.at).as_bytes());
+    Ok(Some(dir.join(format!("{}.json", &hex(&key)[..32]))))
+}
+
 fn lock_dir(home: &Home, code: &LocalCode, hub: &Origin) -> Result<PathBuf, Error> {
     let key = Digest::of(format!("{}\n{}", hub.as_str(), code.at).as_bytes());
     Ok(copy_of(home, code)?.join(format!("locked-{}", &hex(&key)[..16])))
@@ -567,7 +601,8 @@ pub(crate) async fn locked(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
     let _turn = turn.lock().await;
     // A lock that took the open RC's build by URL (its floor no release meets, xs-194) names a wheel the next Runtime merge
     // removes: one that isn't the RC's newest is made again.
-    if let Some(rc) = crate::floor::rc_runtime(&sent).await? {
+    let rc = crate::floor::rc_runtime(&sent).await?;
+    if let Some(rc) = &rc {
         let made = fs::read_to_string(done.join("lock")).ok().filter(|made| !made.is_empty());
         let held = made.or_else(|| fs::read_to_string(sent.join("uv.lock")).ok());
         if done.is_dir() && !held.is_some_and(|lock| lock.contains(&rc.url)) {
@@ -579,7 +614,22 @@ pub(crate) async fn locked(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
         // A project's own code is the project's: nothing of it in Calcifer's log (cl-984).
         let private = crate::private_io::current().is_some();
         let say = |line: &str| if !private { tracing::info!("{}: {line}", project.name) };
-        let made = crate::hub::author::locked(hubs, hub, &project, &within, false, &[], &say).await?;
+        // The same code for the same Hub locks once on this machine (cl-1011): another unencrypted project's copy of it takes the lock
+        // the first made, so a second project builds no new environment for a release that went up meanwhile.
+        let shared = shared_lock(home, code, hub)?;
+        let kept = shared.as_ref().and_then(|at| fs::read(at).ok()).and_then(|bytes| serde_json::from_slice::<SharedLock>(&bytes).ok())
+            .filter(|kept| rc.as_ref().is_none_or(|rc| kept.lock.contains(&rc.url)));
+        let made = match kept {
+            Some(kept) => kept,
+            None => {
+                let made = crate::hub::author::locked(hubs, hub, &project, &within, false, &[], &say).await?;
+                let made = SharedLock { changed: made.changed, lock: made.lock };
+                if let Some(at) = &shared {
+                    let _ = serde_json::to_vec(&made).map_err(std::io::Error::other).and_then(|bytes| durable::replace(at, &bytes, 0o600).map_err(std::io::Error::other));
+                }
+                made
+            }
+        };
         let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
         let part = done.with_extension(format!("part-{}-{nanos}", std::process::id()));
         let failed = |e: std::io::Error| refuse("code_unwritable", format!("{}: {e}", part.display()));
@@ -866,14 +916,14 @@ pub(crate) fn package_of(target: &str) -> &str {
 pub(crate) fn installed(run: Run) -> Result<Installed, Error> {
     if run.status != Status::Completed {
         let (code, message, next) = run.reason.map_or_else(
-            || ("local_install_unfinished".to_owned(), format!("its install is {:?}", run.status).to_lowercase(), vec![]),
+            || ("local_install_unfinished".to_owned(), format!("the install was {}", format!("{:?}", run.status).to_lowercase()), vec![]),
             |r| (r.code, r.message, r.next),
         );
         // Its machine ended before it accepted the install: a machine gone, which a render places again (`project::GONE`).
         let lost = code == "machine_lost" && run.accepted_at_ms.is_none();
         let failed = match lost {
-            true => Error::new(Kind::Unavailable, "machine_ended", format!("the machine ended before it installed this code: {message}")),
-            false => Error::new(Kind::Unavailable, "local_install_failed", format!("the machine did not install this code: {message}")),
+            true => Error::new(Kind::Unavailable, "machine_ended", format!("The machine ended before it installed this code: {message}")),
+            false => Error::new(Kind::Unavailable, "local_install_failed", format!("The machine couldn't install this code: {message}")),
         }
         .cause(code);
         return Err(next.into_iter().chain([format!("cozy run watch {}", run.number)]).fold(failed, Error::next));
@@ -883,13 +933,13 @@ pub(crate) fn installed(run: Run) -> Result<Installed, Error> {
         return Err(Error::new(
             Kind::Unavailable,
             "local_interface_unreadable",
-            "the machine's description of this code is not a package interface",
+            "The machine's description of this code isn't a package interface Cozy can read.",
         ));
     }
     let installation = result["installation"].as_str().map(str::to_owned);
     let machine = run
         .machine
-        .ok_or_else(|| Error::new(Kind::Internal, "local_install_unplaced", "the install ran on no machine"))?;
+        .ok_or_else(|| Error::new(Kind::Internal, "local_install_unplaced", "The install didn't run on any machine."))?;
     Ok(Installed { interface: result["interface"].take(), installation, machine: Some(machine) })
 }
 
@@ -946,13 +996,22 @@ pub(crate) async fn prepare(
     };
     // By its manifest: code that changes during an install is another install, not that one's answer.
     let key = format!("{key}/install/{}", code.source.manifest);
-    if sent(api, &key)?.is_none()
-        && let Some(interface) = runtime.as_deref().filter(|_| !warm).and_then(|runtime| kept(&home, &code.filed(), runtime))
-    {
+    let fresh = sent(api, &key)?.is_none();
+    if fresh && let Some(interface) = runtime.as_deref().filter(|_| !warm).and_then(|runtime| kept(&home, &code.filed(), runtime)) {
         return Ok(prepared(Some(interface), None, None, None));
     }
     let submit = || SubmitRun { agreed: agreed.clone(), ..install_run(&home, origin.as_str(), on.clone(), &code) };
     let after = crate::private_io::current().is_none().then(|| crate::hub::after::After::Keep(code.filed()));
+    // Its machine's Runtime moves first to one its requirement admits, as a published release's does (cl-952, cl-1069): the install
+    // waits behind that update. Boxed, as their futures are large.
+    if fresh
+        && let Some(upgrade) = Box::pin(crate::runs::target::local_upgrade(api, origin.as_str(), on, &code.package, code.needs.clone())).await?
+        && Box::pin(api.machines.upgrade(&upgrade)).await?.is_some()
+        && crate::private_io::current().is_none()
+    {
+        // A project's own code stays out of Calcifer's log (cl-984).
+        tracing::info!("{}", upgrade.note().message);
+    }
     match install_through(api, &key, after.as_ref(), again, submit).await? {
         Install::Going(run) => Ok(prepared(None, None, None, Some(run))),
         Install::Ended(run) => {
@@ -981,7 +1040,7 @@ pub(crate) async fn install_through(api: &Arc<Api>, key: &str, after: Option<&cr
             if let Some(after) = after {
                 api.calcifer.plan(crate::private_io::current().as_ref().map(|scope|scope.storage.project_id.as_str()), &key, after)?;
             }
-            let run = api.calcifer.submit(&key, submit()).await.map_err(|e| crate::api::Refusal::from(e).0)?.run;
+            let run = api.calcifer.submit(&key, submit(), crate::store::Task::Install).await.map_err(|e| crate::api::Refusal::from(e).0)?.run;
             return Ok(Install::Going(run));
         };
         match run.status {
@@ -1048,11 +1107,11 @@ pub(crate) fn run_said(command: &mut Command, code: &str, what: &str) -> Result<
             std::io::ErrorKind::NotFound => Error::new(
                 Kind::Unavailable,
                 "uv_unavailable",
-                format!("{} is gone", command.get_program().to_string_lossy()),
+                format!("{} is missing.", command.get_program().to_string_lossy()),
             )
-            .remedy("run it again: cozy fetches uv when it is missing")
+            .remedy("Try again; Cozy downloads uv when it's missing.")
             .next("cozy doctor"),
-            _ => refuse(code, format!("{what} did not start: {e}")),
+            _ => refuse(code, format!("{what} didn't start: {e}.")),
         };
         (error, String::new())
     })?;
@@ -1178,8 +1237,13 @@ pub(crate) struct Python {
     pub full: String,
 }
 
-/// The cozy-runtime `root`'s uv.lock holds, as uv asks for it (`cozy-runtime==0.45.1`), if it holds one.
+/// The Runtime source this copied project's lock holds, as uv asks for it. A local SDK or
+/// carried wheel is not interchangeable with the index's build of the same version.
 pub(crate) fn locked_runtime(root: &Path) -> Option<String> {
+    locked_requirement(root, "cozy-runtime")
+}
+
+fn locked_requirement(root: &Path, name: &str) -> Option<String> {
     #[derive(Deserialize)]
     struct Lock {
         #[serde(default)]
@@ -1194,12 +1258,34 @@ pub(crate) fn locked_runtime(root: &Path) -> Option<String> {
         source: std::collections::BTreeMap<String, toml::Value>,
     }
     let lock: Lock = toml::from_str(&fs::read_to_string(root.join("uv.lock")).ok()?).ok()?;
-    let locked = lock.package.into_iter().find(|p| p.name == "cozy-runtime")?;
-    // The open RC's Runtime is no index's: a lock takes its newest pure wheel by URL (`floor::rc_runtime`).
-    Some(match locked.source.get("url").and_then(toml::Value::as_str) {
-        Some(url) => format!("cozy-runtime @ {url}"),
-        None => format!("cozy-runtime=={}", locked.version),
-    })
+    let locked = lock.package.into_iter().find(|p| p.name == name)?;
+    if let Some(url) = locked.source.get("url").and_then(toml::Value::as_str) {
+        return Some(format!("{name} @ {url}"));
+    }
+    for kind in ["path", "directory", "editable"] {
+        if let Some(path) = locked.source.get(kind).and_then(toml::Value::as_str) {
+            let path = std::path::absolute(root.join(path)).ok()?;
+            let url = url::Url::from_file_path(path).ok()?;
+            return Some(format!("{name} @ {url}"));
+        }
+    }
+    if let Some(git) = locked.source.get("git").and_then(toml::Value::as_str) {
+        // uv locks a resolved commit after '#', with the requested branch/rev in the query.
+        // The describer takes the resolved commit, retaining a subdirectory when present.
+        let (head, commit) = git.split_once('#').unwrap_or((git, ""));
+        let (repository, query) = head.split_once('?').unwrap_or((head, ""));
+        let directory = url::form_urlencoded::parse(query.as_bytes())
+            .find_map(|(key, value)| (key == "subdirectory").then(|| value.into_owned()));
+        let revision = if commit.is_empty() { String::new() } else { format!("@{commit}") };
+        let fragment = directory.map_or_else(String::new, |directory| {
+            let query = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("subdirectory", &directory)
+                .finish();
+            format!("#{query}")
+        });
+        return Some(format!("{name} @ git+{}{revision}{fragment}", repository.trim_start_matches("git+")));
+    }
+    Some(format!("{name}=={}", locked.version))
 }
 
 /// The SDK is always cozy-runtime: the one named (a version, or an RC build's wheel URL), an authoritative lock, else
@@ -1258,6 +1344,13 @@ pub(crate) fn describe_with(uv: &Path, dir: &Path, python: &str, runtime: Option
     let from = describer_requirement(dir, runtime)?;
     let mut command = self::uv(uv, dir);
     command.args(["tool", "run", "--no-progress", "--python", python, "--from", from.as_str()]);
+    // Carry the locked pair only when this reader chose that lock's Runtime. A caller's
+    // explicit machine Runtime remains authoritative and must not inherit a different lock's TensorFS.
+    if runtime.is_some() && runtime == locked_runtime(dir).as_deref() {
+        if let Some(tensorfs) = locked_requirement(dir, "tensorfs") {
+            command.args(["--with", &tensorfs]);
+        }
+    }
     if runtime.is_none() && from != "cozy-runtime@latest" {
         // Refresh within the bounds, ignoring an older installed tool even when it meets them.
         command.arg("--isolated").args(platform::tools::uv_upgrade(["cozy-runtime"]));
@@ -1273,6 +1366,10 @@ pub(crate) fn describe_with(uv: &Path, dir: &Path, python: &str, runtime: Option
     let document: Value = serde_json::from_str(&said).map_err(|e| refuse("describe_failed", format!("cozy-runtime describe answered no interface: {e}")))?;
     if !interface(&document) {
         return Err(refuse("package_interface_invalid", "the describer's answer is not a package interface"));
+    }
+    // A `needs` rule that isn't CEL over its function's own request stops here, at the read, never at a run (cl-1103).
+    if let Some(fault) = ::needs::faults(&document).into_iter().next() {
+        return Err(refuse("needs_rule_invalid", fault));
     }
     Ok((said.trim_end().to_owned(), document))
 }

@@ -420,20 +420,25 @@ impl Client {
         self.json(request.query(&query).json(&json!({}))).await
     }
 
-    /// Declares a release's files; an upload grant for each the Hub lacks.
+    /// Declares a release's files, and its benchmarks when it has any (cl-1024); an upload grant for each file the Hub lacks.
     pub async fn begin_package_release(
         &self,
         org: &str,
         name: &str,
         release: &str,
         files: &[PackageDeclaredFile],
+        benchmarks: &[PackageBenchmark],
     ) -> Result<PackageReleaseGrants, Error> {
         let request = self.at(
             Method::POST,
             "/v1/packages/{org}/{name}/publish/{release}",
             &[org, name, release],
         );
-        self.json(request.json(&json!({"files": files}))).await
+        let body = match benchmarks.is_empty() {
+            true => json!({"files": files}),
+            false => json!({"files": files, "benchmarks": benchmarks}),
+        };
+        self.json(request.json(&body)).await
     }
 
     pub async fn finalize_package_release(
@@ -569,15 +574,15 @@ impl Client {
             .await
     }
 
-    /// What `function` (`org/package/function`) took on the rented cards it ran on.
-    pub async fn run_times(&self, function: &str) -> Result<RunTimes, Error> {
-        self.json(self.at(Method::GET, "/v1/run-times", &[]).query(&[("function", function)]))
-            .await
+    /// Reports runs to the Hub anonymously (cl-1006); answers how many it kept.
+    pub async fn report_runs(&self, reports: &RunReports) -> Result<RunReportsKept, Error> {
+        self.json(self.at(Method::POST, "/v1/run-reports", &[]).json(reports)).await
     }
 
-    /// Tells the rental's Hub what its runs took, for others' placement on its card.
-    pub async fn report_run_times(&self, id: &str, report: &RunTimesReport) -> Result<(), Error> {
-        self.send(self.at(Method::POST, "/v1/rentals/{id}/run-times", &[id]).json(report))
+    /// Tells the rental's Hub that this client's runs are live on its machine, on `boot_id`, now: a sign of the machine's life when
+    /// the Hub neither hears it check in nor reaches it (cl-977).
+    pub async fn vouch_rental(&self, id: &str, boot_id: &str) -> Result<(), Error> {
+        self.send(self.at(Method::POST, "/v1/rentals/{id}/vouch", &[id]).json(&json!({ "boot_id": boot_id })))
             .await
             .map(drop)
     }

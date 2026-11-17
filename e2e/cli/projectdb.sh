@@ -10,10 +10,13 @@
 #   db_deleted_gc   a deleted box resolves nowhere; Undo in the window; its files and thumbnails gone after it, across a stopped Calcifer too
 #   db_purged       Undo past the 3-hour purge brings each box back where it was without its files, saying so
 #   db_closes       a project closes once no call, stream or render reads it; Calcifer's heap comes back; a reopen is as quick
+#   db_numbered     a project's runs numbered 46550.. open as 1..n, each number kept of them moved; one that can't stays as it was (cl-1075)
+#   db_keys         a run's KEY-N names only its own project: lab2 is LAB2, lab3_2 LAB32, and one that held LAB2 is keyed again (cl-1075)
+#   db_remote_custody  a project whose runs an earlier import left pending custody (Paul's lab) takes new work (cl-1003)
 # Uses project.sh's `api`, `status`, `held` and `sha`.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # project.db's schema (db.rs VERSION): what a project this cozy opens holds, and what its copy before a migration is named after.
-SCHEMA=6
+SCHEMA=7
 
 # sql <project> <query>: what project.db holds, read only, one JSON row a line.
 sql() {
@@ -84,7 +87,7 @@ box_kept() { asset_of "$1" "$2" | J '(.sha256 // null) == null and ((.versions /
 # One deleted while Calcifer is stopped across its window is gone once Calcifer starts. The page's own half is the delete-undo cell.
 # closes_busy <id a> <id b>: whether each project's render is going, `true false`, by the projects' list, which opens none.
 closes_busy() {
-  curl -fsS -H "Authorization: Bearer $(jq -r .token "$lock")" -H 'cozy-project-storage: 3' "http://$(jq -r .address "$lock")/v1/projects?limit=1000" \
+  curl -fsS -H "Authorization: Bearer $(jq -r .token "$lock")" "http://$(jq -r .address "$lock")/v1/projects?limit=1000" \
     | jq -r --arg a "$1" --arg b "$2" '[([.projects[] | select(.id == $a)][0].busy // false), ([.projects[] | select(.id == $b)][0].busy // false)] | map(tostring) | join(" ")' || true
 }
 db_deleted_gc() {
@@ -222,6 +225,58 @@ asset_of "$P" hero | J --arg p "$prompt" '.fields.instructions == $p' || check "
 drop_folder "$P"
 }
 
+# cl-1093: a run's file that landed after its run arrived (a local run's latents, cl-1046) became a loose run row of the project's, and a
+# purge keeps every run row's file: the deleted take's latents stayed. Projects from before the fix hold such rows, so a purge lets them go
+# with the version they belong to. Here a deleted box's version is run 999's and a run row of 999 names its file, as a late landing left
+# it; dated past its window, its file goes at the next open, and so does the row.
+db_purged_late() {
+step "a deleted box's file a late-landed run row names goes with its version (cl-1093)"
+local P=$OUT/purged-late pic aged rows
+cozy --json new --unencrypted "$P" > "$OUT/purged-late-new.log" 2>&1 || { check "purged late: no project: $(tail -c 300 "$OUT/purged-late-new.log")"; return; }
+ffmpeg -v error -y -f lavfi -i 'color=c=orange:size=64x48' -frames:v 1 "$OUT/purged-late.png"
+project_import "$P" "$OUT/purged-late.png" pic > /dev/null || { check "purged late: the box wasn't made"; return; }
+pic=$(asset_of "$P" pic | jq -r '.sha256 // empty')
+[ -n "$pic" ] && in_files "$P" "$pic" || { check "purged late: the box's file isn't in files/"; return; }
+project_api "$P" /assets/pic -X DELETE > /dev/null || { check "purged late: the delete"; return; }
+calcifer_halt || return
+aged=$(python3 -I - "$P/project.db" "$pic" $(((3 * 60 + 1) * 60 * 1000)) <<'PY'
+import json, sqlite3, sys
+db, sha, ago = sqlite3.connect(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+key = db.execute("SELECT key FROM lock_assets WHERE json_extract(record, '$.deleted_ms') IS NOT NULL").fetchone()[0]
+versions = db.execute("UPDATE versions SET record = json_set(record, '$.run', 999) WHERE key = ?", (key,)).rowcount
+ord_ = db.execute("SELECT coalesce(max(ord), -1) + 1 FROM lock_runs").fetchone()[0]
+row = {"id": "cl1093late", "run": 999, "function": "local/late/shot", "output": "latents", "sha256": sha}
+db.execute("INSERT INTO lock_runs (ord, record) VALUES (?, ?)", (ord_, json.dumps(row)))
+db.execute("INSERT INTO run_files (ord, run, function, output, sha256) VALUES (?, 999, 'local/late/shot', 'latents', ?)", (ord_, sha))
+dated = db.execute("UPDATE lock_assets SET record = json_set(record, '$.deleted_ms', json_extract(record, '$.deleted_ms') - ?) WHERE key = ?", (ago, key)).rowcount
+db.execute("UPDATE ops SET at_ms = at_ms - ?", (ago,))
+db.commit()
+print(versions, dated)
+PY
+) || check "purged late: project.db couldn't be set up"
+cozy --json machine ls > /dev/null || check "purged late: Calcifer didn't start again"
+read -r rows _ <<< "$aged"
+[ "${rows:-0}" -ge 1 ] || check "purged late: the deleted box had no version to mark as run 999's: ${aged:-nothing}"
+status "$P" > /dev/null || check "purged late: the project doesn't open past the window"
+for _ in $(seq 150); do in_files "$P" "$pic" || break; sleep 0.2; done
+! in_files "$P" "$pic" || check "purged late: the late run row kept the deleted box's file past its purge"
+rows=$(sql "$P" "SELECT count(*) FROM run_files WHERE sha256 = '$pic'" | jq -r '.[0]')
+[ "$rows" = 0 ] || check "purged late: the late run row stayed after its version's purge ($rows)"
+drop_folder "$P"
+}
+
+# cl-1093 (#3567's review 5): a render the user asked for reads what it was asked with, through a delete and the purge after it: one
+# that picks up from a take deleted while it waits, past the take's window, still goes, and the take's files go once it has (pickup_kept.py).
+db_pickup_kept() {
+step "a render asked for still picks up from a take deleted while it waits, past the take's window (cl-1093)"
+local lock=$HOME/.cozy/calcifer/calcifer.lock.holder
+undo_window "$lock" 20
+COZY=$COZY python3 "$here/pickup_kept.py" "$OUT/pickup-kept" "$OUT" > "$OUT/pickup-kept.json" 2> "$OUT/pickup-kept.err" \
+  || check "pickup kept: $(jq -c '{failures, render: .seen.render.err[-400:], next: .seen.next_version}' "$OUT/pickup-kept.json" 2> /dev/null || tail -c 600 "$OUT/pickup-kept.err")"
+cat "$OUT/pickup-kept.json" 2> /dev/null || true
+undo_window "$lock" ''
+}
+
 # cl-823: Calcifer closes a project nothing reads. Projects of 200 boxes each, made by `cozy apply`, opened by the CLI and shown by a
 # page's stream (`PUT /v1/events/{stream}`): each is open while a call or a stream holds it (its project.db among Calcifer's open files),
 # and closes once the call has answered and once the stream shows another. Calcifer's heap is back within a tenth of where it stood after
@@ -231,8 +286,8 @@ db_closes() {
 step "projects closed once nothing reads them: by the CLI and a page's stream, memory back, a reopen as quick, a render holding its own (cl-823)"
 [ "${RUNNER_OS:-}" = Linux ] || { echo "closes: Calcifer's open files are read on Linux"; return 0; }
 CLOSES=$OUT/closes CLOSES_PREV='' CLOSES_OPENS=() CLOSES_REOPENS=() CLOSES_OPEN=() CLOSES_HELD=()
-CLOSES_PAGE=(-H "Host: $(jq -r .address "$HOME/.cozy/calcifer/calcifer.lock.holder")" -H 'Sec-Fetch-Site: same-origin' -H 'Sec-Fetch-Mode: cors' -H 'Sec-Fetch-Dest: empty' -H 'cozy-project-storage: 3')
-local lock=$HOME/.cozy/calcifer/calcifer.lock.holder n=12 start later pid first second update run_first look queued=0 held_first=0 held_second=0 P a b h1 h2 busy
+CLOSES_PAGE=(-H "Host: $(jq -r .address "$HOME/.cozy/calcifer/calcifer.lock.holder")" -H 'Sec-Fetch-Site: same-origin' -H 'Sec-Fetch-Mode: cors' -H 'Sec-Fetch-Dest: empty')
+local lock=$HOME/.cozy/calcifer/calcifer.lock.holder n=12 start later pid first second update run_first look queued=0 held_first=0 held_second=0 P a b h1 h2 busy again=0
   local dropped=() looks=()
 mkdir -p "$CLOSES"
 ffmpeg -v error -y -f lavfi -i 'color=c=gray:size=32x18' -frames:v 1 "$CLOSES/seed.png"
@@ -288,6 +343,11 @@ for _ in $(seq 240); do
   ! closes_open "$first" || h1=1
   ! closes_open "$second" || h2=1
   busy=$(closes_busy "$a" "$b")
+  # Probed before the list said busy, a project may have closed and opened again between (a render's end, then another walk of it),
+  # or the probe missed: one busy and not seen open is probed once more, after the list said so. A render going holds it then.
+  [ "${busy% *}" != true ] || [ "$h1" = 1 ] || ! closes_open "$first" || { h1=1; again=$((again + 1)); }
+  [ "${busy#* }" != true ] || [ "$h2" = 1 ] || ! closes_open "$second" || { h2=1; again=$((again + 1)); }
+  echo "$SECONDS h1=$h1 h2=$h2 busy=$busy" >> "$CLOSES/samples.log"
   look=$(project_api "$second" /runs | jq -r '[.runs[] | select(.kind == "call")][0] // empty | "\(.status)/\(.machine_state // "")"' || true)
   [[ " ${looks[*]} " == *" ${look:-none} "* ]] || looks+=("${look:-none}")
   [ "${busy% *}" != true ] || [ "$h1" = 1 ] || dropped+=("first while it ran")
@@ -297,9 +357,9 @@ for _ in $(seq 240); do
   [ "$busy" != "false false" ] || break
   sleep 0.5
 done
-echo "closes: the second render went ${looks[*]}; dropped while going: ${dropped[*]:-none}"
+echo "closes: the second render went ${looks[*]}; dropped while going: ${dropped[*]:-none}; seen open only when probed again: $again"
 [ "$queued" = 1 ] || check "closes: the second render was never seen waiting behind the first: ${looks[*]}"
-[ "$held_first" = 1 ] && [ ${#dropped[@]} = 0 ] || check "closes: a render going didn't hold its project open: ${dropped[*]:-never seen going}"
+[ "$held_first" = 1 ] && [ ${#dropped[@]} = 0 ] || check "closes: a render going didn't hold its project open: ${dropped[*]:-never seen going}: $(grep -n 'busy=true' "$CLOSES/samples.log" | grep -E 'h1=0|h2=0' | head -5 | tr '\n' ' ')"
 [ "$held_second" = 1 ] || check "closes: a render waiting for its machine didn't hold its project open"
 for _ in $(seq 300); do kill -0 "$update" 2> /dev/null || break; sleep 1; done
 kill "$update" 2> /dev/null || true; wait "$update" 2> /dev/null || true
@@ -310,7 +370,8 @@ drop_folder "$CLOSES"
 }
 # closes_heap: Calcifer's heap, MiB, as its status says.
 closes_heap() { local lock=$HOME/.cozy/calcifer/calcifer.lock.holder; curl -fsS -H "Authorization: Bearer $(jq -r .token "$lock")" "http://$(jq -r .address "$lock")/v1/status" | jq '.heap_bytes / 1048576 * 10 | round / 10'; }
-# closes_open <project>: Calcifer has its project.db open. Calcifer is nondumpable: its file descriptors read as root.
+# closes_open <project>: Calcifer has its project.db open. Calcifer stays dumpable since cl-984 (only a zero core limit), so its
+# descriptors read without root; the `sudo` is left from when it wasn't, and isn't needed.
 closes_open() { sudo -n find "/proc/$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder")/fd" -lname "$(realpath "$1")/project.db" 2> /dev/null | grep -q .; }
 # closes_shut <project>: it closes within 10 s.
 closes_shut() { local _; for _ in $(seq 50); do closes_open "$1" || return 0; sleep 0.2; done; return 1; }
@@ -1109,6 +1170,121 @@ echo "migrate: 0.24.0's project read here as it read there: $(jq -sc 'map({(.nam
 # row and rows_at and conflicts to meta, changes no row 3 has, and keeps the project as it was beside it once; its rows then stand at
 # the document, so a read takes them, and adds the project's run journal and keys beside them. Schema 3 is this cozy's project, Calcifer
 # stopped, with what 4 to 6 added taken off.
+# db_numbered (cl-1075). Paul, 11-16: "why are all of our runs starting at like run number 47,000? … When I start a new project, the
+# run counter should start at 1." A project an old import left numbered as Calcifer's one store numbered its runs (46550.., as his
+# lab3_2) opens numbered 1..n in the order made, and every number project.db keeps of them moves with them: a take's (versions), a
+# `cozy run`'s files (lock_runs, run_files), the walk's (pending, runs, landing) and a failed take's (lock_assets); the answers it kept
+# for retries (request_keys) go, and it is kept as it was beside it once. Its first run made is KEY-1 from any folder. One whose numbers
+# don't hold (a take naming one run by its number and another by its id) opens as it was, on 6, and Calcifer says why, once.
+db_numbered() {
+step "run numbers: a project's runs numbered 46550.. open as 1..n with each number kept of them (cl-1075)"
+local D=$OUT/numbered N B pid key was p
+N=$D/numbered B=$D/unheld
+mkdir -p "$D"
+for p in "$N" "$B"; do
+  cozy --json new --unencrypted "$p" > "$p.new.json" 2>&1 || { check "numbered: cozy new $p: $(tail -c 300 "$p.new.json")"; return; }
+done
+pid=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder") && term_calcifer "$pid" || return
+python3 "$here/numbered.py" fixture "$N/project.db" "$(sql1 "$N" "SELECT value FROM meta WHERE key = 'id'")" \
+  && python3 "$here/numbered.py" fixture "$B/project.db" "$(sql1 "$B" "SELECT value FROM meta WHERE key = 'id'")" bad \
+  || { check "numbered: its fixtures"; return; }
+was=$(python3 "$here/numbered.py" read "$B/project.db") || { check "numbered: read the one that can't move"; return; }
+in_project "$N" --json status > "$OUT/numbered-status.json" 2> "$OUT/numbered-status.err" \
+  || { check "numbered: it doesn't open: $(tail -c 300 "$OUT/numbered-status.err")"; return; }
+db_calcifer
+python3 "$here/numbered.py" moved "$N/project.db" > "$OUT/numbered-moved.json" \
+  || check "numbered: its numbers didn't move as made: $(head -c 800 "$OUT/numbered-moved.json")"
+[ -f "$N/project.db.pre-schema$SCHEMA" ] || check "numbered: no copy of it as it was beside it"
+key=$(jq -r '.project.key // empty' "$OUT/numbered-status.json")
+# Run 4, of no project's, is history copied in: it reads as no one's (project_locked), and its number is checked above.
+for p in 1 2 3; do
+  (cd "$D" && cozy --json run watch "$key-$p" --once) > "$OUT/numbered-$p.json" 2>&1 || true
+  J --arg id "run-numbered$(printf %018d "$p")" --arg name "$key-$p" '.id == $id and .name == $name' "$OUT/numbered-$p.json" \
+    || check "numbered: $key-$p isn't run $p made: $(tail -c 300 "$OUT/numbered-$p.json")"
+done
+# The one that can't move opens, twice, as it was; Calcifer says why once.
+for p in 1 2; do
+  in_project "$B" --json status > "$OUT/numbered-unheld.json" 2>&1 || check "numbered: one that can't move doesn't open ($p): $(tail -c 300 "$OUT/numbered-unheld.json")"
+done
+python3 "$here/numbered.py" kept "$B/project.db" "$was" > "$OUT/numbered-kept.json" || check "numbered: one that can't move changed: $(head -c 800 "$OUT/numbered-kept.json")"
+[ "$(grep -ac 'runs_not_renumbered' "$HOME/.cozy/calcifer/health.log")" = 1 ] && grep -a 'runs_not_renumbered' "$HOME/.cozy/calcifer/health.log" | grep -q 'versions' \
+  || check "numbered: Calcifer didn't say once why its numbers stayed: $(grep -a 'runs_not_renumbered' "$HOME/.cozy/calcifer/health.log" | tail -c 600)"
+echo "numbered: $key-1 is $(jq -r .id "$OUT/numbered-1.json"); kept: $(grep -a 'runs_not_renumbered' "$HOME/.cozy/calcifer/health.log" | tail -1 | head -c 300)"
+}
+
+# db_keys (cl-1075): a run's KEY-N names only its own project. A key keeps its name's digits (lab2 is LAB2, lab3_2 LAB32, where they
+# were LAB and LAB2), and is never another folder's name's own key, a locked one's too. As Paul's lab3_2 held LAB2 while his lab2 was
+# locked (coordinator, 11-16: kamitsure's run named LAB2-47844 was lab3_2's), a project holding another folder's name's key is keyed
+# again once, by its own, and nothing names it by the one it had. Each project's runs are its own 1, 2, …
+db_keys() {
+step "project keys: a run's KEY-N names only its own project (cl-1075)"
+local D=$OUT/keyed-1075 a b ida idb pid p n
+a=$D/lab2 b=$D/lab3_2
+mkdir -p "$D"
+cozy --json new --unencrypted "$a" > "$D/a.json" 2>&1 && cozy --json new --unencrypted "$b" > "$D/b.json" 2>&1 \
+  || { check "keys: cozy new: $(tail -c 300 "$D/a.json") $(tail -c 300 "$D/b.json")"; return; }
+J '.key == "LAB2"' "$D/a.json" || check "keys: lab2's key is $(jq -r .key "$D/a.json"), not LAB2"
+J '.key == "LAB32"' "$D/b.json" || check "keys: lab3_2's key is $(jq -r .key "$D/b.json"), not LAB32"
+n=0
+for p in "$a" "$a" "$b"; do
+  n=$((n + 1))
+  in_project "$p" --json run minimax-h3-tools/echo "text=keys $n" > "$D/run-$n.ndjson" 2> "$D/run-$n.err" \
+    || check "keys: run $n: $(tail -c 300 "$D/run-$n.ndjson") $(tail -c 300 "$D/run-$n.err")"
+done
+in_project "$a" --json run ls --limit 0 > "$D/a-runs.json" 2>&1; in_project "$b" --json run ls --limit 0 > "$D/b-runs.json" 2>&1
+J '[.runs[].name] | sort == ["LAB2-1", "LAB2-2"]' "$D/a-runs.json" || check "keys: lab2's runs are $(jq -c '[.runs[]?.name]' "$D/a-runs.json"), not LAB2-1 and LAB2-2"
+J '[.runs[].name] == ["LAB32-1"]' "$D/b-runs.json" || check "keys: lab3_2's runs are $(jq -c '[.runs[]?.name]' "$D/b-runs.json"), not LAB32-1"
+local first_a first_b
+first_a=$(jq -r 'first(.runs[]? | select(.name == "LAB2-1") | .id) // empty' "$D/a-runs.json") first_b=$(jq -r 'first(.runs[]? | .id) // empty' "$D/b-runs.json")
+# As Paul's were: lab2 locked, so its key in no index, and lab3_2 holding LAB2, its project.db of schema 6.
+ida=$(sql1 "$a" "SELECT value FROM meta WHERE key = 'id'") idb=$(sql1 "$b" "SELECT value FROM meta WHERE key = 'id'")
+pid=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder") && term_calcifer "$pid" || return
+python3 - "$HOME/.cozy/calcifer/state.db" "$b/project.db" "$ida" "$idb" <<'PY' || { check "keys: Paul's state"; return; }
+import sqlite3, sys
+store, project, a, b = sys.argv[1:5]
+db = sqlite3.connect(store, isolation_level=None)
+db.executescript("BEGIN; DELETE FROM project_keys WHERE id IN ('%s', '%s'); INSERT INTO project_keys (key, id, current) VALUES ('LAB2', '%s', 1); COMMIT;" % (a, b, b))
+db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+db = sqlite3.connect(project, isolation_level=None)
+db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+db.executescript("BEGIN; DELETE FROM project_keys; INSERT INTO project_keys (key, ord) VALUES ('LAB2', 1); PRAGMA user_version = 6; COMMIT;")
+db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+PY
+in_project "$b" --json key > "$D/b-key.json" 2>&1 || true
+J '.key == "LAB32" and ((.former // []) == [])' "$D/b-key.json" || check "keys: lab3_2 that held LAB2 is $(tail -c 300 "$D/b-key.json"), not LAB32 alone"
+in_project "$a" --json key > "$D/a-key.json" 2>&1 || true
+J '.key == "LAB2"' "$D/a-key.json" || check "keys: lab2 unlocked is $(tail -c 300 "$D/a-key.json"), not LAB2"
+db_calcifer
+for p in LAB2-1 LAB32-1; do
+  (cd "$D" && cozy --json run watch "$p" --once) > "$D/$p.json" 2>&1 || true
+done
+J --arg id "$first_a" '.id == $id and .name == "LAB2-1"' "$D/LAB2-1.json" || check "keys: LAB2-1 isn't lab2's first run ($first_a): $(tail -c 300 "$D/LAB2-1.json")"
+J --arg id "$first_b" '.id == $id and .name == "LAB32-1"' "$D/LAB32-1.json" || check "keys: LAB32-1 isn't lab3_2's first run ($first_b): $(tail -c 300 "$D/LAB32-1.json")"
+echo "keys: lab2 $(jq -r .key "$D/a-key.json"), lab3_2 $(jq -r .key "$D/b-key.json")"
+}
+
+# db_remote_custody (cl-1003): a project an earlier import left with runs pending a custody only `local` could verify takes new work.
+# Paul's lab was left so on rc/0.26.0 (its runs made on a rental since ended), and refused every run `legacy_worker_custody_pending`;
+# nothing reads that custody now. Its project.db as lab's: the column, and its runs pending on a machine gone.
+db_remote_custody() {
+step "legacy custody: a project whose runs an earlier import left pending takes new work (cl-1003)"
+local P=$OUT/remote-custody pid
+cozy --json new --unencrypted "$P" > "$OUT/remote-custody-new.json" 2>&1 || { check "remote custody: new: $(tail -c 300 "$OUT/remote-custody-new.json")"; return; }
+in_project "$P" --json run minimax-h3-tools/echo text=first > "$OUT/remote-custody-1.ndjson" 2> "$OUT/remote-custody-1.err" \
+  || { check "remote custody: first run: $(tail -c 300 "$OUT/remote-custody-1.err")"; return; }
+pid=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder") && term_calcifer "$pid" || return
+python3 - "$P/project.db" <<'PY' || { check "remote custody: lab's state"; return; }
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1], isolation_level=None)
+if "custody" not in [row[1] for row in db.execute("PRAGMA table_info(runs)")]:
+    db.execute("ALTER TABLE runs ADD COLUMN custody TEXT NOT NULL DEFAULT 'owned' CHECK(custody IN ('owned','legacy_pending'))")
+assert db.execute("UPDATE runs SET custody = 'legacy_pending', machine = 'gone-rental'").rowcount >= 1
+db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+PY
+in_project "$P" --json run minimax-h3-tools/echo text=after > "$OUT/remote-custody-2.ndjson" 2> "$OUT/remote-custody-2.err" \
+  || check "remote custody: a new run refused: $(tail -c 300 "$OUT/remote-custody-2.ndjson") $(tail -c 300 "$OUT/remote-custody-2.err")"
+}
+
 db_migrate_large() {
 step "project.db: a 5,000-box project of schema 3 migrates with nothing lost"
 local L=$OUT/migrate-large K=$OUT/migrate-large-kept n=5000 pid was began
@@ -1134,7 +1310,7 @@ import sqlite3, sys
 db = sqlite3.connect(sys.argv[1], isolation_level=None)
 db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 journal = ["outputs", "run_logs", "asks", "runs", "project_view", "project_diagnostics", "journal_migrations", "after_steps",
-    "project_headers", "project_rendered_here", "project_vault_operations", "project_keys"]
+    "project_headers", "project_vault_operations", "project_keys"]
 db.executescript("BEGIN; ALTER TABLE boxes DROP COLUMN id; DELETE FROM meta WHERE key IN ('rows_at', 'conflicts'); "
     + "".join(f"DROP TABLE {table}; " for table in journal) + "PRAGMA user_version = 3; COMMIT;")
 PY

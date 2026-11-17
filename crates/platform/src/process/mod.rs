@@ -99,7 +99,7 @@ pub enum State {
 }
 
 impl Birth {
-    /// The birth of the process that has `pid` now.
+    /// The birth of the process that has `pid` now; an exited child not yet reaped has one too.
     pub fn of(pid: u32) -> Result<Birth> {
         sys::birth(pid).map_err(Error::os("read a process's birth"))
     }
@@ -483,7 +483,8 @@ pub fn spawn(mut command: Command) -> Result<Tree> {
 /// A process that outlives its spawner: its own session (Unix); no console, out of the spawner's
 /// job when allowed (Windows). It reads null and appends stdout and stderr to `log` (null without
 /// one), and inherits nothing else: a caller reading the spawner's output to its end, as
-/// `out=$(cozy status)` does, gets that end when the spawner exits.
+/// `out=$(cozy status)` does, gets that end when the spawner exits. It starts in the home folder,
+/// never the one its spawner was in, which it would hold (on Windows, as a folder no one can rename).
 pub fn detach(program: &Path, args: &[OsString], log: Option<&Path>) -> Result<Detached> {
     let log = log
         .map(|path| {
@@ -491,7 +492,8 @@ pub fn detach(program: &Path, args: &[OsString], log: Option<&Path>) -> Result<D
             opened.map_err(Error::io("open log", path))
         })
         .transpose()?;
-    let child = tree::detach(program, args, log).map_err(Error::os("spawn"))?;
+    let home = std::env::home_dir().filter(|home| home.is_dir()).unwrap_or_else(std::env::temp_dir);
+    let child = tree::detach(program, args, log, &home).map_err(Error::os("spawn"))?;
     Ok(Detached(child))
 }
 
@@ -542,11 +544,4 @@ impl Drop for Tree {
     fn drop(&mut self) {
         let _ = self.kill();
     }
-}
-
-/// Chromium's closed debugging pipe: parent send/receive; child reads fd 3 and writes fd 4.
-/// Call before any final descriptor-confinement callback, classifying those pipes as KernelIpc.
-#[cfg(target_os = "linux")]
-pub fn private_browser_pipe(command: &mut Command) -> Result<(std::fs::File, std::fs::File)> {
-    unix::private_browser_pipe(command).map_err(Error::os("open a private browser pipe"))
 }

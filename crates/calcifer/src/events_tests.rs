@@ -23,7 +23,7 @@ async fn runs_scope_skips_other_subscriptions_and_streams_run_updates() {
     let root = tempfile::tempdir().unwrap();
     let home = platform::paths::Home::under(root.path());
     home.open().unwrap();
-    let calcifer = crate::Calcifer::open(&home.calcifer(), &home.outputs()).unwrap();
+    let calcifer = crate::Calcifer::open(&home.calcifer()).unwrap();
     let config = api::config::Config::default();
     let machines = Machines::start(calcifer.clone(), home, root.path(), &config);
     // Only the temporary controller and its event stream are under test, not machine startup.
@@ -43,7 +43,7 @@ async fn runs_scope_skips_other_subscriptions_and_streams_run_updates() {
     });
     taken.recv().unwrap();
     let began = Instant::now();
-    let runs = subscribe(api.clone(), Scope::Runs).await;
+    let runs = subscribe(api.clone(), Scope::Runs, false).await;
     assert!(runs.said.is_none());
     assert!(runs.machines_changed.is_none());
     assert!(runs.showing.is_none());
@@ -58,12 +58,12 @@ async fn runs_scope_skips_other_subscriptions_and_streams_run_updates() {
     assert_eq!(hello["type"], "hello");
     assert!(!SHOWN.lock().unwrap().contains_key(hello["stream"].as_str().unwrap()));
 
-    let mut all = subscribe(api.clone(), Scope::All).await;
+    let mut all = subscribe(api.clone(), Scope::All, false).await;
     assert!(all.said.is_some());
     assert!(all.machines_changed.is_some());
     assert!(all.showing.is_some());
     PROJECTS.said.send(StreamEvent::ProjectVault { id: "test-project".into(), state: "locked".into() }).unwrap();
-    let submitted = calcifer.here(None, "scope-test", "scope-test", "test/echo".into(), &config.hub_url, b"{}".to_vec(),
+    let submitted = calcifer.here(None, "scope-test", "scope-test", "test/echo".into(), crate::store::Task::None, &config.hub_url, b"{}".to_vec(),
         |_| async { Ok(serde_json::json!({"done": true})) }).await.unwrap();
     let update = decoded(&tokio::time::timeout(Duration::from_secs(2), body.next()).await.unwrap().unwrap().unwrap());
     assert_eq!(update["type"], "run.updated");

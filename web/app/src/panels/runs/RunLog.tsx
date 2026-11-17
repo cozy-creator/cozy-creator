@@ -5,9 +5,8 @@ import { LogView, plain, Section } from "../common"
 import { Failure } from "../common"
 import { follow, followingLine, type Following } from "../follow"
 import { span } from "../format"
-import { runName } from "./words"
 
-/** The most a drawer keeps: what scrolls past this is in `cozy run watch`. */
+/** The most a drawer keeps: what scrolls past this is said as how many lines aren't shown. */
 const KEPT = 5000
 
 const LIFECYCLE: Record<string, string> = {
@@ -28,9 +27,9 @@ function line(event: RunEvent, start: number): string | null {
     case "run.call":
       return `        call ${event.call.index} ${event.call.function}: ${event.call.status}${event.call.reason ? `, ${event.call.reason.message}` : ""}`
     case "output_item.landed":
-      return `        ${event.item.name}${event.item.index ? ` ${event.item.index}` : ""} landed here`
+      return `        ${event.item.name}${event.item.index ? ` ${event.item.index}` : ""} downloaded`
     case "output_item.done":
-      return event.item.export_error ? `        ${event.item.name} will not land: ${event.item.export_error}` : null
+      return event.item.export_error ? `        ${event.item.name} won't download: ${event.item.export_error}` : null
     case "run.in_progress":
     case "run.completed":
     case "run.failed":
@@ -59,12 +58,12 @@ export function RunLog({ run, project }: { run: Run; project: string | null }) {
     // A settled run replays its whole log in one go: the page redraws for it ten times a second, not once a line.
     const flush = () => {
       timer = undefined
-      setText((dropped ? [`(${dropped} earlier lines: cozy run watch ${runName(run)})`, ...lines] : lines).join("\n"))
+      setText((dropped ? [`${dropped} earlier lines not shown`, ...lines] : lines).join("\n"))
     }
     setText("")
     void follow(
       stop.signal,
-      () => project ? client.runEvents({ project, run: run.id }, after, stop.signal) : client.maintenanceRunEvents(run.id, after, stop.signal),
+      () => client.runEvents({ project: project ?? "", run: run.id }, after, stop.signal),
       (data) => {
         const event = JSON.parse(data) as RunEvent
         if ("sequence_number" in event) {
@@ -93,9 +92,9 @@ export function RunLog({ run, project }: { run: Run; project: string | null }) {
   const note = followingLine(following, "a log")
   return (
     <Section title="Log">
-      <LogView text={text} empty={following.state === "ended" ? "It logged nothing." : "Nothing yet."} />
+      <LogView text={text} empty={following.state === "ended" ? "No log output." : "Nothing yet."} />
       {note && <p className="muted">{note}</p>}
-      {following.state === "refused" && <Failure error={following.error} lead="Couldn't read its log" />}
+      {following.state === "refused" && <Failure error={following.error} lead="Couldn't load the log" />}
     </Section>
   )
 }

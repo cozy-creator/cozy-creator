@@ -2,7 +2,7 @@
 // list, a quote through the page, its stated price, and no order. With --rent: one click on that price, one order, followed until it's ready; it's
 // used; then End, followed until the Hub affirms the pod gone. What it uses is checked and said, and End goes on whatever those found: `web-rent.sh`'s
 // trap ends the pod if the page doesn't.
-//   node rent.js <sign-in link from `cozy open --no-open`> [--rent]
+//   node rent.js <the project's page, from `cozy --json open`> [--rent]
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: Google Chrome; $COZY: the CLI; $SKU: the product; $SSH_KEY: an OpenSSH public key; $ORDER: where
 // what the order answered goes, the moment it does; $PROJECT: a project's folder for its run; $SHOT: where its screenshots go. Prints what it saw as
 // JSON and exits 1 if anything failed.
@@ -93,8 +93,8 @@ async function use(name, work) {
   const before = mine().map((machine) => machine.name);
   check('runner_starts_with_no_rental', before.length === 0, before);
   if (process.env.SSH_KEY) {
-    await page.click('summary:text-is("Log in over SSH")');
-    await page.fill('input[aria-label="An OpenSSH public key"]', process.env.SSH_KEY);
+    await page.click('summary:text-is("SSH access")');
+    await page.fill('input[aria-label="SSH public key"]', process.env.SSH_KEY);
   }
   await page.locator('.sku').filter({ has: page.locator(`b:text-is("${sku}")`) }).locator('button:text-is("Rent")').click();
   await page.waitForSelector('.order .primary');
@@ -131,14 +131,14 @@ async function use(name, work) {
   check('one_order', mine().length === 1, mine().map((machine) => machine.name));
   const drawer = `${machines}/${encodeURIComponent(id)}`;
 
-  // Still trying, while it is: the list's row says so with End, and the drawer does.
+  // Starting up, while it is: the list's row says so with End, and the drawer does.
   await use('row_says_still_trying', async () => {
     await page.goto(machines);
     await page.waitForSelector('.runrow');
     if (await page.locator('.runrow.trying').count()) {
       await shot('trying');
       const row = await page.textContent('.runrow.trying');
-      check('row_says_still_trying', /Still trying/.test(row), row);
+      check('row_says_still_trying', /Starting up/.test(row), row);
       check('row_shows_end', (await page.locator('.runrow.trying button:text-is("End")').count()) === 1);
     }
     await page.goto(drawer);
@@ -148,9 +148,9 @@ async function use(name, work) {
   let ready = false;
   let over = false;
   await use('boots', async () => {
-    const last = await whileMoving('boot', () => page.textContent('.run-head'), (text) => /^(ready|ended)/.test(text));
-    ready = last.startsWith('ready');
-    over = last.startsWith('ended');
+    const last = await whileMoving('boot', () => page.textContent('.run-head'), (text) => /^(ready|ended)/i.test(text));
+    ready = /^ready/i.test(last);
+    over = /^ended/i.test(last);
     check('boots', ready, last);
   });
 
@@ -168,10 +168,10 @@ async function use(name, work) {
     });
 
     await use('keep_up', async () => {
-      await until('the idle clock', () => page.textContent('.drawer-body'), (text) => /ends in \d/.test(text), 180_000);
+      await until('the idle clock', () => page.textContent('.drawer-body'), (text) => /ends in \d/i.test(text), 180_000);
       const clock = pod().status.idle_deadline_ms;
       await pause(3000);
-      await page.click('button:text-is("Keep up")');
+      await page.click('button:text-is("Keep running")');
       await until('the deadline moves', () => Promise.resolve(pod().status.idle_deadline_ms), (now) => now > clock);
       check('keep_up', true);
     });
@@ -203,7 +203,7 @@ async function use(name, work) {
       // The last it names is its own, after local code's install.
       const number = [...out.matchAll(/^run (\d+)$/gm)].pop()?.[1] ?? (await page.locator('.runrow b').first().textContent()).slice(1);
       await page.goto(`${base}/#/runs/${number}`);
-      await until('its end in the page', () => page.textContent('.run-head'), (text) => text.includes('completed'));
+      await until('its end in the page', () => page.textContent('.run-head'), (text) => text.includes('Completed'));
       await page.click('summary:text-is("Result")');
       check('its_result_shows', (await page.textContent('.drawer-body')).includes('words'));
       await shot('run-done');
@@ -218,11 +218,11 @@ async function use(name, work) {
     await page.click('.ending button:text-is("End")');
     await page.waitForSelector('.confirm');
     seen.end_says = (await page.textContent('.confirm .says')).trim();
-    check('end_says_what_bills', /bills \$\d+\.\d\d\/h until the Hub affirms it gone/.test(seen.end_says), seen.end_says);
+    check('end_says_what_bills', /costs \$\d+\.\d\d\/h until the Hub confirms it has ended/.test(seen.end_says), seen.end_says);
     await shot('end');
-    await page.click('.confirm button:has-text("End it")');
+    await page.click('.confirm button:has-text("End rental")');
     // What it says of the end, and not the facts below it, whose clock would read as progress.
-    const ended = await whileMoving('ending', () => page.evaluate(() => [...document.querySelectorAll('.run-head, .ending, .drawer-body > p')].map((el) => el.innerText).join(' | ')), (text) => /nothing of it bills now/i.test(text));
+    const ended = await whileMoving('ending', () => page.evaluate(() => [...document.querySelectorAll('.run-head, .ending, .drawer-body > p')].map((el) => el.innerText).join(' | ')), (text) => /it costs nothing more/i.test(text));
     // A pod that's gone can't answer, and that's no news (42018791462).
     check('ended_is_all_it_says', !/didn't answer/.test(ended), ended);
     await shot('ended');

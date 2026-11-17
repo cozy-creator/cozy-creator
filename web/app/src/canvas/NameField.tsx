@@ -48,7 +48,7 @@ export function NameField({ name, draft, onCancel }: { name: string; draft: stri
   return (
     <input
       ref={input}
-      className="nm-field nodrag nopan"
+      className="nm-field canvas-control"
       aria-label="Name"
       spellCheck={false}
       value={draft}
@@ -56,7 +56,10 @@ export function NameField({ name, draft, onCancel }: { name: string; draft: stri
       onCompositionEnd={(event) => store.draft(name, typingName(event.currentTarget.value))}
       onKeyDown={key}
       onBlur={(event) => {
-        if (!cancelled.current) store.acceptName(name, event.currentTarget.value)
+        // A cover hiding or freezing the canvas (a new project's lock read) takes focus without anyone clicking away: the name waits.
+        const field = event.currentTarget
+        if (!field.checkVisibility() || field.closest("[inert]")) return
+        if (!cancelled.current) store.acceptName(name, field.value)
       }}
     />
   )

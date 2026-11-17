@@ -237,8 +237,8 @@ pub(crate) async fn keepalive(ctx: &Context, name: &str) -> Result<ExitCode, Err
 /// restart (`POST /v1/machines/{name}/update`): each named as a release version, or a local path,
 /// a dev build sent from here (a wheel or a project to build here; a `cozy` binary or the
 /// cozy-creator checkout to build here). With none named, each moves to its Hub's target. The
-/// update is a numbered run, followed like any run; Calcifer fails it unless the machine then
-/// runs what it asked for.
+/// update is a job of the machine's (cl-1028), followed as it goes; Calcifer fails it unless the
+/// machine then runs what it asked for.
 pub(crate) async fn update(
     ctx: &Context,
     name: &str,
@@ -256,16 +256,14 @@ pub(crate) async fn update(
         tensord: component(ctx, tensord, "").await?,
         gpu_memory_limit,
         mode,
+        torch: false,
     };
     let dev = matches!(ask.tensord, Some(Component::File(_)));
     let named = ask.tensord.is_some();
     let path = format!("{}/update", route(name)?);
     let calcifer = ctx.calcifer().await?;
-    let Updating { machine: m, run, warnings, .. } = calcifer.post(&path, &ask, Some(&mint_key())).await?;
+    let Updating { machine: m, run, .. } = calcifer.post(&path, &ask, Some(&mint_key())).await?;
     let was = m.status.as_ref().map(|status| status.commit.clone());
-    for warning in &warnings {
-        output::warn(warning);
-    }
     let Some(run) = run else {
         return up_to_date(ctx, &m, &m.status.clone().unwrap_or_default());
     };
@@ -292,30 +290,58 @@ pub(crate) async fn update(
     if named && m.kind == MachineKind::Local && (dev || was.as_ref() != Some(&status.commit)) {
         crate::daemon::restart(ctx).await?;
     }
-    if dev && m.kind == MachineKind::Local {
-        output::warn(&format!(
-            "this computer's cozy is now {}, a dev build; `cozy update` returns it to a release",
-            status.version
-        ));
-    }
     Ok(crate::run::exit_code(&run))
 }
 
 /// Asks `local` to move to cozy `version`, the release `cozy update` just installed, once its
-/// runs in flight end: an update naming it, submitted and not followed. Its number; none when
-/// `local` runs it already.
-pub(crate) async fn activate(ctx: &Context, version: &str) -> Result<Option<u64>, Error> {
+/// runs in flight end: an update naming it, submitted and not followed (a job of `local`'s, cl-1028).
+/// False when `local` runs it already.
+pub(crate) async fn activate(ctx: &Context, version: &str) -> Result<bool, Error> {
     let m = machine(ctx, "local").await?;
     if m.status.as_ref().is_some_and(|s| s.version == version) {
-        return Ok(None);
+        return Ok(false);
     }
     let ask = MachineUpdate {
         tensord: Some(Component::Version(version.into())),
+        torch: true,
         ..Default::default()
     };
     let path = format!("{}/update", route("local")?);
     let updating: Updating = ctx.calcifer().await?.post(&path, &ask, Some(&mint_key())).await?;
-    Ok(updating.run.map(|run| run.number))
+    Ok(updating.run.is_some())
+}
+
+/// Asks `local` for its own PyTorch base at its Hub's version, installed now as an ordinary update run followed here rather
+/// than at its first run (`cozy doctor --fix`, which the installers run; cl-1030). What it says of it; a failure is said, never
+/// the command's: the first run installs it.
+pub(crate) async fn torch(ctx: &Context) -> String {
+    let asked = async {
+        // `machine show local` starts it; the update goes once it serves, never waited on for long.
+        let began = std::time::Instant::now();
+        while machine(ctx, "local").await?.status.is_none_or(|status| status.phase != "ready") {
+            if began.elapsed() > Duration::from_secs(300) {
+                return Err(Error::new(Kind::Unavailable, "machine_unready", "local did not start within 5 minutes"));
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        let ask = MachineUpdate { torch: true, ..Default::default() };
+        let path = format!("{}/update", route("local")?);
+        let Updating { machine: m, run, .. } = ctx.calcifer().await?.post(&path, &ask, Some(&mint_key())).await?;
+        let Some(run) = run else {
+            return Ok::<_, Error>(match m.status.map(|status| status.torch).unwrap_or_default() {
+                held if held.is_empty() => "PyTorch: the first run installs it".to_owned(),
+                held => format!("PyTorch {held}: held"),
+            });
+        };
+        if ctx.json {
+            let handle = crate::run::handle(&run);
+            return Ok(format!("PyTorch: installing in run {handle} (`cozy run watch {handle}`)"));
+        }
+        crate::run::carry_out(ctx, run).await?;
+        let held = machine(ctx, "local").await?.status.map(|status| status.torch).unwrap_or_default();
+        Ok(format!("PyTorch {held}: installed"))
+    };
+    asked.await.unwrap_or_else(|e| format!("PyTorch: not installed now ({}); the first run installs it", e.message))
 }
 
 /// What `cozy machine update` installs of one component: a release version, or a file here, built

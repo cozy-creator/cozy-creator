@@ -117,7 +117,7 @@ pub fn label(flag: &str, value: &str) -> Result<String, Error> {
         true => Ok(value.to_owned()),
         false => Err(usage(
             "model_label_invalid",
-            format!("{flag} {value:?}: start alphanumeric, then at most 63 of letters, digits, . _ + ! -"),
+            format!("{flag} {value:?} isn't a valid name: start with a letter or digit, then use at most 63 letters, digits or . _ + ! -"),
         )),
     }
 }
@@ -151,9 +151,9 @@ pub fn checkpoint(value: &str) -> Result<String, Error> {
         }
         _ => Err(usage(
             "checkpoint_invalid",
-            format!("{value:?} is not a checkpoint id"),
+            format!("{value:?} isn't a checkpoint id."),
         )
-        .remedy("write sha256:<64 lowercase hex>")),
+        .remedy("Write it as sha256: followed by 64 lowercase hex characters.")),
     }
 }
 
@@ -168,9 +168,9 @@ impl ModelId {
             }),
             _ => Err(usage(
                 "model_name_invalid",
-                format!("{raw:?} is not name or org/name"),
+                format!("{raw:?} isn't a model name. Write it as name or org/name."),
             )
-            .remedy("org and name use letters, digits, dots, underscores or hyphens")),
+            .remedy("Use letters, digits, dots, underscores or hyphens.")),
         }
     }
 
@@ -180,9 +180,9 @@ impl ModelId {
         if model.org == "local" {
             return Err(usage(
                 "model_local_destination",
-                format!("{raw} is a local alias; local/ names stay on a machine"),
+                format!("{raw} is a local/ model, which stays on its machine."),
             )
-            .remedy(format!("name a model in your account, e.g. <you>/{}", model.name)));
+            .remedy(format!("Name a model in your account instead, like <you>/{}.", model.name)));
         }
         Ok(model)
     }
@@ -203,7 +203,7 @@ impl ModelRef {
                 "hf" | "civitai" | "https" => Ok(ModelRef::Provider(raw.to_owned())),
                 _ => Err(usage(
                     "model_source_scheme_unsupported",
-                    format!("{raw:?} uses neither hf://, civitai:// nor https://"),
+                    format!("Cozy can't download a model from {raw:?}. Use an hf://, civitai:// or https:// link."),
                 )),
             };
         }
@@ -217,7 +217,7 @@ impl ModelRef {
                 None => Ok(ModelRef::Local(model.name)),
                 Some(_) => Err(usage(
                     "model_ref_invalid",
-                    format!("{raw:?}: a local alias has no releases"),
+                    format!("{raw:?}: a local/ model has no releases, so leave out the @ and what follows."),
                 )),
             };
         }
@@ -270,7 +270,7 @@ pub fn strength(raw: &str) -> Result<String, Error> {
     let malformed = || {
         usage(
             "lora_strength_invalid",
-            format!("LoRA strength {raw:?} must be a finite decimal number"),
+            format!("The LoRA strength {raw:?} isn't a number."),
         )
     };
     let trimmed = raw.trim();
@@ -304,7 +304,7 @@ impl fmt::Display for ModelRef {
 fn grammar(raw: &str) -> Error {
     usage(
         "model_ref_invalid",
-        format!("{raw:?} is not a model: use {GRAMMAR}"),
+        format!("{raw:?} isn't a model Cozy recognizes. Name it as {GRAMMAR}."),
     )
 }
 

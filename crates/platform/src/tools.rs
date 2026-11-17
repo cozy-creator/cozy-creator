@@ -1,13 +1,11 @@
 //! The tools cozy uses when present and never bundles: where each is found, whether a run or a
 //! command needs it, what its absence costs, and how it is installed. `cozy doctor` lists them; a
-//! missing optional tool is one warning (`warn_once`) and the work goes on without it; a missing
+//! missing optional tool is said there and the work goes on without it; a missing
 //! essential one is a refusal naming its install. Probes read no environment: the caller hands in
 //! PATH.
 use std::{
-    collections::BTreeSet,
     path::{Path, PathBuf},
     process::Command,
-    sync::{Mutex, PoisonError},
 };
 
 use crate::paths::exe;
@@ -95,6 +93,30 @@ pub const TOOLS: &[Tool] = &[
         probe: |tools, path| ffmpeg(tools, path).map(|(ffmpeg, _)| ffmpeg),
     },
     Tool {
+        name: "fuse3",
+        side: Side::Computer,
+        class: Class::Optional,
+        cost: "encrypted projects can't be created or opened (no fusermount3)",
+        install: Install::System("fuse3"),
+        probe: |_, path| on_path("fusermount3", path).or_else(|| on_path("fusermount3", &system_bin())),
+    },
+    Tool {
+        name: "winfsp",
+        side: Side::Computer,
+        class: Class::Optional,
+        cost: "encrypted projects can't be created or opened",
+        install: Install::System("winfsp"),
+        probe: |_, _| winfsp(),
+    },
+    Tool {
+        name: "vcruntime",
+        side: Side::Computer,
+        class: Class::Optional,
+        cost: "encrypted projects can't be created or opened (no Visual C++ runtime)",
+        install: Install::System("vcruntime"),
+        probe: |_, _| vcruntime(),
+    },
+    Tool {
         name: "systemctl",
         side: Side::Computer,
         class: Class::Optional,
@@ -145,9 +167,14 @@ pub const TOOLS: &[Tool] = &[
 ];
 
 /// Whether this OS uses `tool`: macOS and Windows start Calcifer at login with their own built-ins,
-/// so systemctl is Linux's alone.
+/// so systemctl is Linux's alone; encrypted projects mount through FUSE on Linux, WinFsp on Windows
+/// and hdiutil, built in, on macOS.
 pub fn used_here(tool: &Tool) -> bool {
-    cfg!(target_os = "linux") || tool.name != "systemctl"
+    match tool.name {
+        "systemctl" | "fuse3" => cfg!(target_os = "linux"),
+        "winfsp" | "vcruntime" => cfg!(windows),
+        _ => true,
+    }
 }
 
 /// The table's entry for `name`.
@@ -156,21 +183,6 @@ pub fn tool(name: &str) -> &'static Tool {
         .iter()
         .find(|t| t.name == name)
         .unwrap_or_else(|| panic!("{name} is not in the tool table"))
-}
-
-/// The one warning a missing optional tool gets in this process: its name, what its absence
-/// costs, and `cozy doctor`. None once it was given, so a caller prints only what it gets, the way
-/// it prints (a terminal line, a log record, a run's warning).
-pub fn warn_once(name: &str) -> Option<String> {
-    static WARNED: Mutex<BTreeSet<&'static str>> = Mutex::new(BTreeSet::new());
-    let tool = tool(name);
-    let mut warned = WARNED.lock().unwrap_or_else(PoisonError::into_inner);
-    warned.insert(tool.name).then(|| warning(tool))
-}
-
-/// What a missing tool's warning says.
-pub(crate) fn warning(tool: &Tool) -> String {
-    format!("{} not found: {}; see `cozy doctor`", tool.name, tool.cost)
 }
 
 /// `name` on `path`, the first match in order; only looked for, never run.
@@ -444,6 +456,7 @@ pub fn system_install(package: &str, path: &[PathBuf]) -> Option<String> {
             ("apt-get", "sudo apt-get install -y"),
             ("dnf", "sudo dnf install -y"),
             ("pacman", "sudo pacman -S --noconfirm"),
+            ("zypper", "sudo zypper --non-interactive install"),
         ],
         "macos" => &[("brew", "brew install")],
         "windows" => &[("winget", "winget install --exact --id")],
@@ -452,14 +465,57 @@ pub fn system_install(package: &str, path: &[PathBuf]) -> Option<String> {
     let (manager, command) = managers
         .iter()
         .find(|(program, _)| on_path(program, path).is_some())?;
-    let name = match (*manager, package) {
+    Some(format!("{command} {}", package_name(manager, package)))
+}
+
+/// What `manager` calls `package`.
+pub fn package_name<'a>(manager: &str, package: &'a str) -> &'a str {
+    match (manager, package) {
         ("winget", "ffmpeg") => "Gyan.FFmpeg",
         ("winget", "git") => "Git.Git",
+        ("winget", "winfsp") => "WinFsp.WinFsp",
+        ("winget", "vcruntime") => "Microsoft.VCRedist.2015+.x64",
         ("apt-get" | "dnf", "ninja") => "ninja-build",
         _ => package,
-    };
-    Some(format!("{command} {name}"))
+    }
 }
+
+/// The first package manager this computer has, of those cozy installs through.
+pub fn package_manager(path: &[PathBuf]) -> Option<&'static str> {
+    let managers: &[&str] = match std::env::consts::OS {
+        "linux" => &["apt-get", "dnf", "pacman", "zypper"],
+        "windows" => &["winget"],
+        _ => &[],
+    };
+    managers.iter().copied().find(|program| on_path(program, path).or_else(|| on_path(program, &system_bin())).is_some())
+}
+
+/// The system's own program directories, which a service's PATH may lack.
+fn system_bin() -> Vec<PathBuf> {
+    ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"].iter().map(PathBuf::from).collect()
+}
+
+/// WinFsp's driver library, where its installer puts it.
+fn winfsp() -> Option<Found> {
+    let base = std::env::var_os("ProgramFiles(x86)").or_else(|| std::env::var_os("ProgramFiles"))?;
+    let dll = if std::env::consts::ARCH == "aarch64" { "winfsp-a64.dll" } else { "winfsp-x64.dll" };
+    let path = PathBuf::from(base).join("WinFsp").join("bin").join(dll);
+    path.is_file().then_some(Found { path, version: String::new() })
+}
+
+/// The Visual C++ runtime a Visual C++ program loads from System32.
+fn vcruntime() -> Option<Found> {
+    let system = PathBuf::from(std::env::var_os("SystemRoot")?).join("System32");
+    ["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"]
+        .iter()
+        .all(|dll| system.join(dll).is_file())
+        .then(|| Found { path: system.join("vcruntime140.dll"), version: String::new() })
+}
+
+/// WinFsp's installer, pinned, for a Windows with no winget.
+pub const WINFSP_MSI: (&str, &str) = (WINFSP_URL, WINFSP_SHA256);
+const WINFSP_URL: &str = "https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi";
+const WINFSP_SHA256: &str = "073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a";
 
 /// A file this process may run.
 fn executable(file: &Path) -> bool {

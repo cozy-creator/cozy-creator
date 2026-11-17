@@ -33,6 +33,8 @@ use super::{
 const BOARD: &str = "board";
 /// The machines the project's runs go to (cl-873), as a JSON list of names.
 const MACHINES: &str = "machines";
+/// How the page looks with it open (cl-1097), as JSON: none, as everywhere.
+const APPEARANCE: &str = "appearance";
 
 /// Where every file the project uses is kept, by content: `files/<sha256>.<ext>`.
 pub(crate) const FILES: &str = "files";
@@ -60,7 +62,7 @@ pub(crate) struct Kept {
 const PREFIX: usize = 12;
 
 /// Each kind of file a project keeps by what it is: its extension, its media type, and the field that names one.
-const MEDIA: [(&str, &str, &str); 40] = [
+const MEDIA: [(&str, &str, &str); 41] = [
     ("png", "image/png", "image"),
     ("jpg", "image/jpeg", "image"),
     ("jpeg", "image/jpeg", "image"),
@@ -101,8 +103,10 @@ const MEDIA: [(&str, &str, &str); 40] = [
     ("amr", "audio/amr", "audio"),
     ("dsf", "audio/x-dsf", "audio"),
     ("ape", "audio/x-ape", "audio"),
+    // A text tool's answer (xs-204).
+    ("txt", "text/plain; charset=utf-8", "text"),
 ];
-/// The media type and field of an extension, in any case, if it is a picture, video or sound.
+/// The media type and field of an extension, in any case, if it is a picture, video, sound or words.
 pub(crate) fn media_of(extension: &str) -> Option<(&'static str, &'static str)> {
     let extension = extension.to_ascii_lowercase();
     MEDIA.iter().find(|(known, ..)| *known == extension).map(|(_, media, field)| (*media, *field))
@@ -221,6 +225,7 @@ impl File {
     pub(crate) fn unmeasured(&self) -> bool {
         match media_of(&self.extension()) {
             Some((_, "audio")) => self.duration_ms == 0,
+            Some((_, "text")) => false,
             Some(_) => self.width == 0 || self.shape_only,
             None => false,
         }
@@ -308,6 +313,11 @@ pub(crate) fn main_of(files: &Files) -> Option<&String> {
     ["video", "image", "audio"].iter().find_map(|name| files.get(*name)).or_else(|| files.values().next())
 }
 
+/// The words a file of words in the project at `dir` holds (xs-204). None: it isn't here.
+pub(crate) fn words(dir: &Path, file: &File) -> Option<String> {
+    Some(String::from_utf8_lossy(&std::fs::read(dir.join(&file.path)).ok()?).into_owned())
+}
+
 /// A piece a cut was made without, and why.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Without {
@@ -351,6 +361,9 @@ pub(crate) struct Pending {
     /// Its pin, by the field holding it, goes when it lands (`--outdated`): if it never does, the pin stands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unpin: Option<String>,
+    /// A box of words: the field of its result they're in, which it lands as its version's file (xs-204).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub words: Option<String>,
     /// Where it goes.
     pub target: Target,
 }
@@ -378,9 +391,6 @@ pub(crate) struct Asset {
     pub tried: Option<Tried>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed: Option<Failed>,
-    /// Its takes that failed, by id, the newest last: each kept until it's dismissed (cl-954), at most `ENDED_KEPT`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub ended: Vec<Ended>,
     /// When a delete set it aside: Undo brings it back until the window ends, then its files leave the project (cl-919, `purge`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deleted_ms: Option<i64>,
@@ -395,19 +405,10 @@ pub(crate) struct Failed {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inputs: Option<String>,
     pub error: Error,
-}
-
-/// A take that failed: its id, its run if it had one, and why (cl-954).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub(crate) struct Ended {
-    pub id: String,
+    /// The run it was, by its number: what `cozy run retry` names to render the box again (cl-1085).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<u64>,
-    pub error: Error,
 }
-
-/// The most failed takes an asset keeps.
-pub(crate) const ENDED_KEPT: usize = 20;
 
 /// The seed last sent for `inputs`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -547,6 +548,20 @@ pub(crate) struct RunFile {
     pub output: String,
     pub sha256: String,
 }
+
+impl RunFile {
+    /// Whether `version` is this row's run's: by the run's id when both say one (its number is only a label), else by its number.
+    pub(crate) fn of(&self, version: &Version) -> bool {
+        match (&self.run_id, &version.run_id) {
+            (Some(row), Some(version)) => row == version,
+            (None, None) => version.run == Some(self.run),
+            _ => false,
+        }
+    }
+}
+
+/// project.db's `meta` key saying a purge swept the loose rows a take's run left before cl-1093.
+const LATE_ROWS_SWEPT: &str = "late_rows_swept";
 
 impl Default for Lock {
     fn default() -> Self {
@@ -823,19 +838,23 @@ impl Lock {
             .chain(self.walk.asks.iter().flat_map(|ask| ask.takes.iter().map(|take| name_key(&take.asset))))
             .collect();
         let lost: Vec<String> = self.assets.keys().filter(|key| !key.contains(TOMBSTONE) && !named(key) && !going.contains(*key)).cloned().collect();
-        lost.iter().for_each(|key| self.bury(key));
+        lost.iter().for_each(|key| {
+            self.bury(key);
+        });
         !lost.is_empty()
     }
 
     /// The row under `key` set aside, deleted now: what it holds stays, for Undo, until its window ends (`purge`), and that name starts with none.
-    pub(crate) fn bury(&mut self, key: &str) {
-        let Some(mut held) = self.assets.remove(key).filter(|held| held.files().next().is_some()) else { return };
+    /// Whether it held a file, set aside so: its project's purge is due once the window ends.
+    pub(crate) fn bury(&mut self, key: &str) -> bool {
+        let Some(mut held) = self.assets.remove(key).filter(|held| held.files().next().is_some()) else { return false };
         if held.name.is_empty() {
             held.name = key.to_owned();
         }
         held.deleted_ms = Some(super::now_ms());
         let free = (1..).map(|n| format!("{key}{TOMBSTONE}{n}")).find(|at| !self.assets.contains_key(at)).expect("a free key");
         self.assets.insert(free, held);
+        true
     }
 
     /// Every sha256 a version or a run has on record here, of any asset, discarded too: all `reclaim` may delete, once nothing uses it.
@@ -899,6 +918,18 @@ impl Lock {
         latest(!id.is_empty()).or_else(|| latest(false))
     }
 
+    /// The row a delete of box `id` set aside under `name`, the latest; none for a box with no id (nothing says it's the same box).
+    pub(crate) fn set_aside_of(&self, name: &str, id: &str) -> Option<&Asset> {
+        if id.is_empty() {
+            return None;
+        }
+        let prefix = format!("{}{TOMBSTONE}", name_key(name));
+        (self.assets.iter())
+            .filter(|(at, held)| at.starts_with(&prefix) && held.id == id)
+            .max_by_key(|(at, _)| at[prefix.len()..].parse::<u32>().unwrap_or(0))
+            .map(|(_, held)| held)
+    }
+
     /// Whether `name` is a box deleted from the project that Undo can still bring back.
     pub(crate) fn was_deleted(&self, name: &str, now: i64) -> bool {
         self.deleted_box(name, "").is_some_and(|held| !held.lapsed(now) && held.files().next().is_some())
@@ -943,6 +974,9 @@ struct Shared {
     held: Mutex<Option<Held>>,
     /// A connection that only reads: what `held` doesn't keep, and whether another connection committed. In WAL a read waits on no writer.
     reading: Mutex<Option<rusqlite::Connection>>,
+    /// The connections a run journal's reads take, one each: a run list never waits on another read, nor on the document read again
+    /// (cl-1010).
+    journal: Mutex<JournalReaders>,
     /// A checkpoint is going.
     checkpointing: std::sync::atomic::AtomicBool,
     /// Its history, read from project.db once.
@@ -950,6 +984,42 @@ struct Shared {
     /// What ffprobe last said of each film at its root.
     films: Mutex<HashMap<PathBuf, Frames>>,
 }
+
+/// Idle journal readers, and how many are reading now.
+#[derive(Default)]
+struct JournalReaders {
+    idle: Vec<rusqlite::Connection>,
+    reading: usize,
+}
+
+/// A journal read's turn: counted from its start until it's dropped, on unwind too (a read that panicked left `reading` up, so the
+/// project's close answered busy until Calcifer restarted, and a lock failed). Its connection goes back idle, unless the read
+/// panicked holding it.
+struct JournalReader<'a> {
+    shared: &'a Shared,
+    conn: Option<rusqlite::Connection>,
+}
+
+impl<'a> JournalReader<'a> {
+    fn take(shared: &'a Shared) -> Self {
+        let mut journal = shared.journal.lock().unwrap_or_else(|e| e.into_inner());
+        journal.reading += 1;
+        Self { shared, conn: journal.idle.pop() }
+    }
+}
+
+impl Drop for JournalReader<'_> {
+    fn drop(&mut self) {
+        let mut journal = self.shared.journal.lock().unwrap_or_else(|e| e.into_inner());
+        journal.reading -= 1;
+        if let Some(conn) = self.conn.take().filter(|_| !std::thread::panicking() && journal.idle.len() < JOURNAL_READERS) {
+            journal.idle.push(conn);
+        }
+    }
+}
+
+/// How many idle journal readers a project keeps: as many as the reads a page and the CLI make at once.
+const JOURNAL_READERS: usize = 8;
 
 /// How many frames a film holds, as ffprobe said of it at its size and time.
 type Frames = ((u64, std::time::SystemTime), Option<u64>);
@@ -967,10 +1037,11 @@ impl Drop for Shared {
         drop(shared);
         let writing = self.writing.get_mut().unwrap_or_else(|e| e.into_inner()).take();
         let reading = self.reading.get_mut().unwrap_or_else(|e| e.into_inner()).take();
+        let journal = std::mem::take(&mut self.journal.get_mut().unwrap_or_else(|e| e.into_inner()).idle);
         let held = self.held.get_mut().unwrap_or_else(|e| e.into_inner()).take();
         let book = self.book.get_mut().unwrap_or_else(|e| e.into_inner()).take();
         let films = std::mem::take(self.films.get_mut().unwrap_or_else(|e| e.into_inner()));
-        if writing.is_none() && reading.is_none() && held.is_none() {
+        if writing.is_none() && reading.is_none() && held.is_none() && journal.is_empty() {
             return;
         }
         let dir = self.key.1.clone();
@@ -980,7 +1051,7 @@ impl Drop for Shared {
             if let Some(conn) = writing.as_ref().or(reading.as_ref()) {
                 let _ = conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()));
             }
-            drop((writing, reading, held, book, films));
+            drop((journal, writing, reading, held, book, films));
             platform::heap::give_back();
             tracing::info!(
                 "{} closed: resident {} → {} MiB, allocator committed {} → {} MiB, in use {} MiB",
@@ -1028,6 +1099,7 @@ fn shared(dir: &Path) -> Arc<Shared> {
         collecting: Mutex::default(),
         held: Mutex::default(),
         reading: Mutex::default(),
+        journal: Mutex::default(),
         checkpointing: std::sync::atomic::AtomicBool::default(),
         book: Mutex::default(),
         films: Mutex::default(),
@@ -1131,10 +1203,14 @@ impl Folder {
     /// Release cached connections before unmounting or moving the storage. The caller has
     /// stopped admissions and checked background work; an in-flight DB operation refuses it.
     pub(crate) fn close_connections(&self, checkpoint: bool) -> Result<(), Error> {
-        let busy = || Error::new(api::error::Kind::Conflict, "project_busy", "a project database operation is still running");
+        let busy = || Error::new(api::error::Kind::Conflict, "project_busy", "Cozy is still working on this project's database. Try again in a moment.");
         if self.shared.checkpointing.load(std::sync::atomic::Ordering::Acquire) { return Err(busy()); }
         let mut writer = self.shared.writing.try_lock().map_err(|_| busy())?;
         let mut reader = self.shared.reading.try_lock().map_err(|_| busy())?;
+        let mut journal = self.shared.journal.try_lock().map_err(|_| busy())?;
+        if journal.reading > 0 { return Err(busy()); }
+        journal.idle.clear();
+        drop(journal);
         let reading = reader.take();
         drop(reading);
         if checkpoint {
@@ -1143,12 +1219,12 @@ impl Folder {
                 Some(conn) => conn,
                 None => {
                     extra = rusqlite::Connection::open_with_flags(self.db(), rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
-                        .map_err(|e| Error::new(api::error::Kind::Unavailable, "vault_database", format!("open project checkpoint: {e}")))?;
+                        .map_err(|e| Error::new(api::error::Kind::Unavailable, "vault_database", format!("Cozy couldn't open the project to save it: {e}.")))?;
                     &extra
                 }
             };
             let occupied: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
-                .map_err(|e| Error::new(api::error::Kind::Unavailable, "vault_database", format!("checkpoint project before closing: {e}")))?;
+                .map_err(|e| Error::new(api::error::Kind::Unavailable, "vault_database", format!("Cozy couldn't save the project before closing it: {e}.")))?;
             if occupied != 0 { return Err(busy()); }
         }
         let writing = writer.take();
@@ -1213,6 +1289,11 @@ impl Folder {
         self.reading_db(db::keys)
     }
 
+    /// `db::key_review`.
+    pub(crate) fn key_review(&self) -> Result<bool, Error> {
+        self.reading_db(db::key_review)
+    }
+
     /// Keeps `key` as its key now (`db::set_key`): no part of the project moves.
     pub(crate) fn set_key(&self, key: &str, fresh: bool) -> Result<(), Error> {
         self.write_past(|conn| db::set_key(conn, &self.db(), key, fresh))
@@ -1262,6 +1343,20 @@ impl Folder {
         })
     }
 
+    /// How the page looks with it open (cl-1097); none: as everywhere. A local setting, as its machines are.
+    pub(crate) fn appearance(&self) -> Option<api::calcifer::Appearance> {
+        let kept = self.reading_db(|conn| db::meta(conn, APPEARANCE)).ok().flatten();
+        kept.and_then(|kept| serde_json::from_str(&kept).ok())
+    }
+
+    pub(crate) fn set_appearance(&self, appearance: Option<&api::calcifer::Appearance>) -> Result<(), Error> {
+        let kept = appearance.map(|appearance| serde_json::to_string(appearance).expect("an appearance serializes"));
+        self.act(|| {
+            acting(self.id()).expect("in its act").extra.borrow_mut().meta.push((APPEARANCE, kept));
+            Ok(())
+        })
+    }
+
     /// Whether another program holds project.db's write lock, asked this moment with no wait. None while a write of Calcifer's has the
     /// turn, which finds out.
     pub(crate) fn held_elsewhere(&self) -> Option<bool> {
@@ -1275,7 +1370,7 @@ impl Folder {
     }
 
     pub(crate) fn not_a_project(dir: &Path) -> Error {
-        Error::new(Kind::NotFound, "project_not_found", format!("{} holds no {}", dir.display(), db::DB)).next("cozy new")
+        Error::new(Kind::NotFound, "project_not_found", format!("{} has no {}, so it isn't a project.", dir.display(), db::DB)).next("cozy new")
     }
 
     fn id(&self) -> usize {
@@ -1530,6 +1625,24 @@ impl Folder {
         done
     }
 
+    /// Whether a purge swept the loose rows a take's run left before cl-1093 (`purge::sweep_late`).
+    pub(super) fn late_rows_swept(&self) -> Result<bool, Error> {
+        self.reading_db(|conn| db::meta(conn, LATE_ROWS_SWEPT).is_some())
+    }
+
+    /// A purge swept them.
+    pub(super) fn late_rows_swept_now(&self) -> Result<(), Error> {
+        self.write_past(|conn| db::set_meta(conn, &self.db(), LATE_ROWS_SWEPT, Some("1")))
+    }
+
+    /// Whether run `id` is a take's: sent by the project's walk, under its key (`walker::owed_key`). Not one when its journal can't say.
+    pub(crate) fn take_run(&self, id: &api::ids::RunId) -> bool {
+        use rusqlite::OptionalExtension as _;
+        let key: crate::store::Result<Option<String>> =
+            self.journal_read(|conn| Ok(conn.query_row("SELECT idempotency_key FROM runs WHERE id = ?1", [id.as_str()], |row| row.get(0)).optional()?));
+        key.ok().flatten().is_some_and(|key| super::walker::is_owed_key(&key))
+    }
+
     /// Every history row, oldest first.
     pub(super) fn ops(&self) -> Result<Vec<db::OpRow>, Error> {
         self.loaded()?.ops()
@@ -1560,7 +1673,7 @@ impl Folder {
                 return Ok(doc);
             }
         }
-        Err(Error::new(Kind::Conflict, "project_changed", "the project kept changing while its document was read; read it again and retry"))
+        Err(Error::new(Kind::Conflict, "project_changed", "The project kept changing while Cozy was reading it. Reload it and try again."))
     }
 
     /// The document an act began from, decoded once in it if what's held hadn't been: at its heads.
@@ -1570,7 +1683,7 @@ impl Folder {
         }
         let doc = Arc::new(db::document(&db::connect(&self.db(), true)?, &self.db())?);
         if !same_heads(&doc.heads(), &act.base.heads) {
-            return Err(Error::new(Kind::Conflict, "project_changed", "the project changed while this edit was being made; read it again and retry"));
+            return Err(Error::new(Kind::Conflict, "project_changed", "The project changed while this edit was being made. Reload it and try again."));
         }
         *act.document.borrow_mut() = Some(doc.clone());
         Ok(doc)
@@ -1598,12 +1711,40 @@ impl Folder {
     }
 
     pub(crate) fn journal_read<T>(&self, read: impl FnOnce(&rusqlite::Connection) -> crate::store::Result<T>) -> crate::store::Result<T> {
-        self.reading_db(read).map_err(|error| crate::store::StoreError::Protected(error.code.to_string()))?
+        let protected = |error: Error| crate::store::StoreError::Protected(error.code.to_string());
+        if !self.db().is_file() { return Err(protected(Self::not_a_project(&self.dir))); }
+        let mut reader = JournalReader::take(&self.shared);
+        let conn = match reader.conn.take() {
+            Some(conn) => conn,
+            // A journal reader is a file open of a current project.db, never a wait on the document's load (a start's purge loads
+            // every project's: a run list waited on it, 1.1 s on Paul's laptop, cl-1010). One not yet current is opened as its
+            // reader opens it, migrating it, first.
+            None => match db::reader(&self.db()) {
+                Ok(conn) => conn,
+                Err(_) => {
+                    drop(self.held().map_err(protected)?);
+                    db::reader(&self.db()).map_err(protected)?
+                }
+            },
+        };
+        read(reader.conn.insert(conn))
     }
 
     /// Whether this thread is inside one of this project's acts: its writer is this thread's until the act commits.
     pub(crate) fn acting_here(&self) -> bool {
         acting(self.id()).is_some()
+    }
+
+    /// `journal_write` of what `held` keeps too (a run's numbers in its versions and walk, cl-1075): `held` isn't told it saw the
+    /// commit, so the next read reads it again, as another connection's.
+    pub(crate) fn journal_write_held<T>(&self, write: impl FnOnce(&rusqlite::Transaction<'_>) -> crate::store::Result<T>) -> crate::store::Result<T> {
+        if self.acting_here() { return Err(crate::store::StoreError::Locked("project_acting".into())); }
+        let mut turn = self.shared.writing.lock().unwrap_or_else(|error| error.into_inner());
+        let conn = self.writer(&mut turn).map_err(|error| crate::store::StoreError::Protected(error.code.to_string()))?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let value = write(&tx)?;
+        tx.commit()?;
+        Ok(value)
     }
 
     pub(crate) fn journal_write<T>(&self, write: impl FnOnce(&rusqlite::Transaction<'_>) -> crate::store::Result<T>) -> crate::store::Result<T> {
@@ -1777,7 +1918,7 @@ impl Folder {
             return Written::of_snapshot(json);
         }
         let json = self.reading_db(|conn| db::asked(conn, &ask.digest))?
-            .ok_or_else(|| Error::new(Kind::NotFound, "ask_snapshot_missing", format!("the project render {} was asked with is gone", ask.id)))?;
+            .ok_or_else(|| Error::new(Kind::NotFound, "ask_snapshot_missing", format!("The project snapshot that render {} started from is gone.", ask.id)))?;
         Written::of_snapshot(&json)
     }
 
@@ -1821,7 +1962,7 @@ impl Folder {
         if unnamed == 0 || !lock.runs.is_empty() || lock.assets.values().any(|held| held.on_record().next().is_some()) {
             return None;
         }
-        Some(format!("the project lists no versions, so the {unnamed} files nothing names in {FILES}/ may be all that's left of its takes"))
+        Some(format!("The project lists no versions, so the {unnamed} unlisted files in {FILES}/ may be all that's left of its takes."))
     }
 
     /// `lock`'s file table whole, from what needs no record: each file in `files/` names itself, what a version or run names and isn't here has
@@ -1866,6 +2007,14 @@ impl Folder {
         Ok(sha256)
     }
 
+    /// Words a tool answered, kept as `keep` keeps a file it saved: a box of words' version (xs-204).
+    pub(crate) fn keep_words(&self, words: &str) -> Result<String, Error> {
+        use std::io::Write as _;
+        let mut part = tempfile::Builder::new().suffix(".txt").tempfile_in(&self.dir).map_err(|e| io_at(&self.dir, e))?;
+        part.write_all(words.as_bytes()).map_err(|e| io_at(part.path(), e))?;
+        self.keep(part.path())
+    }
+
     /// A file a run is given, of `sha256`, kept in `files/` unless it's here, and in the lock's table, under what its bytes say it is
     /// else its own extension: a hard link with `link`, else a copy.
     pub(crate) fn keep_given(&self, source: &Path, sha256: &str, link: bool) -> Result<(), Error> {
@@ -1901,8 +2050,17 @@ impl Folder {
     /// of that output was, which goes if nothing else names it. So a file here is a file measured.
     /// Unsupported folders are refused before their files are changed; a current project's write
     /// contention can still leave a measured file awaiting its listing.
-    pub(crate) fn adopt(&self, dest: &Path, digest: &str, made: RunFile, measured: Option<&File>) -> Result<(PathBuf, Option<Error>), Error> {
+    pub(crate) fn adopt(&self, dest: &Path, digest: &str, made: RunFile, measured: Option<&File>, take: bool) -> Result<(PathBuf, Option<Error>), Error> {
         drop(self.held()?);
+        // A take's run that no version on record is of, and none the walk has on its way: its take was deleted and purged before this
+        // landed (an export that resumed late, cl-1093), so nothing of the project is its and nothing keeps it here. While a run is being
+        // sent (a pending one with no number yet) the walk can't say whose it is: it lands as before.
+        let unclaimed = |walk: &WalkFile| !walk.walk.runs.contains_key(&made.run) && !walk.pending.values().any(|pending| pending.run == 0 || pending.run == made.run);
+        if take && self.reading_walk(unclaimed)?
+            && !self.reading_lock(|lock| lock.assets.values().flat_map(Asset::on_record).any(|version| made.of(version)))?
+        {
+            return Ok((dest.to_owned(), None));
+        }
         let (path, old, unlisted) = {
             let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
             let path = file_of(digest, dest);
@@ -1959,7 +2117,14 @@ impl Folder {
                     }
                     _ => self.update_lock(|lock| {
                         here(lock);
-                        listed(&mut lock.runs);
+                        // Its run arrived already and its version lists this file: that version's, as `arrived` makes what landed before
+                        // it, never a loose row (cl-1093: a local run's latents land after the rest, and such a row kept them past their
+                        // take's purge).
+                        let versioned = lock.assets.values().flat_map(Asset::on_record)
+                            .any(|version| made.of(version) && version.files.values().any(|file| file.as_str() == digest));
+                        if !versioned {
+                            listed(&mut lock.runs);
+                        }
                     }),
                 }),
             };
@@ -2007,7 +2172,7 @@ impl Folder {
     /// Err: why not. A client's own file comes held (`PUT /v1/files`), never by its path.
     pub(crate) async fn import(&self, source: &str) -> Result<Kept, String> {
         if !is_url(source) {
-            return Err("it is neither a held file's sha256:<hex>, a file of the project's nor an http(s) URL".into());
+            return Err("it isn't an uploaded file's sha256:<hex>, a file in this project, or an http(s) link".into());
         }
         let bytes = fetch_url(source).await?;
         let (kind, field) = media(infer::get(&bytes))?;
@@ -2263,14 +2428,14 @@ async fn fetch_url(url: &str) -> Result<Vec<u8>, String> {
     let mut sink = |at: u64, frame: &[u8]| {
         bytes.truncate(at as usize);
         if bytes.len() + frame.len() > URL_MOST {
-            let detail = format!("it is over {} MiB, the most a URL may give: download it and import its path", URL_MOST >> 20);
+            let detail = format!("it's larger than {}, the most Cozy downloads from a link, so download it yourself and import the file", crate::bytes(URL_MOST as f64));
             return Err(Refusal { code: Code::SOURCE_NOT_ALLOWED, detail });
         }
         bytes.extend_from_slice(frame);
         Ok(())
     };
     match tokio::time::timeout(URL_LONGEST, tensorfs::fetch::get_link(url, &mut sink)).await {
-        Err(_) => Err(format!("it did not finish in {} s", URL_LONGEST.as_secs())),
+        Err(_) => Err(format!("it didn't finish downloading within {}", api::calcifer::clock(URL_LONGEST.as_millis() as i64))),
         // A refusal's first sentence says it; the rest is for whoever reads the policy.
         Ok(Err(refused)) => {
             let why = refused.detail.split(". ").next().unwrap_or_default();
@@ -2304,8 +2469,8 @@ fn media(kind: Option<infer::Type>) -> Result<(infer::Type, &'static str), Strin
         MatcherType::Audio => Some("audio"),
         _ => None,
     };
-    let kind = kind.ok_or("it is no picture, video or sound")?;
-    let field = field(&kind).ok_or("it is no picture, video or sound")?;
+    let kind = kind.ok_or("it isn't an image, video or sound file")?;
+    let field = field(&kind).ok_or("it isn't an image, video or sound file")?;
     Ok((kind, field))
 }
 
@@ -2358,13 +2523,13 @@ fn io(error: platform::Error) -> Error {
         && durable::held(source)
     {
         let name = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
-        return Error::new(Kind::Unavailable, "file_held", format!("{name} is open in another program")).remedy("close it, and save again");
+        return Error::new(Kind::Unavailable, "file_held", format!("{name} is open in another program.")).remedy("Close it, then save again.");
     }
     Error::new(Kind::Unavailable, "project_io", error.to_string())
 }
 
 fn io_at(path: &Path, error: std::io::Error) -> Error {
-    Error::new(Kind::Unavailable, "project_io", format!("{}: {error}", path.display()))
+    Error::new(Kind::Unavailable, "project_io", format!("Cozy couldn't access {}: {error}.", path.display()))
 }
 
 /// Whether two lists of a document's heads name the same ones.

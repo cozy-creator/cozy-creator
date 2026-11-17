@@ -29,9 +29,9 @@ mock Hub, or second daemon is used.
    active past their expiry. Record exact CLI/TensorD versions and both clocks.
 2. Start `cozy --json model install <model> --lane <lane> --on <machine>`. This uses TensorD's
    download path and isolates the controller repair from Runtime's separate Load-reader fix.
-   Record its run ID and nonzero transfer progress before restarting anything.
+   Record its job ID (a job of the machine's, no project's run: cl-1028) and nonzero transfer progress before restarting anything.
 3. Perform the coordinator's normal CLI update/restart, while leaving the remote machine and
-   accepted run alive. Reattach with `cozy --json run watch <run>`. Capture Calcifer's restart
+   accepted job alive. Reattach with `cozy --json run watch <job id>`. Capture Calcifer's restart
    and resumed-run log, then cross at least two ordinary credential refresh points.
 4. Require continued byte progress and successful completion with the same accepted run ID
    and one attempt. Capture machine logs proving no credential-expiry failure; repeat the
@@ -41,7 +41,7 @@ mock Hub, or second daemon is used.
    the other machine's next refresh point.
 6. Exercise refusal with a dedicated proof account: after acceptance, make that account's
    credential unavailable and restart the controller. The observer must still deliver the
-   machine's actual outcome and allow `cozy run cancel <run>`; it must not synthesize a new
+   machine's actual outcome and allow `cozy run cancel <job id>`; it must not synthesize a new
    failure, resubmit the work, or block while minting a bearer.
 
 Record the run IDs, exact candidate commit, transfer counts, credential-refresh boundaries,

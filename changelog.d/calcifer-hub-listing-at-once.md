@@ -1,0 +1,1 @@
+`cozy machine ls` and `cozy machine ssh` answer the Hubs' last listing of your rentals at once, kept across a Calcifer restart, and Calcifer lists the Hubs again beside the answer: the new listing reaches the page and the live machine list as a change. Before, each waited on every Hub's listing (1 to 15 s on a slow Hub, minutes on one that hung).

@@ -3,7 +3,7 @@
 // keeps every character (cl-904). Another writer's words while the page's are on their way, and a second tab typing in the same box: both
 // stand, merged by character, with nothing asked. H3's Shot: Summary before its Beats, + Beat adds one, and a beat holds six lines with no
 // scroll of its own.
-const { test, expect, box, focus, TEXT_END, TEXT_START } = require('./fixtures');
+const { test, expect, focus, TEXT_END, TEXT_START, canvasNames, canvasVisible } = require('./fixtures');
 const { fit, leave } = require('./hands');
 
 const SENTENCE = 'The quick brown fox jumps over 12 lazy dogs; ';
@@ -55,8 +55,10 @@ test('type', { tag: '@engines' }, async ({ page, context, project, api, signIn }
   await project.add({ name: 'ask', tool: qwen.id, kind: 'image', at: { x: 420, y: 0 } });
   await project.add({ name: 'shared', kind: 'text', fields: { text: 'What Calcifer held.' }, at: { x: 840, y: 0 } });
   await project.add({ name: 'scene', tool: 'minimax-h3/generate', kind: 'video', at: { x: 0, y: 420 } });
-  for (const name of ['note', 'ask', 'shared', 'scene']) await expect(box(page, name)).toBeVisible();
+  // On the canvas, then all in view: the API places them where the view may not reach, and a canvas draws only what's in view.
+  for (const name of ['note', 'ask', 'shared', 'scene']) await expect.poll(async () => (await canvasNames(page)).includes(name), `${name} on the canvas`).toBe(true);
   await fit(page);
+  for (const name of ['note', 'ask', 'shared', 'scene']) await expect.poll(() => canvasVisible(page, name), `${name} in view`).toBe(true);
   const region = page.getByRole('region', { name: 'Focused asset' });
   const fieldOf = async (name, field) => (await project.asset(name))?.fields?.[field];
   const shown = (textbox) => textbox.evaluate((el) => el.textContent.replace(/ /g, ' '));

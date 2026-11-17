@@ -23,7 +23,6 @@ const STRIP_FRAMES = [1, 2, 4, 8, 16, 32]
 /** The clips part this far for what's being dragged in. */
 const GAP = 64
 const MOST_ZOOM = 64
-const POSTER_FRAMES = 16
 /** A cut changed this long ago, and nothing since, is joined into its next version. */
 const JOIN_MS = 1200
 
@@ -118,7 +117,7 @@ const Clip = memo(function Clip({
   // Offline it lasts nothing, as its film goes on without it: a flag where it stands, which still says why and can still be taken out.
   if (clip.missing) {
     return (
-      <div className={`tl-clip offline ${selected ? "on" : ""}`} style={{ transform: `translateX(${x}px)` }} data-missing={clip.missing} role="img" aria-label={`${name}: media offline, ${clip.missing}`} title={`${name}: media offline, ${clip.missing}. The film goes on without it.`} {...common}>
+      <div className={`tl-clip offline ${selected ? "on" : ""}`} style={{ transform: `translateX(${x}px)` }} data-missing={clip.missing} role="img" aria-label={`${name} is missing (${clip.missing})`} title={`${name} is missing (${clip.missing}). The video plays on without it.`} {...common}>
         !
       </div>
     )
@@ -138,7 +137,8 @@ const Clip = memo(function Clip({
   )
 })
 
-/** What's at the playhead, filling the frame center-cropped as the film is, exact once it's been sought. A click plays or pauses it. */
+/** What's at the playhead, filling the frame center-cropped as the film is, exact once it's been sought. A click plays or pauses it. Until a
+ *  video clip's own frame is decoded, its poster stands in at no more than its own size (cl-1080). */
 function Monitor({ preview, layout, empty }: { preview: Preview; layout: Layout; empty: boolean }) {
   const store = useCanvasStore()
   const holder = useRef<HTMLDivElement>(null)
@@ -148,7 +148,6 @@ function Monitor({ preview, layout, empty }: { preview: Preview; layout: Layout;
   const ready = useSignal(preview.ready)
   const kept = useSignal(preview.kept)
   const failed = useSignal(preview.failed)
-  const frame = useSignal(preview.frame)
   useLayoutEffect(() => {
     preview.attach(holder.current, still.current)
     return () => preview.attach(null, null)
@@ -162,17 +161,15 @@ function Monitor({ preview, layout, empty }: { preview: Preview; layout: Layout;
     const image = holder.current?.parentElement?.querySelector("img")
     if (place && clip?.sha256 && image) preview.picture(place.index, clip.sha256, image)
   }
-  // Until it's sought, the nearest of a strip's frames: a trimmed clip doesn't open on its take's first.
-  const tile = place && clip?.holds ? Math.min(POSTER_FRAMES - 1, Math.floor(((place.in + (frame - place.at)) / clip.holds) * POSTER_FRAMES)) : 0
   return (
     <div className="tl-monitor" data-clip={clip ? (clip.name ?? named(clip)) : undefined} data-live={live ? "" : undefined} onClick={() => !empty && preview.toggle()}>
       {clip?.sha256 && !clip.missing && (isStill(clip) || !(videoReady || drawn)) && store.projectId && (
-        moving && tile > 0 ? <Thumb sha256={clip.sha256} cardWidth={512} strip={POSTER_FRAMES} exact frame={tile} className="tl-poster" /> : <Thumb sha256={clip.sha256} cardWidth={1024} onSize={pictureReady} />
+        <Thumb sha256={clip.sha256} cardWidth={1024} className={moving ? "tl-stand-in" : undefined} onSize={pictureReady} />
       )}
       <canvas ref={still} className={drawn ? "" : "off"} />
       {/* One for the box, there only while it holds its slot: what plays is whatever it holds now. */}
       <div ref={holder} className={`tl-video ${videoReady ? "" : "off"}`} />
-      {empty && <p className="tl-empty">Drop videos and pictures on the timeline</p>}
+      {empty && <p className="tl-empty">Drop videos and images on the timeline</p>}
       {failed && <p className="tl-empty">{failed}</p>}
     </div>
   )
@@ -218,7 +215,7 @@ class Saver {
       answered = this.etag = answer.etag
       for (const warning of answer.warnings ?? []) say(warning)
     } catch (error) {
-      say("That edit didn't save", error)
+      say("Couldn't save that edit", error)
       this.etag = undefined
       this.next = null
     }
@@ -314,6 +311,11 @@ export function VideoEditor({ name }: { name: string }) {
   drawnAt.current = scale
   useEffect(() => preview.edit(layout, fps), [preview, layout, fps])
   useEffect(() => () => preview.stop(), [preview])
+  // Its own frame at the playhead from the first, at its own size: not a poster stretched over the player (cl-1080).
+  const framed = layout.frames > 0
+  useEffect(() => {
+    if (framed) preview.seek(preview.frame.get())
+  }, [preview, framed])
 
   const held = valuesOf(view).aspect_ratio
   const ratio = typeof held === "string" ? held : ""
@@ -503,7 +505,7 @@ export function VideoEditor({ name }: { name: string }) {
       setSelected(null)
       armed.current = null
       commit(before.filter((_, n) => n !== index))
-      say(`Took ${gone.name ?? named(gone)} out of the cut`, undefined, { action: { label: "Undo", run: () => commit(before) }, ms: 8_000 })
+      say(`Removed ${gone.name ?? named(gone)} from the edit`, undefined, { action: { label: "Undo", run: () => commit(before) } })
     },
     [commit],
   )
@@ -524,7 +526,7 @@ export function VideoEditor({ name }: { name: string }) {
       const asked = names.filter((held) => store.resolveName(held) !== store.resolveName(name))
       const taken = asked.flatMap((held) => clipOf(store, held, fps) ?? [])
       const refused = asked.filter((held) => !clipOf(store, held, fps))
-      if (refused.length) say(`Only videos and pictures go on the timeline: ${refused.join(", ")} stayed out`)
+      if (refused.length) say(`Only videos and images can go on the timeline, so ${refused.join(", ")} ${refused.length === 1 ? "wasn't" : "weren't"} added`)
       if (!taken.length) return
       const at = indexAt(place.current, xAt(x))
       commit([...current.current.slice(0, at), ...taken, ...current.current.slice(at)])
@@ -564,7 +566,7 @@ export function VideoEditor({ name }: { name: string }) {
     event.stopPropagation()
     setCaret(null)
     const files = [...event.dataTransfer.files].filter((file) => /^(video|image)\//.test(file.type))
-    if (!files.length) return void say("Only videos and pictures go on the timeline")
+    if (!files.length) return void say("Only videos and images can go on the timeline")
     let at = indexAt(place.current, xAt(event.clientX))
     store.placeFiles(files, (made) => {
       const clip = clipOf(store, made, fps)
@@ -621,13 +623,13 @@ export function VideoEditor({ name }: { name: string }) {
         <div className="tl-player" style={{ aspectRatio: aspect }} tabIndex={-1} onKeyDown={key}>
           <Monitor preview={preview} layout={layout} empty={!clips.length} />
           {asset?.rendering != null && (
-            <div className="tl-joining" role="progressbar" aria-label="Joining" aria-valuenow={Math.round(asset.rendering * 100)}>
+            <div className="tl-joining" role="progressbar" aria-label="Putting the video together" aria-valuenow={Math.round(asset.rendering * 100)}>
               <i style={{ transform: `translateX(${Math.round(asset.rendering * 100) - 100}%)` }} />
             </div>
           )}
         </div>
       </FocusFrame>
-      <div ref={box} className="tl nodrag nopan nowheel" data-drop-target="" tabIndex={0} aria-label="Timeline" onKeyDown={key} onKeyUp={() => setTrim(null)} onDragOver={(event) => event.dataTransfer.types.includes("Files") && event.preventDefault()} onDrop={dropFiles}>
+      <div ref={box} className="tl canvas-control" data-drop-target="" tabIndex={0} aria-label="Timeline" onKeyDown={key} onKeyUp={() => setTrim(null)} onDragOver={(event) => event.dataTransfer.types.includes("Files") && event.preventDefault()} onDrop={dropFiles}>
         <div className="tl-bar" role="toolbar" aria-label="Timeline tools">
           <SplitButton preview={preview} clips={clips} fps={fps} onSplit={cutHere} />
           <button type="button" className="tb" aria-label="Delete clip" title="Delete clip (Delete)" disabled={selected === null || !clips[selected]} onClick={() => selected !== null && remove(selected)}>

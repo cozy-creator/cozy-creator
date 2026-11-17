@@ -9,6 +9,8 @@ model's real classes at a tiny config, written into a throwaway store by TensorF
     drive.py <package dir> <interface.json> <fixture.py> <out dir> [--refs DIR] [--only cell,...] [--record]
 
 Prints one line per cell: PASS|FAIL|SKIP <package> <entry> <cell> <seconds>s[: first error line]. Exit 1 on any FAIL.
+Outputs are judged against refs/<package>.json, or refs/<package>.<amd|intel>.json where the two vendors' CPUs differ
+(`stored`: bf16 sums in another order on each, deterministic on one; Paul 11-06, determinism desirable, not required).
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import contextlib
 import importlib.util
 import itertools
 import json
+import math
 import os
 import shutil
 import socket
@@ -63,6 +66,8 @@ class Slot(TypedDict):
 class Entrypoint(TypedDict):
     name: str
     models: NotRequired[list[Slot]]
+    #: its `Files` input: the parameter (`parameter`) a call's `assets=` fill, and what it takes
+    assets: NotRequired[dict[str, Json]]
     #: the functions it calls (an orchestrator's segments)
     calls: NotRequired[list[dict[str, Json]]]
 
@@ -232,6 +237,12 @@ class Saved(TypedDict):
     media_type: str
 
 
+class RawFrame(TypedDict):
+    handle: str
+    raw: str
+    facts: dict[str, Json]
+
+
 class Reply(TypedDict, total=False):
     reply: str
     event: str
@@ -252,6 +263,7 @@ class Reply(TypedDict, total=False):
     detail: str
     outcome: Outcome
     outputs: list[dict[str, Json]]
+    frames: list[RawFrame]
     result: Json
     #: A hello's: the executor makes previews; a progress frame's preview, and a log's message
     previews: int
@@ -385,10 +397,10 @@ class Executor:
         os.close(self.fd)
 
 
-#: A child call: (its function, its request, its input files by field path, its request id, each slot's caller LoRAs as
-#: (ref, strength)) -> its reply and spool.
+#: A child call: (its function, its request, its input files and their media types by field path, its request id, each
+#: slot's caller LoRAs as (ref, strength)) -> its reply and spool.
 type Loras = dict[str, list[tuple[str, float]]]
-type RunChild = Callable[[str, dict[str, Json], dict[str, Path], str, Loras], tuple[Reply, Path]]
+type RunChild = Callable[[str, dict[str, Json], dict[str, tuple[Path, str]], str, Loras], tuple[Reply, Path]]
 
 
 class Broker:
@@ -400,10 +412,14 @@ class Broker:
     KINDS = frozenset({"child_call", "child_poll", "child_cancel", "child_forget", "gpu_release", "stage_memo_lookup",
                        "stage_memo_store", "publish"})
 
-    def __init__(self, request: str, spool: Path, run: RunChild) -> None:
+    def __init__(self, request: str, spool: Path, run: RunChild, files_at: Mapping[str, str]) -> None:
         self.request, self.spool, self.run = request, spool, run
+        #: each function's `Files` parameter, by its export
+        self.files_at = files_at
         #: each file the caller holds, by digest: what it saved and passed, and what its children returned
         self.held: dict[str, Path] = {}
+        #: and its media type, as the attempt saved it or a child returned it (a held file's name has no extension)
+        self.types: dict[str, str] = {}
         self.settled: dict[int, Answer] = {}
 
     def answer(self, got: Reply) -> Answer:
@@ -430,6 +446,7 @@ class Broker:
             return self.settled[index]
         for saved in got.get("saved", []):
             self.held[saved["digest"]] = spooled(self.spool, saved["asset_ref"])
+            self.types[saved["digest"]] = saved["media_type"]
         # Every call is a serving call (`calls.rs` serving_call): its request, and the model choices it passes (`models`):
         # each slot's model as its default, with the LoRAs the choice stacks (`ModelChoice.lora`).
         document = cast(dict[str, Json], json.loads(got.get("payload", "{}")))
@@ -437,6 +454,11 @@ class Broker:
         if not isinstance(request, dict):
             raise Failed("a child call has no request object")
         export = got.get("export", "")
+        # The files a call passes by `assets=`, beside its request, at the callee's Files parameter (`calls.rs` with_files).
+        if (takes := self.files_at.get(export)) is not None:
+            request[takes] = document.get("assets") or []
+        elif document.get("assets"):
+            raise Failed(f"a call to {export} passes files, and it takes none")
         loras: Loras = {}
         for parameter, choice in cast(dict[str, dict[str, Json] | None], document.get("models") or {}).items():
             if not choice:
@@ -446,7 +468,7 @@ class Broker:
             loras[f"{export}.models.{parameter}"] = [
                 (str(lora["ref"]), float(cast(float, lora.get("strength", 1.0))))
                 for lora in cast(list[dict[str, Json]], choice.get("lora") or [])]
-        files = {path: self.held[digest] for path, digest in digests(request) if digest in self.held}
+        files = {path: (self.held[digest], self.types.get(digest, "")) for path, digest in digests(request) if digest in self.held}
         child = f"{self.request}-call-{index}"
         reply, spool = self.run(export, request, files, child, loras)
         outcome = reply.get("outcome", {})
@@ -485,7 +507,7 @@ class Broker:
             node.update(asset_ref=digest, digest=digest, size_bytes=len(data), media_type=media_type)
             grants.append({"output_id": output, "kind": str(node.get("kind", "")), "digest": digest, "length": len(data),
                            "content_bytes": len(data), "media_type": media_type, "local": str(local)})
-            self.held[digest] = local
+            self.held[digest], self.types[digest] = local, media_type
         return json.dumps(value, separators=(",", ":"), sort_keys=True), grants
 
 
@@ -535,15 +557,17 @@ def held(manifest: str, store: Path) -> list[str]:
     return list(tensorfs.open(manifest, cache_dir=store, local_files_only=True).components)
 
 
-def compose(store: Path, base: str, loras: list[tuple[str, str, float]]) -> str:
+def compose(store: Path, base: str, loras: list[tuple[str, str, float]], runs: list[str]) -> str:
     """A call's caller LoRAs (ref, checkpoint, strength) over its slot's model, as TensorD composes them
     (`tensord/src/adapter.rs` compose), written whole into the store: each adapted linear's `weight` and `bias` as
     `<path>.base_layer.*`, each LoRA's factors as `<path>.lora_{A,B}.adapter_<i>.weight`, and the graph as each adapted
-    component's `model_adapters.json`. A LoRA's factor component adapts the model's component of its name, at its
+    component's `model_adapters.json`. A LoRA's factor component adapts the model's component of its name when the call
+    `runs` it, else each it runs that its layers fit (H3's `transformer` LoRA on Ref2VA's `transformer_ref`), at its
     `lora_alpha` (else its rank)."""
     import tensorfs
 
     model = tensorfs.open(base, cache_dir=store, local_files_only=True)
+    parts = model.components
     renamed: dict[tuple[str, str], str] = {}
     grafts: dict[str, list[tuple[str, tensorfs.Component, str]]] = {}
     layers: list[Json] = []
@@ -551,33 +575,39 @@ def compose(store: Path, base: str, loras: list[tuple[str, str, float]]) -> str:
     for ref, checkpoint, strength in loras:
         lora = tensorfs.open(checkpoint, cache_dir=store, local_files_only=True)
         for name, factors in lora.components.items():
-            target = model.components.get(name)
-            if target is None:
-                raise Failed(f"{ref}'s {name} factors adapt no component of the model")
-            alias, alpha = f"adapter_{len(adapters)}", factors.config.get("lora_alpha")
+            alpha = factors.config.get("lora_alpha")
+            factored: list[tuple[str, str]] = []  # each factor's linear and its dtype
             for key, tensor in factors.tensors.items():
                 if key.endswith(".lora_B.weight"):
                     continue
                 if not key.endswith(".lora_A.weight"):
                     raise Failed(f"{ref}: {key} is not a plain LoRA factor, which this driver composes")
-                path = key.removesuffix(".lora_A.weight")
-                for suffix in ("weight", "bias"):
-                    if f"{path}.{suffix}" in target.tensors:
-                        renamed[(name, f"{path}.{suffix}")] = f"{path}.base_layer.{suffix}"
-                grafts.setdefault(name, []).extend(
-                    (f"{path}.{role}.weight", factors, f"{path}.{role}.{alias}.weight") for role in ("lora_A", "lora_B"))
-                rank = tensor.shape[0]
-                layers.append({"component": name, "target": path, "adapter": alias, "rank": rank,
-                               "alpha": float(alpha) if isinstance(alpha, (int, float)) else float(rank),
-                               "strength": strength, "dtype": tensor.dtype})
-            adapters.append({"ref": checkpoint, "scale": strength, "kind": "lora", "component": name,
-                             "source_component": name, "family": ""})
+                factored.append((key.removesuffix(".lora_A.weight"), tensor.dtype))
+            ran = [c for c in runs or parts if c in parts]
+            fit = [c for c in ran if all(f"{path}.weight" in parts[c].tensors for path, _ in factored)]
+            targets = [name] if name in ran else fit
+            if not targets:
+                raise Failed(f"{ref}'s {name} factors fit none of the components the call runs ({', '.join(ran)})")
+            for target in targets:
+                alias = f"adapter_{len(adapters)}"
+                for path, dtype in factored:
+                    rank = factors.tensors[f"{path}.lora_A.weight"].shape[0]
+                    for suffix in ("weight", "bias"):
+                        if f"{path}.{suffix}" in parts[target].tensors:
+                            renamed[(target, f"{path}.{suffix}")] = f"{path}.base_layer.{suffix}"
+                    grafts.setdefault(target, []).extend(
+                        (f"{path}.{role}.weight", factors, f"{path}.{role}.{alias}.weight") for role in ("lora_A", "lora_B"))
+                    layers.append({"component": target, "target": path, "adapter": alias, "rank": rank,
+                                   "alpha": float(alpha) if isinstance(alpha, (int, float)) else float(rank),
+                                   "strength": strength, "dtype": dtype})
+                adapters.append({"ref": checkpoint, "scale": strength, "kind": "lora", "component": target,
+                                 "source_component": name, "family": ""})
     graph = json.dumps({"format": "cozy.model.lora/1", "layers": layers, "adapters": adapters}, sort_keys=True,
                        separators=(",", ":")).encode()
     writer = tensorfs.Writer(cache_dir=store)
     if (pipeline := model.pipeline) is not None:
         writer.pipeline(pipeline.cls, pipeline.config)
-    for name, component in model.components.items():
+    for name, component in parts.items():
         out = writer.component(name, cls=component.cls, config=component.config, config_file=component.config_file)
         for key in component.tensors:
             out.copy(key, component, as_key=renamed.get((name, key)))
@@ -603,15 +633,15 @@ def bindings(interface: Interface, interface_path: str, entry: Entrypoint, manif
         manifest = manifests.get(slot["path"]) or manifests.get(ref)
         if manifest is None:
             raise Failed(f"the fixture builds no model for {slot['path']} ({ref})")
+        wanted = slot.get("components") or sorted({c for use in slot.get("component_use", {}).values() for c in use})
         stacked = (loras or {}).get(slot["path"], [])
         if stacked:
             missing = [lora for lora, _ in stacked if lora not in manifests]
             if missing:
                 raise Failed(f"the fixture builds no LoRA {', '.join(missing)} for {slot['path']}")
-            manifest = compose(store, manifest, [(lora, manifests[lora], strength) for lora, strength in stacked])
+            manifest = compose(store, manifest, [(lora, manifests[lora], strength) for lora, strength in stacked], wanted)
             ref = "+".join([ref, *(lora for lora, _ in stacked)])
         components = held(manifest, store)
-        wanted = slot.get("components") or sorted({c for use in slot.get("component_use", {}).values() for c in use})
         missing = [c for c in wanted if c not in components]
         components = [c for c in components if not wanted or c in wanted]
         if missing or not components:
@@ -663,9 +693,44 @@ def differ(a: list[float], b: list[float]) -> tuple[float, float]:
     return (float(gap.mean()), float(gap.max())) if gap.size else (0.0, 0.0)
 
 
+def raw_video(path: Path, facts: dict[str, Json]) -> dict[str, npt.NDArray[np.generic]]:
+    """The Runtime's sealed RGB8/planar-F32 snapshot, before TensorD's MP4 post phase."""
+    shape = facts.get("shape")
+    if not isinstance(shape, list) or len(shape) != 4:
+        raise Failed(f"{path.name} has no four-axis video shape")
+    dims: list[int] = []
+    for value in shape:
+        if type(value) is not int or value <= 0:
+            raise Failed(f"{path.name} has an invalid video dimension")
+        dims.append(value)
+
+    def count(key: str) -> int:
+        value = facts.get(key, 0)
+        if type(value) is not int or value < 0:
+            raise Failed(f"{path.name} has invalid {key}")
+        return value
+
+    size, channels, audio_samples = count("video_bytes"), count("audio_channels"), count("audio_samples")
+    if dims[-1] != 3 or size != math.prod(dims) or bool(channels) != bool(audio_samples):
+        raise Failed(f"{path.name} has inconsistent raw video/audio facts")
+    data = path.read_bytes()
+    if len(data) != size + channels * audio_samples * 4:
+        raise Failed(f"{path.name} does not hold its declared RGB8/F32 samples")
+    found: dict[str, npt.NDArray[np.generic]] = {"": np.frombuffer(data, dtype=np.uint8, count=size).reshape(dims)}
+    if channels:
+        audio = np.frombuffer(data, dtype="<f4", count=channels * audio_samples, offset=size)
+        if not np.isfinite(audio).all():
+            raise Failed(f"{path.name} holds non-finite audio")
+        found[".audio"] = np.clip(audio, -1, 1) * 127.5 + 127.5
+    return found
+
+
 def samples(path: Path, media_type: str) -> dict[str, npt.NDArray[np.generic]]:
     """An output's samples as 0-255 numbers: a picture or a video's frames decoded, a video's sound, else its bytes."""
     if media_type.startswith("video/"):
+        facts = path.with_suffix(path.suffix + ".json")
+        if path.suffix == ".raw" and facts.exists():
+            return raw_video(path, cast(dict[str, Json], json.loads(facts.read_text())))
         import av
 
         found: dict[str, npt.NDArray[np.generic]] = {}
@@ -753,6 +818,11 @@ def judge(cell: Cell, reply: Reply, spool: Path, reference: Seen | None,
         path = spooled(spool, ref)
         files.append(path)
         named[output] = (path, media_type)
+        if path.suffix == ".raw" and media_type.startswith("video/"):
+            registered = next((f for f in reply.get("frames", []) if f["handle"] == ref), None)
+            if registered is None:
+                raise Failed(f"raw video {output} has no Runtime frame registration")
+            path.with_suffix(path.suffix + ".json").write_text(json.dumps(registered["facts"]))
         if not path.stat().st_size:
             if output not in empty:
                 raise Failed(f"output {output} is empty")
@@ -787,6 +857,10 @@ def frames(path: Path, media_type: str, result: Json) -> Iterator[npt.NDArray[np
     its encoder (AAC) turns a last-bit difference between a group's sum and one rank's into whole-band noise, so a sound
     is judged by its thumbnail (`compare`)."""
     if media_type.startswith("video/"):
+        if path.suffix == ".raw" and path.with_suffix(path.suffix + ".json").exists():
+            for frame in samples(path, media_type)[""]:
+                yield frame.astype(np.int16)
+            return
         import av
 
         with av.open(str(path)) as container:
@@ -943,12 +1017,13 @@ def inputs(cell: Cell, payload: dict[str, Json], work: Path, made: Path,
     return metadata, granted
 
 
-def grant(field: str, path: Path) -> tuple[InputMetadata, InputFile]:
-    """A file the machine grants at `field` (its own path): `PrepareRequest.input_metadata`'s row and `Invoke.inputs`'."""
+def grant(field: str, path: Path, media_type: str = "") -> tuple[InputMetadata, InputFile]:
+    """A file the machine grants at `field` (its own path), of `media_type` (else its extension's):
+    `PrepareRequest.input_metadata`'s row and `Invoke.inputs`'."""
     data = path.read_bytes()
     digest = "sha256:" + hashlib.sha256(data).hexdigest()
     order = next((int(part) for part in reversed(field.split(".")) if part.isdigit()), 0)
-    media_type = MEDIA.get(path.suffix, "application/octet-stream")
+    media_type = media_type or MEDIA.get(path.suffix, "application/octet-stream")
     return ({"input_id": field, "media_type": media_type, "digest": digest, "length": len(data), "order": order},
             {"local": str(path), "media_type": media_type, "digest": digest, "length": len(data), "order": order})
 
@@ -972,6 +1047,30 @@ def load_fixture(path: Path, package: str) -> Fixture:
     return cast(Fixture, module)
 
 
+def cpu() -> str:
+    """This computer's CPU as each reply names it (`execution_observation.accelerator`: the Runtime's `cpu_name`, the
+    model name in /proc/cpuinfo), or ''."""
+    with contextlib.suppress(OSError):
+        for row in Path("/proc/cpuinfo").read_text().splitlines():
+            if row.startswith("model name"):
+                return row.partition(":")[2].strip()
+    return ""
+
+
+def stored(folder: Path, package: str) -> tuple[Path, str]:
+    """The file of `package`'s references for this CPU's vendor, and what each cell's line says of it. bf16 matmuls sum
+    in another order on Intel than on AMD, alike on every CPU of one vendor: a tiny model's picture can move past a
+    reference's tolerance between them (krea-2 lineart, 13/255 in one block: e2e 43758038887 on AMD bit for bit,
+    43758045155, 43758051105, 43758057029 on three Intels the same). Determinism is desirable, not required (Paul 11-06),
+    so a package whose cells differ keeps `<package>.amd.json` and `<package>.intel.json`, one whose don't
+    `<package>.json`. Another vendor reads AMD's and says so. `--record` writes the file read."""
+    name = cpu()
+    vendor = next((v for v in ("amd", "intel") if v in name.lower()), "")
+    own = folder / f"{package}.{vendor or 'amd'}.json"
+    path = own if own.exists() else folder / f"{package}.json"
+    return path, "" if vendor else f"{name or 'this CPU'} is neither AMD nor Intel: AMD's references ({path.name})"
+
+
 def main() -> int:
     package_dir, interface_path, fixture_path, out = (Path(a).resolve() for a in sys.argv[1:5])
     flags = sys.argv[5:]
@@ -991,13 +1090,14 @@ def main() -> int:
     waive = cast(dict[str, str], getattr(fixture, "WAIVE", {}))
     #: `module:NAME` -> the literal it takes in the executor (a release geometry shrunk)
     patch = {k: repr(v) for k, v in cast(dict[str, object], getattr(fixture, "PATCH", {})).items()}
-    references_path = (Path(flags[flags.index("--refs") + 1]) if "--refs" in flags else HERE / "refs") / f"{package}.json"
+    references_path, unknown = stored(Path(flags[flags.index("--refs") + 1]) if "--refs" in flags else HERE / "refs", package)
     references = cast(dict[str, Seen], json.loads(references_path.read_text())) if references_path.exists() else {}
     failed = 0
 
     def line(ok: bool, entry: str, name: str, started: float, why: str = "") -> None:
         nonlocal failed
         failed += not ok
+        why = "; ".join(filter(None, (why, unknown)))
         print(f"{'PASS' if ok else 'FAIL'} {package} {entry} {name} {time.monotonic() - started:.1f}s{': ' + why if why else ''}",
               flush=True)
 
@@ -1017,6 +1117,7 @@ def main() -> int:
         return 1
     version = next((ln.split('"')[1] for ln in (package_dir / "pyproject.toml").read_text().splitlines() if ln.startswith("version")), "0")
     entries = {row["name"]: row for row in interface["entrypoints"]}
+    files_at = {name: str(row["assets"]["parameter"]) for name, row in entries.items() if "parameter" in row.get("assets", {})}
     cells = [c for c in fixture.CELLS if only is None or c["name"] in only or f"{c['entry']}/{c['name']}" in only]
     executors: dict[int, Executor] = {}
     loaded: set[tuple[int, str]] = set()
@@ -1029,7 +1130,7 @@ def main() -> int:
     #: a call that constructs nothing loads one binding naming only its package, as TensorD sends it
     weightless: Binding = {"application": interface["application"], "package_interface": str(interface_path)}
 
-    def run_child(export: str, request: dict[str, Json], files: dict[str, Path], child: str,
+    def run_child(export: str, request: dict[str, Json], files: dict[str, tuple[Path, str]], child: str,
                   loras: Loras) -> tuple[Reply, Path]:
         """A child call through the child executor, as TensorD runs it on its own (GPU) executor: the callee's slots
         bound (with the LoRAs the call stacks) and loaded once, its input files granted where its request names them."""
@@ -1051,13 +1152,14 @@ def main() -> int:
                           "models": rows or [weightless]}
             executor.must(load)
             loaded.add((0, construction))
-        rows_in = {field: grant(field, path) for field, path in files.items()}
+        rows_in = {field: grant(field, path, media_type) for field, (path, media_type) in files.items()}
         executor.must({"cmd": "prepare_request", "request_id": child, "entrypoint": export, "payload": request,
                        "construction": construction, "input_metadata": {k: v[0] for k, v in rows_in.items()}})
         spool = out / "spool" / child
         spool.mkdir(parents=True)
-        executor.broker = Broker(child, spool, run_child)
-        executor.broker.held |= {rows_in[field][1]["digest"]: path for field, path in files.items()}
+        executor.broker = Broker(child, spool, run_child, files_at)
+        executor.broker.held |= {rows_in[field][1]["digest"]: path for field, (path, _) in files.items()}
+        executor.broker.types |= {row["digest"]: row["media_type"] for _, row in rows_in.values()}
         reply = executor.ask({"cmd": "invoke", "request_id": child, "entrypoint": export, "spool": str(spool),
                               "construction": construction, "deadline_s": 1800, "inputs": {k: v[1] for k, v in rows_in.items()}},
                              timeout=1860)
@@ -1128,8 +1230,9 @@ def main() -> int:
                 if executor.previewing:
                     executor.send({"cmd": "preview", "request_id": request, "for_ms": 3_600_000})
                 # TensorD answers every attempt's durable requests: a call, a GPU release, a stage memo.
-                executor.broker = Broker(request, spool, run_child)
+                executor.broker = Broker(request, spool, run_child, files_at)
                 executor.broker.held |= {g["digest"]: Path(g["local"]) for g in granted.values()}  # it may pass them on
+                executor.broker.types |= {g["digest"]: g["media_type"] for g in granted.values()}
                 # As long as the deadline it gave the attempt: a busy computer's 1080p decode outlasts 900 s.
                 reply = executor.ask(invoke, timeout=invoke["deadline_s"] + 60)
                 executor.broker = None

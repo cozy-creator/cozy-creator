@@ -1,11 +1,12 @@
 import { useQuery } from "@tanstack/react-query"
-import { type CSSProperties, type PointerEvent as ReactPointerEvent, useCallback, useRef, useState } from "react"
+import { type CSSProperties, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useRef, useState } from "react"
 import type { Pickup } from "../api/calcifer"
 import { machinesQuery, runResultQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { useSignal } from "../ui/signal"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore } from "./context"
+import { useFullScreen } from "./FullScreen"
 import { WalkedFrames } from "./Media"
 import { orbitOf } from "./Orbit"
 import { cutClock, FPS, framesIn, pickupAt, segmentAt, segmentsOf, segmentWords } from "./ranges"
@@ -38,22 +39,29 @@ export const bare = (take: string) => take.replace(/^<|>$/g, "")
 export const beingMade = (view: ElementView) =>
   !shownOf(view) && view.asset?.kind === "video" && !view.asset.timeline && (view.asset.standing === "making" || Boolean(view.queued) || view.asked !== undefined || Boolean(view.glimpse))
 
-/** Under a video looked at in Focus: the one transport every video has (cl-965). */
+/** Under a video looked at in Focus: the one transport every video has (cl-965). Full screen, its track goes over the picture with it,
+ *  above it (cl-1080). */
 export function VideoTransport({ name, view }: { name: string; view: ElementView }) {
   const store = useCanvasStore()
   const shown = shownOf(view)
   const fps = shown?.fps ?? FPS
   const playback = store.playbackOf(name, fps)
   const length = useSignal(playback.length)
-  if (beingMade(view)) return <Transport playback={playback} frames={length} fps={fps} />
+  const full = Boolean(useFullScreen()?.full)
+  useEffect(() => {
+    playback.full.set(full)
+    return () => playback.full.set(false)
+  }, [playback, full])
+  const track = full && <Segments name={name} view={view} inFrame />
+  if (beingMade(view)) return <>{track}<Transport playback={playback} frames={length} fps={fps} /></>
   if (shown?.field !== "video" || !shown.duration_ms || orbitOf(shown)) return null
-  return <Transport playback={playback} frames={framesIn(shown.duration_ms, fps)} fps={fps} />
+  return <>{track}<Transport playback={playback} frames={framesIn(shown.duration_ms, fps)} fps={fps} /></>
 }
 
 /** Its track (Paul, 11-12; cl-965): the take's segments as spans on the time ruler every video has, the one the playhead is in marked,
  *  and Redo from there. Only whole segments are redone, each continuing from the frames before it, so every later one goes again too.
  *  Segment 1 offers no redo: that's a new take. A take its tool said no seams of is one span. Above it, what the take went on from. */
-export function Segments({ name, view }: { name: string; view: ElementView }) {
+export function Segments({ name, view, inFrame = false }: { name: string; view: ElementView; inFrame?: boolean }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
   const shown = shownOf(view)
@@ -62,6 +70,8 @@ export function Segments({ name, view }: { name: string; view: ElementView }) {
   const playback = store.playbackOf(name, fps)
   const frame = useSignal(playback.frame)
   const length = useSignal(playback.length)
+  // Its player full screen, the track is in its frame (VideoTransport), not here under it.
+  const away = useSignal(playback.full) && !inFrame
   const [room, setRoom] = useState(0)
   // Its width, measured whenever it's drawn: the track fits it.
   const watching = useRef<ResizeObserver | null>(null)
@@ -74,7 +84,7 @@ export function Segments({ name, view }: { name: string; view: ElementView }) {
     watching.current = watch
     setRoom(held.clientWidth)
   }, [])
-  if (!makes(view) && !view.asset) return null
+  if (away || (!makes(view) && !view.asset)) return null
   // Being made, what of it plays so far is one span, its seams said only once it lands.
   const making = beingMade(view)
   if (!making && (shown?.field !== "video" || shown.number === undefined || orbitOf(shown))) return null
@@ -93,8 +103,8 @@ export function Segments({ name, view }: { name: string; view: ElementView }) {
     playback.seek(Math.round(Math.max(0, Math.min(last - 1, (event.clientX - box.left) / scale))))
   }
   return (
-    <div className="tl tl-take nodrag nopan nowheel" aria-label="Timeline">
-      <div className={`tl-bar ${pickup ? "redoes" : ""}`} role="toolbar" aria-label="Its segments">
+    <div className="tl tl-take canvas-control" aria-label="Timeline">
+      <div className={`tl-bar ${pickup ? "redoes" : ""}`} role="toolbar" aria-label="Segments">
         {made && of && (
           <span className="continues" title={made.take}>
             {own ? `Redone from ${cutClock(made.out_frame / fps)}` : `Continues <${of.name}.${of.number}> from ${cutClock(made.out_frame / fps)}`}
@@ -174,7 +184,7 @@ export function LeadIn({ name, view }: { name: string; view: ElementView }) {
   const keptSeconds = going.out_frame / fps
   const newSeconds = Math.max(0, total - (going.beats_from ?? keptSeconds))
   return (
-    <div className="lead-in nodrag nopan" role="group" aria-label="Continues a video">
+    <div className="lead-in canvas-control" role="group" aria-label="Continues a video">
       <span className="lead-in-frame" style={{ aspectRatio: file.width && file.height ? file.width / file.height : 16 / 9 }}>
         <WalkedFrames sha256={file.sha256} cardWidth={160} at={Math.min(1, going.out_frame / last)} />
       </span>
@@ -185,7 +195,7 @@ export function LeadIn({ name, view }: { name: string; view: ElementView }) {
           <span className="new" />
         </span>
       </span>
-      <button type="button" className="tb nodrag" onClick={() => store.stopContinuing(name)}>
+      <button type="button" className="tb canvas-control" onClick={() => store.stopContinuing(name)}>
         Cancel
       </button>
       {gone && <span className="lead-in-gone">Its latents went with {gone}: the join may show</span>}
@@ -206,7 +216,7 @@ export function ContinueFrom({ name, view }: { name: string; view: ElementView }
     <label className="slide continue-from">
       <span className="ctl-name">Continue</span>
       <select
-        className="field nodrag"
+        className="field canvas-control"
         aria-label="Continue a video from its end"
         value=""
         onChange={(event) => {

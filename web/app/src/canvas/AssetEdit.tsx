@@ -16,8 +16,10 @@ import { atDefault, fieldsOf, fieldWords, fullRows, heldBeyond, mainText, newRow
 import { Ghosts, Spread, Thumb } from "./Media"
 import { MentionText } from "./MentionText"
 import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, timecode } from "./ranges"
+import { RenderTime } from "./RenderTime"
 import { makes, watched } from "./shown"
 import { mentionsIn, type Row, rowsIn, textsIn } from "./text"
+import { UNSUPPORTED, UnsupportedNote } from "./Unsupported"
 import { WhenOff, whenOff } from "./When"
 import "./FocusParameters.css"
 
@@ -80,7 +82,7 @@ interface Drawn {
 function Reset({ field, bound }: { field: ToolField; bound: Bound }) {
   if (atDefault(field, bound.value)) return null
   return (
-    <button type="button" className="reset nodrag" aria-label={`Reset ${field.label}`} title="Back to its default" onClick={bound.unset}>
+    <button type="button" className="reset canvas-control" aria-label={`Reset ${field.label}`} title="Reset to default" onClick={bound.unset}>
       ↺
     </button>
   )
@@ -98,6 +100,7 @@ function TextField({ name, field, bound, view, place, label, focus, named, block
     <MentionText
       asset={name}
       place={place}
+      field={field}
       value={said(bound.value)}
       label={label}
       placeholder={field.placeholder ?? undefined}
@@ -139,7 +142,7 @@ function ToggleField({ field, bound, label }: Drawn) {
         <span className="ctl-name">{field.label}</span>
         <span className="segments">
           {options.map(([word, is]) => (
-            <button key={word} type="button" role="radio" aria-checked={(value ?? null) === is} className={`seg nodrag ${(value ?? null) === is ? "on" : ""}`} onClick={() => (is === null ? bound.unset() : bound.write(is))}>
+            <button key={word} type="button" role="radio" aria-checked={(value ?? null) === is} className={`seg canvas-control ${(value ?? null) === is ? "on" : ""}`} onClick={() => (is === null ? bound.unset() : bound.write(is))}>
               {word}
             </button>
           ))}
@@ -149,7 +152,7 @@ function ToggleField({ field, bound, label }: Drawn) {
   }
   return (
     <label className="slide">
-      <input className="nodrag" type="checkbox" role="switch" aria-label={label} checked={value === true} onChange={(event) => bound.write(event.target.checked)} />
+      <input className="canvas-control" type="checkbox" role="switch" aria-label={label} checked={value === true} onChange={(event) => bound.write(event.target.checked)} />
       <span className="ctl-name">{field.label}</span>
       <Reset field={field} bound={bound} />
     </label>
@@ -171,7 +174,7 @@ function NumberField({ field, bound, label }: Drawn) {
     <label className={`slide ${auto ? "auto" : ""}`} title={field.label}>
       <span className="ctl-name">{field.label}</span>
       <input
-        className="nodrag nopan"
+        className="canvas-control"
         type="range"
         aria-label={label}
         min={field.min ?? undefined}
@@ -184,7 +187,7 @@ function NumberField({ field, bound, label }: Drawn) {
       />
       <span className="num">{auto ? "Auto" : `${shown}${field.unit ? ` ${field.unit}` : ""}`}</span>
       {field.auto && held !== undefined ? (
-        <button type="button" className="reset nodrag" aria-label={`${field.label}: Auto`} title="Auto" onClick={bound.unset}>
+        <button type="button" className="reset canvas-control" aria-label={`${field.label}: Auto`} title="Auto" onClick={bound.unset}>
           Auto
         </button>
       ) : (
@@ -194,42 +197,34 @@ function NumberField({ field, bound, label }: Drawn) {
   )
 }
 
-/** Options that each say what they are: a dropdown of their words and a line on each, showing the chosen one's words shut. */
+/** Options that each say what they are: a menu of their words and, under it, what the chosen one does. The browser's own menu, which
+ *  nothing clips: the list this drew itself opened inside the box it sits at the bottom of and was cut off by it (Paul, 11-16, on H3
+ *  Edit's Edit: "clipped by the bounding box it's inside of, so it's impossible (almost) to do anything with it"). */
 function Described({ field, bound, label }: Drawn) {
   const options = field.options ?? []
   const automatic = options.find((option) => typeof option === "string" && option.toLowerCase() === "auto")
   const held = bound.value ?? field.default ?? (field.auto ? automatic : undefined)
   const at = options.findIndex((option) => JSON.stringify(option) === JSON.stringify(held))
-  const [open, setOpen] = useState(false)
-  const choose = (option: unknown) => {
-    setOpen(false)
-    bound.write(option)
-  }
+  const says = at < 0 ? undefined : field.descriptions?.[String(options[at])]
+  const unset = field.auto && automatic === undefined
   return (
-    <div className="slide described" onBlur={(event) => !event.currentTarget.contains(event.relatedTarget as Node | null) && setOpen(false)}>
+    <div className="slide described">
       <span className="ctl-name">{field.label}</span>
-      <button type="button" className="field dropdown nodrag" aria-label={label} aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen(!open)} onKeyDown={(event) => event.key === "Escape" && setOpen(false)}>
-        {at < 0 ? (field.placeholder ?? "Choose") : optionWord(field, options[at])}
-      </button>
-      {open && (
-        <ul className="dropdown-list nodrag nowheel" role="listbox" aria-label={label}>
-          {field.auto && automatic === undefined && <li><button type="button" role="option" aria-selected={at < 0} onClick={() => { bound.unset(); setOpen(false) }}>Auto</button></li>}
-          {options.map((option, i) => (
-            <li key={i}>
-              <button type="button" role="option" aria-selected={i === at} className={i === at ? "on" : ""} onClick={() => choose(option)}>
-                <b>{optionWord(field, option)}</b>
-                {field.descriptions?.[String(option)] && <span className="muted">{field.descriptions[String(option)]}</span>}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+      <select className="field canvas-control" aria-label={label} value={at} onChange={(event) => Number(event.target.value) < 0 ? bound.unset() : bound.write(options[Number(event.target.value)])}>
+        <option value={-1} disabled={!unset} hidden={!unset}>{unset ? "Auto" : (field.placeholder ?? "Choose…")}</option>
+        {options.map((option, i) => (
+          <option key={i} value={i} title={field.descriptions?.[String(option)]}>
+            {optionWord(field, option)}
+          </option>
+        ))}
+      </select>
       <Reset field={field} bound={bound} />
+      {says && <span className="described-says muted">{says}</span>}
     </div>
   )
 }
 
-/** Up to four options side by side, more in a menu; options that say what they are, a dropdown. */
+/** Up to four options side by side, more in a menu; options that say what they are, a menu with the chosen one's line under it. */
 function ChoiceField(props: Drawn) {
   const { field, bound, label } = props
   if (field.descriptions && Object.keys(field.descriptions).length) return <Described {...props} />
@@ -242,9 +237,9 @@ function ChoiceField(props: Drawn) {
       <div className="slide" role="radiogroup" aria-label={label}>
         <span className="ctl-name">{field.label}</span>
         <span className="segments">
-          {field.auto && automatic === undefined && <button type="button" role="radio" aria-checked={at < 0} className={`seg nodrag ${at < 0 ? "on" : ""}`} onClick={bound.unset}>Auto</button>}
+          {field.auto && automatic === undefined && <button type="button" role="radio" aria-checked={at < 0} className={`seg canvas-control ${at < 0 ? "on" : ""}`} onClick={bound.unset}>Auto</button>}
           {options.map((option, i) => (
-            <button key={i} type="button" role="radio" aria-checked={i === at} className={`seg nodrag ${i === at ? "on" : ""}`} onClick={() => bound.write(option)}>
+            <button key={i} type="button" role="radio" aria-checked={i === at} className={`seg canvas-control ${i === at ? "on" : ""}`} onClick={() => bound.write(option)}>
               {optionWord(field, option)}
             </button>
           ))}
@@ -256,7 +251,7 @@ function ChoiceField(props: Drawn) {
   return (
     <label className="slide">
       <span className="ctl-name">{field.label}</span>
-      <select className="field nodrag" aria-label={label} value={at} onChange={(event) => Number(event.target.value) < 0 ? bound.unset() : bound.write(options[Number(event.target.value)])}>
+      <select className="field canvas-control" aria-label={label} value={at} onChange={(event) => Number(event.target.value) < 0 ? bound.unset() : bound.write(options[Number(event.target.value)])}>
         <option value={-1} disabled={!field.auto || automatic !== undefined} hidden={!field.auto || automatic !== undefined}>
           {field.auto ? "Auto" : ""}
         </option>
@@ -278,18 +273,18 @@ function SeedField({ field, bound, label }: Drawn) {
     <div className="slide" role="group" aria-label={label}>
       <span className="ctl-name">{field.label}</span>
       <span className="segments">
-        <button type="button" className={`seg nodrag ${held === null ? "on" : ""}`} aria-pressed={held === null} onClick={bound.unset}>
+        <button type="button" className={`seg canvas-control ${held === null ? "on" : ""}`} aria-pressed={held === null} onClick={bound.unset}>
           Random
         </button>
-        <button type="button" className={`seg nodrag ${held !== null ? "on" : ""}`} aria-pressed={held !== null} onClick={() => held === null && bound.write(Math.floor(Math.random() * 2 ** 31))}>
+        <button type="button" className={`seg canvas-control ${held !== null ? "on" : ""}`} aria-pressed={held !== null} onClick={() => held === null && bound.write(Math.floor(Math.random() * 2 ** 31))}>
           Fixed
         </button>
       </span>
       {held !== null && (
         <input
-          className="field seed nodrag"
+          className="field seed canvas-control"
           type="number"
-          aria-label={`${label}: its number`}
+          aria-label={`${label} number`}
           min={0}
           step={1}
           defaultValue={held}
@@ -308,10 +303,10 @@ function SeedField({ field, bound, label }: Drawn) {
 /** What a mention would put in a slot that takes `accept`, or why it can't: by what the box it names is. */
 export function whyNotIn(store: CanvasStore, accept: Media | undefined, mention: string, besides: string, label: string): string | null {
   const said = store.mentionOf(mention, besides)
-  if (!said) return `${baseOf(mention)} is nothing in this project`
+  if (!said) return `${baseOf(mention)} isn't in this project`
   const kind = store.kindOf(mention, besides)
   if (!accept || kind === accept) return null
-  return `${label} takes ${WANTED[accept]}, and ${baseOf(mention)} is ${kind === "text" ? "words" : (WANTED[kind as Media] ?? "a file")}`
+  return `${label} takes ${WANTED[accept]}, and ${baseOf(mention)} is ${kind === "text" ? "text" : (WANTED[kind as Media] ?? "a file")}`
 }
 
 /** A slot's file: its thumbnail, and on a video its in and out. One its tool can't use, written by hand, is struck through, saying why: a render
@@ -328,11 +323,11 @@ function Held({ name, mention, label, wrong, onRange, onOff }: { name: string; m
   const frames = framesIn(file?.duration_ms, fps)
   return (
     <div className={`slot-held ${missing ? "missing" : ""}`}>
-      <span className={`chip ${wrong && !missing ? "unused" : ""}`} title={wrong && !missing ? wrong : mention} data-mention={mention}>
+      <span className={`chip ${wrong && !missing ? UNSUPPORTED : ""}`} title={wrong && !missing ? wrong : mention} data-mention={mention}>
         {baseOf(mention)}
         {range && ` ${timecode(range.from, fps)}–${timecode(range.to ?? frames, fps)}`}
         {angled && ` ${degrees(angled)}`}
-        <button type="button" className="nodrag" aria-label={`Take ${baseOf(mention)} out of ${label}`} onClick={onOff}>
+        <button type="button" className="canvas-control" aria-label={`Remove ${baseOf(mention)} from ${label}`} onClick={onOff}>
           ×
         </button>
       </span>
@@ -427,7 +422,7 @@ function SlotField({ name, field, bound, view, label, place, siblings }: Drawn &
       ))}
       {(!held.length || field.multiple) && (
         <input
-          className="slot-type nodrag"
+          className="slot-type canvas-control"
           aria-label={`${label}: a name`}
           placeholder={`Drag ${WANTED[(field.accept as Media | null) ?? "image"]} here`}
           value={typed}
@@ -442,7 +437,8 @@ function SlotField({ name, field, bound, view, label, place, siblings }: Drawn &
         />
       )}
       {spans && <span className={`spans ${spans.differs ? "warn" : ""}`}>{spans.says}</span>}
-      {view.asset?.missing?.some((gone) => held.includes(gone)) && <span className="muted">Not in this project any more</span>}
+      {view.asset?.missing?.some((gone) => held.includes(gone)) && <span className="muted">No longer in this project</span>}
+      <UnsupportedNote unused={(view.asset?.unused ?? []).filter((one) => one.at === place && held.includes(one.mention))} />
     </div>
   )
 }
@@ -462,7 +458,7 @@ function spanOf(store: CanvasStore, name: string, field: ToolField, mention: str
   const seconds = Math.round((frames / fps) * 10) / 10
   const differs = Math.abs(seconds - total.sum) >= 0.5
   const unit = total.member.unit ?? "s"
-  return { differs, says: differs ? `${field.label} is ${seconds} ${unit}, and the ${group.label.toLowerCase()} ${total.sum} ${unit}: the ${field.label.toLowerCase()} wins` : `${seconds} ${unit}` }
+  return { differs, says: differs ? `${field.label} is ${seconds} ${unit}, but the ${group.label.toLowerCase()} add up to ${total.sum} ${unit}, so the ${field.label.toLowerCase()}'s length is used` : `${seconds} ${unit}` }
 }
 
 /** One row of a list, or a block: each member drawn by these same rules. */
@@ -583,7 +579,7 @@ function ListGroup({ name, field, bound, view, place }: Drawn) {
     onDragEnd() { move(null) },
   })
   const add = rows.length < (field.max_items ?? Infinity) && (
-    <button type="button" className="add-beat nodrag" title={`Add a ${called.toLowerCase()}`} onClick={() => { bound.write([...rows, newRow(field)]); if (accordion) setExpanded(rows.length) }}>
+    <button type="button" className="add-beat canvas-control" title={`Add a ${called.toLowerCase()}`} onClick={() => { bound.write([...rows, newRow(field)]); if (accordion) setExpanded(rows.length) }}>
       + {called}
     </button>
   )
@@ -605,8 +601,8 @@ function ListGroup({ name, field, bound, view, place }: Drawn) {
       {rows.map((value, i) => {
         const status = progress?.[i]
         const statusWord = status?.state === "skipped" ? "Skipped" : kept[i] || status?.state === "kept" ? "Kept" : status?.state === "completed" ? "Complete" : status?.state === "in_progress" ? "Generating" : run !== undefined && progress ? "Queued" : null
-        const handle = !kept[i] && rows.length - keptCount > 1 && <span className="grip nodrag nopan" role="button" aria-label={`Move ${called.toLowerCase()} ${i + 1}`} title="Drag to reorder" {...grip(i)}>⋮⋮</span>
-        const remove = !kept[i] && rows.length > least && <button type="button" className="iconb nodrag" aria-label={`Remove ${called.toLowerCase()} ${i + 1}`} title={`Remove ${called.toLowerCase()} ${i + 1}`} onClick={() => {
+        const handle = !kept[i] && rows.length - keptCount > 1 && <span className="grip canvas-control" role="button" aria-label={`Move ${called.toLowerCase()} ${i + 1}`} title="Drag to reorder" {...grip(i)}>⋮⋮</span>
+        const remove = !kept[i] && rows.length > least && <button type="button" className="iconb canvas-control" aria-label={`Remove ${called.toLowerCase()} ${i + 1}`} title={`Remove ${called.toLowerCase()} ${i + 1}`} onClick={() => {
           bound.write(rows.filter((_, at) => at !== i))
           if (accordion) setExpanded((open) => open === null ? null : open === i ? Math.max(0, Math.min(i, rows.length - 2)) : open > i ? open - 1 : open)
         }}><Icon name="trash" /></button>
@@ -616,7 +612,7 @@ function ListGroup({ name, field, bound, view, place }: Drawn) {
         return <div className={`beat ${accordion ? "beat-accordion" : ""} ${kept[i] ? "beat-kept" : rows.length > least ? "can-go" : ""} ${moving?.from === i ? "moving" : ""} ${moving && moving.to === i && moving.from !== i ? "landing" : ""}`} data-beat-index={i} data-beat-kept={kept[i] || undefined} data-beat-status={status?.state} key={i}>
           {accordion ? <>
             <div className="beat-heading">{handle}<button type="button" className="beat-toggle" aria-label={`${called} ${i + 1}${statusWord ? `, ${statusWord.toLowerCase()}` : ""}`} aria-expanded={open} aria-controls={`${panelId}-${i}`} onClick={() => setExpanded(open ? null : i)}><b>{called} {i + 1}</b>{statusWord && <span className="beat-status">{statusWord}</span>}{duration != null && <span>{String(duration)} {timing?.unit ?? ""}</span>}<Icon name="forward" /></button>{remove}</div>
-            {status && status.state !== "kept" && status.state !== "skipped" && <div className="beat-progress" role="progressbar" aria-label={`${called} ${i + 1} published frames`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(status.completed * 100)}><span style={{ width: `${status.completed * 100}%` }} /></div>}
+            {status && status.state !== "kept" && status.state !== "skipped" && <div className="beat-progress" role="progressbar" aria-label={`${called} ${i + 1} progress`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(status.completed * 100)}><span style={{ width: `${status.completed * 100}%` }} /></div>}
             <div className="beat-panel" id={`${panelId}-${i}`} data-open={open || undefined} aria-hidden={!open} inert={!open}>{body}</div>
           </> : <>{handle}{body}{remove}</>}
         </div>
@@ -632,7 +628,7 @@ function BlockGroup({ name, field, bound, view, place, label }: Drawn) {
   if (!present && !field.required) {
     return (
       <div className="group-block absent" data-field={place}>
-        <button type="button" className="add-beat nodrag" onClick={() => bound.write(newRow(field))}>
+        <button type="button" className="add-beat canvas-control" onClick={() => bound.write(newRow(field))}>
           + {field.label}
         </button>
       </div>
@@ -644,7 +640,7 @@ function BlockGroup({ name, field, bound, view, place, label }: Drawn) {
       <div className="group-head">
         <span className="ctl-name">{field.label}</span>
         {!field.required && (
-          <button type="button" className="iconb nodrag" aria-label={`Remove ${field.label.toLowerCase()}`} title={`Remove ${field.label.toLowerCase()}`} onClick={bound.unset}>
+          <button type="button" className="iconb canvas-control" aria-label={`Remove ${field.label.toLowerCase()}`} title={`Remove ${field.label.toLowerCase()}`} onClick={bound.unset}>
             <Icon name="trash" />
           </button>
         )}
@@ -714,18 +710,21 @@ export function RenderButton({ name, view }: { name: string; view: ElementView }
   const store = useCanvasStore()
   // An Edit's film is only a moment's work here, and has no run to cancel.
   if (view.asset?.rendering !== undefined) return null
-  // Render while it's making queues one more: each take in the row has its own ×.
+  // Render while it's making queues one more: each take in the row has its own ×. How long it takes where it would go, beside it (cl-1004).
   return (
-    <button
-      type="button"
-      className="run nodrag"
-      aria-label="Render"
-      title={view.asset?.pinned ? `Make another ${view.asset.noun} to look at: what's approved stays` : "Render"}
-      onClick={() => store.run(name)}
-    >
-      <Icon name="play" />
-      Render
-    </button>
+    <span className="render-at">
+      <RenderTime name={name} view={view} />
+      <button
+        type="button"
+        className="run canvas-control"
+        aria-label="Render"
+        title={view.asset?.pinned ? `Render another ${view.asset.noun}. The approved one stays.` : "Render"}
+        onClick={() => store.run(name)}
+      >
+        <Icon name="play" />
+        Render
+      </button>
+    </span>
   )
 }
 
@@ -794,7 +793,7 @@ export function InFrame({ name, view }: { name: string; view: ElementView }) {
       const row = typeof action === "function" ? action(typeof now === "number" ? now : null) : action
       return row ?? (now === "first" ? "first" : null)
     }) }}>
-      <div className="in-frame sections nowheel"
+      <div className="in-frame sections canvas-control"
         onFocus={(event: FocusEvent<HTMLDivElement>) => setWriting(sectionOf(event.target))}
         onBlur={(event: FocusEvent<HTMLDivElement>) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setWriting(null) }}>
         <Backdrop name={name} view={view} mentions={mentions} />
@@ -859,7 +858,7 @@ export function AssetEdit({ name, view, editing, focused = false, actions, child
   const behind = !focused && (plainFolded.length > 0 || beyond.length > 0)
   const render = (
     <div className="row actions">
-      {behind && <button type="button" className="more-toggle nodrag" aria-expanded={open} onClick={() => store.setMore(name, !open)}><span className="more-word">{open ? "Less" : "More"}</span></button>}
+      {behind && <button type="button" className="more-toggle canvas-control" aria-expanded={open} onClick={() => store.setMore(name, !open)}><span className="more-word">{open ? "Less" : "More"}</span></button>}
       {actions}
     </div>
   )

@@ -9,6 +9,8 @@
 #                                           random weights, and uploaded, locked and bound through the candidate cozy
 #                                           (e2e/cpu): what the Runtime, TensorFS, varena, TensorD's frames, Calcifer's
 #                                           describe, lock and binder, or a package decide
+#   skew-candidate                          the candidate cozy against a Hub of tensorhub master, production's line (the
+#                                           Hub suite's cells, e2e/skew/run.sh), while the suites' Hub is tensorhub's RC
 #   cli-release                             cozy's signed-in commands (e2e/release/run.sh): a release only, with the CI key
 #   model                                   the cli suite's real inference on the CPU (BiRefNet's forward pass): what the
 #                                           Runtime, TensorD, TensorFS, varena or the package decides. Every cli run
@@ -42,8 +44,8 @@ rules = [
   # Installers and release archives: the cli suite installs them on every OS at release.
   { paths = [".github/workflows/cozy-publish.yaml", ".github/workflows/cozy-attestations.yaml", ".github/workflows/cozy-promote.yaml", "dist-workspace.toml", "scripts/patch-installers.sh"], select = ["cli", "os:macos", "os:windows"] },
   { paths = [".github/**"], select = [] },
-  # build's memory-safety and route steps alone read these.
-  { paths = ["deny.toml", "unsafe-boundaries.txt", "scripts/memory-safety.sh", "scripts/web-routes.sh"], select = [] },
+  # build's memory-safety, route and removed-features steps alone read these.
+  { paths = ["deny.toml", "unsafe-boundaries.txt", "scripts/memory-safety.sh", "scripts/web-routes.sh", "scripts/removed-features.py"], select = [] },
 ]
 
 # The macOS and Windows cli legs (a cold cozy build there is 6 and 13 min) run for what is OS-specific: the

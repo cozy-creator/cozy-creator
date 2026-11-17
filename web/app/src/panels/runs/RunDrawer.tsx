@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { CopyError, runText } from "../../ui/CopyError"
 import { Link, Navigate, useParams } from "react-router-dom"
-import { maintenanceRunFullQuery, maintenanceRunQuery, runFullQuery, runQuery } from "../../api/queries"
+import { runFullQuery, runQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
 import { useTo } from "../../app/Shell"
 import { useProjectHref, useProjectId } from "../../app/project"
@@ -26,9 +26,8 @@ export function RunDrawer() {
 function NamedRun({ name }: { name: string }) {
   const { client } = useConnection()
   const to = useTo()
-  const { data: run, error } = useQuery({ queryKey: ["named-run", name], queryFn: ({ signal }) => client.maintenanceRun(name, signal) })
+  const { data: run, error } = useQuery({ queryKey: ["named-run", name], queryFn: ({ signal }) => client.namedRun(name, signal) })
   const href = useProjectHref(run?.project_id, `runs/${run?.number}`)
-  if (run && !run.project_id) return <Navigate replace to={`/runs/${run.number}`} />
   if (href) return <Navigate replace to={href} />
   return (
     <DrawerFrame title={`Run ${name}`} back={to("runs")}>
@@ -43,8 +42,9 @@ function NumberedRun() {
   const to = useTo()
   const number = Number(useParams().number)
   const project = useProjectId()
-  const { data: run, error } = useQuery({ ...(project ? runQuery(client, project, number) : maintenanceRunQuery(client, number)), enabled: Number.isSafeInteger(number) })
-  const { data: full } = useQuery({ ...(project ? runFullQuery(client, project, number, run?.settled_at_ms ?? 0) : maintenanceRunFullQuery(client, number, run?.settled_at_ms ?? 0)), enabled: Boolean(run) })
+  // A run is a project's (cl-1028): outside one there is none to read.
+  const { data: run, error } = useQuery({ ...runQuery(client, project ?? "", number), enabled: Boolean(project) && Number.isSafeInteger(number) })
+  const { data: full } = useQuery({ ...runFullQuery(client, project ?? "", number, run?.settled_at_ms ?? 0), enabled: Boolean(project && run) })
   const again = useProjectHref(run?.project_id, `new?again=${number}`)
   const live = Boolean(run && !settled(run))
   const now = useNow(live)
@@ -53,7 +53,7 @@ function NumberedRun() {
   if (!run) {
     return (
       <DrawerFrame title={`Run ${number}`} back={to("runs")}>
-        <Failure error={error} lead="Couldn't read the run" />
+        <Failure error={error} lead="Couldn't load the run" />
       </DrawerFrame>
     )
   }
@@ -70,9 +70,9 @@ function NumberedRun() {
             <Confirm
               label={cancelled ? "Canceling…" : "Cancel"}
               disabled={cancelled || cancel.busy}
-              says={`Cancel run ${runName(run)}? What it hasn't finished is lost. Its machine goes on.`}
-              yes="Cancel it"
-              onYes={() => void cancel.run(() => project ? client.cancelRun({ project, run: run.id }) : client.cancelMaintenanceRun(run.id))}
+              says={`Cancel run ${runName(run)}? Any unfinished work is lost. The machine keeps running.`}
+              yes="Cancel run"
+              onYes={() => void cancel.run(async () => project && client.cancelRun({ project, run: run.id }))}
             />
           )}
           {again && asked && (
@@ -89,11 +89,11 @@ function NumberedRun() {
         <span className="sp" />
         <small>{statusWord(run)}</small>
       </div>
-      <Failure error={cancel.error} lead="Couldn't cancel it" />
+      <Failure error={cancel.error} lead="Couldn't cancel the run" />
       {run.stalled && (
         <p className="failure" role="alert">
-          {stalledWords(run.stalled, now)}. Nothing ends it but you.
-          {run.stalled.usd_micros_per_hour != null && <span className="remedy">{run.stalled.machine} bills {usd(run.stalled.usd_micros_per_hour)}/h meanwhile.</span>}
+          {stalledWords(run.stalled, now)}. Cozy won't cancel it on its own.
+          {run.stalled.usd_micros_per_hour != null && <span className="remedy">{run.stalled.machine} costs {usd(run.stalled.usd_micros_per_hour)}/h in the meantime.</span>}
         </p>
       )}
       {run.reason && (
@@ -102,7 +102,7 @@ function NumberedRun() {
           <CopyError text={runText(run, run.reason)} />
           {run.reason.detail && (
             <details>
-              <summary>What it said</summary>
+              <summary>Details</summary>
               <pre className="log">{run.reason.detail}</pre>
             </details>
           )}
@@ -113,10 +113,10 @@ function NumberedRun() {
       <KV
         rows={[
           ["Machine", run.machine && <Link className="more" to={to(`machines/${encodeURIComponent(run.machine)}`)}>{run.machine}</Link>],
-          ["Waits", run.queue_position == null ? run.waiting : `${run.queue_position === 1 ? "next" : `${run.queue_position - 1} ahead`}${run.waiting ? `: ${run.waiting}` : ""}`],
-          ["Left", live ? eta(run) : null],
-          ["Time", runTime(run, now)],
-          ["Asked", when(run.created_at_ms)],
+          ["Waiting", run.queue_position == null ? run.waiting : `${run.queue_position === 1 ? "Next in line" : `${run.queue_position - 1} ahead of it`}${run.waiting ? ` (${run.waiting})` : ""}`],
+          ["Time left", live ? eta(run) : null],
+          ["Run time", runTime(run, now)],
+          ["Requested", when(run.created_at_ms)],
         ]}
       />
       {/* A mention or input its function can't use was left out (cl-944), or it ran from a dev home's packages checkout (xs-195): a note,
@@ -129,18 +129,18 @@ function NumberedRun() {
       {run.adjustments?.map((adjustment) =>
         adjustment.kind === "ignored" ? (
           <p className="muted" key={adjustment.field}>
-            {adjustment.field}: {adjustment.requested} left out. {adjustment.reason}
+            {adjustment.field} ({adjustment.requested}) wasn't used. {adjustment.reason}
           </p>
         ) : (
           <p className="warn" key={adjustment.field}>
-            {adjustment.field}: {adjustment.requested} became {adjustment.applied}. {adjustment.reason}
+            {adjustment.field} changed from {adjustment.requested} to {adjustment.applied}. {adjustment.reason}
           </p>
         ),
       )}
       <Outputs run={run} project={project} />
       {asked && (
         <details className="sect">
-          <summary>What it was asked</summary>
+          <summary>Input</summary>
           <pre className="yaml">{masked(asked.input)}</pre>
           {asked.seed !== undefined && <p className="muted">Seed {asked.seed}</p>}
         </details>

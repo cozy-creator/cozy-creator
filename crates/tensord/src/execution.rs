@@ -93,6 +93,8 @@ pub(crate) struct Engine {
     pub(crate) store: Arc<crate::storage::Store>,
     roots: Mutex<crate::storage::Roots>,
     private_roots: Mutex<HashMap<String, crate::storage::Roots>>,
+    /// Projects whose folders are gone, going as their last runs settle (cl-1031).
+    gone: Mutex<HashSet<String>>,
     journal: Mutex<Journal>,
     /// Held while a run takes object references, and while unneeded roots are released.
     pub(crate) object_custody: Mutex<()>,
@@ -230,6 +232,7 @@ impl Engine {
             store,
             roots: Mutex::default(),
             private_roots: Mutex::default(),
+            gone: Mutex::default(),
             journal: Mutex::new(journal),
             object_custody: Mutex::new(()),
             active: Mutex::new(HashMap::new()),
@@ -319,6 +322,44 @@ impl Engine {
         self.private_roots.lock().unwrap().remove(project_id);
         self.journal.lock().unwrap().retire_project(project_id)
     }
+    /// A project whose folder is gone (deleted, moved, its drive away): every record of it here goes, as a lock's does (cl-1031).
+    /// Refused while a folder it ran in still holds it. Its runs still going are canceled, as a lock ends them, and it goes as
+    /// the last of them settles (`retire_if_gone`). Answers whether it went now.
+    pub(crate) fn forget_project(&self, project_id: &str, actor: &str) -> io::Result<bool> {
+        let roots = self.journal.lock().unwrap().project_roots()?.remove(project_id);
+        if roots.is_some_and(|roots| roots.iter().any(|root| holds_project(root, project_id))) {
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, "a folder this project ran in still holds it"));
+        }
+        self.gone.lock().unwrap().insert(project_id.to_owned());
+        let active = self.journal.lock().unwrap().private_active_ids(project_id)?;
+        for id in active {
+            if let Err(error) = self.cancel(&id, actor) { tracing::warn!("run {id} of a project whose folder is gone: {error}"); }
+        }
+        self.retire_if_gone(project_id)
+    }
+    /// A project `forget_project` was told is gone goes once none of its runs is active. Answers whether it went.
+    fn retire_if_gone(&self, project_id: &str) -> io::Result<bool> {
+        if !self.gone.lock().unwrap().contains(project_id) || self.journal.lock().unwrap().private_active(project_id)? {
+            return Ok(false);
+        }
+        self.private_roots.lock().unwrap().remove(project_id);
+        crate::private_io::forget(project_id);
+        self.journal.lock().unwrap().retire_project(project_id)?;
+        self.gone.lock().unwrap().remove(project_id);
+        Ok(true)
+    }
+    /// At start: every project journaled here none of whose folders holds it any more is forgotten (cl-1031), as Calcifer
+    /// asks when it finds a folder gone and this machine wasn't running to hear it.
+    pub(crate) fn forget_gone_projects(&self) {
+        let projects = match self.journal.lock().unwrap().project_roots() {
+            Ok(projects) => projects,
+            Err(error) => return tracing::warn!("the projects journaled here could not be read: {error}"),
+        };
+        for (project, roots) in projects {
+            if roots.iter().any(|root| holds_project(root, &project)) { continue; }
+            if let Err(error) = self.forget_project(&project, "machine") { tracing::warn!("a project whose folder is gone keeps its records here: {error}"); }
+        }
+    }
     /// Keeps `objects` from the store's eviction while this machine runs, until the next sweep
     /// judges them again (`Objects::sweep`). Called once the journal names them.
     pub(crate) fn root_objects(&self, objects: &[tensorfs::format::ObjectRef]) -> io::Result<()> {
@@ -363,102 +404,90 @@ impl Engine {
     pub(crate) fn installations(&self, actor: &str) -> io::Result<Vec<crate::journal::Installation>> {
         self.journal.lock().unwrap().installations(actor)
     }
-    /// Short journal reads and writes that need no execution state transition.
-    /// Calcifer's legacy-history lookup (`Journal::legacy_bindings`), under `scope`'s actor key too.
-    pub(crate) fn legacy_bindings(&self, actor: &str, scope: &api::machine::LocalPrivateStorage, requests: &[String])
-        -> io::Result<api::machine::ProjectExecutionLegacyLookupAnswer> {
-        let scoped = crate::private_io::within(Some(scope.clone()), || crate::private_io::resource_key(actor));
-        self.journal.lock().unwrap().legacy_bindings(actor, &scoped, scope, requests)
-    }
-    /// A project's legacy runs leave the machine once Calcifer holds their history in the project (cl-984): their journal
-    /// rows, result copies, spools, triage bundles and the objects only they named. The machine's diagnostics from before
-    /// (`logs` the daily logs, `store_logs`, start.log, each ended executor's output) may quote them and are emptied, as a
-    /// legacy migration always did.
-    pub(crate) fn retire_legacy(&self, ids: &[u64], logs: &Path, store_logs: &Path) -> io::Result<()> {
-        let retired = self.retire_rows(ids)?;
-        if !retired {
-            return Ok(());
-        }
-        let empty = |path: &Path| {
-            if fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_file()) {
-                let _ = fs::OpenOptions::new().write(true).open(path).and_then(|file| file.set_len(0));
-            }
+    /// The legacy hard cut on this machine (cl-1003, cl-1035), once, on a journal an earlier version kept (`Journal::legacy_runs`):
+    /// on this computer's (`local`), each ended run no project owns that retains nothing goes, with its result copies, spools, own logs
+    /// and triage bundles; each that retains an output stays without its words (`Journal::scrub_legacy`: its spools, logs and triage
+    /// go, its result copies stay); then the rows and what only the gone ones named go, and the journal is rewritten; the machine's diagnostics from before
+    /// (the daily logs in `logs`, `store_logs`, start.log, each ended executor's output), which may quote them, are emptied. Learned
+    /// memory peaks stay (anonymous). A rental's journal only takes the format: what it keeps is its projects'. The journal's copies an
+    /// earlier format kept beside it go. The format is written last: a stop anywhere before finds the cut due again at the next start,
+    /// files first, so none outlives its rows.
+    pub(crate) fn cut_legacy(&self, local: bool, logs: &Path, store_logs: &Path) {
+        let from = match self.journal.lock().unwrap().legacy_cut_due() {
+            Ok(Some(from)) => from,
+            Ok(None) => return,
+            Err(error) => return tracing::warn!("the machine journal's format couldn't be read; its legacy cut waits for the next start: {error}"),
         };
-        for entry in fs::read_dir(logs).into_iter().flatten().flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name == "tensord.log" || (name.starts_with("tensord.") && name.ends_with(".log")) { empty(&entry.path()); }
-        }
-        if let Some(state) = logs.parent() { empty(&state.join("start.log")); }
-        for name in ["memory.log", "memory.log.1", "transport.log", "transport.log.1"] { empty(&store_logs.join(name)); }
-        let engine = self.root.parent().unwrap_or(&self.root);
-        for entry in fs::read_dir(engine.join("gpu")).into_iter().flatten().flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.len() == 32 && name.bytes().all(|b| b.is_ascii_hexdigit()) {
-                for log in ["stdout.log", "stderr.log", "codec.stderr.log"] { empty(&entry.path().join(log)); }
+        let cut = (|| -> io::Result<(usize, usize)> {
+            let mut cut = (0, 0);
+            if local {
+                // What projects' clients hold for them in this machine's store (Calcifer's holds of what their boxes show).
+                let rooted = self.store.file_rooted().map_err(crate::storage::io_error)?;
+                let runs = self.journal.lock().unwrap().legacy_runs(&rooted)?;
+                // Files first: a stop before the rows go leaves them for the next start to find again.
+                for id in runs.gone.iter().chain(&runs.kept) {
+                    let dirs: &[&str] = if runs.gone.contains(id) { &["results", "staging"] } else { &["staging"] };
+                    for dir in dirs { let _ = fs::remove_dir_all(self.root.join(dir).join(id.to_string())); }
+                }
+                for entry in fs::read_dir(self.root.join("logs")).into_iter().flatten().flatten() {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    let id = name.split('.').next().and_then(|id| id.parse::<i64>().ok());
+                    if id.is_some_and(|id| runs.gone.contains(&id) || runs.kept.contains(&id)) { let _ = fs::remove_file(entry.path()); }
+                }
+                for subject in runs.subjects.iter().filter(|subject| subject.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')) {
+                    let _ = fs::remove_file(self.root.join("triage").join(format!("{subject}.json")));
+                }
+                self.journal.lock().unwrap().delete_legacy(&runs.gone)?;
+                self.journal.lock().unwrap().scrub_legacy(&runs.kept)?;
+                // The retained outputs of the runs that went: one no kept run names, by its owner or by the files of its tree.
+                let (owners, objects) = self.journal.lock().unwrap().kept_retention()?;
+                let mut released = vec![];
+                for (actor, owner, source) in self.journal.lock().unwrap().unscoped_native_outputs()? {
+                    if owners.contains(&owner) { continue; }
+                    let manifest = crate::stored::decode::<crate::stored::NativeByteRetentionRequest>(&source).ok()
+                        .and_then(|native| native.source?.manifest)
+                        .map(|manifest| tensorfs::format::ObjectRef { sha256: tensorfs::sha256::hex(&manifest.digest), length: manifest.length });
+                    let files = manifest.and_then(|manifest| crate::trees::roots(&self.store, &manifest));
+                    if files.is_some_and(|roots| roots.len() > 1 && roots[1..].iter().all(|file| objects.contains(&file.sha256))) { continue; }
+                    released.push((actor, owner));
+                }
+                self.journal.lock().unwrap().delete_native_outputs(&released)?;
+                self.journal.lock().unwrap().rewrite()?;
+                // What only a journal from before the cut's first part (format 3) still had: its words in logs and diagnostics.
+                if from < 3 {
+                    let empty = |path: &Path| {
+                        if fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_file()) {
+                            let _ = fs::OpenOptions::new().write(true).open(path).and_then(|file| file.set_len(0));
+                        }
+                    };
+                    for entry in fs::read_dir(logs).into_iter().flatten().flatten() {
+                        let name = entry.file_name().to_string_lossy().into_owned();
+                        if name == "tensord.log" || (name.starts_with("tensord.") && name.ends_with(".log")) { empty(&entry.path()); }
+                    }
+                    if let Some(state) = logs.parent() { empty(&state.join("start.log")); }
+                    for name in ["memory.log", "memory.log.1", "transport.log", "transport.log.1"] { empty(&store_logs.join(name)); }
+                    let engine = self.root.parent().unwrap_or(&self.root);
+                    for entry in fs::read_dir(engine.join("gpu")).into_iter().flatten().flatten() {
+                        let name = entry.file_name().to_string_lossy().into_owned();
+                        if name.len() == 32 && name.bytes().all(|b| b.is_ascii_hexdigit()) {
+                            for log in ["stdout.log", "stderr.log", "codec.stderr.log"] { empty(&entry.path().join(log)); }
+                        }
+                    }
+                }
+                cut = (runs.gone.len(), runs.kept.len());
             }
+            for entry in fs::read_dir(&self.root).into_iter().flatten().flatten() {
+                if entry.file_name().to_string_lossy().starts_with("executions.format-") { fs::remove_file(entry.path())?; }
+            }
+            self.journal.lock().unwrap().legacy_cut_done()?;
+            Ok(cut)
+        })();
+        match cut {
+            Ok((gone, kept)) => tracing::info!(from, gone, kept, "the legacy cut left this machine's runs from before projects kept their own that retain nothing behind, and kept the others without their words"),
+            Err(error) => tracing::warn!("the machine journal's legacy cut stopped; the next start finishes it: {error}"),
         }
-        for entry in fs::read_dir(engine.join("gpu").join("peaks")).into_iter().flatten().flatten() {
-            if entry.file_name().to_string_lossy().ends_with(".json") { let _ = fs::remove_file(entry.path()); }
-        }
-        Ok(())
     }
-
-    /// `retire_legacy`'s rows, copies and objects; whether any execution was still journaled.
-    fn retire_rows(&self, ids: &[u64]) -> io::Result<bool> {
-        if self.owned.lock().unwrap().iter().any(|id| ids.iter().any(|retired| retired.to_string() == *id)) {
-            return Err(io::Error::new(io::ErrorKind::ResourceBusy, "a legacy run is still executing"));
-        }
-        let held: Vec<u64> = ids.iter().copied().filter(|id| self.journal.lock().unwrap().holds_execution(*id).unwrap_or(false)).collect();
-        if held.is_empty() {
-            return Ok(false);
-        }
-        let ids = held.as_slice();
-        let (objects, subjects) = self.journal.lock().unwrap().retire_executions(ids)?;
-        for id in ids {
-            for dir in ["results", "staging"] {
-                let _ = fs::remove_dir_all(self.root.join(dir).join(id.to_string()));
-            }
-        }
-        // Their own logs (`<id>.<kind>`), as reclaim names them.
-        for entry in fs::read_dir(self.root.join("logs")).into_iter().flatten().flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if ids.iter().any(|id| name.split('.').next() == Some(id.to_string().as_str())) { let _ = fs::remove_file(entry.path()); }
-        }
-        for subject in subjects.iter().filter(|subject| subject.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')) {
-            let _ = fs::remove_file(self.root.join("triage").join(format!("{subject}.json")));
-        }
-        // Their outputs' trees: one whose every file is theirs is theirs, and its use and retained output go with it.
-        let theirs: std::collections::HashSet<String> = objects.iter().map(|object| object.sha256.clone()).collect();
-        let mut objects = objects;
-        let mut uses: Vec<String> = theirs.iter().cloned().collect();
-        let mut outputs = vec![];
-        let native_outputs = self.journal.lock().unwrap().machine_native_outputs()?;
-        for (actor, owner, source) in native_outputs {
-            let Ok(native) = crate::stored::decode::<crate::stored::NativeByteRetentionRequest>(&source) else { continue };
-            let Some(manifest) = native.source.as_ref().and_then(|source| source.manifest.as_ref()) else { continue };
-            let manifest = tensorfs::format::ObjectRef { sha256: tensorfs::sha256::hex(&manifest.digest), length: manifest.length };
-            let Some(roots) = crate::trees::roots(&self.store, &manifest) else { continue };
-            if roots.len() > 1 && roots[1..].iter().all(|file| theirs.contains(&file.sha256)) {
-                uses.push(crate::trees::name(&native.retention_id));
-                objects.push(manifest);
-                outputs.push((actor, owner));
-            }
-        }
-        self.journal.lock().unwrap().retire_native_outputs(&outputs)?;
-        // Only objects the store holds, at the length it holds them (a record's digest names no length).
-        let objects: Vec<_> = objects.into_iter().filter_map(|mut object| {
-            let held = self.store.path(&object).ok().and_then(|path| fs::metadata(path).ok())?;
-            if object.length == 0 { object.length = held.len(); }
-            Some(object)
-        }).collect();
-        if !objects.is_empty() {
-            // The machine's soft roots go too (they judge again at the next sweep): they would hold the retired objects.
-            *self.roots.lock().unwrap() = crate::storage::Roots::default();
-            // Their own uses go with them: a use naming only their objects is theirs.
-            self.store.retire_objects(&objects, &uses, &[]).map_err(crate::storage::io_error)?;
-        }
-        Ok(true)
-    }
+    /// Short journal reads and writes that need no execution state transition.
     pub(crate) fn with_journal<T>(&self, f: impl FnOnce(&mut Journal) -> io::Result<T>) -> io::Result<T> {
         f(&mut self.journal.lock().unwrap())
     }
@@ -592,6 +621,10 @@ impl Engine {
     pub(crate) fn fetched(&self, id: &str, from: u64, to: u64) -> io::Result<()> {
         self.journal.lock().unwrap().fetched(id, from, to)
     }
+    /// See `Journal::needs`.
+    pub(crate) fn needs(&self, id: &str, account: crate::journal::Account) -> io::Result<()> {
+        self.journal.lock().unwrap().needs(id, account)
+    }
     pub(crate) fn append_gpu(&self, id: &str, entry: &serde_json::Value) -> io::Result<u64> {
         let line = serde_json::to_vec(entry)?;
         let progress = self.progress.lock().unwrap();
@@ -672,6 +705,7 @@ impl Engine {
                     completed_units: bound.completed_units,
                     detail: arriving.over(&own),
                     waiting: bound.waiting.clone(),
+                    place: bound.place,
                     weights: Some((arriving, own)),
                     revision: bound.revision.saturating_add(1),
                     at_ms: crate::machine::lifecycle::now_ms() as u64,
@@ -898,7 +932,7 @@ impl Engine {
         if let Err(error) = launched {
             owned.remove(&id);
             drop(owned);
-            self.fail_unstarted(&id, "executor_launch_failed", format!("supervisor launch failed: {error}"))?;
+            self.fail_unstarted(&id, "executor_launch_failed", format!("Couldn't start the process that runs this ({error})."))?;
             return Err(error);
         }
         Ok(true)
@@ -967,6 +1001,11 @@ impl Engine {
         self.journal.lock().unwrap().children(parent)
     }
 
+    /// When root `root`'s first call on a GPU took it, ended or not; 0: none has yet (cl-1107).
+    pub(crate) fn first_gpu_claim(&self, root: &str) -> io::Result<u64> {
+        self.journal.lock().unwrap().first_gpu_claim(root)
+    }
+
     /// Run `id` as its caller names it (the id it was submitted under), else as this machine does.
     pub(crate) fn caller_id(&self, id: &str) -> String {
         self.get(id)
@@ -976,12 +1015,21 @@ impl Engine {
             .unwrap_or_else(|| id.to_string())
     }
 
-    /// Why queued run `id` waits, for people (another run's install, its place in the queue); `None`
+    /// Why queued run `id` waits, for people (another run's install, its models' download); `None`
     /// once it no longer does. Shown in the run's state while it is queued; nothing durable is
     /// written.
     pub(crate) fn waiting(&self, id: &str, reason: Option<String>) -> io::Result<()> {
+        self.set_waiting(id, reason, None)
+    }
+
+    /// Queued run `id` waits `reason` at `place` in this machine's line (1 is next), as `waiting`.
+    pub(crate) fn in_line(&self, id: &str, place: u32, reason: String) -> io::Result<()> {
+        self.set_waiting(id, Some(reason), Some(place))
+    }
+
+    fn set_waiting(&self, id: &str, reason: Option<String>, place: Option<u32>) -> io::Result<()> {
         let mut progress = self.progress.lock().unwrap();
-        if progress.get(id).map_or(reason.is_none(), |held| held.waiting == reason) {
+        if progress.get(id).map_or(reason.is_none(), |held| held.waiting == reason && held.place == place) {
             return Ok(());
         }
         let mut journal = self.journal.lock().unwrap();
@@ -1002,6 +1050,7 @@ impl Engine {
                 completed_units: record.completed_units,
                 detail: record.progress.clone().unwrap_or_default(),
                 waiting: reason,
+                place,
                 weights,
                 revision: record
                     .revision
@@ -1064,6 +1113,7 @@ impl Engine {
                 completed_units,
                 detail,
                 waiting: None,
+                place: None,
                 weights,
                 revision: record
                     .revision
@@ -1209,6 +1259,7 @@ impl Engine {
                 completed_units: record.completed_units,
                 detail,
                 waiting: record.waiting.clone(),
+                place: record.place,
                 weights,
                 revision: record
                     .revision
@@ -1276,6 +1327,10 @@ impl Engine {
         self.notify_activity();
         if let Some(settled) = self.settled.get().filter(|_| record.state.terminal() && record.invocation.parent.is_empty()) {
             settled(&record);
+        }
+        // The last run of a project whose folder is gone takes its records with it (cl-1031).
+        if let Some(scope) = record.invocation.local_private.as_ref().filter(|_| record.state.terminal()) {
+            if let Err(error) = self.retire_if_gone(&scope.project_id) { tracing::warn!("a project whose folder is gone keeps its records here: {error}"); }
         }
         Ok(record)
     }
@@ -1790,5 +1845,13 @@ pub(crate) fn open_artifact(root: &Path, path: &Path) -> io::Result<File> {
             return Ok(file);
         }
         unreachable!()
+    }
+}
+
+/// Whether `root` still holds project `project_id`: its execution marker names it. One that can't be read holds it.
+fn holds_project(root: &Path, project_id: &str) -> bool {
+    match fs::read(root.join(api::machine::LOCAL_PRIVATE_MARKER)) {
+        Ok(raw) => serde_json::from_slice::<api::machine::LocalPrivateMarker>(&raw).map_or(true, |marker| marker.storage.project_id == project_id),
+        Err(error) => error.kind() != io::ErrorKind::NotFound,
     }
 }

@@ -9,10 +9,10 @@
 const { randomBytes } = require('crypto');
 const { existsSync, readFileSync, realpathSync } = require('fs');
 const { dirname, join } = require('path');
-const { test, expect, recordAddress, stays } = require('./fixtures');
+const { test, expect, recordAddress, stays, canvasVisible } = require('./fixtures');
 
 const NO_SESSION = 'No project open here';
-const HOME_LINE = 'No project open. Pick one above, or press +.';
+const HOME_LINE = 'No project is open. Pick one above, or press + to start one.';
 
 const streaming = (request) => request.method() === 'GET' && new URL(request.url()).pathname === '/v1/events';
 /** Open at `project`: its tab, the current one, over the canvas. */
@@ -26,34 +26,44 @@ const panel = (page) => page.getByRole('region', { name: 'New project', exact: t
 const folderField = (page) => panel(page).getByLabel("New project's folder", { exact: true });
 const index = async (api) => (await api.get('/v1/projects?limit=1000')).projects;
 const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-/** Each request a context's pages make to Calcifer that mints a credential (`/v1/session…`) or sends one (an Authorization header). */
+/** Each request a context's pages make to Calcifer that mints a credential (`/v1/session…`) or sends one (an Authorization header), its
+ *  headers read as it's made and again as its answer comes, with no awaited read: `headerValue` waits for headers some requests never
+ *  give (run 43733704423: 180 s on Windows, 8 of 12). Called, it stops listening and says what it heard. */
 function credentials(context, origin) {
-  const seen = { minted: [], sent: [] };
-  context.on('request', async (request) => {
+  const minted = new Set();
+  const sent = new Set();
+  const look = (request) => {
     if (!request.url().startsWith(origin)) return;
-    const path = new URL(request.url()).pathname;
-    if (path.startsWith('/v1/session')) seen.minted.push(`${request.method()} ${path}`);
-    if (await request.headerValue('authorization')) seen.sent.push(`${request.method()} ${path}`);
-  });
-  return seen;
+    const said = `${request.method()} ${new URL(request.url()).pathname}`;
+    if (said.split(' ')[1].startsWith('/v1/session')) minted.add(said);
+    if (request.headers().authorization) sent.add(said);
+  };
+  const answered = (response) => look(response.request());
+  context.on('request', look);
+  context.on('response', answered);
+  return () => {
+    context.off('request', look);
+    context.off('response', answered);
+    return { minted: [...minted], sent: [...sent] };
+  };
 }
 /** What this tab keeps in Web Storage that holds `secret`. */
 const keeps = (page, secret) => page.evaluate((secret) => [localStorage, sessionStorage].flatMap((store) => Object.keys(store).filter((key) => key.includes(secret) || (store.getItem(key) ?? '').includes(secret))), secret);
 
-test('open', { tag: '@engines' }, async ({ context, newContext, project, api, signIn, removeAfter }) => {
+test('open', { tag: '@engines' }, async ({ context, newContext, project, api, signIn, guards, removeAfter }) => {
   await context.addInitScript(recordAddress);
   const page = await context.newPage();
   const asked = credentials(context, api.origin);
 
   await test.step("the project's address opens this tab as Calcifer's own page, with nothing minted or sent", async () => {
     const streamed = page.waitForRequest(streaming);
-    await page.goto(project.url());
+    await signIn(page, project.url());
     await expect(signedIn(page, project)).toHaveAttribute('aria-current', 'page');
     const stream = await streamed;
-    expect.soft(await stream.headerValue('authorization'), "the page's stream carries no credential").toBeNull();
+    expect.soft(stream.headers().authorization ?? null, "the page's stream carries no credential").toBeNull();
     const answer = await stream.response();
     expect.soft(answer?.status(), 'GET /v1/events').toBe(200);
-    expect.soft(await answer?.headerValue('content-type')).toMatch(/^text\/event-stream/);
+    expect.soft(answer?.headers()['content-type']).toMatch(/^text\/event-stream/);
     expect.soft(await context.cookies(), 'cookies').toEqual([]);
     expect.soft(await keeps(page, api.token), "Web Storage keeps nothing of Calcifer's").toEqual([]);
     await expect.soft(gate(page)).toHaveCount(0);
@@ -63,7 +73,7 @@ test('open', { tag: '@engines' }, async ({ context, newContext, project, api, si
     const streamed = page.waitForRequest(streaming);
     await page.reload();
     await expect(signedIn(page, project)).toHaveAttribute('aria-current', 'page');
-    expect.soft(await (await streamed).headerValue('authorization'), 'still no credential').toBeNull();
+    expect.soft((await streamed).headers().authorization ?? null, 'still no credential').toBeNull();
     await expect.soft(gate(page)).toHaveCount(0);
     expect.soft(await drawn(page, NO_SESSION), 'no gate at any moment').toBe(0);
   });
@@ -77,7 +87,18 @@ test('open', { tag: '@engines' }, async ({ context, newContext, project, api, si
     await expect(signedIn(other, project)).toHaveAttribute('aria-current', 'page');
     await expect.soft(gate(other)).toHaveCount(0);
     expect.soft(await drawn(other, NO_SESSION), 'no gate at any moment').toBe(0);
-    expect.soft(theirs, 'nothing minted or sent').toEqual({ minted: [], sent: [] });
+    expect.soft(theirs(), 'nothing minted or sent').toEqual({ minted: [], sent: [] });
+  });
+
+  await test.step('what that reads sees a credential when a page sends one', async () => {
+    const elsewhere = await newContext();
+    const listened = credentials(elsewhere, api.origin);
+    const other = await elsewhere.newPage();
+    await signIn(other, `${api.origin}/`);
+    // Refused on purpose, as the browser says in its console: a bearer that isn't Calcifer's.
+    guards.allow(/status of 401\b.*\/v1\/status\?sent$/);
+    expect(await other.evaluate(() => fetch('/v1/status?sent', { headers: { Authorization: 'Bearer 00' } }).then((answer) => answer.status)), 'a wrong bearer').toBe(401);
+    expect(listened().sent, 'the request that sent it').toContain('GET /v1/status');
   });
 
   await test.step('/ opens no project by itself and says what to do', async () => {
@@ -115,7 +136,7 @@ test('open', { tag: '@engines' }, async ({ context, newContext, project, api, si
     expect.soft(await api.get(`/v1/projects/${encodeURIComponent(opened.id)}/vault`), 'unencrypted').toMatchObject({ encrypted: false });
   });
 
-  expect.soft(asked, 'nothing minted or sent, all along').toEqual({ minted: [], sent: [] });
+  expect.soft(asked(), 'nothing minted or sent, all along').toEqual({ minted: [], sent: [] });
 });
 
 test('open, alone on its Calcifer', { tag: '@solo' }, async ({ context, page, project, api, guards, removeAfter, calciferControl }) => {
@@ -148,27 +169,28 @@ test('open, alone on its Calcifer', { tag: '@solo' }, async ({ context, page, pr
   await test.step('a tab opens its project, and going to another never blanks the screen', async () => {
     await tab(project).click();
     await expect(page).toHaveURL(project.url());
-    await expect(page.locator('.react-flow__node').first()).toBeVisible();
+    await expect.poll(() => canvasVisible(page, 'only_a')).toBe(true);
     await expect.soft(page.locator('main.gate, .unread'), 'opened').toHaveCount(0);
-    // Each frame from here: the bar, a canvas, and no gate.
+    // Each frame from here: the bar, the canvas with its paper under it, and no gate. The WebGL picture over the paper is the project's own
+    // and transparent, made again for each project; one frame without it paints the same paper.
     await page.evaluate(() => {
       window.__frames = [];
       window.__sampling = true;
       const look = () => {
-        window.__frames.push({ top: Boolean(document.querySelector('header.top')), canvas: Boolean(document.querySelector('.react-flow')), gate: Boolean(document.querySelector('main.gate')) });
+        window.__frames.push({ top: Boolean(document.querySelector('header.top')), canvas: Boolean(document.querySelector('.stage .canvas-root') && document.querySelector('.stage :is(.paper-world, .paper-landscape)')), gate: Boolean(document.querySelector('main.gate')) });
         if (window.__sampling) requestAnimationFrame(look);
       };
       requestAnimationFrame(look);
     });
     await tab(b).click();
-    await expect(page.locator('.card[data-asset="only_b"]')).toBeAttached();
+    await expect.poll(() => canvasVisible(page, 'only_b')).toBe(true);
     await expect(page.locator('main.gate')).toHaveCount(0);
     const frames = await page.evaluate(() => { window.__sampling = false; return window.__frames; });
     const blank = frames.filter((frame) => !frame.top || !frame.canvas || frame.gate);
     expect.soft(frames.length > 0 && blank.length === 0, `never blank: ${frames.length} frames, ${JSON.stringify(blank.slice(0, 5))}`).toBe(true);
   });
 
-  await test.step("+ and the Projects drawer suggest the first project's parent's next untitled-N", async () => {
+  await test.step("+ suggests the first project's parent's next untitled-N; the Projects drawer makes none", async () => {
     await plus(page).click();
     await expect(folderField(page)).toBeVisible();
     const [first] = await index(api);
@@ -176,10 +198,9 @@ test('open, alone on its Calcifer', { tag: '@solo' }, async ({ context, page, pr
     expect.soft(suggested, `beside ${first.path}`).toMatch(new RegExp(`^${escape(dirname(first.path))}[\\\\/]untitled-\\d+$`));
     expect.soft(new URL(page.url()).pathname, 'at /').toBe('/');
     await page.goto(`${api.origin}/projects`);
-    const drawer = page.locator(`.drawer input[aria-label="New project's folder"]`);
-    let offered;
-    await expect.poll(async () => (offered = await drawer.inputValue()), { message: 'the drawer suggests a folder' }).not.toBe('');
-    expect.soft(offered, 'the drawer, the same').toBe(suggested);
+    await expect(page.locator('.drawer ul.list a').first(), 'the drawer lists projects').toBeVisible();
+    // + is how a project is made (Paul, 11-16): the list has no form.
+    await expect.soft(page.locator('.drawer input[aria-label="New project\'s folder"], .drawer form'), 'and no creation form').toHaveCount(0);
   });
 
   // Calcifer away: what the page asks of it fails as the browser says in its console, from each kill until the page is back with it.
@@ -203,7 +224,7 @@ test('open, alone on its Calcifer', { tag: '@solo' }, async ({ context, page, pr
     await calciferControl.kill();
     await expect(page.locator('header.top .pill'), 'the top bar clears').toHaveCount(0, { timeout: 60_000 });
     away = false;
-    expect.soft(await page.evaluate(() => window.barSaid), 'it said Calcifer was offline').toContainEqual(expect.stringMatching(/^Calcifer offline/));
+    expect.soft(await page.evaluate(() => window.barSaid), 'it said Cozy was offline').toContainEqual(expect.stringMatching(/^Cozy is offline/));
     expect.soft(pid(), 'a new Calcifer').not.toBe(was);
   };
   /** Where `row`'s tab stands, its canvas kept, and no gate drawn at any moment of this document. */
@@ -211,26 +232,26 @@ test('open, alone on its Calcifer', { tag: '@solo' }, async ({ context, page, pr
     expect.soft(await stays(page), 'it stays where it is').toEqual({ path: `/p/${row.code}`, moves: [] });
     expect.soft(await drawn(page, NO_SESSION), 'no gate at any moment').toBe(0);
     await expect.soft(page.locator('.unread, main.gate'), 'none now').toHaveCount(0);
-    await expect.soft(page.locator(`.card[data-asset="${only}"]`), 'and its canvas').toBeAttached();
+    await expect.configure({ soft: true }).poll(() => canvasVisible(page, only), { message: 'and its canvas' }).toBe(true);
   };
 
   await test.step('Calcifer killed and back: the tab goes on where it is, and the new one answers its reads', async () => {
     await page.goto(project.url());
-    await expect(page.locator('.react-flow__node').first()).toBeVisible();
+    await expect.poll(() => canvasVisible(page, 'only_a')).toBe(true);
     await killed();
     await kept(project, 'only_a');
     // The page's own read, as it asks: no Authorization.
-    const read = await page.evaluate((id) => fetch(`/v1/projects/${encodeURIComponent(id)}?assets=false`, { headers: { 'cozy-project-storage': '3' } }).then((answer) => answer.status), project.id);
+    const read = await page.evaluate((id) => fetch(`/v1/projects/${encodeURIComponent(id)}?assets=false`).then((answer) => answer.status), project.id);
     expect.soft(read, "the new Calcifer answers the page's read").toBe(200);
   });
 
   await test.step("another project's tab, Calcifer killed and back again, then reloaded: its canvas in place, no gate before or after", async () => {
     await page.goto(`${api.origin}/p/${b.code}`);
-    await expect(page.locator('.card[data-asset="only_b"]')).toBeAttached();
+    await expect.poll(() => canvasVisible(page, 'only_b')).toBe(true);
     await killed();
     await kept(b, 'only_b');
     await page.reload();
-    await expect(page.locator('.card[data-asset="only_b"]')).toBeAttached();
+    await expect.poll(() => canvasVisible(page, 'only_b')).toBe(true);
     await kept(b, 'only_b');
   });
 });

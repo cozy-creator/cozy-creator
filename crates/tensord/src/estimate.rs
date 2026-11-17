@@ -92,6 +92,14 @@ pub(crate) fn functions(service: &Service, installation: &Installation, entrypoi
         .collect()
 }
 
+/// When a started run took its GPUs: its claim, else its start.
+fn claimed(record: &Execution) -> u64 {
+    match record.starting_at_ms {
+        0 => record.started_at_ms,
+        at => at,
+    }
+}
+
 /// The bytes of weights a queued run still waits on, as its progress says.
 fn fetching(record: &Execution) -> u64 {
     let progress: serde_json::Value = record.progress.as_deref().and_then(|p| serde_json::from_str(p).ok()).unwrap_or_default();
@@ -106,7 +114,13 @@ pub(crate) fn roots(service: &Service) -> io::Result<Vec<Root>> {
     let downloading = crate::activity::downloading();
     let mut held: HashMap<String, Vec<Installation>> = HashMap::new();
     let mut roots = vec![];
-    for record in engine.nonterminal(usize::MAX)? {
+    let records = engine.nonterminal(usize::MAX)?;
+    // Each root's calls not ended, by its id: an orchestrator's GPU work is theirs, and so are the weights it waits for (cl-1107).
+    let mut calls: HashMap<&str, Vec<&Execution>> = HashMap::new();
+    for call in records.iter().filter(|record| !record.invocation.parent.is_empty()) {
+        calls.entry(call.invocation.root.as_str()).or_default().push(call);
+    }
+    for record in &records {
         let invocation = &record.invocation;
         // A project's fetch ahead (a function's warm run) fetches behind every run; it holds no place in the line.
         if !invocation.parent.is_empty() || (invocation.prepares && !invocation.entrypoint.is_empty()) {
@@ -130,9 +144,31 @@ pub(crate) fn roots(service: &Service) -> io::Result<Vec<Root>> {
         };
         let running = matches!(record.state, State::Starting | State::Running);
         let private = invocation.local_private.is_some();
-        let caller_id = (record.submission.as_ref().map(|s| s.request_id.clone()))
-            .filter(|request| !request.is_empty())
-            .unwrap_or_else(|| record.id.clone());
+        let caller = |record: &Execution| {
+            (record.submission.as_ref().map(|s| s.request_id.clone()))
+                .filter(|request| !request.is_empty())
+                .unwrap_or_else(|| record.id.clone())
+        };
+        let caller_id = caller(record);
+        let mine: &[&Execution] = calls.get(record.id.as_str()).map_or(&[][..], Vec::as_slice);
+        // When its work took its GPUs: its own claim; a root on a lane for its calls alone (an orchestrator, which starts on its CPU
+        // at once), its first GPU call's claim, ended or not. Until then all its work waits, for its calls' weights or a GPU.
+        let lane = running && invocation.degree == 0 && record.width > 0;
+        let gpu_at = match (running, lane) {
+            (false, _) => 0,
+            (true, false) => claimed(record),
+            (true, true) => engine.first_gpu_claim(&record.id)?,
+        };
+        let models = match private {
+            true => vec![],
+            false => {
+                let ids: Vec<String> = std::iter::once(caller_id.clone()).chain(mine.iter().map(|&call| caller(call))).collect();
+                let mut models: Vec<String> = ids.iter().filter_map(|id| downloading.get(id)).flatten().cloned().collect();
+                models.sort();
+                models.dedup();
+                models
+            }
+        };
         let queued = v1::Queued {
             run: String::new(),
             function: match private || package.is_empty() {
@@ -143,13 +179,16 @@ pub(crate) fn roots(service: &Service) -> io::Result<Vec<Root>> {
             chooses: invocation.gpus == 0 && widths.len() > 1,
             widths,
             running,
-            width: if running { held_width(&record) } else { 0 },
+            width: if running { held_width(record) } else { 0 },
             started_at_unix_ms: record.started_at_ms as i64,
-            models: match private {
-                true => vec![],
-                false => downloading.get(&caller_id).cloned().unwrap_or_default(),
+            gpu_at_unix_ms: gpu_at as i64,
+            gpu_waits: lane && gpu_at == 0,
+            models,
+            bytes_left: match running {
+                // Its own are here; what its calls not started wait for is still to come.
+                true => mine.iter().filter(|call| call.state == State::Queued).map(|call| fetching(call)).sum(),
+                false => fetching(record),
             },
-            bytes_left: if running { 0 } else { fetching(&record) },
         };
         roots.push(Root { id: record.id.clone(), actor, caller_id, queued });
     }
@@ -175,12 +214,14 @@ pub(crate) fn widths(service: &Service, pool: &crate::gpu_service::Pool) -> io::
         nvlink,
         times,
         now_ms: crate::machine::lifecycle::now_ms(),
+        // Its own packing knows no release's benchmarks (cl-1024): what it never ran here is a minute; Calcifer's quotes know them.
+        references: None,
     };
     let queued: Vec<v1::Queued> = roots.iter().map(|root| root.queued.clone()).collect();
     let (jobs, _) = machine.queue(&queued);
     let placed = estimate::pack(machine.gpus, &jobs);
     Ok((roots.into_iter().zip(jobs).zip(placed))
-        .filter(|((root, job), place)| job.running.is_none() && root.queued.chooses && place.width > 0)
+        .filter(|((root, job), place)| job.running.is_none() && !root.queued.running && root.queued.chooses && place.width > 0)
         .map(|((root, _), place)| (root.id, place.width))
         .collect())
 }

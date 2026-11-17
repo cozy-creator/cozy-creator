@@ -4,6 +4,22 @@
 use std::{net::Ipv4Addr, ptr};
 use std::{fmt, net::{IpAddr, SocketAddr}, time::SystemTime};
 
+/// What the TCP sockets of a set of processes received, read again and again ([`Received::read`]): an install's own downloads,
+/// beside which a machine's weights take a share of the link (cl-1007).
+#[derive(Default)]
+pub struct Received {
+    /// Each socket's bytes at the last read, by inode.
+    seen: std::collections::HashMap<u32, u64>,
+}
+
+impl Received {
+    /// What `pids`' TCP sockets received since the last read; a socket new since then counts all it received. None where the OS
+    /// won't say: only Linux's sock_diag does (`tcp_info`'s bytes received, Linux 4.1+).
+    pub fn read(&mut self, pids: &[u32]) -> Option<u64> {
+        sys::received(pids, &mut self.seen)
+    }
+}
+
 /// Every IPv4 address on an interface. None where the OS will not list them.
 #[cfg(unix)]
 pub fn ipv4_addresses() -> Vec<Ipv4Addr> {
@@ -106,8 +122,10 @@ mod sys {
         }
     }
 
-    pub(super) fn quick(peer: SocketAddr, local: SocketAddr, accepted: SystemTime) -> Option<Result<User, &'static str>> {
-        Some(tcp_peer_user(peer, local, accepted))
+    /// The one socket from sock_diag; where netlink is closed, none: `/proc/net/tcp{,6}`, a read of every socket, waits for its
+    /// turn among the full lookups (Calcifer's four at a time) as macOS's and Windows' do.
+    pub(super) fn quick(peer: SocketAddr, local: SocketAddr, _accepted: SystemTime) -> Option<Result<User, &'static str>> {
+        diag(peer, local).ok()
     }
 
     const NETLINK_SOCK_DIAG: libc::c_int = 4;
@@ -261,6 +279,110 @@ mod sys {
         Ok(if message.state == TCP_ESTABLISHED && message.inode != 0 { Ok(User(message.uid.to_string())) } else { Err("no_socket") })
     }
 
+    /// `Received::read` on Linux: the sockets `pids` hold (`/proc/<pid>/fd`), each one's bytes from one sock_diag dump.
+    pub(super) fn received(pids: &[u32], seen: &mut std::collections::HashMap<u32, u64>) -> Option<u64> {
+        let mut held = std::collections::HashSet::new();
+        for pid in pids {
+            let Ok(fds) = std::fs::read_dir(format!("/proc/{pid}/fd")) else { continue };
+            for fd in fds.flatten() {
+                let target = std::fs::read_link(fd.path()).ok();
+                let inode = target.as_ref().and_then(|t| t.to_str()?.strip_prefix("socket:[")?.strip_suffix(']')?.parse::<u32>().ok());
+                held.extend(inode);
+            }
+        }
+        let mut moved = 0;
+        let mut now = std::collections::HashMap::new();
+        for family in [libc::AF_INET, libc::AF_INET6] {
+            for (inode, bytes) in dump(family as u8)?.into_iter().filter(|(inode, _)| held.contains(inode)) {
+                moved += bytes.saturating_sub(seen.get(&inode).copied().unwrap_or(0));
+                now.insert(inode, bytes);
+            }
+        }
+        *seen = now;
+        Some(moved)
+    }
+
+    const NLM_F_DUMP: u16 = 0x300;
+    const NLMSG_DONE: u16 = 3;
+    const INET_DIAG_INFO: u16 = 2;
+    /// `struct tcp_info`'s `tcpi_bytes_received`: its offset, and the length it ends at.
+    const BYTES_RECEIVED: usize = 128;
+
+    /// Every TCP socket of `family` in this network namespace: its inode and the bytes it received. None where netlink won't answer.
+    fn dump(family: u8) -> Option<Vec<(u32, u64)>> {
+        // SAFETY: a plain call; a negative result is the failure.
+        let raw = unsafe { libc::socket(libc::AF_NETLINK, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, NETLINK_SOCK_DIAG) };
+        if raw < 0 {
+            return None;
+        }
+        // SAFETY: a new descriptor that is now ours alone.
+        let socket = unsafe { OwnedFd::from_raw_fd(raw) };
+        let request = Request {
+            header: Header { len: mem::size_of::<Request>() as u32, kind: SOCK_DIAG_BY_FAMILY, flags: NLM_F_REQUEST | NLM_F_DUMP, seq: 1, pid: 0 },
+            family,
+            protocol: libc::IPPROTO_TCP as u8,
+            ext: 1 << (INET_DIAG_INFO - 1),
+            pad: 0,
+            states: !0,
+            id: SockId { sport: [0; 2], dport: [0; 2], src: [0; 4], dst: [0; 4], interface: 0, cookie: [NO_COOKIE; 2] },
+        };
+        let kernel = Kernel { family: libc::AF_NETLINK as libc::sa_family_t, pad: 0, pid: 0, groups: 0 };
+        let timeout = libc::timeval { tv_sec: 1, tv_usec: 0 };
+        // SAFETY: our descriptor and a timeval of the size given.
+        unsafe {
+            libc::setsockopt(socket.as_raw_fd(), libc::SOL_SOCKET, libc::SO_RCVTIMEO, (&raw const timeout).cast(), mem::size_of::<libc::timeval>() as libc::socklen_t)
+        };
+        // SAFETY: our descriptor, the request and the kernel's address, each of the size given.
+        let sent = unsafe {
+            libc::sendto(socket.as_raw_fd(), (&raw const request).cast(), mem::size_of::<Request>(), 0, (&raw const kernel).cast(), mem::size_of::<Kernel>() as libc::socklen_t)
+        };
+        if sent < 0 {
+            return None;
+        }
+        let mut found = vec![];
+        let mut answer = vec![0u64; 4096];
+        loop {
+            // SAFETY: our descriptor and a writable buffer of the size given.
+            let got = unsafe { libc::recv(socket.as_raw_fd(), answer.as_mut_ptr().cast(), answer.len() * 8, 0) };
+            let got = usize::try_from(got).ok()?;
+            // SAFETY: the buffer's first `got` bytes, which the kernel wrote.
+            let bytes = unsafe { std::slice::from_raw_parts(answer.as_ptr().cast::<u8>(), got) };
+            let mut at = 0;
+            while at + mem::size_of::<Header>() <= got {
+                // SAFETY: a header's bytes within what was received, read unaligned.
+                let header = unsafe { bytes.as_ptr().add(at).cast::<Header>().read_unaligned() };
+                let len = header.len as usize;
+                if header.kind == NLMSG_DONE {
+                    return Some(found);
+                }
+                if header.kind == NLMSG_ERROR || len < mem::size_of::<Header>() || at + len > got {
+                    return None;
+                }
+                let body = &bytes[at + mem::size_of::<Header>()..at + len];
+                if header.kind == SOCK_DIAG_BY_FAMILY && body.len() >= mem::size_of::<Message>() {
+                    // SAFETY: a full inet_diag_msg at the body's start, read unaligned.
+                    let message = unsafe { body.as_ptr().cast::<Message>().read_unaligned() };
+                    let mut attribute = mem::size_of::<Message>().next_multiple_of(4);
+                    while attribute + 4 <= body.len() {
+                        let size = usize::from(u16::from_ne_bytes([body[attribute], body[attribute + 1]]));
+                        let kind = u16::from_ne_bytes([body[attribute + 2], body[attribute + 3]]);
+                        if size < 4 || attribute + size > body.len() {
+                            break;
+                        }
+                        let info = &body[attribute + 4..attribute + size];
+                        if kind == INET_DIAG_INFO && info.len() >= BYTES_RECEIVED + 8 {
+                            let mut word = [0; 8];
+                            word.copy_from_slice(&info[BYTES_RECEIVED..BYTES_RECEIVED + 8]);
+                            found.push((message.inode, u64::from_ne_bytes(word)));
+                        }
+                        attribute += size.next_multiple_of(4);
+                    }
+                }
+                at += len.next_multiple_of(4);
+            }
+        }
+    }
+
     fn proc_tables(peer: SocketAddr, local: SocketAddr) -> Result<User, &'static str> {
         for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
             let Ok(text) = std::fs::read_to_string(table) else { continue };
@@ -307,6 +429,11 @@ mod sys {
     };
 
     use super::{User, canonical};
+
+    /// `Received::read`: macOS keeps no count of a socket's bytes that an unprivileged reader can ask for.
+    pub(super) fn received(_pids: &[u32], _seen: &mut std::collections::HashMap<u32, u64>) -> Option<u64> {
+        None
+    }
 
     const PROC_UID_ONLY: u32 = 4;
     const PROC_PIDFDSOCKETINFO: c_int = 3;
@@ -536,6 +663,11 @@ mod sys {
     };
 
     use super::User;
+
+    /// `Received::read`: Windows counts a connection's bytes only once an administrator turns its statistics on.
+    pub(super) fn received(_pids: &[u32], _seen: &mut std::collections::HashMap<u32, u64>) -> Option<u64> {
+        None
+    }
 
     const AF_INET: u32 = 2;
     const AF_INET6: u32 = 23;

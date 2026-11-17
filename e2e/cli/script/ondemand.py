@@ -2,8 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = ["cozy-runtime>=0.43.1", "msgspec>=0.19"]
 # ///
-"""The cli suite's on-demand holder (cl-966): a call with an on-demand slot (BiRefNet; `keep`'s fontbox, `spare`'s pagebox), which holds its
-executor for a while and reads that model only when asked, as a stage would."""
+"""The cli suite's on-demand holder (cl-966): a call with an on-demand slot (BiRefNet; `keep`'s fontbox), which holds its executor for a
+while and reads that model only when asked, as a stage would. `read_now` reads its (e2e/ondemand-read) as it starts (tfs-300)."""
 
 import time
 
@@ -49,9 +49,11 @@ def keep(payload: Hold, extra: Extra, tel: Telemetry) -> Held:
     return Held(seconds=payload.seconds)
 
 
-@app.entrypoint(accelerator=False, defaults={"extra": "lilylilith/pagebox@0.1.0"}, on_demand=("extra",))
-def spare(payload: Hold, extra: Extra, tel: Telemetry) -> Held:
-    """Holds with pagebox (900 MB) as its on-demand model, never reading it."""
-    with tel.stage("holding"):
+@app.entrypoint(accelerator=False, defaults={"extra": "e2e/ondemand-read@0.1.0"}, on_demand=("extra",))
+def read_now(payload: Hold, extra: Extra, tel: Telemetry) -> Held:
+    """Reads `extra` as it starts, as an edit's first stage reads its prompt rewriter, then holds with it read."""
+    with tel.stage("reading it"):
+        _ = extra.graph
+    with tel.stage("read it"):
         time.sleep(payload.seconds)
     return Held(seconds=payload.seconds)

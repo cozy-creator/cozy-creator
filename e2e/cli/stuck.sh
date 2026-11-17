@@ -39,6 +39,7 @@ stuck_diagnose() {
     echo "== connections to :$port"; ss -tnpoi state established "( sport = :$port or dport = :$port )" 2>&1
     echo "== tensord threads"; ps -eLo pid,tid,ppid,stat,wchan:32,comm | awk 'NR == 1 || $6 == "tensord" || $6 ~ /^tokio/ || $6 ~ /^machine-/'
     echo "== runs"; timeout 30 cozy --json run ls --all --limit 10 2>&1 | head -c 4000
+    echo "== local's jobs"; timeout 30 cozy --json machine show local 2>&1 | jq -c '[.jobs[]? | {id, kind, target, status, waiting}]' 2>&1 | head -c 4000
     echo "== tensord log"; stuck_log | tail -40
     echo "== calcifer"; tail -40 "$HOME/.cozy/calcifer/diagnostics.log" 2>&1
   } > "$OUT/stuck-$1.diag" 2>&1
@@ -58,11 +59,11 @@ stuck_run() {
   shift
   (cd "$RUN_PROJECT" && timeout 240 cozy --json run "$here/weightless/reverse" "text=$text" "$@" > "$OUT/stuck-$name.ndjson" 2>&1)
 }
-# settled <seconds>: no update run on local left unsettled, within that long.
+# settled <seconds>: no update job on local left unsettled, within that long (an update is local's job, cl-1028).
 stuck_settled() {
   for _ in $(seq "$1"); do
-    timeout 30 cozy --json run ls --all --on local > "$OUT/stuck-runs.json" 2> /dev/null || true
-    J '[.runs[]? | select(.kind == "update" and (.status | IN("completed", "failed", "canceled") | not))] | length == 0' "$OUT/stuck-runs.json" && return 0
+    timeout 30 cozy --json machine show local > "$OUT/stuck-runs.json" 2> /dev/null || true
+    J '.jobs != null and ([.jobs[] | select(.kind == "update" and (.status | IN("completed", "failed", "canceled") | not))] | length == 0)' "$OUT/stuck-runs.json" && return 0
     sleep 1
   done
   return 1
@@ -95,7 +96,7 @@ stuck_exit() {
 [ -n "$LOCAL" ] || return 0
 step "stuck: a TensorD whose exit sits in the kernel (cl-977)"
 local fs=$OUT/stuck-fs mnt=$RUNNER_TEMP/stuck-mnt trap=$OUT/stuck-trap log=$STUCK_ROOT/machine/start.log
-local service parent t0 took port first second
+local service parent t0 took port first second named
 mkdir -p "$fs" "$mnt"
 : > "$trap"
 # FUSE 2 (fusermount, libfuse.so.2), as the project-encryption driver installs it.
@@ -144,6 +145,10 @@ echo "stuck: pid $first's threads: $(stuck_states "$first")"
 # 10 s to exit, 60 s with no progress, then the next service's boot.
 [ "$took" -le 200 ] || check "stuck: the update took ${took} s past a service that can't exit"
 stuck_log | grep -q "pid $first can't exit: thread " || check "stuck: TensorD's log doesn't say pid $first can't exit"
+# Its thread named only as the machine names it (its place, or the Runtime's call_<n> / ~watcher), never by a comm any code can set:
+# the line is kept in Calcifer's store once the machine ends (cl-1012, #3393's review).
+named=$(stuck_log | grep -oE "pid $first can't exit: thread [0-9]+ \([^)]*\)" | head -1)
+[[ $named =~ \((#[0-9]+|call_[0-9]+|~watcher)\)$ ]] || check "stuck: the line names its thread by a free-form name: $named"
 stuck_ready 30 || { check "stuck: the machine isn't ready after its update: $(tail -c 300 "$OUT/stuck-machine.json")"; stuck_diagnose after-update; }
 stuck_listed "$first" || check "stuck: machine show local lists no stuck pid $first: $(jq -c .status.stuck "$OUT/stuck-machine.json")"
 cozy machine show local > "$OUT/stuck-show.txt" 2>&1 || true
@@ -152,7 +157,7 @@ grep -qE "pid $first \(the TensorD before this one\), killed .* stuck in the ker
 cozy machine ls > "$OUT/stuck-ls.txt" 2>&1 || true
 grep -qE '^local .*1 stuck' "$OUT/stuck-ls.txt" || check "stuck: machine ls doesn't mark local stuck: $(grep '^local' "$OUT/stuck-ls.txt")"
 J '.broken == null' "$OUT/stuck-machine.json" || check "stuck: a machine with no GPU is broken: $(jq -c .broken "$OUT/stuck-machine.json")"
-stuck_settled 120 || { check "stuck: the update run never settled: $(jq -c '[.runs[]? | select(.kind == "update") | {number, status, waiting}]' "$OUT/stuck-runs.json")"; stuck_diagnose unsettled; }
+stuck_settled 120 || { check "stuck: the update job never settled: $(jq -c '[.jobs[]? | select(.kind == "update") | {id, status, waiting}]' "$OUT/stuck-runs.json")"; stuck_diagnose unsettled; }
 stuck_run after-update --on local || check "stuck: no run went to the machine after its update: $(tail -c 300 "$OUT/stuck-after-update.ndjson")"
 echo "stuck: updated in ${took} s past pid $first, which waits in the kernel"
 
@@ -217,7 +222,7 @@ t0=$SECONDS code=0
 timeout 420 cozy --json machine show local > "$OUT/stuck-silent.json" 2>&1 || code=$?
 took=$((SECONDS - t0))
 grep -q '"machine_not_answering"' "$OUT/stuck-silent.json" || check "stuck: a hung start (exit $code, ${took} s) isn't refused machine_not_answering: $(tail -c 400 "$OUT/stuck-silent.json")"
-grep -q "local's TensorD isn't answering" "$OUT/stuck-silent.json" || check "stuck: the refusal doesn't say local's TensorD isn't answering"
+grep -q "This computer's TensorD isn't answering" "$OUT/stuck-silent.json" || check "stuck: the refusal doesn't say this computer's TensorD isn't answering"
 grep -q 'cozy machine logs local' "$OUT/stuck-silent.json" || check "stuck: the refusal names no next command: $(tail -c 300 "$OUT/stuck-silent.json")"
 [ "$took" -ge 290 ] && [ "$took" -le 350 ] || check "stuck: the hung start was refused after ${took} s (the deadline: 300 s)"
 t0=$SECONDS

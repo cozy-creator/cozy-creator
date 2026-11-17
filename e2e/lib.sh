@@ -82,7 +82,13 @@ step() { echo "::endgroup::"; echo "::group::$*"; }
 fail() { check "$@"; exit 1; }
 # A failure can span lines, and a check can run in a subshell: failures.count has one line per check.
 check() { echo "::error::$*"; echo "$*" >> "$OUT/failures.txt"; echo >> "$OUT/failures.count"; }
+# run_parts PART...: a suite's parts in turn. A shell error in a part (an arithmetic or substitution error, `$(( 0 0 ))`) makes bash
+# drop the rest of the top-level command that called this and go on at the next line, past `set -e`, so that part's later checks and
+# every part after it never run: `running` keeps the part's name, and `finish` fails the run rather than passing it (cl-1079).
+running=''
+run_parts() { local part; for part in "$@"; do running=$part; "$part"; done; running=''; }
 finish() {
+  [ -z "$running" ] || check "$running ended on a shell error (the line above names it): its later checks and every part after it didn't run"
   hub_checked
   echo "::endgroup::"
   [ -s "$OUT/failures.txt" ] || { echo "$1: passed"; return 0; }
@@ -160,7 +166,7 @@ hub_check() {
   HUB_CHECK_UPSTREAM=$hub
   [ "${RUNNER_OS:-}" != Windows ] || exe=.exe
   go build -C "$E2E/hubcheck" -o "${RUNNER_TEMP:-$OUT}/hubcheck$exe" . || fail "e2e/hubcheck does not build"
-  "${RUNNER_TEMP:-$OUT}/hubcheck$exe" --hub "$hub" --out "$OUT" > "$OUT/hubcheck.addr" 2> "$OUT/hubcheck.log" &
+  "${RUNNER_TEMP:-$OUT}/hubcheck$exe" --hub "$hub" --out "$OUT" --keep 'POST /v1/run-reports,POST /v1/rental-quotes' > "$OUT/hubcheck.addr" 2> "$OUT/hubcheck.log" &
   HUB_CHECK=$!
   for _ in $(seq 60); do
     addr=$(head -1 "$OUT/hubcheck.addr" 2> /dev/null) && [ -n "$addr" ] && break

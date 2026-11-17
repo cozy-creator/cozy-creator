@@ -2,9 +2,10 @@
 // the API put it, looked at 0.25, 0.5, 1 and 2, then one open in Focus. No box or label lies on another; nothing is cut off, nothing that floats
 // over the canvas lies on another, and Focus is under none of it; no scrollbar anywhere. Words read at 10 px or more (a box's at 100%: they're
 // drawn at the canvas's scale, cl-890); a prompt over a picture is bold, 4.5:1 or more against its surface (cl-901). A render's Cancel shows at
-// 1 and at 0.5, and the Focus frame fits the window. Each finding names its rule, where, and what (layout.js's rules, measured).
+// 1 and at 0.5, and the Focus frame fits the window. A name cut at rest says itself whole under the pointer (cl-1048 row 18). Each finding
+// names its rule, where, and what (layout.js's rules, measured).
 const { randomUUID } = require('crypto');
-const { test, expect, box, canvasIdle, focus, fixtureTool, observeStill, MP4, png } = require('./fixtures');
+const { test, expect, canvasCard, canvasNames, canvasIdle, hoverBox, focus, fixtureTool, middle, nameUnderPointer, newCanvas, observeStill, openPoint, screenshotPixels, MP4, png } = require('./fixtures');
 
 test.use({
   launchOptions: {
@@ -24,8 +25,9 @@ const FLOOR = 10;
 function audit({ floor, focused }) {
   const found = [];
   const R = (el) => el.getBoundingClientRect();
-  const zoom = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
-  const name = (el) => el.closest?.('.react-flow__node')?.querySelector('.card')?.dataset.asset;
+  const root = document.querySelector('.canvas-root'), inspection = root?.canvasInspection;
+  const zoom = inspection?.camera().zoom ?? 1;
+  const name = (el) => el.closest?.('.canvas-node')?.querySelector('.card')?.dataset.asset ?? el.closest?.('[data-focused-asset]')?.dataset.focusedAsset;
   const where = (el) => {
     const path = [];
     for (let e = el; e && e !== document.body && path.length < 3; e = e.parentElement) {
@@ -54,7 +56,7 @@ function audit({ floor, focused }) {
   // Words: legible, and not cut off unless an ellipsis says so; no line cut through.
   for (const el of [...document.querySelectorAll('body *')].filter((one) => ownText(one) && visible(one) && onScreen(R(one)) && !one.closest('.ptabs-ghost, .tool-ghost, [aria-hidden=true]'))) {
     const style = getComputedStyle(el);
-    const onCanvas = Boolean(el.closest('.react-flow__node'));
+    const onCanvas = Boolean(el.closest('.canvas-node'));
     const px = (parseFloat(style.fontSize) * scaleOf(el)) / (onCanvas ? zoom : 1);
     if (px < floor) say('illegible', el, `${px.toFixed(1)} px ${onCanvas ? 'at 100%' : 'on screen'}: "${el.textContent.trim().slice(0, 30)}"`);
     const ellipsis = style.textOverflow === 'ellipsis' && !/flex|grid/.test(style.display);
@@ -80,13 +82,64 @@ function audit({ floor, focused }) {
       if (meet(R(a), R(b))) say('overlap', a, `on ${where(b)}: ${round(R(a))} and ${round(R(b))}`);
     }
   }
-  // At rest, no box on another, with its name over it and what hangs under it.
-  const boxes = [...document.querySelectorAll('.react-flow__node')].filter((node) => visible(node) && onScreen(R(node)) && !node.querySelector('.card.here') && !node.classList.contains('dragging'));
-  const hung = (node) => [node, ...node.querySelectorAll('.head > *, .ratio-rest, .tile-under, .refused-line')].filter(visible);
+  // Actual retained labels have no DOM boxes. Judge their measured glyph bounds, declared font and drawn text.
+  const rect = r => ({ ...r, left: r.x, top: r.y, right: r.x + r.width, bottom: r.y + r.height });
+  const norm = text => text.replace(/\s+/g, ' ').trim();
+  const pixels = [];
+  const boxes = [];
+  // What floats over the canvas covers a label whether or not it takes the pointer (a note is pointer-events: none).
+  const covers = [...document.querySelectorAll('.notes .note, .tools, .zoom, .zoom-menu, .top, .drawer, .activity')].filter(visible).map(R);
+  const inspectFailure = (rule, asset, part, what) => found.push(`${rule}: <${asset}> ${part}: ${what}`);
+  for (const asset of inspection?.names() ?? []) {
+    const card = inspection.card(asset);
+    const native = document.querySelector(`.canvas-node:has(.card[data-asset=${JSON.stringify(asset)}])`);
+    if (native && visible(native) && !native.querySelector('.card.here') && !native.classList.contains('dragging')) {
+      const hung = [native, ...native.querySelectorAll('.head > *, .ratio-rest, .tile-under, .refused-line')].filter(visible)
+        .map(el => ({ part: where(el), rect: R(el) }));
+      if (onScreen(R(native))) boxes.push({ name: asset, hung });
+      continue;
+    }
+    const painted = card?.rendered;
+    if (!painted && !focused && card?.bounds && onScreen(rect(card.bounds))) inspectFailure('not-presented', asset, 'card', 'its visible bounds have no scene or native card');
+    if (!painted || painted.dragging) continue;
+    const bounds = rect(card.bounds), body = rect(painted.body);
+    const labels = Object.entries(painted.labels).filter(([, label]) => label.text && label.width >= 1 && label.height >= 1);
+    const hung = [{ part: 'card', rect: bounds }, ...labels.map(([key, label]) => ({ part: key, rect: rect(label) })),
+      ...painted.controls.map(control => ({ part: control.part, rect: rect(control) }))];
+    if (painted.stateDot) hung.push({ part: 'state dot', rect: rect(painted.stateDot) });
+    if (onScreen(bounds)) boxes.push({ name: asset, hung });
+    for (const [key, label] of labels) {
+      const at = rect(label);
+      if (!onScreen(at)) continue;
+      if (label.fontSize < floor) inspectFailure('illegible', asset, key, `${label.fontSize.toFixed(1)} px at 100%: "${label.text.slice(0, 30)}"`);
+      if (norm(label.text) !== norm(label.fullText) && !label.text.trimEnd().endsWith('…')) inspectFailure('clipped', asset, key, `cut with no ellipsis: "${label.text}"`);
+      if (at.left < bounds.left - 1 || at.right > bounds.right + 1) inspectFailure('clipped', asset, key, `${round(at)} past the box's width ${round(bounds)}`);
+      // Labels intentionally above/below the body stay outside it. Text that starts inside may not have a partial last line outside it.
+      if (at.top >= body.top && at.top < body.bottom && at.bottom > body.bottom + 1) inspectFailure('line-cut', asset, key, `${round(at)} past the picture/text body's bottom ${Math.round(body.bottom)}`);
+      if ((key === 'title' || key === 'cancel' || key.startsWith('words')) && label.fontSize * zoom >= 8
+        && within(at, { left: 0, top: 0, right: innerWidth, bottom: innerHeight }, 0) && !covers.some((over) => meet(at, over, 0))
+        && root.contains(document.elementFromPoint(at.left + at.width / 2, at.top + at.height / 2))) pixels.push({ name: asset, key, ...label });
+    }
+    for (let i = 0; i < painted.controls.length; i++) for (let j = i + 1; j < painted.controls.length; j++) {
+      const [a, b] = [painted.controls[i], painted.controls[j]];
+      if (meet(rect(a), rect(b))) inspectFailure('overlap', asset, a.part, `on ${b.part}: ${round(rect(a))} and ${round(rect(b))}`);
+    }
+    // A box's own Delete and Cancel: within its width (Cancel hangs under it, with the render's line), and a press on one is that control of
+    // that box. Where its hit area ends is the scene's choice.
+    for (const control of painted.controls) {
+      const at = rect(control), middle = { x: at.left + at.width / 2, y: at.top + at.height / 2 };
+      if (middle.x < bounds.left || middle.x > bounds.right) inspectFailure('outside', asset, control.part, `its middle ${Math.round(middle.x)},${Math.round(middle.y)} past the box's width ${round(bounds)}`);
+      else if (within(at, { left: 0, top: 0, right: innerWidth, bottom: innerHeight }, 0) && !covers.some((over) => meet(at, over, 0))) {
+        const hit = inspection.hitTest(middle);
+        if (hit?.name !== asset || hit?.part !== control.part) inspectFailure('unreachable', asset, control.part, `a press on its middle is ${JSON.stringify(hit)}`);
+      }
+    }
+  }
+  // At rest, no box on another, including its title, metadata, errors and render controls hanging above/below it.
   for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
-    const [a, b] = [hung(boxes[i]), hung(boxes[j])];
-    const on = a.flatMap((ea) => b.filter((eb) => meet(R(ea), R(eb))).map((eb) => [ea, eb]))[0];
-    if (on) say('boxes-overlap', boxes[i], `with <${name(boxes[j])}>: ${where(on[0])} ${round(R(on[0]))} on ${where(on[1])} ${round(R(on[1]))}`);
+    const [a, b] = [boxes[i], boxes[j]];
+    const overlap = a.hung.flatMap(ea => b.hung.filter(eb => meet(ea.rect, eb.rect)).map(eb => [ea, eb]))[0];
+    if (overlap) inspectFailure('boxes-overlap', a.name, overlap[0].part, `with <${b.name}>: ${round(overlap[0].rect)} on ${overlap[1].part} ${round(overlap[1].rect)}`);
   }
   // What floats over the canvas, on nothing else that floats; in Focus, its frame and heading under none of it.
   const floats = ['.top .history', '.top .ptabs', '.top .mtabs', '.top .canvas-controls', '.top .main-menu > summary', '.top .pill', '.tools', '.zoom', '.notes'].flatMap((s) => [...document.querySelectorAll(s)]).filter(visible);
@@ -108,7 +161,10 @@ function audit({ floor, focused }) {
   }
   const page = document.scrollingElement;
   if (page.scrollWidth > innerWidth + 0.5 || page.scrollHeight > innerHeight + 0.5) say('page-scrolls', page, `${page.scrollWidth}×${page.scrollHeight} in ${innerWidth}×${innerHeight}`);
-  return found;
+  const probe = document.createElement('i'); probe.style.color = 'var(--ink)'; document.body.append(probe);
+  const css = getComputedStyle(probe).color, values = css.match(/[\d.]+/g).map(Number).slice(0, 3);
+  probe.remove();
+  return { found, pixels, ink: css.startsWith('color(') ? values.map(value => value * 255) : values, dpr: devicePixelRatio };
 }
 
 /** How a prompt's words are drawn: weight, and their contrast with the surface under them, each colour as the page computes it, in sRGB. */
@@ -132,6 +188,31 @@ function legibility(el) {
   return { weight: Number(getComputedStyle(el).fontWeight), text, under, surface: surface?.className ?? null, contrast: Number(((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)).toFixed(2)) };
 }
 
+/** Read real foreground pixels within the reported label bounds. Layout metadata alone cannot prove a label is painted. */
+function textPixels(read, labels, ink, dpr) {
+  return labels.filter(label => {
+    for (let y = Math.floor(label.y * dpr); y < Math.ceil((label.y + label.height) * dpr); y++) {
+      for (let x = Math.floor(label.x * dpr); x < Math.ceil((label.x + label.width) * dpr); x++) {
+        if (read(x, y).every((value, i) => Math.abs(value - ink[i]) <= 40)) return false;
+      }
+    }
+    return true;
+  }).map(label => `${label.name ?? 'making'}:${label.key ?? 'cancel'}`);
+}
+
+async function passive(page) {
+  // On open canvas, so no box is under the pointer at any zoom and none mounts its card; in Focus the canvas takes no hover.
+  const { x, y } = (await page.locator('[data-focused-asset]').count()) ? { x: 2, y: 500 } : await openPoint(page);
+  await page.mouse.move(x, y);
+  await expect(page.locator('.canvas-node')).toHaveCount(0);
+  // Runs/loading may animate forever. Only finite arrival/movement must settle before measuring geometry.
+  await expect.poll(() => page.evaluate(() => {
+    const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+    return inspection?.names().filter(name => { const card = inspection.card(name)?.rendered; return card?.landing?.active || card?.glide?.active; }) ?? ['surface unavailable'];
+  }), { message: 'passive cards have finished arriving and moving' }).toEqual([]);
+  await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
+}
+
 test('layout', async ({ page, project, api }) => {
   const { tools } = await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`);
   const qwen = tools.find((tool) => tool.package === 'qwen-image-2' && tool.makes === 'image' && tool.fields.some((field) => field.type === 'prompt'));
@@ -153,7 +234,7 @@ test('layout', async ({ page, project, api }) => {
   await project.import(png(0, 640, 400, false, (x, y) => COLOURS[(((x >> 3) ^ (y >> 4)) + (x >> 5)) % COLOURS.length]), { name: 'busy', at: at(840, 880) });
   await api.patch(project.at('/assets/busy'), { tool: qwen.id });
   const names = ['blank', LONG, 'failed', 'stacked_1', 'stacked_2', 'clip', 'making', 'shot', 'cut', 'words', 'busy'];
-  for (const name of names) await expect(box(page, name)).toBeVisible();
+  await expect.poll(() => canvasNames(page)).toEqual(expect.arrayContaining(names));
 
   // A render that fails (the crash fixture), then one being made all through the looking: local renders one at a time. Both ended after.
   // Only where this computer runs models, as Calcifer says (Linux's runners; macOS and Windows runners don't): elsewhere both stay unrendered.
@@ -163,12 +244,9 @@ test('layout', async ({ page, project, api }) => {
   try {
     if (renders) {
       await render('failed');
-      await expect.poll(async () => {
-        const held = await project.asset('failed');
-        return Boolean(held?.failure || held?.takes?.some((take) => take.failure));
-      }, { message: 'failed fails', timeout: 60_000 }).toBe(true);
+      await expect.poll(async () => Boolean((await project.asset('failed'))?.failure), { message: 'failed fails', timeout: 60_000 }).toBe(true);
       await render('making');
-      await expect(face, 'making is being made').toBeVisible({ timeout: 60_000 });
+      await expect.poll(async () => Boolean((await canvasCard(page, 'making'))?.rendered?.progress), { message: 'making is being made on the canvas', timeout: 60_000 }).toBe(true);
     }
     const zoomButton = page.getByRole('button', { name: /more zoom options$/ });
     const zoomMenu = async (item) => {
@@ -179,14 +257,46 @@ test('layout', async ({ page, project, api }) => {
     /** Looked at once what animates has finished: every finding, said whole. */
     const looked = async (what, focused = false) => {
       await expect.poll(() => page.evaluate(() => document.getAnimations().filter((one) => one.playState === 'running' && one.timeline === document.timeline && one.effect?.getComputedTiming().iterations !== Infinity).length), { message: `${what}: still` }).toBe(0);
-      expect.soft(await page.evaluate(audit, { floor: FLOOR, focused }), `${what}: laid out`).toEqual([]);
+      await passive(page);
+      const look = await page.evaluate(audit, { floor: FLOOR, focused });
+      expect.soft(look.found, `${what}: laid out`).toEqual([]);
+      if (!focused) expect.soft(look.pixels.length, `${what}: passive labels are available to inspect in the screenshot`).toBeGreaterThan(0);
+      const read = screenshotPixels(await page.screenshot());
+      expect.soft(textPixels(read, look.pixels, look.ink, look.dpr), `${what}: readable passive labels have text pixels`).toEqual([]);
     };
     const cancelShows = async (zoom) => {
       if (!renders) return;
-      const cancel = face.getByRole('button', { name: "Cancel making's render" });
-      await expect.soft(cancel, `Cancel shows on the rendering face at ${zoom}`).toBeVisible();
-      const r = await cancel.boundingBox();
+      await passive(page);
+      let painted;
+      await expect.poll(async () => {
+        painted = (await canvasCard(page, 'making'))?.rendered;
+        return Boolean(painted?.controls.some(control => control.part === 'cancel') && painted.labels.cancel?.text === 'Cancel');
+      }, { message: `Cancel is actually in the passive scene at ${zoom}` }).toBe(true);
+      const r = painted.controls.find(control => control.part === 'cancel');
       expect.soft(Boolean(r) && r.x >= 0 && r.y >= 0 && r.x + r.width <= 1600 && r.y + r.height <= 1000, `and on screen at ${zoom}: ${JSON.stringify(r)}`).toBe(true);
+      const look = await page.evaluate(() => {
+        const root = document.querySelector('.canvas-root'), inspection = root.canvasInspection;
+        const control = inspection.card('making').rendered.controls.find(control => control.part === 'cancel');
+        const hit = inspection.hitTest({ x: control.x + control.width / 2, y: control.y + control.height / 2 });
+        const probe = document.createElement('i'); probe.style.color = 'var(--ink)'; document.body.append(probe);
+        const css = getComputedStyle(probe).color, values = css.match(/[\d.]+/g).map(Number).slice(0, 3);
+        probe.remove();
+        return { hit, ink: css.startsWith('color(') ? values.map(value => value * 255) : values, dpr: devicePixelRatio };
+      });
+      expect.soft(look.hit, `Cancel is reachable at ${zoom}`).toEqual({ name: 'making', part: 'cancel' });
+      expect.soft(textPixels(screenshotPixels(await page.screenshot()), [painted.labels.cancel], look.ink, look.dpr), `Cancel has actual text pixels at ${zoom}`).toEqual([]);
+      // The sparse native control still has its accessible role when the person physically hovers the box (the old canvas's hover card;
+      // the new canvas draws Cancel, judged above by hitTest and its pixels, and names no DOM button for it).
+      await hoverBox(page, 'making');
+      // The new canvas names it for a screen reader among the canvas's hidden actions (visually hidden, so present, not shown).
+      if (await newCanvas(page)) await expect.soft(page.locator('.canvas-actions[role=group]').getByRole('button', { name: "Cancel making's render", exact: true }), `Cancel named for a screen reader at ${zoom}`).toHaveCount(1);
+      else {
+        const cancel = face.getByRole('button', { name: "Cancel making's render" });
+        await expect.soft(cancel, `Cancel shows on the rendering face at ${zoom}`).toBeVisible();
+        const native = await cancel.boundingBox();
+        expect.soft(Boolean(native) && native.x >= 0 && native.y >= 0 && native.x + native.width <= 1600 && native.y + native.height <= 1000, `the native Cancel is on screen at ${zoom}: ${JSON.stringify(native)}`).toBe(true);
+      }
+      await passive(page);
     };
 
     await test.step('view at 0.25, 0.5, 1 and 2', async () => {
@@ -206,6 +316,24 @@ test('layout', async ({ page, project, api }) => {
       await zoomMenu('Zoom to 200%');
       await looked('at 2');
       await zoomMenu('Zoom to fit');
+    });
+
+    await test.step('a name cut at rest says itself whole under the pointer, and nothing else moves', async () => {
+      // cl-1048 acceptance row 18 (Paul's): the long name, cut with an ellipsis where its box ends at rest; hovered, the whole of it.
+      await zoomMenu('Zoom to fit');
+      await passive(page);
+      const label = (await canvasCard(page, LONG))?.rendered?.labels?.title;
+      expect.soft(Boolean(label) && label.text !== label.fullText && label.text.trimEnd().endsWith('…') && label.fullText === LONG,
+        `cut at rest, with an ellipsis: ${JSON.stringify(label && { text: label.text, fullText: label.fullText })}`).toBe(true);
+      const where = () => page.evaluate(() => {
+        const inspection = document.querySelector('.canvas-root').canvasInspection;
+        return { camera: inspection.camera(), at: Object.fromEntries(inspection.names().map((name) => [name, inspection.card(name)?.position ?? null])) };
+      });
+      const before = await where();
+      const said = await nameUnderPointer(page, LONG);
+      expect.soft((said.title === LONG || (said.whole && said.text === LONG)) && said.under_pointer, `whole under the pointer: ${JSON.stringify(said)}`).toBe(true);
+      expect.soft(await where(), 'nothing else moves as it is hovered').toEqual(before);
+      await passive(page);
     });
 
     await test.step('then open one box in Focus', async () => {

@@ -70,7 +70,7 @@ on() { local m=$1 n=$2; shift 2; step "$n" machine ssh "$m" -- "$*"; }
 # sh <machine> <command>: its stdout, for a value.
 sh() { local m=$1; shift; cozy machine ssh "$m" -- "$*" < /dev/null 2>> "$OUT/ssh.err"; }
 # num <step>: the run that step started (its first line names it, followed to its end or not).
-num() { grep -m1 -oE '^run [0-9]+' "$OUT/$1.txt" | awk '{print $2}'; }
+num() { grep -m1 -oE '^run [A-Z][A-Z0-9]*-[0-9]+' "$OUT/$1.txt" | awk '{print $2}'; }
 # record <machine|-> <step>: that run as its controller records it (-: the runner's); its status.
 record() {
   local n; n=$(num "$2")
@@ -218,7 +218,6 @@ done
 [ -n "$N" ] || fail "c: the run from A's $OLD Calcifer never started: $(sh "$A" 'tail -3 /root/inflight.txt')"
 say "c: run $N from A's Calcifer on $OLD is running on B; the next command on A"
 on "$A" c-restart 'cozy machine ls' || fail "c: the first command after the update"
-grep -q "restarting it on $NEW" "$OUT/c-restart.txt" || fail "c: the command did not restart Calcifer: $(head -3 "$OUT/c-restart.txt")"
 [ "$(calcifer_on "$A")" = "$NEW" ] || fail "c: A's Calcifer runs $(calcifer_on "$A") after the restart, not $NEW"
 on "$A" c-inflight "cd /root/session && cozy run watch $N"
 s=$(sh "$A" "cd /root/session && cozy run watch $N --once --json --full" | jq -r .status)

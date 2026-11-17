@@ -2,13 +2,15 @@ import { useQuery } from "@tanstack/react-query"
 import { machinesQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
 import type { Machine, Operation, Run } from "../../api/calcifer"
-import { bytes, leftWords } from "../format"
-import { target } from "../runs/words"
+import { leftWords } from "../format"
+import { rateWords, size, target } from "../runs/words"
 
-/** One thing a machine is doing: a package installing, weights arriving, a run, or the machine coming up. */
+/** One thing a machine is doing: a package installing, weights arriving, a run, another project's run (its state alone), or the machine
+ *  coming up. */
 export type Doing =
   | { kind: "install" | "download"; key: string; operation: Operation }
   | { kind: "run"; key: string; run: Run; on?: Operation }
+  | { kind: "other"; key: string; state: string }
   | { kind: "boot"; key: string; words: string }
 
 /** `qwen/qwen-image-2.1-turbo`, or a Hugging Face source of it, as people say it: `Qwen Image 2.1 Turbo`. Anything else is said as it is. */
@@ -43,29 +45,32 @@ export const waitsOnOf = (activity: Operation[], run: Run) => {
 /** Its own work under way: begun, waiting on nothing. */
 export const working = (run: Run, on?: Operation) => run.started_at_ms != null && !waits(run) && !on
 
-/** What a machine is doing now: each install and download once, however many runs wait on it, then its runs, those going first. */
-export function doingOf(machine: Machine, runs: Run[], project: string | null): Doing[] {
+/** What a machine is doing now, as its status says, kept by the machines' stream: each install and download once, however many runs wait
+ *  on it, then its runs, those going first. `project`'s runs and this computer's own by name; another project's by its state alone. */
+export function doingOf(machine: Machine, project: string | null): Doing[] {
   const activity = ownActivity(machine, project)
   const booting: Doing[] = machine.state === "booting" ? [{ kind: "boot", key: "boot", words: machine.boot ?? "booting" }] : []
   const operations: Doing[] = [...activity]
     .sort((a, b) => Number(a.kind === "download") - Number(b.kind === "download"))
     .map((operation) => ({ kind: operation.kind as "install" | "download", key: operation.id, operation }))
-  const mine: Doing[] = runs
-    .filter((run) => run.machine === machine.name)
-    .map((run) => ({ kind: "run", key: `run ${run.project_id ?? ""} ${run.number}`, run, on: waitsOnOf(activity, run) }))
-  const going = (doing: Doing) => Number(doing.kind === "run" && !working(doing.run, doing.on))
-  return [...booting, ...operations, ...mine.sort((a, b) => going(a) - going(b))]
+  const runs: Doing[] = (machine.status?.runs ?? []).flatMap(({ id, state, run }): Doing[] => {
+    if (!run) return []
+    if (run.project_id && run.project_id !== project) return [{ kind: "other", key: id, state }]
+    return [{ kind: "run", key: `run ${run.project_id ?? ""} ${run.number}`, run, on: waitsOnOf(activity, run) }]
+  })
+  const going = (doing: Doing) => Number(doing.kind === "run" ? !working(doing.run, doing.on) : doing.kind === "other" && doing.state !== "running")
+  return [...booting, ...operations, ...runs.sort((a, b) => going(a) - going(b))]
 }
 
 /** What a run's row is called: its box, where the open project has it, else what it runs. */
 export const runName = (run: Run, boxes: Map<number, string>) => (run.project_id ? boxes.get(run.number) : undefined) ?? target(run)
 
-/** How far a download is: `6.6 GiB / 9.4 GiB · 29 MiB/s · 3 min left · 8.8 GiB already here`. */
+/** How far a download is, as the run face says it (cl-1074): `6.6GB / 9.4GB · 29MB/s · 3 min left · 8.8GB already here`. */
 export function fetchedWords(operation: Operation): string {
-  const parts = [operation.bytes_total ? `${bytes(operation.bytes_done)} / ${bytes(operation.bytes_total)}` : bytes(operation.bytes_done)]
-  if (operation.bytes_per_s) parts.push(`${bytes(operation.bytes_per_s)}/s`)
+  const parts = [operation.bytes_total ? `${size(operation.bytes_done)} of ${size(operation.bytes_total)}` : size(operation.bytes_done)]
+  if (operation.bytes_per_s) parts.push(rateWords(operation.bytes_per_s))
   if (operation.eta_s != null) parts.push(leftWords(operation.eta_s))
-  if (operation.bytes_here) parts.push(`${bytes(operation.bytes_here)} already here`)
+  if (operation.bytes_here) parts.push(`${size(operation.bytes_here)} already on this machine`)
   return parts.join(" · ")
 }
 

@@ -27,6 +27,7 @@ mod project;
 mod render;
 mod run;
 mod send;
+mod settings;
 mod tools;
 mod tui;
 mod update;
@@ -98,6 +99,8 @@ enum Command {
     Update(update::Args),
     /// Diagnose this computer's Cozy installation and machines.
     Doctor(doctor::Args),
+    /// Show or change this computer's settings.
+    Config(settings::Args),
     /// Restart Calcifer on the installed cozy.
     Restart(daemon::Restart),
     /// Sign in to your TensorHub account.
@@ -149,7 +152,14 @@ pub fn main() -> ExitCode {
             );
         }
     };
-    match runtime.block_on(dispatch(&ctx, command)) {
+    let offered = !matches!(command, Command::Update(_) | Command::Completion(_));
+    let run = async {
+        if offered {
+            update::offer(&ctx).await;
+        }
+        dispatch(&ctx, command).await
+    };
+    match runtime.block_on(run) {
         Ok(code) => code,
         Err(error) => output::refusal(&ctx, &error),
     }
@@ -209,6 +219,7 @@ async fn dispatch(ctx: &Context, command: Command) -> Result<ExitCode, Error> {
         Command::Update(args) => update::exec(ctx, args).await,
         Command::Completion(args) => completion::exec(ctx, args).await,
         Command::Doctor(args) => doctor::exec(ctx, args).await,
+        Command::Config(args) => settings::exec(ctx, args).await,
         Command::Restart(args) => daemon::restart_calcifer(ctx, args).await,
     }
 }

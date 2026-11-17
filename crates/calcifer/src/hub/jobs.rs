@@ -61,7 +61,7 @@ impl From<SubmitRun> for Planned {
 fn input<T: DeserializeOwned>(ask: &RunRequest) -> Result<T, Refusal> {
     let given = !ask.terms.is_empty() || !ask.files.is_empty() || ask.input_text.is_some() || !ask.loras.is_empty();
     if given {
-        let said = format!("{} takes its fields as `input`, and nothing else", ask.target);
+        let said = format!("{} only takes its fields as `input`.", ask.target);
         return Err(Refusal(Error::new(Kind::Usage, "job_input", said)));
     }
     let fields = serde_json::Value::Object(ask.input.clone().unwrap_or_default());
@@ -70,7 +70,7 @@ fn input<T: DeserializeOwned>(ask: &RunRequest) -> Result<T, Refusal> {
 
 /// The local code a job is of.
 fn code(ask: &RunRequest) -> Result<LocalCode, Refusal> {
-    let said = format!("{} is of a package sent by content: the request's `code`", ask.target);
+    let said = format!("{} needs the package's code in the request (`code`).", ask.target);
     ask.code.clone().ok_or_else(|| Refusal(Error::new(Kind::Usage, "job_code", said)))
 }
 
@@ -88,7 +88,7 @@ async fn plan_scoped(api: &Arc<Api>, key: &str, hub: &Origin, ask: &RunRequest) 
     let on = match ask.on.as_slice() {
         [] => crate::runs::default_on(api),
         [on] => on.clone(),
-        _ => return Err(Refusal(Error::new(Kind::Usage, "on_one", format!("{} goes to one machine: name one with --on", ask.target)))),
+        _ => return Err(Refusal(Error::new(Kind::Usage, "on_one", format!("{} runs on one machine. Pick one.", ask.target)))),
     };
     let on = if let Some(named) = ask.project.as_deref() {
         let (project, root) = {
@@ -97,7 +97,7 @@ async fn plan_scoped(api: &Arc<Api>, key: &str, hub: &Origin, ask: &RunRequest) 
             (project.to_owned(), root.to_owned())
         };
         crate::private_io::check_project_placement(&project, &root, &[on]).map_err(Refusal)?.into_iter().next()
-            .ok_or_else(|| Refusal(Error::new(Kind::Unavailable, "project_execution_unavailable", "no project execution target is available")))?
+            .ok_or_else(|| Refusal(Error::new(Kind::Unavailable, "project_execution_unavailable", "None of this project's machines can take this right now.")))?
     } else { on };
     let agreed = ask.agreed;
     // Calcifer's pick is refused as a named machine is, where this OS runs no models itself.
@@ -126,8 +126,8 @@ async fn source_project(api: &Arc<Api>, ask: &RunRequest) -> Result<Option<Strin
         return Ok(None);
     };
     match api::calcifer::project::run_name(run.split('#').next().unwrap_or(run)) {
-        Some((key, _)) if key != api::calcifer::project::MACHINE_KEY => crate::api::keyed_project(api, &key).await,
-        _ => Ok(None),
+        Some((key, _)) => crate::api::keyed_project(api, &key).await,
+        None => Ok(None),
     }
 }
 
@@ -182,7 +182,7 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, digest: &str, mut ask: Ru
             if let Some(after) = &after {
                 calcifer.plan(project.as_deref(), key, after)?;
             }
-            let submitted = calcifer.submit_under(key, digest, *submit).await;
+            let submitted = calcifer.submit_under(key, digest, *submit, crate::store::Task::of_job(&ask.target)).await;
             if submitted.is_err() && after.is_some() {
                 calcifer.unplan(project.as_deref(), key);
             }
@@ -193,7 +193,7 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, digest: &str, mut ask: Ru
             let kept = serde_json::to_vec(&ask).map_err(|e| Error::internal("job_ask", e.to_string()))?;
             let (its_api, its_hub, its_key) = (api.clone(), hub.clone(), key.to_owned());
             let work = move |here: Here| async move { work.run(&its_api, &its_hub, &its_key, &here).await };
-            calcifer.here(project.as_deref(), key, digest, target, &hub, kept, work).await.map_err(crate::runs::refused)
+            calcifer.here(project.as_deref(), key, digest, target, crate::store::Task::of_job(&ask.target), &hub, kept, work).await.map_err(crate::runs::refused)
         }
     };
     submitted.map(Job::Done)
@@ -219,7 +219,7 @@ pub(crate) fn resume_project(api: Arc<Api>, project:String)->futures_util::futur
 async fn resume_ids(api:Arc<Api>, ids:Vec<api::ids::RunId>) {
     let calcifer=&api.calcifer;
     for id in ids {
-        let stopped = || Error::new(Kind::Unavailable, "calcifer_stopped", "Calcifer stopped before this ended").remedy("ask again: it is safe");
+        let stopped = || Error::new(Kind::Unavailable, "calcifer_stopped", "Cozy stopped before this finished.").remedy("Try again; it's safe to.");
         let snapshot=calcifer.run_store(id.as_str()).map(|store|(store.run(id.as_str()),store.key(id.as_str()),store.job(id.as_str())));
         let (row, key, kept) = match snapshot {
             Ok((Ok(Some(row)),Ok(Some(key)),Ok(Some(kept)))) => (row,key,kept),
@@ -256,7 +256,7 @@ async fn resume_ids(api:Arc<Api>, ids:Vec<api::ids::RunId>) {
 /// What the job `ask` names would rent on a `new` machine, renting nothing; none for Calcifer's own work, which rents nothing.
 pub(crate) async fn quote(api: &Arc<Api>, ask: RunRequest) -> Result<Job<Option<RunQuote>>, Error> {
     if ask.target == job::MODEL_QUANTIZE && ask.code.is_some() {
-        let said = "local code runs where it was made ready; a `new` machine takes a published release";
+        let said = "Your own code runs only on the machine it was set up on. A new rental runs published packages only.";
         return Err(Error::new(Kind::Usage, "quote_local", said).next("cozy machine rent"));
     }
     let hub = origin(api, Some(&ask.hub)).map_err(|Refusal(e)| e)?;
@@ -290,7 +290,7 @@ pub(super) fn machine(on: &On, what: &str) -> Result<String, Refusal> {
     match on {
         On::Machine(name) => Ok(name.to_ascii_lowercase()),
         other => {
-            let said = format!("{what} is of one machine: {other} names none");
+            let said = format!("{what} needs a machine name, not {other}.");
             Err(Refusal(Error::new(Kind::Usage, "machine_name_required", said).next("cozy machine ls")))
         }
     }

@@ -10,6 +10,7 @@ members = [
     "crates/cli",
     "crates/cozy",
     "crates/executor-api",
+    "crates/needs",
     "crates/platform",
     "crates/project-vault",
     "crates/project-mount",
@@ -38,6 +39,7 @@ api = { path = "crates/api" }
 calcifer = { path = "crates/calcifer" }
 cli = { path = "crates/cli" }
 executor-api = { path = "crates/executor-api" }
+needs = { path = "crates/needs" }
 # Only `signal` unless a member asks for `seams` or `fetch`: varena links nothing else.
 platform = { path = "crates/platform", default-features = false }
 project-vault = { path = "crates/project-vault" }

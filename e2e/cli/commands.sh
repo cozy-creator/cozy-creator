@@ -11,6 +11,13 @@ entrypoints() {
     || check "entrypoints: see $OUT/entrypoints/results.json"
 }
 
+# Every command a hint names is one this cozy has: each `cozy …` its code, page and docs tell someone to type, walked down its help.
+hint_commands() {
+  step "every command a hint, a next line or a doc names parses"
+  python3 "$here/hints.py" --cozy "$COZY" --root "$(git -C "$here" rev-parse --show-toplevel)" --out "$OUT/hints" \
+    || check "hint commands: $(jq -r '.stale | keys | join(", ")' "$OUT/hints/hints.json" 2> /dev/null)"
+}
+
 # What needs no machine: Calcifer, the Hub setting, signing out, the Hub's packages and models.
 catalog() {
 step status
@@ -101,7 +108,7 @@ cozy machine rent > "$OUT/rent-catalog.txt" 2>&1 && grep -q -E '^NAME +GPU +GPUS
   || check "machine rent: no catalog table: $(head -c 300 "$OUT/rent-catalog.txt")"
 cozy --json machine rent > "$OUT/rent-catalog.json" 2> "$OUT/rent-catalog.err" && J 'type == "array" and all(.[]; .name | length > 0)' "$OUT/rent-catalog.json" \
   || check "machine rent --json: no catalog array: $(head -c 300 "$OUT/rent-catalog.json") $(head -c 200 "$OUT/rent-catalog.err")"
-# Pinned to the checkout's release: an RC-only package (a prerelease, xs-196 C) is refused package_rc_only before the sign-in check.
+# Pinned to the checkout's release, a run --on new is refused before the sign-in check.
 bir=birefnet/remove_background; v=$(sed -n 's/^version = "\(.*\)"$/\1/p' "${PACKAGES:-/nonexistent}/birefnet/pyproject.toml" 2>/dev/null | head -1)
 [ -z "$v" ] || bir="birefnet/remove_background@$v"
 code=0; in_project "$RUN_PROJECT" --json run "$bir" --file "image=$(picture dog1.jpg)" --on new > "$OUT/rent-signed-out.json" 2>&1 || code=$?
@@ -134,6 +141,34 @@ cozy --json model ls --on local > "$OUT/models.json" || check "model ls --on loc
 grep -q e2e-tiny "$OUT/models.json" || check "model ls --on local: the local file's local/e2e-tiny is not listed"
 J --arg lane "$lane" 'any(.models[]; .model == "zhengpeng7/birefnet" and .lane == $lane)' "$OUT/models.json" || check "model ls --on local: no zhengpeng7/birefnet in lane $lane after --lane $lane"
 grep -q e2e-birefnet "$OUT/models.json" || check "model ls --on local: the local/e2e-birefnet alias is not listed"
+}
+
+# cl-1076 (Paul, 11-16, a rental's disk full with LTX 2.5's 71.5 GB unused): "The CLI can remove a model from a rental. `cozy model
+# uninstall` only works on this computer; give it `--on <machine>`." On local through the route a rental takes: while ondemand.py's
+# `hold` holds with e2e/uninstall bound, its uninstall is refused naming that run; once the run ends, it goes, its bytes freed.
+uninstall_on() {
+step "a model uninstalled from a named machine, refused while a run reads it (cl-1076)"
+[ -n "$LOCAL" ] || return 0
+local run
+cozy --json model install e2e/uninstall --on local > "$OUT/uninstall-on-install.ndjson" 2>&1 \
+  || { check "uninstall --on: model install e2e/uninstall failed: $(tail -c 300 "$OUT/uninstall-on-install.ndjson")"; return; }
+[ -n "$(run_submit "$OUT" uninstall-on-hold run "$here/script/ondemand.py/hold" seconds:=20 --model extra=e2e/uninstall --on local)" ] \
+  || { check "uninstall --on: the holding run was not made: $(tail -c 300 "$OUT/uninstall-on-hold.err")"; return; }
+run=$(cat "$OUT/uninstall-on-hold.id")
+for _ in $(seq 900); do grep -q '"holding"' "$OUT/uninstall-on-hold.ndjson" 2> /dev/null && break; sleep 0.2; done
+grep -q '"holding"' "$OUT/uninstall-on-hold.ndjson" || { check "uninstall --on: run $run never held: $(tail -c 300 "$OUT/uninstall-on-hold.ndjson")"; return; }
+cozy --json model uninstall e2e/uninstall --on local > "$OUT/uninstall-on-held.json" 2> "$OUT/uninstall-on-held.err" \
+  && check "uninstall --on: e2e/uninstall went while run $run held it"
+J --arg run "$run" '.error.cause == "model_in_use" and (.error.message | contains($run)) and .error.next == ["cozy run watch \($run)"]' "$OUT/uninstall-on-held.json" \
+  || check "uninstall --on: not refused naming run $run: $(head -c 400 "$OUT/uninstall-on-held.json") $(tail -c 200 "$OUT/uninstall-on-held.err")"
+run_wait "$OUT" uninstall-on-hold && [ "$(run_get "$OUT" uninstall-on-hold .status)" = completed ] \
+  || { check "uninstall --on: run $run did not complete: $(tail -c 300 "$OUT/uninstall-on-hold.ndjson")"; return; }
+cozy --json model uninstall e2e/uninstall --on local > "$OUT/uninstall-on.json" 2> "$OUT/uninstall-on.err" \
+  && J '.model == "e2e/uninstall" and .removed and .cache_bytes_removed > 0' "$OUT/uninstall-on.json" \
+  || check "uninstall --on local: e2e/uninstall not removed, or no bytes freed: $(head -c 400 "$OUT/uninstall-on.json") $(tail -c 200 "$OUT/uninstall-on.err")"
+cozy --json model ls --on local > "$OUT/uninstall-on-models.json" && J 'all(.models[]; .model != "e2e/uninstall")' "$OUT/uninstall-on-models.json" \
+  || check "uninstall --on local: model ls --on local still lists e2e/uninstall"
+echo "uninstall --on: $(jq -c . "$OUT/uninstall-on.json")"
 }
 
 # xs-190: a model of one component (e2e/parts-vae, uploaded as `<file>:vae` by e2e/isolated.sh), composed at run time with another
@@ -176,6 +211,78 @@ was=$(output parts-default png) is=$(output parts-composed png)
 { [ -n "$was" ] && [ -n "$is" ] && ! cmp -s "$was" "$is"; } || check "parts: the composed run's stored picture is not another than the default's (${was:-none}, ${is:-none})"
 }
 
+# tfs-300, LAB2-47829 (Paul 11-16: "we don't need all components of a model to be on the critical path; that's just creating
+# unnecessary latency for the end-user who is waiting on models to download"; "I think this is a failure in terms of our download
+# planner"): a LoRA on qwen-image-2's `model`, which reads Noct Q's transformer alone, pulled all of Noct Q, its 9.9 GiB text
+# encoder too, before the call could start. script/lora.py's `model` reads e2e/lora-base's 256 KiB transformer beside its 16 MiB
+# text encoder: cold, with e2e/lora-proj on it, the call completes, the LoRA changes what the transformer makes, and the machine
+# holds the transformer alone.
+lora_reads() {
+step "a LoRA'd slot downloads only the components it reads of its model (tfs-300)"
+[ -n "$LOCAL" ] || return 0
+local script=$here/script/lora.py held stage
+cell lora-adapted "$script" --lora model=e2e/lora-proj || return 0
+stage=$(grep '^{' "$OUT/lora-adapted.ndjson" | jq -s '[.[] | select(.type == "run.progress") | .progress | select(.stage | startswith("preparing model adapters")) | .bytes_total] | max // 0')
+cozy --json model ls --on local > "$OUT/lora-held.json" || { check "lora reads: model ls --on local failed"; return; }
+held=$(jq -c '[.models[]? | select(.model == "e2e/lora-base") | {complete, bytes}]' "$OUT/lora-held.json")
+J '[.models[] | select(.model == "e2e/lora-base")] | length == 1 and .[0].complete == false and .[0].bytes >= 262144 and .[0].bytes < 4194304' "$OUT/lora-held.json" \
+  || check "lora reads: the LoRA'd call left more of e2e/lora-base here than its 256 KiB transformer (its text encoder is 16 MiB): $held"
+J '[.measurements.models[] | select(.slot == "model") | .adapters | length] == [1]' "$OUT/lora-adapted.json" \
+  || check "lora reads: its record names no LoRA on model: $(jq -c '.measurements.models' "$OUT/lora-adapted.json")"
+cell lora-plain "$script" || return 0
+J --slurpfile plain "$OUT/lora-plain.json" '.result.sum != $plain[0].result.sum' "$OUT/lora-adapted.json" \
+  || check "lora reads: the LoRA changed nothing: $(jq -c .result "$OUT/lora-adapted.json") as without it"
+echo "lora reads: e2e/lora-base here after the LoRA'd call $held; its adapter stage moved ${stage} bytes; sums $(jq .result.sum "$OUT/lora-adapted.json") with, $(jq .result.sum "$OUT/lora-plain.json") without"
+}
+
+# ltx2.lora (the ltx-2.5 package's LoRAs, for the release coordinator: "`cozy model upload` / `cozy lora` / `cozy run --lora` can
+# take an LTX-2.5 LoRA (including IC-LoRAs such as Lightricks' Ingredients) and store it as a LoRA whose component is
+# `transformer`, with Diffusers' `LTX2VideoTransformer3DModel` module names and a PEFT adapter config"; Paul 11-16: "convert
+# in-the-wild deviations ... to our canonical cozytensors format"). e2e/isolated.sh uploads Lightricks' LTX-2.3 Motion Track
+# Control IC-LoRA from Hugging Face as published, LTX's native names under diffusion_model.: it is an ltx-2-5 LoRA of its
+# transformer, its 480 modules under Diffusers' names (to_out.0), r and lora_alpha 32 (no .alpha: a scale of 1, as ltx-core applies it),
+# and its reference_downscale_factor (2, its file's metadata) in the adapter config the package reads.
+ltx_lora() {
+step "a published LTX IC-LoRA is a LoRA of ltx-2-5's transformer in Diffusers' names"
+local lora=lightricks/ltx-2.3-motion-track-control show=$OUT/ltx-lora-show.json
+cozy --json --full lora show "$lora" > "$show" 2>&1 || { check "lora show $lora: $(tail -c 300 "$show")"; return; }
+J '.family == "ltx-2-5" and .lanes[0].records.adapter.transformer == {family: "ltx-2-5", component: "transformer"}' "$show" \
+  || check "$lora: not a LoRA of ltx-2-5's transformer: family $(jq -c '[.family, .lanes[0].records.adapter]' "$show")"
+J '[.lanes[0].components[] | select(.tensors > 0) | .name] == ["transformer"]' "$show" \
+  || check "$lora: not one component, transformer: $(jq -c '[.lanes[0].components[] | {name, tensors}]' "$show")"
+J '.lanes[0].components[] | select(.name == "transformer") | .lora.modules == 480 and .lora.alphas == 0 and .config_file == "adapter_config.json"
+   and .config.peft_type == "LORA" and .config.r == 32 and .config.lora_alpha == 32 and .config.reference_downscale_factor == 2
+   and (.config.target_modules | length) == 480
+   and (.config.target_modules | index("transformer_blocks.0.attn1.to_out.0") != null)
+   and all(.config.target_modules[]; startswith("transformer_blocks."))' "$show" \
+  || check "$lora: its transformer is not 480 modules in Diffusers' names at r = lora_alpha = 32, reference_downscale_factor 2: $(jq -c '.lanes[0].components[] | select(.name == "transformer") | {lora, config_file, r: .config.r, lora_alpha: .config.lora_alpha, downscale: .config.reference_downscale_factor, targets: (.config.target_modules // [] | .[:3])}' "$show")"
+}
+
+# se-141 (the ltx-2.5 package's agent, for picture and voice references: "TensorFS ingests LiconStudio's Licon MSR V2 LoRA for
+# LTX-2.5 losslessly, so the ltx-2.5 package can run it"; Paul: canonical format, in-the-wild layouts converted at ingest, the
+# package never maps keys). e2e/isolated.sh uploads it from Hugging Face as published: LTX's native names under diffusion_model.,
+# 1152 rank-128 factor pairs (no .alpha) and two Fourier-MLP reference-slot embeddings the DiT has not. It is an ltx-2-5 LoRA of
+# its transformer holding all 2314 tensors and every byte of them, the embeddings carried whole (PEFT's modules_to_save), and its
+# reference_* metadata typed in the adapter config the package reads.
+ltx_msr() {
+step "LiconStudio's MSR is an ltx-2-5 LoRA that carries its reference-slot embeddings whole"
+local lora=liconstudio/licon-msr-v2 show=$OUT/msr-show.json
+cozy --json --full lora show "$lora" > "$show" 2>&1 || { check "lora show $lora: $(tail -c 300 "$show")"; return; }
+J '.family == "ltx-2-5" and .lanes[0].records.adapter.transformer == {family: "ltx-2-5", component: "transformer"}' "$show" \
+  || check "$lora: not a LoRA of ltx-2-5's transformer: $(jq -c '[.family, .lanes[0].records.adapter]' "$show")"
+J '[.lanes[0].components[] | select(.tensors > 0) | {name, tensors, bytes}] == [{name: "transformer", tensors: 2314, bytes: 2214758976}]' "$show" \
+  || check "$lora: not its 2314 tensors and 2214758976 bytes in transformer: $(jq -c '[.lanes[0].components[] | {name, tensors, bytes}]' "$show")"
+J '.lanes[0].components[] | select(.name == "transformer") | .lora.modules == 1152 and .lora.alphas == 0
+   and .config.r == 128 and .config.lora_alpha == 128 and (.config.target_modules | length) == 1152
+   and (.config.target_modules | index("transformer_blocks.0.video_to_audio_attn.to_out.0") != null)
+   and .config.modules_to_save == ["reference_audio_slot_embedding", "reference_slot_embedding"]
+   and .config.reference_slot_embedding_enabled == true and .config.reference_audio_sparse_slots == true
+   and .config.reference_slot_embedding_dim == 128 and .config.reference_audio_slot_embedding_num_frequencies == 16
+   and .config.reference_audio_slot_duration_seconds == 5.0 and .config.reference_audio_end_margin_seconds == 0.04
+   and .config.reference_slot_embedding_type == "fourier_mlp" and .config.reference_token_order == "prepend"' "$show" \
+  || check "$lora: its adapter config is not 1152 modules at r = lora_alpha = 128, the two embeddings carried and the reference_* layout typed: $(jq -c '.lanes[0].components[] | select(.name == "transformer") | {lora, config: (.config // {} | del(.target_modules))}' "$show")"
+}
+
 # Paul's rule (11-13, cl-984): "1. project data is private 2. models / packages installed are machine-specific (not project
 # specific)". After component_models ran parts.py (a script package on e2e/parts, ~4 MiB) in the suite's project, a second
 # project's first run of it downloads nothing, builds no environment and adds no weights anywhere, and the first project's
@@ -193,7 +300,7 @@ after=$(envs_in "$HOME/.cozy")
 # Nothing downloaded or installed: no `downloading` stage moved a byte, none installed dependencies.
 grep '^{' "$OUT/second-parts.ndjson" | jq -e -s '[.[] | select(.type == "run.progress") | .progress
     | select(((.stage | test("downloading")) and ((.stage | test("the result")) | not) and ((.bytes_done // 0) > 0))
-      or (.stage | test("installing its dependencies|installing this machine")))] | length == 0' > /dev/null \
+      or (.stage | test("installing dependencies|installing this machine")))] | length == 0' > /dev/null \
   || check "second project: its first run downloaded or installed: $(grep '^{' "$OUT/second-parts.ndjson" | jq -r 'select(.type == "run.progress") | .progress.stage' | sort -u | grep -E 'download|install' | head -3 | paste -sd';' -)"
 [ "$before" = "$after" ] || check "second project: the machine gained environments: $(comm -13 <(echo "$before") <(echo "$after") | sed "s#$HOME/##" | paste -sd' ' - | cut -c1-400)"
 # Its own area holds no environment, PyTorch, uv cache, Python or weights: those are the machine's.
@@ -209,6 +316,50 @@ in_project "$other" --json run ls --limit 0 > "$OUT/second-runs.json" \
 J '[.runs[]? | select(.target | test("parts") | not)] | length >= 1' "$OUT/second-first-runs.json" \
   || check "second project: the first project lists none of its other runs: $(jq -c '[.runs[]? | .target]' "$OUT/second-first-runs.json" 2> /dev/null | head -c 300)"
 echo "second project: machine environments $(echo "$before" | grep -c .) then $(echo "$after" | grep -c .); its store $(du -sh "$other/.vault-machine/objects" 2> /dev/null | cut -f1)"
+}
+
+# cl-1011: a lock takes no release the machines can't install. A local index holds a dependency at 1.0 (a wheel for any platform)
+# and 2.0 (a macOS wheel alone, as a release still uploading to PyPI is): local code needing it locks 1.0 and runs here.
+lock_platforms() {
+step "a lock passes over a release no rental can install (cl-1011)"
+[ -n "$LOCAL" ] || return 0
+local L=$OUT/lock-platforms
+rm -rf "$L" && mkdir -p "$L/index" && cp -r "$here/weightless" "$L/code" || { check "lock platforms: no copy of weightless"; return; }
+python3 - "$L/index" <<'PY' || { check "lock platforms: no index"; return; }
+import base64, hashlib, sys, zipfile
+from pathlib import Path
+index = Path(sys.argv[1])
+def wheel(version: str, tag: str) -> None:
+    name, info = "e2e_cl1011_dep", f"e2e_cl1011_dep-{version}.dist-info"
+    files = {f"{name}/__init__.py": f'VERSION = "{version}"\n',
+             f"{info}/METADATA": f"Metadata-Version: 2.1\nName: e2e-cl1011-dep\nVersion: {version}\n",
+             f"{info}/WHEEL": f"Wheel-Version: 1.0\nGenerator: e2e\nRoot-Is-Purelib: {'true' if tag == 'py3-none-any' else 'false'}\nTag: {tag}\n"}
+    record = [f"{path},sha256={base64.urlsafe_b64encode(hashlib.sha256(body.encode()).digest()).rstrip(b'=').decode()},{len(body.encode())}" for path, body in files.items()]
+    files[f"{info}/RECORD"] = "\n".join(record + [f"{info}/RECORD,,"]) + "\n"
+    with zipfile.ZipFile(index / f"e2e_cl1011_dep-{version}-{tag}.whl", "w") as out:
+        for path, body in files.items():
+            out.writestr(path, body)
+wheel("1.0", "py3-none-any")
+wheel("2.0", "py3-none-macosx_11_0_arm64")
+PY
+sed -i 's/^name = "e2e-weightless"/name = "e2e-lock-platforms"/; s/"msgspec>=0.19"\]/"msgspec>=0.19", "e2e-cl1011-dep"]/' "$L/code/pyproject.toml"
+printf '\n[[tool.uv.index]]\nname = "e2e-cl1011"\nurl = "file://%s"\nformat = "flat"\n\n[tool.uv.sources]\ne2e-cl1011-dep = { index = "e2e-cl1011" }\n' "$L/index" >> "$L/code/pyproject.toml"
+cat >> "$L/code/e2e_weightless/__init__.py" <<'PY'
+
+
+class Dependency(msgspec.Struct):
+    version: str
+
+
+@app.entrypoint(accelerator=False)
+def dependency() -> Dependency:
+    import e2e_cl1011_dep
+    return Dependency(version=e2e_cl1011_dep.VERSION)
+PY
+in_project "$RUN_PROJECT" --json run "$L/code/dependency" --on local > "$L/run.ndjson" 2> "$L/run.err" \
+  || { check "lock platforms: the run failed, a lock that took 2.0 (a macOS wheel alone)?: $(tail -c 300 "$L/run.err")"; return; }
+grep -q '"version": *"1.0"' "$L/run.ndjson" || check "lock platforms: the dependency is not 1.0: $(grep -o '"version": *"[^"]*"' "$L/run.ndjson" | tail -1)"
+echo "lock platforms: $(grep -o '"version": *"[^"]*"' "$L/run.ndjson" | tail -1) of 1.0 (any) and 2.0 (macOS alone)"
 }
 
 # safetensors_file <file>: a 4×4 F16 .safetensors file.
@@ -232,7 +383,7 @@ safetensors_file "$OUT/refused.safetensors"
 refused() {  # refused <name> <cozy args...>
   local name=$1 code=0; shift
   cozy --json "$@" > "$OUT/refused-$name.json" 2> "$OUT/refused-$name.err" || code=$?
-  [ "$code" = 1 ] && J '.error.code == "local_unavailable" and (.error.remedy | contains("--on new"))' "$OUT/refused-$name.json" \
+  [ "$code" = 1 ] && J '.error.code == "local_unavailable" and (.error.next | any(contains("--on new")))' "$OUT/refused-$name.json" \
     || check "cozy $*: exit $code, not refused local_unavailable: $(head -c 300 "$OUT/refused-$name.json") $(head -c 200 "$OUT/refused-$name.err")"
 }
 refused run run birefnet/remove_background --file "image=$dog"
@@ -260,14 +411,14 @@ refused logs machine logs local --lines 5
 refused authorize machine authorize "$key"
 refused doctor doctor --on local
 cozy run birefnet/remove_background --file "image=$dog" > "$OUT/refused.txt" 2>&1 && check "a local run without --on was not refused"
-grep -q "local runs aren't available on" "$OUT/refused.txt" && grep -q -- '--on new' "$OUT/refused.txt" \
-  || check "the refusal does not say local runs aren't available and --on new: $(head -c 300 "$OUT/refused.txt")"
+grep -q "This computer can't run models on" "$OUT/refused.txt" && grep -q -- '--on new' "$OUT/refused.txt" \
+  || check "the refusal does not say this computer can't run models and --on new: $(head -c 300 "$OUT/refused.txt")"
 
 step "no local machine"
 cozy --json machine ls > "$OUT/machines.json" && J '.machines | all(.name != "local")' "$OUT/machines.json" || check "machine ls: a local machine is listed"
-cozy machine ls > "$OUT/machines.txt" 2>&1 && grep -q "local runs aren't available on" "$OUT/machines.txt" || check "machine ls does not say local runs aren't available"
+cozy machine ls > "$OUT/machines.txt" 2>&1 && grep -q "This computer can't run models on" "$OUT/machines.txt" || check "machine ls does not say this computer can't run models"
 fixture_calcifer > "$OUT/status.txt" && J '.calcifer.local_usable == false' "$OUT/status.txt" || check "status does not say local runs aren't available"
-cozy --json doctor > "$OUT/doctor-gated.json" && J '.healthy and (.checks | any(.check == "machine" and (.state | contains("aren'"'"'t available"))))' "$OUT/doctor-gated.json" \
+cozy --json doctor > "$OUT/doctor-gated.json" && J '.healthy and (.checks | any(.check == "machine" and (.state | contains("can'"'"'t run models"))))' "$OUT/doctor-gated.json" \
   || check "doctor: not healthy, or no line that local runs aren't available: $(jq -c .checks "$OUT/doctor-gated.json")"
 cozy machine logs local calcifer --lines 5 > "$OUT/log-calcifer.txt" && [ -s "$OUT/log-calcifer.txt" ] || check "machine logs local calcifer: no Calcifer log"
 cozy --json package ls --on all > "$OUT/packages.json" || check "package ls --on all failed"
@@ -408,6 +559,23 @@ fi
 [ "$(row "$RUN_PROJECT" described .fields.description)" = '"An orange card."' ] || check "descriptions: the stored one is now $(row "$RUN_PROJECT" described .fields)"
 }
 
+# se-138 (Paul's clamp-and-warn rule): a size or count that isn't one of a choice's values runs at the nearest one and says
+# so, never at a default larger than asked (cr-299's `to: 768p` ran at 1440p); a word that names none goes as its default.
+choice_clamp() {
+step "a choice given a value it doesn't offer: the nearest, said"
+# `to=768p` is typed by `cozy run` as a resolution (runs/bind.rs `tiers`); a word it doesn't offer is refused there, so `mode` goes as JSON.
+if cell choice "$here/project/choice.py/size" to=768p megapixels:=3 'mode:="slow"'; then
+  grep -q 'to=1080p megapixels=2 mode=full' "$OUT/choice.ndjson" \
+    || check "choice: 768p and 3 didn't run as 1080p and 2, or slow not as full: $(grep -oE '"given": *"[^"]*"' "$OUT/choice.ndjson" | head -1)"
+  cozy --json --full run watch "$(cat "$OUT/choice.number")" --once > "$OUT/choice.json" 2>&1
+  local said
+  for said in "takes 1080p, 1440p or 2160p, not 768p, so Cozy used 1080p." "takes 2 or 4, not 3, so Cozy used 2." "takes fast or full, not slow, so Cozy used the default."; do
+    grep -qF "$(jq -Rr '@json' <<< "$said" | sed 's/^"//; s/"$//')" "$OUT/choice.json" "$OUT/choice.ndjson" "$OUT/choice.err" 2> /dev/null \
+      || grep -qF "$said" "$OUT/choice.err" 2> /dev/null || check "choice: the run didn't say: $said"
+  done
+fi
+}
+
 # cl-883: an orbit mentioned by angle. A dropped video, turned to an orbit as its box's Orbit switch does (PATCH its version's
 # metadata), reaches a function as the frame at an angle, a picture, and as the frames turned between two, a clip:
 # `floor(angle / 360 × 48)`, wrapping past 360° and across 0°. Its frames are greys, frame n at 5n, so the function says which
@@ -432,7 +600,7 @@ if cell angles "$here/project/angles.py/angles" 'pictures:=["<angles_spin:120deg
 fi
 before=$(cozy --json run ls --limit 0 | jq '.runs | length')
 in_project "$RUN_PROJECT" --json run "$here/project/angles.py/angles" 'pictures:=["<angles_plain:120deg>"]' --on local > "$OUT/angles-plain.json" 2>&1 || code=$?
-{ [ "$code" != 0 ] && grep -q mention_not_orbit "$OUT/angles-plain.json" && grep -q 'turn on Orbit' "$OUT/angles-plain.json" \
+{ [ "$code" != 0 ] && grep -q mention_not_orbit "$OUT/angles-plain.json" && grep -q 'Turn on Orbit' "$OUT/angles-plain.json" \
   && [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ]; } \
   || check "angles: an angle of a video that isn't an orbit was not refused mention_not_orbit before any run (exit $code): $(tail -c 300 "$OUT/angles-plain.json")"
 }
@@ -596,6 +764,8 @@ AFTER='grep -c "name = \"e2e-weightless\"" uv.lock' DIR=weightless LOCK_FIXTURE=
 ls -d "$seen"/project/.vault-calcifer/code/*/tree/e2e_weightless > /dev/null 2>&1 || check "unseen lock: Calcifer holds no copy of the package in the project: $(ls "$seen/project/.vault-calcifer/code" 2> /dev/null | head -3)"
 # Publishing a project's package is an explicit export: it gets as far as the sign-in it needs.
 DIR=weightless refused_inside publish not_logged_in package publish
+# Its benchmarks come from this project's warm runs of it on a GPU (cl-1024): this CPU runner made none, so there's nothing to write.
+DIR=weightless refused_inside benchmarks no_benchmarks package benchmarks
 # A model installed from a project's file is an explicit export: it is the machine's.
 inside model --json model install ./tiny.safetensors local/e2e-unseen --source-format as-is --on local \
   && cozy --json model ls --on local | grep -q e2e-unseen || check "unseen model: local/e2e-unseen is not on local"
@@ -711,10 +881,10 @@ step "local code calling a published cozy package, locked at its run (cl-871)"
 [ -n "$LOCAL" ] || return 0
 local dir=$OUT/hub-dependency
 rm -rf "$dir"
-package_at "$dir" e2e_local_relay '"cozy-runtime>=0.45", "msgspec>=0.19", "minimax-h3-tools"' \
+package_at "$dir" e2e_local_relay '"cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19", "minimax-h3-tools>=0.1.0"' \
   "$(printf '\n[tool.uv.sources]\nminimax-h3-tools = { index = "tensorhub" }')" <<'PY'
-import minimax_h3_tools
 import msgspec
+from e2e_local_relay_calls import Text, echo
 
 from cozy_runtime.author import App, call
 
@@ -731,12 +901,14 @@ class Relayed(msgspec.Struct):
 
 
 async def relay(payload: Relay) -> Relayed:
-    echoed = await call(minimax_h3_tools.echo, payload=minimax_h3_tools.Text(text=payload.text))
+    echoed = await call(echo, Text(text=payload.text))
     return Relayed(text=echoed.text, release=echoed.release)
 
 
 app.entrypoint(relay, accelerator=False)
 PY
+cp "$here/relay/e2e_relay/echo_calls.py" "$dir/e2e_local_relay_calls.py"
+sed -i 's/only-include = \["e2e_local_relay.py"\]/only-include = ["e2e_local_relay.py", "e2e_local_relay_calls.py"]/' "$dir/pyproject.toml"
 cell hub-dependency "$dir/relay" "text=from the root index" || return 0
 grep -q '"text": *"from the root index"' "$OUT/hub-dependency.ndjson" && grep -q '"release": *"0.1.0"' "$OUT/hub-dependency.ndjson" \
   || check "hub dependency: the reply is not minimax-h3-tools 0.1.0's echo: $(tail -c 300 "$OUT/hub-dependency.ndjson")"
@@ -782,7 +954,7 @@ echo "rc floor: the open RC's newest Runtime is ${runtime:-unread}"
 grep -q '"status": *"published' "${E2E_RCFLOOR_PUBLISHED:-/dev/null}" 2> /dev/null \
   || check "rc floor: publishing e2e-rcfloor failed: $(tail -c 300 "${E2E_RCFLOOR_PUBLISHED:-/dev/null}" 2> /dev/null | tr '\n' ' ')"
 rm -rf "$src" && cp -r "$here/relay" "$src"
-sed -i -e 's/^name = "e2e-relay"$/name = "e2e-rcsource"/' -e 's/"cozy-runtime>=0.45"/"cozy-runtime>=0.47.0.dev0,<0.48"/' "$src/pyproject.toml"
+sed -i 's/^name = "e2e-relay"$/name = "e2e-rcsource"/' "$src/pyproject.toml"
 cell rc-floor-source "$src/relay" "text=from source" || check "rc floor: its source run failed: $(run_get "$OUT" rc-floor-source .reason.message | head -c 300)"
 grep -q 'cozy-runtime = ' "$src/pyproject.toml" && check "rc floor: its pyproject.toml took a Runtime source"
 if [ -f "$src/uv.lock" ] && [ -n "$runtime" ]; then
@@ -794,48 +966,88 @@ fi
 }
 
 # cl-952, se-128: an unversioned run takes the Hub's newest release its machine runs, installing it when the machine holds
-# an older one, and says so; a machine off the RC never takes a prerelease built for the RC's Runtime. isolated.sh publishes
-# e2e-held 0.1.0 and 0.2.0rc1, and e2e-newer 0.1.0 and 0.1.1. On the candidate, an RC build (`+dev`), local takes e2e-held
-# 0.2.0rc1 and holds only that. Put on a released Runtime by hand, it runs 0.1.0, never the prerelease it holds (sdxl
-# 0.10.0rc1 failed to import on 0.45.0, 47170). Holding e2e-newer 0.1.0 (asked by name), an unversioned run takes 0.1.1
-# and says it's newer (47617 stayed on minimax-h3 0.11.1 after 0.12.0rc2).
+# an older one, and says so. isolated.sh publishes e2e-held 0.1.0 and 0.2.0rc1, and e2e-newer 0.1.0 and 0.1.1. Put on a released
+# Runtime by hand, local refuses a project's run, naming the update (cl-1055). Holding e2e-newer 0.1.0 (asked by name), an
+# unversioned run takes 0.1.1 and says it's newer (47617 stayed on minimax-h3 0.11.1 after 0.12.0rc2).
+#
+# cl-1109 (coordinator, 11-16; xs-203's pod-session 43961722220 installed the Hub's minimax-h3 0.13.0rc2 on RC machines while the
+# palette said 0.12.0, and every H3 run failed): "an unpinned or range request never resolves to a prerelease; only an exact pin
+# (or an explicit opt-in) selects one" (Paul, 11-13: no test prereleases; finals only at promotion). isolated.sh publishes the tool
+# e2e-final 0.1.0 and 0.2.0rc1. On local, an RC build: the palette lists 0.1.0; an unpinned install installs 0.1.0, and the
+# palette still lists it; an unpinned run takes 0.1.0; a run pinned to 0.2.0rc1 takes it, and the palette, holding both, still
+# lists 0.1.0.
 held_prerelease() {
-step "an unversioned run takes the newest release its machine runs; off the RC never a prerelease (cl-952, se-128)"
+step "an unversioned run or install takes the newest final, a prerelease only when pinned; held below this cozy's Runtime minor, a project's run is refused (cl-952, se-128, cl-1055, cl-1109)"
 [ -n "$LOCAL" ] || return 0
 [ -n "${E2E_HELD:-}" ] || { check "held prerelease: isolated.sh published no e2e-held: ${E2E_HELD_REFUSED:-not seeded}"; return; }
-local released=${HELD_RUNTIME:-0.45.1} was
+local released=${HELD_RUNTIME:-0.45.1} was code=0
 machine_ready
+if [ -z "${E2E_FINAL:-}" ]; then check "unpinned final: isolated.sh published no e2e-final: ${E2E_FINAL_REFUSED:-not seeded}"
+else unpinned_final; fi
 case $(jq -r '.status.runtime // empty' "$OUT/machine.json") in *+dev*) ;; *) echo "held prerelease: local isn't on an RC build"; return 0 ;; esac
 was=${CAND_RT:-$(jq -r '.status.runtime // empty' "$OUT/machine.json")}
-if cell held-prerelease-rc "$E2E_HELD/relay" "text=on the RC"; then
-  grep -q '0\.2\.0rc1' "$OUT/held-prerelease-rc.ndjson" \
-    || check "held prerelease: local on an RC build didn't take 0.2.0rc1: $(grep -o '"target": *"[^"]*"' "$OUT/held-prerelease-rc.ndjson" | head -1)"
+# Unversioned, in words as a person reads it: the run says what it moved to. On the RC's Runtime: a project's run needs this cozy's
+# Runtime minor (cl-1055).
+if cell held-newer-old "$E2E_NEWER/relay@0.1.0" "text=asked 0.1.0"; then
+  in_project "$RUN_PROJECT" run "$E2E_NEWER/relay" text=newer --on local > "$OUT/held-newer.out" 2> "$OUT/held-newer.err" \
+    || check "held prerelease: the unversioned e2e-newer run failed: $(tail -c 300 "$OUT/held-newer.err")"
+  grep -q 'e2e-newer 0.1.1, newer than the 0.1.0 on local' "$OUT/held-newer.err" \
+    || check "held prerelease: holding e2e-newer 0.1.0, the run didn't say it takes 0.1.1: $(tail -c 300 "$OUT/held-newer.err")"
 fi
 cozy --json machine update local --runtime "$released" -y > "$OUT/held-update.json" 2>&1 \
   || { check "held prerelease: local refused Runtime $released: $(tail -c 300 "$OUT/held-update.json")"; return; }
 machine_ready
-if cell held-prerelease "$E2E_HELD/relay" "text=off the RC"; then
-  grep -q 'relay@0\.1\.0"' "$OUT/held-prerelease.ndjson" && ! grep -q '0\.2\.0rc' "$OUT/held-prerelease.ndjson" \
-    || check "held prerelease: local on Runtime $released didn't run e2e-held 0.1.0: $(grep -o '"target": *"[^"]*"' "$OUT/held-prerelease.ndjson" | head -1)"
-fi
-# Unversioned, in words as a person reads it: the run says what it moved to.
-if cell held-newer-old "$E2E_NEWER/relay@0.1.0" "text=asked 0.1.0"; then
-  in_project "$RUN_PROJECT" run "$E2E_NEWER/relay" text=newer --on local > "$OUT/held-newer.out" 2> "$OUT/held-newer.err" \
-    || check "held prerelease: the unversioned e2e-newer run failed: $(tail -c 300 "$OUT/held-newer.err")"
-  grep -q 'e2e-newer 0.1.1, newer than local.s 0.1.0' "$OUT/held-newer.err" \
-    || check "held prerelease: holding e2e-newer 0.1.0, the run didn't say it takes 0.1.1: $(tail -c 300 "$OUT/held-newer.err")"
-fi
+# Held on a release below this cozy's Runtime minor, off the RC: a project's run is refused naming the update, and runs nothing.
+in_project "$RUN_PROJECT" --json run "$E2E_HELD/relay" "text=off the RC" --on local > "$OUT/held-prerelease.ndjson" 2> "$OUT/held-prerelease.err" || code=$?
+[ "$code" != 0 ] && grep -q '"runtime_held"' "$OUT/held-prerelease.ndjson" "$OUT/held-prerelease.err" \
+  && grep -q 'cozy machine update local' "$OUT/held-prerelease.ndjson" "$OUT/held-prerelease.err" \
+  || check "held prerelease: held on Runtime $released, a project's e2e-held run wasn't refused runtime_held naming cozy machine update local: exit $code $(tail -c 300 "$OUT/held-prerelease.ndjson") $(tail -c 300 "$OUT/held-prerelease.err")"
 cozy --json machine update local --runtime "$was" -y > "$OUT/held-back.json" 2>&1 \
   || check "held prerelease: local refused Runtime $was again: $(tail -c 300 "$OUT/held-back.json")"
 machine_ready
 }
 
+# unpinned_final: cl-1109's checks (held_prerelease's header), on e2e-final.
+unpinned_final() {
+local holder=$HOME/.cozy/calcifer/calcifer.lock.holder tool=$E2E_FINAL/echo said
+# listed <name>: the releases the palette (`GET /v1/tools`) lists e2e-final at on local, its answer in $OUT/<name>.json; up to 30 s for it to list it.
+listed() {
+  local _
+  for _ in 1 2 3 4 5 6; do
+    curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$(jq -r .address "$holder")/v1/tools?on=local" > "$OUT/$1.json" 2>&1 \
+      && J --arg id "$tool" '[.tools[] | select(.id == $id)] != []' "$OUT/$1.json" && break
+    sleep 5
+  done
+  jq -c --arg id "$tool" '[.tools[]? | select(.id == $id) | .release] | unique' "$OUT/$1.json" 2> /dev/null || head -c 300 "$OUT/$1.json"
+}
+said=$(listed final-palette)
+[ "$said" = '["0.1.0"]' ] || check "unpinned final: before an install, the palette lists $tool at $said, not 0.1.0"
+cozy --json package install "$E2E_FINAL" --on local > "$OUT/final-install.ndjson" 2> "$OUT/final-install.err" \
+  || check "unpinned final: package install $E2E_FINAL --on local failed: $(tail -c 300 "$OUT/final-install.err")"
+cozy --json package ls --on local > "$OUT/final-installed.json" 2>&1
+said=$(jq -c --arg p "$E2E_FINAL" '[.. | objects | select(.package? == $p) | .release] | unique' "$OUT/final-installed.json" 2> /dev/null)
+[ "$said" = '["0.1.0"]' ] || check "unpinned final: an unpinned install put $E2E_FINAL $said on local, not 0.1.0: $(tail -c 300 "$OUT/final-install.err")"
+said=$(listed final-palette-installed)
+[ "$said" = '["0.1.0"]' ] || check "unpinned final: after an unpinned install, the palette lists $tool at $said, not 0.1.0"
+# ran <name>: the release run <name>'s reply says ran (the package echoes its own).
+ran() { grep -o '"release": *"[^"]*"' "$OUT/$1.ndjson" | tail -1 | cut -d'"' -f4; }
+if cell final-unpinned "$tool" "text=unpinned"; then
+  [ "$(ran final-unpinned)" = 0.1.0 ] || check "unpinned final: an unpinned run ran $(ran final-unpinned) ($(run_get "$OUT" final-unpinned .target)), not 0.1.0"
+fi
+if cell final-pinned "$tool@0.2.0rc1" "text=pinned"; then
+  [ "$(ran final-pinned)" = 0.2.0rc1 ] || check "unpinned final: a run pinned to 0.2.0rc1 ran $(ran final-pinned) ($(run_get "$OUT" final-pinned .target))"
+fi
+said=$(listed final-palette-both)
+[ "$said" = '["0.1.0"]' ] || check "unpinned final: holding 0.1.0 and 0.2.0rc1, the palette lists $tool at $said, not 0.1.0"
+}
+
 # cl-952: a machine runs only a package release its Runtime can run. Publishing refused isolated.sh's e2e-lies, whose floor
 # cozy-runtime>=0.44 lacks the `call` it imports (minimax-h3 0.12.0rc3 declared 0.45 and imported the RC's `preview`: run
-# 47791). e2e-floor 0.2.0 needs cozy-runtime>=0.45.1: local held on 0.45.0 by hand refuses it, naming `cozy machine update
-# local`, and still does after Calcifer restarts (the hold is kept in its store); it runs 0.1.0 named; with nothing named, `cozy machine update local` moves it to its Hub's pin (0.45.0, this shard's
-# isolated Hub: e2e.yaml), which holds nothing, and the unversioned run then moves local to the newest 0.45 release and runs
-# 0.2.0, saying so. e2e-capped 0.2.0 (<0.45.1) then runs as 0.1.0: a machine moves only up.
+# 47791). A project's run on local also needs this cozy's Runtime minor (cl-1055). Held on 0.45.0 by hand, local refuses
+# e2e-floor 0.2.0 (cozy-runtime>=0.45.1) and 0.1.0 alike, naming `cozy machine update local`, and still does after Calcifer
+# restarts (the hold is kept in its store); with nothing named, `cozy machine update local` moves it to its Hub's pin (0.45.0, this
+# shard's isolated Hub: e2e.yaml), which holds nothing, and a project's run then moves it to this cozy's own Runtime, saying so.
+# Held on a release of the minor, a cap binds: e2e-capped 0.2.0 (<0.47.0.dev0) runs as 0.1.0, as a machine moves only up.
 runtime_floor() {
 step "a package release runs on a Runtime that meets its floor: publishing refuses a dishonest one; a held machine refuses, another upgrades (cl-952)"
 [ -n "$LOCAL" ] || return 0
@@ -882,7 +1094,19 @@ in_project "$RUN_PROJECT" --json run "$E2E_FLOOR/relay" text=held-again --on loc
   || check "runtime floor: after a Calcifer restart, local held on 0.45.0 wasn't refused runtime_held: exit $code $(tail -c 300 "$OUT/floor-held-again.ndjson")"
 jq -e '.status.runtime == "0.45.0"' "$OUT/machine.json" > /dev/null \
   || check "runtime floor: after a Calcifer restart, held local runs $(jq -r .status.runtime "$OUT/machine.json"), not 0.45.0"
-cell floor-held-older "$E2E_FLOOR/relay@0.1.0" "text=asked 0.1.0" || true
+# A project's run on this computer needs this cozy's Runtime minor (cl-1055): held below it, even a release its own floor admits
+# (e2e-floor 0.1.0) is refused naming the update, and e2e-scratch's probe runs nowhere: no file of it outside its project.
+code=0
+in_project "$RUN_PROJECT" --json run "$E2E_FLOOR/relay@0.1.0" "text=asked 0.1.0" --on local > "$OUT/floor-held-older.ndjson" 2> "$OUT/floor-held-older.err" || code=$?
+[ "$code" != 0 ] && grep -q '"runtime_held"' "$OUT/floor-held-older.ndjson" "$OUT/floor-held-older.err" && grep -q 'cozy machine update local' "$OUT/floor-held-older.ndjson" "$OUT/floor-held-older.err" \
+  || check "runtime floor: held on 0.45.0, e2e-floor 0.1.0 in a project wasn't refused runtime_held naming cozy machine update local: exit $code $(tail -c 300 "$OUT/floor-held-older.ndjson") $(tail -c 300 "$OUT/floor-held-older.err")"
+local marker=CL1055_HELD_$RANDOM$RANDOM
+code=0
+in_project "$RUN_PROJECT" --json run e2e-scratch/probe "marker=$marker" --on local > "$OUT/floor-held-probe.ndjson" 2> "$OUT/floor-held-probe.err" || code=$?
+[ "$code" != 0 ] && grep -q '"runtime_held"' "$OUT/floor-held-probe.ndjson" "$OUT/floor-held-probe.err" \
+  || check "runtime floor: held on 0.45.0, e2e-scratch's probe in a project wasn't refused runtime_held: exit $code $(tail -c 300 "$OUT/floor-held-probe.ndjson")"
+! grep -rqs "$marker" "$HOME/.cozy/machine" "$RUN_PROJECT/.vault-machine" \
+  || check "runtime floor: the refused probe wrote its marker: $(grep -rls "$marker" "$HOME/.cozy/machine" "$RUN_PROJECT/.vault-machine" | head -3)"
 cozy --json machine update local -y > "$OUT/floor-unhold.json" 2>&1 \
   || { check "runtime floor: cozy machine update local (its Hub's pin) failed: $(tail -c 300 "$OUT/floor-unhold.json")"; return; }
 machine_ready
@@ -920,18 +1144,133 @@ if [ -n "$td" ]; then
 else
   echo "runtime floor: rc-$rc holds no cozy for linux x86_64: an RC pin isn't asked here"
 fi
-in_project "$RUN_PROJECT" run "$E2E_FLOOR/relay" text=upgrade --on local > "$OUT/floor-upgrade.out" 2> "$OUT/floor-upgrade.err" \
-  || check "runtime floor: the unversioned e2e-floor run on local (0.45.0, not held) failed: $(tail -c 400 "$OUT/floor-upgrade.err")"
-grep -q "upgrading local.s Runtime 0.45.0 → 0.45.[1-9][0-9]* for .*e2e-floor 0.2.0" "$OUT/floor-upgrade.err" \
-  || check "runtime floor: the run didn't say it upgrades local's Runtime for e2e-floor 0.2.0: $(tail -c 400 "$OUT/floor-upgrade.err")"
+# Not held, on the Hub's 0.45.0: a project's run moves local up to this cozy's Runtime minor first, saying so (cl-1055), and its
+# call's temporary file is in its project's scratch.
+in_project "$RUN_PROJECT" run e2e-scratch/probe "marker=CL1055_MOVED_$RANDOM" --on local > "$OUT/floor-upgrade.out" 2> "$OUT/floor-upgrade.err" \
+  || check "runtime floor: a project's probe run on local (0.45.0, not held) failed: $(tail -c 400 "$OUT/floor-upgrade.err")"
+grep -q "Updating local.s Runtime from 0.45.0 to 0.4[7-9][^ ]* for this project" "$OUT/floor-upgrade.err" \
+  || check "runtime floor: the run didn't say it upgrades local's Runtime for this project: $(tail -c 400 "$OUT/floor-upgrade.err")"
+local temporary
+temporary=$(awk '$1 == "temporary" { print $2 }' "$OUT/floor-upgrade.out" | tail -1)
+case $temporary in
+  "$(realpath "$RUN_PROJECT")"/.vault-machine/scratch/*) ;;
+  *) check "runtime floor: the moved run's temporary file was ${temporary:-nowhere said}, not in its project's scratch" ;;
+esac
 machine_ready
-jq -e '.status.runtime | test("^0\\.45\\.([1-9]|[1-9][0-9])$")' "$OUT/machine.json" > /dev/null \
-  || check "runtime floor: after its upgrade local runs $(jq -r .status.runtime "$OUT/machine.json"), not a 0.45 release from 0.45.1"
-# e2e-capped 0.2.0 needs cozy-runtime<0.45.1: local never moves down, so it runs 0.1.0 and says why.
+jq -e '.status.runtime | test("^0\\.4[7-9]\\.")' "$OUT/machine.json" > /dev/null \
+  || check "runtime floor: after its upgrade local runs $(jq -r .status.runtime "$OUT/machine.json"), not this cozy's Runtime minor"
+# On the minor, e2e-floor 0.2.0 (cozy-runtime>=0.45.1) runs as it is.
+cell floor-on-minor "$E2E_FLOOR/relay" "text=on the minor" || true
+# A cap binds only on a release: a dev build meets every cap (api::release::runs; the RC's builds run packages capped below its
+# minor, cl-922), and until a release of this minor is on PyPI every Runtime a project's run can take is a dev build. So local is held
+# by hand on the candidate's Runtime as a release of the minor (minor_release). There a named older release its Runtime admits runs
+# (e2e-floor 0.1.0); e2e-capped 0.2.0 (cozy-runtime<0.47.0.dev0) can't run, and local never moves down, so the run takes 0.1.0 and
+# says why; and off the RC, an unversioned run never takes a prerelease (e2e-held 0.1.0, never 0.2.0rc1: se-128).
+local release
+release=$(minor_release) || { check "runtime floor: no release of the minor to hold local on: $release"; return; }
+cozy --json machine update local --runtime "$release" -y > "$OUT/floor-release.json" 2>&1 \
+  || { check "runtime floor: local refused the candidate's Runtime as a release ($release): $(tail -c 300 "$OUT/floor-release.json")"; return; }
+machine_ready
+jq -e '.status.runtime | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")' "$OUT/machine.json" > /dev/null \
+  || check "runtime floor: held on $release, local runs $(jq -r .status.runtime "$OUT/machine.json"), not a release"
+if cell floor-release-older "$E2E_FLOOR/relay@0.1.0" "text=held, asked 0.1.0"; then
+  grep -q 'relay@0\.1\.0"' "$OUT/floor-release-older.ndjson" \
+    || check "runtime floor: held on a release of the minor, e2e-floor 0.1.0 named didn't run as 0.1.0: $(grep -o '"target": *"[^"]*"' "$OUT/floor-release-older.ndjson" | head -1)"
+fi
 in_project "$RUN_PROJECT" run "$E2E_CAPPED/relay" text=capped --on local > "$OUT/floor-capped.out" 2> "$OUT/floor-capped.err" \
   || check "runtime floor: the unversioned e2e-capped run failed: $(tail -c 400 "$OUT/floor-capped.err")"
-grep -q "e2e-capped 0.2.0 needs cozy-runtime.*no Runtime it can take does: this run takes 0.1.0" "$OUT/floor-capped.err" \
-  || check "runtime floor: e2e-capped didn't say it takes 0.1.0 for 0.2.0's cap: $(tail -c 400 "$OUT/floor-capped.err")"
+grep -q "e2e-capped 0.2.0 needs cozy-runtime.*no Runtime it can move to does, so this run uses 0.1.0" "$OUT/floor-capped.err" \
+  || check "runtime floor: on a release of the minor, e2e-capped didn't say it takes 0.1.0 for 0.2.0's cap: $(tail -c 400 "$OUT/floor-capped.err")"
+if cell floor-release-held "$E2E_HELD/relay" "text=off the RC"; then
+  grep -q 'relay@0\.1\.0"' "$OUT/floor-release-held.ndjson" && ! grep -q '0\.2\.0rc' "$OUT/floor-release-held.ndjson" \
+    || check "runtime floor: off the RC on a release of the minor, the unversioned e2e-held run didn't take 0.1.0: $(grep -o '"target": *"[^"]*"' "$OUT/floor-release-held.ndjson" | head -1)"
+fi
+}
+
+# cl-1109 (coordinator, 11-16): a model asked with no release takes "finals first, else the newest", the same rule as packages, so
+# one rule everywhere. xs-203 met it on packages: RC machines took minimax-h3 0.13.0rc2 over the 0.12.0 final. isolated.sh publishes
+# e2e/final-model 0.1.0 and then 0.2.0-rc.1. Calcifer's `model show` and `model ls`, and the Hub's resolution (`model install` on
+# local; the TensorFS SDK online) take 0.1.0; the SDK takes 0.2.0-rc.1 when it names it; offline, holding both, TensorFS's own
+# resolution takes 0.1.0.
+final_model() {
+step "a model asked with no release takes its newest final, a prerelease label only when named (cl-1109)"
+[ -n "$LOCAL" ] || return 0
+local model=e2e/final-model dir=$OUT/final-model with said
+mkdir -p "$dir"
+cozy --json model show "$model" > "$dir/show.json" 2>&1
+said=$(jq -r '.release // empty' "$dir/show.json" 2> /dev/null)
+[ "$said" = 0.1.0 ] || check "final model: model show $model says ${said:-no release}, not 0.1.0: $(head -c 300 "$dir/show.json")"
+cozy --json model ls final-model > "$dir/ls.json" 2>&1
+said=$(jq -c --arg m "$model" '[.models[]? | select(.model == $m) | .release]' "$dir/ls.json" 2> /dev/null)
+[ "$said" = '["0.1.0"]' ] || check "final model: model ls lists $model at ${said:-nothing}, not 0.1.0: $(head -c 300 "$dir/ls.json")"
+cozy --json model install "$model" --on local > "$dir/install.ndjson" 2>&1 \
+  || check "final model: model install $model --on local failed: $(tail -c 300 "$dir/install.ndjson")"
+cozy --json model ls --on local > "$dir/installed.json" 2>&1
+said=$(jq -c --arg m "$model" '[.models[]? | select(.model == $m) | .release] | unique' "$dir/installed.json" 2> /dev/null)
+[ "$said" = '["0.1.0"]' ] || check "final model: an unpinned install put $model ${said:-nothing} on local, not 0.1.0"
+# The TensorFS SDK, against this Hub, in a store of its own.
+[ -n "${CAND_TFS:-}" ] || { echo "final model: the SDK's part skipped, this run names no TensorFS"; return 0; }
+if [ -f "$CAND_TFS" ]; then with=$CAND_TFS; else with=tensorfs==${CAND_TFS#v}; fi
+# This Hub and its store are on loopback: declared local for the SDK as for cozy (`local_origins`).
+TENSORFS_LOCAL_ORIGINS=${COZY_LOCAL_ORIGINS:-} uv run -q --no-project --with "$with" python -I - "$model" "$dir/store" > "$dir/sdk.json" 2> "$dir/sdk.err" <<'PY' \
+  || { check "final model: the TensorFS SDK failed: $(tail -n 1 "$dir/sdk.err" | cut -c1-300)"; return; }
+import json, os, ssl, sys
+import tensorfs
+ca = os.environ.get("COZY_TEST_HUB_CA")
+if ca and os.path.isfile(ca):
+    with open(ca) as pem:
+        tensorfs.configure(ca_der=ssl.PEM_cert_to_DER_cert(pem.read()))
+model, store = sys.argv[1], sys.argv[2]
+def release(**asked):
+    with tensorfs.open(model, cache_dir=store, **asked) as checkpoint:
+        return checkpoint.release
+said = {"online": release(), "pinned": release(release="0.2.0-rc.1")}
+release(release="0.1.0")
+said["offline"] = release(local_files_only=True)
+print(json.dumps(said))
+PY
+echo "final model: the SDK: $(cat "$dir/sdk.json")"
+J '.online == "0.1.0"' "$dir/sdk.json" || check "final model: the SDK online took $(jq -r .online "$dir/sdk.json"), not 0.1.0"
+J '.pinned == "0.2.0-rc.1"' "$dir/sdk.json" || check "final model: the SDK naming 0.2.0-rc.1 took $(jq -r .pinned "$dir/sdk.json")"
+J '.offline == "0.1.0"' "$dir/sdk.json" || check "final model: offline, holding 0.1.0 and 0.2.0-rc.1, TensorFS took $(jq -r .offline "$dir/sdk.json"), not 0.1.0"
+}
+
+# minor_release: the candidate's Runtime wheel as a release of its minor (0.47.0.dev0+dev.g… as 0.47.0), for a cell that needs a cap
+# to bind; made once, its path said. Fails, saying why, without a candidate wheel.
+minor_release() {
+  local dir=$OUT/minor-release made
+  [ -f "${CAND_RT:-}" ] || { echo "no candidate Runtime wheel (${CAND_RT:-none})"; return 1; }
+  made=$(find "$dir" -name '*.whl' -print -quit 2> /dev/null) || made=
+  [ -n "$made" ] || made=$(mkdir -p "$dir" && python3 -I - "$CAND_RT" "$dir" <<'PY'
+import base64, hashlib, re, sys, zipfile
+from pathlib import Path
+source, out = Path(sys.argv[1]), Path(sys.argv[2])
+name, version, rest = source.name.split("-", 2)
+release = re.match(r"\d+(?:\.\d+)*", version).group(0)
+target = out / f"{name}-{release}-{rest}"
+with zipfile.ZipFile(source) as wheel:
+    info = next(n for n in wheel.namelist() if n.endswith(".dist-info/METADATA")).rsplit("/", 1)[0]
+    renamed = f"{name}-{release}.dist-info"
+    record = []
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as made:
+        for item in wheel.infolist():
+            if item.filename == f"{info}/RECORD":
+                continue
+            data = wheel.read(item)
+            path = renamed + item.filename[len(info):] if item.filename.startswith(info + "/") else item.filename
+            if path == f"{renamed}/METADATA":
+                data = re.sub(rb"(?m)^Version: .*$", b"Version: " + release.encode(), data, count=1)
+            entry = zipfile.ZipInfo(path, item.date_time)
+            entry.external_attr, entry.compress_type = item.external_attr, zipfile.ZIP_DEFLATED
+            made.writestr(entry, data)
+            digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+            record.append(f"{path},sha256={digest},{len(data)}")
+        record.append(f"{renamed}/RECORD,,")
+        made.writestr(f"{renamed}/RECORD", "\n".join(record) + "\n")
+print(target)
+PY
+) || { echo "the candidate's wheel $CAND_RT didn't repack as a release"; return 1; }
+  echo "$made"
 }
 
 # cr-276: a package calling another package's function whose result holds a `Latents` field, as orbit calls minimax-h3's
@@ -944,7 +1283,7 @@ step "a child result holding Latents, in another package's caller (cr-276)"
 [ -n "$LOCAL" ] || return 0
 local dir=$OUT/child-latents
 rm -rf "$dir"
-package_at "$dir/maker" e2e_latents_maker '"cozy-runtime>=0.45", "msgspec>=0.19"' <<'PY'
+package_at "$dir/maker" e2e_latents_maker '"cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19"' <<'PY'
 import hashlib
 from typing import cast
 
@@ -973,13 +1312,13 @@ def shot(payload: Ask, out: Outputs) -> Shot:
     kept = out.save_bytes(data, media_type="application/octet-stream")  # a saved file fills a Latents field
     return Shot(clip=clip, latents=cast(Latents, kept), sha256=f"sha256:{hashlib.sha256(data).hexdigest()}")
 PY
-package_at "$dir/caller" e2e_latents_caller '"cozy-runtime>=0.45", "msgspec>=0.19", "e2e-latents-maker"' \
+package_at "$dir/caller" e2e_latents_caller '"cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19", "e2e-latents-maker"' \
   "$(printf '\n[tool.uv.sources]\ne2e-latents-maker = { path = "../maker" }')" <<'PY'
 import hashlib
 from importlib.metadata import version
 
-import e2e_latents_maker
 import msgspec
+from e2e_latents_calls import Ask as MakerAsk, shot
 
 from cozy_runtime.author import App, call
 
@@ -998,18 +1337,20 @@ class Got(msgspec.Struct):
 
 
 async def relay(payload: Ask) -> Got:
-    shot = await call(e2e_latents_maker.shot, payload=e2e_latents_maker.Ask(text=payload.text))
-    data = b"" if shot.latents is None else shot.latents.read_bytes()
+    made = await call(shot, MakerAsk(text=payload.text))
+    data = b"" if made.latents is None else made.latents.read_bytes()
     return Got(
-        latents=type(shot.latents).__name__,
-        clip=type(shot.clip).__name__,
-        same_bytes=f"sha256:{hashlib.sha256(data).hexdigest()}" == shot.sha256,
+        latents=type(made.latents).__name__,
+        clip=type(made.clip).__name__,
+        same_bytes=f"sha256:{hashlib.sha256(data).hexdigest()}" == made.sha256,
         runtime=version("cozy-runtime"),
     )
 
 
 app.entrypoint(relay, accelerator=False)
 PY
+cp "$here/latents_maker_calls.py" "$dir/caller/e2e_latents_calls.py"
+sed -i 's/only-include = \["e2e_latents_caller.py"\]/only-include = ["e2e_latents_caller.py", "e2e_latents_calls.py"]/' "$dir/caller/pyproject.toml"
 # No uv.lock: cozy locks it at the run, its path dependency included, and writes the lock beside it (cl-878).
 cell child-latents "$dir/caller/relay" "text=latents" || return 0
 grep -q 'directory = "../maker"' "$dir/caller/uv.lock" 2> /dev/null \
@@ -1198,22 +1539,135 @@ cozy --json run ls --state canceled > "$OUT/canceled.json" && J --argjson n "${n
   || check "run ls --state canceled: wrong runs"
 }
 
-# After `basics`: its model installs are runs of zhengpeng7/birefnet.
+# After `basics`: its runs' targets filter (its model installs are jobs, no project's runs: cl-1028).
 run_filters() {
 step "run ls filters"
-cozy --json run ls --all --package zhengpeng7/birefnet > "$OUT/by-package.json" && J '(.runs | length > 0) and all(.runs[]; .target | startswith("zhengpeng7/birefnet"))' "$OUT/by-package.json" \
-  || check "run ls --package zhengpeng7/birefnet: none listed, or others listed"
+local prefix
+prefix=$(cozy --json run ls --all --limit 1 | jq -r '.runs[0].target // empty | split("@")[0]') || prefix=
+[ -n "$prefix" ] && cozy --json run ls --all --package "$prefix" > "$OUT/by-package.json" \
+  && J --arg p "$prefix" '(.runs | length > 0) and all(.runs[]; .target | startswith($p))' "$OUT/by-package.json" \
+  || check "run ls --package ${prefix:-?}: none listed, or others listed"
 cozy --json run ls --on local > "$OUT/by-machine.json" && J '(.runs | length > 0) and all(.runs[]; .machine == "local")' "$OUT/by-machine.json" \
   || check "run ls --on local: other machines listed"
 cozy --json run ls --limit 1 > "$OUT/limit.json" && J '(.runs | length) == 1' "$OUT/limit.json" || check "run ls --limit 1: not one run"
 }
 
+# cl-998: a command a run carries out ends a failed run as a typed refusal: after the run's events (`--json`), the envelope with
+# the run's reason code and its next step. Each run here fails on the machine: an install whose build has no module, a model file
+# whose tensor runs past its end, the same file uploaded.
+# run_refused <dir> <name> <exit code>: a failed run among its events, its exit non-zero, and its last line the envelope with that run's code.
+run_refused() {
+[ "$3" != 0 ] || check "run failures: $2 exited 0"
+python3 - "$1/$2.ndjson" <<'PY' || check "run failures: $2 isn't a typed refusal: $(tail -c 500 "$1/$2.ndjson") $(tail -c 300 "$1/$2.err")"
+import json, sys
+lines = []
+for line in open(sys.argv[1]):
+  try:
+      lines.append(json.loads(line))
+  except ValueError:
+      pass
+failed = [line["run"] for line in lines if isinstance(line, dict) and line.get("type") in ("run.failed", "run.canceled")]
+assert failed, "no failed run among its events"
+code = (failed[-1].get("reason") or {}).get("code") or "run_failed"
+error = (lines[-1] if isinstance(lines[-1], dict) else {}).get("error") or {}
+assert error.get("code") == code, f"its envelope says {error.get('code')!r}, its run {code!r}"
+assert error.get("next"), "its envelope names no next step"
+PY
+}
+
+run_failures() {
+[ -n "$LOCAL" ] || return 0
+step "a failed run's command is a typed refusal (cl-998)"
+local root=$OUT/run-failures project bad account code
+project=$root/project bad=$root/bad.safetensors
+mkdir -p "$root"
+cozy --json new --unencrypted "$project" > "$root/new.json" 2>&1 || { check "run failures: cozy new: $(tail -c 300 "$root/new.json")"; return 0; }
+# package install: its code builds no module (`uv pip install --editable` fails on the machine; uv lock, here, doesn't build it).
+cp -r "$here/weightless" "$root/nomodule"
+sed -i 's/^module-name = "e2e_weightless"/module-name = "e2e_no_such_module"/' "$root/nomodule/pyproject.toml"
+sed -i 's/^name = "e2e-weightless"/name = "e2e-no-module"/' "$root/nomodule/pyproject.toml"
+code=0; (cd "$project" && cozy --json package install "$root/nomodule" --on local) > "$root/install.ndjson" 2> "$root/install.err" || code=$?
+run_refused "$root" install "$code"
+# model install: a .safetensors file whose one tensor runs past its end.
+python3 - "$bad" <<'PY'
+import json, struct, sys
+header = json.dumps({"w": {"dtype": "F32", "shape": [1024], "data_offsets": [0, 4096]}}).encode()
+open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header)
+PY
+code=0; cozy --json model install "$bad" local/e2e-cl998-bad --on local > "$root/download.ndjson" 2> "$root/download.err" || code=$?
+run_refused "$root" download "$code"
+# model upload: the same file, signed in to the suite's Hub, then signed out again.
+if [ -z "${E2E_HUB_LOG:-}" ] || [ -z "${E2E_HUB_EMAIL:-}" ]; then
+  check "run failures: e2e/isolated.sh named no Hub log or email to sign in with"
+elif signin "$E2E_HUB_EMAIL" > "$root/login.json"; then
+  account=$(cozy --json whoami | jq -r '.account // empty')
+  code=0; cozy --json model upload "$bad" "${account:-e2e}/cl998-bad-$RANDOM" --lane bf16 --on local > "$root/upload.ndjson" 2> "$root/upload.err" || code=$?
+  run_refused "$root" upload "$code"
+  cozy --json logout > "$root/logout.json" 2>&1 || check "run failures: logout: $(tail -c 300 "$root/logout.json")"
+else
+  check "run failures: cozy login failed: $(tail -c 300 "$root/login.json")"
+fi
+}
+
+# cl-1083, from #3423's review: "`cozy model quantize` outside a project is now allowed but no cell runs it to completion". Signed in to
+# the suite's Hub: the tensorfs gate's two-stack model (release-gate/suites/tensorfs/multi-conversion, CPU only) made by its `source`
+# in a project and uploaded as bf16, then quantized to int8 from outside any project, as one of Calcifer's jobs on `local` (job type
+# `quantize`, no project's run). The lane's commit is read back from the Hub by `inspect`, in the project: every weight encoded
+# int8.convrot and near the source, every bias the source's bytes.
+quantize_outside() {
+[ -n "$LOCAL" ] || return 0
+step "cozy model quantize outside a project, carried out to the end (cl-1083)"
+local root=$OUT/quantize-outside seed=$((RANDOM % 9000 + 1000)) code=0 account model made bf16 int8 job
+local pkg=$root/ci-multi-conversion project=$root/project outside=$root/outside
+rm -rf "$root" && mkdir -p "$outside" && cp -r "$here/../../release-gate/suites/tensorfs/multi-conversion" "$pkg" \
+  || { check "quantize outside: no copy of the multi-conversion package"; return 0; }
+[ -n "${E2E_HUB_LOG:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] || { check "quantize outside: e2e/isolated.sh named no Hub log or email to sign in with"; return 0; }
+signin "$E2E_HUB_EMAIL" > "$root/login.json" || { check "quantize outside: cozy login failed: $(tail -c 300 "$root/login.json")"; return 0; }
+account=$(cozy --json whoami | jq -r '.account // empty' || true)
+model=${account:-e2e}/cl1083-two-stacks-$seed
+cozy --json new --unencrypted "$project" > "$root/new.json" 2>&1 || { check "quantize outside: cozy new: $(tail -c 300 "$root/new.json")"; cozy --json logout > /dev/null 2>&1; return 0; }
+# The bf16 source, made in the project and uploaded from its run.
+in_project "$project" --json run "$pkg/source" "seed:=$seed" --on local > "$root/source.ndjson" 2> "$root/source.err" \
+  || { check "quantize outside: the source run failed: $(tail -c 300 "$root/source.ndjson") $(tail -c 200 "$root/source.err")"; cozy --json logout > /dev/null 2>&1; return 0; }
+made=$(grep '^{' "$root/source.ndjson" | jq -rs '[.. | objects | select(.name? and (.name | test("^[A-Z0-9]+-[0-9]+$")) and .status? == "completed") | .name] | last // empty' || true)
+in_project "$project" --json model upload "run:$made#model" "$model" --lane bf16 --on local -y > "$root/upload.ndjson" 2> "$root/upload.err" \
+  || { check "quantize outside: uploading run $made's model as $model failed: $(tail -c 300 "$root/upload.ndjson") $(tail -c 200 "$root/upload.err")"; cozy --json logout > /dev/null 2>&1; return 0; }
+bf16=$(grep '^{' "$root/upload.ndjson" | jq -rs --arg m "$model" '[.. | objects | select(.published?.destination? == $m) | .published.commit] | last // empty' || true)
+[ -n "$bf16" ] || { check "quantize outside: the upload named no commit of $model: $(tail -c 400 "$root/upload.ndjson")"; cozy --json logout > /dev/null 2>&1; return 0; }
+# The quantize, from a folder in no project.
+(cd "$outside" && cozy --json model quantize "$model@$bf16" --lane int8 --package "$pkg" --on local -y) > "$root/quantize.ndjson" 2> "$root/quantize.err" || code=$?
+int8_of() { { grep '^{' "$1" 2> /dev/null | jq -rs '[.. | objects | select(.name? == "int8" and (.checkpoint?.revision? | type == "string")) | .checkpoint.revision] | last // empty'; } || true; }
+int8=$(int8_of "$root/quantize.ndjson")
+if [ -z "$int8" ]; then  # its whole record, by the job's id
+  job=$(grep '^{' "$root/quantize.ndjson" | jq -rs '[.. | objects | select(.id? and .kind? == "call") | .id] | last // empty' || true)
+  [ -z "$job" ] || (cd "$outside" && cozy --json --full run watch "$job" --once) > "$root/quantize-record.json" 2> /dev/null || true
+  int8=$(int8_of "$root/quantize-record.json")
+fi
+[ "$code" = 0 ] && [ -n "$int8" ] \
+  || { check "quantize outside: cozy model quantize $model@${bf16:-?} --lane int8 outside a project: exit $code, no int8 checkpoint: $(tail -c 400 "$root/quantize.ndjson") $(tail -c 200 "$root/quantize.err")"; cozy --json logout > /dev/null 2>&1; return 0; }
+echo "quantize outside: $model@$bf16 (bf16) → int8 $int8"
+# One of Calcifer's jobs on `local`, of type quantize, that completed; in state.db, which holds no project's run.
+job=$(python3 - "$HOME/.cozy/calcifer/state.db" <<'PY'
+import json, sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True, timeout=10)
+print(json.dumps([list(r) for r in c.execute("SELECT machine, kind, status FROM runs WHERE task = 'quantize' AND state = 'settled' ORDER BY number DESC LIMIT 1")]))
+PY
+) || job=
+[ "$job" = '[["local", "call", "completed"]]' ] || check "quantize outside: no completed quantize job of Calcifer's on local (machine, kind, status): ${job:-none}"
+# The lane, read back from the Hub in the project.
+in_project "$project" --json run "$pkg/inspect" "seed:=$seed" "model.model=$model@$int8" --on local > "$root/inspect.ndjson" 2> "$root/inspect.err" \
+  && grep -q '"scheme": *"int8.convrot"' "$root/inspect.ndjson" \
+  || check "quantize outside: the int8 lane $model@$int8 didn't read back as int8.convrot near its source: $(tail -c 400 "$root/inspect.ndjson") $(tail -c 200 "$root/inspect.err")"
+cozy --json logout > "$root/logout.json" 2>&1 || check "quantize outside: logout: $(tail -c 300 "$root/logout.json")"
+}
+
 # cl-987: a project's key names its runs, `KEY-N`, from any folder: proposed from its name, kept in its project.db (so it goes
-# with its folder), changed with `cozy key` while the key it had names them still. Calcifer's own runs are `COZY-N`.
+# with its folder), changed with `cozy key` while the key it had names them still. Calcifer's jobs are no project's runs (cl-1028): none
+# is listed with them, and none has a name.
 project_keys() {
 [ -n "$LOCAL" ] || return 0
 step "project keys: KEY-N from any folder (cl-987)"
-local root=$OUT/keys ka kb na nb ida idb n own
+local root=$OUT/keys ka kb na nb ida idb n
 local a=$root/kilo-alpha-bravo b=$root/zulu outside=$root/outside
 mkdir -p "$outside"
 cozy --json new --unencrypted "$a" > "$root-new-a.json" 2>&1 && cozy --json new --unencrypted "$b" > "$root-new-b.json" 2>&1 \
@@ -1239,12 +1693,9 @@ J --arg a "$na" --arg b "$nb" '[.runs[].name] | index($a) and index($b)' "$root-
   || check "keys: run ls --all doesn't name $na and $nb: $(jq -c '[.runs[]?.name]' "$root-ls.json")"
 (cd "$outside" && cozy run ls --all --limit 0) > "$root-ls.txt" 2>&1 || true
 grep -qE "(^| )$na( |$)" "$root-ls.txt" && grep -qE "(^| )$nb( |$)" "$root-ls.txt" || check "keys: run ls's table doesn't name $na and $nb: $(head -c 600 "$root-ls.txt")"
-# Calcifer's own runs (the downloads before) are COZY-N, from a project's folder too, never that project's N.
-J '[.runs[] | select(.project_id == null)] | length > 0 and all(.name | test("^COZY-[0-9]+$"))' "$root-ls.json" \
-  || check "keys: Calcifer's own runs aren't COZY-N: $(jq -c '[.runs[]? | select(.project_id == null) | .name]' "$root-ls.json")"
-own=$(jq -r '[.runs[]? | select(.project_id == null)][0] | "\(.name) \(.id)"' "$root-ls.json") || own=
-(cd "$a" && cozy --json run watch "${own% *}" --once) > "$root-watch-own.json" 2>&1 || true
-J --arg id "${own#* }" '.id == $id' "$root-watch-own.json" || check "keys: run watch ${own% *} in $ka's folder isn't Calcifer's run: $(tail -c 300 "$root-watch-own.json")"
+# Calcifer's jobs (the downloads before) are no project's runs (cl-1028): run ls --all lists none.
+J '[.runs[] | select(.project_id == null)] | length == 0' "$root-ls.json" \
+  || check "keys: run ls --all lists runs of no project: $(jq -c '[.runs[]? | select(.project_id == null) | {id, target}]' "$root-ls.json")"
 # A new key names its runs; the key it had names them still, and its project.db keeps both, so they go with the folder.
 (cd "$a" && cozy --json key kx987) > "$root-key.json" 2>&1 || true
 J --arg was "$ka" '.key == "KX987" and (.former | index($was))' "$root-key.json" || check "keys: cozy key kx987: $(tail -c 300 "$root-key.json")"
@@ -1258,11 +1709,11 @@ done
 J --arg was "$ka" '.key == "KX987" and .former == [$was]' "$root-shown.json" || check "keys: cozy key: not KX987, formerly $ka: $(tail -c 300 "$root-shown.json")"
 [ "$(python3 -c 'import sqlite3, sys; print(",".join(r[0] for r in sqlite3.connect(sys.argv[1]).execute("SELECT key FROM project_keys ORDER BY ord")))' "$a/project.db" 2>&1)" = "$ka,KX987" ] \
   || check "keys: its project.db doesn't keep $ka then KX987"
-# Another's key, Calcifer's, a misspelled one and one nobody has: refused, typed.
+# Another's key, a reserved one, a misspelled one and one nobody has: refused, typed.
 (cd "$b" && cozy --json key "$ka") > "$root-taken.json" 2>&1 || true
 J '.error.code == "project_key_taken"' "$root-taken.json" || check "keys: $kb took $ka, KX987's former key: $(tail -c 300 "$root-taken.json")"
-(cd "$b" && cozy --json key cozy) > "$root-reserved.json" 2>&1 || true
-J '.error.code == "project_key_taken"' "$root-reserved.json" || check "keys: $kb took COZY: $(tail -c 300 "$root-reserved.json")"
+(cd "$b" && cozy --json key run) > "$root-reserved.json" 2>&1 || true
+J '.error.code == "project_key_taken"' "$root-reserved.json" || check "keys: $kb took RUN: $(tail -c 300 "$root-reserved.json")"
 (cd "$b" && cozy --json key 9z) > "$root-invalid.json" 2>&1 || true
 J '.error.code == "project_key_invalid"' "$root-invalid.json" || check "keys: 9z wasn't refused project_key_invalid: $(tail -c 300 "$root-invalid.json")"
 (cd "$outside" && cozy --json run watch QQ987-1 --once) > "$root-none.json" 2>&1 || true
@@ -1271,8 +1722,8 @@ J '.error.code == "run_not_found" and (.error.message | test("QQ987"))' "$root-n
 
 run_playback() {
 step "run playback API"
-# The player link hands a browser the output straight from its machine. A project's output goes only by an owned private
-# media transport, which that link is not: its playback is refused, naming its project route. The output is a weightless still.
+# The player link hands a browser the output straight from its machine: a plaintext project's too (cl-1066), its link naming the run
+# and the output; web/play-link plays it. Before, a project's was refused project_play_unavailable. The output is a weightless still.
 local holder=$HOME/.cozy/calcifer/calcifer.lock.holder base id project
 base="http://$(jq -r .address "$holder")"
 (cd "$here" && cell play-still ./project/draw.py/draw "instructions=play $RANDOM") || true
@@ -1280,18 +1731,24 @@ first=$(cat "$OUT/play-still.number")
 name=$(jq -r '.output[0].name // empty' "$OUT/play-still.json") || true
 if [ "$first" = none ] || [ -z "$name" ]; then check "run playback API: no still to play"; else
   read -r id project < <(cozy --json run watch "$first" --once | jq -r '"\(.id) \(.project_id)"')
-  curl -sS -G -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' \
+  curl -sS -G -H "Authorization: Bearer $(jq -r .token "$holder")" \
     --data-urlencode "output=$name" --data-urlencode "expires=30s" "$base/v1/projects/$project/runs/$id/play" > "$OUT/play.json" || true
-  J '.error.code == "project_play_unavailable"' "$OUT/play.json" \
-    || check "run playback API: project run $first's output was not refused project_play_unavailable: $(head -c 300 "$OUT/play.json")"
+  J --arg id "$id" --arg name "$name" '(.url | startswith("https://cozy-creator.github.io/cozy-creator/play/#")) and (.url | contains("r=" + $id))
+    and (.url | contains("o=" + $name)) and (.token | length > 0) and .expires_s == 30' "$OUT/play.json" \
+    || check "run playback API: project run $first's output has no link: $(head -c 300 "$OUT/play.json")"
 fi
 }
 
 machines() {
 step machines
-# The same wheels again, an update to what the machine runs: it reports their versions.
+# The same wheels again, an update to what the machine runs: it reports their versions. They're named from inside a plaintext project,
+# which a command of no project sends as any file (cl-1066, fix don't refuse); before, `project_source_scope` refused them.
 if [ -n "$CAND_RT" ] && [ -n "$CAND_TFS" ]; then
-  cozy --json machine update local --runtime "$CAND_RT" --tensorfs "$CAND_TFS" -y > "$OUT/update-again.json" || check "machine update local --runtime --tensorfs failed"
+  wheels=$RUN_PROJECT/cl-1066-wheels
+  mkdir -p "$wheels" && cp "$CAND_RT" "$CAND_TFS" "$wheels/"
+  cozy --json machine update local --runtime "$wheels/$(basename "$CAND_RT")" --tensorfs "$wheels/$(basename "$CAND_TFS")" -y \
+    > "$OUT/update-again.json" 2> "$OUT/update-again.err" || check "machine update local --runtime --tensorfs, wheels in a plaintext project, failed: $(tail -c 300 "$OUT/update-again.err") $(tail -c 300 "$OUT/update-again.json")"
+  rm -rf "$wheels"
   rt=$(jq -r 'select(.machine) | .runtime' "$OUT/update-again.json" | tail -1 || true)
   tfs=$(jq -r 'select(.machine) | .tensorfs' "$OUT/update-again.json" | tail -1 || true)
   cozy --json machine show local | J --arg rt "$rt" --arg tfs "$tfs" '$rt != "" and .status.runtime == $rt and .status.tensorfs == $tfs' \
@@ -1547,3 +2004,88 @@ install_retry() {
   echo $((SECONDS - began)) > "$dir/$1.took"
 }
 
+
+# cl-1028: every run is kept in its project. Outside one, `cozy run` and `POST /v1/runs` refuse before anything is done: one line
+# and the next command, and nothing of the run is made.
+outside_refuses() {
+step "a run outside a project refuses before anything is done, naming the next command (cl-1028)"
+local out=$OUT/outside lock=$HOME/.cozy/calcifer/calcifer.lock.holder began code=0 addr token made
+mkdir -p "$out/folder"
+began=$(date +%s%3N)
+(cd "$out/folder" && cozy run "$here/weightless/reverse" text=outside) > "$out/run.txt" 2>&1 || code=$?
+[ "$code" = 2 ] && grep -qxF "error[not_in_a_project]: Run this from inside a project folder, or create a project first." "$out/run.txt" \
+  && [ "$(grep -cxF 'next: cozy new' "$out/run.txt")" = 1 ] && ! grep -qE '^(hint|cause):' "$out/run.txt" \
+  || check "outside: cozy run outside a project said (exit $code): $(head -c 400 "$out/run.txt")"
+addr=$(jq -r .address "$lock") token=$(jq -r .token "$lock")
+code=$(curl -sS -o "$out/post.json" -w '%{http_code}' -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+  -H "Idempotency-Key: outside-$RANDOM$RANDOM" -X POST -d '{"target":"zhengpeng7/birefnet/remove_background","on":["local"]}' "http://$addr/v1/runs") || code=
+[ "$code" = 400 ] && J '.error.code == "not_in_a_project" and any(.error.next[]; test("cozy new"))' "$out/post.json" \
+  || check "outside: POST /v1/runs with no project answered ${code:-nothing}: $(head -c 300 "$out/post.json")"
+made=$(python3 - "$HOME/.cozy/calcifer/state.db" "$began" <<'PY'
+import sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True, timeout=10)
+print(c.execute("SELECT count(*) FROM runs WHERE created_at >= ? AND (target LIKE '%reverse%' OR target LIKE '%birefnet%')", (int(sys.argv[2]),)).fetchone()[0])
+PY
+) || made=?
+[ "$made" = 0 ] || check "outside: a refused run left $made rows in Calcifer's store"
+}
+
+# cl-1028: Calcifer's jobs (this shard's installs, downloads and updates on `local`; its removals, locks and publications, on no
+# machine) are no project's runs: no run list shows one, GET /v1/runs lists nothing, their machine lists them, and Calcifer's store
+# keeps of each machine, job type and outcome its newest ended job and those that ended in the minute before it: an older one goes as a
+# newer one's end comes, whatever order they ended in. Beside the shard's, each outside any project: a package install that fails on
+# `local` (its code builds no module, as run_failures'), then four models made from one file at once there (ending in any order), and
+# a package installed and removed twice. The failed install stays, its reason on its machine, though downloads and installs completed
+# after it (the review of #3423: one outcome or job type never takes another's).
+jobs_kept() {
+step "jobs are their machine's, not run history: its last of each job type and outcome (cl-1028)"
+local out=$OUT/jobs lock=$HOME/.cozy/calcifer/calcifer.lock.holder code=0 addr token i pids=()
+mkdir -p "$out"
+[ -s "$OUT/tiny.safetensors" ] || safetensors_file "$OUT/tiny.safetensors"
+rm -rf "$out/nomodule" && cp -r "$here/weightless" "$out/nomodule"
+sed -i -e 's/^module-name = "e2e_weightless"/module-name = "e2e_no_such_module"/' -e 's/^name = "e2e-weightless"/name = "e2e-jobs-no-module"/' "$out/nomodule/pyproject.toml"
+(cd "$out" && cozy --json package install "$out/nomodule" --on local -y) > "$out/failed.ndjson" 2>&1 || code=$?
+[ "$code" != 0 ] || check "jobs: a package install whose code builds no module completed: $(tail -c 300 "$out/failed.ndjson")"
+for i in 1 2 3 4; do
+  (cd "$out" && cozy --json model install "$OUT/tiny.safetensors" "local/e2e-jobs-$i" --source-format as-is) > "$out/model-$i.ndjson" 2>&1 & pids+=($!)
+done
+for i in 1 2 3 4; do wait "${pids[i-1]}" || check "jobs: model $i of four made at once failed: $(tail -c 300 "$out/model-$i.ndjson")"; done
+for i in 1 2; do
+  (cd "$out" && cozy --json package install "$here/weightless" --on local -y) > "$out/install-$i.ndjson" 2>&1 \
+    || check "jobs: package install $i outside a project failed: $(tail -c 300 "$out/install-$i.ndjson")"
+  (cd "$out" && cozy --json package uninstall local/e2e-weightless --on local) > "$out/uninstall-$i.json" 2>&1 \
+    || check "jobs: package uninstall $i outside a project failed: $(tail -c 300 "$out/uninstall-$i.json")"
+done
+cozy --json run ls --all --limit 0 > "$out/all.json" 2>&1 || true
+J '.runs != null and ([.runs[] | select(.project_id == null)] | length == 0)' "$out/all.json" \
+  || check "jobs: run ls --all lists runs of no project: $(jq -c '[.runs[]? | select(.project_id == null) | {id, kind, target}][:5]' "$out/all.json" 2> /dev/null | head -c 300)"
+addr=$(jq -r .address "$lock") token=$(jq -r .token "$lock")
+code=$(curl -sS -o "$out/list.json" -w '%{http_code}' -H "Authorization: Bearer $token" "http://$addr/v1/runs?limit=5") || code=
+[ "$code" = 400 ] && J '.error.code == "not_in_a_project"' "$out/list.json" || check "jobs: GET /v1/runs answered ${code:-nothing}: $(head -c 300 "$out/list.json")"
+cozy --json machine show local > "$out/local.json" 2>&1 || true
+J '(.jobs // []) | length > 0 and all(.[]; .name == "" and .project_id == null)' "$out/local.json" \
+  || check "jobs: machine show local lists no jobs, or names them as runs: $(jq -c '[.jobs[]? | {name, kind, target, status}]' "$out/local.json" 2> /dev/null | head -c 300)"
+J 'any(.jobs[]?; .status == "failed" and (.target | contains("e2e-jobs-no-module")) and ((.reason.message // "") != ""))' "$out/local.json" \
+  || check "jobs: the failed package install isn't on local with its reason after later ones completed: $(jq -c '[.jobs[]? | {kind, target, status, reason: .reason.message}]' "$out/local.json" 2> /dev/null | head -c 500)"
+echo "jobs: on local $(jq -c '[.jobs[]? | {kind, status, target}]' "$out/local.json" 2> /dev/null | head -c 600)"
+python3 - "$HOME/.cozy/calcifer/state.db" > "$out/kept.json" <<'PY'
+import json, sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True, timeout=10)
+# By job type (a store before it groups by kind). Each group: how many ended, and those kept that ended over a minute before its newest.
+task = "task" if any(col[1] == "task" for col in c.execute("PRAGMA table_info(runs)")) else "kind"
+groups = {}
+for machine, kind, status, number, ended in c.execute(f"SELECT machine, {task}, status, number, settled_at FROM runs WHERE state = 'settled'"):
+    groups.setdefault((machine, kind, status), []).append((number, ended or 0))
+kept = []
+for (machine, kind, status), rows in sorted(groups.items(), key=str):
+    rows.sort()
+    kept.append([machine, kind, status, len(rows), [number for number, ended in rows[:-1] if ended < rows[-1][1] - 65_000]])
+print(json.dumps({"made": c.execute("SELECT max(number) FROM runs").fetchone()[0], "groups": kept}))
+PY
+echo "jobs: $(cat "$out/kept.json") (machine, job type, status, ended, kept over a minute behind its newest)"
+J '.made >= 12 and any(.groups[]; .[0] == "local" and .[1] == "install" and .[2] == "failed") and any(.groups[]; .[0] == "local" and .[1] == "download" and .[2] == "completed")
+   and any(.groups[]; .[0] == "local" and .[1] == "install" and .[2] == "completed") and any(.groups[]; .[0] == null and .[1] == "remove" and .[2] == "completed")' "$out/kept.json" \
+  || check "jobs: no failed install beside completed downloads and installs on local and Calcifer's own removals, by job type, to prove what is kept: $(cat "$out/kept.json")"
+J 'all(.groups[]; .[4] == [])' "$out/kept.json" \
+  || check "jobs: Calcifer's store keeps an ended job over a minute behind the newest of its machine, job type and outcome (machine, job type, status, ended, those): $(cat "$out/kept.json")"
+}

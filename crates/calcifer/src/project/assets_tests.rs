@@ -37,7 +37,7 @@ fn rename_updates_saved_and_pending_authoring_references() {
     lock.asset_mut("video", "video").discarded.push(folder::Version { number: 8, ..version.clone() });
     lock.pending.insert("pending".into(), folder::Pending {
         kind: "video".into(), job: "pending".into(), ask: "ask".into(), asset: "video".into(),
-        version, run: 0, approve: false, unpin: None, target: folder::Target::default(),
+        version, run: 0, approve: false, unpin: None, words: None, target: folder::Target::default(),
     });
     super::super::renamed(&mut lock, "image", "renamed_image");
     let held = lock.asset("video").unwrap();
@@ -61,7 +61,7 @@ async fn typed_nodes_fixture() {
     let home = platform::paths::Home::under(&root.join("cozy"));
     home.open().unwrap();
     std::fs::create_dir_all(home.calcifer()).unwrap();
-    let calcifer = crate::Calcifer::open(&home.calcifer(), &home.outputs()).unwrap();
+    let calcifer = crate::Calcifer::open(&home.calcifer()).unwrap();
     let config = api::config::Config { hub_url: api::config::Origin::parse("http://127.0.0.1:9").unwrap(), ..Default::default() };
     let machines = crate::machines::Machines::start(calcifer.clone(), home, &root, &config);
     let api = crate::api::Api::new(calcifer, machines, "typed-node-fixture");
@@ -282,7 +282,7 @@ async fn typed_nodes_fixture() {
         "name":"image", "request":{"fields":[{"name":"summary","type":{"prompt":["image"]}}]}
     })).unwrap();
     let bound = super::super::binder::bind(&super::super::binder::Call {
-        name: &original.name, tool: "fixture/image", package: "fixture", callable: &callable,
+        name: &original.name, tool: "fixture/image", package: "fixture", title: "Fixture", callable: &callable,
         fields: &authored, reserved: &[], doc: &doc, own: Some(source_at), lock: &lock,
         stand: &doc.stand(&lock), gone: &BTreeSet::new(), pickup: None, inline: &[],
     }).unwrap();

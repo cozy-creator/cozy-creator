@@ -55,21 +55,6 @@ paths:
       parameters:
         - {name: project_id, in: path, required: true, schema: {type: string}}
       responses: {'204': {description: Project execution closed}, '403': {description: Scope or proof refused}, '409': {description: Work or custody remains active}}
-  /v1/project-execution/{project_id}/migrate:
-    parameters:
-      - {name: project_id, in: path, required: true, schema: {type: string}}
-    get:
-      summary: Whether this machine's global journal still holds runs of this project to move into it.
-      responses: {'200': {description: Pending migration, if any}, '403': {description: Scope or proof refused}}
-    post:
-      summary: Move this project's legacy global runs into its own journal, verified and receipted. Empty body.
-      responses: {'200': {description: Migrated}, '403': {description: Scope or proof refused}, '409': {description: Migration pending or busy}}
-  /v1/project-execution/{project_id}/migration-bindings:
-    post:
-      summary: Look up legacy acceptances this project's receipts cover; never adopts or retires them.
-      parameters:
-        - {name: project_id, in: path, required: true, schema: {type: string}}
-      responses: {'200': {description: Bindings}, '403': {description: Scope or proof refused}}
   /v1/health:
     get:
       summary: >-
@@ -89,6 +74,13 @@ paths:
         '409':
           description: This machine has no idle deadline
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+  /v1/project-gone/{project_id}:
+    post:
+      summary: A project whose folder is gone (cl-1031). Every record of it here goes, as a lock's does; its active runs are canceled, and it goes as the last settles.
+      description: This computer's controller only (the machine capability), on the local machine. Refused while a folder it ran in still holds it.
+      parameters:
+        - {name: project_id, in: path, required: true, schema: {type: string}}
+      responses: {'204': {description: Nothing of it is here, or its last runs take it with them}, '403': {description: Not this computer's controller}, '409': {description: A folder it ran in still holds it}}
   /v1/logs/{name}:
     get:
       summary: >-
@@ -117,26 +109,17 @@ paths:
         '503':
           description: '`log_follow_unsupported`: this machine''s OS cannot follow'
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
-  /v1/models/remove:
-    post:
-      summary: Remove a repository from this computer's ordinary local model cache.
-      description: >-
-        Requires machine-scoped access on a local machine. Removes unreferenced cached objects
-        for the requested repository.
-      operationId: remove_model
-      requestBody:
-        required: true
-        content: {application/json: {schema: {$ref: '#/components/schemas/RemoveModel'}}}
+  /v1/gpus:
+    get:
+      summary: >-
+        Its NVIDIA GPUs' use (cl-1100), as SSE: a `gpus` event each second while the caller stays, read only then. One with none to
+        read sends one empty reading. It holds no idle clock.
+      operationId: gpus
       responses:
         '200':
-          description: The normalized repository name and the cache removal result.
-          content: {application/json: {schema: {$ref: '#/components/schemas/RemovedModel'}}}
-        '400':
-          description: '`invalid_request` or `model_ref_invalid`'
-          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
-        '403':
-          description: '`capability_scope` or `model_remove_local_only`'
-          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+          description: 'SSE `event: gpus`'
+          content:
+            text/event-stream: {schema: {$ref: '#/components/schemas/GpuUse'}}
   /v1/objects/held:
     post:
       summary: >-
@@ -201,10 +184,11 @@ paths:
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
   /v1/models/remove:
     post:
-      summary: Remove a repository's locally cached model copies.
+      summary: Remove a repository's downloaded copies from this machine.
       description: >-
-        Requires machine scope and the ordinary local cache. Removes cached releases and lanes while
-        preserving active readers and content shared with other models. The origin is unchanged.
+        Requires machine scope, on any machine. Removes cached releases and lanes while preserving
+        active readers and content shared with other models. The origin is unchanged. A repository
+        a run here not ended reads is refused `model_in_use`, naming the run.
       operationId: remove_model
       requestBody:
         required: true
@@ -217,7 +201,10 @@ paths:
           description: '`invalid_request` or `model_ref_invalid`'
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
         '403':
-          description: '`capability_scope` or `model_remove_local_only`'
+          description: '`capability_scope` or `model_remove_scoped`'
+          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+        '409':
+          description: '`model_in_use`: a run here not ended reads it'
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
         '500':
           description: '`model_remove_failed`'
@@ -326,8 +313,11 @@ paths:
   /v1/prepare:
     put:
       summary: >-
-        What the caller expects demand for here with no job yet, its whole set, replacing its last; each behind every upcoming
-        job (cl-967). Its downloads show in Status under `cozy:prepare:<key>`.
+        What the caller expects demand for here with no job yet, its whole set, replacing its last: its guesses (cl-1104) and
+        what waits elsewhere (cl-967). Each behind every upcoming job and every run's guesses, and no job: it holds no rental,
+        gives the install line and the disk to any run, and what only it brought is the first to go. One the set drops stops
+        once what replaced it is in the download line, so what both read never stops. Its downloads show in Status under
+        `cozy:prepare:<key>`.
       operationId: prepare
       requestBody:
         content: {application/json: {schema: {$ref: '#/components/schemas/Prepare'}}}
@@ -811,6 +801,19 @@ components:
           description: >-
             The place after them, also the event's id: a follow resumed there goes on with the next line.
         text: {type: string}
+    GpuUse:
+      type: object
+      description: 'One reading of each NVIDIA GPU, as `GET /v1/gpus` streams them (`event: gpus`).'
+      properties:
+        at_unix_ms: {type: integer, format: int64}
+        gpus:
+          type: array
+          items:
+            type: object
+            properties:
+              index: {type: integer, format: int32}
+              busy_percent: {type: integer, format: int32, description: "The share of its last sample period a kernel ran, as nvidia-smi's GPU-Util."}
+              memory_used_bytes: {type: integer, format: int64, description: Its memory in use, every process's.}
     RemoveModel:
       type: object
       required: [model]
@@ -1236,8 +1239,10 @@ components:
         running: {type: boolean, description: "It left its queue: its executor starts or it runs."}
         width: {type: integer, format: int32, minimum: 0, description: The GPUs it holds, running.}
         started_at_unix_ms: {type: integer, format: int64}
-        models: {type: array, items: {type: string}, description: The repositories it waits to download.}
-        bytes_left: {type: integer, format: int64, minimum: 0, description: "Its weights' bytes still to come."}
+        gpu_at_unix_ms: {type: integer, format: int64, description: "When its work took its GPUs: its own claim, or a root on no GPU of its own (an orchestrator), its first call's. Absent: not yet."}
+        gpu_waits: {type: boolean, description: "It runs on its CPU alone while its GPU work waits to begin: all its work is still ahead of it."}
+        models: {type: array, items: {type: string}, description: "The repositories it waits to download, its calls' included."}
+        bytes_left: {type: integer, format: int64, minimum: 0, description: "Its weights' bytes still to come, its calls' included."}
     Timed:
       type: object
       properties:
@@ -1316,6 +1321,8 @@ components:
           minimum: 0
         phase: {type: string, description: 'booting, ready, releasing'}
         platform: {type: string, description: os/arch}
+        os_release: {type: string, description: 'Its distribution and kernel major.minor (Ubuntu 24.04 (6.8)); absent when unread.'}
+        memory_bytes: {type: integer, format: int64, minimum: 0, description: Its host's memory; absent when unread.}
         receipt:
           type: string
           format: byte

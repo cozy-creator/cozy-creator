@@ -12,13 +12,13 @@
 # params:
 #   need_s      seconds the guard must buy (default 2700)
 . "$(dirname "$0")/lib.sh"
-# A step's run: its follower's first line is `run <n> · <target>`, and only a completed run's ends with a bare `run <n>`.
-rn() { awk '$1 == "run" && $2 ~ /^[0-9]+$/ {print $2; exit}' "$OUT/$1.txt" 2>/dev/null; }
+# A step's run: its follower's first line is `run <KEY-N> · <target>`, and only a completed run's ends with a bare `run <KEY-N>`.
+rn() { awk '$1 == "run" && $2 ~ /^[A-Z][A-Z0-9]*-[0-9]+$/ {print $2; exit}' "$OUT/$1.txt" 2>/dev/null; }
 status() { cozy run watch "$(rn "$1")" --once --json --full > "$OUT/$1.json" 2>&1; jq -r '.status // empty' "$OUT/$1.json"; }
 reason() { jq -r '[.reason.code // "", .reason.message // ""] | join(": ")' "$OUT/$1.json" | cut -c1-500; }
 # What a run warned of, its calls' too (a call's lines are on its root's log): any string of its record, or what its
 # follower printed.
-warned() { { jq -r '.. | strings' "$OUT/$1.json" 2>/dev/null; cat "$OUT/$1.txt" 2>/dev/null; } | grep -E 'the disk was short|evicted' | sort -u; }
+warned() { { jq -r '.. | strings' "$OUT/$1.json" 2>/dev/null; cat "$OUT/$1.txt" 2>/dev/null; } | grep -E 'short for this render|Cozy removed' | sort -u; }
 disk() { cozy machine show "$NAME" --json | jq -r '.status | "\(.disk_free_bytes // 0) \(.disk_models_bytes // 0) \(.models_bytes // 0) \(.disk_total_bytes // 0)"'; }
 gib() { awk -v b="$1" 'BEGIN { printf "%.1f GiB", b / 1073741824 }'; }
 quote "$(param need_s 2700)"
@@ -57,9 +57,9 @@ tail -n +"$((before + 1))" "$OUT/tensord.log" > "$OUT/tensord-h3.log"
 cozy machine logs "$NAME" memory -n 0 > "$OUT/memory.log" 2>&1
 tail -n +"$((mem_before + 1))" "$OUT/memory.log" > "$OUT/memory-h3.log"
 h3_evicted=$(grep -c 'tensorfs: evicted minimaxai/minimax-h3' "$OUT/tensord-h3.log")
-said=$(warned h3 | grep -m1 'evicted' || true)
+said=$(warned h3 | grep -m1 'Cozy removed' || true)
 ended=$(grep -c '"event":"end_idle"' "$OUT/memory-h3.log")
-grep -E 'tensorfs: evicted|ended the idle executors|the disk was short|machine_disk_full' "$OUT/tensord-h3.log" | cut -c1-300 >> "$R"
+grep -E 'tensorfs: evicted|ended the idle executors|short for this render|machine_disk_full' "$OUT/tensord-h3.log" | cut -c1-300 >> "$R"
 grep '"event":"end_idle"' "$OUT/memory-h3.log" | cut -c1-300 >> "$R"
 say "H3 $hs, its warning: ${said:-none}"
 say "turbo asked while H3 rendered: $t2 in ${t2_s}s $(reason turbo2); H3 evicted $h3_evicted times; executors ended since H3 began: $ended"
@@ -79,7 +79,7 @@ bs=$(status bf16) bs_s=$(( $(date +%s) - t0 )); read -r free2 stored2 _ _ < <(di
 grew=$(( stored2 > stored ? stored2 - stored : 0 ))
 say "H3 bf16 $bs in ${bs_s}s: $(reason bf16); the store grew $(gib "$grew")"
 [ "$bs" = failed ] && [ "$(jq -r .reason.code "$OUT/bf16.json")" = machine_disk_full ] || bad+=("H3 bf16 $bs, not refused machine_disk_full: $(reason bf16)")
-grep -q -- '--disk-gb' <<<"$(reason bf16)" || bad+=("the refusal names no --disk-gb")
+grep -q -- 'GB disk' <<<"$(reason bf16)" || bad+=("the refusal names no disk to rent")
 [ "$grew" -lt $((1 << 30)) ] || bad+=("H3 bf16 was refused after $(gib "$grew") landed")
 
 # 5. Every byte a listed model's.

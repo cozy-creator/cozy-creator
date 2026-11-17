@@ -144,7 +144,7 @@ def main() -> None:
     longer = answer((args.out / "plain-long.ndjson").read_bytes())
     placed(longer, plain, "the ordinary project's long run")
     facts["concurrent_pids"] = [longer["pid"], beside["pid"]]
-    facts["concurrent_queued"] = b"queued: position" in (args.out / "vault-beside.ndjson").read_bytes()
+    facts["concurrent_queued"] = b"\"queue_position\":" in (args.out / "vault-beside.ndjson").read_bytes()
 
     # A failure: its stderr stays with its run, in its project.
     run(args.cli, args.out, "vault-failure", encrypted, f"{b}_3", "fail:=true", fails=True)

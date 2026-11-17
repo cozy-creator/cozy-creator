@@ -29,7 +29,7 @@ use url::Url;
 use api::{
     error::{Envelope, Kind},
     machine::{
-        Event, HELD, HeldAnswer, HeldBytes, HeldObject, HeldRequest, LogLines, OutputTarget, Ranges,
+        Event, GpuUse, HELD, HeldAnswer, HeldBytes, HeldObject, HeldRequest, LogLines, OutputTarget, Ranges,
         PREVIEW_STEP, RunBatch, RunBatchAnswer, RunEvent, RunList, RunRequest, RunState, SERVER_NAME, StatusFrame, capability, parse_held,
         path,
     },
@@ -41,6 +41,9 @@ const CAP_SECONDS: i64 = 300;
 /// connection ends once `PROBES` in a row go unanswered by the peer's kernel.
 const PROBE: Duration = Duration::from_secs(20);
 const PROBES: u32 = 3;
+/// How long a machine has to say its frame: one that's connected but doesn't answer (its TensorD alive and stuck) is slow, and
+/// its last picture stands, never a wait with no end (xs-199: a walk's quote waited on one forever).
+const STATUS_WAIT: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -152,7 +155,6 @@ impl Machine {
 
     /// Feature/authentication probe before any private file bytes cross the wire.
     pub(crate) async fn probe_private(&self) -> Result<(), Error> {
-        self.migrate_private().await?;
         let capability: api::machine::ProjectExecutionCapabilities =
             json(send(self.request(Method::GET, path::HEALTH, &[])).await?).await?;
         if !capability.ready() {
@@ -163,31 +165,12 @@ impl Machine {
         Ok(())
     }
 
-    pub(crate) async fn migrate_private(&self) -> Result<(), Error> {
-        let scope = self.private.as_ref().ok_or_else(|| Error::Answer("migration requires a selected project proof".into()))?;
-        send(self.request(Method::POST, path::PROJECT_MIGRATE, &[&scope.storage.project_id])).await.map(|_| ())
-    }
-
-    pub(crate) async fn legacy_project_bindings(&self, request_ids: &[String]) -> Result<api::machine::ProjectExecutionLegacyLookupAnswer, Error> {
-        let scope = self.private.as_ref().ok_or_else(|| Error::Answer("legacy binding lookup requires a selected project proof".into()))?;
-        let query = api::machine::ProjectExecutionLegacyLookup { request_ids: request_ids.to_vec() };
-        json(send(self.request(Method::POST, path::PROJECT_LEGACY_BINDINGS, &[&scope.storage.project_id]).json(&query)).await?).await
-    }
-
-    pub(crate) async fn legacy_bindings(&self, request_ids: &[String]) -> Result<api::machine::ProjectExecutionLegacyLookupAnswer, Error> { self.legacy_project_bindings(request_ids).await }
-    pub(crate) async fn migrate_private_bindings(&self, verified: &api::machine::ProjectExecutionMigrationReceipt) -> Result<(), Error> {
-        let scope = self.private.as_ref().ok_or_else(|| Error::Answer("verified adoption requires a selected project proof".into()))?;
-        let request = api::machine::ProjectExecutionMigrationRequest { legacy_requests: verified.bindings.clone() };
-        send(self.request(Method::POST, path::PROJECT_MIGRATE, &[&scope.storage.project_id]).json(&request)).await.map(|_| ())
-    }
-
-    pub(crate) async fn migration_receipt(&self) -> Result<api::machine::ProjectExecutionMigrationReceipt, Error> {
-        let scope = self.private.as_ref().ok_or_else(|| Error::Answer("migration coverage requires a selected project proof".into()))?;
-        json(send(self.request(Method::GET, path::PROJECT_MIGRATE, &[&scope.storage.project_id])).await?).await
+    /// Project `id`'s folder is gone (cl-1031): nothing of it stays on this machine.
+    pub(crate) async fn project_gone(&self, id: &str) -> Result<(), Error> {
+        send(self.request(Method::POST, path::PROJECT_GONE, &[id])).await.map(|_| ())
     }
 
     pub(crate) async fn close_private(&self) -> Result<(), Error> {
-        self.migrate_private().await?;
         let scope = self.private.as_ref().ok_or_else(|| Error::Answer("closing private storage requires a selected project".into()))?;
         send(self.request(Method::POST, path::PRIVATE_CLOSE, &[&scope.storage.project_id])).await.map(|_| ())
     }
@@ -218,7 +201,7 @@ impl Machine {
 
     /// The machine's frame. Without a credential: identity, version, capabilities and receipt.
     pub(crate) async fn status(&self) -> Result<StatusFrame, Error> {
-        let request = self.request(Method::GET, path::STATUS, &[]);
+        let request = self.request(Method::GET, path::STATUS, &[]).timeout(STATUS_WAIT);
         json(send(request.header(header::ACCEPT, "application/json")).await?).await
     }
 
@@ -349,6 +332,19 @@ impl Machine {
         Ok(events.filter_map(|event| async move {
             match event {
                 Ok(event) if event.event == "lines" => Some(parse(&event.data)),
+                Ok(_) => None,
+                Err(e) => Some(Err(e)),
+            }
+        }))
+    }
+
+    /// Its GPUs' readings, once a second while this stays open (`path::GPUS`, cl-1100).
+    pub(crate) async fn follow_gpus(&self) -> Result<impl Stream<Item = Result<GpuUse, Error>> + Send + 'static, Error> {
+        let request = self.request(Method::GET, path::GPUS, &[]);
+        let events = sse(send(request.header(header::ACCEPT, "text/event-stream")).await?)?;
+        Ok(events.filter_map(|event| async move {
+            match event {
+                Ok(event) if event.event == "gpus" => Some(parse(&event.data)),
                 Ok(_) => None,
                 Err(e) => Some(Err(e)),
             }

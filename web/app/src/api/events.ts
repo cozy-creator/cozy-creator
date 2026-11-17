@@ -8,7 +8,8 @@ export type Health =
   | { state: "reconnecting"; attempt: number }
   | { state: "signed_out" }
 
-type Presence = { tab: string; project: string | null; revision: number }
+/** What a tab shows: a project, and whether a machine's view, where runs of no project show (installs, updates). */
+type Presence = { tab: string; project: string | null; revision: number; machines: boolean }
 type Acknowledged = Presence & { stream: string; refusal?: ProjectShowRefusal }
 type Waiter = { project: string; done(): void; fail(error: unknown): void }
 type Confirmed = { stream: string; key: string; readers: number; reply: ProjectShowReply | null }
@@ -20,6 +21,7 @@ type Shared =
   | { shows: Presence }
   | { shown: Acknowledged }
   | { who: true }
+  | { saved: { tab: string; project: string } }
 
 /** Three missed comments: the connection is dead, whatever the socket says. */
 const SILENT_MS = 45_000
@@ -67,6 +69,8 @@ export class EventStream {
   private alive: Promise<void>
   /** The project this tab shows. */
   private showing: string | null = null
+  /** This tab shows a machine's view. */
+  private machines = false
   private revision = 0
   private acknowledged: Acknowledged | null = null
   private waiters = new Set<Waiter>()
@@ -79,6 +83,9 @@ export class EventStream {
   private telling = false
   /** Lock drops server Readers even when the displayed project set later returns to the same IDs. */
   private readers = 0
+  /** The holding tab's: each project Calcifer asked to save before it closes (`project.saving`), and the tabs showing it that
+   *  haven't said they sent what they typed of it. */
+  private saving = new Map<string, Set<string>>()
 
   constructor(client: Client) {
     this.client = client
@@ -89,6 +96,7 @@ export class EventStream {
       else if ("shows" in data) this.heard(data.shows)
       else if ("shown" in data) this.heardAcknowledgement(data.shown)
       else if ("who" in data) this.announce()
+      else if ("saved" in data) this.heardSaved(data.saved)
       else if (this.holding) this.channel.postMessage({ health: this.health.get(), stream: this.stream } satisfies Shared)
     }
     this.alive = new Promise((held) => {
@@ -114,6 +122,37 @@ export class EventStream {
     else this.announce()
   }
 
+  /** This tab sent what it typed of `project`: the holding tab answers Calcifer once every tab showing it has. */
+  saved(project: string) {
+    const said = { tab: this.tab, project }
+    if (this.holding) this.heardSaved(said)
+    else void this.alive.then(() => this.channel.postMessage({ saved: said } satisfies Shared))
+  }
+
+  private heardSaved({ tab, project }: { tab: string; project: string }) {
+    if (!this.holding) return
+    this.saving.get(project)?.delete(tab)
+    this.answerSaved()
+  }
+
+  /** Calcifer told of each project every tab showing it has sent what it typed of; a tab that went sends nothing more. */
+  private answerSaved() {
+    for (const [project, tabs] of this.saving) {
+      for (const tab of tabs) if (!this.shown.has(tab)) tabs.delete(tab)
+      if (tabs.size || !this.stream) continue
+      this.saving.delete(project)
+      void this.client.saved(this.stream, project).catch(() => {})
+    }
+  }
+
+  /** This tab shows a machine's view, or not: only then does Calcifer send it runs of no project. */
+  showMachines(on: boolean) {
+    if (on === this.machines) return
+    this.machines = on
+    if (this.holding) this.heard(this.presence())
+    else this.announce()
+  }
+
   /** Await this tab's held acknowledgement (legacy services confirm completion only). Owns no Reader. */
   whenShown(project: string, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted()
@@ -135,7 +174,7 @@ export class EventStream {
   }
 
   private presence(): Presence {
-    return { tab: this.tab, project: this.showing, revision: this.revision }
+    return { tab: this.tab, project: this.showing, revision: this.revision, machines: this.machines }
   }
 
   private announce() {
@@ -149,6 +188,7 @@ export class EventStream {
     if (tab !== this.tab && !this.shown.has(tab)) {
       void navigator.locks.request(`cozy-tab:${tab}`, () => {
         this.shown.delete(tab)
+        this.answerSaved()
         void this.tell()
       })
     }
@@ -181,7 +221,7 @@ export class EventStream {
       const project = presence.project
       // A legacy204 confirms completion only; a current reply proves which IDs were held.
       const refusal = project && confirmed.reply && !confirmed.reply.held.includes(project)
-        ? confirmed.reply.refused[project] ?? { status: 503, error: { kind: "unavailable" as const, code: "project_not_shown", message: "Calcifer did not hold this project open", next: [] } }
+        ? confirmed.reply.refused[project] ?? { status: 503, error: { kind: "unavailable" as const, code: "project_not_shown", message: "Cozy couldn't keep this project open", next: [] } }
         : undefined
       const shown: Acknowledged = { ...presence, stream: confirmed.stream, refusal: refusal || undefined }
       this.heardAcknowledgement(shown)
@@ -194,7 +234,8 @@ export class EventStream {
     if (this.telling || !this.stream || !this.following || this.following.signal.aborted) return
     const snapshot = [...this.shown.values()]
     const projects = [...new Set(snapshot.flatMap(({ project }) => project === null ? [] : [project]))].sort()
-    const key = projects.join()
+    const machines = snapshot.some((one) => one.machines)
+    const key = `${projects.join()}${machines ? " machines" : ""}`
     const stream = this.stream
     const readers = this.readers
     if (this.told?.stream === stream && this.told.key === key && this.told.readers === readers) {
@@ -203,7 +244,7 @@ export class EventStream {
     }
     this.telling = true
     try {
-      const reply = await this.client.show(stream, projects, this.following.signal)
+      const reply = await this.client.show(stream, projects, machines, this.following.signal)
       if (this.stream === stream && this.readers === readers) {
         this.told = { stream, key, readers, reply }
         this.confirm(snapshot, this.told)
@@ -234,6 +275,16 @@ export class EventStream {
     if (event.type === "hello" && this.epoch !== event.stream) {
       this.epoch = event.stream
       this.acknowledged = null
+      this.saving.clear()
+    }
+    if (event.type === "project.saving") {
+      // Nothing it shows changes: each tab sends what it typed of the project, and says so.
+      if (this.holding) {
+        this.saving.set(event.id, new Set([...this.shown.values()].filter((shown) => shown.project === event.id).map((shown) => shown.tab)))
+        this.answerSaved()
+      }
+      for (const listener of this.listeners) listener(event)
+      return
     }
     if (event.type === "project.vault") {
       this.readers++
@@ -257,7 +308,7 @@ export class EventStream {
     this.epoch = health.state === "live" ? stream : null
     this.health.set(health)
     if (health.state === "signed_out") {
-      for (const waiter of this.waiters) waiter.fail(new ApiError(403, { kind: "forbidden", code: "not_own_page", message: "Calcifer won't answer this page", next: ["cozy open"] }))
+      for (const waiter of this.waiters) waiter.fail(new ApiError(403, { kind: "forbidden", code: "not_own_page", message: "Cozy won't open this page" }))
     }
   }
 
@@ -380,3 +431,6 @@ export const holdMedia = (signal: AbortSignal) => ration(["cozy-media-0", "cozy-
 
 /** The one run's log stream, across tabs. */
 export const holdLog = (signal: AbortSignal) => ration(["cozy-log"], signal)
+
+/** The one machine's GPU readings, across tabs (cl-1100). */
+export const holdGpus = (signal: AbortSignal) => ration(["cozy-gpus"], signal)

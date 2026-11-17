@@ -79,7 +79,8 @@ fn save(api: &Api) {
 
 /// Its newest release's plainest lane, else, to its members, its newest checkpoint.
 fn header_of(card: &types::ModelCard) -> Option<&types::ObjectRef> {
-    let released = card.releases.iter().find(|release| release.visibility == api::model_ref::ReleaseVisibility::Public).and_then(|release| release.lanes.values().next()).map(|lane| &lane.header);
+    let public = card.releases.iter().filter(|release| release.visibility == api::model_ref::ReleaseVisibility::Public);
+    let released = api::release::newest_listed(public, |release| &release.version).and_then(|release| release.lanes.values().next()).map(|lane| &lane.header);
     released.or(card.checkpoints.first().map(|checkpoint| &checkpoint.header))
 }
 
@@ -150,7 +151,7 @@ pub(super) async fn said(api: &Api, hub: &Origin, cards: &[types::ModelCard], mo
 const NAMED_FOR: Duration = Duration::from_secs(600);
 
 /// The family and kind of each declared default, by Hub and reference, when read.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 struct DefaultModel {
     family: Option<String>,
     kind: Option<ModelKind>,
@@ -158,8 +159,26 @@ struct DefaultModel {
 
 static NAMED: OnceLock<Mutex<HashMap<String, (Instant, DefaultModel)>>> = OnceLock::new();
 
-fn named_so_far() -> &'static Mutex<HashMap<String, (Instant, DefaultModel)>> {
-    NAMED.get_or_init(Default::default)
+/// What was read so far, kept across a restart in Calcifer's home (`kept-families.json`): a restart's first list says them (cl-1010).
+fn named_so_far(api: &Api) -> &'static Mutex<HashMap<String, (Instant, DefaultModel)>> {
+    NAMED.get_or_init(|| {
+        let kept: HashMap<String, (i64, DefaultModel)> = std::fs::read(kept_families(api)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+        let now = crate::store::now_ms();
+        let at = |ms: i64| Instant::now().checked_sub(Duration::from_millis((now - ms).max(0) as u64)).unwrap_or_else(Instant::now);
+        Mutex::new(kept.into_iter().map(|(key, (ms, model))| (key, (at(ms), model))).collect())
+    })
+}
+
+fn kept_families(api: &Api) -> std::path::PathBuf {
+    api.machines.hubs.home().calcifer().join("kept-families.json")
+}
+
+/// Keeps what was read so far for the next start, each with when (Unix ms).
+fn keep_families(api: &Api) {
+    let now = (crate::store::now_ms(), Instant::now());
+    let kept: HashMap<String, (i64, DefaultModel)> = named_so_far(api).lock().expect("named lock").iter()
+        .map(|(key, (at, model))| (key.clone(), (now.0 - now.1.duration_since(*at).as_millis() as i64, model.clone()))).collect();
+    let _ = platform::durable::replace(&kept_families(api), &serde_json::to_vec(&kept).expect("serializes"), 0o600);
 }
 
 /// A declared default: its family label or header, and its real checkpoint kind.
@@ -196,10 +215,10 @@ fn reference_header<'a>(card: &'a types::ModelCard, reference: &ModelRef) -> Opt
 }
 
 /// The release a named one resolves to: the newest public one of its series after it, as TensorD resolves it
-/// (`api::release::newest_fix`; a model's prerelease is no RC build, so `rc` is false).
+/// (`api::release::newest_fix`).
 fn newest_fix<'a>(release: &'a str, card: &'a types::ModelCard) -> &'a str {
     let public = card.releases.iter().filter(|held| held.visibility == api::model_ref::ReleaseVisibility::Public).map(|held| held.version.as_str());
-    api::release::newest_fix(release, public, false).unwrap_or(release)
+    api::release::newest_fix(release, public).unwrap_or(release)
 }
 
 /// What `reference` is, as the run that names it loads it: a named release as the newest fix it resolves to, an unnamed one as the
@@ -262,7 +281,7 @@ pub(crate) async fn check_choices(api: &Api, hub: &str, slots: &[(&str, &Slot)],
             let Some((default_card, default_facts)) = held(api, client, endpoint, hub, default).await else { continue };
             let named = &choice.slot;
             let same_family = |want: &str, reference: &str, card: &types::ModelCard, facts: &Facts| match adapts(card, facts) {
-                Some(got) if !got.eq_ignore_ascii_case(want) => Err(Error::new(Kind::Validation, "model_choice_family", format!("{named} takes {want} LoRAs; {reference} is for {got}"))),
+                Some(got) if !got.eq_ignore_ascii_case(want) => Err(Error::new(Kind::Validation, "model_choice_family", format!("{named} takes {want} LoRAs, but {reference} is for {got}."))),
                 _ => Ok(()),
             };
             if let Some(reference) = choice.reference.as_deref()
@@ -270,24 +289,24 @@ pub(crate) async fn check_choices(api: &Api, hub: &str, slots: &[(&str, &Slot)],
             {
                 match (default_facts.lora, facts.lora) {
                     (false, true) => {
-                        return Err(Error::new(Kind::Validation, "model_choice_kind", format!("{named} takes a model; {reference} is a LoRA"))
+                        return Err(Error::new(Kind::Validation, "model_choice_kind", format!("{named} takes a model, but {reference} is a LoRA. Add it as a LoRA instead."))
                             .next(format!("cozy run … --lora {named}={reference}")));
                     }
                     (false, false) => {
                         let labelled = |card: &types::ModelCard, facts: &Facts| family(card.model.family.clone(), facts.family.as_deref()).0;
                         if let Some((want, got)) = labelled(&default_card, &default_facts).zip(labelled(&card, &facts)).filter(|(want, got)| !want.eq_ignore_ascii_case(got)) {
-                            return Err(Error::new(Kind::Validation, "model_choice_family", format!("{named} takes a {want} model; {reference} is {got}")));
+                            return Err(Error::new(Kind::Validation, "model_choice_family", format!("{named} takes a {want} model, but {reference} is {got}.")));
                         }
                     }
                     (true, false) => {
-                        return Err(Error::new(Kind::Validation, "model_choice_kind", format!("{named} takes a LoRA; {reference} is a model")));
+                        return Err(Error::new(Kind::Validation, "model_choice_kind", format!("{named} takes a LoRA, but {reference} is a model.")));
                     }
                     (true, true) => {
                         if let Some(want) = adapts(&default_card, &default_facts) {
                             same_family(&want, reference, &card, &facts)?;
                         }
                         if let Some(why) = default_facts.parts.keeps_lacking(&facts.parts, reads(slot)) {
-                            return Err(Error::new(Kind::Validation, "model_choice_unloadable", format!("{named} can't load {reference}: {why}")));
+                            return Err(Error::new(Kind::Validation, "model_choice_unloadable", format!("{named} can't load {reference}: {why}.")));
                         }
                     }
                 }
@@ -295,7 +314,7 @@ pub(crate) async fn check_choices(api: &Api, hub: &str, slots: &[(&str, &Slot)],
             for adapter in &choice.adapters {
                 let Some((card, facts)) = held(api, client, endpoint, hub, &adapter.reference).await else { continue };
                 if !facts.lora {
-                    return Err(Error::new(Kind::Validation, "model_choice_kind", format!("{} is a model, not a LoRA for {named}", adapter.reference))
+                    return Err(Error::new(Kind::Validation, "model_choice_kind", format!("{} is a model, not a LoRA for {named}. Choose it as the model instead.", adapter.reference))
                         .next(format!("cozy run … --model {named}={}", adapter.reference)));
                 }
                 if let Some(want) = adapts(&default_card, &default_facts) {
@@ -310,31 +329,42 @@ pub(crate) async fn check_choices(api: &Api, hub: &str, slots: &[(&str, &Slot)],
     result
 }
 
-/// Each declared slot says the family and kind of its default checkpoint.
-pub(crate) async fn families(api: &Api, hub: &str, tools: &mut [Tool]) {
+/// Each declared slot says the family and kind of its default checkpoint, as read so far: a list never waits on the Hub for them.
+/// Those not read, or read more than [`NAMED_FOR`] ago, are read behind it, one read at a time, for the next list (cl-1010).
+pub(crate) fn families(api: &std::sync::Arc<Api>, hub: &str, tools: &mut [Tool]) {
+    static READING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     let defaults: BTreeSet<String> = tools.iter().flat_map(|tool| tool.models.iter().chain(tool.model.iter())).filter_map(|model| model.default.clone()).collect();
     let Ok(origin) = Origin::parse(hub) else { return };
-    let fresh = |default: &String| {
-        let held = named_so_far().lock().expect("named lock");
-        held.get(&format!("{origin} {default}")).filter(|(at, _)| at.elapsed() < NAMED_FOR).map(|(_, model)| model.clone())
+    let (found, unread): (HashMap<String, DefaultModel>, Vec<String>) = {
+        let held = named_so_far(api).lock().expect("named lock");
+        let found = defaults.iter().filter_map(|default| Some((default.clone(), held.get(&format!("{origin} {default}"))?.1.clone()))).collect();
+        let fresh = |default: &&String| held.get(&format!("{origin} {default}")).is_some_and(|(at, _)| at.elapsed() < NAMED_FOR);
+        (found, defaults.iter().filter(|default| !fresh(default)).cloned().collect())
     };
-    let mut found: HashMap<String, DefaultModel> = defaults.iter().filter_map(|default| Some((default.clone(), fresh(default)?))).collect();
-    if found.len() < defaults.len() {
-        let Ok(client) = reader(api, &origin) else { return };
-        let Ok(endpoint) = distribution(&client, &origin).await else { return };
-        let (client, endpoint, origin) = (&client, &endpoint, &origin);
-        let unread: Vec<String> = defaults.iter().filter(|default| !found.contains_key(*default)).cloned().collect();
-        let reads = unread.into_iter().map(|default| async move {
-            let model = named(api, client, endpoint, origin, &default).await.unwrap_or_default();
-            (default, model)
+    if !unread.is_empty() && !READING.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        let api = api.clone();
+        tokio::spawn(async move {
+            let read = async {
+                let Ok(client) = reader(&api, &origin) else { return };
+                let Ok(endpoint) = distribution(&client, &origin).await else { return };
+                let (api, client, endpoint, origin) = (&api, &client, &endpoint, &origin);
+                let reads = unread.into_iter().map(|default| async move {
+                    let model = named(api, client, endpoint, origin, &default).await.unwrap_or_default();
+                    (default, model)
+                });
+                let reads: Vec<(String, DefaultModel)> = stream::iter(reads).buffered(READS).collect().await;
+                save(api);
+                {
+                    let mut held = named_so_far(api).lock().expect("named lock");
+                    for (default, model) in reads {
+                        held.insert(format!("{origin} {default}"), (Instant::now(), model));
+                    }
+                }
+                keep_families(api);
+            };
+            let _ = tokio::time::timeout(Duration::from_secs(60), read).await;
+            READING.store(false, std::sync::atomic::Ordering::Release);
         });
-        let reads: Vec<(String, DefaultModel)> = stream::iter(reads).buffered(READS).collect().await;
-        save(api);
-        let mut held = named_so_far().lock().expect("named lock");
-        for (default, model) in reads {
-            held.insert(format!("{origin} {default}"), (Instant::now(), model.clone()));
-            found.insert(default, model);
-        }
     }
     for tool in tools {
         for model in tool.models.iter_mut().chain(tool.model.iter_mut()) {

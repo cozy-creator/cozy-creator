@@ -12,11 +12,11 @@ import { bytes, shown, stamp } from "../format"
 import { OnMachine } from "../machines/OnMachine"
 import { LibraryFrame } from "./Library"
 
-/** Follows the run the ask became. A Hub checkpoint is only recorded there: Calcifer's own run, on no machine. */
+/** Follows what the ask became: a project's run (an upload of its run's output), else a job, which its machine shows (cl-1028). */
 function useFollowRun() {
   const navigate = useNavigate()
   const to = useTo()
-  return ({ run }: Submitted) => navigate(to(`runs/${run.number}`))
+  return ({ run }: Submitted) => navigate(to(run.project_id ? `runs/${run.number}` : `machines/${run.machine ?? "local"}`))
 }
 
 /** A dropped file becomes a private checkpoint of a model, on a machine that makes and uploads it. */
@@ -37,10 +37,10 @@ function Upload({ destination }: { destination?: string }) {
         </label>
       )}
       <label>
-        Lane
+        Precision
         <input className="field" spellCheck={false} placeholder="bf16, fp8, int8, …" value={lane} onChange={(event) => setLane(event.target.value)} />
       </label>
-      {file ? <FileRow file={file} onRemove={() => files.remove(file.id)} /> : <DropZone onFiles={(chosen) => files.add(chosen)}>Drop its weights here, or choose</DropZone>}
+      {file ? <FileRow file={file} onRemove={() => files.remove(file.id)} /> : <DropZone onFiles={(chosen) => files.add(chosen)}>Drop the model file here, or choose one</DropZone>}
       <OnMachine
         body={{ source: file?.digest ?? "", destination: to, lane: lane.trim() }}
         label="Upload"
@@ -71,7 +71,7 @@ export function Models() {
       <div className="row center">
         <input className="field wide" aria-label="Search models" placeholder="Search models, tags, or org/name" spellCheck={false} value={typed} onChange={(event) => setTyped(event.target.value)} />
       </div>
-      <Failure error={error} lead="Couldn't search the models" />
+      <Failure error={error} lead="Couldn't search models" />
       <ul className="list">
         {data?.models
           .filter((found) => showNsfw || !isNsfw(found.tags))
@@ -87,15 +87,15 @@ export function Models() {
             </li>
           ))}
       </ul>
-      {data && !data.models.length && <p className="muted">{q ? `No model matches ${q}.` : "No models you can see."}</p>}
+      {data && !data.models.length && <p className="muted">{q ? `No models match “${q}”.` : "No models to show."}</p>}
       {Boolean(data?.older) && (
         <button type="button" className="tb" onClick={() => setLimit(Math.min(100, limit + 25))}>
-          {data?.older} more
+          Show {data?.older} more
         </button>
       )}
       {signedIn && (
         <details className="sect">
-          <summary>Upload a file</summary>
+          <summary>Upload a model file</summary>
           <Upload />
         </details>
       )}
@@ -110,7 +110,7 @@ function Publish({ name, checkpoints, onDone }: { name: string; checkpoints: Mod
   const [chosen, setChosen] = useState<Set<string>>(new Set())
   return (
     <>
-      <p className="muted">Choose one checkpoint per lane for the public release.</p>
+      <p className="muted">Pick one checkpoint per precision for the public release.</p>
       <table className="grid">
         <tbody>
           {checkpoints.map((checkpoint) => (
@@ -118,7 +118,7 @@ function Publish({ name, checkpoints, onDone }: { name: string; checkpoints: Mod
               <td>
                 <input
                   type="checkbox"
-                  aria-label={`Publish the ${checkpoint.lane} checkpoint of ${checkpoint.created_at}`}
+                  aria-label={`Include the ${checkpoint.lane} checkpoint from ${stamp(checkpoint.created_at)}`}
                   checked={chosen.has(checkpoint.checkpoint)}
                   onChange={(event) => {
                     const next = new Set(chosen)
@@ -140,13 +140,13 @@ function Publish({ name, checkpoints, onDone }: { name: string; checkpoints: Mod
         </tbody>
       </table>
       <div className="row center">
-        <input className="field" spellCheck={false} aria-label="Version" placeholder="Version, 0.1.0" value={version} onChange={(event) => setVersion(event.target.value)} />
+        <input className="field" spellCheck={false} aria-label="Version" placeholder="Version, like 0.1.0" value={version} onChange={(event) => setVersion(event.target.value)} />
         <Confirm
           label="Publish"
           danger={false}
           disabled={ask.busy || !version.trim() || !chosen.size}
-          says={`Publish ${shown(name)} ${version.trim()} with ${chosen.size} ${chosen.size === 1 ? "lane" : "lanes"}? Its checkpoint mapping stays fixed; you can make the release private later.`}
-          yes="Publish it"
+          says={`Publish ${shown(name)} ${version.trim()} with ${chosen.size} ${chosen.size === 1 ? "precision" : "precisions"}? Its checkpoints can't change after this, but you can make the release private later.`}
+          yes="Publish"
           onYes={() =>
             void ask.run(async () => {
               const released = await client.modelPublish(name, version.trim(), [...chosen])
@@ -158,7 +158,7 @@ function Publish({ name, checkpoints, onDone }: { name: string; checkpoints: Mod
           }
         />
       </div>
-      <Failure error={ask.error} lead="Couldn't publish it" />
+      <Failure error={ask.error} lead="Couldn't publish the release" />
     </>
   )
 }
@@ -172,8 +172,8 @@ function DeleteCheckpoint({ name, checkpoint, onDone }: { name: string; checkpoi
       <Confirm
         label="Delete"
         disabled={ask.busy}
-        says={`Delete this private ${checkpoint.lane} checkpoint of ${shown(name)}? No release names it, and the Hub reclaims what nothing else uses. It can't be undone.`}
-        yes="Delete it"
+        says={`Delete this private ${checkpoint.lane} checkpoint of ${shown(name)}? No release uses it. This can't be undone.`}
+        yes="Delete checkpoint"
         onYes={() =>
           void ask.run(async () => {
             await client.deleteModelCheckpoint(name, checkpoint.checkpoint)
@@ -188,9 +188,9 @@ function DeleteCheckpoint({ name, checkpoint, onDone }: { name: string; checkpoi
 
 /** Where a model's family comes from, as a person reads it. */
 function familyLine(detail: ModelDetail): string | undefined {
-  if (!detail.family) return detail.kind === "lora" ? "no family: a LoRA needs one to run" : undefined
-  if (detail.family_from === "weights") return `${detail.family}, from its weights`
-  return detail.weights_family ? `${detail.family}, set by its owner (its weights say ${detail.weights_family})` : `${detail.family}, set by its owner`
+  if (!detail.family) return detail.kind === "lora" ? "No family set (a LoRA needs one to run)" : undefined
+  if (detail.family_from === "weights") return `${detail.family} (read from its weights)`
+  return detail.weights_family ? `${detail.family} (set by its owner; its weights say ${detail.weights_family})` : `${detail.family} (set by its owner)`
 }
 
 /** Its owner's family and tags. Picking "from its weights" (or none) clears the label; a checkpoint needs no family, a LoRA one to run. */
@@ -210,7 +210,7 @@ function Labels({ name, detail }: { name: string; detail: ModelDetail }) {
       queries.setQueryData(["model", name], edited.model)
       void queries.invalidateQueries({ queryKey: ["models"] })
     })
-  const none = detail.weights_family ? `From its weights: ${detail.weights_family}` : detail.kind === "lora" ? "None (a LoRA needs one to run)" : "None"
+  const none = detail.weights_family ? `${detail.weights_family} (from its weights)` : detail.kind === "lora" ? "None (a LoRA needs one to run)" : "None"
   const add = () => {
     const tag = adding.trim()
     if (tag) edit({ add_tags: [tag] })
@@ -231,7 +231,7 @@ function Labels({ name, detail }: { name: string; detail: ModelDetail }) {
       </label>
       <label className="row center">
         <input type="checkbox" checked={tags.includes(NSFW)} disabled={ask.busy} onChange={(event) => edit(event.target.checked ? { add_tags: [NSFW] } : { remove_tags: [NSFW] })} />
-        NSFW: it can make sexual or nude images, asked for or not
+        NSFW (it can make sexual or nude images, even when not asked to)
       </label>
       <div className="row center">
         <Tags tags={tags} onRemove={(tag) => edit({ remove_tags: [tag] })} />
@@ -249,7 +249,7 @@ function Labels({ name, detail }: { name: string; detail: ModelDetail }) {
           Add
         </button>
       </div>
-      <Failure error={ask.error} lead="Couldn't change it" />
+      <Failure error={ask.error} lead="Couldn't save the change" />
     </div>
   )
 }
@@ -274,7 +274,7 @@ function Releases({ detail, signedIn, onDone }: { detail: ModelDetail; signedIn:
                     <Confirm
                       label="Unpublish"
                       disabled={ask.busy}
-                      says={`Make ${shown(detail.model)}@${release.version} private? Existing installed copies remain.`}
+                      says={`Make ${shown(detail.model)} ${release.version} private? Copies already downloaded stay where they are.`}
                       yes="Make private"
                       onYes={() => void ask.run(async () => {
                         await client.modelUnpublish(detail.model, release.version)
@@ -286,8 +286,8 @@ function Releases({ detail, signedIn, onDone }: { detail: ModelDetail; signedIn:
                     <Confirm
                       label="Delete"
                       disabled={ask.busy}
-                      says={`Delete release ${release.version} of ${shown(detail.model)}? The version cannot be reused; its checkpoints remain with the model.`}
-                      yes="Delete it"
+                      says={`Delete release ${release.version} of ${shown(detail.model)}? You can't reuse that version number, and its checkpoints stay with the model.`}
+                      yes="Delete release"
                       onYes={() =>
                         void ask.run(async () => {
                           await client.deleteModelRelease(detail.model, release.version)
@@ -302,7 +302,7 @@ function Releases({ detail, signedIn, onDone }: { detail: ModelDetail; signedIn:
           )}
         </tbody>
       </table>
-      {!detail.releases.length && <p className="muted">No release yet: it's private.</p>}
+      {!detail.releases.length && <p className="muted">No releases yet, so it's private.</p>}
       <Failure error={ask.error} lead="Couldn't change the release" />
     </>
   )
@@ -329,7 +329,7 @@ export function ModelDrawer() {
 
   return (
     <LibraryFrame on="models" title={shown(name)} back={to("models")}>
-      <Failure error={error} lead={`Couldn't read ${shown(name)}`} />
+      <Failure error={error} lead={`Couldn't load ${shown(name)}`} />
       {data && (
         <p className="muted">
           {[familyLine(data), data.author && `by ${data.author.name}${data.author.parked ? " (not claimed)" : ""}`, data.triggers?.length && `${data.triggers.length > 1 ? "triggers" : "trigger"}: ${data.triggers.map((trigger) => `“${trigger}”`).join(", ")}`, data.strength !== undefined && data.strength !== null && `strength ${data.strength}`, data.source && `from ${data.source}`]
@@ -345,16 +345,16 @@ export function ModelDrawer() {
       )}
       <Section title="Download">
         <div className="row center">
-          <select className="field" aria-label="Which release" value={release} onChange={(event) => setRelease(event.target.value)}>
-            <option value="">The newest release</option>
+          <select className="field" aria-label="Release" value={release} onChange={(event) => setRelease(event.target.value)}>
+            <option value="">Newest release</option>
             {data?.releases.map((row) => (
               <option key={row.version} value={row.version}>
                 {row.version}
               </option>
             ))}
           </select>
-          <select className="field" aria-label="Which lane" value={lane} onChange={(event) => setLane(event.target.value)}>
-            <option value="">The machine's best lane</option>
+          <select className="field" aria-label="Precision" value={lane} onChange={(event) => setLane(event.target.value)}>
+            <option value="">Best for the machine</option>
             {lanes.map((held) => (
               <option key={held} value={held}>
                 {held}
@@ -377,12 +377,12 @@ export function ModelDrawer() {
             <summary>Quantize</summary>
             <div className="stack">
               <label>
-                Lane
-                <input className="field" spellCheck={false} placeholder="The lane to write: fp8, int8, …" value={quantizeLane} onChange={(event) => setQuantizeLane(event.target.value)} />
+                Precision
+                <input className="field" spellCheck={false} placeholder="fp8, int8, …" value={quantizeLane} onChange={(event) => setQuantizeLane(event.target.value)} />
               </label>
               <label>
                 Package
-                <input className="field" spellCheck={false} placeholder="org/name, whose recipe writes it" value={quantizePackage} onChange={(event) => setQuantizePackage(event.target.value)} />
+                <input className="field" spellCheck={false} placeholder="org/name of the package that quantizes it" value={quantizePackage} onChange={(event) => setQuantizePackage(event.target.value)} />
               </label>
             </div>
             <OnMachine
@@ -395,12 +395,12 @@ export function ModelDrawer() {
             />
           </details>
           <details className="sect">
-            <summary>Upload a file</summary>
+            <summary>Upload a model file</summary>
             <Upload destination={name} />
           </details>
           {member && data && (
             <details className="sect" open>
-              <summary>Commits and publish</summary>
+              <summary>Checkpoints and publishing</summary>
               <Publish name={name} checkpoints={data.checkpoints} onDone={again} />
             </details>
           )}
@@ -408,12 +408,12 @@ export function ModelDrawer() {
             <Confirm
               label={`Delete ${shown(name)}`}
               disabled={remove.busy}
-              says={`Delete ${shown(name)} from the Hub, with every release and checkpoint? The Hub reclaims what nothing else uses, and it can't be undone. Machines keep what they hold.`}
-              yes="Delete it for good"
+              says={`Delete ${shown(name)} from the Hub, with every release and checkpoint? This can't be undone. Machines keep the copies they've downloaded.`}
+              yes="Delete forever"
               onYes={() =>
                 void remove.run(async () => {
                   await client.deleteModel(name)
-                  say(`${shown(name)} is deleted.`)
+                  say(`Deleted ${shown(name)}.`)
                   void queries.invalidateQueries({ queryKey: ["models"] })
                   navigate(to("models"))
                 })

@@ -168,7 +168,7 @@ pub(crate) struct Seal {
     pub group: bool,
     /// `COZY_HOME`: attention/kernel qualification is kept here between executors.
     pub home: PathBuf,
-    /// Upstream JIT caches and `TMPDIR`, scoped to one machine incarnation and generation.
+    /// Upstream JIT caches and `tmp` (`TMPDIR`), scoped to one machine incarnation and generation.
     pub jit: PathBuf,
     /// This identity's persistent kernel-store namespace.
     pub kernels: PathBuf,
@@ -224,6 +224,7 @@ impl Seal {
         }
         boundary_directory(&root.join("jit").join(incarnation))?;
         let jit = owned(root.join("jit").join(incarnation).join(generation))?;
+        owned(jit.join("tmp"))?;
         // On a low disk the persistent kernel store is an optional write: compiled kernels
         // then live in this run's JIT scope, removed with it.
         let (kernels, kernel_hold) = if crate::reclaim::measure(root)?.short().is_some() {
@@ -265,6 +266,7 @@ impl Seal {
         remove_stale_jit(area, incarnation);
         boundary_directory(&area.join("jit").join(incarnation))?;
         self.jit = owned(area.join("jit").join(incarnation).join(&self.generation))?;
+        owned(self.jit.join("tmp"))?;
         self.home = owned(area.join("home").join(format!("u{}", euid())))?;
         Ok(())
     }
@@ -275,7 +277,9 @@ impl Seal {
             ("CUDA_VISIBLE_DEVICES".to_string(), self.devices.clone()),
             ("OMP_NUM_THREADS".into(), THREADS.to_string()),
             ("COZY_HOME".into(), path(self.home.clone())),
-            ("TMPDIR".into(), path(self.jit.clone())),
+            // A temporary folder of its own, apart from the compiler caches beside it: what an executor writes outside a call (an
+            // import, an atexit) goes with its incarnation; a call's own go to its project's scratch (cl-984, cl-1055).
+            ("TMPDIR".into(), path(self.jit.join("tmp"))),
             ("CUDA_CACHE_PATH".into(), path(self.jit.join("cuda"))),
             (
                 "PYTHONPYCACHEPREFIX".into(),
@@ -309,8 +313,15 @@ impl Seal {
         if let Some(root) = &self.tensorfs_home {
             imposed.insert("TENSORFS_HOME".into(), path(root.clone()));
         }
-        // The origins this machine's operator declared local, and no others, for the executor's fetches.
-        let local = tensorfs::fetch::local_origins();
+        // The origins this machine's operator declared local, and TensorD's own Hub gateway, which is how executors read
+        // a run's Hub under its capability (cl-675): no others, for the executor's fetches.
+        let mut local = tensorfs::fetch::local_origins().to_vec();
+        match crate::gateway::url() {
+            Ok(gateway) => local.push(gateway),
+            Err(error) => tracing::warn!("the Hub gateway: {error}"),
+        }
+        local.sort();
+        local.dedup();
         if !local.is_empty() {
             imposed.insert("TENSORFS_LOCAL_ORIGINS".into(), local.join(","));
         }

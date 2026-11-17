@@ -92,14 +92,38 @@ impl Publisher {
         let _install = job.within(crate::activity::Kind::Install, project.package);
         // One build at a time, in job order (cl-905): its tools' downloads and disk don't split with another's.
         let said = |reason: Option<String>| job.waiting(reason);
-        let _turn = crate::line::INSTALLS.turn(job.order, &job.caller, project.label, job.stop.as_ref(), &said).ok_or_else(super::canceled)?;
+        loop {
+            let turn = crate::line::INSTALLS.turn(job.order, &job.caller, project.label, job.stop.as_ref(), &said).ok_or_else(super::canceled)?;
+            *job.yields.lock().unwrap() = Some(turn.outranked().clone());
+            let built = self.build_in_turn(env, project, job);
+            *job.yields.lock().unwrap() = None;
+            // A caller's guess a run's install took the line from (cl-1104): its build stopped, and goes again after that run's,
+            // from the turn its run first took.
+            let gave_way = turn.outranked().is_cancelled() && !job.stop.as_ref().is_some_and(crate::stop::Stop::is_cancelled);
+            let nested = turn.nested();
+            drop(turn);
+            match built {
+                Err((super::CANCELED, _)) if gave_way && !nested => {
+                    tracing::info!(run = job.caller, "install line: {} gave its turn to a run's install", project.label);
+                }
+                built => return built,
+            }
+        }
+    }
+
+    /// `build`, its turn in the install line held.
+    fn build_in_turn(&self, env: &Path, project: &Project, job: &Job) -> Result<Built, Failure> {
+        // uv's downloads come from their own index, outside the downloader, and a full link of weights starved them (run
+        // 43316018343: 1080 s at 100-450 KiB/s): while they move, the weights leave them the link but a share (cl-1007). Never for
+        // a caller's guess, whose build no run's weights give way to (cl-1104).
+        let _installing = (!crate::origin::priority::prefetch(job.order)).then(tensorfs::fetch::installing);
         let layer = self.layer(job, None)?;
         let missed = match self.build_on(env, project, job, layer.as_deref(), &[]) {
             Err((TORCH_MISSED, missed)) => missed,
             built => return built,
         };
         let torch = layer.as_ref().and_then(|l| l.version("torch")).unwrap_or_default();
-        let warning = format!("requires {missed}; this machine's torch is {torch}: its environment installs its own");
+        let warning = format!("This package needs {missed}, but this machine has torch {torch}, so it installs its own.");
         if crate::private_io::current().is_none() {
             tracing::warn!("package {} {warning}", project.label);
         }
@@ -124,19 +148,16 @@ impl Publisher {
             job.stage(format!("{}: {doing} ({} of {total})", project.stage, step.get()));
         };
         if let Some(fetch) = project.fetch {
-            next("fetching its files");
+            next("getting the package's files");
             fetch()?;
         }
-        // uv's downloads come from their own index, outside the downloader, and its many requests starve them (run
-        // 43316018343: 1080 s at 100-450 KiB/s): what comes after this install waits until it is built (cl-966).
-        let _aside = self.machine.give_way(job.order);
         let carried = carried(project.wheels).map_err(io_failure)?;
         if env.exists() {
             fs::remove_dir_all(env).map_err(io_failure)?;
         }
         let (dir, envs, py) = (project.dir.to_string_lossy(), env.to_string_lossy(), platform::paths::venv_python(env));
         let py = py.to_string_lossy();
-        next("creating its environment");
+        next("creating the environment");
         self.uv(&["venv", "--no-project", "--python", minor(project.python), &envs], &[], job)?;
         // uv never installs what the layer provides: a lock's Torch rows stay out (`Locked::torch`).
         let provided: Vec<&str> = layer.map(|l| l.provided().collect()).unwrap_or_default();
@@ -170,7 +191,7 @@ impl Publisher {
             }
             Ok(())
         };
-        next("installing its dependencies");
+        next("installing dependencies");
         let mut sdk = if over { "machine" } else { "locked" };
         let mut fallback = vec![];
         // Why this machine's own pair isn't what it runs on.
@@ -217,7 +238,7 @@ impl Publisher {
             }
         }
         if let Some(wheels) = project.wheels.filter(|_| steps[1]) {
-            next("adding the wheels it brought");
+            next("adding the package's own wheels");
             let pins: Vec<String> = carried.iter().map(|(name, version)| format!("{name}=={version}")).collect();
             let mut args = vec!["pip", "install", "--python", &py, "--no-deps", "--no-index", "--link-mode", "copy",
                 "--find-links", wheels.to_str().unwrap_or_default()];
@@ -225,7 +246,7 @@ impl Publisher {
             self.uv(&args, &[], job)?;
         }
         if editable_after {
-            next("installing its code");
+            next("installing the package");
             // Its dependencies are in place: the project alone, whatever indexes its sources name.
             self.uv(&["pip", "install", "--python", &py, "--no-deps", "--no-sources", "--editable", &dir], &[], job)?;
         }
@@ -241,7 +262,7 @@ impl Publisher {
         }
         if let Some(locked) = project.locked {
             let build = &self.sdk.runtime_build;
-            next("fitting this machine's Runtime");
+            next("matching this machine's Runtime");
             // A lock's pair of another series can't speak this machine's executor protocol: this
             // machine's goes over it where every declared range admits it, else nothing runs.
             let theirs = pair_of(&locked.packages);
@@ -465,7 +486,7 @@ impl Publisher {
     }
 
     /// uv as the machine runs it (`machine::uv`). `job` hears the bytes it writes about once a
-    /// second; its process group is killed when the run is canceled (`process::supervise`).
+    /// second, and TensorFS what its sockets receive; its process group is killed when the run is canceled (`process::supervise_install`).
     /// Linux tags the builder and its descendants before exec, so a new machine sweeps an
     /// interrupted builder before reusing its environment, even after SIGKILL.
     pub(crate) fn uv(&self, args: &[&str], env: &[(&str, &std::ffi::OsStr)], job: &Job) -> Result<(), Failure> {
@@ -473,7 +494,8 @@ impl Publisher {
         command.args(args).envs(env.iter().copied()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
         // A package's environment is the machine's, whichever project's run builds it (cl-984): its uv runs on the
         // machine's cache and Pythons, never a project's.
-        let (ended, stderr) = run_builder(&mut command, &self.scope_namespace, job.stop.as_ref(), &|read| job.bytes(read, 0))?;
+        let stop = job.stops();
+        let (ended, stderr) = run_builder(&mut command, &self.scope_namespace, stop.as_ref().map(|(stop, _)| stop), &|read| job.bytes(read, 0))?;
         let step = args[..2.min(args.len())].join(" ");
         match ended {
             Supervised::Exited(status) if status.success() => Ok(()),
@@ -481,7 +503,8 @@ impl Publisher {
                 let said = stderr_tail(&stderr);
                 Err(match (network(&said), full(&said)) {
                     (true, _) => (super::UNREACHABLE, format!("uv {step}: {}", said.split_whitespace().collect::<Vec<_>>().join(" "))),
-                    (_, true) => ("machine_disk_full", format!("uv {step} ran out of disk{}", crate::reclaim::advice(self.store.root(), 0))),
+                    (_, true) => ("machine_disk_full", format!("This machine's disk ran out of space while installing the package (uv {step}).{}",
+                        crate::reclaim::advice(self.store.root(), 0))),
                     _ => ("package_installation_uv_failed", format!("uv {step}:\n{said}")),
                 })
             }
@@ -516,7 +539,7 @@ fn run_builder(command: &mut Command, namespace: &str, stop: Option<&crate::stop
             let _ = stderr.read_to_end(&mut kept);
             kept
         });
-        let ended = crate::process::supervise(&mut child, stop, wrote)
+        let ended = crate::process::supervise_install(&mut child, stop, wrote)
             .map_err(|error| ("package_installation_uv_failed", format!("uv: {error}")));
         // A build backend can outlive uv and keep its stderr open. End it before waiting on
         // that pipe, including when supervision failed or the run was canceled.

@@ -161,16 +161,16 @@ impl Local {
     pub(crate) async fn start(&self, answered: impl FnOnce(Endpoint) + Send + 'static) -> Result<Endpoint, Error> {
         let log = self.start_log();
         let failed = |why: String| {
-            let message = format!("this computer's machine did not start: {why} (its log: {})", log.display());
+            let message = format!("This computer's machine didn't start: {why}. Its log is at {}.", log.display());
             Error::new(Kind::Unavailable, "machine_start_failed", message).next("cozy doctor")
         };
         // A pod's machine is its image's, a rental with a Hub and an idle clock. One this starts would
         // own its root as neither.
         if config::image_machine() {
-            return Err(failed("on a pod its image starts it, and it isn't running now".into()));
+            return Err(failed("on a rental, its image starts the machine, and it isn't running now".into()));
         }
         let program = self.home.launcher().ok_or_else(|| {
-            failed(format!("no cozy is installed in {}", self.home.root().display()))
+            failed(format!("there's no cozy installed in {}", self.home.root().display()))
         })?;
         let dir = log.parent().expect("a log has a directory");
         std::fs::create_dir_all(dir).map_err(|e| failed(format!("{}: {e}", dir.display())))?;
@@ -207,14 +207,25 @@ impl Local {
         let woke = wait.woke.clone();
         wait._watch = Some(self.watch(move || woke.notify_one()).map_err(|e| failed(e.message))?);
         let began = Instant::now();
-        let served = tokio::time::timeout(START, wait.served()).await;
+        // Slow is no hang (runs never stuck, Paul 11-15; cl-1066): past `START`, it is waited for while it moves (CPU or I/O since the
+        // last look), and judged silent only once a whole window passes with none, or when its progress can't be read.
+        let mut moved = progress(pid);
+        let served = loop {
+            match tokio::time::timeout(START, wait.served()).await {
+                Err(_) => match progress(pid) {
+                    now @ Some(_) if now != moved => moved = now,
+                    _ => break Err(()),
+                },
+                served => break served.map_err(drop),
+            }
+        };
         match served {
             Ok(Ok(endpoint)) => {
                 info!(ms = began.elapsed().as_millis() as u64, "this computer's machine serves");
                 Ok(endpoint)
             }
             Ok(Err(why)) => Err(failed(why)),
-            Err(_) => {
+            Err(()) => {
                 let stuck = self.stuck(Some(pid));
                 let refusal = not_answering(began, &stuck);
                 warn!("{}", refusal.message);
@@ -252,7 +263,7 @@ impl Answer {
             match self.exited.lock().unwrap().as_ref() {
                 // Another start holds the root: it serves soon, or lets go.
                 Some(Ok(status)) if status.success() && held(&self.lock) => {}
-                Some(Ok(status)) => return Err(format!("the machine exited ({status}) before it served")),
+                Some(Ok(status)) => return Err(format!("the machine exited ({status}) before it was ready")),
                 Some(Err(why)) => return Err(why.clone()),
                 None => {}
             }
@@ -261,11 +272,17 @@ impl Answer {
     }
 }
 
+/// What a start's processes have done so far: CPU time and bytes moved, summed over its tree. None: unreadable here.
+fn progress(pid: u32) -> Option<(u64, u64)> {
+    let each: Vec<(u64, u64)> = platform::process::tree(pid).iter().filter_map(|member| platform::process::meter(member.birth().pid)).collect();
+    (!each.is_empty()).then(|| each.iter().fold((0, 0), |(cpu, io), (c, i)| (cpu + c, io + i)))
+}
+
 /// `machine_not_answering`: how long since it started, what is stuck, and the next command.
 fn not_answering(began: Instant, stuck: &str) -> Error {
-    let message = format!("local's TensorD isn't answering: it hasn't served {} s after it started{stuck}", began.elapsed().as_secs());
+    let message = format!("This computer's TensorD isn't answering: it still isn't ready {}s after it started{stuck}.", began.elapsed().as_secs());
     Error::new(Kind::Unavailable, "machine_not_answering", message)
-        .remedy("local takes no work until it serves; `--on new` rents a machine, or name another")
+        .remedy("This computer takes no work until it's ready. Run it on another machine, or rent one.")
         .next("cozy machine logs local")
 }
 
@@ -279,16 +296,16 @@ fn stuck_now(root: PathBuf, log: PathBuf, pid: Option<u32>) -> String {
             let pid = member.birth().pid;
             if let Some(wchan) = platform::process::in_kernel(pid) {
                 let at = Some(&wchan).filter(|w| !w.is_empty()).map(|w| format!(" at {w}")).unwrap_or_default();
-                stuck += &format!("; pid {pid} is in the kernel{at}");
+                stuck += &format!("; process {pid} is stuck in the kernel{at}");
             }
         }
         if let Some(line) = std::fs::read_to_string(&log).ok().as_deref().and_then(platform::process::last_line) {
-            stuck += &format!("; its log ends: {line}");
+            stuck += &format!("; its log ends with: {line}");
         }
         let _ = said.send(stuck);
     });
     match looking {
-        Ok(_) => heard.recv_timeout(LOOK).unwrap_or_else(|_| format!("; its files don't answer a read in {} s", LOOK.as_secs())),
+        Ok(_) => heard.recv_timeout(LOOK).unwrap_or_else(|_| format!("; its files didn't answer a read within {}s", LOOK.as_secs())),
         Err(_) => String::new(),
     }
 }
@@ -311,7 +328,7 @@ fn stuck_before(record: &Path) -> String {
         }
         let thread = stuck["threads"].as_array().and_then(|threads| threads.iter().find(|t| t["state"] == "D"));
         let at = thread.and_then(|t| t["wchan"].as_str()).filter(|w| !w.is_empty()).map(|w| format!(" at {w}")).unwrap_or_default();
-        said += &format!("; the TensorD before it (pid {}) can't exit, in the kernel{at}", birth.pid);
+        said += &format!("; the previous TensorD (process {}) can't exit and is stuck in the kernel{at}", birth.pid);
     }
     said
 }
@@ -388,7 +405,7 @@ fn valid_key(key: &str) -> Result<(), Error> {
         false => Err(Error::new(
             Kind::Validation,
             "public_key_invalid",
-            format!("{key:?} is not a controller's public key (32 bytes of unpadded base64url)"),
+            format!("{key:?} isn't a valid computer key (32 bytes of unpadded base64url)."),
         )
         .next("on that computer: cozy machine show local (its `controller key`)")),
     }

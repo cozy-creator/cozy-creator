@@ -4,7 +4,7 @@
 // Machines lists what `cozy machine ls` does; tabs share one `GET /v1/events`, which the second takes on when the first closes. The CLI has
 // no verb that renames or moves a box (a node file holds kind, description, text, approved, takes and rev): those two are the API's.
 const { mkdirSync, writeFileSync } = require('fs');
-const { test, expect, box, canvasIdle, focus, fixtureTool, png, TEXT_END } = require('./fixtures');
+const { test, expect, canvasIdle, focus, fixtureTool, png, TEXT_END, canvasCard, canvasText, canvasLabel, screenshotPixels } = require('./fixtures');
 
 /** Polls whose miss leaves the cell going, as `expect.soft` does. */
 const softly = expect.configure({ soft: true });
@@ -15,18 +15,25 @@ const SLOW = fixtureTool('tool.py/slow');
 
 /** In the page: `window.__shown(spec, ms)` resolves with the time of the first frame `spec` holds on the canvas, or null after `ms`. */
 function watchCanvas() {
-  const card = (name) => document.querySelector(`.react-flow__node .card[data-asset="${CSS.escape(name)}"]`);
+  const inspect = () => document.querySelector('.canvas-root')?.canvasInspection;
+  const native = (name) => document.querySelector(`.canvas-node .card[data-asset=${JSON.stringify(name)}], [data-focused-asset=${JSON.stringify(name)}] .card[data-asset=${JSON.stringify(name)}]`);
   const holds = (spec) => {
     if (spec.all) return spec.all.every(holds);
-    if (spec.gone) return !card(spec.gone);
-    if (spec.focused) return Boolean(document.querySelector(`[data-focused-asset="${CSS.escape(spec.focused)}"]`));
-    const el = card(spec.name);
-    if (!el) return false;
-    if (spec.text !== undefined && !el.textContent.includes(spec.text)) return false;
-    if (spec.label !== undefined && el.querySelector('.node-version-label')?.textContent !== spec.label) return false;
+    if (spec.gone) return Boolean(inspect()) && !inspect().names().includes(spec.gone) && !native(spec.gone);
+    if (spec.focused) return Boolean(document.querySelector(`[data-focused-asset=${JSON.stringify(spec.focused)}]`));
+    const card = inspect()?.card(spec.name), el = native(spec.name), shown = card?.rendered;
+    if (!card) return false;
+    if (!(shown && shown.transform.alpha > 0) && !el?.checkVisibility()) return false;
+    const text = el?.textContent ?? [shown?.words, ...Object.values(shown?.labels ?? {}).map(label => label.fullText)].filter(Boolean).join(' ');
+    if (spec.text !== undefined && !text.includes(spec.text)) return false;
+    if (spec.label !== undefined && (shown?.labels.version?.fullText ?? el?.querySelector('.node-version-label')?.textContent) !== spec.label) return false;
     if (spec.at) {
-      const { e, f } = new DOMMatrix(getComputedStyle(el.closest('.react-flow__node')).transform);
-      if (Math.abs(e - spec.at.x) > 0.5 || Math.abs(f - spec.at.y) > 0.5) return false;
+      const root = document.querySelector('.canvas-root'), camera = inspect().camera(), pane = root.getBoundingClientRect();
+      const node = el?.closest('.canvas-node'), rect = node?.checkVisibility() ? node.getBoundingClientRect() : null;
+      if (!rect && !shown) return false;
+      const x = (rect ? (rect.x - pane.x - camera.x) / camera.zoom : shown.transform.x) + card.position.x - (card.bounds.x - pane.x - camera.x) / camera.zoom;
+      const y = (rect ? (rect.y - pane.y - camera.y) / camera.zoom : shown.transform.y) + card.position.y - (card.bounds.y - pane.y - camera.y) / camera.zoom;
+      if (Math.abs(x - spec.at.x) > 0.5 || Math.abs(y - spec.at.y) > 0.5) return false;
     }
     return true;
   };
@@ -63,13 +70,13 @@ async function timed(page, label, spec, act) {
 }
 
 /** Each `method` call to `path` waits here, unsent, until `release`: as a slow network holds it. */
-async function hold(page, method, path) {
+async function hold(page, method, path, which = () => true) {
   const calls = [];
   let open;
   const held = new Promise((done) => (open = done));
   const matches = (url) => url.pathname === path;
   const handler = async (route) => {
-    if (route.request().method() !== method) return route.fallback();
+    if (route.request().method() !== method || !which(route.request())) return route.fallback();
     calls.push(route.request());
     await held;
     await route.fallback();
@@ -105,7 +112,6 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
   mkdirSync(testInfo.outputDir, { recursive: true });
   const file = (name) => testInfo.outputPath(name);
   await page.evaluate(watchCanvas);
-  const card = (name) => box(page, name);
 
   await test.step('the CLI and an API client add, set words, import, rename, approve and move: each live on the open canvas', async () => {
     const nodes = file('nodes.json');
@@ -118,11 +124,21 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
     await timed(page, 'cozy apply: a picture imported, two takes', { name: 'cli_pic' }, () => apply(cli, nodes, { cli_pic: { kind: 'image', takes: [{ file: file('one.png') }, { file: file('two.png') }] } }));
     // Each shows the version that is its state; the other is approved.
     let was = (await project.asset('cli_pic')).version;
-    await expect.soft(card('cli_pic').locator('.node-version-label'), 'cli_pic shows the version that is its state').toHaveText(`v${was}`);
+    await softly.poll(() => canvasLabel(page, 'cli_pic', 'version'), { message: 'cli_pic shows the version that is its state' }).toBe(`v${was}`);
     let other = was === 2 ? 1 : 2;
     rev = await revOf(cli, 'cli_pic');
     await timed(page, `cozy apply: take ${other} approved`, { name: 'cli_pic', label: `v${other}` }, () => apply(cli, nodes, { cli_pic: { rev, approved: other } }));
     expect.soft((await project.asset('cli_pic')).approved, 'cozy apply approved it').toBe(other);
+    await page.mouse.move(2, 500);
+    const approved = await project.asset('cli_pic');
+    const wanted = String(approved.prefixes.find(version => version.number === other).main.sha256).replace(/^sha256:/, '');
+    await expect.poll(async () => { const shown = (await canvasCard(page, 'cli_pic'))?.rendered; return shown?.media.ready && !shown.landing ? shown.media.sha : null; }, { message: 'the approved take is decoded and presented' }).toBe(wanted);
+    const body = (await canvasCard(page, 'cli_pic')).body, pixels = screenshotPixels(await page.screenshot({ scale: 'css' }));
+    for (const [u, v] of [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]]) {
+      const actual = pixels(body.x + body.width * u, body.y + body.height * v), expected = [other === 1 ? 30 : 90, 255 * u, 255 * v];
+      expect.soft(Math.max(...actual.map((value, i) => Math.abs(value - expected[i]))), `cli_pic source pixels at ${u},${v}`).toBeLessThanOrEqual(32);
+    }
+
 
     // An API client, as another program writes.
     await timed(page, 'API: a text box', { name: 'api_a', text: 'Words from the API' }, () => project.add({ name: 'api_a', kind: 'text', fields: { text: 'Words from the API' } }));
@@ -131,7 +147,7 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
     await api.post(project.at('/assets/api_pic/versions'), { source: await project.upload(png(210)) });
     await timed(page, 'API: a rename', { all: [{ name: 'api_b', text: 'Second API words' }, { gone: 'api_a' }] }, () => api.post(project.at('/rename'), { from: 'api_a', to: 'api_b' }));
     was = (await project.asset('api_pic')).version;
-    await expect.soft(card('api_pic').locator('.node-version-label'), 'api_pic shows the version that is its state').toHaveText(`v${was}`);
+    await softly.poll(() => canvasLabel(page, 'api_pic', 'version'), { message: 'api_pic shows the version that is its state' }).toBe(`v${was}`);
     other = was === 2 ? 1 : 2;
     await timed(page, `API: take ${other} approved`, { name: 'api_pic', label: `v${other}` }, () => api.post(project.at('/approve'), { name: 'api_pic', version: String(other) }));
     expect.soft((await project.asset('api_pic')).approved, 'the API approved it').toBe(other);
@@ -142,19 +158,23 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
     await timed(page, 'API: a move', { name: 'api_b', at: to }, () => api.patch(project.at('/canvas'), { cards: { api_b: to } }));
 
     // Words being typed in cli_a meanwhile, at a person's pace: the CLI sets its description, and the API renames the box while the page's
-    // read of that is still on its way, so the read finds nothing by the old name (the 404 is this cell's doing). The page follows the
-    // rename: Focus stays on the box under its new name, and every typed character stays and is saved there beside the CLI's description.
-    guards.allow(/status of 404\b.*\/v1\/projects\/[^/ ]+\/assets\/cli_a$/);
+    // read of that is still on its way, so the read finds nothing by the old name (this cell's doing): it's said gone, an answer, never a
+    // 404. The page follows the rename: Focus stays on the box under its new name, and every typed character stays and is saved there beside
+    // the CLI's description.
+    const asksOld = (request) => (request.postDataJSON()?.names ?? []).includes('cli_a');
     const notFound = [];
-    page.on('response', (answer) => {
-      if (answer.status() === 404 && new URL(answer.url()).pathname === project.at('/assets/cli_a')) notFound.push(answer.request().method());
+    const goneByOld = [];
+    page.on('response', async (answer) => {
+      const at = new URL(answer.url()).pathname;
+      if (answer.status() === 404 && at === project.at('/assets/cli_a')) notFound.push(answer.request().method());
+      if (at === project.at('/read') && answer.request().method() === 'POST' && asksOld(answer.request()) && (await answer.json().catch(() => null))?.gone?.includes('cli_a')) goneByOld.push(answer.url());
     });
     const region = await focus(page, 'cli_a');
     const words = region.getByRole('textbox', { name: 'Text', exact: true });
     await words.click();
     await page.keyboard.press(TEXT_END);
     const typing = page.keyboard.type(' TYPED-MEANWHILE', { delay: 150 });
-    const reads = await hold(page, 'GET', project.at('/assets/cli_a'));
+    const reads = await hold(page, 'POST', project.at('/read'), asksOld);
     rev = await revOf(cli, 'cli_a');
     await apply(cli, nodes, { cli_a: { rev, description: 'Said by the CLI meanwhile' } });
     await softly.poll(() => reads.calls.length, { message: "the page reads the CLI's description" }).toBeGreaterThan(0);
@@ -170,15 +190,15 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
     await canvasIdle(page);
     await softly.poll(async () => (await project.asset('cli_typed'))?.fields, { message: "the typed words saved beside the CLI's description" })
       .toMatchObject({ text: 'Second CLI words TYPED-MEANWHILE', description: 'Said by the CLI meanwhile' });
-    expect.soft(notFound.filter((method) => method === 'GET').length, 'the reads held past its rename found nothing by its old name').toBeGreaterThanOrEqual(reads.calls.length);
-    expect.soft(notFound.filter((method) => method !== 'GET'), 'no write went under its old name').toEqual([]);
+    expect.soft(goneByOld.length, 'the reads held past its rename found nothing by its old name').toBeGreaterThanOrEqual(reads.calls.length);
+    expect.soft(notFound, 'nothing went under its old name').toEqual([]);
     expect.soft(await page.evaluate(() => window.notReloaded), 'the canvas was never reloaded').toBe(true);
   });
 
   await test.step('a typed save on its way as the API renames its box: it goes again under the new name, and nothing is refused', async () => {
-    // More typed in cli_typed, its save held, as a slow network holds it, until the API's rename has returned: it reaches Calcifer under the
-    // old name, which 404s (this cell's doing, as is the page's read of that name after it). The page hears the rename and sends the same
-    // words under the new name, in their turn, with nothing more typed and nothing said to have failed.
+    // More typed in cli_typed, its save held, as a slow network holds it, until the page has heard the API's rename: it reaches Calcifer under
+    // the old name, which 404s (this cell's doing). The page, which already knows the new name, sends the same words under it, in their turn,
+    // with nothing more typed and nothing said to have failed (B5: this order lost them).
     guards.allow(/status of 404\b.*\/v1\/projects\/[^/ ]+\/assets\/cli_typed$/);
     await page.evaluate(recordNotes);
     const saved = [];
@@ -195,6 +215,7 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
     await page.keyboard.type(' IN-THE-WINDOW');
     await expect.poll(() => saves.calls.length, { message: 'its words sent at the pause, and held' }).toBe(1);
     await api.post(project.at('/rename'), { from: 'cli_typed', to: 'cli_raced' });
+    await expect(region, 'the page hears the rename while its save is held').toHaveAttribute('data-focused-asset', 'cli_raced', { timeout: 15_000 });
     await saves.release();
     const typed = 'Second CLI words TYPED-MEANWHILE IN-THE-WINDOW';
     // Still in the words, nothing more typed: the save goes on by itself.
@@ -231,8 +252,8 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
     await rowOf(run.number).getByRole('link').click();
     // Named as a person names it from any folder: KEY-N (cl-987).
     await expect(drawer.locator('.drawer-head')).toContainText(`Run ${run.name}`);
-    await expect(head).toContainText('running', { timeout: 120_000 });
-    await expect.soft(head, 'its end, live').toContainText('completed', { timeout: 120_000 });
+    await expect(head).toContainText('Running', { timeout: 120_000 });
+    await expect.soft(head, 'its end, live').toContainText('Completed', { timeout: 120_000 });
     await expect.soft(log, 'its log, to its end').toContainText('completed');
     expect.soft((await first).code, 'the CLI followed it to its end').toBe(0);
     expect.soft((await api.get(project.at(`/runs/${encodeURIComponent(run.id)}`))).status).toBe('completed');
@@ -246,19 +267,19 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
       await drawer.getByRole('link', { name: 'Back' }).click();
       await expect(rowOf(long.number)).toBeVisible({ timeout: 30_000 });
       await rowOf(long.number).getByRole('link').click();
-      await expect(head).toContainText('running', { timeout: 120_000 });
+      await expect(head).toContainText('Running', { timeout: 120_000 });
       const cancel = drawer.locator('.drawer-head').getByRole('button', { name: 'Cancel', exact: true });
       const asking = drawer.locator('.confirm');
       await cancel.click();
       await expect.soft(cancel).toHaveAttribute('aria-expanded', 'true');
-      await expect.soft(asking.locator('.says'), 'Cancel asks there, inline').toHaveText(`Cancel run ${long.name}? What it hasn't finished is lost. Its machine goes on.`);
+      await expect.soft(asking.locator('.says'), 'Cancel asks there, inline').toHaveText(`Cancel run ${long.name}? Any unfinished work is lost. The machine keeps running.`);
       expect.soft(await status(), 'nothing done before its yes').toMatchObject({ status: 'in_progress', cancel_requested: false });
       await asking.getByRole('button', { name: 'Not now' }).click();
       await expect.soft(asking).toHaveCount(0);
-      await expect.soft(head).toContainText('running');
+      await expect.soft(head).toContainText('Running');
       await cancel.click();
-      await asking.getByRole('button', { name: 'Cancel it' }).click();
-      await expect.soft(head, 'canceled, live').toContainText('canceled', { timeout: 60_000 });
+      await asking.getByRole('button', { name: 'Cancel run' }).click();
+      await expect.soft(head, 'canceled, live').toContainText('Canceled', { timeout: 60_000 });
       await softly.poll(async () => (await status()).status, { message: 'the run canceled' }).toBe('canceled');
       await second;
     } finally {
@@ -287,7 +308,7 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
     await expect(tab.locator('.stage')).toBeVisible();
     await tab.bringToFront();
     await project.add({ name: 'tab_a', kind: 'text', fields: { text: 'Seen in the second tab' } });
-    await expect(box(tab, 'tab_a'), "the second tab hears the first tab's stream").toContainText('Seen in the second tab');
+    await expect.poll(() => canvasText(tab, 'tab_a'), { message: "the second tab hears the first tab's stream" }).toContain('Seen in the second tab');
     expect.soft(its.length, 'the second tab opens no stream of its own').toBe(0);
 
     // The first closes: the second takes the stream on, says what it shows, and changes still arrive.
@@ -296,7 +317,7 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
     await softly.poll(() => its.length, { message: 'the second tab opens the one stream' }).toBe(1);
     expect.soft((await shown).ok(), 'it tells Calcifer what it shows').toBe(true);
     await api.patch(project.at('/assets/tab_a'), { fields: { text: 'After the first tab closed' } });
-    await expect.soft(box(tab, 'tab_a'), 'changes keep arriving').toContainText('After the first tab closed');
+    await softly.poll(() => canvasText(tab, 'tab_a'), { message: 'changes keep arriving' }).toContain('After the first tab closed');
     expect.soft(its.length, 'still one stream').toBe(1);
   });
 });

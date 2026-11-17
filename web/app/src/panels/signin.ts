@@ -76,7 +76,7 @@ export function signInClient(client: Client) {
         stepping = undefined
         return signedIn()
       }
-      return reply(404, { error: { type: "", code: "not_found", message: "Not offered here." } })
+      return reply(404, { error: { type: "", code: "not_found", message: "Cozy can't do this sign-in step." } })
     } catch (error) {
       const step = stepOf(error)
       if (!step) return refusal(error, proving)
@@ -118,15 +118,19 @@ export const appearance = (theme: Theme): AuthUiAppearance => ({ theme: theme ==
 
 /** A Hub's codes go by email only, and the waits are what the refusal stated. */
 export const messages = {
-  contactSignIn: { description: "Enter your email. We'll send you a code.", useDifferent: "Use a different email" },
+  contactSignIn: {
+    description: "Enter your email. We'll send you a code.",
+    codeWait: "Check your email. You can ask for another code in {seconds}s.",
+    useDifferent: "Use a different email",
+  },
   fields: { emailOrPhone: "Email" },
   validation: { emailOrPhoneRequired: "Enter your email" },
   errors: {
-    rate_limited: "Check your email: the code you have still works. You can ask for another code in {retry_after_seconds} s.",
-    code_tries_limited: "Too many tries. You can try again in {retry_after_seconds} s.",
+    rate_limited: "Check your email: the code you have still works. You can ask for another one in {retry_after_seconds}s.",
+    code_tries_limited: "Too many tries. Try again in {retry_after_seconds}s.",
     invalid_code: "That code isn't right. Use the code from your latest email, or ask for another.",
     code_expired: "That code has expired. Ask for another.",
     hub_unreachable: "Couldn't reach the Hub. Check your connection and try again.",
-    calcifer_unreachable: "Calcifer isn't answering. Try again in a moment.",
+    calcifer_unreachable: "Cozy isn't responding. Try again in a moment.",
   },
 } as AuthUiMessageBundle

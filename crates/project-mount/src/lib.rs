@@ -68,6 +68,14 @@ const NOTICES: &[(&str, &str)] = &[
         include_str!("../helper/licenses/tclap.txt"),
     ),
     (
+        "licenses/musl.txt",
+        include_str!("../helper/licenses/musl.txt"),
+    ),
+    (
+        "licenses/libfuse.txt",
+        include_str!("../helper/licenses/libfuse.txt"),
+    ),
+    (
         "licenses/sources.json",
         include_str!("../helper/licenses/sources.json"),
     ),
@@ -92,6 +100,16 @@ fn transition(view: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
     held
 }
 
+impl Error {
+    /// What a failed provider said on stderr, for a log: never shown whole to a person.
+    pub fn provider_detail(&self) -> Option<&str> {
+        match self {
+            Error::Provider { detail, .. } if !detail.is_empty() => Some(detail),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(
@@ -100,6 +118,10 @@ pub enum Error {
     HelperMissing,
     #[error("encrypted projects need {0}")]
     DriverMissing(&'static str),
+    /// What the provider needs from this computer is missing; `install` is the command that adds it, when this computer's package
+    /// manager is known (cl-1000).
+    #[error("encrypted projects need {needs} on this computer{}", .install.as_ref().map(|command| format!("; install it with `{command}`")).unwrap_or_default())]
+    DependencyMissing { needs: &'static str, install: Option<String> },
     #[error("{operation}: {source}")]
     Io {
         operation: &'static str,
@@ -113,11 +135,16 @@ pub enum Error {
     #[error("encrypted project is still in use; close programs using {} and try locking again", .0.display())]
     Busy(PathBuf),
     #[error(
-        "filesystem provider {operation} failed ({code:?}); check that {requirements} is installed and available"
+        "filesystem provider {operation} failed ({code:?}){}; check that {requirements} is installed and available",
+        if .said.is_empty() { String::new() } else { format!(": {}", .said) }
     )]
     Provider {
         operation: &'static str,
         code: Option<i32>,
+        /// Its last line on stderr, the cause in its words; empty when it said nothing.
+        said: String,
+        /// Everything it said on stderr before it failed, its last `TAIL` bytes: for Calcifer's log.
+        detail: String,
         requirements: &'static str,
     },
     #[error(
@@ -144,13 +171,84 @@ fn io_error(operation: &'static str) -> impl FnOnce(io::Error) -> Error {
 /// The driver is an explicit prerequisite only for encrypted projects.
 pub fn requirements() -> &'static str {
     match std::env::consts::OS {
-        "linux" => {
-            "FUSE2 (/dev/fuse and fusermount); the bundled provider also requires glibc 2.34 or newer"
-        }
+        "linux" => "FUSE (/dev/fuse and fusermount3 or fusermount)",
         "macos" => "macOS with its built-in hdiutil encrypted APFS support",
         "windows" => "WinFsp and the Microsoft Visual C++ x64 runtime",
         _ => "a supported encrypted filesystem driver",
     }
+}
+
+/// What a Linux computer lacks: FUSE itself, or the FUSE 2 library a custom dynamically linked provider loads (the bundled one
+/// links libfuse in).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Missing {
+    Fuse,
+    Library,
+}
+
+/// The command that installs what `missing` names, with this computer's package manager (apt, dnf, pacman or zypper); none where
+/// none of them is installed, or off Linux.
+pub fn install_command(missing: Missing) -> Option<String> {
+    if std::env::consts::OS != "linux" {
+        return None;
+    }
+    // Each manager's install verb, then FUSE (fusermount3) and the FUSE 2 library alone.
+    const MANAGERS: [(&str, &str, &str, &str); 4] = [
+        ("apt-get", "sudo apt install", "fuse3", "libfuse2"),
+        ("dnf", "sudo dnf install", "fuse3", "fuse-libs"),
+        ("pacman", "sudo pacman -S", "fuse3", "fuse2"),
+        ("zypper", "sudo zypper install", "fuse3", "libfuse2"),
+    ];
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|path| std::env::split_paths(&path).collect()).unwrap_or_default();
+    dirs.extend(["/usr/bin", "/bin", "/usr/sbin", "/sbin"].map(PathBuf::from));
+    MANAGERS.iter().find(|(program, ..)| dirs.iter().any(|dir| dir.join(program).is_file())).map(|(_, install, fuse, library)| {
+        format!("{install} {}", if missing == Missing::Fuse { fuse } else { library })
+    })
+}
+
+/// FUSE as a Linux computer provides it to the bundled provider, which links libfuse 2.9.9 in.
+const FUSE: &str = "FUSE (/dev/fuse and fusermount3)";
+
+/// Whether this process may open `/dev/fuse` to serve a filesystem (Linux).
+fn fuse_device() -> bool {
+    OpenOptions::new().read(true).write(true).open("/dev/fuse").is_ok()
+}
+
+/// Where libfuse 2 looks for its mount helper: `/bin`, then this process's PATH, which securefs inherits. Relative PATH entries
+/// name nothing stable and are skipped.
+#[cfg(target_os = "linux")]
+fn fuse_program(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::iter::once(PathBuf::from("/bin"))
+        .chain(std::env::split_paths(&path).filter(|dir| dir.is_absolute()))
+        .map(|dir| dir.join(name))
+        .find(|program| program.is_file())
+}
+
+/// The PATH every securefs process gets, or None for this process's own. libfuse 2 runs `fusermount`; a computer with FUSE 3
+/// alone has only `fusermount3`, which takes the same arguments (Debian's fuse3 links one to the other). There, `shims` (a
+/// private folder of cozy's tools) holds a `fusermount` link to it and leads the PATH.
+#[cfg(target_os = "linux")]
+fn fusermount_path(shims: &Path) -> Result<Option<OsString>> {
+    if fuse_program("fusermount").is_some() {
+        return Ok(None);
+    }
+    let Some(target) = fuse_program("fusermount3").and_then(|found| fs::canonicalize(found).ok()) else {
+        return Ok(None);
+    };
+    platform::durable::private_dir(shims)?;
+    let link = shims.join("fusermount");
+    if fs::read_link(&link).ok().as_ref() != Some(&target) {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let staged = shims.join(format!(".fusermount-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let _ = fs::remove_file(&staged);
+        std::os::unix::fs::symlink(&target, &staged).map_err(io_error("link fusermount to fusermount3"))?;
+        fs::rename(&staged, &link).map_err(io_error("link fusermount to fusermount3"))?;
+    }
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::join_paths(std::iter::once(shims.to_path_buf()).chain(std::env::split_paths(&path)))
+        .map(Some)
+        .map_err(|_| Error::Invalid("cozy's tools folder path cannot lead PATH"))
 }
 
 /// A release must embed its pinned provider; ordinary development builds need not.
@@ -162,6 +260,9 @@ pub fn is_bundled() -> bool {
 #[derive(Clone, Debug)]
 pub struct Provider {
     executable: PathBuf,
+    /// The PATH its securefs processes get, where it differs from this process's (`fusermount_path`).
+    #[cfg(target_os = "linux")]
+    path: Option<OsString>,
     #[cfg(target_os = "macos")]
     native: bool,
 }
@@ -170,6 +271,17 @@ impl Provider {
     /// Installs the bundled helper without networking, else looks for an explicitly installed
     /// securefs. Nothing calls this for an ordinary project.
     pub fn discover(tools: &Path) -> Result<Self> {
+        let directory = tools.join("securefs").join(PROVIDER_VERSION);
+        #[allow(unused_mut)]
+        let mut provider = Self::locate(&directory)?;
+        #[cfg(target_os = "linux")]
+        {
+            provider.path = fusermount_path(&directory.join("bin"))?;
+        }
+        Ok(provider)
+    }
+
+    fn locate(directory: &Path) -> Result<Self> {
         // An explicit local override permits rebuilding the independently licensed provider,
         // including relinking modified LGPL components. It is never supplied by the Hub.
         if let Some(path) = std::env::var_os("COZY_SECUREFS_PROVIDER") {
@@ -180,8 +292,7 @@ impl Provider {
             return Self::from_path(PathBuf::from("/usr/bin/hdiutil"));
         }
         if is_bundled() {
-            let directory = tools.join("securefs").join(PROVIDER_VERSION);
-            platform::durable::private_dir(&directory)?;
+            platform::durable::private_dir(directory)?;
             let name = if cfg!(windows) {
                 "securefs.exe"
             } else {
@@ -219,7 +330,7 @@ impl Provider {
         } else {
             "securefs"
         };
-        let cached = tools.join("securefs").join(PROVIDER_VERSION).join(name);
+        let cached = directory.join(name);
         if cached.is_file() {
             return Self::from_path(cached);
         }
@@ -246,6 +357,8 @@ impl Provider {
         }
         let provider = Self {
             executable,
+            #[cfg(target_os = "linux")]
+            path: None,
             #[cfg(target_os = "macos")]
             native: false,
         };
@@ -254,6 +367,14 @@ impl Provider {
             .output()
             .map_err(io_error("run securefs"))?;
         let first = String::from_utf8_lossy(&output.stdout);
+        // A custom dynamically linked provider (COZY_SECUREFS_PROVIDER) that can't load its FUSE library never starts: the loader
+        // says so and exits 127. With no FUSE at all, that's what to install. The bundled one links libfuse in.
+        if cfg!(target_os = "linux") && output.status.code() == Some(127) && String::from_utf8_lossy(&output.stderr).contains("libfuse") {
+            return Err(match fuse_device() {
+                true => Error::DependencyMissing { needs: "the FUSE 2 library (libfuse.so.2)", install: install_command(Missing::Library) },
+                false => Error::DependencyMissing { needs: FUSE, install: install_command(Missing::Fuse) },
+            });
+        }
         if !output.status.success() {
             return Err(provider.failure("version", output.status));
         }
@@ -311,13 +432,17 @@ impl Provider {
             return apfs::create(self, backing, secret);
         }
         let mut command = self.command("create");
-        command.args(["--format", "lite"]).arg(backing);
+        // The secret is the keybag's 256 random bits: securefs's own password stretching adds nothing and cost
+        // ~3 s on every create and mount (cl-995). A backing made before keeps its stored parameters and still mounts.
+        command.args(["--format", "lite", "--argon2-t", "1", "--argon2-m", "8", "--argon2-p", "1"]).arg(backing);
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(io_error("create encrypted filesystem"))?;
+        // A create's words are about an empty backing: never a project file's name.
+        let said = child.stderr.take().map(tail_of);
         let sent = child
             .stdin
             .take()
@@ -331,10 +456,11 @@ impl Provider {
         let status = child
             .wait()
             .map_err(io_error("wait for encrypted filesystem creation"))?;
+        let said = said.map(|reader| reader.join().unwrap_or_default()).unwrap_or_default();
         if status.success() {
             Ok(())
         } else {
-            Err(self.failure("create", status))
+            Err(self.failure_said("create", status, &said))
         }
     }
 
@@ -412,6 +538,11 @@ impl Provider {
         let parent = platform::process::Birth::own()?;
         // This very build, which an update can't take away (cl-981): `current_exe()` then names `<path> (deleted)`.
         let mut command = clean_command(&platform::exe::running()?);
+        // The supervisor's securefs inherits its PATH, and with it any `fusermount` link.
+        #[cfg(target_os = "linux")]
+        if let Some(path) = &self.path {
+            command.env("PATH", path);
+        }
         command
             .arg(ROLE)
             .arg(&self.executable)
@@ -437,10 +568,12 @@ impl Provider {
                 command.arg0(&launch.path);
             }
         }
+        // Its stderr is read only if it fails before the view is acknowledged: then it says why (its own error, and securefs's
+        // words before the mount, which name no project file). After, it stays unread.
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(io_error("start encrypted filesystem supervisor"))?;
         let mut input = child
@@ -458,10 +591,12 @@ impl Provider {
             Ok(Some(owner)) => owner,
             other => {
                 drop(input);
-                let _ = child.wait();
-                return Err(match other {
-                    Err(error) => Error::Platform(error),
-                    _ => {
+                let status = child.wait();
+                return Err(match (other, status) {
+                    (Err(error), _) => Error::Platform(error),
+                    // Exited at once: said with its exit status, as when it exits before it's ready.
+                    (_, Ok(status)) => self.failure("mount", status),
+                    (_, Err(_)) => {
                         Error::Invalid("the filesystem supervisor exited before it could be owned")
                     }
                 });
@@ -507,7 +642,8 @@ impl Provider {
                         .try_wait()
                         .map_err(io_error("read filesystem supervisor status"))?
                 {
-                    return Err(self.failure("mount", status));
+                    let said = mounted.child.stderr.take().map(|stderr| said_within(stderr, CONTROL_ACK)).unwrap_or_default();
+                    return Err(self.failure_said("mount", status, &said));
                 }
                 return Err(Error::Invalid(
                     "provider failed to acknowledge its owned mount",
@@ -593,16 +729,25 @@ impl Provider {
 
     fn command(&self, operation: &str) -> Command {
         let mut command = clean_command(&self.executable);
+        #[cfg(target_os = "linux")]
+        if let Some(path) = &self.path {
+            command.env("PATH", path);
+        }
         command.arg(operation);
         command
     }
 
     fn failure(&self, operation: &'static str, status: ExitStatus) -> Error {
-        Error::Provider {
-            operation,
-            code: status.code(),
-            requirements: requirements(),
-        }
+        self.failure_said(operation, status, &[])
+    }
+
+    /// A provider's failure with what it said on stderr: its last line in the error, all of it (its tail) for the log.
+    fn failure_said(&self, operation: &'static str, status: ExitStatus, stderr: &[u8]) -> Error {
+        let text = String::from_utf8_lossy(stderr);
+        let detail = text.trim().to_owned();
+        let said = detail.lines().rev().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default();
+        let said = if said.chars().count() > 240 { format!("{}…", said.chars().take(240).collect::<String>()) } else { said.to_owned() };
+        Error::Provider { operation, code: status.code(), said, detail, requirements: requirements() }
     }
 
     fn unmount(&self, view: &Path) -> Result<()> {
@@ -652,13 +797,8 @@ impl Provider {
             return Ok(());
         }
         #[cfg(target_os = "linux")]
-        if OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open("/dev/fuse")
-            .is_err()
-        {
-            return Err(Error::DriverMissing(requirements()));
+        if !fuse_device() || (fuse_program("fusermount3").is_none() && fuse_program("fusermount").is_none()) {
+            return Err(Error::DependencyMissing { needs: FUSE, install: install_command(Missing::Fuse) });
         }
         #[cfg(target_os = "macos")]
         if macos_version() < (15, 4)
@@ -864,8 +1004,22 @@ pub fn run_supervisor() -> Option<i32> {
     }
     Some(match supervise(&arguments[2..]) {
         Ok(()) => 0,
+        // Its stderr is read by the mount that started it, and only when it fails: securefs's words, then the cause on one line.
+        // Written, never `eprintln!`: once its mount has returned no one reads this pipe, and a closed one must not panic.
         Err(error) => {
-            eprintln!("encrypted filesystem provider: {error}");
+            let mut stderr = io::stderr().lock();
+            let _ = match &error {
+                Error::Provider { operation, code, said, detail, .. } => {
+                    if !detail.is_empty() {
+                        let _ = writeln!(stderr, "{detail}");
+                    }
+                    match said.is_empty() {
+                        true => writeln!(stderr, "securefs {operation} failed ({code:?})"),
+                        false => writeln!(stderr, "securefs {operation} failed ({code:?}): {said}"),
+                    }
+                }
+                other => writeln!(stderr, "{other}"),
+            };
             1
         }
     })
@@ -935,7 +1089,7 @@ fn supervise(arguments: &[OsString]) -> Result<()> {
         child: command
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .stderr(provider_stderr()?)
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(io_error("start securefs"))?,
         provider: provider.clone(),
@@ -952,6 +1106,9 @@ fn supervise(arguments: &[OsString]) -> Result<()> {
         .map_err(io_error("unlock securefs"))?;
     drop(provider_input);
     drop(secret);
+    // What securefs says before its view is mounted is its cause if the mount fails (a driver, a path, a DLL): kept till then.
+    // After, a filesystem error can name a project's file, so nothing it says is kept.
+    let words = child.child.stderr.take().map(Words::listen);
     let (heard, mounts) = listen(input, parent, Some(child.child.id()))?;
     let mut sealed = false;
     loop {
@@ -963,7 +1120,11 @@ fn supervise(arguments: &[OsString]) -> Result<()> {
             if status.success() {
                 return Ok(());
             }
-            return Err(provider.failure("mount", status));
+            let said = match (&words, sealed) {
+                (Some(words), false) => words.said(),
+                _ => Vec::new(),
+            };
+            return Err(provider.failure_said("mount", status, &said));
         }
         if !sealed && provider.is_mounted(&view).unwrap_or(false) {
             #[cfg(not(target_os = "macos"))]
@@ -972,6 +1133,9 @@ fn supervise(arguments: &[OsString]) -> Result<()> {
             }
             guard.seal()?;
             sealed = true;
+            if let Some(words) = &words {
+                words.forget();
+            }
             acknowledge()?;
         }
         // Where no mount event comes (Windows), the view is sampled until it's mounted.
@@ -1084,10 +1248,62 @@ fn clean_command(program: &Path) -> Command {
     command
 }
 
-fn provider_stderr() -> Result<Stdio> {
-    // A native filesystem error can include project filenames. Even a debug
-    // environment variable must not redirect those bytes into an outside file.
-    Ok(Stdio::null())
+/// How much of a provider's stderr a failure keeps: its last bytes, where the cause is.
+const TAIL: usize = 4096;
+
+/// `stream` read to its end on a thread of its own, its last `TAIL` bytes kept.
+fn tail_of(mut stream: impl Read + Send + 'static) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let (mut kept, mut chunk) = (Vec::new(), [0u8; 1024]);
+        while let Ok(read) = stream.read(&mut chunk) {
+            if read == 0 { break; }
+            kept.extend_from_slice(&chunk[..read]);
+            if kept.len() > TAIL { kept.drain(..kept.len() - TAIL); }
+        }
+        kept
+    })
+}
+
+/// What an exited supervisor said on stderr, waited for at most `budget`: a grandchild still holding the pipe never stalls a refusal.
+fn said_within(stderr: impl Read + Send + 'static, budget: Duration) -> Vec<u8> {
+    let (tell, heard) = mpsc::channel();
+    let reader = tail_of(stderr);
+    thread::spawn(move || { let _ = tell.send(reader.join().unwrap_or_default()); });
+    heard.recv_timeout(budget).unwrap_or_default()
+}
+
+/// securefs's stderr as a supervisor reads it: drained always, so securefs never blocks on it, and kept only until `forget`.
+struct Words {
+    kept: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+}
+
+impl Words {
+    fn listen(mut stream: std::process::ChildStderr) -> Self {
+        let kept = std::sync::Arc::new(std::sync::Mutex::new(Some(Vec::new())));
+        let into = kept.clone();
+        thread::spawn(move || {
+            let mut chunk = [0u8; 1024];
+            while let Ok(read) = stream.read(&mut chunk) {
+                if read == 0 { break; }
+                if let Some(kept) = into.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_mut() {
+                    kept.extend_from_slice(&chunk[..read]);
+                    if kept.len() > TAIL { kept.drain(..kept.len() - TAIL); }
+                }
+            }
+        });
+        Self { kept }
+    }
+
+    /// What it said so far: given a moment for its last words to arrive.
+    fn said(&self) -> Vec<u8> {
+        thread::sleep(Duration::from_millis(200));
+        self.kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or_default()
+    }
+
+    /// The view is mounted: nothing it says from now on is kept.
+    fn forget(&self) {
+        *self.kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
 }
 
 fn control_status(

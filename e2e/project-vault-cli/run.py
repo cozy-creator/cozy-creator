@@ -400,7 +400,7 @@ class Proof:
     ) -> Payload | str:
         if holder is None:
             holder = self.controller()
-        fields = {'Authorization': 'Bearer ' + holder['token'], 'cozy-project-storage': '3', **(headers or {})}
+        fields = {'Authorization': 'Bearer ' + holder['token'], **(headers or {})}
         if isinstance(body, dict):
             fields['Content-Type'] = 'application/json'
             body = json.dumps(body).encode('utf-8')
@@ -1088,14 +1088,13 @@ foreach ($rule in $allowed) {
             return  # POSIX PTY below; Windows still qualifies the noninteractive guard above.
         import socket
 
-        browser_bin = self.out / 'open-browser-bin'
-        browser_bin.mkdir()
+        # The user's browser, as they set it ($BROWSER): a Chrome that writes down each private window `cozy open` asks of it (cl-1067).
         browser_log = self.out / 'open-browser-argv.txt'
-        browser = browser_bin / ('open' if sys.platform == 'darwin' else 'xdg-open')
-        browser.write_text('#!/bin/sh\nprintf \'%s\\n\' "$1" >> "$COZY_TEST_BROWSER_LOG"\n')
+        browser = self.out / 'google-chrome'
+        browser.write_text('#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$COZY_TEST_BROWSER_LOG"\n')
         browser.chmod(0o755)
         environment = dict(os.environ if self.cli_env is None else self.cli_env)
-        environment['PATH'] = str(browser_bin) + os.pathsep + environment.get('PATH', '')
+        environment['BROWSER'] = str(browser)
         environment['COZY_TEST_BROWSER_LOG'] = str(browser_log)
         code, stdout, stderr = self.open_in_tty(None, environment, '--json')
         assert code != 0 and json.loads(stdout)['error']['code'] == 'project_locked'

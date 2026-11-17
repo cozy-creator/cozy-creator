@@ -1,4 +1,5 @@
-//! Unseen box versions (cl-928), retained only in their owning project's existing journal.
+//! Versions and takes not looked at yet (cl-928, cl-1105): each one that lands, until Focus shows it. Kept in the project's own journal,
+//! so a locked project leaves no trace of it elsewhere.
 use std::{collections::{BTreeMap, BTreeSet},sync::Arc};
 use axum::{extract::{Path,State},http::StatusCode};
 use api::error::{Error,Kind};
@@ -11,7 +12,7 @@ pub(super) type Unseen=BTreeMap<String,BTreeSet<u32>>;
 pub(super) fn id_of(held:&Boxed)->String {
     if held.id.is_empty() {format!("name:{}",name_key(&held.name))} else {held.id.clone()}
 }
-fn unavailable()->Error {Error::new(Kind::Unavailable,"project_unseen","the project's unseen versions could not be read or kept")}
+fn unavailable()->Error {Error::new(Kind::Unavailable,"project_unseen","Cozy couldn't read or save which versions you haven't looked at yet.")}
 
 pub(super) fn read(folder:&Folder,project:&str)->Result<Unseen,Error> {
     folder.journal_read(|conn| {
@@ -30,9 +31,10 @@ pub(super) fn refresh(project:&Project)->Result<(),Error> {
     Ok(())
 }
 
+/// Version `number` of `name` landed: unseen until it's looked at, approved or not. Kept as its landing is, with no admission of its
+/// own: a nested try of the project refuses while a lock is queued, and the mark was lost (cl-1025).
 pub(super) fn landed(project:&Project,name:&str,number:u32) {
-    let Ok(_work)=super::vault::try_admit_work(project) else {return};
-    let held=project.folder.reading_boxes(|written|written.get(name).filter(|held|held.get("approved").is_some_and(|value|!value.is_null())).map(id_of));
+    let held=project.folder.reading_boxes(|written|written.get(name).map(id_of));
     let Ok(Some(held))=held else {return};
     match keep(project,&held,number,false) {
         Ok(true)=>crate::events::project_settled(&project.folder.dir),
@@ -61,9 +63,9 @@ pub(super) async fn seen(State(api):State<Arc<Api>>,Path((id,name,number)):Path<
     let _view=api.projects.store(&api,&id).await.map_err(Refusal)?;
     let project=api.projects.get(&api,&id)?;
     project.require_view().map_err(Refusal)?;
-    let number:u32=number.parse().map_err(|_|Refusal(Error::new(Kind::Validation,"version_unknown","the version number is invalid")))?;
+    let number:u32=number.parse().map_err(|_|Refusal(Error::new(Kind::Validation,"version_unknown","That isn't a valid version number.")))?;
     let held=project.folder.reading_boxes(|written|written.get(&name).map(id_of)).map_err(Refusal)?;
-    let held=held.ok_or_else(||Refusal(Error::new(Kind::NotFound,"asset_unknown","the project has no such box")))?;
+    let held=held.ok_or_else(||Refusal(Error::new(Kind::NotFound,"asset_unknown","There's no box by that name in this project.")))?;
     if keep(&project,&held,number,true).map_err(Refusal)? {crate::events::project_settled(&project.folder.dir);}
     Ok(StatusCode::NO_CONTENT)
 }

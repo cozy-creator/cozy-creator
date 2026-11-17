@@ -1,51 +1,102 @@
 // select (cl-973 core cell 3), at zoom 1 and 0.25: a click selects a box and opens nothing; Shift adds one; a Shift-drag selects exactly
-// what it touches; Ctrl+A selects all; a click on the canvas clears it; a hover never looks selected. A selected box has a ring of the
-// selection's own colour, with its glow, 3 px or more on screen.
-const { test, expect, box, canvasIdle, middle, openPoint, png, zoomOf } = require('./fixtures');
+// what it touches; Ctrl+A selects all; a click on the canvas clears it; a hover never looks selected. The selection as Figma draws it
+// (Paul, 11-16: "I don't like the super thick right blue border around the selected node ... just do whatever would be typical for a
+// canvas-based app like figma"): a selected box has one line of the selection's colour on its edge, 2 px on screen at every zoom, with no
+// glow; a box under the pointer, 1 px of the same colour.
+const { test, expect, canvasCard, canvasNames, canvasPoint, canvasIdle, selectedNames, hoverBox, openPoint, png, screenshotPixels, zoomOf } = require('./fixtures');
 
 // Pictures 240 wide on the canvas, a row of three and one under them, clear of each other.
 const PLACES = { A: { x: 0, y: 0 }, B: { x: 360, y: 0 }, C: { x: 720, y: 0 }, D: { x: 0, y: 380 } };
 const NAMES = Object.keys(PLACES);
 
-/** How `name`'s picture is outlined, measured on screen: `look` is the selection's colour, a hover's or neither. */
-const ring = (page, name) => page.evaluate((name) => {
-  const colour = (value) => {
-    const probe = document.createElement('i');
-    probe.style.color = value;
-    document.body.append(probe);
-    const said = getComputedStyle(probe).color;
-    probe.remove();
-    return said;
-  };
-  const [select, hover] = [colour('var(--select)'), colour('var(--line2)')];
-  const media = document.querySelector(`.react-flow__node .card[data-asset="${CSS.escape(name)}"] > .media`);
-  const style = getComputedStyle(media);
-  const zoom = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
-  return {
-    solid: style.outlineStyle === 'solid',
-    look: style.outlineColor === select ? 'selection' : style.outlineColor === hover ? 'hover' : style.outlineColor,
-    // The glow is the ring's colour, faded.
-    glow: style.boxShadow.includes(select.slice(4, -1)),
-    px: Number((parseFloat(style.outlineWidth) * zoom).toFixed(2)),
-  };
-}, name);
+// The bare screenshot at this camera is the observed background for the glow, not a CSS approximation.
+let baseline;
+const near = (a, b, tolerance = 28) => a.every((value, i) => Math.abs(value - b[i]) <= tolerance);
 
-const selected = (page) => page.locator('.react-flow__node .card[aria-selected="true"]').evaluateAll((cards) => cards.map((card) => card.dataset.asset).sort());
+/** Four rays through real screenshot pixels: each side's run of the selection's colour across the box's edge, and any translucent glow
+ *  outside it. */
+function edge(read, body, color, dpr) {
+  const rays = [t => [body.x + t, body.y + body.height / 2], t => [body.x + body.width - t, body.y + body.height / 2],
+    t => [body.x + body.width / 2, body.y + t], t => [body.x + body.width / 2, body.y + body.height - t]];
+  return rays.map(point => {
+    const at = t => { const [x, y] = point(t); return read(x * dpr, y * dpr); };
+    let width = 0, run = 0, first = null;
+    for (let t = -20; t <= 20; t += 0.5) {
+      if (near(at(t), color)) { run += 0.5; if (first === null) first = t; width = Math.max(width, run); }
+      else run = 0;
+    }
+    let glow = false;
+    if (baseline && first !== null) for (let t = first - 3; t >= first - 11; t--) {
+      const [x, y] = point(t), base = baseline(x * dpr, y * dpr), drawn = at(t);
+      const toward = color.map((value, i) => value - base[i]), change = drawn.map((value, i) => value - base[i]);
+      const size = toward.reduce((sum, value) => sum + value * value, 0);
+      const alpha = change.reduce((sum, value, i) => sum + value * toward[i], 0) / size;
+      if (alpha > 0.015 && alpha < 0.65 && change.some(value => Math.abs(value) >= 3)
+        && near(drawn, base.map((value, i) => value + alpha * toward[i]), 8)) glow = true;
+    }
+    return { width, glow };
+  });
+}
+
+async function rings(page) {
+  const state = await page.evaluate(names => {
+    const inspection = document.querySelector('.canvas-root').canvasInspection;
+    const probe = document.createElement('i'); document.body.append(probe);
+    probe.style.color = 'var(--select)';
+    const css = getComputedStyle(probe).color, values = css.match(/[\d.]+/g).map(Number).slice(0, 3);
+    probe.remove();
+    return { select: css.startsWith('color(') ? values.map(value => value * 255) : values, dpr: devicePixelRatio, zoom: inspection.camera().zoom,
+      cards: Object.fromEntries(names.map(name => { const card = inspection.card(name); return [name, { body: card?.body, ring: card?.rendered?.ring ?? null }]; })) };
+  }, NAMES);
+  const read = screenshotPixels(await page.screenshot());
+  return Object.fromEntries(NAMES.map(name => {
+    const { body, ring } = state.cards[name];
+    if (!body) return [name, null];
+    const sides = edge(read, body, state.select, state.dpr);
+    const px = Math.min(...sides.map(side => side.width));
+    return [name, { px, look: px >= 2 ? 'selection' : px >= 1 ? 'hover' : 'neither', glow: sides.filter(side => side.glow).length >= 2, ring, zoom: state.zoom, sides }];
+  }));
+}
+
+async function passive(page) {
+  await page.mouse.move(2, 500);
+  await expect(page.locator('.canvas-node')).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => document.querySelector('.canvas-root')?.canvasInspection?.resources()?.scheduledFrame), { message: 'the passive scene is presented and idle' }).toBe(false);
+}
+
+async function rememberBare(page) {
+  await passive(page);
+  await expect.poll(async () => {
+    const read = screenshotPixels(await page.screenshot()), dpr = await page.evaluate(() => devicePixelRatio);
+    for (const [i, name] of NAMES.entries()) {
+      const body = (await canvasCard(page, name))?.rendered?.body;
+      if (!body || !near(read((body.x + body.width / 2) * dpr, (body.y + body.height / 2) * dpr), [40 + 50 * i, 127, 127], 12)) return false;
+    }
+    baseline = read;
+    return true;
+  }, { message: 'all four real pictures painted before their rings are measured' }).toBe(true);
+}
 
 async function ringed(page, names) {
+  await passive(page);
+  let all;
+  await expect.poll(async () => {
+    all = await rings(page);
+    return NAMES.every(name => Boolean(all[name]) && (names.includes(name) ? all[name].look === 'selection' && !all[name].glow : all[name].look !== 'selection'));
+  }, { message: `the painted rings select ${names.join(', ') || 'nothing'}` }).toBe(true);
   for (const name of NAMES) {
-    const said = await ring(page, name);
+    const said = all[name];
     if (names.includes(name)) {
-      expect.soft(said, `${name} ringed in the selection's colour, with its glow`).toMatchObject({ solid: true, look: 'selection', glow: true });
-      expect.soft(said.px, `${name}'s ring on screen, px`).toBeGreaterThanOrEqual(3);
-    } else {
-      expect.soft(said, `${name} not ringed`).toMatchObject({ look: expect.not.stringMatching(/^selection$/), glow: false });
-    }
+      expect.soft(said, `${name} ringed in the selection's colour, with no glow`).toMatchObject({ look: 'selection', glow: false });
+      expect.soft(said.px, `${name}'s ring, px on screen: one thin line`).toBeLessThanOrEqual(3);
+      // Inside the box's edge only where a line outside it would reach the name, its foot 12 canvas px over the box.
+      expect.soft(said.ring, `${name}: a 2 px ring, inside its edge only where it would reach its name`).toEqual({ kind: 'selected', px: 2, inside: 12 * said.zoom < 3 });
+    } else expect.soft(said, `${name} not ringed`).toMatchObject({ look: expect.not.stringMatching(/^selection$/), glow: false });
   }
 }
 
 async function click(page, name, modifier) {
-  const { x, y } = await middle(box(page, name).locator('.media').first());
+  const { x, y } = await canvasPoint(page, name);
   if (modifier) await page.keyboard.down(modifier);
   await page.mouse.click(x, y);
   if (modifier) await page.keyboard.up(modifier);
@@ -65,7 +116,7 @@ async function zoomTo(page, items, out, percent) {
 
 test('select', async ({ page, project }) => {
   for (const [i, name] of NAMES.entries()) await project.import(png(40 + 50 * i), { name, at: PLACES[name] });
-  for (const name of NAMES) await expect(box(page, name)).toBeVisible();
+  await expect.poll(() => canvasNames(page)).toEqual(expect.arrayContaining(NAMES));
   const url = page.url();
 
   // All four in view, then at 100% about the middle; then 50% and two steps out.
@@ -73,10 +124,12 @@ test('select', async ({ page, project }) => {
     await test.step(`at zoom ${zoom}`, async () => {
       await zoomTo(page, items, out, percent);
       expect(await zoomOf(page)).toBeCloseTo(zoom, 3);
+      await expect.poll(() => selectedNames(page)).toEqual([]);
+      await rememberBare(page);
 
       await test.step('a click selects A and opens nothing', async () => {
         await click(page, 'A');
-        await expect.poll(() => selected(page)).toEqual(['A']);
+        await expect.poll(() => selectedNames(page)).toEqual(['A']);
         await expect.soft(page.getByRole('region', { name: 'Focused asset' })).toHaveCount(0);
         expect.soft(page.url(), 'the same address').toBe(url);
         await ringed(page, ['A']);
@@ -84,21 +137,21 @@ test('select', async ({ page, project }) => {
 
       await test.step('Shift adds B', async () => {
         await click(page, 'B', 'Shift');
-        await expect.poll(() => selected(page)).toEqual(['A', 'B']);
+        await expect.poll(() => selectedNames(page)).toEqual(['A', 'B']);
         await ringed(page, ['A', 'B']);
       });
 
       await test.step('Esc clears it', async () => {
         await page.keyboard.press('Escape');
-        await expect.poll(() => selected(page)).toEqual([]);
+        await expect.poll(() => selectedNames(page)).toEqual([]);
         await ringed(page, []);
       });
 
       await test.step('a Shift-drag selects what it touches: A, B and C', async () => {
-        const [a, c] = [await box(page, 'A').locator('.media').first().boundingBox(), await box(page, 'C').locator('.media').first().boundingBox()];
+        const [a, c] = [(await canvasCard(page, 'A')).body, (await canvasCard(page, 'C')).body];
         const from = { x: a.x - 12, y: a.y + a.height / 4 };
         const to = { x: c.x + c.width / 2, y: c.y + (c.height * 3) / 4 };
-        expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.classList.contains('react-flow__pane'), from), 'the drag starts on open canvas').toBe(true);
+        expect(await page.evaluate(({ x, y }) => Boolean(document.querySelector('.canvas-root')?.contains(document.elementFromPoint(x, y)) && !document.querySelector('.canvas-root').canvasInspection.hitTest({ x, y })), from), 'the drag starts on open canvas').toBe(true);
         await page.keyboard.down('Shift');
         await page.mouse.move(from.x, from.y);
         await page.mouse.down();
@@ -106,29 +159,33 @@ test('select', async ({ page, project }) => {
         await page.mouse.move(to.x, to.y, { steps: 4 });
         await page.mouse.up();
         await page.keyboard.up('Shift');
-        await expect.poll(() => selected(page)).toEqual(['A', 'B', 'C']);
+        await expect.poll(() => selectedNames(page)).toEqual(['A', 'B', 'C']);
         await ringed(page, ['A', 'B', 'C']);
       });
 
       await test.step('Ctrl+A selects all', async () => {
         await page.keyboard.press('ControlOrMeta+a');
-        await expect.poll(() => selected(page)).toEqual(NAMES);
+        await expect.poll(() => selectedNames(page)).toEqual(NAMES);
         await ringed(page, NAMES);
       });
 
       await test.step('a click on the canvas clears it', async () => {
         const { x, y } = await openPoint(page);
         await page.mouse.click(x, y);
-        await expect.poll(() => selected(page)).toEqual([]);
+        await expect.poll(() => selectedNames(page)).toEqual([]);
         await ringed(page, []);
       });
 
       await test.step('a hover never looks selected', async () => {
-        const { x, y } = await middle(box(page, 'D').locator('.media').first());
-        await page.mouse.move(x, y);
-        await expect.poll(() => ring(page, 'D').then((said) => said.look), 'D looks hovered').toBe('hover');
-        expect.soft(await ring(page, 'D'), 'a hover has no glow').toMatchObject({ glow: false });
-        await expect.soft(box(page, 'D')).toHaveAttribute('aria-selected', 'false');
+        await hoverBox(page, 'D');
+        let hovered;
+        try {
+          await expect.poll(async () => { hovered = (await rings(page)).D; return hovered.look; }, 'D looks hovered').toBe('hover');
+        } finally {
+          if (hovered) await test.info().attach(`hover-${zoom}-rays`, { body: Buffer.from(JSON.stringify(hovered, null, 2)), contentType: 'application/json' });
+        }
+        expect.soft(hovered, 'a hover: 1 px of the selection\'s colour, no glow').toMatchObject({ look: 'hover', glow: false, ring: { kind: 'hovered', px: 1 } });
+        expect.soft(await selectedNames(page)).not.toContain('D');
         await page.mouse.move(2, 500);
       });
     });

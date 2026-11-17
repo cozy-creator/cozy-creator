@@ -17,13 +17,47 @@ pub(crate) fn directory() -> Result<String, Error> {
         .map_err(|_| Error::new(Kind::Usage, "project_path", "the current directory is not a UTF-8 path"))
 }
 
-/// Identify the current project without evaluating its canvas or checking its files.
+/// Identify the current project without evaluating its canvas or checking its files, unlocking it first at a terminal when it is locked.
 pub(crate) async fn identity(ctx: &Context) -> Result<api::calcifer::project::Address, Error> {
+    unlocking(ctx, || address(ctx)).await
+}
+
+/// The current project's address as it stands, asking nothing: for what reads a project only when one is open.
+pub(crate) async fn address(ctx: &Context) -> Result<api::calcifer::project::Address, Error> {
     let directory = directory()?;
     let path = crate::calcifer_client::path(&["v1", "projects", &directory, "address"]);
-    match ctx.calcifer().await?.get(&path).await {
-        Err(error) if error.code == "project_not_found" => Err(not_in_a_project(&directory)),
+    ctx.calcifer().await?.get(&path).await.map_err(|error: Error| match error.code.as_str() {
+        "project_not_found" => not_in_a_project(&directory),
+        _ => error,
+    })
+}
+
+/// `read`, with a locked project unlocked first at a terminal, as `cozy open` does (cl-1002): every verb goes on. `--json` and pipes never
+/// ask for a credential: they get `project_locked`, which names `cozy vault unlock`. A project busy locking or converting is not locked:
+/// its refusal stands, and nothing is asked.
+async fn unlocking<T, F, Fut>(ctx: &Context, read: F) -> Result<T, Error>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<T, Error>>,
+{
+    match read().await {
+        Err(error) if error.code == "project_locked" && !ctx.json && std::io::stdin().is_terminal() && ctx.term.stderr => {
+            if !vault::locked(ctx).await {
+                return Err(error);
+            }
+            vault::unlock_for_open(ctx).await?;
+            read().await
+        }
         answer => answer,
+    }
+}
+
+/// The current project's id, for a run: outside any project, refused as a run is (cl-1028: every run is kept in its project).
+pub(crate) async fn for_run(ctx: &Context) -> Result<String, Error> {
+    match identity(ctx).await {
+        Ok(project) => Ok(project.id),
+        Err(error) if error.code == "not_in_a_project" => Err(api::calcifer::project::unnamed()),
+        Err(error) => Err(error),
     }
 }
 
@@ -40,10 +74,10 @@ pub(crate) async fn here(ctx: &Context) -> Result<Option<String>, Error> {
 pub(crate) async fn current(ctx: &Context) -> Result<State, Error> {
     let project = directory()?;
     let path = format!("{}?assets={}", crate::calcifer_client::path(&["v1", "projects", &project]), ctx.full);
-    match ctx.calcifer().await?.get::<State>(&path).await {
-        Err(error) if error.code == "project_not_found" => Err(not_in_a_project(&project)),
-        answer => answer,
-    }
+    unlocking(ctx, || async { ctx.calcifer().await?.get::<State>(&path).await }).await.map_err(|error| match error.code.as_str() {
+        "project_not_found" => not_in_a_project(&project),
+        _ => error,
+    })
 }
 
 fn not_in_a_project(directory: &str) -> Error {
@@ -106,13 +140,6 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
         Some(client.get::<api::calcifer::project::Address>(&path).await?)
     } else { None };
     let client = ctx.calcifer().await?;
-    if !args.unencrypted && existing.is_none() {
-        let status: api::calcifer::CalciferStatus = client.get("/v1/status").await?;
-        if !status.encrypted_project_creation {
-            return Err(Error::new(Kind::Unavailable, "calcifer_outdated", "Calcifer cannot create encrypted projects directly; no credential or creation request was sent")
-                .next("cozy doctor"));
-        }
-    }
     let passphrase = if args.unencrypted || existing.is_some() { None } else {
         if args.passphrase_file.is_none() && !std::io::stdin().is_terminal() {
             return Err(Error::new(Kind::Usage, "vault_credential", "new projects are encrypted; a noninteractive caller must supply a passphrase file or explicitly choose unencrypted storage")
@@ -133,6 +160,7 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
     });
     let request = Open { path: directory.clone(), unencrypted: args.unencrypted, passphrase, ..Open::default() };
     let key = args.unencrypted.then(mint_key);
+    if existing.is_none() && request.passphrase.is_some() { client.own_account().await?; }
     let (id, code, key, path, created, mut recovery_secret) = if let Some(address) = existing {
         (address.id, address.code, address.key, directory.clone(), false, None)
     } else { match if args.unencrypted {
@@ -148,21 +176,14 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
         }
         Err(error) => return Err(error),
     } };
-    let protection = if created && !args.unencrypted {
-        if let Some(meter) = &creating { meter.finalizing("Checking project protection"); }
-        let unsupported = || Error::new(Kind::Unavailable, "calcifer_outdated", format!("Calcifer did not confirm encrypted creation at {}. Do not add private files yet", path.display()))
-            .remedy("Update or restart Calcifer, then inspect this project's protection before continuing")
-            .next("cozy doctor");
-        if !recovery_secret.as_ref().is_some_and(|secret| !secret.is_empty()) { return Err(unsupported()); }
-        let status_path = crate::calcifer_client::path(&["v1", "projects", &directory.to_string_lossy(), "vault"]);
-        let status: api::calcifer::project::VaultStatus = client.get(&status_path).await?;
-        if !status.encrypted { return Err(unsupported()); }
-        if status.state != "unlocked" {
-            return Err(Error::new(Kind::Conflict, "project_locked", "the new project locked before recovery could be saved; unlock it and replace its recovery secret")
-                .next("cozy vault unlock").next("cozy vault recovery --recovery-out <file>"));
+    // Its readable view, when it has one now; the recovery secret it was made with is kept whatever the project's state.
+    let view = match created && !args.unencrypted {
+        true => {
+            let status_path = crate::calcifer_client::path(&["v1", "projects", &directory.to_string_lossy(), "vault"]);
+            client.get::<api::calcifer::project::VaultStatus>(&status_path).await.ok().and_then(|status| status.view)
         }
-        Some(status)
-    } else { None };
+        false => None,
+    };
     if let Some(meter) = &creating { meter.finish_and_clear(); }
     let label = if code.is_empty() { &id } else { &code };
     let message = if created {
@@ -176,7 +197,7 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
         output::say(ctx, &format!("recovery secret saved to {}; keep a copy off this computer", output.display()));
     }
     let mut document = serde_json::json!({ "id": id, "code": code, "key": key, "path": path, "created": created, "message": message });
-    if let Some(view) = protection.and_then(|status| status.view) { document["view"] = serde_json::json!(view); }
+    if let Some(view) = view { document["view"] = serde_json::json!(view); }
     if ctx.json {
         if let Some(secret) = recovery_secret { document["recovery_secret"] = secret.into(); }
         output::document(ctx, &document);

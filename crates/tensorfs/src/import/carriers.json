@@ -14,6 +14,9 @@
     {"producer": "AWQ smoothing", "keys": ["*.pre_quant_scale"]}
   ],
   "marker_execution": ["full_precision_matrix_mult", "num_experts", "linear_dtype"],
+  "execution_tensors": [
+    {"producer": "ComfyUI", "suffix": ".comfy_attention.config", "keys": ["attention"]}
+  ],
   "carriers": [
     {
       "producer": "modelopt",

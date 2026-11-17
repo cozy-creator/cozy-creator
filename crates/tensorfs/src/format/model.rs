@@ -326,9 +326,10 @@ impl Model {
         self.checkpoints.push(checkpoint);
     }
 
-    /// The checkpoint `release` (none: the newest) names in `lane` (none: its only lane), as
-    /// (release, lane, checkpoint). A model without releases (a machine's own model) answers its newest
-    /// checkpoint, in no release. Refused naming what the model has.
+    /// The checkpoint `release` (none: its newest public by `newest_by`, else the last when no
+    /// label parses) names in `lane` (none: its only lane), as (release, lane, checkpoint). A model
+    /// without releases (a machine's own model) answers its newest checkpoint, in no release.
+    /// Refused naming what the model has.
     pub fn resolve(
         &self,
         release: Option<&str>,
@@ -344,11 +345,14 @@ impl Model {
         }
         let found = match release {
             Some(version) => self.release(version),
-            None => self
-                .releases
-                .iter()
-                .rev()
-                .find(|r| r.visibility == ReleaseVisibility::Public),
+            None => {
+                let public = || {
+                    self.releases
+                        .iter()
+                        .filter(|r| r.visibility == ReleaseVisibility::Public)
+                };
+                newest_by(public(), |r| r.version.as_str()).or_else(|| public().next_back())
+            }
         };
         let Some(found) = found else {
             let has: Vec<&str> = self.releases.iter().map(|r| r.version.as_str()).collect();
@@ -474,17 +478,34 @@ mod compatibility_tests {
     }
 }
 
-/// The one "newest" ordering: of `items`, the one whose `version` is the highest final PEP 440
-/// version (a post-release is final), else the highest pre-release; of equal versions (`1.0`,
-/// `1.0.0`), the last given. Items whose version does not parse are skipped.
+/// What a package or model asked with no release takes (cl-1109), as pip reads PEP 440: of
+/// `items`, the one whose `version` is the highest final (a post-release is final), else the
+/// highest pre- or dev release; a prerelease is otherwise taken only when named. Of equal versions
+/// (`1.0`, `1.0.0`), the last given. Items whose version does not parse are skipped.
 pub fn newest_by<T>(items: impl IntoIterator<Item = T>, version: impl Fn(&T) -> &str) -> Option<T> {
     let versioned = items
         .into_iter()
         .filter_map(|item| Some((Version::from_str(version(&item)).ok()?, item)));
-    let order = |(a, _): &(Version, T), (b, _): &(Version, T)| {
-        a.is_stable().cmp(&b.is_stable()).then_with(|| a.cmp(b))
-    };
-    versioned.max_by(order).map(|(_, item)| item)
+    versioned.max_by(|(a, _), (b, _)| taken(a, b)).map(|(_, item)| item)
+}
+
+/// `items` in `newest_by`'s order, newest first; of equal versions, the last given first. Those
+/// whose version does not parse come last, as given.
+pub fn newest_first<T>(items: impl IntoIterator<Item = T>, version: impl Fn(&T) -> &str) -> Vec<T> {
+    let (mut read, unread): (Vec<_>, Vec<_>) = (items.into_iter().enumerate())
+        .map(|(at, item)| (Version::from_str(version(&item)).ok(), at, item))
+        .partition(|(version, ..)| version.is_some());
+    read.sort_by(|(a, at_a, _), (b, at_b, _)| match (a, b) {
+        (Some(a), Some(b)) => taken(b, a).then_with(|| at_b.cmp(at_a)),
+        _ => std::cmp::Ordering::Equal,
+    });
+    read.into_iter().chain(unread).map(|(.., item)| item).collect()
+}
+
+/// `newest_by`'s order, oldest first: every pre- or dev release below every final, each by
+/// PEP 440.
+fn taken(a: &Version, b: &Version) -> std::cmp::Ordering {
+    a.is_stable().cmp(&b.is_stable()).then_with(|| a.cmp(b))
 }
 
 /// A version's order (spec §7): PEP 440, an unparsable one first.

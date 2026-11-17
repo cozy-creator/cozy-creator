@@ -39,20 +39,31 @@ impl Stuck {
         self.thread().map(|t| t.wchan.clone()).unwrap_or_default()
     }
 
-    /// `pid 93 can't exit: thread 102 (host-pressure) is in the kernel at uvm_parent_gpu_replayable_faults_isr_lock`.
+    /// `pid 93 can't exit: thread 102 (#3) is in the kernel at uvm_parent_gpu_replayable_faults_isr_lock`. A machine-target line, kept in
+    /// Calcifer's store once its machine ends (cl-1012): a thread is named as the machine names it ([`Self::named`]), never by its
+    /// `comm`, which any code in the process can set to any 15 bytes.
     pub(crate) fn line(&self) -> String {
         let pid = self.birth.pid;
         match self.thread() {
             Some(t) if t.state == 'D' => {
                 let at = Some(&t.wchan).filter(|w| !w.is_empty()).map(|w| format!(" at {w}")).unwrap_or_default();
-                format!("pid {pid} can't exit: thread {} ({}) is in the kernel{at}", t.tid, t.name)
+                format!("pid {pid} can't exit: thread {} ({}) is in the kernel{at}", t.tid, self.named(t))
             }
             Some(t) if !t.wchan.is_empty() && t.wchan != "0" => {
-                format!("pid {pid} can't exit: thread {} ({}) waits in the kernel at {} (state {})", t.tid, t.name, t.wchan, t.state)
+                format!("pid {pid} can't exit: thread {} ({}) waits in the kernel at {} (state {})", t.tid, self.named(t), t.wchan, t.state)
             }
-            Some(t) => format!("pid {pid} can't exit: thread {} ({}) is in state {}", t.tid, t.name, t.state),
+            Some(t) => format!("pid {pid} can't exit: thread {} ({}) is in state {}", t.tid, self.named(t), t.state),
             None => format!("pid {pid} can't exit"),
         }
+    }
+
+    /// The Runtime's own names (`call_<n>`, `~watcher`: cozy-runtime #2205), else the thread's place among the process's (`#3`).
+    fn named(&self, t: &Thread) -> String {
+        let call = t.name.strip_prefix("call_").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        if call || t.name == "~watcher" {
+            return t.name.clone();
+        }
+        format!("#{}", self.threads.iter().position(|other| other.tid == t.tid).unwrap_or_default())
     }
 
     /// It still lives: a thread of that birth hasn't exited. Read from its threads too: a zombie leader whose last thread still
@@ -83,7 +94,7 @@ impl Before {
                 }
                 // A zombie leader's handle can read exited while a thread of it is still in the kernel (seen on Linux 6.x).
                 if one.alive() {
-                    return tracing::info!("pid {pid}, the TensorD before this one, still has a thread in the kernel; Status judges it as read");
+                    return tracing::info!(target: crate::config::MACHINE, "pid {pid}, the TensorD before this one, still has a thread in the kernel; Status judges it as read");
                 }
                 watched.exited(&one.birth);
             });
@@ -112,11 +123,11 @@ impl Before {
             }
             shown.len()
         };
-        tracing::info!("pid {}, the TensorD before this one, exited", birth.pid);
+        tracing::info!(target: crate::config::MACHINE, "pid {}, the TensorD before this one, exited", birth.pid);
         exited(&self.paths, birth);
         crate::activity::status_changed();
         if self.broken && left == 0 {
-            tracing::warn!("what left this machine broken exited: it starts again, to open its GPUs");
+            tracing::warn!(target: crate::config::MACHINE, "what left this machine broken exited: it starts again, to open its GPUs");
             super::supervise::leave(super::update::REPLACE_EXIT);
         }
     }

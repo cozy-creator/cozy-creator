@@ -4,10 +4,11 @@ import { Files } from "../panels/Files"
 import { ModelDrawer, Models } from "../panels/library/Models"
 import { PackageDrawer, Packages } from "../panels/library/Packages"
 import { MachineDrawer } from "../panels/machines/MachineDrawer"
-import { Machines } from "../panels/machines/Machines"
+import { Machines, NewMachine } from "../panels/machines/Machines"
 import { NewRun } from "../panels/newrun/NewRun"
 import { Projects } from "../panels/Projects"
-import { ProjectVault } from "../panels/ProjectVault"
+import { ProjectSettings } from "../panels/ProjectSettings"
+import { Settings } from "../panels/Settings"
 import { RunDrawer } from "../panels/runs/RunDrawer"
 import { Runs } from "../panels/runs/Runs"
 import { guardRedirects } from "./redirect"
@@ -18,7 +19,7 @@ import { ProjectRoute } from "./project"
 function Broke() {
   return (
     <main className="gate">
-      <h1>That broke this page</h1>
+      <h1>Something went wrong on this page</h1>
       <button type="button" className="tb" onClick={() => location.reload()}>
         Reload
       </button>
@@ -37,12 +38,14 @@ const drawers: RouteObject[] = [
   drawer("runs/:number", <RunDrawer />),
   drawer("machines", <Machines />),
   drawer("machines/:name", <MachineDrawer />),
+  drawer("machines/new", <NewMachine />),
   drawer("packages", <Packages />, "wide"),
   drawer("packages/:name", <PackageDrawer />, "wide"),
   drawer("models", <Models />, "wide"),
   drawer("models/:name", <ModelDrawer />, "wide"),
   drawer("account", <Account />),
   drawer("projects", <Projects />),
+  drawer("settings", <Settings />),
 ]
 
 /** Made once boot has taken a link's code out of the URL: a router reads where it is as it's made, and `to` is where the link goes. */
@@ -66,8 +69,8 @@ export const theRouter = () =>
             { path: "assets/:name", element: null },
             ...drawers,
             drawer("new", <NewRun />),
-            drawer("files", <Files />),
-            drawer("vault", <ProjectVault />),
+            drawer("assets", <Files />),
+            drawer("project-settings", <ProjectSettings />),
           ],
         })),
         { path: "*", element: <Navigate replace to="/" /> },

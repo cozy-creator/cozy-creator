@@ -6,7 +6,7 @@
 # goes there at once: a rental that will be later doesn't hold it. `wait` again would take stand-c 8 min, so it waits for the rental,
 # nothing sent, its box saying "waits for <rental>, ready in …"; the rental ended, it goes to stand-c. `--on new` of a run stand-c
 # finishes sooner than a new rental would rents nothing and runs there. On a GitHub runner the machines run CPU work side by side, so
-# stand-c is late by its own measured time, not by a queue: placement compares the same finish. Its own shard (`coming`), by hand: it
+# stand-c is late by its own measured time, not by a queue: placement compares the same finish. Its own shard (`coming`), on every RC run: it
 # takes about 15 min.
 coming_machine() {
 step "coming machine (cl-915): a job waits for a rental on its way that finishes it sooner, never for one that's later"
@@ -108,11 +108,16 @@ J '[.runs[] | select(.kind == "call" and .machine == "stand-c" and .status == "c
 # `--on new`, stand-c sooner than a new rental: nothing rented (no quote to agree to), it runs there and says why.
 in_project "$P" --json run minimax-h3-tools/echo text=coming --on new > "$OUT/coming-new-run.ndjson" 2> "$OUT/coming-new-run.err" \
   || check "coming: run --on new: $(tail -c 300 "$OUT/coming-new-run.ndjson") $(tail -c 300 "$OUT/coming-new-run.err")"
-grep -q 'stand-c finishes it .*nothing is rented' "$OUT/coming-new-run.ndjson" "$OUT/coming-new-run.err" \
+grep -q 'stand-c would finish it .*nothing new is rented' "$OUT/coming-new-run.ndjson" "$OUT/coming-new-run.err" \
   || check "coming: run --on new didn't say stand-c finishes it sooner: $(tail -c 300 "$OUT/coming-new-run.err")"
 in_project "$P" --json run ls --limit 0 > "$OUT/coming-new-runs.json"
 J '[.runs[] | select(.target | test("/echo"))] | .[0].machine == "stand-c"' "$OUT/coming-new-runs.json" \
   || check "coming: run --on new didn't run on stand-c: $(jq -c '[.runs[] | {number, target, machine, status}]' "$OUT/coming-new-runs.json")"
 cozy --json machine ls | J '[.machines[] | select(.kind == "rental" and .state != "ended")] | length == 0' \
   || check "coming: run --on new rented: $(cozy --json machine ls | jq -c '[.machines[] | {name, kind, state}]')"
+# Where its walk placed each box and why, kept in the project with calcifer.diagnostics on (run.sh), never in Calcifer's log.
+cp "$P/.vault-calcifer/diagnostics/walk.log" "$OUT/coming-walk.log" 2> /dev/null || true
+[ -s "$OUT/coming-walk.log" ] && grep -q ' goes to ' "$OUT/coming-walk.log" \
+  || check "coming: the project's walk log says no placement, with diagnostics on: $(tail -c 300 "$OUT/coming-walk.log" 2> /dev/null)"
+tail -n 60 "$OUT/coming-walk.log" 2> /dev/null || true
 }

@@ -45,6 +45,12 @@ impl Card {
         Some(self.document.get("requirements")?.as_array()?.iter().filter_map(Value::as_str).collect())
     }
 
+    /// Its publisher's benchmarks (cl-1024). None for a release published before the Hub kept them: a card read from a Hub without
+    /// them is of such a release, so it is never read again for them.
+    pub fn benchmarks(&self) -> Vec<crate::estimate::Benchmark> {
+        serde_json::from_value(self.document["benchmarks"].clone()).unwrap_or_default()
+    }
+
 }
 
 /// Where `hub`'s cards live under `root`, the cozy home.
@@ -133,7 +139,7 @@ async fn from_hub(client: impl FnOnce() -> Result<Client, Error>, root: &Path, h
 /// A package's releases as its Hub answered.
 #[derive(Debug, Default)]
 pub struct Releases {
-    /// The newest release that isn't yanked.
+    /// The release a run naming none takes (`release::newest` of those not yanked).
     pub newest: Option<String>,
     /// Every release it has, yanked or not.
     pub released: HashSet<String>,
@@ -141,11 +147,16 @@ pub struct Releases {
 }
 
 impl Releases {
+    /// Every release that isn't yanked.
+    pub fn open(&self) -> impl Iterator<Item = &str> {
+        self.released.iter().map(String::as_str).filter(|release| !self.yanked.contains(*release))
+    }
+
     /// The newest release, or why `package` has none to run.
     pub fn newest(&self, package: &str) -> Result<String, Error> {
         self.newest.clone().ok_or_else(|| {
-            Error::new(Kind::NotFound, "package_unreleased", format!("{package} has no release to run"))
-                .remedy("its owner publishes one with `cozy package publish`")
+            Error::new(Kind::NotFound, "package_unreleased", format!("{package} has no release you can run yet."))
+                .remedy("Its owner needs to publish one first.")
         })
     }
 }
@@ -155,11 +166,13 @@ pub async fn releases(client: &Client, package: &str) -> Result<Releases, Error>
     let (org, name) = package.split_once('/').expect("a package is org/name");
     let card = client.get_package(org, name).await.map_err(|e| absent(refusal(e), package))?;
     let yanked = |row: &&crate::hub::types::CatalogRelease| row.yanked == Some(true) || row.yanked_at.as_deref().is_some_and(|at| !at.is_empty());
-    Ok(Releases {
-        newest: card.package.latest_release,
+    let mut read = Releases {
+        newest: None,
         released: card.releases.iter().map(|row| row.release.clone()).collect(),
         yanked: card.releases.iter().filter(yanked).map(|row| row.release.clone()).collect(),
-    })
+    };
+    read.newest = crate::release::newest(read.open()).map(str::to_owned);
+    Ok(read)
 }
 
 /// The Hub's 404 names what it lacks, and where to look.
@@ -171,7 +184,7 @@ fn absent(error: Error, what: &str) -> Error {
     Error::new(
         Kind::NotFound,
         "package_not_found",
-        format!("the Hub has no {what}"),
+        format!("The Hub has no package {what}."),
     )
     .cause(error.code)
     .next(format!(
@@ -185,6 +198,14 @@ pub fn kept(root: &Path, hub: &str, package: &str, release: &str) -> Option<Card
     let path = file(&dir(root, hub, package), release);
     let document: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
     read(&document).ok()
+}
+
+/// The packages (`org/name`) with a card kept from `hub`.
+pub fn kept_packages(root: &Path, hub: &str) -> Vec<String> {
+    let entries = |dir: &Path| std::fs::read_dir(dir).into_iter().flatten().flatten().filter(|e| e.path().is_dir()).collect::<Vec<_>>();
+    (entries(&hub_dir(root, hub)).into_iter())
+        .flat_map(|org| entries(&org.path()).into_iter().map(move |name| format!("{}/{}", org.file_name().to_string_lossy(), name.file_name().to_string_lossy())))
+        .collect()
 }
 
 /// The releases of `package` whose cards are kept.
@@ -220,14 +241,14 @@ pub(crate) fn read(document: &Value) -> Result<Card, Error> {
         return Err(Error::new(
             Kind::Unavailable,
             "hub.release_card_invalid",
-            "the Hub's release card names no release",
+            "The Hub sent a release card with no release in it.",
         ));
     }
     let interface = Interface::parse(&document["package_interface"]).map_err(|why| {
         Error::new(
             Kind::Unavailable,
             "hub.package_interface_invalid",
-            format!("the Hub's package interface is unreadable: {why}"),
+            format!("Cozy couldn't read the package interface the Hub sent: {why}"),
         )
     })?;
     Ok(Card {

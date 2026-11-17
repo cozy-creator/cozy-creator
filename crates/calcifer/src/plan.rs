@@ -26,7 +26,7 @@ pub(crate) struct Job {
     /// What it asks of a machine; its `prior_ms` and `after_ms` are set here.
     pub ask: v1::EstimateJob,
     /// Its time on one GPU of each picture's kind from runs elsewhere, by picture.
-    pub priors: Vec<u64>,
+    pub priors: Vec<crate::placement::Prior>,
     /// The pictures it may go to.
     pub machines: Vec<usize>,
     /// The jobs of this plan whose output it reads.
@@ -133,8 +133,8 @@ fn after_ms(job: &Job, ends: &[Option<i64>], now: i64) -> u64 {
 }
 
 fn ask(job: &Job, picture: usize, after_ms: u64) -> v1::EstimateJob {
-    let prior_ms = job.machines.iter().position(|&m| m == picture).and_then(|at| job.priors.get(at)).copied().unwrap_or(0);
-    v1::EstimateJob { prior_ms, after_ms, ..job.ask.clone() }
+    let prior = job.machines.iter().position(|&m| m == picture).and_then(|at| job.priors.get(at)).copied().unwrap_or_default();
+    v1::EstimateJob { prior_ms: prior.ms, prior_runs: prior.runs, after_ms, ..job.ask.clone() }
 }
 
 /// Each job's picture and offer with `assigned`, and the plan's (latest, summed) finish: each machine's jobs in dependency order,
@@ -180,19 +180,19 @@ fn stays(job: &Job, was: &Option<(usize, Offer)>, now_placed: &Option<(usize, Of
 }
 
 /// `sooner` finishes clearly before `than`: 10% and 30 s.
-fn clearly_sooner(sooner: &Offer, than: &Offer, now: i64) -> bool {
+pub(crate) fn clearly_sooner(sooner: &Offer, than: &Offer, now: i64) -> bool {
     let gain = than.finish_at_ms - sooner.finish_at_ms;
     gain >= STAY_MS && gain as f64 >= STAY * (than.finish_at_ms - now).max(0) as f64
 }
 
 /// Of `offers`, where a job goes: the soonest finish of those that can run it, of those tied a machine that serves before one on its
-/// way, one measured before one not, and a rental before this computer (`placement::soonest`); and the machine fetching ahead for it
-/// unless another is clearly sooner.
+/// way, one measured before one not, a rental before this computer, then the sooner (`placement::soonest`); and the machine fetching
+/// ahead for it unless another is clearly sooner.
 fn choose(offers: &[(usize, Offer)], stay: Option<usize>, now: i64) -> Option<(usize, Offer)> {
     let fits = || offers.iter().filter(|(_, offer)| offer.fits);
     let first = fits().map(|(_, offer)| offer.finish_at_ms).min()?;
     let tie = (((first - now).max(0) as f64 * TIE) as i64).max(1000);
-    let rank = |offer: &Offer| (offer.ready_at_ms.is_some(), offer.basis != v1::Basis::Measured, offer.machine.is_local());
+    let rank = |offer: &Offer| (offer.ready_at_ms.is_some(), offer.basis != v1::Basis::Measured, offer.machine.is_local(), offer.finish_at_ms);
     let soonest = fits().filter(|(_, offer)| offer.finish_at_ms <= first + tie).min_by_key(|(_, offer)| rank(offer))?;
     let kept = stay.and_then(|stay| fits().find(|(m, _)| *m == stay)).filter(|(_, held)| !clearly_sooner(&soonest.1, held, now));
     kept.or(Some(soonest)).cloned()

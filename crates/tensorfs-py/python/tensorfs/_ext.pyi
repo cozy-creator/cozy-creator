@@ -437,6 +437,9 @@ _Token = str | TokenProvider | Callable[[str, str, Mapping[str, str], str | None
 def _materialize(checkpoint: Checkpoint, directory: StrPath, *, format: str = "cozytensors",
                  decode: bool = False) -> str: ...
 
+def _default_endpoint() -> str:
+    """The endpoint a call reaches when it names none (`TENSORFS_ENDPOINT`, else Tensorhub)."""
+
 class CacheOwnerDeferredError(RuntimeError):
     reason: str
 

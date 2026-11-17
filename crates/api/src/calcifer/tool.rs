@@ -85,7 +85,7 @@ pub struct Tool {
     pub name: String,
     /// What it does within its package: `Image`, `Edit`, `Upscale`.
     pub label: String,
-    /// Its package in words, as the tool list heads its tools: `Qwen Image 2`, `SDXL`.
+    /// Its package in words, as its description writes its name (`MiniMax H3`, `Qwen-Image-2.1`), else as `title` spells it (`SDXL`).
     #[serde(default)]
     pub package_title: String,
     /// What a box of it is: `image`, `video`, `audio` or `text`, by its result's first such field.
@@ -275,29 +275,37 @@ pub fn stays(callable: &Callable) -> Vec<String> {
     callable.result.fields.iter().filter(|field| matches!(field.ty.plain(), Type::Asset(kind) if kind == "latents")).map(|field| field.name.clone()).collect()
 }
 
-/// What `callable` answered in words: its output's first text, or a list of texts' first. `warnings` is no answer.
-pub fn output_text(callable: &Callable, result: &Value) -> Option<String> {
-    let said = |field: &Field| match (field.ty.plain(), &result[field.name.as_str()]) {
-        (Type::Str, Value::String(text)) => Some(text.clone()),
-        (Type::List(item), Value::Array(texts)) if **item == Type::Str => texts.first()?.as_str().map(str::to_owned),
-        _ => None,
-    };
-    callable.result.fields.iter().filter(|field| field.name != "warnings").find_map(said).filter(|text| !text.trim().is_empty())
+/// The field of `callable`'s result its words are in, for a box of text: its first plain text but `warnings`.
+pub fn text_field(callable: &Callable) -> Option<&str> {
+    callable.result.fields.iter().find(|field| field.name != "warnings" && *field.ty.plain() == Type::Str).map(|field| field.name.as_str())
+}
+
+/// The words `result` holds in `field`. None: none.
+pub fn text_in(result: &Value, field: &str) -> Option<String> {
+    result.get(field)?.as_str().filter(|text| !text.trim().is_empty()).map(str::to_owned)
 }
 
 /// What a box of `callable` is: its result's first picture, video or sound, else `text` for a result with words.
-pub(crate) fn makes(callable: &Callable) -> Option<&str> {
-    let text = || callable.result.fields.iter().any(|field| field.name != "warnings" && *field.ty.plain() == Type::Str).then_some("text");
-    output_kind(callable).or_else(text)
+pub fn makes(callable: &Callable) -> Option<&str> {
+    output_kind(callable).or_else(|| text_field(callable).map(|_| "text"))
 }
 
-/// Every tool of a package's interface: each public function that declares `@app.tool`.
-pub fn tools_of(package: &str, release: &str, interface: &Interface) -> Vec<Tool> {
+/// Where a box of a tool with `fields` reads a box of `kind`: its first required slot of that kind, else its first prompt. With `able`, only
+/// a prompt that takes that kind: words (`text`) any prompt takes, as a mention of them is them.
+pub fn reads_kind<'a>(fields: &'a [ToolField], kind: &str, able: bool) -> Option<&'a ToolField> {
+    let slot = fields.iter().find(|field| field.required && field.ty == FieldType::Slot && field.accept.as_deref() == Some(kind));
+    let takes = |field: &&ToolField| !able || kind == "text" || field.takes.as_ref().is_none_or(|kinds| kinds.iter().any(|one| one == kind));
+    slot.or_else(|| fields.iter().filter(|field| field.ty == FieldType::Prompt).find(takes))
+}
+
+/// Every tool of a package's interface: each public function that declares `@app.tool`. `summary` is what the package does in a line, its
+/// pyproject's description, which spells its name (`title`).
+pub fn tools_of(package: &str, release: &str, interface: &Interface, summary: &str) -> Vec<Tool> {
     let callables = interface.public().into_iter().filter_map(|name| interface.callables.iter().find(|c| c.name == name));
-    callables.filter_map(|callable| tool_of(package, release, interface, callable)).collect()
+    callables.filter_map(|callable| tool_of(package, release, interface, callable, summary)).collect()
 }
 
-fn tool_of(package: &str, release: &str, interface: &Interface, callable: &Callable) -> Option<Tool> {
+fn tool_of(package: &str, release: &str, interface: &Interface, callable: &Callable, summary: &str) -> Option<Tool> {
     let declared = callable.tool.as_ref()?;
     let makes = makes(callable)?;
     let package = shown(package);
@@ -313,7 +321,7 @@ fn tool_of(package: &str, release: &str, interface: &Interface, callable: &Calla
         id: format!("{package}/{}", callable.name),
         name: box_name(&package, callable),
         label: if declared.label.is_empty() { capitalized(&words(&callable.name)) } else { declared.label.clone() },
-        package_title: title(&package),
+        package_title: title(&package, summary),
         package,
         function: callable.name.clone(),
         release: release.to_owned(),
@@ -363,14 +371,64 @@ pub fn first_of(word: &str) -> String {
     format!("{word}_1")
 }
 
-/// A package in words, its last part's: `qwen-image-2` is `Qwen Image 2`, and a word with no vowel is upper case, `sdxl` SDXL and `h3` H3.
-pub fn title(package: &str) -> String {
-    let words = package_word(package).split(['-', '_']).filter(|word| !word.is_empty());
+/// A package in words: its name as its own description (`summary`) writes it, `minimax-h3`'s "MiniMax H3 video with sound…" MiniMax H3 and
+/// `qwen-image-2`'s "…using Qwen-Image-2.1" Qwen-Image-2.1. One whose description doesn't name it: its last part's words, `krea-2` Krea 2,
+/// and a word with no vowel upper case, `sdxl` SDXL.
+pub fn title(package: &str, summary: &str) -> String {
+    let name = package_word(package);
+    if let Some(written) = written_in(name, summary) {
+        return written.to_owned();
+    }
+    let words = name.split(['-', '_']).filter(|word| !word.is_empty());
     let word = |word: &str| match word.chars().any(|c| "aeiouAEIOU".contains(c)) {
         true => capitalized(word),
         false => word.to_uppercase(),
     };
     words.map(word).collect::<Vec<_>>().join(" ")
+}
+
+/// `name` where `text` first writes it: its letters and digits in any case, from the start of a word to the end of one, each `-`, `_`, `.`
+/// or space of it written as any one of those or none, and a version after a last number (`qwen-image-2` as Qwen-Image-2.1).
+fn written_in<'a>(name: &str, text: &'a str) -> Option<&'a str> {
+    const GAPS: [char; 4] = ['-', '_', '.', ' '];
+    let wanted: Vec<char> = name.chars().collect();
+    if wanted.iter().all(|c| GAPS.contains(c)) {
+        return None;
+    }
+    let starts = text.char_indices().map(|(at, _)| at).filter(|&at| text[..at].chars().next_back().is_none_or(|before| !before.is_alphanumeric()));
+    'start: for start in starts {
+        let mut rest = text[start..].chars().peekable();
+        let mut end = start;
+        for want in wanted.iter().copied() {
+            if GAPS.contains(&want) {
+                if let Some(gap) = rest.next_if(|next| GAPS.contains(next)) {
+                    end += gap.len_utf8();
+                }
+                continue;
+            }
+            match rest.next() {
+                Some(next) if next.eq_ignore_ascii_case(&want) => end += next.len_utf8(),
+                _ => continue 'start,
+            }
+        }
+        if wanted.last().is_some_and(|last| last.is_ascii_digit()) {
+            loop {
+                let mut ahead = rest.clone();
+                if !(ahead.next() == Some('.') && ahead.next().is_some_and(|digit| digit.is_ascii_digit())) {
+                    break;
+                }
+                rest.next();
+                end += 1;
+                while rest.next_if(|digit| digit.is_ascii_digit()).is_some() {
+                    end += 1;
+                }
+            }
+        }
+        if rest.peek().is_none_or(|next| !next.is_alphanumeric()) {
+            return Some(&text[start..end]);
+        }
+    }
+    None
 }
 
 fn capitalized(text: &str) -> String {
@@ -470,6 +528,29 @@ fn field_of(field: &Field, default: Option<Value>) -> Option<ToolField> {
         _ => return None,
     }
     Some(out)
+}
+
+/// What a box asks of a required `field` it has nothing in, in the words the box draws it with: the step (`choose`, `write`, …), its
+/// label, and a choice's options as it shows them, `Character swap, Head swap or Style transfer`.
+pub fn asked(field: &Field) -> (&'static str, String, Option<String>) {
+    let Some(drawn) = field_of(field, None) else { return ("write", capitalized(&words(&field.name)), None) };
+    let step = match drawn.ty {
+        FieldType::Choice => "choose",
+        FieldType::Slot => "add",
+        FieldType::Number | FieldType::Toggle | FieldType::Shape | FieldType::Seed => "set",
+        FieldType::Group => "fill in",
+        FieldType::Words | FieldType::Prompt | FieldType::Timeline => "write",
+    };
+    let key = |value: &Value| value.as_str().map_or_else(|| value.to_string(), str::to_owned);
+    let shown: Vec<String> = (drawn.options.iter().flatten())
+        .map(|value| drawn.words.as_ref().and_then(|words| words.get(&key(value))).cloned().unwrap_or_else(|| key(value)))
+        .collect();
+    let options = match shown.split_last() {
+        None => None,
+        Some((only, [])) => Some(only.clone()),
+        Some((last, rest)) => Some(format!("{} or {last}", rest.join(", "))),
+    };
+    (step, drawn.label, options)
 }
 
 /// A group's members as the box draws them.

@@ -3,9 +3,8 @@ import { lost } from "../api/outbox"
 import { hashFile, inLine, sendFile } from "../api/upload"
 import { say } from "../ui/notes"
 import type { Asset, Imported, Card, Tool, Opened } from "../api/calcifer"
-import { CARD_WIDTH, type CanvasStore, type CarriedFile, type MediaKind, type Pushes, type Stage, UNDO_MS } from "./CanvasStore"
+import { CARD_WIDTH, type CanvasStore, type CarriedFile, type MediaKind, type Pushes, type Stage } from "./CanvasStore"
 import { startingFields, TEXT_TOOL } from "./controls"
-import type { BasicNodeKind, Operation } from "./palette"
 import { type CopiedBox, copyOf } from "./copy"
 import { asName, nameKey, stemName } from "./names"
 import { pictureSize } from "./pictureSize"
@@ -98,20 +97,12 @@ export class Placer {
   }
 
   /** A tool dropped at a point: an asset of it, there at once, as wide as what it makes and called what its tool says, `fields` with what it starts with
-   *  (a checkpoint dropped is on it). Dropping keeps the current canvas interaction mode. */
-  addTool(tool: Tool, point: { x: number; y: number }, fields?: Record<string, unknown>, operation?: Operation) {
+   *  (a checkpoint dropped is on it). Dropping keeps the current canvas interaction mode. The name it's placed under. */
+  addTool(tool: Tool, point: { x: number; y: number }, fields?: Record<string, unknown>): string {
     const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
-    const text = tool === TEXT_TOOL
+    const text = tool.id === TEXT_TOOL.id
     const timeline = tool.fields.some((field) => field.type === "timeline") ? { fps: 24, tracks: [{ clips: [] }] } : undefined
-    const name = this.box(asName(tool.name ?? tool.label), { kind: tool.makes, tool: text ? undefined : tool.id, fields: text ? { text: "", node_kind: "text" } : { ...startingFields(tool), ...fields, node_kind: tool.makes }, timeline }, at, `Couldn't place ${tool.label}`)
-    if (operation) this.store.patch(name, { operation })
-  }
-
-  /** Basic media nodes retain their type before a model or file is assigned. */
-  addNode(kind: BasicNodeKind, point: { x: number; y: number }) {
-    if (kind === "text") return this.addTool(TEXT_TOOL, point)
-    const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
-    this.box(kind, { kind, fields: { node_kind: kind } }, at, `Couldn't create ${kind}`)
+    return this.box(asName(tool.name ?? tool.label), { kind: tool.makes, tool: text ? undefined : tool.id, fields: text ? { text: "", node_kind: "text" } : { ...startingFields(tool), ...fields, node_kind: tool.makes }, timeline }, at, `Couldn't place ${tool.label}`)
   }
 
   /** An asset that holds these, there at once, with nothing made yet. */
@@ -162,7 +153,7 @@ export class Placer {
     const placing = boxes.map(({ from, at }) => {
       const view = this.store.get(from)!
       const asset: Asset = { ...view.asset!, fields: { ...view.asset!.fields, ...view.sent, ...view.drafts }, etag: undefined, making: undefined, rendering: undefined }
-      return { wanted: asset.name, view: { asset, aspect: view.aspect, operation: view.operation, viewed: view.viewed }, dropped: at }
+      return { wanted: asset.name, view: { asset, aspect: view.aspect, viewed: view.viewed }, dropped: at }
     })
     const said = boxes.length === 1 ? boxes[0].from : `${boxes.length} boxes`
     const names = this.store.placeAll(
@@ -199,7 +190,7 @@ export class Placer {
   }
 
   private pasted(names: string[], edit: string, verb = "Pasted") {
-    say(`${verb} ${names.length === 1 ? names[0] : `${names.length} assets`}`, undefined, { action: { label: "Undo", run: () => this.store.undo({ edit }) }, ms: UNDO_MS })
+    say(`${verb} ${names.length === 1 ? names[0] : `${names.length} boxes`}`, undefined, { action: { label: "Undo", run: () => this.store.undo({ edit }) } })
   }
 
   /** Files dropped on a box with no tool: each its next version, with its slot in the row until it's there. Each takes its step and its turn
@@ -208,7 +199,7 @@ export class Placer {
     const kind = this.store.get(name)?.asset?.kind
     for (const file of files) {
       if (kind && file.type && file.type.split("/")[0] !== kind) {
-        say(`${name} is a ${kind} node and cannot take ${file.name}`)
+        say(`${name} is ${an(kind)} ${kind} box, so it can't take ${file.name}`)
         continue
       }
       const signal = new AbortController().signal
@@ -236,7 +227,7 @@ export class Placer {
       { landed: { sha256: file.sha256, field: file.field } },
       at,
       async (clear, write, pushes) => this.client.import(await this.project(), key, { source: file.sha256, name: file.name, at: clear, description, moves: pushes.moves, placed: pushes.placed }, write),
-      (error) => say(`Couldn't take out ${file.name}`, error),
+      (error) => say(`Couldn't move ${file.name} out onto the canvas`, error),
       (name, _, made) => !file.copy && from !== undefined && number !== undefined && this.store.movedOut(from, number, name, made),
       edit,
     )
@@ -371,4 +362,9 @@ export class Placer {
     )
     return this.made
   }
+}
+
+/** `a` or `an`, as `kind` is said. */
+function an(kind: string): string {
+  return /^[aeiou]/i.test(kind) ? "an" : "a"
 }

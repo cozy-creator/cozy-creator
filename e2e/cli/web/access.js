@@ -1,7 +1,9 @@
 // Who may talk to Calcifer, with no sessions (design/calcifer-access.md, cl-985), on Linux: Calcifer's own page works in two tabs and
 // through a kill -9 with nothing minted; another site's and another port's fetch, <img> and WebSocket are refused, a framed page
 // doesn't render, a rebinding Host is turned away on the page and /v1, another OS account is refused (curl, and a real Chrome of its
-// own that shows only "No project open here"), and in dev mode the page and its hot reload come from Vite through Calcifer alone.
+// own that shows only "No project open here"), and in dev mode the page and its hot reload come from Vite through Calcifer alone;
+// with Vite stopped, the page built into cozy stands in (cl-1087, Paul 11-16: "fall back to the built-in page with a warning": "yeah
+// sure").
 //   node access.js: by web.sh's web_proof, as `web-access`
 // $PLAYWRIGHT, $CHROME, $HOLDER (Calcifer's lock record), $RESTART (kill -9 of Calcifer, then back), $COZY, $LAST_LOOK. Prints what it
 // saw as JSON and exits 1 if anything failed.
@@ -23,7 +25,8 @@ function check(name, ok, detail) {
 const OTHER = 'cozy-access-other';
 const HMR = '/__cozy_hmr';
 const UPGRADE = { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==', 'Sec-WebSocket-Protocol': 'vite-hmr' };
-const REPO = resolve(__dirname, '../../..');
+// Dev mode's Vite serves the web of the cozy under test (CI checks its commit out apart, $COZY_WEB_SOURCE), else this harness's own.
+const REPO = resolve(process.env.COZY_WEB_SOURCE || join(__dirname, '../../..'));
 const WEB = join(REPO, 'web/app');
 const CONFIG = join(homedir(), '.cozy/config.toml');
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
@@ -132,7 +135,7 @@ function devConfig(text) {
     const headers = await request.allHeaders().catch(() => ({}));
     if (url.pathname.startsWith('/v1/session') || headers.authorization) minted.push(url.pathname);
   });
-  const read = (page) => page.evaluate(async (id) => (await fetch(`/v1/projects/${id}?assets=false`, { headers: { 'cozy-project-storage': '3' } })).status, project.id);
+  const read = (page) => page.evaluate(async (id) => (await fetch(`/v1/projects/${id}?assets=false`)).status, project.id);
 
   // Two tabs, each Calcifer's own page: nothing minted, nothing sent but the page's own requests.
   const tabs = [await context.newPage(), await context.newPage()];
@@ -197,7 +200,7 @@ function devConfig(text) {
     spawnSync('sudo', ['-n', 'useradd', '-m', OTHER]);
     const asOther = [
       ['bearer', bearer, `/v1/status`],
-      ['page', { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors', 'cozy-project-storage': '3' }, `/v1/projects/${project.id}?assets=false`],
+      ['page', { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors' }, `/v1/projects/${project.id}?assets=false`],
       ['img', { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'no-cors', 'Sec-Fetch-Dest': 'image' }, `/v1/projects/${project.id}/files/${file}`],
     ];
     for (const [name, headers, path] of asOther) {
@@ -294,6 +297,10 @@ async function otherChrome(base, project) {
 
 async function devMode(context, base, project, token) {
   if (!existsSync(join(WEB, 'node_modules/.bin/vite'))) { check('dev_vite_installed', false, WEB); return; }
+  // The page under test is the candidate's own web: the commit Vite serves, and the one cozy was built from.
+  seen.web_commit = execFileSync('git', ['-C', REPO, 'rev-parse', 'HEAD']).toString().trim();
+  const built = /\+g([0-9a-f]{7,40})\b/.exec(execFileSync(process.env.COZY, ['--version']).toString());
+  check('dev_web_is_candidate', !built || seen.web_commit.startsWith(built[1]), { web_commit: seen.web_commit, cozy: built?.[1] });
   const original = existsSync(CONFIG) ? readFileSync(CONFIG, 'utf8') : null;
   const vite = spawn(join(WEB, 'node_modules/.bin/vite'), ['--host', '127.0.0.1', '--port', '5173', '--strictPort'], { cwd: WEB, detached: true, stdio: 'ignore' });
   const tokens = join(WEB, 'src/ui/tokens.css');
@@ -326,7 +333,7 @@ async function devMode(context, base, project, token) {
     writeFileSync(tokens, `${css}\n/* access.js: a hot update */\n`);
     await until('a hot update arrives', async () => said.some((line) => line.includes('hot updated') && line.includes('tokens.css')), Boolean);
     check('dev_hot_reload_through_calcifer', true);
-    check('dev_page_still_works', (await page.evaluate(async (id) => (await fetch(`/v1/projects/${id}?assets=false`, { headers: { 'cozy-project-storage': '3' } })).status, project.id)) === 200);
+    check('dev_page_still_works', (await page.evaluate(async (id) => (await fetch(`/v1/projects/${id}?assets=false`)).status, project.id)) === 200);
     await page.close();
 
     // Another account gets none of this checkout's code through Calcifer, and the lock record is no file Vite serves.
@@ -343,6 +350,17 @@ async function devMode(context, base, project, token) {
     }
     const lock = curl(`/@fs${homedir()}/.cozy/calcifer/calcifer.lock.holder`, { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'no-cors' });
     check('dev_lock_record_not_served', !lock.body.includes(token) && !lock.body.includes(holderToken()), lock.status);
+
+    // Vite stops: the page built into this cozy stands in, with its own files, on the page and a client route (cl-1087).
+    try { process.kill(-vite.pid, 'SIGKILL'); } catch { /* gone */ }
+    await until('Vite is gone', () => fetch('http://127.0.0.1:5173/@vite/client').then((r) => r.status, () => 0), (status) => status === 0, STEP_MS);
+    const standIn = curl('/');
+    const script = standIn.body.match(/\/assets\/[^"']+\.js/)?.[0];
+    // A built bundle is past spawnSync's 1 MiB stdout buffer, which `curl` here reads it through: fetched directly instead.
+    const loaded = script ? await fetch(`${calcifer()}${script}`).then((r) => ({ status: r.status }), () => ({ status: 0 })) : { status: 0 };
+    const route = curl(`/p/${project.code}`);
+    check('dev_vite_down_built_page', standIn.status === 200 && !standIn.body.includes('/@vite/client') && loaded.status === 200 && route.status === 200,
+      { page: standIn.status, vite: standIn.body.includes('/@vite/client'), script, loaded: loaded.status, route: route.status });
   } catch (error) {
     check('dev_mode', false, String(error));
   } finally {

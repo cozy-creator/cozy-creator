@@ -116,11 +116,19 @@ impl std::fmt::Display for Swept {
     }
 }
 
-/// Bytes for people: MiB to a tenth below a GiB, else GiB to a hundredth.
+/// Bytes as people write them, decimal as disks are sold (cl-1084): `340MB`, `2.1GB`, `200GB`.
 pub(crate) fn size(bytes: u64) -> String {
-    match bytes < 1 << 30 {
-        true => format!("{:.1} MiB", bytes as f64 / (1u64 << 20) as f64),
-        false => format!("{:.2} GiB", bytes as f64 / (1u64 << 30) as f64),
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1000.0 && unit < 4 {
+        value /= 1000.0;
+        unit += 1;
+    }
+    let unit = ["B", "KB", "MB", "GB", "TB"][unit];
+    match value {
+        _ if unit == "B" => format!("{bytes}B"),
+        value if value < 10.0 => format!("{value:.1}{unit}"),
+        value => format!("{value:.0}{unit}"),
     }
 }
 
@@ -900,19 +908,29 @@ fn du(path: &Path, skip: &[PathBuf]) -> u64 {
     durable::allocated(&metadata) + if metadata.is_dir() { children().map(|e| du(&e.path(), skip)).sum() } else { 0 }
 }
 
-/// A refusal's account of the disk under `path`: what fills it and the `--disk-gb` that would
-/// also hold `missing` bytes more.
+/// A refusal's account of the disk under `path`, as sentences that follow it: what fills it, and the disk a rental would need to
+/// also hold `missing` bytes more (cl-1084: said plainly, no command to paste).
 pub(crate) fn advice(path: &Path, missing: u64) -> String {
     let Ok(disk) = measure(path) else {
         return String::new();
     };
     let held = usage().map_or(String::new(), |u| {
-        format!("models {}, package environments {}, Runtime {}; ", size(u.models), size(u.environments), size(u.runtime))
+        format!("{} of models, {} of package environments and {} of Runtime; ", size(u.models), size(u.environments), size(u.runtime))
     });
     let gb = (disk.capacity.saturating_sub(disk.available) + missing + disk.reserve()).div_ceil(10_000_000_000) * 10;
     format!(
-        " (the disk holds {held}{} of {} free: `cozy package ls --on <machine>` and `cozy package uninstall <package> --on <machine>` free some; \
-         `cozy machine rent <sku> --disk-gb {gb}` holds this call)",
+        " The disk holds {held}{} of {} is free. Uninstall packages you don't need, or {RENT}{gb}GB disk.",
         size(disk.available), size(disk.capacity)
     )
+}
+
+/// How `advice` names the disk to rent: a refusal that says it already has its advice (`advised`).
+const RENT: &str = "rent a machine with a ";
+
+/// `why`, with `advice` after it unless it has it.
+pub(crate) fn advised(why: &str, path: &Path, missing: u64) -> String {
+    match why.contains(RENT) {
+        true => why.to_owned(),
+        false => format!("{why}{}", advice(path, missing)),
+    }
 }

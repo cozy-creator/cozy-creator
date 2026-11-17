@@ -1,26 +1,21 @@
 import type { Asset, Tool, ToolField } from "../api/calcifer"
-import { VIDEO_EDIT_TOOL } from "./controls"
-import { madeHere } from "./shown"
+import { TEXT_TOOL, VIDEO_EDIT_TOOL } from "./controls"
+import { madeHere, namesItsPackage } from "./shown"
 
-export type BasicNodeKind = "text" | "image" | "video" | "audio"
-
-export const BASIC_NODES: ReadonlyArray<{ kind: BasicNodeKind; label: string }> = [
-  { kind: "image", label: "Image" },
-  { kind: "video", label: "Video" },
-  { kind: "audio", label: "Audio" },
-  { kind: "text", label: "Text" },
-]
-
+// A picture, a video or a sound comes in as a file dropped, or a tool that makes it; words come in as Text. There's no list of blank
+// boxes (Paul, 11-16: "if you want an image node, just drag an image on there, or drag an image tool on there").
 export const OPERATIONS = [
   { key: "image", label: "Image", makes: "image" },
-  { key: "edit_image", label: "Edit Image", makes: "image" },
   { key: "upscale_image", label: "Upscale Image", makes: "image" },
   { key: "video", label: "Video", makes: "video" },
-  { key: "edit_video", label: "Edit Video", makes: "video" },
   { key: "upscale_video", label: "Upscale Video", makes: "video" },
   { key: "timeline", label: "Video Timeline", makes: "video" },
   { key: "llm", label: "LLM", makes: "text" },
+  { key: "text", label: "Text", makes: "text" },
 ] as const
+
+/** The tools listed, with Calcifer's own: Text, and the Video Timeline last. */
+export const withBuiltIns = (tools: Tool[]): Tool[] => [TEXT_TOOL, ...tools.filter((tool) => tool.id !== TEXT_TOOL.id && tool.id !== VIDEO_EDIT_TOOL.id), VIDEO_EDIT_TOOL]
 
 export type Operation = typeof OPERATIONS[number]["key"]
 export interface PaletteEntry {
@@ -35,39 +30,43 @@ const hasSource = (fields: ToolField[], kind: string): boolean => fields.some((f
   (field.type === "slot" && field.required && field.accept === kind) ||
   (field.type === "group" && field.required && hasSource(field.members ?? [], kind)))
 
-/** Operations describe the result. Image input on a VLM never makes it an image tool. */
+const nameOf = (tool: Tool) => `${tool.function} ${tool.label}`.toLowerCase()
+
+/** A tool that changes what it's given, of the kind it makes: one it must be given, or its name says it edits. A video one is a row of
+ *  Video called what it does (`modelLabel`). */
+const changes = (tool: Tool) => /edit|inpaint|outpaint|vid2vid/.test(nameOf(tool)) || hasSource(tool.fields, tool.makes)
+
+/** Operations describe the result. Image input on a VLM never makes it an image tool. What makes pictures is one group, whether or not it
+ *  can edit one (Paul, 11-16: two groups of the same models was "confusing af"), and so is what makes video, a video edit its own row of it
+ *  (Paul, 11-16: "eliminate the Edit Video section, and instead place it inside of 'Video' section"). */
 export function operationOf(tool: Tool): Operation | null {
   if (tool.id === VIDEO_EDIT_TOOL.id) return "timeline"
-  if (madeHere(tool.id) || tool.id === "text") return null
+  if (tool.id === TEXT_TOOL.id) return "text"
+  if (madeHere(tool.id)) return null
   if (tool.makes === "text") return "llm"
   if (tool.makes !== "image" && tool.makes !== "video") return null
-  const name = `${tool.function} ${tool.label}`.toLowerCase()
-  if (/upscale|super.?resolution/.test(name)) return tool.makes === "image" ? "upscale_image" : "upscale_video"
-  if (/edit|inpaint|outpaint|img2img|vid2vid/.test(name) || hasSource(tool.fields, tool.makes)) return tool.makes === "image" ? "edit_image" : "edit_video"
+  if (/upscale|super.?resolution/.test(nameOf(tool))) return tool.makes === "image" ? "upscale_image" : "upscale_video"
   return tool.makes
 }
 
+/** A tool's row in its group: its model, its package's title as its description writes it (Calcifer's `title`: MiniMax H3, Qwen-Image-2.1),
+ *  and for a video edit what it does too, its model said once: MiniMax H3 Edit beside MiniMax H3. */
 export const modelLabel = (tool: Tool) => {
   if (tool.id === VIDEO_EDIT_TOOL.id) return "Video Timeline"
   const title = tool.package_title || tool.label
-  const model = tool.model?.default?.split("@")[0]?.split("/").at(-1)
-  if (model === "p-h3-image") return "P-H3 Image"
-  const version = model?.match(/(\d+(?:\.\d+)+)$/)?.[1]
-  return version && /\d+(?:\.\d+)*$/.test(title) ? title.replace(/\d+(?:\.\d+)*$/, version) : title
+  if (operationOf(tool) !== "video" || !changes(tool) || !tool.label || title.toLowerCase().endsWith(tool.label.toLowerCase())) return title
+  return namesItsPackage(tool) ? tool.label : `${title} ${tool.label}`
 }
 
-const takesImage = (fields: ToolField[]): boolean => fields.some((field) =>
-  (field.type === "prompt" && (!field.takes || field.takes.includes("image"))) ||
-  (field.type === "slot" && field.accept === "image") ||
-  (field.type === "group" && takesImage(field.members ?? [])))
+/** A group's rows: what makes something new, then what changes what it's given (MiniMax H3, then MiniMax H3 Edit), each by name; local code last. */
+const inGroup = (a: Tool, b: Tool) => Number(Boolean(a.local)) - Number(Boolean(b.local)) || Number(changes(a)) - Number(changes(b)) ||
+  modelLabel(a).localeCompare(modelLabel(b), undefined, { sensitivity: "base" }) || a.id.localeCompare(b.id)
 
 /** Stable operation rows; executable choices live in the node's model control. */
 export function paletteEntries(tools: Tool[]): PaletteEntry[] {
-  const available = [...tools.filter((tool) => tool.id !== VIDEO_EDIT_TOOL.id), VIDEO_EDIT_TOOL]
+  const available = withBuiltIns(tools)
   return OPERATIONS.map((operation) => {
-    const variants = available.filter((tool) => operationOf(tool) === operation.key ||
-      (operation.key === "edit_image" && operationOf(tool) === "image" && takesImage(tool.fields)))
-      .sort((a, b) => Number(Boolean(a.local)) - Number(Boolean(b.local)) || a.id.localeCompare(b.id))
+    const variants = available.filter((tool) => operationOf(tool) === operation.key).sort(inGroup)
     return { ...operation, tool: variants[0], variants }
   })
 }

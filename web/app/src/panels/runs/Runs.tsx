@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { useState } from "react"
 import { Link, useSearchParams } from "react-router-dom"
-import { machinesQuery, maintenanceRunsQuery, projectQuery, runsQuery } from "../../api/queries"
+import { machinesQuery, projectQuery, runsQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
 import { useProjectId, useTo } from "../../app/Shell"
 import type { Run } from "../../api/calcifer"
@@ -50,7 +50,7 @@ function RunRow({ run, now, box }: { run: Run; now: number; box?: string }) {
   )
 }
 
-/** This project's runs, or project-independent maintenance; by machine and status. */
+/** This project's runs, by machine and status. Every run is a project's (cl-1028): with none open there are none. */
 export function Runs() {
   const { client, stream } = useConnection()
   const to = useTo()
@@ -61,7 +61,7 @@ export function Runs() {
   const [limit, setLimit] = useState(PAGE)
   const status = params.get("status") ?? ""
   const machine = params.get("machine") ?? ""
-  const { data, error } = useQuery(id ? runsQuery(client, id, { status, machine }, limit) : maintenanceRunsQuery(client, { status, machine }, limit))
+  const { data, error } = useQuery({ ...runsQuery(client, id ?? "", { status, machine }, limit), enabled: Boolean(id) })
   const { data: machines } = useQuery(machinesQuery(client))
   const runs = data?.runs ?? []
   const now = useNow(runs.some((run) => !settled(run)))
@@ -76,6 +76,17 @@ export function Runs() {
   const names = new Set(machines?.machines.map((listed) => listed.name))
   if (machine) names.add(machine)
 
+  if (!id)
+    return (
+      <DrawerFrame title="Runs">
+        <p className="muted">
+          Runs are kept in their projects.{" "}
+          <Link className="more" to="/projects">
+            Open a project
+          </Link>
+        </p>
+      </DrawerFrame>
+    )
   return (
     <DrawerFrame title="Runs">
       <div className="row filters">
@@ -84,7 +95,7 @@ export function Runs() {
           <option value="">Any status</option>
           {STATUSES.map((word) => (
             <option key={word} value={word}>
-              {word === "in_progress" ? "running" : word}
+              {word === "in_progress" ? "Running" : word.charAt(0).toUpperCase() + word.slice(1)}
             </option>
           ))}
         </select>
@@ -97,7 +108,7 @@ export function Runs() {
           ))}
         </select>
       </div>
-      <Failure error={error} lead="Couldn't list the runs" />
+      <Failure error={error} lead="Couldn't load runs" />
       <ul className="rows">
         {runs.map((run) => (
           <RunRow key={run.id} run={run} now={now} box={run.project_id === id ? boxes.get(run.number) : undefined} />
@@ -105,8 +116,8 @@ export function Runs() {
       </ul>
       {data && !runs.length && (
         <p className="muted">
-          {status || machine ? "No runs match." : !id ? "No runs yet." : "No runs in this project yet."}
-          {id && !status && !machine && (
+          {status || machine ? "No runs match these filters." : "No runs in this project yet."}
+          {!status && !machine && (
             <>
               {" "}
               <Link className="more" to={to("new")}>
@@ -118,12 +129,12 @@ export function Runs() {
       )}
       {data?.unreadable?.map((line) => (
         <p className="muted" key={line}>
-          Left out {line}
+          Couldn't read {line}
         </p>
       ))}
       {Boolean(data?.older) && (
         <button type="button" className="tb" onClick={() => setLimit(Math.min(1000, limit + 200))}>
-          {data?.older} older
+          Show {data?.older} older
         </button>
       )}
     </DrawerFrame>

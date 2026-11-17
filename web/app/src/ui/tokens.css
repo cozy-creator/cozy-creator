@@ -50,10 +50,8 @@
   --halo: 0 0 2px var(--bg), 0 0 6px var(--bg), 0 0 12px var(--bg);
   /* Under words over a picture: the card, mostly, so they read in either theme (cl-940). */
   --scrim: color-mix(in srgb, var(--card) 84%, transparent);
-  /* What's selected on the canvas: its own blue, apart from a check's green and hover's line (cl-926). */
-  --select: #1f63e0;
-  --select-gap: #fffaf0;
-  --select-glow: #1f63e059;
+  /* What's selected on the canvas, and what's under the pointer there: Figma's blue (Paul, 11-16). */
+  --select: #0d99ff;
   --tint: #4d3b2e12;
   --tint2: #4d3b2e20;
   --mark: #5f4e3fa6;
@@ -118,9 +116,7 @@
   --state-running: #5aa9ff;
   --state-unseen: #4ade80;
   --state-failed: #f0625d;
-  --select: #3d8bff;
-  --select-gap: #0b0b0c;
-  --select-glow: #3d8bff66;
+  --select: #0d99ff;
   --tint: #ffffff0d;
   --tint2: #ffffff14;
   --mark: #ffffff38;

@@ -56,7 +56,7 @@ def main() -> int:
 
     def raw(method: str, path: str, body: bytes, key: str | None, content_type: str = "application/json") -> bytes:
         head = [f"{method} {path} HTTP/1.1", f"Host: {host}:{port}", f"Authorization: Bearer {holder['token']}", "Cozy-Client: page e2e-keyed",
-                "cozy-project-storage: 3", f"Content-Type: {content_type}", f"Content-Length: {len(body)}", "Connection: close"]
+                f"Content-Type: {content_type}", f"Content-Length: {len(body)}", "Connection: close"]
         if key:
             head.append(f"Idempotency-Key: {key}")
         return ("\r\n".join(head) + "\r\n\r\n").encode() + body
@@ -196,7 +196,6 @@ def main() -> int:
     kept_with("machines", "PUT", "/machines", {"machines": []}, 200, None, True)
     kept_with("view", "PATCH", "/view", {"viewport": {"x": 0, "y": 0, "zoom": 1}}, 200, None, True)
     kept_with("fit", "POST", "/fit", {"names": ["keyed_note"]}, 200, None, False)
-    kept_with("fit_here", "POST", "/fit/here", {"names": ["keyed_note"]}, 200, None, False)
     kept_with("cancel", "POST", "/cancel", {"names": ["keyed_note"]}, 200, None, True)
     kept_with("reclaim", "POST", "/reclaim", {"yes": True}, 200, "deleted", True)
     # Another picture, a version of its own, then off it again.

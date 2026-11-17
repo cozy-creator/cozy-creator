@@ -6,6 +6,11 @@
 #   hostile_inputs  A video input that names other files or the network (a concat list, a DASH manifest, an HLS
 #                   playlist), sent as video/mp4 past Calcifer's sniff, is refused by the Runtime's decoder, which opens
 #                   none of them; a real clip beside them is read.
+#   private_weights A model the local machine just uploaded, private, read by a run (cl-1009, the release gate's qwen-lora flow):
+#                   its run capability puts its executor on TensorD's own Hub gateway (cl-675), an origin TensorD declares
+#                   local for its executors and nothing a run or Hub answer names. 0.26.0 refused it at the model's load.
+#   token_scope     The token `tensorfs.configure` was given reaches the default endpoint's origin and no other (xs-202, the
+#                   11-15 design audit: TensorFS 0.25.1 sent it to whatever endpoint a call named). The candidate TensorFS, no machine.
 # TensorD is asked as any client holding the machine's authorization asks it (egress.py, a key `machine authorize` admits).
 
 # redirector_start <log>: E2E_REDIRECT, which lib.sh declared local, answering /missing… 404 and anything else with a
@@ -97,6 +102,25 @@ leaked=$({ grep -lsI "$secret" "$dir"/import-*.json; jq -c '.presigned' "$dir/ma
 echo "egress: $(jq -c 'map_values(.refusal.code // .outcome.status)' "$dir/machine.json" 2> /dev/null || true)"
 }
 
+token_scope() {
+step "a configured TensorFS token reaches its own endpoint only (xs-202)"
+local dir=$OUT/token-scope with mode
+[ -n "${CAND_TFS:-}" ] || { echo "token scope: skipped, this run names no TensorFS"; return 0; }
+if [ -f "$CAND_TFS" ]; then with=$CAND_TFS; else with=tensorfs==${CAND_TFS#v}; fi
+rm -rf "$dir"; mkdir -p "$dir"
+for mode in configured environment; do
+  uv run -q --no-project --with "$with" python -I "$here/token_scope.py" "$mode" > "$dir/$mode.json" 2> "$dir/$mode.err" \
+    || { check "token scope ($mode): $(tail -c 300 "$dir/$mode.err")"; continue; }
+  J '(.default | length > 0 and all(. == "Bearer token-a")) and (.named | length > 0 and all(. == "Bearer token-a"))' "$dir/$mode.json" \
+    || check "token scope ($mode): the default endpoint did not get the configured token: $(cat "$dir/$mode.json")"
+  J '.other | length > 0 and all(. == null)' "$dir/$mode.json" \
+    || check "token scope ($mode): another origin got the configured token, or was never asked: $(cat "$dir/$mode.json")"
+  J '.other_own | length > 0 and all(. == "Bearer token-b")' "$dir/$mode.json" \
+    || check "token scope ($mode): another origin did not get the call's own token: $(cat "$dir/$mode.json")"
+  echo "token scope ($mode): $(cat "$dir/$mode.json")"
+done
+}
+
 hostile_inputs() {
 step "a video input naming other files or the network: the Runtime opens none of them (xs-196 D)"
 [ -n "$LOCAL" ] || return 0
@@ -125,4 +149,37 @@ redirector_stop
 [ ! -e "$dir/opened" ] || check "hostile inputs: a decoded input opened the file its concat list names"
 kill "$reader" 2> /dev/null || true
 echo "hostile inputs: $(jq -c 'map_values(.refusal.code // .outcome.reason.code // .outcome.status)' "$dir/machine.json" 2> /dev/null || true)"
+}
+
+private_weights() {
+step "a run reads a model this machine just uploaded, private, through TensorD's gateway (cl-1009)"
+[ -n "$LOCAL" ] || return 0
+[ -n "${E2E_HUB_LOG:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] || { check "private weights: e2e/isolated.sh named no Hub log or email to sign in with"; return; }
+local dir=$OUT/private-weights account model commit
+rm -rf "$dir"; mkdir -p "$dir"
+signin "$E2E_HUB_EMAIL" > "$dir/login.json" || { check "private weights: cozy login failed: $(tail -c 300 "$dir/login.json")"; return; }
+account=$(cozy --json whoami | jq -r '.account // empty')
+model=${account:-e2e}/cl1009-vae-$RANDOM
+# A `vae` as parts.py reads one: its file's metadata (`part`, `size`) is its config.
+python3 -I - "$dir/vae.safetensors" <<'PY'
+import json, random, struct, sys
+n = 65536
+raw = json.dumps({"__metadata__": {"part": "vae-private", "size": str(n)}, "w": {"dtype": "F32", "shape": [n], "data_offsets": [0, 4 * n]}}).encode()
+raw += b" " * (-len(raw) % 8)
+values = random.Random(1009).random
+open(sys.argv[1], "wb").write(struct.pack("<Q", len(raw)) + raw + struct.pack(f"<{n}f", *(values() for _ in range(n))))
+PY
+if run_submit "$dir" upload model upload "$dir/vae.safetensors:vae" "$model" --lane f32 --source-format as-is --on local > /dev/null \
+  && run_wait "$dir" upload && [ "$(run_get "$dir" upload .status)" = completed ]; then
+  commit=$(jq -r '.. | objects | .commit? // empty' "$dir/upload.ndjson" 2> /dev/null | tail -1) || true
+  if [ -z "$commit" ]; then
+    check "private weights: the upload named no commit: $(tail -c 300 "$dir/upload.ndjson")"
+  elif cell private-weights "$here/script/parts.py" --model "vae=$model@$commit"; then
+    J '.result.vae.part == "vae-private" and .result.transformer.part == "dit"' "$OUT/private-weights.json" \
+      || check "private weights: not e2e/parts's transformer with $model's VAE: $(jq -c .result "$OUT/private-weights.json")"
+  fi
+else
+  check "private weights: model upload $model --on local: $(run_get "$dir" upload '.reason.message' | head -c 300)"
+fi
+cozy --json logout > "$dir/logout.json" 2>&1 || check "private weights: logout: $(tail -c 300 "$dir/logout.json")"
 }

@@ -4,7 +4,7 @@ const { execFileSync } = require('child_process');
 const { readdirSync } = require('fs');
 const { homedir } = require('os');
 const { join } = require('path');
-const { expect, box, canvasIdle, middle } = require('./fixtures');
+const { expect, canvasIdle, canvasPoint, canvasCard, screenshotPixels, middle } = require('./fixtures');
 const { carry } = require('./geometry');
 
 /** Files from the computer let go at `at` (a point of the screen) on `target`, as a browser hands a drop over: `[{name, type, bytes}]`. */
@@ -20,9 +20,17 @@ async function dropFiles(page, files, at, target = '.stage') {
 
 /** Where each box of `names` stands, by name, once none is gliding or animating: else 'moving'. */
 const standing = (page, names) => page.evaluate((names) => {
-  const nodes = names.map((name) => document.querySelector(`.react-flow__node:has(.card[data-asset="${CSS.escape(name)}"])`));
-  const moving = (el) => el.classList.contains('glide') || el.getAnimations({ subtree: true }).some((one) => one.playState === 'running' && one.effect?.getComputedTiming().iterations !== Infinity);
-  return nodes.some((el) => !el || moving(el)) ? 'moving' : Object.fromEntries(names.map((name, i) => [name, nodes[i].style.transform]));
+  const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+  const cards = names.map(name => inspection?.card(name));
+  const native = names.map(name => document.querySelector(`.canvas-node:has(.card[data-asset=${JSON.stringify(name)}])`));
+  const moving = (el) => el && (el.classList.contains('glide') || el.getAnimations({ subtree: true }).some(one => one.playState === 'running' && one.effect?.getComputedTiming().iterations !== Infinity));
+  if (cards.some((card, i) => !card || (!card.rendered && !native[i]) || card.rendered?.glide?.active || card.rendered?.landing?.active || moving(native[i]))) return 'moving';
+  const root = document.querySelector('.canvas-root').getBoundingClientRect(), view = inspection.camera();
+  return Object.fromEntries(names.map((name, i) => {
+    const r = native[i]?.getBoundingClientRect(), transform = cards[i].rendered?.transform;
+    const point = r ? { x: (r.x - root.x - view.x) / view.zoom, y: (r.y - root.y - view.y) / view.zoom } : { x: transform.x, y: transform.y };
+    return [name, { x: Math.round(point.x * 1000) / 1000, y: Math.round(point.y * 1000) / 1000 }];
+  }));
 }, names);
 
 /** Boxes let go on what takes them glide back where they were: `move` carries them, and they're back, still, before this ends. */
@@ -34,7 +42,7 @@ async function backAfter(page, names, move) {
 }
 
 /** Box `name` carried by its name and let go at `to`, on what takes it, and back where it was. */
-const carryBox = async (page, name, to) => backAfter(page, [name], async () => carry(page, await middle(box(page, name).locator('.nm')), to));
+const carryBox = async (page, name, to) => backAfter(page, [name], async () => carry(page, await canvasPoint(page, name, 'title'), to));
 
 /** The zoom menu's Zoom to fit: every box in view, the canvas still. */
 async function fit(page) {
@@ -51,13 +59,16 @@ async function leave(page) {
   await canvasIdle(page);
 }
 
-/** Tools › `operation` opened, and its row for tool `id`, to carry out. */
+/** Tools › `operation`'s row for tool `id`, to carry out: its group opened, or the row itself where the operation has that one tool. */
 async function toolRow(page, operation, id) {
   const tools = page.getByRole('complementary', { name: 'Tools' });
   const category = tools.getByRole('button', { name: operation, exact: true });
-  if ((await category.getAttribute('aria-expanded')) !== 'true') await category.click();
-  await expect(category).toHaveAttribute('aria-expanded', 'true');
   const row = tools.locator(`li[data-implementation][data-tool=${JSON.stringify(id)}]`);
+  await expect(row.or(category).first()).toBeVisible();
+  if (await category.count()) {
+    if ((await category.getAttribute('aria-expanded')) !== 'true') await category.click();
+    await expect(category).toHaveAttribute('aria-expanded', 'true');
+  }
   await expect(row).toBeVisible();
   return row;
 }
@@ -82,6 +93,17 @@ const spread = (element) => element.evaluate((picture) => {
   return Math.round(Math.sqrt(lumas.reduce((sum, luma) => sum + (luma - mean) ** 2, 0) / lumas.length));
 });
 
+/** The light spread of the passive poster's actual screenshot, sampled on a 64 by 36 grid. */
+async function posterSpread(page, name) {
+  const body = (await canvasCard(page, name)).body, read = screenshotPixels(await page.screenshot({ scale: 'css' })), lumas = [];
+  for (let y = 0; y < 36; y++) for (let x = 0; x < 64; x++) {
+    const [r, g, b] = read(body.x + (x + 0.5) * body.width / 64, body.y + (y + 0.5) * body.height / 36);
+    lumas.push(0.299 * r + 0.587 * g + 0.114 * b);
+  }
+  const mean = lumas.reduce((sum, luma) => sum + luma, 0) / lumas.length;
+  return Math.round(Math.sqrt(lumas.reduce((sum, luma) => sum + (luma - mean) ** 2, 0) / lumas.length));
+}
+
 /** `ffmpeg` or `ffprobe`: Calcifer's own, which it fetched for its thumbnails, else the one on PATH. */
 function ffmpeg(tool) {
   const root = join(homedir(), '.cozy', 'tools', 'ffmpeg');
@@ -95,7 +117,8 @@ function ffmpeg(tool) {
     for (const entry of entries) {
       const at = join(dir, entry.name);
       if (entry.isFile() && entry.name.replace(/\.exe$/, '') === tool) return at;
-      if (entry.isDirectory()) {
+      // A hidden folder is one being unpacked (`.tmpXXXX`): its ffmpeg isn't whole yet.
+      if (entry.isDirectory() && !entry.name.startsWith('.')) {
         const found = find(at);
         if (found) return found;
       }
@@ -106,4 +129,4 @@ function ffmpeg(tool) {
   return (...args) => execFileSync(own, args, { encoding: tool === 'ffprobe' ? 'utf8' : 'buffer', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 26 });
 }
 
-module.exports = { backAfter, carryBox, dropFiles, ffmpeg, fit, leave, rest, spread, toolRow };
+module.exports = { backAfter, carryBox, dropFiles, ffmpeg, fit, leave, rest, spread, posterSpread, toolRow };

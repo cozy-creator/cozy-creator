@@ -164,22 +164,49 @@ pub fn make_private_dir(dir: &Path) -> crate::Result<()> {
     private_dir(dir).map_err(crate::Error::io("make a folder private", dir))
 }
 
-/// Whether another account on this computer may open `dir`: group or other bits on Unix; on Windows, an entry allowing anyone but
-/// this account, SYSTEM, Administrators or the owner.
-pub fn others_may_open(dir: &Path) -> crate::Result<bool> {
-    opened_by_others(dir).map_err(crate::Error::io("read a folder's access", dir))
+/// Whether another account on this computer may open `dir`. On Unix: its other bits, or its group bits while its group is this
+/// account's own primary one (`staff`, `users`: every account's); a folder given to another group is a share its owner chose. On
+/// Windows: an entry allowing anyone but this account, SYSTEM, Administrators or the owner.
+pub fn open_to_others(dir: &Path) -> crate::Result<bool> {
+    others_bits(dir).map(|(mode, shared)| mode & shared != 0).map_err(crate::Error::io("read a folder's access", dir))
+}
+
+/// Shuts `dir` to the accounts `open_to_others` names: on Unix those bits cleared, a chosen group's kept; on Windows, owner-only, as
+/// `make_private_dir` (which reaches into what's in it: a caller does it once, off any request's path).
+pub fn shut_to_others(dir: &Path) -> crate::Result<()> {
+    shut_others(dir).map_err(crate::Error::io("make a folder private", dir))
+}
+
+/// `dir`'s mode, and the bits of it that reach other accounts.
+#[cfg(unix)]
+fn others_bits(dir: &Path) -> io::Result<(u32, u32)> {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    let meta = std::fs::metadata(dir)?;
+    let own_group = meta.gid() == rustix::process::getgid().as_raw();
+    Ok((meta.permissions().mode(), if own_group { 0o077 } else { 0o007 }))
+}
+
+#[cfg(unix)]
+fn shut_others(dir: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let (mode, shared) = others_bits(dir)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode & 0o7777 & !shared))
+}
+
+#[cfg(windows)]
+fn others_bits(dir: &Path) -> io::Result<(u32, u32)> {
+    opened_by_others(dir).map(|open| (u32::from(open), 1))
+}
+
+#[cfg(windows)]
+fn shut_others(dir: &Path) -> io::Result<()> {
+    private_dir(dir)
 }
 
 #[cfg(unix)]
 fn private_dir(dir: &Path) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-}
-
-#[cfg(unix)]
-fn opened_by_others(dir: &Path) -> io::Result<bool> {
-    use std::os::unix::fs::PermissionsExt as _;
-    Ok(std::fs::metadata(dir)?.permissions().mode() & 0o077 != 0)
 }
 
 #[cfg(windows)]

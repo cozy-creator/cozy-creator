@@ -2,7 +2,9 @@ import { type KeyboardEvent, type PointerEvent, useEffect, useRef, useState } fr
 import { holdMedia } from "../api/events"
 import type { Playback } from "../api/transport"
 import { useConnection } from "../app/Connection"
+import { useFullScreen } from "./FullScreen"
 import type { Shown } from "./shown"
+import { FullScreenButton } from "./timeline/Player"
 
 /** What a file's `orbit` metadata says (design/file-metadata.md): how far one pass turns, which way, and whether its last frame meets its first. */
 export interface Orbit {
@@ -12,7 +14,7 @@ export interface Orbit {
 }
 
 /** What turning orbit viewing on gives any video: one whole turn, clockwise, looping. */
-export const ORBIT: Orbit = { degrees: 360, direction: "cw", loops: true }
+const ORBIT: Orbit = { degrees: 360, direction: "cw", loops: true }
 
 /** A video's `orbit`, read as found: what's missing or malformed takes the whole turn's. None: it plays. */
 export function orbitOf(shown: { metadata?: Record<string, unknown> } | null | undefined): Orbit | null {
@@ -64,7 +66,8 @@ function Dial({ angle }: { angle: number }) {
 /**
  * A video that turns, not plays (Paul, 11-11): a drag across it turns it, wrapping at 0/360 when it loops; arrows step it; Spin plays it
  * round at its own speed. Every frame of an orbit is a keyframe, so a seek shows at once; one seek is in flight at a time, so a drag never
- * queues a backlog. The demo viewer in outputs/orb360-demo-20261111 is its reference.
+ * queues a backlog. The demo viewer in outputs/orb360-demo-20261111 is its reference. In Focus its bar has full screen, where a drag turns it
+ * as in the box (cl-1080).
  */
 export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; orbit: Orbit }) {
   const { client } = useConnection()
@@ -73,6 +76,7 @@ export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; 
   const [ready, setReady] = useState(false)
   const [spinning, setSpinning] = useState(false)
   const [used, setUsed] = useState(false)
+  const screen = useFullScreen(true)
   const at = useRef(0)
   const seek = useRef<{ pending: number | null; busy: boolean }>({ pending: null, busy: false })
   const drag = useRef<{ x: number; from: number; last: number; t: number; v: number } | null>(null)
@@ -189,7 +193,7 @@ export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; 
 
   return (
     <div
-      className={`orbit nodrag nopan nowheel ${ready ? "ready" : ""}`}
+      className={`orbit canvas-control ${ready ? "ready" : ""}`}
       role="slider"
       tabIndex={0}
       aria-label="Turn"
@@ -226,12 +230,12 @@ export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; 
       <div className="orbit-bar">
         <Dial angle={shownAngle} />
         <span className="orbit-deg">{Math.round(shownAngle) % 360}°</span>
-        <button type="button" className="orbit-act nodrag" aria-pressed={spinning} onClick={spin}>
+        <button type="button" className="orbit-act canvas-control" aria-pressed={spinning} onClick={spin}>
           {spinning ? "Stop" : "Spin"}
         </button>
         <button
           type="button"
-          className="orbit-act nodrag"
+          className="orbit-act canvas-control"
           onClick={() => {
             stopSpin()
             turn(0)
@@ -239,6 +243,7 @@ export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; 
         >
           Front
         </button>
+        {screen && <FullScreenButton full={screen.full} toggle={screen.toggle} className="orbit-act orbit-full canvas-control" />}
       </div>
     </div>
   )

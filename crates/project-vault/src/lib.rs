@@ -1,8 +1,9 @@
 //! Local, project-scoped key custody for an optional encrypted project.
 //!
 //! The data filesystem belongs to the mount provider. This crate stores only a random
-//! printable filesystem secret, independently wrapped by a human passphrase and by a
-//! high-entropy recovery secret using Argon2id and AES-256-GCM. Copying the encrypted
+//! printable filesystem secret, independently wrapped by a human passphrase (Argon2id, every
+//! lane the machine has) and by a high-entropy recovery secret (HKDF-SHA256), each with
+//! AES-256-GCM. Format 2 keybags (both slots Argon2id, one lane) still open. Copying the encrypted
 //! project and its keybag is enough for offline recovery; no account service is involved.
 //!
 //! Keybags deliberately have no plaintext secret fields. Unlocked values redact Debug,
@@ -21,7 +22,10 @@ use std::{
 };
 
 use argon2::{Algorithm, Argon2, Params, Version};
-use aws_lc_rs::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
+use aws_lc_rs::{
+    aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey},
+    hkdf,
+};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -48,8 +52,12 @@ impl fmt::Debug for SecretString {
 
 /// Filename kept beside an encrypted project's backing directory, not inside its mount.
 pub const KEYBAG_FILE: &str = "project.vault.keys.json";
-/// Portable keybag format version.
-pub const FORMAT_VERSION: u32 = 2;
+/// Portable keybag format version: 3 writes the recovery slot with HKDF and the passphrase slot
+/// with the machine's lanes (cl-995); 2's keybags still open.
+pub const FORMAT_VERSION: u32 = 3;
+const LEGACY_FORMAT: u32 = 2;
+/// The secret payload inside each envelope, unchanged since format 2.
+const PAYLOAD_VERSION: u32 = 2;
 /// The named cipher/encoding suite for the small key envelopes, not the filesystem data.
 pub const ENVELOPE_SUITE: &str = "argon2id-v19-aes256gcm-v1";
 /// Maximum size of a portable keybag accepted from disk.
@@ -57,7 +65,12 @@ pub const MAX_KEYBAG_BYTES: u64 = 64 * 1024;
 // Fixed, validated before KDF work. A received keybag cannot request arbitrary resources.
 const KDF_MEMORY_KIB: u32 = 256 * 1024;
 const KDF_ITERATIONS: u32 = 3;
-const KDF_LANES: u32 = 1;
+/// Format 2's one lane; a passphrase slot now takes the machine's lanes, at most this many.
+const KDF_LEGACY_LANES: u32 = 1;
+const KDF_MAX_LANES: u32 = 8;
+const KDF_ARGON2: &str = "argon2id";
+const KDF_HKDF: &str = "hkdf-sha256";
+const RECOVERY_INFO: &[u8] = b"cozy-project-vault-recovery-v3";
 const MAX_SECRET_PAYLOAD: usize = 2048;
 const RECOVERY_PREFIX: &str = "cozy1";
 
@@ -348,11 +361,8 @@ impl Keybag {
         }
         let document: serde_json::Value =
             serde_json::from_slice(&bytes).map_err(|_| Error::Format("invalid keybag JSON"))?;
-        if document
-            .get("format_version")
-            .and_then(serde_json::Value::as_u64)
-            != Some(u64::from(FORMAT_VERSION))
-        {
+        let version = document.get("format_version").and_then(serde_json::Value::as_u64);
+        if version != Some(u64::from(FORMAT_VERSION)) && version != Some(u64::from(LEGACY_FORMAT)) {
             return Err(Error::Unsupported);
         }
         let keybag: Self =
@@ -401,7 +411,7 @@ impl Keybag {
         };
         let mut decoded: SecretPayload =
             serde_json::from_slice(&payload).map_err(|_| Error::Unlock)?;
-        if decoded.format_version != FORMAT_VERSION
+        if decoded.format_version != PAYLOAD_VERSION
             || decoded.project_id != self.project_id
             || decoded.generation != self.generation
             || decoded.secret.len() != 43
@@ -439,6 +449,7 @@ impl Keybag {
         let payload = encode_secret(secret)?;
         let replacement = self.wrap("passphrase", &payload, new_passphrase)?;
         self.passphrase_envelope = replacement;
+        self.format_version = FORMAT_VERSION;
         Ok(())
     }
 
@@ -454,6 +465,7 @@ impl Keybag {
             SecretString::from(recovery.expose().to_owned()),
         )?;
         self.recovery_envelope = replacement;
+        self.format_version = FORMAT_VERSION;
         Ok(recovery)
     }
 
@@ -471,7 +483,12 @@ impl Keybag {
     }
 
     fn validate(&self) -> Result<()> {
-        if self.format_version != FORMAT_VERSION || self.envelope_suite != ENVELOPE_SUITE {
+        let legacy = self.format_version == LEGACY_FORMAT;
+        if !(legacy || self.format_version == FORMAT_VERSION) || self.envelope_suite != ENVELOPE_SUITE {
+            return Err(Error::Unsupported);
+        }
+        // Format 2 holds only its own envelopes; 3 also any one not yet rewrapped.
+        if legacy && !(self.passphrase_envelope.kdf.is_empty() && self.recovery_envelope.kdf.is_empty()) {
             return Err(Error::Unsupported);
         }
         validate_project_id(&self.project_id)?;
@@ -481,8 +498,8 @@ impl Keybag {
         {
             return Err(Error::Format("invalid key identity"));
         }
-        self.passphrase_envelope.validate()?;
-        self.recovery_envelope.validate()?;
+        self.passphrase_envelope.validate(KDF_ARGON2)?;
+        self.recovery_envelope.validate(KDF_HKDF)?;
         Ok(())
     }
 
@@ -524,7 +541,7 @@ fn key_fingerprint(secret: &[u8]) -> String {
 
 fn encode_secret(secret: &ProjectSecret) -> Result<Zeroizing<Vec<u8>>> {
     let payload = SecretPayload {
-        format_version: FORMAT_VERSION,
+        format_version: PAYLOAD_VERSION,
         project_id: secret.project_id.clone(),
         generation: secret.generation,
         secret: secret.value.expose_secret().to_owned(),
@@ -537,6 +554,10 @@ fn encode_secret(secret: &ProjectSecret) -> Result<Zeroizing<Vec<u8>>> {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Envelope {
+    /// How its key is derived: `argon2id` (passphrase), `hkdf-sha256` (recovery), or empty for
+    /// format 2's Argon2id with one lane.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    kdf: String,
     memory_kib: u32,
     iterations: u32,
     lanes: u32,
@@ -548,19 +569,34 @@ struct Envelope {
 impl Envelope {
     fn empty() -> Self {
         Self {
+            kdf: String::new(),
             memory_kib: KDF_MEMORY_KIB,
             iterations: KDF_ITERATIONS,
-            lanes: KDF_LANES,
+            lanes: KDF_LEGACY_LANES,
             salt: String::new(),
             nonce: String::new(),
             ciphertext: String::new(),
         }
     }
-    fn validate(&self) -> Result<()> {
-        if self.memory_kib != KDF_MEMORY_KIB
-            || self.iterations != KDF_ITERATIONS
-            || self.lanes != KDF_LANES
-        {
+    /// A new envelope's parameters for `slot`: the passphrase's Argon2id on this machine's lanes,
+    /// the recovery secret's HKDF (it is 256 random bits: nothing to stretch).
+    fn fresh(slot: &str) -> Self {
+        match slot {
+            "recovery" => Self { kdf: KDF_HKDF.to_owned(), memory_kib: 0, iterations: 0, lanes: 0, ..Self::empty() },
+            _ => Self { kdf: KDF_ARGON2.to_owned(), lanes: machine_lanes(), ..Self::empty() },
+        }
+    }
+    /// Its parameters are format 2's, or what a new one of `kind` takes. Fixed before any KDF
+    /// work: a received keybag cannot request arbitrary resources.
+    fn validate(&self, kind: &str) -> Result<()> {
+        let argon2 = self.memory_kib == KDF_MEMORY_KIB && self.iterations == KDF_ITERATIONS;
+        let known = match self.kdf.as_str() {
+            "" => argon2 && self.lanes == KDF_LEGACY_LANES,
+            KDF_ARGON2 => kind == KDF_ARGON2 && argon2 && (1..=KDF_MAX_LANES).contains(&self.lanes),
+            KDF_HKDF => kind == KDF_HKDF && self.memory_kib == 0 && self.iterations == 0 && self.lanes == 0,
+            _ => false,
+        };
+        if !known {
             return Err(Error::Format("unsupported password derivation parameters"));
         }
         if self.salt.len() != 64
@@ -585,18 +621,15 @@ impl Envelope {
 }
 
 impl Keybag {
-    fn aad(&self, slot: &str) -> Result<Vec<u8>> {
-        serde_json::to_vec(&(
-            FORMAT_VERSION,
-            ENVELOPE_SUITE,
-            &self.project_id,
-            self.generation,
-            &self.key_id,
-            slot,
-            KDF_MEMORY_KIB,
-            KDF_ITERATIONS,
-            KDF_LANES,
-        ))
+    /// What each envelope's ciphertext is bound to: its keybag's identity, its slot and how its
+    /// key is derived (format 2's tuple for its own envelopes).
+    fn aad(&self, slot: &str, envelope: &Envelope) -> Result<Vec<u8>> {
+        let (project, generation, key_id) = (&self.project_id, self.generation, &self.key_id);
+        let (memory, iterations, lanes) = (envelope.memory_kib, envelope.iterations, envelope.lanes);
+        match envelope.kdf.as_str() {
+            "" => serde_json::to_vec(&(LEGACY_FORMAT, ENVELOPE_SUITE, project, generation, key_id, slot, memory, iterations, lanes)),
+            kdf => serde_json::to_vec(&(FORMAT_VERSION, ENVELOPE_SUITE, project, generation, key_id, slot, kdf, memory, iterations, lanes)),
+        }
         .map_err(|_| Error::Encrypt)
     }
     fn wrap(&self, slot: &str, payload: &[u8], passphrase: SecretString) -> Result<Envelope> {
@@ -608,14 +641,15 @@ impl Keybag {
         let mut nonce = [0u8; 12];
         getrandom::fill(&mut salt).map_err(|_| Error::Random)?;
         getrandom::fill(&mut nonce).map_err(|_| Error::Random)?;
-        let key = derive_key(&passphrase, &salt)?;
+        let fresh = Envelope::fresh(slot);
+        let key = derive_key(&fresh, &passphrase, &salt)?;
         let cipher =
             LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &*key).map_err(|_| Error::Encrypt)?);
         let mut body = Zeroizing::new(payload.to_vec());
         cipher
             .seal_in_place_append_tag(
                 Nonce::assume_unique_for_key(nonce),
-                Aad::from(self.aad(slot)?),
+                Aad::from(self.aad(slot, &fresh)?),
                 &mut *body,
             )
             .map_err(|_| Error::Encrypt)?;
@@ -623,7 +657,7 @@ impl Keybag {
             salt: hex::encode(salt),
             nonce: hex::encode(nonce),
             ciphertext: STANDARD.encode(&*body),
-            ..Envelope::empty()
+            ..fresh
         })
     }
     fn unwrap(
@@ -632,14 +666,14 @@ impl Keybag {
         envelope: &Envelope,
         passphrase: SecretString,
     ) -> Result<Zeroizing<Vec<u8>>> {
-        envelope.validate()?;
+        envelope.validate(if slot == "recovery" { KDF_HKDF } else { KDF_ARGON2 })?;
         check_passphrase(&passphrase)?;
         let salt = hex::decode(&envelope.salt).map_err(|_| Error::Unlock)?;
         let nonce: [u8; 12] = hex::decode(&envelope.nonce)
             .map_err(|_| Error::Unlock)?
             .try_into()
             .map_err(|_| Error::Unlock)?;
-        let key = derive_key(&passphrase, &salt)?;
+        let key = derive_key(envelope, &passphrase, &salt)?;
         let cipher =
             LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &*key).map_err(|_| Error::Unlock)?);
         let mut body = Zeroizing::new(
@@ -650,7 +684,7 @@ impl Keybag {
         let opened = cipher
             .open_in_place(
                 Nonce::assume_unique_for_key(nonce),
-                Aad::from(self.aad(slot)?),
+                Aad::from(self.aad(slot, envelope)?),
                 &mut body,
             )
             .map_err(|_| Error::Unlock)?;
@@ -658,8 +692,23 @@ impl Keybag {
     }
 }
 
-fn derive_key(passphrase: &SecretString, salt: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
-    let params = Params::new(KDF_MEMORY_KIB, KDF_ITERATIONS, KDF_LANES, Some(32))
+/// A passphrase slot's lanes: the machine's, at most `KDF_MAX_LANES`. The same work in parallel,
+/// stored with the slot so any machine opens it.
+fn machine_lanes() -> u32 {
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    u32::try_from(cores).unwrap_or(KDF_MAX_LANES).clamp(1, KDF_MAX_LANES)
+}
+
+/// `envelope`'s key: one Argon2id, or HKDF for a recovery secret.
+fn derive_key(envelope: &Envelope, credential: &SecretString, salt: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
+    if envelope.kdf == KDF_HKDF {
+        let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, salt).extract(credential.expose_secret().as_bytes());
+        let okm = prk.expand(&[RECOVERY_INFO], hkdf::HKDF_SHA256).map_err(|_| Error::Encrypt)?;
+        let mut key = Zeroizing::new([0u8; 32]);
+        okm.fill(&mut *key).map_err(|_| Error::Encrypt)?;
+        return Ok(key);
+    }
+    let params = Params::new(envelope.memory_kib, envelope.iterations, envelope.lanes, Some(32))
         .map_err(|_| Error::Encrypt)?;
     // Argon2's allocating convenience API does not wipe its arena. Own every block so
     // intermediate password-derived material is cleared on success and every error path.
@@ -671,7 +720,7 @@ fn derive_key(passphrase: &SecretString, salt: &[u8]) -> Result<Zeroizing<[u8; 3
     let mut key = Zeroizing::new([0u8; 32]);
     Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
         .hash_password_into_with_memory(
-            passphrase.expose_secret().as_bytes(),
+            credential.expose_secret().as_bytes(),
             salt,
             &mut *key,
             &mut memory[..],
@@ -720,6 +769,18 @@ impl Default for SessionPolicy {
     }
 }
 
+/// What holds a session open ([`SessionTimer::hold`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Hold {
+    /// Nothing: both clocks run.
+    #[default]
+    Nothing,
+    /// Work that hasn't begun (a run its machine hasn't started): the idle clock waits, the maximum doesn't (cl-1082).
+    Waiting,
+    /// Work going: neither clock ends the session.
+    Working,
+}
+
 /// Explicit viewing activity and expiration. Reading status never extends a session.
 /// This holds no key and does not claim to lock/unmount a provider; Calcifer owns that.
 pub struct SessionTimer {
@@ -729,8 +790,8 @@ pub struct SessionTimer {
     activity: Instant,
     activity_wall: SystemTime,
     expired: AtomicBool,
-    /// Work in progress holds the session open ([`SessionTimer::hold`]).
-    held: bool,
+    /// What holds the session open ([`SessionTimer::hold`]).
+    held: Hold,
 }
 
 impl SessionTimer {
@@ -744,19 +805,19 @@ impl SessionTimer {
             activity: now,
             activity_wall: wall,
             expired: AtomicBool::new(false),
-            held: false,
+            held: Hold::Nothing,
         }
     }
 
-    /// Work in progress (`working`: a run or render of the project) holds the session open: neither its
-    /// idle limit nor its maximum ends it meanwhile, a suspend included. The idle clock starts again when
-    /// the last of it ends, and a maximum reached meanwhile ends it then. A backwards clock jump still ends it.
-    pub fn hold(&mut self, working: bool) {
-        if self.held && !working {
+    /// Work going (`working`: a run its machine began, a render) holds the session open: neither its idle limit nor its
+    /// maximum ends it meanwhile, a suspend included. Work that hasn't begun holds only the idle limit. The idle clock starts
+    /// again when the last of it ends, and a maximum reached meanwhile ends it then. A backwards clock jump still ends it.
+    pub fn hold(&mut self, held: Hold) {
+        if self.held != Hold::Nothing && held == Hold::Nothing {
             self.activity = Instant::now();
             self.activity_wall = SystemTime::now();
         }
-        self.held = working;
+        self.held = held;
     }
 
     /// An expired timer cannot be revived by delayed interaction or a heartbeat.
@@ -785,10 +846,10 @@ impl SessionTimer {
             self.expired.store(true, Ordering::Relaxed);
             return true;
         };
-        let expired = !self.held && self.policy.idle_seconds.is_some_and(|seconds| {
+        let expired = self.held == Hold::Nothing && self.policy.idle_seconds.is_some_and(|seconds| {
             let limit = Duration::from_secs(seconds);
             self.activity.elapsed() >= limit || activity_wall >= limit
-        }) || !self.held && self.policy.maximum_seconds.is_some_and(|seconds| {
+        }) || self.held != Hold::Working && self.policy.maximum_seconds.is_some_and(|seconds| {
             let limit = Duration::from_secs(seconds);
             self.opened.elapsed() >= limit || open_wall >= limit
         });
@@ -799,9 +860,9 @@ impl SessionTimer {
     }
 
     /// When [`SessionTimer::expired`] turns true if nothing moves it: the earlier of each limit's
-    /// wall and monotonic ends. None while work holds it, or with no limit.
+    /// wall and monotonic ends. None while work goes, or with no limit; only the maximum's while work waits.
     pub fn deadline(&self) -> Option<SystemTime> {
-        if self.held {
+        if self.held == Hold::Working {
             return None;
         }
         let (wall, now) = (SystemTime::now(), Instant::now());
@@ -810,7 +871,7 @@ impl SessionTimer {
             let monotonic = wall.checked_add((since + limit).saturating_duration_since(now));
             since_wall.checked_add(limit).into_iter().chain(monotonic).min()
         };
-        let idle = self.policy.idle_seconds.and_then(|seconds| end(self.activity, self.activity_wall, seconds));
+        let idle = self.policy.idle_seconds.filter(|_| self.held == Hold::Nothing).and_then(|seconds| end(self.activity, self.activity_wall, seconds));
         let maximum = self.policy.maximum_seconds.and_then(|seconds| end(self.opened, self.opened_wall, seconds));
         idle.into_iter().chain(maximum).min()
     }
@@ -819,8 +880,8 @@ impl SessionTimer {
         self.policy
     }
 
-    /// Whether work in progress holds the session open.
-    pub fn held(&self) -> bool {
+    /// What holds the session open.
+    pub fn held(&self) -> Hold {
         self.held
     }
 }

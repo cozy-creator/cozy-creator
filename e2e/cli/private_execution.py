@@ -130,7 +130,7 @@ def history(path: str, query: dict[str, object]) -> tuple[int, dict[str, object]
     holder = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
     request = urllib.request.Request(
         f"http://{holder['address']}{path}?{urllib.parse.urlencode(query)}",
-        headers={"Authorization": f"Bearer {holder['token']}", "cozy-project-storage": "3"},
+        headers={"Authorization": f"Bearer {holder['token']}"},
     )
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
@@ -141,13 +141,12 @@ def history(path: str, query: dict[str, object]) -> tuple[int, dict[str, object]
         raise AssertionError("the authenticated private history query could not reach Calcifer") from None
 
 
-def runs_page(prefix: str, project_id: str | None, before: int | None = None) -> RunsPage:
-    """One run of `prefix` per page: the project's history route, or with no project Calcifer's own."""
+def runs_page(prefix: str, project_id: str, before: int | None = None) -> RunsPage:
+    """One run of `prefix` per page: the project's history route."""
     query: dict[str, object] = {"package": prefix, "limit": 1}
     if before is not None:
         query["before"] = before
-    route = f"/v1/projects/{urllib.parse.quote(project_id, safe='')}/runs" if project_id else "/v1/runs"
-    status, body = history(route, query)
+    status, body = history(f"/v1/projects/{urllib.parse.quote(project_id, safe='')}/runs", query)
     assert status == 200, f"the authenticated private history query returned HTTP {status}"
     return cast(RunsPage, body)  # cast: the runs route's JSON
 
@@ -158,9 +157,10 @@ def target_history(cli: Path, output: Path, label: str, proof: TargetProof, *, l
     prefix = target[:-8]
     listed = json.loads(command(cli, output, label, "run", "ls", "--all", "--package", prefix, "--limit", "0"))
     rows = listed["runs"]
-    # A project's runs live in its own journal, never in Calcifer's global history.
-    page = runs_page(prefix, None)
-    assert not page["runs"] and page["older"] == 0, "private target history reached Calcifer's global history"
+    # A project's runs live in its own journal: Calcifer keeps no global run history (cl-1028), and its run list refuses.
+    status, body = history("/v1/runs", {"package": prefix, "limit": 1})
+    refusal = body.get("error")
+    assert status == 400 and isinstance(refusal, dict) and refusal.get("code") == "not_in_a_project" and "runs" not in body, "Calcifer answered a global run history"
     if locked:
         assert not rows and listed["older"] == 0, "locked private target history remained visible through the CLI"
         status, body = history(f"/v1/projects/{urllib.parse.quote(proof['project_id'], safe='')}/runs", {"package": prefix, "limit": 1})

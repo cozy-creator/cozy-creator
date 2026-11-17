@@ -16,9 +16,7 @@ const mediaKind = (item: OutputItem) => {
 /** Whether its bytes landed in Calcifer, so its route serves them. */
 const landed = (item: OutputItem) => Boolean(item.url)
 type OutputProps = { run: Run; item: OutputItem; project: string | null }
-const outputPath = (client: Client, { project, run, item }: OutputProps) => project
-  ? client.output({ project, run: run.id }, item.name, item.index)
-  : client.maintenanceOutput(run.id, item.name, item.index)
+const outputPath = (client: Client, { project, run, item }: OutputProps) => client.output({ project: project ?? "", run: run.id }, item.name, item.index)
 
 /** A URL for a tag that can't send a header. Only an API path is ever followed. */
 function useSrc(path: string | null): string | undefined {
@@ -75,7 +73,7 @@ function FromMachine({ run, item, project }: OutputProps) {
 
   const start = () =>
     ask.run(async () => {
-      const answer = await (project ? client.play({ project, run: run.id }, item.name, item.index) : client.maintenancePlay(run.id, item.name, item.index))
+      const answer = await client.play({ project: project ?? "", run: run.id }, item.name, item.index)
       setOpen(true)
       const el = video.current
       if (!el) return
@@ -84,7 +82,7 @@ function FromMachine({ run, item, project }: OutputProps) {
       player.current = play(el, parseLink(new URL(answer.url).hash))
       player.current.addEventListener("status", (event) => {
         const { state, detail } = (event as CustomEvent<{ state: string; detail: string }>).detail
-        setStatus(state === "error" ? detail : state === "connected" ? "" : `${state === "connecting" ? "Connecting to its machine" : "Reconnecting"}…`)
+        setStatus(state === "error" ? detail : state === "connected" ? "" : `${state === "connecting" ? "Connecting to the machine" : "Reconnecting"}…`)
       })
       el.addEventListener("canplay", () => el.play().catch(() => {}), { once: true })
     })
@@ -94,11 +92,11 @@ function FromMachine({ run, item, project }: OutputProps) {
       <video ref={video} className={open ? "video" : "unseen"} controls muted playsInline />
       {!open && (
         <button type="button" className="tb" disabled={ask.busy} onClick={() => void start()}>
-          Play from {run.machine ?? "its machine"}
+          Play from {run.machine ?? "the machine"}
         </button>
       )}
       {status && <p className="muted">{status}</p>}
-      <Failure error={ask.error} lead="Can't play it from its machine" />
+      <Failure error={ask.error} lead="Couldn't play it from the machine" />
     </>
   )
 }
@@ -121,15 +119,15 @@ function Output({ run, item, project }: OutputProps) {
       {!item.checkpoint && here && kind === "image" && <Picture run={run} item={item} project={project} />}
       {!item.checkpoint && here && (kind === "video" || kind === "audio") && <Landed run={run} item={item} project={project} kind={kind} />}
       {!item.checkpoint && !here && kind === "video" && run.machine && !item.export_error && <FromMachine run={run} item={item} project={project} />}
-      {!item.checkpoint && !here && kind !== "video" && !item.export_error && <p className="muted">Not here yet.</p>}
-      {item.checkpoint !== undefined && <p className="muted">A checkpoint in its machine's store, with no file here.</p>}
-      {item.export_error && <p className="warn">It won't land here: {item.export_error}</p>}
+      {!item.checkpoint && !here && kind !== "video" && !item.export_error && <p className="muted">Not downloaded yet.</p>}
+      {item.checkpoint !== undefined && <p className="muted">A checkpoint stored on the machine, with no file on this computer.</p>}
+      {item.export_error && <p className="warn">It won't download to this computer: {item.export_error}</p>}
       <figcaption>
         <span className="nm">{name}</span>
         <small>{facts.join(" · ")}</small>
         <span className="sp" />
         {here && (
-          <button type="button" className="more" onClick={download} title={project ? "Exported copies are not protected when this project locks." : undefined}>
+          <button type="button" className="more" onClick={download} title={project ? "An exported copy isn't encrypted, even when this project is locked." : undefined}>
             {project ? "Export copy" : "Download"}
           </button>
         )}
@@ -139,7 +137,7 @@ function Output({ run, item, project }: OutputProps) {
           <button
             type="button"
             role="menuitem"
-            title={project ? "Exported copies are not protected when this project locks." : undefined}
+            title={project ? "An exported copy isn't encrypted, even when this project is locked." : undefined}
             onClick={() => {
               download()
               menu.close()

@@ -116,16 +116,16 @@ impl<'a> Sender<'a> {
         Ok(Self { export: true, ..Self::new(ctx).await? })
     }
 
-    /// Whether `path` (a folder: with its files) is independent of any project, else refused, or for an export warned.
+    /// Whether `path` (a folder: with its files) is independent of any project. A plaintext project's own goes as an export does, with
+    /// no memo of its path (cl-1066, fix don't refuse); an encrypted one's only from that project, or exported on purpose.
     async fn independent(&self, path: &Path, tree: bool) -> Result<bool, Error> {
         if self.project.is_some() { return Ok(false); }
-        let owned = project_input(self.ctx, path, tree).await?;
-        if owned && !self.export {
-            return Err(Error::new(Kind::Forbidden, "project_source_scope", "This input belongs to a Cozy project and cannot be staged as independent maintenance data")
-                .remedy("Use it in a project-scoped run, or explicitly export an independent copy first"));
+        let Some(owner) = project_input(self.ctx, path, tree).await? else { return Ok(true) };
+        if !self.export && encrypted(self.ctx, &owner).await? {
+            return Err(Error::new(Kind::Forbidden, "project_source_scope", format!("{} is inside an encrypted project.", path.display()))
+                .remedy("Use it from that project, or export a copy of it first"));
         }
-        if owned { crate::output::warn("this copy leaves its project's protection: what it makes is this machine's, outside the project"); }
-        Ok(!owned)
+        Ok(false)
     }
 
     /// The package at `path` as local code from here: in a project, that project's (its copy and generation are the project's);
@@ -430,9 +430,9 @@ async fn source_scope(ctx: &Context, plan: &api::code::SourcePlan, scope: CodeSc
     Ok(())
 }
 
-/// Whether a file/tree is a project's own (by its path, an alias or any resolved source): an
-/// independent one must not create a global digest memo or CAS copy from it. Tree enumeration hashes nothing.
-async fn project_input(ctx: &Context, path: &Path, tree: bool) -> Result<bool, Error> {
+/// The folder of the project a file/tree is (by its path, an alias or any resolved source), if any: an independent one must not
+/// create a global digest memo or CAS copy from it. Tree enumeration hashes nothing.
+async fn project_input(ctx: &Context, path: &Path, tree: bool) -> Result<Option<String>, Error> {
     let mut paths = vec![path.to_path_buf()];
     if tree {
         paths.extend(api::tree::walk(path, true)
@@ -451,12 +451,18 @@ async fn project_input(ctx: &Context, path: &Path, tree: bool) -> Result<bool, E
         let directory = directory.to_str().ok_or_else(|| Error::new(Kind::Usage, "project_path", "The source path is not UTF-8"))?;
         let route = crate::calcifer_client::path(&["v1", "projects", directory, "address"]);
         match client.get::<api::calcifer::project::Address>(&route).await {
-            Ok(_) => return Ok(true),
+            Ok(_) => return Ok(Some(directory.to_owned())),
             Err(error) if error.code == "project_not_found" => {},
             Err(error) => return Err(error),
         }
     }
-    Ok(false)
+    Ok(None)
+}
+
+/// Whether the project holding `directory` is encrypted.
+async fn encrypted(ctx: &Context, directory: &str) -> Result<bool, Error> {
+    let route = crate::calcifer_client::path(&["v1", "projects", directory, "vault"]);
+    Ok(ctx.calcifer().await?.get::<api::calcifer::project::VaultStatus>(&route).await?.encrypted)
 }
 
 /// `raw`, when it is written as a path here: its file (a folder too, with `folders`) sent, `raw` its digest and `name` its name.

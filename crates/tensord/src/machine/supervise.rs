@@ -145,7 +145,7 @@ pub(crate) fn supervise(
             std::process::exit(0);
         }
         if code == super::update::REPLACE_EXIT || code == super::binary::EXEC_EXIT {
-            tracing::info!("starting the service on its updated software");
+            tracing::info!(target: crate::config::MACHINE, "starting the service on its updated software");
             failures_before_ready = 0;
             continue;
         }
@@ -154,14 +154,14 @@ pub(crate) fn supervise(
             let said = super::update::service_error(paths).map(|line| format!(": {line}")).unwrap_or_default();
             let cause = format!("the service exited twice before readiness ({code}){said}");
             if let Recovered::Nothing = super::update::rollback_pending(paths, &cause)? {
-                tracing::error!("{cause}; stopping");
+                tracing::error!(target: crate::config::MACHINE, "{cause}; stopping");
                 std::process::exit(code);
             }
-            tracing::warn!("{cause}; update rolled back");
+            tracing::warn!(target: crate::config::MACHINE, "{cause}; update rolled back");
             failures_before_ready = 0;
             continue;
         }
-        tracing::warn!("the service exited ({code}); starting it again");
+        tracing::warn!(target: crate::config::MACHINE, "the service exited ({code}); starting it again");
     }
 }
 
@@ -233,7 +233,7 @@ pub(crate) fn supervise(paths: &super::update::Paths, provider: Option<ProviderS
         }
         // An activated binary is exec'd as the loop recovers its published activation.
         if code == super::update::REPLACE_EXIT || code == super::binary::EXEC_EXIT {
-            tracing::info!("starting the service on its updated software");
+            tracing::info!(target: crate::config::MACHINE, "starting the service on its updated software");
             failures_before_ready = 0;
             continue;
         }
@@ -243,12 +243,13 @@ pub(crate) fn supervise(paths: &super::update::Paths, provider: Option<ProviderS
             let cause = format!("the service exited twice before readiness ({code}){said}");
             match super::update::rollback_pending(paths, &cause)? {
                 Recovered::Nothing => {
-                    tracing::error!("{cause}; stopping");
+                    tracing::error!(target: crate::config::MACHINE, "{cause}; stopping");
+                    end_rental(provider.as_ref());
                     end(code, listeners);
                 }
-                Recovered::Restored => tracing::warn!("{cause}; update rolled back"),
+                Recovered::Restored => tracing::warn!(target: crate::config::MACHINE, "{cause}; update rolled back"),
                 Recovered::Exec(launch) => {
-                    tracing::warn!("{cause}; update rolled back to the previous binary");
+                    tracing::warn!(target: crate::config::MACHINE, "{cause}; update rolled back to the previous binary");
                     exec(paths, &launch, provider.as_ref(), listeners, &signals)?;
                 }
             }
@@ -274,6 +275,18 @@ fn exec(paths: &super::update::Paths, launch: &std::path::Path, provider: Option
     let cause = format!("cannot run {}: {error}", launch.display());
     tracing::error!("{cause}");
     super::update::rollback_pending(paths, &cause).map(drop)
+}
+
+/// A rental's parent giving up ends its pod first (cl-977): nothing will serve there again, and a stopped container may still bill
+/// (RunPod starts it again). It asks its provider until the provider takes the pod, and this process ends with it. Elsewhere (no
+/// provider credential) it only stops.
+#[cfg(unix)]
+fn end_rental(provider: Option<&ProviderSelf>) {
+    let Some(provider) = provider else { return };
+    match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(runtime) => runtime.block_on(provider.end_until_gone()),
+        Err(error) => tracing::error!("no runtime to end this pod at its provider ({error}); stopping"),
+    }
 }
 
 /// This parent's exit. A service it leaves stuck (cl-977) holds the listeners it forked with: they stop listening first, so the

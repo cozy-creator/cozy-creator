@@ -1,0 +1,1 @@
+A machine whose disk is full now makes room for a run's weights instead of failing it: it evicts the cached weights of models no run is using, ending their idle executors last, and waits out a moment's hold on the store rather than refusing.

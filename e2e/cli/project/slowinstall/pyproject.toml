@@ -1,0 +1,20 @@
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "e2e-slow-install"
+version = "0.1.0"
+description = "A published tool whose environment downloads a wheel a server on this runner sends slowly, for prefetch_disk (cl-1104)"
+requires-python = ">=3.12"
+dependencies = ["cozy-runtime[media]>=0.45", "msgspec>=0.19", "e2e-slow-wheel"]
+
+[project.entry-points."cozy.application"]
+default = "e2e_slow_install:app"
+
+[tool.uv.sources]
+e2e-slow-wheel = { url = "http://127.0.0.1:47104/e2e_slow_wheel-0.0.0-py3-none-any.whl" }
+
+[tool.uv.build-backend]
+module-name = "e2e_slow_install"
+module-root = ""

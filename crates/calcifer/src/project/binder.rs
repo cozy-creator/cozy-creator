@@ -1,5 +1,6 @@
 //! The one binder: a box's written fields, by its tool's types, as the call its function gets. The browser's Render and `cozy run`
-//! all use it. A prompt goes as its text, each mention spelled as its box is, with what that text mentions; a slot takes only what's
+//! all use it. A prompt goes as its text, each mention spelled as its box is, with what that text mentions, and words as words: a Text
+//! box's (put in by `Doc::inline`) and a version of words' (its file's, xs-204), read as a picture's version is; a slot takes only what's
 //! written in it; a pickup comes only from the gesture. What's past a bound is clamped and said. It knows no model. A mention its tool
 //! can't use where it's written is never sent: `unusable` is the one rule, and the page strikes it through with the same reason (cl-944).
 use std::collections::BTreeSet;
@@ -8,13 +9,13 @@ use api::{
     error::{Error, Kind},
     interface::{Callable, Field, Snap, Struct, Type, Wire},
     calcifer::project::{Pickup, Unused},
-    calcifer::tool::{self, MEDIA, PLATFORM},
+    calcifer::tool::{MEDIA, PLATFORM},
 };
 use serde_json::{Map, Value, json};
 
 use super::{
     folder::{self, Files, Lock},
-    format::{Doc, Standing},
+    format::{Doc, Standing, TEXT},
     graph::{self, SELF, Span, mentions, mentions_replaced, name_key},
 };
 use crate::runs::clip::Range;
@@ -37,6 +38,8 @@ pub(crate) struct Call<'a> {
     pub tool: &'a str,
     /// Its package, whose own extras it reads.
     pub package: &'a str,
+    /// Its package in words, as what's said names it (`tool::title`): MiniMax H3.
+    pub title: &'a str,
     pub callable: &'a Callable,
     /// Its written fields, each text box put in as its words.
     pub fields: &'a Map<String, Value>,
@@ -117,41 +120,45 @@ pub(crate) fn bind(call: &Call) -> Result<Bound, Error> {
     binder.fields()?;
     let declared = &call.callable.request;
     if call.pickup.is_some() && !declared.fields.iter().any(|field| matches!(field.ty.plain(), Type::Pickup(_))) {
-        binder.warn(format!("{}: {} picks up from no take: it renders whole", call.name, call.tool));
+        binder.warn(format!("{}: {} can't pick up from a take, so it renders the whole thing.", call.name, call.tool));
     }
     for written in call.fields.keys().filter(|written| !PLATFORM.contains(&written.as_str()) && declared.fields.iter().all(|field| field.name != **written)) {
-        binder.warn(format!("{}: {} reads no input {written}", call.name, call.tool));
+        binder.warn(format!("{}: {} has no input {written}, so Cozy ignored it.", call.name, call.tool));
     }
     if let Some(first) = binder.nothing.first() {
         let said: Vec<String> = binder.nothing.iter().map(|mention| call.doc.not_there(mention, call.reserved, call.lock)).collect();
         let refused = Error::new(Kind::Validation, "input_missing", format!("{}: {}", call.name, said.join("; ")));
         let deleted = graph::mention(first).is_some_and(|mention| call.lock.was_deleted(mention.name, super::now_ms()));
         return Err(match call.own {
-            Some(_) => refused.remedy(format!("bring it back, or edit {}'s text", call.name)),
-            None if deleted => refused.remedy(format!("undo its delete in the browser opened by cozy open, or leave <{first}> out")).next("cozy open"),
+            Some(_) => refused.remedy(format!("Bring it back, or edit {}'s text.", call.name)),
+            None if deleted => refused.remedy(format!("Undo the delete, or leave <{first}> out.")).next("cozy open"),
             // A run's own: a box of its project, or one of its own references.
             None => refused
-                .remedy(format!("make <{first}> a box of the run's project, or name it in the run: references:='[{{\"name\": \"{first}\", \"image\": \"<file>\"}}]'"))
+                .remedy(format!("Make <{first}> a box in the run's project, or give it in the run as references:='[{{\"name\": \"{first}\", \"image\": \"<file>\"}}]'."))
                 .next("cozy open"),
         });
     }
     if let Some(first) = binder.unturned.first() {
         let name = graph::mention(first).map_or(first.as_str(), |mention| mention.name);
         let said: Vec<String> = binder.unturned.iter().map(|key| format!("<{key}>")).collect();
-        let said = format!("{}: {} names an angle, and {name} isn't an orbit", call.name, said.join(", "));
-        return Err(Error::new(Kind::Validation, "mention_not_orbit", said).remedy(format!("turn on Orbit on {name}'s box, or name its frames, as <{name}:48-120>")));
+        let said = format!("{}: {} asks for an angle, but {name} isn't an orbit video.", call.name, said.join(", "));
+        return Err(Error::new(Kind::Validation, "mention_not_orbit", said).remedy(format!("Turn on Orbit for {name}'s box, or name its frames instead, like <{name}:48-120>.")));
     }
     let mut payload = std::mem::take(&mut binder.bound.payload);
     binder.rows(declared, &mut payload, call.name);
     binder.bound.payload = payload;
     for field in declared.fields.iter().filter(|field| field.wire == Wire::Required && !binder.bound.payload.contains_key(&field.name)) {
         if matches!(field.ty.plain(), Type::Unknown) {
-            let said = format!("{}: {} needs {}, of a type this cozy can't fill", call.name, call.tool, field.name);
+            let said = format!("{}: {} needs {}, which this version of Cozy can't fill in. Update Cozy.", call.name, call.tool, field.name);
             return Err(Error::new(Kind::Unavailable, "tool_input_unknown", said).next("cozy update"));
         }
         if !matches!(field.ty.plain(), Type::Model | Type::Tree) {
-            let said = format!("{} can't run: {} needs its {}", call.name, call.tool, field.name);
-            return Err(Error::new(Kind::Usage, "tool_input_missing", said).remedy(format!("write {}'s {}", call.name, field.name)));
+            // As the box asks it: "choose its Edit (Character swap, Head swap or Style transfer)", never its wire name.
+            let (step, label, options) = api::calcifer::tool::asked(field);
+            let options = options.map(|options| format!(" ({options})")).unwrap_or_default();
+            let said = format!("{} can't render until you {step} its {label}{options}.", call.name);
+            let step = step.chars().next().map(|first| first.to_uppercase().chain(step.chars().skip(1)).collect::<String>()).unwrap_or_default();
+            return Err(Error::new(Kind::Usage, "tool_input_missing", said).remedy(format!("{step} {}'s {label}.", call.name)));
         }
     }
     binder.bound.warnings.dedup();
@@ -166,7 +173,7 @@ impl Binder<'_> {
             let at = field.name.as_str();
             if let Type::Pickup(members) = field.ty.plain() {
                 if call.fields.contains_key(at) {
-                    self.warn(format!("{}'s {at}: a pickup isn't written; use Pick up from here", call.name));
+                    self.warn(format!("{}'s {at}: you can't type a pickup. Use Pick up from here instead.", call.name));
                 }
                 if let Some(pickup) = call.pickup {
                     let value = self.pickup(field, members, pickup)?;
@@ -182,8 +189,10 @@ impl Binder<'_> {
         Ok(())
     }
 
-    /// Why a mention of `kind`, written where `takes` is what's taken, isn't used: None, it is. Words take a text box's words; a slot
-    /// of `file` takes any file. What's said names the tool, and `here` when another of its fields would take it.
+    /// Why a mention of `kind`, written where `takes` is what's taken, isn't used: None, it is. Words take words (`text`); a slot
+    /// of `file` takes any file. What's said names the tool, and `here` when another of its fields would take it (Paul, 11-16: "does
+    /// not support this reference": `SDXL doesn't support reference images`). The page's `<` offers only what this uses (Unsupported.tsx
+    /// `usable`, the same rule).
     fn unusable(&self, takes: &[&str], kind: &str) -> Option<String> {
         if takes.contains(&kind) || (takes.contains(&"file") && MEDIA.contains(&kind)) {
             return None;
@@ -194,7 +203,7 @@ impl Binder<'_> {
             "video" => "videos",
             other => other,
         };
-        Some(format!("{} can't use {kinds}{here}", tool::title(self.call.package)))
+        Some(format!("{} doesn't support reference {kinds}{here}", self.call.title))
     }
 
     /// `inner`, written at `at`, left out for `why`.
@@ -262,30 +271,40 @@ impl Binder<'_> {
                         out.insert(key.clone(), value);
                     }
                 }
-                None => self.warn(format!("{}'s {at}: {} reads no {key}", self.call.name, self.call.tool)),
+                None => self.warn(format!("{}'s {at}: {} has no {key}, so Cozy ignored it.", self.call.name, self.call.tool)),
             }
         }
         Ok(out)
     }
 
-    /// Words: each text box is in them already, a tag stays, and any other box goes as its name, left out.
+    /// Words: each text box is in them already, a version of words goes as its words, a tag stays, and any other box goes as its name, left out.
     fn words(&mut self, at: &str, text: &str) -> String {
-        mentions_replaced(text, &mut |inner| {
+        let mut said = vec![];
+        let text = mentions_replaced(text, &mut |inner| {
             if self.tag(inner) {
                 return None;
             }
             let mention = self.mention_of(inner)?;
             let kind = self.kind_of(&mention)?;
+            if self.text_box(&mention) {
+                return None;
+            }
             if let Some(why) = self.unusable(&["text"], &kind) {
                 self.left_out(at, inner, why);
                 return Some(mention.name.to_owned());
             }
-            None
-        })
+            let words = self.named(&mention).flatten().filter(|named| named.kind == TEXT).and_then(|named| self.words_of(&named));
+            if words.is_none() {
+                said.push(self.no_file(at, inner));
+            }
+            Some(words.unwrap_or_else(|| mention.name.to_owned()))
+        });
+        said.into_iter().for_each(|line| self.warn(line));
+        text
     }
 
-    /// A prompt: its text, each mention spelled as its box spells itself, and each box it mentions, once, in the order first mentioned. What
-    /// it can't use goes as its name, left out.
+    /// A prompt: its text, each mention spelled as its box spells itself, and each box it mentions, once, in the order first mentioned; a
+    /// version of words goes in place, as its words. What it can't use goes as its name, left out.
     fn prompt(&mut self, at: &str, kinds: &[String], text: &str) -> Value {
         let takes: Vec<&str> = kinds.iter().map(String::as_str).chain(["text"]).collect();
         let (mut references, mut keys, mut said, mut nothing) = (vec![], BTreeSet::new(), vec![], vec![]);
@@ -298,7 +317,7 @@ impl Binder<'_> {
                 nothing.push(inner.to_owned());
                 return None;
             };
-            if kind == "text" {
+            if self.text_box(&mention) {
                 return None;
             }
             if let Some(why) = self.unusable(&takes, &kind) {
@@ -306,13 +325,20 @@ impl Binder<'_> {
                 return Some(mention.name.to_owned());
             }
             let Some(named) = self.named(&mention).flatten() else {
-                said.push(format!("{}'s {at}: <{inner}> has no file here, so it goes as its name", self.call.name));
+                said.push(self.no_file(at, inner));
                 return Some(mention.name.to_owned());
             };
             // A part that couldn't be cut is sent whole, which may be a kind this can't use.
             if let Some(why) = self.unusable(&takes, &named.kind) {
                 self.left_out(at, inner, why);
                 return Some(mention.name.to_owned());
+            }
+            if named.kind == TEXT {
+                let words = self.words_of(&named);
+                if words.is_none() {
+                    said.push(self.no_file(at, inner));
+                }
+                return Some(words.unwrap_or_else(|| mention.name.to_owned()));
             }
             if keys.insert(named.key.clone()) {
                 let mut reference = json!({"key": named.key, "type": named.kind, "file": named.file, "description": OFF});
@@ -326,6 +352,16 @@ impl Binder<'_> {
         said.into_iter().for_each(|line| self.warn(line));
         self.nothing.extend(nothing);
         json!({"text": text, "references": references})
+    }
+
+    /// What's said of `<inner>`, written at `at`, whose file isn't here: its name goes instead.
+    fn no_file(&self, at: &str, inner: &str) -> String {
+        format!("{}'s {at}: <{inner}> has no file on this computer, so Cozy sends its name instead.", self.call.name)
+    }
+
+    /// The words a version of words holds (xs-204): what a mention of it says in place, as a Text box's do. None: its file isn't here.
+    fn words_of(&self, named: &Named) -> Option<String> {
+        self.call.doc.words(self.call.lock.files.get(&named.file)?)
     }
 
     /// The box `mention` names: None, nothing.
@@ -344,7 +380,7 @@ impl Binder<'_> {
         }
     }
 
-    /// Whether `mention` is a text box's: one left in by a cycle stays as written.
+    /// Whether `mention` is a Text box's: its words are in already (`Doc::inline`), and one left in by a cycle stays as written.
     fn text_box(&self, mention: &graph::Mention) -> bool {
         self.box_of(mention).is_some_and(|j| self.call.doc.assets[j].text.is_some())
     }
@@ -384,7 +420,7 @@ impl Binder<'_> {
             }
             Ok(None) => self.unturned.push(named.key.clone()),
             Err(why) => {
-                self.warn(format!("{}: <{}> {why}: it's sent whole", self.call.name, named.key));
+                self.warn(format!("{}: <{}> {why}, so Cozy sends all of it.", self.call.name, named.key));
                 if let Some(j) = self.box_of(mention) {
                     named.key = graph::Mention { span: None, ..*mention }.spelled(&self.call.doc.assets[j].name);
                 }
@@ -441,18 +477,18 @@ impl Binder<'_> {
     /// Frames `from` to `to` of a video, to be cut: past its end, to its end.
     fn range(&mut self, named: &Named, from: u32, to: Option<u32>) -> Result<String, String> {
         if named.kind != "video" {
-            return Err(format!("is {}, and only a video takes a range", a(&named.kind)));
+            return Err(format!("is {}, and only a video can take a range", a(&named.kind)));
         }
         let frames = self.call.lock.files.get(&named.file).map_or(0, |file| file.frames as u32);
         let to = match (to, frames) {
             (Some(to), frames) if frames > 0 && to > frames => {
-                self.warn(format!("{}: <{}> runs past its {frames} frames: cut to its end", self.call.name, named.key));
+                self.warn(format!("{}: <{}> runs past its {frames} frames, so Cozy cut it at the end.", self.call.name, named.key));
                 None
             }
             (to, _) => to,
         };
         if to.is_some_and(|to| to <= from) || (frames > 0 && from >= frames) {
-            return Err(format!("names no frames of its {frames}"));
+            return Err(format!("names none of its {frames} frames"));
         }
         Ok(self.cut(&named.file, Range::Frames { from, to }))
     }
@@ -464,7 +500,7 @@ impl Binder<'_> {
         /// Below a frame's rounding, so 120° of 48 frames is frame 16.
         const EVEN: f64 = 1e-9;
         if named.kind != "video" {
-            return Err(format!("is {}, and only an orbit video takes an angle", a(&named.kind)));
+            return Err(format!("is {}, and only an orbit video can take an angle", a(&named.kind)));
         }
         let Some(orbit) = named.metadata.get("orbit").and_then(Value::as_object) else { return Ok(None) };
         let degrees = orbit.get("degrees").and_then(Value::as_f64).filter(|degrees| degrees.is_finite() && *degrees > 0.0).unwrap_or(360.0);
@@ -485,7 +521,7 @@ impl Binder<'_> {
             Span::Angle(angle) if loops => Range::Frame(first(angle.rem_euclid(degrees)) % frames),
             Span::Angle(angle) => {
                 if angle > degrees {
-                    self.warn(format!("{}: <{}> is past its {degrees}° turn: its last frame", self.call.name, named.key));
+                    self.warn(format!("{}: <{}> is past its {degrees}° turn, so Cozy used its last frame.", self.call.name, named.key));
                 }
                 Range::Frame(first(angle.min(degrees)).min(frames - 1))
             }
@@ -503,7 +539,7 @@ impl Binder<'_> {
             }
             Span::Turn(from, to) => {
                 if to > degrees {
-                    self.warn(format!("{}: <{}> runs past its {degrees}° turn: cut to its end", self.call.name, named.key));
+                    self.warn(format!("{}: <{}> runs past its {degrees}° turn, so Cozy cut it at the end.", self.call.name, named.key));
                 }
                 let (start, stop) = (from.min(degrees), to.min(degrees));
                 if stop <= start {
@@ -546,7 +582,7 @@ impl Binder<'_> {
                 }
                 match self.call.lock.matching(&text.trim_start_matches("sha256:").to_ascii_lowercase()).as_slice() {
                     [file] if kind != "file" && file.media().is_some_and(|media| media != kind) => {
-                        self.warn(format!("{}'s {at} takes {}, and {text} is {}: it's left empty", self.call.name, a(kind), a(file.media().unwrap_or_default())));
+                        self.warn(format!("{}'s {at} takes {}, but {text} is {}, so Cozy left it empty.", self.call.name, a(kind), a(file.media().unwrap_or_default())));
                     }
                     [file] => found.push(Named { key: String::new(), kind: file.media().unwrap_or(kind).to_owned(), file: file.sha256.clone(), files: Files::new(), metadata: Map::new(), made_by: String::new(), own: false }),
                     _ => found.push(Named { key: String::new(), kind: kind.to_owned(), file: text.to_owned(), files: Files::new(), metadata: Map::new(), made_by: String::new(), own: false }),
@@ -564,7 +600,7 @@ impl Binder<'_> {
                     continue;
                 }
                 match self.named(&mention).flatten() {
-                    None => self.warn(format!("{}'s {at}: <{inner}> has no file here, so it's left empty", self.call.name)),
+                    None => self.warn(format!("{}'s {at}: <{inner}> has no file on this computer, so Cozy left it empty.", self.call.name)),
                     Some(named) if kind != "file" && named.kind != kind => {
                         let why = self.unusable(&[kind], &named.kind).unwrap_or_default();
                         self.left_out(at, inner, why);
@@ -574,7 +610,7 @@ impl Binder<'_> {
             }
         }
         if !many && found.len() > 1 {
-            self.warn(format!("{}'s {at} takes one file, and {} are written: it takes the first", self.call.name, found.len()));
+            self.warn(format!("{}'s {at} takes one file, but {} were given, so Cozy used the first.", self.call.name, found.len()));
             found.truncate(1);
         }
         Ok(found)
@@ -605,13 +641,13 @@ impl Binder<'_> {
             None => None,
         };
         let Some(Some(take)) = take.filter(|take| take.as_ref().is_some_and(|take| take.kind == "video")) else {
-            let said = format!("{name}: {} is no take to pick up from", pickup.take);
-            return Err(Error::new(Kind::Validation, "pickup_no_take", said).remedy("pick up from one of a video box's takes, as <shot_1.3>"));
+            let said = format!("{name}: {} isn't a take Cozy can pick up from.", pickup.take);
+            return Err(Error::new(Kind::Validation, "pickup_no_take", said).remedy("Pick up from one of a video box's takes, like <shot_1.3>."));
         };
         let snap: Snap = field.extra.get("snap").and_then(|snap| serde_json::from_value(snap.clone()).ok()).unwrap_or_default();
         let out_frame = snapped(pickup.out_frame, snap);
         if out_frame != pickup.out_frame {
-            self.warn(format!("{name}: frame {} isn't one a pickup lands on: it picks up at {out_frame}", pickup.out_frame));
+            self.warn(format!("{name}: a pickup can't land on frame {}, so it picks up at frame {out_frame}.", pickup.out_frame));
         }
         let mut out = Map::new();
         for member in &members.fields {
@@ -635,7 +671,7 @@ impl Binder<'_> {
             if let Some(given) = fields.remove(&key)
                 && self.call.own.is_none()
             {
-                self.warn(format!("{of}'s {key}: {given} is ignored: it applies {}, so it's its default", declared.said(&when)));
+                self.warn(format!("{of}'s {key} applies {}, so Cozy ignored {} and used the default.", declared.said(&when), shown(&given)));
             }
         }
         for field in &declared.fields {
@@ -656,27 +692,37 @@ impl Binder<'_> {
                     let at = value.as_f64().unwrap_or_default();
                     let held = at.clamp(low.unwrap_or(f64::NEG_INFINITY), high.unwrap_or(f64::INFINITY));
                     if held != at {
-                        self.warn(format!("{of}'s {key}: {at} is past what it takes, so it's {held}"));
+                        let bound = if at > held { "at most" } else { "at least" };
+                        self.warn(format!("{of}'s {key} takes {bound} {held}, not {at}, so Cozy used {held}."));
                         *value = if *field.ty.plain() == Type::Int { json!(held as i64) } else { json!(held) };
                     }
                 }
                 Type::Literal(members) if !value.is_null() && !members.contains(value) => {
-                    let offered: Vec<String> = members.iter().filter(|member| !member.is_null()).map(|member| member.as_str().map_or_else(|| member.to_string(), str::to_owned)).collect();
-                    self.warn(format!("{of}'s {key}: {value} isn't one of {}, so it's its default", offered.join(", ")));
-                    fields.remove(key);
+                    let offered: Vec<String> = members.iter().filter(|member| !member.is_null()).map(shown).collect();
+                    let offered = either(&offered);
+                    match nearest(members, value) {
+                        Some(held) => {
+                            self.warn(format!("{of}'s {key} takes {offered}, not {}, so Cozy used {}.", shown(value), shown(&held)));
+                            *value = held;
+                        }
+                        None => {
+                            self.warn(format!("{of}'s {key} takes {offered}, not {}, so Cozy used the default.", shown(value)));
+                            fields.remove(key);
+                        }
+                    }
                 }
                 Type::Shape => {
                     if let Some(held) = value.as_str().and_then(|ratio| shape(field, ratio))
                         && Some(held.as_str()) != value.as_str()
                     {
-                        self.warn(format!("{of}'s {key}: {value} isn't a shape it takes, so it's {held}"));
+                        self.warn(format!("{of}'s {key} doesn't take {}, so Cozy used {held}, the nearest shape it takes.", shown(value)));
                         *value = json!(held);
                     }
                 }
                 Type::List(item) => {
                     let Value::Array(rows) = value else { continue };
                     if let Some(most) = field.constraints.max_length.filter(|most| rows.len() as u64 > *most) {
-                        self.warn(format!("{of}'s {key}: {} given and it takes {most}, so it uses the first {most}", rows.len()));
+                        self.warn(format!("{of}'s {key} takes at most {most}, not {}, so Cozy used the first {most}.", rows.len()));
                         rows.truncate(most as usize);
                     }
                     if let Some(least) = field.constraints.min_length.filter(|least| (rows.len() as u64) < *least) {
@@ -723,10 +769,24 @@ fn takes(ty: &Type, kind: &str) -> bool {
     }
 }
 
-/// `a picture`, `a video`, `a sound`.
+/// A value as people read it: a word without its quotes.
+fn shown(value: &Value) -> String {
+    value.as_str().map_or_else(|| value.to_string(), str::to_owned)
+}
+
+/// `a`, `a or b`, `a, b or c`.
+fn either(words: &[String]) -> String {
+    match words {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
+    }
+}
+
+/// `an image`, `a video`, `a sound`.
 fn a(kind: &str) -> String {
     match kind {
-        "image" => "a picture".into(),
+        "image" => "an image".into(),
         "video" => "a video".into(),
         "audio" => "a sound".into(),
         other => format!("its {other}"),
@@ -759,6 +819,33 @@ fn limits(field: &Field) -> (Option<f64>, Option<f64>) {
     let extra = |key: &str| field.extra.get(key).and_then(Value::as_f64);
     let c = &field.constraints;
     (c.ge.or(c.gt).or_else(|| extra("min")), c.le.or(c.lt).or_else(|| extra("max")))
+}
+
+/// The choice nearest `value` when it and the choices are numbers in the same words (`768p` among `1080p`, `1440p`: `1080p`;
+/// 3 among 2 and 4: 2, the smaller on a tie). A resolution as people say it, which `cozy run` lets through for a choice of
+/// them (`runs/bind.rs` `tiers`), is one: 1080 is 1080p, 4k is 2160p. None: they aren't, and it goes as its default.
+fn nearest(members: &[Value], value: &Value) -> Option<Value> {
+    let number = |value: &Value| -> Option<(f64, String)> {
+        match value {
+            Value::Number(number) => Some((number.as_f64()?, String::new())),
+            Value::String(text) => {
+                let text = text.trim();
+                let digits = text.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(text.len());
+                Some((text[..digits].parse().ok()?, text[digits..].to_ascii_lowercase()))
+            }
+            _ => None,
+        }
+    };
+    let (mut at, mut words) = number(value)?;
+    if members.iter().any(|member| number(member).is_some_and(|(_, said)| said == "p")) && matches!(words.as_str(), "" | "k") {
+        at *= if words == "k" { 540.0 } else { 1.0 };
+        words = "p".to_owned();
+    }
+    members
+        .iter()
+        .filter_map(|member| number(member).filter(|(_, said)| *said == words).map(|(n, _)| (n, member)))
+        .min_by(|a, b| (a.0 - at).abs().total_cmp(&(b.0 - at).abs()).then(a.0.total_cmp(&b.0)))
+        .map(|(_, member)| member.clone())
 }
 
 /// `ratio` held to what a shape takes: the nearest allowed, else within its ends. None: it's no ratio, and goes as written.

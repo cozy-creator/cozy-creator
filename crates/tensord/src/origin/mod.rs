@@ -30,14 +30,18 @@ const VOLUME_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// The machine's one download line, smaller first (cl-905): what a reader is blocked on, then each
 /// run's needs in job order (acceptance, as its GPU work queues), then what jobs waiting on another's
-/// output will read, then guesses, then warm sets. The downloader finishes one before the next.
+/// output will read, then guesses, then warm sets. The downloader finishes one before the next. Everything after a
+/// run's needs is background (`tensorfs::fetch::BACKGROUND`): none of it starts, and what is in flight gives way, while a
+/// need is under way (cl-1101).
 pub(crate) mod priority {
-    /// What a started call's function reads now and isn't here yet (`ModelNeed`): before everything (cl-966).
-    pub(crate) const EMERGENCY: u64 = 0;
-    /// What the machine itself is blocked on (its update), no job's.
-    pub(crate) const NOW: u64 = 1;
-    /// The run a started run's fetches are ordered as (its calls' weights): ahead of every queued
-    /// root, whose order is its acceptance, from 1.
+    // A run's needs are class 0; `ahead` (class 1) is the first background order.
+    const _: () = assert!(2 + (1 << 62) == tensorfs::fetch::BACKGROUND);
+    /// What a started call's function reads now and isn't here yet (`ModelNeed`): before every weight (cl-966).
+    pub(crate) const EMERGENCY: u64 = tensorfs::fetch::EMERGENCY;
+    /// Software, no job's weights: the machine's update, a package's files as it installs. Weights yield to it (cl-1007).
+    pub(crate) const SOFTWARE: u64 = tensorfs::fetch::SOFTWARE;
+    /// The run a call sharing a GPU an ancestor holds is ordered as (`runs::call_order`): ahead of
+    /// every queued root, whose order is its acceptance, from 1.
     pub(crate) const STARTED: u64 = 0;
     fn at(class: u64, run: u64, rank: u32) -> u64 {
         2 + (class << 62 | run.min((1 << 30) - 1) << 32 | u64::from(rank))
@@ -61,6 +65,11 @@ pub(crate) mod priority {
     }
     /// Kept for later (a warm set's `downloaded`).
     pub(crate) const BEHIND: u64 = u64::MAX;
+    /// Whether `order` is a caller's guess's (`prepare`, or kept for later): no run's, so it gives way to every run's, in the
+    /// install line too (cl-1104).
+    pub(crate) fn prefetch(order: u64) -> bool {
+        order.saturating_sub(2) >> 62 == 3
+    }
 }
 
 /// A checkpoint's origin, with the CAs its hosts may present beyond the public roots (a PEM
@@ -138,12 +147,6 @@ impl Machine {
         self.returned.clone()
     }
 
-    /// Until they drop, what comes after `order` waits in every fetcher (`Fetcher::give_way`): one
-    /// started meanwhile isn't held, and there is one, made by the first pull.
-    pub(crate) fn give_way(&self, order: u64) -> Vec<tensorfs::fetch::GiveWay> {
-        self.fetchers.lock().unwrap().iter().map(|(_, fetcher)| fetcher.give_way(order)).collect()
-    }
-
     /// The bytes every fetcher received from its origin, and the time any of them was arriving.
     pub(crate) fn received(&self) -> (u64, Duration) {
         self.fetchers.lock().unwrap().iter().map(|(_, fetcher)| fetcher.stats()).fold(
@@ -206,19 +209,34 @@ impl Machine {
 
     /// Every one of `wants` (objects from a remote, at an order) here, fetched when absent, all in
     /// line at once: the downloader takes them by their orders. Their bytes count into `progress`.
-    pub(crate) fn all(&self, wants: Vec<(Remote, Vec<ObjectRef>, u64)>, progress: Arc<Progress>, stop: &Stop) -> Result<Landed> {
+    /// `lined` hears once each absent one is in the downloader's line, before any is waited for.
+    pub(crate) fn all(&self, wants: Vec<(Remote, Vec<ObjectRef>, u64)>, progress: Arc<Progress>, lined: &dyn Fn(), stop: &Stop) -> Result<Landed> {
         let wants = (wants.into_iter())
             .map(|(remote, objects, priority)| Ok((self.of(&remote)?, remote.origin, objects, priority)))
             .collect::<Result<Vec<_>>>()?;
-        self.block(stop, async move {
+        let mut all = Box::pin(async move {
             let lines: Vec<Want> = wants.iter().map(|(.., priority)| Want { components: None, priority: *priority, progress: Some(progress.as_ref()) }).collect();
             let each = wants.iter().zip(&lines).map(|((fetcher, origin, objects, _), want)| fetcher.objects(origin, objects, want));
             let mut landed = Landed::default();
             for one in futures_util::future::try_join_all(each).await? {
                 (landed.origin, landed.volume, landed.local) = (landed.origin + one.origin, landed.volume + one.volume, landed.local + one.local);
             }
-            Ok(landed)
-        })
+            Ok::<_, Refusal>(landed)
+        });
+        let first = self.line(all.as_mut());
+        lined();
+        match first {
+            std::task::Poll::Ready(landed) => landed,
+            std::task::Poll::Pending => self.block(stop, all),
+        }
+    }
+
+    /// `wanted` polled once, here: a fetch wants each of its absent objects at its first poll (`Fetcher::objects`), so they are
+    /// in the downloader's line when this returns, and a want that takes over another's objects never finds one unwanted in
+    /// between (cl-1104, `ahead::put`). What it waits on from here is woken on the runtime it is then given to.
+    fn line<T>(&self, wanted: std::pin::Pin<&mut (impl Future<Output = T> + ?Sized)>) -> std::task::Poll<T> {
+        let _entered = self.runtime.enter();
+        wanted.poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
     }
 
     /// Each of `objects` here, fetched from `remote` when absent.
@@ -242,13 +260,17 @@ impl Machine {
     ) -> Result<tokio::task::JoinHandle<Result<Landed>>> {
         let (fetcher, origin, returned) = (self.of(remote)?, remote.origin.clone(), self.returned.clone());
         let completion = FetchCompletion(Some(settled));
-        Ok(self.runtime.spawn(async move {
+        let mut wanted = Box::pin(async move {
             let mut completion = completion;
             let result = fetcher.objects(&origin, &objects, &Want { priority, ..Want::default() }).await;
             returned.notify_one();
             if let Some(settled) = completion.0.take() { settled(&result); }
             result
-        }))
+        });
+        Ok(match self.line(wanted.as_mut()) {
+            std::task::Poll::Ready(result) => self.runtime.spawn(async move { result }),
+            std::task::Poll::Pending => self.runtime.spawn(wanted),
+        })
     }
 }
 

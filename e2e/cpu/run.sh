@@ -6,7 +6,8 @@
 #                  [--only pkg,...] [--cells entry/cell,...] [--jobs N] [--refs DIR] [--helpers pkg,...] [--record] [--keep]
 # R and T: a wheel, a source dir (the Runtime), an exact release version, or `lock` (what each package's lock pins).
 # --cozy: a cozy whose Calcifer is up, and --project a project folder of it: each package's code is also uploaded,
-# locked and its cells' requests bound through it (cli.sh); without it those cells are not run.
+# locked and its cells' requests bound through it (cli.sh), and each slot's default lane resolved per GPU family first
+# (lanes.py; `--cells lanes` alone); without it those cells are not run.
 # --keep keeps each package's tiny weights, inputs and outputs (else only logs and replies stay);
 # --refs reads (and --record writes) references elsewhere than refs/; --helpers installs those packages from the
 # checkout over the releases the locks pin (a helper not yet published). e2e/lib.sh's other candidate flags are ignored.
@@ -95,8 +96,18 @@ one() {
     else echo "FAIL $p - typecheck ${s}s: $(grep -m1 'error:' "$out/mypy.txt" || tail -n1 "$out/mypy.txt")"; fi
   }
   t=$SECONDS
+  # A package taking first-party packages from the Hub's index is read as an RC machine reads it from its checkout (xs-195):
+  # those sources are its sibling folders, and it is locked so.
+  local read=$PACKAGES/$p staged
+  staged=$(uv run -q --no-project --with 'packaging>=24' python -I "$HERE/stage.py" "$PACKAGES" "$p" "$out/staged" "$RUNTIME") \
+    || { echo "FAIL $p - describe $((SECONDS - t))s: staging it from the checkout failed"; typed; return 1; }
+  if [ -n "$staged" ]; then
+    nice -n 19 uv lock -q --project "$staged" > "$out/staged-lock.log" 2>&1 \
+      || { echo "FAIL $p - describe $((SECONDS - t))s: its checkout-staged lock failed: $(tail -n1 "$out/staged-lock.log" | cut -c1-300)"; typed; return 1; }
+    read=$staged
+  fi
   # The static reader's interface: since Runtime 0.44 (cr-269) the only describer, so no import to compare.
-  if ! CUDA_VISIBLE_DEVICES= nice -n 19 "$env/bin/cozy-runtime" --json describe --dir "$PACKAGES/$p" \
+  if ! CUDA_VISIBLE_DEVICES= nice -n 19 "$env/bin/cozy-runtime" --json describe --dir "$read" \
       > "$out/interface.json" 2> "$out/describe.err"; then
     local why; why=$(grep -o '"message": *"[^"]*' "$out/describe.err" | head -n1 | sed 's/"message": *"//')
     echo "FAIL $p - describe $((SECONDS - t))s: $(echo "${why:-$(grep -v '^\s*$' "$out/describe.err" | tail -n1)}" | cut -c1-300)"
@@ -115,15 +126,29 @@ one() {
 export -f one
 
 started=$SECONDS
-printf '%s\n' $packages | xargs -P "$JOBS" -I{} bash -c 'one "$@"' _ {} | tee "$OUT/cells.txt" || true
-# Static: the TensorFS names the Runtime reads, against the candidate TensorFS (in any package's environment).
-for q in $packages; do
-  py=$ENVS/$q/bin/python
-  [ -x "$py" ] || continue
-  CUDA_VISIBLE_DEVICES= "$py" "$HERE/surface.py" "$("$py" -c 'import cozy_runtime, os; print(os.path.dirname(cozy_runtime.__file__))')" \
+: > "$OUT/cells.txt"
+# The lane each slot's default resolves to on each GPU family, through cozy against tensorhub.com's releases (lanes.py,
+# cl-1076); `--cells lanes` runs it alone.
+if [ -n "$COZY" ] && { [ -z "$CELLS" ] || [[ ",$CELLS," == *,lanes,* ]]; }; then
+  python3 -I "$HERE/lanes.py" --cozy "$COZY" --project "$PROJECT" --packages "$PACKAGES" --out "$OUT/lanes" $packages \
     | tee -a "$OUT/cells.txt" || true
-  break
-done
+fi
+if [ "$CELLS" != lanes ]; then
+  printf '%s\n' $packages | xargs -P "$JOBS" -I{} bash -c 'one "$@"' _ {} | tee -a "$OUT/cells.txt" || true
+  # Static: the TensorFS names the Runtime reads, against the candidate TensorFS (in any package's environment).
+  for q in $packages; do
+    py=$ENVS/$q/bin/python
+    [ -x "$py" ] || continue
+    CUDA_VISIBLE_DEVICES= "$py" "$HERE/surface.py" "$("$py" -c 'import cozy_runtime, os; print(os.path.dirname(cozy_runtime.__file__))')" \
+      | tee -a "$OUT/cells.txt" || true
+    break
+  done
+fi
 pass=$(grep -c '^PASS' "$OUT/cells.txt" || true) fail=$(grep -c '^FAIL' "$OUT/cells.txt" || true)
-echo "cpu: $pass passed, $fail failed in $((SECONDS - started)) s"
+# The CPU the references were chosen by (drive.py `stored`): AMD's and Intel's bf16 sums differ.
+cpu=$(sed -n '/^model name/{s/^model name[[:space:]]*: *//p;q}' /proc/cpuinfo 2> /dev/null || true)
+case ${cpu,,} in *amd*) refs="AMD's references" ;; *intel*) refs="Intel's references" ;; *) refs="AMD's references, the vendor unknown" ;; esac
+said="cpu: $pass passed, $fail failed in $((SECONDS - started)) s on ${cpu:-an unnamed CPU} ($refs)"
+echo "$said"
+[ -z "${GITHUB_STEP_SUMMARY:-}" ] || echo "### $said" >> "$GITHUB_STEP_SUMMARY"
 [ "$fail" = 0 ] && [ "$pass" != 0 ]

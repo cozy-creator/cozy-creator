@@ -1,19 +1,21 @@
 // render (cl-973 core cell 11), on local: "A still" from the palette, typed in and rendered by Render, lists its take the frame after the
-// press and keeps that one id until it lands in place, unreloaded; another box rendered by Ctrl+Enter says Queued, then Rendering, with a
+// press and keeps that one id until it lands in place, unreloaded, its pending tile and its Cancel naming its run KEY-N; another box rendered by Ctrl+Enter says Queued, then Rendering, with a
 // faded preview of its latents until its take replaces it, and its finish note's View opens it. Render all: a box waiting on another says
 // so and shows none of the other's progress; the other's whole job's meter rises as it renders; Cancel stops one waiting and one
 // rendering, and their takes go.
-// A failed take stays red, its error with Copy, through a reload, until its trash deletes it. The take watched in Focus is the one drawn
+// A failed render is said once, as a toast, and its take is gone: nothing in the column to pick or delete, the frame back on the take it
+// showed, through a reload (cl-1070). The take watched in Focus is the one drawn
 // when it lands, through a reload; its run's warnings are the box's, never a note. Two boxes rendered at once: the one whose tool is warm
-// starts before the other's install ends.
+// is ready before the other's install ends, waiting only for the CPU another run holds, which its log names (cl-1086). A picture's
+// take on its way is, in its takes column, the shape it will be: the one set, else Auto's from the picture it edits (cl-1072).
 const { writeFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, box, canvasIdle, focus, middle, openPoint, fixtureTool, png } = require('./fixtures');
+const { test, expect, canvasIdle, focus, middle, openPoint, newCanvas, partPoint, fixtureTool, png, canvasCard, hoverBox, screenshotPixels } = require('./fixtures');
+const { toolRow } = require('./hands');
 
 const TOOL = fixtureTool('tool.py');
 const STILL = `${TOOL}/still`;
 const LATENTS = `${fixtureTool('latents.py')}/latents`;
-const CRASH = `${fixtureTool('shots.py')}/crash`;
 const BROKEN = 'the crash tool fails, as the render cell asks';
 const WARNED = 'a handled fallback, as the render cell asks';
 // A run whose result warns, as a handled fallback does: no fixture tool's does. Its dependencies are tool.py's.
@@ -21,12 +23,12 @@ const WARNS = `# /// script
 # requires-python = ">=3.12"
 # dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19"]
 # ///
-"""The render cell's tool: a still of one colour whose result warns."""
+"""The render cell's tools: a still of one colour whose result warns, and one that fails."""
 
 import os
 
 import msgspec
-from cozy_runtime.author import App, ImageFrame, Outputs
+from cozy_runtime.author import App, ImageFrame
 from cozy_runtime.fields import Image, Prompt
 from cozy_runtime.media import ImageFile
 
@@ -45,10 +47,16 @@ class Warned(msgspec.Struct):
 
 
 @app.tool(label="Warns", named="warned", accelerator=False)
-def warned(payload: Drawing, out: Outputs) -> Warned:
+def warned(payload: Drawing) -> Warned:
     """A still of one colour, and a warning."""
-    image = out.save_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png")
+    image = ImageFile.from_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png")
     return Warned(image, payload.instructions.text, ["${WARNED}"])
+
+
+@app.tool(label="Crashes", named="crashes", accelerator=False)
+def crashes(payload: Drawing) -> Warned:
+    """Fails."""
+    raise RuntimeError("${BROKEN}")
 `;
 // A tool of an environment of its own (tool.py's and tomli-w): its first render installs it.
 const INSTALLS = `# /// script
@@ -60,7 +68,7 @@ const INSTALLS = `# /// script
 import os
 
 import msgspec
-from cozy_runtime.author import App, ImageFrame, Outputs
+from cozy_runtime.author import App, ImageFrame
 from cozy_runtime.fields import Image, Prompt
 from cozy_runtime.media import ImageFile
 
@@ -78,9 +86,9 @@ class Picture(msgspec.Struct):
 
 
 @app.tool(label="Installs", named="installed", accelerator=False)
-def installed(payload: Drawing, out: Outputs) -> Picture:
+def installed(payload: Drawing) -> Picture:
     """A still of one colour, once its environment is installed."""
-    return Picture(out.save_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png"), payload.instructions.text)
+    return Picture(ImageFile.from_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png"), payload.instructions.text)
 `;
 
 const softly = expect.configure({ soft: true });
@@ -88,6 +96,16 @@ const hex = (sha) => String(sha ?? '').replace(/^sha256:/, '');
 const shaOf = (asset, number) => hex(asset?.prefixes?.find((version) => version.number === number)?.main?.sha256);
 /** A render on its way, on its box at rest or over it in Focus: its two lines and Cancel. */
 const face = (page, name) => page.getByRole('status', { name: `${name}'s render`, exact: true });
+/** Its render canceled as a person cancels it: the old canvas's hover card's Cancel, the new canvas's drawn one. */
+async function cancelRender(page, name) {
+  if (await newCanvas(page)) {
+    const at = await partPoint(page, name, 'cancel');
+    await page.mouse.click(at.x, at.y);
+    return;
+  }
+  await hoverBox(page, name);
+  await face(page, name).getByRole('button', { name: `Cancel ${name}'s render`, exact: true }).click();
+}
 const focused = (page) => page.getByRole('region', { name: 'Focused asset' });
 /** The take a picture's frame draws, once its pixels are in. */
 const drawn = (scope) => scope.locator('.media-pixels .buffered-image').evaluateAll(([host]) => {
@@ -121,11 +139,11 @@ async function carry(page, from, to) {
   await page.mouse.up();
 }
 
-/** Every note the page puts up, as it comes, in each page this context loads. */
+/** Every note the page puts up, each once as it comes, in each page this context loads: a note goes by itself (Paul, 11-16). */
 function keepNotes() {
-  const said = (window.__notes = []);
+  const said = (window.__notes = []), ids = new Set();
   new MutationObserver(() => {
-    for (const note of document.querySelectorAll('[data-note]')) if (!said.includes(note.innerText)) said.push(note.innerText);
+    for (const note of document.querySelectorAll('[data-note]')) if (!ids.has(note.dataset.note)) { ids.add(note.dataset.note); said.push(note.innerText); }
   }).observe(document, { subtree: true, childList: true, characterData: true });
 }
 
@@ -143,34 +161,46 @@ const notesOver = (page, ms) => page.evaluate((ms) => new Promise((done) => {
 const recordBox = (page, name) => page.evaluate((name) => {
   const log = ((window.__said ??= {})[name] = []);
   const look = () => {
-    const card = document.querySelector(`.react-flow__node .card[data-asset="${CSS.escape(name)}"]`);
-    const open = document.querySelector(`[data-focused-asset="${CSS.escape(name)}"]`);
-    const face = [...document.querySelectorAll('[role="status"]')].find((one) => one.getAttribute('aria-label') === `${name}'s render`);
-    const meter = card?.querySelector('[role="progressbar"][aria-label="The whole job"]');
+    const open = document.querySelector(`[data-focused-asset=${JSON.stringify(name)}]`);
+    const card = open?.querySelector('.card') ?? document.querySelector(`.canvas-node .card[data-asset=${JSON.stringify(name)}]`);
+    const shown = document.querySelector('.canvas-root')?.canvasInspection?.card(name)?.rendered;
+    const face = [...document.querySelectorAll('[role="status"]')].find(one => one.getAttribute('aria-label') === `${name}'s render`);
+    const meter = card?.querySelector('[role="progressbar"][aria-label="Overall progress"]');
     const preview = card?.querySelector('.latent-preview img');
     return {
-      face: face?.querySelector('.face-state b')?.textContent ?? null,
-      time: face?.querySelector('.face-time')?.textContent ?? null,
-      dot: (open?.querySelector('.focus-title .state-dot') ?? card?.querySelector('.head .state-dot'))?.getAttribute('aria-label') ?? null,
-      meter: meter ? Number(meter.getAttribute('aria-valuenow')) : null,
-      preview: preview?.complete && preview.naturalWidth > 0 ? Number(getComputedStyle(preview).opacity) : null,
+      face: face?.querySelector('.face-state b')?.textContent ?? (shown?.progress ? [shown.labels.progress?.fullText, shown.labels.count?.fullText].filter(Boolean).join(' ') : null),
+      time: face?.querySelector('.face-time')?.textContent ?? shown?.labels.time?.fullText ?? null,
+      dot: (open?.querySelector('.focus-title .state-dot') ?? card?.querySelector('.head .state-dot'))?.getAttribute('aria-label') ?? ({ queued: 'Queued', running: 'Rendering', failed: 'Failed', unseen: 'New, not looked at' }[shown?.state] ?? null),
+      meter: meter ? Number(meter.getAttribute('aria-valuenow')) : shown?.meter && shown.progress?.fraction !== undefined ? Math.round(shown.progress.fraction * 100) : null,
+      preview: preview?.complete && preview.naturalWidth > 0 ? Number(getComputedStyle(preview).opacity) : shown?.latent?.opacity ?? null,
     };
   };
-  new MutationObserver(() => {
+  const sample = () => {
     const now = look();
     if (JSON.stringify(now) !== JSON.stringify(log.at(-1))) log.push(now);
-  }).observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
-  log.push(look());
+  };
+  // Native Focus can commit Queued and then Rendering between frames; preserve that ordering while also sampling Pixi frames.
+  new MutationObserver(sample).observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
+  const frame = () => { sample(); requestAnimationFrame(frame); };
+  frame();
+}, name);
+const renderState = (page, name) => page.evaluate(name => {
+  const shown = document.querySelector('.canvas-root')?.canvasInspection?.card(name)?.rendered;
+  if (shown) return shown.progress ? [shown.labels.progress?.fullText, shown.labels.count?.fullText].filter(Boolean).join(' ') : null;
+  return [...document.querySelectorAll('[role="status"]')].find(one => one.getAttribute('aria-label') === `${name}'s render`)?.querySelector('.face-state b')?.textContent ?? null;
 }, name);
 const said = (page, name) => page.evaluate((name) => window.__said[name], name);
 
-/** Focus's takes column for `name` on every change, by take id; and, heard before the page's own handler, the column as Render was pressed
- *  and in the next frame. */
+/** Focus's takes column for `name` on every change, by take id, with what each pending tile of a run and its Cancel say; and, heard before
+ *  the page's own handler, the column as Render was pressed and in the next frame. */
 const recordTakes = (page, name) => page.evaluate((name) => {
   const look = () => {
     const side = document.querySelector(`[data-focused-asset="${CSS.escape(name)}"] .here-side`);
     const ids = (selector) => [...(side?.querySelectorAll(selector) ?? [])].map((tile) => tile.getAttribute('data-take-id')).filter(Boolean);
-    return { open: Boolean(side), making: ids('.take.making[data-take-id]'), landed: ids('.take[data-take][data-take-id]') };
+    const runs = [...(side?.querySelectorAll('.take.making[data-run]') ?? [])].map((tile) => ({
+      run: tile.getAttribute('data-run'), tile: tile.getAttribute('title'), cancel: tile.closest('.take-at')?.querySelector('.take-off')?.getAttribute('aria-label') ?? null,
+    }));
+    return { open: Boolean(side), making: ids('.take.making[data-take-id]'), landed: ids('.take[data-take][data-take-id]'), runs };
   };
   const takes = (window.__takes = { log: [look()], pressed: null });
   new MutationObserver(() => {
@@ -226,12 +256,8 @@ test('render', async ({ page, project, api, cli }) => {
   let first;
 
   await test.step('"A still" from the palette, typed in and rendered by Render; another box by Ctrl+Enter', async () => {
-    const tools = page.getByRole('complementary', { name: 'Tools' });
-    const image = tools.locator('button[data-operation="image"]');
-    await image.click();
-    await expect(image).toHaveAttribute('aria-expanded', 'true');
-    const still = tools.locator(`li[data-implementation][data-tool-operation="image"][data-tool=${JSON.stringify(STILL)}]`);
-    await expect(still).toBeVisible();
+    const still = await toolRow(page, 'Image', STILL);
+    await expect(still).toHaveAttribute('data-tool-operation', 'image');
     await carry(page, still, await openPoint(page));
     const fresh = async () => (await project.assets()).filter((asset) => asset.tool === STILL && !before.has(asset.name)).map((asset) => asset.name);
     await expect.poll(fresh, { message: 'a box of A still, dropped' }).toHaveLength(1);
@@ -255,6 +281,11 @@ test('render', async ({ page, project, api, cli }) => {
     const log = await page.evaluate(() => window.__takes.log);
     const listed = log.findIndex((look) => look.making.includes(take) || look.landed.includes(take));
     expect.soft(log.slice(listed).filter((look) => look.open && !look.making.includes(take) && !look.landed.includes(take)), 'never off the column until it lands').toEqual([]);
+    // Its pending tile and its Cancel name its run KEY-N, as the run drawer does, in every look (cl-987, #3341).
+    const { key } = await api.get(project.at('/key'));
+    const named = log.flatMap((look) => look.runs);
+    expect.soft(Boolean(key) && named.length > 0 && named.every(({ run, tile, cancel }) => tile === `Run ${key}-${run}` && cancel === `Cancel run ${key}-${run}`),
+      `its pending tile and its Cancel say Run ${key}-N: ${JSON.stringify(named.slice(0, 4))}`).toBe(true);
     await softly.poll(() => drawn(region.locator('.focus-viewer')), { message: 'its take drawn where it was made' }).toBe(shaOf(made, 1));
     expect.soft(await page.evaluate(() => window.__unreloaded), 'with no reload').toBe(true);
     await back(page);
@@ -269,9 +300,30 @@ test('render', async ({ page, project, api, cli }) => {
     await page.keyboard.press('ControlOrMeta+Enter');
     await asked;
     await back(page);
+    await expect.poll(async () => (await canvasCard(page, 'latent'))?.rendered?.latent?.opacity ?? 0, { message: 'a passive latent preview is drawn', timeout: 120_000 }).toBeGreaterThan(0);
+    const latentBody = (await canvasCard(page, 'latent')).rendered.body, previewPixels = screenshotPixels(await page.screenshot({ scale: 'css' }));
+    const previewColours = new Set();
+    for (let y = 7; y < 12; y++) for (let x = 1; x < 12; x++) previewColours.add(previewPixels(latentBody.x + latentBody.width * x / 12, latentBody.y + latentBody.height * y / 12).map(value => Math.round(value / 8)).join());
+    expect.soft(previewColours.size, 'the passive latent preview paints nonuniform pixels below the prompt text').toBeGreaterThan(8);
     await expect.poll(async () => (await project.asset('latent'))?.versions, { message: "latent's take", timeout: 120_000 }).toBe(1);
     const latent = await project.asset('latent');
-    await softly.poll(() => drawn(box(page, 'latent')), { message: 'its take replaces the preview' }).toBe(shaOf(latent, 1));
+    await softly.poll(async () => { const shown = (await canvasCard(page, 'latent'))?.rendered; return shown?.media.ready ? shown.media.sha : null; }, { message: 'its take replaces the preview' }).toBe(shaOf(latent, 1));
+    await expect.poll(async () => { const shown = (await canvasCard(page, 'latent'))?.rendered; return Boolean(shown && !shown.landing && !shown.glide && shown.transform.alpha === 1); }, { message: 'the final output presentation settles' }).toBe(true);
+    const main = latent.prefixes.find(version => version.number === 1).main;
+    const answer = await api.raw('GET', project.at(`/${main.path.split('/').map(encodeURIComponent).join('/')}`));
+    expect(answer.ok, 'the real final PNG can be read').toBe(true);
+    const expectedPixels = screenshotPixels(Buffer.from(await answer.arrayBuffer()));
+    const finalBody = (await canvasCard(page, 'latent')).rendered.body, finalPixels = screenshotPixels(await page.screenshot({ scale: 'css' }));
+    const mean = (read, x, y, width, height) => {
+      const sum = [0, 0, 0]; let count = 0;
+      for (let py = Math.ceil(y); py < y + height; py++) for (let px = Math.ceil(x); px < x + width; px++) { read(px, py).forEach((value, c) => { sum[c] += value; }); count++; }
+      return sum.map(value => value / count);
+    };
+    for (const [u, v] of [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]]) {
+      const actual = mean(finalPixels, finalBody.x + finalBody.width * (u - 0.1), finalBody.y + finalBody.height * (v - 0.1), finalBody.width * 0.2, finalBody.height * 0.2);
+      const expected = mean(expectedPixels, expectedPixels.width * (u - 0.1), expectedPixels.height * (v - 0.1), expectedPixels.width * 0.2, expectedPixels.height * 0.2);
+      expect.soft(Math.max(...actual.map((value, c) => Math.abs(value - expected[c]))), `final output replaces faded latent pixels at ${u},${v}`).toBeLessThanOrEqual(24);
+    }
     const sayings = await said(page, 'latent');
     const dots = sayings.map((look) => look.dot);
     const queued = dots.indexOf('Queued');
@@ -279,15 +331,15 @@ test('render', async ({ page, project, api, cli }) => {
     expect.soft(dots.indexOf('Rendering', queued), 'then Rendering').toBeGreaterThan(queued);
     const faces = sayings.map((look) => look.face).filter(Boolean);
     expect.soft(faces[0], 'its face says Queued first').toMatch(/^Queued/);
-    expect.soft(faces.some((words) => /^Denoising/.test(words)), `then its stage: ${faces.join(' | ')}`).toBe(true);
+    expect.soft(faces.some((words) => /^Rendering/.test(words)), `then its stage: ${faces.join(' | ')}`).toBe(true);
     const faded = sayings.map((look) => look.preview).filter((opacity) => opacity !== null);
     expect.soft(faded.length, 'a preview of its latents shows as it renders').toBeGreaterThan(0);
     expect.soft(faded.every((opacity) => opacity > 0 && opacity < 1), `faded: ${faded.join(' ')}`).toBe(true);
-    await expect.soft(box(page, 'latent').locator('.latent-preview'), 'its take replaces it').toHaveCount(0);
-    await expect.soft(face(page, 'latent')).toHaveCount(0);
+    await softly.poll(async () => (await canvasCard(page, 'latent'))?.rendered?.latent ?? null, { message: 'its take replaces it' }).toBeNull();
+    await softly.poll(() => renderState(page, 'latent')).toBeNull();
 
     // Landed at rest: its note names it and its take, and View opens it on that take.
-    const note = page.locator('[data-note]').filter({ hasText: 'latent finished: version 1' });
+    const note = page.locator('[data-note]').filter({ hasText: 'Version 1 of latent is ready' });
     await expect.soft(note).toBeVisible();
     await note.getByRole('button', { name: 'View', exact: true }).click();
     region = focused(page);
@@ -295,7 +347,7 @@ test('render', async ({ page, project, api, cli }) => {
     await canvasIdle(page);
     await expect.soft(region.getByLabel('Take', { exact: true })).toHaveText('v1');
     await back(page);
-    expect.soft(notes.concat(await page.evaluate(() => window.__notes)).filter((text) => text.includes(`${first} finished`)), 'a take landing where it is looked at says nothing').toEqual([]);
+    expect.soft(notes.concat(await page.evaluate(() => window.__notes)).filter((text) => text.includes(`of ${first} is ready`)), 'a take landing where it is looked at says nothing').toEqual([]);
   });
 
   await test.step('Render all, on a slow box that mentions the first', async () => {
@@ -304,14 +356,15 @@ test('render', async ({ page, project, api, cli }) => {
     await recordBox(page, 'after');
     await recordBox(page, 'slow');
     await page.getByRole('button', { name: /^Render all \d+$/ }).click();
-    await expect(face(page, 'after').locator('.face-state b'), 'after waits for slow').toHaveText(/^Waiting for <slow>/, { timeout: 60_000 });
+    await expect.poll(() => renderState(page, 'after'), { message: 'after waits for slow', timeout: 60_000 }).toMatch(/^Waiting for <slow>/);
   });
 
   await test.step('Cancel one box while it waits for its input and another while it renders', async () => {
-    await face(page, 'after').getByRole('button', { name: "Cancel after's render", exact: true }).click();
+    await cancelRender(page, 'after');
+    await page.mouse.move(2, 500);
     await expect.poll(() => settled(project, 'after'), { message: 'after canceled, its take gone' }).toEqual({ takes: 0, making: 0, versions: 0 });
-    await expect.soft(face(page, 'after')).toHaveCount(0);
-    await expect(face(page, 'slow').locator('.face-state b'), 'slow renders').toHaveText(/^Drawing/, { timeout: 90_000 });
+    await softly.poll(() => renderState(page, 'after')).toBeNull();
+    await expect.poll(() => renderState(page, 'slow'), { message: 'slow renders', timeout: 90_000 }).toMatch(/^Drawing/);
     // The whole job's meter, at rest, rises as it goes and never goes back. Nothing like slow ran here, so its estimate is its own steps',
     // and those say no time left until its second (43405964751: 99 from then on, "6s / 6s" then "7s / 21s"): the meter isn't pinned by it.
     const rising = async () => {
@@ -319,59 +372,65 @@ test('render', async ({ page, project, api, cli }) => {
       return meter.length > 1 && meter.every((value, i) => i === 0 || value >= meter[i - 1]) && meter.at(-1) > meter[0] ? 'rising' : `not rising: ${meter.join(' ') || 'no meter'}`;
     };
     await softly.poll(rising, { message: "slow's whole job's meter", timeout: 15_000 }).toBe('rising');
-    // Its first step timed as it ran (3 s), not from its own ctx.progress (~0 ms): once it's done ("Drawing 1 / 10": a stage no model's
+    // Its first step timed as it ran (3 s), not from its own ctx.progress (~0 ms): once it's done ("Drawing, 1 of 10": a stage no model's
     // steps), the time left is its 9 steps to go,
-    // not none (43405964751: "4s / 4s" after it, "7s / 21s" only after the second).
+    // not none (43405964751: "4s of 4s" after it, "7s of 21s" only after the second).
     const span = (said) => said.split(' ').reduce((all, part) => all + Number(part.slice(0, -1)) * { s: 1, m: 60, h: 3600 }[part.at(-1)], 0);
     const firstStep = async () => {
-      const look = (await said(page, 'slow')).filter((one) => /(?:^|\s)1 \/ 10$/.test(one.face ?? '') && one.time).at(-1);
-      const [since, whole] = look ? look.time.replace(/^ - /, '').split(' / ').map(span) : [];
+      const look = (await said(page, 'slow')).filter((one) => /(?:^|\s)1 of 10$/.test(one.face ?? '') && one.time).at(-1);
+      const [since, whole] = look ? look.time.replace(/^ [-·] /, '').split(' of ').map(span) : [];
       return look ? whole - since : null;
     };
     await softly.poll(firstStep, { message: "slow's time left once its first step is done, s", timeout: 15_000 }).toBeGreaterThanOrEqual(10);
     const [run] = (await project.asset('slow'))?.making ?? [];
     expect(run, "slow's run").toBeTruthy();
-    await face(page, 'slow').getByRole('button', { name: "Cancel slow's render", exact: true }).click();
+    await cancelRender(page, 'slow');
+    await page.mouse.move(2, 500);
     await expect.poll(() => settled(project, 'slow'), { message: 'slow canceled, its take gone', timeout: 30_000 }).toEqual({ takes: 0, making: 0, versions: 0 });
     await softly.poll(async () => (await api.get(project.at(`/runs/${run}`))).status, { message: `run ${run}` }).toBe('canceled');
-    await expect.soft(face(page, 'slow')).toHaveCount(0);
+    await softly.poll(() => renderState(page, 'slow')).toBeNull();
     const waited = (await said(page, 'after')).map((look) => look.face).filter(Boolean);
     expect.soft(waited.some((words) => /^Waiting for <slow>/.test(words)), `after says it waits for slow: ${waited.join(' | ')}`).toBe(true);
     expect.soft(waited.filter((words) => /Drawing|\b\d+ \/ 10\b/.test(words)), "after shows none of slow's progress").toEqual([]);
   });
 
   await test.step('Render the crash tool', async () => {
-    await project.add({ name: 'broken', tool: CRASH, kind: 'video', fields: { crash: BROKEN }, at: { x: 0, y: 420 } });
-    await expect.poll(() => project.asset('broken')).toBeTruthy();
+    // cl-1070 (Paul, 11-16): "do not keep failed runs around as if they were takes I can select"; "an error, when it happens, is a toast
+    // notification, and the take disappears". It's said once, its take leaves the column with nothing to delete, and the frame that
+    // watched it goes back to the take it showed.
+    await project.add({ name: 'broken', tool: `${warns}/crashes`, kind: 'image', fields: { instructions: 'A still that fails.' }, at: { x: 0, y: 420 } });
+    await api.post(project.at('/assets/broken/versions'), { source: await project.upload(png(60, 16, 16)) });
+    await api.post(project.at('/unpin'), { name: 'broken' });
+    await expect.poll(async () => { const held = await project.asset('broken'); return { versions: held?.versions, pinned: Boolean(held?.pinned) }; })
+      .toEqual({ versions: 1, pinned: false });
+    const v1 = shaOf(await project.asset('broken'), 1);
     await fit(page);
     let region = await focus(page, 'broken');
+    await expect(region.getByLabel('Take', { exact: true })).toHaveText('v1');
+    await expect.poll(() => drawn(region.locator('.focus-viewer')), { message: 'v1 drawn' }).toBe(v1);
+    await recordTakes(page, 'broken');
     await region.getByRole('button', { name: 'Render', exact: true }).click();
-    await expect.poll(async () => (await project.asset('broken'))?.takes?.filter((take) => take.failure).length, { message: 'its take failed', timeout: 120_000 }).toBe(1);
-    const failed = region.locator('.here-side .take.making[data-state="failed"]');
-    const error = region.locator('.focus-viewer .run-face.failed');
-    const red = async (when) => {
-      await expect.soft(failed, `${when}: listed, saying so`).toHaveText('Failed');
-      await expect.soft(failed.getByRole('img', { name: 'Failed', exact: true }), `${when}: its red dot`).toBeVisible();
-      await expect.soft(error, `${when}: its error in the frame`).toContainText(BROKEN);
-      await expect.soft(error.getByRole('button', { name: 'Copy', exact: true }), `${when}: Copy`).toBeVisible();
+    await expect.poll(async () => (await project.asset('broken'))?.failure?.message ?? '', { message: 'it failed', timeout: 120_000 }).toContain(BROKEN);
+    expect.soft((await page.evaluate(() => window.__takes.log)).some((look) => look.making.length > 0), 'its take listed while it rendered').toBe(true);
+    const toast = page.locator('[data-note]').filter({ hasText: "broken didn't render" });
+    await expect.soft(toast, 'a toast says it').toHaveCount(1);
+    await expect.soft(toast).toContainText(BROKEN);
+    await softly.poll(async () => (await project.asset('broken'))?.takes ?? [], { message: 'no failed take kept', timeout: 15_000 }).toEqual([]);
+    const gone = async (when) => {
+      await expect.soft(region.locator('.here-side .take.making'), `${when}: no take of it in the column, nothing to delete`).toHaveCount(0);
+      await expect.soft(region.getByLabel('Take', { exact: true }), `${when}: the frame back on the take it showed`).toHaveText('v1');
+      await softly.poll(() => drawn(region.locator('.focus-viewer')), { message: `${when}: v1 drawn again` }).toBe(v1);
     };
-    await red('failed');
+    await gone('failed');
+    await notesOver(page, 2000);
+    expect.soft((await page.evaluate(() => window.__notes)).filter((text) => text.includes("broken didn't render")), 'said once').toHaveLength(1);
     await pull();
     await page.reload();
     region = focused(page);
     await expect(region).toHaveAttribute('data-focused-asset', 'broken');
     await canvasIdle(page);
-    await failed.click();
-    await red('after a reload');
-    await region.getByRole('button', { name: 'Delete this failed take', exact: true }).click();
-    await expect.poll(async () => (await project.asset('broken'))?.takes?.length ?? 0, { message: 'its take deleted' }).toBe(0);
-    await expect.soft(failed).toHaveCount(0);
-    await pull();
-    await page.reload();
-    await expect(focused(page)).toHaveAttribute('data-focused-asset', 'broken');
-    await canvasIdle(page);
-    await expect.soft(failed, 'deleted, through a reload').toHaveCount(0);
-    expect.soft((await project.asset('broken')).takes ?? [], 'deleted for good').toEqual([]);
+    await gone('after a reload');
+    await expect.soft(toast, 'not said again after a reload').toHaveCount(0);
     await back(page);
   });
 
@@ -418,27 +477,91 @@ test('render', async ({ page, project, api, cli }) => {
     expect.soft(notes.filter((text) => text.includes(WARNED)), 'no note says a warning').toEqual([]);
   });
 
-  await test.step("Render two boxes at once: the one whose tool is warm starts before the other's install ends", async () => {
-    // One render of both, so they're ready in one turn of its walk: `eager` on tool.py, warm and read by this project in the first step;
+  await test.step("Render two boxes at once: the one whose tool is warm is ready before the other's install ends, waiting only for the CPU, named", async () => {
+    // One render of both, so they're ready in one turn of its walk: `eager` on tool.py, installed and read by this project in the first step;
     // `fresh` on installs.py, whose first render installs it (cl-973: a box that can start now never waits for another's install).
+    // cl-1086 (Paul: "a run never waits on something it doesn't need"; "every wait is tied to what it waits on, observed"): a run of
+    // tool.py's `slow` holds this machine's one CPU slot first, so eager waits for it whatever else the lane runs, and its start (a cold
+    // executor, ~2 s) judges nothing. Its log says what it waits for as the wait begins, naming that run, on the machine's clock: it is
+    // ready before fresh's install ends, and nothing it waits for is fresh's. Once the CPU is free, eager goes before fresh.
     const installs = join(project.path, 'installs.py');
     writeFileSync(installs, INSTALLS);
     await project.add({ name: 'eager', tool: STILL, kind: 'image', fields: { instructions: 'Ready now.' }, at: { x: 720, y: 420 } });
     await project.add({ name: 'fresh', tool: `${installs}/installed`, kind: 'image', fields: { instructions: 'Once installed.' }, at: { x: 1080, y: 420 } });
     const runs = async () => (await api.get(project.at('/runs?limit=1000'))).runs;
     const earlier = new Set((await runs()).map((run) => run.id));
+    const made = async (kind, target) => (await runs()).find((run) => !earlier.has(run.id) && run.kind === kind && run.target === target);
+    const holding = cli('run', `${TOOL}/slow`, 'instructions=Holds the CPU.', 'seconds=600', '--on', 'local');
+    let hold;
+    await expect.poll(async () => (hold = await made('call', 'local/tool/slow'))?.started_at_ms ?? 0, { message: 'a slow run holds the CPU', timeout: 120_000 })
+      .toBeGreaterThan(0);
     const rendering = cli('--json', 'render', 'eager', 'fresh', '--on', 'local');
+    await expect.poll(async () => (await made('warm', 'install local/installs'))?.status, { message: "fresh's install, while eager waits", timeout: 120_000 })
+      .toBe('completed');
+    await api.post(project.at(`/runs/${encodeURIComponent(hold.id)}/cancel`));
     const takes = async () => ({ eager: (await project.asset('eager'))?.versions ?? 0, fresh: (await project.asset('fresh'))?.versions ?? 0 });
     await expect.poll(takes, { message: 'both takes', timeout: 120_000 }).toEqual({ eager: 1, fresh: 1 });
     const rendered = await rendering;
+    await holding;
     expect.soft(rendered.code, `cozy render: ${rendered.stderr.slice(-400)}`).toBe(0);
-    const made = (await runs()).filter((run) => !earlier.has(run.id));
-    const install = made.find((run) => run.kind === 'warm' && run.target === 'install local/installs');
-    const eager = made.find((run) => run.kind === 'call' && run.target === 'local/tool/still');
-    const fresh = made.find((run) => run.kind === 'call' && run.target === 'local/installs/installed');
+    const install = await made('warm', 'install local/installs');
+    const eager = await made('call', 'local/tool/still');
+    const fresh = await made('call', 'local/installs/installed');
+    // What each run's machine said, as its log keeps it: its stages and waits, each when it began, on the machine's clock.
+    const stages = async (run) => {
+      if (!run) return [];
+      const stream = await (await api.raw('GET', project.at(`/runs/${encodeURIComponent(run.id)}/events`))).text();
+      return stream.split('\n').filter((line) => line.startsWith('data:')).map((line) => JSON.parse(line.slice(5)))
+        .filter((event) => event.type === 'run.log' && event.level === 'stage').map((event) => ({ at: event.at_ms, text: event.text }));
+    };
+    const [waited, building] = [await stages(eager), await stages(install)];
+    // Built, the install gives up the machine's install line and describes what it built (said, not judged: a warm uv cache builds in 0.7 s).
+    const built = building.find((line) => line.text.startsWith('describing '))?.at;
+    // Ready: queued for what it waits on, or else starting.
+    const queued = waited.filter((line) => /this machine's CPU/.test(line.text));
+    const ready = queued[0]?.at ?? waited.find((line) => /^(importing |starting the executor)/.test(line.text))?.at ?? eager?.started_at_ms;
     const times = (run) => run && { number: run.number, status: run.status, created: run.created_at_ms, started: run.started_at_ms, ended: run.settled_at_ms };
-    const said = JSON.stringify({ install: times(install), eager: times(eager), fresh: times(fresh) });
-    expect.soft([install, eager, fresh].map((run) => run?.status), `fresh's install, eager's call, fresh's call: ${said}`).toEqual(['completed', 'completed', 'completed']);
-    expect.soft(eager?.started_at_ms < install?.settled_at_ms, `eager's call starts before fresh's install ends: ${said}`).toBe(true);
+    const told = JSON.stringify({ hold: hold.name, built, ready, eager: { ...times(eager), log: waited }, install: times(install), fresh: times(fresh) });
+    expect.soft([install, eager, fresh].map((run) => run?.status), `fresh's install, eager's call, fresh's call: ${told}`).toEqual(['completed', 'completed', 'completed']);
+    expect.soft(ready < install?.settled_at_ms, `eager is ready, waiting only for the CPU, before fresh's install ends: ${told}`).toBe(true);
+    expect.soft(queued.map((line) => line.text).join('\n'), `eager's wait names the run holding the CPU, as people know it: ${told}`).toContain(`waiting for ${hold.name} to finish with this machine's CPU`);
+    const theirs = waited.filter((line) => /install/.test(line.text) || [install?.id, fresh?.id].some((id) => id && line.text.includes(id)));
+    expect.soft(theirs, `eager waits for nothing of fresh's: ${told}`).toEqual([]);
+    expect.soft(eager?.started_at_ms < fresh?.started_at_ms, `the CPU free, eager goes before fresh: ${told}`).toBe(true);
   });
+});
+
+// cl-1072 (Paul, 11-16): "the aspect ratio of the preview should be equal to what we expect it to be like of the final generated image";
+// "if it's non-deterministic (i.e., 'auto' is set and there is no default) then just go with whatever aspect ratio the other reference
+// images are". A 16:9 set, and an edit with Auto of a 32×18 picture (`still` takes 1:1 or 16:9): its queued and rendering tile is 16:9.
+test('a picture on its way has the shape it will be in its takes column', async ({ page, project, api }) => {
+  await project.add({ name: 'wide', tool: STILL, kind: 'image', fields: { instructions: 'A wide still.', aspect_ratio: '16:9' }, at: { x: 0, y: 0 } });
+  await project.add({ name: 'edited', tool: STILL, kind: 'image', fields: { instructions: 'Warmer.' }, at: { x: 360, y: 0 } });
+  await api.post(project.at('/assets/edited/versions'), { source: await project.upload(png(120, 32, 18)) });
+  await expect.poll(async () => (await project.asset('edited'))?.versions).toBe(1);
+  await expect.poll(async () => (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`)).tools.map((tool) => tool.id), { message: 'the local tool listed', timeout: 120_000 })
+    .toContain(STILL);
+  await page.reload();
+  await expect(page.locator('.stage')).toBeVisible();
+  await fit(page);
+  for (const [name, edit] of [['wide', false], ['edited', true]]) {
+    const region = await focus(page, name);
+    if (edit) await region.getByRole('button', { name: 'Edit image', exact: true }).click();
+    await page.evaluate((name) => {
+      const looks = (window.__tiles = []);
+      new MutationObserver(() => {
+        for (const tile of document.querySelectorAll(`[data-focused-asset="${CSS.escape(name)}"] .here-side .take.making`)) {
+          const look = { width: tile.offsetWidth, height: tile.offsetHeight };
+          if (!looks.some((held) => held.width === look.width && held.height === look.height)) looks.push(look);
+        }
+      }).observe(document.body, { subtree: true, childList: true, attributes: true });
+    }, name);
+    const before = (await project.asset(name))?.versions ?? 0;
+    await region.getByRole('button', { name: 'Render', exact: true }).click();
+    await expect.poll(async () => (await project.asset(name))?.versions, { message: `${name}'s take`, timeout: 120_000 }).toBe(before + 1);
+    if (edit) expect.soft((await project.asset(name))?.fields?.instructions, 'an edit of its take 1').toContain('<self.1>');
+    const looks = await page.evaluate(() => window.__tiles);
+    expect.soft(looks.length > 0 && looks.every(({ width, height }) => Math.abs(width - height * 16 / 9) <= 1), `${name}'s tile on its way is 16:9: ${JSON.stringify(looks)}`).toBe(true);
+    await back(page);
+  }
 });

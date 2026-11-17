@@ -1,5 +1,6 @@
 import type {
   Account,
+  Appearance,
   Agreed,
   Approved,
   Asked,
@@ -8,6 +9,8 @@ import type {
   AssetPatch,
   AssetPatched,
   AssetVersions,
+  AssetsRead,
+  ReadAssets,
   Browsed,
   CalciferStatus,
   Canvas,
@@ -31,8 +34,6 @@ import type {
   Keepalive,
   Machine,
   MachineList,
-  MachineModels,
-  MachinePackages,
   MachineUpdate,
   ModelDetail,
   ModelEdit,
@@ -49,6 +50,7 @@ import type {
   Play,
   ProjectAddress,
   ProjectMachines,
+  ProjectMoved,
   ProjectState,
   ProjectView,
   ProjectViewPatch,
@@ -65,6 +67,7 @@ import type {
   RunQuote,
   RunRequest,
   Runs,
+  Settings,
   SignedOut,
   Submitted,
   Target,
@@ -74,13 +77,11 @@ import type {
   Unpinned,
   Updating,
   VersionMoved,
-  VersionPatched,
   VaultAsk,
   VaultStatus,
   VaultChanged,
   VaultEvent,
 } from "./calcifer"
-import { PROJECT_STORAGE_HEADER, PROJECT_STORAGE_VERSION } from "./calcifer"
 import { readEvents } from "./events"
 import type { MachineLogName, Rent } from "../types"
 import type { Transport } from "./transport"
@@ -108,7 +109,7 @@ const failureStatus: Record<ErrorBody["kind"], number> = {
 }
 
 const unreachable = () =>
-  new ApiError(0, { kind: "unavailable", code: "calcifer_unreachable", message: "Calcifer isn't answering", next: ["cozy open"] })
+  new ApiError(0, { kind: "unavailable", code: "calcifer_unreachable", message: "Cozy isn't responding", remedy: "If it doesn't come back, start Cozy again on this computer." })
 
 /** Calcifer won't answer this page: it isn't Calcifer's own page, or not its account's (design/calcifer-access.md). Any other 401
  *  or 403 is a Hub's word on a code or a key, which belongs where it happened. */
@@ -118,7 +119,7 @@ async function refusal(response: Response): Promise<ApiError> {
   const body = await response.json().catch(() => null)
   const error = body?.error
   if (typeof error?.message === "string") return new ApiError(response.status, error)
-  return new ApiError(response.status, { kind: "internal", code: `http_${response.status}`, message: `Calcifer answered ${response.status}` })
+  return new ApiError(response.status, { kind: "internal", code: `http_${response.status}`, message: `Cozy returned an error (HTTP ${response.status})` })
 }
 
 const aborted = (error: unknown) => error instanceof DOMException && error.name === "AbortError"
@@ -168,7 +169,7 @@ export interface Hooks {
 
 const project = (id: string) => `/v1/projects/${encodeURIComponent(id)}`
 const vaultOperation = (id: string, operation: string) => `/v1/projects/${encodeURIComponent(id)}/vault/operations/${operation}`
-const maintenanceRun = (id: string | number) => `/v1/runs/${encodeURIComponent(id)}`
+const namedRun = (name: string) => `/v1/runs/${encodeURIComponent(name)}`
 export type ProjectRun = { project: string; run: string | number }
 const run = (address: ProjectRun) => `/v1/projects/${encodeURIComponent(address.project)}/runs/${encodeURIComponent(address.run)}`
 const machine = (name: string) => `/v1/machines/${encodeURIComponent(name)}`
@@ -189,9 +190,6 @@ const asks = (path: string) => path.split("?")[0].endsWith("/held")
 export class Client {
   readonly transport: Transport
   private hooks: Hooks
-  private frozen = false
-  private writes = 0
-  private readonly settledWrites = new Set<() => void>()
 
   constructor(transport: Transport, hooks: Hooks) {
     this.transport = transport
@@ -200,33 +198,9 @@ export class Client {
 
   retireProject(id: string) { this.transport.retireProject(id) }
   allowProject(id: string) { this.transport.allowProject(id) }
-  freezeWrites() { this.frozen = true }
-  resumeWrites() { this.frozen = false }
-  /** Writes sent and not yet answered. */
-  unsentWrites() { return this.writes }
-  async savedWrites() {
-    while (this.writes) await new Promise<void>((done) => this.settledWrites.add(done))
-  }
-
-  private async send(path: string, init: RequestInit = {}, options: Options = {}): Promise<Response> {
-    // By segment, not route literal: scripts/web-routes.sh reads every `/v1/` string here as a call.
-    const [, , root] = path.split("?")[0].split("/")
-    const writing = !["GET", "HEAD"].includes(init.method ?? "GET") && !(root === "down" && path.split("/").length === 3) && !asks(path)
-    if (writing && this.frozen && !options.action && root !== "events") {
-      throw new ApiError(409, { kind: "conflict", code: "browser_closing", message: "Cozy is saving its edits before closing" })
-    }
-    if (writing) this.writes++
-    try { return await this.exchange(path, init, options) }
-    finally {
-      if (writing) { this.writes--; for (const done of this.settledWrites) done(); this.settledWrites.clear() }
-    }
-  }
 
   /** What can't reach Calcifer tries again where that's safe, saying each attempt, then gives up. */
-  private async exchange(path: string, init: RequestInit = {}, options: Options = {}): Promise<Response> {
-    const headers = new Headers(init.headers)
-    headers.set(PROJECT_STORAGE_HEADER, PROJECT_STORAGE_VERSION)
-    init = { ...init, headers }
+  private async send(path: string, init: RequestInit = {}, options: Options = {}): Promise<Response> {
     const safe = init.method !== "POST" || asks(path) || new Headers(init.headers).has("Idempotency-Key")
     const say = (attempt: number) => {
       this.hooks.attempt(attempt)
@@ -260,7 +234,8 @@ export class Client {
         throw failure
       }
       say(attempt + 1)
-      await pause(500 * 2 ** (attempt - 1), init.signal)
+      // Cancelled while it waits to try again, as when cancelled in flight: nothing is being tried any more (cl-1110).
+      try { await pause(500 * 2 ** (attempt - 1), init.signal) } catch (error) { say(0); throw error }
     }
   }
 
@@ -289,14 +264,37 @@ export class Client {
     return this.json("/v1/status")
   }
 
+  settings(signal?: AbortSignal): Promise<Settings> {
+    return this.json("/v1/settings", { signal })
+  }
+
+  changeSettings(settings: Settings): Promise<Settings> {
+    return this.write("PUT", "/v1/settings", settings)
+  }
+
+  /** How the page looks everywhere (cl-1097); none: never set here. */
+  appearance(signal?: AbortSignal): Promise<Appearance | null> {
+    return this.json("/v1/appearance", { signal })
+  }
+
+  setAppearance(appearance: Appearance): Promise<Appearance> {
+    return this.write("PUT", "/v1/appearance", appearance)
+  }
+
   /** The one stream, opened once: `EventStream` does its own reconnecting. */
   events(signal: AbortSignal): Promise<Response> {
     return this.transport.fetch("/v1/events", { signal, headers: { Accept: "text/event-stream" } })
   }
 
-  /** The projects the tabs on `stream` show, which Calcifer holds open while it lasts. One that ended is told again on the next. */
-  async show(stream: string, projects: string[], signal: AbortSignal): Promise<ProjectShowReply | null> {
-    const body = JSON.stringify({ projects })
+  /** The page on `stream` sent what it typed of `project`, as `project.saving` asked before it closes. */
+  async saved(stream: string, project: string): Promise<void> {
+    await this.send(`/v1/events/${encodeURIComponent(stream)}/saved`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project }) })
+  }
+
+  /** The projects the tabs on `stream` show, which Calcifer holds open while it lasts, and whether one shows a machine's view: the stream
+   *  hears runs only of these. One that ended is told again on the next. */
+  async show(stream: string, projects: string[], machines: boolean, signal: AbortSignal): Promise<ProjectShowReply | null> {
+    const body = JSON.stringify({ projects, machines })
     const response = await this.send(`/v1/events/${encodeURIComponent(stream)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body }, { once: signal })
     // Older services confirm completion without saying which Readers they could install.
     return response.status === 204 ? null : response.json()
@@ -354,9 +352,7 @@ export class Client {
 
   async newProject(body: Open): Promise<Opened> {
     if (body.unencrypted) return this.write("POST", "/v1/projects", body, `project-${crypto.randomUUID()}`)
-    if (this.transport.channel) return Promise.reject(new ApiError(403, { kind: "forbidden", code: "vault_local_only", message: "Open Cozy on this computer to enter encryption credentials" }))
-    const status = await this.json<CalciferStatus>("/v1/status", { cache: "no-store" })
-    if (status.encrypted_project_creation !== true) throw new ApiError(503, { kind: "unavailable", code: "calcifer_outdated", message: "Calcifer cannot create encrypted projects directly. Update or restart it; no credential or creation request was sent." })
+    if (this.transport.channel) return Promise.reject(new ApiError(403, { kind: "forbidden", code: "vault_local_only", message: "To make an encrypted project, open Cozy on the computer the project will be on" }))
     return this.json("/v1/projects", { method: "POST", headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }, body: JSON.stringify(body), cache: "no-store" })
   }
 
@@ -366,7 +362,7 @@ export class Client {
 
   /** One operation ID survives connection loss; credentials and final secrets stay in this caller's memory. */
   async vaultChange(id: string, body: Partial<VaultAsk> & Pick<VaultAsk, "action">, onProgress?: (event: VaultProgress) => void, signal?: AbortSignal): Promise<VaultChanged> {
-    if (this.transport.channel) throw new ApiError(403, { kind: "forbidden", code: "vault_local_only", message: "Open this project on its computer to enter encryption credentials" })
+    if (this.transport.channel) throw new ApiError(403, { kind: "forbidden", code: "vault_local_only", message: "To enter a passphrase or recovery secret, open this project on the computer it's on" })
     signal?.throwIfAborted()
     // Activity is a frequent, best-effort clock update, not a durable operation.
     if (body.action === "activity") {
@@ -376,9 +372,9 @@ export class Client {
     const serialized = JSON.stringify(body)
     const incomplete = () => new ApiError(0, {
       kind: "unavailable", code: "vault_stream_incomplete",
-      message: "The connection ended before the project operation finished. It may still be running; check project protection before trying again.",
+      message: "The connection dropped before the change finished, and it may still be running. Check the project's encryption before you try again.",
     })
-    const invalid = () => new ApiError(502, { kind: "internal", code: "vault_stream_invalid", message: "The project operation response could not be read. Check project protection before trying again." })
+    const invalid = () => new ApiError(502, { kind: "internal", code: "vault_stream_invalid", message: "Couldn't read Cozy's reply about the change. Check the project's encryption before you try again." })
     const terminal: { changed?: VaultChanged; failure?: ApiError } = {}
     let attempt = 0
     let acknowledged = false
@@ -486,6 +482,11 @@ export class Client {
     return this.json(`${project(id)}/assets/${encodeURIComponent(name)}`, { signal })
   }
 
+  /** These boxes as they stand, at once: those gone said as gone, an answer, never a 404 a browser logs. */
+  readAssets(id: string, names: string[]): Promise<AssetsRead> {
+    return this.json(`${project(id)}/read`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ names } satisfies ReadAssets) })
+  }
+
   projectAddress(reference: string): Promise<ProjectAddress> {
     return this.json(`${project(reference)}/address`)
   }
@@ -519,14 +520,24 @@ export class Client {
     return this.write("PUT", `${project(id)}/machines`, { machines })
   }
 
+  /** How the page looks with this project open; null: as everywhere (cl-1097). */
+  setProjectAppearance(id: string, appearance: Appearance | null): Promise<{ appearance: Appearance | null }> {
+    return this.write("PUT", `${project(id)}/appearance`, { appearance })
+  }
+
+  /** The project called `name`: its folder renamed where it is (cl-1097). */
+  renameProject(id: string, name: string): Promise<ProjectMoved> {
+    return this.write("PUT", `${project(id)}/name`, { name })
+  }
+
+  /** Its folder moved to the trash (cl-1097). */
+  deleteProject(id: string): Promise<ProjectMoved> {
+    return this.write("DELETE", project(id), undefined)
+  }
+
   /** What a render of `names` on this computer alone would do poorly, a line a tool. */
   fit(id: string, names: string[]): Promise<Fit> {
     return this.write("POST", `${project(id)}/fit`, { names })
-  }
-
-  /** The same, each tool kept as rendered here, so nothing asks again. */
-  renderHere(id: string, names: string[]): Promise<Fit> {
-    return this.write("POST", `${project(id)}/fit/here`, { names })
   }
 
   /** A tool dropped on the canvas. */
@@ -557,11 +568,6 @@ export class Client {
   /** One take or version off its box. Its number is kept, and its file until `reclaim`. */
   discardVersion(id: string, name: string, number: number, write: Write = {}): Promise<VersionMoved> {
     return this.write("DELETE", `${project(id)}/assets/${encodeURIComponent(name)}/versions/${number}`, {}, undefined, write)
-  }
-
-  /** What a version's main file says of itself, whole: `orbit` turns a video. `{}` clears it. */
-  patchVersion(id: string, name: string, number: number, metadata: Record<string, unknown>, write: Write = {}): Promise<VersionPatched> {
-    return this.write("PATCH", `${project(id)}/assets/${encodeURIComponent(name)}/versions/${number}`, { metadata }, undefined, write)
   }
 
   /** This version was looked at: it leaves the box's `unseen` in its project-owned activity journal (cl-928). No key: saying it twice is saying it once. */
@@ -657,12 +663,6 @@ export class Client {
     return this.json(`${project(id)}/runs?${query}`, { signal })
   }
 
-  maintenanceRuns(filter: RunFilter, limit: number, signal?: AbortSignal): Promise<RunList> {
-    const query = new URLSearchParams({ limit: String(limit) })
-    for (const [name, value] of Object.entries(filter)) if (value) query.set(name, value)
-    return this.json(`/v1/runs?${query}`, { signal })
-  }
-
   run(address: ProjectRun, signal?: AbortSignal): Promise<Run> {
     return this.json(run(address), { signal })
   }
@@ -698,29 +698,9 @@ export class Client {
     return this.json(`${run(address)}/play?output=${output}`)
   }
 
-  maintenanceRun(id: string | number, signal?: AbortSignal): Promise<Run> {
-    return this.json(maintenanceRun(id), { signal })
-  }
-
-  maintenanceRunFull(id: string | number, signal?: AbortSignal): Promise<Run> {
-    return this.json(`${maintenanceRun(id)}?detail=full`, { signal })
-  }
-
-  cancelMaintenanceRun(id: string, once?: AbortSignal): Promise<Run> {
-    return this.write("POST", `${maintenanceRun(id)}/cancel`, {}, undefined, { once })
-  }
-
-  maintenanceRunEvents(id: string, after: number, signal: AbortSignal): Promise<Response> {
-    return this.opened(`${maintenanceRun(id)}/events${after ? `?starting_after=${after}` : ""}`, signal)
-  }
-
-  maintenanceOutput(id: string, name: string, index: number): string {
-    return `${maintenanceRun(id)}/outputs/${encodeURIComponent(name)}${index ? `?index=${index}` : ""}`
-  }
-
-  maintenancePlay(id: string, name: string, index: number): Promise<Play> {
-    const output = encodeURIComponent(index ? `${name}/${index}` : name)
-    return this.json(`${maintenanceRun(id)}/play?output=${output}`)
+  /** A run by its name, `SE-5`, from any scope (cl-987): Calcifer finds its project. */
+  namedRun(name: string, signal?: AbortSignal): Promise<Run> {
+    return this.json(namedRun(name), { signal })
   }
 
   /** What a run of `target` would call: a package's functions, and a named function's request. Runs nothing. */
@@ -743,7 +723,7 @@ export class Client {
   }
 
   job(target: string, asked: object, key: string): Promise<Submitted> {
-    return this.maintenanceSubmit(this.jobRequest(target, asked as Record<string, unknown>), key)
+    return this.submitJob(this.jobRequest(target, asked as Record<string, unknown>), key)
   }
 
   submit(id: string, request: RunRequest, key: string): Promise<Submitted> {
@@ -751,7 +731,8 @@ export class Client {
     return this.write("POST", `${project(id)}/runs/submit`, { ...request, project: id }, key)
   }
 
-  maintenanceSubmit(request: RunRequest, key: string): Promise<Submitted> {
+  /** One of Calcifer's jobs (an install, a download, an upload, a quantization: cl-1028), no project's run. */
+  submitJob(request: RunRequest, key: string): Promise<Submitted> {
     if (request.project != null) throw new Error("Project runs require their project's route")
     return this.write("POST", "/v1/runs", request, key)
   }
@@ -788,12 +769,9 @@ export class Client {
     return this.opened(`${machine(name)}/logs/${log}?lines=${lines}${place}`, signal)
   }
 
-  machinePackages(name: string, signal?: AbortSignal): Promise<MachinePackages> {
-    return this.json(`${machine(name)}/packages`, { signal })
-  }
-
-  machineModels(name: string, signal?: AbortSignal): Promise<MachineModels> {
-    return this.json(`${machine(name)}/models`, { signal })
+  /** Its GPUs' use, a reading each second while the stream is read (cl-1100). */
+  machineGpuEvents(name: string, signal: AbortSignal): Promise<Response> {
+    return this.opened(`${machine(name)}/gpus`, signal)
   }
 
   // Packages

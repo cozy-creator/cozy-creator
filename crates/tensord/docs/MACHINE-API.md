@@ -19,6 +19,7 @@ onto them is `~/cozy_v2/tracker/design/machine-http-api.md` §2. In short:
   no job; each item a function's warm run of the machine's own, behind every run, never listed;
 - `GET /v1/runs/{id}/outputs/{output}` (ranged, `ETag` = revision, readable while it grows),
   `GET /v1/logs/{name}`;
+- `GET /v1/gpus` (cl-1100): its NVIDIA GPUs' busy share and memory in use, as SSE, read each second only while someone watches;
 - `PUT /v1/objects/sha256:<hex>`: content-addressed parts in any order, side by side, resumable
   from what `POST /v1/objects/held` says is held; verified once whole.
 
