@@ -127,6 +127,8 @@ for i in $(seq 0 $(($(jq length <<<"$CANDIDATES") - 1))); do
     made=$(find "$WORK/raw/$s" -name '*.png' 2> /dev/null | head -1)
     if [ "$code" != 0 ] || [ -z "$made" ]; then say "FAIL $s: run ${n:-none}, exit $code: $(tail -c 300 "$OUT/$s.txt" | tr '\n' ' ')"; bad=1; continue; fi
     cp "$made" "$WORK/runs/$name/$image.png"
+    # Published as it lands (the bench's only), so a session the deadline ends still leaves what it made.
+    private "$image" || { mkdir -p "$OUT/runs/$name" && cp "$made" "$OUT/runs/$name/$image.png"; }
     say "$s: run $n $(jq -r '"\(.status), exec \((.execution_ms // 0) / 1000) s, total \(((.settled_at_ms // 0) - (.created_at_ms // 0)) / 1000) s, peak reserved \((.measurements.memory.peak_reserved_bytes // 0) / 1073741824 * 10 | floor / 10) GiB"' "$OUT/records/$s.json" 2> /dev/null)"
   done
 done
