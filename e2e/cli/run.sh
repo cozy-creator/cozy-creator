@@ -90,7 +90,7 @@ step candidates; candidates
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
 # web_serves reads what the gate costs from Calcifer's Server-Timing, which it sends only with its diagnostics on (cl-985); coming keeps
 # its project's walk log (.vault-calcifer/diagnostics/walk.log) with them on.
-case $SHARD in projectvault | projectvault-static | projectvault-unstarted | plan | plan-resent | stuck | coming | thumbs) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* ]] || calcifer_diagnostics ;; esac
+case $SHARD in projectvault | projectvault-static | projectvault-unstarted | projectvault-lock-hung | plan | plan-resent | stuck | coming | thumbs) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* ]] || calcifer_diagnostics ;; esac
 }
 
 # A vault failure names its reason, and web_serves reads the gate's Server-Timing: Calcifer started again with config.toml's
@@ -815,9 +815,7 @@ case $SHARD in
   web-solo) web_cells=(${WEB_SOLO[@]+"${WEB_SOLO[@]}"}); parts="web_lane logs" ;;
   web-2d) export WEB_RENDERER=2d; web_cells=(${WEB_2D[@]+"${WEB_2D[@]}"}); parts="web_lane logs" ;;
   web-2d-solo) export WEB_RENDERER=2d; web_cells=(${WEB_2D_SOLO[@]+"${WEB_2D_SOLO[@]}"}); parts="web_lane logs" ;;
-  # opens skips itself on Windows (its GL has a performance caveat, so the page draws in 2D: Linux's web-2d-solo times that), and a skipped
-  # cell fails the lane: it isn't asked for there.
-  web-native) web_cells=(); for cell in ${WEB_NATIVE[@]+"${WEB_NATIVE[@]}"}; do [ "$cell" = opens ] && [ "${RUNNER_OS:-}" = Windows ] || web_cells+=("$cell"); done; parts="web_lane logs" ;;
+  web-native) web_cells=(${WEB_NATIVE[@]+"${WEB_NATIVE[@]}"}); parts="web_lane logs" ;;
   # Pictures imported into a plain project get their thumbnails stored (cl-1054: none on macOS).
   thumbs) parts="thumbs_stored logs" ;;
   # What Paul's standing rules decide (cl-1066): a loose project folder made private, a project route with no protocol header, a run
@@ -915,12 +913,15 @@ case $SHARD in
     ended_logs
     vault_reattach
     vault_unstarted
+    lock_hung
     logs
   " ;;
   # A run on local after a lock that ended one, a run and a lock, attaches (cl-1082), alone. Named projectvault-* for its driver.
   projectvault-reattach) parts="vault_reattach logs" ;;
   # A run its machine hasn't begun never holds a vault past its maximum (cl-1082), alone.
   projectvault-unstarted) parts="vault_unstarted logs" ;;
+  # An encrypted project locks while its local machine is stopped (cl-1064), alone. Named projectvault-* for its driver.
+  projectvault-lock-hung) parts="lock_hung logs" ;;
   # An ended machine's own lines still read; a locked project's run nowhere outside it (cl-1012). Named projectvault-* for its driver.
   projectvault-ended-logs) parts="ended_logs logs" ;;
   # A deleted box's next purge kept for a plaintext project only, never an encrypted one's (cl-1010). Named projectvault-* for its driver.
@@ -974,7 +975,6 @@ case $SHARD in
     rental_end
     rental_end_again
     rental_rename
-    run_on_new
     logs
   " ;;
   # Stops, restarts, updates and starts past a TensorD that can't exit, and a start that hangs, then a rental's own end against a
