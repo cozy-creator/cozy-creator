@@ -55,9 +55,19 @@ test('delete-undo', async ({ page, project, api, guards }) => {
 
   const history = async () => (await api.get(project.at('/history'))).entries;
   const undoButton = page.locator('.top .history').getByRole('button', { name: 'Undo', exact: true });
-  /** `name` gone: from the canvas at once, from the API, and the history says so. */
+  /** From now, the page notes when it first draws a frame without `name`: "at once" is judged on the page's own clock, never by a round trip
+   *  to it (e2e 44142655129: d2 was gone in the first sample, which a busy page took 801 ms to answer). */
+  const watch = (name) => page.evaluate((name) => {
+    const inspection = document.querySelector('.canvas-root').canvasInspection;
+    const from = performance.now();
+    window.goneIn = { ...window.goneIn, [name]: null };
+    const look = () => { if (inspection.names().includes(name)) requestAnimationFrame(look); else window.goneIn[name] = performance.now() - from; };
+    requestAnimationFrame(look);
+  }, name);
+  /** `name` gone: from the canvas at once (watched from just before it was asked), from the API, and the history says so. */
   const gone = async (name, how) => {
-    await expect.configure({ soft: true }).poll(async () => (await canvasNames(page)).includes(name), { message: `${how}: ${name} off the canvas at once`, timeout: 1000 }).toBe(false);
+    await expect.poll(() => page.evaluate((name) => window.goneIn?.[name] ?? null, name), { message: `${how}: ${name} off the canvas` }).not.toBeNull();
+    expect.soft(await page.evaluate((name) => window.goneIn[name], name), `${how}: ${name} off the canvas at once, in ms`).toBeLessThan(1000);
     await expect.poll(() => project.asset(name), { message: `${how}: ${name} out of the API` }).toBeUndefined();
     await expect.poll(async () => (await history()).some((entry) => entry.words === `Deleted ${name}` && !entry.undone), { message: `${how}: the history says "Deleted ${name}"` }).toBe(true);
   };
@@ -75,12 +85,14 @@ test('delete-undo', async ({ page, project, api, guards }) => {
     let at = await on('d1');
     await page.mouse.click(at.x, at.y);
     await expect.poll(() => selectedNames(page)).toContain('d1');
+    await watch('d1');
     await page.keyboard.press('Delete');
     await gone('d1', 'Delete on a selection');
 
     const region = await focus(page, 'd2');
     const close = region.getByRole('button', { name: 'Close focus', exact: true });
     expect.soft(await close.locator('svg').getAttribute('data-icon'), "Focus's ✕ only closes").toBe('close');
+    await watch('d2');
     await page.keyboard.press('Backspace');
     await expect(region).toHaveCount(0);
     await gone('d2', 'Backspace in Focus');
@@ -88,9 +100,11 @@ test('delete-undo', async ({ page, project, api, guards }) => {
 
     at = await on('d3');
     await page.mouse.click(at.x, at.y, { button: 'right' });
+    await watch('d3');
     await page.getByRole('menu', { name: "d3's menu" }).getByRole('menuitem', { name: 'Delete', exact: true }).click();
     await gone('d3', 'menu › Delete');
 
+    await watch('d4');
     await pressTrash(page, 'd4');
     await gone('d4', 'the trash icon');
   });
@@ -104,8 +118,10 @@ test('delete-undo', async ({ page, project, api, guards }) => {
     await expect(undoButton).toHaveAttribute('title', /^Undo: Deleted d2, by this tab/);
     await undoButton.click();
     await back('d2', "the top bar's Undo");
+    await watch('d2');
     await page.keyboard.press('ControlOrMeta+Shift+z');
-    await expect.configure({ soft: true }).poll(async () => (await canvasNames(page)).includes('d2'), { message: 'Redo takes d2 off the canvas', timeout: 1000 }).toBe(false);
+    await expect.poll(() => page.evaluate(() => window.goneIn?.d2 ?? null), { message: 'Redo takes d2 off the canvas' }).not.toBeNull();
+    expect.soft(await page.evaluate(() => window.goneIn.d2), 'Redo takes d2 off the canvas at once, in ms').toBeLessThan(1000);
     await expect.poll(() => project.asset('d2'), { message: 'Redo deletes d2 again' }).toBeUndefined();
   });
 
@@ -126,6 +142,7 @@ test('delete-undo', async ({ page, project, api, guards }) => {
   await test.step('delete F, which G mentions', async () => {
     const at = await on('F');
     await page.mouse.click(at.x, at.y);
+    await watch('F');
     await page.keyboard.press('Delete');
     await gone('F', 'F');
     const said = page.locator('.notes .note .line').filter({ hasText: 'Deleted F.' });
@@ -163,6 +180,7 @@ test('delete-undo', async ({ page, project, api, guards }) => {
   });
 
   await test.step('undo an entry that a later edit would clobber, then reload', async () => {
+    await watch('K');
     await pressTrash(page, 'K');
     await gone('K', 'K');
     // Another writer's K, in its place.
