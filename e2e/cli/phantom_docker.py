@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""phantom_docker.py LISTEN UPSTREAM LOG: a Docker Engine socket at LISTEN that is UPSTREAM's, except that every container
-create asks a million CPUs, which the engine refuses (400 "range of CPUs is from 0.01 to N.00"): a provider that lists stock
-and refuses to sell it, as RunPod did with RTX 5090s (th-383). Each create is a line of LOG. One request per connection."""
+"""phantom_docker.py LISTEN UPSTREAM LOG [DATACENTER]: a Docker Engine socket at LISTEN that is UPSTREAM's, except that every
+container create (only those the Hub labels as bought in DATACENTER, when named) asks a million CPUs, which the engine refuses
+(400 "range of CPUs is from 0.01 to N.00"): a provider that lists stock and refuses to sell it, as RunPod did with RTX 5090s
+(th-383). Each refused create is a line of LOG. One request per connection."""
 import asyncio
 import json
 import re
@@ -9,6 +10,7 @@ import sys
 import time
 
 LISTEN, UPSTREAM, LOG = sys.argv[1:4]
+DATACENTER = sys.argv[4] if len(sys.argv) > 4 else None
 CREATE = re.compile(rb"^POST /v[0-9.]+/containers/create[?\s]")
 
 
@@ -25,8 +27,9 @@ async def serve(client_r: asyncio.StreamReader, client_w: asyncio.StreamWriter) 
             elif name != b"connection":
                 kept.append(line)
         body = await client_r.readexactly(length) if length else b""
-        if CREATE.match(lines[0]) and body:
-            create = json.loads(body)
+        create = json.loads(body) if CREATE.match(lines[0]) and body else None
+        bought_in = ((create or {}).get("Labels") or {}).get("com.cozy.tensorhub.datacenter")
+        if create is not None and DATACENTER in (None, bought_in):
             create.setdefault("HostConfig", {})["NanoCpus"] = 10**15
             body = json.dumps(create).encode()
             with open(LOG, "a") as log:

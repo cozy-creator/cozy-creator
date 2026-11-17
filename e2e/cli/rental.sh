@@ -481,9 +481,11 @@ hub_phantom_stock() (
 # machine at once, from any host or provider, at its price or lower; only when none is on sale does it wait for capacity, offering
 # the cheapest above its price, which it buys once its renter agrees (the 2× A6000 and 2× 5090 orders sat 70+ min on one host's
 # offer). Two providers here: `docker`, whose engine refuses every create (phantom_docker.py), and `docker-b`, the runner's own
-# engine. Each listing comes every 120 s, so a wait for the next one would show. Priced alike, the order is refused by `docker`
-# and bought from `docker-b` within a minute. With `docker-b` 3× dearer, it waits, offers `docker-b`, buys nothing there until
-# `cozy machine rent <it> --yes` agrees, then buys it within a minute.
+# engine. Each listing comes every 120 s, so a wait for the next one would show. With `docker-b` listed 10% dearer, at the same
+# renter price (prices are whole tenths of a cent), the order is refused by `docker` and bought from `docker-b` within a minute:
+# the renter's price bounds it, not what the machine costs Tensorhub against the quote's (a Vast 2× A6000 under the price its
+# renter accepted was refused as cost_above_quote). With `docker-b` 3× dearer, it waits, offers `docker-b`, buys nothing there
+# until `cozy machine rent <it> --yes` agrees, then buys it within a minute.
 hub_phantom_instead() (
   step "an order refused for want of capacity buys an equivalent machine elsewhere at once, or one dearer once agreed (th-383)"
   [ -n "${COZY_TEST_HUB_COMMAND_FILE:-}" ] && [ -n "${COZY_HUB_URL:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] \
@@ -507,6 +509,7 @@ hub_phantom_instead() (
       --set "provider.docker.engines_json=[{\"name\":\"docker-b\",\"socket\":\"/var/run/docker.sock\",\"list_price_usd_micros_per_hour\":$1}]" \
       > "$S/rehub-$1.log" 2>&1 || fail "phantom instead: restarting the Hub on two providers: $(tail -c 300 "$S/rehub-$1.log")"
     sql -c "DELETE FROM hub_v2.provider_sku_cooldowns" > /dev/null 2>&1 || true
+    sql -c "DELETE FROM hub_v2.provider_card_cooldowns" > /dev/null 2>&1 || true
     for _ in $(seq 60); do
       [ "$(sql -c "SELECT count(*) FROM hub_v2.provider_inventory_heads WHERE provider IN ('docker','docker-b')" 2> /dev/null || echo 0)" = 2 ] && return
       sleep 1
@@ -533,17 +536,17 @@ hub_phantom_instead() (
       extract(epoch FROM updated_at)::bigint FROM hub_v2.rental_acquisition_attempts WHERE rental_id = '$1' ORDER BY ordinal" 2> /dev/null | tr '|' ' '
   }
 
-  two_providers 1000
+  two_providers 1100
   order alike
   for _ in $(seq 90); do
     attempts=$(tried "$rental")
     grep -q ' docker-b ' <<< "$attempts" && break
     sleep 1
   done
-  echo "phantom instead: priced alike, $rental's attempts: $(tr '\n' ';' <<< "$attempts")"
+  echo "phantom instead: docker-b 10% dearer to run, same renter price, $rental's attempts: $(tr '\n' ';' <<< "$attempts")"
   gap=$(awk '$2 == "docker" && $4 == "provider.no_capacity" {refused = $6} $2 == "docker-b" && refused {print $5 - refused; exit}' <<< "$attempts")
   [ -n "$gap" ] && [ "$gap" -le 60 ] \
-    || check "phantom instead: refused by docker, $rental didn't buy docker-b's machine at its price within a minute (gap ${gap:-none}): $(tr '\n' ';' <<< "$attempts")"
+    || check "phantom instead: refused by docker, $rental didn't buy docker-b's machine at the price its renter accepted within a minute (gap ${gap:-none}): $(tr '\n' ';' <<< "$attempts")"
   end_all
   rentals=()
 
@@ -572,4 +575,80 @@ hub_phantom_instead() (
   done
   echo "phantom instead: agreed to $offered micro-USD/h; attempts: $(tried "$rental" | tr '\n' ';')"
   [ -n "$bought" ] || check "phantom instead: agreed, $rental didn't buy docker-b's machine within a minute: $(tr '\n' ';' <<< "$(tried "$rental")")"
+)
+
+# th-383: the dead listings were datacenter × card (RunPod EU-RO-1 RTX 5090 even at 1×, EU-SE-1 A6000), so a refusing
+# datacenter rests its card alone, across widths, and a resting card is never quoted: rental A was quoted a phantom $4.685/h
+# while Vast booted its 2× 5090 at $2.188/h. One provider here lists its CPU in `local`, whose creates its engine refuses, and
+# in `local-b`, which sells. Three orders are each refused at `local` and bought at `local-b` (its sales don't end `local`'s
+# streak); `local`'s CPU then rests (`GET /v1/admin/provider-cooldowns`), and a fourth order is quoted and bought at `local-b`
+# with no refusal.
+hub_phantom_datacenter() (
+  step "a refusing datacenter's card rests alone, and is never quoted (th-383)"
+  [ -n "${COZY_TEST_HUB_COMMAND_FILE:-}" ] && [ -n "${COZY_HUB_URL:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] \
+    || fail "phantom datacenter: e2e/isolated.sh named no Hub command, URL or email"
+  local S=$OUT/hub-datacenter db port container proxy rentals=() rental pid n attempts token rested quoted
+  mkdir -p "$S"
+  db=$(tr '\0' '\n' < "$COZY_TEST_HUB_COMMAND_FILE" | grep -o 'postgres://[^" ]*' | head -1 || true)
+  port=$(sed -E 's#.*@[^:/]+:([0-9]+)/.*#\1#' <<< "$db")
+  container=$(docker ps --filter "publish=$port" --format '{{.Names}}' 2> /dev/null | head -1 || true)
+  [ -n "$container" ] || fail "phantom datacenter: no Postgres container publishes ${port:-?}"
+  sql() { docker exec -i "$container" psql -v ON_ERROR_STOP=1 -qtA -U postgres "$@"; }
+  python3 "$here/phantom_docker.py" "$S/docker.sock" /var/run/docker.sock "$S/creates.log" local > "$S/proxy.log" 2>&1 & proxy=$!
+  for _ in $(seq 50); do [ -S "$S/docker.sock" ] && break; sleep 0.1; done
+  [ -S "$S/docker.sock" ] || fail "phantom datacenter: the engine proxy didn't start: $(tail -c 300 "$S/proxy.log")"
+  end_all() { for n in "${rentals[@]}"; do cozy --json machine end "$n" -y > /dev/null 2>&1 || true; done; }
+  trap 'end_all; kill "$proxy" 2> /dev/null || true; bash "$here/../skew/rehub.sh" > /dev/null 2>&1 || true' EXIT
+  signin "$E2E_HUB_EMAIL" > "$S/login.json" || fail "phantom datacenter: cozy login: $(tail -c 300 "$S/login.json")"
+  bash "$here/../skew/rehub.sh" --set "provider.docker.socket=$S/docker.sock" --set 'provider.docker.datacenters_json=["local","local-b"]' \
+    > "$S/rehub.log" 2>&1 || fail "phantom datacenter: restarting the Hub on two datacenters: $(tail -c 300 "$S/rehub.log")"
+  sql -c "DELETE FROM hub_v2.provider_card_cooldowns" > /dev/null 2>&1 || true
+  sql -c "DELETE FROM hub_v2.provider_sku_cooldowns" > /dev/null 2>&1 || true
+  for _ in $(seq 60); do
+    [ "$(sql -c "SELECT count(DISTINCT datacenter) FROM hub_v2.provider_inventory_offers o JOIN hub_v2.provider_inventory_heads h
+      ON h.provider = o.provider AND h.generation = o.generation WHERE o.provider = 'docker'" 2> /dev/null || echo 0)" = 2 ] && break
+    sleep 1
+  done
+  # tried <rental>: its attempts, `ordinal datacenter state failure`.
+  tried() {
+    sql -c "SELECT ordinal, datacenter, state, coalesce(nullif(failure_code, ''), '-') FROM hub_v2.rental_acquisition_attempts
+      WHERE rental_id = '$1' ORDER BY ordinal" 2> /dev/null | tr '|' ' '
+  }
+  for n in 1 2 3 4; do
+    cozy --json machine rent cpu -y > "$S/rent-$n.ndjson" 2> "$S/rent-$n.err" & pid=$!
+    rental=''
+    for _ in $(seq 180); do
+      rental=$(jq -r 'select(.type? == "rental.accepted") | .rental_id // empty' "$S/rent-$n.ndjson" 2> /dev/null | tail -1 || true)
+      [ -n "$rental" ] || ! kill -0 "$pid" 2> /dev/null || { sleep 1; continue; }
+      break
+    done
+    kill -KILL "$pid" 2> /dev/null || true
+    wait "$pid" 2> /dev/null || true
+    [ -n "$rental" ] || fail "phantom datacenter: rent $n: no rental accepted: $(tail -c 300 "$S/rent-$n.ndjson") $(tail -c 300 "$S/rent-$n.err")"
+    rentals+=("$rental")
+    quoted=$(jq -r 'select(.quote?) | .quote.datacenter // empty' "$S/rent-$n.ndjson" 2> /dev/null | tail -1 || true)
+    for _ in $(seq 90); do
+      attempts=$(tried "$rental")
+      grep -q ' local-b ' <<< "$attempts" && break
+      sleep 1
+    done
+    echo "phantom datacenter: order $n quoted at ${quoted:-?}; attempts: $(tr '\n' ';' <<< "$attempts")"
+    grep -q ' local-b ' <<< "$attempts" || check "phantom datacenter: order $n wasn't bought at local-b within 90 s: $(tr '\n' ';' <<< "$attempts")"
+    cozy --json machine end "$rental" -y > /dev/null 2>&1 || true
+    if [ "$n" = 4 ]; then
+      [ "$quoted" = local-b ] || check "phantom datacenter: with local's CPU resting, order 4 was quoted at '${quoted:-nothing}', not local-b"
+      ! grep -q ' local ' <<< "$attempts" || check "phantom datacenter: order 4 was sent to the resting local again: $(tr '\n' ';' <<< "$attempts")"
+    fi
+    if [ "$n" = 3 ]; then
+      cozy --json whoami > /dev/null 2>&1 || true
+      token=$(jq -r .token "$(ls "$HOME"/.cozy/keys/*.bearer.json | head -1)" 2> /dev/null || true)
+      curl -s -m 10 -H "Authorization: Bearer $token" "$COZY_HUB_URL/v1/admin/provider-cooldowns" > "$S/cooldowns.json" 2>&1 || true
+      rested=$(jq -c '[.cooldowns[] | select(.provider == "docker")]' "$S/cooldowns.json" 2> /dev/null || true)
+      echo "phantom datacenter: the admin view after 3 orders: ${rested:-$(head -c 200 "$S/cooldowns.json")}"
+      jq -e '.cooldowns[] | select(.provider == "docker" and .datacenter == "local" and .accelerator_model == "CPU" and .resting and .refusals >= 3)' \
+        "$S/cooldowns.json" > /dev/null 2>&1 || check "phantom datacenter: local's CPU isn't resting after 3 refusals there: ${rested:-$(head -c 200 "$S/cooldowns.json")}"
+      ! jq -e '.cooldowns[] | select(.datacenter == "local-b" and .resting)' "$S/cooldowns.json" > /dev/null 2>&1 \
+        || check "phantom datacenter: local-b rests too, though it sold every create: $rested"
+    fi
+  done
 )
