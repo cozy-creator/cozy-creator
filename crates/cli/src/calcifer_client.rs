@@ -79,6 +79,12 @@ pub(crate) enum Lock {
 #[derive(Clone)]
 pub(crate) struct Client(Arc<Inner>);
 
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client").field("holder", &self.holder().map(|holder| holder.pid)).finish()
+    }
+}
+
 /// A vault operation's public progress. Its terminal response, which may carry a recovery secret,
 /// is returned separately and never sent to the progress renderer.
 pub(crate) enum VaultProgress<'a> {
