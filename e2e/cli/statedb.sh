@@ -13,6 +13,8 @@
 #                  one's never, unlocked or locked, and it's still purged once its window ended and it's unlocked again (cl-1010)
 #   hub_listing_restart a machine list (`cozy machine ls`) answers the Hubs' last listing at once, kept across a restart, and lists
 #                  them again beside the answer: with the Hub stopped, a restarted Calcifer's refresh answers within a second (cl-1010)
+#   hub_facts_restart a restarted Calcifer's tool list, machine read and first run wait on no Hub: its account's facts kept across a
+#                  restart and read again beside it; with the Hub stopped, both answer within a second and the run runs (cl-1010)
 # Uses project.sh's `api` and projectdb.sh's `kill9`, `db_calcifer`, `calcifer_halt` and `undo_window`.
 
 # state <query>: what state.db holds, read only, one JSON row a line.
@@ -440,4 +442,57 @@ hub_listing_restart() (
   # Listed by the Calcifer before: the Hub answered nothing since.
   jq -e --argjson at "$halted" '[.hubs[].listed_at_ms] | length > 0 and max <= $at' "$S/after.json" > /dev/null 2>&1 \
     || check "hub listing: the restarted Calcifer answered no listing from before it: $(jq -c '.hubs' "$S/after.json" 2> /dev/null)"
+)
+
+# cl-1010: a restarted Calcifer's tool list (and each read of a machine) waited on three Hub reads, its account's facts, whenever its
+# machine held an installation from an origin only those name: 1.2 to 1.8 s at each start on Paul's laptop, as long as the Hub took
+# when it hung; and so did the first run after a restart, whose send reads them. They're kept across a restart and read again beside
+# it: with the Hub stopped, a restarted Calcifer answers both within a second, and runs code here on its machine.
+hub_facts_restart() (
+  step "a restarted Calcifer's tool list, machine read and first run wait on no Hub: its account's facts kept, read again beside (cl-1010)"
+  [ -n "${COZY_TEST_HUB_PID_FILE:-}" ] && [ -f "$COZY_TEST_HUB_PID_FILE" ] || { echo "hub facts: needs an isolated Hub this cell can stop"; exit 0; }
+  [ -n "${E2E_HUB_LOG:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] || fail "hub facts: e2e/isolated.sh named no Hub log or email to sign in with"
+  local hub_pid lock=$HOME/.cozy/calcifer/calcifer.lock.holder pid now='' route answer status secs S=$OUT/hub-facts
+  local P=$OUT/hub-facts/project
+  mkdir -p "$S"
+  hub_pid=$(cat "$COZY_TEST_HUB_PID_FILE")
+  trap 'kill -CONT "$hub_pid" 2> /dev/null || true' EXIT
+  cozy --json whoami > "$S/whoami.json" 2>&1 || true
+  jq -e '.logged_in == true' "$S/whoami.json" > /dev/null 2>&1 \
+    || signin "$E2E_HUB_EMAIL" > "$S/login.json" || fail "hub facts: cozy login: $(tail -c 300 "$S/login.json")"
+  cozy --json new --unencrypted "$P" > "$S/new.json" 2>&1 || fail "hub facts: new: $(tail -c 300 "$S/new.json")"
+  # A run's send reads the facts (who the capability is for): one before the restart, installed and read.
+  in_project "$P" --json run minimax-h3-tools/echo text=facts --on local > "$S/run.ndjson" 2> "$S/run.err" \
+    || fail "hub facts: cozy run minimax-h3-tools/echo: $(tail -c 300 "$S/run.err")"
+  # Kept once read: before this change, never.
+  for _ in $(seq 50); do [ -s "$HOME/.cozy/calcifer/kept-hub-facts.json" ] && break; sleep 0.2; done
+  pid=$(jq -r .pid "$lock")
+  calcifer_halt || fail "hub facts: Calcifer didn't stop"
+  kill -STOP "$hub_pid" || fail "hub facts: the Hub ($hub_pid) couldn't be stopped"
+  systemctl --user start cozy-calcifer || fail "hub facts: systemctl --user start cozy-calcifer failed"
+  for _ in $(seq 150); do
+    now=$(jq -r .pid "$lock" 2> /dev/null) || now=''
+    [ -n "$now" ] && [ "$now" != "$pid" ] && break
+    sleep 0.1
+  done
+  [ -n "$now" ] && [ "$now" != "$pid" ] || fail "hub facts: Calcifer didn't start again in 15 s"
+  db_calcifer || fail "hub facts: the started Calcifer's record can't be read"
+  for route in /v1/tools /v1/machines/local; do
+    answer=$(api -o "$S/after.json" -w '%{http_code} %{time_total}' -m 10 "http://$ADDR$route") || true
+    read -r status secs <<< "$answer" || true
+    echo "hub facts: $route with the Hub stopped, at a restart: $status in ${secs:-?} s"
+    [ "$status" = 200 ] && awk -v s="$secs" 'BEGIN { exit !(s < 1.0) }' \
+      || check "hub facts: with the Hub not answering, a restarted Calcifer's $route took ${secs:-10 or more} s (HTTP ${status:-none})"
+  done
+  # The first run after the restart, of code here on this computer's machine: it needs nothing the stopped Hub says.
+  # Its release named, as the first one ran it: a run naming none asks the Hub for its releases.
+  local began ended code=0 target
+  target=$(jq -r 'select(.type? == "run.created") | .run.target' "$S/run.ndjson" | head -1)
+  began=$(date +%s%N)
+  timeout 60 bash -c 'cd "$1" && cozy --json run "$2" text=restarted --on local' _ "$P" "$target" > "$S/after-run.ndjson" 2> "$S/after-run.err" || code=$?
+  ended=$(date +%s%N)
+  kill -CONT "$hub_pid" || true
+  echo "hub facts: the first run after a restart, the Hub stopped: exit $code in $(( (ended - began) / 1000000 )) ms"
+  [ "$code" = 0 ] && [ $(( (ended - began) / 1000000 )) -lt 15000 ] \
+    || check "hub facts: with the Hub not answering, the first run after a restart exited $code in $(( (ended - began) / 1000000 )) ms: $(tail -c 300 "$S/after-run.err")"
 )
