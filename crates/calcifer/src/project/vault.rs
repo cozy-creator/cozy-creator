@@ -567,6 +567,9 @@ fn project_runtime(root: &FsPath) -> Result<PathBuf, Error> {
     Ok(runtime)
 }
 
+/// How long a save from a local judged not answering may be still before a deadline lock cuts it (cl-1064, review 6939581151).
+const LOCAL_STILL: Duration = Duration::from_secs(3);
+
 /// In an owed view's runtime folder (cl-1064): its sealed mount point stays until the machine that didn't answer has done the
 /// clean-up a lock owes it, so nothing that machine still runs can write plaintext where the view was.
 const OWED_MARK: &str = "owed";
@@ -777,14 +780,16 @@ fn saving(api: &Arc<Api>, root: &FsPath) -> Option<Error> {
 /// why. A remote machine's run keeps its outputs across a lock (the lock closes only this computer's machine,
 /// `private_io::close_private_project`), so its save stays owed and resumes when that machine answers. The runs it cut and the runs
 /// it left owed, by name, for the lock's answer to its own client and nothing else (no log). One rule for every lock.
-/// `local_gone`: the deadline's ask found local not answering (cl-1064): a save from it is cut at once, not after `EXPORT_SILENCE`,
-/// so the vault locks close to its deadline; its outputs read lost, saying local didn't answer.
+/// `local_gone`: the deadline's ask found local not answering (cl-1064): a save from it is cut once still for `LOCAL_STILL`, not
+/// `EXPORT_SILENCE`, so the vault locks close to its deadline; its outputs read lost, saying local didn't answer. Still is judged by
+/// progress, from the later of its last bytes and the drain's start: a save whose bytes still come lands, and so does one from a
+/// local that came back as the drain began (review 6939581151).
 fn drain_saves(api: &Arc<Api>, root: &FsPath, local_gone: bool, mut saving: impl FnMut()) -> Result<(Vec<String>, Vec<String>), Error> {
     let journal = |_: crate::store::StoreError| error("project_journal", "the project journal could not be checked");
     let projects = api.projects.now_open();
     let Some(project) = projects.iter().find(|project| project.root == root).cloned() else { return Ok((vec![], vec![])) };
     let owner = super::RunOwner::of(&project, &api.calcifer);
-    let (mut said, mut busy) = (false, None::<Instant>);
+    let (mut said, mut busy, began) = (false, None::<Instant>, Instant::now());
     loop {
         let (owed, from_local) = match owner.store() {
             Ok(store) => {
@@ -811,7 +816,11 @@ fn drain_saves(api: &Arc<Api>, root: &FsPath, local_gone: bool, mut saving: impl
         // An exporter missing is started; one going is left alone: waking it is no progress, and cuts its pause.
         for (id, _) in &owed { if !api.calcifer.exporting(id) { api.calcifer.export(id); } }
         if !said { saving(); said = true; }
-        if owed.iter().any(|(id, _)| api.calcifer.export_moving(id) && !from_local.contains(id)) {
+        let still_moving = |id: &crate::RunId| match from_local.contains(id) {
+            true => began.elapsed() < LOCAL_STILL || api.calcifer.export_moved_within(id, LOCAL_STILL),
+            false => api.calcifer.export_moving(id),
+        };
+        if owed.iter().any(|(id, _)| still_moving(id)) {
             std::thread::sleep(Duration::from_millis(250));
             continue;
         }

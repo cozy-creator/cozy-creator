@@ -735,7 +735,9 @@ impl Calcifer {
     pub(crate) fn row_owner(&self,row:&RunRow)->store::Result<Option<project::RunOwner>> {
         let Some(root)=&row.project_root else { return Ok(None); };
         let open=self.live_owners().into_iter().find(|owner|owner.root()==root);
-        open.or_else(||self.opened(&row.owner).filter(|owner|owner.root()==root)).map(Some).ok_or_else(||StoreError::Locked("project_not_open".into()))
+        // Not open: an encrypted one locked says so (it unlocks), any other isn't open (it opens).
+        let closed=||StoreError::Locked(if crate::project::vault::is_locked(root) { "project_locked" } else { "project_not_open" }.into());
+        open.or_else(||self.opened(&row.owner).filter(|owner|owner.root()==root)).map(Some).ok_or_else(closed)
     }
     /// What names `row` to a person (cl-987): `KEY-N`, its project's key and its number there; its number alone while its project
     /// isn't open. Naming a run never opens its project (a lock may be closing it). A job of Calcifer's has none (cl-1028).

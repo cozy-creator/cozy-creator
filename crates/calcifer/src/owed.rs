@@ -101,6 +101,14 @@ impl Machines {
         self.maybe_owed() && self.store().owed_to("local").is_ok_and(|owed| owed.iter().any(|(_, owed)| owed == folder))
     }
 
+    /// The folders `local` is owed a clean-up of (cl-1064): nothing is warmed for them on it until it's paid.
+    pub(crate) fn owed_folders(&self) -> Vec<std::path::PathBuf> {
+        if !self.maybe_owed() {
+            return vec![];
+        }
+        self.store().owed_to("local").map(|owed| owed.into_iter().map(|(_, folder)| folder).collect()).unwrap_or_default()
+    }
+
     /// Whether `local` may still be owed a clean-up (cheap: no read once one found none).
     pub(crate) fn maybe_owed(&self) -> bool {
         MAYBE_OWED.load(Ordering::Relaxed)
@@ -152,6 +160,8 @@ impl Machines {
                 }
             }
         }
+        // What waited for it is warmed now (`Lists::send` holds an owed project's lists back from local).
+        self.lists.again(self);
         true
     }
 

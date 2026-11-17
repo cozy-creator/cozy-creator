@@ -364,7 +364,9 @@ fn locked(code: &str) -> Error {
         "project_inspection" => ("project_busy", "Cozy is checking the project's storage for a moment. Try again."),
         "project_acting" => ("project_acting", "The project is busy with another change to it. Try again when that finishes."),
         "project_transition" => ("project_transition", "The project's storage is changing (it's locking, unlocking or converting). Try again when that finishes."),
-        "project_not_open" | "run_owner_required" => ("project_not_open", "The project isn't open in Cozy right now. Open it, then try again."),
+        // Reached by a run alone (`/v1/runs/{id}`), a locked encrypted project and a plaintext one not open look alike here: nothing
+        // here names a locked project's runs (cl-984).
+        "project_not_open" | "run_owner_required" => ("project_not_open", "The run's project isn't open in Cozy right now. Unlock it if it's encrypted, or open it, then try again."),
         _ => ("project_locked", "The project is locked. Unlock it to see its run history."),
     };
     Error::new(Kind::Conflict, code, said)

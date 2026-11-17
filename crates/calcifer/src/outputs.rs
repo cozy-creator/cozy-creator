@@ -229,13 +229,19 @@ impl Calcifer {
     /// an item landed, within `EXPORT_SILENCE` (a new exporter has that long to start). Nothing else counts: an attempt that
     /// starts again with nothing moved, a wake, a retry. One that stalls holds no vault open: its outputs stay owed.
     pub(super) fn export_moving(&self, id: &RunId) -> bool {
+        self.export_moved_within(id, EXPORT_SILENCE)
+    }
+
+    /// Whether the run's exporter moved its outputs within `within` (`export_moving`'s test, by another silence): a lock that found
+    /// local not answering still lets a save from it land while its bytes come (cl-1064).
+    pub(super) fn export_moved_within(&self, id: &RunId, within: std::time::Duration) -> bool {
         if !self.exporting(id) { return false; }
         let in_place = self.bytes_in_place(id);
         let now = Instant::now();
         let mut seen = lock(&self.exports.seen);
         let mark = seen.entry(id.clone()).or_insert((in_place, now));
         if in_place > mark.0 { *mark = (in_place, now); }
-        now.duration_since(mark.1) < EXPORT_SILENCE
+        now.duration_since(mark.1) < within
     }
 
     /// Starts the run's exporter, or wakes it.
