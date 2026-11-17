@@ -90,7 +90,7 @@ step candidates; candidates
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
 # web_serves reads what the gate costs from Calcifer's Server-Timing, which it sends only with its diagnostics on (cl-985); coming keeps
 # its project's walk log (.vault-calcifer/diagnostics/walk.log) with them on.
-case $SHARD in projectvault | projectvault-static | projectvault-unstarted | plan | stuck | coming | thumbs) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* ]] || calcifer_diagnostics ;; esac
+case $SHARD in projectvault | projectvault-static | projectvault-unstarted | plan | plan-resent | stuck | coming | thumbs) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* ]] || calcifer_diagnostics ;; esac
 }
 
 # A vault failure names its reason, and web_serves reads the gate's Server-Timing: Calcifer started again with config.toml's
@@ -726,7 +726,17 @@ case $SHARD in
   # A small disk full of idle models' weights makes room for the next runs' (tfs-150).
   disk) parts="disk_full logs" ;;
   # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.
-  plan) parts="estimate_line plan_picks plan_published plan_update plan_fetch prepare_ahead logs" ;;
+  plan) parts="
+    estimate_line
+    plan_picks
+    plan_published
+    plan_update
+    plan_fetch
+    prepare_ahead
+    plan_resent
+    logs" ;;
+  # A run moved to another machine is that machine's to cancel and follow, and its take lands (cl-1116). Named plan-* for its stand-ins.
+  plan-resent) parts="plan_resent logs" ;;
   # A box's tool gets its machine ready before Render (cl-1104): a guess switched, a request sent meanwhile, a box deleted; two boxes
   # of one function quoted each by its own checkpoint; a guess moved when its machine's load changes; on a short disk a guess
   # evicts nothing, goes first, says so and comes again, and its install gives the line to a run's.

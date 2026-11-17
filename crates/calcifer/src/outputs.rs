@@ -309,7 +309,7 @@ impl Calcifer {
             Err(_) => return true,
         };
         let Some(lane) = link.lane(0, false) else { return true };
-        let target = v1::OutputTarget { run: run.id.to_string(), output: item.name.clone(), index: item.index, member: String::new() };
+        let target = machine_client::OutputAt { run: run.sent_id(), output: item.name.clone(), index: item.index, member: String::new() };
         !matches!(lane.get(&target, (0, 1), item.rev).await, Err(machine_client::Error::Refused { status: 404, .. }))
     }
 
@@ -542,8 +542,9 @@ impl Calcifer {
         let name = file_name(run.number, &item.name, item.index, &item.media_type);
         let out_dir = crate::project::vault::resolve_path(&run.out_dir).map_err(|error| Failure::Again(error.message))?;
         let dest = out_dir.join(name);
-        let target = v1::OutputTarget {
-            run: run.id.to_string(),
+        // Read by the id its machine knows this attempt by: a run sent again (moved, retried) is `<id>~<attempt>` there (cl-1116).
+        let target = machine_client::OutputAt {
+            run: run.sent_id(),
             output: item.name.clone(),
             index: item.index,
             member: String::new(),
@@ -1008,7 +1009,7 @@ async fn batch(gate: &Option<crate::project::RunOwner>) -> Result<Option<tokio::
 /// left in place (`.part.held`), cleared by a digest that doesn't match.
 async fn fetch_file(
     link: &Link,
-    target: &v1::OutputTarget,
+    target: &machine_client::OutputAt,
     item: &OutputRow,
     dest: &Path,
     appended: Option<u64>,
@@ -1064,7 +1065,7 @@ async fn fetch_file(
 /// against its digest; a file the tree names twice is read once.
 async fn fetch_tree(
     link: &Link,
-    target: &v1::OutputTarget,
+    target: &machine_client::OutputAt,
     item: &OutputRow,
     dest: &Path,
     moved: &Arc<AtomicU64>,
@@ -1105,7 +1106,7 @@ async fn fetch_tree(
         }
         let empty = std::fs::File::create(&file).and_then(|f| f.set_len(length));
         empty.map_err(unwritable)?;
-        let member = v1::OutputTarget {
+        let member = machine_client::OutputAt {
             member: path,
             ..target.clone()
         };
@@ -1220,7 +1221,7 @@ async fn check(path: &Path, length: u64, digest: &str) -> Result<(), Failure> {
 #[allow(clippy::too_many_arguments)]
 async fn fetch(
     link: &Link,
-    target: &v1::OutputTarget,
+    target: &machine_client::OutputAt,
     rev: u64,
     held: &[(u64, u64)],
     length: u64,
@@ -1273,7 +1274,7 @@ impl Drop for Stretch {
 /// Logs even when a range fails or a slow/replaced transfer drops its future.
 struct RangeTiming<'a> {
     private: bool,
-    target: &'a v1::OutputTarget,
+    target: &'a machine_client::OutputAt,
     rev: u64,
     first: u64,
     end: u64,
@@ -1306,7 +1307,7 @@ impl Drop for RangeTiming<'_> {
 /// in place.
 async fn read_range(
     lane: Bulk,
-    target: v1::OutputTarget,
+    target: machine_client::OutputAt,
     rev: u64,
     (first, end, length): (u64, u64, u64),
     part: PathBuf,

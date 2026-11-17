@@ -58,13 +58,13 @@ fn lifetime(text: &str) -> Result<u64, Refusal> {
 }
 
 /// The player's link: everything it needs rides the fragment, which never leaves the browser.
-fn link(address: &str, fingerprint: &str, token: &str, run: &str, output: &str) -> String {
+fn link(address: &str, fingerprint: &str, token: &str, run: &crate::store::Sent, output: &str) -> String {
     let fragment = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("v", "1")
         .append_pair("a", address)
         .append_pair("f", fingerprint)
         .append_pair("c", token)
-        .append_pair("r", run)
+        .append_pair("r", run.as_str())
         .append_pair("o", output)
         .finish();
     format!("{PLAYER}#{fragment}")
@@ -148,7 +148,7 @@ pub(crate) async fn play(
     let url_for = |token: &str| link(address, &webrtc.fingerprint, token, &sent, &ask.output);
     let token = capability::mint(&signer, Grant {
         machine: endpoint.worker_id,
-        run: sent.clone(),
+        run: sent.to_string(),
         outputs: vec![ask.output.clone()],
         scope,
         generation,
