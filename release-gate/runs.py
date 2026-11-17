@@ -208,6 +208,7 @@ class Execution(TypedDict, total=False):
 
 class Graph(TypedDict, total=False):
     replays: int | None
+    eager_gap: str | None  # why the region's last call ran as written
 
 
 class Residency(TypedDict, total=False):
