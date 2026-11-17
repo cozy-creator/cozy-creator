@@ -338,8 +338,9 @@ J --arg id "$tool" '[.tools[] | select(.id == $id)] != [] and .note == null' "$O
 # The Hub back, at the same address, for what follows (control.sh's hub_away).
 [ "${RUNNER_OS:-}" != Windows ] || exe=.exe
 mkdir -p "$OUT/hub-offline"
-"${RUNNER_TEMP:-$OUT}/hubcheck$exe" --hub "${HUB_CHECK_UPSTREAM:?}" --out "$OUT/hub-offline" --listen "$addr" --keep 'POST /v1/run-reports,POST /v1/rental-quotes' \
+"${RUNNER_TEMP:-$OUT}/hubcheck$exe" --hub "${HUB_CHECK_UPSTREAM:?}" --out "$OUT/hub-offline" --listen "$addr" --keep "$HUB_KEEP" \
   > /dev/null 2> "$OUT/hub-offline/hubcheck.log" &
 HUB_CHECK=$!
+echo "$OUT/hub-offline" > "$OUT/hubcheck.out"
 for _ in $(seq 30); do curl -sS -m 5 -o /dev/null "http://$addr/openapi.yaml" 2> /dev/null && break; sleep 1; done
 }

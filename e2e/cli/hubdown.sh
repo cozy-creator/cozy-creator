@@ -29,8 +29,9 @@ hub_back() {
   bash "$here_hubdown/../skew/rehub.sh" > "$OUT/rehub-${1:-back}.log" 2>&1 || check "hub back: the Hub didn't start again: $(tail -c 300 "$OUT/rehub-${1:-back}.log")"
   [ "${RUNNER_OS:-}" != Windows ] || exe=.exe
   mkdir -p "$dir"
-  "${RUNNER_TEMP:-$OUT}/hubcheck$exe" --hub "${HUB_CHECK_UPSTREAM:?}" --out "$dir" --listen "$HUB_ADDR" --keep 'POST /v1/run-reports' > /dev/null 2> "$dir/hubcheck.log" &
+  "${RUNNER_TEMP:-$OUT}/hubcheck$exe" --hub "${HUB_CHECK_UPSTREAM:?}" --out "$dir" --listen "$HUB_ADDR" --keep "$HUB_KEEP" > /dev/null 2> "$dir/hubcheck.log" &
   HUB_CHECK=$!
+  echo "$dir" > "$OUT/hubcheck.out"
   for _ in $(seq 30); do curl -sS -m 5 -o /dev/null "http://$HUB_ADDR/openapi.yaml" 2> /dev/null && break; sleep 1; done
 }
 

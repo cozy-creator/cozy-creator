@@ -62,8 +62,8 @@ wait "$pid" 2> /dev/null || true
 echo "rented $rental"
 # cl-1076, Paul 11-16: "300GB worker discs by default". A rent that names no disk asks its Hub for 300 GB: the quote it
 # made first, as hubcheck keeps it (this Hub's cpu product would be bought at its image's own 512 GB either way).
-grep -F '"operation":"POST /v1/rental-quotes"' "$OUT/hub-kept.jsonl" 2> /dev/null | jq -se 'last.body.container_disk_gb == 300' > /dev/null \
-  || check "rental_end: machine rent cpu didn't ask for 300 GB: $(grep -F rental-quotes "$OUT/hub-kept.jsonl" 2> /dev/null | tail -1 | head -c 300)"
+hub_kept | grep -F '"operation":"POST /v1/rental-quotes"' | jq -se 'last.body.container_disk_gb == 300' > /dev/null \
+  || check "rental_end: machine rent cpu didn't ask for 300 GB: $(hub_kept | grep -F rental-quotes | tail -1 | head -c 300)"
 
 step "a rental says what it rents until its Hub names its host, then the host's word (cl-888, Paul 11-12)"
 # One host, one name: the Hub names a pod by its host once it's placed there, and until then the rental is "Renting a CPU…",

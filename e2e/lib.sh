@@ -157,6 +157,12 @@ install_cozy() {
   grep -q "cozy ${want#cozy }," "$OUT/doctor-release.json" || check "Calcifer is not the release's ${want#cozy } after cozy doctor"
 }
 
+# What every hubcheck keeps (its <out>/hub-kept.jsonl), whichever cell starts it again: the cells read these.
+HUB_KEEP='POST /v1/run-reports,POST /v1/rental-quotes'
+# hub_kept: what the hubcheck running now kept. A cell that stops it and starts another (hub_away, tools_offline, hub_back) names
+# the new one's folder in $OUT/hubcheck.out, so a later cell reads that one, not the first's.
+hub_kept() { cat "$(cat "$OUT/hubcheck.out" 2> /dev/null || echo "$OUT")/hub-kept.jsonl" 2> /dev/null || true; }
+
 # hubcheck between cozy and tensorhub.com, before the installer starts Calcifer: every cozy process (the CLI, Calcifer,
 # the machine) reads config.toml's hub_url, and scripts that call the Hub themselves read $COZY_HUB_URL.
 HUB_CHECK='' HUB_CHECK_UPSTREAM=''
@@ -166,8 +172,9 @@ hub_check() {
   HUB_CHECK_UPSTREAM=$hub
   [ "${RUNNER_OS:-}" != Windows ] || exe=.exe
   go build -C "$E2E/hubcheck" -o "${RUNNER_TEMP:-$OUT}/hubcheck$exe" . || fail "e2e/hubcheck does not build"
-  "${RUNNER_TEMP:-$OUT}/hubcheck$exe" --hub "$hub" --out "$OUT" --keep 'POST /v1/run-reports,POST /v1/rental-quotes' > "$OUT/hubcheck.addr" 2> "$OUT/hubcheck.log" &
+  "${RUNNER_TEMP:-$OUT}/hubcheck$exe" --hub "$hub" --out "$OUT" --keep "$HUB_KEEP" > "$OUT/hubcheck.addr" 2> "$OUT/hubcheck.log" &
   HUB_CHECK=$!
+  echo "$OUT" > "$OUT/hubcheck.out"
   for _ in $(seq 60); do
     addr=$(head -1 "$OUT/hubcheck.addr" 2> /dev/null) && [ -n "$addr" ] && break
     kill -0 "$HUB_CHECK" 2> /dev/null || break

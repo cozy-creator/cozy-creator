@@ -1,0 +1,1 @@
+Tests only: every e2e hubcheck keeps the same requests and names its folder, so a cell after tools_offline (cl-1126) reads the rental quote it made from the hubcheck running now. rental_end failed "didn't ask for 300 GB" reading the stopped one's file.
