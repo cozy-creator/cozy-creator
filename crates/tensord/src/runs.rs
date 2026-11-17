@@ -600,7 +600,8 @@ impl Runs {
                 Err(_) => return 0,
             },
         };
-        let open = crate::estimate::chooses(&root) && self.service.pool().is_some_and(|pool| pool.open(root.root_seq()));
+        let open = crate::estimate::chooses(&root) && !root.invocation.background
+            && self.service.pool().is_some_and(|pool| pool.open(root.root_seq()));
         if open { 0 } else { root.width }
     }
 

@@ -2894,10 +2894,11 @@ impl Pool {
         if plan.degree == 0 {
             if !admit()? { return Ok(false); }
             // Its widest in service, until its first call binds its lane at the width the machine's packing then gives it (cl-1187):
-            // what its calls prepared before that fit within.
+            // what its calls prepared before that fit within. A speculative run (cl-1123 D) isn't packed: its narrowest, as before.
             let widths = &record.invocation.widths;
+            let widest = widths.iter().copied().filter(|width| *width as usize <= self.serving_width()).max();
             let width = match record.invocation.gpus {
-                0 => (widths.iter().copied().filter(|width| *width as usize <= self.serving_width()).max())
+                0 => (widest.filter(|_| !record.invocation.background))
                     .or_else(|| widths.first().copied())
                     .unwrap_or_else(|| held.record.widest_group(self.serving_width()).min(1)) as usize,
                 gpus => gpus as usize,
