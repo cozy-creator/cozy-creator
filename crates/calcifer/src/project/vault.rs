@@ -412,7 +412,16 @@ pub(super) fn location(api: &Api, named: &str) -> Result<PathBuf, Error> {
             _ => path.to_owned(),
         };
         recover_conversion(&candidate)?;
-        let path = logical(&platform::durable::canonical(&candidate).map_err(provider)?);
+        let path = match platform::durable::canonical(&candidate) {
+            Ok(path) => logical(&path),
+            // Its folder gone (cl-1124): a session still held for it ends through its operation, which says so.
+            Err(_) if !candidate.exists() => {
+                let path = logical(&candidate);
+                if held(&path).is_some() { return Ok(path); }
+                return Err(Error::new(Kind::NotFound, "project_gone", format!("There's no project at {}: its folder is gone.", path.display())));
+            }
+            Err(e) => return Err(provider(e)),
+        };
         if let Some(root) = path.ancestors().find(|root| encrypted(root)) { return Ok(root.to_owned()); }
         return super::named(api, named);
     }
