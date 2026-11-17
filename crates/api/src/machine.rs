@@ -476,39 +476,10 @@ pub struct RunSpec {
     /// the lane its commit is labelled. The package's own children inherit it; another
     /// package's take none.
     pub lane: String,
-    /// A warm run's: what its caller planned it to fetch, by slot (`Ahead::wants`). Absent: what its function's needs rules say
-    /// of its payload, as for a call.
+    /// A real call that is the request a list item predicted (cl-1123): its key. One the machine finds identical to that item's
+    /// (its run identity, `sha256` of the spec as sent, access aside) adopts what the item made ready.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub wants: Option<Wants>,
-}
-
-/// What a call wants of its models, by slot (`<function>.models.<parameter>`), as its function's needs rules say of its request
-/// (cl-1103, `needs::wants`): the slots it waits for before it starts; for each function it may call that no rule answers for, the
-/// slots that one waits for, of which what they all read is waited for; and what it may read besides, by group, fetched only in the
-/// background. A slot named in none is never fetched for it. Each side reads a slot's components from its declaration and resolves
-/// it to a checkpoint itself: Calcifer by its Hub card, to quote it; a machine for its lane and store, to fetch it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Wants {
-    pub needed: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub either: Vec<Vec<String>>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub extras: Vec<(String, Vec<String>)>,
-}
-
-impl Wants {
-    /// Each function a slot of it belongs to, once, in the order first named.
-    pub fn functions(&self) -> Vec<&str> {
-        let slots = self.needed.iter().chain(self.either.iter().flatten()).chain(self.extras.iter().flat_map(|(_, slots)| slots));
-        let mut functions: Vec<&str> = vec![];
-        for function in slots.filter_map(|slot| slot.split_once(".models.").map(|(function, _)| function)) {
-            if !functions.contains(&function) {
-                functions.push(function);
-            }
-        }
-        functions
-    }
+    pub predicted: Option<String>,
 }
 
 /// The caller's provider tokens, for models a run makes from a provider source.
@@ -745,6 +716,24 @@ pub struct RunState {
     /// When the machine accepted it and when it ended, Unix ms; 0 until then.
     pub accepted_at_ms: u64,
     pub finished_at_ms: u64,
+    /// A list item's (`StatusFrame::ahead`): how ready its machine is for it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub readiness: Option<Readiness>,
+}
+
+/// How ready a machine is for a predicted request (cl-1123): `installing`, `downloading`, `ready` (its weights here), `loading`
+/// (its executor starting and its weights going onto a GPU), `loaded` (they are there: its first step loads nothing), `evicted`
+/// (a run took that GPU memory since), `running`, `done`. `done`/`total` count what the stage counts, in bytes; `reason` says why
+/// it stops where it is.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(default)]
+pub struct Readiness {
+    pub stage: String,
+    pub done: u64,
+    pub total: u64,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub reason: String,
 }
 
 /// `GET /v1/runs`: the runs the caller reads, newest first; on a rental its owner reads every
@@ -939,15 +928,14 @@ pub struct Call {
     pub memo_basis: String,
 }
 
-// ---- Ahead ----------------------------------------------------------------------------------
+// ---- Predicted requests ---------------------------------------------------------------------
 
-/// `PUT /v1/upcoming` (cl-967, Paul 11-12): the jobs the caller expects to send here, nearest first, its whole list, replacing its
-/// last. Each prepares behind every run, in its order, as a function's warm run does: its code installed, what its call reads up
-/// front, then its guesses, while they fit; one the list drops stops. A run later sent for it finds what it fetched.
+/// `PUT /v1/upcoming` (cl-967, Paul 11-12): the jobs the caller will send here, nearest first, its whole list, replacing its last.
+/// Each is made ready behind every run, in its order; one the list drops stops. A run later sent for it finds what it made ready.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Upcoming {
-    pub jobs: Vec<Ahead>,
+    pub jobs: Vec<Predicted>,
 }
 
 /// `PUT /v1/prepare` (cl-967): what the caller expects demand for here with no job yet, its whole set, replacing its last: its
@@ -958,29 +946,22 @@ pub struct Upcoming {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prepare {
-    pub items: Vec<Ahead>,
+    pub items: Vec<Predicted>,
 }
 
-/// One function to have ready: its code, its models in their lanes. Its downloads show in `StatusFrame::activity` with its id among
-/// their `runs`: `cozy:upcoming:<key>`, or `cozy:prepare:<key>`.
+/// A request the caller predicts it may send here (cl-1123; Paul, 11-17: "calcifer only has to worry about what it knows, i.e., it
+/// predicts what the user MAY want in the future, and the remote machine only needs to worry about what it's told, what a request MAY
+/// look like, to ensure it's ready for it"): the exact spec a run of it would carry, its payload bound and its seed fixed. The machine
+/// plans it as it plans that run (its function's needs rules on its payload, its lane for this machine's GPUs, its store) and makes
+/// it ready: its code installed, what it needs downloaded. Nothing of components, lanes or downloads is said. Its readiness shows in
+/// Status (`ahead`), its downloads in `StatusFrame::activity` with its id among their `runs`: `cozy:upcoming:<key>`, or
+/// `cozy:prepare:<key>`. A run later sent naming the key (`RunSpec::predicted`) with the same spec adopts it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Ahead {
+pub struct Predicted {
     /// The caller's name for it: an upcoming job's key, the one its run is sent under.
     pub key: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source: Option<Source>,
-    /// Empty: its code installed only.
-    pub entrypoint: String,
-    pub models: Vec<ModelChoice>,
-    pub lane: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hub: Option<HubAccess>,
-    /// What it fetches, as its caller evaluated its function's needs rules on the request it expects (cl-1103; Paul, 11-17: "calcifer
-    /// says 'okay, I'm going to send machine-A this request, so I should tell it to download the required files'"): its needed slots
-    /// at its list's order, its extras behind them, and no slot its rules exclude. Absent: its function's rules with no request.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub wants: Option<Wants>,
+    pub spec: RunSpec,
 }
 
 /// What a list came to: each item as a run would be admitted, in its order.

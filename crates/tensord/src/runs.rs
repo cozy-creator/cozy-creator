@@ -32,7 +32,7 @@ mod model_folder;
 mod read;
 mod sent;
 pub(crate) use read::{actor_id, retention_owner, wordless_terminal, Log, OutputSnapshot};
-pub(crate) use sent::{choices, resume, resume_private};
+pub(crate) use sent::{choices, identity, resume, resume_private};
 
 pub(crate) enum Source {
     /// A published release by name (th-245); empty: the Hub's newest. `digest`: the release digest its caller pinned (a project's
@@ -77,8 +77,6 @@ pub(crate) struct Spec {
     pub input: Value,
     pub inputs: Vec<InputFile>,
     pub models: Vec<stored::ModelChoice>,
-    /// A list item's: what its caller walked it to fetch, by slot (`Ahead::wants`, cl-1103). None: what its own request's rules say.
-    pub wants: Option<api::machine::Wants>,
     pub attention_kernel: String,
     /// Dev-only: the Runtime's attention capture spec; its run, and every child, always runs.
     pub attention_capture: String,
@@ -235,13 +233,10 @@ fn asked(spec: &Spec) -> &Value {
     }
 }
 
-/// What run `spec` wants of `interface`'s models, by slot (cl-1103): what its caller walked for it (a list item's, Calcifer's on the
-/// request it expects), else the same walk (`needs::wants`) of what its function's rules say of its own request (`ruled`).
-fn wants_of(interface: &Value, spec: &Spec) -> api::machine::Wants {
-    match &spec.wants {
-        Some(wants) => wants.clone(),
-        None => needs::wants(interface, &spec.entrypoint, &ruled(interface, &spec.entrypoint, asked(spec))),
-    }
+/// What run `spec` wants of `interface`'s models, by slot (`needs::wants`, cl-1103): what its function's rules say of its request
+/// (`ruled`), a predicted request's as a sent one's (cl-1123), walked over the functions it calls.
+fn wants_of(interface: &Value, spec: &Spec) -> needs::Wants {
+    needs::wants(interface, &spec.entrypoint, &ruled(interface, &spec.entrypoint, asked(spec)))
 }
 
 /// Whether `installation` declares a public entrypoint `name` for a warm set.
@@ -402,7 +397,7 @@ impl Runs {
     /// own is the run's refusal.
     #[allow(clippy::too_many_arguments)]
     fn needs(
-        &self, id: &str, installation: &Installation, hub: Option<hub::Source>, asker: &Asker, entrypoint: &str, wants: &api::machine::Wants,
+        &self, id: &str, installation: &Installation, hub: Option<hub::Source>, asker: &Asker, entrypoint: &str, wants: &needs::Wants,
         (models, lane): (&[stored::ModelChoice], &str), observe: Option<&Report>, stop: Option<&Stop>,
     ) -> Result<crate::access::Needs, Refused> {
         let predicted = |function: &str| {
@@ -1961,7 +1956,6 @@ impl Runs {
                     Some(stored::ModelChoice { parameter: path, ..choice })
                 })
                 .collect(),
-            wants: None,
             attention_kernel: context.attention_kernel,
             attention_capture: context.attention_capture,
             // The caller's count caps a child's group, else the GPUs its root took; the child's own

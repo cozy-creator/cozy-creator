@@ -155,15 +155,14 @@ async fn guess(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, f
 }
 
 /// What `machine` has ready for box `name` of `kind` whose tool is `with` (`PUT /v1/prepare`): the function its text names, else the
-/// first of its package that makes this kind, with the box's model choices and what its needs rules say its render needs of its
-/// models (`wants`, cl-1103); and the function, as its row says it. Its package is read statically, nothing installed to read it
-/// (`Host::foreseen`). None: its package makes nothing of the kind, or it is an encrypted project's local code, which goes with the
-/// run that calls it.
-async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, with, kind, made): (&str, &str, &str, &Map<String, Value>), machine: &On, asking: &Asking) -> Result<Option<(v1::Ahead, String)>, Error> {
+/// first of its package that makes this kind, as the request a render of the box would send it (`super::predicted`, cl-1123: its
+/// draft bound, its draft's seed); and the function, as its row says it. Its package is read statically, nothing installed to read
+/// it (`Host::foreseen`). None: its package makes nothing of the kind, or it is an encrypted project's local code, which goes with
+/// the run that calls it.
+async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, with, kind, made): (&str, &str, &str, &Map<String, Value>), machine: &On, asking: &Asking) -> Result<Option<(v1::Predicted, String)>, Error> {
     let dir = &project.folder.dir;
     let package = host.foreseen(hub, with, dir, std::slice::from_ref(machine)).await?;
     let Some(renderer) = package.first_making(kind) else { return Ok(None) };
-    let models = super::listed_models(&renderer, made)?;
     let source = match &renderer.local {
         None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: recorded(api, project, hub, &renderer)? }),
         // By its manifest, which a machine that ran it holds: one that holds none refuses the item, and its first render there sends it.
@@ -175,9 +174,9 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
         }
     };
     let request = asking.request(name, &package, &renderer.function);
-    let wants = Some(super::wants(&package, &renderer.function, request.as_ref()));
-    let item = v1::Ahead { source: Some(source), entrypoint: renderer.function.clone(), models, wants, ..Default::default() };
-    Ok(Some((item, package.name.clone() + "/" + &renderer.function)))
+    let spec = super::predicted(&renderer, made, request, project.draft_seed(name), source)?;
+    // Its key is its machine's list's to give (`Lists::key`).
+    Ok(Some((v1::Predicted { key: String::new(), spec }, package.name.clone() + "/" + &renderer.function)))
 }
 
 /// The digest `renderer`'s release must install (xs-196): the one this project's lock recorded at its first run of it, else its card's.
