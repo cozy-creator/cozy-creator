@@ -1,0 +1,5 @@
+Calcifer tells a machine what to fetch ahead of a request, from the package's needs rules (cl-1103):
+- A box's draft, as its render would send it (a mention of a box not rendered yet counted as its kind), is evaluated against its tool's rules, and the machine it would render on fetches only what that request needs: a Qwen Image 2 box drafted text-to-image gets the model and `expander_t2i`, never `expander_i2i`. Editing the draft to mention a picture switches the guess: the machine stops what only the old one wanted and fetches `expander_i2i`. A walk's upcoming jobs carry the same.
+- A render's quote counts exactly what its request waits for, less what that machine has: a model its rules rule out isn't counted, one they rule in is, and an on-demand model no rule answers is no part of it ("plus up to … on demand" is gone).
+- `cozy run`'s placement quotes its bound payload the same way.
+- Calcifer and the machine walk the rules one way (`needs::wants`); a call sent with no word from Calcifer (`cozy run --on`) is walked on the machine from its own request.

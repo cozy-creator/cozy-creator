@@ -187,13 +187,20 @@ struct RequiredWant {
 /// on"). `needed` is what it is sure to read: what of it isn't here is Y, all its call waits on. `extras` are what it may read, each
 /// by name (Z): fetched behind every run's needs, never waited on. Its source is the rules in its function's published interface,
 /// evaluated against the request (cl-1103; Paul, 11-16: "plan, without having to install packages and run arbitrary code"): which
-/// slots, components and called functions this request uses. Until a function has rules, its declarations are the fallback
-/// (`Plan::needs`: every slot but an on-demand one; an orchestrator's, `Runs::needs`: what all the functions it calls read is
-/// needed, each one's own an extra). Those two are the only places that decide needed from extra: nothing past them changes.
+/// slots, components and called functions this request uses. Needed from extra is decided in one place, the `needs` crate's walk
+/// (`needs::wants`), which Calcifer walks too: a list item comes with Calcifer's (`Ahead::wants`), any other call is walked here
+/// from its request; `Plan::needs` and `Runs::needs` only resolve its slots to checkpoints.
 #[derive(Clone, Default)]
 pub(crate) struct Needs {
     pub needed: Selected,
     pub extras: Vec<(String, Selected)>,
+}
+
+impl Needs {
+    /// What the one walk of a call's wants resolved to (`needs::resolved`, cl-1103).
+    pub(crate) fn of(resolved: needs::Resolved) -> Self {
+        Self { needed: resolved.needed, extras: resolved.extras }
+    }
 }
 
 /// Checkpoints by header, each with the components read (all, when none).

@@ -49,8 +49,6 @@ pub(crate) struct Job {
     pub scope: Option<crate::private_io::Scope>,
     /// Local code's folder (a packages checkout's, or a project's `./dir`): its `benchmarks.json` is its benchmarks until it's published.
     pub source: Option<std::path::PathBuf>,
-    /// Of its weights fetched only when the function first reads them, the most it may download besides `models` (cl-1071).
-    pub on_demand_bytes: u64,
 }
 
 /// When one machine would run one job, on this computer's clock.
@@ -69,8 +67,6 @@ pub(crate) struct Offer {
     pub warm: bool,
     /// Its weights' bytes it downloads there first (cl-967).
     pub fetch_bytes: u64,
-    /// Of its weights fetched only when the function first reads them, the most it may download there besides: in no time (cl-1071).
-    pub on_demand_bytes: u64,
     /// When it was quoted.
     pub quoted_at_ms: i64,
     /// When its machine should serve, for one on its way (cl-915); none for one that serves.
@@ -118,7 +114,6 @@ impl Offer {
             warm: self.warm,
             prepare_ms: self.prepare_ms,
             fetch_bytes: self.fetch_bytes,
-            on_demand_bytes: self.on_demand_bytes,
         }
     }
 
@@ -346,7 +341,6 @@ pub(crate) fn asked(job: &Job, prior: Prior) -> v1::EstimateJob {
         gpu: job.gpu,
         prior_ms: prior.ms,
         prior_runs: prior.runs,
-        on_demand_bytes: job.on_demand_bytes,
         after_ms: 0,
     }
 }
@@ -360,8 +354,8 @@ pub(crate) fn quote(picture: &Picture, jobs: &[v1::EstimateJob], now: i64) -> Ve
         .collect();
     let quotes = api::estimate::quote(&picture.frame, now, &asks, &picture.references);
     let at = |ms: u64| now + ms as i64;
-    (quotes.into_iter().skip(picture.ahead.len()).zip(jobs))
-        .map(|(quote, job)| Offer {
+    (quotes.into_iter().skip(picture.ahead.len()).take(jobs.len()))
+        .map(|quote| Offer {
             machine: picture.on.clone(),
             fits: quote.fits,
             refusal: quote.refusal,
@@ -373,7 +367,6 @@ pub(crate) fn quote(picture: &Picture, jobs: &[v1::EstimateJob], now: i64) -> Ve
             basis: quote.basis,
             warm: quote.warm,
             fetch_bytes: quote.fetch_bytes,
-            on_demand_bytes: if quote.fits { job.on_demand_bytes } else { 0 },
             quoted_at_ms: now,
             ready_at_ms: picture.ready_at_ms,
         })
@@ -565,11 +558,7 @@ pub(crate) fn said(offer: &Offer, now: i64) -> String {
         0 => String::new(),
         s => format!("; {s} s preparing{fetch}"),
     };
-    let demand = match offer.on_demand_bytes {
-        0 => String::new(),
-        bytes => format!("; plus up to {} on demand", crate::bytes(bytes as f64)),
-    };
-    format!("{} finishes in {} s ({:?}{warm}{preparing}{demand}){ready}", offer.machine, (offer.finish_at_ms - now).max(0) / 1000, offer.basis)
+    format!("{} finishes in {} s ({:?}{warm}{preparing}){ready}", offer.machine, (offer.finish_at_ms - now).max(0) / 1000, offer.basis)
 }
 
 /// How soon, for people: `in under a minute`, `in about 2 min`, `in about 1.5 h`.

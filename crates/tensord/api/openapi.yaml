@@ -1169,6 +1169,11 @@ components:
         tensorfs:
           description: Ordinary TensorFS connection settings supplied by the caller, forwarded to Runtime.
           oneOf: [{$ref: '#/components/schemas/TensorFSOptions'}, {type: 'null'}]
+        wants:
+          description: >-
+            A warm run's: what its caller planned it to fetch, by slot (`Ahead.wants`). Absent, and for a call: what its
+            function's needs rules say of its payload.
+          oneOf: [{$ref: '#/components/schemas/Wants'}, {type: 'null'}]
         weights_destination:
           type: string
           description: >-
@@ -1225,6 +1230,18 @@ components:
         models: {type: array, items: {$ref: '#/components/schemas/ModelChoice'}}
         lane: {type: string}
         hub: {$ref: '#/components/schemas/HubAccess'}
+        wants: {$ref: '#/components/schemas/Wants'}
+    Wants:
+      type: object
+      description: >-
+        What it fetches, as its caller evaluated its function's needs rules on the request it expects (cl-1103), by slot
+        (`<function>.models.<parameter>`): needed, at its list's order; either (for each function it may call that no rule answers,
+        that one's needed; what they all read is needed); extras, by group, behind them. A slot named in none is never fetched.
+        Absent: its function's rules with no request.
+      properties:
+        needed: {type: array, items: {type: string}}
+        either: {type: array, items: {type: array, items: {type: string}}}
+        extras: {type: array, items: {type: array, prefixItems: [{type: string}, {type: array, items: {type: string}}]}}
     AheadAnswer:
       type: object
       properties: {items: {type: array, items: {$ref: '#/components/schemas/Admitted'}}}

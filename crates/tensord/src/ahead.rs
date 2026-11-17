@@ -91,6 +91,7 @@ pub(crate) fn put(runs: &Arc<Runs>, actor: VerifiedActor, prefix: &'static str, 
                 lane: item.lane,
                 hub: item.hub,
                 tensorfs,
+                wants: item.wants,
                 ..Default::default()
             };
             v1::RunRequest { id: format!("{prefix}{}", item.key), spec }

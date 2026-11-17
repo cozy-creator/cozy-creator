@@ -3,6 +3,11 @@
 //! expression over `request`, the request as JSON with each field it leaves out at its declared default. Calcifer (a quote, what a
 //! box prepares) and TensorD (what a call fetches before it starts) read it here, with one evaluator. A slot with no rule is always
 //! needed, and one whose rule gives no answer for a request is as one with none.
+//!
+//! What a call then wants of its models is one walk here too (`wants`, `resolved`): its slots by the rules' answers and, for a
+//! function that calls others, theirs. Calcifer walks it to quote a call and to tell a machine what to fetch ahead of one (Paul,
+//! 11-17: "calcifer says 'okay, I'm going to send machine-A this request, so I should tell it to download the required files'");
+//! a machine walks it for a call sent with no such word. The two can't disagree on what a request needs.
 #![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
 
@@ -10,6 +15,8 @@ use std::{
     collections::{BTreeSet, HashMap},
     sync::Arc,
 };
+
+use api::machine::Wants;
 
 use api::interface::{Field, Struct, Type};
 use cel::common::ast::{operators, CallExpr, ComprehensionExpr, EntryExpr, Expr, IdedExpr, LiteralValue};
@@ -48,19 +55,8 @@ pub fn rules(entry: &Value) -> Vec<(String, String)> {
     slots.chain(calls).collect()
 }
 
-/// What `entry`'s rules say of the request `sent`; one sent as nothing is its defaults.
+/// What `entry`'s rules say of the request `sent`, as its function gets it bound; one sent as nothing is its defaults.
 pub fn answers(entry: &Value, sent: &Value) -> Answers {
-    answered(entry, sent, true)
-}
-
-/// What `entry`'s rules say of a box's fields as `written`, before its request is bound (a quote's). What only binding knows is
-/// left unknown, so a rule that reads it gives no answer, never a wrong one: the references of a prompt that mentions something,
-/// which the binder finds, and a pickup, which a gesture fills.
-pub fn answers_written(entry: &Value, written: &Value) -> Answers {
-    answered(entry, written, false)
-}
-
-fn answered(entry: &Value, sent: &Value, bound: bool) -> Answers {
     let mut answers = Answers::default();
     let rules = rules(entry);
     if rules.is_empty() {
@@ -68,8 +64,8 @@ fn answered(entry: &Value, sent: &Value, bound: bool) -> Answers {
     }
     let request = match Struct::deserialize(&entry["request"]) {
         Ok(request) => match sent {
-            Value::Object(members) => Value::Object(fields(&request.fields, members, bound)),
-            _ => Value::Object(fields(&request.fields, &Map::new(), bound)),
+            Value::Object(members) => Value::Object(fields(&request.fields, members)),
+            _ => Value::Object(fields(&request.fields, &Map::new())),
         },
         Err(error) => {
             answers.unanswered = rules.into_iter().map(|(name, _)| (name, format!("its request can't be read: {error}"))).collect();
@@ -87,6 +83,167 @@ fn answered(entry: &Value, sent: &Value, bound: bool) -> Answers {
         };
     }
     answers
+}
+
+/// The extras of a function's own on-demand slots, as a group.
+pub const ON_DEMAND: &str = "its on-demand models";
+
+/// What a call of `entrypoint` in the interface `document` wants of its models, by slot, given what its rules say of the request
+/// (`answers`; none, for a call sent with no request). A function that loads models waits for each slot but an on-demand one, and
+/// for one whose rule holds; one whose rule doesn't hold is never fetched; the rest of its on-demand slots are its extras. One that
+/// loads none and calls others (an orchestrator, H3's `generate`): for each function it calls (`callees`), what that one waits for
+/// is waited for when its rule says this request calls it, and is `either` when no rule answers, of which what they all read is
+/// waited for; the rest of each is an extra. A called function's own rules read its own request, which only its call brings: none
+/// of them answers here.
+pub fn wants(document: &Value, entrypoint: &str, answers: &Answers) -> Wants {
+    let mut wants = Wants::default();
+    let Some(entry) = api::interface::entrypoint(document, entrypoint) else { return wants };
+    if !api::interface::models(entry).is_empty() {
+        let (needed, extras) = split(entry, answers);
+        wants.needed = needed;
+        if !extras.is_empty() {
+            wants.extras.push((ON_DEMAND.to_owned(), extras));
+        }
+        return wants;
+    }
+    let unasked = Answers::default();
+    for callee in callees(document, entrypoint, &answers.unneeded) {
+        let Some(entry) = api::interface::entrypoint(document, &callee) else { continue };
+        let (needed, extras) = split(entry, &unasked);
+        match answers.needed.contains(&callee) {
+            true => {
+                wants.needed.extend(needed);
+                if !extras.is_empty() {
+                    wants.extras.push((callee, extras));
+                }
+            }
+            false => {
+                wants.either.push(needed.clone());
+                wants.extras.push((callee, [needed, extras].concat()));
+            }
+        }
+    }
+    wants
+}
+
+/// `entry`'s own slots by `answers`: those it waits for (each but an on-demand one, raw weights too, and one whose rule holds), and
+/// its extras (an on-demand one no rule answers). One whose rule doesn't hold is in neither.
+fn split(entry: &Value, answers: &Answers) -> (Vec<String>, Vec<String>) {
+    let (mut needed, mut extras) = (vec![], vec![]);
+    for slot in api::interface::models(entry) {
+        let Some(path) = api::interface::slot_path(slot) else { continue };
+        let parameter = path.rsplit_once(".models.").map_or(path, |(_, parameter)| parameter);
+        if answers.unneeded.contains(parameter) {
+            continue;
+        }
+        let raw = slot["weights"].as_bool() == Some(true);
+        let on_demand = slot["on_demand"].as_bool() == Some(true);
+        match !on_demand || raw || answers.needed.contains(parameter) {
+            true => needed.push(path.to_owned()),
+            false => extras.push(path.to_owned()),
+        }
+    }
+    (needed, extras)
+}
+
+/// The internal functions of `document` that construct a model and that `entrypoint`, loading none itself, calls: those its `calls`
+/// name (the Runtime's static reading, through its own helpers), and theirs in turn, in its package's order (cl-1077: H3's `edit`
+/// brought `upscale`'s upscaler). One that declares no `calls` may call any of them. One its rules say the request doesn't call
+/// (`uncalled`) is left out, and what only it reaches.
+pub fn callees(document: &Value, entrypoint: &str, uncalled: &BTreeSet<String>) -> Vec<String> {
+    let constructs = |entry: &Value| api::interface::models(entry).iter().any(|slot| slot["weights"].as_bool() != Some(true));
+    let reached = api::interface::entrypoint(document, entrypoint).filter(|entry| entry.get("calls").is_some()).map(|root| {
+        let (mut reached, mut pending) = (BTreeSet::new(), vec![root]);
+        while let Some(entry) = pending.pop() {
+            for called in entry["calls"].as_array().into_iter().flatten().filter_map(|call| call["function"].as_str()) {
+                if std::ptr::eq(entry, root) && uncalled.contains(called) {
+                    continue;
+                }
+                if reached.insert(called.to_owned()) {
+                    pending.extend(api::interface::entrypoint(document, called));
+                }
+            }
+        }
+        reached
+    });
+    api::interface::entrypoints(document)
+        .filter(|entry| api::interface::internal(entry) && constructs(entry))
+        .filter_map(|entry| api::interface::name(entry).map(str::to_owned))
+        .filter(|name| reached.as_ref().is_none_or(|reached| reached.contains(name)))
+        .collect()
+}
+
+/// Checkpoints by their id, each with the components read of it (none: all of it).
+pub type Selected = Vec<(String, Vec<String>)>;
+
+/// `Wants` as checkpoints: what the call waits for, and its extras by group.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Resolved {
+    pub needed: Selected,
+    pub extras: Vec<(String, Selected)>,
+}
+
+/// `wants` as checkpoints, each slot by `resolve` (its checkpoint and the components read of it; none: it reads nothing here): what
+/// the call waits for is what every function of its `either` reads, each one resolved whole (one that doesn't is left out), and
+/// each needed slot's; then each group of extras. Each checkpoint once in each, with the components any of its slots reads.
+pub fn resolved(wants: &Wants, resolve: impl Fn(&str) -> Option<(String, Vec<String>)>) -> Resolved {
+    let selected = |slots: &[String]| {
+        let mut selected = Selected::new();
+        joined(&mut selected, slots.iter().filter_map(|slot| resolve(slot.as_str())).collect());
+        selected
+    };
+    let each: Vec<Selected> = (wants.either.iter())
+        .filter_map(|slots| slots.iter().map(|slot| resolve(slot.as_str())).collect::<Option<Selected>>())
+        .map(|all| {
+            let mut one = Selected::new();
+            joined(&mut one, all);
+            one
+        })
+        .collect();
+    let mut needed = shared_of(&each);
+    joined(&mut needed, selected(wants.needed.as_slice()));
+    let extras = (wants.extras.iter())
+        .map(|(group, slots)| (group.clone(), selected(slots.as_slice())))
+        .filter(|(_, selected)| !selected.is_empty())
+        .collect();
+    Resolved { needed, extras }
+}
+
+/// What the checkpoints and components of `each` all share. No components names a whole checkpoint.
+fn shared_of(each: &[Selected]) -> Selected {
+    let holds = |list: &Selected, header: &str, component: Option<&str>| {
+        list.iter().any(|(held, components)| held == header && (components.is_empty() || component.is_none_or(|component| components.iter().any(|c| c == component))))
+    };
+    let mut shared: Selected = vec![];
+    for (header, components) in each.first().into_iter().flatten() {
+        let names: Vec<Option<&str>> = match components.is_empty() {
+            true => vec![None],
+            false => components.iter().map(|component| Some(component.as_str())).collect(),
+        };
+        for component in names.into_iter().filter(|component| each.iter().all(|list| holds(list, header, *component))) {
+            match (shared.iter_mut().find(|(held, _)| held == header), component) {
+                (Some((_, components)), Some(component)) => components.push(component.to_owned()),
+                (Some((_, components)), None) => components.clear(),
+                (None, _) => shared.push((header.clone(), component.map(str::to_owned).into_iter().collect())),
+            }
+        }
+    }
+    shared
+}
+
+/// `more` added to `into`: each checkpoint once, with the components either reads (none: all of it).
+fn joined(into: &mut Selected, more: Selected) {
+    for (checkpoint, components) in more {
+        match into.iter_mut().find(|(held, _)| *held == checkpoint) {
+            Some((_, held)) if components.is_empty() => held.clear(),
+            Some((_, held)) if held.is_empty() => {}
+            Some((_, held)) => {
+                let new: Vec<String> = components.into_iter().filter(|component| !held.contains(component)).collect();
+                held.extend(new);
+            }
+            None => into.push((checkpoint, components)),
+        }
+    }
 }
 
 /// Each rule of the interface `document` that can't be read against its function's request, in words: a package with one isn't
@@ -116,29 +273,26 @@ pub fn faults(document: &Value) -> Vec<String> {
 }
 
 /// `sent` as a rule reads it: each field it leaves out at its declared default, at any depth, and a prompt sent as words alone as
-/// its text with no references. A field with no default that isn't sent stays out. Not `bound` (a box's fields as written): a
-/// prompt that mentions something stays its words, its references unknown, and a pickup not written stays out, unknown.
-fn fields(declared: &[Field], sent: &Map<String, Value>, bound: bool) -> Map<String, Value> {
+/// its text with no references. A field with no default that isn't sent stays out.
+fn fields(declared: &[Field], sent: &Map<String, Value>) -> Map<String, Value> {
     let mut filled = sent.clone();
     for field in declared {
-        let gesture = !bound && matches!(field.ty.plain(), Type::Pickup(_));
-        if let Some(held) = sent.get(&field.name).or(field.default.as_ref().filter(|_| !gesture)) {
-            filled.insert(field.name.clone(), typed(&field.ty, held, bound));
+        if let Some(held) = sent.get(&field.name).or(field.default.as_ref()) {
+            filled.insert(field.name.clone(), typed(&field.ty, held));
         }
     }
     filled
 }
 
-fn typed(ty: &Type, held: &Value, bound: bool) -> Value {
+fn typed(ty: &Type, held: &Value) -> Value {
     match (ty, held) {
-        (Type::Struct(inner) | Type::Pickup(inner), Value::Object(members)) => Value::Object(fields(&inner.fields, members, bound)),
-        (Type::Media { extras, .. }, Value::Object(members)) => Value::Object(fields(&extras.fields, members, bound)),
-        (Type::List(item), Value::Array(items)) => Value::Array(items.iter().map(|held| typed(item, held, bound)).collect()),
+        (Type::Struct(inner) | Type::Pickup(inner), Value::Object(members)) => Value::Object(fields(&inner.fields, members)),
+        (Type::Media { extras, .. }, Value::Object(members)) => Value::Object(fields(&extras.fields, members)),
+        (Type::List(item), Value::Array(items)) => Value::Array(items.iter().map(|held| typed(item, held)).collect()),
         (Type::Map(item), Value::Object(members)) => {
-            Value::Object(members.iter().map(|(name, held)| (name.clone(), typed(item, held, bound))).collect())
+            Value::Object(members.iter().map(|(name, held)| (name.clone(), typed(item, held))).collect())
         }
-        // Written words that mention nothing have no references; a mention's file is the binder's to find.
-        (Type::Prompt(_), Value::String(text)) if bound || !text.contains('<') => serde_json::json!({"text": text, "references": []}),
+        (Type::Prompt(_), Value::String(text)) => serde_json::json!({"text": text, "references": []}),
         (Type::Prompt(_), Value::Object(members)) => {
             let mut prompt = members.clone();
             prompt.entry("text").or_insert_with(|| Value::String(String::new()));
@@ -147,7 +301,7 @@ fn typed(ty: &Type, held: &Value, bound: bool) -> Value {
         }
         (Type::Union { .. }, Value::Null) => Value::Null,
         // `T | None`, set: as `T`.
-        (Type::Union { .. }, held) if !std::ptr::eq(ty.plain(), ty) => typed(ty.plain(), held, bound),
+        (Type::Union { .. }, held) if !std::ptr::eq(ty.plain(), ty) => typed(ty.plain(), held),
         (_, held) => held.clone(),
     }
 }

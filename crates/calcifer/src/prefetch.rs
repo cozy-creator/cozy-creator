@@ -95,9 +95,10 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// A prepare item's identity: what it makes ready, the same however many boxes or jobs ask it.
+/// A prepare item's identity: what it makes ready, the same however many boxes or jobs ask it. What its rules say it fetches is part of
+/// it (cl-1103): a draft edited to need another model is another item, so its machine ends what only the old one wanted.
 fn identity(item: &v1::Ahead) -> String {
-    let shape = serde_json::json!([item.source, item.entrypoint, item.models, item.lane]);
+    let shape = serde_json::json!([item.source, item.entrypoint, item.models, item.lane, item.wants]);
     let digest = Sha256::digest(shape.to_string().as_bytes());
     digest.iter().take(12).map(|byte| format!("{byte:02x}")).collect()
 }

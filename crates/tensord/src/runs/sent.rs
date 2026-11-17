@@ -206,6 +206,8 @@ fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAc
             })
             .collect(),
         models,
+        // A warm run fetches what its caller walked for it; a call is walked here, from its own request (cl-1103).
+        wants: spec.wants.filter(|_| warm),
         attention_kernel: spec.attention_kernel,
         attention_capture: spec.attention_capture,
         gpus: spec.gpus,

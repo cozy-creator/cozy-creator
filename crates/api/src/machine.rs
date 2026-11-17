@@ -476,6 +476,39 @@ pub struct RunSpec {
     /// the lane its commit is labelled. The package's own children inherit it; another
     /// package's take none.
     pub lane: String,
+    /// A warm run's: what its caller planned it to fetch, by slot (`Ahead::wants`). Absent: what its function's needs rules say
+    /// of its payload, as for a call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wants: Option<Wants>,
+}
+
+/// What a call wants of its models, by slot (`<function>.models.<parameter>`), as its function's needs rules say of its request
+/// (cl-1103, `needs::wants`): the slots it waits for before it starts; for each function it may call that no rule answers for, the
+/// slots that one waits for, of which what they all read is waited for; and what it may read besides, by group, fetched only in the
+/// background. A slot named in none is never fetched for it. Each side reads a slot's components from its declaration and resolves
+/// it to a checkpoint itself: Calcifer by its Hub card, to quote it; a machine for its lane and store, to fetch it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Wants {
+    pub needed: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub either: Vec<Vec<String>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub extras: Vec<(String, Vec<String>)>,
+}
+
+impl Wants {
+    /// Each function a slot of it belongs to, once, in the order first named.
+    pub fn functions(&self) -> Vec<&str> {
+        let slots = self.needed.iter().chain(self.either.iter().flatten()).chain(self.extras.iter().flat_map(|(_, slots)| slots));
+        let mut functions: Vec<&str> = vec![];
+        for function in slots.filter_map(|slot| slot.split_once(".models.").map(|(function, _)| function)) {
+            if !functions.contains(&function) {
+                functions.push(function);
+            }
+        }
+        functions
+    }
 }
 
 /// The caller's provider tokens, for models a run makes from a provider source.
@@ -949,6 +982,11 @@ pub struct Ahead {
     pub lane: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hub: Option<HubAccess>,
+    /// What it fetches, as its caller evaluated its function's needs rules on the request it expects (cl-1103; Paul, 11-17: "calcifer
+    /// says 'okay, I'm going to send machine-A this request, so I should tell it to download the required files'"): its needed slots
+    /// at its list's order, its extras behind them, and no slot its rules exclude. Absent: its function's rules with no request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wants: Option<Wants>,
 }
 
 /// What a list came to: each item as a run would be admitted, in its order.
@@ -983,10 +1021,6 @@ pub struct EstimateJob {
     /// is then Measured. 0: runs elsewhere.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub prior_runs: u32,
-    /// Of its weights fetched only when the function first reads them (on demand), the most it may download, beside those it waits for
-    /// before it starts: in no time, as a quote can't know which it reads (cl-1071).
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub on_demand_bytes: u64,
     /// The soonest it can start, ms from now: when what it reads is made.
     #[serde(skip_serializing_if = "is_zero")]
     pub after_ms: u64,

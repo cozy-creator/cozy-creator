@@ -10,11 +10,12 @@
 //! would finish it clearly sooner (`plan::clearly_sooner`), and its render stays there by the same rule (`Walk::plan`), so the
 //! machine made ready is the one Render picks.
 //!
-//! What a guess needs (`item`) is read here from the function's published interface and the box's draft request, with nothing
-//! installed and no package code run (`Host::foreseen`): today its model slots with the box's choices, whose static `components=`
-//! and `on_demand` declarations its machine reads from the release's card before it installs anything (`tensord::Runs::early`).
-//! This is the one place that changes when the interface carries needs rules evaluated against the request (cl-1103) and a call's
-//! needs less what its machine has are one computation (cl-1102): `item` then sends that result.
+//! What a guess fetches (`item`) is decided here, with nothing installed and no package code run (`Host::foreseen`, cl-1103; Paul,
+//! 11-17: "calcifer says 'okay, I'm going to send machine-A this request, so I should tell it to download the required files'"): the
+//! function's needs rules, from its published interface, evaluated on the box's draft request as its render would send it
+//! (`Asking::request`), walked as its machine walks a call (`needs::wants`). The item carries that walk by slot; its machine resolves
+//! each slot for its lane and store and fetches the needed ones, then the extras, never a slot the rules exclude. An edit that changes
+//! what the rules say changes the item: its machine drops what only the old one wanted and fetches the new.
 use std::{
     sync::{Arc, LazyLock, atomic::Ordering},
     time::Duration,
@@ -24,7 +25,7 @@ use api::{calcifer::On, error::Error, machine as v1};
 use serde_json::{Map, Value};
 use tokio::sync::watch;
 
-use super::{Doc, PackageRead, Project, host::{Host, Renderer}, job_of};
+use super::{Asking, PackageRead, Project, host::{Host, Renderer}, job_of};
 use crate::{api::Api, placement, plan, prefetch::Guess, store::now_ms};
 
 /// What's typed settles this long before it's guessed again.
@@ -110,8 +111,10 @@ async fn guesses_in(api: &Arc<Api>, project: &Arc<Project>) -> Vec<Guess> {
     if project.require_view().is_err() {
         return vec![];
     }
+    // What each box's render would send, which its function's needs rules read (cl-1103).
+    let Some(asking) = Asking::of(&project.folder) else { return vec![] };
     let boxes: Vec<Boxed> = {
-        let Ok(doc) = Doc::load(&project.folder) else { return vec![] };
+        let doc = &asking.doc;
         // What a render of everything would make: each box with a tool of a package, not approved.
         (doc.order.iter().copied())
             .filter(|&i| doc.makes(i) && doc.tool(i).is_none() && doc.assets[i].pin.is_none())
@@ -124,14 +127,15 @@ async fn guesses_in(api: &Arc<Api>, project: &Arc<Project>) -> Vec<Guess> {
     }
     let Ok(on) = crate::runs::unnamed_set(api, Some(&project.id)).await else { return vec![] };
     let (hub, host, folder) = (api.machines.hubs.default_origin(), Host::new(api), project.folder.dir.to_string_lossy().into_owned());
-    let each = boxes.into_iter().map(|boxed| Box::pin(guess(api, project, &host, &hub, &folder, on.clone(), boxed)));
+    let each = boxes.into_iter().map(|boxed| Box::pin(guess(api, project, &host, &hub, &folder, on.clone(), boxed, &asking)));
     futures_util::future::join_all(each).await.into_iter().flatten().collect()
 }
 
 /// The guess for one box: none when no machine that serves now could run it, or its package says nothing to run.
-async fn guess(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, folder: &str, on: Vec<On>, boxed: Boxed) -> Option<Guess> {
+#[allow(clippy::too_many_arguments)]
+async fn guess(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, folder: &str, on: Vec<On>, boxed: Boxed, asking: &Asking) -> Option<Guess> {
     let (name, with, kind, made, media) = boxed;
-    let read = job_of(host, &project.folder.dir, name.clone(), on, hub, &with, made.clone(), PackageRead::Foreseen);
+    let read = job_of(host, &project.folder.dir, name.clone(), on, hub, &with, made.clone(), PackageRead::Foreseen, Some((asking, name.as_str())));
     let mut job = tokio::time::timeout(READ, read).await.ok()?.ok()??;
     job.size.refs = Some(media);
     let (offers, _) = placement::offers_now(api, std::slice::from_ref(&job)).await;
@@ -146,16 +150,16 @@ async fn guess(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, f
         _ => soonest,
     };
     let On::Machine(machine) = &chosen.machine else { return None };
-    let (item, function) = item(api, host, project, hub, &with, &kind, &made, &chosen.machine).await.ok()??;
+    let (item, function) = item(api, host, project, hub, (name.as_str(), with.as_str(), kind.as_str(), &made), &chosen.machine, asking).await.ok()??;
     Some(Guess { project: Arc::downgrade(project), asset: name, machine: machine.clone(), hub: hub.to_owned(), item, function })
 }
 
-/// What `machine` has ready for a box of `kind` whose tool is `with` (`PUT /v1/prepare`): the function its text names, else the first
-/// of its package that makes this kind, with the box's model choices; and the function, as its row says it. Its package is read
-/// statically, nothing installed to read it (`Host::foreseen`). None: its package makes nothing of the kind, or it is an encrypted
-/// project's local code, which goes with the run that calls it.
-#[allow(clippy::too_many_arguments)]
-async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, with: &str, kind: &str, made: &Map<String, Value>, machine: &On) -> Result<Option<(v1::Ahead, String)>, Error> {
+/// What `machine` has ready for box `name` of `kind` whose tool is `with` (`PUT /v1/prepare`): the function its text names, else the
+/// first of its package that makes this kind, with the box's model choices and what its needs rules say its render needs of its
+/// models (`wants`, cl-1103); and the function, as its row says it. Its package is read statically, nothing installed to read it
+/// (`Host::foreseen`). None: its package makes nothing of the kind, or it is an encrypted project's local code, which goes with the
+/// run that calls it.
+async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, with, kind, made): (&str, &str, &str, &Map<String, Value>), machine: &On, asking: &Asking) -> Result<Option<(v1::Ahead, String)>, Error> {
     let dir = &project.folder.dir;
     let package = host.foreseen(hub, with, dir, std::slice::from_ref(machine)).await?;
     let Some(renderer) = package.first_making(kind) else { return Ok(None) };
@@ -170,7 +174,9 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, with: &
             v1::Source::Local(v1::LocalSource { manifest: package.manifest.clone() })
         }
     };
-    let item = v1::Ahead { source: Some(source), entrypoint: renderer.function.clone(), models, ..Default::default() };
+    let request = asking.request(name, &package, &renderer.function);
+    let wants = Some(super::wants(&package, &renderer.function, request.as_ref()));
+    let item = v1::Ahead { source: Some(source), entrypoint: renderer.function.clone(), models, wants, ..Default::default() };
     Ok(Some((item, package.name.clone() + "/" + &renderer.function)))
 }
 
