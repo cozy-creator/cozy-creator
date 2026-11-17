@@ -1969,17 +1969,17 @@ impl Pool {
         idle.sort_by_key(|(_, used)| *used);
         idle
     }
-    /// Each busy executor that lets an idle construction go (`release`), with the models its calls run on and each idle
-    /// construction's, by their headers' digests (a view's, its base's): what its holds in the store are for (tfs-303).
+    /// Each executor that lets an idle construction go (`release`), with the models its calls run on and each idle
+    /// construction's, by their headers' digests (a view's, its base's): what its holds in the store are for (tfs-303). An
+    /// idle one is listed too: one taken for a call as it is ended lets go instead (e2e 44063971753).
     pub(crate) fn busy_models(&self) -> BTreeMap<u32, BusyModels> {
-        let idle: std::collections::BTreeSet<u32> = self.idle_executors().into_iter().flat_map(|(pids, _)| pids).collect();
         let header = |manifest: &String| match crate::storage::view(manifest) {
             Some(view) => view.recipe.base.trim_start_matches("sha256:").to_owned(),
             None => manifest.trim_start_matches("sha256:").to_owned(),
         };
         let models = self.models.lock().unwrap();
         (models.iter())
-            .filter(|(pid, entry)| entry.line.is_some() && !idle.contains(*pid))
+            .filter(|(_, entry)| entry.line.is_some())
             .map(|(pid, entry)| {
                 let (live, idle): (Vec<_>, Vec<_>) = entry.constructions.iter().partition(|(c, _)| entry.live.contains_key(*c));
                 let live = live.into_iter().flat_map(|(_, manifests)| manifests.iter().map(header)).collect();

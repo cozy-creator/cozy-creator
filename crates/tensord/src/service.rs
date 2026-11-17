@@ -575,7 +575,7 @@ impl Service {
                 (ended, can) = (with, more);
             }
         }
-        for (pid, models) in &busy {
+        for (pid, models) in busy.iter().filter(|(pid, _)| !ended.contains(*pid)) {
             for construction in models.idle.keys() {
                 if can >= need {
                     break;
@@ -587,12 +587,19 @@ impl Service {
                     (released, can) = (with, more);
                 }
             }
-            // A model two idle constructions read goes only with both.
+            // A model two idle constructions read goes only with both; then each that frees nothing more stays.
             if can < need {
                 let mut with = released.clone();
                 with.extend(models.idle.keys().map(|c| (*pid, c.clone())));
                 let more = freed(&ended, &with);
                 if more > can {
+                    for construction in models.idle.keys() {
+                        let pair = (*pid, construction.clone());
+                        with.remove(&pair);
+                        if freed(&ended, &with) < more {
+                            with.insert(pair);
+                        }
+                    }
                     (released, can) = (with, more);
                 }
             }
@@ -609,6 +616,10 @@ impl Service {
         }
         if !names.is_empty() {
             tracing::warn!("the disk is short of {}: executors let go of {}", crate::reclaim::size(need), names.join(", "));
+        } else if can < need {
+            let busy: Vec<String> = busy.iter().map(|(pid, models)| format!("{pid}: {} idle", models.idle.len())).collect();
+            tracing::info!("the disk is short of {}: no executor's models would give it ({} of it free now; executors {})",
+                crate::reclaim::size(need), crate::reclaim::size(can), busy.join(", "));
         }
         // What a busy executor let go leaves the store's holds once it closes them.
         let deadline = std::time::Instant::now() + RELEASE_WAIT;
