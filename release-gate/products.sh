@@ -3,7 +3,7 @@
 # Qwen-Image's edits its render) falls back to the gate's reference when that one did not run. The describer reads the
 # checked-in ref/seed.jpg, so both arms of a comparison caption the same picture.
 PRODUCTS=(minimax-h3 seedvr2 sdxl flux.3-klein qwen-image-2 anima birefnet qwen3.5 fibo-2 hidream-o1 moss-image qwen-image
-  flux-2 ideogram-4 krea-2 hunyuan-image-3)
+  flux-2 ideogram-4 krea-2 minimax-h3-image hunyuan-image-3)
 # --first runs these packages before the rest, in its order: a clean standalone number before models stack.
 [ -z "$FIRST" ] || mapfile -t PRODUCTS < <(tr , '\n' <<< "$FIRST"; printf '%s\n' "${PRODUCTS[@]}" | grep -vxF -f <(tr , '\n' <<< "$FIRST"))
 product() {
@@ -177,6 +177,18 @@ product_ideogram_4() {
     seed:=$((R + 26))
 }
 product_krea_2() { cell krea "$(pkg krea-2 generate)" prompt="$CHAR under a neon sign that reads \"NIGHT MARKET\", photo" seed:=$((R + 27)); }
+# MiniMax-H3-Image (se-146): text to image, then its default edit: two pictures, its prompt expander on. cr-331, Paul 11-17
+# ("inference-fits-any-memory"): a refusal to fit is a bug; the Runtime pages and tries, and never refuses a call that can
+# run. Runtime 0.47.0 failed that edit `does_not_fit` on a 4090 (SP146-6/7/9): the expander prefilled with its whole decode
+# set leased (21.4 GiB) beside 1.2 GiB of decode slots, its vision tower's split found no room, and that refusal ended the
+# call where a refused allocation streams it. Red on a card with 22.7-23.6 GiB of room (a 4090 with 22.8); with less
+# (22.5), the slots were refused first and it ran.
+product_minimax_h3_image() {
+  cell h3i "$(pkg minimax-h3-image generate)" instructions="$SCENE, photo" seed:=$((R + 35))
+  cell h3i-edit "$(pkg minimax-h3-image generate)" seed:=$((R + 36)) \
+    instructions="Put <Hero> on the rocks below <Lighthouse>, in its light and weather" \
+    references:="[{\"name\": \"Hero\", \"image\": \"${K:-$REF}\"}, {\"name\": \"Lighthouse\", \"image\": \"$REF\"}]"
+}
 # HunyuanImage 3.0's 80B experts page about 85 GB a step through a 24 GB card and wedged there (se-079): only by --only
 # (hunyuan, hunyuan-refs or hunyuan-image-3), on a card of 48 GB or more (rtx-pro-6000, a100-80gb).
 product_hunyuan_image_3() {
