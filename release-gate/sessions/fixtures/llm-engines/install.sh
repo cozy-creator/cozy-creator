@@ -10,6 +10,8 @@ for what in "$@"; do
   case $what in
     vllm) uv venv -q --clear -p 3.12 /w/vllm && uv pip install -p /w/vllm/bin/python vllm --torch-backend=auto && links vllm ;;
     sglang) uv venv -q --clear -p 3.12 /w/sglang && uv pip install -p /w/sglang/bin/python "sglang[all]" --torch-backend=auto && links sglang ;;
+    # cozy_vllm (this folder's, copied to /w/plugin): vLLM reading Cozy's lanes from the machine's TensorFS store.
+    plugin) uv pip install -p /w/vllm/bin/python "tensorfs==${TENSORFS_VERSION:-0.25.1}" -e /w/plugin ;;
     llamacpp)
       mkdir -p /w/llamabin && cd /w/llamabin &&
         curl -sfL -o l.tgz https://github.com/ggml-org/llama.cpp/releases/download/b12466/llama-b12466-bin-ubuntu-cuda-12.8-x64.tar.gz &&
@@ -22,6 +24,7 @@ for what in "$@"; do
     m27b-nvfp4) hf download nvidia/Qwen3.8-27B-NVFP4 --local-dir /w/models/27b-nvfp4 ;;
     m27b-q4) hf download ggml-org/Qwen3.8-27B-GGUF Qwen3.8-27B-Q4_K_M.gguf mmproj-Qwen3.8-27B-Q8_0.gguf mtp-Qwen3.8-27B-Q8_0.gguf --local-dir /w/models/27b-q4 ;;
     m27b-fp8) hf download Qwen/Qwen3.6-27B-FP8 --local-dir /w/models/27b-fp8 ;;
+    m27b-fp8q) hf download Qwen/Qwen3.8-27B-FP8 --local-dir /w/models/27b-fp8 ;;
     m27b-gguf) hf download ggml-org/Qwen3.6-27B-GGUF Qwen3.6-27B-Q8_0.gguf mmproj-Qwen3.6-27B-Q8_0.gguf mtp-Qwen3.6-27B-Q8_0.gguf --local-dir /w/models/27b-gguf ;;
     *) echo "unknown $what"; continue ;;
   esac

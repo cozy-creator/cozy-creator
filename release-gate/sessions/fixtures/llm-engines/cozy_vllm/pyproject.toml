@@ -1,0 +1,14 @@
+[project]
+name = "cozy-vllm"
+version = "0.0.1"
+requires-python = ">=3.11"
+
+[project.entry-points."vllm.general_plugins"]
+cozy = "cozy_vllm:register"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["cozy_vllm"]
