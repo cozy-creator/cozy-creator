@@ -45,6 +45,9 @@ struct Wheel {
     sha256: String,
     name: String,
     length: u64,
+    /// The Hub index's namespace a lock took it from (`…/v1/index/<namespace>/simple/`); empty for a release's own.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    namespace: String,
 }
 
 /// What is kept of a release: its card, and the wheels its lock takes from its Hub's indexes (other cozy packages).
@@ -144,7 +147,9 @@ pub(crate) fn keep_behind(api: &Arc<Api>, hub: &str, package: &str, release: &st
 async fn keep(api: &Arc<Api>, hub: &str, package: &str, release: &str) -> Result<(), Error> {
     let (org, name) = package.split_once('/').ok_or_else(|| Error::new(Kind::Usage, "package_ref_invalid", package.to_owned()))?;
     let hubs = &api.machines.hubs;
-    let plan = hubs.reader(hub)?.get_package_download_plan(org, name, release, None, Some(std::env::consts::ARCH)).await
+    let reader = hubs.reader(hub)?;
+    let signed_in = matches!(reader.credential(), ::api::hub::Credential::User(_));
+    let plan = reader.get_package_download_plan(org, name, release, None, Some(std::env::consts::ARCH)).await
         .map_err(|e| e.refusal(|| "cozy login <email>".into()))?;
     let unread = |what: &str| Error::new(Kind::Unavailable, "release_plan_invalid", format!("its install plan's {what} doesn't read"));
     if plan.release != release {
@@ -159,6 +164,7 @@ async fn keep(api: &Arc<Api>, hub: &str, package: &str, release: &str) -> Result
         sha256: file.digest.trim_start_matches("sha256:").to_ascii_lowercase(),
         name: file.path.rsplit('/').next().unwrap_or(&file.path).to_owned(),
         length: file.length.try_into().unwrap_or(0),
+        namespace: String::new(),
     });
     let card = Card {
         interface,
@@ -177,7 +183,10 @@ async fn keep(api: &Arc<Api>, hub: &str, package: &str, release: &str) -> Result
         return Ok(());
     }
     // The Hub's own files under a private CA (a test Hub's), as its machines trust it.
-    let roots = hubs.facts(&Origin::parse(hub)?).await.ok().map(|facts| facts.ca().to_vec()).filter(|der| !der.is_empty()).map(|der| pem(&der));
+    let roots = match signed_in {
+        true => hubs.facts(&Origin::parse(hub)?).await.ok().map(|facts| facts.ca().to_vec()).filter(|der| !der.is_empty()).map(|der| pem(&der)),
+        false => None,
+    };
     for wheel in all {
         let digest: Digest = format!("sha256:{}", wheel.sha256).parse().map_err(|_| unread("wheel digest"))?;
         if crate::runs::files::held(&digest).is_some() {
@@ -221,19 +230,29 @@ fn indexed(lock: &str) -> Vec<Wheel> {
     #[derive(Deserialize)]
     struct LockedWheel {
         url: Option<String>,
+        path: Option<String>,
         hash: Option<String>,
         size: Option<u64>,
     }
     let Ok(lock) = toml::from_str::<Lock>(lock) else { return vec![] };
-    let indexed = |row: &Row| row.source.get("registry").and_then(toml::Value::as_str).is_some_and(|registry| registry.contains("/v1/index/"));
-    (lock.package.iter().filter(|row| indexed(row)))
-        .filter_map(|row| match row.wheels.as_slice() {
-            [LockedWheel { url: Some(url), hash: Some(hash), size }] => Some(Wheel {
-                url: url.clone(),
-                sha256: hash.trim_start_matches("sha256:").to_ascii_lowercase(),
-                name: url.rsplit('/').next().unwrap_or_default().to_owned(),
-                length: size.unwrap_or(0),
-            }),
+    let namespace = |row: &Row| {
+        let registry = row.source.get("registry")?.as_str()?;
+        let namespace = registry.split_once("/v1/index/")?.1.trim_end_matches('/').strip_suffix("/simple")?;
+        (!namespace.is_empty() && !namespace.contains('/')).then(|| namespace.to_owned())
+    };
+    (lock.package.iter())
+        .filter_map(|row| match (namespace(row)?, row.wheels.as_slice()) {
+            // A Hub's index answers a URL; the index this computer holds offline (`offline_index`), a path.
+            (namespace, [LockedWheel { url, path, hash: Some(hash), size }]) => {
+                let at = url.as_ref().or(path.as_ref())?;
+                Some(Wheel {
+                    url: at.clone(),
+                    sha256: hash.trim_start_matches("sha256:").to_ascii_lowercase(),
+                    name: at.rsplit(['/', '\\']).next().unwrap_or_default().to_owned(),
+                    length: size.unwrap_or(0),
+                    namespace,
+                })
+            }
             _ => None,
         })
         .collect()
@@ -250,6 +269,51 @@ pub(crate) fn indexed_held(lock: &str) -> Vec<(String, StagedInput, u64)> {
             Some((wheel.name, StagedInput { path, digest, length }, length))
         })
         .collect()
+}
+
+/// Where a lock with the Hub unreachable reads the cozy packages this computer holds (`offline_index`).
+pub(crate) const OFFLINE: &str = ".simple";
+
+/// A PEP 503 index on disk of the wheels of `namespace` at `hub` this computer holds, `file://…/.simple/v1/index/<namespace>/simple/`:
+/// what a lock reads with the Hub unreachable (cl-1127), as the Hub's own index answers `no-store`, which uv keeps nothing of. Its
+/// rows name the namespace as the Hub's do, and each wheel by its hash. None: it holds none of them.
+pub(crate) fn offline_index(home: &Home, hub: &str, namespace: &str) -> Option<String> {
+    let root = hub_dir(home, hub);
+    let mut wheels: BTreeMap<String, Vec<Wheel>> = BTreeMap::new();
+    let dirs = |dir: &std::path::Path| fs::read_dir(dir).into_iter().flatten().flatten().filter(|entry| entry.path().is_dir()).collect::<Vec<_>>();
+    for org in dirs(&root).into_iter().filter(|org| org.file_name() != OFFLINE) {
+        for name in dirs(&org.path()) {
+            for record in fs::read_dir(name.path()).into_iter().flatten().flatten() {
+                let Some(kept) = fs::read(record.path()).ok().and_then(|bytes| serde_json::from_slice::<Kept>(&bytes).ok()) else { continue };
+                let own = (org.file_name().to_string_lossy() == namespace).then_some(&kept.card.wheels).into_iter().flatten();
+                for wheel in own.chain(kept.indexed.iter().filter(|wheel| wheel.namespace == namespace)) {
+                    let distribution = crate::local_code::distribution(wheel.name.split('-').next().unwrap_or_default());
+                    wheels.entry(distribution).or_default().push(wheel.clone());
+                }
+            }
+        }
+    }
+    let simple = root.join(OFFLINE).join("v1").join("index").join(namespace).join("simple");
+    let mut any = false;
+    for (distribution, mut held) in wheels {
+        held.sort_by(|a, b| a.name.cmp(&b.name));
+        held.dedup_by(|a, b| a.sha256 == b.sha256);
+        let dir = simple.join(&distribution);
+        let mut page = String::from("<!DOCTYPE html><html><body>\n");
+        for wheel in held {
+            let Ok(digest) = format!("sha256:{}", wheel.sha256).parse::<Digest>() else { continue };
+            let (Some(from), false) = (crate::runs::files::held(&digest), wheel.name.contains(['/', '\\'])) else { continue };
+            let to = dir.join(&wheel.name);
+            let placed = to.is_file() || (fs::create_dir_all(&dir).is_ok() && (fs::hard_link(&from, &to).is_ok() || fs::copy(&from, &to).is_ok()));
+            if placed {
+                page.push_str(&format!("<a href=\"{0}#sha256={1}\">{0}</a>\n", wheel.name, wheel.sha256));
+                any = true;
+            }
+        }
+        page.push_str("</body></html>\n");
+        let _ = fs::create_dir_all(&dir).and_then(|()| fs::write(dir.join("index.html"), page));
+    }
+    any.then(|| url::Url::from_directory_path(&simple).ok().map(String::from)).flatten()
 }
 
 fn pem(der: &[u8]) -> String {

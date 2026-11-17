@@ -398,7 +398,8 @@ pub(crate) async fn locked(hubs: &Hubs, hub: &Origin, project: &Project, within:
                 (project.hub_sources.iter())
                     .map(|name| {
                         let namespace = locked.get(name).cloned().unwrap_or_else(|| api::names::ROOT.to_owned());
-                        let url = super::held::index(hubs.home(), hub.as_str(), &namespace);
+                        let url = super::held::offline_index(hubs.home(), hub.as_str(), &namespace)
+                            .unwrap_or_else(|| super::held::index(hubs.home(), hub.as_str(), &namespace));
                         (name.clone(), (namespace, url))
                     })
                     .collect()

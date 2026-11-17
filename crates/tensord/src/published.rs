@@ -1188,7 +1188,17 @@ impl Publisher {
         let card = self.card(service, actor, request, &release, &catalog)?;
         // An earlier environment of this release (another SDK's): the Runtime pair it holds.
         let earlier = self.earlier(service, actor, request, &release);
-        let locked = read_lock(&card.pyproject, &card.lock, Some(source))?;
+        let mut locked = read_lock(&card.pyproject, &card.lock, Some(source))?;
+        // Sent by its controller (cl-1127): the cozy packages its lock takes from a Hub index come from the store, which it wrote them
+        // to, wherever their URLs point; uv reads none of them.
+        if request.card.is_some() {
+            let indexed: Vec<HubFile> = std::mem::take(&mut locked.indexed);
+            for file in indexed.into_iter().filter(|file| self.held_file(file)) {
+                if !locked.hub.iter().any(|held| held.sha256 == file.sha256) {
+                    locked.hub.push(file);
+                }
+            }
+        }
         let before = earlier.and_then(|dir| fs::read(dir.join("generation.json")).ok())
             .and_then(|raw| serde_json::from_slice::<crate::catalog::Generation>(&raw).ok())
             .map(|record| record.dependencies.into_iter().map(|d| (normalized(&d.name), d.version)).collect());
@@ -2319,6 +2329,8 @@ pub(crate) struct Locked {
     git: Vec<String>,
     local: Vec<String>,
     hub: Vec<HubFile>,
+    /// Every row from a Hub index with one wheel, wherever its URL is: a sent card's rows the store holds (cl-1127).
+    indexed: Vec<HubFile>,
     /// The Hub namespace each row from a Hub index takes it from (`…/v1/index/<namespace>/simple/`), by name.
     namespaces: BTreeMap<String, String>,
     /// Each package it names, at its version.
@@ -2415,6 +2427,9 @@ pub(crate) fn read_lock(pyproject: &str, lock: &str, source: Option<&hub::Source
             .filter(|namespace| !namespace.is_empty() && !namespace.contains('/'));
         if let Some(namespace) = namespace {
             locked.namespaces.insert(name.clone(), namespace.to_owned());
+            if let [Wheel { url: Some(url), hash: Some(hash), size }] = row.wheels.as_slice() {
+                locked.indexed.extend(HubFile::new(url, hash, url.rsplit('/').next().unwrap_or_default(), *size));
+            }
         }
         let local = ["directory", "editable", "path"].iter().any(|key| row.source.contains_key(*key));
         if row.source.contains_key("git") {
