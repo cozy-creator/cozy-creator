@@ -443,7 +443,7 @@ cat "$OUT/ondemand-need.timeline.json"
 while read -r why; do check "ondemand-need: $why"; done < "$OUT/ondemand-need.failed"
 }
 
-# cl-1117 (the release coordinator, 11-17, on Paul's rule that extras are never in a request's way): "hold background extras (and
+# cl-1118 (the release coordinator, 11-17, on Paul's rule that extras are never in a request's way): "hold background extras (and
 # prefetch at `prepare` priority) while any call on the machine is starting cold, until its models are loaded and resident … Resume
 # the extras the moment the call's load completes." xs-203's run 43996197790: a cold H3 call's executor took 167 s to start, against
 # 1 s, while 22 GB of extras downloaded beside it. calls.py's `cold` loads e2e/calls-cold (32 MiB), whose load takes 15 s, and has
@@ -451,7 +451,7 @@ while read -r why; do check "ondemand-need: $why"; done < "$OUT/ondemand-need.fa
 # needs are here until its models are loaded, and all of it lands while the call then holds 20 s.
 ondemand_cold() {
 [ "$RUNNER_OS" = Linux ] || return 0
-step "the background downloads wait while a call starts cold, until its models are loaded (cl-1117)"
+step "the background downloads wait while a call starts cold, until its models are loaded (cl-1118)"
 [ -z "${E2E_CALLS_SEED:-}" ] || { check "ondemand-cold: its models weren't seeded: $E2E_CALLS_SEED"; return 0; }
 local began
 slow_store ondemand-cold || return 0

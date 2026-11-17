@@ -3653,7 +3653,7 @@ impl Pool {
             }
         };
         // A request that loads models and starts cold (a new executor, or its models not loaded in the one it takes): from here
-        // until they are loaded, no background download takes the disk, the link or the page cache from it (cl-1117).
+        // until they are loaded, no background download takes the disk, the link or the page cache from it (cl-1118).
         let request = engine.get(id).is_ok_and(|record| !record.invocation.background);
         let loads = request && (!plan.slots.is_empty() || !plan.sources.is_empty());
         let cold = loads && retained.as_ref().is_none_or(|session| !session.started || !session.loaded.contains_key(&plan.construction));
@@ -3894,7 +3894,7 @@ impl Pool {
     /// Start the process once, load the plan's construction into it once and invoke it, active
     /// (unless `load_only`: a prewarm). A known outcome stays in the journal until run_on returns
     /// its executor idle or proves its teardown ended. `cold` holds every background download until
-    /// its models are loaded (cl-1117).
+    /// its models are loaded (cl-1118).
     #[allow(clippy::too_many_arguments)]
     fn call(
         &self,
@@ -4073,7 +4073,7 @@ impl Pool {
                 leader.constructions.insert(construction.clone());
             }
         }
-        // Its models are loaded: the background downloads go on at once (cl-1117).
+        // Its models are loaded: the background downloads go on at once (cl-1118).
         drop(cold);
         if load_only {
             return Ok(None);

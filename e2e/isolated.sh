@@ -501,7 +501,7 @@ if [ -n "$needs" ]; then
     # ondemand_adapted's other model, bigger than its base, so its root's prefetch (smallest first) can't land it before its call;
     # and ondemand_order's two, the earlier run's bigger, so the later run's call is wanted while it still downloads; and
     # ondemand_needs' two (cl-1102): the one its call loads, and the one it has on demand and never reads; and ondemand_cold's
-    # two the same (cl-1117).
+    # two the same (cl-1118).
     page=https://github.com/cozy-creator/cozy-creator/tree/master/e2e
     for name in used:32 unused:32 other:256 early:256 late:128 needed:192 extra:256 cold:32 waits:256; do
       random_weights "$seed/calls.safetensors" "${name#*:}" "calls-${name%:*}"

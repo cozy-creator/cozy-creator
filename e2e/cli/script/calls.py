@@ -7,7 +7,7 @@
 (e2e/calls-lora) on its `base` (e2e/calls-base) beside its own `extra` (e2e/calls-other), as H3's `edit` puts its edit LoRA on a
 segment's base beside the turbo LoRA. `early` reads e2e/calls-early itself; `late` calls `late_call`, which reads
 e2e/calls-late, as LTX and H3's `edit` met on one machine. `needs` loads e2e/calls-needed and has e2e/calls-extra on demand,
-never read (cl-1102); `cold` the same with e2e/calls-cold, which loads slowly, and e2e/calls-waits (cl-1117)."""
+never read (cl-1102); `cold` the same with e2e/calls-cold, which loads slowly, and e2e/calls-waits (cl-1118)."""
 
 import asyncio
 import time
@@ -130,7 +130,7 @@ def needs(payload: Ask, extra: Extra, later: Later, tel: Telemetry) -> Said:
 
 
 class Slow(Model[object]):
-    """A model whose load takes 15 s, as a cold H3 call's executor start and load take minutes (cl-1117)."""
+    """A model whose load takes 15 s, as a cold H3 call's executor start and load take minutes (cl-1118)."""
 
     graph: object
 
@@ -145,7 +145,7 @@ class Slow(Model[object]):
     on_demand=("later",),
 )
 def cold(payload: Ask, slow: Slow, later: Later, tel: Telemetry) -> Said:
-    """Holds `seconds` with `slow` loaded and `later`, on demand, never read (cl-1117)."""
+    """Holds `seconds` with `slow` loaded and `later`, on demand, never read (cl-1118)."""
     with tel.stage("holding"):
         time.sleep(payload.seconds)
     return Said(used="e2e/calls-cold")
