@@ -10,7 +10,7 @@ const { test, expect, themed, canvasIdle, canvasVisible, focus } = require('./fi
 const { fit, leave } = require('./hands');
 
 const MODEL = 'qwen/qwen3.5-0.8b@0.1.0';
-const PROMPT = 'Write a long story, about a thousand words, of a lighthouse keeper and a storm. Use plain sentences.';
+const PROMPT = 'Write a long story in twelve chapters, each about two hundred words, of a lighthouse keeper through one winter of storms. Use plain sentences.';
 const NAME = 'story';
 
 /** The words a box shows at rest, as the canvas drew them. */
@@ -27,7 +27,7 @@ test('llm-stream', async ({ page, project, api }) => {
     if (found.ok) { tool = name; break; }
   }
   expect(tool, 'a Qwen Write tool is published here').toBeTruthy();
-  await project.add({ name: NAME, tool, kind: 'text', fields: { instructions: PROMPT, max_tokens: 1400, seed: 7, models: { model: { ref: MODEL } } }, at: { x: 0, y: 0 } });
+  await project.add({ name: NAME, tool, kind: 'text', fields: { instructions: PROMPT, max_tokens: 2400, seed: 7, models: { model: { ref: MODEL } } }, at: { x: 0, y: 0 } });
   await page.reload();
   await expect(page.locator('.stage')).toBeVisible();
   await expect.poll(() => canvasVisible(page, NAME)).toBe(true);
