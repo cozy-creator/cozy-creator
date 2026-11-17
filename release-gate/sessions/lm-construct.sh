@@ -9,6 +9,8 @@
 #   warm   the same on a new executor (the package uninstalled first), its weights in the page cache
 #   hot    the same executor again
 #   sdxl   SDXL's generate (1 MP, 20 steps) on a new executor, then again on it with another seed
+#   capped with `capped`, Qwen-Image 2's generate (1 MP, no upsampling) under that VRAM cap on a new executor: blocks
+#          paged per step, the varena-heavy twin (cr-318)
 # Every row's parts against the ceilings TensorFS measures on the pod (disk, pinned H2D) are in table.txt and the job summary.
 # A judged arm must construct warm in `prepare_s` and run cold in `x` times its weights' read at the disk's ceiling plus
 # `fixed_s` (legs.py): the default bar, 40 s and 2 x + 60 s, is 71 s on 44058999272's A6000 (6.78 GB/s), where the fixed
@@ -19,12 +21,14 @@
 #            wheel>", "judged": false}, {"name": "fix", ..., "judged": true}]
 #   bar      {"prepare_s": 40, "x": 2, "fixed_s": 60}
 #   sdxl     false: no SDXL rows
+#   capped   a VRAM cap (`12GiB`): the capped Qwen-Image 2 row per arm
 #   need_s   seconds the guard must buy (default 3600)
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/lm-construct PICTURE=$HERE/fixtures/ltx-images/teapot.jpg
 TREE=$(param tree '') ARMS=$(param arms '[]') BAR=$(param bar '{"prepare_s": 40, "x": 2, "fixed_s": 60}')
-[ -n "$TREE" ] && [ -f "$PACKAGES/$TREE/qwen3.6/pyproject.toml" ] && [ -f "$PACKAGES/$TREE/sdxl/pyproject.toml" ] ||
+[ -n "$TREE" ] && [ -f "$PACKAGES/$TREE/qwen3.6/pyproject.toml" ] && [ -f "$PACKAGES/$TREE/sdxl/pyproject.toml" ] &&
+  [ -f "$PACKAGES/$TREE/qwen-image-2/pyproject.toml" ] ||
   fail "dispatch with -f packages_refs=<name>=<the packages RC> and params.tree=<name>"
 SOURCE=$(cd "$PACKAGES/$TREE" && pwd)
 mapfile -t names < <(jq -r '.[].name' <<<"$ARMS")
@@ -43,7 +47,9 @@ for a in "${names[@]}"; do
 done
 jq -n --argjson arms "$ARMS" --argjson bar "$BAR" '[$arms[] | {key: .name, value: ($bar + {judged: (.judged // false)})}] | from_entries' \
   > "$OUT/bar.json" || fail "bar: $BAR"
-kernels "$SOURCE/qwen3.6"; kernels "$SOURCE/sdxl"
+CAPPED=$(param capped '')
+[[ -z $CAPPED || $CAPPED =~ ^[0-9]+GiB$ ]] || fail "capped $CAPPED"
+kernels "$SOURCE/qwen3.6"; kernels "$SOURCE/sdxl"; [ -z "$CAPPED" ] || kernels "$SOURCE/qwen-image-2"
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh
 quote "$(param need_s 3600)"
@@ -55,6 +61,7 @@ T=60 pod "cat > /tmp/lm.py" < "$FIX/pod.py" || fail "pod.py"
 run_page import "$PICTURE" --name photo > "$OUT/import-photo.json" 2>&1 || fail "import the photo: $(tail -c 300 "$OUT/import-photo.json")"
 photo=$(jq -r '.sha256 // empty' "$OUT/import-photo.json"); [ -n "$photo" ] || fail "the import holds no file"
 ON_PHOTO=$(jq -cn --arg f "sha256:${photo#sha256:}" '{text: "What is in <photo>? Answer in two sentences.", references: [{key: "photo", type: "image", file: $f}]}')
+jq -n '{prompt: {text: "a lighthouse keeper'"'"'s desk at dawn, watercolor"}, megapixels: 1, prompt_upsampling: false, seed: 7}' > "$OUT/qimg.json"
 for seed in 7 8; do
   jq -n --argjson s "$seed" '{prompt: "a lighthouse keeper'"'"'s desk at dawn, watercolor", megapixels: 1.0, aspect_ratio: "1:1", steps: 20, seed: $s}' > "$OUT/sdxl-$seed.json"
 done
@@ -101,6 +108,11 @@ for a in "${names[@]}"; do
     fresh qwen3.6
     step "$a-sdxl-new" run "$SOURCE/sdxl/generate" --input "$OUT/sdxl-7.json" --on "$NAME"; record "$a-sdxl-new"
     step "$a-sdxl-warm" run "$SOURCE/sdxl/generate" --input "$OUT/sdxl-8.json" --on "$NAME"; record "$a-sdxl-warm"
+  fi
+  if [ -n "$CAPPED" ]; then
+    step "cap-$a" machine update "$NAME" --gpu-memory-limit "$CAPPED" -y || fail "$a: the cap"
+    step "$a-qimg-capped" run "$SOURCE/qwen-image-2/generate" --input "$OUT/qimg.json" --on "$NAME"; record "$a-qimg-capped"
+    step "uncap-$a" machine update "$NAME" --gpu-memory-limit off -y || fail "$a: lifting the cap"
   fi
 done
 
