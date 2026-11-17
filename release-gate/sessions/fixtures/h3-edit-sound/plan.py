@@ -77,7 +77,7 @@ def plan(frames: int, rate: Fraction, beats: list[int]) -> dict[str, object]:
     followed = StoryReference(name="Plate", kind="anchor_video", video=plate)
     windows, _ = shot_windows([(followed, 0.0, math.inf)], [(s - p.prefix_frames, p.sample_frames) for s, p in zip(starts, plans)])
     length = footage_frames(plate)
-    slots = math.floor(plate.duration * FPS + Fraction(1, 2))
+    slots = max(1, math.floor(plate.duration * FPS + Fraction(1, 2)))  # a plate shows at least its first frame
     assert length == slots, (length, slots)
     assert total == length, f"delivered {total} of the plate's {length}"
     seen: list[int] = []
@@ -143,7 +143,7 @@ def main() -> None:
             for beats in ([15], [5, 15]):
                 try:
                     row = plan(frames, rate, beats)
-                except (AssertionError, ValueError) as miss:
+                except Exception as miss:  # noqa: BLE001  # every miss is listed, the run goes on
                     fails.append(f"{name} fps, {frames} frames, beats {beats}: {miss!r}")
                     continue
                 if beats == [15] and (row["plate_frames"] in grid or row["plate_frames"] - 1 in grid or row["plate_frames"] + 1 in grid
@@ -156,7 +156,7 @@ def main() -> None:
                 count = max(1, int(frames))
                 try:
                     readers.append(guide(rate, count, window))
-                except AssertionError as miss:
+                except Exception as miss:  # noqa: BLE001
                     fails.append(f"guide {rate} fps, {count} frames into {window}: {miss!r}")
     total = sum(int(MOST_S * r) for r in RATES.values()) * 2
     summary = {"plates": total, "failures": len(fails), "seconds": round(time.monotonic() - began, 1),
