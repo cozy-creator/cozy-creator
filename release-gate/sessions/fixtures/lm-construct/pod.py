@@ -1,10 +1,7 @@
 """lm-construct's pod side (sessions/lm-construct.sh), run as root over `cozy machine ssh`:
-  evict              the store's weights out of the page cache (cold-start.sh's)
-  ceiling            TensorFS's own ceilings, from the newest executor environment: disk GB/s and pinned H2D GB/s to GPU 0
-  watch <label> <s>  until /tmp/lm-<label>.stop or <s> seconds: every 0.5 s the disk's reads and each executor's I/O
-                     (/tmp/lm/<label>.jsonl), and each executor process that starts sampled by py-spy (/tmp/py-spy, if
-                     there) at 25 Hz with its idle frames (/tmp/lm/<label>-<pid>.json, speedscope)
-  end                every executor process ends (SIGTERM): the next run starts a new one
+  evict    the store's weights out of the page cache (cold-start.sh's)
+  ceiling  TensorFS's own ceilings, from the newest executor environment: disk GB/s and pinned H2D GB/s to GPU 0
+  end      every executor process ends (SIGTERM): the next run starts a new one
 """
 
 import glob
@@ -29,15 +26,15 @@ def roots(name):
 
 
 def executors():
-    out = {}
+    out = []
     for d in glob.glob("/proc/[0-9]*"):
         try:
             cmd = open(d + "/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="replace")
         except OSError:
             continue
         if "cozy_runtime.internal.executor" in cmd:
-            out[int(d[6:])] = d
-    return out
+            out.append(int(d[6:]))
+    return sorted(out)
 
 
 mode = sys.argv[1]
@@ -66,7 +63,7 @@ elif mode == "ceiling":
     done = subprocess.run([envs[-1], "-c", code, store or ""], capture_output=True, text=True, timeout=300)
     print(done.stdout.strip() or json.dumps({"error": done.stderr[-400:]}))
 elif mode == "end":
-    ended = sorted(executors())
+    ended = executors()
     for pid in ended:
         try:
             os.kill(pid, signal.SIGTERM)
@@ -74,42 +71,3 @@ elif mode == "end":
             pass
     time.sleep(5)
     print(json.dumps({"ended": ended, "left": sorted(set(executors()) & set(ended))}))
-elif mode == "watch":
-    label, until = sys.argv[2], time.time() + float(sys.argv[3])
-    stop = f"/tmp/lm-{label}.stop"
-    os.makedirs("/tmp/lm", exist_ok=True)
-    seen, spies = set(executors()), {}
-    spy = "/tmp/py-spy" if os.access("/tmp/py-spy", os.X_OK) else None
-    out = open(f"/tmp/lm/{label}.jsonl", "a")
-    while not os.path.exists(stop) and time.time() < until:
-        row = {"t": round(time.time(), 3), "disk": {}, "procs": []}
-        for line in open("/proc/diskstats"):
-            f = line.split()
-            if not f[2].startswith(("loop", "ram")) and int(f[3]) + int(f[7]):
-                row["disk"][f[2]] = int(f[5]) * 512
-        for pid, d in executors().items():
-            try:
-                io = dict(line.split(": ") for line in open(d + "/io").read().splitlines())
-                row["procs"].append([pid, int(io["read_bytes"]), int(io["rchar"])])
-            except (OSError, KeyError, ValueError):
-                pass
-            if pid not in seen:
-                seen.add(pid)
-                if spy:
-                    spies[pid] = subprocess.Popen(
-                        [spy, "record", "--pid", str(pid), "--rate", "25", "--idle", "--threads", "--nonblocking",
-                         "--format", "speedscope", "-o", f"/tmp/lm/{label}-{pid}.json"],
-                        stdout=subprocess.DEVNULL, stderr=open(f"/tmp/lm/{label}-{pid}.err", "w"),
-                    )
-        out.write(json.dumps(row) + "\n")
-        out.flush()
-        time.sleep(0.5)
-    for p in spies.values():
-        if p.poll() is None:
-            p.send_signal(signal.SIGINT)
-    for p in spies.values():
-        try:
-            p.wait(120)
-        except subprocess.TimeoutExpired:
-            p.kill()
-    print(json.dumps({"label": label, "spied": sorted(spies)}))

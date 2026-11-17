@@ -2,7 +2,7 @@
 
     python3 -I legs.py <ceiling.json> <bar.json> <label>=<run record> ...
 
-A label is <arm>-<case> (case: cold, warm, hot, sdxl-new, sdxl-warm). Each row: its wait before the executor (download,
+A label is <arm>-<case> (case: first, cold, warm, hot, sdxl-new, sdxl-warm). Each row: its wait before the executor (download,
 install, queue), executor start, construction (prepare) and its fill legs, the time from construction to the answer's
 first weight read, the load of the weights it read (bytes and GB/s against the store's ceiling), and the rest. The
 bar (`bar.json`, an arm judged when its `judged` is true) is checked on its Qwen3.6 rows: a warm construction under
