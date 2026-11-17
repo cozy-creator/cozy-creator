@@ -234,10 +234,17 @@ def qwen3(out: Path, fixtures: Path) -> None:
                                              tokenize=False, enable_thinking=False)
         inputs = processor(text=[text], images=images or None, return_tensors="pt").to("cuda")
         with torch.inference_mode():
-            made = model.generate(**inputs, max_new_tokens=cell["max_tokens"], do_sample=False, eos_token_id=stops)
-        tokens = made[0, inputs["input_ids"].shape[1]:].tolist()
+            made = model.generate(**inputs, max_new_tokens=cell["max_tokens"], do_sample=False, eos_token_id=stops,
+                                  output_scores=True, return_dict_in_generate=True)
+        tokens = made.sequences[0, inputs["input_ids"].shape[1]:].tolist()
+        # How often Qwen's top-k 20 would bind at the instruct sampling (T 0.7, top-p 0.8): the nucleus's size a step.
+        sizes = []
+        for scores in made.scores:
+            probabilities = (scores[0].float() / 0.7).softmax(-1).sort(descending=True).values
+            sizes.append(int(((probabilities.cumsum(-1) - probabilities) < 0.8).sum()))
         answers[name] = {"text": processor.decode(tokens, skip_special_tokens=True).strip(), "tokens": tokens,
-                         "prompt_tokens": int(inputs["input_ids"].shape[1])}
+                         "prompt_tokens": int(inputs["input_ids"].shape[1]),
+                         "nucleus": {"steps": len(sizes), "over_20": sum(n > 20 for n in sizes), "max": max(sizes, default=0)}}
         say(name, len(tokens), "tokens")
     (out / "qwen3.json").write_text(json.dumps(answers, ensure_ascii=False, indent=1))
 

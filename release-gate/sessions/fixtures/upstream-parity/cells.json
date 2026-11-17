@@ -3,37 +3,86 @@
     "t2i": {
       "prompt": "A red vintage bicycle leaning against a pastel blue wall on a sunny street; above it a hand-painted wooden sign reads \"CAFE ROSA\"; soft morning light, photorealistic.",
       "negative": "低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲。",
-      "width": 1328, "height": 1328, "steps": 50, "guidance": 4.0
+      "width": 1328,
+      "height": 1328,
+      "steps": 50,
+      "guidance": 4.0
     },
     "t2i-turbo": {
       "prompt": "A red vintage bicycle leaning against a pastel blue wall on a sunny street; above it a hand-painted wooden sign reads \"CAFE ROSA\"; soft morning light, photorealistic.",
-      "width": 1328, "height": 1328, "steps": 8
+      "width": 1328,
+      "height": 1328,
+      "steps": 8
     },
     "edit": {
-      "image": "teapot.jpg", "mention": "teapot",
+      "image": "teapot.jpg",
+      "mention": "teapot",
       "prompt": "Make the teapot in Picture 1 glossy cobalt blue with white polka dots, keeping everything else unchanged.",
-      "negative": " ", "steps": 40, "guidance": 4.0
+      "negative": " ",
+      "steps": 40,
+      "guidance": 4.0
     },
     "edit-turbo": {
-      "image": "teapot.jpg", "mention": "teapot",
+      "image": "teapot.jpg",
+      "mention": "teapot",
       "prompt": "Make the teapot in Picture 1 glossy cobalt blue with white polka dots, keeping everything else unchanged.",
       "steps": 8
     }
   },
   "pan2": {
-    "t2v": {"example": 0, "frames": 25, "width": 1248, "height": 704, "steps": 50},
-    "i2v": {"example": 1, "image": "i2v_house_tour.jpg", "frames": 25, "width": 1248, "height": 704, "steps": 50}
+    "t2v": {
+      "example": 0,
+      "frames": 25,
+      "width": 1248,
+      "height": 704,
+      "steps": 50
+    },
+    "i2v": {
+      "example": 1,
+      "image": "i2v_house_tour.jpg",
+      "frames": 25,
+      "width": 1248,
+      "height": 704,
+      "steps": 50
+    }
   },
   "qwen3": {
-    "text": {"prompt": "Explain in three short paragraphs how a refrigerator keeps food cold.", "max_tokens": 300},
-    "image": {"image": "teapot.jpg", "prompt": "Describe this picture in detail: the objects, their materials, the light and the setting.", "max_tokens": 300}
+    "text": {
+      "prompt": "Explain in three short paragraphs how a refrigerator keeps food cold.",
+      "max_tokens": 300
+    },
+    "image": {
+      "image": "teapot.jpg",
+      "prompt": "Describe this picture in detail: the objects, their materials, the light and the setting.",
+      "max_tokens": 300
+    },
+    "poem": {
+      "prompt": "Write a short free-verse poem about the sea at night.",
+      "max_tokens": 200,
+      "upstream_only": true
+    }
   },
   "rewriter": {
     "requests": [
-      {"prompt": "A red ceramic cup stands on a wooden table. A hand lifts it, pours water into a clear glass, then puts the cup down.", "seconds": 10},
-      {"prompt": "A golden retriever runs across a snowy park, catches a frisbee mid-air and trots back toward the camera.", "seconds": 6},
-      {"prompt": "A street musician in a rainy alley plays a saxophone while passers-by with umbrellas stop and drop coins into his case.", "seconds": 15}
+      {
+        "prompt": "A red ceramic cup stands on a wooden table. A hand lifts it, pours water into a clear glass, then puts the cup down.",
+        "seconds": 10
+      },
+      {
+        "prompt": "A golden retriever runs across a snowy park, catches a frisbee mid-air and trots back toward the camera.",
+        "seconds": 6
+      },
+      {
+        "prompt": "A street musician in a rainy alley plays a saxophone while passers-by with umbrellas stop and drop coins into his case.",
+        "seconds": 15
+      }
     ]
   },
-  "birefnet": {"images": ["pearl", "teapot"], "synthetic_from": "pearl"}
+  "birefnet": {
+    "images": [
+      "pearl",
+      "teapot"
+    ],
+    "synthetic_from": "pearl"
+  }
 }

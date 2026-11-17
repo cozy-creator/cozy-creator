@@ -126,6 +126,7 @@ for g in qwen-image birefnet qwen3 pan2; do
 done
 T=1800 pod "tar -C /root/up/out -cf - . | base64 -w0" < /dev/null | base64 -d > "$WORK/up.tar" && tar -xf "$WORK/up.tar" -C "$WORK/up" || fail "the references' outputs"
 say "references: $(ls "$WORK/up" | paste -sd' ')"
+[ ! -f "$WORK/up/qwen3.json" ] || say "Qwen3 nucleus at T 0.7, top-p 0.8 (top-k 20 binds above 20): $(jq -c 'with_entries(.value |= .nucleus)' "$WORK/up/qwen3.json")"
 wait "$BG"; BG=''
 
 # Ours: each cell through `cozy run` from its checkout, bf16, SDPA.
