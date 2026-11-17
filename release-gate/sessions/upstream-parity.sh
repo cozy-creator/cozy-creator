@@ -48,12 +48,15 @@ rm -rf "$W" && mkdir -p "$W" || fail "$W"
     uv pip install -q --python "$W/$v/bin/python" --python-platform x86_64-manylinux_2_28 torch==2.14.1 torchvision==0.29.1 \
       --index-url https://download.pytorch.org/whl/cu130
   done
-  uv pip install -q "${P[@]}" transformers==4.57.1 diffusers==0.41.0 accelerate einops safetensors 'huggingface_hub[hf_xet]<1' \
+  # Diffusers for HiDream's schedulers: Tencent's 0.35.2, the newest on Transformers 4.57's huggingface_hub < 1.
+  uv pip install -q "${P[@]}" transformers==4.57.1 diffusers==0.35.2 accelerate einops safetensors 'huggingface_hub[hf_xet]<1' \
     pillow numpy scipy tqdm
   uv pip install -q --python "$W/venv5/bin/python" --python-platform x86_64-manylinux_2_28 "transformers==$tf5" accelerate einops \
     safetensors 'huggingface_hub[hf_xet]' pillow numpy sentencepiece requests bitsandbytes
   cp "$FX"/hidream_ref.py "$FX"/ideogram_ref.py . && cp hidream/assets/edit/test.jpg edit.jpg
-) > "$OUT/env.log" 2>&1 || fail "upstream's environment: $(tail -5 "$OUT/env.log")"
+) > "$OUT/env.log" 2>&1
+# Its own status, not `|| fail`: a subshell tested by `||` ignores its `set -e`.
+[ $? = 0 ] || fail "upstream's environment: $(tail -5 "$OUT/env.log")"
 say "upstream: HiDream $(git -C "$W/hidream" rev-parse --short HEAD) on $("$W/venv/bin/python" -I -c 'import torch, transformers; print("torch", torch.__version__, "transformers", transformers.__version__)'), \
 Ideogram $(git -C "$W/ideogram4" rev-parse --short HEAD) on transformers $("$W/venv5/bin/python" -I -c 'import transformers; print(transformers.__version__)'): $(du -sh "$W" | cut -f1) to ship"
 cp "$W/edit.jpg" "$OUT/edit.jpg"

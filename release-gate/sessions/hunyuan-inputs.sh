@@ -22,7 +22,9 @@ rm -rf "$W" && mkdir -p "$W/files" || fail "$W"
   uv venv -q --python 3.12 pk && uv pip install -q --python pk/bin/python --torch-backend cpu torch torchvision \
     "transformers==$tf" "tokenizers==$tk" einops pillow numpy
   echo "package env: transformers $tf, tokenizers $tk"
-) > "$OUT/env.log" 2>&1 || fail "environments: $(tail -5 "$OUT/env.log")"
+) > "$OUT/env.log" 2>&1
+# Its own status, not `|| fail`: a subshell tested by `||` ignores its `set -e`.
+[ $? = 0 ] || fail "environments: $(tail -5 "$OUT/env.log")"
 say "$(grep 'package env' "$OUT/env.log"); Tencent $(git -C "$W/tencent" rev-parse --short HEAD)"
 bad=0
 for spec in tencent/HunyuanImage-3.0-Instruct@2ec2c78bee7d4b94157341fba86c4c2c7b1858b2 \
