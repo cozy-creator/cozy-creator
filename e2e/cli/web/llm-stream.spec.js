@@ -143,7 +143,7 @@ test('llm-stream: a real model on a GPU', { tag: '@gpu' }, async ({ page, projec
       // Its words, once they're no longer what the box showed before its ask (its prompt, then the last version).
       if (words && words !== plain(before)) {
         first = first ?? at;
-        shown.push([at, count(words)]);
+        shown.push([at, count(words), words]);
       }
       if (number !== undefined) {
         const run = await api.get(project.at(`/runs/${number}`));
@@ -160,17 +160,19 @@ test('llm-stream: a real model on a GPU', { tag: '@gpu' }, async ({ page, projec
     const rate = (rows) => (rows.length > 1 ? ((rows.at(-1)[1] - rows[0][1]) * 1000) / (rows.at(-1)[0] - rows[0][0]) : null);
     renders.push({
       render: n, effort: effort ?? null, thought_tokens: thinking ? (counted.filter(([, , stage]) => /thinking/i.test(stage)).at(-1)?.[1] ?? 0) : null,
-      run: number, machine: run.machine, gpu: run.gpu, executed_ms: run.execution_ms, landed_ms: Date.now() - asked,
+      first_words: shown[0]?.[2].slice(0, 120) ?? null, run: number, machine: run.machine, gpu: run.gpu, executed_ms: run.execution_ms, landed_ms: Date.now() - asked,
       first_word_ms: first ?? null, words_per_s: rate(span(shown)), tokens_per_s: rate(span(counted)),
       words: count(version.main?.text ?? ''), tokens: counted.at(-1)?.[1] ?? null, stages: [...new Set(counted.map(([, , stage]) => stage))],
       shown: shown.length, text: (version.main?.text ?? '').slice(0, 300),
     });
     expect.soft(first, `render ${n}: words showed on the box before its version landed`).toBeTruthy();
+    // What the box showed as it came is how its answer starts, each time: nothing of a thought, nothing that went away.
+    const text = plain(version.main?.text ?? '');
+    const stray = shown.find(([, , words]) => !text.startsWith(words));
+    expect.soft(stray?.[2].slice(0, 200) ?? null, `render ${n}: every look at its words is how its answer starts`).toBeNull();
     if (thinking) {
-      // While it thought, its stage said so and the box showed nothing new: no words of the thought.
-      const thought = counted.filter(([, , stage]) => /thinking/i.test(stage));
-      expect.soft(thought.length, `render ${n} (${effort}): its stage said it was thinking`).toBeGreaterThan(0);
-      expect.soft(thought.some(([, , , shown]) => shown), `render ${n} (${effort}): no words showed while it thought`).toBe(false);
+      // While it thought, its stage said so (its first word may come a progress report, 0.25 s, before the stage moves on).
+      expect.soft(counted.some(([, , stage]) => /thinking/i.test(stage)), `render ${n} (${effort}): its stage said it was thinking`).toBe(true);
     }
     before = version.main?.text ?? '';
     await page.screenshot({ path: join(out, `landed-${n}.png`) });

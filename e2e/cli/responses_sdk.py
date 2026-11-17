@@ -91,7 +91,7 @@ def main() -> int:
             first = f"{deltas[0][1]:.2f}" if deltas else "-"
             failed.append(f"streamed: {len(deltas)} deltas, the first at {first} s and the end at {ended:.2f} s: its words came only at its end")
 
-    picture = "data:image/png;base64," + base64.b64encode(png(64, 64)).decode()
+    picture = "data:image/png;base64," + base64.b64encode(png(256, 256)).decode()
     response = client.responses.create(
         model=args.model,
         input=[{"role": "user", "content": [{"type": "input_text", "text": "In one sentence, what colors are in this picture?"}, {"type": "input_image", "image_url": picture}]}],
@@ -99,10 +99,10 @@ def main() -> int:
         temperature=0,
         metadata={"project": args.project},
     )
-    status, text = str(response.status), str(response.output_text)
-    seen["whole"] = {"status": status, "id": str(response.id), "text": text}
+    status, text, error = str(response.status), str(response.output_text), str(response.error)
+    seen["whole"] = {"status": status, "id": str(response.id), "text": text, "error": error}
     if status != "completed" or not text.strip():
-        failed.append(f"not streamed: {status}, {text!r}")
+        failed.append(f"not streamed: {status}, {text!r}: {error}")
 
     for line in failed:
         print(f"FAIL {line}")
