@@ -58,9 +58,9 @@ run_clock() {
 # The pod side of `pod_derived`, found once as this file is sourced: a session cds into its packages and outputs, and a
 # path relative to where it started found nothing after its first arm (44034679486).
 POD_DERIVED_SCRIPT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/derived-state.sh
-# pod_derived <cli> <machine> <reset|census>: release-gate/derived-state.sh on the machine's root shell (an `--ssh` rental):
-# `reset` clears what earlier runs left besides weights and installs (LoRA bakes, memos, learned peaks, kernels, page cache);
-# both print its census line, `derived N memo N peaks N kernels N jit N cached_gib X`. Nothing printed: no answer. No
+# pod_derived <cli> <machine> <reset|settle|census>: release-gate/derived-state.sh on the machine's root shell (an `--ssh`
+# rental): `reset` before an update clears what earlier runs left besides weights and installs (LoRA bakes, memos, learned
+# peaks, kernels, page cache); `settle` after its restart clears what the ended executors still wrote; each prints its census line, `derived N memo N peaks N kernels N jit N cached_gib X`. Nothing printed: no answer. No
 # script here: exit 2 at once, as no retry finds it.
 pod_derived() {
   local script

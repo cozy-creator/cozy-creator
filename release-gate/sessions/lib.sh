@@ -77,8 +77,9 @@ if [ -n "${SESSION_UNTIL:-}" ]; then
   ( left=$((SESSION_UNTIL - $(date +%s) - 300)); [ "$left" -le 0 ] || sleep "$left" || exit 0  # killed by `finish`
     say "DEADLINE: the step ends in 5 min; this session ends now"; kill -TERM $$ ) 9>&- & DL=$!
 fi
-# derived_state <label> <reset|census>: the pod's derived state (release-gate/derived-state.sh, machines.sh `pod_derived`):
-# `reset` before an update's restart begins an arm, `census` counts what is left. DERIVED holds the census line; a cold arm
+# derived_state <label> <reset|settle|census>: the pod's derived state (release-gate/derived-state.sh, machines.sh
+# `pod_derived`): `reset` before an update's restart begins an arm, `settle` after it clears what the ended executors still
+# wrote and counts what is left. DERIVED holds the census line; a cold arm
 # starts with no derived page, memo entry or learned peak (`derived_zero`). The call memo can't be cleared there: a record
 # it answered says `memoized`, and ab.sh never compares one. No `cozy` verb clears any of this (tfs-299): the root shell
 # is the only way in.

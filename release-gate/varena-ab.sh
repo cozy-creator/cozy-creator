@@ -19,7 +19,7 @@ AB_CAND="$AB_TENSORD $AB_TENSORFS $(ab_version "$AB_TENSORD") $(ab_version "$AB_
 ab_on() {
   local want=0 show said lim i line
   # An arm begins cold: what the last arm left on the pod (LoRA bakes, memos, peaks, kernels, page cache) goes before the
-  # restart, and the census after it must find none (machines.sh `pod_derived`; 44006261838 compared a cold arm with a warm).
+  # restart, and a settle after it (what the ended executors still wrote) must leave none (machines.sh `pod_derived`; 44006261838 compared a cold arm with a warm).
   [ -n "$(pod_derived "$CLI" "$M" reset)" ] || { log "varena-ab: no derived-state reset on $M (an --ssh rental)"; return 1; }
   [ "$5" = off ] || want=$(($5 << 30))
   "$CLI" --json machine update "$M" --tensord "$1" --tensorfs "$2" --gpu-memory-limit "$([ "$5" = off ] && echo off || echo "${5}GiB")" -y \
@@ -29,7 +29,7 @@ ab_on() {
     said=$(jq -r '"\(.status.version // "")/\(.status.tensorfs // "")"' <<< "$show")
     lim=$(jq -r '[.status.gpus[]? | .memory_limit_bytes // 0 | tostring] | unique | join(",")' <<< "$show")
     [ "$said" = "$3/$4" ] && [ "$lim" = "$want" ] && {
-      line=$(pod_derived "$CLI" "$M" census); printf '%s\t%s\n' "$*" "$line" >> ab-derived.tsv
+      line=$(pod_derived "$CLI" "$M" settle); printf '%s\t%s\n' "$*" "$line" >> ab-derived.tsv
       pod_derived_zero "$line" && return 0
       log "varena-ab: $* starts with derived state it did not make: ${line:-no census}"; return 1; }
     sleep 5

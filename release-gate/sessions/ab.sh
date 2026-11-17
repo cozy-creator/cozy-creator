@@ -6,7 +6,8 @@
 # Arms. Each cell with an `update` starts an arm.
 # - The pod's derived state goes first (lib.sh `derived_state`: LoRA bakes, memos, learned peaks, kernels, page cache),
 #   then the update restarts the machine. No arm reads another's: in 44006261838 the candidate read the 0.25.0 arm's
-#   bakes and looked 9x faster cold. A census after the restart must find no derived page, memo or peak, or the session
+#   bakes and looked 9x faster cold. A settle after the restart (what the ended executors still wrote, 44038983465) must
+#   leave no derived page, memo or peak, or the session
 #   fails.
 # - In an arm a cell is `cold`, its function's first request since the arm began, or `warm`, a later one. A cell marked
 #   `"warmup": true` is the arm's own warm-up and is never compared. Its first call still serves what has not compiled
@@ -253,7 +254,7 @@ for k in "${names[@]}"; do
     # shellcheck disable=SC2086 # the update's flags and wheel paths (no spaces)
     step "update-$k" machine update "$NAME" ${UPDATE[$k]} -y || fail "$k: the update"
     say "$k: pod Runtime $(cozy machine show "$NAME" --json | jq -r .status.runtime), TensorFS $(cozy machine show "$NAME" --json | jq -r .status.tensorfs)"
-    derived_state "$k" census
+    derived_state "$k" settle
     [ "$keep" = true ] || derived_zero || fail "$k: its arm starts with derived state it did not make: $DERIVED"
     SEEN=()
   fi
