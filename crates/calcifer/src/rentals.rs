@@ -44,8 +44,12 @@ pub(crate) struct Hubs {
     listings: Mutex<HashMap<String, Listing>>,
     /// Whether a listing of the Hubs is going: one at a time.
     listing_now: std::sync::atomic::AtomicBool,
-    /// This computer's account at each Hub and where machines read it, for runs' access.
+    /// This computer's account at each Hub and where machines read it, for runs' access: kept across a restart
+    /// (`hub_facts` in state.db), and which of them this start has read again.
     pub(crate) facts: Mutex<HashMap<config::Origin, crate::access::Facts>>,
+    pub(crate) facts_read: Mutex<std::collections::HashSet<config::Origin>>,
+    facts_changed: std::sync::atomic::AtomicBool,
+    pub(crate) learning: tokio::sync::Mutex<()>,
 }
 
 /// A boot its Hub keeps no history for: about this long from its attempt's start to serving (cl-915).
@@ -92,7 +96,37 @@ impl Hubs {
             listings: Mutex::default(),
             listing_now: std::sync::atomic::AtomicBool::new(false),
             facts: Mutex::default(),
+            facts_read: Mutex::default(),
+            facts_changed: std::sync::atomic::AtomicBool::new(false),
+            learning: tokio::sync::Mutex::new(()),
         }
+    }
+
+    /// Each Hub's facts read since they were last kept: state.db keeps them at the end of the next Hub listing (`hub_facts`).
+    pub(crate) fn keep_facts(&self) {
+        self.facts_changed.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Each Hub's facts as state.db kept them, until this start reads them again.
+    pub(crate) fn load_facts(&self, kept: Vec<(String, String)>) {
+        let mut facts = lock(&self.facts);
+        for (hub, read) in kept {
+            match (config::Origin::parse(&hub), serde_json::from_str(&read)) {
+                (Ok(origin), Ok(read)) => {
+                    facts.entry(origin).or_insert(read);
+                }
+                _ => warn!(hub, "kept Hub facts read as nothing"),
+            }
+        }
+    }
+
+    /// Each Hub's facts, as state.db keeps them, when read since they were last kept.
+    fn changed_facts(&self) -> Option<Vec<(String, String)>> {
+        if !self.facts_changed.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            return None;
+        }
+        let facts = lock(&self.facts);
+        Some((facts.iter()).map(|(hub, read)| (hub.to_string(), serde_json::to_string(read).expect("facts serialize"))).collect())
     }
 
     /// Each Hub's last word as state.db kept it (`hub_listings`), what a start answers until its own listing: of the Hubs in
@@ -1176,6 +1210,12 @@ impl Machines {
             warn!("keeping the Hubs' last listing: {e}");
         }
         self.hubs.learn().await;
+        // Facts read since the last listing (this one's, a run's), kept in state.db as all of Calcifer's state (cl-818).
+        if let Some(facts) = self.hubs.changed_facts()
+            && let Err(e) = self.store().keep_hub_facts(&facts)
+        {
+            warn!("keeping the Hubs' facts: {e}");
+        }
         self.calcifer.machine_changed();
     }
 
@@ -1210,6 +1250,7 @@ impl Machines {
                 return;
             }
         };
+        let listed_took = crate::took::Took::new("hub_listing");
         let rentals = match client.list_rentals("live").await {
             Ok(listing) => listing.rentals,
             Err(e) => {
@@ -1229,6 +1270,7 @@ impl Machines {
                 return;
             }
         };
+        drop(listed_took);
         let listed: Vec<String> = rentals.iter().map(|r| r.rental_id.clone()).collect();
         {
             let mut listings = lock(&self.hubs.listings);
@@ -1246,6 +1288,7 @@ impl Machines {
         for rental in rentals.iter().filter(|rental| !gone(&rental.state)) {
             self.adopt(origin, rental, &rows);
         }
+        let _took = crate::took::Took::new("hub_word");
         for row in rows {
             if row.kind == MachineKind::Rental
                 && row.hub == origin

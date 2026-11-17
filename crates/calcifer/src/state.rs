@@ -47,6 +47,10 @@ pub(crate) const TABLES: &str = "
         hub TEXT PRIMARY KEY,
         listing TEXT NOT NULL
     ) STRICT;
+    CREATE TABLE IF NOT EXISTS hub_facts (
+        hub TEXT PRIMARY KEY,
+        facts TEXT NOT NULL
+    ) STRICT;
     CREATE TABLE IF NOT EXISTS tool_list (
         ord INTEGER PRIMARY KEY,
         package TEXT NOT NULL UNIQUE
@@ -499,6 +503,25 @@ impl Store {
             for (hub, listing) in listings {
                 tx.execute("INSERT INTO hub_listings (hub, listing) VALUES (?1, ?2)
                     ON CONFLICT (hub) DO UPDATE SET listing = excluded.listing", [hub, listing])?;
+            }
+            Ok(())
+        })
+    }
+
+    /// This computer's account at each Hub as Calcifer last read it (cl-1010): a start's requests use them until it reads them again.
+    pub(crate) fn hub_facts(&self) -> Result<Vec<(String, String)>> {
+        self.read(|conn| {
+            let mut statement = conn.prepare("SELECT hub, facts FROM hub_facts")?;
+            let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    /// Keeps each Hub's facts, replacing what was kept of it.
+    pub(crate) fn keep_hub_facts(&self, facts: &[(String, String)]) -> Result<()> {
+        self.write(|tx| {
+            for (hub, read) in facts {
+                tx.execute("INSERT INTO hub_facts (hub, facts) VALUES (?1, ?2) ON CONFLICT (hub) DO UPDATE SET facts = excluded.facts", [hub, read])?;
             }
             Ok(())
         })

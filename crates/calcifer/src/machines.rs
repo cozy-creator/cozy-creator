@@ -212,6 +212,10 @@ impl Machines {
             (Ok(kept), Ok(rows)) => me.hubs.load_listings(kept, &rows),
             (Err(e), _) | (_, Err(e)) => warn!("reading the Hubs' last listing: {e}"),
         }
+        match me.store().hub_facts() {
+            Ok(kept) => me.hubs.load_facts(kept),
+            Err(e) => warn!("reading the Hubs' facts: {e}"),
+        }
         match me.store().live_machines() {
             Ok(rows) => {
                 // `local` is followed once recorded, while its TensorD runs.
@@ -403,8 +407,13 @@ impl Machines {
                     let unnamed = (frame.environments.iter())
                         .filter_map(|env| config::Origin::parse(&env.hub).ok())
                         .any(|hub| self.hubs.known(&hub).is_none());
+                    // Read beside the answer (cl-1010): a restarted Calcifer's tool list waited on it.
                     if unnamed {
-                        self.hubs.learn().await;
+                        let me = self.clone();
+                        self.spawn(async move {
+                            me.hubs.learn().await;
+                            me.calcifer.machine_changed();
+                        });
                     }
                     self.observe(&row.name, frame);
                 }

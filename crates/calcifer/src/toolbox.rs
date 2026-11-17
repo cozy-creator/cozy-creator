@@ -73,6 +73,8 @@ async fn list_tools(api: &Arc<Api>, asked: Asked) -> Result<Json<Tools>, Refusal
     let q = asked.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
     let on = On::Machine(asked.on.unwrap_or_else(|| "local".into()));
     let mine = mine(api)?;
+    // Each part a list waits on says when it's slow (cl-1010: 345 lists over a second on Paul's laptop, 2.3 s at the median).
+    let took = crate::took::Took::new("tools_project_code");
     let local = match asked.project.as_deref() {
         Some(named) => {
             let root = project::named(api, named).map_err(Refusal)?;
@@ -84,10 +86,15 @@ async fn list_tools(api: &Arc<Api>, asked: Asked) -> Result<Json<Tools>, Refusal
         }
         None => vec![],
     };
+    drop(took);
     // A dev home's checkout's first-party packages are their source's, not the Hub's (xs-195).
     let (source, reading) = from_source(api, &hub, &on).await;
+    let took = crate::took::Took::new("tools_installed");
     let held: Vec<Tool> = held(api, &hub, &on).await.into_iter().filter(|tool| !checkout::holds(&tool.package)).collect();
+    drop(took);
+    let took = crate::took::Took::new("tools_hub_list");
     let (listed, note) = api.listing.tools(api, &hub).await;
+    drop(took);
     let mut note = note.or(reading);
     let installed: BTreeSet<&str> = held.iter().map(|tool| tool.package.as_str()).collect();
     // What its machine can't run, on its Runtime or one a run of it moves to (cl-952), isn't offered (run 46790: flux-3-klein@0.7.0,
@@ -100,7 +107,9 @@ async fn list_tools(api: &Arc<Api>, asked: Asked) -> Result<Json<Tools>, Refusal
         .map(|offered| offered.tool.clone())
         .collect();
     let mut tools: Vec<Tool> = std::iter::once(tool::edit()).chain(local).chain(source).chain(held).chain(listed).collect();
+    let took = crate::took::Took::new("tools_added");
     let (added, unread) = on_your_list(api, &hub, &mine, &tools).await;
+    drop(took);
     note = note.or(unread);
     tools.extend(added);
     // Taken off is off at rest, and a search still finds it, as what a box of it asks for must.

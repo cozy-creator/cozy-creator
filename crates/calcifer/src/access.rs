@@ -21,6 +21,7 @@ use api::{
     machine as v1,
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::{
@@ -50,9 +51,9 @@ pub(crate) enum Denied {
     Unreachable(String),
 }
 
-/// What a Hub says of this computer's account there, read once per device key: a login as
-/// another account (a new key) reads it again.
-#[derive(Clone)]
+/// What a Hub says of this computer's account there, kept per device key across restarts and read again beside each start: a login as
+/// another account (a new key) reads it again before it's used.
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Facts {
     key: String,
     account: String,
@@ -447,6 +448,11 @@ impl Hubs {
         {
             return Ok(facts.clone());
         }
+        self.read_facts(origin, &client, key).await
+    }
+
+    /// The Hub's word now on this computer's account there, kept for the next start.
+    async fn read_facts(&self, origin: &Origin, client: &::api::hub::Client, key: String) -> Result<Facts, Error> {
         let hub = |error| hub_refusal(origin, error);
         let account = client.get_current_account().await.map_err(hub)?;
         let environment = client
@@ -479,6 +485,8 @@ impl Hubs {
                 .unwrap_or_default(),
         };
         lock(&self.facts).insert(origin.clone(), facts.clone());
+        lock(&self.facts_read).insert(origin.clone());
+        self.keep_facts();
         Ok(facts)
     }
 
@@ -506,11 +514,21 @@ impl Hubs {
         self.known(origin).unwrap_or_else(|| origin.clone())
     }
 
-    /// Reads the configured Hub's facts when this computer is signed in there and has not.
+    /// Reads the configured Hub's facts once a start, where this computer is signed in, one reading at a time: those kept from
+    /// before answer meanwhile (cl-1010: a restarted Calcifer's tool list and machine reads waited on these three Hub reads, 1.2 to
+    /// 1.8 s on Paul's laptop).
     pub(crate) async fn learn(&self) {
-        if !lock(&self.facts).contains_key(&self.hub) {
-            let _ = self.facts(&self.hub).await;
+        let _one = self.learning.lock().await;
+        if lock(&self.facts_read).contains(&self.hub) {
+            return;
         }
+        let Ok(client) = self.client(&self.hub) else { return };
+        let Credential::User(session) = client.credential() else {
+            unreachable!("a signed-in client speaks as its user")
+        };
+        let key = session.key().public_key();
+        let _took = crate::took::Took::new("hub_facts");
+        let _ = self.read_facts(&self.hub, &client, key).await;
     }
 
     /// An installation's Hub as a machine records it, as this computer names that Hub: the
