@@ -255,7 +255,8 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
             let bound = async {
                 let hub = api.machines.hubs.default_origin();
                 let on = [crate::runs::default_on(&api)];
-                let package = Host::new(&api).package(&hub, &doc.target(i), &project.folder.dir, &on, super::host::Wait::Plain).await?;
+                // Read as a quote reads it: nothing installed, started or moved on any machine to show a call (cl-1115).
+                let package = Host::new(&api).foreseen(&hub, &doc.target(i), &project.folder.dir, &on).await?;
                 let function = package.maker()?.map(|maker| maker.function).unwrap_or_default();
                 let callable = package.callable(&function).ok_or_else(|| Error::new(Kind::NotFound, "callable_unknown", format!("{} has no function called {function}.", package.name)))?;
                 let (fields, reserved, stand, title) = (doc.inputs_of(i), package.reserved(), &model.stand, package.title());

@@ -27,7 +27,7 @@ use api::{calcifer::On, config::Origin, error::Error, machine as v1};
 use serde_json::{Map, Value};
 use tokio::sync::watch;
 
-use super::{Asking, PackageRead, Project, host::{Host, Renderer}, job_of};
+use super::{Asking, Project, host::{Host, Renderer}, job_of};
 use crate::{api::Api, placement, plan, prefetch::Guess, store::now_ms};
 
 /// What's typed settles this long before it's guessed again (cl-1123: a prediction is only as good as how early it starts). A project
@@ -192,10 +192,9 @@ enum Guessed {
 async fn guess(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, folder: &str, on: Vec<On>, boxed: Boxed, asking: &Asking) -> Guessed {
     let began = std::time::Instant::now();
     let (name, with, kind, made, media) = boxed;
-    let read = job_of(host, &project.folder.dir, name.clone(), on, hub, &with, made.clone(), PackageRead::Foreseen, Some((asking, name.as_str())));
+    let read = job_of(host, &project.folder.dir, name.clone(), on, hub, &with, made.clone(), Some((asking, name.as_str())));
     let mut job = match tokio::time::timeout(READ, read).await {
-        Ok(Ok(Some(job))) => job,
-        Ok(Ok(None)) => return Guessed::Unknown("its package is installing"),
+        Ok(Ok(job)) => job,
         Ok(Err(_)) => return Guessed::Unknown("its quote couldn't be read"),
         Err(_) => return Guessed::Unknown("its quote didn't answer in time"),
     };

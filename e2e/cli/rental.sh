@@ -357,8 +357,7 @@ else
     ! J '(.waiting // "") | test("no machine named")' "$w" || check "rental_rename: the run waits on $(jq -r .waiting "$w")"
   fi
   # cl-1106: the project's machines, as the page and `cozy status` read them, and where a render naming none goes: its tool's install
-  # (which waits for the rental) or its call there, and its call nowhere else. Reading the project describes its box's tool on `local`,
-  # which installs it there too: an install isn't where the render went.
+  # (which waits for the rental) or its call there, and its call nowhere else. Nothing of it installs elsewhere either (rental_quote).
   if [ -n "$chose" ]; then
     status "$P" > "$OUT/rename-status.json" || true
     echo "rental_rename: the project chose $handle; once its host was named $name its machines are $(jq -c '.machines' "$OUT/rename-status.json" 2> /dev/null)"
@@ -526,5 +525,66 @@ for number in "${numbers[@]}"; do
     || check "queued_elsewhere: run $number's log doesn't say its machine shut down and it was placed again: $(grep -o '"text":"[^"]*"' "$OUT/queued-said-$number.txt" | tail -5)"
 done
 for queued_pid in "${pids[@]}"; do kill "$queued_pid" 2> /dev/null || true; wait "$queued_pid" 2> /dev/null || true; done
+}
+
+# rental_quote (cl-1115; the coordinator, from cl-1106's green run 43982287394: "the box's local-code tool installed on `local` though the
+# project prefers a rental only"; Paul: a quote never acts, and a box's tool is made ready only on the machine its request would go to). A
+# project of the docker rental alone (it never gets ready, so what goes there waits for it) renders a box of a local tool of its own, its
+# source new to every machine, and then reads the box's call as a page does. Its install goes to the rental; nothing of this cell's runs on
+# this computer: no install for the walk's quote (`quotable` read it there), none for the call's read.
+rental_quote() {
+step "a project on a rental alone quotes, renders and reads its box's call, and nothing installs on this computer (cl-1115)"
+[ -n "${E2E_HUB_LOG:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] || { check "rental_quote: e2e/isolated.sh named no Hub log or email to sign in with"; return; }
+local rental='' name='' P=$OUT/quote-project tool=$OUT/quote-tool pid since here_runs='[.runs[]? | select(.machine == "local" and .created_at_ms >= $since)]'
+signin "$E2E_HUB_EMAIL" > "$OUT/quote-login.json" || { check "rental_quote: cozy login failed: $(tail -c 300 "$OUT/quote-login.json")"; return; }
+cozy --json machine rent cpu -y > "$OUT/quote-rent.ndjson" 2> "$OUT/quote-rent.err" & pid=$!
+for _ in $(seq 180); do
+  rental=$(jq -r 'select(.type? == "rental.accepted") | .rental_id // empty' "$OUT/quote-rent.ndjson" 2> /dev/null | tail -1 || true)
+  [ -n "$rental" ] || ! kill -0 "$pid" 2> /dev/null || { sleep 1; continue; }
+  break
+done
+kill -KILL "$pid" 2> /dev/null || true
+wait "$pid" 2> /dev/null || true
+[ -n "$rental" ] || { check "rental_quote: machine rent cpu: no rental accepted: $(tail -c 400 "$OUT/quote-rent.ndjson")"; cozy --json logout > /dev/null 2>&1 || true; return; }
+for _ in $(seq 120); do
+  name=$(cozy --json machine ls 2> /dev/null | jq -r --arg r "$rental" '.machines[] | select(.rental_id == $r and .placeholder == null) | .name' 2> /dev/null || true)
+  [ -n "$name" ] && [[ $name != rent-* ]] && break
+  sleep 1
+done
+if [ -z "$name" ] || [[ $name == rent-* ]]; then
+  check "rental_quote: its Hub never named $rental's host in 2 min"
+else
+  cozy --json new --unencrypted "$P" > "$OUT/quote-new.json" 2>&1 || check "rental_quote: new: $(tail -c 300 "$OUT/quote-new.json")"
+  in_project "$P" --json machine use "$name" > "$OUT/quote-use.json" 2>&1 && J --arg n "$name" '.machines == [$n]' "$OUT/quote-use.json" \
+    || check "rental_quote: the project didn't choose $name alone: $(tail -c 300 "$OUT/quote-use.json")"
+  # Its tool's source new to every machine: none holds what it would install, so a machine that read it would install it.
+  mkdir -p "$tool" && { cat "$rename_here/project/draw.py"; echo "# rental_quote $RANDOM$RANDOM $(date +%s%N)"; } > "$tool/draw.py"
+  since=$(date -u +%s%3N)
+  jq -n --arg draw "$tool/draw.py/draw" '[{name: "quoted", tool: $draw, kind: "image", fields: {instructions: "Rendered on the rental alone."}}]' | boxes_in "$P" || true
+  project_api "$P" /runs -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: quote-$RANDOM$RANDOM" -d '{"names":["quoted"],"on":[]}' \
+    > "$OUT/quote-render.json" 2>&1 || check "rental_quote: render: $(tail -c 300 "$OUT/quote-render.json")"
+  # Its turn sends its install to the rental, which holds it: the walk quoted it before that.
+  for _ in $(seq 150); do
+    in_project "$P" --json run ls --limit 20 > "$OUT/quote-runs.json" 2> /dev/null || true
+    J --arg n "$name" '[.runs[]? | select(.machine == $n)] | length > 0' "$OUT/quote-runs.json" && break
+    sleep 2
+  done
+  J --arg n "$name" '[.runs[]? | select(.machine == $n)] | length > 0' "$OUT/quote-runs.json" \
+    || check "rental_quote: the render made nothing for $name in 5 min: $(status "$P" | jq -c '.board.jobs[]? | select(.asset == "quoted")' 2> /dev/null)"
+  # The box's call, as a page reads it (`?call=true`).
+  project_api "$P" "/assets/quoted?call=true" --max-time 120 > "$OUT/quote-call.json" 2>&1 && J '.call != null' "$OUT/quote-call.json" \
+    || check "rental_quote: the box's call didn't read in 2 min: $(tail -c 300 "$OUT/quote-call.json")"
+  # Anything of it going to this computer has been sent by now.
+  sleep 15
+  in_project "$P" --json run ls --limit 50 > "$OUT/quote-runs.json" 2> /dev/null || true
+  (cd "$HOME" && cozy --json run ls --limit 50) > "$OUT/quote-runs-calcifer.json" 2> /dev/null || true
+  echo "rental_quote: the project's runs: $(jq -c '[.runs[]? | {number, target, machine, status}]' "$OUT/quote-runs.json" 2> /dev/null)"
+  for runs in "$OUT/quote-runs.json" "$OUT/quote-runs-calcifer.json"; do
+    J --argjson since "$since" "$here_runs | length == 0" "$runs" \
+      || check "rental_quote: this computer ran $(jq -c --argjson since "$since" "$here_runs | map({number, target, status})" "$runs") for a project that renders on $name alone"
+  done
+  project_api "$P" /cancel -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: quote-cancel-$RANDOM$RANDOM" -d '{"names":["quoted"]}' > "$OUT/quote-cancel.json" 2>&1 || true
+fi
+cozy --json machine end "$rental" -y > "$OUT/quote-end.json" 2>&1 || check "rental_quote: machine end $rental: $(tail -c 300 "$OUT/quote-end.json")"
 cozy --json logout > /dev/null 2>&1 || true
 }
