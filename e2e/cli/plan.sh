@@ -139,9 +139,8 @@ done
 # what its machine fetches. composed.py builds a transformer and a VAE, and a third model on demand that it never reads; its box takes
 # e2e/composed-tune (its own transformer on e2e/composed-base's VAE) for the transformer. On stand-c, which holds none of them, the run
 # is quoted the tune's transformer and the base's VAE once (64 MiB) to fetch before it starts, not each named checkpoint whole and the
-# on-demand one (160 MiB); and that is what stand-c then holds of the two, within 5%. The on-demand model, which a quote can't know a
-# run reads, is quoted besides ("plus up to" its 32 MiB, `on_demand_bytes`); its machine fetches it beside the run, and it is that,
-# within 5%: the gap measured, never silent.
+# on-demand one (160 MiB); and that is what stand-c then holds of the two, within 5%. The on-demand model, which no rule says the run
+# reads, is an extra (cl-1103): no part of the quote, as no run waits for it; its machine fetches it beside the run.
 # plan_fetch_held: stand-c's own listing of what it holds; and how much of `$1` it holds, `$2` the other model whose parts it shares
 # (`total_bytes` of one, `unique_bytes` of the other: their objects once).
 plan_fetch_held() {
@@ -153,7 +152,7 @@ plan_fetch_held() {
 plan_fetch() {
 step "plan (cl-1071): a run's quoted download is what its machine fetches"
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "plan: its stand-in is another user of a fresh GitHub runner"; return; }
-local P=$OUT/plan-fetch tool=$here/project/composed.py/composed r=$RANDOM job run placed quoted demand landed extra=0
+local P=$OUT/plan-fetch tool=$here/project/composed.py/composed r=$RANDOM job run placed quoted landed extra=0
 cozy --json machine show local > "$OUT/set-local.json" || { check "plan fetch: machine show local"; return; }
 stand_in stand-c || return
 cozy --json new --unencrypted "$P" > "$OUT/plan-fetch-new.json" 2>&1 || { check "plan fetch: new: $(tail -c 300 "$OUT/plan-fetch-new.json")"; return; }
@@ -167,7 +166,7 @@ run=$(jq -r '.run // empty' <<< "${job:-null}")
 echo "$P" > "$OUT/plan-fetch.at"
 run_show "$OUT" plan-fetch "$run"
 placed=$(jq -c '.placed // empty' "$OUT/plan-fetch.json" 2> /dev/null)
-quoted=$(jq -r '.fetch_bytes // 0' <<< "${placed:-null}") demand=$(jq -r '.on_demand_bytes // 0' <<< "${placed:-null}")
+quoted=$(jq -r '.fetch_bytes // 0' <<< "${placed:-null}")
 landed=$(plan_fetch_held e2e/composed-tune e2e/composed-base)
 # The on-demand model comes beside the run, after it may have ended.
 for _ in $(seq 120); do
@@ -175,13 +174,12 @@ for _ in $(seq 120); do
   J '[.status.models[]? | select(.repository == "e2e/composed-extra") | .checkpoints[]?.complete] | any' "$OUT/plan-fetch-held.json" && break
   sleep 1
 done
-echo "plan fetch: run $run on stand-c quoted $((quoted >> 20)) MiB to fetch, plus up to $((demand >> 20)) MiB on demand ($placed);" \
+echo "plan fetch: run $run on stand-c quoted $((quoted >> 20)) MiB to fetch ($placed);" \
   "stand-c holds $((landed >> 20)) MiB of the tune and the base, and $((extra >> 20)) MiB of the on-demand model"
 echo "plan fetch: stand-c holds $(jq -c '[.status.models[]? | select(.repository | startswith("e2e/composed")) | {repository, total_bytes, unique_bytes, complete: [.checkpoints[]?.complete]}]' "$OUT/plan-fetch-held.json" 2> /dev/null)"
 [ "$landed" -gt 0 ] && [ $(( (quoted > landed ? quoted - landed : landed - quoted) * 20 )) -le "$landed" ] \
   || check "plan fetch: quoted $((quoted >> 20)) MiB to fetch before it starts, but stand-c holds $((landed >> 20)) MiB of what it waits for"
-[ "$extra" -gt 0 ] && [ $(( (demand > extra ? demand - extra : extra - demand) * 20 )) -le "$extra" ] \
-  || check "plan fetch: quoted up to $((demand >> 20)) MiB on demand, but stand-c fetched $((extra >> 20)) MiB of its on-demand model"
+[ "$extra" -gt 0 ] || check "plan fetch: stand-c never fetched the on-demand model beside the run"
 }
 
 # plan_update (phase b3), cl-1073 (Paul, 11-16): "I had an idle more powerful machine, with another machine that already had heavy
