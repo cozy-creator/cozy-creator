@@ -1133,7 +1133,9 @@ def ltx2_native(script: dict[str, Any], keys: list[str]) -> tuple[dict[str, str]
 def ltx2_comfy(name: str) -> Table[TableRow]:
     """LTX-2.5 in ComfyUI's two files: the DiT's (`ltx2.comfy`, its connectors' blocks beside it under one prefix) and
     Gemma's (`ltx2.comfy_gemma`, the connectors' input projections beside it). Each holds part of `connectors`, whose
-    rest the base supplies (`base` rows). Renames are diffusers' conversion script's (`LTX2_SCRIPT`), Gemma's
+    rest the base supplies (`base` rows). Lightricks keeps the DiT's 290 modulation tables in F32; the canonical layout
+    (its Diffusers release) is bf16 throughout, and Diffusers' LTX-2 code runs one dtype (an F32 table turns a block's
+    activations F32 before its bf16 attention gates), so every component is cast to BF16. Renames are diffusers' conversion script's (`LTX2_SCRIPT`), Gemma's
     `GEMMA_COMFY`; rows are in the mirror's order. Checked against both banked files of each, bf16 and int8_convrot."""
     components: dict[str, InspectedComponent] = {c["name"]: c for c in json.loads(LTX25.read_text())["components"]}
     shapes = {c: {t["key"]: t["shape"] for t in components[c]["tensors"]} for c in ("transformer", "connectors", "text_encoder")}
@@ -1153,7 +1155,7 @@ def ltx2_comfy(name: str) -> Table[TableRow]:
             assert all(keys[prefix + n] == shapes[component][t] for t, n in mapped.items()), (component, "shapes")
             rows = [row(t, mapped[t]) for t in order[component] if t in mapped]
             assert set(mapped) <= set(shapes[component]), (component, sorted(set(mapped) - set(shapes[component]))[:4])
-            c: Component[TableRow] = {"name": component, "prefix": prefix, "rows": rows}
+            c: Component[TableRow] = {"name": component, "prefix": prefix, "cast": "BF16", "rows": rows}
             if rest := [(t, shapes[component][t]) for t in order[component] if t not in mapped]:
                 c["base"] = rest
             built.append(c)
@@ -1167,8 +1169,9 @@ def ltx2_comfy(name: str) -> Table[TableRow]:
         assert renamed.keys() == shapes["text_encoder"].keys(), sorted(set(renamed) ^ set(shapes["text_encoder"]))[:4]
         assert all(keys[n] == shapes["text_encoder"][t] for t, n in renamed.items()), "text_encoder shapes"
         assert all(keys[n] == shapes["connectors"][t] for t, n in connectors.items()), "connectors shapes"
-        built.append({"name": "text_encoder", "rows": [row(t, renamed[t]) for t in order["text_encoder"]], "optional": assets})
-        built.append({"name": "connectors", "prefix": projections,
+        built.append({"name": "text_encoder", "cast": "BF16", "rows": [row(t, renamed[t]) for t in order["text_encoder"]],
+                      "optional": assets})
+        built.append({"name": "connectors", "prefix": projections, "cast": "BF16",
                       "rows": [row(t, connectors[t].removeprefix(projections)) for t in order["connectors"] if t in connectors],
                       "base": [(t, shapes["connectors"][t]) for t in order["connectors"] if t not in connectors]})
     return {"name": name, "components": built}
