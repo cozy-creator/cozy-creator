@@ -163,8 +163,12 @@ function devConfig(text) {
 
   // The project's own tab reads the file first, as it draws it: told it's Calcifer's own (same-origin), so no other page draws it, even one
   // on another port of this computer, the same site, whose tab could otherwise use a copy kept from this read (coordinator, 11-17).
-  const own = await tabs[0].evaluate(async (path) => { const answer = await fetch(path); return { status: answer.status, policy: answer.headers.get('cross-origin-resource-policy') }; }, `/v1/projects/${project.id}/files/${file}`);
+  const own = await tabs[0].evaluate(async (path) => { const answer = await fetch(path); return { status: answer.status, policy: answer.headers.get('cross-origin-resource-policy'), kept: answer.headers.get('cache-control') }; }, `/v1/projects/${project.id}/files/${file}`);
   check('own_file_same_origin_only', own.status === 200 && own.policy === 'same-origin', own);
+  // Kept by the browser: the page's own files by their hashes, and nothing of a project's (Paul: a project's files never end up in the
+  // browser's cache or history).
+  const code = await tabs[0].evaluate(async () => { const src = document.querySelector('script[type="module"][src^="/assets/"]')?.getAttribute('src'); const answer = src && await fetch(src); return { src, kept: answer?.headers.get('cache-control') }; });
+  check('page_code_kept_project_file_not', /immutable/.test(code.kept ?? '') && /no-store/.test(own.kept ?? ''), { code, file: own.kept });
 
   // Another site, and another port of this computer: refused, however it asks.
   const elsewhere = await attacker();

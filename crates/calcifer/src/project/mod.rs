@@ -3866,7 +3866,6 @@ async fn file(
         return Err(Refusal(Error::new(Kind::Usage, "file_name", said)));
     }
     let mut response = send(&project.folder.path(&format!("{}/{file}", folder::FILES)), &format!("\"{hex}\""), &headers)?;
-    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static(crate::files::IMMUTABLE));
     if let Some(name) = saved.download {
         crate::files::save_as(&mut response, &name, ext);
     }

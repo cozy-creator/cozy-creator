@@ -98,10 +98,16 @@ pub(crate) struct Api {
 /// site, and with no resource policy a picture its tab once read could be drawn there without asking Calcifer (web-access, coordinator
 /// 11-17). Nothing of ours loads Calcifer's answers from another origin: the hosted player streams from the machine, and in dev mode Vite's
 /// code comes through Calcifer's own origin.
+/// The page's own files by their hashes (its code, styles, fonts and icons: no project's data in them) are kept as they were answered, for
+/// good (`immutable`); nothing else is kept, a project's files, thumbnails and every /v1 answer least of all (Paul: a project's files never
+/// end up in the browser's cache or history, which is why `cozy open` opens a private window).
 async fn no_store(request: Request, next: Next) -> Response {
+    let page_file = request.uri().path().starts_with("/assets/");
     let mut response = next.run(request).await;
-    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
-    response.headers_mut().insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    if !(page_file && response.status().is_success()) {
+        response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+        response.headers_mut().insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    }
     response.headers_mut().insert(header::HeaderName::from_static("cross-origin-resource-policy"), HeaderValue::from_static("same-origin"));
     response
 }

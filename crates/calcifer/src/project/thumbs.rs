@@ -157,9 +157,7 @@ pub(super) async fn thumb(
     let unreadable = |e: std::io::Error| Refusal(Error::new(Kind::Unavailable, "project_io", format!("Cozy couldn't read {}: {e}.", at.display())));
     let opened = std::fs::File::open(&at).map_err(unreadable)?;
     let len = opened.metadata().map_err(unreadable)?.len();
-    let mut response = crate::files::send(opened, len, media_type(&at), &format!("\"{name}\""), &headers).map_err(unreadable)?;
-    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static(if private { "private, no-store" } else { crate::files::IMMUTABLE }));
-    Ok(response)
+    crate::files::send(opened, len, media_type(&at), &format!("\"{name}\""), &headers).map_err(unreadable)
 }
 
 /// `202 Accepted`, `thumb_pending`: a thumbnail not there yet, which the page waits for, its `thumb` event or a while, as no error.
