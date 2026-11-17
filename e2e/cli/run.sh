@@ -815,7 +815,9 @@ case $SHARD in
   web-solo) web_cells=(${WEB_SOLO[@]+"${WEB_SOLO[@]}"}); parts="web_lane logs" ;;
   web-2d) export WEB_RENDERER=2d; web_cells=(${WEB_2D[@]+"${WEB_2D[@]}"}); parts="web_lane logs" ;;
   web-2d-solo) export WEB_RENDERER=2d; web_cells=(${WEB_2D_SOLO[@]+"${WEB_2D_SOLO[@]}"}); parts="web_lane logs" ;;
-  web-native) web_cells=(${WEB_NATIVE[@]+"${WEB_NATIVE[@]}"}); parts="web_lane logs" ;;
+  # opens skips itself on Windows (its GL has a performance caveat, so the page draws in 2D: Linux's web-2d-solo times that), and a skipped
+  # cell fails the lane: it isn't asked for there.
+  web-native) web_cells=(); for cell in ${WEB_NATIVE[@]+"${WEB_NATIVE[@]}"}; do [ "$cell" = opens ] && [ "${RUNNER_OS:-}" = Windows ] || web_cells+=("$cell"); done; parts="web_lane logs" ;;
   # Pictures imported into a plain project get their thumbnails stored (cl-1054: none on macOS).
   thumbs) parts="thumbs_stored logs" ;;
   # What Paul's standing rules decide (cl-1066): a loose project folder made private, a project route with no protocol header, a run
