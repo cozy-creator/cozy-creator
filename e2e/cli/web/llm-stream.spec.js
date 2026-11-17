@@ -106,8 +106,9 @@ test('llm-stream', async ({ page, project, api }) => {
 });
 
 // The GPU check (release-gate/sessions/llm-stream.sh): a real model on a rental, STREAM_TOOL (`qwen3/write`, its default the abliterated
-// Qwen3.8-27B) on STREAM_MACHINE, rendered twice, cold then warm. Each render's time from its ask to its first word on the box at rest, and
-// the words a second the box shows against the tokens a second its run counts, both over the same span, in OUT/web/llm-stream-gpu.
+// Qwen3.8-27B) on STREAM_MACHINE, rendered three times: cold, warm, and warm thinking at `low` effort, whose box says it's thinking and
+// shows no words until the answer begins. Each render's time from its ask to its first word on the box at rest, and the words a second
+// the box shows against the tokens a second its run counts, both over the same span, in OUT/web/llm-stream-gpu.
 test('llm-stream: a real model on a GPU', { tag: '@gpu' }, async ({ page, project, api }) => {
   const machine = process.env.STREAM_MACHINE, tool = process.env.STREAM_TOOL;
   test.skip(!machine || !tool, 'release-gate/sessions/llm-stream.sh sets STREAM_MACHINE and STREAM_TOOL');
@@ -124,7 +125,9 @@ test('llm-stream: a real model on a GPU', { tag: '@gpu' }, async ({ page, projec
   const count = (words) => (words.match(/\S+/g) ?? []).length;
   const renders = [];
   let before = story;
-  for (const n of [1, 2]) {
+  for (const n of [1, 2, 3]) {
+    const thinking = n === 3;
+    if (thinking) await api.patch(project.at(`/assets/${NAME}`), { fields: { thinking: true, reasoning_effort: 'low' } });
     const asked = Date.now();
     await api.call('POST', project.at('/runs'), { names: [NAME], on: [machine] }, { headers: { 'Idempotency-Key': randomUUID() } });
     const shown = [], counted = [];
@@ -142,7 +145,7 @@ test('llm-stream: a real model on a GPU', { tag: '@gpu' }, async ({ page, projec
       }
       if (number !== undefined) {
         const run = await api.get(project.at(`/runs/${number}`));
-        if (run.progress?.unit === 'tokens' && run.status === 'in_progress') counted.push([at, run.progress.completed, run.progress.stage]);
+        if (run.progress?.unit === 'tokens' && run.status === 'in_progress') counted.push([at, run.progress.completed, run.progress.stage, Boolean(first)]);
       }
       expect(Date.now() - asked, `render ${n} lands within 30 min`).toBeLessThan(1_800_000);
       await page.waitForTimeout(250);
@@ -160,6 +163,12 @@ test('llm-stream: a real model on a GPU', { tag: '@gpu' }, async ({ page, projec
       shown: shown.length, text: (version.main?.text ?? '').slice(0, 300),
     });
     expect.soft(first, `render ${n}: words showed on the box before its version landed`).toBeTruthy();
+    if (thinking) {
+      // While it thought, its stage said so and the box showed nothing new: no words of the thought.
+      const thought = counted.filter(([, , stage]) => /thinking/i.test(stage));
+      expect.soft(thought.length, 'render 3: its stage said it was thinking').toBeGreaterThan(0);
+      expect.soft(thought.some(([, , , shown]) => shown), 'render 3: no words showed while it thought').toBe(false);
+    }
     before = version.main?.text ?? '';
     await page.screenshot({ path: join(out, `landed-${n}.png`) });
   }
