@@ -1711,6 +1711,11 @@ fn current_view(root: &FsPath) -> Result<PathBuf, Error> {
 }
 
 impl Project {
+    /// Its id, as its views and runs name it.
+    pub(crate) fn id(&self) -> &str {
+        &self.id
+    }
+
     /// Old references are bound to their original physical view, never a recycled drive.
     fn require_view(&self) -> Result<(), Error> {
         if self.mount_id != vault::mount_identity(&self.root) || current_view(&self.root)? != self.folder.dir || db_file(&self.folder.dir) != self.db_file {

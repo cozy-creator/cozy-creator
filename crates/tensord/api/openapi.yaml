@@ -1204,6 +1204,9 @@ components:
             done: {type: integer, format: int64, minimum: 0}
             total: {type: integer, format: int64, minimum: 0, description: Bytes the stage counts.}
             reason: {type: string, description: Why it stops where it is.}
+        reason:
+          $ref: '#/components/schemas/Reason'
+          description: Why a list's item failed (Status `ahead`), which its caller sends again or not by.
     Source:
       oneOf:
         - type: object

@@ -44,6 +44,11 @@ const PINNED: std::time::Duration = std::time::Duration::from_secs(600);
 pub(crate) const UPCOMING: &str = "cozy:upcoming:";
 pub(crate) const PREPARE: &str = "cozy:prepare:";
 
+/// A list item's run (`tensord::ahead`): a box's guess, or a job fetched ahead. No run of Calcifer's.
+pub(crate) fn listed(id: &str) -> bool {
+    id.starts_with(UPCOMING) || id.starts_with(PREPARE)
+}
+
 /// This Calcifer, in a prepare item's key: one a Calcifer before this listed is started anew, never answered as it ended then.
 static BORN: LazyLock<String> = LazyLock::new(|| format!("{:x}", crate::store::now_ms()));
 
@@ -74,6 +79,17 @@ pub(crate) struct Guess {
     pub item: v1::Predicted,
     pub function: String,
     pub placed: Placed,
+    /// Its box's draft request, hashed (`guess::draft`): edited, it is a new guess, and a failed one starts over.
+    pub draft: u64,
+}
+
+/// A guess's tries in a row that failed, on one machine (cl-1104): as any request is asked again (retry-standard-api-practice).
+struct Tries {
+    backoff: tensorfs::fetch::Backoff,
+    /// The run the last word is of: each Status of it says it again.
+    run: String,
+    /// Ok: tried again soon, said with its attempt (`<why>; attempt 2/5 in 6 s`). Err: it stays failed, in a line.
+    said: Result<String, String>,
 }
 
 /// Where a guess's render would finish when it was placed (`placement::Offer`): on its machine, and on each other machine that serves
@@ -121,6 +137,8 @@ pub(crate) struct Lists {
     /// that render (`answered`), whatever its box's guess is meanwhile: the request it made ready is the one the render adopts. With
     /// its Hub, the project and box it was guessed for, and since when.
     pinned: Mutex<HashMap<(String, String), Pinned>>,
+    /// By machine and what an item makes ready (`identity`): its guess's failed tries, until it is ready or a new guess.
+    tries: Mutex<HashMap<(String, String), Tries>>,
 }
 
 #[derive(Clone)]
@@ -164,6 +182,22 @@ impl Lists {
     /// `project`'s guesses now (none: it closed, or guesses nothing): each machine's prepare list goes again where that changed it, and
     /// a row of a guess that is one no more names no box.
     pub(crate) fn guess(&self, machines: &Arc<Machines>, project: &str, guesses: Vec<Guess>) {
+        // A box new or its draft edited is a new guess: what failed of its item on its machine starts over, under a new key.
+        let renewed: Vec<(String, String)> = {
+            let guessed = lock(&self.guessed);
+            let before = guessed.get(project);
+            let same = |guess: &Guess| before.is_some_and(|before| before.iter().any(|was| was.asset == guess.asset && was.draft == guess.draft));
+            guesses.iter().filter(|guess| !same(guess)).map(|guess| (guess.machine.clone(), identity(&guess.item))).collect()
+        };
+        {
+            let mut tries = lock(&self.tries);
+            let mut keys = lock(&self.keys);
+            for at in renewed {
+                if tries.remove(&at).is_some() {
+                    keys.remove(&at);
+                }
+            }
+        }
         let was = match guesses.is_empty() {
             true => lock(&self.guessed).remove(project),
             false => lock(&self.guessed).insert(project.to_owned(), guesses),
@@ -177,7 +211,7 @@ impl Lists {
         let on: HashSet<String> = lock(&self.guessed).get(project).into_iter().flatten().map(|guess| guess.machine.clone()).collect();
         for machine in on {
             if let Some(frame) = machines.frame(&machine) {
-                self.observe(&machine, &frame);
+                self.observe(machines, &machine, &frame);
             }
         }
     }
@@ -194,6 +228,23 @@ impl Lists {
         if !open {
             self.guess(machines, project, vec![]);
         }
+    }
+
+    /// Whose list item `id` is, while it is listed: its project's id and the boxes it is for. What its machine does for it is that
+    /// project's, as its runs' is (`Machines::operation`, cl-1104).
+    pub(crate) fn owner(&self, id: &str) -> Option<(String, Vec<String>)> {
+        if let Some(key) = id.strip_prefix(UPCOMING) {
+            let planned = lock(&self.planned);
+            let listed = planned.values().flat_map(|lists| lists.values().flatten()).find(|listed| listed.item.key == key)?;
+            return Some((listed.project.id().to_owned(), vec![listed.asset.clone()]));
+        }
+        let folders: Vec<String> = lock(&self.guessed).keys().cloned().collect();
+        for folder in folders {
+            let Some((.., names)) = self.rows(&folder).into_iter().find(|(held, ..)| held == id) else { continue };
+            let project = lock(&self.guessed).get(&folder)?.first()?.project.upgrade()?;
+            return Some((project.id().to_owned(), names));
+        }
+        None
     }
 
     /// The machine `project`'s guess for box `asset` is on, where it has one.
@@ -314,6 +365,7 @@ impl Lists {
             }
             let listed: HashSet<&str> = prepare.iter().map(|(made, ..)| made.as_str()).collect();
             lock(&self.keys).retain(|(machine, made), _| *machine != name || listed.contains(made.as_str()));
+            lock(&self.tries).retain(|(machine, made), _| *machine != name || listed.contains(made.as_str()));
             let prepare: Vec<(String, v1::Predicted)> = prepare.into_iter().map(|(_, hub, item)| (hub, v1::Predicted { key: self.key(&name, &item), ..item })).collect();
             let now = Sent {
                 boot: started(&frame),
@@ -345,8 +397,8 @@ impl Lists {
     }
 
     /// `machine`'s Status: each upcoming job's and each guess's row there moves with its item's run and the downloads it lists under
-    /// it, and is ready once that run succeeded.
-    pub(crate) fn observe(&self, machine: &str, frame: &v1::StatusFrame) {
+    /// it, and is ready once that run succeeded. A guess that failed is tried again or says why it stays failed (`tried`).
+    pub(crate) fn observe(&self, machines: &Arc<Machines>, machine: &str, frame: &v1::StatusFrame) {
         self.weigh(machine, frame);
         let row_of = |id: &str, function: &str, names: Vec<String>| {
             let run = frame.ahead.iter().find(|run| run.id == id)?;
@@ -407,12 +459,27 @@ impl Lists {
         for (folder, project) in guessing {
             let mut lost = false;
             for (id, _, function, names) in self.rows(&folder).into_iter().filter(|(_, on, ..)| on == machine) {
-                if let Some(row) = row_of(&id, &function, names) {
-                    project.jobs.guessed(&id, Row { guess: true, ..row });
+                let mut row = row_of(&id, &function, names);
+                match frame.ahead.iter().find(|run| run.id == id) {
+                    // Its machine lost what it made ready, and may fetch it again now: listed under a new key, it is started anew.
+                    Some(run) if run.state == "evicted" && run.waiting.is_empty() && run.reason.is_none() => lost |= self.rekey(machine, &id),
+                    // It failed (or failed for room, which there is now): tried again as any request is, else it says why it stays failed.
+                    Some(run) if run.reason.is_some() && (run.state == "failed" || (run.state == "evicted" && run.waiting.is_empty())) => {
+                        let reason = run.reason.as_ref().expect("a failed try says why");
+                        let tried = self.tried(machines, machine, &id, reason, &folder, &project);
+                        if let Some(row) = &mut row {
+                            row.stage = None;
+                            (row.waiting, row.held_back) = match tried {
+                                Ok(again) => (Some(again), None),
+                                Err(stays) => (None, Some(stays)),
+                            };
+                        }
+                    }
+                    Some(run) if run.state == "succeeded" => drop(lock(&self.tries).remove(&(machine.to_owned(), made_of(&id)))),
+                    _ => {}
                 }
-                // Its machine lost what it made ready, and may fetch it again now: listed under a new key, it is started anew.
-                if frame.ahead.iter().any(|run| run.id == id && run.state == "evicted" && run.waiting.is_empty()) {
-                    lost |= self.rekey(machine, &id);
+                if let Some(row) = row {
+                    project.jobs.guessed(&id, Row { guess: true, ..row });
                 }
             }
             if lost {
@@ -421,6 +488,40 @@ impl Lists {
                 self.rekeyed.store(true, Ordering::Release);
             }
         }
+    }
+
+    /// Guess `id` on `machine` failed, as `reason` says (cl-1104: a failed guess stayed failed). One the next try may not repeat
+    /// (`transient`) is tried again under a new key once its pause passes, said with its attempt (`<why>; attempt 2/5 in 6 s`); one
+    /// that may, or whose tries are spent, stays failed until a new guess, said in a line. The pause is the one clock: nothing polls.
+    fn tried(&self, machines: &Arc<Machines>, machine: &str, id: &str, reason: &v1::Reason, folder: &str, project: &Arc<Project>) -> Result<String, String> {
+        let mut tries = lock(&self.tries);
+        let tried = tries.entry((machine.to_owned(), made_of(id))).or_insert_with(|| Tries { backoff: tensorfs::fetch::Backoff::background(), run: String::new(), said: Err(String::new()) });
+        // Each Status of the same failed run says it again.
+        if tried.run == id {
+            return tried.said.clone();
+        }
+        tried.run = id.to_owned();
+        let why = line(&reason.message);
+        tried.said = match transient(&reason.code) {
+            false => Err(why),
+            true => match tried.backoff.again(&why, false, None) {
+                None => Err(tried.backoff.spent(&why)),
+                Some((pause, said)) => {
+                    let (held, machine, id, folder, project) = (machines.clone(), machine.to_owned(), id.to_owned(), folder.to_owned(), project.clone());
+                    machines.clone().spawn(async move {
+                        tokio::time::sleep(pause).await;
+                        let lists = &held.lists;
+                        if lists.rekey(&machine, &id) {
+                            let now: HashSet<String> = lists.rows(&folder).into_iter().map(|(id, ..)| id).collect();
+                            project.jobs.guesses_kept(&now);
+                            lists.send(&held);
+                        }
+                    });
+                    Ok(said)
+                }
+            },
+        };
+        tried.said.clone()
     }
 
     /// The prepare item `machine`'s list names `id` takes a new key at its next listing. Whether it had that one.
@@ -578,6 +679,27 @@ impl Moved {
             Self::State => "its phase, update or GPUs changed".to_owned(),
             Self::Waits(by) => format!("its weights' wait moved {} s", by / 1000),
         }
+    }
+}
+
+/// What a prepare item's run `id` makes ready (`identity`), as its key begins.
+fn made_of(id: &str) -> String {
+    id.trim_start_matches(PREPARE).split('.').next().unwrap_or_default().to_owned()
+}
+
+/// A guess's failure the next try may not repeat (retry-standard-api-practice): the network, a Hub or an index not answering, a
+/// download cut short, no room on the disk yet (its machine says when there is: `tensord::ahead::standing`), its preparation cut by
+/// a restart. Any other is the request's or the package's, and stays.
+fn transient(code: &str) -> bool {
+    matches!(code, "hub_unreachable" | "model_fetch_failed" | "model_download_failed" | "package_file_download_failed" | "machine_disk_full" | "preparation_interrupted")
+}
+
+/// A failure's words in one line, at most a short sentence's length (concise-errors).
+fn line(message: &str) -> String {
+    let said = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    match said.char_indices().nth(240) {
+        Some((at, _)) => format!("{}…", &said[..at]),
+        None => said,
     }
 }
 
