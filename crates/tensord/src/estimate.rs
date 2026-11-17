@@ -122,8 +122,10 @@ pub(crate) fn roots(service: &Service) -> io::Result<Vec<Root>> {
     }
     for record in &records {
         let invocation = &record.invocation;
-        // A project's fetch ahead (a function's warm run) fetches behind every run; it holds no place in the line.
-        if !invocation.parent.is_empty() || (invocation.prepares && !invocation.entrypoint.is_empty()) {
+        // A project's fetch ahead (a function's warm run) fetches behind every run; it holds no place in the line. Nor does a
+        // speculative run (cl-1123 D): any call takes its GPU at once, and the call that is its request adopts it.
+        if !invocation.parent.is_empty() || (invocation.prepares && !invocation.entrypoint.is_empty())
+            || (invocation.background && !invocation.prepares) {
             continue;
         }
         let actor = record.submission.as_ref().map(|s| s.actor.clone()).unwrap_or_default();
