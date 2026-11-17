@@ -54,6 +54,9 @@
 #              "floor_mb_s", "floor_after_s" (optional: this cell's slow-host floor, lib.sh `step`; the session's by default);
 #              "max_s" (optional: its run is canceled this long in and said UNFINISHED, not failed; a compared pair
 #              with an UNFINISHED cell compares nothing);
+#              "host_free_gib" (optional: for this cell a root shell's program takes all of the pod's available host RAM
+#              but this many GiB, page cache included, as a computer whose other programs hold its memory: a short host
+#              tier, cr-305; it ends after the cell);
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR; and
 #              their seconds, cold or warm (pairs.tsv)
 #   order      optional: `abba` (default: each two builds compared run in both orders) or `one-way`
@@ -283,6 +286,55 @@ EOS
   [[ ${held:-x} =~ ^[0-9]+$ ]] || fail "$1: no holder: $(head -c 300 "$OUT/hold-$1-$2.txt")"
   say "$1: holder $((held >> 20)) MiB held, $((free >> 20)) MiB left free"
 }
+# ram <cell> <GiB|off>: a root shell's program takes the pod's available host RAM but GiB (anonymous pages it wrote, so
+# the page cache goes too, within the container's memory.max where it has one), or ends.
+RAM_HOLDER='import mmap, os, sys, time
+leave, ready = int(float(sys.argv[1]) * (1 << 30)), sys.argv[2]
+def available():
+    free = next(int(l.split()[1]) * 1024 for l in open("/proc/meminfo") if l.startswith("MemAvailable:"))
+    try:
+        limit = open("/sys/fs/cgroup/memory.max").read().strip()
+        if limit != "max":
+            stat = dict(l.split() for l in open("/sys/fs/cgroup/memory.stat"))
+            used = int(open("/sys/fs/cgroup/memory.current").read()) - int(stat["active_file"]) - int(stat["inactive_file"])
+            free = min(free, int(limit) - used)
+    except (OSError, KeyError, ValueError):
+        pass
+    return free
+take, held, chunks, pattern = max(available() - leave, 0), 0, [], b"\1" * (64 << 20)
+while held < take:
+    n = min(1 << 30, take - held)
+    m = mmap.mmap(-1, n)
+    for at in range(0, n, len(pattern)):
+        m[at:at + min(len(pattern), n - at)] = pattern[:min(len(pattern), n - at)]
+    chunks.append(m)
+    held += n
+open(ready + ".tmp", "w").write(f"{os.getpid()} {held} {available()}\n")
+os.replace(ready + ".tmp", ready)
+while True:
+    time.sleep(3600)'
+ram() {
+  local script try code held='' left=''
+  if [ "$2" = off ]; then
+    script='pgrep -f /var/tmp/ab-ram.py | xargs -r kill; rm -f /var/tmp/ab-ram.ready; sleep 2'
+  else
+    script="pgrep -f /var/tmp/ab-ram.py | xargs -r kill; sleep 1
+echo $(base64 -w0 <<< "$RAM_HOLDER") | base64 -d > /var/tmp/ab-ram.py && rm -f /var/tmp/ab-ram.ready
+setsid nohup python3 /var/tmp/ab-ram.py $2 /var/tmp/ab-ram.ready > /var/tmp/ab-ram.out 2>&1 < /dev/null &
+i=0; while [ ! -s /var/tmp/ab-ram.ready ] && [ \$i -lt 600 ]; do sleep 0.5; i=\$((i + 1)); done
+cat /var/tmp/ab-ram.ready 2> /dev/null || tail -c 300 /var/tmp/ab-ram.out"
+  fi
+  for try in 1 2 3; do
+    cozy machine ssh "$NAME" "echo $(base64 -w0 <<< "$script") | base64 -d | sh" > "$OUT/ram-$1-$2.txt" 2>&1; code=$?
+    if [ "$2" = off ]; then [ "$code" = 0 ] && return 0; else
+      read -r _ held left _ < <(tail -1 "$OUT/ram-$1-$2.txt"); [[ ${held:-x} =~ ^[0-9]+$ ]] && break
+    fi
+    say "$1: host holder $2, try $try: exit $code $(head -c 200 "$OUT/ram-$1-$2.txt")"; sleep 10
+  done
+  [ "$2" != off ] || fail "$1: the host holder did not end"
+  [[ ${held:-x} =~ ^[0-9]+$ ]] || fail "$1: no host holder: $(head -c 300 "$OUT/ram-$1-$2.txt")"
+  say "$1: host holder $((held >> 30)) GiB held, $((left >> 30)) GiB left available"
+}
 # cellstate <name>: the record's LoRA bake blocks, derived bytes filled and persisted pages (the run's own measurements and
 # its calls', every GPU), and whether the call memo answered it, tab-separated.
 cellstate() { jq -r '. as $r | [.measurements, (.calls[]?.measurements)] | map(select(. != null) | .memory.stats.varena[]?.stats // empty) as $v
@@ -336,6 +388,8 @@ for k in "${names[@]}"; do
   # wait_s: the executor left idle this long before the cell (an idle period's work runs); its record says whether it did
   w=$(jq -r '.wait_s // 0' <<<"$c"); [[ $w =~ ^[0-9]+$ ]] || fail "cell $k: wait_s $w"
   [ "$w" = 0 ] || { say "$k: the machine left idle ${w}s"; sleep "$w"; }
+  hg=$(jq -r '.host_free_gib // empty' <<<"$c"); [[ -z $hg || $hg =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "cell $k: host_free_gib $hg"
+  [ -z "$hg" ] || ram "$k" "$hg"
   echo "$k" > "$OUT/current"
   say "$k: GPU before: $(gpu | paste -sd';')"
   tree=$(jq -r '.tree // empty' <<<"$c") target=$(jq -r .target <<<"$c")
@@ -364,6 +418,7 @@ for k in "${names[@]}"; do
   fi
   step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?
   [ -z "$MS" ] || { pkill -P "$MS" 2> /dev/null; kill "$MS" 2> /dev/null; MS=''; }
+  [ -z "$hg" ] || ram "$k" off
   N=$(runno "$k"); [ -n "$N" ] || N=$(current "$k")  # a failed run's output names it only in its first line
   # `step` runs every cell from the session's project (lib.sh RUN_PROJECT): its runs are known there alone.
   cd "$RUN_PROJECT" || fail "no $RUN_PROJECT"
