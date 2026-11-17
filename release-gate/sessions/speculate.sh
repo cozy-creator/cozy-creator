@@ -6,6 +6,7 @@
 #   2. edit:      the box edited while its draft runs: that run ends ("its draft changed") and the new draft runs.
 #   3. in flight: the box rendered while its draft runs: the render adopts the run going.
 #   4. preempt:   another model's call (SDXL) sent while a draft runs: it gets the GPU at once (under 50 ms), the run told to stop.
+#   5. no trace:  the project lists only the session's own five runs, and no speculative run moved the idle deadline.
 # The pod runs the session's TensorD, Runtime and TensorFS, checked before every step (load-ahead.sh). params:
 #   tree     a packages_refs checkout whose qwen-image-2 runs, its rules with it (`-f packages_refs=pk=<ref>`, tree pk): a dev home
 #   update   `cozy machine update` flags beside its TensorD: a dev build's Runtime and TensorFS, `artifact:<run id>:<artifact>[:<repo>]`
@@ -74,13 +75,15 @@ until_stage() {
   done
   say "the box's draft is $1 ($t s)"
 }
+# mark <what>: a person's action (marks.txt): the idle deadline may move only at one.
+mark() { echo "$(date +%s%3N) $1" >> "$OUT/marks.txt"; }
 # render <arm>: the box rendered as the page renders it; its take landed, timed from the ask.
 render() {
-  local asked; asked=$(date +%s%3N)
+  local asked; asked=$(date +%s%3N); mark "render $1"
   python3 "$RUN_PAGE" render "$RUN_PROJECT" --on "$NAME" q > "$OUT/render-$1.txt" 2>&1 || fail "$1: the render: $(tail -c 400 "$OUT/render-$1.txt")"
   say "$1: the render's take landed $(( $(date +%s%3N) - asked )) ms after Render"
 }
-edit() { run_page set q --fields "$(jq -nc --arg p "$1" '{instructions: $p}')" > "$OUT/edit.json" 2>&1 || fail "the edit: $(tail -c 300 "$OUT/edit.json")"; say "q edited: $1"; }
+edit() { mark edit; run_page set q --fields "$(jq -nc --arg p "$1" '{instructions: $p}')" > "$OUT/edit.json" 2>&1 || fail "the edit: $(tail -c 300 "$OUT/edit.json")"; say "q edited: $1"; }
 
 # The weights onto the pod (the default request reads the model, its text encoder, expander_t2i and Turbo's LoRA), then SDXL's.
 ours fetch
@@ -95,6 +98,7 @@ for _ in $(seq 1 30); do grep -q '"held"' "$OUT/shown.txt" && break; sleep 1; do
 grep -q '"held": \["' "$OUT/shown.txt" || fail "the project wasn't shown: $(tail -c 300 "$OUT/shown.txt")"
 
 # 1. done: drafted, loaded, run ahead to its end; then Render.
+mark draft
 run_page add q --tool "$TOOL" --fields "$(jq -nc --arg p "$PROMPT" '{instructions: $p, megapixels: 1, aspect_ratio: "1:1", seed: 3}')" \
   > "$OUT/box.json" 2>&1 || fail "the box: $(tail -c 300 "$OUT/box.json")"
 say "box q drafted (Turbo and upsampling on)"
@@ -121,6 +125,7 @@ edit "a white lighthouse at noon, calm sea, gulls, photo"
 until_stage loaded 120
 until_stage running 60
 ours preempt
+mark preempt
 step preempt run "$OTHER" --on "$NAME" prompt="a brass compass on a walnut desk" seed:=5 || fail "the other call"
 ours end
 kill $BG 2> /dev/null; BG=''
@@ -147,4 +152,32 @@ if ended and waits:
     print(f"preempt: the call waited for a free GPU from {w[0].split()[0]}; the run ended {1000 * (at(ended[-1]) - at(w[0])):.1f} ms later"
           + (f"; the call went {1000 * (at(g[0]) - at(w[0])):.1f} ms after it waited" if g else ""))
 PY
-[ "$RC" = 0 ] && say "PASS: run ahead, adopted done and in flight, ended by an edit, and by another model's call"
+# 5. No trace: fetch, other-fetch, two renders and the preempting call are the project's runs; while a draft ran ahead or stood
+# done, the idle deadline stayed where the last action left it.
+(cd "$RUN_PROJECT" && cozy --json run ls --all --limit 40) > "$OUT/runs.json" 2>&1
+say "the project's runs: $(jq -c '[.runs[]? | {number, target}]' "$OUT/runs.json" | cut -c1-400)"
+[ "$(jq '[.runs[]?] | length' "$OUT/runs.json")" = 5 ] || { say "FAIL: the project lists other than its 5 runs"; RC=1; }
+! grep -q speculative "$OUT/runs.json" || { say "FAIL: a speculative run is in the project"; RC=1; }
+python3 - "$OUT" <<'PY' | tee -a "$R" | grep -q '^idle: held' || { say "FAIL: speculation moved the idle deadline"; RC=1; }
+import json, sys
+out = sys.argv[1]
+marks = sorted(int(line.split()[0]) for line in open(f"{out}/marks.txt"))
+rows = [json.loads(line) for line in open(f"{out}/status.ndjson") if line.strip().endswith("}")]
+rows = [row for row in rows if row.get("status")]
+def stage(row):
+    return next(((a.get("readiness") or {}).get("stage") for a in row["status"]["ahead"] if a.get("id", "").startswith("cozy:prepare:")), None)
+moved, spans, held = [], 0, None
+for row in rows:
+    since = max([m for m in marks if m <= row["at_ms"]], default=0)
+    # From 2 s after an action (its own call or list put landed) until the next one.
+    if stage(row) not in ("running", "done") or row["at_ms"] < since + 2000:
+        held = None
+        continue
+    deadline = row["status"].get("idle_deadline_ms")
+    if held is None or held[0] != since:
+        held, spans = (since, deadline), spans + 1
+    elif deadline != held[1]:
+        moved.append((row["at_ms"], held[1], deadline))
+print(f"idle: {'held' if not moved and spans else 'MOVED'} across {spans} spans of running ahead" + (f"; moved {moved[:3]}" if moved else ""))
+PY
+[ "$RC" = 0 ] && say "PASS: run ahead, adopted done and in flight, ended by an edit, and by another model's call; no trace, idle held"
