@@ -620,6 +620,9 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     if KEY_ROOTS.lock().expect("vault project roots").get(&keybag.info().project_id).is_some_and(|known| known != root && held(known).is_some()) {
         return Err(Error::new(Kind::Conflict, "vault_project_copy", "another location of this encrypted project is unlocked"));
     }
+    // With no session of it here, a view under it is a dead Calcifer's: one killed, whose service manager ended its supervisor with it
+    // (systemd's KillMode), left mounted with no provider. Detached now, it outlives no later stop (e2e 44118022499).
+    if held(root).is_none() { retire_orphaned_views(root)?; }
     let runtime = project_runtime(root)?;
     let view = project_mount::view_path(&runtime).map_err(provider)?;
     let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(unusable)?;
