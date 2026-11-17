@@ -146,12 +146,21 @@ impl Link {
         lanes[i].clone()
     }
 
-    /// Sends `runs` as one admission (`POST /v1/runs/batch`; one run is a batch of one): each one's state, the machine's acceptance,
-    /// in their order. The same id and spec again answer the run as it is; another spec is `run_id_conflict`.
-    pub(crate) async fn admit(&self, runs: Vec<(store::Sent, v1::RunSpec)>) -> Result<Vec<Result<v1::RunState, LinkError>>, LinkError> {
+    /// Sends `runs` as one admission (`POST /v1/runs/batch`; one run is a batch of one), with `objects` they read: each one's
+    /// state, the machine's acceptance, in their order. The same id and spec again answer the run as it is; another spec is
+    /// `run_id_conflict`. The answer goes on with the events of run `follow` from its start, as `events(follow, 0)` reads them
+    /// (cl-1172): one round trip admits and follows it. None for the events from a machine that answers the batch alone.
+    pub(crate) async fn admit(
+        &self,
+        runs: Vec<(store::Sent, v1::RunSpec)>,
+        follow: &store::Sent,
+        objects: Vec<v1::CarriedObject>,
+    ) -> Result<(Vec<Result<v1::RunState, LinkError>>, Option<Live<v1::RunEvent>>), LinkError> {
         let runs = runs.into_iter().map(|(id, spec)| v1::RunRequest { id: id.as_str().to_owned(), spec }).collect();
-        let answers = self.machine.submit_batch(&v1::RunBatch { runs }).await?;
-        Ok(answers.into_iter().map(|answer| answer.map_err(LinkError::from)).collect())
+        let batch = v1::RunBatch { runs, follow: follow.as_str().to_owned(), objects };
+        let (answers, events) = self.machine.submit_batch(&batch).await?;
+        let events: Option<Live<v1::RunEvent>> = events.map(|events| Box::pin(events.map_err(LinkError::from)) as Live<v1::RunEvent>);
+        Ok((answers.into_iter().map(|answer| answer.map_err(LinkError::from)).collect(), events))
     }
 
     /// Sends an update (`POST /v1/runs`): what every TensorD takes, as it reaches a machine on another minor (`Machines::current`).

@@ -323,7 +323,30 @@ pub struct RunRequest {
 #[serde(default)]
 pub struct RunBatch {
     pub runs: Vec<RunRequest>,
+    /// The id of the run of `runs` whose events the answer goes on with, asked as `text/event-stream` (cl-1172): the answer is
+    /// then its [`ADMITTED`] event, and the run's events follow it as `GET /v1/runs/{id}/events` sends them from its start, so one
+    /// round trip admits a run and follows it. Empty, or a machine that doesn't stream it: the answer alone, as JSON.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub follow: String,
+    /// Small objects its runs read, whole (cl-1172): written here as `PUT /v1/objects/{digest}` writes them, before the runs are
+    /// admitted, so a run's small inputs take no round trip of their own. Sent only to a machine whose Status says it takes
+    /// them (`StatusFrame::carried_objects`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub objects: Vec<CarriedObject>,
 }
+
+/// One small object a batch carries (`RunBatch::objects`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CarriedObject {
+    /// `sha256:<hex>` of `data`.
+    pub digest: String,
+    #[serde(with = "base64_bytes")]
+    pub data: Vec<u8>,
+}
+
+/// The SSE event that carries a batch's [`RunBatchAnswer`] ahead of its followed run's events (`RunBatch::follow`).
+pub const ADMITTED: &str = "admitted";
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -1262,6 +1285,9 @@ pub struct StatusFrame {
     pub gpu_problems: Vec<String>,
     /// What builds kernels here when no prebuilt one serves the card.
     pub toolchain: Toolchain,
+    /// Its batch admission writes the small objects a batch carries (`RunBatch::objects`, cl-1172); false from an older one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub carried_objects: bool,
     /// Each native kernel's verdict on this machine's cards, as the Runtime keeps it.
     pub kernels: Vec<KernelVerdict>,
     /// The TensorD service's process (not its stable parent, a pod's PID 1).

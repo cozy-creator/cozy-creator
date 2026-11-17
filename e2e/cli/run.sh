@@ -58,6 +58,7 @@ parse "$@"
 . "$(dirname "$0")/standing.sh"
 . "$(dirname "$0")/llm.sh"
 . "$(dirname "$0")/hubdown.sh"
+. "$(dirname "$0")/overhead.sh"
 
 # This proof owns its foreground Calcifer. Keep it out of the ordinary raw-log/body
 # collectors and never emit its private CLI data.
@@ -616,6 +617,7 @@ case $SHARD in
     llm_stream
     responses_sdk
     llm_cli_words
+    run_overhead
     previews
     second_executor
     lifetime
@@ -687,10 +689,12 @@ case $SHARD in
     weightless
     describe
     first_run
+    given_file
     llm_write
     llm_stream
     responses_sdk
     llm_cli_words
+    run_overhead
     previews
     run_flags
     run_playback
@@ -699,6 +703,8 @@ case $SHARD in
     performance_data
     logs
   " ;;
+  # A warm run's time outside its compute (cl-1172), alone.
+  overhead) parts="run_overhead logs" ;;
   executors) parts="
     second_executor
     lifetime
@@ -921,6 +927,8 @@ case $SHARD in
   # An export whose bytes the machine no longer has settles and starts the machine no more (cl-1035). Named projectvault-* for its driver.
   projectvault-export-gone) parts="export_gone logs" ;;
   projectdb-closes) parts="db_closes logs" ;;
+  # The Hub's catalog asked only if it changed, kept on a 304 (cl-1174), alone.
+  catalog) parts="catalog_unchanged logs" ;;
   # cl-1000: a runner with no FUSE (e2e.yaml installs no vault driver for it).
   projectvault-nofuse) parts="vault_no_fuse logs" ;;
   # cl-1049: an encrypted project made, written, locked, unlocked and read back on this runner's OS (Windows: WinFsp by doctor --fix).
@@ -1013,6 +1021,7 @@ case $SHARD in
     path_manifest
     from_source
     tools_offline
+    catalog_unchanged
     rental_end
     rental_end_again
     rental_rename
@@ -1033,6 +1042,8 @@ case $SHARD in
   asleep) parts="asleep logs" ;;
   # Typed package composition on the candidate cohort, with tiny local CPU inputs only.
   typed-calls) parts="typed_calls logs" ;;
+  # A run's own file at a box-shaped input, its first use and again (cl-1183).
+  given-file) parts="given_file logs" ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
   coming) parts="coming_machine logs" ;;
   # `cozy update`, its own runner, as it replaces this computer's cozy: a newer release offered at a terminal (cl-1069), the Latest

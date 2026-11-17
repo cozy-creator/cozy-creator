@@ -3,7 +3,8 @@
 // Each mismatch is one JSON line in <out>/hub-mismatches.jsonl: a request that breaks the document is the client's
 // drift, a response that breaks it the document's. A route the document lacks is a mismatch; an operation marked
 // `x-raw-body` (pages, redirects, bytes) has its status checked, not its body. Object fields follow the document's
-// additionalProperties policy. <out>/hub-calls.json counts the calls of each operation. Each call of an operation --keep names
+// additionalProperties policy. <out>/hub-calls.json counts the calls of each operation, and those answered other than 200 again by their
+// status ("GET /v1/packages 304"). Each call of an operation --keep names
 // is one JSON line in <out>/hub-kept.jsonl: its body, its answer, and whether it carried a credential. Started again on the
 // same <out> (a cell stopped it with the Hub), it adds to these files.
 //
@@ -232,6 +233,9 @@ func (c *checker) check(w http.ResponseWriter, r *http.Request, route *routers.R
 	}
 	at.Status = recorder.status
 	c.count(r.Method + " " + route.Path)
+	if recorder.status != http.StatusOK {
+		c.count(fmt.Sprintf("%s %s %d", r.Method, route.Path, recorder.status))
+	}
 	if c.keep[r.Method+" "+route.Path] {
 		c.save(Kept{Operation: r.Method + " " + route.Path, Credential: r.Header.Get("Authorization") != "",
 			Body: asJSON(body), Status: recorder.status, Answer: asJSON(recorder.body.Bytes())})

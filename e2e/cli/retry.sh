@@ -5,6 +5,9 @@
 # the project's one machine, each held there (waits.py's `held`), and it ends mid-run. Neither fails: each run returns to Calcifer's queue
 # as its next attempt ("attempt 1 stopped: stand-r shut down; attempt 2 of 3 …") and completes on local, on the seed it was asked with;
 # `cozy render cut` follows it there and exits 0, and the page (web/retry.js) says no failure and shows paged's take land.
+# cl-1173, Paul, 11-03: "it tries again with backoff, informing the user of what's going on, i.e., attempt 2/5": each run's record carries
+# its attempt and why ("attempt 2 of 3: stand-r shut down"), said by its tile, its page and `cozy run ls` while it goes (held on local
+# `at_home`), and by `cozy run ls --json` and `cozy run watch --once` after.
 retry_elsewhere() {
 step "a running job's machine ends: it reruns elsewhere as attempt 2 and completes (cl-1085, cl-1132)"
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] \
@@ -17,7 +20,7 @@ cozy --json machine show local > "$OUT/set-local.json" || { check "retry elsewhe
 stand_in stand-r || return
 cozy --json new --unencrypted "$P" > "$OUT/retry-new.json" 2>&1 || { check "retry elsewhere: new: $(tail -c 300 "$OUT/retry-new.json")"; return; }
 jq -n --arg tool "$tool" --argjson home "$(id -u)" '["cut", "paged"] | map({name: ., tool: $tool, kind: "image",
-  fields: {instructions: "Held on stand-r until it ends: \(.).", megapixels: 0.25, seconds: 600, home: $home}})' | boxes_in "$P" || return
+  fields: {instructions: "Held on stand-r until it ends: \(.).", megapixels: 0.25, seconds: 600, home: $home, at_home: 60}})' | boxes_in "$P" || return
 in_project "$P" --json machine use stand-r > "$OUT/retry-use.json" 2>&1 && J '.machines == ["stand-r"]' "$OUT/retry-use.json" \
   || { check "retry elsewhere: machine use stand-r: $(tail -c 300 "$OUT/retry-use.json")"; return; }
 
@@ -59,6 +62,13 @@ for run in "$cut" "$paged"; do
   project_api "$P" "/runs/$run/events" --max-time 10 -H 'Accept: text/event-stream' > "$OUT/retry-said-$run.txt" 2> /dev/null || true
   grep -q 'attempt 1 stopped: stand-r shut down; attempt 2 of 3' "$OUT/retry-said-$run.txt" \
     || check "retry elsewhere: $name's log doesn't say attempt 1 stopped as stand-r shut down and attempt 2 of 3 went elsewhere: $(grep -o '"text":"[^"]*"' "$OUT/retry-said-$run.txt" | tail -5)"
+  # Its record keeps its attempt once it ended (cl-1173): `cozy run ls --json` and `cozy run watch --once` say it.
+  in_project "$P" --json run ls > "$OUT/retry-ls.json" 2>&1
+  J --arg n "$name" '[.runs[] | select(.name == $n) | .retry] == [{"attempt": 2, "attempts": 3, "why": "stand-r shut down"}]' "$OUT/retry-ls.json" \
+    || check "retry elsewhere: cozy run ls --json doesn't say $name is attempt 2 of 3 as stand-r shut down: $(jq -c --arg n "$name" '[.runs[]? | select(.name == $n) | {name, status, retry}]' "$OUT/retry-ls.json" 2> /dev/null || tail -c 300 "$OUT/retry-ls.json")"
+  in_project "$P" run watch "$name" --once > "$OUT/retry-watch-$run.txt" 2>&1
+  grep -Eq '^ *attempt[: ] +2 of 3: stand-r shut down$' "$OUT/retry-watch-$run.txt" \
+    || check "retry elsewhere: cozy run watch $name --once doesn't say attempt 2 of 3: stand-r shut down: $(tail -c 400 "$OUT/retry-watch-$run.txt")"
 done
 [ "$code" = 0 ] || check "retry elsewhere: cozy render cut exited $code: $(tail -c 300 "$OUT/retry-cut.err")"
 J --slurpfile was "$OUT/retry-cut-before.json" '.request.seed != null and .request.seed == $was[0].request.seed' "$OUT/retry-$cut.json" \

@@ -42,11 +42,11 @@ function ToolGroup({ entry, open, toggle }: { entry: PaletteEntry; open: boolean
 }
 
 /** Clicks browse; only a drag creates a box or attaches a tool. */
-export function ToolPanel({ project, machine, waiting, shut, setShut }: { project: string | null; machine: string | null; waiting: boolean; shut: boolean; setShut: (shut: boolean) => void }) {
+export function ToolPanel({ project, shut, setShut }: { project: string | null; shut: boolean; setShut: (shut: boolean) => void }) {
   const { client } = useConnection()
   const store = useCanvasStore()
   const [open, setOpen] = useState<Operation | null>(null)
-  const { data, error, isPlaceholderData } = useQuery({ ...toolsQuery(client, "", machine, project), enabled: !waiting })
+  const { data, error, isPlaceholderData } = useQuery(toolsQuery(client, "", project))
   useEffect(() => {
     store.addTools(withBuiltIns(data && !isPlaceholderData ? data.tools : []))
   }, [store, data, isPlaceholderData])

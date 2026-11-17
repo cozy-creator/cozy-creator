@@ -532,6 +532,30 @@ pub struct Run {
     /// Where the plan sent it, and what it quoted there (cl-967); none for a run no plan placed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placed: Option<Placed>,
+    /// Past its first attempt (cl-1173): which it is and why the one before stopped. None on its first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<Retry>,
+}
+
+/// A run sent again, its machine lost under it or its GPU failed (cl-1132, cl-935): "attempt 2 of 3: stand-r shut down".
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Retry {
+    pub attempt: u32,
+    pub attempts: u32,
+    /// Why the attempt before stopped, in one line; empty when that wasn't kept.
+    #[serde(default)]
+    pub why: String,
+}
+
+impl std::fmt::Display for Retry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "attempt {} of {}", self.attempt, self.attempts)?;
+        match self.why.is_empty() {
+            true => Ok(()),
+            false => write!(f, ": {}", self.why),
+        }
+    }
 }
 
 /// A text output's words so far, as its machine streams them (xs-209): `index` 0 for a single output, from 1 a list's item.

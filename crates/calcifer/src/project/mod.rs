@@ -800,9 +800,10 @@ impl Holding {
 
     /// `cozy run`'s written fields bound as Render binds a box's: mentions read this project's boxes, then the run's own references
     /// (`inline`, each with its file here), ranges are cut here, and `pickup.` terms are the gesture. Answers the call, the files it
-    /// names (the project's fetched here if a machine keeps them), what was said, and what it left out.
+    /// names, each where the call reads it (a box's `video.file`, cl-1183): the run's own (`given`, as attached), the project's (fetched
+    /// here if a machine keeps them); what was said, and what it left out.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn bound(&self, target: &str, package: &str, title: &str, callable: &api::interface::Callable, written: Map<String, Value>, clips: &crate::runs::clip::Clips, inline: &[(binder::Inline, PathBuf)]) -> Result<(Map<String, Value>, Vec<crate::runs::bind::InputFile>, Vec<String>, Vec<Unused>), Error> {
+    pub(crate) async fn bound(&self, target: &str, package: &str, title: &str, callable: &api::interface::Callable, written: Map<String, Value>, clips: &crate::runs::clip::Clips, inline: &[(binder::Inline, PathBuf)], given: &[crate::runs::bind::InputFile]) -> Result<(Map<String, Value>, Vec<crate::runs::bind::InputFile>, Vec<String>, Vec<Unused>), Error> {
         let _access = vault::admit_root(&self.dir).await?;
         let physical = vault::resolve_path(&self.dir)?;
         let folder = Folder::at(&physical);
@@ -823,6 +824,7 @@ impl Holding {
         let mut bound = binder::bind(&call)?;
         // The run's own files go as a cut clip does: by their digest, from where they are here.
         let mut cut: HashMap<String, PathBuf> = inline.iter().map(|(named, path)| (named.file.clone(), path.clone())).collect();
+        cut.extend(given.iter().map(|file| (file.digest.to_string(), file.path.clone())));
         let mut digests = vec![];
         for range in &bound.cuts {
             let Some(path) = self.file(&range.source).await? else { continue };
@@ -848,6 +850,10 @@ impl Holding {
         binder::cuts_filled(&mut payload, &digests);
         let mut files = vec![];
         for (field, _, sha256) in tools::files_in(&payload, &folder, &lock, &cut) {
+            if let Some(file) = given.iter().find(|file| file.digest.to_string() == sha256) {
+                files.push(crate::runs::bind::InputFile { order: order_of(&field), field, ..file.clone() });
+                continue;
+            }
             let path = match cut.get(&sha256) {
                 Some(clip) => clip.clone(),
                 None => self.file(&sha256).await?.unwrap_or_else(|| folder.path(&lock.files[&sha256].path)),
@@ -856,6 +862,7 @@ impl Holding {
             let digest = sha256.parse().map_err(|why: &str| Error::new(Kind::Internal, "digest", why))?;
             files.push(crate::runs::bind::InputFile { order: order_of(&field), shown: sha256.clone(), field, path, digest, length: sniffed.length, media_type: sniffed.media_type });
         }
+        files.sort_by(|a, b| a.field.cmp(&b.field));
         Ok((payload.as_object().cloned().unwrap_or_default(), files, bound.warnings, bound.unused))
     }
 }

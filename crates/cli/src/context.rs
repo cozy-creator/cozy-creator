@@ -22,6 +22,8 @@ pub(crate) struct Context {
     /// The user's home directory: services and `~` are relative to it.
     pub user_home: PathBuf,
     pub term: Term,
+    /// The command's one connection to Calcifer, made at its first use (cl-1172): every read after it rides the same pool.
+    calcifer: tokio::sync::OnceCell<Client>,
 }
 
 impl Context {
@@ -34,6 +36,7 @@ impl Context {
             home: loaded.home,
             user_home: loaded.user_home,
             term,
+            calcifer: tokio::sync::OnceCell::new(),
         }
     }
 
@@ -47,8 +50,8 @@ impl Context {
         Origin::parse(origin).is_ok_and(|o| o != *self.hub()).then_some(origin)
     }
 
-    /// Calcifer, started if none runs.
+    /// Calcifer, started if none runs: the command's one client, its clones sharing one connection.
     pub(crate) async fn calcifer(&self) -> Result<Client, Error> {
-        Client::connect(self).await
+        self.calcifer.get_or_try_init(|| Client::connect(self)).await.cloned()
     }
 }

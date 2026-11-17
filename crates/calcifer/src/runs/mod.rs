@@ -877,8 +877,12 @@ async fn gpuless(api: &Api, on: &On, gpu: bool, target: &str) -> Option<String> 
     if !gpu {
         return None;
     }
-    let machine = api.machines.show(name).await.ok()?;
-    (machine.status.as_ref()).is_some_and(|s| s.phase == "ready" && s.gpus.is_empty()).then(|| {
+    // What its open Status stream last said, else asked now (cl-1172: a round trip a GPU run).
+    let gpuless = match api.machines.named(name).ok().flatten().and_then(|row| api.machines.live_frame(&row.name)) {
+        Some(frame) => frame.phase == "ready" && frame.gpus.is_empty(),
+        None => api.machines.show(name).await.ok()?.status.is_some_and(|s| s.phase == "ready" && s.gpus.is_empty()),
+    };
+    gpuless.then(|| {
         format!(
             "{name} has no supported GPU, so {target} runs on its CPU: slowly, or not at all if it loads a model. Rent a GPU to run it properly."
         )
