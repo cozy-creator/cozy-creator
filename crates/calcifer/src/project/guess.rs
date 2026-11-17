@@ -83,6 +83,46 @@ fn kept(api: &Api, project: &Project, folder: &str, (name, with, kind, made): (&
     (request_key(with, kind, made, project.draft_seed(name), request.as_ref()) == memo.key).then_some(guess)
 }
 
+/// Why each box isn't guessed, by project folder and box ("" for the project), said once until it changes (cl-1123: Paul's picture box
+/// with Qwen on it was never guessed, and nothing said why).
+static UNGUESSED: LazyLock<Mutex<std::collections::HashMap<(String, String), String>>> = LazyLock::new(Mutex::default);
+
+/// Box `name` of `folder` (the project, when empty) isn't guessed, for `why`: said when that's new.
+fn unguessed(folder: &str, name: &str, why: &str) {
+    let mut said = lock(&UNGUESSED);
+    if said.get(&(folder.to_owned(), name.to_owned())).is_some_and(|was| was == why) {
+        return;
+    }
+    match name.is_empty() {
+        true => tracing::info!(target: crate::prefetch::TARGET, "{folder}: no box is guessed: {why}"),
+        false => tracing::info!(target: crate::prefetch::TARGET, "{folder}: {name} isn't guessed: {why}"),
+    }
+    said.insert((folder.to_owned(), name.to_owned()), why.to_owned());
+}
+
+/// Box `name` of `folder` is guessed: a reason it isn't is said again once it holds.
+fn guessed(folder: &str, name: &str) {
+    let mut said = lock(&UNGUESSED);
+    said.remove(&(folder.to_owned(), String::new()));
+    said.remove(&(folder.to_owned(), name.to_owned()));
+}
+
+/// Why box `i` isn't a draft its Render would make, if it isn't: it has no tool, Cozy makes it itself, or it approves a take of what
+/// it asks now. One with a tool approving anything else is one (cl-1123; Paul, 11-17: "I just attached qwen image 2.1, to an image,
+/// and typed up a prompt, but it didn't pre-fetch the iTi prompt-enhancer until I pushed render"): the picture put on it, or a take
+/// of what it asked before, is what its Render edits or makes again.
+fn not_a_draft(asking: &Asking, i: usize) -> Option<&'static str> {
+    let (doc, stand) = (&asking.doc, &asking.stand[i]);
+    if !doc.makes(i) {
+        return Some("it has no tool");
+    }
+    if doc.tool(i).is_some() {
+        return Some("Cozy makes it itself, with no model");
+    }
+    let take = |(number, now): (u32, &String)| asking.lock.asset(&doc.assets[i].name).and_then(|held| held.version(number)).is_some_and(|version| version.inputs == *now);
+    (doc.assets[i].pin.is_some() && stand.version().zip(stand.inputs.as_ref()).is_some_and(take)).then_some("it approves a take of what it asks now")
+}
+
 /// Local code carried to a machine by a guess (`item`), by machine and its package's manifest: written there once, its source as staged.
 static CARRIED: LazyLock<Mutex<std::collections::HashMap<(String, String), v1::LocalSource>>> = LazyLock::new(Mutex::default);
 /// The functions whose Hub reads are read ahead (`fit::read_ahead`): by Hub, package, release and function.
@@ -169,43 +209,70 @@ pub(super) fn keep(api: &Arc<Api>, project: &Arc<Project>) {
         }
         api.machines.lists.guess_closed(&api.machines, &folder);
         lock(&MADE).retain(|(at, _), _| *at != folder);
+        lock(&UNGUESSED).retain(|(at, _), _| *at != folder);
     });
 }
 
-/// `project`'s guesses as it stands: one for each box a render would make, where a machine that serves could run it.
+/// `project`'s guesses as it stands: one for each box a render would make, where a machine that serves could run it. Why a box has
+/// none is said (`unguessed`).
 async fn guesses(api: &Arc<Api>, project: &Arc<Project>) -> Vec<Guess> {
     // Its runs, which its times on each machine stand on, are its own: read in its storage, as its estimates are (`fit`).
-    let Ok(scope) = crate::private_io::of_path(&project.folder.dir) else { return vec![] };
+    let scope = match crate::private_io::of_path(&project.folder.dir) {
+        Ok(scope) => scope,
+        Err(e) => {
+            unguessed(&project.folder.dir.to_string_lossy(), "", &format!("its storage can't be read: {}", e.message));
+            return vec![];
+        }
+    };
     crate::private_io::context(scope, guesses_in(api, project)).await
 }
 
 async fn guesses_in(api: &Arc<Api>, project: &Arc<Project>) -> Vec<Guess> {
-    if project.require_view().is_err() {
+    let folder = project.folder.dir.to_string_lossy().into_owned();
+    if let Err(e) = project.require_view() {
+        unguessed(&folder, "", &format!("its view isn't open: {}", e.message));
         return vec![];
     }
     // What each box's render would send, which its function's needs rules read (cl-1103).
-    let Some(asking) = Asking::of(&project.folder) else { return vec![] };
-    let boxes: Vec<Boxed> = {
-        let doc = &asking.doc;
-        // What a render of everything would make: each box with a tool of a package, not approved.
-        (doc.order.iter().copied())
-            .filter(|&i| doc.makes(i) && doc.tool(i).is_none() && doc.assets[i].pin.is_none())
-            .take(BOXES)
-            .map(|i| (doc.assets[i].name.clone(), doc.target(i), doc.assets[i].kind.clone(), doc.assets[i].made.clone(), doc.media_read(i)))
-            .collect()
+    let Some(asking) = Asking::of(&project.folder) else {
+        unguessed(&folder, "", "its boxes can't be read");
+        return vec![];
     };
+    // What a render of each box would make: each draft with a tool of a package (`not_a_draft`), the first `BOXES`.
+    let mut drafts = 0;
+    let mut boxes: Vec<Boxed> = vec![];
+    for &i in &asking.doc.order {
+        let (doc, name) = (&asking.doc, &asking.doc.assets[i].name);
+        match not_a_draft(&asking, i) {
+            Some(why) => unguessed(&folder, name, why),
+            None if drafts == BOXES => unguessed(&folder, name, &format!("a project guesses its first {BOXES} drafts")),
+            None => {
+                drafts += 1;
+                boxes.push((name.clone(), doc.target(i), doc.assets[i].kind.clone(), doc.assets[i].made.clone(), doc.media_read(i)));
+            }
+        }
+    }
     if boxes.is_empty() {
         return vec![];
     }
-    let Ok(on) = crate::runs::unnamed_set(api, Some(&project.id)).await else { return vec![] };
-    let (hub, host, folder) = (api.machines.hubs.default_origin(), Host::new(api), project.folder.dir.to_string_lossy().into_owned());
+    let on = match crate::runs::unnamed_set(api, Some(&project.id)).await {
+        Ok(on) => on,
+        Err(e) => {
+            unguessed(&folder, "", &format!("its machines can't be read: {}", e.message));
+            return vec![];
+        }
+    };
+    let (hub, host) = (api.machines.hubs.default_origin(), Host::new(api));
     // A box an edit didn't change keeps its guess: only the others are guessed again. The guesses stay in the boxes' order.
     lock(&MADE).retain(|(at, name), _| *at != folder || boxes.iter().any(|(held, ..)| held == name));
     let order: Vec<String> = boxes.iter().map(|(name, ..)| name.clone()).collect();
     let (mut kept_now, mut fresh) = (vec![], vec![]);
     for boxed in boxes {
         match kept(api, project, &folder, (boxed.0.as_str(), boxed.1.as_str(), boxed.2.as_str(), &boxed.3), &asking) {
-            Some(guess) => kept_now.push(guess),
+            Some(guess) => {
+                guessed(&folder, &guess.asset);
+                kept_now.push(guess);
+            }
             None => fresh.push(boxed),
         }
     }
@@ -221,12 +288,16 @@ async fn guesses_in(api: &Arc<Api>, project: &Arc<Project>) -> Vec<Guess> {
     let made: Vec<Guess> = (names.into_iter().zip(made))
         .filter_map(|(name, made)| match made {
             Guessed::Made(guess) => {
+                guessed(&folder, &name);
                 if let Some(memo) = lock(&MADE).get_mut(&(folder.clone(), name)) {
                     memo.guess = Some((*guess).clone());
                 }
                 Some(*guess)
             }
-            Guessed::Nothing => None,
+            Guessed::Nothing(why) => {
+                unguessed(&folder, &name, &why);
+                None
+            }
             Guessed::Unknown(why) => {
                 let kept = api.machines.lists.last_guess(&folder, &name);
                 tracing::info!(target: crate::prefetch::TARGET, "{folder}: {name}'s guess wasn't made ({why}); {}", if kept.is_some() { "it keeps the one it had" } else { "it has none" });
@@ -239,12 +310,12 @@ async fn guesses_in(api: &Arc<Api>, project: &Arc<Project>) -> Vec<Guess> {
     all
 }
 
-/// What a box's guess came to: made; nothing (its package makes nothing of its kind, or it is an encrypted project's local code); or
-/// not known this time, and why.
+/// What a box's guess came to: made; nothing, and why (its package makes nothing of its kind, it is an encrypted project's local
+/// code); or not known this time, and why.
 enum Guessed {
     Made(Box<Guess>),
-    Nothing,
-    Unknown(&'static str),
+    Nothing(Cow<'static, str>),
+    Unknown(Cow<'static, str>),
 }
 
 /// The guess for one box: none when no machine that serves now could run it, or its package says nothing to run.
@@ -255,23 +326,23 @@ async fn guess(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, f
     let read = job_of(host, &project.folder.dir, name.clone(), on, hub, &with, made.clone(), Some((asking, name.as_str())));
     let mut job = match tokio::time::timeout(READ, read).await {
         Ok(Ok(job)) => job,
-        Ok(Err(_)) => return Guessed::Unknown("its quote couldn't be read"),
-        Err(_) => return Guessed::Unknown("its quote didn't answer in time"),
+        Ok(Err(why)) => return Guessed::Unknown(Cow::Owned(format!("its quote couldn't be read: {why}"))),
+        Err(_) => return Guessed::Unknown(Cow::Borrowed("its quote didn't answer in time")),
     };
     job.size.refs = Some(media);
     let (offers, _) = placement::offers_now(api, std::slice::from_ref(&job)).await;
     let now = now_ms();
     let serves = |offer: &placement::Offer| offer.ready_at_ms.is_none() && matches!(&offer.machine, On::Machine(name) if api.machines.live_frame(name).is_some());
-    let Some(offers) = offers.into_iter().next() else { return Guessed::Unknown("no machine quoted it") };
+    let Some(offers) = offers.into_iter().next() else { return Guessed::Unknown(Cow::Borrowed("no machine quoted it")) };
     let up: Vec<placement::Offer> = offers.into_iter().filter(serves).collect();
-    let Some(soonest) = placement::soonest(&up, now) else { return Guessed::Unknown("no machine that serves now runs it") };
+    let Some(soonest) = placement::soonest(&up, now) else { return Guessed::Unknown(Cow::Borrowed("no machine that serves now runs it")) };
     let held = api.machines.lists.guessed_on(folder, &name).map(On::Machine);
     let held = held.and_then(|held| up.iter().find(|offer| offer.fits && offer.machine == held));
     let chosen = match held {
         Some(held) if !plan::clearly_sooner(soonest, held, now) => held,
         _ => soonest,
     };
-    let On::Machine(machine) = &chosen.machine else { return Guessed::Nothing };
+    let On::Machine(machine) = &chosen.machine else { return Guessed::Nothing(Cow::Owned(format!("it would go to {}, no one machine", chosen.machine))) };
     // Where else it would finish, and how long each one's line holds it from GPUs: what a load moving there could change.
     let others = (up.iter().filter(|offer| offer.fits && offer.machine != chosen.machine))
         .filter_map(|offer| match &offer.machine {
@@ -281,9 +352,9 @@ async fn guess(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, f
         .collect();
     let placed = crate::prefetch::Placed { finish_ms: chosen.finish_at_ms, others };
     let (item, function) = match item(api, host, project, hub, (name.as_str(), with.as_str(), kind.as_str(), &made), &chosen.machine, asking).await {
-        Ok(Some(item)) => item,
-        Ok(None) => return Guessed::Nothing,
-        Err(_) => return Guessed::Unknown("its request couldn't be read"),
+        Ok(Ok(item)) => item,
+        Ok(Err(why)) => return Guessed::Nothing(why),
+        Err(why) => return Guessed::Unknown(Cow::Owned(format!("its request couldn't be read: {}", why.message))),
     };
     tracing::info!(target: crate::prefetch::TARGET, "{folder}: {name} guessed on {machine} in {} ms", began.elapsed().as_millis());
     Guessed::Made(Box::new(Guess { project: Arc::downgrade(project), asset: name, machine: machine.clone(), hub: hub.to_owned(), item, function, placed, draft: draft(&with, &made) }))
@@ -300,12 +371,12 @@ fn draft(with: &str, made: &Map<String, Value>) -> u64 {
 /// What `machine` has ready for box `name` of `kind` whose tool is `with` (`PUT /v1/prepare`): the function its text names, else the
 /// first of its package that makes this kind, as the request a render of the box would send it (`super::predicted`, cl-1123: its
 /// draft bound, its draft's seed); and the function, as its row says it. Its package is read statically, nothing installed to read
-/// it (`Host::foreseen`). None: its package makes nothing of the kind, or it is an encrypted project's local code, which goes with
-/// the run that calls it.
-async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, with, kind, made): (&str, &str, &str, &Map<String, Value>), machine: &On, asking: &Asking) -> Result<Option<(v1::Predicted, String)>, Error> {
+/// it (`Host::foreseen`). Err(why) inside: none, as its package makes nothing of the kind, or it is an encrypted project's local
+/// code, which goes with the run that calls it.
+async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, with, kind, made): (&str, &str, &str, &Map<String, Value>), machine: &On, asking: &Asking) -> Result<Result<(v1::Predicted, String), Cow<'static, str>>, Error> {
     let dir = &project.folder.dir;
     let package = host.foreseen(hub, with, dir, std::slice::from_ref(machine)).await?;
-    let Some(renderer) = package.first_making(kind) else { return Ok(None) };
+    let Some(renderer) = package.first_making(kind) else { return Ok(Err(Cow::Owned(format!("{} makes no {kind}", package.name)))) };
     let source = match &renderer.local {
         None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: recorded(api, project, hub, &renderer)?, ..Default::default() }),
         // Carried to its machine as a run of it carries it (#3646), its files and manifest written there before the item, so a fresh
@@ -315,9 +386,9 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
         Some(path) => {
             let private = crate::private_io::of_path(dir)?.is_some_and(|scope| !scope.storage.ordinary);
             if private && path.starts_with(dir) {
-                return Ok(None);
+                return Ok(Err(Cow::Borrowed("its code is this encrypted project's own, which goes only with the run that calls it")));
             }
-            let On::Machine(on) = machine else { return Ok(None) };
+            let On::Machine(on) = machine else { return Ok(Err(Cow::Owned(format!("its local code would go to {machine}, no one machine")))) };
             let carried = (on.clone(), package.manifest.clone());
             let mut held = lock(&CARRIED).get(&carried).cloned();
             // There already, a run of it having carried it: carried by its manifest alone.
@@ -333,8 +404,7 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
                     let origin = Origin::parse(&if hub.is_empty() { hubs.default_origin() } else { hub.to_owned() })?;
                     let staged = crate::local_code::source(hubs.home(), &crate::local_code::own(api, path)?, hubs, &origin).await?;
                     if let Err(why) = api.calcifer.ship(on, &staged.inputs).await {
-                        tracing::warn!(machine = on, "a guess's local code wasn't carried there: {why}");
-                        return Ok(None);
+                        return Ok(Err(Cow::Owned(format!("its local code wasn't carried to {on}: {why}"))));
                     }
                     lock(&CARRIED).insert(carried, staged.source.clone());
                     staged.source
@@ -347,10 +417,14 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
     // What its request is, as its machine will plan it: the fields it sends, and what its rules make of them.
     let answers = (request.as_ref().zip(api::interface::entrypoint(package.document(), &renderer.function))).map(|(request, entry)| ::needs::answers(entry, request));
     let fields: Option<Vec<&String>> = request.as_ref().and_then(Value::as_object).map(|fields| fields.keys().collect());
+    // What its prompts reference, by field and kind: what an edit's rules read (a picture box's own picture is one).
+    let references: Vec<String> = (request.as_ref().and_then(Value::as_object).into_iter().flatten())
+        .flat_map(|(field, value)| value["references"].as_array().into_iter().flatten().map(move |reference| format!("{field}: {}", reference["type"].as_str().unwrap_or("?"))))
+        .collect();
     let (needed, unneeded, unanswered) = (answers.as_ref().map(|answers| &answers.needed), answers.as_ref().map(|answers| &answers.unneeded), answers.as_ref().map(|answers| &answers.unanswered));
     tracing::info!(
         target: crate::prefetch::TARGET,
-        "guess {name} on {machine}: {}/{} with {fields:?}; its rules hold for {needed:?}, not for {unneeded:?}, give no answer for {unanswered:?}",
+        "guess {name} on {machine}: {}/{} with {fields:?}, referencing {references:?}; its rules hold for {needed:?}, not for {unneeded:?}, give no answer for {unanswered:?}",
         package.name, renderer.function
     );
     // Once a box's function is guessed, what any edit of it reads of the Hub is read behind it.
@@ -386,7 +460,7 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
         spec.inputs = inputs;
     }
     // Its key is its machine's list's to give (`Lists::key`).
-    Ok(Some((v1::Predicted { key: String::new(), spec }, package.name.clone() + "/" + &renderer.function)))
+    Ok(Ok((v1::Predicted { key: String::new(), spec }, package.name.clone() + "/" + &renderer.function)))
 }
 
 /// `machine` holds local source `manifest` whole, as Calcifer kept it.
