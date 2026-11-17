@@ -14,7 +14,8 @@
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/../../e2e/cli/overhead.sh"
-check() { say "FAIL $*"; RC=1; }
+# Only the session's own cozy is held to the bar: the before cozy is measured to compare.
+check() { say "FAIL $*"; [ "${LABEL:-}" = before ] || RC=1; }
 for tool in jq python3; do command -v "$tool" > /dev/null || fail "no $tool"; done
 V=$(cozy --version | awk '{print $2}')
 [[ $V == *-dev* ]] || fail "cozy $V is no dev build: dispatch with cozy=<a dev-build run of the change>"
@@ -39,6 +40,9 @@ mkdir -p "${cfg%/*}" && touch "$cfg" || fail "no $cfg"
 cozy restart > "$OUT/restart.txt" 2>&1 || fail "cozy restart: $(tail -c 300 "$OUT/restart.txt")"
 [ -z "$(own)" ] || fail "this runner's Calcifer already holds a rental: $(own | paste -sd' ')"
 trap 'code=$?; claim; (exit "$code"); finish' EXIT
+# Its TensorD's own hops (cl-1172's proof builds) are read off it at the end.
+[ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
+RENT_ARGS=--ssh
 quote "$(param seconds 1500)"
 GUARD_ALSO=own guard
 rent
@@ -50,6 +54,7 @@ done
 # measure <label> <cozy>: this runner's cozy and the rental's TensorD that cozy, then the warm repeats, each table named <label>-….
 measure() {
   local label=$1 binary=$2
+  LABEL=$label
   if [ "$(cozy --version)" != "$("$binary" --version)" ]; then
     install -m 0755 "$binary" "$COZY_BIN" && cozy restart > "$OUT/restart-$label.txt" 2>&1 || fail "$label: cozy restart: $(tail -c 300 "$OUT/restart-$label.txt")"
   fi
@@ -76,6 +81,7 @@ measure() {
 [ -z "$BEFORE" ] || measure before "$OUT/before-cozy"
 measure after "$OUT/after-cozy"
 [ ! -f /tmp/cozy-hops.log ] || cp /tmp/cozy-hops.log "$OUT/hops.log"
+timeout 60 cozy machine ssh "$NAME" -- "cat /tmp/cozy-hops.log" > "$OUT/pod-hops.log" 2> "$OUT/pod-hops.err" || true
 cozy machine logs "$NAME" --since 2h -n 0 > "$OUT/machine.log" 2>&1
 { echo "## run-overhead on $NAME ($SKU)"; tail -qn 1 "$OUT"/overhead-*-caption.txt "$OUT"/overhead-*-write.txt 2> /dev/null | sed 's/^/- /'; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 exit "$RC"

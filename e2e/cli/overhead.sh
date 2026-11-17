@@ -80,7 +80,8 @@ sys.exit(0 if median < bar else 1)
 PY
 }
 
-# overhead_input <name> <field> <i>: repeat i's input: words naming i, or a picture of its own colour (a 96x64 PNG).
+# overhead_input <name> <field> <i>: repeat i's input, its own to <name> and i (none is another's memo): words naming both, or a
+# picture of a colour of their own (a 96x64 PNG).
 overhead_input() {
 case $2 in
   picture)
@@ -88,14 +89,15 @@ case $2 in
     mkdir -p "${file%/*}"
     [ -f "$file" ] || python3 -I -c '
 import struct, sys, zlib
-i, w, h = int(sys.argv[2]), 96, 64
-pixel = bytes(((40 * i) % 256, (97 * i) % 256, (180 + 7 * i) % 256))
+import hashlib
+w, h = 96, 64
+pixel = hashlib.sha256(sys.argv[2].encode()).digest()[:3]
 rows = b"".join(b"\0" + pixel * w for _ in range(h))
 chunk = lambda kind, data: struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
 open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
-' "$file" "$3" || return 1
+' "$file" "$1-$3" || return 1
     printf 'images:=["%s"]' "$file" ;;
-  *) printf '%s=Say one word about the number %s.' "$2" "$3" ;;
+  *) printf '%s=Say one word about the number %s (%s).' "$2" "$3" "$1" ;;
 esac
 }
 
