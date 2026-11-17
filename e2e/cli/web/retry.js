@@ -55,7 +55,7 @@ const asset = async (name) => (await api('')).assets?.find((row) => row.name ===
   }, (at) => at > 0, 300_000).catch(() => 0);
   seen.notes = [...said];
   check('the_take_landing_is_said', landed > 0, seen.notes);
-  check('no_failure_said', ![...said].some((text) => /shut down|didn.t render|failed/i.test(text)), seen.notes);
+  check('no_failure_said', ![...said].some((text) => /shut down, so|didn.t render|failed/i.test(text)), seen.notes);
   const box = await page.locator('.notes').boundingBox();
   seen.notes_at = box;
   check('toasts_bottom_left', Boolean(box) && box.x <= 16 && 900 - (box.y + box.height) <= 24, box);

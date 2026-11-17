@@ -1956,8 +1956,9 @@ impl Calcifer {
                 if run.state != State::Queued {
                     self.waiting(id, format!("this computer's machine can't start: {}", e.message));
                     pause.wait(wake, None).await;
-                } else if run.kind == ::api::calcifer::Kind::Call {
-                    // It can't start (cl-977): the call goes where it finishes soonest of the machines that can (cl-1132).
+                } else if !run.pinned && run.wants == "any" && run.kind == ::api::calcifer::Kind::Call {
+                    // It can't start (cl-977): a call the queue placed here goes back to it, to go where it finishes soonest of the
+                    // machines that can (cl-1132). One named to this computer is refused at once, saying why (cl-977).
                     self.requeue(id, &format!("this computer's machine can't start ({})", e.message), true);
                 } else {
                     let reason = Reason { code: e.code, message: e.message, next: e.next, ..Default::default() };
