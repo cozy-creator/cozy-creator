@@ -142,7 +142,8 @@ def cells(picture: Callable[[Path], Path], clip: Callable[[Path], Path]) -> list
          "files": {"instructions.references.0.file": picture, "instructions.references.1.file": clip}, "check": wrote},
         {"entry": "quantize", "name": "int8", "payload": {}, "skip": NARROW},
     ]
-    picked: list[Cell] = [{**cell, "name": f"moe-{cell['name']}", "models": {"model": MOE}} for cell in plain if cell["entry"] != "quantize"]
+    picked: list[Cell] = [{**cell, "name": f"moe-{cell['name']}", "models": {"model": MOE}}
+                          for cell in plain if cell["entry"] != "quantize"]
     return plain + picked
 
 
