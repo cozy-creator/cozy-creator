@@ -1,8 +1,8 @@
 # e2e/cli/web.sh: the page in a browser. The web suite (cl-973): web/<cell>.spec.js, a lane of them at once on this job's Calcifer
 # (web_suite). On every OS, `web-serves` (web_serves, cl-985): the page as Calcifer's own with nothing minted or kept (web/serves.js),
 # what the access rule refuses (design/calcifer-access.md), and what the gate costs. By hand, `--shard web-<cell>` also runs a
-# web/<cell>.js outside the suite (web_alone): look (pictures to review), scale and pageidle (cl-885's benchmarks), and access (a second
-# OS account, framing, restarts and dev mode through Calcifer).
+# web/<cell>.js outside the suite (web_alone): look and names (pictures to review), scale and pageidle (cl-885's benchmarks), and access
+# (a second OS account, framing, restarts and dev mode through Calcifer).
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 J() { jq -e "$@" > /dev/null; }
 
