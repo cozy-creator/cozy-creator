@@ -685,6 +685,7 @@ case $SHARD in
     weightless
     describe
     first_run
+    given_file
     llm_write
     llm_stream
     responses_sdk
@@ -1030,6 +1031,8 @@ case $SHARD in
   asleep) parts="asleep logs" ;;
   # Typed package composition on the candidate cohort, with tiny local CPU inputs only.
   typed-calls) parts="typed_calls logs" ;;
+  # A run's own file at a box-shaped input, its first use and again (cl-1183).
+  given-file) parts="given_file logs" ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
   coming) parts="coming_machine logs" ;;
   # `cozy update`, its own runner, as it replaces this computer's cozy: a newer release offered at a terminal (cl-1069), the Latest

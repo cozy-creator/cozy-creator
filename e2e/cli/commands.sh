@@ -520,6 +520,31 @@ code=0; in_project "$RUN_PROJECT" --json run "$here/project/mentions.py/mentions
   || check "own references: in/elsewhere.yaml's in/amy.png (in/in/amy.png) wasn't refused saying where it starts (exit $code): $(tail -c 300 "$OUT/own-refs-elsewhere.json")"
 }
 
+# cl-1183 (pod-session 44176217146, H3 upscale's `video`: PRO-2 refused, PRO-4 ran): a file a run attaches to a box-shaped input
+# (Image, Video: the call reads its `file`) went under the input's own name while its project didn't hold it yet, so the Runtime,
+# reading `picture.file`, refused it `asset_ungranted`; once the project kept it, a later run sent it as `picture.file`. Local
+# code installed here takes a picture no run has sent, twice: both runs complete and read its bytes.
+given_file() {
+step "a run's own file at a box-shaped input, its first use and again (cl-1183)"
+[ -n "$LOCAL" ] || return 0
+local dir=$OUT/given-file want got n
+rm -rf "$dir"; mkdir -p "$dir"
+python3 -I - "$dir/picture.png" <<'PY'
+import random, struct, sys, zlib
+w, h, rgb = 40, 24, random.randbytes(3)
+def chunk(kind, data): return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+rows = b"".join(b"\0" + rgb * w for _ in range(h))
+open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+PY
+want=$(sha256sum "$dir/picture.png" | cut -d' ' -f1)
+for n in first again; do
+  cell "given-$n" "$here/project/given.py/read" "picture=$dir/picture.png" \
+    || { check "given file: the $n run of a new picture $(run_get "$OUT" "given-$n" .status): $(run_get "$OUT" "given-$n" .reason.message | head -c 300)"; continue; }
+  got=$(run_get "$OUT" "given-$n" '"\(.result.sha256) \(.result.width)"')
+  [ "$got" = "$want 40" ] || check "given file: the $n run read '$got', not '$want 40'"
+done
+}
+
 # xs-191: a lane fits on the components its slot reads, not its whole checkpoint (madebyollin/texture-fix-vae@0.2.0 is
 # Qwen-Image-2.1 with its VAE replaced; its `vae` slot warned that 30.8 GiB doesn't fit for 1.35 GB). TensorD asks the Hub
 # with its GPUs, their free bytes and the slot's components; a CPU runner has no GPUs to send, so the cell asks it the same
