@@ -266,10 +266,10 @@ pub(crate) async fn bind(
         let package = target.rsplit_once('/').map_or(target, |(package, _)| package);
         let inline = binder.inline_references().await?;
         let title = api::calcifer::tool::title(package, summary);
-        let (payload, named, said, left) = project.bound(target, package, &title, callable, std::mem::take(&mut binder.document), &terms.clips, &inline).await?;
+        let (payload, named, said, left) = project.bound(target, package, &title, callable, std::mem::take(&mut binder.document), &terms.clips, &inline, &files).await?;
         binder.document = payload;
-        files.retain(|file| !named.iter().any(|held| held.field == file.field));
-        files.extend(named);
+        // Each file goes by where the call reads it, as a box's would: a first use of a file is bound as any later one (cl-1183).
+        files = named;
         said.into_iter().for_each(|message| binder.warn(message));
         unused = left.iter().map(|one| one.line(target)).collect();
         binder.notes.extend(unused.iter().map(|message| Note { level: api::calcifer::NoteLevel::Info, message: message.clone() }));
