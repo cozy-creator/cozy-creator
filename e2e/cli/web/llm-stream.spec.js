@@ -4,7 +4,7 @@
 // shows its words growing, each look a longer start of the last, and Focus shows them growing too; a reload mid-way shows the words so far.
 // Its version lands with the words it streamed. Kept mid-stream at rest and in Focus at 1440×900 and 1920×1080, on paper and dark.
 const { randomUUID } = require('crypto');
-const { mkdirSync } = require('fs');
+const { mkdirSync, writeFileSync } = require('fs');
 const { join } = require('path');
 const { test, expect, themed, canvasIdle, canvasVisible, focus } = require('./fixtures');
 const { fit, leave } = require('./hands');
@@ -103,4 +103,65 @@ test('llm-stream', async ({ page, project, api }) => {
     await canvasIdle(page);
     await expect.configure({ soft: true }).poll(async () => plain(await restWords(page, NAME)), { message: 'the box at rest shows its version' }).toBe(text.trim());
   });
+});
+
+// The GPU check (release-gate/sessions/llm-stream.sh): a real model on a rental, STREAM_TOOL (`qwen3/write`, its default the abliterated
+// Qwen3.8-27B) on STREAM_MACHINE, rendered twice, cold then warm. Each render's time from its ask to its first word on the box at rest, and
+// the words a second the box shows against the tokens a second its run counts, both over the same span, in OUT/web/llm-stream-gpu.
+test('llm-stream: a real model on a GPU', { tag: '@gpu' }, async ({ page, project, api }) => {
+  const machine = process.env.STREAM_MACHINE, tool = process.env.STREAM_TOOL;
+  test.skip(!machine || !tool, 'release-gate/sessions/llm-stream.sh sets STREAM_MACHINE and STREAM_TOOL');
+  test.setTimeout(3_600_000);
+  const story = 'Write a long story, at least eight hundred words, of a lighthouse keeper through one winter of storms.';
+  const model = process.env.STREAM_MODEL ? { models: { model: { ref: process.env.STREAM_MODEL } } } : {};
+  await project.add({ name: NAME, tool, kind: 'text', fields: { instructions: story, max_tokens: 1500, ...model }, at: { x: 0, y: 0 } });
+  await page.reload();
+  await expect(page.locator('.stage')).toBeVisible();
+  await expect.poll(() => canvasVisible(page, NAME)).toBe(true);
+  await fit(page);
+  const out = join(process.env.OUT, 'web', 'llm-stream-gpu');
+  mkdirSync(out, { recursive: true });
+  const count = (words) => (words.match(/\S+/g) ?? []).length;
+  const renders = [];
+  let before = story;
+  for (const n of [1, 2]) {
+    const asked = Date.now();
+    await api.call('POST', project.at('/runs'), { names: [NAME], on: [machine] }, { headers: { 'Idempotency-Key': randomUUID() } });
+    const shown = [], counted = [];
+    let number, first;
+    for (;;) {
+      const asset = await project.asset(NAME);
+      if ((asset?.versions ?? 0) >= n) break;
+      number = number ?? asset?.making?.[0];
+      const at = Date.now() - asked;
+      const words = plain(await restWords(page, NAME));
+      // Its words, once they're no longer what the box showed before its ask (its prompt, then the last version).
+      if (words && words !== plain(before)) {
+        first = first ?? at;
+        shown.push([at, count(words)]);
+      }
+      if (number !== undefined) {
+        const run = await api.get(project.at(`/runs/${number}`));
+        if (run.progress?.unit === 'tokens' && run.status === 'in_progress') counted.push([at, run.progress.completed, run.progress.stage]);
+      }
+      expect(Date.now() - asked, `render ${n} lands within 30 min`).toBeLessThan(1_800_000);
+      await page.waitForTimeout(250);
+    }
+    const version = (await project.asset(NAME)).prefixes.at(-1);
+    const run = await api.get(project.at(`/runs/${number}`));
+    // Over the span words showed and tokens were counted, both.
+    const from = Math.max(first ?? Infinity, counted[0]?.[0] ?? Infinity);
+    const span = (rows) => rows.filter(([at]) => at >= from);
+    const rate = (rows) => (rows.length > 1 ? ((rows.at(-1)[1] - rows[0][1]) * 1000) / (rows.at(-1)[0] - rows[0][0]) : null);
+    renders.push({
+      render: n, run: number, machine: run.machine, gpu: run.gpu, executed_ms: run.execution_ms, landed_ms: Date.now() - asked,
+      first_word_ms: first ?? null, words_per_s: rate(span(shown)), tokens_per_s: rate(span(counted)),
+      words: count(version.main?.text ?? ''), tokens: counted.at(-1)?.[1] ?? null, stages: [...new Set(counted.map(([, , stage]) => stage))],
+      shown: shown.length, text: (version.main?.text ?? '').slice(0, 300),
+    });
+    expect.soft(first, `render ${n}: words showed on the box before its version landed`).toBeTruthy();
+    before = version.main?.text ?? '';
+    await page.screenshot({ path: join(out, `landed-${n}.png`) });
+  }
+  writeFileSync(join(out, 'numbers.json'), JSON.stringify({ tool, model: process.env.STREAM_MODEL ?? 'default', renders }, null, 2));
 });
