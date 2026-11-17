@@ -68,7 +68,7 @@ export function Disk({ machine, status }: { machine: Machine; status: MachineSta
       {full && (
         <p className="disk-full">
           Nearly full: {bytes(full.free)} free of {bytes(full.total)}
-          {full.model ? `, not enough for another model the size of ${full.model.name} (${bytes(full.model.bytes)})` : ""}. Before a download, Cozy clears out
+          {full.model ? `, not enough for another model the size of ${full.model.name} (${bytes(full.model.bytes)})` : ""}. Before a download, Cozy Creator clears out
           models nothing is using. If a run still doesn't fit, it won't start: {machine.kind === "rental" ? "rent a machine with a bigger disk" : `free up space on ${machine.kind === "local" ? "this" : "that"} computer`}.
         </p>
       )}

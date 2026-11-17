@@ -176,7 +176,7 @@ impl Local {
             return Err(failed("on a rental, its image starts the machine, and it isn't running now".into()));
         }
         let program = self.home.launcher().ok_or_else(|| {
-            failed(format!("there's no cozy installed in {}", self.home.root().display()))
+            failed(format!("there's no Cozy Creator installed in {}", self.home.root().display()))
         })?;
         let dir = log.parent().expect("a log has a directory");
         std::fs::create_dir_all(dir).map_err(|e| failed(format!("{}: {e}", dir.display())))?;

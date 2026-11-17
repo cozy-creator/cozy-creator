@@ -470,7 +470,7 @@ impl Service {
             Ok(free) if free >= missing => return Ok(()),
             Ok(_) => {}
             Err(error) => {
-                warn(format!("Cozy couldn't check whether this render's models ({}) fit on the disk: {error}", size(missing)));
+                warn(format!("Cozy Creator couldn't check whether this render's models ({}) fit on the disk: {error}", size(missing)));
                 return Ok(());
             }
         }
@@ -481,7 +481,7 @@ impl Service {
         let room = match store.room() {
             Ok(room) => room,
             Err(error) => {
-                warn(format!("Cozy couldn't check whether this render's models ({}) fit on the disk: {error}", size(missing)));
+                warn(format!("Cozy Creator couldn't check whether this render's models ({}) fit on the disk: {error}", size(missing)));
                 return Ok(());
             }
         };
@@ -493,7 +493,7 @@ impl Service {
         if evictable < short {
             let past = match below {
                 0 => format!("{} free", size(now)),
-                below => format!("the disk is {} short of the space Cozy keeps free", size(below)),
+                below => format!("the disk is {} short of the space Cozy Creator keeps free", size(below)),
             };
             // What keeps the rest, largest first: the models in use and who holds them.
             let me = std::process::id();
@@ -511,7 +511,7 @@ impl Service {
             let held: Vec<String> = held.into_iter().take(3).map(|(_, said)| said).collect();
             let in_use = if held.is_empty() { String::new() } else { format!(" Still in use: {}.", held.join("; ")) };
             return Err(format!(
-                "machine_disk_full: This machine's disk doesn't have room for this render's models. They need {} more, and Cozy can free only {} \
+                "machine_disk_full: This machine's disk doesn't have room for this render's models. They need {} more, and Cozy Creator can free only {} \
                  ({past}, plus {} in models nothing queued or running needs).{in_use}{}",
                 size(missing), size((now + evictable).saturating_sub(below)), size(evictable), crate::reclaim::advice(store.root(), missing)
             ));
@@ -523,10 +523,10 @@ impl Service {
                     .map(|e| format!("{} ({}, unused for {})", e.name, size(e.bytes), api::calcifer::clock(e.idle.as_millis() as i64)))
                     .collect();
                 let idle = if ended.is_empty() { "" } else { ", after closing the idle processes that had them open" };
-                warn(format!("The disk was {} short for this render's models, so Cozy removed {}{idle}.", size(short), each.join(", ")));
+                warn(format!("The disk was {} short for this render's models, so Cozy Creator removed {}{idle}.", size(short), each.join(", ")));
             }
             Ok(_) => {}
-            Err(error) => warn(format!("Cozy couldn't make room on the disk for this render's models ({}): {error}", size(missing))),
+            Err(error) => warn(format!("Cozy Creator couldn't make room on the disk for this render's models ({}): {error}", size(missing))),
         }
         Ok(())
     }

@@ -171,7 +171,7 @@ pub(crate) struct Keyed {
 }
 
 fn err(at: &Path, e: impl std::fmt::Display) -> Error {
-    Error::new(Kind::Unavailable, "project_db", format!("Cozy couldn't use {}: {e}.", at.display()))
+    Error::new(Kind::Unavailable, "project_db", format!("Cozy Creator couldn't use {}: {e}.", at.display()))
 }
 
 /// A SQLite error at `at`. Its write lock held past the busy timeout is another program's open transaction: `file_held`, which the page says
@@ -302,7 +302,7 @@ fn structure(path: &Path) -> Result<(), Error> {
     }
     // A 4 with the journal is a candidate's of 5, never released: refused as it is rather than read as #3198's 4.
     if user_version(&checked).map_err(e)? == 4 && has_table(&checked, "runs").map_err(e)? {
-        return Err(Error::new(Kind::Validation, "project_db_version", format!("{} uses an unreleased format (schema 4 with a run journal), and Cozy only opens schema {VERSION}.", path.display()))
+        return Err(Error::new(Kind::Validation, "project_db_version", format!("{} uses an unreleased format (schema 4 with a run journal), and Cozy Creator only opens schema {VERSION}.", path.display()))
             .remedy("Keep this database safe, and make a new project in a separate empty folder."));
     }
     keep_copy(path, &checked)?;
@@ -450,12 +450,12 @@ fn read_lock(conn: &Connection, at: &Path) -> Result<Lock, Error> {
 fn require_current(conn: &Connection, path: &Path) -> Result<(), Error> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).map_err(|error| sql(path, error))?;
     if !(UNNUMBERED..=VERSION).contains(&version) {
-        return Err(Error::new(Kind::Validation, "project_db_version", format!("{} uses schema {version}, which this Cozy can't open (it opens up to schema {VERSION}).", path.display()))
+        return Err(Error::new(Kind::Validation, "project_db_version", format!("{} uses schema {version}, which this Cozy Creator can't open (it opens up to schema {VERSION}).", path.display()))
             .remedy("Keep this database safe, and make a new project in a separate empty folder."));
     }
     let format: i64 = conn.query_row("SELECT format FROM crdt_document WHERE id = 1", [], |row| row.get(0)).map_err(|error| sql(path, error))?;
     if format != crdt::FORMAT {
-        return Err(Error::new(Kind::Validation, "project_db_version", format!("{} uses format {format}, and Cozy only opens format {}.", path.display(), crdt::FORMAT)));
+        return Err(Error::new(Kind::Validation, "project_db_version", format!("{} uses format {format}, and Cozy Creator only opens format {}.", path.display(), crdt::FORMAT)));
     }
     Ok(())
 }
@@ -881,7 +881,7 @@ fn rows_differ(rows: &Stored, document: &Stored) -> Vec<String> {
 fn read_document(conn: &Connection, at: &Path) -> Result<crdt::Document, Error> {
     let (format, bytes, heads): (i64, Vec<u8>, String) = conn.query_row("SELECT format, snapshot, heads FROM crdt_document WHERE id = 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).map_err(|e| sql(at, e))?;
     if format != crdt::FORMAT {
-        return Err(err(at, format!("it uses storage format {format}, which this version of Cozy doesn't know. Update Cozy")));
+        return Err(err(at, format!("it uses storage format {format}, which this version of Cozy Creator doesn't know. Update Cozy Creator")));
     }
     crdt::Document::load(&bytes, &heads, at)
 }

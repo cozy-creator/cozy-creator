@@ -103,7 +103,7 @@ pub(super) async fn write(State(api): State<Arc<Api>>, Path((named, id)): Path<(
     if !valid_id(&id) { return Err(Refusal(Error::new(Kind::Usage, "vault_operation_id", "Use a unique operation ID of 16 to 128 letters, numbers, dashes or underscores."))); }
     let ask: VaultAsk = parse(&body?)?;
     if !matches!(ask.action.as_str(), "encrypt" | "unlock" | "lock" | "decrypt" | "passphrase" | "recovery" | "rotate") {
-        return Err(Refusal(Error::new(Kind::Usage, "vault_action", "Cozy doesn't know that lock action.")));
+        return Err(Refusal(Error::new(Kind::Usage, "vault_action", "Cozy Creator doesn't know that lock action.")));
     }
     // Path resolution and even admission fsync can block on storage. Acknowledge
     // receipt first; the worker records admission durably before any mutation.
@@ -251,7 +251,7 @@ impl Progress {
             Ok(())
         }).map_err(|error| match error {
             crate::store::StoreError::Protected(code) if code.starts_with("vault_operation_") => Error::new(Kind::Conflict, code, "This operation has already started. Check the project's lock status before starting another change.").next("cozy vault status"),
-            _ => Error::new(Kind::Unavailable, "vault_operation_receipt", "Cozy couldn't read the record of this project's operation."),
+            _ => Error::new(Kind::Unavailable, "vault_operation_receipt", "Cozy Creator couldn't read the record of this project's operation."),
         })
     }
     pub(super) fn finish_receipt(&self, store: &super::journal::SealingStore<'_>, state: &str) -> Result<(), Error> {
@@ -261,7 +261,7 @@ impl Progress {
             let changed = tx.execute("UPDATE project_vault_operations SET state=?3 WHERE id=?1 AND binding=?2", rusqlite::params![id,binding,state])?;
             if changed != 1 { return Err(crate::store::StoreError::Protected("vault_operation_receipt_missing".into())); }
             Ok(())
-        }).map_err(|_| Error::new(Kind::Unavailable, "vault_operation_receipt", "Cozy couldn't save the record of this project's operation."))
+        }).map_err(|_| Error::new(Kind::Unavailable, "vault_operation_receipt", "Cozy Creator couldn't save the record of this project's operation."))
     }
     pub(super) fn begin_inventory(&mut self) { self.files_total = 0; self.bytes_total = 0; }
     pub(super) fn plan_file(&mut self, bytes: u64) { self.files_total += 1; self.bytes_total = self.bytes_total.saturating_add(bytes); }

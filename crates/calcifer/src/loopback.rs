@@ -182,7 +182,7 @@ pub(crate) async fn admitted(api: &Api, peer: &Peer, method: &Method, path: &str
         (_, Some(token)) if !api.admits(token) => ("unauthenticated", "this isn't the bearer in Calcifer's lock record"),
         (Some(Some(client)), _) => return Ok(client),
         (None, Some(_)) => return Ok(Client::Native),
-        (None, None) => ("unauthenticated", "Calcifer answers its own page, and this computer's cozy with the bearer in its lock record"),
+        (None, None) => ("unauthenticated", "Calcifer answers its own page, and this computer's Cozy Creator with the bearer in its lock record"),
     };
     let kind = if code == "unauthenticated" { Kind::Credential } else { Kind::Forbidden };
     Err(Refusal(Error::new(kind, code, said).next("cozy open")))

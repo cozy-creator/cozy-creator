@@ -167,7 +167,7 @@ function SignOut({ who, onDone }: { who: Who; onDone: () => void }) {
       <Confirm
         label="Sign out"
         disabled={ask.busy}
-        says={`Sign this computer out${who.email ? ` of ${who.email}` : ""}? The Hub revokes this computer's key, and Cozy deletes it here. Your rentals keep running and costing money until they end, and you can't rent or end one from this computer until you sign in again.`}
+        says={`Sign this computer out${who.email ? ` of ${who.email}` : ""}? The Hub revokes this computer's key, and Cozy Creator deletes it here. Your rentals keep running and costing money until they end, and you can't rent or end one from this computer until you sign in again.`}
         yes="Sign out"
         onYes={() =>
           void ask.run(async () => {
@@ -210,7 +210,7 @@ function Settings() {
   return (
     <Section title="Settings">
       <ShowNsfw shown={showNsfw} onChange={setShowNsfw} />
-      <p className="muted">This applies to every model and LoRA list in Cozy.</p>
+      <p className="muted">This applies to every model and LoRA list in Cozy Creator.</p>
       <label className="row center">
         <input
           type="checkbox"
@@ -220,7 +220,7 @@ function Settings() {
         />
         Send anonymous performance data
       </label>
-      <p className="muted">Cozy sends each run's package, models, versions, GPU, size, timings and errors, under a random install ID. It never sends your prompts, images, names or account.</p>
+      <p className="muted">Cozy Creator sends each run's package, models, versions, GPU, size, timings and errors, under a random install ID. It never sends your prompts, images, names or account.</p>
       <Failure error={ask.error} lead="Couldn't save the setting" />
     </Section>
   )

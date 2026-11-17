@@ -359,7 +359,7 @@ pub(crate) fn recover_activation(paths: &Paths) -> io::Result<Recovered> {
         // A state a newer binary wrote, before a rollback to this one.
         state => {
             tracing::warn!("update state {state} is unknown to cozy {VERSION}: rolling it back");
-            rollback_pending(paths, &format!("machine_restarted: cozy {VERSION} does not know update state {state}"))
+            rollback_pending(paths, &format!("machine_restarted: Cozy Creator {VERSION} does not know update state {state}"))
         }
     }
 }
@@ -1040,7 +1040,7 @@ impl Updates {
             return Err(error);
         }
         tracing::info!(target: crate::config::MACHINE, 
-            "update {}: restarting on cozy {}, Runtime {} / TensorFS {}",
+            "update {}: restarting on Cozy Creator {}, Runtime {} / TensorFS {}",
             request.operation, to.cozy, to.runtime, to.tensorfs
         );
         // The restarted service's idle window starts here; its commit starts it again.
@@ -1063,7 +1063,7 @@ impl Updates {
             return match &request.cozy {
                 Some(named) if named != VERSION => Err(coded(
                     "binary_mismatch",
-                    format!("this machine runs cozy {VERSION} from its launch path, not {named}: `cozy machine update <machine> --tensord {named}` fetches it"),
+                    format!("this machine runs Cozy Creator {VERSION} from its launch path, not {named}: `cozy machine update <machine> --tensord {named}` fetches it"),
                 )),
                 _ => Ok(None),
             };
@@ -1071,7 +1071,7 @@ impl Updates {
         self.rollback(launch)?;
         let version = super::binary::version(&launch.path).map_err(|e| coded("binary_mismatch", e.to_string()))?;
         if let Some(named) = request.cozy.as_ref().filter(|named| **named != version) {
-            return Err(coded("binary_mismatch", format!("{} is cozy {version}, not {named}", launch.path.display())));
+            return Err(coded("binary_mismatch", format!("{} is Cozy Creator {version}, not {named}", launch.path.display())));
         }
         Ok(Some(Binary { launch: launch.path.clone(), version, staged: None, dev: false }))
     }
@@ -1087,7 +1087,7 @@ impl Updates {
             return Err(self.unrecoverable(launch));
         }
         super::binary::keep_running(&previous).map_err(|e| {
-            let message = format!("cannot keep this cozy {VERSION} at {} to roll back to: {e}", previous.display());
+            let message = format!("cannot keep this Cozy Creator {VERSION} at {} to roll back to: {e}", previous.display());
             io::Error::other(Coded { code: "binary_unrecoverable", message })
         })
     }
@@ -1098,7 +1098,7 @@ impl Updates {
         let (path, previous) = (launch.path.display(), super::binary::previous(&launch.path));
         let placed = super::binary::check(&launch.path);
         let said = match &placed {
-            Ok(version) => format!("cozy {version}"),
+            Ok(version) => format!("Cozy Creator {version}"),
             Err(why) => format!("cannot run here: {why}"),
         };
         let grace = self.lifecycle.as_ref().map_or(super::lifecycle::IDLE_GRACE_MS, |l| l.grace);
@@ -1110,12 +1110,12 @@ impl Updates {
         };
         let remedy = match &placed {
             Ok(_) => format!("It moves by itself: it exits {idle}, its next use starts that binary, and updates work again"),
-            Err(_) => format!("Put a cozy that runs at that path (the installer does): it exits {idle}, and cannot start again until then"),
+            Err(_) => format!("Put a Cozy Creator binary that runs at that path (the installer does): it exits {idle}, and cannot start again until then"),
         };
         io::Error::other(Coded {
             code: "binary_unrecoverable",
             message: format!(
-                "{path} ({said}) was replaced outside `cozy update` and {} is missing, so there is nothing to roll back to and this machine stays on cozy {VERSION}, taking no update. {remedy}",
+                "{path} ({said}) was replaced outside `cozy update` and {} is missing, so there is nothing to roll back to and this machine stays on Cozy Creator {VERSION}, taking no update. {remedy}",
                 previous.display()
             ),
         })
@@ -1128,7 +1128,7 @@ impl Updates {
     fn staged_binary(&self, request: &Request, choice: &Choice) -> io::Result<Binary> {
         let coded = |code, message| io::Error::other(Coded { code, message });
         let launch = super::binary::launch()
-            .ok_or_else(|| coded("binary_unsupported", "this machine was not started from a cozy binary".into()))?;
+            .ok_or_else(|| coded("binary_unsupported", "this machine was not started from a Cozy Creator binary".into()))?;
         if launch.swapped() {
             self.rollback(launch)?;
             let placed = super::binary::version(&launch.path).ok();
@@ -1144,7 +1144,7 @@ impl Updates {
         let version = super::binary::check(&staged).map_err(|why| coded("binary_incompatible", why))?;
         let named = request.cozy.as_ref().or((!choice.version.is_empty()).then_some(&choice.version));
         if let Some(named) = named.filter(|named| **named != version) {
-            return Err(coded("binary_mismatch", format!("the binary is cozy {version}, not {named}")));
+            return Err(coded("binary_mismatch", format!("the binary is Cozy Creator {version}, not {named}")));
         }
         Ok(Binary { launch: launch.path.clone(), version, staged: Some(staged), dev: choice.version.is_empty() })
     }

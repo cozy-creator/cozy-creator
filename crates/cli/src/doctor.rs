@@ -40,7 +40,7 @@ pub(crate) struct Args {
     /// Machine to check. Defaults to this computer.
     #[arg(long)]
     on: Option<String>,
-    /// Install what this computer lacks first: system packages (asking once before sudo) and the tools cozy
+    /// Install what this computer lacks first: system packages (asking once before sudo) and the tools Cozy Creator
     /// otherwise fetches when a feature first needs them. The installers run it.
     #[arg(long)]
     fix: bool,
@@ -225,7 +225,7 @@ async fn calcifer(ctx: &Context) -> Vec<Check> {
                 }
                 (false, silence)
             } else if let Some(old) = stale(ctx, &holder) {
-                (true, format!("it ran cozy {old}, not the installed cozy"))
+                (true, format!("it ran Cozy Creator {old}, not the installed one"))
             } else {
                 checks.push(Check::ok("calcifer", running(&holder)));
                 return checks;
@@ -345,7 +345,7 @@ async fn silence(ctx: &Context, client: &Client, holder: &Holder) -> Option<Stri
             ok = &mut answered => {
                 return match ok {
                     true => None,
-                    false => Some("it holds this computer's cozy but refuses connections".into()),
+                    false => Some("it holds this computer's Cozy Creator but refuses connections".into()),
                 };
             }
             _ = tokio::time::sleep(SAMPLE) => {
@@ -406,7 +406,7 @@ fn end(pid: u32) -> Result<(), String> {
 }
 
 fn running(h: &Holder) -> String {
-    format!("answering: cozy {}, pid {}, up {}", h.version, h.pid, output::age(h.started_at_ms))
+    format!("answering: Cozy Creator {}, pid {}, up {}", h.version, h.pid, output::age(h.started_at_ms))
 }
 
 /// Calcifer's service: defined for the installed cozy, so a login starts it; rewritten when not.
@@ -426,16 +426,16 @@ fn service(ctx: &Context) -> Check {
         );
     }
     if services.current(&spec) {
-        return Check::ok("service", "defined for the installed cozy");
+        return Check::ok("service", "defined for the installed Cozy Creator");
     }
     if !ours {
         return Check::bad(
             "service",
-            format!("not defined for the installed cozy; run {} doctor", spec.program.display()),
+            format!("not defined for the installed Cozy Creator; run {} doctor", spec.program.display()),
         );
     }
     match services.ensure(&spec) {
-        Ok(_) => Check::fixed("service", "defined for the installed cozy", "rewrote its definition"),
-        Err(e) => Check::bad("service", format!("not defined for the installed cozy, and writing it failed: {e}")),
+        Ok(_) => Check::fixed("service", "defined for the installed Cozy Creator", "rewrote its definition"),
+        Err(e) => Check::bad("service", format!("not defined for the installed Cozy Creator, and writing it failed: {e}")),
     }
 }

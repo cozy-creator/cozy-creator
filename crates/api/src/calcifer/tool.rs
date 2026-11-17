@@ -247,7 +247,7 @@ pub fn edit() -> Tool {
         release: String::new(),
         name: "Video Timeline".to_owned(),
         label: "Video Timeline".to_owned(),
-        package_title: "Cozy".to_owned(),
+        package_title: "Cozy Creator".to_owned(),
         makes: "video".to_owned(),
         description: "Put videos and stills together into one video, free, with no machine".to_owned(),
         local: false,

@@ -154,7 +154,7 @@ install_cozy() {
   [ "$(cozy --version)" = "$want" ] || fail "cozy is $(cozy --version) after the release's installer, not $want"
   native
   cozy --json doctor > "$OUT/doctor-release.json" || check "cozy doctor is not healthy after the release's installer"
-  grep -q "cozy ${want#cozy }," "$OUT/doctor-release.json" || check "Calcifer is not the release's ${want#cozy } after cozy doctor"
+  grep -q "Cozy Creator ${want#cozy }," "$OUT/doctor-release.json" || check "Calcifer is not the release's ${want#cozy } after cozy doctor"
 }
 
 # hubcheck between cozy and tensorhub.com, before the installer starts Calcifer: every cozy process (the CLI, Calcifer,
@@ -257,7 +257,7 @@ candidates() {
     # The installer's Calcifer keeps running an older cozy until restarted (`cozy update` does that for
     # a person): `cozy doctor` finds it and restarts it on the candidate.
     cozy --json doctor > "$OUT/doctor-candidate.json" || check "cozy doctor is not healthy after the candidates"
-    grep -q "cozy ${want#cozy }," "$OUT/doctor-candidate.json" || check "Calcifer is not the candidate ${want#cozy }"
+    grep -q "Cozy Creator ${want#cozy }," "$OUT/doctor-candidate.json" || check "Calcifer is not the candidate ${want#cozy }"
   fi
   [ -z "$CAND_TFS" ] || args+=(--tensorfs "$CAND_TFS")
   [ -z "$CAND_RT" ] || args+=(--runtime "$CAND_RT")
@@ -296,7 +296,7 @@ candidate_cozy() {
   fi
   [ "$(cozy --version)" = "$want" ] || fail "cozy is $(cozy --version), not the candidate $want"
   cozy --json doctor > "$OUT/doctor-candidate.json" || check "cozy doctor is not healthy after the candidate"
-  grep -q "cozy ${want#cozy }," "$OUT/doctor-candidate.json" || check "Calcifer is not the candidate ${want#cozy }"
+  grep -q "Cozy Creator ${want#cozy }," "$OUT/doctor-candidate.json" || check "Calcifer is not the candidate ${want#cozy }"
 }
 
 # The controller's process belongs to its holder record; project status reports assets.
@@ -340,7 +340,7 @@ calcifer_orphaned() {
   grep -o '"fixed": *"[^"]*"' "$OUT/doctor-orphaned.json" || true
 }
 
-# Removing cozy as the README's "Remove cozy" says, for this OS: nothing of cozy is left.
+# Removing cozy as the README's "Remove Cozy Creator" says, for this OS: nothing of cozy is left.
 remove_cozy() {
   # The executable must start argv; a parent fixture names it as an argument.
   local process_pattern="^$COZY([[:space:]]|$)"

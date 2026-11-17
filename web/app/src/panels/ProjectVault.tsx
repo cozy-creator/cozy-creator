@@ -62,7 +62,7 @@ export function Recovery({ secret, onDone, disabled = false }: { secret: string;
   const print = () => {
     const paper = window.open("", "_blank", "popup,width=520,height=360")
     if (!paper) return
-    paper.document.title = "Cozy project recovery"
+    paper.document.title = "Cozy Creator project recovery"
     const title = paper.document.createElement("h1")
     title.textContent = "Project recovery secret"
     const hint = paper.document.createElement("p")
@@ -217,13 +217,13 @@ export function VaultBody({ id }: { id: string }) {
       {sourceRemoved && !error && status.encrypted && unlocked && <p>The unencrypted copy of the project was removed.</p>}
       {ended.length > 0 && <p className="muted">Locking the project canceled {ended.length === 1 ? "run" : "runs"} {ended.join(", ")}.</p>}
       {skipped.length > 0 && !error && (!status.encrypted || unlocked) && <div className="warn">
-        <p>Done, but these files were missing, so Cozy skipped them:</p>
+        <p>Done, but these files were missing, so Cozy Creator skipped them:</p>
         <ul>{skipped.map((file, at) => <li key={`${at}:${file}`}><code>{file}</code></li>)}</ul>
       </div>}
       {newRecovery && status.encrypted && unlocked && <Recovery secret={newRecovery} onDone={() => setNewRecovery(null)} />}
       {!status.encrypted ? (
         <form className="stack" onSubmit={(event) => submit(event, "encrypt")}>
-          <p className="warn">Once the encrypted copy is verified, Cozy removes the unencrypted project. Other unencrypted copies made earlier, backups and shared cache copies aren't erased. Remove or secure those yourself.</p>
+          <p className="warn">Once the encrypted copy is verified, Cozy Creator removes the unencrypted project. Other unencrypted copies made earlier, backups and shared cache copies aren't erased. Remove or secure those yourself.</p>
           {passwordControls}
           {timeoutControls}
           <button className="tb primary" type="submit" disabled={ask.busy || !passphrase || passphrase !== confirmation || pending.count > 0}>Encrypt project</button>
@@ -247,7 +247,7 @@ export function VaultBody({ id }: { id: string }) {
           <details className="sect"><summary>Change passphrase</summary><form className="stack" onSubmit={(event) => submit(event, "passphrase")}>{passwordControls}<button className="tb" type="submit" disabled={ask.busy || !passphrase || passphrase !== confirmation}>Save passphrase</button></form></details>
           <details className="sect"><summary>Replace recovery secret</summary><p>The old recovery secret may still unlock copies of this project's keys made before you replace it.</p><button className="tb" type="button" disabled={ask.busy} onClick={() => void change("recovery")}>Make a new recovery secret</button></details>
           <details className="sect"><summary>Decrypt project</summary><p>This turns the project back into ordinary, unencrypted files. The project keeps all its files and history. First close any files or terminals that use the unlocked folder.</p><button className="tb" type="button" disabled={ask.busy || pending.count > 0} onClick={() => void change("decrypt")}>Decrypt project</button></details>
-          <details className="sect"><summary>Change the encryption key</summary><p>Cozy re-encrypts every file the project keeps, and its history, with a new key. This can take a while and needs some free disk space while it runs.</p><form className="stack" onSubmit={(event) => submit(event, "rotate")}>{passwordControls}<button className="tb" type="submit" disabled={ask.busy || !passphrase || passphrase !== confirmation || pending.count > 0}>Re-encrypt project</button></form></details>
+          <details className="sect"><summary>Change the encryption key</summary><p>Cozy Creator re-encrypts every file the project keeps, and its history, with a new key. This can take a while and needs some free disk space while it runs.</p><form className="stack" onSubmit={(event) => submit(event, "rotate")}>{passwordControls}<button className="tb" type="submit" disabled={ask.busy || !passphrase || passphrase !== confirmation || pending.count > 0}>Re-encrypt project</button></form></details>
         </>
       )}
       {ask.busy && <p role="status">{pendingLine(operation)}</p>}

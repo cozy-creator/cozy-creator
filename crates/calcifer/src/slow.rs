@@ -363,7 +363,7 @@ impl Calcifer {
 
 fn likely(causes: &[String]) -> String {
     match causes {
-        [] => ". Cozy found no cause in its record.".into(),
+        [] => ". Cozy Creator found no cause in its record.".into(),
         causes => format!(". Likely cause: {}.", causes.join("; ")),
     }
 }

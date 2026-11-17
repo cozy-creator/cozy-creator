@@ -77,7 +77,7 @@ function Update({ machine }: { machine: Machine }) {
           <input className="field" spellCheck={false} placeholder={status?.tensorfs || "The Hub's recommended version"} value={tensorfs} onChange={(event) => setTensorfs(event.target.value)} />
         </label>
         <label>
-          Cozy
+          Cozy Creator
           <input className="field" spellCheck={false} placeholder={status?.version || "The Hub's recommended version"} value={tensord} onChange={(event) => setTensord(event.target.value)} />
         </label>
         <div className="row end">
@@ -86,7 +86,7 @@ function Update({ machine }: { machine: Machine }) {
           </button>
         </div>
       </form>
-      {machine.kind === "local" && tensord.trim() && <p className="muted">Cozy switches to that version the next time you use it from a terminal.</p>}
+      {machine.kind === "local" && tensord.trim() && <p className="muted">Cozy Creator switches to that version the next time you use it from a terminal.</p>}
       {said && <p className="muted">{said}</p>}
       <Failure error={ask.error} lead="Couldn't update this machine" />
     </details>
@@ -105,7 +105,7 @@ function Details({ machine, now }: { machine: Machine; now: number }) {
       rows={[
         ["Type", kindWords(machine)],
         ["Running for", rental ? span((now - rental.rented_at_ms) / 1000) : status && span((now - status.started_at_ms) / 1000)],
-        ["Cozy", status && `${status.version}${status.dev ? " (dev)" : ""}`],
+        ["Cozy Creator", status && `${status.version}${status.dev ? " (dev)" : ""}`],
         ["Runtime", status?.runtime],
         ["TensorFS", status?.tensorfs],
         ["RC", machine.rc && `${machine.rc.rc} ${machine.rc.state}: ${machine.rc.detail}`],

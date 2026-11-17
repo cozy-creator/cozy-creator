@@ -327,7 +327,7 @@ impl Binder<'_> {
                 .find_map(|kind| row.get(kind).and_then(Value::as_str).map(|text| (kind, text)))
                 .ok_or_else(shape)?;
             let Some((path, digest)) = self.terms.file(text).await? else {
-                return Err(usage("reference_file_missing", format!("references: {name}'s {kind}, {text}, isn't a file sent with this run or one Cozy has."))
+                return Err(usage("reference_file_missing", format!("references: {name}'s {kind}, {text}, isn't a file sent with this run or one Cozy Creator has."))
                     .remedy("A relative path in an --input file starts at that file's folder; one on the command line starts at the working directory."));
             };
             own.push((crate::project::Inline { name: name.to_owned(), kind: kind.to_owned(), file: digest.to_string() }, path));
@@ -671,7 +671,7 @@ impl Binder<'_> {
             }
             // A file where the function takes none is left out, as any undeclared field is: never refused (cl-944).
             let Some(accepts) = self.accepts(&parts) else {
-                self.notes.push(Note { level: NoteLevel::Warning, message: format!("{} has no file input called {field}, so Cozy left out {}.", self.callable.name, spec.source) });
+                self.notes.push(Note { level: NoteLevel::Warning, message: format!("{} has no file input called {field}, so Cozy Creator left out {}.", self.callable.name, spec.source) });
                 continue;
             };
             let named = path_key(&spec.source).to_owned();
@@ -679,7 +679,7 @@ impl Binder<'_> {
                 (Some(found), _) => found,
                 (None, Some(Sent::Tree(_))) => return Err(invalid("asset_not_a_file", format!("{field}: {named} is a folder, not a file"))),
                 (None, Some(Sent::File(_))) | (None, None) if named.starts_with("sha256:") || self.terms.sent(&named).is_some() => {
-                    return Err(Error::new(Kind::NotFound, "file_not_held", format!("{field}: Cozy doesn't have the file {named}."))
+                    return Err(Error::new(Kind::NotFound, "file_not_held", format!("{field}: Cozy Creator doesn't have the file {named}."))
                         .remedy(format!("Attach the file again (--file {field}=<path>), then try again.")));
                 }
                 (None, _) => return Err(not_sent(&field, &named)),
@@ -698,7 +698,7 @@ impl Binder<'_> {
                     "video" => "videos",
                     other => other,
                 };
-                self.notes.push(Note { level: NoteLevel::Info, message: format!("{field}: Cozy left out {}, because {} can't use {kinds} there.", spec.source, self.target) });
+                self.notes.push(Note { level: NoteLevel::Info, message: format!("{field}: Cozy Creator left out {}, because {} can't use {kinds} there.", spec.source, self.target) });
                 continue;
             }
             let (kind_max, kinds) = accepts;
@@ -777,7 +777,7 @@ impl Binder<'_> {
                 (None, Err(_)) => return Err(not_sent(&field, &source)),
             };
             let not_held = |what: String| {
-                Error::new(Kind::NotFound, "file_not_held", format!("{field}: Cozy doesn't have the {what}.")).remedy(format!("Attach the folder again ({field}=./path), then try again."))
+                Error::new(Kind::NotFound, "file_not_held", format!("{field}: Cozy Creator doesn't have the {what}.")).remedy(format!("Attach the folder again ({field}=./path), then try again."))
             };
             let path = self.terms.held(&digest).ok_or_else(|| not_held(format!("tree document {digest}")))?;
             let document = std::fs::read(&path).map_err(|e| Error::new(Kind::Internal, "tree_unreadable", format!("{field}: {e}")))?;
@@ -1156,7 +1156,7 @@ impl Binder<'_> {
                 !gone.contains(&(at - 1))
             });
         }
-        self.cut.push(format!("{} takes {kept} of these files, so Cozy left out {}.", assets.parameter, left.join(", ")));
+        self.cut.push(format!("{} takes {kept} of these files, so Cozy Creator left out {}.", assets.parameter, left.join(", ")));
     }
 
     /// What the input at `parts` accepts: the byte bound it declares, and each media-type set with
@@ -1228,8 +1228,8 @@ fn holds_file(ty: &Type) -> bool {
 /// The warning for a list of files cut to its limit.
 fn cut_list(function: &str, list: &str, max: u64, left: String) -> String {
     match max {
-        0 => format!("{function} takes no {list}, so Cozy left out {left}."),
-        max => format!("{list} takes at most {max}, so Cozy left out {left}."),
+        0 => format!("{function} takes no {list}, so Cozy Creator left out {left}."),
+        max => format!("{list} takes at most {max}, so Cozy Creator left out {left}."),
     }
 }
 
@@ -1595,7 +1595,7 @@ fn ignored_warning(target: &str, ignored: &[String]) -> Option<String> {
     };
     (!ignored.is_empty()).then(|| {
         format!(
-            "Cozy ignored the {noun} {}, which {target} doesn't have",
+            "Cozy Creator ignored the {noun} {}, which {target} doesn't have",
             ignored.join(", ")
         )
     })

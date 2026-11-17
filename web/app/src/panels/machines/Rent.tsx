@@ -99,7 +99,7 @@ function Order() {
             </p>
           ))}
           <p>You pay for it until you end it. It also ends by itself after 15 minutes idle.</p>
-          {!now.quote.agreed && <p className="warn">Cozy didn't confirm this price, so you can't rent it from here.</p>}
+          {!now.quote.agreed && <p className="warn">Cozy Creator didn't confirm this price, so you can't rent it from here.</p>}
           <div className="row">
             <button type="button" className="tb primary" disabled={!now.quote.agreed} onClick={() => void go()}>
               Rent {line(now.order, now.quote.usd_micros_per_hour)}

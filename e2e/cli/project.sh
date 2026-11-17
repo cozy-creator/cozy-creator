@@ -142,7 +142,7 @@ busy_skew() {
   (cd "$OUT/project" && "$CAND_COZY" machine use local) > "$OUT/skew-busy.txt" 2>&1 || code=$?
   cat "$OUT/skew-busy.txt"
   if [ "$code" != 0 ]; then
-    grep -qF "Calcifer here is ${release#cozy }, this cozy is ${candidate#cozy }" "$OUT/skew-busy.txt" && grep -q 'cozy restart' "$OUT/skew-busy.txt" \
+    grep -qF "Calcifer here is ${release#cozy }, this Cozy Creator is ${candidate#cozy }" "$OUT/skew-busy.txt" && grep -q 'cozy restart' "$OUT/skew-busy.txt" \
       || check "skew: the candidate CLI's refused ask did not say which versions meet and \`cozy restart\`"
   fi
   [ "$(jq -r .pid "$holder")" = "$pid" ] || check "skew: the candidate CLI restarted the release's Calcifer under an open page (pid $pid is now $(jq -r .pid "$holder"))"
@@ -168,8 +168,8 @@ kept_calcifer() {
     (cd "$OUT/project" && cozy $words) > "$OUT/kept-out.txt" 2> "$OUT/kept-err.txt" || code=$?
     { echo "\$ cozy $words (exit $code)"; cat "$OUT/kept-out.txt" "$OUT/kept-err.txt"; } >> "$OUT/kept.txt"
     [ "$code" = 0 ] || check "kept: cozy $words failed against a Calcifer of another version (exit $code): $(tail -c 300 "$OUT/kept-err.txt")"
-    ! grep -qiE 'Calcifer here is|this cozy is|keeps running|cozy restart' "$OUT/kept-out.txt" "$OUT/kept-err.txt" \
-      || check "kept: cozy $words spoke of the Calcifer it keeps: $(grep -hiE 'Calcifer here is|this cozy is|keeps running|cozy restart' "$OUT/kept-out.txt" "$OUT/kept-err.txt" | head -2)"
+    ! grep -qiE 'Calcifer here is|this Cozy Creator is|keeps running|cozy restart' "$OUT/kept-out.txt" "$OUT/kept-err.txt" \
+      || check "kept: cozy $words spoke of the Calcifer it keeps: $(grep -hiE 'Calcifer here is|this Cozy Creator is|keeps running|cozy restart' "$OUT/kept-out.txt" "$OUT/kept-err.txt" | head -2)"
   done
   cp "$OUT/holder.saved" "$holder"
   cat "$OUT/kept.txt"

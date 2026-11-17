@@ -146,7 +146,7 @@ impl Hubs {
     /// this computer dials the Hub, as its client does.
     pub(crate) async fn serves(&self, hub: &config::Origin, namespace: &str, distribution: &str) -> Result<bool, Error> {
         let page = format!("{}/v1/index/{namespace}/simple/{distribution}/", hub.as_str().trim_end_matches('/'));
-        let unreached = |why: String| Error::new(Kind::Unavailable, "index_unreachable", format!("Cozy couldn't reach the package index at {page}: {why}."));
+        let unreached = |why: String| Error::new(Kind::Unavailable, "index_unreachable", format!("Cozy Creator couldn't reach the package index at {page}: {why}."));
         let status = self.http.get(&page).send().await.map_err(|e| unreached(e.to_string()))?.status();
         match status {
             reqwest::StatusCode::NOT_FOUND => Ok(false),
@@ -318,7 +318,7 @@ impl Machines {
         let now = crate::store::now_ms();
         let instant = |at: &str| {
             ms(at).ok_or_else(|| {
-                let message = format!("The Hub at {hub} sent a rental time Cozy can't read: {at:?}.");
+                let message = format!("The Hub at {hub} sent a rental time Cozy Creator can't read: {at:?}.");
                 Error::new(Kind::Unavailable, "hub.rental_time_invalid", message)
             })
         };
@@ -389,7 +389,7 @@ impl Machines {
                     let _ = me.ask_hub(&ask, Some(answer)).await;
                 });
                 answered.await.map_err(|_| {
-                    Error::new(Kind::Unavailable, STOPPING, "Cozy is stopping. Try again once it's back.")
+                    Error::new(Kind::Unavailable, STOPPING, "Cozy Creator is stopping. Try again once it's back.")
                 })??
             }
         };
@@ -544,7 +544,7 @@ impl Machines {
                     let name = ask.machine.as_deref().unwrap_or(&ask.key);
                     pause = e.wait_or((pause * 2).clamp(Duration::from_secs(2), Duration::from_secs(60)));
                     tell(&Err(e.remedy(format!(
-                        "Cozy keeps asking with the same key, so it rents one machine at most. It shows as {name}; end it to cancel the order."
+                        "Cozy Creator keeps asking with the same key, so it rents one machine at most. It shows as {name}; end it to cancel the order."
                     )).next(format!("cozy machine end {name}"))));
                     tokio::select! {
                         () = tokio::time::sleep(pause) => {}
@@ -994,7 +994,7 @@ impl Machines {
             }
             // Asked before this Calcifer: whether the Hub took it is not known here.
             if ask.kind == AskKind::Rent {
-                lock(&self.unanswered).insert(ask.key.clone(), "Cozy restarted before it answered".into());
+                lock(&self.unanswered).insert(ask.key.clone(), "Cozy Creator restarted before it answered".into());
             }
             let me = self.clone();
             self.spawn(async move {
@@ -1530,7 +1530,7 @@ impl Machines {
                 if !noted && at.elapsed() >= END_UNCONFIRMED {
                     noted = true;
                     let minutes = END_UNCONFIRMED.as_secs() / 60;
-                    let said = format!("The Hub accepted the end {minutes}m ago but hasn't confirmed the rental is gone, so it may still be billing. Cozy keeps checking.");
+                    let said = format!("The Hub accepted the end {minutes}m ago but hasn't confirmed the rental is gone, so it may still be billing. Cozy Creator keeps checking.");
                     match self.store().note_ask(&ask.key, &said) {
                         Ok(()) => self.calcifer.machine_changed(),
                         Err(e) => warn!(ask = ask.key, "{e}"),
@@ -1716,7 +1716,7 @@ fn order_pending(ask: &Ask) -> Error {
     Error::new(
         Kind::Unavailable,
         "rental_order_pending",
-        format!("{name} is already on order and the Hub ({}) hasn't answered yet, so Cozy didn't place a second one.", ask.hub),
+        format!("{name} is already on order and the Hub ({}) hasn't answered yet, so Cozy Creator didn't place a second one.", ask.hub),
     )
     .remedy("End it if you don't want it.")
     .next(format!("cozy machine end {name}"))
@@ -2060,7 +2060,7 @@ fn sku_refusal(sku: &str, gpus: u32, status: &types::RentalSkuStatus) -> Error {
     }
     // The Hub's reason, of the offer that frees first; an older Hub gives none.
     let why = match status.held_for.as_deref() {
-        Some("no_capacity") => "isn't available from any provider Cozy can buy from",
+        Some("no_capacity") => "isn't available from any provider Cozy Creator can buy from",
         Some("failed_boot") => "is paused after a recent failed start",
         _ => "is paused",
     };

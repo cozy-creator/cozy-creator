@@ -441,7 +441,7 @@ pub fn ffmpeg_encodes(ffmpeg: &Path, encoder: &str) -> bool {
 /// The words that install `tool` here.
 pub fn install_hint(tool: &Tool, path: &[PathBuf]) -> String {
     match tool.install {
-        Install::Fetched => "cozy fetches it when a feature first needs it".into(),
+        Install::Fetched => "Cozy Creator fetches it when a feature first needs it".into(),
         Install::System(package) => system_install(package, path)
             .unwrap_or_else(|| format!("install {package} with this computer's package manager")),
         Install::Note(text) => format!("install {text}"),

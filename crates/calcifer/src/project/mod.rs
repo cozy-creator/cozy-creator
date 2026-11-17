@@ -590,7 +590,7 @@ pub(crate) fn named(api: &Api, text: &str) -> Result<PathBuf, Error> {
     let path = FsPath::new(text);
     if api::target::written_as_path(text) {
         if !path.is_absolute() {
-            let said = format!("{text} is a relative path, and Cozy can't tell which folder it starts from.");
+            let said = format!("{text} is a relative path, and Cozy Creator can't tell which folder it starts from.");
             return Err(Error::new(Kind::Usage, "project_path", said).remedy("Use the project's name, id or code, or the absolute path of its folder."));
         }
         vault::recover_conversion(path)?;
@@ -673,7 +673,7 @@ fn backfill_code(store: &crate::store::Store, entry: &crate::state::KnownProject
     if !path.is_file() { return Err(Folder::not_a_project(&entry.path)); }
     let conn = db::open(&path)?;
     if db::identity(&conn).is_none() {
-        return Err(Error::new(Kind::Validation, "project_identity", format!("{} has no project id, so Cozy can't open it as a project.", path.display())));
+        return Err(Error::new(Kind::Validation, "project_identity", format!("{} has no project id, so Cozy Creator can't open it as a project.", path.display())));
     }
     let kept = db::meta(&conn, "code");
     let code = reserve_code(store, &entry.id, &entry.name, &entry.path, kept.as_deref())?;
@@ -756,7 +756,7 @@ pub(crate) fn keep_given(project: &FsPath, given: &[(PathBuf, String)], uploads:
     let folder = Folder::at(&physical);
     let unkept = given.iter().filter_map(|(path, sha256)| {
         let why = folder.keep_given(path, sha256, path.starts_with(uploads)).err()?;
-        Some(format!("Cozy couldn't keep a copy of {} in the project ({}), so to run this again you'll need to give the file again.", path.display(), inner(&why.message)))
+        Some(format!("Cozy Creator couldn't keep a copy of {} in the project ({}), so to run this again you'll need to give the file again.", path.display(), inner(&why.message)))
     });
     Ok(unkept.collect())
 }
@@ -803,7 +803,7 @@ impl Holding {
                 let at = folder.path(&file.path);
                 if file.stays() && !at.is_file() {
                     let fetched = self.calcifer.bring(&file.sha256, &file.machine).await;
-                    fetched.map_err(|why| Error::new(Kind::Unavailable, "file_on_a_machine", format!("{written} is on {}, and Cozy couldn't download it: {}.", file.machine, inner(&why.to_string()))))?;
+                    fetched.map_err(|why| Error::new(Kind::Unavailable, "file_on_a_machine", format!("{written} is on {}, and Cozy Creator couldn't download it: {}.", file.machine, inner(&why.to_string()))))?;
                 }
                 Ok(Some(at))
             }
@@ -841,7 +841,7 @@ impl Holding {
             let Some(path) = self.file(&range.source).await? else { continue };
             let fps = lock.files.get(&range.source).map_or(0.0, |file| file.fps);
             if fps <= 0.0 {
-                return Err(Error::new(Kind::Unavailable, "range_unmeasured", format!("Cozy can't cut a range of {} because its frame rate hasn't been measured yet.", folder::prefix_of(&range.source))).next("cozy status"));
+                return Err(Error::new(Kind::Unavailable, "range_unmeasured", format!("Cozy Creator can't cut a range of {} because its frame rate hasn't been measured yet.", folder::prefix_of(&range.source))).next("cozy status"));
             }
             let mut notes = vec![];
             let ffmpeg = clips.ffmpeg().await?;
@@ -910,7 +910,7 @@ pub(crate) fn landed(project: &FsPath, made: &Landed, dest: &FsPath) -> Result<(
     let (kept, unlisted) = folder.adopt(dest, made.digest, row, made.measured, take).map_err(|e| e.message)?;
     // The file is in `files/` now. An output that grows reads its next revision whole, with nothing here to extend.
     let _ = std::fs::remove_file(dest);
-    let said = unlisted.map(|why| format!("{} is saved in files/, but Cozy couldn't add it to the project: {}.", made.output, inner(&why.message)));
+    let said = unlisted.map(|why| format!("{} is saved in files/, but Cozy Creator couldn't add it to the project: {}.", made.output, inner(&why.message)));
     Ok((kept, said))
 }
 
@@ -985,7 +985,7 @@ pub(crate) fn write_cause(error: &(dyn std::error::Error + 'static)) -> &'static
         if let Some(io) = error.downcast_ref::<std::io::Error>() {
             return match io.kind() {
                 std::io::ErrorKind::ReadOnlyFilesystem => "the disk is read-only",
-                std::io::ErrorKind::PermissionDenied => "cozy may not write there",
+                std::io::ErrorKind::PermissionDenied => "Cozy Creator may not write there",
                 std::io::ErrorKind::StorageFull | std::io::ErrorKind::QuotaExceeded => "the disk is full",
                 _ => "it couldn't be written",
             };
@@ -1256,7 +1256,7 @@ fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_c
     let copied = |id: &str| original(id).is_some();
     if encrypted {
         let keybag = project_vault::Keybag::load(&logical.join(project_vault::KEYBAG_FILE))
-            .map_err(|_| Error::new(Kind::Conflict, "vault_identity", "Cozy can't read this locked project's key file."))?;
+            .map_err(|_| Error::new(Kind::Conflict, "vault_identity", "Cozy Creator can't read this locked project's key file."))?;
         if kept.as_ref().is_none_or(|(id, _)| id != &keybag.info().project_id) {
             return Err(Error::new(Kind::Conflict, "vault_identity", "This locked project's id doesn't match its key file."));
         }
@@ -1269,12 +1269,12 @@ fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_c
             None => (id.clone(), None),
             Some(original) => (fresh_id(), Some(original)),
         },
-        None => return Err(Error::new(Kind::Validation, "project_identity", format!("{} has no project id, so Cozy can't open it as a project.", dir.join(db::DB).display()))),
+        None => return Err(Error::new(Kind::Validation, "project_identity", format!("{} has no project id, so Cozy Creator can't open it as a project.", dir.join(db::DB).display()))),
     };
     // Its name is its folder's (cl-1097): the index lists it so, and a folder renamed, here or by hand, renames it.
     let name = unique_name(api, &id, dir, folder_name(&logical))?;
     if let Some(original) = copy_of {
-        let said = format!("{} is a copy of {} ({}), so Cozy opened it as a separate project called {name}.", logical.display(), original.name, original.path.display());
+        let said = format!("{} is a copy of {} ({}), so Cozy Creator opened it as a separate project called {name}.", logical.display(), original.name, original.path.display());
         tracing::info!("{said}");
         COPIES.lock().expect("copies lock").insert(logical.clone(), said);
     }
@@ -1313,7 +1313,7 @@ pub(crate) fn own_folder(dir: &FsPath) -> bool {
 
 fn refuse_own_folder(dir: &FsPath) -> Result<(), Error> {
     if !own_folder(dir) { return Ok(()); }
-    Err(Error::new(Kind::Conflict, "project_own_folder", format!("{} isn't a project. It's a folder Cozy uses while it converts a project's storage.", dir.display()))
+    Err(Error::new(Kind::Conflict, "project_own_folder", format!("{} isn't a project. It's a folder Cozy Creator uses while it converts a project's storage.", dir.display()))
         .remedy("Open the project next to it."))
 }
 
@@ -1798,7 +1798,7 @@ impl Project {
 
 /// What a project and its render say while what landed can't go in.
 pub(super) fn not_saved(why: &str) -> String {
-    format!("Not saved yet: {}. Cozy will save the results as soon as it can.", inner(why))
+    format!("Not saved yet: {}. Cozy Creator will save the results as soon as it can.", inner(why))
 }
 
 /// Makes a new project at `path`, a folder of this computer's by its absolute path, named for its folder and recorded in the index as
@@ -1822,7 +1822,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, retry:Option<axum
     }
     let path = open.path.clone();
     if !path.is_absolute() {
-        let said = format!("{} is a relative path. Give the absolute path of a folder on Cozy's computer.", path.display());
+        let said = format!("{} is a relative path. Give the absolute path of a folder on Cozy Creator's computer.", path.display());
         return Err(Refusal(Error::new(Kind::Usage, "project_path", said)));
     }
     let engine = if open.unencrypted { None } else { Some(tokio::task::block_in_place(|| vault::preflight_creation(&api)).map_err(Refusal)?) };
@@ -1874,7 +1874,7 @@ pub(crate) fn loosened(dir: &FsPath) -> Option<String> {
     if !platform::durable::open_to_others(dir).ok()? {
         return None;
     }
-    let said = |e: &dyn std::fmt::Display| format!("Other accounts on this computer can open {}, and Cozy couldn't shut them out: {e}", dir.display());
+    let said = |e: &dyn std::fmt::Display| format!("Other accounts on this computer can open {}, and Cozy Creator couldn't shut them out: {e}", dir.display());
     if !cfg!(windows) {
         return platform::durable::shut_to_others(dir).err().map(|e| said(&e));
     }
@@ -1906,8 +1906,8 @@ pub(crate) fn loosened(dir: &FsPath) -> Option<String> {
 /// A folder that can't be made, in a person's words: no permission there, or why not.
 fn unmakeable(path: &FsPath, e: std::io::Error) -> Error {
     match e.kind() {
-        std::io::ErrorKind::PermissionDenied => Error::new(Kind::Forbidden, "project_permission", format!("Cozy doesn't have permission to make a folder at {}.", path.display())),
-        _ => Error::new(Kind::Unavailable, "project_io", format!("Cozy couldn't make a folder at {}: {e}.", path.display())),
+        std::io::ErrorKind::PermissionDenied => Error::new(Kind::Forbidden, "project_permission", format!("Cozy Creator doesn't have permission to make a folder at {}.", path.display())),
+        _ => Error::new(Kind::Unavailable, "project_io", format!("Cozy Creator couldn't make a folder at {}: {e}.", path.display())),
     }
 }
 
@@ -1920,7 +1920,7 @@ fn opened(id: String, code: String, key: String, dir: &FsPath) -> Opened {
 /// named. Its canonical folder.
 fn made_new(api: &Api, dir: &FsPath, name: &str, starter: bool) -> Result<PathBuf, Error> {
     refuse_encrypted_parent(dir)?;
-    let io = |e: platform::Error| Error::new(Kind::Unavailable, "project_io", format!("Cozy couldn't set up a project in {}: {e}.", dir.display()));
+    let io = |e: platform::Error| Error::new(Kind::Unavailable, "project_io", format!("Cozy Creator couldn't set up a project in {}: {e}.", dir.display()));
     let written = if starter { format::starter() } else { written::Written::default() };
     let canonical = platform::durable::canonical(dir).map_err(io)?;
     let (id, name) = (fresh_id(), unique_name(api, "", &canonical, name.to_owned())?);
@@ -1934,7 +1934,7 @@ fn new_database(dir: &FsPath, id: &str, name: &str, written: written::Written) -
     let creation=keyed::claimed();
     db::create_with_key(&part, &db::Stored { written: written.into(), ..Default::default() }, &[], &[],creation.as_ref())?;
     db::set_identity(&mut db::open(&part)?, &part, id, name, None)?;
-    std::fs::rename(&part, dir.join(db::DB)).map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("Cozy couldn't set up a project in {}: {e}.", dir.display())))?;
+    std::fs::rename(&part, dir.join(db::DB)).map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("Cozy Creator couldn't set up a project in {}: {e}.", dir.display())))?;
     platform::durable::sync_dir(dir).map_err(|e| Error::new(Kind::Unavailable, "project_io", e.to_string()))
 }
 
@@ -1979,7 +1979,7 @@ fn holding(path: &FsPath) -> Result<PathBuf, Error> {
 }
 
 fn owning(path: &FsPath, source: bool) -> Result<PathBuf, Error> {
-    let unavailable = || Error::new(Kind::Unavailable, "project_ownership_unavailable", "Cozy couldn't tell which project this source folder belongs to.");
+    let unavailable = || Error::new(Kind::Unavailable, "project_ownership_unavailable", "Cozy Creator couldn't tell which project this source folder belongs to.");
     // A client can name a path only it sees (its own copy under a project's folder here): the nearest
     // ancestor that exists here decides the owner, as for any path.
     let existing = path.ancestors().find(|dir| dir.exists()).ok_or_else(unavailable)?;
@@ -1992,7 +1992,7 @@ fn owning(path: &FsPath, source: bool) -> Result<PathBuf, Error> {
         for marker in [project_vault::KEYBAG_FILE, db::DB, "project.canvas.yaml", "project.db.new"] {
             match std::fs::symlink_metadata(dir.join(marker)) {
                 Ok(_) if marker == project_vault::KEYBAG_FILE || marker == db::DB => return Ok(dir.to_owned()),
-                Ok(_) if source => return Err(Error::new(Kind::Validation, "project_format_unsupported", "This source is inside an old or half-made project, so Cozy won't use it for maintenance.")),
+                Ok(_) if source => return Err(Error::new(Kind::Validation, "project_format_unsupported", "This source is inside an old or half-made project, so Cozy Creator won't use it for maintenance.")),
                 Ok(_) => {},
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
                 Err(_) => return Err(unavailable()),
@@ -2085,7 +2085,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
             // A render going has its own text: what it owes, and what's wrong with the file, are the answer.
             let queue = queue(&project, &folder.walk_now().map_err(Refusal)?);
             let busy = *project.walking.lock().expect("walking lock");
-            let warning = format!("{}. The render that's going keeps the text it started with, and Cozy can't start a new one until the project reads again.", inner(&error.message));
+            let warning = format!("{}. The render that's going keeps the text it started with, and Cozy Creator can't start a new one until the project reads again.", inner(&error.message));
             return Ok(Json(ProjectState { covered: None, id, code: project.code.clone(), key: project.key(), path: folder.dir.clone(), assets: vec![], heads: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], notes: vec![], next: vec![], board: board_of(&project), unsent: vec![], machines: chosen(&api, &project.folder), appearance: project.folder.appearance() }));
         }
     };
@@ -2268,7 +2268,7 @@ fn read_tags(doc: &Doc, folder: &Folder, lock: &Lock, i: usize, package: &Packag
 
 /// The line that says an asset's tool names a package and no function.
 fn no_function(name: &str, package: &str) -> String {
-    format!("{name}: {package} has no single function that makes this box, so Cozy can't tell which to use. Choose one of its functions as the box's tool.")
+    format!("{name}: {package} has no single function that makes this box, so Cozy Creator can't tell which to use. Choose one of its functions as the box's tool.")
 }
 
 /// The version of cut `asset` that cutting it again from `inputs` would only make again: those inputs, nothing left out, and its film
@@ -2771,7 +2771,7 @@ fn folder_named(name: &str) -> Result<&str, Error> {
     let bad = |why: &str| Err(Error::new(Kind::Usage, "project_name", format!("{why}. Pick another name.")));
     if name.is_empty() { return bad("A project needs a name"); }
     if name.contains(['/', '\\', '\0']) { return bad("A project's name can't have / or \\ in it"); }
-    if matches!(name, "." | "..") || name.starts_with(".cozy-") { return bad(&format!("{name} is a name Cozy keeps for itself")); }
+    if matches!(name, "." | "..") || name.starts_with(".cozy-") { return bad(&format!("{name} is a name Cozy Creator keeps for itself")); }
     if name.len() > 255 { return bad("That name is too long"); }
     Ok(name)
 }
@@ -3065,10 +3065,10 @@ async fn render(api: &Arc<Api>, id: &str, mut asked: Runs) -> Result<Asked, Refu
     let outdated = asked.outdated;
     let picking = asked.pickup.is_some();
     if picking && (all || asked.names.len() != 1) {
-        say(format!("A pickup works only for one box, so Cozy ignored it for {}.", if all { "all" } else { "several boxes" }));
+        say(format!("A pickup works only for one box, so Cozy Creator ignored it for {}.", if all { "all" } else { "several boxes" }));
     }
     if asked.approve && (all || asked.names.len() != 1) {
-        say("--approve works only for one box, so Cozy ignored it.".into());
+        say("--approve works only for one box, so Cozy Creator ignored it.".into());
     }
     let mut named = vec![];
     let mut first = None;
@@ -3425,7 +3425,7 @@ fn cancelled(api: &Arc<Api>, project: &Arc<Project>, names: &[String], takes: &[
 
 /// Why a job of asset `name`, deleted, made nothing.
 fn deleted_why(name: &str) -> String {
-    format!("{name} was deleted, so Cozy won't render it")
+    format!("{name} was deleted, so Cozy Creator won't render it")
 }
 
 /// Stops what `wanted` names of a project's jobs: what waits leaves, with a row saying `why`; what is being sent isn't sent, and a run
@@ -3535,7 +3535,7 @@ fn import_failed(source: &str, why: String) -> Refusal {
 }
 
 fn not_held(source: &str) -> Refusal {
-    Refusal(Error::new(Kind::NotFound, "file_not_held", format!("Neither Cozy nor this project has the file {source}.")).remedy(format!("Upload it first with PUT /v1/files/{source}.")))
+    Refusal(Error::new(Kind::NotFound, "file_not_held", format!("Neither Cozy Creator nor this project has the file {source}.")).remedy(format!("Upload it first with PUT /v1/files/{source}.")))
 }
 
 /// What a person's `name`, or `source`'s stem, calls an element: `file` when neither can be a name.
@@ -3902,7 +3902,7 @@ fn send(path: &FsPath, etag: &str, headers: &HeaderMap) -> Result<Response, Refu
     let file = std::fs::File::open(path).map_err(missing)?;
     let len = file.metadata().map_err(missing)?.len();
     crate::files::send(file, len, media_type(path), etag, headers)
-        .map_err(|e| Refusal(Error::new(Kind::Unavailable, "project_io", format!("Cozy couldn't read {}: {e}.", path.display()))))
+        .map_err(|e| Refusal(Error::new(Kind::Unavailable, "project_io", format!("Cozy Creator couldn't read {}: {e}.", path.display()))))
 }
 
 /// A version to send now: asset `i`'s because it has no state (take None), or a take's.
@@ -4297,7 +4297,7 @@ impl Walk {
         if self.fell_back.lock().expect("fell back lock").insert(ask.to_owned()) {
             let set = automatic.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
             let gone: Vec<&str> = gone.iter().map(|said| inner(said)).collect();
-            self.say(Told::Warning { message: format!("{}. Cozy will send this render to whichever of {set} finishes soonest.", gone.join("; ")), name: None });
+            self.say(Told::Warning { message: format!("{}. Cozy Creator will send this render to whichever of {set} finishes soonest.", gone.join("; ")), name: None });
         }
         automatic
     }
@@ -4308,12 +4308,12 @@ impl Walk {
         if !self.folder().wants_ffprobe(lock) || self.measuring.swap(true, Ordering::Relaxed) {
             return;
         }
-        self.say(Told::Said { message: "Downloading ffmpeg and ffprobe, which Cozy uses to measure this project's files.".into(), name: None });
+        self.say(Told::Said { message: "Downloading ffmpeg and ffprobe, which Cozy Creator uses to measure this project's files.".into(), name: None });
         let (api, project) = (self.host.api(), self.project.clone());
         tokio::spawn(async move {
             match Host::new(&api).ffmpeg().await {
                 Ok(_) => project.asked.notify_one(),
-                Err(error) => project.jobs.told(Told::Warning { message: format!("Cozy couldn't get ffprobe, so tools can't see the sizes of this project's files: {}. Restart Cozy to try again.", inner(&error.message)), name: None }),
+                Err(error) => project.jobs.told(Told::Warning { message: format!("Cozy Creator couldn't get ffprobe, so tools can't see the sizes of this project's files: {}. Restart Cozy Creator to try again.", inner(&error.message)), name: None }),
             }
         });
     }
@@ -4712,7 +4712,7 @@ impl Walk {
                         attempt += 1;
                         tokio::time::sleep(wait).await;
                     }
-                    Err(Unquotable::Again(why)) => break Err(Unquoted { why: format!("Cozy couldn't get an estimate from its machines after {QUOTE_ATTEMPTS} tries: {}", inner(&why)), gave_up: true, silent: vec![] }),
+                    Err(Unquotable::Again(why)) => break Err(Unquoted { why: format!("Cozy Creator couldn't get an estimate from its machines after {QUOTE_ATTEMPTS} tries: {}", inner(&why)), gave_up: true, silent: vec![] }),
                     Err(Unquotable::Not(why)) => break Err(Unquoted { why, gave_up: false, silent: vec![] }),
                     Ok(job) => break Ok(job),
                 }
@@ -5510,7 +5510,7 @@ impl Walk {
                 }
                 // Its machine went as it was sent (a pod releasing itself that second, cl-920): placed again, never failed.
                 Err(error) if GONE.contains(&error.code.as_str()) && self.place_again(&key) => {
-                    self.say(Told::Said { message: format!("{name}: {}. Cozy is sending it to another machine.", inner(&error.message)), name: Some(name.clone()) });
+                    self.say(Told::Said { message: format!("{name}: {}. Cozy Creator is sending it to another machine.", inner(&error.message)), name: Some(name.clone()) });
                     self.project.walker.lock().expect("walker lock").graph.put_back(id);
                 }
                 Err(error) => {
@@ -5718,7 +5718,7 @@ impl Walk {
             }).await.map_err(|e| Error::new(Kind::Internal, "edit_cut", e.to_string()))?
         }.await;
         if let Err(error) = written {
-            self.say(Told::Warning { message: format!("{name}'s timeline file is gone, and Cozy couldn't write it again: {}.", inner(&error.message)), name: None });
+            self.say(Told::Warning { message: format!("{name}'s timeline file is gone, and Cozy Creator couldn't write it again: {}.", inner(&error.message)), name: None });
         }
     }
 
@@ -5932,7 +5932,7 @@ impl Walk {
             let file = lock.files.get(&range.source).ok_or_else(|| format!("{} isn't one of this project's files", folder::prefix_of(&range.source)))?;
             let path = self.folder().path(&file.path);
             if !path.is_file() || file.fps <= 0.0 {
-                return Err(format!("to cut a range of {}, Cozy needs it on this computer and measured. Open the project in the browser to download it", folder::prefix_of(&range.source)));
+                return Err(format!("to cut a range of {}, Cozy Creator needs it on this computer and measured. Open the project in the browser to download it", folder::prefix_of(&range.source)));
             }
             let mut notes = vec![];
             let ffmpeg = clips.ffmpeg().await.map_err(|e| e.message)?;
@@ -5994,7 +5994,7 @@ impl Walk {
             true => vec![],
             false => vec![Warning {
                 code: "request_fields_ignored".into(),
-                message: format!("{name}: Cozy ignored {}, which this tool doesn't use.", choices.dropped.join(", ")),
+                message: format!("{name}: Cozy Creator ignored {}, which this tool doesn't use.", choices.dropped.join(", ")),
             }],
         };
         warnings.extend(choices.replaced.iter().map(|replaced| Warning {
@@ -6011,7 +6011,7 @@ impl Walk {
             // What stays on a machine: read there by its hash, else fetched now that a run needs it.
             let mut on_machine = false;
             let Some(file) = lock.files.get(&digest) else {
-                let length = std::fs::metadata(&path).map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("Cozy couldn't read {}: {e}.", path.display())))?.len();
+                let length = std::fs::metadata(&path).map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("Cozy Creator couldn't read {}: {e}.", path.display())))?.len();
                 inputs.push(v1::InputFile { field: field.clone(), digest: digest.clone(), length, media_type: media_type(&path).to_owned(), order: order_of(&field) });
                 staged.push(StagedInput { path, digest: digest.parse().map_err(|why: &str| Error::new(Kind::Internal, "digest", why))?, length });
                 continue;
@@ -6036,7 +6036,7 @@ impl Walk {
                 true => file.length,
                 false => {
                     std::fs::metadata(&path)
-                        .map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("Cozy couldn't read {}: {e}.", path.display())).next("cozy open"))?
+                        .map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("Cozy Creator couldn't read {}: {e}.", path.display())).next("cozy open"))?
                         .len()
                 }
             };
@@ -6308,7 +6308,7 @@ impl Walk {
             true => tally.takes = tally.takes.saturating_sub(1),
             false => tally.versions = tally.versions.saturating_sub(1),
         }
-        let said = format!("{name}: run {} made its file, but Cozy couldn't download it: {}.", run.number, inner(&output.export_error.clone().unwrap_or_default()));
+        let said = format!("{name}: run {} made its file, but Cozy Creator couldn't download it: {}.", run.number, inner(&output.export_error.clone().unwrap_or_default()));
         Err(Error::new(Kind::Unavailable, "version_unsaved", said).next(format!("cozy run watch {}", run.number)))
     }
 
@@ -6401,7 +6401,7 @@ impl Walk {
                 Ok(said) => {
                     metadata.insert(file.clone(), said);
                 }
-                Err(why) => version.warnings.push(format!("{name}: Cozy left off {file}'s metadata because it {why}.")),
+                Err(why) => version.warnings.push(format!("{name}: Cozy Creator left off {file}'s metadata because it {why}.")),
             }
             // What stays on its machine is listed with who holds it, and no file.
             if output.stays && output.path.as_ref().is_none_or(|path| !path.is_file()) {
@@ -6527,7 +6527,7 @@ impl Walk {
         }).await.map_err(|e| Error::new(Kind::Internal, "frame", e.to_string()))?;
         let (frame, past) = grabbed?;
         if let (true, Some(at)) = (past, at) {
-            self.say(Told::Warning { message: format!("{name}: the video ends before {at:.2}s, so Cozy used its last frame instead."), name: None });
+            self.say(Told::Warning { message: format!("{name}: the video ends before {at:.2}s, so Cozy Creator used its last frame instead."), name: None });
         }
         self.folder().keep(frame.path())
     }
@@ -6672,7 +6672,7 @@ impl Walk {
         self.leave_out(&name, &on, left, &mut without);
         let Some((made, part)) = made else {
             let stands = if folder.dir.join(&name).is_file() { " The current film stays." } else { "" };
-            self.say(Told::Warning { message: format!("Cozy couldn't cut {name} because none of its clips can be used, so there's no new version.{stands}"), name: None });
+            self.say(Told::Warning { message: format!("Cozy Creator couldn't cut {name} because none of its clips can be used, so there's no new version.{stands}"), name: None });
             return Ok(None);
         };
         let now = folder.lock()?;
@@ -6719,8 +6719,8 @@ impl Walk {
             return;
         }
         let message = match platform::durable::held(error) {
-            true => format!("{name} is open in another program, so Cozy couldn't update it. Close it, and the next render will."),
-            false => format!("Cozy couldn't update {name}: {error}."),
+            true => format!("{name} is open in another program, so Cozy Creator couldn't update it. Close it, and the next render will."),
+            false => format!("Cozy Creator couldn't update {name}: {error}."),
         };
         self.say(Told::Warning { message, name: None });
     }
@@ -6747,7 +6747,7 @@ impl Walk {
         match files.get("timeline").and_then(|sha256| lock.files.get(sha256)) {
             Some(kept) if !same || !timeline.is_file() => {
                 if let Err(e) = tools::publish(&self.folder().path(&kept.path), &timeline) {
-                    self.say(Told::Warning { message: format!("Cozy couldn't update {}: {e}.", timeline.display()), name: None });
+                    self.say(Told::Warning { message: format!("Cozy Creator couldn't update {}: {e}.", timeline.display()), name: None });
                 }
             }
             None if !timeline.is_file() => self.timeline_again(&doc.assets[i], &stand[i], lock, &cut_name(&doc.assets[i].name)).await,
@@ -6787,7 +6787,7 @@ impl Walk {
             let answer = changed.then(|| tools::unread(ffprobe, &piece.path)).flatten().map_or(String::new(), |answer| format!(" ({answer})"));
             let piece = piece.asset.clone();
             let render = if on.is_empty() { format!("Render {piece} again") } else { format!("Render {piece} on {on} again") };
-            self.say(Told::Warning { message: format!("{} was cut without {piece}, which {which}{answer}, and Cozy couldn't download it: {}. {render}, or open the project in the browser to download its files.", cut_name(&asset.name), inner(&reason.to_string())), name: None });
+            self.say(Told::Warning { message: format!("{} was cut without {piece}, which {which}{answer}, and Cozy Creator couldn't download it: {}. {render}, or open the project in the browser to download its files.", cut_name(&asset.name), inner(&reason.to_string())), name: None });
             without.push(folder::Without { piece, why: why.into(), absent: !here });
         }
         Ok(without)

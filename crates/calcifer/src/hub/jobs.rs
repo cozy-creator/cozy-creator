@@ -219,7 +219,7 @@ pub(crate) fn resume_project(api: Arc<Api>, project:String)->futures_util::futur
 async fn resume_ids(api:Arc<Api>, ids:Vec<api::ids::RunId>) {
     let calcifer=&api.calcifer;
     for id in ids {
-        let stopped = || Error::new(Kind::Unavailable, "calcifer_stopped", "Cozy stopped before this finished.").remedy("Try again; it's safe to.");
+        let stopped = || Error::new(Kind::Unavailable, "calcifer_stopped", "Cozy Creator stopped before this finished.").remedy("Try again; it's safe to.");
         let snapshot=calcifer.run_store(id.as_str()).map(|store|(store.run(id.as_str()),store.key(id.as_str()),store.job(id.as_str())));
         let (row, key, kept) = match snapshot {
             Ok((Ok(Some(row)),Ok(Some(key)),Ok(Some(kept)))) => (row,key,kept),

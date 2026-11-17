@@ -89,7 +89,7 @@ pub(crate) enum Error {
     Store(#[from] StoreError),
     #[error("{0}")]
     Invalid(String),
-    #[error("Cozy couldn't prepare the input {path}: {message}")]
+    #[error("Cozy Creator couldn't prepare the input {path}: {message}")]
     Input { path: PathBuf, message: String },
     /// Refused at submit, before anything is recorded.
     #[error("{0}")]
@@ -276,7 +276,7 @@ impl From<LinkError> for Stop {
 
 impl From<StoreError> for Stop {
     fn from(e: StoreError) -> Self {
-        Stop::Waiting(format!("Cozy couldn't save this run's progress: {e}"))
+        Stop::Waiting(format!("Cozy Creator couldn't save this run's progress: {e}"))
     }
 }
 
@@ -1016,7 +1016,7 @@ impl Calcifer {
             .is_some_and(|options| !options.token.is_empty())
         {
             return Err(Error::Invalid(
-                "A saved run can't include a TensorFS token. Leave out the tensorfs options, and Cozy uses this computer's Hub sign-in when it sends the run.".into(),
+                "A saved run can't include a TensorFS token. Leave out the tensorfs options, and Cozy Creator uses this computer's Hub sign-in when it sends the run.".into(),
             ));
         }
         // A LoRA given without a strength runs at its recommended one: here, the one place every run is recorded.
@@ -1089,7 +1089,7 @@ impl Calcifer {
                 &row.id,
                 match &row.machine {
                     Some(machine) => format!("sending to {machine}"),
-                    None => "waiting for Cozy to pick a machine".into(),
+                    None => "waiting for Cozy Creator to pick a machine".into(),
                 },
             );
             let created = self.run_store(row.id.as_str())?.events_after(row.id.as_str(), 0)?;
@@ -1877,7 +1877,7 @@ impl Calcifer {
                 // A rental ordered for it says what it rents (`Rentals::rent_for`) until it is named.
                 let renting = lock(&self.live).get(id).and_then(|live| live.waiting.as_deref()).is_some_and(|w| w.starts_with("renting "));
                 if run.wants != "any" && !renting {
-                    self.waiting(id, "waiting for Cozy to pick a machine".into());
+                    self.waiting(id, "waiting for Cozy Creator to pick a machine".into());
                 }
                 wake.notified().await;
                 continue;
@@ -2289,7 +2289,7 @@ impl Calcifer {
                     // machine's disk: the same spec sent again brings it, and it prepares on.
                     Ok((state, events)) if state.state == "needs_access" => {
                         // Said in the run's own log: Calcifer's diagnostics hold no run ids.
-                        let said = format!("{machine} restarted while it was preparing this run, so Cozy sent the run's access again");
+                        let said = format!("{machine} restarted while it was preparing this run, so Cozy Creator sent the run's access again");
                         if let Ok(noted) = self.with_run_store(run.id.as_str(), |store| store.note(run.id.as_str(), "info", &said)) {
                             self.publish(&run.id, noted);
                         }
@@ -3076,7 +3076,7 @@ fn copy_checked(inputs: &Path, source: &StagedInput, target: &Path) -> Result<()
     let got = Digest::from_bytes(hasher.finalize().into());
     if got != source.digest || length != source.length {
         return Err(failed(format!(
-            "the file changed while Cozy read it: it has {length} bytes with digest {got}, not {} with {}",
+            "the file changed while Cozy Creator read it: it has {length} bytes with digest {got}, not {} with {}",
             source.length, source.digest
         )));
     }

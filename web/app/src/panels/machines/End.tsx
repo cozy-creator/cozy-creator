@@ -70,7 +70,7 @@ export function End({ machine }: { machine: Machine }) {
           says={
             order
               ? `Cancel ${machine.placeholder ? "this order" : `the order for ${machine.name}`}? Nothing more will be rented, and anything it already rented will be ended.`
-              : `End ${it}? Cozy downloads any results still on it first, then shuts it down and deletes its files.${hourly ? ` It costs ${hourly}/h until the Hub confirms it has ended.` : ""}`
+              : `End ${it}? Cozy Creator downloads any results still on it first, then shuts it down and deletes its files.${hourly ? ` It costs ${hourly}/h until the Hub confirms it has ended.` : ""}`
           }
           yes={order ? "Cancel order" : "End rental"}
           onYes={() => end(false)}

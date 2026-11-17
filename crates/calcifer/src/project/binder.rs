@@ -123,7 +123,7 @@ pub(crate) fn bind(call: &Call) -> Result<Bound, Error> {
         binder.warn(format!("{}: {} can't pick up from a take, so it renders the whole thing.", call.name, call.tool));
     }
     for written in call.fields.keys().filter(|written| !PLATFORM.contains(&written.as_str()) && declared.fields.iter().all(|field| field.name != **written)) {
-        binder.warn(format!("{}: {} has no input {written}, so Cozy ignored it.", call.name, call.tool));
+        binder.warn(format!("{}: {} has no input {written}, so Cozy Creator ignored it.", call.name, call.tool));
     }
     if let Some(first) = binder.nothing.first() {
         let said: Vec<String> = binder.nothing.iter().map(|mention| call.doc.not_there(mention, call.reserved, call.lock)).collect();
@@ -149,7 +149,7 @@ pub(crate) fn bind(call: &Call) -> Result<Bound, Error> {
     binder.bound.payload = payload;
     for field in declared.fields.iter().filter(|field| field.wire == Wire::Required && !binder.bound.payload.contains_key(&field.name)) {
         if matches!(field.ty.plain(), Type::Unknown) {
-            let said = format!("{}: {} needs {}, which this version of Cozy can't fill in. Update Cozy.", call.name, call.tool, field.name);
+            let said = format!("{}: {} needs {}, which this version of Cozy Creator can't fill in. Update Cozy Creator.", call.name, call.tool, field.name);
             return Err(Error::new(Kind::Unavailable, "tool_input_unknown", said).next("cozy update"));
         }
         if !matches!(field.ty.plain(), Type::Model | Type::Tree) {
@@ -271,7 +271,7 @@ impl Binder<'_> {
                         out.insert(key.clone(), value);
                     }
                 }
-                None => self.warn(format!("{}'s {at}: {} has no {key}, so Cozy ignored it.", self.call.name, self.call.tool)),
+                None => self.warn(format!("{}'s {at}: {} has no {key}, so Cozy Creator ignored it.", self.call.name, self.call.tool)),
             }
         }
         Ok(out)
@@ -356,7 +356,7 @@ impl Binder<'_> {
 
     /// What's said of `<inner>`, written at `at`, whose file isn't here: its name goes instead.
     fn no_file(&self, at: &str, inner: &str) -> String {
-        format!("{}'s {at}: <{inner}> has no file on this computer, so Cozy sends its name instead.", self.call.name)
+        format!("{}'s {at}: <{inner}> has no file on this computer, so Cozy Creator sends its name instead.", self.call.name)
     }
 
     /// The words a version of words holds (xs-204): what a mention of it says in place, as a Text box's do. None: its file isn't here.
@@ -420,7 +420,7 @@ impl Binder<'_> {
             }
             Ok(None) => self.unturned.push(named.key.clone()),
             Err(why) => {
-                self.warn(format!("{}: <{}> {why}, so Cozy sends all of it.", self.call.name, named.key));
+                self.warn(format!("{}: <{}> {why}, so Cozy Creator sends all of it.", self.call.name, named.key));
                 if let Some(j) = self.box_of(mention) {
                     named.key = graph::Mention { span: None, ..*mention }.spelled(&self.call.doc.assets[j].name);
                 }
@@ -482,7 +482,7 @@ impl Binder<'_> {
         let frames = self.call.lock.files.get(&named.file).map_or(0, |file| file.frames as u32);
         let to = match (to, frames) {
             (Some(to), frames) if frames > 0 && to > frames => {
-                self.warn(format!("{}: <{}> runs past its {frames} frames, so Cozy cut it at the end.", self.call.name, named.key));
+                self.warn(format!("{}: <{}> runs past its {frames} frames, so Cozy Creator cut it at the end.", self.call.name, named.key));
                 None
             }
             (to, _) => to,
@@ -521,7 +521,7 @@ impl Binder<'_> {
             Span::Angle(angle) if loops => Range::Frame(first(angle.rem_euclid(degrees)) % frames),
             Span::Angle(angle) => {
                 if angle > degrees {
-                    self.warn(format!("{}: <{}> is past its {degrees}° turn, so Cozy used its last frame.", self.call.name, named.key));
+                    self.warn(format!("{}: <{}> is past its {degrees}° turn, so Cozy Creator used its last frame.", self.call.name, named.key));
                 }
                 Range::Frame(first(angle.min(degrees)).min(frames - 1))
             }
@@ -539,7 +539,7 @@ impl Binder<'_> {
             }
             Span::Turn(from, to) => {
                 if to > degrees {
-                    self.warn(format!("{}: <{}> runs past its {degrees}° turn, so Cozy cut it at the end.", self.call.name, named.key));
+                    self.warn(format!("{}: <{}> runs past its {degrees}° turn, so Cozy Creator cut it at the end.", self.call.name, named.key));
                 }
                 let (start, stop) = (from.min(degrees), to.min(degrees));
                 if stop <= start {
@@ -582,7 +582,7 @@ impl Binder<'_> {
                 }
                 match self.call.lock.matching(&text.trim_start_matches("sha256:").to_ascii_lowercase()).as_slice() {
                     [file] if kind != "file" && file.media().is_some_and(|media| media != kind) => {
-                        self.warn(format!("{}'s {at} takes {}, but {text} is {}, so Cozy left it empty.", self.call.name, a(kind), a(file.media().unwrap_or_default())));
+                        self.warn(format!("{}'s {at} takes {}, but {text} is {}, so Cozy Creator left it empty.", self.call.name, a(kind), a(file.media().unwrap_or_default())));
                     }
                     [file] => found.push(Named { key: String::new(), kind: file.media().unwrap_or(kind).to_owned(), file: file.sha256.clone(), files: Files::new(), metadata: Map::new(), made_by: String::new(), own: false }),
                     _ => found.push(Named { key: String::new(), kind: kind.to_owned(), file: text.to_owned(), files: Files::new(), metadata: Map::new(), made_by: String::new(), own: false }),
@@ -600,7 +600,7 @@ impl Binder<'_> {
                     continue;
                 }
                 match self.named(&mention).flatten() {
-                    None => self.warn(format!("{}'s {at}: <{inner}> has no file on this computer, so Cozy left it empty.", self.call.name)),
+                    None => self.warn(format!("{}'s {at}: <{inner}> has no file on this computer, so Cozy Creator left it empty.", self.call.name)),
                     Some(named) if kind != "file" && named.kind != kind => {
                         let why = self.unusable(&[kind], &named.kind).unwrap_or_default();
                         self.left_out(at, inner, why);
@@ -610,7 +610,7 @@ impl Binder<'_> {
             }
         }
         if !many && found.len() > 1 {
-            self.warn(format!("{}'s {at} takes one file, but {} were given, so Cozy used the first.", self.call.name, found.len()));
+            self.warn(format!("{}'s {at} takes one file, but {} were given, so Cozy Creator used the first.", self.call.name, found.len()));
             found.truncate(1);
         }
         Ok(found)
@@ -641,7 +641,7 @@ impl Binder<'_> {
             None => None,
         };
         let Some(Some(take)) = take.filter(|take| take.as_ref().is_some_and(|take| take.kind == "video")) else {
-            let said = format!("{name}: {} isn't a take Cozy can pick up from.", pickup.take);
+            let said = format!("{name}: {} isn't a take Cozy Creator can pick up from.", pickup.take);
             return Err(Error::new(Kind::Validation, "pickup_no_take", said).remedy("Pick up from one of a video box's takes, like <shot_1.3>."));
         };
         let snap: Snap = field.extra.get("snap").and_then(|snap| serde_json::from_value(snap.clone()).ok()).unwrap_or_default();
@@ -671,7 +671,7 @@ impl Binder<'_> {
             if let Some(given) = fields.remove(&key)
                 && self.call.own.is_none()
             {
-                self.warn(format!("{of}'s {key} applies {}, so Cozy ignored {} and used the default.", declared.said(&when), shown(&given)));
+                self.warn(format!("{of}'s {key} applies {}, so Cozy Creator ignored {} and used the default.", declared.said(&when), shown(&given)));
             }
         }
         for field in &declared.fields {
@@ -693,7 +693,7 @@ impl Binder<'_> {
                     let held = at.clamp(low.unwrap_or(f64::NEG_INFINITY), high.unwrap_or(f64::INFINITY));
                     if held != at {
                         let bound = if at > held { "at most" } else { "at least" };
-                        self.warn(format!("{of}'s {key} takes {bound} {held}, not {at}, so Cozy used {held}."));
+                        self.warn(format!("{of}'s {key} takes {bound} {held}, not {at}, so Cozy Creator used {held}."));
                         *value = if *field.ty.plain() == Type::Int { json!(held as i64) } else { json!(held) };
                     }
                 }
@@ -702,11 +702,11 @@ impl Binder<'_> {
                     let offered = either(&offered);
                     match nearest(members, value) {
                         Some(held) => {
-                            self.warn(format!("{of}'s {key} takes {offered}, not {}, so Cozy used {}.", shown(value), shown(&held)));
+                            self.warn(format!("{of}'s {key} takes {offered}, not {}, so Cozy Creator used {}.", shown(value), shown(&held)));
                             *value = held;
                         }
                         None => {
-                            self.warn(format!("{of}'s {key} takes {offered}, not {}, so Cozy used the default.", shown(value)));
+                            self.warn(format!("{of}'s {key} takes {offered}, not {}, so Cozy Creator used the default.", shown(value)));
                             fields.remove(key);
                         }
                     }
@@ -715,14 +715,14 @@ impl Binder<'_> {
                     if let Some(held) = value.as_str().and_then(|ratio| shape(field, ratio))
                         && Some(held.as_str()) != value.as_str()
                     {
-                        self.warn(format!("{of}'s {key} doesn't take {}, so Cozy used {held}, the nearest shape it takes.", shown(value)));
+                        self.warn(format!("{of}'s {key} doesn't take {}, so Cozy Creator used {held}, the nearest shape it takes.", shown(value)));
                         *value = json!(held);
                     }
                 }
                 Type::List(item) => {
                     let Value::Array(rows) = value else { continue };
                     if let Some(most) = field.constraints.max_length.filter(|most| rows.len() as u64 > *most) {
-                        self.warn(format!("{of}'s {key} takes at most {most}, not {}, so Cozy used the first {most}.", rows.len()));
+                        self.warn(format!("{of}'s {key} takes at most {most}, not {}, so Cozy Creator used the first {most}.", rows.len()));
                         rows.truncate(most as usize);
                     }
                     if let Some(least) = field.constraints.min_length.filter(|least| (rows.len() as u64) < *least) {

@@ -18,7 +18,7 @@ project's runs and every row its scope keyed, and Calcifer's index keeps only an
 Unlock; unlocking registers it again from its own project.db. The containment shard's lock scans prove it (`e2e/cli/containment`).
 
 
-All project data that Cozy stores automatically belongs in the project's directory. For an encrypted project, durable contents belong inside its encrypted filesystem. This includes run identities and history, inputs, outputs, logs and errors, retry records, derived caches, source, execution scratch, browser project preferences and private execution bookkeeping. An encrypted outside journal or a hash-only outside execution index is still a violation.
+All project data that Cozy Creator stores automatically belongs in the project's directory. For an encrypted project, durable contents belong inside its encrypted filesystem. This includes run identities and history, inputs, outputs, logs and errors, retry records, derived caches, source, execution scratch, browser project preferences and private execution bookkeeping. An encrypted outside journal or a hash-only outside execution index is still a violation.
 
 Calcifer may retain a project reference consisting of its opaque identity, location and opaque route code. Names, last-use times, walking state, run counters and project-derived cache entries are not part of that exception. Unrelated installation, account and machine state remains independent; it must not contain project/run associations or content.
 

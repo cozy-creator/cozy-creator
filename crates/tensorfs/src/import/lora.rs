@@ -88,7 +88,7 @@ pub(crate) fn unusable(group: &Group) -> Option<String> {
             return Some("a LyCORIS LoKr adapter in names no table maps onto a model's modules".into());
         }
         let kinds: Vec<&str> = kinds.into_iter().filter(|k| *k != "LoKr").collect();
-        return Some(format!("a LyCORIS {} adapter; Cozy applies LoRA, DoRA and LoKr adapters only", kinds.join(" and ")));
+        return Some(format!("a LyCORIS {} adapter; Cozy Creator applies LoRA, DoRA and LoKr adapters only", kinds.join(" and ")));
     }
     let kohya = keys().any(|k| KOHYA.iter().any(|p| k.starts_with(p)));
     (kohya && adapter).then(|| {

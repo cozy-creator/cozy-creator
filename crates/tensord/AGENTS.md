@@ -1,4 +1,4 @@
-# Cozy machine
+# Cozy Creator machine
 
 Module map and owners: `docs/ARCHITECTURE.md`.
 
@@ -11,4 +11,4 @@ process kills, hidden environment behavior switches, smaller substitute requests
 inference qualification.
 
 Qualify vertical slices with actual process/socket/storage/inference paths and record their
-limits. This repository is experimental until ordinary Cozy CLI, consumer and release gates pass.
+limits. This repository is experimental until ordinary Cozy Creator CLI, consumer and release gates pass.

@@ -82,7 +82,7 @@ pub(crate) async fn current(ctx: &Context) -> Result<State, Error> {
 
 fn not_in_a_project(directory: &str) -> Error {
     let name = std::path::Path::new(directory).file_name().and_then(|name| name.to_str()).unwrap_or(directory);
-    Error::new(Kind::Usage, "not_in_a_project", format!("{name:?} is not a Cozy project."))
+    Error::new(Kind::Usage, "not_in_a_project", format!("{name:?} is not a Cozy Creator project."))
         .remedy("Navigate to a project directory, or create one with cozy new.")
         .next("cozy new")
 }

@@ -742,10 +742,11 @@ case $SHARD in
   # of one function quoted each by its own checkpoint; a guess moved when its machine's load changes; on a short disk a guess
   # evicts nothing, goes first, says so and comes again, and its install gives the line to a run's.
   prefetch) parts="prefetch_switch prefetch_ready prefetch_quoted prefetch_yields prefetch_load prefetch_disk logs" ;;
-  entrypoints) parts="entrypoints hint_commands" ;;
+  entrypoints) parts="entrypoints hint_commands product_name" ;;
   commands) parts="
     entrypoints
     hint_commands
+    product_name
     outside_refuses
     catalog
     basics

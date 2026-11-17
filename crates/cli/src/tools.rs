@@ -110,7 +110,7 @@ pub(crate) async fn fix(ctx: &Context) {
     for (name, fetched) in calcifer::prefetch(&ctx.home, &say).await {
         match fetched {
             Ok(build) => say(&format!("{name}: ready ({build})")),
-            Err(why) => say(&format!("{name}: not fetched now ({why}); cozy fetches it when a feature first needs it")),
+            Err(why) => say(&format!("{name}: not fetched now ({why}); Cozy Creator fetches it when a feature first needs it")),
         }
     }
     // This computer's machine holds its PyTorch before its first run (cl-1030).
@@ -162,7 +162,7 @@ fn linux(_: &[&'static Tool], _: &[PathBuf], _: &str, _: &(dyn Fn(&str) + Sync))
 fn linux(wanted: &[&'static Tool], path: &[PathBuf], listed: &str, say: &(dyn Fn(&str) + Sync)) {
     use std::process::{Command, Stdio};
     let Some(manager) = tools::package_manager(path) else {
-        say(&format!("cozy needs these, and this computer has no package manager cozy knows (apt-get, dnf, pacman, zypper):\n{listed}"));
+        say(&format!("Cozy Creator needs these, and this computer has no package manager Cozy Creator knows (apt-get, dnf, pacman, zypper):\n{listed}"));
         return;
     };
     let packages = wanted
@@ -185,7 +185,7 @@ fn linux(wanted: &[&'static Tool], path: &[PathBuf], listed: &str, say: &(dyn Fn
     };
     let root = Command::new("id").arg("-u").output().is_ok_and(|out| String::from_utf8_lossy(&out.stdout).trim() == "0");
     let mut command = if root {
-        say(&format!("installing what cozy needs with {manager}:\n{listed}"));
+        say(&format!("installing what Cozy Creator needs with {manager}:\n{listed}"));
         let mut command = Command::new("sh");
         command.args(["-c", &script]).stdin(Stdio::null());
         command
@@ -194,11 +194,11 @@ fn linux(wanted: &[&'static Tool], path: &[PathBuf], listed: &str, say: &(dyn Fn
         let tty = std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty");
         let sudo = tools::on_path("sudo", path).is_some();
         let (Ok(mut tty), true) = (tty, sudo) else {
-            say(&format!("cozy needs these on this computer:\n{listed}\nTo install them, run:\n  {said}"));
+            say(&format!("Cozy Creator needs these on this computer:\n{listed}\nTo install them, run:\n  {said}"));
             return;
         };
         use std::io::{BufRead as _, Write as _};
-        let _ = write!(tty, "cozy needs these on this computer:\n{listed}\nInstall them now with sudo {manager}? [Y/n] ");
+        let _ = write!(tty, "Cozy Creator needs these on this computer:\n{listed}\nInstall them now with sudo {manager}? [Y/n] ");
         let mut answer = String::new();
         let _ = std::io::BufReader::new(&tty).read_line(&mut answer);
         if matches!(answer.trim().to_ascii_lowercase().as_str(), "n" | "no") {
@@ -248,10 +248,10 @@ async fn windows(wanted: &[&'static Tool], path: &[PathBuf], listed: &str, say: 
         .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).trim() == "True");
     if !admin {
         if !std::io::stdin().is_terminal() {
-            say(&format!("cozy needs these on this computer:\n{listed}\nTo install them:\n  {}", said.join("\n  ")));
+            say(&format!("Cozy Creator needs these on this computer:\n{listed}\nTo install them:\n  {}", said.join("\n  ")));
             return;
         }
-        print!("cozy needs these on this computer:\n{listed}\nInstall them now? [Y/n] ");
+        print!("Cozy Creator needs these on this computer:\n{listed}\nInstall them now? [Y/n] ");
         let _ = std::io::Write::flush(&mut std::io::stdout());
         let mut answer = String::new();
         let _ = std::io::stdin().read_line(&mut answer);
@@ -260,7 +260,7 @@ async fn windows(wanted: &[&'static Tool], path: &[PathBuf], listed: &str, say: 
             return;
         }
     } else {
-        say(&format!("installing what cozy needs:\n{listed}"));
+        say(&format!("installing what Cozy Creator needs:\n{listed}"));
     }
     for (tool, said) in wanted.iter().zip(&said) {
         let done = match (winget, package(tool)) {

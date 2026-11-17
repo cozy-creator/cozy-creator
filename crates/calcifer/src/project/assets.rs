@@ -284,7 +284,7 @@ const READ_MOST: usize = 256;
 pub(super) async fn read_many(State(api): State<Arc<Api>>, Path(id): Path<String>, body: Result<Bytes, BytesRejection>) -> Result<Json<AssetsRead>, Refusal> {
     let asked: ReadAssets = parse(&body?)?;
     if asked.names.len() > READ_MOST {
-        return Err(Refusal(Error::new(Kind::Validation, "read_too_many", format!("You named {} boxes, more than the {READ_MOST} Cozy reads at once.", asked.names.len())).remedy("Read the whole project instead.")));
+        return Err(Refusal(Error::new(Kind::Validation, "read_too_many", format!("You named {} boxes, more than the {READ_MOST} Cozy Creator reads at once.", asked.names.len())).remedy("Read the whole project instead.")));
     }
     let project = api.projects.get(&api, &id)?;
     let model = model::of(&api, &project).await.map_err(Refusal)?;
@@ -431,7 +431,7 @@ pub(super) fn patched(folder: &folder::Folder, name: &str, asked: &AssetPatch, r
         };
         let written = folder.written()?;
         if asked.tool.is_none() && validated_tool.as_ref().is_some_and(|target| written.get(&name).and_then(|held| held.get("tool")).and_then(Value::as_str) != Some(target.as_str())) {
-            return Err(Error::new(Kind::Conflict, "asset_changed", format!("{name}'s tool changed while Cozy was checking its models.")).remedy("Reload the box, then choose its models again."));
+            return Err(Error::new(Kind::Conflict, "asset_changed", format!("{name}'s tool changed while Cozy Creator was checking its models.")).remedy("Reload the box, then choose its models again."));
         }
         let was = written.get(&name).ok_or_else(|| own_lines(&name))?.etag();
         let mut fields = asked.fields.clone();

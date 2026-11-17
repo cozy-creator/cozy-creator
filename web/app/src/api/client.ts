@@ -109,7 +109,7 @@ const failureStatus: Record<ErrorBody["kind"], number> = {
 }
 
 const unreachable = () =>
-  new ApiError(0, { kind: "unavailable", code: "calcifer_unreachable", message: "Cozy isn't responding", remedy: "If it doesn't come back, start Cozy again on this computer." })
+  new ApiError(0, { kind: "unavailable", code: "calcifer_unreachable", message: "Cozy Creator isn't responding", remedy: "If it doesn't come back, start Cozy Creator again on this computer." })
 
 /** Calcifer won't answer this page: it isn't Calcifer's own page, or not its account's (design/calcifer-access.md). Any other 401
  *  or 403 is a Hub's word on a code or a key, which belongs where it happened. */
@@ -119,7 +119,7 @@ async function refusal(response: Response): Promise<ApiError> {
   const body = await response.json().catch(() => null)
   const error = body?.error
   if (typeof error?.message === "string") return new ApiError(response.status, error)
-  return new ApiError(response.status, { kind: "internal", code: `http_${response.status}`, message: `Cozy returned an error (HTTP ${response.status})` })
+  return new ApiError(response.status, { kind: "internal", code: `http_${response.status}`, message: `Cozy Creator returned an error (HTTP ${response.status})` })
 }
 
 const aborted = (error: unknown) => error instanceof DOMException && error.name === "AbortError"
@@ -352,7 +352,7 @@ export class Client {
 
   async newProject(body: Open): Promise<Opened> {
     if (body.unencrypted) return this.write("POST", "/v1/projects", body, `project-${crypto.randomUUID()}`)
-    if (this.transport.channel) return Promise.reject(new ApiError(403, { kind: "forbidden", code: "vault_local_only", message: "To make an encrypted project, open Cozy on the computer the project will be on" }))
+    if (this.transport.channel) return Promise.reject(new ApiError(403, { kind: "forbidden", code: "vault_local_only", message: "To make an encrypted project, open Cozy Creator on the computer the project will be on" }))
     return this.json("/v1/projects", { method: "POST", headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }, body: JSON.stringify(body), cache: "no-store" })
   }
 
@@ -374,7 +374,7 @@ export class Client {
       kind: "unavailable", code: "vault_stream_incomplete",
       message: "The connection dropped before the change finished, and it may still be running. Check the project's encryption before you try again.",
     })
-    const invalid = () => new ApiError(502, { kind: "internal", code: "vault_stream_invalid", message: "Couldn't read Cozy's reply about the change. Check the project's encryption before you try again." })
+    const invalid = () => new ApiError(502, { kind: "internal", code: "vault_stream_invalid", message: "Couldn't read Cozy Creator's reply about the change. Check the project's encryption before you try again." })
     const terminal: { changed?: VaultChanged; failure?: ApiError } = {}
     let attempt = 0
     let acknowledged = false

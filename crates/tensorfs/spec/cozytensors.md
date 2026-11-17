@@ -4,7 +4,7 @@ Start with the [Rust and Python usage guide](../README.md). Readable documents a
 schemas are in [schema/](schema/).
 
 This is the authoritative specification of the stored format and its decode semantics. A reader can implement it
-without TensorFS, Cozy or Tensorhub. Library APIs, cache policy and GPU execution are outside the format contract.
+without TensorFS, Cozy Creator or Tensorhub. Library APIs, cache policy and GPU execution are outside the format contract.
 
 cozytensors/1 describes model weights as immutable, content-addressed objects. One **header** describes a model:
 its pipeline, components, plain or encoded tensors, and the chunks and assets those components use. A **tree** is a
@@ -683,7 +683,7 @@ carries back with the block.
 
 ### `w4a8.convrot`
 
-`comfy.asym_w4a8_int8` under Cozy's own name, at one profile: the w4a8 lane's scheme (§7). Its parts and decode are
+`comfy.asym_w4a8_int8` under Cozy Creator's own name, at one profile: the w4a8 lane's scheme (§7). Its parts and decode are
 that scheme's, with `group_size` 16, `group_scale` `F8_E4M3` and no `correction`; the `codebook` stays optional.
 A reader that does not know the name refuses it on a GPU, so it never serves the file as another lane.
 - Params: `group_size: 16`; `rotation: "kron_regular_h4"`; `rotation_size: B`, `B = 4^k`, `1 ≤ k ≤ 8`.

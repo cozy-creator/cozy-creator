@@ -82,7 +82,7 @@ export function sameOrigin(): Transport {
       if (secret(init.body)) {
         const now = await account(signal)
         if (!now || now !== (opened ??= now)) {
-          return refusal(403, "forbidden", "secret_other_account", "The Cozy answering this page runs as another account on this computer, so nothing secret was sent to it.")
+          return refusal(403, "forbidden", "secret_other_account", "The Cozy Creator answering this page runs as another account on this computer, so nothing secret was sent to it.")
         }
       }
       const headers = new Headers(init.headers)

@@ -259,7 +259,7 @@ impl Client {
         match platform::net::User::current() {
             Some(own) if own.to_string() == status.os_user => Ok(()),
             _ => Err(Error::new(Kind::Forbidden, "secret_other_account",
-                "The Cozy answering here runs as another account on this computer, so nothing secret was sent to it.")),
+                "The Cozy Creator answering here runs as another account on this computer, so nothing secret was sent to it.")),
         }
     }
 
@@ -535,13 +535,13 @@ impl Client {
                         return Ok(value);
                     }
                     Err(e) if self.other_version() && write => {
-                        let lacks = format!("answers without what this cozy reads ({e})");
+                        let lacks = format!("answers without what this Cozy Creator reads ({e})");
                         self.say(&format!("{}; it carried out the ask, which isn't sent again", self.lacking(&lacks)));
                         self.restart_after(&lacks).await;
                         let said = format!("The operation completed, but its response could not be read: {e}");
                         return Err(Error::new(Kind::Internal, "answer_unreadable", said));
                     }
-                    Err(e) if self.other_version() => format!("answers without what this cozy reads ({e})"),
+                    Err(e) if self.other_version() => format!("answers without what this Cozy Creator reads ({e})"),
                     Err(e) => {
                         let said = format!("Cannot read Calcifer's response: {e}");
                         return Err(Error::new(Kind::Internal, "answer_unreadable", said));
@@ -600,7 +600,7 @@ impl Client {
     /// "Calcifer runs cozy X, which <lacks>".
     fn lacking(&self, lacks: &str) -> String {
         let version = self.holder().map_or_else(|| "?".into(), |h| h.version);
-        format!("Calcifer runs cozy {version}, which {lacks}")
+        format!("Calcifer runs Cozy Creator {version}, which {lacks}")
     }
 
     /// Restarts Calcifer on the installed cozy because it `lacks` something this cozy asks for;
@@ -612,7 +612,7 @@ impl Client {
         if let Some(why) = self.kept(&holder).await {
             return Err(other_version(&holder, lacks, &why));
         }
-        self.say(&format!("{}; restarting it on the installed cozy", self.lacking(lacks)));
+        self.say(&format!("{}; restarting it on the installed Cozy Creator", self.lacking(lacks)));
         if let Err(e) = self.down(&holder).await {
             self.say(&format!("Calcifer did not stop cleanly ({}); starting the installed one", e.message));
         }
@@ -634,16 +634,16 @@ impl Client {
     /// One too old to say who uses it is kept.
     async fn kept(&self, holder: &Holder) -> Option<String> {
         if !self.is_installed() {
-            return Some("this cozy is not the installed one, which a restart would start".into());
+            return Some("this Cozy Creator is not the installed one, which a restart would start".into());
         }
         let request = self.0.http.get(format!("http://{}/v1/activity", holder.address)).bearer_auth(&holder.token);
         let answer = match tokio::time::timeout(REPORT, request.send()).await {
             Ok(Ok(answer)) if answer.status().is_success() => answer,
-            Ok(Ok(_)) => return Some(format!("cozy {} can't say who uses it", holder.version)),
+            Ok(Ok(_)) => return Some(format!("Cozy Creator {} can't say who uses it", holder.version)),
             _ => return Some("it did not say who uses it".into()),
         };
         let Ok(activity) = answer.json::<CalciferActivity>().await else {
-            return Some(format!("cozy {} can't say who uses it", holder.version));
+            return Some(format!("Cozy Creator {} can't say who uses it", holder.version));
         };
         let recent = activity.others_request_ms.map(|at| Duration::from_millis(u64::try_from(activity.now_ms - at).unwrap_or(0)));
         let mut uses = Vec::new();
@@ -680,7 +680,7 @@ impl Client {
         Error::new(
             Kind::Unavailable,
             "calcifer_outdated",
-            format!("{}; this is cozy {}", self.lacking(lacks), ::api::VERSION),
+            format!("{}; this is Cozy Creator {}", self.lacking(lacks), ::api::VERSION),
         )
         .next("cozy update")
     }
@@ -1404,7 +1404,7 @@ fn other_version(holder: &Holder, lacks: &str, why: &str) -> Error {
         Kind::Unavailable,
         "calcifer_other_version",
         format!(
-            "Calcifer here is {}, this cozy is {}; run the matching cozy, or `cozy restart` to switch",
+            "Calcifer here is {}, this Cozy Creator is {}; run the matching Cozy Creator, or `cozy restart` to switch",
             holder.version,
             ::api::VERSION
         ),

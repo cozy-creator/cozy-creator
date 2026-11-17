@@ -178,7 +178,7 @@ pub(super) async fn send_code(
     let email = match (&session, email) {
         (Some(session), _) => session.key().email.clone(),
         (None, Some(email)) => email.to_owned(),
-        (None, None) => return Err(refuse(Kind::Usage, "email_required", "Enter your account's email so Cozy can send you a code.")),
+        (None, None) => return Err(refuse(Kind::Usage, "email_required", "Enter your account's email so Cozy Creator can send you a code.")),
     };
     let label = if ask.purpose == Purpose::Export { EXPORT_LABEL } else { LABEL };
     let enrollment = match Enrollment::begin(&anonymous, &email, label, session.as_ref().map(UserSession::key)).await {
@@ -212,7 +212,7 @@ pub(super) async fn prove(
 ) -> Result<Json<Proven>, Refusal> {
     let CodeAnswer { code } = parse(&body?)?;
     let waiting = api.codes.answers(&id).ok_or_else(|| {
-        Refusal(Error::not_found("code_not_found", "Cozy isn't waiting for that code anymore.").remedy("Ask for a new code."))
+        Refusal(Error::not_found("code_not_found", "Cozy Creator isn't waiting for that code anymore.").remedy("Ask for a new code."))
     })?;
     let (hub, purpose) = (waiting[0].hub.clone(), waiting[0].purpose);
     let anonymous = reader(&api, &hub)?.anonymous();
@@ -241,10 +241,10 @@ pub(super) async fn step(
     let CodeStep { path, body } = parse(&body?)?;
     let plain = |segment: &str| !segment.is_empty() && segment.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
     if !path.split('/').all(plain) {
-        return Err(refuse(Kind::Validation, "step_path_invalid", format!("{path:?} isn't a sign-in step Cozy can send.")));
+        return Err(refuse(Kind::Validation, "step_path_invalid", format!("{path:?} isn't a sign-in step Cozy Creator can send.")));
     }
     let (pending, code) = api.codes.stepping(&id).ok_or_else(|| {
-        Refusal(Error::not_found("code_not_found", "Cozy isn't waiting on a sign-in step for that code.").remedy("Ask for a new code."))
+        Refusal(Error::not_found("code_not_found", "Cozy Creator isn't waiting on a sign-in step for that code.").remedy("Ask for a new code."))
     })?;
     let anonymous = reader(&api, &pending.hub)?.anonymous();
     anonymous.authkit_step(&path, &body).await.map_err(|e| refusal(&pending.hub, e))?;
@@ -355,16 +355,16 @@ async fn erase(api: &Api, hub: &Origin, everywhere: bool) -> Result<SignedOut, R
         if let Err(e) = std::fs::remove_file(&path)
             && e.kind() != std::io::ErrorKind::NotFound
         {
-            return Err(refuse(Kind::Internal, "key_unremovable", format!("Cozy couldn't delete this computer's key at {}: {e}.", path.display())));
+            return Err(refuse(Kind::Internal, "key_unremovable", format!("Cozy Creator couldn't delete this computer's key at {}: {e}.", path.display())));
         }
     }
     match revoked {
         Some(Err(e)) => {
             let code = refusal(hub, e).0.code;
-            out.notes.push(format!("The Hub at {hub} didn't confirm it revoked this computer's key ({code}), but Cozy deleted the key here."));
+            out.notes.push(format!("The Hub at {hub} didn't confirm it revoked this computer's key ({code}), but Cozy Creator deleted the key here."));
         }
         None => out.notes.push(
-            "This computer's key was added by hand, so Cozy forgot it here but didn't revoke it, and another computer \
+            "This computer's key was added by hand, so Cozy Creator forgot it here but didn't revoke it, and another computer \
              can still sign in with it. Sign out everywhere to revoke every key."
                 .into(),
         ),

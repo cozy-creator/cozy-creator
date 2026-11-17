@@ -203,7 +203,7 @@ impl ModelRef {
                 "hf" | "civitai" | "https" => Ok(ModelRef::Provider(raw.to_owned())),
                 _ => Err(usage(
                     "model_source_scheme_unsupported",
-                    format!("Cozy can't download a model from {raw:?}. Use an hf://, civitai:// or https:// link."),
+                    format!("Cozy Creator can't download a model from {raw:?}. Use an hf://, civitai:// or https:// link."),
                 )),
             };
         }
@@ -304,7 +304,7 @@ impl fmt::Display for ModelRef {
 fn grammar(raw: &str) -> Error {
     usage(
         "model_ref_invalid",
-        format!("{raw:?} isn't a model Cozy recognizes. Name it as {GRAMMAR}."),
+        format!("{raw:?} isn't a model Cozy Creator recognizes. Name it as {GRAMMAR}."),
     )
 }
 

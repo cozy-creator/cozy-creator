@@ -54,7 +54,7 @@ pub(super) fn create(provider: &Provider, backing: &Path, secret: &[u8]) -> Resu
             "Case-sensitive APFS",
             "-nospotlight",
             "-volname",
-            "Cozy Project",
+            "Cozy Creator Project",
             "-encryption",
             "AES-256",
             "-stdinpass",

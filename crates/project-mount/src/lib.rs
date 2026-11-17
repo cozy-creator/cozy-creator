@@ -113,7 +113,7 @@ impl Error {
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(
-        "encrypted projects need securefs {PROVIDER_VERSION}; install it or use a cozy release containing its filesystem provider"
+        "encrypted projects need securefs {PROVIDER_VERSION}; install it or use a Cozy Creator release containing its filesystem provider"
     )]
     HelperMissing,
     #[error("encrypted projects need {0}")]
@@ -248,7 +248,7 @@ fn fusermount_path(shims: &Path) -> Result<Option<OsString>> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     std::env::join_paths(std::iter::once(shims.to_path_buf()).chain(std::env::split_paths(&path)))
         .map(Some)
-        .map_err(|_| Error::Invalid("cozy's tools folder path cannot lead PATH"))
+        .map_err(|_| Error::Invalid("Cozy Creator's tools folder path cannot lead PATH"))
 }
 
 /// A release must embed its pinned provider; ordinary development builds need not.

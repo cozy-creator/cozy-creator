@@ -432,7 +432,7 @@ impl Publisher {
         let mut asked: Vec<String> = floors.to_vec();
         let mut chosen: BTreeMap<String, String> = BTreeMap::new();
         while let Some(requirement) = asked.pop() {
-            let invalid = || ("runtime_floor_unmet", format!("{label} needs {requirement}, which this machine can't read: a newer cozy may, `cozy machine update <machine>`"));
+            let invalid = || ("runtime_floor_unmet", format!("{label} needs {requirement}, which this machine can't read: a newer Cozy Creator may, `cozy machine update <machine>`"));
             let floor = Floor::parse(&requirement).ok_or_else(invalid)?;
             if chosen.contains_key(&floor.name) {
                 continue;

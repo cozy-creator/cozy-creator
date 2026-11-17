@@ -364,7 +364,7 @@ impl Machines {
         match (behind.is_empty(), installed) {
             (true, None) => follow("current", said),
             (current, Some(installed)) => {
-                let cozy = format!("cozy {} (installed)", prerelease::shown(&installed));
+                let cozy = format!("Cozy Creator {} (installed)", prerelease::shown(&installed));
                 let to = if current { cozy } else { format!("{said} · {cozy}") };
                 follow("behind", format!("moves to {to} once this computer has been at rest for {} s", AT_REST.as_secs()))
             }

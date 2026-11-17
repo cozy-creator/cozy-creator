@@ -92,7 +92,7 @@ function NumberedRun() {
       <Failure error={cancel.error} lead="Couldn't cancel the run" />
       {run.stalled && (
         <p className="failure" role="alert">
-          {stalledWords(run.stalled, now)}. Cozy won't cancel it on its own.
+          {stalledWords(run.stalled, now)}. Cozy Creator won't cancel it on its own.
           {run.stalled.usd_micros_per_hour != null && <span className="remedy">{run.stalled.machine} costs {usd(run.stalled.usd_micros_per_hour)}/h in the meantime.</span>}
         </p>
       )}

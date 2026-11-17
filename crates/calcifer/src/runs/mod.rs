@@ -73,7 +73,7 @@ pub(crate) async fn submit_project(
     let mut raw:serde_json::Value=parse(&bytes)?;
     let legacy_on=raw.get("on").is_some_and(serde_json::Value::is_string);
     if legacy_on {let value=raw.get("on").cloned().expect("checked on");raw["on"]=serde_json::json!([value]);}
-    let mut ask:RunRequest=serde_json::from_value(raw).map_err(|_|Refusal(Error::new(Kind::Validation,"invalid_run_request","Cozy couldn't read this run request.")))?;
+    let mut ask:RunRequest=serde_json::from_value(raw).map_err(|_|Refusal(Error::new(Kind::Validation,"invalid_run_request","Cozy Creator couldn't read this run request.")))?;
     let (id,recorded) = { let store = api.projects.store(&api, &project).await.map_err(Refusal)?; (store.project_id().to_owned(),store.recorded(&key)?) };
     // A migrated retry keeps its exact original body digest. Its old locator
     // may have moved; the existing row inside this admitted owner is authority.
@@ -83,7 +83,7 @@ pub(crate) async fn submit_project(
             Ok((StatusCode::OK,Json(Submitted {run:api.calcifer.record(&row)?,replay:true,notes:vec![],preparing:false,lock:None})))
         }).await;
     }
-    if legacy_on {return Err(Refusal(Error::new(Kind::Usage,"legacy_run_request","This old request format only works to retry a run moved from an older Cozy.")));}
+    if legacy_on {return Err(Refusal(Error::new(Kind::Usage,"legacy_run_request","This old request format only works to retry a run moved from an older Cozy Creator.")));}
     if let Some(named) = ask.project.as_deref() {
         let actual = { let store = api.projects.store(&api, named).await.map_err(Refusal)?; store.project_id().to_owned() };
         if actual != id { return Err(Refusal(Error::new(Kind::Validation, "project_scope_mismatch", "The request names a different project from the one it was sent to."))); }
@@ -280,9 +280,9 @@ fn prebuilt(body: &[u8]) -> Result<(), Refusal> {
         Error::new(
             Kind::Usage,
             "client_outdated",
-            format!("This cozy is older than {version} and sent the run in an old format. Cozy on this computer runs {version}."),
+            format!("This Cozy Creator is older than {version} and sent the run in an old format. Cozy Creator on this computer runs {version}."),
         )
-        .remedy(format!("Use the installed cozy (~/.cozy/bin/cozy), or update this one to {version}.")),
+        .remedy(format!("Use the installed Cozy Creator (~/.cozy/bin/cozy), or update this one to {version}.")),
     ))
 }
 
@@ -363,7 +363,7 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Resul
                     }).await.map_err(|e| Error::internal("keep_given", e.to_string()))?;
                     notes.extend(kept?.into_iter().map(|message| Note { level: NoteLevel::Warning, message }));
                 } else {
-                    notes.push(Note { level: NoteLevel::Warning, message: "The run started, but Cozy couldn't add its private inputs to the project's history because the project was closing.".into() });
+                    notes.push(Note { level: NoteLevel::Warning, message: "The run started, but Cozy Creator couldn't add its private inputs to the project's history because the project was closing.".into() });
                 }
             }
             Ok(Submitted { notes, lock, ..submitted })
@@ -453,7 +453,7 @@ enum Prepared {
 /// What a client following `run` before its ask goes again is told, when it is its machine's update to this cozy's minor.
 fn updating(run: &api::calcifer::Run) -> Option<Note> {
     let machine = run.machine.as_deref().filter(|_| run.kind == RunKind::Update)?;
-    Some(Note { level: NoteLevel::Info, message: format!("Updating {machine} to cozy {} first.", crate::update::this_release()) })
+    Some(Note { level: NoteLevel::Info, message: format!("Updating {machine} to Cozy Creator {} first.", crate::update::this_release()) })
 }
 
 /// What a prepared ask is for.
@@ -839,7 +839,7 @@ async fn call(
     let (spec, bound, out) = match ask.warm {
         Some(level) => {
             if ask.gpus.is_some() {
-                notes.push(Note { level: NoteLevel::Warning, message: "The GPU count only applies to a run, so Cozy ignored it while warming up.".into() });
+                notes.push(Note { level: NoteLevel::Warning, message: "The GPU count only applies to a run, so Cozy Creator ignored it while warming up.".into() });
             }
             let (models, payload) = bind::warm_choices(
                 &target, code.release, code.interface, callable, &terms, level == WarmLevel::Gpu, &mut notes,
@@ -905,9 +905,9 @@ pub(crate) fn callable<'a>(package: &str, interface: &'a Interface, asked: &str)
                 return Err(Error::new(
                     Kind::Unavailable,
                     "callable_unreadable",
-                    format!("This cozy can't read {package}/{name}: {why}."),
+                    format!("This version of Cozy Creator can't read {package}/{name}: {why}."),
                 )
-                .remedy("Update cozy, or run another function of the package.")
+                .remedy("Update Cozy Creator, or run another function of the package.")
                 .next("cozy update"));
             }
             let public = interface.public();

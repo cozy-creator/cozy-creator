@@ -95,7 +95,7 @@ Putting a tool on a text asset moves its `text` to `instructions`. On a picture,
 
 **The key** is blind to names: eight hex digits of its tool (no release, no root namespace), `models`, `lora` and its fields after defaults, each box they mention replaced by its number in order of first mention (`<Amy.2>` is `<#0.2>`), then twelve for each of those boxes: its `description` and the files of each version read, or a text box's words. So a rename puts nothing out of date. Editing a box's description puts its readers out of date, `<Abr.2>`'s too. Inputs plus the seed never run twice: a seed in its fields, or a function with no seed, has one result per key. Putting old text back returns the old take as its state, with no run.
 
-**Not in the key:** its own `description`; a pickup; package and cozy updates; the machine or card. An update never re-renders anything. A hit reuses the stored file, whatever another card would make.
+**Not in the key:** its own `description`; a pickup; package and Cozy Creator updates; the machine or card. An update never re-renders anything. A hit reuses the stored file, whatever another card would make.
 
 **Seed:** Calcifer draws it when the function takes one, and records it.
 
@@ -130,7 +130,7 @@ An asset has one main file; any other files are what the same run left, such as 
 
 ## Import
 
-Dropping a picture, video or sound onto the browser canvas is one act: the file in `files/`, a box under its name, its hash never handled. With no name it takes the file's, lower-cased: `Kyogre Art (1).png` is `kyogre_art_1`. A name cozy picks gets `_2` if the project has it. One you typed that the project has is refused, naming what has it. The same file twice is two assets and one file.
+Dropping a picture, video or sound onto the browser canvas is one act: the file in `files/`, a box under its name, its hash never handled. With no name it takes the file's, lower-cased: `Kyogre Art (1).png` is `kyogre_art_1`. A name Cozy Creator picks gets `_2` if the project has it. One you typed that the project has is refused, naming what has it. The same file twice is two assets and one file.
 
 **A take lifted out** is a plain asset, a file and its words, with no `tool` and no link to what made it. The project import API accepts an existing file hash with its new name and description.
 
@@ -161,9 +161,9 @@ A box is a call of its tool, by one binder, the same for the browser's Render an
 - **Words** (`str`): as written, each text box in place as its words; a box with a file it mentions goes as its name, with a warning.
 - **A prompt** (`Prompt`, or `Prompt[Image]`): its text as written, each mention spelled as its box spells itself, with the boxes it mentions as its own references, in the order first mentioned. What it doesn't take (a video in a `Prompt[Image]`) goes as its name, with a warning.
 - **A slot** (`ImageFile`, `VideoFile`, `AudioFile`, or `Image`, `Video`, `Audio` with the description): only what's written in it, `<coast.2>`, or a hash of a project file. One of the wrong kind is left empty for that render, with a warning.
-- **A range** of a video, `<take3:48-336>`, is cut here, frame-accurate, with cozy's ffmpeg, and sent as that clip.
+- **A range** of a video, `<take3:48-336>`, is cut here, frame-accurate, with Cozy Creator's ffmpeg, and sent as that clip.
 - **A group** (a struct of these, or a list of them with `Count`): its members the same way, as deep as it nests.
-- **A number, choice, shape or list** past what it takes is clamped to it, with a warning. A required field left empty, or one of a type this cozy can't fill, fails the box before anything is sent, free, naming the fix.
+- **A number, choice, shape or list** past what it takes is clamped to it, with a warning. A required field left empty, or one of a type this Cozy Creator can't fill, fails the box before anything is sent, free, naming the fix.
 - **A pickup** (`Pickup`) is filled only by Pick up from here: `{take, out_frame, …}`, on the frames its `Snap` allows.
 
 `@app.tool(label=, named=, reserved=)` says the rest: its name in the tool list, what a box of it is called (`shot_1`), and its model's own tags. A box is always drawn from its declared fields. Markers on a field (`Range`, `Count`, `Total`, `Ratios`, `Snap`, `Spans`, `Label`, `Placeholder`, `Advanced`) tell the box how to draw it.

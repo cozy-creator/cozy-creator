@@ -7,9 +7,9 @@
 set -euo pipefail
 sh=$1/cozy-installer.sh ps=$1/cozy-installer.ps1
 export FIX='    "$_install_dir/cozy" doctor --fix < /dev/null || true'
-perl -pi -e 's/^(    say "cozy is installed in .*")$/$1\n$ENV{FIX}/' "$sh"
+perl -pi -e 's/^(    say "(?:cozy|Cozy Creator) is installed in .*")$/$1\n$ENV{FIX}/' "$sh"
 test "$(grep -c -F "$FIX" "$sh")" = 1
 export PSFIX='  try { & (Join-Path $dest_dir "cozy.exe") doctor --fix } catch { Write-Information "cozy doctor --fix: $_" }
   $global:LASTEXITCODE = 0'
-perl -pi -e 's/^(  Write-Information "cozy is installed in .*")\r?$/$1\n$ENV{PSFIX}/' "$ps"
+perl -pi -e 's/^(  Write-Information "(?:cozy|Cozy Creator) is installed in .*")\r?$/$1\n$ENV{PSFIX}/' "$ps"
 test "$(grep -c -F '(Join-Path $dest_dir "cozy.exe") doctor --fix' "$ps")" = 1

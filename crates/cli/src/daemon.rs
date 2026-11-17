@@ -35,7 +35,7 @@ pub(crate) async fn restart_calcifer(ctx: &Context, _args: Restart) -> Result<Ex
         output::json(&json!({"restarted": restarted, "version": holder.version, "pid": holder.pid}));
     } else {
         let did = if restarted { "restarted" } else { "started" };
-        output::say(ctx, &format!("Calcifer {did} on cozy {} (pid {})", holder.version, holder.pid));
+        output::say(ctx, &format!("Calcifer {did} on Cozy Creator {} (pid {})", holder.version, holder.pid));
     }
     Ok(ExitCode::SUCCESS)
 }

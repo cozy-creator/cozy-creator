@@ -190,7 +190,7 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await drawer.getByRole('button', { name: 'Sign out', exact: true }).click();
       const confirm = drawer.locator('.confirm');
       await expect(confirm, 'Sign out asks in the drawer').toBeVisible();
-      await expect.soft(confirm.locator('.says')).toHaveText(`Sign this computer out of ${email}? The Hub revokes this computer's key, and Cozy deletes it here. Your rentals keep running and costing money until they end, and you can't rent or end one from this computer until you sign in again.`);
+      await expect.soft(confirm.locator('.says')).toHaveText(`Sign this computer out of ${email}? The Hub revokes this computer's key, and Cozy Creator deletes it here. Your rentals keep running and costing money until they end, and you can't rent or end one from this computer until you sign in again.`);
       await confirm.getByRole('button', { name: 'Sign out', exact: true }).click();
       const address = drawer.getByLabel('Email', { exact: true });
       await expect(address, "AuthKit's form, signed out").toBeVisible();
@@ -510,7 +510,7 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
 
       await drawer.getByRole('button', { name: 'End', exact: true }).click();
       const confirm = drawer.locator('.confirm');
-      await expect.soft(confirm.locator('.says'), 'End asks in the drawer').toHaveText(/^End (this rental|\S+)\? Cozy downloads any results still on it first, then shuts it down and deletes its files\./);
+      await expect.soft(confirm.locator('.says'), 'End asks in the drawer').toHaveText(/^End (this rental|\S+)\? Cozy Creator downloads any results still on it first, then shuts it down and deletes its files\./);
       await confirm.getByRole('button', { name: 'End rental', exact: true }).click();
       await expect.soft(drawer.getByText(/^Shutting down\./), 'ending').toBeVisible();
       await expect(drawer.getByText('Ended. It costs nothing more, and results already downloaded stay on this computer.', { exact: true }), 'ended').toBeVisible({ timeout: 90_000 });

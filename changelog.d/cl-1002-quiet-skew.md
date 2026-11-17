@@ -1,1 +1,1 @@
-A Calcifer of another build that is kept running (a page open, a run going) is used without a word: no more "Calcifer here is …, this cozy is …" on every command. A request it can't serve is still refused with its remedy (cl-1002).
+A Calcifer of another build that is kept running (a page open, a run going) is used without a word: no more "Calcifer here is …, this Cozy Creator is …" on every command. A request it can't serve is still refused with its remedy (cl-1002).

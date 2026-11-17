@@ -248,7 +248,7 @@ pub(crate) fn read(document: &Value) -> Result<Card, Error> {
         Error::new(
             Kind::Unavailable,
             "hub.package_interface_invalid",
-            format!("Cozy couldn't read the package interface the Hub sent: {why}"),
+            format!("Cozy Creator couldn't read the package interface the Hub sent: {why}"),
         )
     })?;
     Ok(Card {

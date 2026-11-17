@@ -46,7 +46,7 @@ pub(crate) fn rc_version() -> bool {
 /// This very `cozy`, held as a file an update stages (`--tensord <path>`): what a machine of this computer's platform runs to be on
 /// this build when it has no release to fetch.
 async fn this_build() -> Result<DevBuild, Error> {
-    let unreadable = |e: std::io::Error| Error::new(Kind::Unavailable, "cozy_unreadable", format!("Cozy couldn't read its own program file: {e}."));
+    let unreadable = |e: std::io::Error| Error::new(Kind::Unavailable, "cozy_unreadable", format!("Cozy Creator couldn't read its own program file: {e}."));
     let exe = platform::exe::running().map_err(crate::cozy::updated)?;
     let digest = tokio::task::spawn_blocking(move || crate::runs::files::hold(&std::fs::read(&exe).map_err(unreadable)?))
         .await
@@ -89,7 +89,7 @@ impl Machines {
             Some(frame) => frame,
             None => {
                 let (_, link) = self.linked(name)?;
-                link.status().await.map_err(|e| Error::new(Kind::Unavailable, "machine_unreachable", format!("Cozy couldn't reach {name}: {e}.")))?
+                link.status().await.map_err(|e| Error::new(Kind::Unavailable, "machine_unreachable", format!("Cozy Creator couldn't reach {name}: {e}.")))?
             }
         };
         let own = this_release();
@@ -120,7 +120,7 @@ impl Machines {
                 Status::Completed => Ok(None),
                 Status::Failed | Status::Canceled => {
                     let why = run.reason.as_ref().map_or_else(|| "it did not finish".to_owned(), |reason| reason.message.clone());
-                    as_is(format!("its update to cozy {own} failed: {why}"))
+                    as_is(format!("its update to Cozy Creator {own} failed: {why}"))
                 }
                 _ => Ok(Some(run)),
             };
@@ -137,7 +137,7 @@ impl Machines {
             None if m.status.as_ref().is_some_and(|status| status.platform == format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH)) => {
                 Component::File(this_build().await?)
             }
-            None => return as_is("this cozy is a dev build of another platform, with no release to fetch".into()),
+            None => return as_is("this Cozy Creator is a dev build of another platform, with no release to fetch".into()),
         };
         // `local` below this cozy's Runtime minor takes this cozy's own Runtime in the same update, unless held by hand (cl-1055): a
         // project's run then finds it on the minor, with no second update.
@@ -148,7 +148,7 @@ impl Machines {
         let ask = MachineUpdate { tensord: Some(tensord), runtime: runtime.map(Component::Version), ..Default::default() };
         match self.update(&key, name, ask).await {
             Ok((updating, _)) => Ok(updating.run),
-            Err(e) => as_is(format!("its update to cozy {own} was refused: {}", e.message)),
+            Err(e) => as_is(format!("its update to Cozy Creator {own} was refused: {}", e.message)),
         }
     }
 
@@ -312,7 +312,7 @@ impl Machines {
         }
         if let Some(version) = placed {
             // The guard every TensorD carries out: the binary at its launch path, that release, activates.
-            named.push(format!("cozy {version} (installed)"));
+            named.push(format!("Cozy Creator {version} (installed)"));
             payload.insert("cozy".into(), version.into());
         }
         if let Some(version) = torch {
@@ -423,7 +423,7 @@ impl Machines {
                 outcome.status = "failed".into();
                 outcome.reason = Some(v1::Reason {
                     code: "update_unapplied".into(),
-                    message: format!("{name} updated, but Cozy couldn't check its mode: {error}"),
+                    message: format!("{name} updated, but Cozy Creator couldn't check its mode: {error}"),
                     origin: "machine".into(), detail: String::new(), next: Vec::new(),
                 });
                 return outcome;
@@ -503,7 +503,7 @@ fn rc_pairing(m: &Machine, asked: &[(&str, &str, Component)], placed: Option<&st
     Err(Error::new(
         Kind::Conflict,
         "rc_runtime_needs_rc_cozy",
-        format!("{} would run the open RC's Runtime {} under cozy {cozy}, which is a release. Only the RC's cozy can run released packages with it.", m.name, api::prerelease::shown(&runtime)),
+        format!("{} would run the open RC's Runtime {} under Cozy Creator {cozy}, which is a release. Only the RC's Cozy Creator can run released packages with it.", m.name, api::prerelease::shown(&runtime)),
     )
     .next(format!("cozy machine update {}", m.name)))
 }
@@ -618,7 +618,7 @@ fn measured(build: DevBuild, distribution: &str) -> Result<(String, StagedInput,
         return Err(refused(format!("{name} isn't a {distribution} wheel file ({distribution}-<version>-….whl).")));
     }
     let Some(path) = crate::runs::files::held(&sha256) else {
-        return Err(Error::new(Kind::NotFound, "file_not_held", format!("Cozy doesn't have the file {name} ({sha256}).")).remedy(format!("Upload it first (PUT /v1/files/{sha256}).")));
+        return Err(Error::new(Kind::NotFound, "file_not_held", format!("Cozy Creator doesn't have the file {name} ({sha256}).")).remedy(format!("Upload it first (PUT /v1/files/{sha256}).")));
     };
     let length = std::fs::metadata(&path).map_err(|e| refused(format!("{name}: {e}")))?.len();
     let version = version.filter(|_| distribution.is_empty());
@@ -663,14 +663,14 @@ fn unapplied(m: &Machine, s: &MachineStatus, want: &[(&str, Value)], line: Optio
     let asked: Vec<String> = (want.iter())
         .map(|(field, value)| match (*field, value.as_str()) {
             ("runtime", Some(version)) => format!("cozy-runtime {version}"),
-            ("version", Some(version)) => format!("cozy {version}"),
+            ("version", Some(version)) => format!("Cozy Creator {version}"),
             (field, Some(version)) => format!("{field} {version}"),
             _ => "dev build".into(),
         })
         .collect();
     let build = if s.dev { "dev build" } else { "release" };
     let message = format!(
-        "{}'s update finished, but it still runs cozy {} ({build} {}), cozy-runtime {}, tensorfs {} and mode {}, not the requested {}",
+        "{}'s update finished, but it still runs Cozy Creator {} ({build} {}), cozy-runtime {}, tensorfs {} and mode {}, not the requested {}",
         m.name, s.version, s.commit.get(..12).unwrap_or(&s.commit), s.runtime, s.tensorfs,
         if s.mode.is_empty() { "unknown" } else { &s.mode }, asked.join(", ")
     );

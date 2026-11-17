@@ -258,7 +258,7 @@ parts into aligned chunks and preserves construction order for efficient reads. 
 an import/export format, so existing Diffusers and Transformers workflows can use the same weights.
 
 Use TensorFS through its Rust API, Python library or `tfs` command-line tool. It works with local
-files, static origins and Tensorhub, without requiring Cozy, a Tensorhub account or PyTorch.
+files, static origins and Tensorhub, without requiring Cozy Creator, a Tensorhub account or PyTorch.
 The [cozytensors specification](spec/cozytensors.md) defines the format and exact decoding rules.
 
 ## Timing versus safetensors

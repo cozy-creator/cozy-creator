@@ -18,7 +18,7 @@ status() { cozy run watch "$(rn "$1")" --once --json --full > "$OUT/$1.json" 2>&
 reason() { jq -r '[.reason.code // "", .reason.message // ""] | join(": ")' "$OUT/$1.json" | cut -c1-500; }
 # What a run warned of, its calls' too (a call's lines are on its root's log): any string of its record, or what its
 # follower printed.
-warned() { { jq -r '.. | strings' "$OUT/$1.json" 2>/dev/null; cat "$OUT/$1.txt" 2>/dev/null; } | grep -E 'short for this render|Cozy removed' | sort -u; }
+warned() { { jq -r '.. | strings' "$OUT/$1.json" 2>/dev/null; cat "$OUT/$1.txt" 2>/dev/null; } | grep -E 'short for this render|Cozy Creator removed' | sort -u; }
 disk() { cozy machine show "$NAME" --json | jq -r '.status | "\(.disk_free_bytes // 0) \(.disk_models_bytes // 0) \(.models_bytes // 0) \(.disk_total_bytes // 0)"'; }
 gib() { awk -v b="$1" 'BEGIN { printf "%.1f GiB", b / 1073741824 }'; }
 quote "$(param need_s 2700)"
@@ -57,7 +57,7 @@ tail -n +"$((before + 1))" "$OUT/tensord.log" > "$OUT/tensord-h3.log"
 cozy machine logs "$NAME" memory -n 0 > "$OUT/memory.log" 2>&1
 tail -n +"$((mem_before + 1))" "$OUT/memory.log" > "$OUT/memory-h3.log"
 h3_evicted=$(grep -c 'tensorfs: evicted minimaxai/minimax-h3' "$OUT/tensord-h3.log")
-said=$(warned h3 | grep -m1 'Cozy removed' || true)
+said=$(warned h3 | grep -m1 'Cozy Creator removed' || true)
 ended=$(grep -c '"event":"end_idle"' "$OUT/memory-h3.log")
 grep -E 'tensorfs: evicted|ended the idle executors|short for this render|machine_disk_full' "$OUT/tensord-h3.log" | cut -c1-300 >> "$R"
 grep '"event":"end_idle"' "$OUT/memory-h3.log" | cut -c1-300 >> "$R"

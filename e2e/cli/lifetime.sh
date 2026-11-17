@@ -250,7 +250,7 @@ else
   # The install's own log, in its project: machine and Calcifer logs hold no project run ids.
   (cd "$RUN_PROJECT" && cozy --full run watch "$install" --once) > "$OUT/kept.install.txt" 2>&1 || check "kept: run watch $install failed: $(tail -n 2 "$OUT/kept.install.txt")"
   # Said only when the restarted machine kept it as needs_access and Calcifer sent its access again (crates/calcifer/src/lib.rs, cl-1084).
-  grep -q "restarted while it was preparing this run, so Cozy sent the run's access again" "$OUT/kept.install.txt" \
+  grep -q "restarted while it was preparing this run, so Cozy Creator sent the run's access again" "$OUT/kept.install.txt" \
     || check "kept: the restarted machine did not keep install $install as needs_access, or Calcifer did not send its access again"
   echo "kept: install $install was kept across the restart as needs_access, took its access again and completed; run ${n:-none} completed"
 fi

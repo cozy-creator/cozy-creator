@@ -183,7 +183,7 @@ su_store() {
 #  - held by hand: its install is refused runtime_held naming `cozy machine update local`, and cozy moves nothing.
 #  - its install folder read-only: refused once, naming `sudo cozy update`, and cozy moves nothing.
 #  - then, once the Latest reads the candidate's store (self_forward measures both: 0.25.0's is 7, 0.26's 8; until then a notice
-#    says so), its install says "Updating cozy from 0.24.99 to <Latest> for …" once, cozy and Calcifer become the Latest, and the install
+#    says so), its install says "Updating Cozy Creator from 0.24.99 to <Latest> for …" once, cozy and Calcifer become the Latest, and the install
 #    completes as it, local moving to its minor; and a run of it, in a project of the Latest's, completes on a Runtime that runs it.
 # The release is GitHub's Latest (signed by its release workflow, which no test build is): `cozy update`'s own source.
 self_update() {
@@ -217,7 +217,7 @@ su_hub "${SU_NEW[@]}" || return
 cozy --json machine update local --runtime 0.45.2 -y > "$OUT/su-hold.json" 2>&1 || { check "self update: hold local: $(tail -c 300 "$OUT/su-hold.json")"; return; }
 machine_ready
 code=0; su_install held || code=$?
-[ "$code" != 0 ] && grep -q '"runtime_held"' "$OUT/su-held.out" && grep -q 'cozy machine update local' "$OUT/su-held.out" && ! grep -q 'Updating cozy' "$OUT/su-held.out" \
+[ "$code" != 0 ] && grep -q '"runtime_held"' "$OUT/su-held.out" && grep -q 'cozy machine update local' "$OUT/su-held.out" && ! grep -q 'Updating Cozy Creator' "$OUT/su-held.out" \
   || check "self update: held local wasn't refused runtime_held naming cozy machine update local: exit $code $(tail -c 400 "$OUT/su-held.out")"
 [ "$(cozy --version)" = "cozy $before" ] || check "self update: held, cozy moved to $(cozy --version)"
 # Let go: named by nothing on 0.24's pin, which it runs.
@@ -239,8 +239,8 @@ cozy --json restart > "$OUT/su-restart-2.json" 2>&1 || { check "self update: coz
 
 # The update, said once (as a person reads it, not --json); the install goes on as the Latest.
 code=0; su_install updated --human || code=$?
-[ "$(grep -c 'Updating cozy' "$OUT/su-updated.out")" = 1 ] && grep -q "Updating cozy from $before to $latest for $E2E_NEXT 0.1.0" "$OUT/su-updated.out" \
-  || check "self update: the install didn't say once \"Updating cozy from $before to $latest for $E2E_NEXT 0.1.0\": $(grep 'Updating cozy\|cozy_' "$OUT/su-updated.out" | head -3)"
+[ "$(grep -c 'Updating Cozy Creator' "$OUT/su-updated.out")" = 1 ] && grep -q "Updating Cozy Creator from $before to $latest for $E2E_NEXT 0.1.0" "$OUT/su-updated.out" \
+  || check "self update: the install didn't say once \"Updating Cozy Creator from $before to $latest for $E2E_NEXT 0.1.0\": $(grep 'Updating Cozy Creator\|cozy_' "$OUT/su-updated.out" | head -3)"
 [ "$(cozy --version)" = "cozy $latest" ] || { check "self update: cozy is $(cozy --version), not $latest: $(tail -c 400 "$OUT/su-updated.out")"; return; }
 [ "$code" = 0 ] || check "self update: on $latest the install didn't complete: exit $code $(tail -c 400 "$OUT/su-updated.out")"
 jq -e --arg v "$latest" '.version == $v' "$HOME/.cozy/calcifer/calcifer.lock.holder" > /dev/null \
@@ -286,7 +286,7 @@ step "a newer release is offered at a terminal, never forced (cl-1069)"
 [ -n "${E2E_COZY_BEFORE:-}" ] && [ -f "$E2E_COZY_BEFORE" ] || { check "update offer: no cozy-before (${E2E_COZY_BEFORE:-unset})"; return; }
 su_latest || { check "update offer: GitHub names no Latest cozy"; return; }
 local latest=$SU_LATEST rel=$RUNNER_TEMP/offer-release port=$((20000 + RANDOM % 20000)) server f
-local asked="cozy $latest is out (this is 0.24.99). Update now? [Y/n]"
+local asked="Cozy Creator $latest is out (this is 0.24.99). Update now? [Y/n]"
 rm -rf "$rel" && mkdir -p "$rel" || { check "update offer: $rel not made"; return; }
 for f in dist-manifest.json "$SU_ARCHIVE" "$SU_ARCHIVE.sigstore.jsonl"; do
   curl -fsSL --retry 3 -o "$rel/$f" "https://github.com/cozy-creator/cozy-creator/releases/download/v$latest/$f" \
@@ -300,7 +300,7 @@ of_fresh || { kill "$server" 2> /dev/null || true; return; }
 # `n`: kept, said, and the command goes on; not asked again.
 of_run declined 'n\n' "$OF_HOME/.cozy/bin/cozy whoami"
 grep -qF "$asked" "$OUT/offer-declined.out" || check "update offer: a terminal wasn't asked \"$asked\": $(tail -c 300 "$OUT/offer-declined.out")"
-grep -qF 'staying on cozy 0.24.99' "$OUT/offer-declined.out" || check "update offer: declined, it didn't say it stays on 0.24.99"
+grep -qF 'staying on Cozy Creator 0.24.99' "$OUT/offer-declined.out" || check "update offer: declined, it didn't say it stays on 0.24.99"
 grep -qF 'error[calcifer_start_failed]' "$OUT/offer-declined.out" || check "update offer: declined, the command didn't go on"
 [ "$(of_version)" = "cozy 0.24.99" ] || check "update offer: declined, cozy is $(of_version)"
 of_run again 'n\n' "$OF_HOME/.cozy/bin/cozy whoami"
@@ -318,7 +318,7 @@ of_run stdin 'n\n' "$OF_HOME/.cozy/bin/cozy whoami < /dev/null"
 of_run updated 'y\n' "$OF_HOME/.cozy/bin/cozy whoami"
 grep -qF "$asked" "$OUT/offer-updated.out" || check "update offer: a fresh home wasn't asked \"$asked\""
 [ "$(of_version)" = "cozy $latest" ] || check "update offer: yes, cozy is $(of_version), not $latest: $(tail -c 400 "$OUT/offer-updated.out")"
-grep -qF "cozy 0.24.99 → $latest" "$OUT/offer-updated.out" || check "update offer: yes, the update didn't say cozy 0.24.99 → $latest"
+grep -qF "Cozy Creator 0.24.99 → $latest" "$OUT/offer-updated.out" || check "update offer: yes, the update didn't say Cozy Creator 0.24.99 → $latest"
 grep -qF 'error[calcifer_start_failed]' "$OUT/offer-updated.out" || check "update offer: yes, the command didn't go on"
 kill "$server" 2> /dev/null || true
 }

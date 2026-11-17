@@ -209,7 +209,7 @@ pub(crate) async fn settled(calcifer: &std::sync::Arc<Calcifer>, key: &str, subm
         match events.recv().await {
             Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
             Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                return Err(crate::Error::Invalid("Cozy is stopping.".into()));
+                return Err(crate::Error::Invalid("Cozy Creator is stopping.".into()));
             }
         }
     }

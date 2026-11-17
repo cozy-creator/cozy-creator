@@ -83,12 +83,12 @@ export function whyNot(found: FoundModel, name: string, view: ElementView | unde
   const made = view?.asset?.tool
   if (!made || madeHere(made)) return `No model makes ${name}, so ${word} can't go on it`
   const tool = tools.get(made)
-  if (!tool) return `Cozy can't tell which model ${name} uses, so ${word} can't go on it`
+  if (!tool) return `Cozy Creator can't tell which model ${name} uses, so ${word} can't go on it`
   const models = modelsOf(tool)
   if (!models.length) return `${name} doesn't use a single model, so ${word} can't go on it`
-  if (!found.kind || !found.family) return `Cozy can't tell which model ${word} is for, so it can't go on ${name}`
+  if (!found.kind || !found.family) return `Cozy Creator can't tell which model ${word} is for, so it can't go on ${name}`
   const families = models.flatMap((model) => model.family ?? [])
-  if (!families.length) return `Cozy can't tell which model ${name} uses, so ${word} can't go on it`
+  if (!families.length) return `Cozy Creator can't tell which model ${name} uses, so ${word} can't go on it`
   return families.includes(found.family) ? null : `${word} is for ${found.family}, but ${name} uses ${families.join(", ")}`
 }
 

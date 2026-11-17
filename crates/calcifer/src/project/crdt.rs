@@ -247,7 +247,7 @@ impl Document {
         let projection = project(&doc, &mut found)?;
         if root_value(&projection, "schema").and_then(Value::as_u64) != Some(FORMAT as u64) {
             return Err(invalid(
-                "unsupported logical project schema; update cozy before opening this project",
+                "unsupported logical project schema; update Cozy Creator before opening this project",
             ));
         }
         Ok(Self {
@@ -322,7 +322,7 @@ impl Document {
         }
         let mut now = self.doc.clone();
         let mut then = now.fork_at(&heads).map_err(|_| {
-            Error::new(Kind::Conflict, "project_heads_unknown", "This edit was made on a version of the project Cozy doesn't have.").remedy("Reload the project and try again.")
+            Error::new(Kind::Conflict, "project_heads_unknown", "This edit was made on a version of the project Cozy Creator doesn't have.").remedy("Reload the project and try again.")
         })?;
         if let Some(text) = text_of(&then, id, field)? {
             for splice in splices {

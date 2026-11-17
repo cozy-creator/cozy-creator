@@ -154,7 +154,7 @@ pub(super) async fn thumb(
         failed.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
         return Ok(failed);
     };
-    let unreadable = |e: std::io::Error| Refusal(Error::new(Kind::Unavailable, "project_io", format!("Cozy couldn't read {}: {e}.", at.display())));
+    let unreadable = |e: std::io::Error| Refusal(Error::new(Kind::Unavailable, "project_io", format!("Cozy Creator couldn't read {}: {e}.", at.display())));
     let opened = std::fs::File::open(&at).map_err(unreadable)?;
     let len = opened.metadata().map_err(unreadable)?.len();
     let mut response = crate::files::send(opened, len, media_type(&at), &format!("\"{name}\""), &headers).map_err(unreadable)?;
@@ -164,7 +164,7 @@ pub(super) async fn thumb(
 
 /// `202 Accepted`, `thumb_pending`: a thumbnail not there yet, which the page waits for, its `thumb` event or a while, as no error.
 fn pending() -> Response {
-    let mut pending = Refusal(Error::new(Kind::NotFound, "thumb_pending", "Cozy is still making this thumbnail. The thumb event says when it's ready.")).into_response();
+    let mut pending = Refusal(Error::new(Kind::NotFound, "thumb_pending", "Cozy Creator is still making this thumbnail. The thumb event says when it's ready.")).into_response();
     *pending.status_mut() = StatusCode::ACCEPTED;
     pending.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     pending

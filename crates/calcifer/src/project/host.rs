@@ -426,7 +426,7 @@ impl Host {
         let mut tail = calcifer.subscribe();
         loop {
             let row = calcifer.maintenance_store().run(id.as_str()).map_err(|e| refused(e.into()))?;
-            let row = row.ok_or_else(|| Error::new(Kind::NotFound, "run_not_found", format!("Cozy has no run {id}.")))?;
+            let row = row.ok_or_else(|| Error::new(Kind::NotFound, "run_not_found", format!("Cozy Creator has no run {id}.")))?;
             let run = calcifer.record(&row).map_err(refused)?;
             if matches!(run.status, RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled) {
                 return Ok(run);
@@ -441,7 +441,7 @@ impl Host {
         loop {
             let row = self.journal().and_then(|store|store.run(id.as_str())).map_err(|e| refused(e.into()))?;
             let row =
-                row.ok_or_else(|| Error::new(Kind::NotFound, "run_not_found", format!("Cozy has no run {id}.")))?;
+                row.ok_or_else(|| Error::new(Kind::NotFound, "run_not_found", format!("Cozy Creator has no run {id}.")))?;
             let run = calcifer.record(&row).map_err(refused)?;
             if matches!(run.status, RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled) && and(&run) {
                 return Ok(run);

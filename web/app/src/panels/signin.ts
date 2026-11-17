@@ -76,7 +76,7 @@ export function signInClient(client: Client) {
         stepping = undefined
         return signedIn()
       }
-      return reply(404, { error: { type: "", code: "not_found", message: "Cozy can't do this sign-in step." } })
+      return reply(404, { error: { type: "", code: "not_found", message: "Cozy Creator can't do this sign-in step." } })
     } catch (error) {
       const step = stepOf(error)
       if (!step) return refusal(error, proving)
@@ -131,6 +131,6 @@ export const messages = {
     invalid_code: "That code isn't right. Use the code from your latest email, or ask for another.",
     code_expired: "That code has expired. Ask for another.",
     hub_unreachable: "Couldn't reach the Hub. Check your connection and try again.",
-    calcifer_unreachable: "Cozy isn't responding. Try again in a moment.",
+    calcifer_unreachable: "Cozy Creator isn't responding. Try again in a moment.",
   },
 } as AuthUiMessageBundle

@@ -18,6 +18,13 @@ hint_commands() {
     || check "hint commands: $(jq -r '.stale | keys | join(", ")' "$OUT/hints/hints.json" 2> /dev/null)"
 }
 
+# What a user reads names the product Cozy Creator, never a bare "Cozy" (Paul, 11-17): the code's strings, the page's text and the docs.
+product_name() {
+  step "user-facing text names the product Cozy Creator"
+  python3 "$here/product_name.py" --root "$(git -C "$here" rev-parse --show-toplevel)" > "$OUT/product-name.txt" \
+    || check "product name: $(sed -n '2,7p' "$OUT/product-name.txt" | tr -s ' \n' ' ')"
+}
+
 # What needs no machine: Calcifer, the Hub setting, signing out, the Hub's packages and models.
 catalog() {
 step status
@@ -569,7 +576,7 @@ if cell choice "$here/project/choice.py/size" to=768p megapixels:=3 'mode:="slow
     || check "choice: 768p and 3 didn't run as 1080p and 2, or slow not as full: $(grep -oE '"given": *"[^"]*"' "$OUT/choice.ndjson" | head -1)"
   cozy --json --full run watch "$(cat "$OUT/choice.number")" --once > "$OUT/choice.json" 2>&1
   local said
-  for said in "takes 1080p, 1440p or 2160p, not 768p, so Cozy used 1080p." "takes 2 or 4, not 3, so Cozy used 2." "takes fast or full, not slow, so Cozy used the default."; do
+  for said in "takes 1080p, 1440p or 2160p, not 768p, so Cozy Creator used 1080p." "takes 2 or 4, not 3, so Cozy Creator used 2." "takes fast or full, not slow, so Cozy Creator used the default."; do
     grep -qF "$(jq -Rr '@json' <<< "$said" | sed 's/^"//; s/"$//')" "$OUT/choice.json" "$OUT/choice.ndjson" "$OUT/choice.err" 2> /dev/null \
       || grep -qF "$said" "$OUT/choice.err" 2> /dev/null || check "choice: the run didn't say: $said"
   done
@@ -1872,7 +1879,7 @@ fi
 CAND_COZY=$back install_candidate_binary
 cozy --json doctor > "$OUT/update-forward.json" || check "update: cozy doctor on the candidate again: $(tail -c 300 "$OUT/update-forward.json")"
 [ "$(cozy --version)" = "$candidate" ] || check "update: cozy is $(cozy --version), not the candidate $candidate"
-grep -q "cozy ${candidate#cozy }," "$OUT/update-forward.json" || check "update: Calcifer is not the candidate ${candidate#cozy } again"
+grep -q "Cozy Creator ${candidate#cozy }," "$OUT/update-forward.json" || check "update: Calcifer is not the candidate ${candidate#cozy } again"
 after=$(run_history) || { check "update: the candidate lists no run history again"; return; }
 [ "$after" = "$before" ] || check "update: the project's runs are not as they were: $(diff <(jq . <<< "$before") <(jq . <<< "$after") | head -20)"
 echo "update: back on ${candidate#cozy }, the project's $(jq length <<< "$after") runs and their outputs as they were"

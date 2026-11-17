@@ -543,7 +543,7 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
         && !rc_version()
         && let Some(run) = machines.current(&row.name).await.map_err(|e| e.message)?
     {
-        return Err(format!("it's updating to cozy {own} first (run {})", run.name));
+        return Err(format!("it's updating to Cozy Creator {own} first (run {})", run.name));
     }
     let frame = linked(api, &row.name, frame);
     Ok(Picture { on: on.clone(), name: row.name, frame, ready_at_ms: None, ahead: vec![], references: Arc::default() })

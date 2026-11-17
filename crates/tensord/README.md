@@ -1,4 +1,4 @@
-# Cozy machine
+# Cozy Creator machine
 
 TensorD (executable `tensord`) is the Rust daemon that owns the machine API, execution journal,
 scheduling and executor supervision. It uses embedded TensorFS to make selected

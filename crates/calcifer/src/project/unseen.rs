@@ -12,7 +12,7 @@ pub(super) type Unseen=BTreeMap<String,BTreeSet<u32>>;
 pub(super) fn id_of(held:&Boxed)->String {
     if held.id.is_empty() {format!("name:{}",name_key(&held.name))} else {held.id.clone()}
 }
-fn unavailable()->Error {Error::new(Kind::Unavailable,"project_unseen","Cozy couldn't read or save which versions you haven't looked at yet.")}
+fn unavailable()->Error {Error::new(Kind::Unavailable,"project_unseen","Cozy Creator couldn't read or save which versions you haven't looked at yet.")}
 
 pub(super) fn read(folder:&Folder,project:&str)->Result<Unseen,Error> {
     folder.journal_read(|conn| {

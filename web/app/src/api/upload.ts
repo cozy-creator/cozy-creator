@@ -73,7 +73,7 @@ export async function sendFile(client: Client, file: File, digest: string, signa
       }
     }
   }
-  throw new Error("The upload finished, but Cozy doesn't have the whole file. Try again.")
+  throw new Error("The upload finished, but Cozy Creator doesn't have the whole file. Try again.")
 }
 
 export type Moving = { stage: "reading" | "sending"; done: number }

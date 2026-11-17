@@ -184,7 +184,7 @@ pub(crate) struct Measured {
 pub(crate) enum StoreError {
     #[error("Calcifer's store: {0}")]
     Sqlite(#[from] rusqlite::Error),
-    #[error("Calcifer's store is at version {0}, written by a newer cozy (this one reads {current}): run `cozy update` to go forward", current = VERSION)]
+    #[error("Calcifer's store is at version {0}, written by a newer Cozy Creator (this one reads {current}): run `cozy update` to go forward", current = VERSION)]
     Version(i64),
     #[error("idempotency key {0:?} already names another submission")]
     Conflict(String),
@@ -1649,7 +1649,7 @@ macro_rules! journal_methods {
                     // Said plainly; asked again elsewhere by `cozy run retry` or the page's Retry (cl-1085). Why its machine ended is the machine's.
                     let run = run_name(tx, &row);
                     let message = match row.state {
-                        State::Accepted if reason == "released_by_pod" => format!("{machine} accepted {run}, but its result never reached Cozy, and {machine} ended itself after 15 idle minutes, so the result is lost."),
+                        State::Accepted if reason == "released_by_pod" => format!("{machine} accepted {run}, but its result never reached Cozy Creator, and {machine} ended itself after 15 idle minutes, so the result is lost."),
                         State::Accepted => format!("{machine} shut down, so {run} stopped"),
                         _ => format!("{machine} shut down before it took {run}"),
                     };

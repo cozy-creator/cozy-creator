@@ -297,7 +297,7 @@ impl Doc {
             let shown = read_as(name);
             if shown != *name {
                 doc.dotted.insert(name_key(name), doc.assets.len());
-                doc.warn(&shown, format!("{name}: names can't contain `.`, so Cozy reads it as {shown}. Rename it {shown}."));
+                doc.warn(&shown, format!("{name}: names can't contain `.`, so Cozy Creator reads it as {shown}. Rename it {shown}."));
             }
             doc.declare(&shown, written, &defaults, folder, lock);
         }
@@ -386,7 +386,7 @@ impl Doc {
         inputs.retain(|_, value| !value.is_null());
         made.retain(|_, value| !value.is_null());
         if tool.as_deref() == Some(EDIT) && inputs.get("tracks").and_then(Value::as_array).is_some_and(|tracks| tracks.len() > 1) {
-            self.warn(name, format!("{name}: an edit uses only one track for now, so Cozy left out the others."));
+            self.warn(name, format!("{name}: an edit uses only one track for now, so Cozy Creator left out the others."));
         }
         let hollow = body.is_empty() || tool.as_deref().is_none_or(|tool| made_here(tool) && kind_made_here(tool).is_none());
         self.index.insert(key, self.assets.len());
@@ -1105,7 +1105,7 @@ pub(super) fn can_initialize_approval(folder: &Folder, name: &str) -> Result<boo
 /// The sha256 a file pin's value names, or how it fails, to follow "{name}'s {field}".
 fn file_named(written: &str, lock: &Lock) -> Result<String, String> {
     if written.is_empty() || !written.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(format!(" isn't a file hash, so Cozy ignored {written}. Import {} in the browser instead.", quoted(written)));
+        return Err(format!(" isn't a file hash, so Cozy Creator ignored {written}. Import {} in the browser instead.", quoted(written)));
     }
     match lock.matching(&written.to_ascii_lowercase()).as_slice() {
         [file] => Ok(file.sha256.clone()),

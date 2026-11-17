@@ -146,7 +146,7 @@ export function Machines() {
           {problem.hub} didn't respond ({problem.message}). Its rentals may still be costing money.
         </p>
       ))}
-      {project && data && !chosen.length && <p className="muted">Cozy picks where this project renders. Check Prefer on a machine to render there.</p>}
+      {project && data && !chosen.length && <p className="muted">Cozy Creator picks where this project renders. Check Prefer on a machine to render there.</p>}
       <ul className="rows">
         {mine.map((machine, at) => (
           <MachineRow key={machine.name} machine={machine} now={now} here={chosen.includes(machine.name)} tabbed={at > 0 && first.has(mine[at - 1].name) && !first.has(machine.name)} />

@@ -248,7 +248,7 @@ pub fn schema(tools: &[Tool]) -> Value {
     }));
     json!({
         "$schema": SCHEMA,
-        "title": "A Cozy project file: node name to node",
+        "title": "A Cozy Creator project file: node name to node",
         "type": "object",
         "propertyNames": {"pattern": NAME},
         "additionalProperties": {"$ref": "#/$defs/node"},

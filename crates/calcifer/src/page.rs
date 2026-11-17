@@ -46,8 +46,8 @@ pub(crate) fn routes() -> Router<Arc<Api>> {
 }
 
 fn not_built() -> Refusal {
-    let error = Error::new(Kind::Unavailable, "page_not_built", "This cozy was built without its web page.")
-        .remedy("cd web/app && pnpm install --frozen-lockfile && pnpm build, then build cozy again");
+    let error = Error::new(Kind::Unavailable, "page_not_built", "This Cozy Creator was built without its web page.")
+        .remedy("cd web/app && pnpm install --frozen-lockfile && pnpm build, then build Cozy Creator again");
     Refusal(error)
 }
 

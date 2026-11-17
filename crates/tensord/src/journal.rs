@@ -1774,7 +1774,7 @@ pub(crate) fn cleared_note() -> Adjustment {
         kind: AdjustmentKind::Warn,
         requested: String::new(),
         applied: String::new(),
-        reason: "this run's words were cleared when its machine moved to cozy 0.26: its text reads empty; its files are whole".into(),
+        reason: "this run's words were cleared when its machine moved to Cozy Creator 0.26: its text reads empty; its files are whole".into(),
         source: "machine".into(),
     }
 }

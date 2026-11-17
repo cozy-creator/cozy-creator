@@ -97,11 +97,11 @@ enum Command {
     Package(package::Args),
     /// Replace this binary with the newest release.
     Update(update::Args),
-    /// Diagnose this computer's Cozy installation and machines.
+    /// Diagnose this computer's Cozy Creator installation and machines.
     Doctor(doctor::Args),
     /// Show or change this computer's settings.
     Config(settings::Args),
-    /// Restart Calcifer on the installed cozy.
+    /// Restart Calcifer on the installed Cozy Creator.
     Restart(daemon::Restart),
     /// Sign in to your TensorHub account.
     Login(account::Login),

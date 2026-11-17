@@ -486,7 +486,7 @@ async fn admit(State(api): State<Arc<Api>>, ConnectInfo(peer): ConnectInfo<Peer>
     }
     let stopping = api.stopping.clone().read_owned().await;
     if *stopping {
-        return refuse(Kind::Unavailable, STOPPING, "Cozy is stopping, so it didn't do that.")
+        return refuse(Kind::Unavailable, STOPPING, "Cozy Creator is stopping, so it didn't do that.")
             .remedy("Try again once it's back.")
             .into_response();
     }

@@ -53,12 +53,12 @@ export function brokenWords(machine: Machine): string {
   if (!broken || machine.state === "ended") return ""
   const then =
     machine.kind !== "rental"
-      ? "Cozy won't send it work. It stops after 2 idle minutes, and checks itself again the next time it's needed."
+      ? "Cozy Creator won't send it work. It stops after 2 idle minutes, and checks itself again the next time it's needed."
       : machine.status?.phase === "releasing"
         ? "It's ending itself."
         : broken.code === "silent_after_update" && machine.ordered !== false
-          ? "Cozy is ending it, since it costs money and can't do any work."
-          : "Cozy won't send it work, and it ends itself once nothing is running on it."
+          ? "Cozy Creator is ending it, since it costs money and can't do any work."
+          : "Cozy Creator won't send it work, and it ends itself once nothing is running on it."
   return `This machine can't run anything right now: ${broken.message.replace(/\.$/, "")}. ${then}`
 }
 

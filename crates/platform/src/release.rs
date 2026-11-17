@@ -89,7 +89,7 @@ pub fn dir(version: Option<&str>) -> Result<String, Refused> {
     let valid = |c: u8| c.is_ascii_alphanumeric() || b".-+".contains(&c);
     match !v.is_empty() && v.bytes().all(valid) {
         true => Ok(format!("{RELEASES}/download/v{v}")),
-        false => Err(not_found(format!("{v:?} is not a cozy release version"))),
+        false => Err(not_found(format!("{v:?} is not a Cozy Creator release version"))),
     }
 }
 
@@ -124,10 +124,10 @@ impl Release {
         let version = (manifest.releases.into_iter())
             .find(|r| r.app_name == "cozy")
             .map(|r| r.app_version)
-            .ok_or_else(|| not_found(format!("{dir} holds no cozy release")))?;
+            .ok_or_else(|| not_found(format!("{dir} holds no Cozy Creator release")))?;
         if let Some(wanted) = wanted.filter(|w| *w != version) {
             return Err(not_found(format!(
-                "{dir} holds cozy {version}, not {wanted}"
+                "{dir} holds Cozy Creator {version}, not {wanted}"
             )));
         }
         let (archive, sha256) = (manifest.artifacts.into_iter())
@@ -135,7 +135,7 @@ impl Release {
                 a.kind == "executable-zip" && a.target_triples.iter().any(|t| t == TARGET)
             })
             .and_then(|(name, mut a)| Some((name, a.checksums.remove("sha256")?)))
-            .ok_or_else(|| not_found(format!("cozy {version} has no build for {TARGET}")))?;
+            .ok_or_else(|| not_found(format!("Cozy Creator {version} has no build for {TARGET}")))?;
         Ok(Self {
             version,
             archive,

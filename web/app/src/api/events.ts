@@ -221,7 +221,7 @@ export class EventStream {
       const project = presence.project
       // A legacy204 confirms completion only; a current reply proves which IDs were held.
       const refusal = project && confirmed.reply && !confirmed.reply.held.includes(project)
-        ? confirmed.reply.refused[project] ?? { status: 503, error: { kind: "unavailable" as const, code: "project_not_shown", message: "Cozy couldn't keep this project open", next: [] } }
+        ? confirmed.reply.refused[project] ?? { status: 503, error: { kind: "unavailable" as const, code: "project_not_shown", message: "Cozy Creator couldn't keep this project open", next: [] } }
         : undefined
       const shown: Acknowledged = { ...presence, stream: confirmed.stream, refusal: refusal || undefined }
       this.heardAcknowledgement(shown)
@@ -308,7 +308,7 @@ export class EventStream {
     this.epoch = health.state === "live" ? stream : null
     this.health.set(health)
     if (health.state === "signed_out") {
-      for (const waiter of this.waiters) waiter.fail(new ApiError(403, { kind: "forbidden", code: "not_own_page", message: "Cozy won't open this page" }))
+      for (const waiter of this.waiters) waiter.fail(new ApiError(403, { kind: "forbidden", code: "not_own_page", message: "Cozy Creator won't open this page" }))
     }
   }
 

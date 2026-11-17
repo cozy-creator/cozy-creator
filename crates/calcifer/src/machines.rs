@@ -464,7 +464,7 @@ impl Machines {
             Error::new(
                 Kind::Unavailable,
                 "machine_unreachable",
-                format!("Cozy couldn't reach {address}: {e}."),
+                format!("Cozy Creator couldn't reach {address}: {e}."),
             )
             .remedy("Check the address that computer shows for itself, then try again.")
             .next("cozy machine show local")
@@ -476,7 +476,7 @@ impl Machines {
             return Err(Error::new(
                 Kind::Conflict,
                 "machine_is_local",
-                format!("{address} is this computer, which Cozy already uses."),
+                format!("{address} is this computer, which Cozy Creator already uses."),
             )
             .next("cozy machine show local"));
         }
@@ -772,13 +772,13 @@ impl Machines {
                     return Err(Error::new(
                         Kind::NotFound,
                         "machine_log_not_kept",
-                        format!("{} isn't answering, and Cozy keeps a copy of its TensorD log only.", row.name),
+                        format!("{} isn't answering, and Cozy Creator keeps a copy of its TensorD log only.", row.name),
                     )
                     .next(format!("cozy machine logs {}", row.name)));
                 }
                 self.kept_log(&row.name, lines)
                     .map(String::into_bytes)
-                    .ok_or_else(|| error.remedy("Cozy didn't keep any of its log."))
+                    .ok_or_else(|| error.remedy("Cozy Creator didn't keep any of its log."))
             }
             read => read,
         }
@@ -795,7 +795,7 @@ impl Machines {
     ) -> Result<crate::link::Live<v1::LogLines>, Error> {
         let (row, link) = self.linked(text).map_err(|error| match self.kept_named(text) {
             Ok(Some(row)) if log == MachineLog::Tensord && self.kept_log(&row.name, 1).is_some() => error
-                .remedy("Without --follow, it prints the copy of its log Cozy kept."),
+                .remedy("Without --follow, it prints the copy of its log Cozy Creator kept."),
             _ => error,
         })?;
         let lines = link.follow_log(log_name(log), lines, after).await;
@@ -809,7 +809,7 @@ impl Machines {
             LinkError::NotFound => Error::new(
                 Kind::NotFound,
                 "machine_gpu_use_unknown",
-                format!("{} runs an older Cozy that doesn't report GPU use. It will once it updates.", row.name),
+                format!("{} runs an older Cozy Creator that doesn't report GPU use. It will once it updates.", row.name),
             ),
             e => refusal(&row.name, e),
         })
@@ -1672,7 +1672,7 @@ impl Machines {
     fn unfitted(&self, run: &RunRow) -> String {
         let asks = self.store().pending_asks().unwrap_or_default();
         if asks.iter().any(|ask| ask.kind == AskKind::Rent) {
-            return "waiting for the rental Cozy ordered".into();
+            return "waiting for the rental Cozy Creator ordered".into();
         }
         let none = match run.spec.gpus {
             0 => "no rental is running or starting".to_owned(),
@@ -2104,7 +2104,7 @@ pub(crate) struct LogQuery {
 /// Calcifer's own log, `calcifer` on `local`, as a machine's: its whole lines, or followed as it is written, across a rotation.
 async fn calcifer_log(api: &Arc<Api>, name: &str, query: LogQuery, headers: &HeaderMap) -> Result<Response, Refusal> {
     if !name.eq_ignore_ascii_case("local") {
-        let said = format!("{name} has no Cozy log. Only this computer has one.");
+        let said = format!("{name} has no Cozy Creator log. Only this computer has one.");
         return Err(Refusal(Error::new(Kind::Usage, "log_not_kept", said).next("cozy machine logs local calcifer")));
     }
     let home = api.machines.hubs.home();
@@ -2486,7 +2486,7 @@ pub(crate) fn signer(path: &Path) -> Result<SigningKey, Error> {
             Error::new(
                 Kind::Credential,
                 "key_unreadable",
-                format!("Cozy can't read the signing key {}.", path.display()),
+                format!("Cozy Creator can't read the signing key {}.", path.display()),
             )
         })
 }

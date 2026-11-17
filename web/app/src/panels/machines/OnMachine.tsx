@@ -99,7 +99,7 @@ export function OnMachine<Body extends object, Answer>({
               setGpus(undefined)
             }}
           >
-            <option value="">Cozy picks</option>
+            <option value="">Cozy Creator picks</option>
             {status.local_usable && <option value="local">This computer</option>}
             {machines
               .filter((machine) => machine.kind !== "local")
@@ -146,7 +146,7 @@ export function OnMachine<Body extends object, Answer>({
               {warning}
             </p>
           ))}
-          {!stated.quote.agreed && <p className="warn">Cozy didn't confirm this price, so you can't rent it from here.</p>}
+          {!stated.quote.agreed && <p className="warn">Cozy Creator didn't confirm this price, so you can't rent it from here.</p>}
           {stated.alternatives?.map((other) => (
             <button
               type="button"

@@ -5,11 +5,11 @@
 # `irm … | iex` puts cozy on that PowerShell's PATH at once. Fails when dist's text moved and a patch no longer applies.
 set -euo pipefail
 sh=$1/cozy-installer.sh ps=$1/cozy-installer.ps1 rb=$1/cozy.rb
-supported='cozy runs on Linux x86_64 or aarch64 with glibc 2.28 or newer (not musl), macOS on Apple Silicon, and Windows x86_64 or arm64'
+supported='Cozy Creator runs on Linux x86_64 or aarch64 with glibc 2.28 or newer (not musl), macOS on Apple Silicon, and Windows x86_64 or arm64'
 sed -i "s|for your platform \$_true_arch\"|for your platform \$_true_arch. $supported\"|" "$sh"
 test "$(grep -c "$supported" "$sh")" = 2
 # The installer reads an Apple Silicon Mac's Rosetta shell as arm64, so x86_64-apple-darwin is an Intel Mac.
-intel="Intel Macs aren't supported; cozy needs Apple Silicon"
+intel="Intel Macs aren't supported; Cozy Creator needs Apple Silicon"
 sed -i "/^select_archive_for_arch() {\$/,/^}\$/s|^        \*)\$|        \"x86_64-apple-darwin\")\n            err \"$intel\"\n            ;;\n&|" "$sh"
 sed -i "s|^  if OS.mac?\$|&\n    odie \"$intel\" if Hardware::CPU.intel?|" "$rb"
 test "$(grep -c "$intel" "$sh" "$rb" | paste -sd' ')" = "$sh:1 $rb:1"

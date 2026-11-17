@@ -69,7 +69,7 @@ fn local(api: &Api, text: &str, code: Option<&LocalCode>, cwd: Option<&Path>) ->
 /// the tree's files with `PUT /v1/files` and send its `code` reference (see `api::code`).
 pub(crate) fn by_path(text: &str) -> Error {
     Error::new(Kind::Usage, "target_by_path", format!("Your local code wasn't uploaded: {}.", text.trim()))
-        .remedy("Run it by its folder path, and Cozy uploads it for you.")
+        .remedy("Run it by its folder path, and Cozy Creator uploads it for you.")
         .next("cozy run ./path")
 }
 
@@ -200,7 +200,7 @@ pub(crate) fn only_function(interface: &Interface) -> Option<&str> {
 
 fn parse(document: &serde_json::Value) -> Result<Interface, Error> {
     Interface::parse(document).map_err(|why| {
-        Error::new(Kind::Unavailable, "package_interface_invalid", format!("Cozy can't read this package's interface: {why}.")).remedy("Update cozy.").next("cozy update")
+        Error::new(Kind::Unavailable, "package_interface_invalid", format!("Cozy Creator can't read this package's interface: {why}.")).remedy("Update Cozy Creator.").next("cozy update")
     })
 }
 
@@ -346,7 +346,7 @@ async fn release_of(api: &Arc<Api>, hub: &str, package: &str, release: Option<&s
             Error::new(
                 Kind::Unavailable,
                 "runtime_outdated",
-                format!("{machine} runs Runtime {}, older than this computer's, and Cozy can't get a newer one for it right now. Update {machine} to move it.", held.runtime),
+                format!("{machine} runs Runtime {}, older than this computer's, and Cozy Creator can't get a newer one for it right now. Update {machine} to move it.", held.runtime),
             )
             .next(format!("cozy machine update {machine}"))
         }

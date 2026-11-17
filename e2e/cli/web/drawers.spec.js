@@ -186,10 +186,10 @@ test('drawers', { tag: '@vault' }, async ({ page, project, api, cli, removeAfter
       });
       await signIn(other, `${api.origin}/p/${plain.code}`);
       await expect(other.locator('.stage')).toBeVisible();
-      const updated = () => other.evaluate(() => window.__notesSeen.filter((said) => said.startsWith('Cozy updated to')));
+      const updated = () => other.evaluate(() => window.__notesSeen.filter((said) => said.startsWith('Cozy Creator updated to')));
       expect.soft(told, 'the page was told the older version').toBeGreaterThan(0);
       await expect.poll(updated, { message: 'one note', timeout: 30_000 }).toHaveLength(1);
-      expect.soft((await updated())[0]).toMatch(/^Cozy updated to \S+\. Reload the page to use it\.\|Reload$/);
+      expect.soft((await updated())[0]).toMatch(/^Cozy Creator updated to \S+\. Reload the page to use it\.\|Reload$/);
       expect.soft(await other.evaluate(() => window.__inBar ?? false), 'nothing in the bar').toBe(false);
       await other.context().close();
     });

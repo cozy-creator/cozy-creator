@@ -34,7 +34,7 @@ function useGpuUse(name: string, watch: boolean): Use {
           } catch (error) {
             if (stop.signal.aborted) return
             if (error instanceof ApiError && error.status !== 503) {
-              const why = error.body.code === "unknown_route" ? "This version of Cozy doesn't report GPU use yet." : error.message
+              const why = error.body.code === "unknown_route" ? "This version of Cozy Creator doesn't report GPU use yet." : error.message
               return setUse({ state: "unknown", why })
             }
           }

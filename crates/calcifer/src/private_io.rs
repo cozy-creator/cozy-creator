@@ -145,7 +145,7 @@ pub(crate) async fn execution_link(
         crate::link::LinkError::NotFound => Error::new(Kind::Conflict, "project_worker_upgrade_required",
             "This machine is too old to run a project's work. Update it, then try again.").next("cozy doctor"),
         _ => Error::new(Kind::Unavailable, "project_worker_unavailable",
-            "This computer's machine couldn't confirm it can keep the project's files private, so Cozy didn't send them.").next("cozy doctor"),
+            "This computer's machine couldn't confirm it can keep the project's files private, so Cozy Creator didn't send them.").next("cozy doctor"),
     })?;
     PROVED.lock().unwrap().insert(proved);
     Ok(selected)
@@ -343,7 +343,7 @@ pub(crate) async fn close_private_project(
     if !view.join(".vault-machine").exists() { let mut scopes = SCOPES.lock().unwrap(); scopes.remove(root); scopes.remove(&view); return Ok(()); }
     if !api.machines.local.running() {
         api.machines.local_up().await.map_err(|why| Error::new(Kind::Unavailable, "project_seal_pending",
-            format!("This computer's machine couldn't start, so Cozy couldn't secure the project's work: {}", why.message)).next("cozy doctor"))?;
+            format!("This computer's machine couldn't start, so Cozy Creator couldn't secure the project's work: {}", why.message)).next("cozy doctor"))?;
     }
     let scope = match SCOPES.lock().unwrap().get(root).cloned() {
         Some(scope) => scope,
@@ -352,18 +352,18 @@ pub(crate) async fn close_private_project(
             let logical = crate::project::vault::logical(root);
             let id = if crate::project::vault::encrypted(&logical) {
                 let info = Keybag::load(&logical.join(KEYBAG_FILE)).map_err(|_| error("This project isn't open right now. Open it, then try again."))?.info();
-                if marker.storage.generation != info.generation { return Err(error("The project's encryption changed while Cozy was locking it. Try again.")); }
+                if marker.storage.generation != info.generation { return Err(error("The project's encryption changed while Cozy Creator was locking it. Try again.")); }
                 info.project_id
             } else { crate::project::vault::plain_project_id(&view).ok_or_else(|| error("This project isn't open right now. Open it, then try again."))? };
             validate_retained(&marker, &id)?;
-            if marker.storage.view_root != view { return Err(error("The project moved while Cozy was locking it. Try again.")); }
+            if marker.storage.view_root != view { return Err(error("The project moved while Cozy Creator was locking it. Try again.")); }
             Scope { storage: marker.storage, token: marker.token }
         }
     };
     let Some(link) = api
         .calcifer
         .link("local")
-        .map_err(|_| error("This computer's machine isn't running, so Cozy can't lock the project yet. Try again in a moment."))?
+        .map_err(|_| error("This computer's machine isn't running, so Cozy Creator can't lock the project yet. Try again in a moment."))?
     else {
         return Err(error(
             "This computer's machine isn't ready to lock the project yet. Try again in a moment.",

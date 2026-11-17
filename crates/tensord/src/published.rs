@@ -1875,7 +1875,7 @@ fn refused(code: &'static str, refusal: tensorfs::err::Refusal) -> Failure {
         tensorfs::err::Code::CREDENTIAL_REQUIRED => ("hub_credential_refused", refusal.detail),
         // A provider's own answer to a token it wants, or one it refused.
         tensorfs::err::Code::PERMISSION_DENIED => (code, format!("The model's source refused the download ({refusal}). A gated or private model needs your \
-            Hugging Face or Civitai token on the computer that sent the render: set HF_TOKEN or CIVITAI_TOKEN there, or huggingface_token or civitai_token in Cozy's config.")),
+            Hugging Face or Civitai token on the computer that sent the render: set HF_TOKEN or CIVITAI_TOKEN there, or huggingface_token or civitai_token in Cozy Creator's config.")),
         _ if tensorfs::Failure::from(refusal.clone()).kind == tensorfs::Kind::Network => (UNREACHABLE, refusal.to_string()),
         _ => (code, refusal.to_string()),
     }

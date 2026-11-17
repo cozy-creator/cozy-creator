@@ -318,7 +318,7 @@ impl Calcifer {
     pub(crate) async fn bring(&self, digest: &str, machine: &str) -> Result<(), String> {
         let made = self.making_scoped(digest, machine).map_err(|e| e.to_string())?;
         let Some((run, item)) = made else {
-            return Err(format!("Cozy doesn't know which run on {machine} made it"));
+            return Err(format!("Cozy Creator doesn't know which run on {machine} made it"));
         };
         // On its way here already: that export's landing, and no second read of it.
         let mut events = self.subscribe();
@@ -416,7 +416,7 @@ impl Calcifer {
                         let reads = wrong.entry((name.clone(), index, rev)).or_default();
                         *reads += 1;
                         match *reads >= WRONG_READS {
-                            true => Err(Failure::Lost { code: "output_unreadable", why: format!("Cozy tried {reads} times but never got the whole file: {message}") }),
+                            true => Err(Failure::Lost { code: "output_unreadable", why: format!("Cozy Creator tried {reads} times but never got the whole file: {message}") }),
                             false => Err(Failure::Again(message)),
                         }
                     }

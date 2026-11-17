@@ -212,7 +212,7 @@ fn stage(
     if let Some(name) = cohort.unknown.keys().next() {
         let version = ::api::VERSION;
         return Err(Error::validation("update_field_unknown", format!(
-            "cozy {version} cannot carry out an update's {name:?}: move this machine's cozy first (`cozy machine update <machine>`), then ask again"
+            "Cozy Creator {version} cannot carry out an update's {name:?}: move this machine's Cozy Creator first (`cozy machine update <machine>`), then ask again"
         )));
     }
     // A build no release vouches for, a staged file or a wheel by URL, only the machine's owner installs (xs-196): its own

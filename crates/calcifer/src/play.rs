@@ -125,7 +125,7 @@ pub(crate) async fn play(
         .ok()
         .and_then(|pem| SigningKey::from_pkcs8_pem(&pem).ok())
         .ok_or_else(|| {
-            let message = format!("Cozy can't read the signing key {}.", machine.key.display());
+            let message = format!("Cozy Creator can't read the signing key {}.", machine.key.display());
             refuse(Kind::Internal, "machine_key_unreadable", message)
         })?;
     // A project's run on this computer's machine keeps its outputs in the project's workspace there (cl-1066): the link names it, and

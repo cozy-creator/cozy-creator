@@ -84,7 +84,7 @@ enum Verb {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
-    /// Update a machine's Runtime, TensorFS and Cozy binary.
+    /// Update a machine's Runtime, TensorFS and Cozy Creator binary.
     Update {
         /// Machine name or rental ID.
         name: String,
@@ -97,7 +97,7 @@ enum Verb {
         #[arg(long, value_name = "VERSION|PATH")]
         tensorfs: Option<String>,
         // A dev binary on local also replaces the installed CLI and Calcifer.
-        /// Cozy binary version, local binary or source checkout.
+        /// Cozy Creator version, local binary or source checkout.
         #[arg(long, value_name = "VERSION|PATH")]
         tensord: Option<String>,
         // This development limit persists across machine updates and restarts.

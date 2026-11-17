@@ -450,7 +450,7 @@ A machine is this computer's (`local`, started when used), a rental, or another 
   `machine_refused` (cause `model_in_use`), naming the run.
 - `GET /v1/machines/{name}/gpus` (cl-1100): SSE `gpus` events, each a `GpuUse {at_unix_ms, gpus: [{index, busy_percent,
   memory_used_bytes}]}` the machine read that second, while the caller follows; nothing is read otherwise, and following is no activity.
-  A machine with no NVIDIA GPU sends one empty reading. One whose Cozy predates it is `404 machine_gpu_use_unknown`.
+  A machine with no NVIDIA GPU sends one empty reading. One whose Cozy Creator predates it is `404 machine_gpu_use_unknown`.
 - `GET /v1/machines/{name}/logs/{tensord|tensorfs|memory}?lines=N&since_ms=T`, and on `local` `logs/calcifer`, Calcifer's own (`400 log_not_kept` elsewhere; the CLI reads its file, so it works with Calcifer down):
   - The newest `N` whole lines (`0`: all), as `text/plain`. `since_ms` drops the lines before the first one
     stamped at or after `T`.

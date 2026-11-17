@@ -167,13 +167,13 @@ pub(super) fn rebuild(path: &Path, from: i64) -> Result<()> {
         conn.pragma_update(None, "user_version", VERSION)?;
         conn.execute_batch("COMMIT; DETACH old;")?;
     }
-    std::fs::File::open(&next).and_then(|file| file.sync_all()).map_err(|error| cut(format!("the new store couldn't be written ({}): start cozy again once it can be", crate::project::write_cause(&error))))?;
+    std::fs::File::open(&next).and_then(|file| file.sync_all()).map_err(|error| cut(format!("the new store couldn't be written ({}): start Cozy Creator again once it can be", crate::project::write_cause(&error))))?;
     private(&next);
     // The old file's WAL belongs to it: wholly checkpointed into it by its last connection, then gone before the file is replaced.
     let (busy, log, done): (i64, i64, i64) = Connection::open(path)?.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
     if busy != 0 || log != done {
         let _ = std::fs::remove_file(&next);
-        return Err(cut("another program has Calcifer's store open: close it (an sqlite3 shell, a backup), then start cozy again"));
+        return Err(cut("another program has Calcifer's store open: close it (an sqlite3 shell, a backup), then start Cozy Creator again"));
     }
     for suffix in ["-wal", "-shm"] {
         let mut side = path.as_os_str().to_owned();
@@ -182,7 +182,7 @@ pub(super) fn rebuild(path: &Path, from: i64) -> Result<()> {
     }
     // Caches of projects' files kept outside them, before the store that made them goes (a later start never clears them).
     if let Some(calcifer) = path.parent() { crate::legacy_cleanup::cut_caches(calcifer); }
-    std::fs::rename(&next, path).map_err(|error| cut(format!("the new store couldn't take the old one's place ({}): start cozy again once it can", crate::project::write_cause(&error))))?;
+    std::fs::rename(&next, path).map_err(|error| cut(format!("the new store couldn't take the old one's place ({}): start Cozy Creator again once it can", crate::project::write_cause(&error))))?;
     if let Some(home) = path.parent() {
         let _ = platform::durable::sync_dir(home);
     }
@@ -214,7 +214,7 @@ fn hold_project_files(path: &Path, from: i64) -> Result<usize> {
     }
     let mut held = hold_unread(&conn, calcifer, from, &unread)?;
     if readable.iter().any(|(_, left)| !left.is_empty()) {
-        let store = crate::runs::files::store().map_err(|_| cut("this computer's TensorFS store can't be opened, so the old store stays: start cozy again once it can be"))?;
+        let store = crate::runs::files::store().map_err(|_| cut("this computer's TensorFS store can't be opened, so the old store stays: start Cozy Creator again once it can be"))?;
         for (root, left) in &readable {
             let present: Vec<_> = left.iter().filter(|object| store.path(object).is_ok_and(|at| at.is_file())).cloned().collect();
             if present.is_empty() { continue; }
@@ -226,7 +226,7 @@ fn hold_project_files(path: &Path, from: i64) -> Result<usize> {
 }
 
 fn held_failed(why: &str) -> StoreError {
-    cut(format!("a project's files left on local couldn't be held in ~/.cozy/calcifer/kept ({why}), so the old store stays: start cozy again once it can be written"))
+    cut(format!("a project's files left on local couldn't be held in ~/.cozy/calcifer/kept ({why}), so the old store stays: start Cozy Creator again once it can be written"))
 }
 
 /// What the old store's runs left on `local`, never exported, held for each of `unread` by the project its run names. How many held.
@@ -238,7 +238,7 @@ fn hold_unread(conn: &Connection, calcifer: &Path, from: i64, unread: &[PathBuf]
             WHERE r.machine = 'local' AND o.path IS NULL"))?;
         stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get::<_, Option<Vec<u8>>>(2)?.unwrap_or_default(), row.get(3)?)))?.collect::<rusqlite::Result<_>>()?
     };
-    let store = crate::runs::files::store().map_err(|_| cut("this computer's TensorFS store can't be opened, so the old store stays: start cozy again once it can be"))?;
+    let store = crate::runs::files::store().map_err(|_| cut("this computer's TensorFS store can't be opened, so the old store stays: start Cozy Creator again once it can be"))?;
     let mut held = 0;
     for root in unread {
         let key = path_key(root);

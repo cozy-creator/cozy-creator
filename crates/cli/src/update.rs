@@ -60,17 +60,17 @@ async fn update(ctx: &Context, wanted: Option<&str>) -> Result<Option<PathBuf>, 
         match moves(&version, current) {
             Move::Up => {}
             Move::Stay => {
-                println!("cozy {current} is the newest release");
+                println!("Cozy Creator {current} is the newest release");
                 return Ok(None);
             }
             Move::Down => {
-                let said = format!("the Latest release, cozy {version}, is older than this cozy {current}: an update never goes back unless the version is named");
+                let said = format!("the Latest release, Cozy Creator {version}, is older than this Cozy Creator {current}: an update never goes back unless the version is named");
                 return Err(Error::new(Kind::Conflict, "cozy_downgrade", said).next(format!("cozy update {version}")));
             }
         }
     }
-    crate::output::say(ctx, &format!("fetching cozy {version}"));
-    let bar = crate::progress::Transfer::stderr(ctx.term.stderr, "Downloading Cozy");
+    crate::output::say(ctx, &format!("fetching Cozy Creator {version}"));
+    let bar = crate::progress::Transfer::stderr(ctx.term.stderr, "Downloading Cozy Creator");
     bar.phase("Downloading and checking archive");
     let mut moved = |at: u64| bar.update(crate::progress::TransferCounts { files_done: 0, files_total: Some(1), bytes_done: at, bytes_total: None, bytes_moved: at });
     let installed = api::update::install(&dir, download_url.is_some(), &release, &binary, &mut moved).await;
@@ -85,7 +85,7 @@ async fn update(ctx: &Context, wanted: Option<&str>) -> Result<Option<PathBuf>, 
         Err(e) => {
             return Err(Error {
                 remedy: Some(format!(
-                    "{} is cozy {version} now; `cozy doctor` restarts Calcifer on it",
+                    "{} is Cozy Creator {version} now; `cozy doctor` restarts Calcifer on it",
                     installed.binary.display()
                 )),
                 ..e
@@ -118,7 +118,7 @@ async fn update(ctx: &Context, wanted: Option<&str>) -> Result<Option<PathBuf>, 
         );
     } else {
         println!(
-            "cozy {} → {}: {}",
+            "Cozy Creator {} → {}: {}",
             updated.from,
             updated.to,
             updated.binary.display()
@@ -169,7 +169,7 @@ pub(crate) async fn offer(ctx: &Context) {
     if offered.latest == offered.declined || !matches!(moves(&offered.latest, current), Move::Up) || major(&offered.latest) != major(current) {
         return;
     }
-    anstream::eprint!("cozy {} is out (this is {current}). Update now? [Y/n] ", offered.latest);
+    anstream::eprint!("Cozy Creator {} is out (this is {current}). Update now? [Y/n] ", offered.latest);
     let _ = std::io::stderr().flush();
     let mut answer = String::new();
     if !matches!(std::io::stdin().lock().read_line(&mut answer), Ok(1..)) {
@@ -179,13 +179,13 @@ pub(crate) async fn offer(ctx: &Context) {
     if !matches!(answer.trim(), "" | "y" | "Y" | "yes") {
         offered.declined = offered.latest.clone();
         keep(&path, &offered);
-        anstream::eprintln!("staying on cozy {current}; `cozy update` updates it later");
+        anstream::eprintln!("staying on Cozy Creator {current}; `cozy update` updates it later");
         return;
     }
     match update(ctx, Some(&offered.latest)).await {
         Ok(Some(binary)) => crate::output::warn(&again(&binary).message),
         Ok(None) => {}
-        Err(e) => crate::output::warn(&format!("cozy's update: {}", e.message)),
+        Err(e) => crate::output::warn(&format!("Cozy Creator's update: {}", e.message)),
     }
 }
 
@@ -224,7 +224,7 @@ pub(crate) fn after_update(ctx: &Context, run: &api::calcifer::Run) -> Result<()
     }
     if run.status != api::calcifer::Status::Completed {
         let kept = run.result.as_ref().and_then(|result| serde_json::from_value::<Error>(result["error"].clone()).ok());
-        return Err(kept.unwrap_or_else(|| Error::new(Kind::Unavailable, "cozy_update_failed", "cozy's update didn't finish".to_owned()).next("cozy update")));
+        return Err(kept.unwrap_or_else(|| Error::new(Kind::Unavailable, "cozy_update_failed", "Cozy Creator's update didn't finish".to_owned()).next("cozy update")));
     }
     let binary = crate::calcifer_client::installed(&ctx.home)?;
     let said = std::process::Command::new(&binary).arg("--version").output().map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned());

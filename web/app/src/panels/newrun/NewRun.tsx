@@ -156,7 +156,7 @@ function Asking({ target, resolved, id, startInput }: { target: string; resolved
           })} />
           {extra.length > 0 && (
             <p className="warn">
-              This release doesn't take {extra.join(", ")}. They're sent anyway, and Cozy drops what it can't use and tells you.
+              This release doesn't take {extra.join(", ")}. They're sent anyway, and Cozy Creator drops what it can't use and tells you.
             </p>
           )}
           {unreadable && <p className="warn">A field above isn't valid yet, so this can't run.</p>}
@@ -294,7 +294,7 @@ export function NewRun() {
         </button>
       )}
       <Failure error={askedError} lead={`Couldn't load run ${again}`} />
-      {again && asked && !asked.request && <p className="warn">Cozy has no record of what run {again} was asked to do.</p>}
+      {again && asked && !asked.request && <p className="warn">Cozy Creator has no record of what run {again} was asked to do.</p>}
       {again && asked?.request && <p className="muted">Copied from run {again}: its input, models and LoRAs. Its precision, GPUs and attention kernel aren't copied; set them below if you need to.</p>}
       {!picked && !again && <Picker onPick={setPicked} />}
       {local && picked && (

@@ -27,7 +27,7 @@ function NoSession() {
   return (
     <main className="gate">
       <h1>No project open here</h1>
-      <p>Cozy only opens its own page, and only for the user account on this computer that it runs under. Open Cozy again from that account.</p>
+      <p>Cozy Creator only opens its own page, and only for the user account on this computer that it runs under. Open Cozy Creator again from that account.</p>
     </main>
   )
 }
@@ -36,8 +36,8 @@ function NoSession() {
 function Unreachable() {
   return (
     <main className="gate">
-      <h1>Cozy isn't responding</h1>
-      <p>This page opens by itself as soon as Cozy is back. If it doesn't come back, start Cozy again on this computer.</p>
+      <h1>Cozy Creator isn't responding</h1>
+      <p>This page opens by itself as soon as Cozy Creator is back. If it doesn't come back, start Cozy Creator again on this computer.</p>
     </main>
   )
 }

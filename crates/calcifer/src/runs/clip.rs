@@ -119,7 +119,7 @@ impl Clips {
             Error::new(
                 Kind::NotFound,
                 "input_file_unreadable",
-                format!("Cozy can't read the input file {}.", source.display()),
+                format!("Cozy Creator can't read the input file {}.", source.display()),
             )
         })?;
         let extension = if matches!(range, Range::Frame(_)) { "png" } else { "mp4" };
@@ -140,7 +140,7 @@ impl Clips {
         }
         let past = within(&ffmpeg, field, source, range, fps)?;
         if let Some(end) = past {
-            notes.push(Note { level: NoteLevel::Warning, message: format!("{field}: {} runs past the end of {}, so Cozy cut it at the end ({}).", range.timed(fps), source.display(), clock(end)) });
+            notes.push(Note { level: NoteLevel::Warning, message: format!("{field}: {} runs past the end of {}, so Cozy Creator cut it at the end ({}).", range.timed(fps), source.display(), clock(end)) });
         }
         say(notes, format!("{field}: cutting {} of {}", range.timed(fps), source.display()));
         let began = Instant::now();

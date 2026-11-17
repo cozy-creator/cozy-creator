@@ -97,7 +97,7 @@ pub(crate) fn store() -> Result<&'static Arc<Store>, Error> {
     if let Some(store) = STORE.get() {
         return Ok(store);
     }
-    let unusable = |why: String| Error::new(Kind::Unavailable, "file_store_unusable", format!("Cozy can't use this computer's file store: {why}."));
+    let unusable = |why: String| Error::new(Kind::Unavailable, "file_store_unusable", format!("Cozy Creator can't use this computer's file store: {why}."));
     let root = tensorfs::home::resolve(None).map_err(|e| unusable(e.to_string()))?;
     let store = Arc::new(Store::open(root).map_err(|e| unusable(e.to_string()))?);
     let _ = platform::durable::set_mode(store.root(), 0o700);
@@ -274,7 +274,7 @@ async fn put_in(storage: Arc<Store>, name: String, headers: HeaderMap, body: Bod
     if let Some(path) = held_in(&storage, &digest) {
         let held = file(digest, &path)?;
         if held.length != length {
-            return Err(Refusal(Error::new(Kind::Conflict, "file_length_conflict", format!("Cozy already has {digest} as {} bytes, not {length}.", held.length))));
+            return Err(Refusal(Error::new(Kind::Conflict, "file_length_conflict", format!("Cozy Creator already has {digest} as {} bytes, not {length}.", held.length))));
         }
         let answered = answer(StatusCode::OK, &path);
         // Nothing of the project is written: the rest of the body is read with no hold on it.
@@ -354,7 +354,7 @@ async fn put_in(storage: Arc<Store>, name: String, headers: HeaderMap, body: Bod
         Settled::Partly(held) => Ok((StatusCode::NO_CONTENT, [held_header(&held)]).into_response()),
         Settled::Whole | Settled::Held => {
             let status = if matches!(settled, Settled::Whole) { StatusCode::CREATED } else { StatusCode::OK };
-            let path = held_in(&storage, &digest).ok_or_else(|| Refusal(Error::new(Kind::Internal, "file_unwritable", format!("{digest} disappeared while Cozy was saving it."))))?;
+            let path = held_in(&storage, &digest).ok_or_else(|| Refusal(Error::new(Kind::Internal, "file_unwritable", format!("{digest} disappeared while Cozy Creator was saving it."))))?;
             answer(status, &path)
         }
     }
@@ -446,7 +446,7 @@ async fn held_of(storage: &Arc<Store>, digest: Digest) -> Result<(Option<PathBuf
 
 fn named(name: &str) -> Result<Digest, Refusal> {
     name.parse().map_err(|why: &str| {
-        Refusal(Error::new(Kind::Usage, "file_name_invalid", format!("{name:?} isn't a file name Cozy knows: {why}.")).remedy("Name a file as sha256:<hex>."))
+        Refusal(Error::new(Kind::Usage, "file_name_invalid", format!("{name:?} isn't a file name Cozy Creator knows: {why}.")).remedy("Name a file as sha256:<hex>."))
     })
 }
 

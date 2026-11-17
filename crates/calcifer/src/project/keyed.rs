@@ -188,7 +188,7 @@ async fn keyed(api: Arc<Api>, key: String, request: Request, next: Next) -> Resp
 async fn creation(api:&Arc<Api>,bytes:&[u8],key:&str,digest:&str)->Result<Creation,Refusal> {
     let ask:api::calcifer::project::Open=crate::api::parse(bytes)?;
     if !ask.unencrypted || !ask.path.is_absolute() {return Ok(Creation::Fresh);}
-    let pending=||Refusal(Error::new(Kind::Conflict,"project_creation_pending","Cozy can't answer this retry until the original project, or the folder it was being made in, is back."));
+    let pending=||Refusal(Error::new(Kind::Conflict,"project_creation_pending","Cozy Creator can't answer this retry until the original project, or the folder it was being made in, is back."));
     let path=ask.path;
     if path.try_exists().map_err(|_|pending())? {
         if path.join(format!("{}.new",super::db::DB)).try_exists().map_err(|_|pending())? {return Err(pending());}

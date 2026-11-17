@@ -131,7 +131,7 @@ pub(crate) async fn header(endpoint: &Endpoint, object: &types::ObjectRef) -> Re
     let object = ObjectRef { sha256: object.sha256.clone(), length: object.length.max(0) as u64 };
     let bytes = (endpoint.document(&object).await)
         .map_err(|why| Error::unavailable("header_unreadable", format!("Couldn't read the model's header {} ({}).", object.id(), why.detail)))?;
-    Header::from_cbor(&bytes).map_err(|why| Error::new(Kind::Unavailable, "header_invalid", format!("This version of Cozy can't read the model's header {} ({why}). Update Cozy.", object.id())).next("cozy update"))
+    Header::from_cbor(&bytes).map_err(|why| Error::new(Kind::Unavailable, "header_invalid", format!("This version of Cozy Creator can't read the model's header {} ({why}). Update Cozy Creator.", object.id())).next("cozy update"))
 }
 
 /// The chunks a slot's checkpoint is fetched as, by Hub, header and components: content-addressed, so read once and kept.

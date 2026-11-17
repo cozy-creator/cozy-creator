@@ -1326,7 +1326,7 @@ impl Runs {
                 });
             if !declared {
                 let warning = format!(
-                    "The model choice {:?} doesn't match a model slot of this function or the packages it calls, so Cozy ignored it.",
+                    "The model choice {:?} doesn't match a model slot of this function or the packages it calls, so Cozy Creator ignored it.",
                     choice.parameter
                 );
                 if let Err(error) = self.service.engine.append_warning(id, &warning) {
@@ -1736,7 +1736,7 @@ impl Runs {
             // A request prepares a function's own GPU model; one with none warms what it calls, as ever.
             let unbound = item.payload.is_some() && plan.is_none();
             if unbound {
-                let warning = format!("{} loads no GPU model of its own, so Cozy warmed only the models it calls, not its inputs.", item.entrypoint);
+                let warning = format!("{} loads no GPU model of its own, so Cozy Creator warmed only the models it calls, not its inputs.", item.entrypoint);
                 if let Err(error) = self.service.engine.append_warning(id, &warning) {
                     crate::private_io::warning(&self.service.engine, id, format_args!("{warning} ({error})"));
                 }

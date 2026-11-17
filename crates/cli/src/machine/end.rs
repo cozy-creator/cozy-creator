@@ -522,7 +522,7 @@ fn updated(ctx: &Context, name: &str, s: &MachineStatus) {
         output::json(&serde_json::json!({"machine": name, "tensord": s.version, "runtime": s.runtime, "tensorfs": s.tensorfs, "mode": s.mode}));
     } else {
         let build = if s.dev { " (dev build)" } else { "" };
-        output::say(ctx, &format!("{name} runs TensorD (cozy) {}{build}, Runtime {}, TensorFS {}, mode {}", s.version, s.runtime, s.tensorfs,
+        output::say(ctx, &format!("{name} runs TensorD (Cozy Creator) {}{build}, Runtime {}, TensorFS {}, mode {}", s.version, s.runtime, s.tensorfs,
             if s.mode.is_empty() { "unknown" } else { &s.mode }));
     }
 }
@@ -532,7 +532,7 @@ fn up_to_date(ctx: &Context, m: &Machine, s: &MachineStatus) -> Result<ExitCode,
         output::json(&serde_json::json!({"machine": m.name, "changed": false, "tensord": s.version, "runtime": s.runtime, "tensorfs": s.tensorfs, "mode": s.mode}));
     } else {
         output::say(ctx, &format!(
-            "{} runs TensorD (cozy) {}, Runtime {}, TensorFS {}: the Hub's target, nothing to update",
+            "{} runs TensorD (Cozy Creator) {}, Runtime {}, TensorFS {}: the Hub's target, nothing to update",
             m.name, s.version, s.runtime, s.tensorfs
         ));
     }

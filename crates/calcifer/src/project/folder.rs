@@ -1203,7 +1203,7 @@ impl Folder {
     /// Release cached connections before unmounting or moving the storage. The caller has
     /// stopped admissions and checked background work; an in-flight DB operation refuses it.
     pub(crate) fn close_connections(&self, checkpoint: bool) -> Result<(), Error> {
-        let busy = || Error::new(api::error::Kind::Conflict, "project_busy", "Cozy is still working on this project's database. Try again in a moment.");
+        let busy = || Error::new(api::error::Kind::Conflict, "project_busy", "Cozy Creator is still working on this project's database. Try again in a moment.");
         if self.shared.checkpointing.load(std::sync::atomic::Ordering::Acquire) { return Err(busy()); }
         let mut writer = self.shared.writing.try_lock().map_err(|_| busy())?;
         let mut reader = self.shared.reading.try_lock().map_err(|_| busy())?;
@@ -1219,12 +1219,12 @@ impl Folder {
                 Some(conn) => conn,
                 None => {
                     extra = rusqlite::Connection::open_with_flags(self.db(), rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
-                        .map_err(|e| Error::new(api::error::Kind::Unavailable, "vault_database", format!("Cozy couldn't open the project to save it: {e}.")))?;
+                        .map_err(|e| Error::new(api::error::Kind::Unavailable, "vault_database", format!("Cozy Creator couldn't open the project to save it: {e}.")))?;
                     &extra
                 }
             };
             let occupied: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
-                .map_err(|e| Error::new(api::error::Kind::Unavailable, "vault_database", format!("Cozy couldn't save the project before closing it: {e}.")))?;
+                .map_err(|e| Error::new(api::error::Kind::Unavailable, "vault_database", format!("Cozy Creator couldn't save the project before closing it: {e}.")))?;
             if occupied != 0 { return Err(busy()); }
         }
         let writing = writer.take();
@@ -1673,7 +1673,7 @@ impl Folder {
                 return Ok(doc);
             }
         }
-        Err(Error::new(Kind::Conflict, "project_changed", "The project kept changing while Cozy was reading it. Reload it and try again."))
+        Err(Error::new(Kind::Conflict, "project_changed", "The project kept changing while Cozy Creator was reading it. Reload it and try again."))
     }
 
     /// The document an act began from, decoded once in it if what's held hadn't been: at its heads.
@@ -2428,7 +2428,7 @@ async fn fetch_url(url: &str) -> Result<Vec<u8>, String> {
     let mut sink = |at: u64, frame: &[u8]| {
         bytes.truncate(at as usize);
         if bytes.len() + frame.len() > URL_MOST {
-            let detail = format!("it's larger than {}, the most Cozy downloads from a link, so download it yourself and import the file", crate::bytes(URL_MOST as f64));
+            let detail = format!("it's larger than {}, the most Cozy Creator downloads from a link, so download it yourself and import the file", crate::bytes(URL_MOST as f64));
             return Err(Refusal { code: Code::SOURCE_NOT_ALLOWED, detail });
         }
         bytes.extend_from_slice(frame);
@@ -2529,7 +2529,7 @@ fn io(error: platform::Error) -> Error {
 }
 
 fn io_at(path: &Path, error: std::io::Error) -> Error {
-    Error::new(Kind::Unavailable, "project_io", format!("Cozy couldn't access {}: {error}.", path.display()))
+    Error::new(Kind::Unavailable, "project_io", format!("Cozy Creator couldn't access {}: {error}.", path.display()))
 }
 
 /// Whether two lists of a document's heads name the same ones.

@@ -1,6 +1,6 @@
 # Bundled filesystem provider
 
-Cozy embeds the unmodified securefs 2.0.0 release executable. Its MIT license is in
+Cozy Creator embeds the unmodified securefs 2.0.0 release executable. Its MIT license is in
 `LICENSE.securefs.md`; upstream source and build scripts are available at
 <https://github.com/netheril96/securefs/tree/v2.0.0>.
 
@@ -24,7 +24,7 @@ upstream's release workflow. It links in:
   <https://gitlab.alpinelinux.org/alpine/aports/-/tree/3.22-stable/community/fuse>.
 - GCC 14.2's libstdc++ and libgcc, under the GCC Runtime Library Exception.
 
-Cozy does not modify or rebuild the executable. To relink it with a modified
+Cozy Creator does not modify or rebuild the executable. To relink it with a modified
 libfuse, rebuild securefs from the source above (upstream's `build-alpine` job
 in `.github/workflows/release.yml`) and point `COZY_SECUREFS_PROVIDER` at the
 result. The kernel's FUSE device and the system's `fusermount3` (or
@@ -32,7 +32,7 @@ result. The kernel's FUSE device and the system's `fusermount3` (or
 
 WinFsp is a separately installed Windows filesystem driver; its own license
 and installation terms apply. Native macOS storage uses Apple's system hdiutil
-and APFS implementation, not this bundled executable or a macFUSE driver. Cozy
+and APFS implementation, not this bundled executable or a macFUSE driver. Cozy Creator
 never silently changes boot/security policy.
 
 The optional `COZY_SECUREFS_PROVIDER` environment variable selects an explicit

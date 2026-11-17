@@ -542,7 +542,7 @@ fn parse_table(text: &str, file: &str) -> Result<toml::Table, Error> {
 fn extract(table: toml::Table, file: &str, env: &[(&str, &str)]) -> Result<(Config, Vec<String>), Error> {
     let mut warnings = vec![];
     let mut ignored = |path: serde_ignored::Path<'_>| {
-        warnings.push(format!("{file}: `{path}` is not a setting this cozy reads; ignored"))
+        warnings.push(format!("{file}: `{path}` is not a setting this Cozy Creator reads; ignored"))
     };
     let value = toml::Value::Table(table);
     let mut config: Config = serde_path_to_error::deserialize(serde_ignored::Deserializer::new(value, &mut ignored))

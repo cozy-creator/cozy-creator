@@ -391,7 +391,7 @@ impl<'a> Sender<'a> {
 enum CodeScope<'a> { Independent, Project(&'a str) }
 
 fn code_scope_refused() -> Error {
-    Error::new(Kind::Forbidden, "project_source_scope", "This package source belongs to a Cozy project")
+    Error::new(Kind::Forbidden, "project_source_scope", "This package source belongs to a Cozy Creator project")
         .remedy("Run it from that project, or export a separate package copy before installing or publishing")
         .next("cozy run --help")
 }

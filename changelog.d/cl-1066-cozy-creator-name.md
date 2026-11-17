@@ -1,0 +1,1 @@
+What the page, the CLI, the installer and the docs say names the product Cozy Creator, never a bare `Cozy` ("Cozy Creator couldn't reach the Hub", "Cozy Creator 0.26.0 is the newest release"); the command is still `cozy`. A CPU cell (`e2e/cli/product_name.py`, in the commands shard) fails on a bare `Cozy` in a user-facing string.
