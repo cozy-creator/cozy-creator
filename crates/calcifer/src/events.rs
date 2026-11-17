@@ -201,8 +201,12 @@ pub(crate) fn ahead_updated(id: &str, ahead: &api::calcifer::project::Ahead) {
     let _ = PROJECTS.said.send(StreamEvent::AheadUpdated { project: id.to_owned(), ahead: Box::new(ahead.clone()) });
 }
 
+/// Set once this generation hands over (cl-1113): a stream opened on it after says so at once.
+static LEAVING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Tells every stream this Calcifer hands over to the next (cl-1113): each ends after saying it, and its page comes straight back.
 pub(crate) fn restarting() {
+    LEAVING.store(true, Ordering::Relaxed);
     let _ = PROJECTS.said.send(StreamEvent::Restarting);
 }
 
@@ -303,9 +307,14 @@ async fn subscribe(api: Arc<Api>, scope: Scope, page: bool) -> Watch {
     let showing = all.then(|| Showing::new(page));
     let id = showing.as_ref().map(|showing| showing.0.clone()).unwrap_or_else(stream_id);
     let hello = StreamEvent::Hello { version: ::api::VERSION.into(), stream: id };
+    let mut pending = VecDeque::from([hello]);
+    // Opened over a kept connection as this generation hands over (cl-1113): it ends at once, and its page goes to the next one.
+    if LEAVING.load(Ordering::Relaxed) {
+        pending.push_back(StreamEvent::Restarting);
+    }
     Watch {
         showing,
-        pending: VecDeque::from([hello]),
+        pending,
         runs,
         owed: VecDeque::new(),
         machines_changed,
@@ -498,8 +507,10 @@ pub(crate) async fn show(
     let shown: Shown = crate::api::parse(&body?)?;
     let gone = || crate::api::Refusal(Error::new(api::error::Kind::NotFound, "stream_unknown", format!("The stream {stream} has ended.")));
     if !SHOWN.lock().expect("shown lock").contains_key(&stream) {
-        return match HANDED.lock().expect("handed lock").contains(&stream) {
-            // The last generation's: nothing is held for it here; its page tells its new stream after `hello`.
+        // The last generation's, or one of this one's that ended as it hands over: nothing is held for it; its page tells its new
+        // stream after `hello`.
+        let handing = LEAVING.load(Ordering::Relaxed) && MADE.lock().expect("made lock").contains(&stream);
+        return match handing || HANDED.lock().expect("handed lock").contains(&stream) {
             true => Ok(axum::Json(ProjectShowReply::default())),
             false => Err(gone()),
         };
