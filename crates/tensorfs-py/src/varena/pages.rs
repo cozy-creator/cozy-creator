@@ -220,6 +220,8 @@ struct State {
     passes: HashMap<String, u64>,
     /// The pass of its set each page was last taken in.
     taken: HashMap<String, u64>,
+    /// The set this request last took a page of: the running loop's (cr-305).
+    running: Option<String>,
     /// Bytes of pages let go this process, by why: short of room, displaced, given, shed, forgotten.
     let_go: HashMap<&'static str, u64>,
     clock: u64,
@@ -345,13 +347,20 @@ impl State {
         *self.let_go.entry(why).or_default() += kept.page.len as u64;
         Some(kept)
     }
-    /// Keys from the least worth, then the most recently used: of pages a loop refills alike, the
-    /// one it used last is the one it needs last.
+    /// Keys of the sets the running loop does not take from first, then each by the least worth,
+    /// then the most recently used: of pages a loop refills alike, the one it used last is the one
+    /// it needs last. Ranked by worth alone, a short tier let Qwen-Image's own blocks go before
+    /// pages it had finished with and read them again mid-loop: turbo steps 2-3 at 8.8-9.5 s
+    /// against 0.9 s (gate 44006460875); Flux-2's step 4 at 8.7 s against 1.7 s (44034703012).
     fn cheapest(&self) -> Vec<(u64, Reverse<u64>, String)> {
+        let running = self.running.as_deref();
         let mut keys: Vec<_> = self.kept.iter()
-            .map(|(key, kept)| (self.worth(key, &kept.set), Reverse(kept.last), key.clone())).collect();
+            .map(|(key, kept)| {
+                (running == Some(kept.set.as_str()), self.worth(key, &kept.set), Reverse(kept.last), key.clone())
+            })
+            .collect();
         keys.sort_unstable();
-        keys
+        keys.into_iter().map(|(_, worth, last, key)| (worth, last, key)).collect()
     }
 }
 
@@ -653,6 +662,9 @@ impl Tier {
             }
             if refill {
                 state.count(key, set);
+            }
+            if state.running.as_deref() != Some(set) {
+                state.running = Some(set.to_owned());
             }
             let gone = self.trim(&mut state);
             let tick = state.tick();
@@ -1023,6 +1035,7 @@ impl Tier {
         state.rate = std::mem::take(&mut state.refills);
         state.passes.clear();
         state.taken.clear();
+        state.running = None;
         state.looked = None;
         state.last_reads = std::mem::take(&mut state.reads);
         let (fresh, stale): (Vec<_>, Vec<_>) = std::mem::take(&mut state.spare).into_iter().partition(|(_, fresh)| *fresh);
