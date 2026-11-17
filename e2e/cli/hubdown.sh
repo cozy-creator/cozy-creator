@@ -25,13 +25,8 @@ hub_stop() {
 
 # hub_back: the Hub again, and hubcheck at the address cozy knows, for what follows.
 hub_back() {
-  local exe='' dir=$OUT/hub-again-${1:-back}
   bash "$here_hubdown/../skew/rehub.sh" > "$OUT/rehub-${1:-back}.log" 2>&1 || check "hub back: the Hub didn't start again: $(tail -c 300 "$OUT/rehub-${1:-back}.log")"
-  [ "${RUNNER_OS:-}" != Windows ] || exe=.exe
-  mkdir -p "$dir"
-  "${RUNNER_TEMP:-$OUT}/hubcheck$exe" --hub "${HUB_CHECK_UPSTREAM:?}" --out "$dir" --listen "$HUB_ADDR" --keep 'POST /v1/run-reports' > /dev/null 2> "$dir/hubcheck.log" &
-  HUB_CHECK=$!
-  for _ in $(seq 30); do curl -sS -m 5 -o /dev/null "http://$HUB_ADDR/openapi.yaml" 2> /dev/null && break; sleep 1; done
+  hub_check_again "$HUB_ADDR"
 }
 
 # hd_said <file>...: a failure's code and message, in one line.
