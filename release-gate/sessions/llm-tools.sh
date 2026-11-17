@@ -13,7 +13,8 @@
 #          then `q36_35b`, `q36_27b`, `q35_9b`): asked about a photo (teapot.jpg) and a video (clip-1s-360p.mp4, a lighthouse at dusk)
 #          by mention, boxes named `photo` and `clip` so their names say nothing, each answer saying what it shows (SEES_*); then the
 #          requests a stock model refuses (REFUSALS), each answered, not refused (REFUSED). The same requests on stock Qwen3.6-27B
-#          (`control`) are said, not judged: what the stock model does with them.
+#          (`control`) are said, not judged: what the stock model does with them. The default thinks once (`thinking`): its
+#          answer is the words after its thought, never the thought's tags.
 #   gpus   cl-1100: Qwen3.8 and Qwen3.5 write a long story at once while the drawer (`machine-details: GPU use`, GPU_MACHINE) is read twice a second
 #          and the pod's nvidia-smi once a second: each GPU's busy % and memory within 10 points and 200 MB, and the drawer showing the
 #          reading it heard (fixtures/llm-tools/gpu_use.py); the GPUs section at 1440×900 and 1920×1080, paper and dark.
@@ -160,6 +161,8 @@ for row in q38_27b q36_35b q36_27b q35_9b; do
   for i in "${!REFUSALS[@]}"; do write "$row-ask$((i + 1))" "$row" "instructions=${REFUSALS[$i]}" max_tokens:=200 seed:=7; done
 done
 for i in "${!REFUSALS[@]}"; do write "control-ask$((i + 1))" control "instructions=${REFUSALS[$i]}" max_tokens:=200 seed:=7; done
+# The default thinking first (its template's own effort, xhigh): only the answer after the thought is the box's.
+write q38_27b-think q38_27b 'instructions=In one sentence: why is the sky blue?' thinking:=true max_tokens:=4096 seed:=7
 fi
 
 # gpus: the pod's nvidia-smi once a second, beside the drawer, while both write at once.
@@ -202,6 +205,7 @@ if part cli; then
     for i in "${!REFUSALS[@]}"; do cells+=("$row-ask$((i + 1))!$REFUSED"); done
   done
   for i in "${!REFUSALS[@]}"; do cells+=("control-ask$((i + 1))"); done
+  cells+=("q38_27b-think!</?think>")
 fi
 ! part gpus || cells+=(q38-story q35-story)
 [ "${#cells[@]}" -gt 0 ] || exit "$RC"
