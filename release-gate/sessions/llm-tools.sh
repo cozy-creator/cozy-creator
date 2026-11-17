@@ -23,6 +23,7 @@
 #   tree     the packages_refs checkout the packages run from (required)
 #   gpus     the rental's GPUs (default 2)
 #   busy_s   seconds the drawer is read during the stories (default 60)
+#   only     some of cli, gpus and page, comma-separated (default: all three)
 #   seconds  what the cap must buy (default 3600)
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -32,7 +33,8 @@ PICTURE=$HERE/fixtures/ltx-images/teapot.jpg VIDEO=$ROOT/release-gate/suites/ben
 SEES_PICTURE='tea ?pot|kettle' SEES_VIDEO='lighthouse'
 for tool in jq node npm google-chrome python3; do command -v "$tool" > /dev/null || fail "no $tool"; done
 [ -f "$PICTURE" ] && [ -f "$VIDEO" ] || fail "no $PICTURE or $VIDEO (pod-session.yaml's sparse checkout)"
-TREE=$(param tree '') GPUS=$(param gpus 2) BUSY_S=$(param busy_s 60)
+TREE=$(param tree '') GPUS=$(param gpus 2) BUSY_S=$(param busy_s 60) ONLY=$(param only cli,gpus,page)
+part() { [[ ",$ONLY," == *",$1,"* ]]; }
 [[ $GPUS =~ ^[1-8]$ && $BUSY_S =~ ^[0-9]+$ ]] || fail "gpus $GPUS, busy_s $BUSY_S"
 V=$(cozy --version | awk '{print $2}')
 [[ $V == *-dev* ]] || fail "cozy $V is no RC build: dispatch with cozy=<a dev-build or rc-dev run of rc/<x>>"
@@ -99,6 +101,7 @@ done
 say "on the RC: $(jq -r '"cozy \(.status.version) · Runtime \(.status.runtime) · TensorFS \(.status.tensorfs) · " + ([.status.gpus[] | "GPU \(.index) \(.name) \(.memory_bytes / 1073741824 | floor) GiB"] | join(", "))' "$OUT/show-rc.json")"
 
 # cli: each package asked about the photo and the video, by mention.
+if part cli; then
 run_page import "$PICTURE" --name photo > "$OUT/import-photo.json" 2>&1 || fail "import the photo: $(tail -c 300 "$OUT/import-photo.json")"
 run_page import "$VIDEO" --name clip > "$OUT/import-clip.json" 2>&1 || fail "import the video: $(tail -c 300 "$OUT/import-clip.json")"
 photo=$(jq -r '.sha256 // empty' "$OUT/import-photo.json") clip=$(jq -r '.sha256 // empty' "$OUT/import-clip.json")
@@ -119,8 +122,10 @@ write q35-photo qwen3.5 "instructions:=$ON_PHOTO" max_tokens:=200
 write q36-photo qwen3.6 "instructions:=$ON_PHOTO" max_tokens:=200
 write q35-clip qwen3.5 "instructions:=$ON_CLIP" max_tokens:=200
 write q36-clip qwen3.6 "instructions:=$ON_CLIP" max_tokens:=200
+fi
 
 # gpus: the pod's nvidia-smi once a second, beside the drawer, while both write at once.
+if part gpus; then
 SMI=$OUT/smi.csv fields=index,utilization.gpu,memory.used,memory.reserved
 cozy machine ssh "$NAME" "nvidia-smi --query-gpu=$fields --format=csv,noheader,nounits" < /dev/null > "$OUT/smi-probe.txt" 2>&1 ||
   fields=index,utilization.gpu,memory.used
@@ -140,17 +145,23 @@ kill "$smi" 2> /dev/null
 python3 -I "$FIX/gpu_use.py" "$SMI" "$OUT/drawer.jsonl" "$OUT/drawer.jsonl.heard" > "$OUT/gpu-use.md" 2>&1 || RC=1
 grep -E '^(PASS|FAIL) ' "$OUT/gpu-use.md" | sed 's/^/  gpus: /' | tee -a "$R"
 find "$OUT/web/results" -name 'gpu-use-*.png' -exec cp {} "$OUT/" \; 2> /dev/null
+fi
 
 # page: Qwen3.6 on the canvas, its renders on the rental.
+if part page; then
 pw llm llm 'llm: real models on a GPU' LLM_MACHINE="$NAME" LLM_TOOL=qwen3.6/write LLM_PICTURE="$PICTURE" LLM_VIDEO="$VIDEO" \
   LLM_SEES_PICTURE="$SEES_PICTURE" LLM_SEES_VIDEO="$SEES_VIDEO"
 jq -r '.boxes | to_entries[] | .key as $box | .value[] | "  page: \($box) v\(.version) run \(.run) on \(.machine) GPU \(.gpu // "?"), \(.execution_ms // "?") ms\(if .carries == null then "" else ", carries its \(.kind): \(.carries)" end): \(.text | gsub("\n"; " "))"' \
   "$OUT/web/llm-gpu/answers.json" 2> /dev/null | tee -a "$R"
+fi
 
 cozy machine show "$NAME" --json > "$OUT/show-end.json" 2>&1
 cozy machine logs "$NAME" --since 3h -n 0 > "$OUT/machine.log" 2>&1
-python3 -I "$FIX/summary.py" "$OUT" q35-photo="$SEES_PICTURE" q36-photo="$SEES_PICTURE" q35-clip="$SEES_VIDEO" q36-clip="$SEES_VIDEO" \
-  q35-story q36-story > "$OUT/summary.md" 2>&1 || RC=1
+cells=()
+! part cli || cells+=(q35-photo="$SEES_PICTURE" q36-photo="$SEES_PICTURE" q35-clip="$SEES_VIDEO" q36-clip="$SEES_VIDEO")
+! part gpus || cells+=(q35-story q36-story)
+[ "${#cells[@]}" -gt 0 ] || exit "$RC"
+python3 -I "$FIX/summary.py" "$OUT" "${cells[@]}" > "$OUT/summary.md" 2>&1 || RC=1
 grep -E '^(PASS|FAIL) ' "$OUT/summary.md" | sed 's/^/  cli: /' | tee -a "$R"
 { echo "## llm-tools on $NAME ($SKU x$GPUS)"; cat "$OUT/summary.md"; echo; echo "### GPU use against nvidia-smi"; cat "$OUT/gpu-use.md"; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 exit "$RC"
