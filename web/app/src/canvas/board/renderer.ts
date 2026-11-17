@@ -31,8 +31,12 @@ extensions.add(CanvasGraphics)
  *  that builds and drops cards grew that table without end (e2e 43803931154, 0.4 MB in ten cycles at 1,000 boxes). The GC's collection
  *  sweep drops the nulls, as it does for Pixi's own tables. */
 function tidy(renderer: Renderer) {
-  const { gc, canvasText } = renderer as unknown as { gc: { addCollection(context: object, collection: string, type: "hash"): void }; canvasText: object }
+  type Tables = { addCollection(context: object, collection: string, type: "hash"): void; _managedResourceHashes?: { context: object; hash: string }[] }
+  const { gc, canvasText } = renderer as unknown as { gc: Tables; canvasText: object }
   gc.addCollection(canvasText, "_activeTextures", "hash")
+  // Pixi's own resource tables (each pipe's graphics and texts, by uid) null a released entry too and keep its key until 10,000 gather:
+  // a pan at 50% grew them ~1 MB in ten cycles (large, e2e 44023757746 heap snapshots). The same sweep drops theirs.
+  for (const { context, hash } of gc._managedResourceHashes ?? []) gc.addCollection(context, hash, "hash")
 }
 
 /** The GPU a context names. Firefox's RENDERER is already the device (and it warns on the debug extension); Chrome's says "WebKit WebGL". */
