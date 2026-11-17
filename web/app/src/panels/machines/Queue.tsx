@@ -45,11 +45,11 @@ function RunRow({ held, activity, project, boxes }: { held: LiveRun; activity: O
   const run: Run | null | undefined = held.run
   const state = held.state
   const going = state === "running"
-  if (!run || (run.project_id && run.project_id !== project)) {
+  if (held.locked || !run || (run.project_id && run.project_id !== project)) {
     return (
       <li className="qrow" data-queue="run" data-state={state}>
         <span className={`dot ${going ? "work" : "idle"}`} />
-        <b>{run ? "Another project's run" : "A run this computer has no record of"}</b>
+        <b>{held.locked ? "A locked project's run" : run ? "Another project's run" : "A run this computer has no record of"}</b>
         <span className="kind">{sentence(state)}</span>
       </li>
     )
@@ -101,8 +101,8 @@ export function Queue({ machine, status }: { machine: Machine; status: MachineSt
           {operations.map((operation) => (
             <OperationRow key={operation.id} operation={operation} />
           ))}
-          {runs.map((held) => (
-            <RunRow key={held.id} held={held} activity={activity} project={project} boxes={boxes} />
+          {runs.map((held, at) => (
+            <RunRow key={held.id || `locked ${at}`} held={held} activity={activity} project={project} boxes={boxes} />
           ))}
         </ul>
       ) : (

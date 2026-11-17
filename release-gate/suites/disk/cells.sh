@@ -1,8 +1,8 @@
 # Suite `disk` (tfs-140, cl-709): a 100 GB machine keeps working past a full disk, which tatara (11-01) did not. Run
 # with `--disk 100`. Every check is an `expect` row.
-#   disk-envs  sdxl, qwen-image-2 and minimax-h3, each its previous release and then its newest (an update removes the
-#              previous environment, logged with its bytes): `machine show` says what fills the disk (models, package
-#              environments, Runtime, other)
+#   disk-envs  sdxl, qwen-image-2, minimax-h3 and seedvr2, each the newest earlier release this Runtime runs and then its
+#              newest (an update removes the previous environment, logged with its bytes): `machine show` says what fills
+#              the disk (models, package environments, Runtime, other). SKIP when no package has two on this Runtime minor
 #   torch-layer  none of those installs, nor seedvr2's (its lock pins torch 2.14.1), brings its own Torch (cl-715): no
 #              "installs its own" warning, and no install takes 1 GiB of disk
 #   disk-held  a CPU SDXL call running while H3 int8 (68 GiB) and Qwen-Image int8 (17 GiB) land: none of SDXL is evicted,
@@ -21,22 +21,31 @@ T=$OUT/disk; mkdir -p "$T"
 use() { "$CLI" --json machine show "$M" 2>/dev/null | jq -r --arg s "$1" '.status | [$s, .disk_free_bytes, .disk_models_bytes,
   .disk_environments_bytes, .disk_runtime_bytes] | @tsv' >> "$T/use.tsv"; }
 step() { local n=$1; shift; run_submit "$T" "$n" "$@" > /dev/null; run_wait "$T" "$n"; use "$n"; run_get "$T" "$n" .status; }
-released() { package_details "$1" 2>/dev/null | jq -r '[.releases[] | select(.yanked | not) | .release][0:2] | reverse | join(" ")'; }
+newest() { package_details "$1" 2>/dev/null | jq -r '[.releases[] | select(.yanked | not) | .release][0] // empty'; }
 logs() { "$CLI" machine logs "$M" tensord -n 0 > "$T/tensord.log" 2>&1; grep -c -- "$1" "$T/tensord.log"; }
 
 use start; bad=()
 if [ "${DISK_INSTALLS:-yes}" != no ]; then
+updated=() alone=()
 for p in sdxl qwen-image-2 minimax-h3 seedvr2; do
-  for r in $(released "$p"); do
-    "$CLI" package install "$p@$r" --on "$M" -y > "$T/install-$p-$r.log" 2>&1 || bad+=("$p@$r install failed"); use "$p@$r"
-  done
+  new=$(newest "$p")
+  if old=$(earlier "$p" "$new" "$T/install-$p-earlier.log"); then [ -z "$old" ] || use "$p@$old"
+  else bad+=("$p's earlier release install failed"); fi
+  "$CLI" package install "$p@$new" --on "$M" -y > "$T/install-$p-$new.log" 2>&1 || bad+=("$p@$new install failed"); use "$p@$new"
+  [ -n "$old" ] && updated+=("$p $old to $new") || alone+=("$p@$new")
 done
 read -r _ free models envs runtime < <(tail -1 "$T/use.tsv"); removed=$(logs 'removed package environment')
 # A Calcifer older than this machine reports no disk use (version skew): the removals judge it then.
 shown=$([ -n "$envs" ] && echo "models $models, environments $envs, Runtime $runtime" || echo "this cozy's Calcifer reports no disk use")
-[ ${#bad[@]} -eq 0 ] && [ "$removed" -gt 0 ] && { [ -z "$envs" ] || [ "$envs" -gt 0 ]; } \
-  && expect disk-envs PASS "installs and updates done, $removed previous environments removed (logged with bytes); $shown; free $free" \
-  || expect disk-envs FAIL "${bad[*]:-}; $removed environments removed; $shown"
+if [ ${#bad[@]} -gt 0 ] || { [ -n "$envs" ] && [ "$envs" -eq 0 ]; }; then
+  expect disk-envs FAIL "${bad[*]:-}; $removed environments removed; $shown"
+elif [ ${#updated[@]} -eq 0 ]; then
+  expect disk-envs SKIP "no update to judge: every earlier release of ${alone[*]} needs an older Runtime minor; $shown"
+elif [ "$removed" -gt 0 ]; then
+  expect disk-envs PASS "updated ${updated[*]}: $removed previous environments removed (logged with bytes); $shown; free $free"
+else
+  expect disk-envs FAIL "updated ${updated[*]}, 0 previous environments removed; $shown"
+fi
 
 own=$(cat "$T"/install-*.log | grep -c 'installs its own'); own=$((own + $(logs 'installs its own')))
 most=$(awk -F'\t' 'NR > 1 && p - $2 > m {m = p - $2; w = $1} {p = $2} END {printf "%d %s", m, w}' "$T/use.tsv")
@@ -94,20 +103,22 @@ unlisted=$(( stored > listed ? stored - listed : 0 ))
   || expect disk-listed FAIL "the store holds $((stored >> 20)) MiB, listed models $((listed >> 20)) MiB: $((unlisted >> 20)) MiB no model names; $(tail -1 "$T/model-ls.txt")"
 
 total=$("$CLI" --json machine show "$M" 2>/dev/null | jq -r '.status.disk_total_bytes // 0'); before=$(tail -1 "$T/use.tsv" | cut -f3)
-big=$(step h3-bf16-render run "$(pkg minimax-h3 generate)" --on "$M" --lane bf16 \
-  beats:="$(jq -cn --arg d "$OBJECT, too big for this disk" '[{description: $d, duration: 5}]')" seed:=$((R + 702)))
-code=$(run_get "$T" h3-bf16-render .reason.code); why=$(run_get "$T" h3-bf16-render .reason.message)
-after=$(tail -1 "$T/use.tsv" | cut -f3); grew=$(( after > before ? after - before : 0 ))
-fits=$(step sdxl-room run "$(pkg sdxl generate)" --on "$M" prompt="$OBJECT, after a full disk" steps:=1 seed:=$((R + 703)))
-said=$("$CLI" --json --full run watch "$(cat "$T/sdxl-room.number")" --once 2>/dev/null | jq -r '[.warnings[]?, .result.warnings[]?] | map(if type == "object" then .message else . end) | .[]' | grep -m1 'Cozy removed' || true)
-evicted_sdxl=$(logs 'tensorfs: evicted stabilityai/sdxl')
-# H3 bf16 is 130 GiB: a disk that could hold it whole once all else is evicted (a CPU pod gets 160 GB for 100) judges SDXL's half only.
+# H3 bf16 is 130 GiB: a disk that holds it whole once all else is evicted (a CPU pod gets 160 GB for 100) would render it on
+# the CPU for hours (44053329028: 38 min to its first step), and SDXL then needs no eviction: nothing to judge.
 if [ "$total" -gt $((135 << 30)) ]; then
-  [ "$fits" = completed ] && expect disk-room PASS "a $((total >> 30)) GiB disk holds H3 bf16 (not judged); SDXL ran: ${said:-no eviction needed}" \
-    || expect disk-room FAIL "SDXL $fits: $(run_get "$T" sdxl-room .reason.message)"
-elif [ "$big$code" = failedmachine_disk_full ] && [[ $why == *"GB disk"* ]] && [ "$grew" -lt $((1 << 30)) ] && [ "$fits" = completed ] \
-  && { [ "$evicted_sdxl" = 0 ] || [ -n "$said" ]; }; then
-  expect disk-room PASS "H3 bf16 refused while it prepared ($why), its store grew $((grew >> 20)) MiB; SDXL ran: ${said:-no eviction needed}"
+  expect disk-room SKIP "a $((total >> 30)) GiB disk holds H3 bf16 whole: no render here needs more than the disk can free"
 else
-  expect disk-room FAIL "H3 bf16 $big $code ($why), store grew $((grew >> 20)) MiB; SDXL $fits $(run_get "$T" sdxl-room .reason.message); said: ${said:-nothing}"
+  big=$(step h3-bf16-render run "$(pkg minimax-h3 generate)" --on "$M" --lane bf16 \
+    beats:="$(jq -cn --arg d "$OBJECT, too big for this disk" '[{description: $d, duration: 5}]')" seed:=$((R + 702)))
+  code=$(run_get "$T" h3-bf16-render .reason.code); why=$(run_get "$T" h3-bf16-render .reason.message)
+  after=$(tail -1 "$T/use.tsv" | cut -f3); grew=$(( after > before ? after - before : 0 ))
+  fits=$(step sdxl-room run "$(pkg sdxl generate)" --on "$M" prompt="$OBJECT, after a full disk" steps:=1 seed:=$((R + 703)))
+  said=$("$CLI" --json --full run watch "$(cat "$T/sdxl-room.number")" --once 2>/dev/null | jq -r '[.warnings[]?, .result.warnings[]?] | map(if type == "object" then .message else . end) | .[]' | grep -m1 'Cozy removed' || true)
+  evicted_sdxl=$(logs 'tensorfs: evicted stabilityai/sdxl')
+  if [ "$big$code" = failedmachine_disk_full ] && [[ $why == *"GB disk"* ]] && [ "$grew" -lt $((1 << 30)) ] && [ "$fits" = completed ] \
+    && { [ "$evicted_sdxl" = 0 ] || [ -n "$said" ]; }; then
+    expect disk-room PASS "H3 bf16 refused while it prepared ($why), its store grew $((grew >> 20)) MiB; SDXL ran: ${said:-no eviction needed}"
+  else
+    expect disk-room FAIL "H3 bf16 $big $code ($why), store grew $((grew >> 20)) MiB; SDXL $fits $(run_get "$T" sdxl-room .reason.message); said: ${said:-nothing}"
+  fi
 fi

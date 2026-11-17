@@ -7,7 +7,7 @@
     { "match": "generate", "says": "Rendering the image", "phase": "working", "counts": "step" },
     { "match": "refine", "says": "Refining", "phase": "working", "counts": "step" },
 
-    { "match": "answering", "says": "Writing the answer", "phase": "working", "counts": "token" },
+    { "match": "answering", "says": "Writing", "phase": "working", "counts": "token" },
     { "match": "reading", "says": "Reading the inputs", "phase": "working" },
     { "match": "upsampling prompt", "says": "Rewriting the prompt", "phase": "working", "counts": "token" },
     { "match": "thinking", "says": "Thinking", "phase": "working", "counts": "token" },

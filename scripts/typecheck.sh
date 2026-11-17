@@ -44,6 +44,7 @@ mypy_path() {
     release-gate/suites/varena/public-api) path=$top/crates/varena/examples:$path ;;
     e2e/cli/project/probe) path=$top/e2e/cli/project/probe-callee:$path ;;
     release-gate/suites/progress) path=$top/e2e/cli:$path ;;  # its check reads the page's map through e2e/cli/stages.py
+    release-gate/sessions/fixtures/user-flow) path=$top/e2e/cli:$path ;;  # its judge reads the page's map through e2e/cli/stages.py
   esac
   case $1 in release-gate | release-gate/*) path=$top/release-gate:$path ;; esac
   echo "$path"

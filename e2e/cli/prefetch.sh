@@ -38,7 +38,7 @@ pre_end() {
   [ -z "${PRE_SLOWED:-}" ] || sudo tc qdisc del dev lo root 2> /dev/null || check "prefetch: the store's link wasn't restored"
   PRE_SLOWED=''
   # Its projects closed, as nothing shows them now: what the run keeps of them is read once their files stand still.
-  for project in "$OUT/pre-switch" "$OUT/pre-ready" "$OUT/pre-quoted" "$OUT/pre-yields" "$OUT/pre-load" "$OUT/pre-local" "$OUT/pre-disk"; do
+  for project in "$OUT/pre-switch" "$OUT/pre-ready" "$OUT/pre-quoted" "$OUT/pre-yields" "$OUT/pre-load" "$OUT/pre-local" "$OUT/pre-disk" "$OUT/pre-retry"; do
     for _ in $(seq 75); do [ -e "$project/project.db-shm" ] || break; sleep 0.2; done
   done
 }
@@ -603,4 +603,87 @@ pre_disk_end() {
   sudo rm -f /mnt/pre-disk/pre-disk-filler || true
   timeout 60 "$COZY" --json machine end stand-q --force -y > "$OUT/stand-q-end.json" 2>&1 || true
   pre_end
+}
+
+# prefetch_retry (cl-1104's open items; the coordinator, 11-17: "A failed prefetch guess stays failed ... Retry it the standard way:
+# transient errors back off with attempts shown; a non-recoverable error stays failed with a one-line reason; a new guess (draft
+# edited, machine changed) clears it", and "A guess's install isn't in the machine's status activity, so the box's row never says
+# it's installing"). A project of this computer's machine, shown by a page, gets a box of e2e-slow-install while nothing serves the
+# wheel its environment takes: its guess can't connect, and fails once its machine's own tries are spent. Its row says it's tried
+# again, with the attempt; the wheel's server comes (8 MiB/s), and the guess builds the environment, its row saying it's installing
+# it and the machine's activity on the page naming the box, then it's ready. A box of e2e-prefetched naming a model no Hub has fails
+# for good: its row says why in one line, and it isn't tried again.
+prefetch_retry() {
+[ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || return 0
+step "prefetch (cl-1104): a failed guess is tried again when it may not fail again, says why when it stays, and says it's installing"
+pre_page || return 0
+local P=$OUT/pre-retry rows=$OUT/pre-retry-rows.jsonl row='' failed='' ready='' began seen _
+if curl -fsI http://127.0.0.1:47104/e2e_slow_wheel-0.0.0-py3-none-any.whl > /dev/null 2>&1; then
+  check "prefetch retry: something serves e2e-slow-install's wheel already"; pre_end; return 0
+fi
+cozy --json machine show local > "$OUT/retry-local.json" || { check "prefetch retry: machine show local"; pre_end; return 0; }
+pre_project "$P" local || { pre_end; return 0; }
+: > "$rows"
+jq -n '[{name: "retried", tool: "e2e-slow-install/still", kind: "image", fields: {instructions: "A still whose environment cannot be fetched yet."}}]' \
+  | boxes_in "$P" || { pre_end; return 0; }
+# Its machine's own tries at the wheel are spent within a minute or two (`published::patiently`): then its run has ended.
+began=$(date +%s)
+while [ $(($(date +%s) - began)) -lt 300 ]; do
+  row=$(pre_row "$P" retried)
+  [ -z "$row" ] || echo "$row" >> "$rows"
+  if J '.ready == true' <<< "${row:-null}"; then
+    check "prefetch retry: the guess got ready with nothing serving its wheel: nothing failed to be tried again"; pre_end; return 0
+  fi
+  [ -n "$row" ] && J '.stage == null' <<< "$row" && { failed=1; break; }
+  sleep 0.5
+done
+[ -n "$failed" ] || { check "prefetch retry: the guess's run didn't end in 5 min with nothing serving its wheel: its row: ${row:-none}"; pre_end; return 0; }
+echo "prefetch retry: $(($(date +%s) - began)) s on, its run ended: $row"
+python3 "$here/project/slowinstall/wheel.py" "$OUT/retry-wheel" $((8 << 20)) > "$OUT/retry-wheel.log" 2>&1 &
+PRE_WHEEL=$!
+began=$(date +%s)
+while [ $(($(date +%s) - began)) -lt 300 ]; do
+  row=$(pre_row "$P" retried)
+  [ -z "$row" ] || echo "$row" >> "$rows"
+  J '.ready == true' <<< "${row:-null}" && { ready=1; break; }
+  sleep 0.5
+done
+kill "$PRE_WHEEL" 2> /dev/null || true
+PRE_WHEEL=''
+seen=$(jq -sc '[.[] | {stage, waiting, held_back, ready}] | unique' "$rows" 2> /dev/null)
+echo "prefetch retry: its row said: ${seen:0:3000}; the wheel was asked for $(grep -c '"GET /e2e_slow_wheel' "$OUT/retry-wheel.log") times"
+[ -n "$ready" ] || check "prefetch retry: the guess that failed while its wheel had no server never came again once it had one (5 min): its row: ${row:-none}"
+jq -se '[.[] | select(.stage == null and (.waiting // "" | test("attempt [0-9]+/[0-9]+ in [0-9.]+ s$")))] | length > 0' "$rows" > /dev/null \
+  || check "prefetch retry: once its run failed its row never said it's tried again with the attempt"
+jq -se '[.[] | select(.stage == "installing it")] | length > 0' "$rows" > /dev/null \
+  || check "prefetch retry: its row never said its machine was installing it while it built the environment"
+# The machine as the page's stream shows it, this project's view: the guess's install among its activity, naming the box.
+sse "$OUT/pre-page.sse" | jq -c 'select(.type == "machine.updated" and .machine.name == "local") | .machine.status.activity[]? | select(.kind == "install")
+  | {subject, names, runs, project}' 2> /dev/null | sort -u | head -20 | sed 's/^/prefetch retry: on the page, local installs: /'
+sse "$OUT/pre-page.sse" | jq -e 'select(.type == "machine.updated" and .machine.name == "local") | .machine.status.activity[]?
+  | select(.kind == "install" and (.subject | test("e2e-slow-install")) and ((.names // []) | index("retried")))' > /dev/null 2>&1 \
+  || check "prefetch retry: the machine's activity on the page never listed the guess's install of e2e-slow-install for its box"
+
+# A request no try can answer: it stays failed, says why in a line, and isn't tried again.
+jq -n '[{name: "missing", tool: "e2e-prefetched/still", kind: "image", fields: {instructions: "A still of a model no Hub has.", models: {model: {ref: "e2e/pre-missing@0.1.0"}}}}]' \
+  | boxes_in "$P" || { pre_end; return 0; }
+: > "$OUT/pre-missing-rows.jsonl"
+began=$(date +%s)
+while [ $(($(date +%s) - began)) -lt 180 ]; do
+  row=$(pre_row "$P" missing)
+  [ -z "$row" ] || echo "$row" >> "$OUT/pre-missing-rows.jsonl"
+  J '.held_back != null' <<< "${row:-null}" && break
+  sleep 0.5
+done
+echo "prefetch retry: the box of a model no Hub has: ${row:-no row}"
+if J '.held_back != null' <<< "${row:-null}"; then
+  J '.held_back | (test("\n") | not) and length <= 241' <<< "$row" || check "prefetch retry: why its guess stays failed isn't one line: $(jq -r .held_back <<< "$row")"
+  for _ in $(seq 30); do row=$(pre_row "$P" missing); [ -z "$row" ] || echo "$row" >> "$OUT/pre-missing-rows.jsonl"; sleep 0.5; done
+  jq -se '[.[] | select(.waiting // "" | test("attempt [0-9]+/[0-9]+ in"))] | length == 0' "$OUT/pre-missing-rows.jsonl" > /dev/null \
+    || check "prefetch retry: a guess no try can answer was tried again: $(jq -sc '[.[] | .waiting] | unique' "$OUT/pre-missing-rows.jsonl")"
+  J '.held_back != null and .ready != true' <<< "${row:-null}" || check "prefetch retry: the guess no try can answer stopped saying why it failed: ${row:-no row}"
+else
+  check "prefetch retry: its row never said why its guess failed in 3 min: ${row:-no row}"
+fi
+pre_end
 }

@@ -1352,6 +1352,15 @@ video.preview.on {
   user-select: text;
   pointer-events: auto;
 }
+/* Open, the words a tool is writing come under what it was asked (xs-209), over the take before them. */
+.in-frame .answer {
+  position: relative;
+  inset: auto;
+  flex: 1;
+  min-height: 0;
+  /* In line with the words of what it was asked, in their bordered field above. */
+  padding: 4px 31px 12px;
+}
 /* A draft that goes on from a take says so across the top of its frame (cl-951): the kept part's last frame, what's kept and redone, and Cancel. */
 .lead-in {
   position: absolute;

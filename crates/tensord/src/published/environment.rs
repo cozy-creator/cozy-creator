@@ -684,9 +684,11 @@ pub(crate) fn describe_environment(python: &Path, root: &str, packages: &BTreeMa
 }
 
 /// A live project's interface and code closures, read from its source directory by the
-/// environment's Runtime.
-pub(crate) fn describe_project(python: &Path, project: &Path, stop: Option<&crate::stop::Stop>) -> Result<(Value, BTreeMap<String, String>), Failure> {
-    let reply = ask_runtime(python, &json!({"kind": "describe", "project": project, "environment_python": python}), stop)?;
+/// environment's Runtime. `held`: the callee wheels its lock pins that this machine holds, by sha256 hex, which the Runtime reads
+/// in place of their URLs (cl-1127); one before it reads them by URL.
+pub(crate) fn describe_project(python: &Path, project: &Path, held: &BTreeMap<String, std::path::PathBuf>, stop: Option<&crate::stop::Stop>)
+    -> Result<(Value, BTreeMap<String, String>), Failure> {
+    let reply = ask_runtime(python, &json!({"kind": "describe", "project": project, "environment_python": python, "wheels": held}), stop)?;
     let interface = Some(reply["interface"].clone()).filter(Value::is_object)
         .ok_or(("package_prepare_description_failed", "the project's description holds no interface".into()))?;
     Ok((interface, closures_of(&reply)))

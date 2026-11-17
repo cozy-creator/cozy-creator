@@ -269,6 +269,8 @@ class Reply(TypedDict, total=False):
     previews: int
     preview: dict[str, Json]
     name: str
+    #: an invoke's: what it built, and on demand (`on_demand`: by the parameter it was built for)
+    execution: dict[str, Json]
 
 
 class Executor:
@@ -421,6 +423,8 @@ class Broker:
         #: and its media type, as the attempt saved it or a child returned it (a held file's name has no extension)
         self.types: dict[str, str] = {}
         self.settled: dict[int, Answer] = {}
+        #: each function it called, as its calls name them
+        self.called: list[str] = []
 
     def answer(self, got: Reply) -> Answer:
         seq, kind, index = got.get("seq", 0), got.get("kind", ""), got.get("call_index", -1)
@@ -454,6 +458,7 @@ class Broker:
         if not isinstance(request, dict):
             raise Failed("a child call has no request object")
         export = got.get("export", "")
+        self.called.append(export)
         # The files a call passes by `assets=`, beside its request, at the callee's Files parameter (`calls.rs` with_files).
         if (takes := self.files_at.get(export)) is not None:
             request[takes] = document.get("assets") or []
@@ -509,6 +514,21 @@ class Broker:
                            "content_bytes": len(data), "media_type": media_type, "local": str(local)})
             self.held[digest], self.types[digest] = local, media_type
         return json.dumps(value, separators=(",", ":"), sort_keys=True), grants
+
+
+def missed(interface: Path, function: str, request: dict[str, Json], reply: Reply, called: list[str]) -> list[str]:
+    """What a call read on demand or called that its function's needs rules say its request doesn't use (cl-1103): each a miss,
+    which a machine fetches only when it's read. The rules are answered by TensorD's evaluator (crates/needs' needs-answers)."""
+    answers = os.environ.get("NEEDS_ANSWERS", "")
+    if not answers:
+        return []
+    done = subprocess.run([answers, str(interface), function], input=json.dumps(request), capture_output=True, text=True,
+                          timeout=60, check=False)
+    if done.returncode != 0:
+        raise Failed(f"{function}'s needs rules give no answer: {first_line(done.stderr)}")
+    unneeded = set(cast(list[str], json.loads(done.stdout).get("unneeded") or []))
+    built = cast(dict[str, Json], (reply.get("execution") or {}).get("on_demand") or {})
+    return sorted((set(built) | set(called)) & unneeded)
 
 
 def encode(spool: Path, frames: list[dict[str, Json]]) -> None:
@@ -1166,7 +1186,7 @@ def main() -> int:
                        "construction": construction, "input_metadata": {k: v[0] for k, v in rows_in.items()}})
         spool = out / "spool" / child
         spool.mkdir(parents=True)
-        executor.broker = Broker(child, spool, run_child, files_at)
+        broker = executor.broker = Broker(child, spool, run_child, files_at)
         executor.broker.held |= {rows_in[field][1]["digest"]: path for field, (path, _) in files.items()}
         executor.broker.types |= {row["digest"]: row["media_type"] for _, row in rows_in.values()}
         reply = executor.ask({"cmd": "invoke", "request_id": child, "entrypoint": export, "spool": str(spool),
@@ -1174,6 +1194,8 @@ def main() -> int:
                              timeout=1860)
         executor.broker = None
         (out / f"{child}.reply.json").write_text(json.dumps(reply, indent=1))
+        if wrong := missed(interface_path, export, request, reply, broker.called):
+            raise Failed(f"{export} read or called {', '.join(wrong)}, which its needs rules say this request doesn't use")
         return reply, spool
 
     #: each cell's judged output this run: a `same_as` cell is judged against its twin's here
@@ -1239,7 +1261,7 @@ def main() -> int:
                 if executor.previewing:
                     executor.send({"cmd": "preview", "request_id": request, "for_ms": 3_600_000})
                 # TensorD answers every attempt's durable requests: a call, a GPU release, a stage memo.
-                executor.broker = Broker(request, spool, run_child, files_at)
+                broker = executor.broker = Broker(request, spool, run_child, files_at)
                 executor.broker.held |= {g["digest"]: Path(g["local"]) for g in granted.values()}  # it may pass them on
                 executor.broker.types |= {g["digest"]: g["media_type"] for g in granted.values()}
                 # As long as the deadline it gave the attempt: a busy computer's 1080p decode outlasts 900 s.
@@ -1253,6 +1275,9 @@ def main() -> int:
                 wrong = [said for said in executor.preview_said if "where this VAE's latents have" not in said]
                 if wrong:
                     raise Failed(wrong[0])
+                # A machine fetches before a call starts only what its rules say the request uses (cl-1103).
+                if missing := missed(interface_path, entry, payload, reply, broker.called):
+                    raise Failed(f"it read or called {', '.join(missing)}, which {entry}'s needs rules say this request doesn't use")
                 key = f"{entry}/{name}"
                 same_as = cell.get("same_as")
                 against = ran.get(same_as) or references.get(same_as) if same_as else None if record else references.get(key)

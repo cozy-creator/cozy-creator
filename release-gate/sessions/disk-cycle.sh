@@ -3,12 +3,13 @@
 # the session's cozy: five image models (about 51 GiB of weights), the last two at once, each leaving its executor idle and
 # warm, then the first again. Every run completes: the store evicts least recently used, idle executors ended last to free what they
 # hold, and the log names what went. params:
-#   need_s   seconds the guard must buy (default 2400)
-# Dispatch: sku=rtx-4090 disk=40 cap=1 (a disk smaller than the cycle's weights).
+#   need_s   seconds the guard must buy (default 5400: its last run, 43726884909, was ended by a $1 cap at 4,577 s, in fibo)
+# Dispatch: sku=rtx-4090 disk=40 cap=1.6 (a disk smaller than the cycle's weights). Change-gated: when the store's eviction
+# or TensorD's idle-executor ends change. The CPU disk suite never ends an idle executor for room, so it can't hold this.
 . "$(dirname "$0")/lib.sh"
 status() { cozy run watch "$(runno "$1")" --once --json --full > "$OUT/$1.json" 2>&1; jq -r '.status // empty' "$OUT/$1.json"; }
 free_gib() { cozy machine show "$NAME" --json 2>/dev/null | jq -r '.status.disk_free_bytes // 0 | . / 1073741824 | floor'; }
-quote "$(param need_s 2400)"
+quote "$(param need_s 5400)"
 rent
 
 step update machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "update"

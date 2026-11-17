@@ -2,11 +2,11 @@
 // can grab the image and spin it around, 360-style, as if it were a 3d model. Currently instead they are treated just as regular videos, where you
 // push play and watch it in time." A video box whose tool declares its file an orbit (project/orbit.py's `turn`: `with_metadata`, every frame a
 // keyframe, as the `orbit` package does) lands that metadata on its version. At rest on the board it carries the orbit mark, which a plain video
-// doesn't; in Focus it has no play button or timeline, and a drag turns it, there and in full screen. Pictures to look at, at rest and in Focus,
-// at 1440×900 and 1920×1080, paper and dark: $OUT/web/orbit/<browser>.
-const { mkdirSync, readFileSync } = require('fs');
+// doesn't, and shows its front, frame 0, the picture it turns from; in Focus it has no play button or timeline, and a drag turns it, there and
+// in full screen. Pictures to look at, at rest and in Focus, at 1440×900 and 1920×1080, paper and dark: $OUT/web/orbit/<browser>.
+const { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, themed, focus, canvasVisible, canvasIdle, fixtureTool } = require('./fixtures');
+const { test, expect, themed, focus, canvasCard, canvasVisible, canvasIdle, fixtureTool, screenshotPixels } = require('./fixtures');
 const { ffmpeg, fit, leave } = require('./hands');
 
 const TURN = fixtureTool('orbit.py/turn');
@@ -52,6 +52,13 @@ test('orbit', async ({ page, project, api, cli }) => {
     const mark = await markOf(page, 'turned');
     expect.soft(mark.width, 'the mark as big as on screen as a control').toBeGreaterThanOrEqual(14);
     expect(await markOf(page, 'plain'), 'no mark on a plain video').toBeNull();
+    // Its picture at rest is its front, frame 0, the view it turns from: the marker in front, red, at its middle (cl-1131).
+    await expect.poll(async () => {
+      const body = (await canvasCard(page, 'turned'))?.body;
+      if (!body) return 'not drawn';
+      const [r, g, b] = screenshotPixels(await page.screenshot({ scale: 'css' }))(body.x + body.width / 2, body.y + body.height / 2);
+      return r > 150 && b < 100 ? 'front' : `rgb ${r},${g},${b} at its middle`;
+    }, { message: 'at rest, its front: the marker red at its middle' }).toBe('front');
   });
 
   await test.step('in Focus: no play button or timeline, and a drag turns it', async () => {
@@ -108,6 +115,103 @@ test('orbit', async ({ page, project, api, cli }) => {
         await page.screenshot({ path: join(shots, `rest-${width}x${height}-${theme}.png`) });
         await focus(page, 'turned');
         await expect(region.locator('.orbit.ready')).toBeVisible();
+        await page.screenshot({ path: join(shots, `focus-${width}x${height}-${theme}.png`) });
+      }
+    }
+  });
+});
+
+// cl-1131's GPU proof, release-gate/sessions/orbit.sh: the same hands on a real Orbit, rendered on a rental. ORBIT_MACHINE is where the
+// project's renders go (`local` in the session's $0 pre-flight); ORBIT_TOOL the tool (`orbit/orbit`, the dev home's checkout's; the local
+// fixture's path in the pre-flight); ORBIT_FIELDS its fields (JSON; `<photo>` names ORBIT_PICTURE's box). Its version says it's an orbit;
+// at rest it carries the mark; in Focus a drag turns it, there and in full screen, with no play button. The run, its file and the angles
+// in $OUT/web/orbit-gpu/result.json, with the page at rest and in Focus at 1440×900 and 1920×1080, paper and dark.
+test('orbit: a real Orbit on a GPU', { tag: '@gpu' }, async ({ page, project, api }) => {
+  const machine = process.env.ORBIT_MACHINE, want = process.env.ORBIT_TOOL;
+  test.skip(!machine || !want, 'release-gate/sessions/orbit.sh sets ORBIT_MACHINE and ORBIT_TOOL');
+  test.setTimeout(3_600_000);
+  const shots = join(process.env.OUT, 'web', 'orbit-gpu');
+  mkdirSync(shots, { recursive: true });
+  const kept = { machine, tool: want };
+  const keep = () => writeFileSync(join(shots, 'result.json'), JSON.stringify(kept, null, 2));
+  const region = page.getByRole('region', { name: 'Focused asset' });
+  await api.call('PUT', project.at('/machines'), { machines: [machine] });
+  if (process.env.ORBIT_PICTURE) await project.import(readFileSync(process.env.ORBIT_PICTURE), { name: 'photo', at: { x: 560, y: 0 } });
+  // A local fixture by its path; a checkout's first-party tool as Tools lists it.
+  let tool = want;
+  if (!want.startsWith('/')) {
+    await expect.poll(async () => (tool = (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`)).tools.find((one) => one.id === want || one.id.endsWith(`/${want}`))?.id) ?? null,
+      { message: `Tools lists ${want}`, timeout: 180_000 }).not.toBeNull();
+  }
+  kept.tool = tool;
+  await project.add({ name: 'turned', tool, kind: 'video', fields: JSON.parse(process.env.ORBIT_FIELDS ?? '{}'), at: { x: 0, y: 0 } });
+  await page.reload();
+  await expect(page.locator('.stage')).toBeVisible();
+  await expect.poll(() => canvasVisible(page, 'turned')).toBe(true);
+  await fit(page);
+
+  await test.step(`${tool} rendered on ${machine} by Focus's Render: its version says it's an orbit`, async () => {
+    await focus(page, 'turned');
+    await region.getByRole('button', { name: 'Render', exact: true }).click();
+    await expect.poll(async () => Boolean((await project.asset('turned'))?.prefixes?.at(-1)?.main), { message: "turned's take", timeout: 45 * 60_000, intervals: [5_000] }).toBe(true);
+    const take = (await project.asset('turned')).prefixes.at(-1);
+    Object.assign(kept, { run: take.run, file: take.main, project: project.path });
+    keep();
+    // Its file, for the session's ffprobe: the project goes with the test.
+    const file = join(project.path, take.main.path);
+    await expect.poll(() => existsSync(file), { message: `${file} on disk` }).toBe(true);
+    copyFileSync(file, join(shots, 'take.mp4'));
+    expect(take.main.metadata?.orbit, "its version's file says it's an orbit").toEqual(ORBIT);
+    await leave(page);
+  });
+  await expect.poll(() => markOf(page, 'turned'), { message: 'the orbit mark at rest' }).not.toBeNull();
+
+  await test.step('in Focus: no play button or timeline; a drag turns it, there and in full screen', async () => {
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await focus(page, 'turned');
+    const orbit = region.getByRole('slider', { name: 'Turn', exact: true });
+    await expect(region.locator('.orbit.ready')).toBeVisible({ timeout: 60_000 });
+    await expect(region.locator('.tl-transport, .tl-take'), 'no timeline').toHaveCount(0);
+    await expect(region.getByRole('button', { name: /^(Play|Pause)$/ }), 'no play button').toHaveCount(0);
+    kept.angles = [];
+    for (const [from, to, angle, full] of [[0.25, 0.5, 90, false], [0.25, 0.75, 180, true]]) {
+      let turn = await orbit.boundingBox();
+      if (full) {
+        await region.locator('.orbit-bar').getByRole('button', { name: 'Front', exact: true }).click();
+        await expect.poll(async () => Number(await orbit.getAttribute('data-angle'))).toBe(0);
+        await region.locator('.orbit-bar').getByRole('button', { name: 'Full screen', exact: true }).click();
+        await expect.poll(() => page.evaluate(() => Boolean(document.fullscreenElement?.matches('.focus-viewer[data-full]')))).toBe(true);
+        turn = await grown(orbit, turn);
+      }
+      const y = turn.y + turn.height / 2;
+      await page.mouse.move(turn.x + turn.width * from, y);
+      await page.mouse.down();
+      await page.mouse.move(turn.x + turn.width * to, y, { steps: 12 });
+      await page.mouse.up();
+      await expect.poll(async () => Number(await orbit.getAttribute('data-angle')), { message: `a drag of ${to - from} of its width turns it ${angle}°` }).toBeCloseTo(angle, -1);
+      kept.angles.push({ full, angle: Number(await orbit.getAttribute('data-angle')), frame: Number(await orbit.getAttribute('data-frame')), frames: Number(await orbit.getAttribute('data-frames')) });
+      keep();
+      await page.screenshot({ path: join(shots, `turned-${angle}${full ? '-full' : ''}.png`) });
+    }
+    await page.keyboard.press('Escape');
+    await page.emulateMedia({ reducedMotion: null });
+  });
+
+  await test.step('to look at: at rest and in Focus at 1440×900 and 1920×1080, paper and dark', async () => {
+    for (const theme of ['paper', 'dark']) {
+      if (await region.count()) await leave(page);
+      await project.look(theme);
+      await page.reload();
+      await expect(page.locator('.stage')).toBeVisible();
+      await themed(page, theme);
+      for (const [width, height] of [[1440, 900], [1920, 1080]]) {
+        if (await region.count()) await leave(page);
+        await page.setViewportSize({ width, height });
+        await canvasIdle(page);
+        await fit(page);
+        await page.screenshot({ path: join(shots, `rest-${width}x${height}-${theme}.png`) });
+        await focus(page, 'turned');
+        await expect(region.locator('.orbit.ready')).toBeVisible({ timeout: 60_000 });
         await page.screenshot({ path: join(shots, `focus-${width}x${height}-${theme}.png`) });
       }
     }

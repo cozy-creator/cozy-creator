@@ -37,7 +37,7 @@ signin() {
 rental_end() {
 step "a rental's end, signed out and with a refused key (cl-875)"
 [ -n "${E2E_HUB_LOG:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] || { check "rental_end: e2e/isolated.sh named no Hub log or email to sign in with"; return; }
-local keys=$HOME/.cozy/keys key rental pid code k1 k2 pod gone held
+local keys=$HOME/.cozy/keys key rental pid code k1 k2 pod gone held quotes asked
 # Key files stay out of $OUT, which is published.
 held=$(mktemp -d)
 signin "$E2E_HUB_EMAIL" > "$OUT/rental-login.json" || { check "rental_end: cozy login failed: $(tail -c 300 "$OUT/rental-login.json")"; return; }
@@ -50,6 +50,7 @@ cp "$key" "$held/laptop-key.json"
 # `--ssh` with no path: the default key. The order stands once its Hub accepts it, which an end needs, not a ready
 # machine. The follower is killed outright, as a closed terminal kills it: it ends nothing.
 [ -f "$HOME/.ssh/id_ed25519.pub" ] || ssh-keygen -q -t ed25519 -N '' -f "$HOME/.ssh/id_ed25519"
+quotes=$(grep -cF '"operation":"POST /v1/rental-quotes"' "$OUT/hub-kept.jsonl" 2> /dev/null || true)
 cozy --json machine rent cpu --ssh -y > "$OUT/rental-rent.ndjson" 2> "$OUT/rental-rent.err" & pid=$!
 for _ in $(seq 180); do
   rental=$(jq -r 'select(.type? == "rental.accepted") | .rental_id // empty' "$OUT/rental-rent.ndjson" 2> /dev/null | tail -1 || true)
@@ -62,8 +63,9 @@ wait "$pid" 2> /dev/null || true
 echo "rented $rental"
 # cl-1076, Paul 11-16: "300GB worker discs by default". A rent that names no disk asks its Hub for 300 GB: the quote it
 # made first, as hubcheck keeps it (this Hub's cpu product would be bought at its image's own 512 GB either way).
-grep -F '"operation":"POST /v1/rental-quotes"' "$OUT/hub-kept.jsonl" 2> /dev/null | jq -se 'last.body.container_disk_gb == 300' > /dev/null \
-  || check "rental_end: machine rent cpu didn't ask for 300 GB: $(grep -F rental-quotes "$OUT/hub-kept.jsonl" 2> /dev/null | tail -1 | head -c 300)"
+asked=$(grep -F '"operation":"POST /v1/rental-quotes"' "$OUT/hub-kept.jsonl" 2> /dev/null | tail -n +$((${quotes:-0} + 1)) || true)
+[ -n "$asked" ] && jq -se 'all(.body.container_disk_gb == 300)' <<< "$asked" > /dev/null \
+  || check "rental_end: machine rent cpu didn't ask for 300 GB: $(printf '%s' "${asked:-hubcheck kept no quote of it}" | head -c 300)"
 
 step "a rental says what it rents until its Hub names its host, then the host's word (cl-888, Paul 11-12)"
 # One host, one name: the Hub names a pod by its host once it's placed there, and until then the rental is "Renting a CPU…",

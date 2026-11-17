@@ -159,6 +159,22 @@ rc_floor() {
   else log "publishing e2e-rcfloor was refused: $(tail -c 300 "$E2E_RCFLOOR_PUBLISHED" | tr '\n' ' ')"; fi
 }
 
+# oldcall (old_call_files, cl-1160): e2e/cli/oldcall as the admin's account's `e2e-oldcall` 0.1.0, locked on Runtime 0.46.0 as cozy
+# 0.25.0's packages are. A refusal is the cell's to report.
+oldcall() {
+  local copy=$seed/packages/e2e-oldcall account
+  account=$(cozy --json whoami | jq -r '.account // empty')
+  rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$here/cli/oldcall" "$copy"
+  if (cd "$copy" && cozy --json package publish -y) > "$seed/publish-e2e-oldcall.json" 2>&1; then
+    export E2E_OLDCALL=$account/e2e-oldcall
+    log "published $E2E_OLDCALL 0.1.0 ($(grep -A1 -x 'name = "cozy-runtime"' "$copy/uv.lock" 2> /dev/null | tail -1))"
+  else
+    E2E_OLDCALL_REFUSED=$(tail -c 400 "$seed/publish-e2e-oldcall.json" | tr '\n' ' ')
+    export E2E_OLDCALL_REFUSED
+    log "publishing e2e-oldcall was refused: $E2E_OLDCALL_REFUSED"
+  fi
+}
+
 # next (self_update, cl-978): the hub suite's weightless echo as the admin's account's `e2e-next` 0.1.0, needing cozy-runtime>=0.46.0,
 # which only a cozy of the Latest's line runs.
 next() {
@@ -274,7 +290,7 @@ case $key in
   cli:entrypoints | cli:executors | cli:projectdb-cancel | cli:local-wake | cli:containment | cli:containment-web | cli:projectvault-static | cli:projectvault-static-distros) needs='' ;;
   # forward's run that moves local's Runtime for its project (cl-1055).
   cli:selfupdate) needs='next scratch' ;;
-  # llm_write's Qwen3.5 0.8B (xs-204).
+  # llm_write's Qwen3.5 0.8B (xs-204), which llm_stream and responses_sdk run too (xs-209).
   cli:runs) needs='packages birefnet qwen' ;;
   # project_runtime's probe (cl-1055).
   cli:local-code) needs='packages birefnet scratch' ;;
@@ -296,7 +312,7 @@ case $key in
   # plan_fetch quotes a fine-tune composed of a base's parts (cl-1071).
   cli:plan) needs='packages birefnet downloads composed' ;;
   # A published tool of two models that share a VAE, which a box's machine fetches before any render (cl-1104).
-  cli:prefetch) needs='packages pre' ;;
+  cli:prefetch | cli:prefetch-retry) needs='packages pre' ;;
   cli:) needs='packages birefnet qwen downloads spare loras vaes fits parts composed lorabase calls uninstall ltxlora pre' ;;
   # shared_scratch's probe and its warm BiRefNet (cl-984).
   cli:projectvault) needs='packages birefnet scratch' ;;
@@ -416,6 +432,10 @@ if [ -n "$needs" ]; then
   # resolves it on each (hub_away's Windows-only dependency). A cohort pin would lock it to this runner alone.
   publish "$tools"
   for p in qwen-image-2 minimax-h3 sdxl birefnet; do publish "$packages/$p" cohort; done
+  # The LLM Write tool the page's stream and the Responses API run by name (xs-209): qwen3's, or qwen3.5's before it.
+  case $key in
+    cli:runs | cli:) for p in qwen3 qwen3.5; do [ ! -d "$packages/$p" ] || { publish "$packages/$p" cohort; break; }; done ;;
+  esac
   [[ " $needs " != *" scratch "* ]] || publish "$here/cli/scratch"
   # MOSS Image, which takes words only: a mention it can't use is crossed out (cl-944).
   case $key in cli: | cli:web-suite) publish "$packages/moss-image" cohort ;; esac
@@ -440,7 +460,8 @@ if [ -n "$needs" ]; then
       relay
       held
       final
-      rc_floor ;;
+      rc_floor
+      oldcall ;;
   esac
   if [[ " $needs " == *" birefnet "* || " $needs " == *" qwen "* || " $needs " == *" downloads "* || " $needs " == *" loras "* || " $needs " == *" parts "* \
     || " $needs " == *" disk "* || " $needs " == *" lorabase "* || " $needs " == *" ltxlora "* || " $needs " == *" enhancer "* ]]; then
@@ -454,15 +475,14 @@ if [ -n "$needs" ]; then
     mirror hf://ZhengPeng7/BiRefNet@e2bf8e4460fc8fa32bba5ea4d94b3233d367b0e4 zhengpeng7/birefnet fp16 0.1.0 https://huggingface.co/ZhengPeng7/BiRefNet
   fi
   case $shard in local-code | '') final_model ;; esac
-  # The real Qwen3.5 0.8B, which an LLM tool runs on the CPU (xs-204); it also stands in for the downloads' 1.6 GB.
+  # The real Qwen3.5 0.8B, abliterated (huihui-ai's, as qwen3's models are: se-145), which an LLM tool runs on the CPU (xs-204).
   if [[ " $needs " == *" qwen "* ]]; then
-    mirror hf://Qwen/Qwen3.5-0.8B@2fc06364715b967f1860aea9cf38778875588b17 qwen/qwen3.5-0.8b bf16 0.1.0 https://huggingface.co/Qwen/Qwen3.5-0.8B
+    mirror hf://huihui-ai/Huihui-Qwen3.5-0.8B-abliterated@4813135658fe51b2e535b8e77927d2f23909ce42 huihui-ai/huihui-qwen3.5-0.8b-abliterated \
+      bf16 0.1.0 https://huggingface.co/huihui-ai/Huihui-Qwen3.5-0.8B-abliterated
   fi
   if [[ " $needs " == *" downloads "* ]]; then
-    if [[ " $needs " != *" qwen "* ]]; then
-      random_weights "$seed/qwen3.5-0.8b.safetensors" 1640
-      mirror "$seed/qwen3.5-0.8b.safetensors" qwen/qwen3.5-0.8b bf16 0.1.0 https://huggingface.co/Qwen/Qwen3.5-0.8B --source-format as-is
-    fi
+    random_weights "$seed/qwen3.5-0.8b.safetensors" 1640
+    mirror "$seed/qwen3.5-0.8b.safetensors" qwen/qwen3.5-0.8b bf16 0.1.0 https://huggingface.co/Qwen/Qwen3.5-0.8B --source-format as-is
     random_weights "$seed/fontbox.safetensors" 115
     mirror "$seed/fontbox.safetensors" lilylilith/fontbox bf16 0.1.0 https://huggingface.co/lilylilith/fontbox --source-format as-is
     rm -f "$seed"/*.safetensors
@@ -555,7 +575,7 @@ PYCALLS
     requests=plain
     [[ " $needs " != *" enhancers "* ]] || requests='words edit plain'
     for request in $requests; do
-      for slot in model:16 expander:96 rewriter:96; do
+      for slot in model:16 expander-t2i:96 expander-i2i:96; do
         random_weights "$seed/enhance.safetensors" "${slot#*:}" "enhance-$request-${slot%:*}"
         mirror "$seed/enhance.safetensors" "e2e/enhance-$request-${slot%:*}" bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is
         rm -f "$seed/enhance.safetensors"

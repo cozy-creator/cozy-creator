@@ -13,11 +13,11 @@ import { carriedAt, carriedFile, LET_GO } from "./carry"
 import { ClipRange } from "./ClipRange"
 import { useCanvasStore, useElement } from "./context"
 import { atDefault, fieldsOf, fieldWords, fullRows, heldBeyond, mainText, newRow, onFace, optionWord, totalOf, WANTED } from "./controls"
-import { Ghosts, Spread, Thumb } from "./Media"
+import { Answer, Ghosts, Spread, Thumb, useWords } from "./Media"
 import { MentionText } from "./MentionText"
 import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, timecode } from "./ranges"
 import { RenderTime } from "./RenderTime"
-import { makes, watched } from "./shown"
+import { makes, makingRun, watched } from "./shown"
 import { mentionsIn, type Row, rowsIn, textsIn } from "./text"
 import { UNSUPPORTED, UnsupportedNote } from "./Unsupported"
 import { WhenOff, whenOff } from "./When"
@@ -764,6 +764,8 @@ export function InFrame({ name, view }: { name: string; view: ElementView }) {
   const [open, setOpen] = useState<"first" | number | null>("first")
   const [writing, setWriting] = useState<"first" | number | null>(null)
   const panel = useId()
+  // A text tool's words as its run writes them, under what it was asked (xs-209).
+  const words = useWords(view, makingRun(view))
   const fields = view.asset ? framedOf(view, fieldsOf(view.asset, tools)) : []
   if (!fields.length) return null
   const [first, list] = fields
@@ -779,6 +781,7 @@ export function InFrame({ name, view }: { name: string; view: ElementView }) {
       <div className="in-frame">
         <Backdrop name={name} view={view} mentions={mentions} />
         <ControlRow name={name} field={first} view={view} focus={store.focusing === name} named={false} framed />
+        {words !== undefined && <Answer words={words} writing />}
       </div>
     )
   }

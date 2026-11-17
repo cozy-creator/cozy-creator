@@ -112,7 +112,7 @@ echo "once: request keys kept under the fixture keys: ${kept:-0}"
 # then with hubcheck stopped, so nothing answers at the Hub's address, run again. The lock names its index: no Hub is asked.
 hub_away() {
 step "locked local code runs while the Hub doesn't answer (cl-809)"
-local dir=$OUT/hub-away addr exe=''
+local dir=$OUT/hub-away addr
 counting | package_at "$dir" hub_away '"cozy-runtime>=0.30", "msgspec>=0.19", "minimax-h3-tools ; sys_platform == '"'"'win32'"'"'"' \
   "$(printf '\n[tool.uv.sources]\nminimax-h3-tools = { index = "tensorhub" }')"
 python3 "$here/../package-lock.py" --cozy "$COZY" "$dir" --root > "$OUT/hub-away-lock.json" 2>&1 || { check "hub away: the lock API failed: $(tail -c 300 "$OUT/hub-away-lock.json")"; return; }
@@ -125,12 +125,7 @@ curl -sS -m 5 -o /dev/null "http://$addr/" 2> /dev/null && check "hub away: some
 if cell hub-away-2 "$dir" "text=four five"; then
   grep -q '"words": *2\b' "$OUT/hub-away-2.ndjson" || check "hub away: the reply is not 2 words"
 fi
-# The Hub back, at the same address, for what follows.
-[ "${RUNNER_OS:-}" != Windows ] || exe=.exe
-mkdir -p "$OUT/hub-again"
-"${RUNNER_TEMP:-$OUT}/hubcheck$exe" --hub "${HUB_CHECK_UPSTREAM:?}" --out "$OUT/hub-again" --listen "$addr" --keep 'POST /v1/run-reports' > /dev/null 2> "$OUT/hub-again/hubcheck.log" &
-HUB_CHECK=$!
-for _ in $(seq 30); do curl -sS -m 5 -o /dev/null "http://$addr/openapi.yaml" 2> /dev/null && break; sleep 1; done
+hub_check_again "$addr"
 }
 
 # uv answers an index's page from its cache for the page's max-age (PyPI's: 10 minutes): a release newer than the page it

@@ -276,7 +276,7 @@ vault_helper() {
     archive=$(python3 "$E2E/../scripts/prepare-securefs.py" --target "$target" --out-dir "$dir") || return 1
   else
     archive=$dir/securefs-linux-$arch-release.zip
-    curl -fsSL --retry 3 -o "$archive" "https://github.com/netheril96/securefs/releases/download/v2.0.0/securefs-linux-$arch-release.zip" || return 1
+    curl -fsSL --retry 5 --retry-all-errors -o "$archive" "https://github.com/netheril96/securefs/releases/download/v2.0.0/securefs-linux-$arch-release.zip" || return 1
     [ "$(sha256sum "$archive" | cut -d ' ' -f 1)" = "$digest" ] || { echo "$archive: not the glibc pin's digest" >&2; return 1; }
   fi
   python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extract("securefs", sys.argv[2])' "$archive" "$dir" && chmod 755 "$dir/securefs" || return 1

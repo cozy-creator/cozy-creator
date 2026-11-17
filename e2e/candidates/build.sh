@@ -14,14 +14,14 @@ exe=''
 [ "${RUNNER_OS:-}" != Windows ] || exe=.exe
 mkdir -p "$out"
 
-# reuse: the candidate an earlier cozy-creator e2e run built from the same build inputs. Only a merge group's or a
-# dispatch's run counts: a pull request's runs the PR's own workflow.
+# reuse: the candidate an earlier cozy-creator e2e run built from the same build inputs. Only a merge group's, a dispatch's or
+# an RC push's run counts (rc-e2e.yaml, rc-os.yaml: merged code): a pull request's runs the PR's own workflow.
 reuse() {
   local run
   for run in $(gh api "repos/cozy-creator/cozy-creator/actions/artifacts?name=$name" \
     --jq '.artifacts[] | select(.expired | not) | .workflow_run.id'); do
-    gh api "repos/cozy-creator/cozy-creator/actions/runs/$run" --jq '.event + " " + .path' \
-      | grep -qxE '(merge_group|workflow_dispatch) \.github/workflows/e2e\.yaml' || continue
+    gh api "repos/cozy-creator/cozy-creator/actions/runs/$run" --jq '.event + " " + (.path | split("@")[0])' \
+      | grep -qxE '(merge_group|workflow_dispatch) \.github/workflows/e2e\.yaml|(push|workflow_dispatch) \.github/workflows/rc-(e2e|os)\.yaml' || continue
     gh run download "$run" -R cozy-creator/cozy-creator -n "$name" -D "$out" > /dev/null || continue
     echo "$what: reused $name of https://github.com/cozy-creator/cozy-creator/actions/runs/$run" >&2
     return 0
@@ -82,10 +82,12 @@ elif [ "$what" = cozy ]; then
     COZY_COMMIT=$sha cargo build --release --locked --offline -p cozy --bin cozy
     git checkout -- Cargo.toml Cargo.lock)
   (cd "$stage_src"
-    COZY_COMMIT=$(git rev-parse HEAD) cargo build --release --locked -p api --example stage-code)
+    COZY_COMMIT=$(git rev-parse HEAD) cargo build --release --locked -p api --example stage-code -p needs --example needs-answers)
   # cozy is one file (00e565d72): varena is the TensorFS wheel's.
   cp "$src/target/release/cozy$exe" "$out/cozy$exe"
   cp "$stage_src/target/release/examples/stage-code$exe" "$out/stage-code$exe"
+  # The cpu suite's judge of each call against its function's needs rules (cl-1103).
+  cp "$stage_src/target/release/examples/needs-answers$exe" "$out/needs-answers$exe"
 elif [ "$what" = cozy-before ]; then
   # A release's version, no +dev: it updates itself. Its TensorFS crate is the line's, whose protocol is what it runs. No page.
   (cd "$src"

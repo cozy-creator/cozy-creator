@@ -339,6 +339,12 @@ CELLS: list[Cell] = [
     {"entry": "generate", "name": "beat", "payload": {
         "beats": [{"duration": 5, "description": {"text": "a red fox runs across a snowy field"}}], "seed": 7,
         "quality": "full"}},
+    # cl-1103: a pickup whose take has no latents opens its new part on the take's frame, by FL2VA, which its rules must
+    # fetch up front (drive.py `missed`); it then joins the take's kept start.
+    {"entry": "generate", "name": "pickup-take", "payload": {
+        "beats": [{"duration": 5, "description": {"text": "the fox stops and looks back"}}], "seed": 7, "quality": "full",
+        "pickup": {"take": {}, "out_frame": 124}},
+     "files": {"pickup.take.file": clip(130)}},
     {"entry": "upscale", "name": "1080p", "payload": {"video": {"description": "a red fox in the snow"}, "to": "1080p",
                                                       "strength": 0.7},
      "files": {"video.file": clip(25)}},

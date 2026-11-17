@@ -154,6 +154,9 @@ jobs:
         if: matrix.name == 'linux-x86_64'
         run: |
           wheel=$(ls dist/*-cp311-abi3-*.whl)
+          # A release has no fault injection (`fault-hooks` is dev-build.yaml's alone).
+          uv run --no-project --python 3.12 --with "$wheel" python -c \
+            'import tensorfs._ext as e; assert not hasattr(e, "_io_fail_pieces"), "a release carries the fault hook"'
           uv run --no-project --python 3.12 --with "$wheel" --with mypy==2.4.1 \
             --with 'torch @ https://download.pytorch.org/whl/cpu/torch-2.15.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl' \
             python -m mypy.stubtest --allowlist stubtest-allowlist.txt tensorfs._ext tensorfs.api tensorfs.executor tensorfs.raw

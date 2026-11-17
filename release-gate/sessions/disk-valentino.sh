@@ -8,7 +8,8 @@
 #      either fits beside it or is refused machine_disk_full with the sizes.
 #   4. H3 bf16 (130 GiB, more than the disk) is refused machine_disk_full while it prepares, with nothing downloaded.
 #   5. Every byte of the store is a model `model ls` names.
-# Each package is the release its interface was read at (`cozy run <fn>@<release> --describe`, 11-05).
+# Each package is its newest final, as users get it: the 11-05 pins (qwen-image-2 0.3.0, sdxl 0.3.0, minimax-h3 0.4.0) predate
+# the 0.22 hard cut, and 0.3.0 imports `cozy_runtime.stepcache`, which today's Runtime lacks (session 43725390334, xs-208).
 # params:
 #   need_s      seconds the guard must buy (default 2700)
 . "$(dirname "$0")/lib.sh"
@@ -31,11 +32,11 @@ read -r free stored listed total < <(disk); say "pod TensorD $v; disk $(gib "$to
 
 # 1. Both Qwen models and SDXL, the turbo one last so its executor is the newest idle one. A 5 s H3 with no reference
 # reads 48 GiB (no transformer_ref), so it must make room on a 70 GB disk (`-f disk=70`) and fits beside them on 100 GB.
-step qwen run qwen-image-2/generate@0.3.0 --on "$NAME" --lane int8 prompt="a red lighthouse on a cliff at dawn, photo" seed:=$RANDOM || fail "qwen"
+step qwen run qwen-image-2/generate --on "$NAME" --lane int8 prompt="a red lighthouse on a cliff at dawn, photo" seed:=$RANDOM || fail "qwen"
 [ "$(status qwen)" = completed ] || fail "qwen $(status qwen): $(reason qwen)"
-step sdxl run sdxl/generate@0.3.0 --on "$NAME" prompt="a copper kettle on a stove, morning light, photo" seed:=$RANDOM || fail "sdxl"
+step sdxl run sdxl/generate --on "$NAME" prompt="a copper kettle on a stove, morning light, photo" seed:=$RANDOM || fail "sdxl"
 [ "$(status sdxl)" = completed ] || fail "sdxl $(status sdxl): $(reason sdxl)"
-step turbo run qwen-image-2/generate_turbo@0.3.0 --on "$NAME" --lane int8 prompt="a green tram in the rain at night, photo" seed:=$RANDOM || fail "turbo"
+step turbo run qwen-image-2/generate_turbo --on "$NAME" --lane int8 prompt="a green tram in the rain at night, photo" seed:=$RANDOM || fail "turbo"
 [ "$(status turbo)" = completed ] || fail "turbo $(status turbo): $(reason turbo)"
 read -r free stored listed total < <(disk); say "after Qwen: $(gib "$free") free, the store $(gib "$stored")"
 
@@ -44,11 +45,11 @@ bad=()
 SHOT="A woman in a yellow raincoat walks along a wet pier at dusk, gulls overhead, the camera tracking beside her."
 before=$(cozy machine logs "$NAME" tensord -n 0 2>/dev/null | wc -l)
 mem_before=$(cozy machine logs "$NAME" memory -n 0 2>/dev/null | wc -l)
-step h3 run minimax-h3/generate@0.4.0 --on "$NAME" --lane int8 prompt="$SHOT" duration_s:=5.0 seed:=$RANDOM & H3P=$!
+step h3 run minimax-h3/generate --on "$NAME" --lane int8 prompt="$SHOT" duration_s:=5.0 seed:=$RANDOM & H3P=$!
 # Once H3 has made its room (its warning says what went), so turbo's ask can't race H3's room check.
 until { [ -n "$(rn h3)" ] && status h3 > /dev/null && warned h3 | grep -q evicted; } || ! kill -0 "$H3P" 2>/dev/null; do sleep 5; done
 t0=$(date +%s)
-step turbo2 run qwen-image-2/generate_turbo@0.3.0 --on "$NAME" --lane int8 prompt="a blue kite over a beach, photo" seed:=$RANDOM
+step turbo2 run qwen-image-2/generate_turbo --on "$NAME" --lane int8 prompt="a blue kite over a beach, photo" seed:=$RANDOM
 t2=$(status turbo2) t2_s=$(( $(date +%s) - t0 ))
 wait "$H3P"; hs=$(status h3)
 [ -n "$(rn h3)" ] || fail "H3 made no run: $(tail -4 "$OUT/h3.txt" | tr '\n' ' ')"
@@ -74,7 +75,7 @@ esac
 # 4. More than the disk.
 read -r free stored listed total < <(disk)
 t0=$(date +%s)
-step bf16 run minimax-h3/generate@0.4.0 --on "$NAME" --lane bf16 prompt="$SHOT" duration_s:=5.0 seed:=$RANDOM
+step bf16 run minimax-h3/generate --on "$NAME" --lane bf16 prompt="$SHOT" duration_s:=5.0 seed:=$RANDOM
 bs=$(status bf16) bs_s=$(( $(date +%s) - t0 )); read -r free2 stored2 _ _ < <(disk)
 grew=$(( stored2 > stored ? stored2 - stored : 0 ))
 say "H3 bf16 $bs in ${bs_s}s: $(reason bf16); the store grew $(gib "$grew")"

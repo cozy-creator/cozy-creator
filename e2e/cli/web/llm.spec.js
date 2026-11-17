@@ -246,7 +246,7 @@ async function holdMaking(page) {
 }
 
 // xs-204's GPU proof, release-gate/sessions/llm-tools.sh: the same hands on a real model, its renders on a rental. LLM_MACHINE is where the
-// project's renders go (`local` in the session's $0 pre-flight); LLM_TOOL the tool (`qwen3.6/write`, the dev home's checkout's; a local
+// project's renders go (`local` in the session's $0 pre-flight); LLM_TOOL the tool (`qwen3/write`, the dev home's checkout's; a local
 // fixture's path in the pre-flight); LLM_PICTURE and LLM_VIDEO the files, boxes named `photo` and `clip` so their names say nothing of
 // them; LLM_SEES_PICTURE and LLM_SEES_VIDEO what an answer that saw each says (case-insensitive patterns). A Text box with words and the
 // LLM on it rendered twice: two versions of words, different, each whole in Focus and the newest on the box at rest. The LLM let go on

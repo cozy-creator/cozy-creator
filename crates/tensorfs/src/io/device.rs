@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::{AcqRel, Relaxed}};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 use std::time::Instant;
 
 use super::cuda::{self, CUcontext, CUevent, CUstream, CtxGuard};
@@ -16,6 +16,31 @@ const READERS: usize = 8;
 const RING: usize = 2;
 const STAGING: usize = READERS * RING;
 const STREAMS: usize = 4;
+
+/// A test's faults (cr-318, `_io_fail_pieces`): staged pieces to let pass, then how many to fail.
+#[cfg(feature = "fault-hooks")]
+static FAULT_AFTER: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "fault-hooks")]
+static FAULT_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// The next `count` staged pieces read on any device fail, after `after` more pass: a reader
+/// failing mid-run, for the release gate's fault case. Dev builds only (`fault-hooks`).
+#[cfg(feature = "fault-hooks")]
+pub fn fail_pieces(after: usize, count: usize) {
+    FAULT_AFTER.store(after, Relaxed);
+    FAULT_COUNT.store(count, Relaxed);
+}
+
+#[cfg(feature = "fault-hooks")]
+fn injected() -> bool {
+    if FAULT_COUNT.load(Relaxed) == 0 {
+        return false;
+    }
+    if FAULT_AFTER.fetch_update(AcqRel, Relaxed, |n| n.checked_sub(1)).is_ok() {
+        return false;
+    }
+    FAULT_COUNT.fetch_update(AcqRel, Relaxed, |n| n.checked_sub(1)).is_ok()
+}
 
 fn failed(copy: usize, error: cuda::Error) -> Error {
     let kind = match error {
@@ -209,14 +234,21 @@ impl Near {
 struct Engine {
     device: i32,
     ctx: CUcontext,
-    streams: Vec<cuda::Stream>,
-    queues: Vec<Mutex<()>>,
+    /// Lane sets no run holds. A run takes one (or makes one) and gives it back, so its copies,
+    /// its timing and its completion are its own, whatever runs beside it (cr-318).
+    lanes: Mutex<Vec<Lanes>>,
     near: Near,
     free: Mutex<Vec<Slot>>,
-    serial: Mutex<()>,
+    /// Told whenever slots go back to `free`: a run waiting for a ring takes one then.
+    freed: Condvar,
+    /// Shared by runs; exclusive for `recover` and `drain`, which assume no engine work in flight.
+    serial: RwLock<()>,
+    /// Runs holding staging rings now: with none, a run that finds no slot free never gets one.
+    holding: AtomicUsize,
+    /// The engine's reader threads, started as runs need them and kept.
+    readers: Arc<Readers>,
     seen: Mutex<VecDeque<(usize, usize)>>,
     held: Mutex<Vec<Retained>>,
-    staged: Mutex<Vec<Slot>>,
     /// Completed events of this context, reused: a run records a start and an end on every
     /// stream, and a wait for each foreign stream.
     events: Mutex<Vec<Event>>,
@@ -314,21 +346,24 @@ fn checked_take<T, E>(
     Ok(std::mem::take(owners))
 }
 
-// A scoped reader may unwind before its normal ring return. Keep those actual slots
-// in the engine's retained set instead of running GPU-owning Slot destructors there.
+// A reader may unwind before its normal ring return. Keep those actual slots in its run's
+// retained set, never another run's, instead of running GPU-owning Slot destructors there.
 struct ReaderRing<'a> {
-    engine: &'a Engine,
+    staged: &'a Mutex<Vec<Slot>>,
     slots: Vec<Slot>,
 }
 impl Drop for ReaderRing<'_> {
     fn drop(&mut self) {
-        for slot in self.slots.drain(..) { self.engine.hold_slot(slot); }
+        self.staged.lock().unwrap_or_else(|e| e.into_inner()).append(&mut self.slots);
     }
 }
 
 struct RunHold<'a> {
     engine: &'a Engine,
     owners: Option<Retained>,
+    /// This run's slots a failed or unwound reader kept: they leave with this run's owners only.
+    staged: &'a Mutex<Vec<Slot>>,
+    lanes: &'a Lanes,
 }
 
 impl RunHold<'_> {
@@ -336,13 +371,13 @@ impl RunHold<'_> {
         let mut owners = self.owners.take().expect("run owners taken once");
         owners
             .slots
-            .append(&mut self.engine.staged.lock().unwrap_or_else(|e| e.into_inner()));
+            .append(&mut self.staged.lock().unwrap_or_else(|e| e.into_inner()));
         owners
     }
 
     fn finish(mut self, complete: bool) -> cuda::Result<()> {
         let owners = self.take();
-        self.engine.release(vec![owners], complete)
+        self.engine.release(vec![owners], complete, std::slice::from_ref(self.lanes))
     }
 }
 
@@ -386,7 +421,7 @@ pub(super) fn drain(device: i32) -> cuda::Result<()> {
         .cloned();
     match engine {
         Some(engine) => {
-            let _serial = engine.serial.lock().unwrap_or_else(|e| e.into_inner());
+            let _only = engine.serial.write().unwrap_or_else(|e| e.into_inner());
             engine.recover()
         }
         None => Ok(()),
@@ -422,10 +457,8 @@ impl Engine {
         if let Some(engine) = engines.get(&device) {
             return Ok(engine.clone());
         }
-        let streams: Vec<_> = (0..STREAMS)
-            .map(|_| cuda::Stream::new(device))
-            .collect::<cuda::Result<_>>()?;
-        let ctx = streams[0].context();
+        let lanes = Lanes::new(device)?;
+        let ctx = lanes.streams[0].context();
         let near = Near::of(device);
         // Pinned pages land on the allocating thread's node.
         let at = ctx as usize;
@@ -444,14 +477,15 @@ impl Engine {
         let engine = Arc::new(Engine {
             device,
             ctx,
-            streams,
-            queues: (0..STREAMS).map(|_| Mutex::new(())).collect(),
+            lanes: Mutex::new(vec![lanes]),
             near,
             free: Mutex::new(free),
-            serial: Mutex::new(()),
+            freed: Condvar::new(),
+            serial: RwLock::new(()),
+            holding: AtomicUsize::new(0),
+            readers: Arc::default(),
             seen: Mutex::new(VecDeque::new()),
             held: Mutex::new(Vec::new()),
-            staged: Mutex::new(Vec::new()),
             events: Mutex::new(Vec::new()),
         });
         engines.insert(device, engine.clone());
@@ -470,9 +504,9 @@ impl Engine {
         false
     }
 
-    fn wait(&self, event: &Event, streams: usize) -> cuda::Result<()> {
+    fn wait(&self, lanes: &Lanes, event: &Event, streams: usize) -> cuda::Result<()> {
         let _ctx = CtxGuard::enter(self.ctx)?;
-        for stream in &self.streams[..streams] {
+        for stream in &lanes.streams[..streams] {
             // SAFETY: a live stream and event of this engine's context, which is current.
             cuda::check("cuStreamWaitEvent", unsafe {
                 (cuda::driver()?.stream_wait_event)(stream.raw() as CUstream, event.raw, 0)
@@ -481,11 +515,11 @@ impl Engine {
         Ok(())
     }
 
-    fn synchronize(&self, owners: &[Retained]) -> cuda::Result<()> {
+    fn synchronize(&self, owners: &[Retained], lanes: &[Lanes]) -> cuda::Result<()> {
         let mut first = None;
-        for stream in self
-            .streams
+        for stream in lanes
             .iter()
+            .flat_map(|l| &l.streams)
             .chain(owners.iter().flat_map(|r| &r.streams))
         {
             if let Err(error) = stream.drain() {
@@ -495,9 +529,9 @@ impl Engine {
         first.map_or(Ok(()), Err)
     }
 
-    fn checked_release(&self, owners: &mut [Retained], complete: bool) -> cuda::Result<()> {
+    fn checked_release(&self, owners: &mut [Retained], complete: bool, lanes: &[Lanes]) -> cuda::Result<()> {
         if !complete {
-            self.synchronize(owners)?;
+            self.synchronize(owners, lanes)?;
         }
         let mut first = None;
         for buffer in owners.iter_mut().flat_map(|r| &mut r._buffers) {
@@ -521,6 +555,7 @@ impl Engine {
                 slot.recorded = false;
                 self.free().push(slot);
             }
+            self.freed.notify_all();
             // Checked complete: its events are free to record again.
             let mut pool = self.events.lock().unwrap_or_else(|e| e.into_inner());
             for event in owner.events.drain(..).filter(|e| e.ctx == self.ctx) {
@@ -534,8 +569,8 @@ impl Engine {
         }
     }
 
-    fn release(&self, mut owners: Vec<Retained>, complete: bool) -> cuda::Result<()> {
-        match checked_take(&mut owners, |r| self.checked_release(r, complete)) {
+    fn release(&self, mut owners: Vec<Retained>, complete: bool, lanes: &[Lanes]) -> cuda::Result<()> {
+        match checked_take(&mut owners, |r| self.checked_release(r, complete, lanes)) {
             Ok(released) => {
                 self.released(released);
                 Ok(())
@@ -550,10 +585,12 @@ impl Engine {
         }
     }
 
-    // Caller holds serial, including before allowing any slot to be reused.
+    // Caller holds serial exclusively: no run is in flight, every lane set is idle.
     fn recover(&self) -> cuda::Result<()> {
+        let lanes = self.lanes.lock().unwrap_or_else(|e| e.into_inner());
         let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
-        let released = checked_take(&mut held, |r| self.checked_release(r, false))?;
+        let released = checked_take(&mut held, |r| self.checked_release(r, false, &lanes))?;
+        drop(lanes);
         drop(held);
         // All previous engine work is now complete, including slots already returned to the free list.
         for slot in self.free().iter_mut() {
@@ -577,11 +614,61 @@ impl Engine {
         self.free.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn hold_slot(&self, slot: Slot) {
-        self.staged
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(slot);
+    /// Up to `wanted` rings of `RING` slots, as many as are free: none free, it waits for
+    /// another run's, unless no run holds any (they are all retained by failed copies).
+    fn rings(&self, wanted: usize) -> Option<Vec<Vec<Slot>>> {
+        let mut free = self.free();
+        loop {
+            let n = wanted.min(free.len() / RING);
+            if n > 0 {
+                self.holding.fetch_add(1, AcqRel);
+                return Some((0..n).map(|_| {
+                    let at = free.len() - RING;
+                    free.split_off(at)
+                }).collect());
+            }
+            if self.holding.load(Relaxed) == 0 {
+                return None;
+            }
+            free = self.freed.wait_timeout(free, std::time::Duration::from_millis(50))
+                .unwrap_or_else(|e| e.into_inner()).0;
+        }
+    }
+
+    /// A lane set for one run: an idle one, else a new one.
+    fn take_lanes(&self) -> cuda::Result<Lanes> {
+        let idle = self.lanes.lock().unwrap_or_else(|e| e.into_inner()).pop();
+        idle.map_or_else(|| Lanes::new(self.device), Ok)
+    }
+
+    /// `n` calls of `work` on the engine's reader threads, returned once every one has run. A
+    /// reader that panicked panics here, as a scoped thread's join would.
+    fn on_readers(&self, n: usize, work: &(dyn Fn() + Sync)) {
+        let done = Arc::new((Mutex::new(0usize), Condvar::new()));
+        let panicked = Arc::new(AtomicBool::new(false));
+        // SAFETY: each task runs `work` once and counts itself done after it, and this function
+        // returns only once all `n` have counted (unwinds included): the borrow outlives each use.
+        let work: &'static (dyn Fn() + Sync) = unsafe {
+            std::mem::transmute::<&(dyn Fn() + Sync), &'static (dyn Fn() + Sync)>(work)
+        };
+        for _ in 0..n {
+            let (done, panicked) = (done.clone(), panicked.clone());
+            self.readers.submit(Box::new(move || {
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).is_err() {
+                    panicked.store(true, Relaxed);
+                }
+                let (count, all) = &*done;
+                *count.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+                all.notify_all();
+            }));
+        }
+        let (count, all) = &*done;
+        let mut finished = count.lock().unwrap_or_else(|e| e.into_inner());
+        while *finished < n {
+            finished = all.wait(finished).unwrap_or_else(|e| e.into_inner());
+        }
+        drop(finished);
+        assert!(!panicked.load(Relaxed), "a TensorFS reader panicked");
     }
 
     fn run(
@@ -593,25 +680,33 @@ impl Engine {
         issued: Option<Issued>,
         cancel: Option<&ReadControl>,
     ) -> Result<ReadStats, Error> {
-        let _serial = self.serial.lock().unwrap_or_else(|e| e.into_inner());
         let first = copies[0].0;
         let canceled = || cancel.is_some_and(ReadControl::canceled);
         if canceled() {
             return Err(interrupted(first));
         }
-        if !self
-            .held
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_empty()
-        {
-            self.recover().map_err(|e| failed(first, e))?;
+        // Runs share the engine; a failed run's held owners are recovered with none in flight.
+        let mut shared = self.serial.read().unwrap_or_else(|e| e.into_inner());
+        while !self.held.lock().unwrap_or_else(|e| e.into_inner()).is_empty() {
+            drop(shared);
+            {
+                let _only = self.serial.write().unwrap_or_else(|e| e.into_inner());
+                if !self.held.lock().unwrap_or_else(|e| e.into_inner()).is_empty() {
+                    self.recover().map_err(|e| failed(first, e))?;
+                }
+            }
+            shared = self.serial.read().unwrap_or_else(|e| e.into_inner());
         }
+        let _shared = shared;
         let _ctx = CtxGuard::enter(self.ctx).map_err(|e| failed(first, e))?;
         let streams = opts.streams.clamp(1, STREAMS);
+        let lanes = LanesHold { engine: self, lanes: Some(self.take_lanes().map_err(|e| failed(first, e))?) };
+        let staged = Mutex::new(Vec::new());
         let mut hold = RunHold {
             engine: self,
             owners: Some(Retained::default()),
+            staged: &staged,
+            lanes: lanes.get(),
         };
         let mut complete = false;
         let result = (|| {
@@ -628,7 +723,7 @@ impl Engine {
                     event
                         .record(stream as CUstream)
                         .map_err(|e| failed(copy, e))?;
-                    self.wait(event, streams).map_err(|e| failed(copy, e))?;
+                    self.wait(lanes.get(), event, streams).map_err(|e| failed(copy, e))?;
                 }
                 if let Dst::Device { stream, .. } = c.dst {
                     if stream != 0 {
@@ -639,7 +734,7 @@ impl Engine {
                         event
                             .record(stream as CUstream)
                             .map_err(|e| failed(copy, e))?;
-                        self.wait(event, streams).map_err(|e| failed(copy, e))?;
+                        self.wait(lanes.get(), event, streams).map_err(|e| failed(copy, e))?;
                     }
                 }
                 let mut direct = matches!(
@@ -681,7 +776,7 @@ impl Engine {
                 }
             }
             let start = owners.events.len();
-            for stream in &self.streams[..streams] {
+            for stream in &lanes.get().streams[..streams] {
                 owners
                     .events
                     .push(self.event(true).map_err(|e| failed(first, e))?);
@@ -698,7 +793,7 @@ impl Engine {
             // Each copy's jobs not yet issued: the one that issues its last tells `issued`.
             let left: Vec<AtomicUsize> = (0..copies.len()).map(|_| AtomicUsize::new(0)).collect();
             jobs.iter().for_each(|job| _ = left[job.local].fetch_add(1, Relaxed));
-            let raw: Vec<usize> = self.streams[..streams].iter().map(|s| s.raw()).collect();
+            let raw: Vec<usize> = lanes.get().streams[..streams].iter().map(|s| s.raw()).collect();
             let done = |job: &Job| {
                 if let Some(control) = cancel { control.issue(job.len); }
                 if let Some(issued) = issued {
@@ -716,38 +811,42 @@ impl Engine {
                     stopped.store(true, Relaxed);
                     break;
                 }
-                if let Err(failure) = self.issue(job, lane(at, streams)) {
+                if let Err(failure) = self.issue(lanes.get(), job, lane(at, streams)) {
                     error.lock().unwrap().get_or_insert(failure);
                     stopped.store(true, Relaxed);
                     break;
                 }
                 done(job);
             }
-            // A failed copy's slots stay retained until checked completion: read with the rest.
-            let readers = readers(jobs.len(), opts, self.free().len());
-            if readers == 0 && !jobs.is_empty() && !stopped.load(Relaxed) {
-                let lost = io::Error::other("all staging is still retained by failed copies");
-                return Err(Error {
-                    copy: first,
-                    source: lost,
-                });
-            }
+            // This run's rings, taken whole before any reader starts: no slot crosses runs. A failed
+            // copy's slots stay retained until checked completion: read with the rest.
+            let wanted = readers(jobs.len(), opts);
+            let rings = match wanted {
+                0 => Vec::new(),
+                _ if stopped.load(Relaxed) => Vec::new(),
+                _ => match self.rings(wanted) {
+                    Some(rings) => rings,
+                    None => {
+                        let lost = io::Error::other("all staging is still retained by failed copies");
+                        return Err(Error { copy: first, source: lost });
+                    }
+                },
+            };
+            let held_rings = !rings.is_empty();
+            let readers = rings.len();
+            let rings = Mutex::new(rings);
             let work = || {
                 self.near.enter();
                 let mut ring = ReaderRing {
-                    engine: self,
-                    slots: {
-                        let mut free = self.free();
-                        let at = free.len() - RING;
-                        free.split_off(at)
-                    },
+                    staged: &staged,
+                    slots: rings.lock().unwrap_or_else(|e| e.into_inner()).pop().expect("a ring for each reader"),
                 };
                 let mut turn = 0;
                 while !stopped.load(Relaxed) && !canceled() {
                     let at = next.fetch_add(1, Relaxed);
                     let Some(job) = jobs.get(at) else { break };
                     turn += 1;
-                    match self.piece(job, at % streams, opts, &tally, &mut ring.slots[turn % RING]) {
+                    match self.piece(lanes.get(), job, at % streams, opts, &tally, &mut ring.slots[turn % RING]) {
                         Ok(()) => done(job),
                         Err(failure) => {
                             error.lock().unwrap().get_or_insert(failure);
@@ -755,26 +854,25 @@ impl Engine {
                         }
                     }
                 }
-                // After any failure a slot may still be in flight: kept until checked completion.
-                for slot in ring.slots.drain(..) {
-                    match stopped.load(Relaxed) {
-                        true => self.hold_slot(slot),
-                        false => self.free().push(slot),
-                    }
+                // After any failure a slot may still be in flight: kept with this run until its
+                // checked completion. Else it goes back, and a run waiting for a ring is told.
+                if !stopped.load(Relaxed) {
+                    self.free().append(&mut ring.slots);
+                    self.freed.notify_all();
                 }
             };
             // Every reader is TensorFS's own thread, so moving it to the GPU's CPUs moves no caller.
-            std::thread::scope(|scope| {
-                for _ in 0..readers {
-                    scope.spawn(work);
-                }
-            });
+            self.on_readers(readers, &work);
+            if held_rings {
+                self.holding.fetch_sub(1, AcqRel);
+                self.freed.notify_all();
+            }
             if canceled() {
                 error.lock().unwrap().get_or_insert_with(|| interrupted(first));
             }
             let mut busy_ns = 0;
             let mut all_complete = true;
-            for (lane, stream) in self.streams[..streams].iter().enumerate() {
+            for (lane, stream) in lanes.get().streams[..streams].iter().enumerate() {
                 let drained = (|| {
                     owners.events.push(self.event(true)?);
                     let index = owners.events.len() - 1;
@@ -814,11 +912,11 @@ impl Engine {
 
     /// A direct copy, whole, on stream `lane`: a memset, a device copy, a peer copy or a copy
     /// from registered host memory. Nothing is staged.
-    fn issue(&self, job: &Job, lane: usize) -> Result<(), Error> {
+    fn issue(&self, lanes: &Lanes, job: &Job, lane: usize) -> Result<(), Error> {
         let _ctx = CtxGuard::enter(self.ctx).map_err(|e| failed(job.copy, e))?;
         let d = cuda::driver().map_err(|e| failed(job.copy, e))?;
-        let stream = self.streams[lane].raw() as CUstream;
-        let _queue = self.queues[lane].lock().unwrap();
+        let stream = lanes.streams[lane].raw() as CUstream;
+        let _queue = lanes.queues[lane].lock().unwrap();
         let Dst::Device { ptr: dst, .. } = job.c.dst else {
             unreachable!("a direct copy has a device destination")
         };
@@ -843,6 +941,7 @@ impl Engine {
 
     fn piece(
         &self,
+        lanes: &Lanes,
         job: &Job,
         lane: usize,
         opts: &ReadOpts,
@@ -851,12 +950,17 @@ impl Engine {
     ) -> Result<(), Error> {
         let _ctx = CtxGuard::enter(self.ctx).map_err(|e| failed(job.copy, e))?;
         let d = cuda::driver().map_err(|e| failed(job.copy, e))?;
-        let stream = self.streams[lane].raw() as CUstream;
+        let stream = lanes.streams[lane].raw() as CUstream;
         if slot.pending {
             slot.done.sync().map_err(|e| failed(job.copy, e))?;
             slot.pending = false;
         }
         match job.c.src {
+            #[cfg(feature = "fault-hooks")]
+            Src::File(..) if injected() => {
+                let source = io::Error::other("an injected staged-piece fault (release gate)");
+                return Err(Error { copy: job.copy, source });
+            }
             Src::File(file, offset) => {
                 let copy = Copy {
                     src: Src::File(file, offset + job.at as u64),
@@ -885,7 +989,7 @@ impl Engine {
             Src::Device { .. } => {}
             Src::Zero => unreachable!("zero uses native device memset"),
         }
-        let _queue = self.queues[lane].lock().unwrap();
+        let _queue = lanes.queues[lane].lock().unwrap();
         let rc = match (job.c.src, job.c.dst) {
             // SAFETY: the device destination covers `job.at + job.len` bytes and the slot stays pending until the event syncs.
             (_, Dst::Device { ptr, .. }) => unsafe {
@@ -918,10 +1022,106 @@ fn lane(at: usize, streams: usize) -> usize {
     at % streams.max(1)
 }
 
-/// Reader threads a run starts for its `staged` pieces: none without any, else as many as its
-/// threads allow and the free staging rings hold.
-fn readers(staged: usize, opts: &ReadOpts, free_slots: usize) -> usize {
-    opts.threads.clamp(1, READERS).min(staged).min(free_slots / RING)
+/// Readers a run wants for its `staged` pieces: none without any, else as many as its threads
+/// allow (`Engine::rings` gives it as many as the free staging holds).
+fn readers(staged: usize, opts: &ReadOpts) -> usize {
+    if staged == 0 { 0 } else { opts.threads.clamp(1, READERS).min(staged) }
+}
+
+/// One run's lanes: `STREAMS` streams, each with the lock its copies issue under.
+struct Lanes {
+    streams: Vec<cuda::Stream>,
+    queues: Vec<Mutex<()>>,
+}
+
+// SAFETY: as the Engine's: its handles are used only after entering their primary context, and
+// calls on one stream are ordered by its queue lock.
+unsafe impl Send for Lanes {}
+// SAFETY: as above.
+unsafe impl Sync for Lanes {}
+
+impl Lanes {
+    fn new(device: i32) -> cuda::Result<Lanes> {
+        Ok(Lanes {
+            streams: (0..STREAMS).map(|_| cuda::Stream::new(device)).collect::<cuda::Result<_>>()?,
+            queues: (0..STREAMS).map(|_| Mutex::new(())).collect(),
+        })
+    }
+}
+
+/// A run's lane set, back to the engine's idle ones when the run ends however it ends: anything
+/// still in flight on it is waited for by the next run's own completion or an exclusive recover.
+struct LanesHold<'a> {
+    engine: &'a Engine,
+    lanes: Option<Lanes>,
+}
+
+impl LanesHold<'_> {
+    fn get(&self) -> &Lanes {
+        self.lanes.as_ref().expect("a run's lanes")
+    }
+}
+
+impl Drop for LanesHold<'_> {
+    fn drop(&mut self) {
+        if let Some(lanes) = self.lanes.take() {
+            self.engine.lanes.lock().unwrap_or_else(|e| e.into_inner()).push(lanes);
+        }
+    }
+}
+
+type Task = Box<dyn FnOnce() + Send + 'static>;
+
+/// An engine's reader threads: started as runs need them, kept, each pinned to the GPU's CPUs by
+/// the work it runs. A run's tasks never wait on another task, so more threads only add overlap.
+#[derive(Default)]
+struct Readers {
+    queue: Mutex<ReaderQueue>,
+    wake: Condvar,
+}
+
+#[derive(Default)]
+struct ReaderQueue {
+    tasks: VecDeque<Task>,
+    idle: usize,
+}
+
+impl Readers {
+    fn submit(self: &Arc<Self>, task: Task) {
+        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        queue.tasks.push_back(task);
+        if queue.idle >= queue.tasks.len() {
+            drop(queue);
+            self.wake.notify_one();
+            return;
+        }
+        drop(queue);
+        let readers = Arc::clone(self);
+        let started = std::thread::Builder::new().name("tensorfs-reader".into()).spawn(move || readers.work());
+        if started.is_err() {
+            // No thread: the caller runs what it queued, as a scope with no room would.
+            while let Some(task) = self.queue.lock().unwrap_or_else(|e| e.into_inner()).tasks.pop_front() {
+                task();
+            }
+        }
+    }
+
+    fn work(&self) {
+        loop {
+            let task = {
+                let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+                loop {
+                    if let Some(task) = queue.tasks.pop_front() {
+                        break task;
+                    }
+                    queue.idle += 1;
+                    queue = self.wake.wait(queue).unwrap_or_else(|e| e.into_inner());
+                    queue.idle -= 1;
+                }
+            };
+            task();
+        }
+    }
 }
 
 struct Job<'a> {

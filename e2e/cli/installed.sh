@@ -42,13 +42,13 @@ J '.held == null' "$OUT/machine.json" || check "installed follow: local is still
 
 # local's TensorD on another build: the open RC's own cozy, installed and started as Calcifer starts any (no update, so no pin).
 rc=$(jq -r '.rc.rc // empty' "$OUT/machine.json")
-other=$(curl -fsSL "https://github.com/cozy-creator/cozy-creator/releases/download/rc-$rc/SHA256SUMS" 2> /dev/null | awk '$2 ~ /^cozy-.*-linux-x86_64$/ {print $1, $2; exit}')
+other=$(curl -fsSL --retry 5 --retry-all-errors "https://github.com/cozy-creator/cozy-creator/releases/download/rc-$rc/SHA256SUMS" 2> /dev/null | awk '$2 ~ /^cozy-.*-linux-x86_64$/ {print $1, $2; exit}')
 if [ -z "$other" ]; then
   check "installed follow: rc-${rc:-?} lists no cozy for linux/x86_64"
 elif [ "$(cut -d' ' -f2 <<< "$other")" = "cozy-$was-linux-x86_64" ]; then
   echo "installed follow: the open RC's own cozy is this candidate ($was): nothing to move to, so the move isn't asked here"
 else
-  curl -fsSL -o "$rc_cozy" "https://github.com/cozy-creator/cozy-creator/releases/download/rc-$rc/$(cut -d' ' -f2 <<< "$other")" \
+  curl -fsSL --retry 5 --retry-all-errors -o "$rc_cozy" "https://github.com/cozy-creator/cozy-creator/releases/download/rc-$rc/$(cut -d' ' -f2 <<< "$other")" \
     && echo "$(cut -d' ' -f1 <<< "$other")  $rc_cozy" | sha256sum -c --quiet - \
     || { check "installed follow: the open RC's cozy didn't fetch: $other"; cp "$saved" "$cfg"; CAND_COZY=$back install_candidate_binary; cozy restart > /dev/null 2>&1; return; }
   chmod +x "$rc_cozy"

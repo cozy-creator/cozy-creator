@@ -80,6 +80,13 @@ pub(crate) struct Installed {
     pub machine: Option<String>,
 }
 
+/// Local source `manifest` (`sha256:<hex>`) as `keep_manifest` kept it, and its length. None: it isn't kept here (any more).
+pub(crate) fn kept_manifest(home: &Home, manifest: &str) -> Option<(Digest, u64)> {
+    let dir = crate::private_io::cache(crate::private_io::current().as_ref(), home.calcifer().join("local"), "local").ok()?;
+    let length = fs::metadata(dir.join(format!("{}.json", manifest.trim_start_matches("sha256:")))).ok()?.len();
+    Some((manifest.parse().ok()?, length))
+}
+
 /// Where manifests are kept for their calls to stage: Calcifer's home, the newest 256.
 fn keep_manifest(home: &Home, digest: &Digest, document: &[u8]) -> Result<PathBuf, Error> {
     const KEPT: usize = 256;

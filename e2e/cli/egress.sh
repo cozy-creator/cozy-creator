@@ -132,7 +132,9 @@ printf "ffconcat version 1.0\nfile '%s'\n" "$dir/marker" > "$dir/concat.mp4"
 printf '<?xml version="1.0"?>\n<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT2S" minBufferTime="PT1S" profiles="urn:mpeg:dash:profile:isoff-on-demand:2011">\n<Period><AdaptationSet mimeType="video/mp4"><Representation id="1" bandwidth="1000" codecs="avc1.42c00d" width="64" height="64"><BaseURL>%s/dash-segment.mp4</BaseURL><SegmentBase indexRange="0-100"/></Representation></AdaptationSet></Period></MPD>\n' "$E2E_REDIRECT" > "$dir/dash.mp4"
 printf '#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\n%s/hls-segment.ts\n#EXT-X-ENDLIST\n' "$E2E_REDIRECT" > "$dir/hls.mp4"
 redirector_start "$dir/asked.log"
-(timeout 900 sh -c 'echo read > "$1"' _ "$dir/marker" && touch "$dir/opened") & reader=$!
+# The writer waits for a reader of the FIFO: $reader is its `timeout`, so the kill below ends it and its sh. It wrote nothing to the suite's
+# output: a subshell around it was killed alone, and the writer held the job step's pipe 900 s after the suite ended (cl-1128).
+timeout 900 sh -c 'echo read > "$1" && touch "$2"' _ "$dir/marker" "$dir/opened" > /dev/null 2>&1 < /dev/null & reader=$!
 if machine_client "$dir" media "$here/clip" control="$dir/control.mp4" concat="$dir/concat.mp4" dash="$dir/dash.mp4" hls="$dir/hls.mp4"; then
   J '.control.outcome.status == "succeeded" and (.control.outcome.result | tostring | test("\"seconds\": *[12](\\.[0-9]+)?[,}]"))' "$dir/machine.json" \
     || check "hostile inputs: the real clip was not read as 2 s: $(jq -c .control "$dir/machine.json" | head -c 400)"
@@ -148,6 +150,7 @@ redirector_stop
 [ ! -s "$dir/asked.log" ] || check "hostile inputs: a decoded input reached the network: $(head -c 200 "$dir/asked.log")"
 [ ! -e "$dir/opened" ] || check "hostile inputs: a decoded input opened the file its concat list names"
 kill "$reader" 2> /dev/null || true
+wait "$reader" 2> /dev/null || true
 echo "hostile inputs: $(jq -c 'map_values(.refusal.code // .outcome.reason.code // .outcome.status)' "$dir/machine.json" 2> /dev/null || true)"
 }
 

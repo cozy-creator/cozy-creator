@@ -923,16 +923,22 @@ impl Machines {
             machine.attempt = seen.attempt;
         }
         if let Some(status) = &mut machine.status {
+            let listed: HashSet<String> = held.iter().map(|run| crate::store::calcifer_id(&run.id).to_owned()).collect();
             status.runs = held.into_iter().filter_map(|run| self.held(run)).collect();
             // A project's runs execute in its own engine: listed from its journal, as the machine holds them (cl-811).
-            let listed: HashSet<String> = status.runs.iter().map(|run| crate::store::calcifer_id(&run.id).to_owned()).collect();
             for project_run in self.calcifer.project_runs_on(&row.name).into_iter().filter(|run| !listed.contains(run.id.as_str())) {
+                // A locked project's (cl-1130): its state there, nothing of its project's.
+                if crate::project::vault::hidden(&project_run.out_dir) {
+                    status.runs.push(wire::LiveRun::locked(project_run.machine_state.clone().unwrap_or_else(|| "running".into())));
+                    continue;
+                }
                 let Ok(run) = self.calcifer.record(&project_run) else { continue };
                 status.runs.push(wire::LiveRun {
                     id: project_run.id.to_string(),
                     state: run.machine_state.clone().unwrap_or_else(|| "running".into()),
                     waiting: run.waiting.clone().unwrap_or_default(),
                     run: Some(run),
+                    locked: false,
                 });
             }
             status.activity = activity.iter().filter_map(|operation| self.operation(operation, projects)).collect();
@@ -996,11 +1002,15 @@ impl Machines {
         Some(wire::Ssh { args, line })
     }
 
-    /// A run the machine holds for this controller, with this controller's record of it: Calcifer's own or an open project's.
+    /// A run the machine holds for this controller, with this controller's record of it: Calcifer's own or an open project's, a locked
+    /// one's by its state alone.
     fn held(&self, run:v1::RunState)->Option<wire::LiveRun> {
         // A run sent again (cl-935) is `<id>~<attempt>` there.
         let row=self.calcifer.active_run(crate::store::calcifer_id(&run.id))?;
-        Some(wire::LiveRun {run:self.calcifer.record(&row).ok(),id:run.id,state:run.state,waiting:self.calcifer.runs_named(&run.waiting)})
+        // A locked project's (cl-1130): its state there, nothing of its project's.
+        if crate::project::vault::hidden(&row.out_dir) { return Some(wire::LiveRun::locked(run.state)); }
+        let waiting = self.calcifer.runs_named_for(&run.waiting, Some(row.id.as_str()));
+        Some(wire::LiveRun {run:self.calcifer.record(&row).ok(),id:run.id,state:run.state,waiting,locked:false})
     }
 
     /// `text` with each run it names as people know it (`Calcifer::runs_named`).
@@ -1012,20 +1022,32 @@ impl Machines {
     /// project's own is in its private scope (`resource_key`), so its runs are all that project's.
     fn operation(&self,operation:&v1::Operation,projects:&[String])->Option<wire::Operation> {
         let mut project=None;
-        let mut number=|id:&str| {
+        let (mut runs,mut names)=(vec![],vec![]);
+        for id in &operation.runs {
+            // A box's guess, or a job fetched ahead (cl-1104): no run, said by its boxes, in its project's views as any install is.
+            if crate::prefetch::listed(id) {
+                let Some((of,boxes))=self.lists.owner(id).filter(|(of,_)| projects.contains(of)) else { continue };
+                project=Some(of);
+                names.extend(boxes);
+                continue;
+            }
             let id=crate::store::calcifer_id(id);
-            if let Some(row)=self.calcifer.maintenance_store().run(id).ok().flatten() { return Some((row.number,self.calcifer.named(&row))); }
+            if let Some(row)=self.calcifer.maintenance_store().run(id).ok().flatten() {
+                runs.push(row.number);
+                names.push(self.calcifer.named(&row));
+                continue;
+            }
             match self.calcifer.run_store(id).ok()? {
                 crate::store::RunStore::Project(store) if projects.iter().any(|project| project==store.project_id()) => {
                     let row=store.run(id).ok().flatten()?;
                     project=Some(store.project_id().to_owned());
-                    Some((row.number,self.calcifer.run_name(&row)))
+                    runs.push(row.number);
+                    names.push(self.calcifer.run_name(&row));
                 }
-                _ => None,
+                _ => return None,
             }
-        };
-        let (runs,names):(Vec<u64>,Vec<String>)=operation.runs.iter().map(|id|number(id)).collect::<Option<Vec<_>>>()?.into_iter().unzip();
-        if runs.is_empty() {return None;}
+        }
+        if names.is_empty() {return None;}
         let rate=Some(operation.bytes_per_s).filter(|rate|*rate>=1.0);
         let left=operation.bytes_total.saturating_sub(operation.bytes_done);
         Some(wire::Operation {id:operation.id.clone(),kind:operation.kind.clone(),subject:operation.subject.clone(),stage:operation.stage.clone(),bytes_done:operation.bytes_done,bytes_total:operation.bytes_total,bytes_here:operation.bytes_here,bytes_per_s:rate,eta_s:rate.filter(|_|left>0).map(|rate|(left as f64/rate) as i64),started_at_ms:operation.started_at_unix_ms,runs,names,project})
@@ -1215,7 +1237,9 @@ impl Machines {
         }
         self.calcifer.observe_warm(name, frame.warm.clone());
         self.calcifer.observe_downloads(name, &frame.activity);
-        self.lists.observe(name, &frame);
+        if let Some(machines) = self.calcifer.machines() {
+            self.lists.observe(&machines, name, &frame);
+        }
         let installed;
         let (back, ready) = {
             let mut seen = lock(&self.seen);

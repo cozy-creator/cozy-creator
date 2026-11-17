@@ -499,10 +499,10 @@ while read -r why; do check "ondemand-behind: $why"; done < "$OUT/ondemand-behin
 }
 
 # cl-1101 (Paul, 11-16): "the same goes for qwen image 2.1 image's prompt enhancer; it has two (T2I and I2I) but we only need one
-# when we get a request." Qwen Image 2.1's `expander` (a prompt of words) and `rewriter` (one with pictures) are each needed by a
+# when we get a request." Qwen Image 2.1's `expander_t2i` (a prompt of words) and `expander_i2i` (one with pictures) are each needed by a
 # rule over the request (cl-1103), and a request reads at most one, as its first stage. project/enhance is that function three times, each with a model (16 MiB) and two
-# enhancers (96 MiB each) of its own, so each request starts cold, over a 10 MB/s link: `words` reads its expander, `edit` its
-# rewriter, `plain` (prompt_upsampling off) neither. A request fetches the enhancer it reads with its other weights, before its
+# enhancers (96 MiB each) of its own, so each request starts cold, over a 10 MB/s link: `words` reads its expander_t2i, `edit`
+# its expander_i2i, `plain` (prompt_upsampling off) neither. A request fetches the enhancer it reads with its other weights, before its
 # function starts, and nothing of the other. ondemand-enhancers.json keeps what each fetched, at which order of the download
 # line, each emergency its function waited on, and the guessed weights dropped unfinished when it ended.
 ondemand_enhancers() {
@@ -567,7 +567,7 @@ def inside(value, key):
             return found
     return None
 fail = lambda why: print(why, file=sys.stderr)
-reads = {"words": "expander", "edit": "rewriter", "plain": None}
+reads = {"words": "expander_t2i", "edit": "expander_i2i", "plain": None}
 report = {}
 for request, read in reads.items():
     try:
@@ -579,8 +579,8 @@ for request, read in reads.items():
         continue
     accepted = record.get("accepted_at_ms") or began
     held = {}
-    for slot in ("model", "expander", "rewriter"):
-        rows = [m for m in models if m.get("model") == f"e2e/enhance-{request}-{slot}"]
+    for slot in ("model", "expander_t2i", "expander_i2i"):
+        rows = [m for m in models if m.get("model") == f"e2e/enhance-{request}-{slot.replace('_', '-')}"]
         held[slot] = {"bytes": sum(m.get("bytes") or 0 for m in rows), "complete": bool(rows) and all(m.get("complete") for m in rows)}
     by_class, guessed, landed = {}, {}, set()
     for t, kind, size, name, sha in moved:
@@ -624,8 +624,8 @@ for request, read in reads.items():
     if record.get("status") != "completed":
         fail(f"{request}: its run {record.get('status')}")
         continue
-    for slot in ("expander", "rewriter"):
-        name, has = f"e2e/enhance-{request}-{slot}", held[slot]
+    for slot in ("expander_t2i", "expander_i2i"):
+        name, has = f"e2e/enhance-{request}-{slot.replace('_', '-')}", held[slot]
         if slot != read and has["bytes"] >= 1 << 20:
             fail(f"{request}: {has['bytes']} bytes of {name} landed, and this request never reads it")
         if slot == read and not has["complete"]:
@@ -852,11 +852,16 @@ edge = lambda t: any(abs(t - b) <= 2000 for b in busy)
 inside = [w for t, w, _ in during if t in busy]
 outside = [w for t, w, _ in during if not edge(t)]
 mean = lambda xs: sum(xs) / len(xs) if xs else 0.0
-stalls, run = [], []
-for t, w, _ in during:
-    run = run + [t] if w < 0.02 * LINK else []
-    if len(run) == 5:
-        stalls.append(run[0] - began)
+# A stall is 20 s in which the weights moved under 2% of the link. The weights are paced: the reader drains what its sockets hold
+# at its allowance (a sixteenth of the link), so at the wire they come in bursts with seconds between (43991466520: 8 s at the wire
+# with none while TensorD read 0.47 MB/s throughout, and 0.34 MB/s or more over every 20 s). A hold, as #3126's, is minutes.
+STALL = 20
+stalls = []
+for k in range(len(during) - STALL + 1):
+    window = during[k:k + STALL]
+    if window[-1][0] - window[0][0] <= (STALL + 2) * 1000 and sum(w for _, w, _ in window) < 0.02 * LINK * STALL:
+        if not stalls or window[0][0] - began > stalls[-1] + STALL * 1000:
+            stalls.append(window[0][0] - began)
 shares = []
 for line in (out / "ondemand-share.tensord.log").read_text(errors="replace").splitlines():
     if "link shared with an install" in line or "weights take the whole link" in line:
@@ -879,7 +884,7 @@ if not during or not inside:
     fail(f"the install didn't download beside the weights: {summary}")
 else:
     if stalls:
-        fail(f"the weights stopped for 5 s or more during the install, from {summary['stalls_from_s']} s")
+        fail(f"the weights moved under 2% of the link for {STALL} s during the install, from {summary['stalls_from_s']} s")
     if mean(outside) < 0.75 * LINK:
         fail(f"outside the install's downloads the weights moved {mean(outside) / 1e6:.2f} MB/s of the {LINK / 1e6:.2f} MB/s link")
     if not 0 < mean(inside) <= 0.35 * LINK:

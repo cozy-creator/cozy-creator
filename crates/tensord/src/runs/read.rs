@@ -117,6 +117,22 @@ impl Runs {
     pub(crate) fn state(&self, actor: VerifiedActor, id: &str) -> Result<v1::RunState, Error> {
         self.state_of(&self.record(actor, id)?)
     }
+    /// `actor`'s list item `id` now (`ahead`), with why it failed if it did: its caller sends it again or not by that (cl-1104).
+    pub(crate) fn listed_state(&self, actor: VerifiedActor, id: &str) -> Result<v1::RunState, Error> {
+        let record = self.record(actor, id)?;
+        let mut state = self.state_of(&record)?;
+        if record.state == State::Failed {
+            let failure = crate::journal::Failure::decode(record.failure.as_deref().unwrap_or_default()).map_err(problem)?;
+            let origin = match failure.origin {
+                1 => "author",
+                2 => "runtime",
+                6 => "request",
+                _ => "machine",
+            };
+            state.reason = Some(message_reason(&failure.code, &safe(&failure.message, 1024), origin));
+        }
+        Ok(state)
+    }
     fn page(&self, actor: VerifiedActor, states: &[String], before: u64, newest: bool, limit: usize) -> Result<Vec<v1::RunState>, Error> {
         let records = self
             .service
@@ -735,19 +751,25 @@ impl Runs {
         }
         Ok(items)
     }
-    /// Up to 256 of the run's stored events after `after`, waiting up to 30 s for one.
-    fn log_page(&self, actor: VerifiedActor, id: &str, after: u64) -> Result<stored::LogPage, Error> {
+    /// Up to 256 of the run's stored events after `after`, waiting up to 30 s for news when there is
+    /// none: no event, and no words its follower hasn't heard (`heard`). Also the run's id here.
+    fn log_page(&self, actor: VerifiedActor, id: &str, after: u64, heard: &BTreeMap<(String, u32), usize>) -> Result<(stored::LogPage, String), Error> {
+        let engine = &self.service.engine;
         let mut record = self.record(actor, id)?;
-        if !record.state.terminal() && record.revision <= after {
-            let epoch = self.service.engine.activity_epoch();
+        let quiet = |record: &Execution| !record.state.terminal() && record.revision <= after && !engine.texts_untold(&record.id, heard);
+        if quiet(&record) {
+            let epoch = engine.activity_epoch();
             record = self.record(actor, id)?;
-            if !record.state.terminal() && record.revision <= after {
-                self.service
-                    .engine
-                    .wait_activity(epoch, Some(Duration::from_secs(30)));
+            if quiet(&record) {
+                engine.wait_activity(epoch, Some(Duration::from_secs(30)));
                 record = self.record(actor, id)?;
             }
         }
+        let own = record.id.clone();
+        self.log_after(record, after).map(|page| (page, own))
+    }
+
+    fn log_after(&self, record: Execution, after: u64) -> Result<stored::LogPage, Error> {
         if record.state.terminal() {
             let mut page = self.terminal(&record)?;
             page.events.retain(|event| event.sequence > after);
@@ -1160,6 +1182,9 @@ pub(crate) struct Log {
     /// Each item's latest revision as parts (digest, length): a revision whose parts extend
     /// them appends.
     parts: HashMap<(String, u32), Parts>,
+    /// How much of each text output's words it heard (bytes), and how many deltas (xs-209).
+    heard: BTreeMap<(String, u32), usize>,
+    said: u64,
 }
 impl Log {
     fn event(&mut self, event: stored::LogEvent) -> Option<v1::RunEvent> {
@@ -1319,7 +1344,7 @@ impl Runs {
     /// The next events of `actor`'s run `id` after those `log` has read (`api::machine`), waiting
     /// up to 30 s for one. Its outcome ends it.
     pub(crate) fn read(&self, actor: VerifiedActor, id: &str, log: &mut Log) -> Result<Vec<v1::RunEvent>, Error> {
-        let page = self.log_page(actor, id, log.after)?;
+        let (page, own) = self.log_page(actor, id, log.after, &log.heard)?;
         let mut events = vec![];
         for event in page.events {
             log.after = log.after.max(event.sequence);
@@ -1339,6 +1364,15 @@ impl Runs {
             events.push(event);
         }
         log.after = log.after.max(page.next_after);
+        // The words its text outputs made since this follower last heard (xs-209), from memory, ahead of its outcome.
+        let mut said = vec![];
+        for (output, index, delta) in self.service.engine.texts_after(&own, &mut log.heard) {
+            let delta = v1::OutputTextDelta::new(&output, index, delta, log.said);
+            log.said += 1;
+            said.push(v1::RunEvent { sequence: 0, at_ms: now_ms() as i64, event: v1::Event::OutputTextDelta(delta) });
+        }
+        let at = events.iter().position(|event| matches!(event.event, v1::Event::Outcome(_))).unwrap_or(events.len());
+        events.splice(at..at, said);
         Ok(events)
     }
 }

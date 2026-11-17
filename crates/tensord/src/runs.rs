@@ -471,6 +471,9 @@ impl Runs {
                 Err(refusal) => answers.push(Some(Err(refusal))),
             }
         }
+        // A list's items are sent again after a restart (Calcifer re-sends its lists): their acceptance needn't outlive a crash, so it
+        // isn't synced. Synced, it waited ~1 s for the disk while the machine downloaded at full speed (cl-1123, 44087750572).
+        let synced = !drafts.iter().all(|(_, id, ..)| crate::ahead::hidden(id));
         let accepting = (drafts.iter_mut())
             .map(|(_, id, spec, invocation, references)| crate::journal::Accepting {
                 id,
@@ -480,7 +483,7 @@ impl Runs {
                 spec: &spec.journaled,
             })
             .collect();
-        let accepted = self.service.engine.accept_runs(actor, accepting)?;
+        let accepted = self.service.engine.accept_runs(actor, accepting, synced)?;
         drop(custody);
         for ((at, _, spec, ..), accepted) in drafts.into_iter().zip(accepted) {
             answers[at] = Some(match accepted {

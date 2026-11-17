@@ -396,6 +396,10 @@ pub(crate) fn require_path(path: &FsPath) -> Result<(), Error> {
     Ok(())
 }
 
+/// Whether what lands under `path` is a project's that is locked or locking (cl-1130): outside it, its run is "a locked project's
+/// run", and nothing more of it is said.
+pub(crate) fn hidden(path: &FsPath) -> bool { require_path(path).is_err() }
+
 fn locked(_root: &FsPath) -> Error {
     Error::new(Kind::Conflict, "project_locked", "the project is locked")
         .next("cozy vault unlock")
@@ -432,6 +436,15 @@ pub(super) fn location(api: &Api, named: &str) -> Result<PathBuf, Error> {
 /// its next commands shown by status until a lock succeeds.
 struct LockRetry { backoff: tensorfs::fetch::Backoff, at: std::time::Instant, next: Vec<String> }
 static LOCK_RETRIES: LazyLock<Mutex<BTreeMap<PathBuf, LockRetry>>> = LazyLock::new(Mutex::default);
+
+/// What a locking project last waited for (cl-1130): its runs ending (`RUNS`), or an app with its files open (`FILES`). Its status says it.
+static HOLDING: LazyLock<Mutex<BTreeMap<PathBuf, &'static str>>> = LazyLock::new(Mutex::default);
+const RUNS: &str = "runs";
+const FILES: &str = "files";
+
+fn holds(root: &FsPath, what: &'static str) {
+    HOLDING.lock().expect("vault holders").insert(root.to_owned(), what);
+}
 
 fn idle_lock_failed(root: &FsPath, failure: &Error) {
     let mut retries = LOCK_RETRIES.lock().expect("lock retries");
@@ -473,13 +486,19 @@ fn status(root: &FsPath) -> VaultStatus {
         view = None;
         expires = None;
     }
-    let next = match state {
-        "locked" | "storage_update_required" => vec!["cozy vault unlock".into()],
-        "locking" => LOCK_RETRIES.lock().expect("lock retries").get(root).map(|retry| retry.next.clone())
+    let holding = match state {
+        "locking" => HOLDING.lock().expect("vault holders").get(root).copied().unwrap_or_default(),
+        _ => "",
+    };
+    let next = match (state, holding) {
+        ("locked" | "storage_update_required", _) => vec!["cozy vault unlock".into()],
+        // Its runs, which the lock ended, are still finishing: nothing to do but wait (cl-1130).
+        ("locking", RUNS) => vec!["wait: it locks once its runs have ended".into()],
+        ("locking", _) => LOCK_RETRIES.lock().expect("lock retries").get(root).map(|retry| retry.next.clone())
             .unwrap_or_else(|| vec!["close applications using the project, then lock again".into()]),
         _ => vec![],
     };
-    VaultStatus { encrypted: encrypted(root), state: state.into(), path: root.to_owned(), view, expires_at_ms: expires, idle_timeout_s: idle, next }
+    VaultStatus { encrypted: encrypted(root), state: state.into(), path: root.to_owned(), view, expires_at_ms: expires, idle_timeout_s: idle, next, holding: holding.into() }
 }
 
 fn milliseconds(seconds: u64) -> i64 { i64::try_from(seconds).unwrap_or(i64::MAX).saturating_mul(1000) }
@@ -669,6 +688,7 @@ fn forget_with(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, sn
             // A finished call's outputs still being saved into it (cl-1060).
             || api.calcifer.writing_into(&project.id).is_some()
         {
+            holds(root, RUNS);
             return Err(Error::new(Kind::Conflict, "project_busy", "the project's work is still stopping; retry after it settles"));
         }
     }
@@ -722,6 +742,7 @@ fn saving(api: &Arc<Api>, root: &FsPath) -> Option<Error> {
     let projects = api.projects.now_open();
     let project = projects.iter().find(|project| project.root == root)?;
     api.calcifer.writing_into(&project.id)?;
+    holds(root, RUNS);
     Some(Error::new(Kind::Conflict, "project_busy", "a run is still writing into the project; it locks once that's done"))
 }
 
@@ -811,13 +832,14 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Resul
     if let Some(session) = held(root) {
         let mut session = session.lock().expect("vault session");
         session.mount.try_unmount().map_err(|why| match why {
-            project_mount::Error::Busy(_) => Error::new(Kind::Conflict, "project_busy", "close programs using the project, then retry the storage change"),
+            project_mount::Error::Busy(_) => { holds(root, FILES); Error::new(Kind::Conflict, "project_busy", "close programs using the project, then retry the storage change") }
             other => provider(other),
         })?;
         retire_runtime(&session.runtime)?;
         drop(session);
         SESSIONS.lock().expect("vault sessions").remove(root);
         LOCK_RETRIES.lock().expect("lock retries").remove(root);
+        HOLDING.lock().expect("vault holders").remove(root);
         CLOSED.notify_waiters();
         ROOTS.lock().expect("vault roots").retain(|_, logical| logical != root);
         if let Ok(keybag) = Keybag::load(&root.join(KEYBAG_FILE)) {
@@ -1068,6 +1090,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
         // A request still holds the project: its view is revoked, and the sweeper locks once it ends.
         if let Some(busy) = busy {
             if ended.is_empty() { return Err(busy); }
+            holds(root, RUNS);
             progress.readable = readable_token(root);
             return Ok(VaultChanged { vault: status(&root), recovery_secret: None, ended, skipped_files: vec![], unsaved: vec![], deferred: vec![] });
         }
@@ -1089,6 +1112,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
     let mut transition = match gate {
         Ok(transition) => transition,
         Err(busy) if settling && busy.code == "project_busy" => {
+            holds(root, RUNS);
             progress.readable = readable_token(root);
             return Ok(VaultChanged { vault: status(&root), recovery_secret: None, ended, skipped_files: vec![], unsaved: vec![], deferred: vec![] });
         }
@@ -1101,7 +1125,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
     let mut changed = loop {
         match change(&api, &root, ask, progress, &transition) {
             // What it ended is still settling: the session is closing, and the sweeper locks it once it has.
-            Err(busy) if !ended.is_empty() && busy.code == "project_busy" => break VaultChanged { vault: status(&root), recovery_secret: None, ended: vec![], skipped_files: vec![], unsaved: vec![], deferred: vec![] },
+            Err(busy) if !ended.is_empty() && busy.code == "project_busy" => break { holds(root, RUNS); VaultChanged { vault: status(&root), recovery_secret: None, ended: vec![], skipped_files: vec![], unsaved: vec![], deferred: vec![] } },
             // Its view is revoked, so nothing new opens it: what still holds it (a request, a journal read, a measurement) is
             // finishing. A lock or a decrypt waits for that a moment rather than refuse; its pages sent what they typed already.
             Err(busy) if drains && busy.code == "project_busy" && std::time::Instant::now() < draining => {

@@ -68,6 +68,9 @@ for request in "$OUT"/requests/*.json; do
   [ -n "$entry" ] && jq -e --arg e "$entry" 'has($e)' "$cli/public.json" > /dev/null || continue
   cell=$(basename "$request" .json) cell=${cell#"$entry"-}
   if jq -e .models "$request" > /dev/null; then line SKIP "$entry" "bind/$cell" "it binds a slot to a tiny model, no Hub ref"; continue; fi
+  if jq -e '.payload.pickup' "$request" > /dev/null; then
+    line SKIP "$entry" "bind/$cell" "a person names a pickup's take by its box (pickup.take=<box.N>), which this project has none of"; continue
+  fi
   # A prompt's reference goes as a person names one in a run (`references: [{name, image: <file>}]`), its text
   # mentioning it; any other file at its field's path (`--file field.path=FILE`), a media field's at the field.
   jq '. as $req

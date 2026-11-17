@@ -657,6 +657,9 @@ pub enum Event {
     Outcome(Outcome),
     Call(Call),
     Gpu(GpuAllocation),
+    /// Live, never in its log: its SSE data is the Responses API's event object alone.
+    #[serde(rename = "response.output_text.delta")]
+    OutputTextDelta(OutputTextDelta),
 }
 
 impl Event {
@@ -670,12 +673,49 @@ impl Event {
             Event::Outcome(_) => "outcome",
             Event::Call(_) => "call",
             Event::Gpu(_) => "gpu",
+            Event::OutputTextDelta(_) => OUTPUT_TEXT_DELTA,
         }
     }
     /// The SSE event names a run's stream carries.
-    pub const NAMES: [&'static str; 7] = [
-        "state", "progress", "product", "log", "outcome", "call", "gpu",
+    pub const NAMES: [&'static str; 8] = [
+        "state", "progress", "product", "log", "outcome", "call", "gpu", OUTPUT_TEXT_DELTA,
     ];
+}
+
+/// The Responses API's event for words a text output made (xs-209).
+pub const OUTPUT_TEXT_DELTA: &str = "response.output_text.delta";
+
+/// Words a run's text output made since its follower last heard (xs-209), as the Responses API's
+/// `response.output_text.delta` says them: live, held only in memory while the run goes, and each
+/// follower's from its own place (one attaching mid-run hears the words so far first). `item_id`
+/// is the output's name, `<name>/<n>` for a list's item `n`; `output_index` that item's place, from 0.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OutputTextDelta {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub item_id: String,
+    pub output_index: u32,
+    pub content_index: u32,
+    pub delta: String,
+    /// Its place on its follower's stream, from 0.
+    pub sequence_number: u64,
+}
+
+impl OutputTextDelta {
+    /// `delta` of output `output`'s item `index` (0: a single output; from 1, a list's).
+    pub fn new(output: &str, index: u32, delta: String, sequence_number: u64) -> Self {
+        let item_id = if index == 0 { output.to_owned() } else { format!("{output}/{index}") };
+        Self { kind: OUTPUT_TEXT_DELTA.into(), item_id, output_index: index.saturating_sub(1), content_index: 0, delta, sequence_number }
+    }
+
+    /// The output and item it is of: `(name, 0)` for a single output, `(name, n)` for a list's item `n`.
+    pub fn output(&self) -> (&str, u32) {
+        match self.item_id.split_once('/') {
+            Some((name, n)) => (name, n.parse().unwrap_or(0)),
+            None => (self.item_id.as_str(), 0),
+        }
+    }
 }
 
 /// A root run's GPU allocation changed: `grant` binds its lane, `wait` queues it behind `behind`
@@ -725,6 +765,9 @@ pub struct RunState {
     /// A list item's (`StatusFrame::ahead`): how ready its machine is for it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub readiness: Option<Readiness>,
+    /// Why a list's item failed (`StatusFrame::ahead`, cl-1104): what its caller decides by whether to send it again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<Reason>,
 }
 
 /// How ready a machine is for a predicted request (cl-1123): `planning` (its request not planned yet), `installing`, `downloading`,

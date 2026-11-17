@@ -311,7 +311,7 @@ step "tools offline (cl-1126): its Hub away and no catalog kept, the list holds 
 [ -n "$LOCAL" ] || return 0
 [ -n "${E2E_FINAL:-}" ] || { check "tools offline: isolated.sh published no e2e-final: ${E2E_FINAL_REFUSED:-not seeded}"; return; }
 [ -n "$HUB_CHECK" ] || { check "tools offline: no hubcheck to stop"; return; }
-local lock=$HOME/.cozy/calcifer/calcifer.lock.holder tool=$E2E_FINAL/echo addr exe='' t0 took
+local lock=$HOME/.cozy/calcifer/calcifer.lock.holder tool=$E2E_FINAL/echo addr t0 took
 offline_list() {
   t0=$(date +%s%3N)
   curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$lock")" "http://$(jq -r .address "$lock")/v1/tools" > "$OUT/$1.json" 2>&1
@@ -335,11 +335,5 @@ offline_list offline-down
 echo "tools offline: with its Hub away and no catalog kept, the list answered in $took ms: $(jq -c '{tools: [.tools[]? | .id], note}' "$OUT/offline-down.json" 2> /dev/null | head -c 400)"
 J --arg id "$tool" '[.tools[] | select(.id == $id)] != [] and .note == null' "$OUT/offline-down.json" && [ "$took" -lt 3000 ] \
   || check "tools offline: with its Hub away, the list took $took ms: $(head -c 400 "$OUT/offline-down.json")"
-# The Hub back, at the same address, for what follows (control.sh's hub_away).
-[ "${RUNNER_OS:-}" != Windows ] || exe=.exe
-mkdir -p "$OUT/hub-offline"
-"${RUNNER_TEMP:-$OUT}/hubcheck$exe" --hub "${HUB_CHECK_UPSTREAM:?}" --out "$OUT/hub-offline" --listen "$addr" --keep 'POST /v1/run-reports,POST /v1/rental-quotes' \
-  > /dev/null 2> "$OUT/hub-offline/hubcheck.log" &
-HUB_CHECK=$!
-for _ in $(seq 30); do curl -sS -m 5 -o /dev/null "http://$addr/openapi.yaml" 2> /dev/null && break; sleep 1; done
+hub_check_again "$addr"
 }

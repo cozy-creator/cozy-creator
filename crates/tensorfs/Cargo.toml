@@ -19,6 +19,8 @@ net = ["dep:base64", "dep:reqwest", "dep:rustls", "dep:webpki-roots", "dep:tokio
 cuda = ["dep:varena"]
 # `Writer::quantize`'s encoders and the SVDQ fit: faer and its tree. The wheel's; `cozy` never quantizes.
 quantize = ["dep:faer", "dep:rayon", "dep:pulp", "dep:rand", "dep:rand_chacha", "dep:rand_distr"]
+# The release gate's fault injection (`io::fail_pieces`): dev builds only. A released TensorFS has none.
+fault-hooks = []
 
 [dependencies]
 # SVDQ producer revision pins its factorization and random-sketch implementation.

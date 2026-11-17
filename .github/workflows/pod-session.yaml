@@ -8,7 +8,7 @@ name: pod-session
 # each session rents and ends its own pod. Dispatched from `rc/<x>`, or with `runtime_ref`, a session has that Runtime as a wheel in
 # RUNTIME_WHEEL, as e2e builds it, for what no release knows yet.
 #   gh workflow run pod-session.yaml -R cozy-creator/cozy-creator -f hub=prod -f script=model-ingest -f packages_refs=pk=<sha> \
-#     -f sku=a40 -f disk=500 -f cap=6 -f params='{"package": "qwen3.6", "sources": "…", "lanes": "int8", "version": "0.1.0"}'
+#     -f sku=a40 -f disk=500 -f cap=6 -f params='{"package": "qwen3", "sources": "…", "lanes": "int8", "version": "0.1.0"}'
 on:
   workflow_dispatch:
     inputs:
@@ -76,6 +76,7 @@ jobs:
           sparse-checkout: |
             release-gate/sessions
             release-gate/derived-state.sh
+            release-gate/ledger.py
             release-gate/ref
             release-gate/suites/bench/vram.py
             release-gate/suites/bench/fixtures
@@ -103,7 +104,7 @@ jobs:
           fetch-depth: 0
           path: packages.git
       - uses: actions/checkout@v5
-        if: inputs.script == 'bench'
+        if: inputs.script == 'bench' || inputs.script == 'upscale'
         with:
           repository: cozy-creator/benchmarks
           ref: ${{ fromJSON(inputs.params).bench_ref || 'master' }}
@@ -210,6 +211,7 @@ jobs:
           PARAMS: ${{ inputs.params }}
           RENT: ${{ inputs.rent }}
           SESSION_UNTIL: ${{ steps.deadline.outputs.until }}
+          TRACKER_LEDGER_KEY: ${{ secrets.TRACKER_LEDGER_KEY }}  # lib.sh's ledger rows into the tracker's benchmarks/
         run: |
           s=creator/release-gate/sessions
           [[ $SCRIPT =~ ^[a-z0-9-]+$ && $SCRIPT != lib && -f $s/$SCRIPT.sh ]] ||
