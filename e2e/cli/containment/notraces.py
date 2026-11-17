@@ -173,7 +173,8 @@ def main() -> int:
         (view / "probe.py").write_text(PROGRAM)
         scanner.add(sha(PROGRAM.encode())); scanner.add("sha256:" + sha(PROGRAM.encode()))
         (view / "input.json").write_text(json.dumps({"prompt": prompt}))
-        events = cozy(args.cli, "run", "probe.py/echo", "--input", "input.json", "--on", "local", cwd=folder)
+        # Its code and input named in its view: the CLI reads them where they are (the folder holds only their ciphertext).
+        events = cozy(args.cli, "run", str(view / "probe.py") + "/echo", "--input", str(view / "input.json"), "--on", "local", cwd=folder)
         runs = [run for event in events for run in [event.get("run", event)] if isinstance(run, dict)]
         require(any(isinstance(run.get("result"), dict) and cast(Json, run["result"]).get("echoed") == prompt for run in runs), "notraces_run_result")
         for run in runs:
