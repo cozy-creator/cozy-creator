@@ -9,9 +9,9 @@
 # started. Enhancer and Turbo off: they are on-demand slots, built at a call's first read. params:
 #   tool      the box's tool and the function the cold call runs (default qwen-image-2/image)
 #   other     the call that takes the GPU during a load (default sdxl/generate)
-#   wait_s    how long the box's request may take to be `loaded` (default 1200)
+#   wait_s    how long the box's request may take to be `loaded` (default 600)
 . "$(dirname "$0")/lib.sh"
-TOOL=$(param tool qwen-image-2/image) OTHER=$(param other sdxl/generate) WAIT=$(param wait_s 1200)
+TOOL=$(param tool qwen-image-2/image) OTHER=$(param other sdxl/generate) WAIT=$(param wait_s 600) BEGAN=$(date +%s)
 PROMPT="a red lighthouse on a cliff at dusk, waves below, photo"
 FIELDS='turbo:=false prompt_upsampling:=false megapixels:=1 aspect_ratio=1:1'
 quote "$(param need_s 3600)"
@@ -29,11 +29,17 @@ say "pod TensorD $v, Runtime $(cozy machine show "$NAME" --json | jq -r '.status
   done ) & BG=$!
 # stage: the newest readiness stage the pod says for any predicted request ("" for none).
 stage() { tail -1 "$OUT/status.ndjson" | jq -r '[.status.ahead[]? | .readiness.stage // empty] | first // ""'; }
+# collect: the pod's TensorD log and this runner's Calcifer's, since the session began.
+collect() {
+  cozy machine logs "$NAME" --lines 0 --since "$(( ($(date +%s) - BEGAN) / 60 + 2 ))m" > "$OUT/tensord.log" 2>&1 || say "the pod's TensorD log wasn't read"
+  cozy machine logs local calcifer --lines 20000 > "$OUT/calcifer.log" 2>&1 || true
+}
 # until <stage> <seconds>: the pod says it, else fail.
 until_stage() {
   local t=0
   until [ "$(stage)" = "$1" ]; do
-    sleep 1; t=$((t + 1)); [ "$t" -lt "$2" ] || fail "no predicted request was $1 within $2 s: $(tail -1 "$OUT/status.ndjson" | cut -c1-400)"
+    sleep 1; t=$((t + 1))
+    [ "$t" -lt "$2" ] || { collect; fail "no predicted request was $1 within $2 s: $(tail -1 "$OUT/status.ndjson" | cut -c1-400)"; }
   done
   say "a predicted request is $1 ($t s)"
 }
@@ -59,7 +65,12 @@ step cold run "$TOOL" --on "$NAME" instructions="$PROMPT" $FIELDS seed:=2 || fai
 report cold "$(runno cold)"
 unload predicted
 
-# The prediction: a box with the tool, as a person puts one on the canvas. Calcifer guesses its render onto the pod.
+# The prediction: the project open, as a page shows it (Calcifer guesses only for a project a page shows), and a box with the
+# tool put on its canvas. Calcifer guesses its render onto the pod.
+python3 "$RUN_PAGE" show "$RUN_PROJECT" > "$OUT/shown.txt" 2>&1 & BG="$BG $!"
+for _ in $(seq 1 30); do grep -q '"held"' "$OUT/shown.txt" && break; sleep 1; done
+grep -q '"held": \["' "$OUT/shown.txt" || fail "the project wasn't shown: $(tail -c 300 "$OUT/shown.txt")"
+say "the project is shown, as an open page shows it: $(head -c 200 "$OUT/shown.txt")"
 ASK=$(date +%s%3N)
 run_page add q --tool "$TOOL" --fields "$(jq -nc --arg p "$PROMPT" '{instructions: $p, turbo: false, prompt_upsampling: false,
   megapixels: 1, aspect_ratio: "1:1", seed: 3}')" > "$OUT/box.json" 2>&1 || fail "the box: $(tail -c 300 "$OUT/box.json")"
@@ -83,9 +94,9 @@ step other run "$OTHER" --on "$NAME" prompt="a brass compass on a walnut desk" s
 report other "$(runno other)"
 # Then the GPU is idle again: it loads again, and the idle clock that began when SDXL ended stays where it was.
 until_stage loaded 600
-kill "$BG" 2> /dev/null; BG=''
+kill $BG 2> /dev/null; BG=''
 
-cozy machine logs "$NAME" --lines 0 --since "$(( ($(date +%s) - ASK / 1000) / 60 + 15 ))m" > "$OUT/tensord.log" 2>&1 || say "the pod's TensorD log wasn't read"
+collect
 grep -aE "load ahead|queue: goes after" "$OUT/tensord.log" | cut -c1-300 | tee -a "$R" > "$OUT/load-ahead.log"
 python3 - "$OUT" "$SENT" <<'PY' | tee -a "$R" > "$OUT/summary.json"
 import json, sys
