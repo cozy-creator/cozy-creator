@@ -26,20 +26,41 @@ struct Verified {
 
 static VERIFIED: LazyLock<Mutex<HashMap<String, Arc<Verified>>>> = LazyLock::new(Mutex::default);
 
-/// Where this machine keeps the births of the executors it starts for each vault view (cl-1064): a lock that couldn't reach this
-/// machine ends them by these, so a hung machine's executors hold no project's decrypted bytes past its lock. One file a view, named
-/// by a digest of the view's path (new at each unlock): no project's id, name or folder. It goes at the view's close and at the
-/// clean-up a lock owed; a machine starting again drops those whose processes have all ended.
+/// Where this machine keeps the births of the processes it starts with each vault view's interpreter (cl-1064): a lock that couldn't
+/// reach this machine ends them by these, so a hung machine's processes hold no project's decrypted bytes past its lock. One file a
+/// view, named by a digest of its project, generation and view path (a drive letter is used again on Windows), holding the digest of
+/// its view path and the births: no project's id, name or folder. It goes at the view's close, at the clean-up a lock owed, and as its
+/// scope ends; a machine starting again drops those whose processes have all ended.
 static BIRTHS: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 static BIRTHS_WRITE: Mutex<()> = Mutex::new(());
 
-/// Keeps executors' births in `dir` (`BIRTHS`), dropping what an earlier machine kept of views whose processes have all ended.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Births {
+    /// The digest of its view's path, so a view's clean-up finds it by the view alone.
+    view: String,
+    births: Vec<platform::process::Birth>,
+}
+
+fn hex(bytes: impl AsRef<[u8]>) -> String {
+    Sha256::digest(bytes.as_ref()).iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// The name a view's births file has: Calcifer names it the same way (`Machines::end_executors`).
+fn births_key(project_id: &str, generation: u64, view: &std::path::Path) -> String {
+    hex(format!("{project_id}\0{generation}\0{}", view.to_string_lossy()))
+}
+
+fn read_births(path: &std::path::Path) -> Births {
+    fs::read(path).ok().and_then(|raw| serde_json::from_slice(&raw).ok()).unwrap_or_default()
+}
+
+/// Keeps births in `dir` (`BIRTHS`), dropping what an earlier machine kept of views whose processes have all ended.
 pub(crate) fn keep_births_in(dir: PathBuf) -> io::Result<()> {
     fs::create_dir_all(&dir)?;
     platform::durable::set_mode(&dir, 0o700)?;
     for entry in fs::read_dir(&dir)? {
         let path = entry?.path();
-        if births(&path).iter().all(|birth| !platform::process::Exact::open(birth).is_ok_and(|open| open.is_some())) {
+        if read_births(&path).births.iter().all(|birth| !platform::process::Exact::open(birth).is_ok_and(|open| open.is_some())) {
             let _ = fs::remove_file(&path);
         }
     }
@@ -47,35 +68,38 @@ pub(crate) fn keep_births_in(dir: PathBuf) -> io::Result<()> {
     Ok(())
 }
 
-fn births_file(view: &std::path::Path) -> Option<PathBuf> {
-    let digest = Sha256::digest(view.to_string_lossy().as_bytes());
-    Some(BIRTHS.get()?.join(digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>()))
-}
-
-fn births(path: &std::path::Path) -> Vec<platform::process::Birth> {
-    fs::read(path).ok().and_then(|raw| serde_json::from_slice(&raw).ok()).unwrap_or_default()
-}
-
-/// An executor of the code whose path is `python` started as `birth`: kept under its view, if a project's view holds it.
+/// A process of the code whose interpreter is `python` started as `birth`: kept under its view, if an encrypted project's view
+/// holds it (the longest such view).
 pub(crate) fn record_birth(python: &std::path::Path, birth: &platform::process::Birth) -> io::Result<()> {
     // Held across the look-up: a view closing meanwhile forgets its births only after this write.
     let _writing = BIRTHS_WRITE.lock().unwrap();
-    let view = VERIFIED.lock().unwrap().values().find(|scope| python.starts_with(&scope.descriptor.view_root)).map(|scope| scope.descriptor.view_root.clone());
-    let Some(path) = view.as_deref().and_then(births_file) else { return Ok(()) };
-    let mut kept = births(&path);
-    kept.retain(|held| platform::process::Exact::open(held).is_ok_and(|open| open.is_some()));
-    kept.push(birth.clone());
+    let Some(dir) = BIRTHS.get() else { return Ok(()) };
+    let scope = VERIFIED.lock().unwrap().values()
+        .filter(|scope| !scope.descriptor.ordinary && python.starts_with(&scope.descriptor.view_root))
+        .max_by_key(|scope| scope.descriptor.view_root.as_os_str().len())
+        .map(|scope| scope.descriptor.clone());
+    let Some(scope) = scope else { return Ok(()) };
+    let path = dir.join(births_key(&scope.project_id, scope.generation, &scope.view_root));
+    let mut kept = read_births(&path);
+    kept.view = hex(scope.view_root.to_string_lossy().as_bytes());
+    kept.births.retain(|held| platform::process::Exact::open(held).is_ok_and(|open| open.is_some()));
+    kept.births.push(birth.clone());
     let staged = path.with_extension("next");
     fs::write(&staged, serde_json::to_vec(&kept).map_err(io::Error::other)?)?;
     platform::durable::set_mode(&staged, 0o600)?;
     fs::rename(&staged, &path)
 }
 
-/// The view's executors' births go: it closed, or a lock's owed clean-up of it was done.
+/// A view's births go: it closed, its scope ended, or a lock's owed clean-up of it was done. Found by the view alone, so a machine
+/// started again since forgets them too.
 pub(crate) fn forget_births(view: &std::path::Path) {
-    if let Some(path) = births_file(view) {
-        let _writing = BIRTHS_WRITE.lock().unwrap();
-        let _ = fs::remove_file(path);
+    let Some(dir) = BIRTHS.get() else { return };
+    let digest = hex(view.to_string_lossy().as_bytes());
+    let _writing = BIRTHS_WRITE.lock().unwrap();
+    for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+        if read_births(&entry.path()).view == digest {
+            let _ = fs::remove_file(entry.path());
+        }
     }
 }
 tokio::task_local! { static REQUEST: LocalPrivateStorage; }

@@ -374,7 +374,14 @@ BIRTHS = Path.home() / ".cozy/machine/var/lib/cozy/tensord/private-executors"
 
 def births_kept(view: Path) -> bool:
     """Whether local keeps its executors' births for `view` (cl-1064): never past the view's close or its owed clean-up."""
-    return (BIRTHS / hashlib.sha256(str(view).encode()).hexdigest()).exists()
+    digest = hashlib.sha256(str(view).encode()).hexdigest()
+    for kept in BIRTHS.glob("*") if BIRTHS.is_dir() else []:
+        try:
+            if json.loads(kept.read_bytes()).get("view") == digest:
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
 
 
 def live_mounts() -> set[str]:
@@ -535,7 +542,7 @@ SINCE = time.time_ns()
 def hung(cell: Cell, label: str, scanner: Scanner, view: Path, projects: list[Path]) -> dict[str, object]:
     """While the machine is stopped: the view gone, and nothing outside the folders but the machine's journal, named."""
     facts: dict[str, object] = {"mounted": mounted(view), "journal_rows": journaled(view), "journal": str(journal()[0]),
-                                "executors_left": executors_gone(view), "births_kept_dir": BIRTHS.is_dir()}
+                                "executors_left": executors_gone(view)}
     facts["executors_left_are"] = [described(pid, view) for pid in cast(list[int], facts["executors_left"] or [])]
     facts["scan"] = traces(scanner, cell.out, f"{label}-stopped", [*(project.resolve() for project in projects), *journal()])
     print(f"lock hung: {label}: while local is stopped, the one exception is its own journal {facts['journal']}: "
@@ -630,8 +637,6 @@ def main() -> None:
             lock_facts = cast(dict[str, object], facts["lock"])
             if lock_facts["executors_left"]:
                 failures.append(f"lock: the project's processes still run on local after its lock: {lock_facts['executors_left_are']}")
-            if not lock_facts["births_kept_dir"]:
-                failures.append("local keeps no executor births (the lock fell back to ending its whole service)")
             for label in ("lock", "after_lock"):
                 found = cast(dict[str, object], facts[label])
                 if label == "lock" and found["mounted"]:

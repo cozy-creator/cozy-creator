@@ -964,7 +964,7 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Resul
             // Owed before the view ends, so a Calcifer stopped between them still tells the machine; let go if it doesn't end.
             crate::private_io::Sealed::Owed(view) => {
                 // Its processes on local end first (cl-1064): a hung machine's executors hold its decrypted bytes in memory.
-                let (ended, said) = api.machines.end_executors(view);
+                let (ended, said) = api.machines.end_executors(session.keybag.info().project_id.as_str(), session.keybag.info().generation, view);
                 api.machines.owe(view, root, ended).map_err(|e| error("vault_index", e.to_string()))?;
                 // Its sealed mount point stays, marked before the view ends, until the machine's clean-up is paid (`retire_owed_view`).
                 fs::write(session.runtime.join(OWED_MARK), b"").map_err(io)?;

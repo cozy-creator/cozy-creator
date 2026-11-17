@@ -66,15 +66,9 @@ impl Local {
         self.root.join("var/lib/cozy/machine/agent.lock")
     }
 
-    /// Where TensorD keeps the births of each vault view's executors (cl-1064): absent, a TensorD that keeps none.
+    /// Where TensorD keeps the births of each vault view's processes (cl-1064).
     pub(crate) fn births(&self) -> PathBuf {
         self.root.join("var/lib/cozy/tensord/private-executors")
-    }
-
-    /// The machine's stable parent, which holds its lock and starts its service again after it ends: its pid.
-    pub(crate) fn holder(&self) -> Option<u32> {
-        let raw = std::fs::read(self.root.join("var/lib/cozy/machine/agent.lock.holder")).ok()?;
-        serde_json::from_slice::<serde_json::Value>(&raw).ok()?.get("pid")?.as_u64().and_then(|pid| u32::try_from(pid).ok())
     }
 
     fn ready(&self) -> PathBuf {

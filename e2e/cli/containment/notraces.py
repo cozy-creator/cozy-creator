@@ -181,11 +181,22 @@ def main() -> int:
             if isinstance(run.get("id"), str):
                 scanner.add(cast(str, run["id"]))
     # The births the machine keeps of the view's executors (cl-1064): kept while it is unlocked, gone with its lock.
-    births = Path.home() / ".cozy/machine/var/lib/cozy/tensord/private-executors" / hashlib.sha256(cast(str, vault["view"]).encode()).hexdigest()
-    require(not local or births.is_file(), "notraces_births_unkept")
+    kept_in = Path.home() / ".cozy/machine/var/lib/cozy/tensord/private-executors"
+    digest = hashlib.sha256(cast(str, vault["view"]).encode()).hexdigest()
+
+    def births_kept() -> bool:
+        for kept in kept_in.glob("*") if kept_in.is_dir() else []:
+            try:
+                if json.loads(kept.read_bytes()).get("view") == digest:
+                    return True
+            except (OSError, ValueError):
+                continue
+        return False
+
+    require(not local or births_kept(), "notraces_births_unkept")
     locked = cozy(args.cli, "vault", "lock", cwd=folder)[-1]
     require(cast(Json, locked.get("vault", {})).get("state") == "locked", "notraces_locked")
-    require(not births.exists(), "notraces_births_left")
+    require(not births_kept(), "notraces_births_left")
     # Locked, only the folder's path may stay outside it: its id and name nowhere else.
     scanner.identity(folder, project, folder.name)
     home = Path.home()

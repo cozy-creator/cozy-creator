@@ -99,26 +99,26 @@ impl Machines {
         matches!(tokio::time::timeout(ASK_WITHIN, link.status()).await, Ok(Ok(_)))
     }
 
-    /// What a lock that couldn't reach `local` ends of the project's processes there (cl-1064): its executors, which hold its
-    /// decrypted bytes in memory while local hangs, by the births TensorD kept for `view`, each opened exactly (a reused pid is never
-    /// touched) and ended with its tree. A TensorD that keeps no births has its service ended instead, which its parent starts again,
-    /// every project's work there with it. How many it ended, and the lock's words for it (none when it ended nothing).
-    pub(crate) fn end_executors(&self, view: &Path) -> (u32, String) {
+    /// What a lock that couldn't reach `local` ends of the project's processes there (cl-1064): those TensorD started with its view's
+    /// interpreter, which hold its decrypted bytes in memory while local hangs, by the births it kept for the project's `generation` at
+    /// `view`. Each is opened exactly (a reused pid is never touched) and ended through that handle; its tree goes with it only when
+    /// the tree read now is rooted at that same birth. With no births kept (a TensorD older than this), nothing is ended here: the
+    /// clean-up stays owed, as for any lock local didn't answer. How many it ended, and the lock's words for it (none for none).
+    pub(crate) fn end_executors(&self, project_id: &str, generation: u64, view: &Path) -> (u32, String) {
         use sha2::Digest as _;
-        let dir = self.local.births();
-        if !dir.is_dir() {
-            let ended = self.end_local_service();
-            return (ended, format!("local keeps no record of the project's processes, so its service was ended ({ended} processes)"));
-        }
-        let key = hex::encode(sha2::Sha256::digest(view.to_string_lossy().as_bytes()));
-        let births: Vec<platform::process::Birth> = std::fs::read(dir.join(key)).ok().and_then(|raw| serde_json::from_slice(&raw).ok()).unwrap_or_default();
+        #[derive(serde::Deserialize, Default)]
+        struct Births { births: Vec<platform::process::Birth> }
+        let key = hex::encode(sha2::Sha256::digest(format!("{project_id}\0{generation}\0{}", view.to_string_lossy())));
+        let kept: Births = std::fs::read(self.local.births().join(key)).ok().and_then(|raw| serde_json::from_slice(&raw).ok()).unwrap_or_default();
         let mut ended = 0;
-        for birth in births {
-            if !matches!(platform::process::Exact::open(&birth), Ok(Some(_))) {
-                continue;
-            }
-            for process in platform::process::tree(birth.pid) {
-                let _ = process.kill();
+        for birth in kept.births {
+            let Ok(Some(process)) = platform::process::Exact::open(&birth) else { continue };
+            let tree = platform::process::tree(birth.pid);
+            let _ = process.kill();
+            if tree.first().is_some_and(|root| root.birth() == &birth) {
+                for descendant in &tree[1..] {
+                    let _ = descendant.kill();
+                }
             }
             ended += 1;
         }
@@ -128,16 +128,6 @@ impl Machines {
             n => format!("it ended the project's {n} processes there"),
         };
         (ended, said)
-    }
-
-    /// Local's service and all it runs, its stable parent aside: how many processes.
-    fn end_local_service(&self) -> u32 {
-        let Some(parent) = self.local.holder() else { return 0 };
-        let tree: Vec<_> = platform::process::tree(parent).into_iter().filter(|process| process.birth().pid != parent).collect();
-        for process in &tree {
-            let _ = process.kill();
-        }
-        tree.len() as u32
     }
 
     /// A lock that couldn't reach `local` owes it the clean-up of the project at `folder`, mounted at `view`; it ended `ended` of
