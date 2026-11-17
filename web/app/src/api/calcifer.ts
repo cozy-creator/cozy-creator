@@ -1503,6 +1503,15 @@ idle_deadline_ms?: number | null, gpus: Array<Gpu>, disk_total_bytes: number, di
  */
 disk_models_bytes: number, disk_environments_bytes: number, disk_runtime_bytes: number, disk_runs_bytes: number,
 /**
+ * What a download may take there: free past the reserve, with what its store could free (`machine::Disk::room`, cl-1175).
+ */
+disk_room_bytes: number,
+/**
+ * The room its usual models need, when it has less (`machine::Disk::short_of`): `cozy doctor` and the Machines panel warn. 0: it
+ * has room.
+ */
+disk_needs_bytes: number,
+/**
  * This controller's queued, preparing or running runs there, as the machine says.
  */
 runs: Array<LiveRun>, models: Array<Model>, models_bytes: number, environments: Array<Environment>, warm: Array<WarmItem>,
@@ -1990,6 +1999,20 @@ ssh_key?: string | null, } | { "kind": "add", name: string, address: string,
  * `sha256:<hex>` of the machine's TLS leaf.
  */
 fingerprint: Digest, };
+
+/**
+ * A render waiting because none of its machines has room on its disk for its models (cl-1175).
+ */
+export type NoRoom = {
+/**
+ * What it lacks, once: `This computer needs 671MB more disk space for its models: free that much and it renders here, or render it on a
+ * new rental.`
+ */
+line: string,
+/**
+ * What the disk of the machine it would go to lacks for them, after all its store could free, as the line says it: `671MB`.
+ */
+short: string, };
 
 /**
  * Something a request's handling said.
@@ -2554,7 +2577,11 @@ export type Purpose = "sign_in" | "export" | "sign_out_everywhere";
 /**
  * One thing a project has to do: running, with its run's number once it has one, else queued.
  */
-export type Queued = { name: string, running: boolean, run?: number | null, };
+export type Queued = { name: string, running: boolean, run?: number | null,
+/**
+ * None of its machines has room on its disk for its models (cl-1175): it waits, nothing of it downloaded.
+ */
+no_room?: NoRoom | null, };
 
 /**
  * One thing an ask queued, and the names ahead of it.

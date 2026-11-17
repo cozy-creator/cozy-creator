@@ -594,12 +594,21 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     let mut offers = vec![];
     // Placed among machines here rather than named: one of several, or a `new` run a machine up or on its way finishes sooner.
     let mut placed = set.len() > 1;
+    // One machine is quoted too, for its disk's room (cl-1175): a run whose weights it has no room for never starts to download them.
+    let one = purpose == For::Run && matches!(on, On::Machine(_));
     match &resolved {
-        Resolved::Release { package, card, .. } if set.len() > 1 || estimates => {
+        Resolved::Release { package, card, .. } if set.len() > 1 || estimates || one => {
             let (chosen, offered, said) = crate::project::run_on(api, &set, &hub, package, &card.release, &callable.name, input.as_ref(), size, gpus, needs_gpu, count, !estimates).await;
             // Why a machine quoted nothing is an estimate's answer; a run goes to the one that finishes soonest, and says nothing of the others.
             if estimates {
                 notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Info, message }));
+            }
+            // Room for its weights on none of them: refused before anything downloads, with the rental its asker may choose instead.
+            if let Err(e) = &chosen
+                && e.code == "machine_disk_full"
+                && !estimates
+            {
+                return Err(e.clone().next(format!("cozy run {} … --on new", ask.target)));
             }
             if set.len() > 1 {
                 on = match chosen {
@@ -616,6 +625,9 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
                 let now = crate::store::now_ms();
                 let waits = offered.first().and_then(|offers| offers.iter().find(|offer| offer.machine == on)).and_then(|offer| offer.waits_for(now));
                 notes.extend(waits.map(|message| Note { level: NoteLevel::Info, message: format!("{named}: {message}") }));
+                // Gone elsewhere for a disk without room for it, said in a line.
+                let roomless = offered.first().and_then(|offers| crate::placement::roomless(offers)).filter(|short| short.machine != on && !estimates);
+                notes.extend(roomless.map(|short| Note { level: NoteLevel::Info, message: crate::placement::elsewhere_line(short, &on, "run") }));
             }
             offers = offered;
         }

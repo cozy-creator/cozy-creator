@@ -701,6 +701,10 @@ pub(crate) struct Coming {
 pub(crate) struct Target {
     pub on: Vec<On>,
     pub hub: String,
+    /// It named no machine (cl-1175): `on` is where a render naming none went when it was asked, and a machine added or rented since may
+    /// take it too, as one with room takes what this computer's disk can't hold (`Walk::wider`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub any: bool,
 }
 
 /// One new version of `asset`, sent under `key`.

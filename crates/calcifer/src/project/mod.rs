@@ -74,7 +74,7 @@ use api::{
     machine as v1,
     calcifer::project::{
         Approve, Approved, Asked, Asset as Row, Cancel, Cancelled, Cut, File as Listing, Import, Imported, Job, JobState, Known, Machines as ProjectMachines, AppearanceKept as ProjectAppearance, Moved as ProjectMoved, Name as ProjectName, MainFile, Open, Opened,
-        Orphan, Projects as Listed, Queued, QueuedNow, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, Said, Stale, Standing as RowStanding, State as ProjectState, Unpin, Unpinned,
+        NoRoom, Orphan, Projects as Listed, Queued, QueuedNow, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, Said, Stale, Standing as RowStanding, State as ProjectState, Unpin, Unpinned,
         TakeNow, Unused, VersionPrefix, Warning as ProjectWarning,
     },
 };
@@ -1495,6 +1495,8 @@ fn sync_jobs(project: &Project, run: impl Fn(u64) -> Option<Run>) -> Result<(), 
             let placed = walker.placed.get(&job.key);
             // Its turn come, held for a machine on its way that finishes it sooner (cl-915): `waits for pluto, ready in about 2 min`.
             let held = placed.filter(|_| waits.is_empty()).and_then(|placed| Some((placed.soonest.waits_for(now)?, placed.soonest.machine.to_string())));
+            // Held for room on its machines' disks (cl-1175): what it lacks, said as its box says it.
+            let held = held.or_else(|| walker.no_room.get(&job.key).map(|short| (placement::no_room_line(short, "render"), short.machine.to_string())));
             let row = Job {
                 id: job.key.clone(),
                 asset: job.asset.clone(),
@@ -1569,6 +1571,9 @@ struct Walker {
     unquoted: HashMap<String, Unquoted>,
     /// Ready jobs every machine of which doesn't answer its frame while each is asked again, by key: they wait for one to.
     waiting: HashSet<String>,
+    /// Ready jobs none of whose machines has room on its disk for their weights, by key, with the offer that lacks least (cl-1175):
+    /// they wait for room or a rental, nothing of them downloaded.
+    no_room: HashMap<String, Offer>,
     /// What the walk log last said of each machine not answering, by name: said again only when it changes.
     silent: HashMap<String, String>,
     /// The runs whose version's files were on their way that have arrived, by number: each arrives once, by whichever looks first.
@@ -3043,6 +3048,7 @@ async fn render(api: &Arc<Api>, id: &str, mut asked: Runs) -> Result<Asked, Refu
     asked.on=crate::private_io::check_project_placement(&project.id,&project.root,&asked.on).map_err(Refusal)?;
     let id = project.id.clone();
     // None named: where `cozy run` naming none goes (cl-894). A rental named by its order's handle, by its Hub's name for it (cl-1106).
+    let any = asked.on.is_empty();
     let on = match asked.on.is_empty() {
         true => crate::runs::unnamed_set(&api, Some(&id)).await.map_err(Refusal)?,
         false => asked.on.into_iter().map(|on| match on {
@@ -3055,7 +3061,7 @@ async fn render(api: &Arc<Api>, id: &str, mut asked: Runs) -> Result<Asked, Refu
     let written = project.folder.written().map_err(Refusal)?;
     let doc = Doc::asked(&project.folder, &written).map_err(Refusal)?;
     let (digest, snapshot) = written.snapshot();
-    let target = Target { on, hub };
+    let target = Target { on, hub, any };
     let lock = project.folder.lock().map_err(Refusal)?;
     let stand = doc.stand(&lock);
     // What the ask finds is its answer's: the walk it joins or begins says only what it does.
@@ -3314,7 +3320,8 @@ fn queue(project: &Project, walk: &folder::WalkFile) -> Vec<Queued> {
     let row = |id: usize| {
         let job = &graph.jobs[id];
         let run = runs.get(job.key.as_str()).copied();
-        Queued { name: job.asset.clone(), running: run.is_some(), run: run.filter(|run| *run > 0) }
+        let no_room = walker.no_room.get(&job.key).map(|short| NoRoom { line: placement::no_room_line(short, "render"), short: crate::bytes(short.short_bytes as f64) });
+        Queued { name: job.asset.clone(), running: run.is_some(), run: run.filter(|run| *run > 0), no_room }
     };
     graph.open_jobs().into_iter().map(row).collect()
 }
@@ -4265,6 +4272,22 @@ impl Walk {
         Ok(())
     }
 
+    /// `target`'s machines (cl-1175): those it named; for one that named none, where a render naming none goes now beside where it went when
+    /// asked, so a machine added or rented since takes it too: a render waiting for disk room goes to the computer added for it.
+    fn wider(&self, target: &Target) -> Vec<On> {
+        if !target.any {
+            return target.on.clone();
+        }
+        let api = self.host.api();
+        let now = match machines_of(&api, &self.project.id) {
+            Ok(pinned) if !pinned.is_empty() => pinned,
+            _ => api.machines.automatic(),
+        };
+        let mut on = target.on.clone();
+        on.extend(now.into_iter().filter(|machine| !target.on.contains(machine)));
+        on
+    }
+
     /// Which of `on` render `ask` may still send to.
     fn sending(&self, ask: &str, on: &[On]) -> Vec<On> {
         let on = self.live(ask, on);
@@ -4583,21 +4606,28 @@ impl Walk {
                         warn!("{}: it was going with nothing following it", walker.graph.jobs[id].asset);
                         walker.graph.end(id, End::Done);
                     });
-                    if walker.graph.has_ready() {
-                        continue;
+                    // What's ready but held for a machine (its room, cl-1175; its answer) waits below for one to change, never another turn
+                    // at once, which would come round again at once, forever.
+                    match (walker.graph.has_ready(), walker.held) {
+                        (true, true) => None,
+                        (true, false) => continue,
+                        (false, _) => {
+                            for id in walker.graph.open_jobs() {
+                                warn!("{}: nothing is going, and it still waits for {:?}", walker.graph.jobs[id].asset, walker.graph.waits_for(id));
+                            }
+                            Some(walker.joined.clone())
+                        }
                     }
-                    for id in walker.graph.open_jobs() {
-                        warn!("{}: nothing is going, and it still waits for {:?}", walker.graph.jobs[id].asset, walker.graph.waits_for(id));
-                    }
-                    walker.joined.clone()
                 };
-                for ask in self.folder().walk_now()?.walk.asks.into_iter().filter(|ask| done.contains(&ask.id)) {
-                    self.finish(&ask.id).await?;
+                if let Some(done) = done {
+                    for ask in self.folder().walk_now()?.walk.asks.into_iter().filter(|ask| done.contains(&ask.id)) {
+                        self.finish(&ask.id).await?;
+                    }
+                    if self.over(&mut first, following)? {
+                        return Ok(());
+                    }
+                    continue;
                 }
-                if self.over(&mut first, following)? {
-                    return Ok(());
-                }
-                continue;
             }
             loop {
                 tokio::select! {
@@ -4633,11 +4663,12 @@ impl Walk {
     fn ahead_jobs(&self) -> Vec<(String, String, Wanted)> {
         let Ok(walk) = self.folder().walk_now() else { return vec![] };
         let walker = self.project.walker.lock().expect("walker lock");
-        let Walker { graph, readings, placed, foreseen, .. } = &*walker;
+        let Walker { graph, readings, placed, foreseen, no_room, .. } = &*walker;
         let mut jobs = vec![];
         for id in graph.open_jobs() {
             let job = &graph.jobs[id];
-            if job.node == usize::MAX || job.state != walker::State::Waiting || matches!(job.kind, JobKind::Free { .. }) {
+            // One waiting for disk room fetches nothing ahead anywhere (cl-1175): none of its machines has room for it.
+            if job.node == usize::MAX || job.state != walker::State::Waiting || matches!(job.kind, JobKind::Free { .. }) || no_room.contains_key(&job.key) {
                 continue;
             }
             let Some(ask) = walk.walk.asks.iter().find(|ask| ask.id == job.ask) else { continue };
@@ -4645,7 +4676,7 @@ impl Walk {
             let target = ask.takes.iter().find(|take| take.key == job.key).map_or(&ask.target, |take| &take.target);
             let asset = &reading.doc.assets[job.node];
             let machine = match target.on.as_slice() {
-                [only] => Some(only.clone()),
+                [only] if !target.any => Some(only.clone()),
                 _ => placed.get(&job.key).map(|placed| placed.soonest.machine.clone()).or_else(|| foreseen.get(&job.key).cloned().flatten()),
             };
             // With `any`, or none placed yet, where isn't known.
@@ -4788,7 +4819,7 @@ impl Walk {
             let (true, Some(machine), Some(job)) = (waits, run.machine, quotables.get(pending.job_of(key))) else { continue };
             // Between rentals and added machines: a run for this computer is made for it (its project's private storage), and one
             // made for another isn't.
-            let on: Vec<On> = self.sending(&pending.ask, &pending.target.on).into_iter().filter(|on| !on.is_local()).collect();
+            let on: Vec<On> = self.sending(&pending.ask, &self.wider(&pending.target)).into_iter().filter(|on| !on.is_local()).collect();
             if machine == "local" || on.len() < 2 {
                 continue;
             }
@@ -4929,7 +4960,7 @@ impl Walk {
         let jobs: Vec<(usize, placement::Job)> = (unsent.iter().enumerate())
             .filter_map(|(at, unsent)| {
                 let job = quotables.get(&unsent.key)?;
-                Some((at, placement::Job { on: self.sending(&unsent.ask, &unsent.target.on), ..job.clone() }))
+                Some((at, placement::Job { on: self.sending(&unsent.ask, &self.wider(&unsent.target)), ..job.clone() }))
             })
             .collect();
         // Runs sent that their machines haven't accepted yet wait there ahead of these.
@@ -5006,6 +5037,8 @@ impl Walk {
         }
         let placed = plan::plan(&pictures, &planned, now);
         let said = |offers: &[Offer]| offers.iter().map(|offer| placement::said(offer, now)).collect::<Vec<_>>().join("; ");
+        // What a job's lack of room says, once each time it changes (cl-1175).
+        let (mut roomless, mut rooms) = (vec![], false);
         let mut walker = self.project.walker.lock().expect("walker lock");
         for ((at, job), placement) in jobs.iter().zip(placed) {
             let unsent = &unsent[*at];
@@ -5019,11 +5052,27 @@ impl Walk {
             let Some((_, chosen)) = placement.chosen else {
                 walker.placed.remove(&unsent.key);
                 walker.starts.remove(&unsent.key);
-                // A waiting job none of its machines was planned for goes where a ready one would at its turn: the first of them, which
-                // fetches ahead for it.
-                match job.on.first().filter(|_| !unsent.ready) {
+                // A waiting job none of its machines was planned for goes where a ready one would at its turn: the first of them with room
+                // for its weights, which fetches ahead for it.
+                let room = |on: &&On| !placement.offers.iter().any(|offer| offer.short_bytes > 0 && offer.machine == **on);
+                match job.on.iter().find(room).filter(|_| !unsent.ready) {
                     Some(first) => ahead(&mut walker, first, false),
                     None => drop(walker.foreseen.remove(&unsent.key)),
+                }
+                // None of its machines has room for its weights (cl-1175, Paul 11-17: "stop them from trying to download models they
+                // cannot fit"): it waits here, nothing of it sent, until one has, or a rental comes; said once.
+                if let (true, Some(short)) = (unsent.ready, placement::roomless(&placement.offers)) {
+                    walker.waiting.remove(&unsent.key);
+                    let line = placement::no_room_line(short, "render");
+                    match walker.no_room.insert(unsent.key.clone(), short.clone()) {
+                        None => {
+                            info!("{dir}: {} waits for room: {}", unsent.key, said(&placement.offers));
+                            roomless.push(Told::Warning { message: format!("{}: {line}", unsent.asset), name: Some(unsent.asset.clone()) });
+                            rooms = true;
+                        }
+                        Some(was) => rooms |= placement::no_room_line(&was, "render") != line,
+                    }
+                    continue;
                 }
                 if unsent.ready {
                     // Every one of its machines connected and not answering its frame: it waits while they're asked again, placed once one
@@ -5057,6 +5106,8 @@ impl Walk {
                 continue;
             };
             walker.waiting.remove(&unsent.key);
+            let was_held = walker.no_room.remove(&unsent.key);
+            rooms |= was_held.is_some();
             let fits = placement.offers.iter().filter(|offer| offer.fits).map(|offer| offer.machine.to_string()).collect();
             walker.starts.insert(unsent.key.clone(), (chosen.start_at_ms, fits));
             if !unsent.ready {
@@ -5068,6 +5119,12 @@ impl Walk {
                 let quoted = said(&placement.offers);
                 info!("{dir}: {} goes to {}: {quoted}", unsent.key, chosen.machine);
                 crate::private_io::diagnose(&self.folder().dir, || format!("{} goes to {}: {quoted}", unsent.key, chosen.machine));
+            }
+            // Elsewhere for a disk without room for it, as its machines quote it now or as it waited for room: said in a line, once.
+            let short = placement::roomless(&placement.offers).or(was_held.as_ref()).filter(|short| short.machine != chosen.machine);
+            if let Some(short) = short.filter(|_| was_held.is_some() || walker.placed.get(&unsent.key).is_none_or(|was| was.soonest.machine != chosen.machine)) {
+                let message = format!("{}: {}", unsent.asset, placement::elsewhere_line(short, &chosen.machine, "render"));
+                roomless.push(Told::Said { message, name: Some(unsent.asset.clone()) });
             }
             walker.unplanned.remove(&unsent.key);
             walker.placed.insert(unsent.key.clone(), Placed { offers: placement.offers, soonest: chosen });
@@ -5086,7 +5143,15 @@ impl Walk {
         walker.foreseeing.retain(|key| unsent.iter().any(|unsent| unsent.key == *key));
         walker.unquoted.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
         walker.waiting.retain(|key| unsent.iter().any(|unsent| unsent.key == *key));
+        let before = walker.no_room.len();
+        walker.no_room.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
+        rooms |= walker.no_room.len() != before;
         drop(walker);
+        roomless.into_iter().for_each(|told| self.say(told));
+        // The page shows a job waiting for room on its box, from the project's queue.
+        if rooms {
+            crate::events::project_settled(&self.folder().dir);
+        }
         unsent.into_iter().filter(|unsent| if unsent.ready { quoting.contains(&unsent.key) } else { foresee.contains(&unsent.key) }).collect()
     }
 
@@ -5107,7 +5172,7 @@ impl Walk {
             work.push(async move {
                 let (key, hub, with) = (&unsent.key, &unsent.target.hub, &unsent.with);
                 let asked = asking.as_deref().map(|asking| (asking, unsent.asset.as_str()));
-                let on = self.sending(&unsent.ask, &unsent.target.on);
+                let on = self.sending(&unsent.ask, &self.wider(&unsent.target));
                 let quotable = self.quotable(key.clone(), on, hub, with, unsent.made.clone(), asked).await;
                 match unsent.ready {
                     true => Done::Quoted { key: unsent.key, quotable },
@@ -5347,7 +5412,7 @@ impl Walk {
                     let id = *id;
                     *act = Act::Quoting { id };
                 } else if let Act::Send { id, key, .. } = act
-                    && walker.waiting.contains(key.as_str())
+                    && (walker.waiting.contains(key.as_str()) || walker.no_room.contains_key(key.as_str()))
                 {
                     let id = *id;
                     *act = Act::Held { id };
@@ -5728,7 +5793,7 @@ impl Walk {
             None => (ask.target.clone(), false, false),
             Some(take) => (take.target.clone(), take.approve, take.new),
         };
-        target.on = self.sending(&ask.id, &target.on);
+        target.on = self.sending(&ask.id, &self.wider(&target));
         if target.on.is_empty() {
             self.not_sent(&name);
             return self.folder().update_walk(|walk| settle(&mut walk.walk));
@@ -5865,7 +5930,7 @@ impl Walk {
             }
             // Its machines stopped while it was on its way.
             let mut pending = pending;
-            pending.target.on = self.sending(&ask.id, &pending.target.on);
+            pending.target.on = self.sending(&ask.id, &self.wider(&pending.target));
             if pending.target.on.is_empty() {
                 self.not_sent(&name);
                 return self.folder().update_walk(|walk| settle(&mut walk.walk));

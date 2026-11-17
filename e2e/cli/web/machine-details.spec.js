@@ -23,13 +23,9 @@ const SIZES = [[1440, 900], [1920, 1080]];
 const GB = 2 ** 30;
 const softly = expect.configure({ soft: true });
 
-/** The page's rule (Disk.tsx `nearlyFull`): under a tenth free, or too little past the machine's reserve for its biggest model. */
+/** Calcifer's rule, which the page shows (Disk.tsx `nearlyFull`, cl-1175): its room for downloads under what its usual models need. */
 function nearlyFull(status) {
-  const total = status.disk_total_bytes, free = status.disk_free_bytes;
-  if (!total) return false;
-  const reserve = Math.min(10 * GB, Math.max(GB, total / 50));
-  const biggest = Math.max(0, ...(status.models ?? []).map((model) => model.total_bytes));
-  return free < total / 10 || (biggest > 0 && free < reserve + biggest);
+  return Boolean(status.disk_total_bytes && status.disk_needs_bytes);
 }
 
 test('machine-details', { tag: '@solo' }, async ({ page, project, api, cli }) => {
@@ -139,7 +135,7 @@ test('machine-details', { tag: '@solo' }, async ({ page, project, api, cli }) =>
       await expect.poll(async () => nearlyFull(await local()), { message: 'the machine reports its disk nearly full', timeout: 90_000 }).toBe(true);
       const warning = section('Disk').locator('.disk-full');
       await expect(warning).toBeVisible({ timeout: 30_000 });
-      await expect(warning).toContainText(/^Nearly full: \d+(\.\d)?(MB|GB) free of \d+(\.\d)?(GB|TB)/);
+      await expect(warning).toContainText(/^Nearly full: \d+(\.\d)?(MB|GB) of room for models, and its usual models need \d+(\.\d)?(GB|TB)/);
       await expect(warning).toContainText('free up space on this computer');
       await shoot('nearly-full', ['Disk']);
       if (fill) rmSync(fill, { force: true });

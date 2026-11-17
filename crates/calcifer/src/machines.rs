@@ -1291,6 +1291,11 @@ impl Machines {
                 self.placing.notify_one();
                 self.rc_ready.notify_one();
             }
+            // Room made on its disk: a run of Calcifer's queue waiting for it may go there now (cl-1175).
+            let room = |frame: &v1::StatusFrame| frame.disk.as_ref().map(v1::Disk::room);
+            if seen.frame.as_ref().is_some_and(|last| room(&frame) > room(last)) {
+                self.placing.notify_one();
+            }
             // Ready on a boot not seen ready before (it came up, or started again on new software): plans count it now.
             if frame.phase == "ready" && seen.frame.as_ref().is_none_or(|f| f.phase != "ready" || f.boot_id != frame.boot_id) {
                 self.arrivals.send_modify(|n| *n += 1);
@@ -2456,6 +2461,10 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
         disk_environments_bytes: frame.disk.as_ref().map_or(0, |d| d.environments_bytes),
         disk_runtime_bytes: frame.disk.as_ref().map_or(0, |d| d.runtime_bytes),
         disk_runs_bytes: frame.disk.as_ref().map_or(0, |d| d.runs_bytes),
+        disk_room_bytes: frame.disk.as_ref().map_or(0, v1::Disk::room),
+        disk_needs_bytes: (frame.disk.as_ref())
+            .and_then(|d| d.short_of(frame.models.iter().map(|model| model.total_bytes).max().unwrap_or(0)))
+            .unwrap_or(0),
         runs: vec![],
         activity: vec![],
         models: frame

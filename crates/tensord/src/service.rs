@@ -395,7 +395,7 @@ impl Service {
         let publisher = self.publisher.lock().unwrap().clone();
         let generations = self.catalog.root();
         if let Some(publisher) = publisher {
-            crate::reclaim::measure_usage(publisher.store().root(), generations.parent().unwrap_or(generations), Some(&publisher.uv_cache()));
+            crate::reclaim::measure_usage(publisher.store(), generations.parent().unwrap_or(generations), Some(&publisher.uv_cache()));
         }
     }
     /// `actor`'s installations `named` leave the journal, their warm set members and the GPU

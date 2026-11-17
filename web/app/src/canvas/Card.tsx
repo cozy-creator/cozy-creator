@@ -345,6 +345,14 @@ function Status({ view, name }: { view: ElementView; name: string }) {
       </div>
     )
   }
+  // Its models fit on none of its machines' disks (cl-1175): how much room it lacks, and where to get a machine with room.
+  if (view.noRoom) {
+    return (
+      <div className="status mak">
+        {view.noRoom.line} <Act label="Machines" onClick={store.askMachine} />
+      </div>
+    )
+  }
   if (view.queued || view.asked !== undefined) return null
   // A failure is its toast; unavailable media is labelled by the media view.
   return null
