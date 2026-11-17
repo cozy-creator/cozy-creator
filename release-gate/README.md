@@ -240,7 +240,8 @@ H3 untouched renders 362 frames. `-f params='{"machine": "<name>"}'` uses a rent
 RC's builds. Each size forms its group, registers H3's weights with native memory on every GPU, and must complete at that degree on that
 many GPUs. Paul: "minimax h3 inference can use 1 GPU, 2, 4, 7, or 8 GPUs. We should always support all of these with ulysses-style
 parallelism." A cell of the `runtime` and `varena` suites, run by hand. The release lead runs 4, 2 and 1 at a cut (about $1), and 8 and 7
-on an 8x when the Runtime's group code changed (about $2.5). A change to groups, varena or minimax-h3 runs it at 2 as its PR proof:
+on an 8x when the Runtime's group code changed (about $2.5). 8 and 7 are unproven so far: on 11-17 no provider had rtx-3090 ×8 and
+a40 ×8 was $7.87/h. A change to groups, varena or minimax-h3 runs it at 2 as its PR proof:
 `gh workflow run pod-session.yaml -R cozy-creator/cozy-creator --ref rc/<x> -f hub=prod -f script=h3-group -f packages_refs=rc=rc/<x>
 -f sku=rtx-3090 -f disk=150 -f cap=3 -f cozy=<rc-dev run> -f params='{"tree": "rc", "gpus": 4, "degrees": "4 2 1"}' -f rent=true`.
 `h3-8gb` is the 8 GB tier: H3 Turbo 15 s on one RTX 3070 must complete, 362 frames, under its time bar.
