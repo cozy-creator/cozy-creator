@@ -299,8 +299,8 @@ signin "$E2E_HUB_EMAIL" > "$OUT/render-new-login.json" || { check "render_on_new
 cozy --json new --unencrypted "$P" > "$OUT/render-new-plain.json" 2>&1 || check "render_on_new: new: $(tail -c 300 "$OUT/render-new-plain.json")"
 render_new plain "$P"
 printf 'render-new-%s%s\n' "$RANDOM" "$RANDOM" > "$pass"
-if cozy --json new "$E" --passphrase-file "$pass" --recovery-out "$OUT/render-new-recovery" > "$OUT/render-new-sealed.json" 2>&1; then
-  id=$(jq -r '.id // empty' "$OUT/render-new-sealed.json") code=$(jq -r '.code // empty' "$OUT/render-new-sealed.json")
+if cozy --json new "$E" --passphrase-file "$pass" --recovery-out "$OUT/render-new-recovery" > "$OUT/render-new-sealed.json" 2> "$OUT/render-new-sealed.err"; then
+  id=$(jq -r '.id // empty' "$OUT/render-new-sealed.json" || true) code=$(jq -r '.code // empty' "$OUT/render-new-sealed.json" || true)
   render_new sealed "$E"
   in_project "$E" --json vault lock > "$OUT/render-new-lock.json" 2>&1 || check "render_on_new: the encrypted project didn't lock: $(tail -c 300 "$OUT/render-new-lock.json")"
   if [ -n "$runid" ]; then
@@ -310,7 +310,7 @@ if cozy --json new "$E" --passphrase-file "$pass" --recovery-out "$OUT/render-ne
     check "render_on_new: sealed: no run of its render to look for in Calcifer's asks"
   fi
 else
-  check "render_on_new: new encrypted: $(tail -c 300 "$OUT/render-new-sealed.json")"
+  check "render_on_new: new encrypted: $(tail -c 300 "$OUT/render-new-sealed.err")"
 fi
 cozy --json logout > /dev/null 2>&1 || true
 }
@@ -340,7 +340,7 @@ rental=$(jq -r '.rental // empty' <<< "$on" 2> /dev/null || true)
 machine=$(jq -r '.machine // empty' <<< "$on" 2> /dev/null || true)
 number=$(jq -r '.number // empty' <<< "$on" 2> /dev/null || true)
 rentals=$(cozy --json machine ls --history 2> /dev/null | jq -c --argjson was "${before:-[]}" '[.rentals[]?.rental_id | select(IN($was[]) | not)]' 2> /dev/null || true)
-[ -z "$number" ] || in_project "$P" --json run watch "$number" --once > "$at" 2>&1 || true
+[ -z "$number" ] || in_project "$P" --json run watch "$number" --once > "$at" 2> /dev/null || true
 runid=$(jq -r '.id // empty' "$at" 2> /dev/null || true)
 in_project "$P" --json run ls --limit 20 > "$w" 2> /dev/null || true
 echo "render_on_new: $name: rented ${rentals:-nothing}; its work $(jq -c '[.runs[]? | select(.target | test("draw")) | {number, target, machine, status}]' "$w" 2> /dev/null); the box $(status "$P" | jq -c '.board.jobs[]? | select(.asset == "box") | {state, why}' 2> /dev/null)"
