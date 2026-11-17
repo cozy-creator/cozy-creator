@@ -49,7 +49,11 @@ runno() { awk '$1=="run" && NF==2{print $2}' "$OUT/$1.txt" | tail -1; }
 handle() { sed 's/^[0-9.]* {/{/' "$1" 2>/dev/null | grep '^{' | jq -r 'select(.run.number != null) | if (.run.name // "") != "" then .run.name else .run.id end' 2>/dev/null | head -1; }
 finish() {
   local status=$?; [ "$RC" != 0 ] || RC=$status
-  for p in $WD $BG $DL; do pkill -P "$p"; kill "$p"; done 2>/dev/null
+  # From here a signal is noted, not obeyed: nothing the session started (the deadline watcher, a helper) or a cancel stops
+  # the rental ends below. 43971316155's watcher TERMed this trap and the session exited without its RESULT.
+  trap 'RC=1' INT TERM HUP
+  # The helpers stop first, each one's children before itself: a watcher whose sleep is killed exits without acting.
+  for p in $DL $WD $BG; do pkill -P "$p"; kill "$p"; done 2>/dev/null
   local r
   for r in "${RIDS[@]}"; do
     local tries=0
@@ -70,7 +74,7 @@ trap 'RC=1; exit 1' INT TERM HUP
 # The step's deadline (SESSION_UNTIL, pod-session.yaml): 5 min before it the session ends itself, so its trap ends its rentals and
 # says END, GONE and the bill before the step is killed.
 if [ -n "${SESSION_UNTIL:-}" ]; then
-  ( left=$((SESSION_UNTIL - $(date +%s) - 300)); [ "$left" -le 0 ] || sleep "$left"
+  ( left=$((SESSION_UNTIL - $(date +%s) - 300)); [ "$left" -le 0 ] || sleep "$left" || exit 0  # killed by `finish`
     say "DEADLINE: the step ends in 5 min; this session ends now"; kill -TERM $$ ) 9>&- & DL=$!
 fi
 # claim: what this runner's Calcifer ordered (machines.sh `own`) joins RIDS and $OUT/rental, for a session whose own work
