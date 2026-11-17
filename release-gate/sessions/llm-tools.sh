@@ -62,7 +62,7 @@ declare -A MODEL=(
   [q38_27b]=$(param q38_27b heretic-org/qwen3.8-27b-heretic-ara@0.1.0)
   [q36_35b]=$(param q36_35b llmfan46/qwen3.6-35b-a3b-uncensored-heretic-native-mtp-preserved@0.1.0)
   [q36_27b]=$(param q36_27b llmfan46/qwen3.6-27b-uncensored-heretic-v2-native-mtp-preserved@0.1.0)
-  [q35_9b]=$(param q35_9b darrellbest/qwen3.5-9b-heretic@0.1.0)
+  [q35_9b]=$(param q35_9b huihui-ai/huihui-qwen3.5-9b-abliterated@0.1.0)
   [control]=$(param control qwen/qwen3.6-27b@0.1.0)
 )
 # A dev home, its first-party packages from the checkout.
