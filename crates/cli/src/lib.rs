@@ -101,7 +101,7 @@ enum Command {
     Doctor(doctor::Args),
     /// Show or change this computer's settings.
     Config(settings::Args),
-    /// Restart Calcifer on the installed cozy.
+    /// Restart Calcifer on the installed cozy once nothing else runs, without a moment off.
     Restart(daemon::Restart),
     /// Sign in to your TensorHub account.
     Login(account::Login),
