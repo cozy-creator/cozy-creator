@@ -232,6 +232,12 @@ impl Calcifer {
         self.export_moved_within(id, EXPORT_SILENCE)
     }
 
+    /// The run's save judged anew from now (cl-1064): its machine came back after a long silence, which counts against it no more.
+    pub(super) fn export_fresh(&self, id: &RunId) {
+        let in_place = self.bytes_in_place(id);
+        lock(&self.exports.seen).insert(id.clone(), (in_place, Instant::now()));
+    }
+
     /// Whether the run's exporter moved its outputs within `within` (`export_moving`'s test, by another silence): a lock that found
     /// local not answering still lets a save from it land while its bytes come (cl-1064).
     pub(super) fn export_moved_within(&self, id: &RunId, within: std::time::Duration) -> bool {

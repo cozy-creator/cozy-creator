@@ -61,6 +61,16 @@ impl Machines {
         false
     }
 
+    /// Whether `name` answers one status ask now, whatever was judged of it lately (cl-1064): a lock asks before it cuts a save
+    /// for a verdict, so a machine that came back keeps its saves. An answer clears the verdict.
+    pub(crate) async fn answers_now(&self, name: &str) -> bool {
+        let answered = self.asked(name).await;
+        if answered {
+            verdict(name, true);
+        }
+        answered
+    }
+
     /// `work`, which waits on `name`, while `name` answers: its status asked every second meanwhile; None once it missed three in
     /// a row, and `work` is dropped.
     pub(crate) async fn while_answering<T>(&self, name: &str, work: impl Future<Output = T>) -> Option<T> {

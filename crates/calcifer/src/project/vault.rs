@@ -784,12 +784,12 @@ fn saving(api: &Arc<Api>, root: &FsPath) -> Option<Error> {
 /// `EXPORT_SILENCE`, so the vault locks close to its deadline; its outputs read lost, saying local didn't answer. Still is judged by
 /// progress, from the later of its last bytes and the drain's start: a save whose bytes still come lands, and so does one from a
 /// local that came back as the drain began (review 6939581151).
-fn drain_saves(api: &Arc<Api>, root: &FsPath, local_gone: bool, mut saving: impl FnMut()) -> Result<(Vec<String>, Vec<String>), Error> {
+fn drain_saves(api: &Arc<Api>, root: &FsPath, mut local_gone: bool, mut saving: impl FnMut()) -> Result<(Vec<String>, Vec<String>), Error> {
     let journal = |_: crate::store::StoreError| error("project_journal", "the project journal could not be checked");
     let projects = api.projects.now_open();
     let Some(project) = projects.iter().find(|project| project.root == root).cloned() else { return Ok((vec![], vec![])) };
     let owner = super::RunOwner::of(&project, &api.calcifer);
-    let (mut said, mut busy, began) = (false, None::<Instant>, Instant::now());
+    let (mut said, mut busy, began, mut asked) = (false, None::<Instant>, Instant::now(), false);
     loop {
         let (owed, from_local) = match owner.store() {
             Ok(store) => {
@@ -813,6 +813,16 @@ fn drain_saves(api: &Arc<Api>, root: &FsPath, local_gone: bool, mut saving: impl
             Err(e) => return Err(journal(e)),
         };
         if owed.is_empty() { return Ok((vec![], vec![])); }
+        // Asked once more before any save from it is cut for the verdict: a local that answers now came back, and its saves, judged
+        // anew from now, go on as any do (re-review 6939581151); their exporters are woken from their pause.
+        if !from_local.is_empty() && !std::mem::replace(&mut asked, true) && tokio::runtime::Handle::current().block_on(api.machines.answers_now("local")) {
+            for id in &from_local {
+                api.calcifer.export_fresh(id);
+                api.calcifer.export(id);
+            }
+            local_gone = false;
+            continue;
+        }
         // An exporter missing is started; one going is left alone: waking it is no progress, and cuts its pause.
         for (id, _) in &owed { if !api.calcifer.exporting(id) { api.calcifer.export(id); } }
         if !said { saving(); said = true; }
