@@ -1989,7 +1989,13 @@ fn convert_from(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSe
     // its live storage as an incidental part of converting its parent.
     no_nested(api, root)?;
     progress.phase("validating");
-    let managed = managed_tree(&source)?;
+    let managed = match &copy {
+        // A copy's view holds its original's marker, naming the original's view, and its database isn't read on a read-only mount: what
+        // it retains is its original's, as a plain copy's is.
+        Some(_) => crate::private_io::retained_copy_storage(&source)?.is_some_and(|storage|
+            Keybag::load(&root.join(KEYBAG_FILE)).is_ok_and(|bag| bag.info().project_id == storage.project_id)),
+        None => managed_tree(&source)?,
+    };
     let old_secret = if copying { None } else { held(root).map(|session| session.lock().expect("vault session").secret.duplicate()) };
     if !copying && old_secret.is_none() && plain_generation_for_encrypt(root, &keybag.info().project_id)? != keybag.info().generation {
         return Err(error("vault_key", "the plaintext execution generation changed before encryption"));

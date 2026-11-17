@@ -73,6 +73,16 @@ projectvault() (
   J --arg i "$(jq -r .id "$work/born.json")" '.id == $i' "$work/born-state.json" || fail "the original lost its id to its copy: $(jq -c .id "$work/born-state.json")"
   in_project "$work/born-copy" --json vault lock > /dev/null 2>&1 || fail "the copy didn't lock"
   in_project "$work/born" --json vault lock > /dev/null 2>&1 || fail "the original didn't lock again"
+  # Unlocked by its recovery secret, a copy is asked for a passphrase of its own, which wraps its new key.
+  cp -a "$work/born" "$work/born-copy2"
+  if cozy --json vault --directory "$work/born-copy2" unlock --recovery-file "$secrets/born-recovery" > "$work/copy2-asked.json" 2>&1; then
+    fail "a copy unlocked by its recovery secret wasn't asked for a passphrase of its own"
+  fi
+  jq -e '.error.code == "vault_copy_passphrase"' "$work/copy2-asked.json" > /dev/null || fail "a copy unlocked by its recovery secret: $(tail -c 300 "$work/copy2-asked.json")"
+  cozy --json vault --directory "$work/born-copy2" unlock --recovery-file "$secrets/born-recovery" --passphrase-file "$secrets/initial" > "$work/copy2.json" 2>&1 \
+    || fail "a copy didn't unlock by its recovery secret with a passphrase of its own: $(tail -c 300 "$work/copy2.json")"
+  jq -e '.recovery_secret | type == "string"' "$work/copy2.json" > /dev/null || fail "the copy unlocked by its recovery secret got no recovery secret of its own"
+  in_project "$work/born-copy2" --json vault lock > /dev/null 2>&1 || fail "the second copy didn't lock"
   cozy --json new --unencrypted "$P" > "$work/created.json"
   boxes_of "$P" > "$work/before.json"
   mkdir -p "$P/files"
