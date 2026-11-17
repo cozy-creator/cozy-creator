@@ -209,7 +209,8 @@ def quantized(binary: str, project: Path, package_dir: Path, cell: Cell, folder:
     cozy(binary, project, ["model", "show", f"{made['repo_id']}@{made['revision']}"], folder / "show.json")
     lanes = cast(list[dict[str, Json]], cast(dict[str, Json], json.loads((folder / "show.json").read_text())).get("lanes") or [{}])
     tensors = sum(int(cast(int, component.get("tensors") or 0)) for component in cast(list[dict[str, Json]], lanes[0].get("components") or []))
-    held = cast(dict[str, int], (against or {}).get("weights", {}).get(wanted_lane, {})).get("tensors")
+    recorded: dict[str, dict[str, int]] = against.get("weights", {}) if against is not None else {}
+    held = recorded.get(wanted_lane, {}).get("tensors")
     if not tensors or held is not None and held != tensors:
         raise Failed(f"quantize {wanted_lane}'s checkpoint holds {tensors} tensors, the reference's {held}")
     return {"result": {"lane": wanted_lane}, "outputs": [], "weights": {wanted_lane: {"tensors": tensors}}}
@@ -288,7 +289,8 @@ def main() -> int:
             else:
                 payload, files = request(cell, out / "made")
                 (folder / "request.json").write_text(json.dumps(payload, indent=1))
-                models = [arg for path, ref in sorted(cell.get("models", {}).items()) for arg in ("--model", f"{path}={ref}")]
+                models = [arg for path, ref in sorted(cell.get("models", {}).items())
+                          for arg in ("--model", f"{path.rsplit('.', 1)[-1]}={ref}")]
                 run = cozy(binary, project, ["--full", "run", f"{package_dir}/{entry}", "--input", str(folder / "request.json"),
                                              *files, *models, "--on", "local", "-o", str(folder / "out")], folder / "run.ndjson")
                 (folder / "run.json").write_text(json.dumps(run, indent=1))

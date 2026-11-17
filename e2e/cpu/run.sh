@@ -83,6 +83,7 @@ packages=$(echo $packages)
 packages="$(for q in $SLOWEST; do [[ " $packages " != *" $q "* ]] || echo "$q"; done) $(for q in $packages; do [[ " $SLOWEST " == *" $q "* ]] || echo "$q"; done)"
 packages=$(i=0; for q in $packages; do [ $((i % ${SHARD#*/})) != $((${SHARD%/*} - 1)) ] || echo "$q"; i=$((i + 1)); done)
 packages=$(echo $packages)
+[ -n "$packages$absent" ] || { echo "cpu: shard $SHARD holds none of the packages asked for"; exit 0; }
 
 one() {
   local p=$1 out=$OUT/$1 env=$ENVS/$1 t
