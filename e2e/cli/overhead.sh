@@ -16,7 +16,7 @@ run_overhead() {
 step "a warm run's time outside its compute (cl-1172)"
 local package=qwen3.5
 [ -z "$PACKAGES" ] || [ ! -d "$PACKAGES/qwen3" ] || package=qwen3
-local qwen=(--model model=qwen/qwen3.5-0.8b@0.1.0 max_tokens:=4 seed:=7 temperature:=0)
+local qwen=(--model model=${OVERHEAD_MODEL:-huihui-ai/huihui-qwen3.5-0.8b-abliterated@0.1.0} max_tokens:=4 seed:=7 temperature:=0)
 overhead_of echo minimax-h3-tools/echo text
 overhead_of write "$package/write" instructions "${qwen[@]}"
 overhead_of caption "$package/caption" picture "${qwen[@]}"
@@ -40,7 +40,7 @@ sudo tc qdisc add dev lo root handle 1: prio \
   && sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip dport "$port" 0xffff flowid 1:3 \
   && sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport "$port" 0xffff flowid 1:3 \
   || { sudo tc qdisc del dev lo root 2> /dev/null; check "overhead far: its link wasn't delayed"; return; }
-local qwen=(--model model=qwen/qwen3.5-0.8b@0.1.0 max_tokens:=4 seed:=7 temperature:=0)
+local qwen=(--model model=${OVERHEAD_MODEL:-huihui-ai/huihui-qwen3.5-0.8b-abliterated@0.1.0} max_tokens:=4 seed:=7 temperature:=0)
 OVERHEAD_ON=far OVERHEAD_MS=$bar overhead_of far-echo minimax-h3-tools/echo text
 OVERHEAD_ON=far OVERHEAD_MS=$bar overhead_of far-caption "$1/caption" picture "${qwen[@]}"
 sudo tc qdisc del dev lo root || check "overhead far: its link wasn't restored"
@@ -80,14 +80,20 @@ sys.exit(0 if median < bar else 1)
 PY
 }
 
-# overhead_input <name> <field> <i>: repeat i's input: words naming i, or a picture of its own colour.
+# overhead_input <name> <field> <i>: repeat i's input: words naming i, or a picture of its own colour (a 96x64 PNG).
 overhead_input() {
 case $2 in
   picture)
-    local file=$OUT/overhead-inputs/$1-$3.jpg
+    local file=$OUT/overhead-inputs/$1-$3.png
     mkdir -p "${file%/*}"
-    [ -f "$file" ] || ffmpeg -v error -y -f lavfi -i "color=c=0x$(printf '%02x%02x%02x' $((40 * $3 % 256)) $((97 * $3 % 256)) $((180 + 7 * $3 % 76))):s=96x64" \
-      -frames:v 1 "$file" || return 1
+    [ -f "$file" ] || python3 -I -c '
+import struct, sys, zlib
+i, w, h = int(sys.argv[2]), 96, 64
+pixel = bytes(((40 * i) % 256, (97 * i) % 256, (180 + 7 * i) % 256))
+rows = b"".join(b"\0" + pixel * w for _ in range(h))
+chunk = lambda kind, data: struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+' "$file" "$3" || return 1
     printf 'images:=["%s"]' "$file" ;;
   *) printf '%s=Say one word about the number %s.' "$2" "$3" ;;
 esac
