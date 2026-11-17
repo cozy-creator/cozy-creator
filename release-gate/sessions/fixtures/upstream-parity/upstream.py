@@ -218,6 +218,10 @@ def qwen3(out: Path, fixtures: Path) -> None:
     processor = AutoProcessor.from_pretrained(root)
     model = AutoModelForImageTextToText.from_pretrained(root, dtype=torch.bfloat16, attn_implementation="sdpa").to("cuda")
     model.eval()
+    # The chat's end and the configured eos: the checkpoint has no generation_config.json.
+    configured = model.generation_config.eos_token_id
+    stops = sorted({processor.tokenizer.eos_token_id, *(configured if isinstance(configured, list) else [configured])} - {None})
+    say("stops", stops)
     answers = {}
     for name, cell in CELLS["qwen3"].items():
         content = []
@@ -230,7 +234,7 @@ def qwen3(out: Path, fixtures: Path) -> None:
                                              tokenize=False, enable_thinking=False)
         inputs = processor(text=[text], images=images or None, return_tensors="pt").to("cuda")
         with torch.inference_mode():
-            made = model.generate(**inputs, max_new_tokens=cell["max_tokens"], do_sample=False)
+            made = model.generate(**inputs, max_new_tokens=cell["max_tokens"], do_sample=False, eos_token_id=stops)
         tokens = made[0, inputs["input_ids"].shape[1]:].tolist()
         answers[name] = {"text": processor.decode(tokens, skip_special_tokens=True).strip(), "tokens": tokens,
                          "prompt_tokens": int(inputs["input_ids"].shape[1])}
