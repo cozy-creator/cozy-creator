@@ -554,7 +554,8 @@ Every product of a code with a scale is exact in f32 (`q6_k`'s second product as
 `q4_1`, `q5_1`, `q2_k`, `q4_k` and `q5_k`, `q6_k`'s second product and `nvfp4`'s `scale` round; a build of ggml that
 fuses multiply-adds agrees. ggml's own encoder for each type is its `quantize_row_<type>_ref`; TensorFS's producer
 `ggml-ref/1` is a port of those for `q8_0`, `q5_0`, `q5_1`, `q4_k`, `q5_k` and `q6_k` (llama.cpp b12466), bit-exact with
-them and so with llama-quantize run without an importance matrix.
+them as x86-64 builds of ggml run them (nothing contracts to a fused multiply-add there), and so with an x86-64
+llama-quantize run without an importance matrix. aarch64 and Apple clang builds fuse, and may differ in the last bit.
 
 ### `gptq.int2`, `gptq.int3`, `gptq.int4`, `gptq.int8`
 

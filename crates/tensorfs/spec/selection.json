@@ -1,5 +1,5 @@
 {
- "rule": 6,
+ "rule": 7,
  "features": {
   "mma": {"min": "8.0"},
   "int8": {"min": "8.0", "except": ["10.3"]},
