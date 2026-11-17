@@ -487,7 +487,7 @@ impl Service {
             }
         };
         let idle: BTreeSet<u32> = self.pool().map(|pool| pool.idle_executors().into_iter().flat_map(|(pids, _)| pids).collect()).unwrap_or_default();
-        let busy = self.pool().map(|pool| pool.busy_models()).unwrap_or_default();
+        let busy = self.pool().map(|pool| pool.executor_models()).unwrap_or_default();
         let all = busy.iter().flat_map(|(pid, models)| models.idle.keys().map(|c| (*pid, c.clone()))).collect();
         let goes = |lane: &tensorfs::store::retention::RoomLane| lets_go(lane, &idle, &busy, &all);
         let evictable = room.freed(goes);
@@ -536,16 +536,17 @@ impl Service {
     }
 
     /// Executors let go of models, while those only they hold open would give the disk what it lacks for `incoming` more bytes
-    /// and its reserve, as the store judges an admit (0: one of unknown length, or none): idle executors end, least recently
-    /// used first; then a busy executor lets go of constructions none of its calls runs on (tfs-303: one that ran disk-1 and
-    /// runs disk-5 kept both, and a run was refused disk-1's room), never one a queued or running job also holds. Waits, as
-    /// long as `RELEASE_WAIT`, for what those let go to leave the store's holds. The models they held, by name.
+    /// and its reserve, as the store judges an admit (0: one of unknown length, or none): each executor, idle or busy, lets go
+    /// of constructions none of its calls runs on (tfs-303: one that ran disk-1 and runs disk-5 kept both, and a run was refused
+    /// disk-1's room), its process kept; then idle executors end, least recently used first, for what that doesn't free; never
+    /// a model a queued or running job also holds. Waits, as long as `RELEASE_WAIT`, for what they let go to leave the store's
+    /// holds. The models they held, by name.
     fn free_executor_holds(&self, store: &crate::storage::Store, incoming: u64) -> Vec<String> {
         let Some(pool) = self.pool() else {
             return vec![];
         };
         let idle = pool.idle_executors();
-        let busy = pool.busy_models();
+        let busy = pool.executor_models();
         // Below its reserve the disk lacks room for any write (kamitsure, 11-16: its idle LTX stayed while outputs went).
         let need = crate::reclaim::measure(store.root()).map_or(0, |disk| (disk.reserve() + incoming.max(1)).saturating_sub(disk.available));
         if (idle.is_empty() && busy.is_empty()) || need == 0 {
@@ -562,25 +563,9 @@ impl Service {
         let freed = |ended: &BTreeSet<u32>, released: &Released| room.freed(|lane| lets_go(lane, ended, &busy, released));
         let (mut ended, mut released, mut names) = (BTreeSet::new(), Released::new(), vec![]);
         let mut can = freed(&ended, &released);
-        for (pids, _) in idle {
-            if can >= need {
-                break;
-            }
-            let mut with = ended.clone();
-            with.extend(pids.iter().copied());
-            let more = freed(&with, &released);
-            // The leader's end ends its whole group.
-            if more > can {
-                if pool.end_idle_executor(pids[0]) {
-                    names.extend(room.lanes.iter().filter(|lane| pids.iter().any(|pid| lane.holders.contains(pid))).map(|lane| lane.name.clone()));
-                    (ended, can) = (with, more);
-                } else {
-                    // Taken for a call as it was listed idle (e2e 44063971753): it lets go below instead.
-                    tracing::info!("executor {} was taken for a call before it could end: it lets go of what that call doesn't read", pids[0]);
-                }
-            }
-        }
-        for (pid, models) in busy.iter().filter(|(pid, _)| !ended.contains(*pid)) {
+        // First each executor, idle or busy, lets go of constructions none of its calls runs on: its process stays warm and
+        // keeps what the disk doesn't need (Paul: keep weights resident while there's room).
+        for (pid, models) in &busy {
             for construction in models.idle.keys() {
                 if can >= need {
                     break;
@@ -609,6 +594,27 @@ impl Service {
                 }
             }
         }
+        // Then an idle executor ends, for what letting go doesn't free: one whose Runtime takes no `release`, or what it holds
+        // for no construction.
+        for (pids, _) in idle {
+            if can >= need {
+                break;
+            }
+            let mut with = ended.clone();
+            with.extend(pids.iter().copied());
+            let more = freed(&with, &released);
+            // The leader's end ends its whole group.
+            if more > can {
+                if pool.end_idle_executor(pids[0]) {
+                    names.extend(room.lanes.iter().filter(|lane| pids.iter().any(|pid| lane.holders.contains(pid))).map(|lane| lane.name.clone()));
+                    (ended, can) = (with, more);
+                } else {
+                    // Taken for a call as it was listed idle (e2e 44063971753): what it lets go of above stays its answer.
+                    tracing::info!("executor {} was taken for a call before it could end: it lets go of what that call doesn't read", pids[0]);
+                }
+            }
+        }
+        released.retain(|(pid, _)| !ended.contains(pid));
         let mut waits: Vec<(u32, BTreeSet<String>)> = vec![];
         for (pid, models) in &busy {
             let which: Vec<String> = released.iter().filter(|(of, _)| of == pid).map(|(_, c)| c.clone()).collect();
@@ -905,9 +911,9 @@ impl Service {
 /// The most `free_executor_holds` waits for what busy executors let go to leave the store's holds.
 const RELEASE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Whether `lane` goes once executors let it go: each process holding it is an idle executor `ended` for it, or a busy one
-/// (`busy`) holding it only for constructions none of its calls runs on, each of them `released` (tfs-303).
-fn lets_go(lane: &tensorfs::store::retention::RoomLane, ended: &BTreeSet<u32>, busy: &BTreeMap<u32, crate::gpu_service::BusyModels>,
+/// Whether `lane` goes once executors let it go: each process holding it is an idle executor `ended` for it, or an executor
+/// (`busy`, idle or busy) holding it only for constructions none of its calls runs on, each of them `released` (tfs-303).
+fn lets_go(lane: &tensorfs::store::retention::RoomLane, ended: &BTreeSet<u32>, busy: &BTreeMap<u32, crate::gpu_service::LoadedModels>,
     released: &BTreeSet<(u32, String)>) -> bool {
     lane.holders.iter().all(|pid| ended.contains(pid) || busy.get(pid).is_some_and(|models| {
         let mut held = models.idle.iter().filter(|(_, headers)| headers.iter().any(|h| lane.keeps(h))).peekable();
