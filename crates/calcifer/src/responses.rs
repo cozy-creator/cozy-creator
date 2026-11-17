@@ -472,14 +472,15 @@ impl Answering {
 
     /// Waits for what its run says next; false once there is no more to hear.
     async fn listen(&mut self) -> bool {
-        tokio::select! {
-            received = self.tail.recv() => match received {
-                Ok((id, event)) if id == self.id => self.heard(event),
-                Ok(_) => {}
-                Err(broadcast::error::RecvError::Lagged(_)) => self.caught_up(),
-                Err(broadcast::error::RecvError::Closed) => return false,
-            },
-            _ = self.stop.wait_for(|stop| *stop) => return false,
+        let received = tokio::select! {
+            received = self.tail.recv() => received,
+            () = stopping(&mut self.stop) => return false,
+        };
+        match received {
+            Ok((id, event)) if id == self.id => self.heard(event),
+            Ok(_) => {}
+            Err(broadcast::error::RecvError::Lagged(_)) => self.caught_up(),
+            Err(broadcast::error::RecvError::Closed) => return false,
         }
         true
     }
@@ -519,6 +520,10 @@ impl Drop for Answering {
             }
         }
     }
+}
+
+async fn stopping(stop: &mut watch::Receiver<bool>) {
+    let _ = stop.wait_for(|stop| *stop).await;
 }
 
 /// An output item as a message of the Responses API.

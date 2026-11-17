@@ -750,10 +750,10 @@ impl Runs {
             }
         }
         let own = record.id.clone();
-        self.page(record, after).map(|page| (page, own))
+        self.log_after(record, after).map(|page| (page, own))
     }
 
-    fn page(&self, record: Execution, after: u64) -> Result<stored::LogPage, Error> {
+    fn log_after(&self, record: Execution, after: u64) -> Result<stored::LogPage, Error> {
         if record.state.terminal() {
             let mut page = self.terminal(&record)?;
             page.events.retain(|event| event.sequence > after);
