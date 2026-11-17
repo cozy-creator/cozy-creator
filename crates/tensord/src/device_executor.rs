@@ -478,6 +478,12 @@ impl Codec {
         #[cfg(unix)]
         platform::process::keep_open(&mut command, hold.into_iter().collect());
         let mut child = command.spawn()?;
+        // A project's own codec holds its frames: its view keeps this birth too, so a lock that can't reach this machine ends it (cl-1064).
+        if let Err(error) = Birth::of(child.id()).map_err(io::Error::from).and_then(|birth| crate::private_io::record_birth(&self.config.python, &birth)) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
         let input = child
             .stdin
             .take()
@@ -916,6 +922,8 @@ impl DeviceExecutor {
             serving: Arc::default(),
         };
         on_birth(&birth, &cancellation)?;
+        // A project's own code: its view keeps this birth, so a lock that can't reach this machine ends it (cl-1064).
+        if config.within { crate::private_io::record_birth(&config.python, &birth)?; }
         // Wait for connection OR observed process death. No elapsed-time startup kill.
         let Some(stream) = listener.accept_unless(&exact)? else {
             let status = unready.ended()?;

@@ -208,6 +208,8 @@ async fn project_gone_at(State(m): State<Machine>, headers: HeaderMap, body: Byt
                 _ => Error::conflict("private_storage_busy", error.to_string()),
             })?;
         }
+        // Done: the births kept for the view go with it.
+        crate::private_io::forget_births(&gone.view);
         Ok(())
     }).await?;
     Ok(StatusCode::NO_CONTENT.into_response())

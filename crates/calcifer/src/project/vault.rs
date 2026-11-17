@@ -893,8 +893,8 @@ pub(crate) async fn save_open() {
 
 /// What a lock says when `local` didn't answer it (cl-1064).
 const OWED_LINE: &str = "locked; local didn't answer, so its clean-up for this project runs when it next answers";
-/// The projects whose last lock said it, for the lock's answer.
-static OWED_SAID: LazyLock<Mutex<BTreeSet<PathBuf>>> = LazyLock::new(Mutex::default);
+/// What each project's last lock said of it, for the lock's answer.
+static OWED_SAID: LazyLock<Mutex<BTreeMap<PathBuf, String>>> = LazyLock::new(Mutex::default);
 
 fn unanswered_seal() -> Error {
     Error::new(Kind::Unavailable, "private_storage_unavailable", "local didn't answer to close the project's execution storage; retry once it answers")
@@ -934,7 +934,7 @@ fn journal<T>(mut read: impl FnMut() -> Result<T, crate::Error>) -> Result<T, cr
 
 /// What `root`'s last lock says of a machine that didn't answer it, once.
 fn owed_said(root: &FsPath) -> Option<String> {
-    OWED_SAID.lock().expect("owed said").remove(root).then(|| OWED_LINE.to_owned())
+    OWED_SAID.lock().expect("owed said").remove(root)
 }
 
 fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Result<(), Error> {
@@ -970,7 +970,9 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Resul
             })?,
             // Owed before the view ends, so a Calcifer stopped between them still tells the machine; let go if it doesn't end.
             crate::private_io::Sealed::Owed(view) => {
-                api.machines.owe(view, root).map_err(|e| error("vault_index", e.to_string()))?;
+                // Its processes on local end first (cl-1064): a hung machine's executors hold its decrypted bytes in memory.
+                let (ended, said) = api.machines.end_executors(session.keybag.info().project_id.as_str(), session.keybag.info().generation, view);
+                api.machines.owe(view, root, ended).map_err(|e| error("vault_index", e.to_string()))?;
                 // Its sealed mount point stays, marked before the view ends, until the machine's clean-up is paid (`retire_owed_view`).
                 fs::write(session.runtime.join(OWED_MARK), b"").map_err(io)?;
                 if let Err(why) = session.mount.end() {
@@ -978,8 +980,9 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Resul
                     let _ = api.calcifer.store().paid("local", view);
                     return Err(provider(why));
                 }
-                OWED_SAID.lock().expect("owed said").insert(root.to_owned());
-                say(root, "owed", || OWED_LINE.into());
+                let line = if said.is_empty() { OWED_LINE.to_owned() } else { format!("{OWED_LINE}; {said}") };
+                OWED_SAID.lock().expect("owed said").insert(root.to_owned(), line.clone());
+                say(root, "owed", || line);
             }
         }
         if matches!(sealed, crate::private_io::Sealed::Closed) { retire_runtime(&session.runtime)?; }

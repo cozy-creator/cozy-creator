@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+import hashlib
 from http.client import HTTPConnection
 import io
 import json
@@ -172,14 +173,30 @@ def main() -> int:
         (view / "probe.py").write_text(PROGRAM)
         scanner.add(sha(PROGRAM.encode())); scanner.add("sha256:" + sha(PROGRAM.encode()))
         (view / "input.json").write_text(json.dumps({"prompt": prompt}))
-        events = cozy(args.cli, "run", "probe.py/echo", "--input", "input.json", "--on", "local", cwd=folder)
+        # Its code and input named in its view: the CLI reads them where they are (the folder holds only their ciphertext).
+        events = cozy(args.cli, "run", str(view / "probe.py") + "/echo", "--input", str(view / "input.json"), "--on", "local", cwd=folder)
         runs = [run for event in events for run in [event.get("run", event)] if isinstance(run, dict)]
         require(any(isinstance(run.get("result"), dict) and cast(Json, run["result"]).get("echoed") == prompt for run in runs), "notraces_run_result")
         for run in runs:
             if isinstance(run.get("id"), str):
                 scanner.add(cast(str, run["id"]))
+    # The births the machine keeps of the view's executors (cl-1064): kept while it is unlocked, gone with its lock.
+    kept_in = Path.home() / ".cozy/machine/var/lib/cozy/tensord/private-executors"
+    digest = hashlib.sha256(cast(str, vault["view"]).encode()).hexdigest()
+
+    def births_kept() -> bool:
+        for kept in kept_in.glob("*") if kept_in.is_dir() else []:
+            try:
+                if json.loads(kept.read_bytes()).get("view") == digest:
+                    return True
+            except (OSError, ValueError):
+                continue
+        return False
+
+    require(not local or births_kept(), "notraces_births_unkept")
     locked = cozy(args.cli, "vault", "lock", cwd=folder)[-1]
     require(cast(Json, locked.get("vault", {})).get("state") == "locked", "notraces_locked")
+    require(not births_kept(), "notraces_births_left")
     # Locked, only the folder's path may stay outside it: its id and name nowhere else.
     scanner.identity(folder, project, folder.name)
     home = Path.home()

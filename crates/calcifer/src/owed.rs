@@ -99,9 +99,41 @@ impl Machines {
         matches!(tokio::time::timeout(ASK_WITHIN, link.status()).await, Ok(Ok(_)))
     }
 
-    /// A lock that couldn't reach `local` owes it the clean-up of the project at `folder`, mounted at `view`.
-    pub(crate) fn owe(&self, view: &Path, folder: &Path) -> crate::store::Result<()> {
-        self.store().owe("local", view, folder)?;
+    /// What a lock that couldn't reach `local` ends of the project's processes there (cl-1064): those TensorD started with its view's
+    /// interpreter, which hold its decrypted bytes in memory while local hangs, by the births it kept for the project's `generation` at
+    /// `view`. Each is opened exactly (a reused pid is never touched) and ended through that handle; its tree goes with it only when
+    /// the tree read now is rooted at that same birth. With no births kept (a TensorD older than this), nothing is ended here: the
+    /// clean-up stays owed, as for any lock local didn't answer. How many it ended, and the lock's words for it (none for none).
+    pub(crate) fn end_executors(&self, project_id: &str, generation: u64, view: &Path) -> (u32, String) {
+        use sha2::Digest as _;
+        #[derive(serde::Deserialize, Default)]
+        struct Births { births: Vec<platform::process::Birth> }
+        let key = hex::encode(sha2::Sha256::digest(format!("{project_id}\0{generation}\0{}", view.to_string_lossy())));
+        let kept: Births = std::fs::read(self.local.births().join(key)).ok().and_then(|raw| serde_json::from_slice(&raw).ok()).unwrap_or_default();
+        let mut ended = 0;
+        for birth in kept.births {
+            let Ok(Some(process)) = platform::process::Exact::open(&birth) else { continue };
+            let tree = platform::process::tree(birth.pid);
+            let _ = process.kill();
+            if tree.first().is_some_and(|root| root.birth() == &birth) {
+                for descendant in &tree[1..] {
+                    let _ = descendant.kill();
+                }
+            }
+            ended += 1;
+        }
+        let said = match ended {
+            0 => String::new(),
+            1 => "it ended the project's process there".into(),
+            n => format!("it ended the project's {n} processes there"),
+        };
+        (ended, said)
+    }
+
+    /// A lock that couldn't reach `local` owes it the clean-up of the project at `folder`, mounted at `view`; it ended `ended` of
+    /// the project's processes there.
+    pub(crate) fn owe(&self, view: &Path, folder: &Path, ended: u32) -> crate::store::Result<()> {
+        self.store().owe("local", view, folder, ended)?;
         MAYBE_OWED.store(true, Ordering::Relaxed);
         Ok(())
     }

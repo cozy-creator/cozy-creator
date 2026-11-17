@@ -25,6 +25,7 @@ the cell goes on: a red names each way it hangs. The machine always goes on at t
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -34,6 +35,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from typing import cast
@@ -299,6 +301,89 @@ def paid(view: Path) -> tuple[int | None, float]:
     return rows, round(time.monotonic() - began, 1)
 
 
+def executors_of(view: Path) -> list[int] | None:
+    """The processes whose environment names `view`: a project's executors (their home and scratch are in its view). None where
+    this OS's processes' environments aren't read here (only Linux's are)."""
+    if not sys.platform.startswith("linux"):
+        return None
+    needle, found = str(view).encode(), []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit() or int(entry.name) == os.getpid():
+            continue
+        try:
+            environ = (entry / "environ").read_bytes()
+        except OSError:
+            continue
+        if any(value.split(b"=", 1)[-1].startswith(needle) for value in environ.split(b"\0")):
+            found.append(int(entry.name))
+    return found
+
+
+def executors_but(view: Path) -> dict[int, str]:
+    """Executors on this machine (Linux) of everything but `view`, each with its start (so a reused pid isn't taken for it)."""
+    if not sys.platform.startswith("linux"):
+        return {}
+    ours = set(executors_of(view) or [])
+    found = {}
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit() or int(entry.name) in ours:
+            continue
+        try:
+            if b"cozy_runtime.internal.executor" in (entry / "cmdline").read_bytes():
+                found[int(entry.name)] = (entry / "stat").read_text().rsplit(")", 1)[1].split()[19]
+        except OSError:
+            continue
+    return found
+
+
+def alive(pid: int, start: str) -> bool:
+    """Whether process `pid`, started at `start`, still runs (a zombie has ended)."""
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+    except OSError:
+        return False
+    return fields[19] == start and fields[0] != "Z"
+
+
+def described(pid: int, view: Path) -> dict[str, object]:
+    """What process `pid` is: its parent, state, command and which of its environment's names hold `view`."""
+    proc = Path(f"/proc/{pid}")
+    try:
+        fields = (proc / "stat").read_text().rsplit(")", 1)[1].split()
+        names = [entry.split(b"=", 1)[0].decode(errors="replace") for entry in (proc / "environ").read_bytes().split(b"\0")
+                 if str(view).encode() in entry]
+        command = (proc / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")[:300]
+        parent = int(fields[1])
+        parent_command = Path(f"/proc/{parent}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")[:200]
+    except OSError as error:
+        return {"pid": pid, "unreadable": str(error)}
+    return {"pid": pid, "state": fields[0], "ppid": parent, "parent": parent_command, "command": command, "names": names}
+
+
+def executors_gone(view: Path) -> list[int] | None:
+    """`executors_of(view)` once they had 10 s to go."""
+    began, left = time.monotonic(), executors_of(view)
+    while left and time.monotonic() - began < 10:
+        time.sleep(0.5)
+        left = executors_of(view)
+    return left
+
+
+BIRTHS = Path.home() / ".cozy/machine/var/lib/cozy/tensord/private-executors"
+
+
+def births_kept(view: Path) -> bool:
+    """Whether local keeps its executors' births for `view` (cl-1064): never past the view's close or its owed clean-up."""
+    digest = hashlib.sha256(str(view).encode()).hexdigest()
+    for kept in BIRTHS.glob("*") if BIRTHS.is_dir() else []:
+        try:
+            if json.loads(kept.read_bytes()).get("view") == digest:
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
 def live_mounts() -> set[str]:
     return {line.split(" ")[4].replace("\\040", " ") for line in Path("/proc/self/mountinfo").read_text().splitlines()}
 
@@ -456,7 +541,9 @@ SINCE = time.time_ns()
 
 def hung(cell: Cell, label: str, scanner: Scanner, view: Path, projects: list[Path]) -> dict[str, object]:
     """While the machine is stopped: the view gone, and nothing outside the folders but the machine's journal, named."""
-    facts: dict[str, object] = {"mounted": mounted(view), "journal_rows": journaled(view), "journal": str(journal()[0])}
+    facts: dict[str, object] = {"mounted": mounted(view), "journal_rows": journaled(view), "journal": str(journal()[0]),
+                                "executors_left": executors_gone(view)}
+    facts["executors_left_are"] = [described(pid, view) for pid in cast(list[int], facts["executors_left"] or [])]
     facts["scan"] = traces(scanner, cell.out, f"{label}-stopped", [*(project.resolve() for project in projects), *journal()])
     print(f"lock hung: {label}: while local is stopped, the one exception is its own journal {facts['journal']}: "
           f"{facts['journal_rows']} runs of the ended view", flush=True)
@@ -514,6 +601,8 @@ def main() -> None:
             facts["lock_said"] = locked.get("owed")
             if "didn't answer" not in str(facts["lock_said"]):
                 failures.append(f"the lock didn't say local's clean-up is owed: {facts['lock_said']!r}")
+            if "ended the project's" not in str(facts["lock_said"]):
+                failures.append(f"the lock didn't say it ended the project's processes on local: {facts['lock_said']!r}")
             facts["lock"] = hung(first, "lock", scanner, view, projects)
 
             # Unlocked again before local answers: once it goes on, nothing the lock settled changes, nothing of the run appears in
@@ -524,12 +613,14 @@ def main() -> None:
             facts["files_before"] = written(again / "files", mark) + written(again / ".vault-machine", mark)
             go_on()
             facts["journal_rows_after"], facts["owed_paid_s"] = paid(view)
+            facts["births_after_paid"] = births_kept(view)
             facts["runtime_left"] = runtime_left(first.project, view, mark)
             finish(process)
             facts["run_after"] = first.status(number)
             facts["files_after"] = written(again / "files", mark) + written(again / ".vault-machine", mark)
             first.cozy("runs-again", "run", str(sleeper(again)), "seconds:=0", "mark=again", "--on", "local")
             facts["answered_said"] = first.cozy("lock-answered", "vault", "lock").get("owed")
+            facts["births_after_lock"] = births_kept(again)
             facts["after_lock"] = traces(scanner, args.out, "lock-after", projects)
             if str(facts["run_before"]).split(" ")[0] not in ("canceled", "failed", "completed") or facts["run_after"] != facts["run_before"]:
                 failures.append(f"the stopped run was {facts['run_before']!r} when unlocked again and {facts['run_after']!r} once local went on")
@@ -541,6 +632,11 @@ def main() -> None:
                 failures.append(f"lock: the ended view stays in the project's folder once local answered: {facts['runtime_left']}")
             if facts["answered_said"]:
                 failures.append(f"a lock local answered said its clean-up is owed: {facts['answered_said']!r}")
+            if facts["births_after_paid"] or facts["births_after_lock"]:
+                failures.append(f"local keeps a view's executor births past its clean-up ({facts['births_after_paid']}) or its lock ({facts['births_after_lock']})")
+            lock_facts = cast(dict[str, object], facts["lock"])
+            if lock_facts["executors_left"]:
+                failures.append(f"lock: the project's processes still run on local after its lock: {lock_facts['executors_left_are']}")
             for label in ("lock", "after_lock"):
                 found = cast(dict[str, object], facts[label])
                 if label == "lock" and found["mounted"]:
@@ -584,11 +680,25 @@ def main() -> None:
         scanner.add(mark)
         view = second.unlock("unlock-maximum", MAXIMUM)
         unlocked_at = time.monotonic()
+        # Another project's executor on local, warm from a render (local's CPU takes one call at a time, so not mid-call): the lock
+        # ends only the locked project's processes, so it lives on, and the project renders again once local answers.
+        plain_folder = Path(tempfile.mkdtemp(prefix="lock-hung-plain-")) / "plain"
+        made = subprocess.run([str(args.cli), "--json", "new", "--unencrypted", str(plain_folder)], capture_output=True, timeout=300)
+        assert made.returncode == 0, f"cozy new --unencrypted: {made.stdout[-300:]!r} {made.stderr[-300:]!r}"
+        plain = Cell(args, plain_folder, "plain-")
+        plain.cozy("plain-warm", "run", str(sleeper(plain_folder)), "seconds:=0", "mark=plain", "--on", "local")
         process, stdout = second.start("going-run", sleeper(view), 600, mark)
         assert waiting(stdout, process, BEGUN, 180), f"the going run didn't begin: {stdout.read_bytes()[-400:]!r}"
         number = number_of(stdout)
+        others = facts["other_executors"] = executors_but(view)
         facts["going_stopped"] = stop(view)
         facts["going_locked_s"] = second.locked_by(deadline_of(unlocked_at, MAXIMUM, facts, "going"), DEADLINE_BOUND)
+        if facts["going_locked_s"] is not None:
+            ended = facts["other_executors_ended"] = [pid for pid, start in others.items() if not alive(pid, start)]
+            if not others:
+                failures.append("going: no other project's executor was warm on local before the stop, so none could be seen to live on")
+            elif ended:
+                failures.append(f"going: the lock ended another project's executors on local: {ended}")
         failures.extend(deadline(second, "going", scanner, view, projects, facts, process, mark))
         # Its run read once local answered, from the project unlocked again: a locked project's runs aren't read.
         if second.state() != "locked":
@@ -598,6 +708,12 @@ def main() -> None:
         second.cozy("lock-after-reading", "vault", "lock")
         if facts["going_locked_s"] is not None and not str(facts["going_run"]).startswith("canceled"):
             failures.append(f"going: the run going when local stopped is {facts['going_run']!r} once the vault locked, not canceled")
+        rendered = subprocess.run([str(args.cli), "--json", "run", str(sleeper(plain_folder)), "seconds:=1", "mark=plain-after", "--on", "local"],
+                                  cwd=plain_folder, capture_output=True, timeout=600)
+        answer = last(rendered.stdout)
+        facts["plain_after"] = cast(dict[str, object], answer.get("run", answer)).get("status") if rendered.returncode == 0 else rendered.stderr[-300:]
+        if facts["plain_after"] != "completed":
+            failures.append(f"another project doesn't render on local once it answered: {facts['plain_after']!r}")
     except BaseException:
         for project in projects:
             clock(project)
@@ -631,6 +747,8 @@ def deadline(cell: Cell, label: str, scanner: Scanner, view: Path, projects: lis
         facts[f"{label}_workaround"] = cell.workaround(label, scanner, view)
     else:
         found = facts[label] = hung(cell, label, scanner, view, projects)
+        if found["executors_left"]:
+            failures.append(f"{label}: the project's processes still run on local after its lock: {found['executors_left_are']}")
         if found["mounted"]:
             failures.append(f"{label}: the view is still mounted while local is stopped")
         if cast(dict[str, object], found["scan"])["matches"]:
@@ -638,6 +756,8 @@ def deadline(cell: Cell, label: str, scanner: Scanner, view: Path, projects: lis
     go_on()
     rows, _ = paid(view)
     facts[f"{label}_journal_rows_after"] = rows
+    if births_kept(view):
+        failures.append(f"{label}: local keeps the view's executor births past its clean-up")
     remains = facts[f"{label}_runtime_left"] = runtime_left(cell.project, view, mark)
     if remains:
         failures.append(f"{label}: the ended view stays in the project's folder once local answered: {remains}")
