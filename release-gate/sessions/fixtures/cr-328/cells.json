@@ -10,7 +10,12 @@
     "aspect_ratio=3:4",
     "megapixels:=4",
     "seed:=152001"
-   ]
+   ],
+   "update": {
+    "runtime": "44194218307",
+    "tensorfs": "artifact:44199733826/tensorfs-wheel-5882ed74902f8b982904fb631acce542fb3cebfb",
+    "tensord": true
+   }
   },
   {
    "name": "rc-e1",
@@ -75,7 +80,7 @@
     "seed:=152110"
    ],
    "update": {
-    "tensorfs": "artifact:44194582689/tensorfs-wheel-f80d57eb3f5e0eed9a16dcf243b62cfbb46ae22d",
+    "tensorfs": "artifact:44199741072/tensorfs-wheel-dd005afd7d1093a61d357f9992574268aa3e7df1",
     "gpu_memory_limit": "off"
    }
   },
