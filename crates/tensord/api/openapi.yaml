@@ -1193,6 +1193,9 @@ components:
           type: array
           items: {type: string}
           description: The runs it waits for, by id (an update waits for those in flight).
+        reason:
+          $ref: '#/components/schemas/Reason'
+          description: Why a list's item failed (Status `ahead`), which its caller sends again or not by.
     Source:
       oneOf:
         - type: object

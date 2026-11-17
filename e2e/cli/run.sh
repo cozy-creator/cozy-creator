@@ -730,7 +730,9 @@ case $SHARD in
   # A box's tool gets its machine ready before Render (cl-1104): a guess switched, a request sent meanwhile, a box deleted; two boxes
   # of one function quoted each by its own checkpoint; a guess moved when its machine's load changes; on a short disk a guess
   # evicts nothing, goes first, says so and comes again, and its install gives the line to a run's.
-  prefetch) parts="prefetch_switch prefetch_ready prefetch_quoted prefetch_yields prefetch_load prefetch_disk logs" ;;
+  prefetch) parts="prefetch_switch prefetch_ready prefetch_quoted prefetch_yields prefetch_load prefetch_disk prefetch_retry logs" ;;
+  # A failed guess tried again or saying why it stays failed, and a guess's install on the machine's activity (cl-1104), alone.
+  prefetch-retry) parts="prefetch_retry logs" ;;
   entrypoints) parts="entrypoints hint_commands" ;;
   commands) parts="
     entrypoints

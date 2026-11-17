@@ -117,6 +117,22 @@ impl Runs {
     pub(crate) fn state(&self, actor: VerifiedActor, id: &str) -> Result<v1::RunState, Error> {
         self.state_of(&self.record(actor, id)?)
     }
+    /// `actor`'s list item `id` now (`ahead`), with why it failed if it did: its caller sends it again or not by that (cl-1104).
+    pub(crate) fn listed_state(&self, actor: VerifiedActor, id: &str) -> Result<v1::RunState, Error> {
+        let record = self.record(actor, id)?;
+        let mut state = self.state_of(&record)?;
+        if record.state == State::Failed {
+            let failure = crate::journal::Failure::decode(record.failure.as_deref().unwrap_or_default()).map_err(problem)?;
+            let origin = match failure.origin {
+                1 => "author",
+                2 => "runtime",
+                6 => "request",
+                _ => "machine",
+            };
+            state.reason = Some(message_reason(&failure.code, &safe(&failure.message, 1024), origin));
+        }
+        Ok(state)
+    }
     fn page(&self, actor: VerifiedActor, states: &[String], before: u64, newest: bool, limit: usize) -> Result<Vec<v1::RunState>, Error> {
         let records = self
             .service

@@ -723,6 +723,9 @@ pub struct RunState {
     /// When the machine accepted it and when it ended, Unix ms; 0 until then.
     pub accepted_at_ms: u64,
     pub finished_at_ms: u64,
+    /// Why a list's item failed (`StatusFrame::ahead`, cl-1104): what its caller decides by whether to send it again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<Reason>,
 }
 
 /// `GET /v1/runs`: the runs the caller reads, newest first; on a rental its owner reads every

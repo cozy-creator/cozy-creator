@@ -147,7 +147,16 @@ async fn guess(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, f
     };
     let On::Machine(machine) = &chosen.machine else { return None };
     let (item, function) = item(api, host, project, hub, &with, &kind, &made, &chosen.machine).await.ok()??;
-    Some(Guess { project: Arc::downgrade(project), asset: name, machine: machine.clone(), hub: hub.to_owned(), item, function })
+    let draft = draft(&with, &made);
+    Some(Guess { project: Arc::downgrade(project), asset: name, machine: machine.clone(), hub: hub.to_owned(), item, function, draft })
+}
+
+/// A box's draft request, hashed: its tool and its fields. One edited is a new guess, which a failed one's doesn't stand in for.
+fn draft(with: &str, made: &Map<String, Value>) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (with, Value::Object(made.clone()).to_string()).hash(&mut hasher);
+    hasher.finish()
 }
 
 /// What `machine` has ready for a box of `kind` whose tool is `with` (`PUT /v1/prepare`): the function its text names, else the first
