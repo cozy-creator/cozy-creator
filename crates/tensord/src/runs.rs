@@ -1151,6 +1151,14 @@ impl Runs {
             self.warn(id, "needs_rule_unanswered", &format!("{name}: its needs rule gives no answer for this request ({why}), so it is fetched as if it had none."));
         }
         let wants = wants_of(&interface, &spec);
+        // A list item's plan, said: which of its request's fields its rules read, and what they made of them (cl-1123).
+        if crate::ahead::hidden(&caller) {
+            let fields: Vec<&String> = spec.input.as_object().map(|input| input.keys().collect()).unwrap_or_default();
+            tracing::info!(
+                "{caller}: its request ({} fields: {fields:?}); its rules hold for {:?}, not for {:?}, give no answer for {:?}; it needs {:?}, extras {:?}",
+                fields.len(), ruled.needed, ruled.unneeded, ruled.unanswered, wants.needed, wants.extras
+            );
+        }
         // What a root call reads, for its function's next quote on any machine (cl-967).
         if let (false, true, Some(plan)) = (spec.warm, spec.parent.is_empty(), &plan) {
             self.record_reads(id, Some(&installation), &plan.needs(&wants).needed);

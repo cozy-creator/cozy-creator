@@ -174,6 +174,13 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
         }
     };
     let request = asking.request(name, &package, &renderer.function);
+    // What its request is, as its machine will plan it: the fields it sends, and what its rules make of them.
+    let answers = (request.as_ref().zip(api::interface::entrypoint(package.document(), &renderer.function))).map(|(request, entry)| ::needs::answers(entry, request));
+    tracing::info!(
+        "guess {name} on {machine}: {}/{} with {:?}; its rules hold for {:?}, not for {:?}, give no answer for {:?}",
+        package.name, renderer.function, request.as_ref().and_then(Value::as_object).map(|fields| fields.keys().collect::<Vec<_>>()),
+        answers.as_ref().map(|answers| &answers.needed), answers.as_ref().map(|answers| &answers.unneeded), answers.as_ref().map(|answers| &answers.unanswered)
+    );
     let spec = super::predicted(&renderer, made, request, project.draft_seed(name), source)?;
     // Its key is its machine's list's to give (`Lists::key`).
     Ok(Some((v1::Predicted { key: String::new(), spec }, package.name.clone() + "/" + &renderer.function)))

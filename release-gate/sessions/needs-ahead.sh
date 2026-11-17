@@ -23,6 +23,12 @@
 #            800), so a draft's edit lands while expander_t2i is still coming ("": as rented; a fast pod fetched its 11 GB in 18 s)
 #   need_s   the seconds the cap must buy of every rental together (default 3600)
 . "$(dirname "$0")/lib.sh"
+# A failure keeps the rental's TensorD log first: what it planned and fetched says why.
+fail() {
+  [ -z "${NAME:-}" ] || cozy machine logs "$NAME" --since 2h -n 0 > "$OUT/tensord-$NAME.log" 2>&1
+  cozy machine logs local calcifer --lines 20000 > "$OUT/calcifer.log" 2>&1
+  say "FAIL: $*"; RC=1; exit 1
+}
 TREE=$(param tree '') CPU_SKU=$(param cpu_sku '')
 T2I=$(param t2i pottokao/qwen-image-2.1-pe-t2i-abliterated) I2I=$(param i2i darrellbest/qwen-image-2.1-pe-i2i-abliterated)
 [ -n "$TREE" ] && [ -f "$PACKAGES/$TREE/qwen-image-2/pyproject.toml" ] ||
@@ -86,9 +92,22 @@ record() {
   n=$(run_page asset "$1" | jq -r '.versions[-1].runs[-1] // empty')
   [ -n "$n" ] && (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$2" 2>&1
 }
+# version: the TensorD $NAME runs now. ours: the session's (`V`), which carries the change. A dev home's rental moves to the open RC's
+# builds once it is ready (rc.rs), and 44046574458's moved back after the session's update: it is checked before each step.
+version() { cozy --json machine show "$NAME" 2> /dev/null | jq -r '.status.version // empty'; }
+ours() {
+  local tries=0 runs
+  while runs=$(version); [ "$runs" != "$V" ]; do
+    [ "$tries" -lt 3 ] || fail "$NAME doesn't keep the session's TensorD $V: it runs ${runs:-nothing it says}"
+    [ "$tries" = 0 ] || say "$NAME runs ${runs:-nothing it says}, not the session's $V: its TensorD again"
+    step tensord machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "$NAME refused the session's TensorD"
+    sleep 30; tries=$((tries + 1))
+  done
+  say "$NAME runs the session's TensorD $V"
+}
 # on_machine: the rental just booted ($NAME) on the session's TensorD, and this project's one machine.
 on_machine() {
-  step tensord machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "$NAME refused the session's TensorD"
+  ours
   (cd "$RUN_PROJECT" && cozy --json machine use "$NAME") > "$OUT/use-$NAME.json" 2>&1 || fail "machine use $NAME: $(tail -c 300 "$OUT/use-$NAME.json")"
 }
 # page: a page shows this project, as the page's own fetch asks it (cl-985): its boxes are guessed while it does.
@@ -120,17 +139,18 @@ guess_ready() {
   fail "draw isn't ready on $NAME: ${READY:-no row}"
 }
 # sample <file> <tsv>: what $NAME holds now, into <file>, and a line of <tsv>: the runner's clock (Unix ms), each enhancer's own bytes.
-sample() { shown "$1"; printf '%s\t%s\t%s\n' "$(date +%s%3N)" "$(held "$1" "$T2I")" "$(held "$1" "$I2I")" >> "$2"; }
+sample() { shown "$1"; printf '%s\t%s\t%s\t%s\n' "$(date +%s%3N)" "$(held "$1" "$T2I")" "$(held "$1" "$I2I")" "$(jq -r '.status.version // empty' "$1")" >> "$2"; }
 # MISMATCH: what didn't match, said at the end; each step runs all the same.
 MISMATCH=()
 # switch: steps 2 and 3 on $NAME, this project's machine.
 switch() {
   say "step 2: a page shows the project; draw, drafted text-to-image, is guessed on $NAME"
+  ours
   page
   # expander_t2i's own bytes coming: 1 s on, the draft changes, most of its 11 GB still to come. expander_i2i never comes meanwhile.
   local began=$SECONDS guessed='' had series=$OUT/t2i-series.tsv
-  printf 'unix_ms\tt2i_own\ti2i_own\n' > "$series"
-  while [ $((SECONDS - began)) -lt 1800 ]; do
+  printf 'unix_ms\tt2i_own\ti2i_own\ttensord\n' > "$series"
+  while [ $((SECONDS - began)) -lt 300 ]; do
     sample "$OUT/guess.json" "$series"
     [ "$(held "$OUT/guess.json" "$I2I")" -le "$HEADER" ] || fail "expander_i2i came for a text-to-image draft: $(models "$OUT/guess.json")"
     ! whole "$OUT/guess.json" "$T2I" || fail "expander_t2i was whole before the edit could cut it (no unfinished bytes to stop): $(models "$OUT/guess.json")"
@@ -138,7 +158,7 @@ switch() {
     sleep 0.5
   done
   had=$(held "$OUT/guess.json" "$T2I")
-  [ "$had" -gt "$HEADER" ] || fail "draw's guess brought no expander_t2i to $NAME in 30 min: $(models "$OUT/guess.json")"
+  [ "$had" -gt "$HEADER" ] || fail "draw's guess brought no expander_t2i to $NAME in 5 min: $(models "$OUT/guess.json"); its row: $(row)"
   sleep 1
   sample "$OUT/guess.json" "$series"
   guessed=$(row)
@@ -234,7 +254,7 @@ if [ -n "$CPU_SKU" ]; then
 else
   switch
 fi
-say "step 4: draw rendered on $NAME"
+say "step 4: draw rendered on $NAME, on $(version)"
 before=$(total "$OUT/switch.json")
 timeout 3000 python3 "$RUN_PAGE" render "$RUN_PROJECT" --on "$NAME" draw > "$OUT/draw.txt" 2>&1 || fail "draw: $(tail -c 400 "$OUT/draw.txt")"
 record draw "$OUT/draw.json" || fail "draw has no run record: $(tail -c 300 "$OUT/draw.txt")"
@@ -246,5 +266,6 @@ jq -e '.measurements.weights.needs == 0' "$OUT/draw.json" > /dev/null || fail "d
 [ "$after" = "$before" ] || fail "$NAME holds $((after - before)) bytes more after draw's render"
 [ "$(held "$OUT/after-draw.json" "$T2I")" = "$T2I_LEFT" ] || fail "draw's render fetched expander_t2i"
 cozy machine logs "$NAME" --since 2h -n 0 > "$OUT/tensord-$NAME.log" 2>&1 || true
+cozy machine logs local calcifer --lines 20000 > "$OUT/calcifer.log" 2>&1 || true
 [ ${#MISMATCH[@]} = 0 ] || fail "what didn't match: ${MISMATCH[*]}"
 say "PASS: each machine fetched what each request's rules said, Calcifer's word ahead of the render, and the cold quote was what landed"
