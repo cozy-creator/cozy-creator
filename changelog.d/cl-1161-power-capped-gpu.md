@@ -1,0 +1,1 @@
+A GPU its host holds to a power limit well under its default (an RTX 4090 at 160 of 450 W runs about 2.8× slower) is no longer silently slow: its runs warn with the numbers, the machine shows as slow, the Hub ranks the host last, and a slow run names the power limit.
