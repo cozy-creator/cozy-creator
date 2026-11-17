@@ -312,3 +312,34 @@ wait "$call" || check "busy: the function's run failed: $(tail -c 300 "$OUT/busy
 wait "$first" || check "queued: the first download failed: $(tail -c 300 "$OUT/queued-first.ndjson")"
 wait "$second" || check "queued: the second download failed: $(tail -c 300 "$OUT/queued-second.ndjson")"
 }
+
+# xs-210, Paul: "one request, like 'hey I have X, I need Y' ... the client shouldn't need to do a request per piece or per tensor or
+# per component." e2e/grants (e2e/isolated.sh) is a 1 MiB weight and 320 small assets: with its header and tree, 323 objects. Its
+# download onto local is one Hub call in all: `POST /v1/models/grants` names the model, and the Hub answers the checkpoint it
+# resolves to and every object, each at a storage URL. No `GET …/resolve` (one before) and no `GET /blobs` (one per object
+# before), counted from the Hub's own /stats. A Hub without the route (rc/0.41.0) says so; the download still completes,
+# resolved and then one GET per object, and this cell fails on its counts.
+hub_grants() (
+  step "a model's download is one Hub call: one grant resolves it and lists its objects (xs-210)"
+  [ -n "${COZY_HUB_URL:-}" ] && [ -n "${E2E_GRANTS:-}" ] || fail "hub grants: e2e/isolated.sh named no Hub or model"
+  local S=$OUT/hub-grants grants resolves blobs calls
+  mkdir -p "$S"
+  # Each route's requests so far: `METHOD PATH COUNT`.
+  routes() {
+    curl -fsS -m 30 "$COZY_HUB_URL/stats" | grep -o '<tr><td>[^<]*</td><td>[^<]*</td><td>[^<]*</td><td>[0-9]*</td></tr>' \
+      | sed -E 's#<tr><td>([^<]*)</td><td>([^<]*)</td><td>[^<]*</td><td>([0-9]*)</td></tr>#\1 \2 \3#'
+  }
+  routes > "$S/before.txt" && [ -s "$S/before.txt" ] || fail "hub grants: the Hub's /stats lists no routes"
+  cozy --json model install "$E2E_GRANTS" --on local > "$S/install.ndjson" 2>&1 \
+    || check "hub grants: downloading $E2E_GRANTS failed: $(tail -c 300 "$S/install.ndjson")"
+  routes > "$S/after.txt" || fail "hub grants: the Hub's /stats did not answer after the download"
+  # The download's calls: every route's that moved, but this cell's own reads of /stats.
+  awk 'NR == FNR { was[$1 " " $2] = $3; next } $1 " " $2 != "GET /stats" && $3 > was[$1 " " $2] + 0 { print $1, $2, $3 - was[$1 " " $2] }' \
+    "$S/before.txt" "$S/after.txt" > "$S/calls.txt"
+  count() { awk -v m="$1" -v p="$2" '$1 == m && $2 == p { n += $3 } END { print n + 0 }' "$S/calls.txt"; }
+  grants=$(count POST /v1/models/grants) resolves=$(count GET '/v1/models/{org}/{name}/resolve') blobs=$(count GET '/blobs/{aa}/{bb}/{sha}')
+  calls=$(awk '{ n += $3 } END { print n + 0 }' "$S/calls.txt")
+  grep -q '^POST /v1/models/grants ' "$S/after.txt" || echo "hub grants: this Hub has no POST /v1/models/grants: it resolves, then answers each object"
+  echo "hub grants: $E2E_GRANTS (323 objects) downloaded in $calls Hub calls: $grants POST /v1/models/grants, $resolves GET resolve, $blobs GET /blobs ($(paste -sd ';' "$S/calls.txt"))"
+  [ "$calls" = 1 ] && [ "$grants" = 1 ] || check "hub grants: the download took $calls Hub calls ($grants grants, $resolves resolves, $blobs GET /blobs), not one grant"
+)

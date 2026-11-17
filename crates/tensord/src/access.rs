@@ -34,12 +34,13 @@ use tensorfs::{
 };
 
 /// Where `header`, a checkpoint this machine pulled from a Hub (`held_models::Pulled`), comes
-/// from: `source`'s Hub. None for one never pulled (local).
-pub(crate) fn remote(machine: &Machine, source: &hub::Source, header: &ObjectRef) -> io::Result<Option<Remote>> {
-    if hub_pull(machine.store(), header)?.is_none() {
+/// from: `source`'s Hub, under one grant of its commit's `components` (none: all). None for one never pulled (local).
+pub(crate) fn remote(machine: &Machine, source: &hub::Source, header: &ObjectRef, components: &[String]) -> io::Result<Option<Remote>> {
+    let Some(pulled) = hub_pull(machine.store(), header)? else {
         return Ok(None);
-    }
-    origin::remote(machine, source).map(Some).map_err(io::Error::other)
+    };
+    let want = tensorfs::fetch::Wanted::Commit { tree: pulled.tree, components: components.to_vec(), structure: false };
+    origin::remote(machine, source, Some(want)).map(Some).map_err(io::Error::other)
 }
 
 /// The Hub checkpoint `header` is, as this machine pulled it; a view's (its LoRAs composed on a base, `adapter::compose`) is
@@ -319,11 +320,11 @@ impl Fetch {
     }
 
     /// Where the absent objects of `header` come from.
-    fn source(&self, header: &ObjectRef) -> io::Result<Option<Remote>> {
+    fn source(&self, header: &ObjectRef, components: &[String]) -> io::Result<Option<Remote>> {
         let Some(hub) = &self.hub else {
             return Ok(None);
         };
-        remote(&self.machine, hub, header)
+        remote(&self.machine, hub, header, components)
     }
 
     /// `previous` (a run's preparation's fetches) ends with the call.
@@ -545,7 +546,7 @@ impl Fetch {
         }
         for (header, components) in selected {
             let checkpoint = checkpoint(self.store(), header)?;
-            if let Some(remote) = self.source(checkpoint.id())? {
+            if let Some(remote) = self.source(checkpoint.id(), components)? {
                 let objects = storage::chunks(&checkpoint, components);
                 kept.push(self.machine.want(&remote, objects, priority::BEHIND).map_err(failed)?);
             }
@@ -566,7 +567,7 @@ impl Fetch {
             let (mut parts, mut held) = (vec![], vec![]);
             for (header, components) in set {
                 let checkpoint = checkpoint(self.store(), header)?;
-                match self.source(checkpoint.id())? {
+                match self.source(checkpoint.id(), components)? {
                     Some(remote) => {
                         let model = hub_pull(self.store(), checkpoint.id())?.map_or_else(|| header.clone(), |p| p.model);
                         let each: Vec<Vec<String>> = match components.is_empty() {

@@ -33,8 +33,8 @@ use crate::{
 };
 use tensorfs::sha256;
 use tensorfs::{
-    err::Refusal,
-    fetch::{Hardware, Landed, Progress as Counted},
+    err::{Code, Refusal},
+    fetch::{Hardware, Landed, Progress as Counted, Wanted},
     format::ObjectRef,
 };
 use crate::catalog::normalized;
@@ -706,12 +706,21 @@ impl Publisher {
     /// `order`, its run's place in the machine's download line. Answers the bytes that came from
     /// the Hub and from the datacenter volume, and those the store held already (`local`, as the
     /// components' walk found them). Whatever is here moves nothing.
+    /// From a Hub with grants (xs-210) it fetches what one grant lists, in its order (`granted`: the remote whose grant
+    /// resolved it; else one of its commit's components, or its structure).
     #[allow(clippy::too_many_arguments)]
-    fn pull(&self, source: &hub::Source, named: &Named, components: Option<&[String]>, order: u64, stop: Option<&Stop>,
-        room: Option<&dyn Fn(u64) -> Result<(), String>>, bytes: &(dyn Fn(u64, u64) + Sync)) -> Result<Landed, Failure> {
+    fn pull(&self, source: &hub::Source, named: &Named, granted: Option<origin::Remote>, components: Option<&[String]>, order: u64,
+        stop: Option<&Stop>, room: Option<&dyn Fn(u64) -> Result<(), String>>, bytes: &(dyn Fn(u64, u64) + Sync)) -> Result<Landed, Failure> {
         let _inventory = crate::held_models::ModelChange;
         let header = named.header()?;
-        let remote = origin::remote(&self.machine, source).map_err(|e| unsigned(source, refused("model_download_failed", e.clone()), &e))?;
+        let remote = match granted {
+            Some(remote) => remote,
+            None => {
+                let structure = components == Some(&[]);
+                let want = named.tree.as_ref().map(|tree| Wanted::Commit { tree: tree.clone(), components: components.unwrap_or(&[]).to_vec(), structure });
+                origin::remote(&self.machine, source, want).map_err(|e| unsigned(source, refused("model_download_failed", e.clone()), &e))?
+            }
+        };
         let stop = stop.cloned().unwrap_or_default();
         let failed = |e: Refusal| match stop.is_cancelled() {
             true => canceled(),
@@ -722,6 +731,51 @@ impl Publisher {
             storage::transport(&self.store, "pull-failed", &subject, &format!("origin={}: {e}", source.origin));
             failed(e)
         };
+        // The grant's list, unless all it would bring is here (nothing asked); none from a Hub without grants.
+        let listing = match self.pulled_whole(named, components) {
+            true => None,
+            false => self.machine.listing(&remote, &stop).map_err(failed)?,
+        };
+        if let (Some(listing), Some(tree)) = (listing, &named.tree) {
+            let refuse = |detail: String| failed(Refusal { code: Code::REF_NOT_FOUND, detail });
+            // Its tree and header first: the checkpoint held while the rest lands, its room known before.
+            let (first, rest): (Vec<_>, Vec<_>) = listing.objects.iter().partition(|listed| matches!(listed.kind.as_str(), "tree" | "header"));
+            let first: Vec<ObjectRef> = first.into_iter().map(|listed| listed.object.clone()).collect();
+            if let Some(unlisted) = [tree, header].into_iter().find(|object| !first.contains(object)) {
+                return Err(refuse(format!("{} is not in the Hub's grant for {}", unlisted.id(), tree.id())));
+            }
+            let structure = self.machine.objects(&remote, &first, order, &stop).map_err(failed)?;
+            let pulled = Pulled { model: named.model.clone(), release: named.release.clone(), lane: named.lane.clone(), tree: tree.clone() };
+            pulled.record(&self.store).map_err(io_failure)?;
+            let held = self.store.at_checkpoint(tree).map_err(|e| io_failure(storage::io_error(e)))?;
+            let logged = |landed: &Landed| {
+                let (fetched, reused, seconds) = (landed.origin + landed.volume, landed.local, started.elapsed().as_secs_f64());
+                let detail = format!("header={} tree={} objects={} fetched={fetched} reused={reused} seconds={seconds:.1} origin={} granted",
+                    header.id(), tree.id(), listing.objects.len(), source.origin);
+                storage::transport(&self.store, "pull", &subject, &detail);
+            };
+            if components == Some(&[]) {
+                logged(&structure);
+                return Ok(structure);
+            }
+            // The loader reads its tensors from the header: a chunk it reads that the grant doesn't list fails it now.
+            let listed: std::collections::HashSet<&str> = listing.objects.iter().map(|listed| listed.object.sha256.as_str()).collect();
+            if let Some(unlisted) = storage::chunks(&held, components.unwrap_or(&[])).iter().find(|o| !listed.contains(o.sha256.as_str())) {
+                return Err(refuse(format!("{} is not in the Hub's grant for {}", unlisted.id(), tree.id())));
+            }
+            let rest: Vec<ObjectRef> = rest.into_iter().map(|listed| listed.object.clone()).collect();
+            if let Some(room) = room {
+                let absent: u64 = rest.iter().filter(|o| !self.store.holds(o)).map(|o| o.length).sum();
+                room(absent).map_err(|why| ("machine_disk_full", why.trim_start_matches("machine_disk_full: ").to_owned()))?;
+            }
+            let progress = Arc::new(Counted::default());
+            let landed = origin::watched(&progress, bytes, || {
+                self.machine.all(vec![(remote.clone(), rest, order)], progress.clone(), &|| {}, &stop)
+            });
+            let landed = landed.map_err(failed)?;
+            logged(&landed);
+            return Ok(Landed { origin: structure.origin + landed.origin, volume: structure.volume + landed.volume, local: landed.local });
+        }
         let mut structure = self.machine.pull(&remote, header, Some(&[]), order, None, &stop).map_err(failed)?;
         // A header by hash is recorded under a tree naming it alone.
         let tree = match &named.tree {
@@ -764,18 +818,26 @@ impl Publisher {
         Ok(Landed { origin: structure.landed.origin + landed.origin, volume: structure.landed.volume + landed.volume, local: landed.local })
     }
 
+    /// Whether all a pull of `named` would bring is here: its header and tree, and the chunks of `components` (all when
+    /// `None`, none when empty).
+    fn pulled_whole(&self, named: &Named, components: Option<&[String]>) -> bool {
+        let Ok(header) = named.header() else { return false };
+        let structure = self.store.holds(header) && named.tree.as_ref().is_none_or(|tree| self.store.holds(tree));
+        structure && (components == Some(&[]) || crate::access::whole(&self.store, &header.id(), components.unwrap_or(&[])))
+    }
+
     /// `named` downloaded whole at `order`, as a request's weights are: what a caller asked for
     /// whole (an adapter).
     fn ensure(&self, source: &hub::Source, named: &Named, order: u64, stop: Option<&Stop>,
         bytes: &(dyn Fn(u64, u64) + Sync)) -> Result<Landed, Failure> {
-        self.pull(source, named, None, order, stop, None, bytes)
+        self.pull(source, named, None, None, order, stop, None, bytes)
     }
 
     /// A Hub checkpoint's header, landed at once: which of its chunks come, and when, its calls
     /// direct (`access`). A held header asks the Hub nothing.
-    fn structure(&self, source: &hub::Source, named: &Named, job: &Job) -> Result<(), Failure> {
+    fn structure(&self, source: &hub::Source, named: &Named, granted: Option<origin::Remote>, job: &Job) -> Result<(), Failure> {
         job.stage(format!("resolving {}", named.shown()));
-        self.pull(source, named, Some(&[]), job.order, job.stop.as_ref(), None, &|_, _| ()).map(drop)
+        self.pull(source, named, granted, Some(&[]), job.order, job.stop.as_ref(), None, &|_, _| ()).map(drop)
     }
 
     /// The checkpoint `named` is: one by hash as given, a name as the Hub resolves its release and
@@ -783,13 +845,19 @@ impl Publisher {
     /// journaled per GPUs; an answer older than `FRESH` is read again behind it (`refresh`).
     /// A capability's frozen roots are checked at the origin before local bytes are reused.
     pub(crate) fn resolve(&self, service: &Service, source: &hub::Source, named: Named, hardware: &Hardware, order: u64) -> Result<Named, Failure> {
+        self.resolve_by(service, source, named, hardware, order, &|named| Answer::ask(&self.machine, source, named, hardware))
+    }
+
+    /// [`Publisher::resolve`], the Hub asked by `ask` when no held answer serves.
+    fn resolve_by(&self, service: &Service, source: &hub::Source, named: Named, hardware: &Hardware, order: u64,
+        ask: &dyn Fn(&Named) -> Result<Answer, Failure>) -> Result<Named, Failure> {
         if named.tree.is_some() {
             return self.checkpoint(service, source, named, order);
         }
         let (named, forward) = forward(source, named);
         let answer = if source.capability.is_some() {
             // An account's earlier read does not authorize this capability's frozen root set.
-            Answer::ask(&self.machine, source, &named, hardware)?
+            ask(&named)?
         } else {
             let origin = hub::origin_key(&source.origin).unwrap_or_default();
             // Only anonymous reads fill it. v5 held lanes free memory lowered (cl-1076); a 4-bit floor's answer, which
@@ -806,7 +874,7 @@ impl Publisher {
                     answer
                 }
                 None => {
-                    let answer = Answer::ask(&self.machine, source, &named, hardware)?;
+                    let answer = ask(&named)?;
                     let kept = serde_json::to_string(&answer).map_err(|e| io_failure(io::Error::other(e)))?;
                     service.engine.with_journal(|j| j.bind_named(&name, &kept)).map_err(io_failure)?;
                     answer
@@ -887,7 +955,7 @@ impl Publisher {
         let mut held = match held {
             Some(held) => held,
             None => {
-                let remote = origin::remote(&self.machine, source).map_err(failed)?;
+                let remote = origin::remote(&self.machine, source, None).map_err(failed)?;
                 self.machine.objects(&remote, std::slice::from_ref(&object), order, &Stop::default()).map_err(failed)?;
                 match storage::tree_or_header(&self.store, &object).map_err(|e| ("model_resolution_failed", e.to_string()))? {
                     Some(checkpoint) => {
@@ -926,11 +994,33 @@ impl Publisher {
         bytes: &(dyn Fn(u64, u64) + Sync),
     ) -> Result<(Named, Landed), Refused> {
         let failed = |(code, message)| Refused { code, message };
-        let named = self.resolve(service, source, named, hardware, order).map_err(failed)?;
+        // One Hub call (xs-210): a grant resolves it and lists what comes, unless its answer is held (then one of its commit).
+        let granted = Mutex::new(None);
+        let ask = |named: &Named| self.granted(source, named, hardware, structure, stop, &granted);
+        let named = self.resolve_by(service, source, named, hardware, order, &ask).map_err(failed)?;
         // Held payload bytes move nothing; resolve already checked capability-backed authority.
         let components = structure.then_some(&[][..]);
-        let moved = self.pull(source, &named, components, order, stop, Some(room), bytes).map_err(failed)?;
+        let granted = granted.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let moved = self.pull(source, &named, granted, components, order, stop, Some(room), bytes).map_err(failed)?;
         Ok((named, moved))
+    }
+
+    /// `named` as one grant of its Hub resolves it, `hardware`'s (with `structure`, a grant of its tree and header alone),
+    /// the grant's remote kept in `kept` for the pull that follows (xs-210); a Hub without grants is asked to resolve it.
+    fn granted(&self, source: &hub::Source, named: &Named, hardware: &Hardware, structure: bool, stop: Option<&Stop>,
+        kept: &Mutex<Option<origin::Remote>>) -> Result<Answer, Failure> {
+        let some = |text: &str| (!text.is_empty()).then(|| text.to_owned());
+        let want = Wanted::Model { name: named.model.clone(), release: some(&named.release), lane: some(&named.lane),
+            hardware: hardware.clone(), structure };
+        let failed = |e: Refusal| unsigned(source, refused("model_resolution_failed", e.clone()), &e);
+        let remote = origin::remote(&self.machine, source, Some(want)).map_err(failed)?;
+        let listing = self.machine.listing(&remote, &stop.cloned().unwrap_or_default()).map_err(failed)?;
+        let Some(resolved) = listing.and_then(|listing| listing.resolved.clone()) else {
+            return Answer::ask(&self.machine, source, named, hardware);
+        };
+        *kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(remote);
+        Ok(Answer { release: resolved.release, lane: resolved.lane, checkpoint: resolved.checkpoint, header: resolved.header,
+            reasons: resolved.reasons, hardware: hardware.clone() })
     }
 
     /// The installation a request names. An unnamed release is the newest this signer holds, so
@@ -1551,7 +1641,7 @@ impl Publisher {
         let hardware = gpu.hardware(degree);
         let main = main_model(&slots);
         // One slot's grant, its Hub checkpoint and its warnings.
-        let pick = |slot: &Value| -> Result<(ModelGrant, Option<Named>, Vec<String>), Failure> {
+        let pick = |slot: &Value| -> Result<(ModelGrant, Option<(Named, Option<origin::Remote>)>, Vec<String>), Failure> {
             let path = slot.get("path").and_then(Value::as_str).unwrap_or_default().to_string();
             job.stage(format!("choosing the model for {path}"));
             let choice = &slot_choice(slot, &request.choices).ok_or_else(|| choice_absent(&path, &installation.package))?;
@@ -1588,7 +1678,12 @@ impl Publisher {
             let plain = slot["encoded_leaves"] != "accept" || slot["weights"] == true;
             let free_vram = (slot["min_bits"] == 4).then(|| gpu.free_vram(degree)).flatten();
             let hardware = tensorfs::fetch::Hardware { plain, components: slot_components(slot), free_vram, ..hardware.clone() };
-            let named = self.resolve(service, request.hub(&format!("the model for {path}"))?, named, &hardware, job.order)?;
+            // One Hub call (xs-210): a grant resolves it and lists its tree and header, unless its answer is held.
+            let source = request.hub(&format!("the model for {path}"))?;
+            let granted = Mutex::new(None);
+            let ask = |named: &Named| self.granted(source, named, &hardware, true, job.stop.as_ref(), &granted);
+            let named = self.resolve_by(service, source, named, &hardware, job.order, &ask)?;
+            let granted = granted.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
             let warnings = named.reasons.iter().map(|why| format!("{}: {why}", named.model)).collect();
             let grant = ModelGrant {
                 package: installation.package.clone(),
@@ -1600,15 +1695,15 @@ impl Publisher {
                 components: vec![],
                 adapted: None,
             };
-            Ok((grant, (!named.model.starts_with("local/")).then_some(named), warnings))
+            Ok((grant, (!named.model.starts_with("local/")).then_some((named, granted)), warnings))
         };
         // One slot bound: its grant, its checkpoint's structure landed (what of it comes, and when,
         // its calls direct), its components and its adapters; and its warnings.
         let bind = |slot: &Value| -> Result<(ModelGrant, Vec<String>), Failure> {
             let (mut grant, named, mut warnings) = pick(slot)?;
             // Only a Hub names a checkpoint here (`pick` refused it without the run's access).
-            if let Some(named) = named {
-                self.structure(request.hub("a Hub model")?, &named, job)?;
+            if let Some((named, granted)) = named {
+                self.structure(request.hub("a Hub model")?, &named, granted, job)?;
             }
             if grant.components.is_empty() && !grant.model.is_empty() {
                 grant.components = self.components(&grant.manifest)?;

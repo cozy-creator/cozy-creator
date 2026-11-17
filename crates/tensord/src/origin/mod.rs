@@ -16,7 +16,7 @@ use std::{
 
 use tensorfs::{
     err::{refuse, Code, Refusal, Result},
-    fetch::{Client, Config, Fetcher, Landed, Origin, Progress, Pulled, SourcePolicy, VolumeOrigin, Want},
+    fetch::{Client, Config, Fetcher, Landed, Listing, Origin, Progress, Pulled, SourcePolicy, VolumeOrigin, Want},
     format::ObjectRef,
     store::Store,
 };
@@ -237,6 +237,13 @@ impl Machine {
     fn line<T>(&self, wanted: std::pin::Pin<&mut (impl Future<Output = T> + ?Sized)>) -> std::task::Poll<T> {
         let _entered = self.runtime.enter();
         wanted.poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+    }
+
+    /// What one ask of `remote` lists for its download (a Hub's grant: the commit it resolved and every object, in order);
+    /// None from an origin that locates each object itself.
+    pub(crate) fn listing(&self, remote: &Remote, stop: &Stop) -> Result<Option<Arc<Listing>>> {
+        let origin = remote.origin.clone();
+        self.block(stop, async move { origin.listing().await })
     }
 
     /// Each of `objects` here, fetched from `remote` when absent.

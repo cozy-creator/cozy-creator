@@ -807,6 +807,8 @@ case $SHARD in
   rental-rename) parts="rental_rename logs" ;;
   # Work queued for a rental order follows it through a Calcifer restart and its Hub's second name for the host; its end says why (cl-1125).
   rental-replan) parts="rental_replan logs" ;;
+  # A model's download asks the Hub once for its objects' URLs (xs-210).
+  hub-grants) parts="hub_grants logs" ;;
   # A take's thumbnail asked for while its file is on its way here answers no error (cl-1108).
   thumb-arriving) parts="thumb_arriving logs" ;;
   # A dev build's Calcifer at the stack size it ships resumes a render walk and answers /fit (cl-1069: E2E_DEV_COZY, e2e.yaml).

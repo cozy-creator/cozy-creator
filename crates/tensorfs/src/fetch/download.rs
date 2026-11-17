@@ -146,6 +146,8 @@ pub(crate) struct Task {
     /// One request asks the origin where the object is; its other ranges wait for that answer's head.
     locating: AtomicBool,
     located: watch::Sender<bool>,
+    /// Where its origin said to read it once storage refused the bearer URL first located (`Origin::renew`).
+    renewed: Mutex<Option<Location>>,
     /// Its last waiter left.
     left: Notify,
     done: watch::Sender<Option<std::result::Result<Tier, Refusal>>>,
@@ -783,6 +785,8 @@ enum Failed {
     Fatal(Refusal),
     /// It gave its place up to a more urgent range (`Slots::outranked`): its bytes so far stay, and it asks again from there.
     GaveWay,
+    /// Storage refused a bearer URL (the second): the origin may have another (`Origin::renew`).
+    Renew(String, String),
 }
 
 impl From<Refusal> for Failed {
@@ -1447,6 +1451,7 @@ impl Shared {
                     delivery: Mutex::default(),
                     locating: AtomicBool::new(false),
                     located: watch::channel(false).0,
+                    renewed: Mutex::default(),
                     left: Notify::new(),
                     done: watch::channel(None).0,
                 });
@@ -1772,6 +1777,7 @@ impl Shared {
         let (mut permit, mut wrong) = (Some(permit), None::<String>);
         loop {
             task.enter(Phase::Origin);
+            *lock(&task.renewed) = None;
             let located = task.origin.locate(std::slice::from_ref(&task.object)).await;
             let Some(here) = located?.pop() else {
                 return refuse(Code::REF_NOT_FOUND, format!("{}: the origin located nothing", task.object.sha256));
@@ -1907,6 +1913,10 @@ impl Shared {
                 }
                 Err(Failed::Fatal(refusal)) => return Err(refusal),
                 Err(Failed::Again(why, wait)) => (why, wait, part.reached > from),
+                Err(Failed::Renew(why, url)) => match self.renewed(task, &url).await? {
+                    true => (why, None, part.reached > from),
+                    false => return refuse(Code::CREDENTIAL_REQUIRED, why),
+                },
             };
             still = if moved { 0 } else { still + 1 };
             task.unanswered.store(still, Ordering::Release);
@@ -1940,6 +1950,10 @@ impl Shared {
         let range = (from > 0 || end < length).then(|| format!("bytes={from}-{}", end - 1));
         let shown_range = range.as_deref().unwrap_or("all");
         let ranged: Vec<_> = range.clone().map(|range| ("range".to_owned(), range)).into_iter().collect();
+        // A renewed bearer URL stands in for the one located.
+        let renewed = lock(&task.renewed).clone();
+        let renewed = renewed.as_ref().and_then(Location::http);
+        let here = renewed.as_ref().unwrap_or(here);
         // Where the origin redirected this object while that holds, with only the range (credentials stay
         // with the origin); else the origin.
         let current = || lock(&task.delivery).clone().filter(|(_, until)| *until > Instant::now());
@@ -1983,6 +1997,8 @@ impl Shared {
                     *lock(&task.delivery) = None;
                     return Err(Failed::Again(why, None));
                 }
+                // A URL that is its own authority (a grant's): the origin may give a newer one.
+                401 | 403 if here.provider.is_none() && here.headers.is_empty() => return Err(Failed::Renew(why, here.url.to_owned())),
                 401 | 403 => Code::CREDENTIAL_REQUIRED,
                 404 | 410 => Code::REF_NOT_FOUND,
                 416 => Code::LENGTH_MISMATCH,
@@ -2058,6 +2074,23 @@ impl Shared {
         match part.reached >= end {
             true => Ok(()),
             false => Err(Failed::Again(format!("{object}: the body ended at {} of {end}", part.reached), None)),
+        }
+    }
+
+    /// Whether `task`'s origin gave a new place to read it once storage refused `url` (`Origin::renew`), which its
+    /// requests then ask.
+    async fn renewed(&self, task: &Task, url: &str) -> Result<bool> {
+        if !task.origin.renew(&task.object, url).await? {
+            return Ok(false);
+        }
+        let mut located = task.origin.locate(std::slice::from_ref(&task.object)).await?;
+        match located.pop().filter(|here| here.http().is_some()) {
+            Some(here) => {
+                tracing::info!(object = %task.object.sha256, "storage refused its URL: read where the origin renewed it");
+                *lock(&task.renewed) = Some(here);
+                Ok(true)
+            }
+            None => Ok(false),
         }
     }
 

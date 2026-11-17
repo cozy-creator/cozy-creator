@@ -22,6 +22,19 @@ pub trait Origin: Send + Sync {
     /// Whether anyone may read these objects: only then are they written back to a shared
     /// volume.
     fn public(&self) -> bool;
+
+    /// Storage refused `url`, a bearer URL `locate` gave for `object` (its grant ran out): whether `locate` now gives
+    /// another.
+    fn renew<'a>(&'a self, object: &'a ObjectRef, url: &'a str) -> Boxed<'a, Result<bool>> {
+        let _ = (object, url);
+        Box::pin(async { Ok(false) })
+    }
+
+    /// What one ask of the origin lists for the download it serves (a Hub's grant: the commit it resolved and every object,
+    /// in order): None when it locates each object itself.
+    fn listing(&self) -> Boxed<'_, Result<Option<Arc<super::grant::Listing>>>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 
 /// Where one object can be read.

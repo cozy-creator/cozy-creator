@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use tensorfs::{
     err::{refuse, Code, Result},
-    fetch::{Endpoint, Hardware, Resolved, TokenProvider},
+    fetch::{Endpoint, Hardware, Resolved, TokenProvider, Wanted},
     format::ObjectRef,
 };
 
@@ -25,10 +25,13 @@ fn endpoint(machine: &Machine, source: &hub::Source) -> Result<(Endpoint, Key)> 
     Ok((endpoint, trust))
 }
 
-/// Where the objects of `source`'s Hub are read. Nothing is asked of the Hub until a fetch
-/// needs it.
-pub(crate) fn remote(machine: &Machine, source: &hub::Source) -> Result<Remote> {
-    let (endpoint, trust) = endpoint(machine, source)?;
+/// Where the objects of `source`'s Hub are read: those `want` names (a commit, or a model the Hub resolves) where one grant
+/// of the Hub's says (xs-210). Nothing is asked of the Hub until a fetch or its listing needs it.
+pub(crate) fn remote(machine: &Machine, source: &hub::Source, want: Option<Wanted>) -> Result<Remote> {
+    let (mut endpoint, trust) = endpoint(machine, source)?;
+    if let Some(want) = want {
+        endpoint = endpoint.granting(want);
+    }
     Ok(Remote { origin: Arc::new(endpoint), trust })
 }
 

@@ -2,7 +2,8 @@
 //! `B/blobs/<aa>/<bb>/<sha256>` and a model's commits and resolution, over HTTP(S) or a directory.
 //!
 //! - **Reads.** Objects as Fetcher locations, whose redirects the client follows without
-//!   credentials across origins; [`Endpoint::resolve`] names a model's commit.
+//!   credentials across origins; [`Endpoint::resolve`] names a model's commit. An endpoint bound to
+//!   a commit ([`Endpoint::granting`]) locates its objects where one Hub grant says ([`super::grant`]).
 //! - **Uploads.** Per object HEAD → PUT (to the HEAD's `Location`, else here) → HEAD; `412` means
 //!   present. [`upload_checkpoint`] sends chunks, assets and repo files, then the header, then the
 //!   tree, then records the commit as the model's ([`Endpoint::commit`]).
@@ -23,6 +24,7 @@ use base64::engine::{general_purpose::STANDARD, Engine as _};
 use serde_json::Value;
 
 use super::ask::{self, Backoff};
+use super::grant::{self, Answer, Grant, Granted, Listing, Wanted};
 use super::net::{join, same_origin, shown, Body, Client, GetError, HeaderMap, Pulse};
 use super::origin::{Boxed, Location, Origin};
 use super::policy::is_local;
@@ -50,6 +52,8 @@ pub struct Endpoint {
     /// When any of its requests last sent a byte: a request is cut for silence only when all of them are
     /// silent, so the streams of one upload on a slow link never cut each other's starved ones.
     pulse: Arc<Pulse>,
+    /// The commit its objects belong to, read under one grant.
+    grant: Option<Grant>,
 }
 
 enum At {
@@ -101,8 +105,13 @@ pub struct Resolved {
     #[serde(rename = "commit", alias = "checkpoint")]
     pub checkpoint: ObjectRef,
     pub header: ObjectRef,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_empty")]
     pub reasons: Vec<String>,
+}
+
+/// A list a Go Hub may write as null.
+fn null_empty<'de, D: serde::Deserializer<'de>, T: serde::Deserialize<'de>>(d: D) -> std::result::Result<Vec<T>, D::Error> {
+    Ok(<Option<Vec<T>> as serde::Deserialize>::deserialize(d)?.unwrap_or_default())
 }
 
 /// An answer read whole.
@@ -158,7 +167,16 @@ impl Endpoint {
             At::Http(_) => token.or_else(|| default_for(&url)),
             At::Dir(..) => None,
         };
-        Ok(Endpoint { url, at, client: client.clone(), token, sent: Arc::default(), pulse: Pulse::new() })
+        Ok(Endpoint { url, at, client: client.clone(), token, sent: Arc::default(), pulse: Pulse::new(), grant: None })
+    }
+
+    /// Its objects are what `want` names: a Hub's are located where one grant of it says, asked when the first is
+    /// located or its listing read (`POST /v1/models/grants`). An object the grant doesn't list is refused.
+    pub fn granting(mut self, want: Wanted) -> Self {
+        if matches!(self.at, At::Http(_)) && !self.url.starts_with("s3://") {
+            self.grant = Some(Grant::new(want));
+        }
+        self
     }
 
     pub fn url(&self) -> &str {
@@ -542,15 +560,101 @@ impl Endpoint {
 
 impl Origin for Endpoint {
     fn locate<'a>(&'a self, objects: &'a [ObjectRef]) -> Boxed<'a, Result<Vec<Location>>> {
-        Box::pin(async move { Ok(self.located(objects)) })
+        Box::pin(async move {
+            let Some(grant) = &self.grant else { return Ok(self.located(objects)) };
+            match self.granted(grant, None).await? {
+                Some(granted) if !granted.unknown => (objects.iter())
+                    .map(|object| match granted.url(object) {
+                        // A presigned URL is its own authority: the endpoint's credential stays here.
+                        Some(url) => Ok(Location::Url { url: url.to_owned(), headers: vec![] }),
+                        None => Err(granted.absent(object)),
+                    })
+                    .collect(),
+                _ => Ok(self.located(objects)),
+            }
+        })
     }
 
     fn public(&self) -> bool {
         self.token.is_none()
     }
+
+    fn renew<'a>(&'a self, object: &'a ObjectRef, url: &'a str) -> Boxed<'a, Result<bool>> {
+        Box::pin(async move {
+            let Some(grant) = &self.grant else { return Ok(false) };
+            let renewed = self.granted(grant, Some((object, url))).await?;
+            Ok(renewed.as_ref().and_then(|granted| granted.url(object)).is_some_and(|now| now != url))
+        })
+    }
+
+    fn listing(&self) -> Boxed<'_, Result<Option<Arc<Listing>>>> {
+        Box::pin(async move {
+            let Some(grant) = &self.grant else { return Ok(None) };
+            Ok(self.granted(grant, None).await?.filter(|granted| !granted.unknown).map(|granted| granted.listing.clone()))
+        })
+    }
 }
 
 impl Endpoint {
+    /// Its grant as it stands, asked of the Hub when there is none or it nears its end, or when storage refused `refused`
+    /// (an object and the URL it gave) unless a newer one is here or that one is fresh. None: the Hub has no grants.
+    async fn granted(&self, grant: &Grant, refused: Option<(&ObjectRef, &str)>) -> Result<Option<Arc<Granted>>> {
+        let At::Http(base) = &self.at else { return Ok(None) };
+        if grant::unrouted(base) {
+            return Ok(None);
+        }
+        let mut held = grant.held.lock().await;
+        let (want, granted) = &mut *held;
+        let stale = match (granted.as_ref(), refused) {
+            (None, _) => true,
+            (Some(granted), None) => granted.ending(),
+            (Some(granted), Some((object, url))) => granted.url(object) == Some(url) && granted.renewable(),
+        };
+        if stale {
+            match self.ask_grant(base, want).await? {
+                Some(asked) => {
+                    if let Some(renewal) = asked.renewal(want) {
+                        *want = renewal;
+                    }
+                    *granted = Some(Arc::new(asked));
+                }
+                None => {
+                    grant::without_route(base);
+                    return Ok(None);
+                }
+            }
+        }
+        Ok(granted.clone())
+    }
+
+    /// One grant of `want`, every page; None from a Hub without the route.
+    async fn ask_grant(&self, base: &str, want: &Wanted) -> Result<Option<Granted>> {
+        let (url, asked, mut body, mut pages) = (format!("{base}/v1/models/grants"), std::time::Instant::now(), grant::body(want, None), vec![]);
+        loop {
+            let bytes = Bytes::from(serde_json::to_vec(&body).expect("JSON"));
+            let payload = hex_digest(&bytes);
+            let make = move || Ok(Payload::Bytes(bytes.clone()));
+            let headers = vec![("content-type".to_owned(), "application/json".to_owned()), ("accept-encoding".to_owned(), "gzip".to_owned())];
+            let reply = self.exchange(Ask { method: "POST", url: &url, headers, body: Some(&make), payload: Some(&payload), auth: true }).await?;
+            match reply.status {
+                200 => {}
+                404 | 405 | 501 => return Ok(None),
+                _ => return Err(refusal(&reply, "POST")),
+            }
+            let answer = Answer::read(reply.header("content-encoding"), &reply.body)
+                .map_err(|e| Refusal { code: Code::UNKNOWN_FORMAT, detail: format!("POST {url}: {e}") })?;
+            let next = answer.next.clone();
+            pages.push((answer, reply.header("date").map(str::to_owned)));
+            match next {
+                Some(cursor) => body = grant::body(want, Some(&cursor)),
+                None => break,
+            }
+        }
+        let granted = Granted::of(want, pages, asked).map_err(|e| Refusal { code: e.code, detail: format!("POST {url}: {}", e.detail) })?;
+        tracing::info!(?want, objects = granted.listing.objects.len(), unknown = granted.unknown, "a fetch grant from {base}");
+        Ok(Some(granted))
+    }
+
     fn located(&self, objects: &[ObjectRef]) -> Vec<Location> {
         let mut out = Vec::with_capacity(objects.len());
         for object in objects {

@@ -290,6 +290,7 @@ case $key in
   cli:ondemand-ramp) needs='packages spare' ;;
   cli:ondemand-enhancers) needs='packages enhancer enhancers' ;;
   cli:disk) needs='packages disk' ;;
+  cli:hub-grants) needs='packages grants' ;;
   # H3's Models & LoRAs, Qwen's VAE slot and heavy.py's BiRefNet; macOS and Windows run no models.
   cli:web-suite) needs='packages birefnet loras vaes'; [ "${RUNNER_OS:-Linux}" = Linux ] || needs='packages' ;;
   cli:env-cost) needs='packages birefnet' ;;
@@ -484,6 +485,18 @@ if [ -n "$needs" ]; then
     mirror "$seed/disk.safetensors" e2e/disk-tokenizer bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is \
       --add "processor/vocab.json=$here/cli/tokenizer/e2e_tokenizer/processor/vocab.json"
     rm -f "$seed/disk.safetensors"
+  fi
+  # hub_grants' model (xs-210): a 1 MiB weight and 320 assets of 4 KiB, so its download is hundreds of objects and about 2 MB.
+  if [[ " $needs " == *" grants "* ]]; then
+    random_weights "$seed/grants.safetensors" 1
+    mkdir -p "$seed/grants" && adds=()
+    for i in $(seq 320); do
+      head -c 4096 /dev/urandom > "$seed/grants/a$i.bin" && adds+=(--add "assets/a$i.bin=$seed/grants/a$i.bin")
+    done
+    mirror "$seed/grants.safetensors" e2e/grants bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e \
+      --source-format as-is "${adds[@]}"
+    rm -rf "$seed/grants" "$seed/grants.safetensors"
+    export E2E_GRANTS=e2e/grants
   fi
   if [[ " $needs " == *" calls "* ]]; then
     # ondemand_calls' orchestrator (cl-1077): the model of the function it calls and of one it never calls, 32 MiB each; and
