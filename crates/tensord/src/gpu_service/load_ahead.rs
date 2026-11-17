@@ -151,9 +151,9 @@ impl Pool {
         if self.ahead.loading.lock().unwrap().as_ref().is_some_and(|loading| loading.actor == actor && loading.caller == caller) {
             return at("loading", String::new());
         }
-        let resident = self.resident(&item);
+        let on_gpu = self.on_gpu(&item);
         let state = item.state.lock().unwrap();
-        match (resident, state.loaded.is_some()) {
+        match (on_gpu, state.loaded.is_some()) {
             (Some(true), _) => at("loaded", String::new()).map(|loaded| api::machine::Readiness { done: item.need, ..loaded }),
             (Some(false), _) => at("evicted", "a run took its GPU memory; it loads again once the GPU is idle".into()),
             (None, true) => at("evicted", "its executor ended for a run's room; it loads again once the GPU is idle".into()),
@@ -164,7 +164,7 @@ impl Pool {
 
     /// Whether `item`'s models are on a GPU (an executor holds its construction there): None if not; false once a run took that
     /// memory from the executor its load left idle, as varena's ledger shows.
-    fn resident(&self, item: &Item) -> Option<bool> {
+    fn on_gpu(&self, item: &Item) -> Option<bool> {
         let construction = &item.predicted.plan.construction;
         let (start, pid) = {
             let levels = self.levels.lock().unwrap();
@@ -208,7 +208,7 @@ impl Pool {
             if item.state.lock().unwrap().failed {
                 continue;
             }
-            if self.resident(item) == Some(true) {
+            if self.on_gpu(item) == Some(true) {
                 changed |= item.hold_back("");
                 continue;
             }
@@ -243,8 +243,9 @@ impl Pool {
         // The lanes a call of it would take (one its environment's executor is on first), those with room for it. Room is looked
         // at before any GPU is taken: a call slot taken and given back wakes every waiter, this one too.
         let degree = plan.degree as usize;
-        let mut starts: Vec<usize> = self.hosting(plan).into_iter().map(|(start, _)| start).collect();
-        starts.extend((0..(self.width() + 1).saturating_sub(degree)).filter(|start| !starts.contains(start)));
+        let hosts: Vec<usize> = self.hosting(plan).into_iter().map(|(start, _)| start).collect();
+        let others = (0..(self.width() + 1).saturating_sub(degree)).filter(|start| !hosts.contains(start));
+        let starts: Vec<usize> = hosts.iter().copied().chain(others).collect();
         let mut short = None;
         let fits: Vec<usize> = starts.into_iter().filter(|&start| match self.room(item, start..start + degree, listed) {
             Ok(()) => true,
