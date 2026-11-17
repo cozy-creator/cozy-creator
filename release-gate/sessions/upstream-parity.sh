@@ -7,15 +7,18 @@
 # params:
 #   tree     the packages_refs checkout (pk)
 #   only     cells to run, comma-separated (default all): h-t2i, h-edit, h-dev-edit, h-default, i-fp8, i-default
+#   fix      a second packages_refs checkout whose ideogram-4 also runs i-fp8 and i-default, as i-fp8-fix and i-default-fix
+#            (default none)
 #   seed_h   HiDream's seed (32, inference.py's default); seed_i Ideogram's (7)
 #   need_s   seconds the cap must buy (4200)
 #   floor_mb_s  lib.sh's slow-host floor: upstream's weights download beside ours, so give it about half the usual (25)
 . "$(dirname "$0")/lib.sh"
 FX=$(cd "$(dirname "$0")" && pwd)/fixtures/upstream-parity
 TREE=$(param tree pk) ONLY=",$(param only 'h-t2i,h-edit,h-dev-edit,h-default,i-fp8,i-default'),"
-SEED_H=$(param seed_h 32) SEED_I=$(param seed_i 7)
+SEED_H=$(param seed_h 32) SEED_I=$(param seed_i 7) FIX=$(param fix '')
 SRC=$PACKAGES/$TREE
 for p in hidream-o1 ideogram-4; do [ -f "$SRC/$p/pyproject.toml" ] || fail "no $p in packages_refs checkout $TREE"; done
+[ -z "$FIX" ] || [ -f "$PACKAGES/$FIX/ideogram-4/pyproject.toml" ] || fail "no ideogram-4 in packages_refs checkout $FIX"
 [[ $SEED_H =~ ^[0-9]+$ && $SEED_I =~ ^[0-9]+$ ]] || fail "seeds"
 want() { [[ $ONLY == *",$1,"* ]]; }
 # Upstream, pinned: the code and the checkpoints our packages' READMEs name. Ideogram's fp8 repository is gated, so its files
@@ -76,6 +79,7 @@ lfs "$IDEOGRAM_OFFICIAL" > "$OUT/ideogram-official.lfs" && lfs "$IDEOGRAM_COPY" 
   fail "cocktailpeanut's Ideogram fp8 is not the official files: $(diff "$OUT/ideogram-official.lfs" "$OUT/ideogram-copy.lfs" | head -5)"
 say "Ideogram's fp8: the copy's $(wc -l < "$OUT/ideogram-copy.lfs") weight files are the official ones, sha256 for sha256"
 for p in hidream-o1 ideogram-4; do kernels "$SRC/$p"; done
+[ -z "$FIX" ] || kernels "$PACKAGES/$FIX/ideogram-4"
 
 # A dev home: the rental moves to the RC's builds, which the RC's packages need (44194808517's pod ran Runtime 0.47.0 and refused
 # them, `runtime_floor_unmet`), and is held there.
@@ -160,6 +164,13 @@ want h-default && cell h-default ./hidream-o1/generate prompt="$PROMPT_H" seed:=
 want i-fp8 && cell i-fp8 ./ideogram-4/generate prompt="$CAPTION" prompt_upsampling:=false seed:=$SEED_I --lane fp8 \
   --model "text_encoder=$QWEN_BF16" "${SDPA[@]}"
 want i-default && cell i-default ./ideogram-4/generate prompt="$CAPTION" prompt_upsampling:=false seed:=$SEED_I
+if [ -n "$FIX" ]; then
+  SRC=$PACKAGES/$FIX
+  want i-fp8 && cell i-fp8-fix ./ideogram-4/generate prompt="$CAPTION" prompt_upsampling:=false seed:=$SEED_I --lane fp8 \
+    --model "text_encoder=$QWEN_BF16" "${SDPA[@]}"
+  want i-default && cell i-default-fix ./ideogram-4/generate prompt="$CAPTION" prompt_upsampling:=false seed:=$SEED_I
+  SRC=$PACKAGES/$TREE
+fi
 
 # Upstream alone on the GPU: a restart ends Cozy's executors. No Cozy run moves from here on, so the rental's idle clock is
 # renewed by hand.
@@ -216,6 +227,10 @@ U=$OUT/upstream
     printf 'i-upstream-bn-decode\t%s\t%s\n' "$U/i-t2i.png" "$U/i-t2i-bn.png"
   fi
   want i-default && printf 'i-default\t%s\t%s\n' "$U/i-t2i.png" "$OUT/ours-i-default.png"
+  if [ -n "$FIX" ]; then
+    want i-fp8 && printf 'i-fp8-fix\t%s\t%s\n' "$U/i-t2i.png" "$OUT/ours-i-fp8-fix.png"
+    want i-default && printf 'i-default-fix\t%s\t%s\n' "$U/i-t2i.png" "$OUT/ours-i-default-fix.png"
+  fi
 } > "$OUT/pairs.tsv"
 "$IQA" -I "$FX/compare.py" "$OUT/pairs.tsv" "$OUT/scores" > "$OUT/compare.log" 2>&1 || fail "scoring: $(tail -5 "$OUT/compare.log")"
 say "scores (reference first; PSNR dB, mean |d| of 255, DISTS):"
