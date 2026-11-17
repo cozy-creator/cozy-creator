@@ -238,7 +238,8 @@ ahead() {
   if [ -e "ahead/$k.queued" ]; then
     until [ -e "ahead/$k.done" ] || ! kill -0 "$WARMER" 2> /dev/null; do sleep 2; done
     [ "$(cat "ahead/$k.code" 2> /dev/null)" = 0 ] ||
-      expect "$name-weights" FAIL "warmed ahead as ahead-$k: $(run_get "$OUT" "ahead-$k" .status) $(run_get "$OUT" "ahead-$k" '.reason.message')"
+      expect "$name-weights" FAIL "warmed ahead as ahead-$k: $(s=$(run_get "$OUT" "ahead-$k" .status) w=$(run_get "$OUT" "ahead-$k" .reason.message)
+        [ -n "$s$w" ] && echo "$s $w" || echo "no run: $(tail -c 200 "ahead-$k.err" | tr '\n' ' ')")"
     return 0
   fi
   # Local code warms through the staging helper, built only for --packages; without it (suite bench's calibrate) the
