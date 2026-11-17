@@ -23,7 +23,7 @@ use std::{
     time::Duration,
 };
 
-use api::{calcifer::On, error::Error, machine as v1};
+use api::{calcifer::On, config::Origin, error::Error, machine as v1};
 use serde_json::{Map, Value};
 use tokio::sync::watch;
 
@@ -42,6 +42,12 @@ const READ: Duration = Duration::from_secs(20);
 
 /// Moves whenever a project closes: each one's guesses end with it.
 static CLOSED: LazyLock<watch::Sender<u64>> = LazyLock::new(|| watch::channel(0).0);
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Local code carried to a machine by a guess (`item`), by machine and its package's manifest: written there once, its source as staged.
+static CARRIED: LazyLock<Mutex<std::collections::HashMap<(String, String), v1::LocalSource>>> = LazyLock::new(Mutex::default);
 /// The functions whose Hub reads are read ahead (`fit::read_ahead`): by Hub, package, release and function.
 static READ_AHEAD: LazyLock<Mutex<HashSet<(String, String, String, String)>>> = LazyLock::new(Mutex::default);
 
@@ -235,12 +241,33 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
     let Some(renderer) = package.first_making(kind) else { return Ok(None) };
     let source = match &renderer.local {
         None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: recorded(api, project, hub, &renderer)?, ..Default::default() }),
-        // By its manifest, which a machine that ran it holds: one that holds none refuses the item, and its first render there sends it.
-        Some(_) => {
-            if crate::private_io::of_path(dir)?.is_some_and(|scope| !scope.storage.ordinary) {
+        // Carried to its machine as a run of it carries it (#3646), its files and manifest written there before the item, so a fresh
+        // rental installs it too (frozen-RC 44000183889: H3 from a checkout never got ready on one); once a machine has them, by its
+        // manifest alone. An encrypted project's own code goes only with the run that calls it; code beside the project (a dev
+        // home's checkout, `~/…`) isn't the project's.
+        Some(path) => {
+            let private = crate::private_io::of_path(dir)?.is_some_and(|scope| !scope.storage.ordinary);
+            if private && path.starts_with(dir) {
                 return Ok(None);
             }
-            v1::Source::Local(v1::LocalSource { manifest: package.manifest.clone() })
+            let On::Machine(on) = machine else { return Ok(None) };
+            let carried = (on.clone(), package.manifest.clone());
+            let held = lock(&CARRIED).get(&carried).cloned();
+            let source = match held {
+                Some(source) => source,
+                None => {
+                    let hubs = &api.machines.hubs;
+                    let origin = Origin::parse(&if hub.is_empty() { hubs.default_origin() } else { hub.to_owned() })?;
+                    let staged = crate::local_code::source(hubs.home(), &crate::local_code::own(api, path)?, hubs, &origin).await?;
+                    if let Err(why) = api.calcifer.ship(on, &staged.inputs).await {
+                        tracing::warn!(machine = on, "a guess's local code wasn't carried there: {why}");
+                        return Ok(None);
+                    }
+                    lock(&CARRIED).insert(carried, staged.source.clone());
+                    staged.source
+                }
+            };
+            v1::Source::Local(source)
         }
     };
     let request = asking.request(name, &package, &renderer.function);

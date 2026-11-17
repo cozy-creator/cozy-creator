@@ -38,7 +38,7 @@ pre_end() {
   [ -z "${PRE_SLOWED:-}" ] || sudo tc qdisc del dev lo root 2> /dev/null || check "prefetch: the store's link wasn't restored"
   PRE_SLOWED=''
   # Its projects closed, as nothing shows them now: what the run keeps of them is read once their files stand still.
-  for project in "$OUT/pre-switch" "$OUT/pre-ready" "$OUT/pre-quoted" "$OUT/pre-yields" "$OUT/pre-load" "$OUT/pre-disk"; do
+  for project in "$OUT/pre-switch" "$OUT/pre-ready" "$OUT/pre-quoted" "$OUT/pre-yields" "$OUT/pre-load" "$OUT/pre-local" "$OUT/pre-disk"; do
     for _ in $(seq 75); do [ -e "$project/project.db-shm" ] || break; sleep 0.2; done
   done
 }
@@ -408,6 +408,47 @@ if [ -n "$n" ]; then
 fi
 timeout 60 "$COZY" --json machine end stand-p --force -y > "$OUT/stand-p-end.json" 2>&1 || true
 }
+
+# prefetch_local (cl-1104): a box whose tool is local code, on a machine that never held it. Frozen-RC 44000183889 rented A for the
+# user-flow, whose H3 runs from a checkout: its guess was never sent there (local code went only to a machine holding its source), and
+# the box never said Ready. Here stand-l, a new stand-in, holds nothing; a project of it shows a box whose tool is e2e-prefetched as
+# local code, its folder on this computer. The guess carries its source there as a run of it would, stand-l installs it and fetches
+# e2e/pre-a, and the box says ready on stand-l. Its render goes there, quoted nothing to download, and fetches and builds nothing.
+prefetch_local() {
+[ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || return 0
+step "prefetch (cl-1104): local code is carried to a fresh machine, and its box says ready there"
+[ -n "${PRE_PAGE:-}" ] || { check "prefetch local: the cells before it left no page"; return 0; }
+local P=$OUT/pre-local name=stand-l began job run
+cozy --json machine show local > "$OUT/set-local.json" || { check "prefetch local: machine show local"; return 0; }
+stand_in "$name" || return 0
+pre_project "$P" "$name" || { pre_local_end; return 0; }
+jq -n --arg t "$here/project/prefetched/still" '[{name: "local_tool", tool: $t, kind: "image", fields: {instructions: "A still of local code, on a machine that never held it."}}]' \
+  | boxes_in "$P" || { pre_local_end; return 0; }
+pre_ready "$P" local_tool "$name" 300 || { pre_local_end; return 0; }
+began=$(date -u +%s%3N)
+coming_go local_tool "[\"$name\"]"
+coming_done local_tool 600
+job=$(status "$P" | jq -c '[.board.jobs[]? | select(.asset == "local_tool")] | last // empty')
+run=$(jq -r '.run // empty' <<< "${job:-null}")
+[ -n "$run" ] && J '.state == "done"' <<< "$job" || { check "prefetch local: its render didn't end done: ${job:-no job}"; pre_local_end; return 0; }
+echo "$P" > "$OUT/pre-local-made.at"
+run_show "$OUT" pre-local-made "$run"
+echo "prefetch local: its render $run went to $(run_get "$OUT" pre-local-made .machine), placed $(jq -c '.placed | {machine, fetch_bytes, prepare_ms}' "$OUT/pre-local-made.json" 2> /dev/null); its weights $(jq -c '.measurements.weights // "none said"' "$OUT/pre-local-made.json" 2> /dev/null)"
+J --arg m "$name" '.machine == $m' "$OUT/pre-local-made.json" || check "prefetch local: its render went to $(run_get "$OUT" pre-local-made .machine), not $name, which its guess made ready"
+J '(.placed.fetch_bytes // 0) == 0' "$OUT/pre-local-made.json" || check "prefetch local: its render was quoted $(run_get "$OUT" pre-local-made .placed.fetch_bytes) bytes to download on $name"
+pre_log "$name" "$OUT/pre-local.tensord.log"
+pre_judge "$OUT/pre-local.tensord.log" "$began" '{}' <<'JUDGE' > "$OUT/pre-local.failed"
+print(json.dumps({"fetched_objects": len(weights), "installs": len(installs)}), file=sys.stderr)
+if weights:
+    print(f"its machine fetched {len(weights)} objects ({landed // MIB} MiB landed) from its render on: the guess didn't have them ready")
+if installs:
+    print(f"an environment was built {len(installs)} times from its render on: the guess didn't install its local code")
+JUDGE
+while read -r why; do check "prefetch local: $why"; done < "$OUT/pre-local.failed"
+pre_local_end
+}
+# pre_local_end: stand-l ended.
+pre_local_end() { timeout 60 "$COZY" --json machine end stand-l --force -y > "$OUT/stand-l-end.json" 2>&1 || true; }
 
 # prefetch_disk (cl-1104): a guess on a short disk, and a guess's install. stand-q, a new stand-in, keeps its store on a 3 GiB disk, 1
 # GiB of it TensorFS's reserve. A run there reads e2e/pre-ask (256 MiB: a call's, the oldest it holds), and its machine starts again so
