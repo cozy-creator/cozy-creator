@@ -18,16 +18,20 @@ const STAGING: usize = READERS * RING;
 const STREAMS: usize = 4;
 
 /// A test's faults (cr-318, `_io_fail_pieces`): staged pieces to let pass, then how many to fail.
+#[cfg(feature = "fault-hooks")]
 static FAULT_AFTER: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "fault-hooks")]
 static FAULT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 /// The next `count` staged pieces read on any device fail, after `after` more pass: a reader
-/// failing mid-run, for the release gate's fault case. Not a user API.
+/// failing mid-run, for the release gate's fault case. Dev builds only (`fault-hooks`).
+#[cfg(feature = "fault-hooks")]
 pub fn fail_pieces(after: usize, count: usize) {
     FAULT_AFTER.store(after, Relaxed);
     FAULT_COUNT.store(count, Relaxed);
 }
 
+#[cfg(feature = "fault-hooks")]
 fn injected() -> bool {
     if FAULT_COUNT.load(Relaxed) == 0 {
         return false;
@@ -952,6 +956,7 @@ impl Engine {
             slot.pending = false;
         }
         match job.c.src {
+            #[cfg(feature = "fault-hooks")]
             Src::File(..) if injected() => {
                 let source = io::Error::other("an injected staged-piece fault (release gate)");
                 return Err(Error { copy: job.copy, source });

@@ -33,13 +33,15 @@ fn ceiling(py: Python<'_>, device: Option<i32>, path: Option<PathBuf>) -> PyResu
 }
 
 /// The release gate's fault case (cr-318): the next `count` staged device-read pieces fail, after
-/// `after` more pass. Private and undocumented: not part of TensorFS's interface.
+/// `after` more pass. Dev builds only (`fault-hooks`): not part of TensorFS's interface.
+#[cfg(feature = "fault-hooks")]
 #[pyfunction]
 fn _io_fail_pieces(after: usize, count: usize) {
     tensorfs::io::fail_pieces(after, count);
 }
 
 pub(crate) fn install(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    #[cfg(feature = "fault-hooks")]
     m.add_function(wrap_pyfunction!(_io_fail_pieces, m)?)?;
     m.add_class::<PyCeiling>()?;
     m.add_function(wrap_pyfunction!(ceiling, m)?)

@@ -18,7 +18,9 @@ pub mod source;
 pub mod view;
 
 #[cfg(feature = "cuda")]
-pub use device::{fail_pieces, DeviceBuffer};
+pub use device::DeviceBuffer;
+#[cfg(feature = "fault-hooks")]
+pub use device::fail_pieces;
 pub use plan::Target;
 pub use probe::{ceiling, disk, keep_ceilings_in, Ceiling};
 pub use view::{Span, StoredPart};
