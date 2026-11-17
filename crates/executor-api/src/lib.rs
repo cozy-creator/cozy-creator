@@ -274,6 +274,10 @@ pub struct Map {
     pub entrypoint: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<Json>,
+    /// Its on-demand models (by parameter) built first, as a call's first read of each would build it, then warmed with the
+    /// rest: those a predicted request needs (cl-1123). An executor before this builds none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub build: Vec<String>,
 }
 
 /// What a warmed construction's models hold: `gpu` is warm and fills free room now, `ram`

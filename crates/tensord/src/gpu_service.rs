@@ -34,6 +34,9 @@ use std::{
 };
 use crate::storage::Store;
 
+mod load_ahead;
+pub(crate) use load_ahead::Predicted;
+
 /// `binding`'s snapshot when it is a view this process keeps (`storage::view`), as the executor
 /// opens it: its bytes, which no store holds.
 fn view(binding: &Binding) -> Option<executor_api::View> {
@@ -559,6 +562,10 @@ struct Session {
     ledger: bool,
     /// Why its Runtime serves its GPUs none of its native kernels, as its Start said (cl-913); empty: it does.
     kernels_absent: String,
+    /// Whose call or predicted request it served last (`load_ahead`): another's model is never evicted for a guess.
+    user: Option<load_ahead::Scope>,
+    /// The on-demand models a predicted request's load built in it ahead, as `<construction>#<parameter>` (cl-1123).
+    built: std::collections::BTreeSet<String>,
 }
 impl Session {
     fn lane(&self) -> std::ops::Range<usize> {
@@ -914,6 +921,8 @@ pub(crate) struct Pool {
     /// The host's ledger, supervised: an executor's exit is told to it, as to each GPU's.
     #[cfg(target_os = "linux")]
     host_ledger: std::sync::OnceLock<Arc<varena_ledger::Table>>,
+    /// Predicted requests whose weights it puts on a GPU while none is wanted (cl-1123).
+    ahead: load_ahead::Ahead,
     // Drop session/resource custody before ending the actual spawning thread.
     launcher: crate::child_launcher::ChildLauncher,
 }
@@ -1175,6 +1184,7 @@ impl Pool {
                 foreign: Mutex::default(),
                 #[cfg(target_os = "linux")]
                 host_ledger: Default::default(),
+                ahead: Default::default(),
             }
         });
         // Started once the pool is built: inside `new_cyclic` its first upgrade found no pool and it
@@ -2044,7 +2054,7 @@ impl Pool {
             return "its warm preparation was canceled";
         }
         if let (Ok("loaded" | "already loaded"), Level::Gpu | Level::Host) = (&result, level) {
-            result = self.map_member(engine, plan, start, member, preparation);
+            result = self.map_member(engine, plan, start, member, preparation, &[]);
         }
         match result {
             Ok("loaded" | "already loaded" | "mapped") => "",
@@ -2056,13 +2066,14 @@ impl Pool {
         }
     }
     /// Warming a loaded member: its executor, on the lane from `start`, loads its models at
-    /// `level` (`gpu`, or `host` in RAM; Runtime places them): "mapped", or why not.
+    /// `level` (`gpu`, or `host` in RAM; Runtime places them), its on-demand ones `build` names built
+    /// first (cl-1123): "mapped", or why not.
     fn map_member(&self, engine: &Arc<Engine>, plan: &Plan, start: usize, member: &Member,
-        preparation: Option<&Stoppable>) -> io::Result<&'static str> {
+        preparation: Option<&Stoppable>, build: &[String]) -> io::Result<&'static str> {
         let level = member.level;
         let key = session_key(&plan.construction, start);
         let holds = self.levels.lock().unwrap().get(&key).map(|(_, level, _)| *level);
-        if holds == Some(level) && member.payload.is_none() {
+        if holds == Some(level) && member.payload.is_none() && build.is_empty() {
             return Ok("mapped");
         }
         let Some(mut session) = self.sessions.lock().unwrap().remove(&session_key(&plan.executor, start)) else {
@@ -2103,6 +2114,7 @@ impl Pool {
                 entrypoint: plan.entrypoint.clone(),
                 payload: member.payload.as_ref().map(|payload| executor_api::Json(
                     serde_json::from_str(payload.get()).expect("validated warm payload"))),
+                build: build.to_vec(),
             }),
             &mut callbacks,
         );
@@ -2113,6 +2125,7 @@ impl Pool {
         if reply.as_ref().is_ok_and(|reply| reply.ok) {
             // An unready program leaves its models loaded, and memory is the core's to give back.
             session.loaded.insert(plan.construction.clone(), if member.payload.is_none() || ready { level } else { Level::Host });
+            session.built.extend(build.iter().map(|parameter| format!("{}#{parameter}", plan.construction)));
         }
         if member.payload.is_some() {
             *member.prepared.lock().unwrap() = Some(ready && usable);
@@ -3719,6 +3732,8 @@ impl Pool {
         }
         // A shared executor's memoized stages are this run's project's, or the machine's for a run of none (cl-984).
         let mut session = session;
+        let actor = engine.get(id).ok().and_then(|record| record.submission).map(|s| s.actor).unwrap_or_default();
+        session.user = Some((actor, private.as_ref().map(|scope| scope.project_id.clone())));
         session.executor.keep_memo(match &private { Some(scope) => self.memo_for_private(scope)?, None => self.memo.clone() });
         // A development Runtime build is named by its build, not only its version.
         let hello = &session.executor.hello;
@@ -3889,6 +3904,8 @@ impl Pool {
             launch,
             serving: id,
             kernels_absent: String::new(),
+            user: None,
+            built: Default::default(),
         })
     }
 

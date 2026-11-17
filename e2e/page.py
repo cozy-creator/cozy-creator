@@ -21,6 +21,9 @@ no `cozy project` verbs). Each prints JSON on stdout; a refusal goes to stderr a
                                                                      before a render here alone
     page.py undo <project>                                           the newest edit that stands undone, as Undo does
     page.py history <project>                                        the project's history, newest first
+    page.py show <project>                                           the project shown, as an open page holds it (`GET /v1/events`, then
+                                                                     `PUT /v1/events/{stream}`): its boxes' renders guessed and their
+                                                                     machines made ready (cl-1104) until this ends; one JSON line once shown
 <project> is its folder, which names it in a route."""
 
 import argparse
@@ -123,6 +126,25 @@ def render(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def show(folder: str) -> int:
+    """The project shown on an events stream, as a page shows it, until this process ends."""
+    shown = str(read(folder)["id"])
+    request = urllib.request.Request(BASE + "/v1/events", headers={**AUTH, "Accept": "text/event-stream", "Cozy-Client": "page e2e"})
+    with OPENER.open(request) as stream:
+        for raw in stream:
+            line = raw.decode().strip()
+            if not line.startswith("data:"):
+                continue
+            event = cast(Json, json.loads(line[5:]))
+            if event.get("type") == "hello":
+                held = call("PUT", "/v1/events/" + str(event["stream"]), json.dumps({"projects": [shown]}).encode())
+                print(json.dumps({"stream": event["stream"], "held": held.get("held")}), flush=True)
+                break
+        for _ in stream:
+            pass
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     verbs = parser.add_subparsers(dest="verb", required=True)
@@ -165,7 +187,7 @@ def main() -> int:
     one = verbs.add_parser("asset")
     one.add_argument("project")
     one.add_argument("names", nargs="+")
-    for verb in ("board", "tools", "undo", "history"):
+    for verb in ("board", "tools", "undo", "history", "show"):
         verbs.add_parser(verb).add_argument("project")
     for verb in ("cancel", "fit"):
         one = verbs.add_parser(verb)
@@ -201,6 +223,8 @@ def main() -> int:
         print(json.dumps(call("GET", project(args.project) + "/history")))
     elif args.verb == "board":
         print(json.dumps(read(args.project).get("board")))
+    elif args.verb == "show":
+        return show(args.project)
     elif args.verb == "tools":
         print(json.dumps(call("GET", "/v1/tools?" + urllib.parse.urlencode({"project": str(read(args.project)["id"])}))))
     else:

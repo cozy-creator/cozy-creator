@@ -2400,6 +2400,9 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
         heat: frame.heat.clone(),
         runtime_kernels: frame.runtime_kernels.clone(),
         busy_until_ms: None,
+        ahead: (frame.ahead.iter())
+            .map(|item| wire::Readied { id: item.id.clone(), state: item.state.clone(), readiness: item.readiness.clone() })
+            .collect(),
         disk_total_bytes: frame.disk.as_ref().map_or(0, |d| d.total_bytes),
         disk_free_bytes: frame.disk.as_ref().map_or(0, |d| d.free_bytes),
         disk_models_bytes: frame.disk.as_ref().map_or(0, |d| d.models_bytes),

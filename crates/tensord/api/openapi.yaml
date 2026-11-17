@@ -1365,7 +1365,7 @@ components:
         ahead:
           type: array
           items: {$ref: '#/components/schemas/RunState'}
-          description: "The caller's lists' items (PUT /v1/upcoming, /v1/prepare), each as its run stands: ready once it succeeded."
+          description: "The caller's lists' items (PUT /v1/upcoming, /v1/prepare), each as its run stands: ready once it succeeded, then its `readiness`: `loading`, `loaded` (its call's first step loads nothing) or `evicted` (cl-1123)."
         started_at_unix_ms: {type: integer, format: int64}
         stuck:
           type: array

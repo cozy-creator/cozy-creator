@@ -80,6 +80,13 @@ pub(crate) fn listed(actor: &str) -> Vec<String> {
     listed.iter().filter(|((owner, _), _)| owner == actor).flat_map(|(_, ids)| ids.clone()).collect()
 }
 
+/// Where `actor`'s item `id` stands among its lists: upcoming jobs before guesses, each list in its order. None: no list names it.
+pub(crate) fn rank(actor: &str, id: &str) -> Option<(usize, usize)> {
+    let listed = lock(&LISTED);
+    [UPCOMING, PREPARE].into_iter().enumerate()
+        .find_map(|(class, prefix)| Some((class, listed.get(&(actor.to_owned(), prefix))?.iter().position(|listed| listed == id)?)))
+}
+
 /// Run `id`, sent naming list item `key` (`RunSpec::predicted`, cl-1123), is the request that item predicted: its identity
 /// (`digest`) is the item's. Whether it is; said in the log either way.
 pub(crate) fn adopts(key: &str, id: &str, digest: &str) -> bool {
@@ -98,7 +105,7 @@ pub(crate) fn adopts(key: &str, id: &str, digest: &str) -> bool {
 }
 
 /// Run `caller`'s needs (Y) landed (`Runs::download`): a list item is `ready` from here, its extras (Z) still coming behind
-/// (cl-1123). The load step begins here (`gpu_service::Pool::predict`, from `Runs::prepare` as the item's run returns).
+/// (cl-1123). Its run returns now, and its load is registered as it does (`gpu_service::Pool::predict`, from `Runs::prepare`).
 pub(crate) fn landed(caller: &str) {
     if hidden(caller) {
         tracing::info!("{caller}: what it needs is here");
@@ -125,8 +132,6 @@ pub(crate) fn guess(id: &str) -> bool {
     id.starts_with(PREPARE)
 }
 
-/// Replaces `actor`'s list under `prefix` with `items`, in their order: each new one admitted as a warm run, each it drops canceled,
-/// once what replaced it is in the download line when anything did.
 /// A list put, answered at once (cl-1123: 44082666492's took 1.27 s, most of an edit's way to its first byte): what it names and drops
 /// is noted now, and its items are admitted behind the answer (`admit`), `planning` in Status until they are.
 pub(crate) fn put(
@@ -155,6 +160,10 @@ pub(crate) fn put(
     let ids: Vec<String> = requests.iter().map(|request| request.id.clone()).collect();
     let list = (crate::runs::actor_id(actor), prefix);
     lock(&LISTED).insert(list.clone(), ids.clone());
+    // What no list names now loads no more (cl-1123).
+    if let Some(pool) = runs.service.pool() {
+        pool.unlist(&crate::runs::actor_id(actor));
+    }
     // What no list names any more is weighed no more.
     let named: Vec<String> = lock(&LISTED).values().flatten().cloned().collect();
     lock(&NEEDS).retain(|id, _| named.contains(id));
@@ -213,6 +222,7 @@ fn admit(runs: &Arc<Runs>, actor: VerifiedActor, list: List, put: u64, requests:
     static HANDOVERS: AtomicU64 = AtomicU64::new(0);
     let handover = HANDOVERS.fetch_add(1, Ordering::Relaxed);
     lock(&HANDED).push(Handed { put: handover, actor, dropped, waiting: ids.clone() });
+    let specs: Vec<v1::RunSpec> = requests.iter().map(|request| request.spec.clone()).collect();
     let admitted = runs.accept(actor, requests);
     drop(admission);
     // Only an item new now takes over what a dropped one fetched: any other is in line already, or never will be.
@@ -225,6 +235,18 @@ fn admit(runs: &Arc<Runs>, actor: VerifiedActor, list: List, put: u64, requests:
             handed.waiting.retain(|id| new.contains(&id));
         }
     });
+    // An item whose run made it ready before (before a restart, or before its list last named it) is planned again, so the
+    // machine loads it as one sent now (cl-1123).
+    if let (Ok(admitted), Some(pool)) = (&admitted, runs.service.pool()) {
+        let signer = crate::runs::actor_id(actor);
+        for ((id, spec), admitted) in ids.iter().zip(specs).zip(admitted) {
+            if let Ok((false, state)) = admitted {
+                if state.state == "succeeded" && pool.plans_again(&signer, id) {
+                    runs.replan(actor, state.number.to_string(), spec);
+                }
+            }
+        }
+    }
     let mut planning = lock(&PLANNING);
     let refused = |planning: &mut HashMap<String, Option<String>>, id: &String, why: &str| {
         tracing::warn!("list item {id} won't be ready ahead: {why}");
@@ -353,6 +375,15 @@ pub(crate) fn standing(store: &crate::storage::Store, busy: bool, mut states: Ve
             _ => String::new(),
         };
         state.state = "evicted".to_owned();
+    }
+    states
+}
+
+/// The items `states` as their caller `actor` reads them: one whose run made it ready (its weights here) says how far the load
+/// step took it (`gpu_service::Pool::readiness`, cl-1123).
+pub(crate) fn readiness(pool: Option<&crate::gpu_service::Pool>, actor: &str, mut states: Vec<v1::RunState>) -> Vec<v1::RunState> {
+    for state in states.iter_mut().filter(|state| state.state == "succeeded") {
+        state.readiness = pool.and_then(|pool| pool.readiness(actor, &state.id));
     }
     states
 }
