@@ -86,19 +86,15 @@ for f in "$WORK"/fx/*; do base64 -w0 "$f" | pod "base64 -d > /root/up/fx/${f##*/
 # A simple command goes to the background, its own descriptors redirected: a backgrounded `a && b` list keeps the SSH
 # channel open in its subshell until it ends.
 pod "cd /root/up; setsid nohup bash setup.sh > setup.log 2>&1 < /dev/null &" < /dev/null || fail "setup.sh"
-say "the references' environments and weights: fetching on the pod"
+say "the references' environments: building on the pod"
 
-# Our weights meanwhile, each lane the cells pin (bf16), on the pod's TensorFS.
+# Our weights: each lane the cells pin (bf16). A run fetches what it needs; a group's models go after its runs, so the
+# disk holds one group's at a time.
 QI=qwen/qwen-image-2512@sha256:447b8c6848773b8730ff4cf540d0fd77bcf68d1d57d06a990c7f8b0aad35a1c4
 QE=qwen/qwen-image-edit-2511@sha256:f8c99413497ff7c869060d25190b6f254d16939e24997c0e6e6b91eca95be292
 P2=ifm/pan2@sha256:649bd825e2df81c918cb47887562dd21a0c3b4d835ab3146a4126d1f2247c689
 Q3=huihui-ai/huihui-qwen3.5-9b-abliterated@sha256:3d23b0ddeb4c310b7ee8c374dc365334d9a025a8fa32507041fc9d03f94fa0b8
-installs=()
-on qwen-image && installs+=("$QI" "$QE" lightx2v/qwen-image-2512-lightning-lora@0.1.0 lightx2v/qwen-image-edit-2511-lightning-lora@0.1.0)
-on birefnet && installs+=(zhengpeng7/birefnet@0.1.0)
-on qwen3 && installs+=("$Q3")
-on pan2 && installs+=("$P2")
-( for i in "${!installs[@]}"; do step "install-$i" model install "${installs[$i]}" --on "$NAME" -y < /dev/null || say "install ${installs[$i]}: failed"; done ) & BG=$!
+uninstall() { local m; for m in "$@"; do cozy model uninstall "$m" --on "$NAME" -y < /dev/null >> "$OUT/uninstall.txt" 2>&1 || say "uninstall $m: $(tail -c 200 "$OUT/uninstall.txt")"; done; }
 
 # The references, one group at a time on the idle GPU, as its weights arrive; the pod kept from its idle end.
 alive=$(date +%s)
@@ -117,20 +113,20 @@ waitfor() {  # waitfor <file> <seconds>: true once the pod holds /root/up/<file>
 envs_for() { case $1 in qwen-image | qwen3) echo a ;; *) echo b ;; esac; }
 for g in qwen-image birefnet qwen3 pan2; do
   on "$g" || continue
-  if ! waitfor "$g.fetched" 5400; then say "reference $g: its weights never arrived: $(pod "tail -5 /root/up/fetch-$g.log /root/up/setup.log /root/up/$(envs_for "$g").log" < /dev/null 2>&1 | tail -c 600)"; continue; fi
   e=$(envs_for "$g")
-  pod "cd /root/up; setsid nohup bash -c 'HF_HOME=/root/hf $e/bin/python upstream.py $g out fx > ref-$g.log 2>&1 || touch out/$g.failed' > /dev/null 2>&1 < /dev/null &" < /dev/null ||
+  if ! waitfor "$e.ok" 1800; then say "reference $g: no Python environment $e: $(pod "tail -5 /root/up/setup.log /root/up/$e.log" < /dev/null 2>&1 | tail -c 600)"; continue; fi
+  # Its weights, then the reference; the next group's weights only once this one's are gone.
+  pod "cd /root/up; setsid nohup bash -c 'export HF_HOME=/root/hf; ($e/bin/python upstream.py $g out fx --fetch > fetch-$g.log 2>&1 && $e/bin/python upstream.py $g out fx > ref-$g.log 2>&1) || touch out/$g.failed' > /dev/null 2>&1 < /dev/null &" < /dev/null ||
     say "reference $g: its start did not return (it may run anyway)"
-  if waitfor "out/$g.done" 3600; then say "reference $g: $(pod "cat /root/up/out/$g.done" < /dev/null)"
-  else say "reference $g FAILED: $(pod "tail -15 /root/up/ref-$g.log" < /dev/null 2>&1 | tail -c 1500)"; fi
+  if waitfor "out/$g.done" 5400; then say "reference $g: $(pod "cat /root/up/out/$g.done; tail -2 /root/up/fetch-$g.log" < /dev/null)"
+  else say "reference $g FAILED: $(pod "tail -6 /root/up/fetch-$g.log; tail -15 /root/up/ref-$g.log" < /dev/null 2>&1 | tail -c 1500)"; fi
   pod "tail -40 /root/up/ref-$g.log" < /dev/null > "$OUT/ref-$g.log" 2>&1
   # Its weights go: the disk holds the next group's and ours.
-  pod "rm -rf /root/hf/hub/models--$(case $g in qwen-image) echo 'Qwen--Qwen-Image-* /root/hf/hub/models--lightx2v--*' ;; pan2) echo IFM--PAN2 ;; qwen3) echo huihui-ai--* ;; *) echo ZhengPeng7--* ;; esac)" < /dev/null
+  pod "rm -rf /root/hf/xet /root/hf/hub/models--$(case $g in qwen-image) echo 'Qwen--Qwen-Image-* /root/hf/hub/models--lightx2v--*' ;; pan2) echo IFM--PAN2 ;; qwen3) echo huihui-ai--* ;; *) echo ZhengPeng7--* ;; esac); df -h / | tail -1" < /dev/null | sed 's/^/disk after the reference: /' | tee -a "$R"
 done
 T=1800 pod "tar -C /root/up/out -cf - . | base64 -w0" < /dev/null | base64 -d > "$WORK/up.tar" && tar -xf "$WORK/up.tar" -C "$WORK/up" || fail "the references' outputs"
 say "references: $(ls "$WORK/up" | paste -sd' ')"
 [ ! -f "$WORK/up/qwen3.json" ] || say "Qwen3 nucleus at T 0.7, top-p 0.8 (top-k 20 binds above 20): $(jq -c 'with_entries(.value |= .nucleus)' "$WORK/up/qwen3.json")"
-wait "$BG"; BG=''
 
 # Ours: each cell through `cozy run` from its checkout, bf16, SDPA.
 EXACT=(--attention-kernel sdpa --on "$NAME" -y)
@@ -209,6 +205,12 @@ User request: $p" '{system: $sys, prompt: $u, max_tokens: 3072, temperature: 0, 
         done
       done ;;
   esac
+  case $g in
+    qwen-image) uninstall qwen/qwen-image-2512 qwen/qwen-image-edit-2511 lightx2v/qwen-image-2512-lightning-lora lightx2v/qwen-image-edit-2511-lightning-lora ;;
+    pan2) uninstall ifm/pan2 ;;
+    qwen3) uninstall huihui-ai/huihui-qwen3.5-9b-abliterated ;;
+  esac
+  say "disk after $g: $(pod 'df -h / | tail -1' < /dev/null)"
   keep
 done
 cozy machine show "$NAME" --json > "$OUT/show-end.json" 2>&1
