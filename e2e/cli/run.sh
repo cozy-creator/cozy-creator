@@ -737,6 +737,8 @@ case $SHARD in
     logs" ;;
   # A run moved to another machine is that machine's to cancel and follow, and its take lands (cl-1116). Named plan-* for its stand-ins.
   plan-resent) parts="plan_resent logs" ;;
+  # A busy machine's runs ahead in its quote, replayed on two stand-ins that say only their Status (cl-1107): a few minutes.
+  queue) parts="plan_queue logs" ;;
   # A box's tool gets its machine ready before Render (cl-1104): a guess switched, a request sent meanwhile, a box deleted; two boxes
   # of one function quoted each by its own checkpoint; a guess moved when its machine's load changes; on a short disk a guess
   # evicts nothing, goes first, says so and comes again, and its install gives the line to a run's.
