@@ -163,11 +163,12 @@ on:
         description: Keep CPU fixture inputs, weights and outputs in the run's artifacts
         type: boolean
         default: false
-      # skew (select it: `select=skew`): released cozy versions × a Hub built from tensorhub at hub_ref (e2e/skew/run.sh).
+      # The tensorhub ref every Hub here is built from: the isolated Hub of cli, imports and cpu, and skew's (`select=skew`:
+      # released cozy versions × that Hub, e2e/skew/run.sh). Empty: as Runtime and packages, tensorhub's RC on a run toward one.
       hub_ref:
-        description: "skew: the tensorhub ref the Hub is built from (the candidate)"
+        description: "The tensorhub ref the Hubs are built from (empty: tensorhub's RC on a run toward an RC, else master)"
         type: string
-        default: master
+        default: ''
       skew_clients:
         description: "skew: released cozy versions, space-separated; `previous` is the previous minor's latest patch"
         type: string
@@ -207,6 +208,7 @@ jobs:
       stack: ${{ steps.pin.outputs.stack }}
       runtime: ${{ steps.pin.outputs.runtime }}
       packages: ${{ steps.pin.outputs.packages }}
+      hub: ${{ steps.pin.outputs.hub }}
       skew_clients: ${{ steps.skew.outputs.clients }}
     steps:
       - id: what
@@ -328,6 +330,8 @@ jobs:
           STACK: ${{ inputs.stack_ref || 'master' }}
           RUNTIME: ${{ inputs.runtime_ref || 'master' }}
           PACKAGES: ${{ inputs.packages_ref || 'master' }}
+          HUB: ${{ inputs.hub_ref }}
+          HUB_KEY: ${{ secrets.TENSORHUB_READ_KEY }}
           RC: ${{ steps.what.outputs.rc }}
           FROM_RC: ${{ steps.what.outputs.from_rc }}
         run: |
@@ -351,7 +355,24 @@ jobs:
           packages=$ref
           [ "$GITHUB_REPO" = cozy-creator/packages ] || packages=$(commit cozy-creator/packages "$packages_at")
           for c in "$ref" "$creator" "$stack" "$runtime" "$packages"; do [[ $c =~ ^[0-9a-f]{40}$ ]] || { echo "::error::unresolved ref: '$c'"; exit 1; }; done
-          printf 'ref=%s\ncreator=%s\nstack=%s\nruntime=%s\npackages=%s\n' "$ref" "$creator" "$stack" "$runtime" "$packages" | tee -a "$GITHUB_OUTPUT"
+          # tensorhub as `sibling` reads the others: hub_ref, else on a run toward an RC its `rc/<x>`, else its newest `rc/*`, else
+          # master; a branch to its commit (a tag or commit as named). It is private, so its branches are read with its deploy key;
+          # unread, its checkout resolves the name.
+          key=$RUNNER_TEMP/tensorhub-read-key
+          (umask 077; printf '%s\n' "$HUB_KEY" > "$key")
+          heads=$(GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" \
+            git ls-remote --heads git@github.com:cozy-creator/tensorhub.git 2> "$RUNNER_TEMP/tensorhub-refs.err") || heads=
+          rm -f "$key"
+          [ -n "$heads" ] || echo "::warning::tensorhub's refs unread: $(tail -c 200 "$RUNNER_TEMP/tensorhub-refs.err")"
+          hub_at=${HUB:-master}
+          if [ -z "$HUB" ] && [ -n "$RC" ]; then
+            names=$(sed -n 's|^[0-9a-f]*\trefs/heads/||p' <<< "$heads")
+            if grep -qx "$RC" <<< "$names"; then hub_at=$RC
+            else hub_at=$(grep '^rc/[0-9]' <<< "$names" | sort -V | tail -1) || hub_at=; hub_at=${hub_at:-master}; fi
+          fi
+          hub=$(awk -v at="$hub_at" '$2 == "refs/heads/" at { print $1; exit }' <<< "$heads")
+          [[ ! $hub_at =~ ^[0-9a-f]{40}$ ]] || hub=$hub_at
+          printf 'ref=%s\ncreator=%s\nstack=%s\nruntime=%s\npackages=%s\nhub=%s\n' "$ref" "$creator" "$stack" "$runtime" "$packages" "${hub:-$hub_at}" | tee -a "$GITHUB_OUTPUT"
           # What this run runs against, at the top of its summary: no one guesses which Runtime or packages it met.
           { echo "### Refs: ${RC:-master}${FROM_RC:+ ($FROM_RC)}"
             echo
@@ -360,7 +381,8 @@ jobs:
             echo "| creator (harness) | ${GITHUB_REPO#cozy-creator/} $REF | ${creator:0:12} |"
             echo "| stack | $stack_said | ${stack:0:12} |"
             echo "| runtime | $runtime_at | ${runtime:0:12} |"
-            echo "| packages | ${packages_at:-the change} | ${packages:0:12} |"; } | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "| packages | ${packages_at:-the change} | ${packages:0:12} |"
+            echo "| hub | tensorhub $hub_at | ${hub:0:12} |"; } | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@v5
         if: inputs.select == '' || inputs.select == 'affected'
         with:
@@ -504,7 +526,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # The isolated Hub every cli, imports and cpu shard runs against (e2e/skew/run.sh --hub-bin): tensorhub at hub_ref
+  # The isolated Hub every cli, imports and cpu shard runs against (e2e/skew/run.sh --hub-bin): tensorhub at `affected`'s hub
   # and MinIO, built once a run and cached by commit. Native cli runners take fixture-hub-<runner> for their OS.
   hub:
     name: isolated Hub
@@ -519,7 +541,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           repository: cozy-creator/tensorhub
-          ref: ${{ inputs.hub_ref || 'master' }}
+          ref: ${{ needs.affected.outputs.hub }}
           ssh-key: ${{ secrets.TENSORHUB_READ_KEY }}
           persist-credentials: false
           path: .tensorhub
@@ -1077,7 +1099,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           repository: cozy-creator/tensorhub
-          ref: ${{ inputs.hub_ref || 'master' }}
+          ref: ${{ needs.affected.outputs.hub }}
           ssh-key: ${{ secrets.TENSORHUB_READ_KEY }}
           persist-credentials: false
           path: .tensorhub
@@ -1271,7 +1293,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           repository: cozy-creator/tensorhub
-          ref: ${{ inputs.hub_ref || 'master' }}
+          ref: ${{ needs.affected.outputs.hub }}
           ssh-key: ${{ secrets.TENSORHUB_READ_KEY }}
           persist-credentials: false
           path: .tensorhub
@@ -1284,7 +1306,7 @@ jobs:
         with:
           path: ${{ runner.temp }}/skew-tools
           key: skew-minio-RELEASE.2025-09-07T16-13-09Z
-      - name: skew cozy ${{ matrix.client }} × tensorhub ${{ inputs.hub_ref || 'master' }}
+      - name: skew cozy ${{ matrix.client }} × tensorhub ${{ needs.affected.outputs.hub }}
         env:
           SKEW_TOOLS: ${{ runner.temp }}/skew-tools
           CLIENT: ${{ matrix.client }}
