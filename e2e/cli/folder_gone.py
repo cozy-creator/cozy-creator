@@ -3,8 +3,9 @@
 
 On Windows the removal succeeds at once and the view (a drive letter) dies with the backing, under a session Calcifer still holds.
 Then, each within its bound: `cozy vault lock` on it ends (it answers, it doesn't hang); its idle lock ends the session; Calcifer
-answers all along; and `cozy restart`, which lets go of every view, ends. On Linux and macOS the folder can't go while its view is
-mounted: what removing it does there is recorded, and the project is put away (cl-1124's question (1))."""
+answers all along; and `cozy restart`, which lets go of every view, ends and succeeds. On Linux and macOS the folder can't go while
+its view is mounted (cl-1124's question (1)), but its keys and data do: the session must still end, not wedge. Its keybag alone
+deleted, the session stays open: it holds the only copy of the keys."""
 
 from __future__ import annotations
 
@@ -22,6 +23,17 @@ from typing import cast
 # A lock asked of it, and Calcifer's status, answer within this; a restart within `RESTART`.
 ANSWER = 60
 RESTART = 120
+def ended(cell: "Cell", folder: Path, view: str) -> dict[str, object]:
+    """A session whose folder's keys and data went (Linux, macOS: its mounted view keeps the folder): its state once it ended, or
+    as it stays `ANSWER` s on."""
+    began = time.monotonic()
+    state = cell.state(folder)
+    while state in ("unlocked", "locking", "no answer") and time.monotonic() - began < ANSWER:
+        time.sleep(1)
+        state = cell.state(folder)
+    return {"state": state, "ended_s": round(time.monotonic() - began, 1), "mounted_after": mounted(view)}
+
+
 # The idle lock's limit, and how long past it the session may last.
 IDLE = 15
 IDLE_BOUND = 60
@@ -137,7 +149,9 @@ def main() -> None:
             if "folder is gone" not in said:
                 failures.append(f"the lock asked of a project whose folder is gone didn't say so: {said.strip()[-300:]}")
         else:
-            locked["state"] = cell.state(folder)
+            locked.update(ended(cell, folder, view))
+            if locked["state"] in ("unlocked", "locking", "no answer") or locked["mounted_after"]:
+                failures.append(f"lock: its session stays {locked['state']} after its folder's keys and data were removed: {locked}")
             cell.put_away(folder)
 
         # 2. Its folder removed, then its idle lock.
@@ -154,8 +168,28 @@ def main() -> None:
             if state in ("unlocked", "locking", "no answer"):
                 failures.append(f"its session lasts {IDLE + IDLE_BOUND} s past its folder's removal with a {IDLE} s idle limit: {state}")
         else:
-            idled["state"] = cell.state(folder)
+            idled.update(ended(cell, folder, view))
+            if idled["state"] in ("unlocked", "locking", "no answer") or idled["mounted_after"]:
+                failures.append(f"idle: its session stays {idled['state']} after its folder's keys and data were removed: {idled}")
             cell.put_away(folder)
+
+        # 2b. Its keybag alone deleted: the session holds the only copy of the keys, so it stays open (asked of, and on the clock).
+        folder, view = cell.made("keys", 0)
+        keybag = folder / "project.vault.keys.json"
+        kept = keybag.read_bytes()
+        keybag.unlink()
+        code, said, _ = cell.cozy("--json", "vault", "--directory", str(folder), "unlock", "--passphrase-file", str(out / "passphrase"),
+                                  timeout=ANSWER)
+        time.sleep(15)
+        keys: dict[str, object] = {"asked_exit": code, "asked_said": said.strip()[-200:], "mounted": mounted(view)}
+        keybag.write_bytes(kept)
+        keys["state"] = cell.state(folder)
+        facts["keys"] = keys
+        if keys["state"] != "unlocked" or not keys["mounted"]:
+            failures.append(f"keys: its session ended when only its keybag was deleted: {keys}")
+        code, said, _ = cell.cozy("--json", "vault", "--directory", str(folder), "lock", timeout=ANSWER)
+        keys["locked_after"] = code == 0
+        cell.put_away(folder)
 
         # 3. Calcifer answers, and a restart, which lets go of every view it holds, ends.
         facts["up"] = cell.up()
@@ -165,6 +199,8 @@ def main() -> None:
         facts["restart"] = {"exit": code, "s": seconds, "said": said[-300:], "up": cell.up()}
         if code is None or seconds > RESTART:
             failures.append(f"cozy restart didn't end within {RESTART} s after a project's folder was removed ({seconds} s)")
+        elif code != 0:
+            failures.append(f"cozy restart failed after a project's folder was removed: {said.strip()[-300:]}")
     finally:
         (out / "folder-gone.json").write_text(json.dumps(facts, indent=2, default=str))
     print(f"folder gone: {json.dumps(facts)}", flush=True)
