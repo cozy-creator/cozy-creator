@@ -1,7 +1,7 @@
 //! Speculative runs (cl-1123 D; Paul, 11-17: "or even start running the run, as if the current stuff entered into the text-box were
 //! the final request, and cancel it and re-submit it if the input changes. This assumes that we can cancel quickly and that running
 //! prematurely has no consequence (if the machine is empty, that's likely true)"). A guess (`ahead::drafts`) loaded on a GPU
-//! (`gpu_service::Pool::loaded`) whose draft has stood unchanged `STILL`, while no call wants a GPU, runs as the call it predicts
+//! (`gpu_service::Pool::item_loaded`) whose draft has stood unchanged `STILL`, while no call wants a GPU, runs as the call it predicts
 //! under an id of its own (`ahead::SPECULATIVE`): no job, never listed, its outputs held here. A call sent as that request adopts it
 //! (`adopt`): one going goes on as the call, one finished is the call's at once. An edit ends it (`dropped`), and so does a call of
 //! any other request (`gpu_service::Pool::yield_to`): its executor told to stop at its next step, its GPU the call's at once; once the
@@ -139,7 +139,7 @@ fn look(runs: &Arc<Runs>) -> Option<Instant> {
         // whose weights go elsewhere.
         let spec = &draft.spec;
         let call = spec.kind == v1::RunKind::Call && spec.inputs.is_empty() && spec.weights_destination.is_empty() && spec.set.is_none();
-        if !call || !pool.loaded(&actor, &caller) {
+        if !call || !pool.item_loaded(&actor, &caller) {
             continue;
         }
         if let Some(attempt) = attempts.get(&(actor.clone(), draft.key.clone())) {

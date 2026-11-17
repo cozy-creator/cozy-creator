@@ -159,7 +159,7 @@ impl Pool {
     }
 
     /// `actor`'s item `caller` is on a GPU now, its on-demand models built: a speculative run of it builds and loads nothing.
-    pub(crate) fn loaded(&self, actor: &str, caller: &str) -> bool {
+    pub(crate) fn item_loaded(&self, actor: &str, caller: &str) -> bool {
         let item = self.ahead.items.lock().unwrap().iter().find(|item| item.predicted.actor == actor && item.predicted.caller == caller).cloned();
         item.is_some_and(|item| self.on_gpu(&item) == Some(true))
     }
