@@ -32,9 +32,8 @@ def say(**row: object) -> None:
     print(json.dumps(row), flush=True)
 
 
-def safetensors(directory: str) -> dict[str, bytes]:
-    """Every tensor's bytes in a Hugging Face folder's safetensors files."""
-    out: dict[str, bytes] = {}
+def safetensors(directory: str):
+    """Each tensor's name and bytes in a Hugging Face folder's safetensors files, one at a time."""
     for name in sorted(os.listdir(directory)):
         if not name.endswith(".safetensors"):
             continue
@@ -47,8 +46,7 @@ def safetensors(directory: str) -> dict[str, bytes]:
                     continue
                 start, stop = info["data_offsets"]
                 f.seek(base + start)
-                out[key] = f.read(stop - start)
-    return out
+                yield key, f.read(stop - start)
 
 
 def main() -> int:
@@ -60,14 +58,18 @@ def main() -> int:
     failed = 0
 
     # The source: llama.cpp converts the same bytes as the commit holds.
-    held = safetensors(hf)
-    same = [k for k in held if k in source and source.read(k).tobytes() == held[k]]
-    missing = sorted(set(held) - set(source))
-    differ = sorted(set(held) & set(source) - set(same))
-    say(check="source", hf_tensors=len(held), commit_tensors=len(source), identical=len(same), differ=differ[:10],
+    seen, same, missing, differ = 0, 0, [], []
+    for key, raw in safetensors(hf):
+        seen += 1
+        if key not in source:
+            missing.append(key)
+        elif source.read(key).tobytes() == raw:
+            same += 1
+        else:
+            differ.append(key)
+    say(check="source", hf_tensors=seen, commit_tensors=len(source), identical=same, differ=differ[:10],
         missing=missing[:10])  # fmt: skip
     failed += bool(differ or missing)
-    del held
 
     n_layer = int(text["num_hidden_layers"])
     k_heads, v_heads = int(text["linear_num_key_heads"]), int(text["linear_num_value_heads"])
