@@ -6,11 +6,11 @@
 # execution time: minimax-h3-tools' echo (published, no model), and Qwen3.5 on the real 0.8B (published, a model held): `write`
 # (words from words) and `caption` (a new picture each repeat, as boxes on a page are captioned). Each repeat asks something new,
 # so none is answered from the memo. On this computer's machine the median of each is under OVERHEAD_MS; on another computer's
-# (overhead_far), under OVERHEAD_MS plus OVERHEAD_TRIPS round trips of its link.
+# (overhead_far), under OVERHEAD_MS plus OVERHEAD_TRIPS round trips of its link: one sends the run and brings its outcome back.
 OVERHEAD_MS=${OVERHEAD_MS:-300}
 OVERHEAD_N=${OVERHEAD_N:-10}
 OVERHEAD_RTT_MS=${OVERHEAD_RTT_MS:-100}
-OVERHEAD_TRIPS=${OVERHEAD_TRIPS:-2}
+OVERHEAD_TRIPS=${OVERHEAD_TRIPS:-1}
 run_overhead() {
 [ -n "$LOCAL" ] || return 0
 step "a warm run's time outside its compute (cl-1172)"
