@@ -444,6 +444,8 @@ for _ in $(seq 120); do
   J '.state == "ready"' "$OUT/pre-disk-up.json" && break
   sleep 1
 done
+# Its last use three days ago, well before anything the guesses bring: least recently used by any reckoning but a guess's.
+sudo find "$mnt/uses" -maxdepth 1 -type f -exec touch -d '3 days ago' {} + || check "prefetch disk: pre-ask's use wasn't made older"
 pre_project "$P" "$name" || { pre_disk_end; return 0; }
 # A guess's environment that takes a while: the wheel it needs comes at 2 MiB/s.
 python3 "$here/project/slowinstall/wheel.py" "$OUT/slow-wheel" $((2 << 20)) > "$OUT/slow-wheel.log" 2>&1 &
@@ -524,12 +526,18 @@ done
 [ "$after" -le $((before + (16 << 20))) ] || check "prefetch disk: a guess that doesn't fit wrote $(((after - before) >> 20)) MiB on a disk 150 MiB past its reserve"
 ! J '.ready == true' <<< "${row:-null}" || check "prefetch disk: pre-b's box says ready on $name, which has no room for its transformer"
 project_api "$P" /assets/bounded -X DELETE > "$OUT/pre-disk-delete.json" 2>&1 || check "prefetch disk: the bounded box wasn't deleted"
-# A request makes room: what only a guess brought goes first.
+# A request makes room: what only a guess brought goes first. Each use the store keeps, when last used, beside its checkpoint's name.
+pre_machine "$name" "$OUT/pre-disk-uses.json"
+sudo find "$mnt/uses" -maxdepth 1 -type f -printf '%TY-%Tm-%Td %TH:%TM %f\n' 2> /dev/null | while read -r day time digest; do
+  echo "prefetch disk: use $day $time ${digest:0:12} $(jq -r --arg d "$digest" '[.status.models[]? | select([.checkpoints[]? | .manifest, .tree] | map(tostring) | any(contains($d))) | .repository] | first // "?"' "$OUT/pre-disk-uses.json" 2> /dev/null)"
+done
 n=$(run_submit "$OUT" pre-req model install e2e/pre-req --on "$name")
 { [ -n "$n" ] && run_wait "$OUT" pre-req && [ "$(run_get "$OUT" pre-req .status)" = completed ]; } \
   || { check "prefetch disk: model install e2e/pre-req on $name: $(run_get "$OUT" pre-req .reason.message | head -c 300)"; pre_disk_end; return 0; }
 pre_machine "$name" "$OUT/pre-disk-made-room.json"
 echo "prefetch disk: once e2e/pre-req came: pre-ask $(pre_held "$OUT/pre-disk-made-room.json" e2e/pre-ask), pre-a $(pre_held "$OUT/pre-disk-made-room.json" e2e/pre-a), pre-req $(pre_held "$OUT/pre-disk-made-room.json" e2e/pre-req)"
+pre_log "$name" "$OUT/pre-disk-room.tensord.log"
+{ grep -E "evicted|dropped|freed|making room|downloads ended" "$OUT/pre-disk-room.tensord.log" || true; } | cut -c1-260 | tail -8 | sed 's/^/prefetch disk: /'
 J '[.status.models[]? | select(.repository == "e2e/pre-ask") | .checkpoints[]?.complete] | any' "$OUT/pre-disk-made-room.json" \
   || check "prefetch disk: e2e/pre-ask, which a call read, went to make room while e2e/pre-a, which only a guess brought, stayed: $(pre_held "$OUT/pre-disk-made-room.json" e2e/pre-a)"
 for _ in $(seq 40); do
