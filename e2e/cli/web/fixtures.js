@@ -6,7 +6,7 @@
 const { test: base, expect } = require('@playwright/test');
 const { execFile } = require('child_process');
 const { createHash, randomBytes } = require('crypto');
-const { appendFileSync, readFileSync, rmSync, writeFileSync } = require('fs');
+const { appendFileSync, copyFileSync, readFileSync, rmSync, writeFileSync } = require('fs');
 const { homedir, loadavg } = require('os');
 const { basename, join } = require('path');
 const { DARK_OPEN, MP4, photo, png, wav } = require('./media');
@@ -295,6 +295,12 @@ const test = base.extend({
     const folders = [];
     await use(folders);
     testInfo.annotations.push({ type: 'load', description: loadavg()[0].toFixed(2) });
+    // A failed cell keeps each project's walk log (Calcifer's diagnostics, on for the web lanes): what it planned, quoted and installed.
+    if (testInfo.status !== testInfo.expectedStatus) {
+      for (const [i, folder] of folders.entries()) {
+        try { copyFileSync(join(folder, '.vault-calcifer', 'diagnostics', 'walk.log'), testInfo.outputPath(`walk-${i}.log`)); } catch {}
+      }
+    }
     for (const folder of folders) await removeFolder(folder);
   }, { auto: true }],
 
