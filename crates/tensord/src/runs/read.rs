@@ -1255,6 +1255,7 @@ impl Log {
                     gpus: gpu["gpus"].as_array().into_iter().flatten().filter_map(|g| g.as_u64()).map(|g| g as u32).collect(),
                     width: gpu["width"].as_u64().unwrap_or_default() as u32,
                     behind: gpu["behind"].as_str().unwrap_or_default().into(),
+                    left_ms: gpu["left_ms"].as_u64().unwrap_or_default(),
                 }),
                 None => v1::Event::Log(v1::LogLine {
                     level: body["level"].as_str().unwrap_or("info").into(),

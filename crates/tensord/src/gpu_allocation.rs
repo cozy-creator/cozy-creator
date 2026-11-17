@@ -8,7 +8,8 @@
 //! flight and their families finish (nothing is preempted), then its lane ends and it queues
 //! again at its own place. A root that released (or yielded) its lane comes back at its place
 //! among the waiting ones and never displaces a holder. A call's family may call where it
-//! calls: a call waiting on its child shares its GPU with it.
+//! calls: a call waiting on its child shares its GPU with it. A root's width is chosen until its
+//! first lane binds (`choose`, cl-1187), and kept from then on.
 use std::{
     collections::BTreeMap,
     ops::Range,
@@ -51,6 +52,10 @@ struct Root {
     started: bool,
     /// The blocker its newest reported wait named, until it binds.
     reported: Option<Option<u64>>,
+    /// While open, about how long until it starts, ms, as `choose` last said (None: not known); and in whole minutes as its newest
+    /// reported wait said it, which a change of reports again.
+    wait_ms: Option<u64>,
+    told: Option<u64>,
     holders: usize,
 }
 /// A root's lane, or the request it waits behind and what holds it. `new`: the first answer
@@ -76,6 +81,11 @@ pub(crate) struct Permit {
     table: Arc<Allocations>,
     devices: Range<usize>,
     hint: bool,
+}
+
+/// A wait in whole minutes, nearest, as a person is told it.
+fn minutes(wait_ms: Option<u64>) -> Option<u64> {
+    wait_ms.map(|ms| (ms + 30_000) / 60_000)
 }
 
 impl Table {
@@ -125,7 +135,7 @@ impl Table {
     fn bind(&mut self, root: u64, lane: Range<usize>) {
         lane.clone().for_each(|d| self.gpus[d].root = Some(root));
         let entry = self.roots.get_mut(&root).expect("a registered root");
-        (entry.lane, entry.released, entry.started, entry.reported) = (Some(lane), false, true, None);
+        (entry.lane, entry.released, entry.started, entry.reported, entry.wait_ms) = (Some(lane), false, true, None, None);
     }
 }
 
@@ -146,7 +156,7 @@ impl Allocations {
         let mut table = self.table.lock().unwrap();
         let width = width.clamp(1, table.gpus.len().max(1));
         table.roots.entry(root)
-            .or_insert(Root { width, lane: None, released: false, started: false, reported: None, holders: 0 })
+            .or_insert(Root { width, lane: None, released: false, started: false, reported: None, wait_ms: None, told: None, holders: 0 })
             .holders += 1;
         Hold { table: self.clone(), root }
     }
@@ -166,6 +176,26 @@ impl Allocations {
     /// A registered root's width (0: none).
     pub(crate) fn width(&self, root: u64) -> usize {
         self.table.lock().unwrap().roots.get(&root).map_or(0, |r| r.width)
+    }
+    /// A registered root that has never held a lane: its width is still the machine's to choose (`choose`).
+    pub(crate) fn open(&self, root: u64) -> bool {
+        self.table.lock().unwrap().roots.get(&root).is_some_and(|r| !r.started && r.lane.is_none())
+    }
+    /// `root`'s width, while it is open, as its first step goes (cl-1187: the machine's packing, by the soonest finish), and about
+    /// how long it waits for it. Either changed (the wait by a minute), its next wait is reported with it.
+    pub(crate) fn choose(&self, root: u64, width: usize, wait_ms: Option<u64>) {
+        let mut table = self.table.lock().unwrap();
+        let width = width.clamp(1, table.gpus.len().max(1));
+        if let Some(entry) = table.roots.get_mut(&root).filter(|r| !r.started && r.lane.is_none()) {
+            if entry.width != width || minutes(wait_ms) != entry.told {
+                entry.reported = None;
+            }
+            (entry.width, entry.wait_ms) = (width, wait_ms);
+        }
+    }
+    /// About how long open `root` waits for its GPUs, ms, as `choose` last said; None: not known.
+    pub(crate) fn wait_ms(&self, root: u64) -> Option<u64> {
+        self.table.lock().unwrap().roots.get(&root).and_then(|r| r.wait_ms)
     }
     /// Keep the lane `root` would take from later requests in this pass; the request it waits
     /// behind.
@@ -239,6 +269,9 @@ impl Allocations {
         }
         let entry = table.roots.get_mut(&root).expect("a registered root");
         let new = entry.reported.replace(behind) != Some(behind);
+        if new {
+            entry.told = minutes(entry.wait_ms);
+        }
         drop(table);
         if !yielded.is_empty() {
             self.freed();

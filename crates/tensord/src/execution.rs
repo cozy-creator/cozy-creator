@@ -677,6 +677,10 @@ impl Engine {
     pub(crate) fn fetched(&self, id: &str, from: u64, to: u64) -> io::Result<()> {
         self.journal.lock().unwrap().fetched(id, from, to)
     }
+    /// See `Journal::set_width`.
+    pub(crate) fn set_width(&self, id: &str, width: u32) -> io::Result<()> {
+        self.journal.lock().unwrap().set_width(id, width)
+    }
     /// See `Journal::needs`.
     pub(crate) fn needs(&self, id: &str, account: crate::journal::Account) -> io::Result<()> {
         self.journal.lock().unwrap().needs(id, account)

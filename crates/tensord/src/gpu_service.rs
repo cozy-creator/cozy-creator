@@ -2675,6 +2675,15 @@ impl Pool {
             engine: Arc::downgrade(engine),
         })
     }
+    /// Whether root `root` holds GPUs whose width is still to be chosen: it never bound a lane (`Allocations::open`).
+    pub(crate) fn open(&self, root: u64) -> bool {
+        self.allocations.open(root)
+    }
+    /// Root `root`'s width as the machine packs its queue now, while it is open, and about how long it waits for it
+    /// (`Allocations::choose`).
+    pub(crate) fn choose(&self, root: u64, width: u32, wait_ms: Option<u64>) {
+        self.allocations.choose(root, width as usize, wait_ms);
+    }
     /// `Context.release_gpus()` of a root: its lane ends now; its next step queues again at
     /// its original place.
     pub(crate) fn release(&self, engine: &Engine, root: u64) {
@@ -2704,6 +2713,10 @@ impl Pool {
             crate::gpu_allocation::Lane::Held { lane, new } => {
                 if new {
                     self.note_gpus(engine, root, "grant", lane.clone(), None);
+                    // Its width, chosen as this call went (cl-1187): what its later calls are prepared at and its time is counted at.
+                    if let Err(error) = engine.set_width(&root.to_string(), lane.len() as u32) {
+                        tracing::warn!(root, "its width was not kept: {error}");
+                    }
                 }
                 Ok(lane)
             }
@@ -2744,8 +2757,11 @@ impl Pool {
         let request = |seq: u64| engine.get(&seq.to_string()).ok()
             .and_then(|record| record.submission.map(|s| s.request_id)).unwrap_or_default();
         let width = self.allocations.width(root);
-        let body = serde_json::json!({"gpu": {"state": state, "gpus": gpus.collect::<Vec<_>>(),
+        let mut body = serde_json::json!({"gpu": {"state": state, "gpus": gpus.collect::<Vec<_>>(),
             "width": width, "behind": behind.map(request).unwrap_or_default()}});
+        if let Some(left) = self.allocations.wait_ms(root).filter(|_| state == "wait") {
+            body["gpu"]["left_ms"] = left.max(1).into();
+        }
         if let Err(error) = engine.append_gpu(&root.to_string(), &body) {
             tracing::warn!("gpu allocation entry: {error}");
         }
@@ -2877,9 +2893,13 @@ impl Pool {
         let root = record.root_seq();
         if plan.degree == 0 {
             if !admit()? { return Ok(false); }
+            // Its widest in service, until its first call binds its lane at the width the machine's packing then gives it (cl-1187):
+            // what its calls prepared before that fit within. A speculative run (cl-1123 D) isn't packed: its narrowest, as before.
+            let widths = &record.invocation.widths;
+            let widest = widths.iter().copied().filter(|width| *width as usize <= self.serving_width()).max();
             let width = match record.invocation.gpus {
-                // Unpacked (its queue's packing failed), its narrowest width.
-                0 => width.or_else(|| record.invocation.widths.first().copied())
+                0 => (widest.filter(|_| !record.invocation.background))
+                    .or_else(|| widths.first().copied())
                     .unwrap_or_else(|| held.record.widest_group(self.serving_width()).min(1)) as usize,
                 gpus => gpus as usize,
             };
@@ -2919,6 +2939,14 @@ impl Pool {
         let plan = match width.filter(|_| record.invocation.parent.is_empty() && record.invocation.gpus == 0) {
             Some(width) => plan.at(width)?,
             None => plan,
+        };
+        // A call prepared before its root's lane was bound narrower (cl-1187) takes the widest group it declares there.
+        let plan = match &lane {
+            Some(lane) if plan.degree as usize > lane.len() && !plan.slots.is_empty() => {
+                let entry = api::interface::entrypoint(&held.record.interface, &record.invocation.entrypoint);
+                plan.at(entry.map_or(1, |entry| self.degree(entry, lane.len() as u32)))?
+            }
+            _ => plan,
         };
         if let Some(why) = self.unservable(lane.clone(), plan.degree as usize) {
             engine.fail_unstarted(&record.id, "gpu_lost", why)?;

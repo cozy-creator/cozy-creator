@@ -588,14 +588,21 @@ impl Runs {
         Ok(Drafted::New(Box::new(draft), references))
     }
 
-    /// The GPUs `run`'s root took as it started; 0: none, or not yet.
+    /// The GPUs `run`'s root took; 0: none, or not yet, as while the machine has yet to choose them (cl-1187): its call then takes
+    /// its widest, fitted to its root's lane as it binds.
     fn root_width(&self, run: &str) -> u32 {
         let engine = &self.service.engine;
         let Ok(record) = engine.get(run) else { return 0 };
-        match record.invocation.root.as_str() {
-            "" => record.width,
-            root => engine.get(root).map_or(0, |root| root.width),
-        }
+        let root = match record.invocation.root.as_str() {
+            "" => record,
+            root => match engine.get(root) {
+                Ok(root) => root,
+                Err(_) => return 0,
+            },
+        };
+        let open = crate::estimate::chooses(&root) && !root.invocation.background
+            && self.service.pool().is_some_and(|pool| pool.open(root.root_seq()));
+        if open { 0 } else { root.width }
     }
 
     /// Prepare accepted run `run` on a thread of its own, which ends the run unless it binds.

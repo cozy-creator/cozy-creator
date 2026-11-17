@@ -205,9 +205,17 @@ pub(crate) fn roots(service: &Service) -> io::Result<Vec<Root>> {
     Ok(roots)
 }
 
-/// Each waiting root's width as it would start, of those the machine chooses for (`chooses`), from the same picture Calcifer
-/// quotes by.
-pub(crate) fn widths(service: &Service, pool: &crate::gpu_service::Pool) -> io::Result<HashMap<String, u32>> {
+/// A waiting root's width as the machine packs its queue now, and about how long until it starts, ms; None: not known, as a run it
+/// waits for has never been timed here.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Start {
+    pub width: u32,
+    pub wait_ms: Option<u64>,
+}
+
+/// Each waiting root's start, of those the machine chooses for (`chooses`), from the same picture Calcifer quotes by: a root queued,
+/// or an orchestrator whose calls have yet to take its GPUs (cl-1187).
+pub(crate) fn widths(service: &Service, pool: &crate::gpu_service::Pool) -> io::Result<HashMap<String, Start>> {
     let roots = roots(service)?;
     let mut times = HashMap::new();
     for root in roots.iter().filter(|root| !root.queued.function.is_empty()) {
@@ -232,7 +240,7 @@ pub(crate) fn widths(service: &Service, pool: &crate::gpu_service::Pool) -> io::
     let (jobs, _) = machine.queue(&queued);
     let placed = estimate::pack(machine.gpus, &jobs);
     Ok((roots.into_iter().zip(jobs).zip(placed))
-        .filter(|((root, job), place)| job.running.is_none() && !root.queued.running && root.queued.chooses && place.width > 0)
-        .map(|((root, _), place)| (root.id, place.width))
+        .filter(|((root, job), place)| job.running.is_none() && root.queued.chooses && place.width > 0)
+        .map(|((root, _), place)| (root.id, Start { width: place.width, wait_ms: place.known.then_some(place.start_ms.max(0.0) as u64) }))
         .collect())
 }

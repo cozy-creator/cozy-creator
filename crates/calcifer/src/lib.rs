@@ -2663,21 +2663,29 @@ impl Calcifer {
                         machine_at_ms = frame.at_ms);
                     batch.products.push(product);
                 }
-                // Waiting for GPUs another run holds, named by its number; granted, it waits no more.
+                // Waiting for GPUs another run holds, named by its number, and about how long as its machine times it (cl-1187: Paul
+                // read a 96 s wait as a hang); granted, it waits no more. Its log says the wait once, its status each new minute.
                 Frame::Gpu(gpu) if gpu.state == "wait" => {
                     let gpus = match gpu.width {
                         1 => "a GPU".to_owned(),
                         n => format!("{n} GPUs"),
                     };
+                    // No run: the machine's own work holds them (a load ahead, which yields to it, or warming).
                     let holder = match self.with_run_store(&gpu.behind, |store| store.run(&gpu.behind)) {
+                        _ if gpu.behind.is_empty() => "the machine's own work".to_owned(),
                         Ok(Some(holder)) => self.named_for(&holder, id.as_str()),
                         _ => "another run".to_owned(),
                     };
                     let reason = format!("waiting for {gpus}, held by {holder}");
+                    let left = match gpu.left_ms {
+                        0 => "how long isn't known yet".to_owned(),
+                        ms if ms < 60_000 => "under a minute".to_owned(),
+                        ms => format!("about {} min", (ms + 30_000) / 60_000),
+                    };
                     if self.wait_said(id, &reason) {
-                        batch.logs.push((frame.at_ms, "stage".into(), reason.clone()));
+                        batch.logs.push((frame.at_ms, "stage".into(), format!("{reason}, {left}")));
                     }
-                    self.waiting(id, reason);
+                    self.waiting(id, format!("{reason}, {left}"));
                 }
                 Frame::Gpu(gpu) => {
                     if gpu.state == "grant" {
