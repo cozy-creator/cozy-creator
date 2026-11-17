@@ -169,6 +169,25 @@ git_url() {
     || check "git url: the tool list doesn't list $id from git+$repo@$now#subdirectory=$boxed: '${said:-nothing}' $(jq -c '[.tools[]? | select(.source // "" | startswith("git+")) | .id]' "$OUT/git-tools.json" 2> /dev/null | head -c 300)"
 }
 
+# held_wheel_describe: whether the Runtime under test reads a pinned callee wheel the machine holds in place of its URL (cozy-runtime
+# #2229, cl-1127), by its source: the candidate wheel, else the one local runs. 0.26.0's Runtime (ca841fe72) doesn't: local code that
+# calls a Hub package describes only with the Hub up there. One it can't read is judged.
+HELD_PROBED=''
+held_wheel_describe() {
+  local wheel=${CAND_RT:-}
+  [ -f "$wheel" ] || wheel=$(ls "$HOME"/.cozy/machine/root/var/lib/cozy/tensord/sdk/current/cozy_runtime-*.whl 2> /dev/null | head -1) || wheel=
+  HELD_PROBED=${wheel##*/}
+  [ -f "$wheel" ] || return 0
+  python3 -I - "$wheel" <<'PY'
+import sys, zipfile
+try:
+    source = zipfile.ZipFile(sys.argv[1]).read("cozy_runtime/internal/locked_sources.py").decode()
+except (KeyError, OSError, zipfile.BadZipFile):
+    sys.exit(0)
+sys.exit(0 if "self.held" in source else 1)
+PY
+}
+
 # hub_down_install (cl-1127; Paul, 11-17: "if tensorhub is down, or unable to be reached, ideally the host machine (here) should be able
 # to, on a remote machine, give it a package from our local machine"): e2e-relay, an account's release whose lock takes minimax-h3-tools
 # from the root's index, installed on local with the Hub up, so this computer holds it; then with the Hub down, installed on a stand-in
@@ -204,12 +223,16 @@ hub_down_install() {
   (cd "$RUN_PROJECT" && timeout 900 "$COZY" --json run "$E2E_RELAY/relay" "text=hub down" --on "$m") > "$OUT/hdi-run.ndjson" 2> "$OUT/hdi-run.err" \
     && grep -q '"text": *"hub down"' "$OUT/hdi-run.ndjson" && grep -q '"release": *"0.1.0"' "$OUT/hdi-run.ndjson" \
     || check "hub down install: with the Hub down, $E2E_RELAY/relay on $m didn't answer minimax-h3-tools 0.1.0's echo: $(hd_said "$OUT/hdi-run.ndjson" "$OUT/hdi-run.err")"
-  hd_relay "$OUT/hdi-code" hdi_code
-  (cd "$RUN_PROJECT" && timeout 900 "$COZY" --json run "$OUT/hdi-code/relay" "text=hub down code" --on "$m") > "$OUT/hdi-code.ndjson" 2> "$OUT/hdi-code.err" \
-    && grep -q '"text": *"hub down code"' "$OUT/hdi-code.ndjson" && grep -q '"release": *"0.1.0"' "$OUT/hdi-code.ndjson" \
-    || check "hub down install: with the Hub down, local code calling minimax-h3-tools didn't lock, install, describe and run on $m: $(hd_said "$OUT/hdi-code.ndjson" "$OUT/hdi-code.err")"
-  grep -q 'registry = "http[^"]*/v1/index/_/simple/"' "$OUT/hdi-code/uv.lock" 2> /dev/null \
-    || check "hub down install: the lock made with the Hub down doesn't name the root's index as the Hub's would: $(grep -m1 'registry' "$OUT/hdi-code/uv.lock" 2> /dev/null)"
+  if held_wheel_describe; then
+    hd_relay "$OUT/hdi-code" hdi_code
+    (cd "$RUN_PROJECT" && timeout 900 "$COZY" --json run "$OUT/hdi-code/relay" "text=hub down code" --on "$m") > "$OUT/hdi-code.ndjson" 2> "$OUT/hdi-code.err" \
+      && grep -q '"text": *"hub down code"' "$OUT/hdi-code.ndjson" && grep -q '"release": *"0.1.0"' "$OUT/hdi-code.ndjson" \
+      || check "hub down install: with the Hub down, local code calling minimax-h3-tools didn't lock, install, describe and run on $m: $(hd_said "$OUT/hdi-code.ndjson" "$OUT/hdi-code.err")"
+    grep -q 'registry = "http[^"]*/v1/index/_/simple/"' "$OUT/hdi-code/uv.lock" 2> /dev/null \
+      || check "hub down install: the lock made with the Hub down doesn't name the root's index as the Hub's would: $(grep -m1 'registry' "$OUT/hdi-code/uv.lock" 2> /dev/null)"
+  else
+    echo "hub down install: local code calling a Hub package: not applicable, the Runtime under test ($HELD_PROBED) lacks cozy-runtime #2229's held-wheel describe"
+  fi
   hub_back hdi
   timeout 120 "$COZY" --json machine end "$m" --force -y > "$OUT/$m-end.json" 2>&1 || true
 }

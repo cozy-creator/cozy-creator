@@ -41,7 +41,7 @@ import { clipOf, wire } from "./timeline/model"
 import { PageHistory, type Target } from "./history"
 import { comingOff, goingOn, holdsPictures, readsBox, startsFrom, type ToolStep, wontGoOn } from "./toolchange"
 import { isSelf, mentionFrom, numbersOf, SELF, versionIn, versionOf } from "./versions"
-import { mergeValue, same, spliceOf, wordsChanged } from "./words"
+import { endTrimmed, mergeValue, same, spliceOf, wordsChanged } from "./words"
 import { plainProject } from "../app/view"
 
 /** The body width in this geometry publication; the node width may be an opened envelope. */
@@ -2280,8 +2280,11 @@ export class CanvasStore {
       const base = from.get(field)
       if (!base || base.sent === undefined) continue
       const view = name ? this.views.get(name) : undefined
-      if (name && view && !same(merged, base.sent)) {
-        const onto = (local: unknown) => mergeValue(base.sent, local, merged)
+      // What was sent as Calcifer keeps it: the space it cuts after the last word is no one's edit. Taken for one, it was merged into what
+      // was typed since, and a space typed there went (e2e 44122550502: "A " sent, then "Aharbour at dusk.").
+      const kept = endTrimmed(base.sent)
+      if (name && view && !same(merged, kept)) {
+        const onto = (local: unknown) => mergeValue(kept, local, merged)
         const sent = view.sent && field in view.sent ? { sent: { ...view.sent, [field]: onto(view.sent[field]) } } : {}
         const drafts = view.drafts && field in view.drafts ? { drafts: { ...view.drafts, [field]: onto(view.drafts[field]) } } : {}
         this.patch(name, { ...sent, ...drafts })
