@@ -417,7 +417,8 @@ impl Machines {
             return outcome;
         };
         let want = wanted(&row.spec);
-        let m = match self.show(name).await {
+        // Boxed, as the run drivers' futures are (`refloored`).
+        let m = match Box::pin(self.came_back(name, &want)).await {
             Ok(machine) => machine,
             Err(error) if want.iter().any(|(field, _)| *field == "mode") => {
                 outcome.status = "failed".into();
@@ -459,6 +460,29 @@ impl Machines {
             ..Default::default()
         });
         outcome
+    }
+}
+
+/// How long an update's outcome waits for its machine to come back from the restart the update ends with.
+const BACK: std::time::Duration = std::time::Duration::from_secs(180);
+
+impl Machines {
+    /// `name` once the restart its update ends with is over: read again as what's known of it changes, until it runs `want` or
+    /// `BACK` passed, and the last read stands. Read at once, a machine still restarting answered nothing, and an update of its
+    /// mode failed `update_unapplied` (cl-1123, pod-session 44042599506).
+    async fn came_back(self: &Arc<Self>, name: &str, want: &[(&str, Value)]) -> Result<Machine, Error> {
+        let mut changes = self.calcifer.machine_watch(name);
+        let deadline = tokio::time::Instant::now() + BACK;
+        loop {
+            let read = self.show(name).await;
+            let back = read.as_ref().is_ok_and(|m| m.unreachable.is_none() && runs(&m.status.clone().unwrap_or_default(), want));
+            let now = tokio::time::Instant::now();
+            if back || now >= deadline {
+                return read;
+            }
+            // What it says next, or a look again soon: a machine coming back says nothing until its stream opens again.
+            let _ = tokio::time::timeout((deadline - now).min(std::time::Duration::from_secs(5)), changes.changed()).await;
+        }
     }
 }
 
