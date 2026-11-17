@@ -55,6 +55,25 @@ fails, notes = [], []
 # Cells gate.sh stopped after N sampler steps (stop_cell, xs-208): canceled there on purpose, with no output and no
 # whole-run time. Judged on what they ran: the steps, peak VRAM, kernels and their suite's checks.
 STOPPED_TSV = os.path.join(out, 'stopped.tsv')
+# The steps a run's own events said (its sampler's progress), for a stopped run whose record carries no measurements: TensorD
+# keeps none for a canceled call (varena 44058261623: s6-sdxl-1 said step 6 of 30, and its record holds no attribution).
+SAMPLER_STAGES = ('denoise', 'generating image', 'refine', 'step', 'generate')
+
+
+def said_steps(name: str) -> int:
+    most = 0
+    for line in open(os.path.join(out, name + '.ndjson'), errors='replace') if os.path.exists(os.path.join(out, name + '.ndjson')) else ():
+        if '"run.progress"' not in line:
+            continue
+        try:
+            p = json.loads(line).get('progress') or {}
+        except ValueError:
+            continue
+        if str(p.get('stage', '')).split(' / ')[-1] in SAMPLER_STAGES and (p.get('total') or 0) > 0:
+            most = max(most, int(p.get('completed') or 0))
+    return most
+
+
 STOPPED: dict[str, int] = {l.split('\t')[0]: int(l.split('\t')[1]) for l in open(STOPPED_TSV) if '\t' in l} if os.path.exists(STOPPED_TSV) else {}
 
 
@@ -117,11 +136,11 @@ for name, target, number in cells:
     if run is None or not (run.status == 'completed' or stopped):
         fails.append(f'{name}: run {number} {run and run.status} {run and run.reason or None}')
         continue
-    if stopped and len(run.steps) < STOPPED[name]:
-        fails.append(f'{name}: run {number} stopped after {len(run.steps)} of the {STOPPED[name]} steps it was to run')
+    if stopped and max(len(run.steps), said_steps(name)) < STOPPED[name]:
+        fails.append(f'{name}: run {number} stopped after {max(len(run.steps), said_steps(name))} of the {STOPPED[name]} steps it was to run')
         continue
     if stopped:
-        notes.append(f'{name}: stopped after step {len(run.steps)}, as asked ({STOPPED[name]})')
+        notes.append(f'{name}: stopped after step {max(len(run.steps), said_steps(name))}, as asked ({STOPPED[name]})')
     runs[name] = run
     # A run completes even when the test it ran failed: its own verdict is the cell's.
     if isinstance(run.result, dict) and run.result.get('passed') is False:
