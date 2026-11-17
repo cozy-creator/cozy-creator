@@ -19,7 +19,7 @@ source "$HERE/suites/execution/multi-gpu/h3-carried.sh"
 # `pod_derived`), so both start cold. Their seeds differ: the machine's call memo answers the same request again from its
 # first run whatever its GPUs (--gpus is not part of a computation, by design), as 44056226690's 2-GPU twin was. So here
 # two GPUs are held to being faster; that their frames are the one-GPU run's (the CPU suite's two-rank bar, at most 0.5 of
-# 255 in the worst frame) needs the twin on another machine of the card (design/release-tests-v2.md, flow B).
+# 255 in the worst frame) waits on a way to clear the call memo (tracker cl-1156); then the twin renders here on the same seed.
 one_two() {
   local g line said=() req=(references:="$H3REF" prompt="<$NAME> $MOTION One take, rendered twice." duration_s:=5)
   [ -z "$ONLY" ] || [[ $ONLY == *",h3-gpus-1,"* || $ONLY == *",h3-gpus-2,"* ]] || return 0
