@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
-use reqwest::header::{ACCEPT, HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::{ACCEPT, ETAG, HeaderMap, HeaderName, HeaderValue, IF_NONE_MATCH};
 use reqwest::{Method, Request, RequestBuilder, Response, StatusCode};
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -385,6 +385,21 @@ impl Client {
         let request = self.at(Method::GET, "/v1/packages", &[]);
         self.json(request.query(&[("q", q)]).query(&[("limit", limit), ("offset", offset)]))
             .await
+    }
+
+    /// A page of the whole catalog, asked only if it changed since the answer `etag` names (cl-1174): none when the Hub says it
+    /// didn't (304). Its ETag beside it; a Hub that sends none (before th-401) answers each page whole.
+    pub async fn catalog_page(&self, limit: u32, offset: u32, etag: Option<&str>) -> Result<Option<(PackageSearch, Option<String>)>, Error> {
+        let mut request = self.at(Method::GET, "/v1/packages", &[]).query(&[("limit", limit), ("offset", offset)]);
+        if let Some(etag) = etag {
+            request = request.header(IF_NONE_MATCH, etag);
+        }
+        let response = self.send(request).await?;
+        if response.status() == StatusCode::NOT_MODIFIED {
+            return Ok(None);
+        }
+        let etag = response.headers().get(ETAG).and_then(|value| value.to_str().ok()).map(str::to_owned);
+        Ok(Some((read(response).await?, etag)))
     }
 
     pub async fn get_package(&self, org: &str, name: &str) -> Result<PackageCard, Error> {

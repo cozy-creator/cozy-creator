@@ -122,7 +122,7 @@ function ProjectSync({ id }: { id: string }) {
       asked.current.add(ask)
       // Local code is listed only once something names it, so the list is read again. Anything else can be searched for.
       if (/^[./~\\]|^\w:[\\/]/.test(tool)) void queries.invalidateQueries({ queryKey: ["tools"] })
-      else client.tools(tool.split("/").slice(0, -1).join(" "), null, id).then(({ tools }) => store.addTools(tools), () => {})
+      else client.tools(tool.split("/").slice(0, -1).join(" "), id).then(({ tools }) => store.addTools(tools), () => {})
     }
   }, [store, client, id, queries, state, tools])
   // Gone (its folder deleted, say): said on the canvas (`Unread`) as anything else that stops it being read is, and the page stays where it is
@@ -495,12 +495,10 @@ function Canvas({
   // What can't be read says so on the canvas, and everything around it still works. One already read stays while Calcifer's away.
   const gone = useGone(projectId)
   const { data: read, error } = useQuery({ ...projectQuery(client, stream, projectId ?? ""), enabled: Boolean(projectId) && !gone })
-  // Which machine's packages a list leads with. The list waits to know, or it would be asked for twice, each a wait on the Hub.
-  const machines = useMachines(store, read?.machines ?? [])
-  const machine = machines?.at(-1) ?? null
+  useMachines(store, read?.machines ?? [])
   const unread = gone ? { gone } : error && !(read && lost(error)) ? { error } : null
   const readable = unread ? null : projectId
-  const { data: listed } = useQuery({ ...toolsQuery(client, "", machine, readable), enabled: machines !== null })
+  const { data: listed } = useQuery(toolsQuery(client, "", readable))
 
   useEffect(() => {
     // A project opened here for the first time is fitted, once. Either way the viewport is kept, so a reload finds it.
@@ -981,8 +979,6 @@ function Canvas({
     <CanvasStoreProvider value={store}>
       <ToolPanel
         project={readable}
-        machine={machine}
-        waiting={machines === null}
         shut={shut}
         setShut={(next) => {
           if (store.focusedName.get()) return

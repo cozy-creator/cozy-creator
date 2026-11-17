@@ -83,11 +83,11 @@ export const projectViewQuery = (client: Client, stream: EventStream, id: string
     },
   })
 
-/** Read once, and again only when Calcifer says it changed (`tools.changed`, cl-1126). */
-export const toolsQuery = (client: Client, q: string, on: string | null, project: string | null) =>
+/** Read once, and again only when Calcifer says it changed (`tools.changed`, cl-1126): one list for every machine (cl-1174). */
+export const toolsQuery = (client: Client, q: string, project: string | null) =>
   queryOptions({
-    queryKey: ["tools", q, on, project],
-    queryFn: ({ signal }) => client.tools(q, on, project, signal),
+    queryKey: ["tools", q, project],
+    queryFn: ({ signal }) => client.tools(q, project, signal),
     placeholderData: keepPreviousData,
   })
 

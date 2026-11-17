@@ -455,21 +455,40 @@ impl Listing {
     }
 }
 
-/// The tools of every package `hub` lists with a release, each at its newest.
+/// The tools of every package `hub` lists with a release, each at its newest. Each page of the catalog is asked only if it changed
+/// since the one kept (cl-1174: `If-None-Match`); one the Hub says didn't is the kept one.
 async fn every_tool(api: &Arc<Api>, hub: &str) -> Result<Arc<Vec<Tool>>, Error> {
     let reader = api.machines.hubs.reader(hub)?;
-    let mut wanted = vec![];
+    let root = api.machines.hubs.home().root();
+    let kept = cards::kept_pages(root, hub);
+    let (mut wanted, mut pages, mut unchanged) = (vec![], vec![], 0);
     loop {
-        let page = reader.search_packages_page(None, MOST_BROWSED, wanted.len() as u32).await.map_err(cards::refusal)?;
-        let read = page.packages.len();
-        wanted.extend(page.packages.into_iter().map(|row| (format!("{}/{}", row.org, row.name), row.latest_release)));
-        if read == 0 || wanted.len() as i64 >= page.search.total {
+        let offset = wanted.len() as u32;
+        let held = kept.iter().find(|page| page.offset == offset);
+        let page = match reader.catalog_page(MOST_BROWSED, offset, held.map(|page| page.etag.as_str())).await.map_err(cards::refusal)? {
+            Some((page, etag)) => cards::Page {
+                offset,
+                etag: etag.unwrap_or_default(),
+                rows: page.packages.into_iter().map(|row| (format!("{}/{}", row.org, row.name), row.latest_release)).collect(),
+                total: page.search.total,
+            },
+            None => {
+                unchanged += 1;
+                held.cloned().ok_or_else(|| Error::new(Kind::Unavailable, "hub_answer_invalid", format!("{hub} said its catalog was unchanged, asked nothing")))?
+            }
+        };
+        let (read, total) = (page.rows.len(), page.total);
+        wanted.extend(page.rows.iter().cloned());
+        pages.push(page);
+        if read == 0 || wanted.len() as i64 >= total {
             break;
         }
     }
+    tracing::info!(hub, pages = pages.len(), unchanged, packages = wanted.len(), "catalog read");
     let released: Vec<(String, String)> = wanted.into_iter().filter_map(|(package, release)| Some((package, release?))).collect();
     let tools = Arc::new(read_all(api, hub, released.clone()).await);
-    cards::keep_listed(api.machines.hubs.home().root(), hub, &released);
+    pages.retain(|page| !page.etag.is_empty());
+    cards::keep_listed(root, hub, &released, &pages);
     Ok(tools)
 }
 
