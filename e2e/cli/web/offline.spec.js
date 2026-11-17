@@ -153,8 +153,9 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
   });
 
   let moved;
-  // The two files dropped while it's away have their bytes held back until the reconnect's first reads are in, so the drops' turns come
-  // after those reads (e2e 44027468586: a picture dropped on a box renamed offline was never sent once they had, and nothing said so).
+  // The two files dropped while it's away have their bytes held back as Calcifer starts, until the reconnect's first reads are in, so the
+  // drops' turns come after those reads (e2e 44027468586: a picture dropped on a box renamed offline was never sent once they had, and
+  // nothing said so).
   let releaseDrops;
   const dropsHeld = new Promise((release) => { releaseDrops = release; });
   const hold = (bytes) => page.route(`**/v1/project-files/sha256:${createHash('sha256').update(bytes).digest('hex')}*`, async (route) => { await dropsHeld; await route.continue(); });
@@ -200,8 +201,6 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
     await expect.soft(take, 'the approval shows at once').toHaveAttribute('aria-current', 'true', AT_ONCE);
     await leave(page, region);
 
-    await hold(LATE);
-    await hold(JOINED);
     await drop(page, 'late.png', LATE, await openPoint(page));
     await expect(page.getByRole('textbox', { name: 'Name' })).toBeFocused();
     await page.keyboard.press('Enter');
@@ -238,10 +237,12 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
   });
 
   await test.step('Calcifer started (cozy machine ls)', async () => {
+    await hold(LATE);
+    await hold(JOINED);
     await calciferControl.start();
-    await back();
     await expect.poll(() => readsBegan.some((began) => began > renamedAt), { message: 'the page read the project after its rename landed', timeout: 30_000 }).toBe(true);
     releaseDrops();
+    await back();
     const landed = async () => {
       const assets = Object.fromEntries((await project.assets()).map((asset) => [asset.name, asset]));
       const { cards } = await api.get(project.at('/canvas'));
