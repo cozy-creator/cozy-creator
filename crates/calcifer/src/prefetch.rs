@@ -381,6 +381,7 @@ impl Lists {
                 stage: (!ended).then(|| match ops.first() {
                     Some(op) if op.kind == "install" => "installing it".to_owned(),
                     Some(op) => format!("downloading {}", op.subject),
+                    None if run.readiness.as_ref().is_some_and(|ready| ready.stage == "planning") => "planning it".to_owned(),
                     None => "preparing it".to_owned(),
                 }),
                 // How far its machine says it is (cl-1123), else what its downloads there come to.
@@ -630,14 +631,9 @@ async fn put(machines: &Arc<Machines>, machine: &str, hubs: Vec<String>, upcomin
         v1::Predicted { spec: v1::RunSpec { hub, owner, ..item.spec }, ..item }
     };
     let accessed = began.elapsed().as_millis();
-    let answer = link.upcoming(&v1::Upcoming { jobs: upcoming.into_iter().map(with).collect() }).await.map_err(|e| e.to_string())?;
-    for refused in answer.items.iter().filter_map(|item| item.refusal.as_ref()) {
-        warn!(machine, "an upcoming job won't be ready ahead: {}", refused.message);
-    }
-    let answer = link.prepare(&v1::Prepare { items: prepare.into_iter().map(with).collect() }).await.map_err(|e| e.to_string())?;
-    for refused in answer.items.iter().filter_map(|item| item.refusal.as_ref()) {
-        warn!(machine, "a guess won't be ready ahead: {}", refused.message);
-    }
+    // Each is taken at once and admitted behind the answer: one refused says so in its readiness (cl-1123).
+    link.upcoming(&v1::Upcoming { jobs: upcoming.into_iter().map(with).collect() }).await.map_err(|e| e.to_string())?;
+    link.prepare(&v1::Prepare { items: prepare.into_iter().map(with).collect() }).await.map_err(|e| e.to_string())?;
     tracing::info!(target: TARGET, "lists put on {machine} in {} ms ({accessed} ms for their access)", began.elapsed().as_millis());
     Ok(())
 }

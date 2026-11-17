@@ -481,9 +481,8 @@ async fn listed(m: Machine, headers: HeaderMap, prefix: &'static str, items: Vec
     }
     let admitted = m.admit()?;
     let actor = caller.actor;
-    let answer = m.call(move |runs| crate::ahead::put(runs, actor, prefix, items)).await?;
-    drop(admitted);
-    Ok(json(StatusCode::OK, &answer))
+    m.call(move |runs| crate::ahead::put(runs, actor, prefix, items, admitted)).await?;
+    Ok(StatusCode::ACCEPTED.into_response())
 }
 
 

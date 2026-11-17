@@ -727,10 +727,11 @@ pub struct RunState {
     pub readiness: Option<Readiness>,
 }
 
-/// How ready a machine is for a predicted request (cl-1123): `installing`, `downloading`, `ready` (its weights here), `loading`
+/// How ready a machine is for a predicted request (cl-1123): `planning` (its request not planned yet), `installing`, `downloading`,
+/// `ready` (its weights here), `loading`
 /// (its executor starting and its weights going onto a GPU), `loaded` (they are there: its first step loads nothing), `evicted`
 /// (a run took that GPU memory since), `running`, `done`. `done`/`total` count what the stage counts, in bytes; `reason` says why
-/// it stops where it is.
+/// it stops where it is (`refused`: the machine won't make it ready, and why).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
@@ -968,13 +969,6 @@ pub struct Predicted {
     /// The caller's name for it: an upcoming job's key, the one its run is sent under.
     pub key: String,
     pub spec: RunSpec,
-}
-
-/// What a list came to: each item as a run would be admitted, in its order.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct AheadAnswer {
-    pub items: Vec<Admitted>,
 }
 
 // ---- Estimate -------------------------------------------------------------------------------

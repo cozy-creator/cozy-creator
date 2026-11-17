@@ -64,6 +64,12 @@ static PREDICTED: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(Mutex
 /// Each listed item's extras still coming once its needs landed (`extras`), by its run's id: a list that drops it ends them.
 static EXTRAS: LazyLock<Mutex<HashMap<String, Stop>>> = LazyLock::new(Mutex::default);
 
+/// Each list's newest put, by caller and list (`put`): an older one its admission hasn't reached is never admitted.
+static PUTS: LazyLock<Mutex<HashMap<List, u64>>> = LazyLock::new(Mutex::default);
+
+/// Listed items not yet admitted, by their run's id, and why its admission refused one (`admit`): their Status until their runs say.
+static PLANNING: LazyLock<Mutex<HashMap<String, Option<String>>>> = LazyLock::new(Mutex::default);
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -121,7 +127,15 @@ pub(crate) fn guess(id: &str) -> bool {
 
 /// Replaces `actor`'s list under `prefix` with `items`, in their order: each new one admitted as a warm run, each it drops canceled,
 /// once what replaced it is in the download line when anything did.
-pub(crate) fn put(runs: &Arc<Runs>, actor: VerifiedActor, prefix: &'static str, items: Vec<v1::Predicted>) -> Result<v1::AheadAnswer, Error> {
+/// A list put, answered at once (cl-1123: 44082666492's took 1.27 s, most of an edit's way to its first byte): what it names and drops
+/// is noted now, and its items are admitted behind the answer (`admit`), `planning` in Status until they are.
+pub(crate) fn put(
+    runs: &Arc<Runs>,
+    actor: VerifiedActor,
+    prefix: &'static str,
+    items: Vec<v1::Predicted>,
+    admission: crate::machine::lifecycle::Admission,
+) -> Result<(), Error> {
     let mut identities = vec![];
     let requests: Vec<v1::RunRequest> = (items.into_iter())
         .map(|v1::Predicted { key, spec }| {
@@ -139,7 +153,8 @@ pub(crate) fn put(runs: &Arc<Runs>, actor: VerifiedActor, prefix: &'static str, 
         })
         .collect();
     let ids: Vec<String> = requests.iter().map(|request| request.id.clone()).collect();
-    lock(&LISTED).insert((crate::runs::actor_id(actor), prefix), ids.clone());
+    let list = (crate::runs::actor_id(actor), prefix);
+    lock(&LISTED).insert(list.clone(), ids.clone());
     // What no list names any more is weighed no more.
     let named: Vec<String> = lock(&LISTED).values().flatten().cloned().collect();
     lock(&NEEDS).retain(|id, _| named.contains(id));
@@ -156,29 +171,93 @@ pub(crate) fn put(runs: &Arc<Runs>, actor: VerifiedActor, prefix: &'static str, 
         }
         named
     });
-    let dropped: Vec<String> = runs.live_ids(actor)?.into_iter().filter(|id| id.starts_with(prefix) && !ids.contains(id)).collect();
+    {
+        let mut planning = lock(&PLANNING);
+        planning.retain(|id, _| named.contains(id));
+        for id in &ids {
+            planning.entry(id.clone()).or_insert(None);
+        }
+    }
+    let put = {
+        let mut puts = lock(&PUTS);
+        let put = puts.entry(list.clone()).or_default();
+        *put += 1;
+        *put
+    };
+    let runs = runs.clone();
+    std::thread::Builder::new()
+        .name(format!("list-{}", prefix.trim_end_matches(':').rsplit(':').next().unwrap_or(prefix)))
+        .spawn(move || admit(&runs, actor, list, put, requests, ids, admission))
+        .map_err(|error| Error::internal("list_unadmitted", error.to_string()))?;
+    Ok(())
+}
+
+/// List put `put`'s items admitted, one put at a time, unless a newer put of its list came since (which admits its own, and drops
+/// what this one would have). Its admission holds the machine's release meanwhile.
+fn admit(runs: &Arc<Runs>, actor: VerifiedActor, list: List, put: u64, requests: Vec<v1::RunRequest>, ids: Vec<String>, admission: crate::machine::lifecycle::Admission) {
+    static ADMITTING: Mutex<()> = Mutex::new(());
+    let _one = lock(&ADMITTING);
+    if lock(&PUTS).get(&list) != Some(&put) {
+        return;
+    }
+    let began = std::time::Instant::now();
+    let prefix = list.1;
+    let dropped: Vec<String> = match runs.live_ids(actor) {
+        Ok(live) => live.into_iter().filter(|id| id.starts_with(prefix) && !ids.contains(id)).collect(),
+        Err(error) => {
+            tracing::warn!("{prefix} list: its runs weren't read: {}", error.message);
+            return;
+        }
+    };
     // Noted before any is admitted: one in line at once is heard.
-    static PUTS: AtomicU64 = AtomicU64::new(0);
-    let put = PUTS.fetch_add(1, Ordering::Relaxed);
-    lock(&HANDED).push(Handed { put, actor, dropped, waiting: ids.clone() });
+    static HANDOVERS: AtomicU64 = AtomicU64::new(0);
+    let handover = HANDOVERS.fetch_add(1, Ordering::Relaxed);
+    lock(&HANDED).push(Handed { put: handover, actor, dropped, waiting: ids.clone() });
     let admitted = runs.accept(actor, requests);
+    drop(admission);
     // Only an item new now takes over what a dropped one fetched: any other is in line already, or never will be.
     let new: Vec<&String> = match &admitted {
         Ok(admitted) => ids.iter().zip(admitted).filter(|(_, admitted)| matches!(admitted, Ok((true, _)))).map(|(id, _)| id).collect(),
         Err(_) => vec![],
     };
     settle(runs, |handed| {
-        if let Some(handed) = handed.iter_mut().find(|handed| handed.put == put) {
+        if let Some(handed) = handed.iter_mut().find(|handed| handed.put == handover) {
             handed.waiting.retain(|id| new.contains(&id));
         }
     });
-    let items = (admitted?.into_iter())
-        .map(|admitted| match admitted {
-            Ok((created, state)) => v1::Admitted { created, state: Some(state), refusal: None },
-            Err(error) => v1::Admitted { refusal: Some(error), ..Default::default() },
-        })
-        .collect();
-    Ok(v1::AheadAnswer { items })
+    let mut planning = lock(&PLANNING);
+    let refused = |planning: &mut HashMap<String, Option<String>>, id: &String, why: &str| {
+        tracing::warn!("list item {id} won't be ready ahead: {why}");
+        if let Some(held) = planning.get_mut(id) {
+            *held = Some(why.to_owned());
+        }
+    };
+    match admitted {
+        Ok(admitted) => {
+            for (id, admitted) in ids.iter().zip(admitted) {
+                match admitted {
+                    Ok(_) => drop(planning.remove(id)),
+                    Err(error) => refused(&mut *planning, id, &error.message),
+                }
+            }
+        }
+        Err(error) => ids.iter().for_each(|id| refused(&mut *planning, id, &error.message)),
+    }
+    tracing::info!("{prefix} list: {} items admitted in {} ms", ids.len(), began.elapsed().as_millis());
+}
+
+/// To `states` (the runs of `listed`), each listed item not yet admitted, `planning`; one its admission refused, failed and why.
+pub(crate) fn planning(listed: &[String], states: &mut Vec<v1::RunState>) {
+    let planning = lock(&PLANNING);
+    for id in listed.iter().filter(|id| !states.iter().any(|state| &state.id == *id)) {
+        let Some(refused) = planning.get(id) else { continue };
+        let (state, stage) = match refused {
+            Some(_) => ("failed", "refused"),
+            None => ("queued", "planning"),
+        };
+        let readiness = v1::Readiness { stage: stage.to_owned(), reason: refused.clone().unwrap_or_default(), ..Default::default() };
+        states.push(v1::RunState { id: id.clone(), state: state.to_owned(), readiness: Some(readiness), ..Default::default() });
+    }
 }
 
 /// The run its caller names `id` has what it reads in the download line, or ended: what a list dropped for it and its like ends now.
@@ -278,16 +357,22 @@ pub(crate) fn standing(store: &crate::storage::Store, busy: bool, mut states: Ve
 }
 
 /// Each list item's readiness up to `ready` (cl-1123), from its run's state (`standing`) and what `activity` lists under its id:
-/// `installing` until it has its code and its plan, `downloading` while what it needs comes (bytes), `ready` once its run made it
-/// ready, `evicted` once that went. One the load step says more of keeps that; one that failed or was canceled says so in its state.
+/// `planning` until its request is planned (`planning` before it is admitted), `installing` while its code installs, `downloading`
+/// while what it needs comes (bytes), `ready` once its run made it ready, `evicted` once that went. One the load step says more of
+/// keeps that; one that failed or was canceled says so in its state.
 pub(crate) fn progress(states: &mut [v1::RunState], activity: &[v1::Operation]) {
+    let planned = lock(&NEEDS);
     for state in states.iter_mut().filter(|state| state.readiness.is_none()) {
-        let downloads: Vec<&v1::Operation> = activity.iter().filter(|op| op.kind == "download" && op.runs.iter().any(|run| *run == state.id)).collect();
+        let id = state.id.clone();
+        let under = |kind: &str| activity.iter().filter(|op| op.kind == kind && op.runs.iter().any(|run| *run == id)).collect::<Vec<&v1::Operation>>();
+        let downloads = under("download");
         let (stage, done, total) = match state.state.as_str() {
             "succeeded" => ("ready", 0, 0),
             "evicted" => ("evicted", 0, 0),
             "failed" | "canceled" => continue,
             _ if !downloads.is_empty() => ("downloading", downloads.iter().map(|op| op.bytes_done).sum(), downloads.iter().map(|op| op.bytes_total).sum()),
+            _ if !under("install").is_empty() => ("installing", 0, 0),
+            _ if !planned.contains_key(&id) => ("planning", 0, 0),
             _ => ("installing", 0, 0),
         };
         state.readiness = Some(v1::Readiness { stage: stage.to_owned(), done, total, ..Default::default() });

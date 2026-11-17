@@ -250,13 +250,13 @@ impl Machine {
     }
 
     /// This key's upcoming jobs here, nearest first, replacing its last list (cl-967).
-    pub(crate) async fn upcoming(&self, list: &api::machine::Upcoming) -> Result<api::machine::AheadAnswer, Error> {
-        json(send(self.request(Method::PUT, path::UPCOMING, &[]).json(list)).await?).await
+    pub(crate) async fn upcoming(&self, list: &api::machine::Upcoming) -> Result<(), Error> {
+        send(self.request(Method::PUT, path::UPCOMING, &[]).json(list)).await.map(|_| ())
     }
 
     /// What this key expects demand for here with no job yet, replacing its last set (cl-967).
-    pub(crate) async fn prepare(&self, list: &api::machine::Prepare) -> Result<api::machine::AheadAnswer, Error> {
-        json(send(self.request(Method::PUT, path::PREPARE, &[]).json(list)).await?).await
+    pub(crate) async fn prepare(&self, list: &api::machine::Prepare) -> Result<(), Error> {
+        send(self.request(Method::PUT, path::PREPARE, &[]).json(list)).await.map(|_| ())
     }
 
     /// The runs this key reads, newest first, before the run numbered `before` (0: the newest).
