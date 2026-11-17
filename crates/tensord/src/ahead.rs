@@ -152,6 +152,7 @@ pub(crate) fn put(runs: &Arc<Runs>, actor: VerifiedActor, prefix: &'static str, 
         let named = named.contains(id);
         if !named {
             stop.cancel();
+            tracing::info!("list item {id} dropped: its extras stop downloading");
         }
         named
     });
@@ -199,9 +200,14 @@ fn settle(runs: &Runs, change: impl FnOnce(&mut Vec<Handed>)) {
     for Handed { actor, dropped, .. } in done.into_iter().filter(|handed| !handed.dropped.is_empty()) {
         // One that ended meanwhile is left as it ended.
         let live = runs.live_ids(actor).unwrap_or_default();
-        for id in dropped.iter().filter(|id| live.contains(id)) {
-            if let Err(error) = runs.cancel(actor, id) {
-                tracing::warn!("a list's dropped item {id} wasn't canceled: {}", error.message);
+        for id in &dropped {
+            if !live.contains(id) {
+                tracing::info!("list item {id} dropped: its run had ended");
+                continue;
+            }
+            match runs.cancel(actor, id) {
+                Ok(_) => tracing::info!("list item {id} dropped: its run ends, and what only it wanted stops downloading"),
+                Err(error) => tracing::warn!("a list's dropped item {id} wasn't canceled: {}", error.message),
             }
         }
     }
