@@ -2,10 +2,11 @@
 #   1. the model's bf16 commit pulled onto the pod, then each lane written from it by the packages checkout's recipe (qwen3's
 #      q8_0 and q4_k_m: `ggml.*` encodings by TensorFS's ggml-ref/1, no GGUF and no scratch file);
 #   2. on the pod over ssh (fixtures/ggml-ingest/pod.sh): stock llama.cpp <llama> (its llama-quantize built for the CPU,
-#      unpatched), the Hugging Face checkpoint `hf`, its bf16 GGUF and llama-quantize's Q8_0 and Q4_K_M of it;
+#      unpatched), the Hugging Face checkpoint `hf`, its bf16 GGUF and llama-quantize's file of each lane's type and of
+#      each `pure` type (--pure: every tensor in that type);
 #   3. fixtures/ggml-ingest/compare.py: the Hugging Face tensors equal the bf16 commit's, then every tensor llama-quantize
 #      quantized equals ours in type and bytes (after the converter's own row moves; ssm_out by ggml-ref/1 of its moved
-#      columns). Any difference fails.
+#      columns), and every tensor of a --pure file equals ggml-ref/1 of the same source. Any difference fails.
 # The pod runs this session's cozy as its TensorD and the candidate TensorFS and Runtime (`tensorfs`, `runtime`: wheel
 # sources as lib.sh `wheel_from` takes them). Commits stay private.
 # packages_refs: one checkout (`tree`). params:
@@ -13,6 +14,8 @@
 #   model     the bf16 commit, org/name@sha256:… (required)
 #   hf        the Hugging Face repo it was ingested from (Qwen/Qwen3.5-9B)
 #   lanes     comma-separated lanes (q8_0,q4_k_m); the GGUF type each compares with is its name upper-cased
+#   pure      comma-separated llama-quantize types (Q5_0,Q5_1,Q5_K_S) made with --pure: every tensor llama-quantize
+#             quantizes in that one type, each compared with ggml-ref/1 of the same source, no lane written
 #   llama     llama.cpp's tag (b12466) and llama_sha256 its source archive's digest
 #   tensorfs, runtime   wheel sources (required)
 #   have      space-separated lane=org/name@sha256:… already written: pulled, not quantized again
@@ -21,7 +24,7 @@
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/ggml-ingest
 TREE=$(param tree '') PACKAGE=$(param package qwen3) MODEL=$(param model '') HFREPO=$(param hf Qwen/Qwen3.5-9B)
-LANES=$(param lanes q8_0,q4_k_m) LLAMA=$(param llama b12466)
+LANES=$(param lanes q8_0,q4_k_m) PURE=$(param pure '') LLAMA=$(param llama b12466)
 LLAMA_SUM=$(param llama_sha256 d81544fe1f31f2539f3610486eb10e7fe606d88da9d1f85a54c310bc7ac75af7)
 [ -n "$TREE" ] && [ -f "$PACKAGES/$TREE/$PACKAGE/pyproject.toml" ] || fail "no $PACKAGE in packages_refs checkout '$TREE'"
 [[ $MODEL == */*@sha256:* ]] || fail "model must be org/name@sha256:<bf16 commit>"
@@ -44,13 +47,16 @@ there() { timeout "${2:-600}" cozy machine ssh "$NAME" -- "$1"; }
 there "mkdir -p /w/out" < /dev/null || fail "ssh"
 there "cat > /w/pod.sh" < "$FIX/pod.sh" && there "cat > /w/compare.py" < "$FIX/compare.py" &&
   there "cat > /w/${TENSORFS##*/}" < "$TENSORFS" || fail "copy the fixtures to the pod"
-there "bash /w/pod.sh $LLAMA $LLAMA_SUM $HFREPO > /w/out/pod.out 2>&1" 7200 < /dev/null & LLAMA_PID=$!
+IFS=, read -ra lanes <<<"$LANES"
+IFS=, read -ra pure <<<"$PURE"
+types=("${lanes[@]^^}")
+for t in "${pure[@]}"; do types+=("pure:$t"); done
+there "bash /w/pod.sh $LLAMA $LLAMA_SUM $HFREPO ${types[*]} > /w/out/pod.out 2>&1" 10800 < /dev/null & LLAMA_PID=$!
 
 # 1. Ours.
 step pull model install "$MODEL" --on "$NAME" || fail "pull $MODEL"
 declare -A REF
 for pair in $(param have ''); do REF[${pair%%=*}]=${pair#*=}; done
-IFS=, read -ra lanes <<<"$LANES"
 for lane in "${lanes[@]}"; do
   if [ -n "${REF[$lane]:-}" ]; then
     step "pull-$lane" model install "${REF[$lane]}" --on "$NAME" || fail "pull $lane ${REF[$lane]}"
@@ -70,9 +76,10 @@ there "cat /w/out/pod.log" < /dev/null | tee -a "$R"
 # 3. Compared.
 args=()
 for lane in "${lanes[@]}"; do args+=("$lane=${REF[$lane]}:/w/${lane^^}.gguf"); done
+for t in "${pure[@]}"; do args+=("pure:$t=/w/pure-$t.gguf"); done
 there "export PATH=\$HOME/.local/bin:\$PATH; uv pip install -q -p /w/py/bin/python /w/${TENSORFS##*/} &&
-  PYTHONPATH=/w/src/gguf-py /w/py/bin/python /w/compare.py /w/hf /var/lib/tensorfs $MODEL ${args[*]}" 3600 \
+  PYTHONPATH=/w/src/gguf-py /w/py/bin/python /w/compare.py /w/hf /var/lib/tensorfs $MODEL ${args[*]}" 7200 \
   < /dev/null > "$OUT/compare.jsonl" 2> "$OUT/compare.err"; code=$?
 sed 's/^/    /' "$OUT/compare.jsonl" >> "$R"
 [ "$code" = 0 ] || { tail -c 2000 "$OUT/compare.err" | tee -a "$R"; fail "our lanes differ from llama-quantize's (compare.jsonl)"; }
-say "PASS: ${LANES} byte for byte llama-quantize's ($LLAMA) on $HFREPO"
+say "PASS: ${LANES}${PURE:+ and --pure $PURE} byte for byte llama-quantize's ($LLAMA) on $HFREPO"

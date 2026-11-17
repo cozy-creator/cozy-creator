@@ -1,22 +1,29 @@
-"""ggml-ingest, on the pod: our ggml lanes against llama-quantize's GGUFs of the same source, tensor by tensor.
+"""ggml-ingest, on the pod: our ggml lanes and TensorFS's ggml-ref/1 against llama-quantize's GGUFs of the same source.
 
-    compare.py <hf dir> <store dir> <bf16 ref> <lane>=<ref>:<gguf> ...
+    compare.py <hf dir> <store dir> <bf16 ref> <lane>=<ref>:<gguf> ... pure:<TYPE>=<gguf> ...
 
 First the source: every tensor of the Hugging Face checkpoint llama.cpp converted equals the bf16 commit's, byte for
-byte. Then each lane: every tensor llama-quantize quantized against ours, its type and its block bytes. llama.cpp's
-converter reorders and merges some of Qwen3.5's (`_LinearAttentionVReorderBase`): `attn_qkv_gate` is `in_proj_qkv` (its
-V rows reordered) then `in_proj_z` (reordered), `ssm_beta_alpha` is `in_proj_b` then `in_proj_a` (reordered), each row
-quantized alone, so ours compare after the same row moves. `ssm_out` is `out_proj` with its columns reordered, which
-moves elements between blocks: ours is checked to be TensorFS's ggml-ref/1 of `out_proj` as stored, and ggml-ref/1 of
-those columns reordered against llama's. One JSON line per check; exit 1 on any difference.
+byte (a fused expert stack against the commit's experts in order). Then each lane: every tensor llama-quantize
+quantized against ours, its type and its block bytes. Then each `--pure` GGUF: every tensor llama-quantize quantized
+against ggml-ref/1 of the same source values, so each block type is proven, not only the ones a mix picks.
+
+llama.cpp's converter moves some of Qwen3.5's rows (`_LinearAttentionVReorderBase`): `in_proj_qkv`'s V rows, `in_proj_z`,
+`in_proj_b` and `in_proj_a` are reordered from grouped to tiled V heads; the dense converter merges `in_proj_qkv` with
+`in_proj_z` (`attn_qkv_gate`) and `in_proj_b` with `in_proj_a` (`ssm_beta_alpha`); a routed expert's weights stack per
+layer, a fused gate and up split in two. Each row is quantized alone, so ours compare after the same row moves.
+`ssm_out` is `out_proj` with its columns reordered, which moves elements between blocks: ours is checked to be ggml-ref/1
+of `out_proj` as stored, and ggml-ref/1 of those columns reordered against llama's. One JSON line per check; exit 1 on
+any difference.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import struct
 import sys
+from collections.abc import Iterator
 
 import numpy as np
 import tensorfs
@@ -26,13 +33,21 @@ from tensorfs import raw
 TYPES = {"Q8_0": ("q8_0", 32), "Q4_K": ("q4_k", 256), "Q5_K": ("q5_k", 256), "Q6_K": ("q6_k", 256),
          "Q5_0": ("q5_0", 32), "Q5_1": ("q5_1", 32)}  # fmt: skip
 FLOAT = {"F32", "F16", "BF16"}
+LAYER = {"attn_q.weight": "self_attn.q_proj.weight", "attn_k.weight": "self_attn.k_proj.weight",
+         "attn_v.weight": "self_attn.v_proj.weight", "attn_output.weight": "self_attn.o_proj.weight",
+         "ffn_gate.weight": "mlp.gate_proj.weight", "ffn_up.weight": "mlp.up_proj.weight",
+         "ffn_down.weight": "mlp.down_proj.weight", "ffn_gate_shexp.weight": "mlp.shared_expert.gate_proj.weight",
+         "ffn_up_shexp.weight": "mlp.shared_expert.up_proj.weight",
+         "ffn_down_shexp.weight": "mlp.shared_expert.down_proj.weight"}  # fmt: skip
+
+type Piece = tuple[str, np.ndarray | None]
 
 
 def say(**row: object) -> None:
     print(json.dumps(row), flush=True)
 
 
-def safetensors(directory: str):
+def safetensors(directory: str) -> Iterator[tuple[str, bytes]]:
     """Each tensor's name and bytes in a Hugging Face folder's safetensors files, one at a time."""
     for name in sorted(os.listdir(directory)):
         if not name.endswith(".safetensors"):
@@ -50,7 +65,7 @@ def safetensors(directory: str):
 
 
 def main() -> int:
-    hf, store, bf16_ref, *lanes = sys.argv[1:]
+    hf, store, bf16_ref, *specs = sys.argv[1:]
     config = json.load(open(os.path.join(hf, "config.json")))
     text = config.get("text_config", config)
     open_ = lambda ref: tensorfs.open(ref, local_files_only=True, cache_dir=store)  # noqa: E731
@@ -59,11 +74,21 @@ def main() -> int:
 
     # The source: llama.cpp converts the same bytes as the commit holds.
     seen, same, missing, differ = 0, 0, [], []
-    for key, raw in safetensors(hf):
+    for key, data in safetensors(hf):
         seen += 1
-        if key not in source:
+        fused = re.fullmatch(r"(.*\.mlp\.experts)\.(gate_up|down)_proj(?:\.weight)?", key)
+        if key in source:
+            ours_bytes = source.read(key).tobytes()
+        elif fused:
+            parts = [f"{fused.group(1)}.{e}.{fused.group(2)}_proj.weight" for e in range(int(text["num_experts"]))]
+            if not all(p in source for p in parts):
+                missing.append(key)
+                continue
+            ours_bytes = b"".join(source.read(p).tobytes() for p in parts)
+        else:
             missing.append(key)
-        elif source.read(key).tobytes() == raw:
+            continue
+        if ours_bytes == data:
             same += 1
         else:
             differ.append(key)
@@ -72,6 +97,7 @@ def main() -> int:
     failed += bool(differ or missing)
 
     n_layer = int(text["num_hidden_layers"])
+    n_expert = int(text.get("num_experts", 0) or 0)
     k_heads, v_heads = int(text["linear_num_key_heads"]), int(text["linear_num_value_heads"])
     k_dim, v_dim = int(text["linear_key_head_dim"]), int(text["linear_value_head_dim"])
 
@@ -79,8 +105,11 @@ def main() -> int:
         """`_reorder_v_heads`'s permutation of `n` rows: grouped by K head to tiled."""
         return np.arange(n).reshape(k_heads, v_heads // k_heads, head_dim).transpose(1, 0, 2).reshape(-1)
 
-    def ours(name: str) -> tuple[list[tuple[str, np.ndarray | None]], bool]:
-        """llama.cpp's tensor as ours: (key, row permutation or None) in its row order; True for ssm_out's columns."""
+    qk = 2 * k_heads * k_dim
+    qkv_rows = np.concatenate([np.arange(qk), qk + heads(v_heads * v_dim, v_dim)])
+
+    def ours(name: str) -> tuple[list[Piece], bool]:
+        """llama.cpp's tensor as ours: (key, row index or None) in its row order; True for ssm_out's columns."""
         if name == "token_embd.weight":
             return [("model.language_model.embed_tokens.weight", None)], False
         if name == "output.weight":
@@ -90,76 +119,118 @@ def main() -> int:
         if rest == "nextn.eh_proj.weight":
             return [("mtp.fc.weight", None)], False
         p = f"model.language_model.layers.{b}." if b < n_layer else f"mtp.layers.{b - n_layer}."
-        if rest == "attn_qkv_gate.weight":
-            qk = 2 * k_heads * k_dim
-            qkv = np.concatenate([np.arange(qk), qk + heads(v_heads * v_dim, v_dim)])
-            return [(p + "linear_attn.in_proj_qkv.weight", qkv),
-                    (p + "linear_attn.in_proj_z.weight", heads(v_heads * v_dim, v_dim))], False  # fmt: skip
-        if rest == "ssm_beta_alpha.weight":
-            return [(p + "linear_attn.in_proj_b.weight", heads(v_heads, 1)),
-                    (p + "linear_attn.in_proj_a.weight", heads(v_heads, 1))], False  # fmt: skip
+        la = p + "linear_attn."
+        z, beta = heads(v_heads * v_dim, v_dim), heads(v_heads, 1)
+        moved: dict[str, list[Piece]] = {
+            "attn_qkv_gate.weight": [(la + "in_proj_qkv.weight", qkv_rows), (la + "in_proj_z.weight", z)],
+            "ssm_beta_alpha.weight": [(la + "in_proj_b.weight", beta), (la + "in_proj_a.weight", beta)],
+            "attn_qkv.weight": [(la + "in_proj_qkv.weight", qkv_rows)],
+            "attn_gate.weight": [(la + "in_proj_z.weight", z)],
+            "ssm_beta.weight": [(la + "in_proj_b.weight", beta)],
+            "ssm_alpha.weight": [(la + "in_proj_a.weight", beta)],
+        }
+        if rest in moved:
+            return moved[rest], False
         if rest == "ssm_out.weight":
-            return [(p + "linear_attn.out_proj.weight", None)], True
-        table = {"attn_q.weight": "self_attn.q_proj.weight", "attn_k.weight": "self_attn.k_proj.weight",
-                 "attn_v.weight": "self_attn.v_proj.weight", "attn_output.weight": "self_attn.o_proj.weight",
-                 "ffn_gate.weight": "mlp.gate_proj.weight", "ffn_up.weight": "mlp.up_proj.weight",
-                 "ffn_down.weight": "mlp.down_proj.weight"}  # fmt: skip
-        return [(p + table[rest], None)], False
+            return [(la + "out_proj.weight", None)], True
+        if m := re.fullmatch(r"ffn_(gate|up|down)_exps\.weight", rest):
+            pieces: list[Piece] = []
+            for e in range(n_expert):
+                own = f"{p}mlp.experts.{e}.{m.group(1)}_proj.weight"
+                if own in source or m.group(1) == "down":
+                    pieces.append((own, None))
+                    continue
+                fused = f"{p}mlp.experts.{e}.gate_up_proj.weight"
+                half = int(source[fused].shape[0]) // 2
+                pieces.append((fused, np.arange(half) + (half if m.group(1) == "up" else 0)))
+            return pieces, False
+        return [(p + LAYER[rest], None)], False
 
-    for spec in lanes:
-        lane, rest = spec.split("=", 1)
-        ref, path = rest.rsplit(":", 1)
-        tensors = open_(ref).components["model"].tensors
+    def values(pieces: list[Piece], columns: bool) -> np.ndarray:
+        """The f32 matrix llama.cpp's converter wrote for these pieces."""
+        rows = []
+        for key, index in pieces:
+            v = (np.frombuffer(source.read(key).tobytes(), np.uint16).astype(np.uint32) << 16).view(np.float32)
+            v = v.reshape(int(source[key].shape[0]), -1)
+            rows.append(v if index is None else v[index])
+        whole = np.concatenate(rows) if len(rows) > 1 else rows[0]
+        return np.ascontiguousarray(whole[:, heads(v_heads * v_dim, v_dim)] if columns else whole)
+
+    def ref(name: str, block: int, matrix: np.ndarray) -> bytes:
+        """ggml-ref/1 of `matrix` in `name`, 4096 rows at a time (rows encode alone)."""
+        out = []
+        for at in range(0, matrix.shape[0], 4096):
+            part = matrix[at : at + 4096]
+            encoded = raw.quantize(f"ggml.{name}", part.tobytes(), dtype="BF16", shape=list(part.shape),
+                                   strategy="ggml-ref/1", params={"block_size": block})  # fmt: skip
+            out.append(encoded.parts["blocks"].tobytes())
+        return b"".join(out)
+
+    def differs(tensor: str, name: str, got: bytes, want: bytes) -> dict[str, object] | None:
+        if got == want:
+            return None
+        a, b = np.frombuffer(got, np.uint8), np.frombuffer(want, np.uint8)
+        first = int(np.argmax(a != b)) if a.size == b.size else -1
+        return {"tensor": tensor, "llama": name, "bytes": b.size, "ours_bytes": a.size, "first_difference": first,
+                "differing": int((a != b).sum()) if a.size == b.size else -1}  # fmt: skip
+
+    for spec in specs:
+        label, rest = spec.split("=", 1)
+        pure = label.startswith("pure:")
+        if pure:
+            path, tensors, ref_ = rest, None, None
+        else:
+            ref_, path = rest.rsplit(":", 1)
+            tensors = open_(ref_).components["model"].tensors
         gguf = GGUFReader(path)
-        encoded = {k for k, meta in tensors.items() if meta.encoding is not None}
-        seen: set[str] = set()
+        seen_keys: set[str] = set()
         counts: dict[str, int] = {}
         bad: list[dict[str, object]] = []
         for t in gguf.tensors:
             kind = t.tensor_type.name
             if kind in FLOAT:
                 continue
-            name = TYPES[kind][0]
+            name, block = TYPES[kind]
             counts[name] = counts.get(name, 0) + 1
-            keys, columns = ours(t.name)
+            pieces, columns = ours(t.name)
             want = bytes(t.data)
-            pieces = []
-            for key, rows in keys:
-                seen.add(key)
+            if pure:
+                found = differs(t.name, name, ref(name, block, values(pieces, columns)), want)
+                if found:
+                    bad.append(found)
+                continue
+            assert tensors is not None
+            blocks = []
+            for key, index in pieces:
+                seen_keys.add(key)
                 meta = tensors[key]
                 scheme = meta.encoding.scheme if meta.encoding is not None else "plain"
                 if scheme != f"ggml.{name}":
                     bad.append({"tensor": t.name, "key": key, "llama": name, "ours": scheme})
                     break
-                blocks = tensors.read(key).parts["blocks"].tobytes()
-                if rows is not None:
-                    blocks = np.frombuffer(blocks, np.uint8).reshape(len(rows), -1)[rows].tobytes()
-                pieces.append(blocks)
+                data = tensors.read(key).parts["blocks"].tobytes()
+                if index is not None:
+                    data = np.frombuffer(data, np.uint8).reshape(int(meta.shape[0]), -1)[index].tobytes()
+                blocks.append(data)
             else:
-                got = b"".join(pieces)
+                got = b"".join(blocks)
                 if columns:
                     # Ours is ggml-ref/1 of out_proj as stored; llama's is of out_proj's columns reordered.
-                    key = keys[0][0]
-                    values = np.frombuffer(source.read(key).tobytes(), np.uint16).astype(np.uint32) << 16
-                    values = values.view(np.float32).reshape(meta.shape)
-                    n = TYPES[kind][1]
-                    again = raw.quantize(f"ggml.{name}", values.tobytes(), dtype="BF16", shape=list(values.shape),
-                                         strategy="ggml-ref/1", params={"block_size": n}).parts["blocks"].tobytes()  # fmt: skip
-                    if again != got:
-                        bad.append({"tensor": t.name, "key": key, "ours": "not ggml-ref/1 of the source"})
+                    if ref(name, block, values(pieces, False)) != got:
+                        bad.append({"tensor": t.name, "key": pieces[0][0], "ours": "not ggml-ref/1 of the source"})
                         continue
-                    moved = np.ascontiguousarray(values[:, heads(v_heads * v_dim, v_dim)])
-                    got = raw.quantize(f"ggml.{name}", moved.tobytes(), dtype="BF16", shape=list(moved.shape),
-                                       strategy="ggml-ref/1", params={"block_size": n}).parts["blocks"].tobytes()  # fmt: skip
-                if got != want:
-                    a, b = np.frombuffer(got, np.uint8), np.frombuffer(want, np.uint8)
-                    first = int(np.argmax(a != b)) if a.size == b.size else -1
-                    bad.append({"tensor": t.name, "llama": name, "bytes": b.size, "ours_bytes": a.size,
-                                "first_difference": first, "differing": int((a != b).sum()) if a.size == b.size else -1})  # fmt: skip
-        extra = sorted(encoded - seen)
-        say(check="lane", lane=lane, ref=ref, quantized=sum(counts.values()), types=counts,
-            identical=sum(counts.values()) - len(bad), differ=bad[:20], ours_not_llamas=extra[:20])  # fmt: skip
-        failed += bool(bad or extra)
+                    got = ref(name, block, values(pieces, True))
+                if found := differs(t.name, name, got, want):
+                    bad.append(found)
+        row: dict[str, object] = {"check": "pure" if pure else "lane", "lane": label, "gguf": os.path.basename(path),
+                                  "quantized": sum(counts.values()), "types": counts,
+                                  "identical": sum(counts.values()) - len(bad), "differ": bad[:20]}  # fmt: skip
+        if tensors is not None:
+            encoded = {k for k, meta in tensors.items() if meta.encoding is not None}
+            row |= {"ref": ref_, "ours_not_llamas": sorted(encoded - seen_keys)[:20]}
+            failed += bool(row["ours_not_llamas"])
+        say(**row)
+        failed += bool(bad) or not counts
     return 1 if failed else 0
 
 
