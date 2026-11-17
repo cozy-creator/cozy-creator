@@ -1607,6 +1607,7 @@ fn exports(event: &api::calcifer::Event) -> bool {
     !matches!(
         event,
         Event::Log { .. } | Event::Call { .. } | Event::Progress { .. } | Event::Waiting { .. } | Event::Arriving { .. } | Event::OutputDelta { .. }
+            | Event::OutputTextDelta { .. }
     )
 }
 

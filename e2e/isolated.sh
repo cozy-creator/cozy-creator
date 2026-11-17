@@ -290,7 +290,7 @@ case $key in
   cli:entrypoints | cli:executors | cli:projectdb-cancel | cli:local-wake | cli:containment | cli:containment-web | cli:projectvault-static | cli:projectvault-static-distros) needs='' ;;
   # forward's run that moves local's Runtime for its project (cl-1055).
   cli:selfupdate) needs='next scratch' ;;
-  # llm_write's Qwen3.5 0.8B (xs-204).
+  # llm_write's Qwen3.5 0.8B (xs-204), which llm_stream and responses_sdk run too (xs-209).
   cli:runs) needs='packages birefnet qwen' ;;
   # project_runtime's probe (cl-1055).
   cli:local-code) needs='packages birefnet scratch' ;;
@@ -432,6 +432,10 @@ if [ -n "$needs" ]; then
   # resolves it on each (hub_away's Windows-only dependency). A cohort pin would lock it to this runner alone.
   publish "$tools"
   for p in qwen-image-2 minimax-h3 sdxl birefnet; do publish "$packages/$p" cohort; done
+  # The LLM Write tool the page's stream and the Responses API run by name (xs-209): qwen3's, or qwen3.5's before it.
+  case $key in
+    cli:runs | cli:) for p in qwen3 qwen3.5; do [ ! -d "$packages/$p" ] || { publish "$packages/$p" cohort; break; }; done ;;
+  esac
   [[ " $needs " != *" scratch "* ]] || publish "$here/cli/scratch"
   # MOSS Image, which takes words only: a mention it can't use is crossed out (cl-944).
   case $key in cli: | cli:web-suite) publish "$packages/moss-image" cohort ;; esac

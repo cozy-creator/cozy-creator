@@ -280,8 +280,22 @@ a spec.
   A run settled over 30 days ago has dropped `measurements` and each call's, so its `report` is gone. Nothing else
   of a run is ever dropped: its row, `result`, reason, outputs, logs and `calls` stay for good.
 - `GET /v1/runs/{id}/events` (`Last-Event-ID` or `?starting_after=`): `run.*`, `output_item.*`, `run.log`,
-  `run.call`, and the live `run.progress` and `run.waiting`. It ends after the terminal event once every output
+  `run.call`, and the live `run.progress`, `run.waiting` and `output_text.delta`. It ends after the terminal event once every output
   has landed here or failed to.
+- Words a text output makes come as they are made (xs-209): `output_text.delta {output_index, item_id, delta}` (`item_id` the output's
+  name, `<name>/<n>` a list's item), each appended to the last; a follower opening mid-run hears the words so far first. While it runs, its
+  record's `text` (`[{output, index, text}]`) holds them, from memory only; its `result` holds them whole once it ends.
+- `POST /v1/openai/responses`: OpenAI's Responses API, for programs that speak it: an SDK with base URL `http://<Calcifer>/v1/openai` (OpenAI's
+  own paths, `models` and `files`, are Cozy's under `/v1`) and the bearer as its API key. One ordinary run of
+  the function `model` names (`[org/]pkg/fn[@release]`, `:<checkpoint>` its model slot), in the project `metadata.project` names.
+  `input` is a string or one user message of `input_text`, `input_image` and `input_video` (`video_url`) parts, a file as a `data:` URL or
+  `file_id` (`sha256:<hex>`); `instructions` → `system`, `max_output_tokens` → `max_tokens`, `temperature`, `top_p`; `reasoning.effort`
+  `none` turns `thinking` off, any other on at that `reasoning_effort`. `stream: true` answers the Responses events as they happen
+  (`response.created` … `response.output_text.delta` … `response.completed` or `response.failed`), and a client that leaves cancels the
+  run; else the Response once it ends. `tools`, `previous_response_id`, `conversation` and `background` are refused
+  (`unsupported_parameter`); `400 project_required`, `model_reads_no_text`, `url_input_unsupported`, `conversation_unsupported`.
+- `GET /v1/openai/models`: OpenAI's model list, `{object: list, data: [{id, object: model, created, owned_by}]}`, of the tools that write words, each
+  `id` as `cozy run` and `POST /v1/openai/responses` name it (`qwen3/write`).
 - `POST /v1/runs/{id}/cancel`: `202`, or `200` when it had ended.
 - `GET /v1/runs/{id}/play?output=&expires=` (`expires`: `90s`, `30m`, `24h`, `7d`, default `1h`): `Play {address, fingerprint, token, url, expires_s}`: how a browser plays that output straight from its machine, and `url`, the hosted player's link. `400 play_expires_invalid`, `400 play_output_invalid`.
 - `GET /v1/runs/{id}/outputs/{name}` (`?index=` an item of a list): an output's bytes, where its `url` says. A folder's is its tree document (`application/vnd.cozy.tree-manifest`), and `?member=<path>` one file of it: a client fetches what it asks for and holds each to its digest (`cozy run -o`, `cozy run watch -o`). An output names no path of Calcifer's. An item with `stays`, an output its function's result declares `Latents`, stays on its machine: no `url`, nothing waits for it, and this answers `409 output_on_its_machine`.

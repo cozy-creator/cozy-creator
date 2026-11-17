@@ -491,6 +491,9 @@ pub struct Run {
     /// Live: the machine's latest progress.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<Progress>,
+    /// Live, while it runs: the words each text output has so far (xs-209), from Calcifer's memory alone; its result holds them whole.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub text: Vec<OutputText>,
     /// With `?detail=full`: verified video segment frame ranges and published completion, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub video_progress: Option<VideoProgress>,
@@ -536,6 +539,15 @@ pub struct Run {
     /// Where the plan sent it, and what it quoted there (cl-967); none for a run no plan placed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placed: Option<Placed>,
+}
+
+/// A text output's words so far, as its machine streams them (xs-209): `index` 0 for a single output, from 1 a list's item.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct OutputText {
+    pub output: String,
+    pub index: u32,
+    pub text: String,
 }
 
 /// A video's verified segment plan and the completed prefix, in absolute shot frames.
@@ -940,6 +952,10 @@ pub enum Event {
     /// Its results coming here once it ended, each second until they land (`Run::arriving`).
     #[serde(rename = "run.arriving")]
     Arriving { progress: Progress },
+    /// Words a text output made, as the Responses API's `response.output_text.delta` says them (xs-209): live, appended to what came
+    /// before. `item_id` is the output's name, `<name>/<n>` for a list's item `n`.
+    #[serde(rename = "output_text.delta")]
+    OutputTextDelta { output_index: u32, item_id: String, delta: String },
 }
 
 impl Event {
@@ -1012,7 +1028,7 @@ impl Event {
             | Event::Call {
                 sequence_number, ..
             } => Some(*sequence_number),
-            Event::Progress { .. } | Event::Waiting { .. } | Event::Arriving { .. } => None,
+            Event::Progress { .. } | Event::Waiting { .. } | Event::Arriving { .. } | Event::OutputTextDelta { .. } => None,
         }
     }
 

@@ -7,7 +7,7 @@ use crate::journal::{
 };
 use serde_json::Value;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     path::{Component, Path, PathBuf},
@@ -32,6 +32,10 @@ const PREVIEW_RETELL: Duration = Duration::from_secs(10);
 const PREVIEW_BYTES: usize = 4 << 20;
 /// Runs with previews kept: a queued run asked for and canceled leaves its entry until this many.
 const PREVIEW_RUNS: usize = 1024;
+
+/// The most words a run's text outputs keep while it goes (xs-209): past it, the rest comes only
+/// in its result.
+const TEXT_BYTES: usize = 1 << 20;
 
 /// A run's newest preview: the step it shows and its picture; `n` counts them from 1.
 pub(crate) struct Preview {
@@ -114,6 +118,9 @@ pub(crate) struct Engine {
     faults: Mutex<HashMap<String, crate::journal::Failure>>,
     /// Each running run's previews (cr-282), dropped at its end.
     previews: Mutex<HashMap<String, Previewing>>,
+    /// Each running run's text outputs so far (xs-209), by (output, item), dropped at its end:
+    /// what its followers are told as `response.output_text.delta`.
+    texts: Mutex<HashMap<String, BTreeMap<(String, u32), String>>>,
 }
 
 /// One run's preparation, registered while it lasts: its cancel stops `stop`, which ends the
@@ -245,6 +252,7 @@ impl Engine {
             preparations: Mutex::new(HashMap::new()),
             faults: Mutex::new(HashMap::new()),
             previews: Mutex::new(HashMap::new()),
+            texts: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -926,6 +934,7 @@ impl Engine {
                 }
                 drop(progress);
                 engine.previews.lock().unwrap().remove(&thread_id);
+                engine.texts.lock().unwrap().remove(&thread_id);
                 engine.owned.lock().unwrap().remove(&thread_id);
                 engine.notify_activity();
             });
@@ -1212,6 +1221,45 @@ impl Engine {
         let Some(fields) = payload.as_object_mut() else { return Ok(()) };
         fields.insert("preview".into(), n.into());
         self.observe_progress(id, units, payload.to_string())
+    }
+
+    /// Run `id`'s executor sent words of a text output (`kind: text`): appended to what it said of
+    /// it, for its followers to hear. Memory only, and only while it runs.
+    pub(crate) fn observe_text(&self, id: &str, frame: &executor_api::TextFrame) {
+        if frame.delta.is_empty() || frame.output.is_empty() || !self.owned.lock().unwrap().contains(id) {
+            return;
+        }
+        {
+            let mut texts = self.texts.lock().unwrap();
+            let outputs = texts.entry(id.to_owned()).or_default();
+            if outputs.values().map(String::len).sum::<usize>() + frame.delta.len() > TEXT_BYTES {
+                return;
+            }
+            outputs.entry((frame.output.clone(), frame.index)).or_default().push_str(&frame.delta);
+        }
+        self.notify_activity();
+    }
+
+    /// Run `id`'s text outputs past what a follower has heard of each (`heard`, bytes): each
+    /// output, its item and the words it hasn't heard; `heard` moves past them.
+    pub(crate) fn texts_after(&self, id: &str, heard: &mut BTreeMap<(String, u32), usize>) -> Vec<(String, u32, String)> {
+        let texts = self.texts.lock().unwrap();
+        let Some(outputs) = texts.get(id) else { return vec![] };
+        let mut news = vec![];
+        for (key, text) in outputs {
+            let at = heard.entry(key.clone()).or_default();
+            if text.len() > *at {
+                news.push((key.0.clone(), key.1, text[*at..].to_owned()));
+                *at = text.len();
+            }
+        }
+        news
+    }
+
+    /// Whether run `id` has words a follower that heard `heard` hasn't.
+    pub(crate) fn texts_untold(&self, id: &str, heard: &BTreeMap<(String, u32), usize>) -> bool {
+        let texts = self.texts.lock().unwrap();
+        texts.get(id).is_some_and(|outputs| outputs.iter().any(|(key, text)| text.len() > heard.get(key).copied().unwrap_or(0)))
     }
 
     /// The weights run `id` waits on while they arrive (`access::meter`), shown over its own

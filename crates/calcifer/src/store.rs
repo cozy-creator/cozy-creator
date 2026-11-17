@@ -3371,6 +3371,7 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
         settled_at_ms: row.settled_at_ms,
         waiting: None,
         progress: None,
+        text: vec![],
         video_progress: None,
         arriving: None,
         report: None,
