@@ -2,6 +2,9 @@
 # se-147, Paul 11-17: "upscaling doesn't work. I attached the qwen image 2.1 upscaler to an image and ran it, and it just made the image
 # more of the same. The image was small and had JPEG artifacts; those JPG artifacts just became more embellished, rather than fixed (the
 # image was not upscaled at all properly)."
+# se-149, Paul 11-17, on the other picture upscalers: "audit the other upscalers to ensure they're actually doing useful upscaling
+# ... ensure we're using them as recommended, to get maximal results. Ideally for an upscaler we should have the option to make it
+# strict (keep to the results) or creative (enhance the image with details as needed)."
 # The bench (fixtures/upscale-bench, its README): degraded/<name>.jpg, 225 px JPEGs (q50-75) of clean originals that make_set.py rebuilds
 # here from sources.tsv: the originals from the private benchmarks checkout's upscale/originals (`bench_ref` its branch), else
 # Wikimedia Commons, each checked by sha256. Each candidate upscales each input on the rental; metrics.py scores
@@ -17,15 +20,22 @@
 #   private     more inputs, kept private: a folder of <name>.jpg files in the private benchmarks checkout (`bench_ref` its branch;
 #               never in params, whose values the public log prints). Their outputs and sheets leave the runner only encrypted to
 #               `pubkey` (base64 of a PEM RSA public key): private.tar.gz.enc, its AES key in private.key.enc
+#   bars        the cell's verdict: a JSON list of {candidate, vs, metric, by}: `candidate`'s mean DISTS or LPIPS over the
+#               full-reference pictures it shares with `vs` (a candidate, or `lanczos`, the floor) at most `vs`'s times 1 - `by`
+#               (bars.py, after the scoring); a bar missed fails the session. Set `by` from a measured gap, never to pass.
 #   seconds     what the cap must buy (default 5400)
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/upscale-bench WORK=${RUNNER_TEMP:-$OUT/..}/upscale
 CANDIDATES=$(param candidates '[]') IMAGES=$(param images '') PRIVATE=$(param private '') PUBKEY=$(param pubkey '') NEED=$(param seconds 5400)
+BARS=$(param bars '[]')
 for tool in jq uv openssl; do command -v "$tool" > /dev/null || fail "no $tool"; done
 jq -e 'type == "array" and length > 0 and all(.[]; (.name | test("^[a-z0-9-]+$")) and (.tree | type == "string") and (.tool | test("^[a-z0-9._-]+/[a-z_]+$")))' \
   <<<"$CANDIDATES" > /dev/null || fail "candidates: a JSON list of {name, tree, tool, fields?, from?, images?}"
 [ -z "$PRIVATE" ] || [ -n "$PUBKEY" ] || fail "private inputs: name a pubkey to encrypt their outputs to"
+jq -e --argjson c "$CANDIDATES" '([$c[].name] + ["lanczos"]) as $n | type == "array" and all(.[]; (.candidate as $x | $n | index($x)) and
+  (.vs as $x | $n | index($x)) and (.metric | IN("dists", "lpips")) and (.by | type == "number" and . >= 0 and . < 1))' <<<"$BARS" > /dev/null ||
+  fail "bars: a JSON list of {candidate, vs, metric: dists|lpips, by: 0-1}, each naming a candidate (vs: or lanczos)"
 V=$(cozy --version | awk '{print $2}')
 [[ $V == *-dev* ]] || fail "cozy $V is no RC build: dispatch with cozy=<a dev-build or rc-dev run of rc/<x>>"
 while read -r tree tool; do
@@ -127,6 +137,11 @@ for r in "${RIDS[@]}"; do for _ in $(seq 60); do gone "$r" && break; sleep 10; d
 "$PY" -I "$FIX/sheets.py" "$WORK/runs" --out "$WORK/sheets" > "$OUT/sheets.txt" 2>&1 || { say "sheets.py: $(tail -c 400 "$OUT/sheets.txt")"; RC=1; }
 { echo "## upscale on $NAME ($SKU)"; echo '```'; sed -n '/^candidate /,$p' "$OUT/scores.txt"; echo '```'; } > "$OUT/summary.md"
 sed -n '/^candidate /,$p' "$OUT/scores.txt" | sed 's/^/  /' | tee -a "$R"
+if [ "$(jq length <<<"$BARS")" -gt 0 ]; then
+  "$PY" -I "$FIX/bars.py" "$OUT/scores.tsv" "$BARS" > "$OUT/bars.txt" 2>&1 || RC=1
+  sed 's/^/  bar: /' "$OUT/bars.txt" | tee -a "$R"
+  { echo '### bars'; echo '```'; cat "$OUT/bars.txt"; echo '```'; } >> "$OUT/summary.md"
+fi
 cat "$OUT/summary.md" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 # What leaves the runner: the bench's outputs and sheets as they are, the private ones encrypted.
 mkdir -p "$WORK/private"
