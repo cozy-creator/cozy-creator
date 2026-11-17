@@ -127,6 +127,16 @@ for c in "cozy_runtime:$RWF" "tensorfs:$TWF"; do
   v=${c#*:}; [ -n "$v" ] && [ ! -f "$v" ] || continue
   why=$(tag_built "${c%%:*}" "$v") || { log "$why"; exit 1; }
 done
+# The candidate set resolves before any rental (resolve.py; 44195951427 rented a 4090 for 10 min to learn that its
+# Runtime refused its TensorFS): the Runtime takes the TensorFS, and every package of the checkout and the suites the
+# Runtime. A conflict ends the gate here, at $0.
+RESOLVE=("${GATE_PKGS[@]}")
+[ -z "$PKGS" ] || for d in "$PKGS"/*/; do grep -qs cozy.application "$d/pyproject.toml" && RESOLVE+=("${d%/}"); done
+if ! said=$(uv run -q --no-project --with packaging python -I "$HERE/resolve.py" "${RWF:-}" "${TWF:-}" "${RESOLVE[@]}" 2>&1); then
+  log "the candidate set does not resolve: $(paste -sd';' <<< "$said")"
+  printf 'FAIL candidate set: %s\nVERDICT FAIL (candidate set does not resolve)\n' "$(paste -sd';' <<< "$said")" | tee verdict.txt
+  exit 1
+fi
 if [ -f "$TDF" ]; then
   chmod +x "$TDF"; BIN=$("$TDF" --version | awk '{print $2}')
   [ -n "$BIN" ] || { log "$TD is not a cozy binary"; exit 1; }
