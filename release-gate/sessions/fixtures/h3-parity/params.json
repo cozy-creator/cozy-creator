@@ -1,0 +1,257 @@
+{
+ "tree": "pk",
+ "seconds": 10800,
+ "ours": [
+  {
+   "name": "o-t2v",
+   "phase": "video",
+   "tool": "minimax-h3/generate",
+   "input": "v-t2v.json",
+   "args": [
+    "--lane",
+    "bf16",
+    "--attention-kernel",
+    "sdpa"
+   ]
+  },
+  {
+   "name": "o-i2v",
+   "phase": "video",
+   "tool": "minimax-h3/generate",
+   "input": "v-i2v.json",
+   "args": [
+    "--lane",
+    "bf16",
+    "--attention-kernel",
+    "sdpa"
+   ]
+  },
+  {
+   "name": "o-ref",
+   "phase": "video",
+   "tool": "minimax-h3/generate",
+   "input": "v-ref.json",
+   "args": [
+    "--lane",
+    "bf16",
+    "--attention-kernel",
+    "sdpa"
+   ]
+  },
+  {
+   "name": "o-ref-default",
+   "phase": "video",
+   "tool": "minimax-h3/generate",
+   "input": "v-ref-default.json"
+  },
+  {
+   "name": "o-i2v-default",
+   "phase": "video",
+   "tool": "minimax-h3/generate",
+   "input": "v-i2v-default.json"
+  },
+  {
+   "name": "o-p-t2i",
+   "phase": "image",
+   "tool": "p-h3-image/generate",
+   "input": "p-t2i.json",
+   "args": [
+    "--lane",
+    "bf16",
+    "--attention-kernel",
+    "sdpa"
+   ]
+  },
+  {
+   "name": "o-p-edit",
+   "phase": "image",
+   "tool": "p-h3-image/generate",
+   "input": "p-edit.json",
+   "args": [
+    "--lane",
+    "bf16",
+    "--attention-kernel",
+    "sdpa"
+   ]
+  },
+  {
+   "name": "o-p-t2i-default",
+   "phase": "image",
+   "tool": "p-h3-image/generate",
+   "input": "p-t2i.json"
+  },
+  {
+   "name": "o-h-t2i",
+   "phase": "image",
+   "tool": "minimax-h3-image/generate",
+   "input": "h-t2i.json",
+   "args": [
+    "--lane",
+    "bf16",
+    "--attention-kernel",
+    "sdpa"
+   ]
+  },
+  {
+   "name": "o-h-edit",
+   "phase": "image",
+   "tool": "minimax-h3-image/generate",
+   "input": "h-edit.json",
+   "args": [
+    "--lane",
+    "bf16",
+    "--attention-kernel",
+    "sdpa"
+   ]
+  },
+  {
+   "name": "o-h-t2i-default",
+   "phase": "image",
+   "tool": "minimax-h3-image/generate",
+   "input": "h-t2i.json"
+  }
+ ],
+ "upstream": [
+  {
+   "name": "u-t2v",
+   "phase": "video",
+   "trunk": "fl2va",
+   "of": "o-t2v",
+   "frames": 124,
+   "height": 768,
+   "width": 768
+  },
+  {
+   "name": "u-i2v",
+   "phase": "video",
+   "trunk": "fl2va",
+   "of": "o-i2v",
+   "frames": 124,
+   "image": "/root/parity/in/lighthouse-768.png"
+  },
+  {
+   "name": "u-ref-1024",
+   "phase": "video",
+   "trunk": "ref2va",
+   "of": "o-ref",
+   "frames": 124,
+   "height": 768,
+   "width": 768,
+   "references": [
+    "/root/parity/in/fighter.jpg"
+   ],
+   "short_edge": 1024
+  },
+  {
+   "name": "u-ref-2048",
+   "phase": "video",
+   "trunk": "ref2va",
+   "of": "o-ref",
+   "frames": 124,
+   "height": 768,
+   "width": 768,
+   "references": [
+    "/root/parity/in/fighter.jpg"
+   ],
+   "short_edge": 2048
+  },
+  {
+   "name": "u-p-t2i",
+   "phase": "image",
+   "model": "p-h3-image",
+   "of": "o-p-t2i"
+  },
+  {
+   "name": "u-p-edit",
+   "phase": "image",
+   "model": "p-h3-image",
+   "of": "o-p-edit",
+   "images": [
+    "/root/parity/in/lighthouse.jpg"
+   ],
+   "size": false
+  },
+  {
+   "name": "u-h-t2i",
+   "phase": "image",
+   "model": "minimax-h3-image",
+   "of": "o-h-t2i"
+  },
+  {
+   "name": "u-h-edit",
+   "phase": "image",
+   "model": "minimax-h3-image",
+   "of": "o-h-edit",
+   "images": [
+    "/root/parity/in/lighthouse.jpg"
+   ]
+  }
+ ],
+ "pairs": [
+  [
+   "o-t2v",
+   "u-t2v",
+   "H3 t2v Turbo, ours bf16+SDPA vs Diffusers 0.43 + PDD"
+  ],
+  [
+   "o-i2v",
+   "u-i2v",
+   "H3 i2v (FL2VA first frame) Turbo, parity"
+  ],
+  [
+   "o-ref",
+   "u-ref-1024",
+   "H3 Ref2VA Turbo, parity, both reading the picture at 1024"
+  ],
+  [
+   "u-ref-2048",
+   "u-ref-1024",
+   "upstream: its 2048 reference edge vs our 1024 default"
+  ],
+  [
+   "o-ref-default",
+   "o-ref",
+   "ours: shipped defaults (lane, 8-bit attention, 4 dense + 4 sparse) vs bf16 SDPA all dense"
+  ],
+  [
+   "o-i2v-default",
+   "o-i2v",
+   "ours: shipped defaults vs bf16 SDPA all dense"
+  ],
+  [
+   "o-ref-default",
+   "u-ref-2048",
+   "ours as shipped vs upstream as shipped"
+  ],
+  [
+   "o-p-t2i",
+   "u-p-t2i",
+   "P-H3-Image t2i 8 MP, parity"
+  ],
+  [
+   "o-p-edit",
+   "u-p-edit",
+   "P-H3-Image edit, parity"
+  ],
+  [
+   "o-p-t2i-default",
+   "o-p-t2i",
+   "P-H3-Image ours: shipped defaults vs bf16 SDPA"
+  ],
+  [
+   "o-h-t2i",
+   "u-h-t2i",
+   "MiniMax-H3-Image t2i 4 MP, parity"
+  ],
+  [
+   "o-h-edit",
+   "u-h-edit",
+   "MiniMax-H3-Image edit, parity"
+  ],
+  [
+   "o-h-t2i-default",
+   "o-h-t2i",
+   "MiniMax-H3-Image ours: shipped defaults vs bf16 SDPA"
+  ]
+ ]
+}

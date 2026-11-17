@@ -1,0 +1,18 @@
+{
+ "beats": [
+  {
+   "duration": 5,
+   "description": "[Shot 1] <fighter> draws her katana in a bamboo forest and turns toward the camera as leaves drift down around her."
+  }
+ ],
+ "references": [
+  {
+   "name": "fighter",
+   "image": "./fighter.jpg"
+  }
+ ],
+ "aspect_ratio": "1:1",
+ "turbo": true,
+ "quality": "full",
+ "seed": 20261117
+}

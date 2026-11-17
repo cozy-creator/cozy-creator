@@ -1,0 +1,10 @@
+{
+ "beats": [
+  {
+   "duration": 5,
+   "description": "[Shot 1] The lamp of the lighthouse turns, waves break against the rocks below, and the camera slowly pushes in."
+  }
+ ],
+ "first_frame": "./lighthouse-768.png",
+ "seed": 20261117
+}

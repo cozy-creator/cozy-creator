@@ -1,0 +1,13 @@
+{
+ "instructions": "Turn <lighthouse> into a winter night scene: snow on the rocks and the gallery, the lamp lit, everything else unchanged.",
+ "references": [
+  {
+   "name": "lighthouse",
+   "image": "./lighthouse.jpg"
+  }
+ ],
+ "aspect_ratio": "1:1",
+ "megapixels": 4,
+ "seed": 20261117,
+ "prompt_upsampling": false
+}

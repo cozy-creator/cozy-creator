@@ -1,0 +1,12 @@
+{
+ "beats": [
+  {
+   "duration": 5,
+   "description": "[Shot 1] A white lighthouse on a rocky sea cliff at dusk. Waves crash on the rocks below and its lamp turns slowly. The camera holds still."
+  }
+ ],
+ "aspect_ratio": "1:1",
+ "turbo": true,
+ "quality": "full",
+ "seed": 20261117
+}
