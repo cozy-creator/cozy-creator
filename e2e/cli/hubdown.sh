@@ -101,13 +101,15 @@ hub_down_table() {
   cozy --json machine show local > "$OUT/set-local.json" || { check "hub down: machine show local"; return; }
   stand_in "$m" || return
   # With the Hub up: local code on the stand-in; a release on it (minimax-h3-tools); a release on this computer alone (e2e-relay, whose
-  # lock takes minimax-h3-tools from the root's index); and local code locked against that index.
+  # lock takes minimax-h3-tools from the root's index); local code locked against that index; and the stand-in's update, whose target
+  # this computer then knows.
   counting | package_at "$dir/held" hd_held '"cozy-runtime>=0.30", "msgspec>=0.19"'
   hd_row "(Hub up) local code on $m" up-code run "$dir/held" "text=one two" --on "$m"
   hd_row "(Hub up) minimax-h3-tools on $m" up-release run minimax-h3-tools/echo text=up --on "$m"
   hd_row "(Hub up) e2e-relay on local" up-relay run "$E2E_RELAY/relay" "text=on local" --on local
   hd_relay "$dir/locked" hd_locked
   hd_row "(Hub up) local code locked against the root's index, on local" up-locked run "$dir/locked/relay" "text=locked" --on local
+  hd_row "(Hub up) cozy machine update $m" up-update machine update "$m" -y
   hub_stop
   counting | sed 's/len(payload.text.split())/len(payload.text.split()) * 1/' | package_at "$dir/new" hd_new '"cozy-runtime>=0.30", "msgspec>=0.19"'
   hd_row "Local code new to $m (cozy run ./dir --on $m)" code-new run "$dir/new" "text=a b c" --on "$m"
