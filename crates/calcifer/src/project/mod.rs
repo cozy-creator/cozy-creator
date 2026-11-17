@@ -4060,15 +4060,16 @@ impl Asking {
 }
 
 impl Project {
-    /// The seed box `name`'s draft is predicted with (cl-1123), drawn once: a render of it takes it (`take_draft_seed`), so the
-    /// request a machine made ready is the one it is sent.
+    /// The seed box `name`'s draft is predicted with (cl-1123), drawn once and kept: its render sends it, so the request a machine
+    /// made ready is the one it is sent, and nothing about the render changes the item it names.
     pub(super) fn draft_seed(&self, name: &str) -> u64 {
         *self.drafts.lock().expect("drafts lock").entry(name_key(name)).or_insert_with(new_seed)
     }
 
-    /// Box `name`'s draft seed, for its render, which takes it: its next draft is predicted with another.
-    fn take_draft_seed(&self, name: &str) -> Option<u64> {
-        self.drafts.lock().expect("drafts lock").remove(&name_key(name))
+    /// Box `name`'s render was answered by its machine (`prefetch::Lists::answered`): its next draft is predicted with a seed of its
+    /// own, as its next render takes one.
+    pub(crate) fn rotate_draft_seed(&self, name: &str) {
+        self.drafts.lock().expect("drafts lock").remove(&name_key(name));
     }
 }
 
@@ -4096,6 +4097,19 @@ fn predicted(renderer: &Renderer, made: &Map<String, Value>, request: Option<Val
     let models = choices::wire(&choices.into_choices())?;
     let payload = v1::Json::parse(Value::Object(payload).to_string()).map_err(|e| Error::new(Kind::Internal, "payload", e.to_string()))?;
     Ok(v1::RunSpec { kind: v1::RunKind::Call, source: Some(source), entrypoint: renderer.function.clone(), payload: Some(payload), models, ..Default::default() })
+}
+
+/// The files `spec`'s payload reads (`tools::files_in`) as a run of it lists them (`Walk::submit`), and as they're written to a machine
+/// ahead of it (`Calcifer::ship`), so a predicted request is its render's to the byte (cl-1123). One not on this computer is left out.
+pub(super) fn predicted_inputs(folder: &Folder, lock: &Lock, spec: &v1::RunSpec) -> (Vec<v1::InputFile>, Vec<StagedInput>) {
+    let Some(payload) = spec.payload.as_ref().and_then(|payload| serde_json::from_str::<Value>(payload.get()).ok()) else { return (vec![], vec![]) };
+    let (mut inputs, mut staged) = (vec![], vec![]);
+    for (field, path, digest) in tools::files_in(&payload, folder, lock, &HashMap::new()) {
+        let (Ok(length), Ok(parsed)) = (std::fs::metadata(&path).map(|held| held.len()), digest.parse::<Digest>()) else { continue };
+        inputs.push(v1::InputFile { field: field.clone(), digest: digest.clone(), length, media_type: media_type(&path).to_owned(), order: order_of(&field) });
+        staged.push(StagedInput { path, digest: parsed, length });
+    }
+    (inputs, staged)
 }
 
 /// What a call of `function` of `package` wants of its models, by slot (cl-1103): its needs rules evaluated on `request` (none: no rule
@@ -4773,8 +4787,13 @@ impl Walk {
                 v1::Source::Local(crate::private_io::context(scope, self.host.ready(path, machine, hub, host::Wait::Job(key, None))).await?.source)
             }
         };
-        let request = Asking::of(self.folder()).and_then(|asking| asking.request(asset, &package, &renderer.function));
-        let spec = predicted(&renderer, made, request, self.project.draft_seed(asset), source)?;
+        let asking = Asking::of(self.folder());
+        let request = asking.as_ref().and_then(|asking| asking.request(asset, &package, &renderer.function));
+        let mut spec = predicted(&renderer, made, request, self.project.draft_seed(asset), source)?;
+        // Its files as its run lists them, which that run writes there: the item is its request to the byte (cl-1123).
+        if let Some(asking) = &asking {
+            spec.inputs = predicted_inputs(self.folder(), &asking.lock, &spec).0;
+        }
         Ok(Some((v1::Predicted { key: key.to_owned(), spec }, package.name.clone() + "/" + &renderer.function)))
     }
 
@@ -5923,7 +5942,7 @@ impl Walk {
                 // Try again is a render of what failed on these inputs: the same seed, so its finished calls come from the memo.
                 let tried = now.asset(&name).and_then(|held| held.tried.as_ref()).filter(|tried| tried.inputs == inputs).map(|tried| tried.seed);
                 // Else the seed its draft was predicted with (cl-1123): the request its machine made ready is the one it is sent.
-                version.seed = Some(tried.or_else(|| self.project.take_draft_seed(&name)).unwrap_or_else(new_seed));
+                version.seed = Some(tried.unwrap_or_else(|| self.project.draft_seed(&name)));
             }
             version.pickup = pickup;
             // Its number now, whichever of several lands first.

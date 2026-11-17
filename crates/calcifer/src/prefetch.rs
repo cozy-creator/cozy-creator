@@ -34,6 +34,12 @@ use tracing::warn;
 
 use crate::{machines::Machines, project::Project};
 
+/// What Calcifer's log says of its predictions (cl-1123): each guess round, each box's guess, each list sent and how long each took.
+pub(crate) const TARGET: &str = "cozy.prefetch";
+
+/// How long a prepare item a render named stays listed for it at most, should its machine never answer the render.
+const PINNED: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// The prefixes the machine's runs of an upcoming and of a prepare list take (`tensord::ahead`).
 pub(crate) const UPCOMING: &str = "cozy:upcoming:";
 pub(crate) const PREPARE: &str = "cozy:prepare:";
@@ -100,6 +106,19 @@ pub(crate) struct Lists {
     /// By machine: what of its Status a quote of its load reads (`load`), and a count that moves whenever one's changes.
     loads: Mutex<HashMap<String, (u64, u64)>>,
     pub(crate) load_moved: AtomicU64,
+    /// By machine and key: a prepare item a render names (`RunSpec::predicted`, cl-1123), kept on its list until the machine answers
+    /// that render (`answered`), whatever its box's guess is meanwhile: the request it made ready is the one the render adopts. With
+    /// its Hub, the project and box it was guessed for, and since when.
+    pinned: Mutex<HashMap<(String, String), Pinned>>,
+}
+
+#[derive(Clone)]
+struct Pinned {
+    hub: String,
+    item: v1::Predicted,
+    project: std::sync::Weak<Project>,
+    asset: String,
+    since: std::time::Instant,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -172,14 +191,36 @@ impl Lists {
     }
 
     /// The key of the item `machine`'s lists predict job `job` (box `asset`) of `project` by (cl-1123): its upcoming job's, else its box's
-    /// guess's. What its render names (`RunSpec::predicted`), so the machine knows the request it made ready is this one.
+    /// guess's, which stays listed until the machine answers the render (`answered`). What its render names (`RunSpec::predicted`), so
+    /// the machine knows the request it made ready is this one.
     pub(crate) fn predicted(&self, machine: &str, project: &str, asset: &str, job: &str) -> Option<String> {
         let planned = lock(&self.planned).get(machine).and_then(|lists| lists.get(project)).and_then(|listed| listed.iter().find(|listed| listed.item.key == job).map(|listed| listed.item.key.clone()));
         if planned.is_some() {
             return planned;
         }
-        let guess = lock(&self.guessed).get(project)?.iter().find(|guess| guess.asset == asset && guess.machine == machine)?.item.clone();
-        lock(&self.keys).get(&(machine.to_owned(), identity(&guess))).cloned()
+        let guess = lock(&self.guessed).get(project)?.iter().find(|guess| guess.asset == asset && guess.machine == machine)?.clone();
+        let key = lock(&self.keys).get(&(machine.to_owned(), identity(&guess.item))).cloned()?;
+        let pinned = Pinned { hub: guess.hub, item: v1::Predicted { key: key.clone(), ..guess.item }, project: guess.project, asset: asset.to_owned(), since: std::time::Instant::now() };
+        lock(&self.pinned).insert((machine.to_owned(), key.clone()), pinned);
+        tracing::info!(target: TARGET, "{asset}'s render names {key} on {machine}: it stays listed until the machine answers");
+        Some(key)
+    }
+
+    /// `machine` answered a render that named item `key`: the item goes as its box's guess says now, and that box's next draft is
+    /// predicted with a seed of its own (`Project::rotate_draft_seed`), as its next render takes one.
+    pub(crate) fn answered(&self, machines: &Arc<Machines>, machine: &str, key: &str) {
+        let Some(pinned) = lock(&self.pinned).remove(&(machine.to_owned(), key.to_owned())) else { return };
+        if let Some(project) = pinned.project.upgrade() {
+            project.rotate_draft_seed(&pinned.asset);
+        }
+        tracing::info!(target: TARGET, "{machine} answered {}'s render, which named {key}", pinned.asset);
+        self.send(machines);
+    }
+
+    /// `project`'s guesses as last made, for a box whose guess couldn't be made this time (a read that didn't answer, a machine
+    /// between frames): it keeps the one it had, so its item keeps its key.
+    pub(crate) fn last_guess(&self, project: &str, asset: &str) -> Option<Guess> {
+        lock(&self.guessed).get(project)?.iter().find(|guess| guess.asset == asset).cloned()
     }
 
     /// The key `machine`'s prepare list has for what `item` makes ready, given now if it isn't on that list.
@@ -248,7 +289,13 @@ impl Lists {
             let mut prepare: Vec<(String, String, v1::Predicted)> = vec![];
             let asked = (guessed.iter().filter(|guess| guess.machine == name).map(|guess| (guess.hub.clone(), guess.item.clone())))
                 .chain(demand(&planned, &name, &frame, upcoming.is_empty()));
-            for (hub, item) in asked {
+            // And what a render named, until the machine answers it (`answered`).
+            lock(&self.pinned).retain(|_, pinned| pinned.since.elapsed() < PINNED);
+            let pinned: Vec<(String, v1::Predicted)> = (lock(&self.pinned).iter())
+                .filter(|((machine, _), _)| *machine == name)
+                .map(|(_, pinned)| (pinned.hub.clone(), v1::Predicted { key: String::new(), ..pinned.item.clone() }))
+                .collect();
+            for (hub, item) in asked.chain(pinned) {
                 let made = identity(&item);
                 if !prepare.iter().any(|(held, ..)| *held == made) {
                     prepare.push((made, hub, item));
@@ -271,6 +318,8 @@ impl Lists {
                 continue;
             }
             lock(&self.sent).insert(name.clone(), now);
+            let keys: Vec<&str> = prepare.iter().map(|(_, item)| item.key.as_str()).collect();
+            tracing::info!(target: TARGET, "lists to {name}: {} upcoming, prepare {keys:?}", upcoming.len());
             let hubs: Vec<String> = upcoming.iter().map(|listed| listed.hub.clone()).chain(prepare.iter().map(|(hub, _)| hub.clone())).collect();
             let upcoming: Vec<(String, v1::Predicted)> = upcoming.iter().map(|listed| (listed.hub.clone(), listed.item.clone())).collect();
             let machines = machines.clone();
@@ -429,8 +478,9 @@ fn demand(planned: &HashMap<String, HashMap<String, Vec<Listed>>>, machine: &str
 
 /// Sends `machine` its lists, each item under the access its Hub gives that machine.
 async fn put(machines: &Arc<Machines>, machine: &str, hubs: Vec<String>, upcoming: Vec<(String, v1::Predicted)>, prepare: Vec<(String, v1::Predicted)>) -> Result<(), String> {
+    let began = std::time::Instant::now();
     let (_, link) = machines.linked(machine).map_err(|e| e.message)?;
-    let mut access: HashMap<String, Option<v1::HubAccess>> = HashMap::new();
+    let mut access: HashMap<String, (Option<v1::HubAccess>, Option<String>)> = HashMap::new();
     for hub in hubs {
         if access.contains_key(&hub) {
             continue;
@@ -439,9 +489,19 @@ async fn put(machines: &Arc<Machines>, machine: &str, hubs: Vec<String>, upcomin
             .filter(|(held, _)| *held == hub)
             .map(|(_, item)| item.spec.clone())
             .collect();
-        access.insert(hub.clone(), machines.list_access(&hub, machine, &specs).await?);
+        access.insert(hub.clone(), (machines.list_access(&hub, machine, &specs).await?, machines.list_owner(&hub).await));
     }
-    let with = |(hub, item): (String, v1::Predicted)| v1::Predicted { spec: v1::RunSpec { hub: access.get(&hub).cloned().flatten(), ..item.spec }, ..item };
+    // Each item with what its run's send gives a run (`finish_spec`): its Hub access, and for local code the account it names.
+    let with = |(hub, item): (String, v1::Predicted)| {
+        let (hub, owner) = access.get(&hub).cloned().unwrap_or_default();
+        let local = matches!(item.spec.source, Some(v1::Source::Local(_))) && item.spec.owner.is_empty();
+        let owner = match (local, owner) {
+            (true, Some(owner)) => owner,
+            _ => item.spec.owner.clone(),
+        };
+        v1::Predicted { spec: v1::RunSpec { hub, owner, ..item.spec }, ..item }
+    };
+    let accessed = began.elapsed().as_millis();
     let answer = link.upcoming(&v1::Upcoming { jobs: upcoming.into_iter().map(with).collect() }).await.map_err(|e| e.to_string())?;
     for refused in answer.items.iter().filter_map(|item| item.refusal.as_ref()) {
         warn!(machine, "an upcoming job won't be ready ahead: {}", refused.message);
@@ -450,5 +510,6 @@ async fn put(machines: &Arc<Machines>, machine: &str, hubs: Vec<String>, upcomin
     for refused in answer.items.iter().filter_map(|item| item.refusal.as_ref()) {
         warn!(machine, "a guess won't be ready ahead: {}", refused.message);
     }
+    tracing::info!(target: TARGET, "lists put on {machine} in {} ms ({accessed} ms for their access)", began.elapsed().as_millis());
     Ok(())
 }

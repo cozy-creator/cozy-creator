@@ -283,6 +283,17 @@ impl Machines {
         })
     }
 
+    /// The account local code of a list item at `hub` names, as a run's send gives it (`finish_spec`): the item is the run's request
+    /// to the byte (cl-1123). None: signed out there.
+    pub(crate) async fn list_owner(&self, hub: &str) -> Option<String> {
+        let origin = match Origin::parse(hub) {
+            Ok(origin) => self.hubs.resolve(&origin).await,
+            Err(_) => self.hubs.hub.clone(),
+        };
+        self.hubs.client(&origin).ok()?;
+        self.hubs.facts(&origin).await.ok().map(|facts| facts.account)
+    }
+
     /// The Hub access a machine's list (`PUT /v1/upcoming`, `/v1/prepare`) of `specs` at `hub` carries: what this computer's
     /// unsettled runs there and they read, signed for its workload key; signed out, the Hub's origin alone, as a run's.
     pub(crate) async fn list_access(&self, hub: &str, machine: &str, specs: &[v1::RunSpec]) -> Result<Option<v1::HubAccess>, String> {

@@ -122,8 +122,34 @@ page() {
   [ -n "$stream" ] || fail "the page's stream said no hello: $(head -c 300 "$OUT/page-$NAME.sse")"
   id=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import page; print(page.read(sys.argv[2])["id"])' "$(dirname "$RUN_PAGE")" "$RUN_PROJECT" 2> "$OUT/id.err")
   [ -n "$id" ] || fail "the project's id: $(tail -c 300 "$OUT/id.err")"
+  PAGE_MS=$(date +%s%3N)
   curl -fsS -X PUT "${headers[@]}" -H "Origin: http://$addr" -H 'Content-Type: application/json' -d "$(jq -nc --arg id "$id" '{projects: [$id]}')" \
     "http://$addr/v1/events/$stream" > "$OUT/show-$NAME.json" 2>&1 || fail "the page couldn't show the project: $(tail -c 300 "$OUT/show-$NAME.json")"
+}
+# first_fetch <since ms> <rule>: from TensorD's log, when the first list item planned after <since> whose rules hold for <rule> was
+# planned, and when the machine first fetched an object at a prepare item's order after that (Unix ms each; the pod's clock).
+first_fetch() {
+  python3 -I - "$OUT/tensord-$NAME.log" "$1" "$2" <<'PY'
+import datetime, re, sys
+log, since, rule = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+def ms(stamp):
+    return int(datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp() * 1000)
+planned = fetched = 0
+for line in open(log, errors="replace"):
+    parts = line.split(" ", 1)
+    if not parts[0][:4].isdigit():
+        continue
+    at = ms(parts[0])
+    if at < since:
+        continue
+    if not planned and "cozy:prepare:" in line and "its rules hold for" in line and f'"{rule}"' in line.split("its rules hold for", 1)[1].split("}", 1)[0]:
+        planned = at
+    elif planned and not fetched:
+        found = re.search(r"fetching object=\S+ bytes=\d+ priority=(\d+)", line)
+        if found and int(found.group(1)) >= 1 << 63:
+            fetched = at
+print(planned, fetched)
+PY
 }
 # row: draw's guess's row on the board, the newest that names it: what the machine a render of it would go to has ready for it.
 row() { run_page board | jq -c --arg n draw '[.ahead[]? | select((.names // []) | index($n))] | max_by(.run) // empty' 2> /dev/null; }
@@ -267,5 +293,18 @@ jq -e '.measurements.weights.needs == 0' "$OUT/draw.json" > /dev/null || fail "d
 [ "$(held "$OUT/after-draw.json" "$T2I")" = "$T2I_LEFT" ] || fail "draw's render fetched expander_t2i"
 cozy machine logs "$NAME" --since 2h -n 0 > "$OUT/tensord-$NAME.log" 2>&1 || true
 cozy machine logs local calcifer --lines 20000 > "$OUT/calcifer.log" 2>&1 || true
+# Adoption (cl-1123): draw's run names the item that made it ready, and is that request to the byte.
+adopted=$(grep -m1 -E "run run-[0-9a-f]+ (is the request|names)" "$OUT/tensord-$NAME.log" | sed 's/.*INFO tensord::ahead: //')
+say "draw's run on $NAME: ${adopted:-named no predicted request}"
+[[ $adopted == *"is the request"*"takes what it made ready"* ]] || MISMATCH+=("draw's render didn't adopt its item: ${adopted:-it named none}")
+# From each draft to its machine's first byte (`first_fetch`): the page showing the project, and the edit.
+read -r planned fetched <<< "$(first_fetch "$PAGE_MS" expander_t2i)"
+say "the T2I draft: shown at $PAGE_MS; planned on $NAME $((planned - PAGE_MS)) ms later; first fetched $((fetched - PAGE_MS)) ms after it was shown"
+[ "$fetched" -gt 0 ] && [ $((fetched - PAGE_MS)) -le 5000 ] || MISMATCH+=("the T2I draft's first byte came $((fetched - PAGE_MS)) ms after the page showed it")
+if [ -n "${EDIT_MS:-}" ]; then
+  read -r planned fetched <<< "$(first_fetch "$EDIT_MS" expander_i2i)"
+  say "the I2I edit: made at $EDIT_MS; planned on $NAME $((planned - EDIT_MS)) ms later; first fetched $((fetched - EDIT_MS)) ms after the edit"
+  [ "$fetched" -gt 0 ] && [ $((fetched - EDIT_MS)) -le 5000 ] || MISMATCH+=("the I2I edit's first byte came $((fetched - EDIT_MS)) ms after it")
+fi
 [ ${#MISMATCH[@]} = 0 ] || fail "what didn't match: ${MISMATCH[*]}"
 say "PASS: each machine fetched what each request's rules said, Calcifer's word ahead of the render, and the cold quote was what landed"
