@@ -5,3 +5,5 @@ prompt-lm-capture	rtx-4090|rtx-5090	xs-182: capture_capacity in a prompt LM's de
 h3-u2-short-sparse	h100-*	xs-182: H3's sparse steps dense in a Hopper group's first call (cr-268: 0.45.0 run 47001, sparse 0 of 2304; suite multi-gpu)
 h3-u2-short-exchange	h100-*	xs-182: the copy-engine exchange unmapped under varena (cr-268: 0.45.0 runs 47001, 47019 route nccl; suite multi-gpu)
 h3-u2-finetune-video	*	cl-935: a 2-GPU call with a model fetched from the Hub failed credential_at_seam (0.45.0/0.45.1: 47352, 47432; fixed in Runtime 0.45.2; suite multi-gpu)
+upscale-qwen-dists	*	se-147: qwen-image-2's Upscale sharpened a small JPEG's blocks, no closer to the picture than Lanczos (Paul 11-17; suite upscale)	packages=qwen-image-2
+upscale-seedvr2-dists	*	se-149: SeedVR2's picture Upscale at 1080p fell short of its 2160p restoration (suite upscale)	packages=seedvr2
