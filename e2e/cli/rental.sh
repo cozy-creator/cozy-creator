@@ -580,9 +580,9 @@ hub_phantom_instead() (
 # th-383: the dead listings were datacenter × card (RunPod EU-RO-1 RTX 5090 even at 1×, EU-SE-1 A6000), so a refusing
 # datacenter rests its card alone, across widths, and a resting card is never quoted: rental A was quoted a phantom $4.685/h
 # while Vast booted its 2× 5090 at $2.188/h. One provider here lists its CPU in `local`, whose creates its engine refuses, and
-# in `local-b`, which sells. Three orders are each refused at `local` and bought at `local-b` (its sales don't end `local`'s
-# streak); `local`'s CPU then rests (`GET /v1/admin/provider-cooldowns`), and a fourth order is quoted and bought at `local-b`
-# with no refusal.
+# in `local-b`, which sells, read every 10 s; each order follows a fresh listing, which lifts a refused offer's hold. Three
+# orders are each refused at `local` and bought at `local-b` (its sales don't end `local`'s streak); `local`'s CPU then rests
+# (`GET /v1/admin/provider-cooldowns`), and a fourth order is quoted and bought at `local-b` with no refusal.
 hub_phantom_datacenter() (
   step "a refusing datacenter's card rests alone, and is never quoted (th-383)"
   [ -n "${COZY_TEST_HUB_COMMAND_FILE:-}" ] && [ -n "${COZY_HUB_URL:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] \
@@ -601,6 +601,7 @@ hub_phantom_datacenter() (
   trap 'end_all; kill "$proxy" 2> /dev/null || true; bash "$here/../skew/rehub.sh" > /dev/null 2>&1 || true' EXIT
   signin "$E2E_HUB_EMAIL" > "$S/login.json" || fail "phantom datacenter: cozy login: $(tail -c 300 "$S/login.json")"
   bash "$here/../skew/rehub.sh" --set "provider.docker.socket=$S/docker.sock" --set 'provider.docker.datacenters_json=["local","local-b"]' \
+    --set provider.inventory_refresh_seconds=10 \
     > "$S/rehub.log" 2>&1 || fail "phantom datacenter: restarting the Hub on two datacenters: $(tail -c 300 "$S/rehub.log")"
   sql -c "DELETE FROM hub_v2.provider_card_cooldowns" > /dev/null 2>&1 || true
   sql -c "DELETE FROM hub_v2.provider_sku_cooldowns" > /dev/null 2>&1 || true
@@ -615,6 +616,8 @@ hub_phantom_datacenter() (
       WHERE rental_id = '$1' ORDER BY ordinal" 2> /dev/null | tr '|' ' '
   }
   for n in 1 2 3 4; do
+    # A listing after the last refusal: the refused offer is held off only until its provider lists it again.
+    [ "$n" = 1 ] || sleep 15
     cozy --json machine rent cpu -y > "$S/rent-$n.ndjson" 2> "$S/rent-$n.err" & pid=$!
     rental=''
     for _ in $(seq 180); do
