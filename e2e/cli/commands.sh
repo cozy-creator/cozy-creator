@@ -11,6 +11,13 @@ entrypoints() {
     || check "entrypoints: see $OUT/entrypoints/results.json"
 }
 
+# Every command a hint names is one this cozy has: each `cozy …` its code, page and docs tell someone to type, walked down its help.
+hint_commands() {
+  step "every command a hint, a next line or a doc names parses"
+  python3 "$here/hints.py" --cozy "$COZY" --root "$(git -C "$here" rev-parse --show-toplevel)" --out "$OUT/hints" \
+    || check "hint commands: $(jq -r '.stale | keys | join(", ")' "$OUT/hints/hints.json" 2> /dev/null)"
+}
+
 # What needs no machine: Calcifer, the Hub setting, signing out, the Hub's packages and models.
 catalog() {
 step status

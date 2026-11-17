@@ -2217,7 +2217,7 @@ take: string, out_frame: number,
 beats_from?: number | null, };
 
 /**
- * Where the plan sent a run, and what that machine's offer quoted when it went (cl-967): `cozy run show`'s `placed`.
+ * Where the plan sent a run, and what that machine's offer quoted when it went (cl-967): `cozy run watch --once`'s `placed`.
  */
 export type Placed = { machine: string,
 /**

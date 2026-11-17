@@ -2578,7 +2578,7 @@ impl Calcifer {
                     } else if let Some(reason) = self.machine_waiting(id, state.clone())
                         && self.wait_said(id, &reason)
                     {
-                        // What it waits for, kept with the run as its stages are: `cozy run show` and its cells read when it began.
+                        // What it waits for, kept with the run as its stages are: `cozy run watch --once` and its cells read when it began.
                         batch.logs.push((frame.at_ms, "stage".into(), reason));
                     }
                     if state.started_at_ms > 0 {

@@ -908,7 +908,7 @@ impl Publisher {
     }
 
     /// A Hub checkpoint resolved (`resolve`) and downloaded into the store at `order` (a warm run's
-    /// model choice: `cozy model download`): whole, or its header and tree alone (`structure`: a
+    /// model choice: `cozy model install`): whole, or its header and tree alone (`structure`: a
     /// composition's base, whose components stay the Hub's). `room` is asked for the bytes absent
     /// before any is fetched, as a run's weights are (`Service::room_for`). Answers what the Hub
     /// named and its bytes by where they came from (`pull`).
@@ -1940,7 +1940,7 @@ fn apply_adapters(
     let mut selections = vec![];
     for adapter in &choice.adapters {
         let header = if adapter.source.is_empty() && adapter.model.starts_with("local/") {
-            // One this machine holds by name (`cozy model download … local/<name>`).
+            // One this machine holds by name (`cozy model install … local/<name>`).
             held_local(store, &adapter.model)?.header.id()
         } else if adapter.source.is_empty() {
             // By name, resolved at the Hub, or the owner's by hash (th-245).

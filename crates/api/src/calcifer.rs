@@ -413,7 +413,7 @@ pub enum Status {
     Canceled,
 }
 
-/// Where the plan sent a run, and what that machine's offer quoted when it went (cl-967): `cozy run show`'s `placed`.
+/// Where the plan sent a run, and what that machine's offer quoted when it went (cl-967): `cozy run watch --once`'s `placed`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Placed {

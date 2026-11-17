@@ -702,7 +702,7 @@ impl Runs {
     }
 
     /// A warm run's model choices made present when it names no entrypoint (`cozy package
-    /// install`, `cozy model download`) or no code (`cozy model upload`, of a file or a run's output): a
+    /// install`, `cozy model install`) or no code (`cozy model upload`, of a file or a run's output): a
     /// Hub checkpoint downloaded, a provider source or a written file (`object://`) made, a
     /// checkpoint this machine holds (a run's weights output, a `local/` alias) found. With a
     /// weights destination the one choice is put there: a `local/` alias held by name, or a
@@ -911,7 +911,7 @@ impl Runs {
             // A commit's repo files (configs, a tokenizer) go with its header: the base's, for a composition.
             let files = repo_files(upload_store, tree.as_ref())?;
             if let Some(name) = destination.strip_prefix("local/") {
-                // A local alias (`cozy model download … local/name`): the model, held by name.
+                // A local alias (`cozy model install … local/name`): the model, held by name.
                 crate::storage::set_local(publisher.store(), name, &header, &files, &spec.lane)
                     .map_err(|e| refused("local_alias_refused", e.to_string()))?;
                 row["published"] = json!({"destination": destination, "checkpoint": header.id(), "converged": false});
