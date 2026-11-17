@@ -12,8 +12,13 @@
 # UPSCALERS: <key> <package>/<function> <inputs, comma-separated> <BY>
 # - qwen: the three it did worst on in se-147's runs (konqi-friends q50 4:2:0, hokusai-wave q55 4:2:0, kiki q65). Its fix
 #   measured 53-60% under Lanczos' DISTS on them (pod-session 44073117278), the RC's tool 1% above (44057846726): the bar 30%.
+# - seedvr2 (se-149, Paul 11-17: "audit the other upscalers to ensure they're actually doing useful upscaling ... to get
+#   maximal results"): the three whose restoration gained most from 2160p (kiki q65, hokusai-wave q55 4:2:0, revoy-shichimi
+#   q74). At 2160p, the fix's default, it measured 55% under Lanczos' DISTS on them; at the RC's 1080p 44% (pod-session
+#   44058075454): the bar 50%.
 UPSCALERS=(
   "qwen qwen-image-2/upscale konqi-friends,hokusai-wave,kiki 0.30"
+  "seedvr2 seedvr2/upscale_image kiki,hokusai-wave,revoy-shichimi 0.50"
 )
 UPSCALE=$HERE/sessions/fixtures/upscale-bench UPSCALE_PY=${RUNNER_TEMP:-/tmp}/upscale-iqa
 mkdir -p upscale/runs
