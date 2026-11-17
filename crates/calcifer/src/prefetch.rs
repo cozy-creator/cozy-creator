@@ -145,7 +145,6 @@ pub(crate) struct Lists {
 struct Pinned {
     hub: String,
     item: v1::Predicted,
-    project: std::sync::Weak<Project>,
     asset: String,
     since: std::time::Instant,
 }
@@ -262,19 +261,16 @@ impl Lists {
         }
         let guess = lock(&self.guessed).get(project)?.iter().find(|guess| guess.asset == asset && guess.machine == machine)?.clone();
         let key = lock(&self.keys).get(&(machine.to_owned(), identity(&guess.item))).cloned()?;
-        let pinned = Pinned { hub: guess.hub, item: v1::Predicted { key: key.clone(), ..guess.item }, project: guess.project, asset: asset.to_owned(), since: std::time::Instant::now() };
+        let pinned = Pinned { hub: guess.hub, item: v1::Predicted { key: key.clone(), ..guess.item }, asset: asset.to_owned(), since: std::time::Instant::now() };
         lock(&self.pinned).insert((machine.to_owned(), key.clone()), pinned);
         tracing::info!(target: TARGET, "{asset}'s render names {key} on {machine}: it stays listed until the machine answers");
         Some(key)
     }
 
-    /// `machine` answered a render that named item `key`: the item goes as its box's guess says now, and that box's next draft is
-    /// predicted with a seed of its own (`Project::rotate_draft_seed`), as its next render takes one.
+    /// `machine` answered a render that named item `key`: the item goes as its box's guess says now. The render took its draft's seed
+    /// (`Project::take_draft_seed`), so that box's next draft is already predicted with a fresh one.
     pub(crate) fn answered(&self, machines: &Arc<Machines>, machine: &str, key: &str) {
         let Some(pinned) = lock(&self.pinned).remove(&(machine.to_owned(), key.to_owned())) else { return };
-        if let Some(project) = pinned.project.upgrade() {
-            project.rotate_draft_seed(&pinned.asset);
-        }
         tracing::info!(target: TARGET, "{machine} answered {}'s render, which named {key}", pinned.asset);
         self.send(machines);
     }

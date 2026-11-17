@@ -4057,10 +4057,11 @@ impl Project {
         *self.drafts.lock().expect("drafts lock").entry(name_key(name)).or_insert_with(new_seed)
     }
 
-    /// Box `name`'s render was answered by its machine (`prefetch::Lists::answered`): its next draft is predicted with a seed of its
-    /// own, as its next render takes one.
-    pub(crate) fn rotate_draft_seed(&self, name: &str) {
-        self.drafts.lock().expect("drafts lock").remove(&name_key(name));
+    /// The seed a render of box `name` takes when its seed is unset: its draft's, so the request its machine made ready is the one it
+    /// is sent (cl-1123), and taken, so its next draft, and its next render, draw a fresh one. An unset seed is a new seed every render
+    /// (`new_seed`), whatever the machine answers or whether the memo serves it.
+    pub(super) fn take_draft_seed(&self, name: &str) -> u64 {
+        self.drafts.lock().expect("drafts lock").remove(&name_key(name)).unwrap_or_else(new_seed)
     }
 }
 
@@ -5928,7 +5929,7 @@ impl Walk {
                 // Try again is a render of what failed on these inputs: the same seed, so its finished calls come from the memo.
                 let tried = now.asset(&name).and_then(|held| held.tried.as_ref()).filter(|tried| tried.inputs == inputs).map(|tried| tried.seed);
                 // Else the seed its draft was predicted with (cl-1123): the request its machine made ready is the one it is sent.
-                version.seed = Some(tried.unwrap_or_else(|| self.project.draft_seed(&name)));
+                version.seed = Some(tried.unwrap_or_else(|| self.project.take_draft_seed(&name)));
             }
             version.pickup = pickup;
             // Its number now, whichever of several lands first.
