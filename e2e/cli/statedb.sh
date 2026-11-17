@@ -485,9 +485,11 @@ hub_facts_restart() (
       || check "hub facts: with the Hub not answering, a restarted Calcifer's $route took ${secs:-10 or more} s (HTTP ${status:-none})"
   done
   # The first run after the restart, of code here on this computer's machine: it needs nothing the stopped Hub says.
-  local began ended code=0
+  # Its release named, as the first one ran it: a run naming none asks the Hub for its releases.
+  local began ended code=0 target
+  target=$(jq -r 'select(.type? == "run.created") | .run.target' "$S/run.ndjson" | head -1)
   began=$(date +%s%N)
-  timeout 60 bash -c 'cd "$1" && cozy --json run minimax-h3-tools/echo text=restarted --on local' _ "$P" > "$S/after-run.ndjson" 2> "$S/after-run.err" || code=$?
+  timeout 60 bash -c 'cd "$1" && cozy --json run "$2" text=restarted --on local' _ "$P" "$target" > "$S/after-run.ndjson" 2> "$S/after-run.err" || code=$?
   ended=$(date +%s%N)
   kill -CONT "$hub_pid" || true
   echo "hub facts: the first run after a restart, the Hub stopped: exit $code in $(( (ended - began) / 1000000 )) ms"
