@@ -3,8 +3,9 @@
 # using the int8 VAE where possible."
 # minimax-h3's `vae_round_trip` on a 129-frame 1344x768 clip (ComfyUI's blog shape), int8 lane: a warm-up, then a timed call
 # whose `vae_encode` and `vae_decode` stages must each be within 5% of ComfyUI's on this SKU (h3-vae.tsv: ComfyUI master,
-# comfy-kitchen #167's kernels, its int8 VAE and --fast fp16_accumulation, timed on the same pod by sessions/h3-vae.sh). A SKU
-# with no row runs and is noted.
+# comfy-kitchen #167's kernels, its int8 VAE and --fast fp16_accumulation, timed on the same pod by sessions/h3-vae.sh), each
+# first scaled by the call's mean SM clock against that pod's (`sm_mhz`): rentals of one SKU run at 451 to 576 W. A pod
+# whose `read_video` takes twice that pod's (`read_s`) is named a slow host. A SKU with no row runs and is noted.
 if [ -z "$ONLY" ] || [[ $ONLY == *",h3-vae,"* || $ONLY == *",minimax-h3,"* ]]; then
   VAE_CLIP=$OUT/h3-vae-129.mp4
   nice -n 19 ffmpeg -nostdin -v error -y -loop 1 -i "$HERE/ref/seed.jpg" -frames:v 129 -r 24 -pix_fmt yuv420p -c:v libx264 -crf 12 \
@@ -16,18 +17,22 @@ if [ -z "$ONLY" ] || [[ $ONLY == *",h3-vae,"* || $ONLY == *",minimax-h3,"* ]]; t
   ONLY=$SAVED
   cell h3-vae "$VAE_FN" --file video="$VAE_CLIP" --lane int8
   if [ -f h3-vae.json ]; then
-    read -r enc dec < <(run_get "$OUT" h3-vae '[.measurements, .calls[]?.measurements | .attribution.stages? // {}] as $s
-      | "\(([$s[].vae_encode.total_ms // empty] | add // 0) / 1000) \(([$s[].vae_decode.total_ms // empty] | add // 0) / 1000)"')
-    read -r _ c_enc c_dec source < <(awk -F'\t' -v s="$SKU" '$1 == s' "$HERE/suites/runtime/h3-vae.tsv")
+    read -r enc dec rd sm < <(run_get "$OUT" h3-vae '[.measurements, .calls[]?.measurements] as $m | [$m[] | .attribution.stages? // {}] as $s
+      | "\(([$s[].vae_encode.total_ms // empty] | add // 0) / 1000) \(([$s[].vae_decode.total_ms // empty] | add // 0) / 1000)"
+        + " \(([$s[].read_video.total_ms // empty] | add // 0) / 1000) \([$m[] | .memory.driver[]?.sm_mhz_mean // empty] | first // 0)"')
+    read -r _ c_enc c_dec c_sm c_rd source < <(awk -F'\t' -v s="$SKU" '$1 == s' "$HERE/suites/runtime/h3-vae.tsv")
     if [ "$(run_get "$OUT" h3-vae .status)" != completed ]; then
       expect h3-vae FAIL "run $(cat h3-vae.number 2>/dev/null) $(run_get "$OUT" h3-vae .status)"
     elif [ -z "${c_enc:-}" ]; then
       log "h3-vae: encode ${enc}s, decode ${dec}s on $SKU; h3-vae.tsv has no ComfyUI time for it"
     else
+      [ "${sm:-0}" != 0 ] || sm=$c_sm  # no clock read: unscaled
+      host=$(awk -v r="$rd" -v c="$c_rd" 'BEGIN { if (r >= 2 * c) printf "; slow host: read_video %.2f s against %.2f s", r, c }')
       for part in encode decode; do
         if [ $part = encode ]; then ours=$enc theirs=$c_enc; else ours=$dec theirs=$c_dec; fi
-        expect "h3-vae-$part" "$(awk -v o="$ours" -v t="$theirs" 'BEGIN { print (o > 0 && o <= t * 1.05) ? "PASS" : "FAIL" }')" \
-          "vae_$part ${ours}s against ComfyUI's ${theirs}s (bar x1.05) on $SKU, 129 frames at 1344x768 ($source)"
+        scaled=$(awk -v o="$ours" -v m="$sm" -v c="$c_sm" 'BEGIN { printf "%.2f", o * m / c }')
+        expect "h3-vae-$part" "$(awk -v o="$scaled" -v t="$theirs" 'BEGIN { print (o > 0 && o <= t * 1.05) ? "PASS" : "FAIL" }')" \
+          "vae_$part ${ours}s at ${sm} MHz, ${scaled}s at ComfyUI's pod's ${c_sm} MHz, against its ${theirs}s (bar x1.05) on $SKU, 129 frames at 1344x768$host ($source)"
       done
     fi
   fi
