@@ -213,13 +213,15 @@ impl PyDevice {
     fn granularity(&self) -> PyResult<usize> {
         Ok(self.owner()?.granularity())
     }
-    /// A Region of `bytes` from `source`: address space only, until it is used.
+    /// A Region of `bytes` from `source`: address space only, until it is used. `set`: the model
+    /// component it belongs to, whose small regions share pages (cr-317).
     #[cfg(feature = "store")]
-    fn region(&self, py: Python<'_>, bytes: usize, source: PyRef<'_, source::PySource>) -> PyResult<PyRegion> {
+    #[pyo3(signature = (bytes, source, set = None))]
+    fn region(&self, py: Python<'_>, bytes: usize, source: PyRef<'_, source::PySource>, set: Option<String>) -> PyResult<PyRegion> {
         let device = self.owner()?;
         let inner = source.inner.clone();
         let bound = inner.clone();
-        let region = py.detach(|| device.region(bytes, Arc::new(source::PageSource(inner))))
+        let region = py.detach(|| device.region_in(bytes, Arc::new(source::PageSource(inner)), set.as_deref()))
             .map_err(|e| raise(py, e))?;
         source::bind(&bound, &region);
         Ok(PyRegion { region: Deferred::new(region) })

@@ -100,9 +100,10 @@ class Device:
     def granularity(self) -> int:
         return self._native.granularity
 
-    def region(self, bytes: int, source: Source) -> Region:
-        """A Region of `bytes` from `source`: address space only, until it is used."""
-        return Region(self._native.region(bytes, source._native))
+    def region(self, bytes: int, source: Source, set: str | None = None) -> Region:
+        """A Region of `bytes` from `source`: address space only, until it is used. `set`: the
+        model component it belongs to; its small regions share pages (cr-317)."""
+        return Region(self._native.region(bytes, source._native, set))
 
     def stats(self) -> DeviceStats:
         return self._native.stats()
