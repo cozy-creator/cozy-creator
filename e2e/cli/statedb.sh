@@ -416,8 +416,8 @@ hub_listing_restart() (
     sleep 0.2
   done
   [ -n "$listed" ] || fail "hub listing: the Hub was never listed: $(api "http://$ADDR/v1/machines" 2>&1 | jq -c '{hubs, unanswered, signed_out}' 2>&1)"
-  # Kept just after it's read: before this change, never.
-  for _ in $(seq 50); do [ -s "$HOME/.cozy/calcifer/kept-hub-listings.json" ] && break; sleep 0.2; done
+  # Kept in state.db just after it's read (hub_listings, cl-818: no JSON store beside it); before #3618, never.
+  for _ in $(seq 50); do [ "$(state1 "SELECT count(*) FROM hub_listings" 2> /dev/null || echo 0)" -ge 1 ] && break; sleep 0.2; done
   pid=$(jq -r .pid "$lock")
   calcifer_halt || fail "hub listing: Calcifer didn't stop"
   halted=$(($(date +%s%N) / 1000000))

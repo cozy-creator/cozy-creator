@@ -294,12 +294,25 @@ async fn ssh(ctx: &Context, name: &str, command: &[String]) -> Result<ExitCode, 
     }
 }
 
-/// Why `machine ssh` has no login for `m`: not a rental, rented without a key, not ready yet, or
-/// its Hub's word is missing (this computer is signed out there, or it did not answer).
+/// Why `machine ssh` has no login for `m`: not a rental, this computer signed out of its Hub (whose
+/// word is the login, checked first: a listing kept from before says nothing now), rented without a key,
+/// not ready yet, or its Hub's word missing (it did not answer).
 async fn no_login(ctx: &Context, m: &Machine) -> Error {
     let name = &m.name;
     if m.kind != MachineKind::Rental {
         return Error::new(Kind::Usage, "machine_ssh_none", format!("{name} is not a rental; connect using its owner's SSH details"));
+    }
+    let list = match ctx.calcifer().await {
+        Ok(calcifer) => calcifer.get::<MachineList>("/v1/machines?refresh=true").await.ok(),
+        Err(_) => None,
+    };
+    let hub = &m.hub;
+    if list.as_ref().is_some_and(|list| list.signed_out.contains(hub)) {
+        return Error::credential(
+            "not_logged_in",
+            format!("{name}'s SSH login comes from its Hub, and this computer is not signed in to {hub}"),
+        )
+        .next(ctx.config.login(hub));
     }
     match &m.rental {
         Some(rental) if rental.ssh_key => {
@@ -308,34 +321,20 @@ async fn no_login(ctx: &Context, m: &Machine) -> Error {
         }
         Some(rental) => Error::new(Kind::Usage, "machine_ssh_none", format!("{name} has no SSH key; keys must be added when renting"))
             .next(format!("cozy machine rent {} --ssh", rental.sku)),
-        None => {
-            let list = match ctx.calcifer().await {
-                Ok(calcifer) => calcifer.get::<MachineList>("/v1/machines?refresh=true").await.ok(),
-                Err(_) => None,
-            };
-            let hub = &m.hub;
-            let signed_out = list.as_ref().is_some_and(|list| list.signed_out.contains(hub));
-            let unanswered = list.as_ref().and_then(|list| list.unanswered.iter().find(|problem| problem.hub == *hub));
-            match (signed_out, unanswered) {
-                (true, _) => Error::credential(
-                    "not_logged_in",
-                    format!("{name}'s SSH login comes from its Hub, and this computer is not signed in to {hub}"),
-                )
-                .next(ctx.config.login(hub)),
-                (false, Some(problem)) => Error::new(
-                    Kind::Unavailable,
-                    "hub_unanswered",
-                    format!("{name}'s SSH login comes from its Hub, which did not answer: {}", problem.message),
-                )
-                .next(format!("cozy machine ssh {name}")),
-                (false, None) => Error::new(
-                    Kind::Unavailable,
-                    "machine_ssh_unheard",
-                    format!("{name}'s Hub has not said how to reach it yet"),
-                )
-                .next(format!("cozy machine show {name}")),
-            }
-        }
+        None => match list.as_ref().and_then(|list| list.unanswered.iter().find(|problem| problem.hub == *hub)) {
+            Some(problem) => Error::new(
+                Kind::Unavailable,
+                "hub_unanswered",
+                format!("{name}'s SSH login comes from its Hub, which did not answer: {}", problem.message),
+            )
+            .next(format!("cozy machine ssh {name}")),
+            None => Error::new(
+                Kind::Unavailable,
+                "machine_ssh_unheard",
+                format!("{name}'s Hub has not said how to reach it yet"),
+            )
+            .next(format!("cozy machine show {name}")),
+        },
     }
 }
 
