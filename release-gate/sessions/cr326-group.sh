@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # cr326-group (proof, never merged): a 2-GPU group renders H3 Turbo 15 s with the Runtime under test, then the same request
-# on 1 GPU. cr-326: on rc/0.27.0 every group follower failed its prepare (`Invalid device id`, Paul's PRO6-36/38/45/46).
+# on 1 GPU (`one`: no skips it); `gpus` sizes the group (2). cr-326: on rc/0.27.0 every group follower failed its prepare (`Invalid device id`, Paul's PRO6-36/38/45/46).
 # Setup as llm-two-gpus: a dev home on this runner's RC cozy, packages from the packages_refs checkout `tree`, the rental on
 # the RC's builds, then this cozy as its TensorD and `runtime`'s wheel. params: tree, runtime (required), seconds (3600).
 . "$(dirname "$0")/lib.sh"
@@ -26,7 +26,8 @@ cozy restart > "$OUT/restart.txt" 2>&1 || fail "cozy restart: $(tail -c 300 "$OU
 [ -z "$(own)" ] || fail "this runner's Calcifer already holds a rental: $(own | paste -sd' ')"
 trap 'code=$?; claim; (exit "$code"); finish' EXIT
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
-RENT_ARGS="--ssh --gpus 2"
+G=$(param gpus 2)
+RENT_ARGS="--ssh --gpus $G"
 quote "$(param seconds 3600)"
 GUARD_ALSO=own guard
 order
@@ -65,9 +66,9 @@ h3() {
   say "$cell: run ${n:-none} on $2 GPU(s): $(jq -r '.status // "unrecorded"' "$OUT/$cell.json" 2> /dev/null) in $(jq -r '(.execution_ms // 0) / 1000 | floor' "$OUT/$cell.json" 2> /dev/null) s; GPUs $(jq -c '[.measurements.execution.gpus[]?.uuid]' "$OUT/$cell.json" 2> /dev/null); $(jq -r '[.reason.code, .reason.message] | map(select(. != null)) | join(": ")' "$OUT/$cell.json" 2> /dev/null | cut -c1-300)"
   [ "$(jq -r '.status // empty' "$OUT/$cell.json" 2> /dev/null)" = completed ] || RC=1
 }
-h3 two 2
-h3 one 1
+h3 group "$G"
+[ "$(param one yes)" = no ] || h3 one 1
 cozy machine logs "$NAME" --since 3h -n 0 > "$OUT/machine.log" 2>&1
 grep -c 'Invalid device id' "$OUT/machine.log" | xargs -I{} say "machine log: {} 'Invalid device id' lines"
-{ echo "## cr326-group on $NAME ($SKU x2): cozy $on, Runtime $runtime"; grep -E '(two|one): run|FAIL' "$R"; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+{ echo "## cr326-group on $NAME ($SKU x$G): cozy $on, Runtime $runtime"; grep -E '(group|one): run|FAIL' "$R"; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 exit "$RC"
