@@ -512,6 +512,7 @@ WEB_2=(
   fullscreen
   llm-reads
   orbit
+  tools-local
 )
 WEB_3=(
   focus
