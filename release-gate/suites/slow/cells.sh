@@ -9,6 +9,9 @@
 # - slow-power: cl-1161 (the 0.26.0 coordinator, 11-17: "one cheap real rental with no false alarm"). A loaded run on the card's own
 #   readings records its enforced and default power limits, and warns `gpu_throttled` only when its host holds it under 80% of its
 #   default (or heat holds it back) most of the run: on a healthy card, no alarm. Escaped as xs-203's hiroyuki (a 4090 held to ~160 of 450 W, unflagged).
+# - slow-source-bar: cl-1161 (the coordinator: "fix `bar()` for from-source targets with no `@release`"). Local code names no release, so
+#   its bar is its source's benchmarks.json: a copy of e2e's weightless package whose rows say `wait` takes 1 s on this card waits 30 s and
+#   warns `slow_run` "based on its source's benchmark". Escaped as xs-203's from-source H3: 925 s against 331 s and no slow_run.
 S=$OUT/slow; mkdir -p "$S"
 [ -z "$ONLY" ] || [[ $ONLY == *,slow* ]] || return 0
 TOOL=$HERE/../e2e/cli/project/tool.py
@@ -78,3 +81,14 @@ heat=$("$CLI" --json machine show "$M" 2>/dev/null | jq -c '[.status.heat[]? | {
 "$CLI" machine ssh "$M" -- "sed -i '/gpu_samples = /d' ~/.cozy/config.toml" < /dev/null > /dev/null 2>&1
 restart cool
 expect slow-hot "$([ ${#bad[@]} -eq 0 ] && echo PASS || echo FAIL)" "${bad[*]:-run $(cat slow-hot.number 2>/dev/null) warned gpu_throttled and slow_run: $said; machine show $heat}"
+
+# Local code's bar: its source's benchmarks.json, on this card.
+bad=()
+rm -rf "$S/benched" && cp -r "$HERE/../e2e/cli/weightless" "$S/benched"
+card=$("$CLI" --json machine show "$M" 2>/dev/null | jq -r '.status.gpus[0].name // empty')
+[ -n "$card" ] || bad+=("machine show names no GPU")
+jq -n --arg gpu "$card" '[{function: "wait", gpu: $gpu, gpus: 1, request: {}, warm_ms: 1000, cold_ms: 1000, note: "cl-1161 slow-source-bar"}]' > "$S/benched/benchmarks.json"
+run_cell "$OUT" slow-source-bar "$S/benched/wait" --on "$M" 'seconds:=30' > /dev/null 2>&1 || bad+=("the run did not complete")
+said=$(jq -r '.warnings[]? | select(.code == "slow_run") | .message' "$OUT/slow-source-bar.json" 2>/dev/null)
+grep -q "based on its source's benchmark of an" <<< "$said" || bad+=("no slow_run on its source's benchmark: [$(codes slow-source-bar)] $said")
+expect slow-source-bar "$([ ${#bad[@]} -eq 0 ] && echo PASS || echo FAIL)" "${bad[*]:-run $(cat slow-source-bar.number 2>/dev/null) on $card: $said}"
