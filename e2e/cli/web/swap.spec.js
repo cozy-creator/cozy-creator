@@ -6,7 +6,10 @@ const { homedir } = require('os');
 const { join } = require('path');
 const { test, expect } = require('./fixtures');
 
-test.use({ projectOptions: { encrypted: true } });
+// Encrypted but on Windows, whose web lane has no WinFsp (as every native web cell's project is plain there): swap.py carries an
+// encrypted view across a swap on Windows too.
+const encrypted = process.platform !== 'win32';
+test.use({ projectOptions: { encrypted } });
 
 const holder = () => JSON.parse(readFileSync(join(homedir(), '.cozy', 'calcifer', 'calcifer.lock.holder'), 'utf8'));
 
@@ -30,8 +33,9 @@ test('swap', { tag: '@solo' }, async ({ page, project, api, cli, signIn }) => {
   // Past the page's 2 s quiet: a stream not back by then would say so.
   await page.waitForTimeout(3_000);
   expect(await page.evaluate(() => window.__swap?.offline), 'the same page, never offline').toBe(0);
-  expect(await api.get(project.at('/vault')), 'the project stayed unlocked').toMatchObject({ encrypted: true, state: 'unlocked' });
   await expect(page.locator('header.top .pill').filter({ hasText: /offline|Trying again/ }), 'nothing left waiting').toHaveCount(0);
+  if (!encrypted) return;
+  expect(await api.get(project.at('/vault')), 'the project stayed unlocked').toMatchObject({ encrypted: true, state: 'unlocked' });
   // The view the next generation took locks as any does: its mount ends, and the project's folder can go.
   await api.post(project.at('/vault'), { action: 'lock' });
   await expect.poll(async () => (await api.get(project.at('/vault'))).state, { message: 'the carried view locked', timeout: 30_000 }).toBe('locked');

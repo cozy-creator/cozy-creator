@@ -40,7 +40,9 @@ def holder() -> Holder:
 def place(source: Path, at: Path) -> None:
     """`source` at `at`, renamed into place as an update does: a running process keeps the inode it runs (a copy over it is refused)."""
     staged = at.with_name(at.name + ".staging")
-    shutil.copy2(source, staged)
+    # Its bytes alone: a system binary's flags (macOS) don't copy.
+    shutil.copyfile(source, staged)
+    os.chmod(staged, 0o755)
     os.replace(staged, at)
 
 
@@ -81,7 +83,8 @@ class Asking:
                     kept = kept or http.client.HTTPConnection(self.host, self.port, timeout=30)
                     try:
                         self.ask(kept)
-                    except (http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError):
+                    # A kept connection the server closed meanwhile, as each OS says it (Windows: WSAECONNABORTED).
+                    except (http.client.RemoteDisconnected, ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
                         if not reused:
                             raise
                         self.again += 1
