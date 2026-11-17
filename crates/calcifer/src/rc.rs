@@ -40,6 +40,11 @@ pub(crate) fn open() -> String {
     format!("{major}.{}.0", minor + u64::from(!release.contains('-')))
 }
 
+/// Whether a machine's `cozy` (`version`) is a build of the open RC: it moved to the RC's builds before.
+fn on_rc(version: &str) -> bool {
+    prerelease::dev(version) && crate::update::same_minor(version, &open())
+}
+
 /// What the RC's prereleases name, as read.
 pub(crate) struct Sums {
     pub rc: String,
@@ -261,10 +266,14 @@ impl Machines {
 
     /// Moves `name` to the open RC's builds when it follows the RC, is behind it, isn't held by hand and has no work going (nor,
     /// unless `sending`, any waiting for it): the update run to wait for. None when nothing moves, or the RC can't be read
-    /// (its runs go on what it runs).
+    /// (its runs go on what it runs). A send moves only a machine not on the RC's builds yet, as at its boot (cl-922): one on them
+    /// moves to a newer build at idle alone, never ahead of work (cl-1123: PRO6-33 waited 92 s for hougetsu's move to the next).
     pub(crate) async fn follow_rc(self: &Arc<Self>, name: &str, sending: bool) -> Option<Run> {
         let row = self.follows(name)?;
         let frame = self.frame(name).filter(|frame| frame.phase == "ready" && frame.update.is_none())?;
+        if sending && on_rc(&frame.version) {
+            return None;
+        }
         let store = self.store();
         // `local` moves only at rest, never ahead of a run (xs-195).
         let local = row.kind == MachineKind::Local;
