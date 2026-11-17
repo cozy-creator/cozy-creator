@@ -103,8 +103,8 @@ pub(crate) struct Lists {
     listings: AtomicU64,
     /// A prepare item its machine says it lost was given a new key: the lists go again at its next Status (`seen`).
     rekeyed: std::sync::atomic::AtomicBool,
-    /// By machine: what of its Status a quote of its load reads (`load`), and a count that moves whenever one's changes.
-    loads: Mutex<HashMap<String, (u64, u64)>>,
+    /// By machine: what of its Status a quote of its load reads (`weigh`), and a count that moves whenever one's changes.
+    loads: Mutex<HashMap<String, Load>>,
     pub(crate) load_moved: AtomicU64,
     /// By machine and key: a prepare item a render names (`RunSpec::predicted`, cl-1123), kept on its list until the machine answers
     /// that render (`answered`), whatever its box's guess is meanwhile: the request it made ready is the one the render adopts. With
@@ -420,36 +420,63 @@ impl Lists {
         keys.len() != before
     }
 
-    /// What of `machine`'s Status a quote of its load reads (cl-1104): the roots in its queue, each where it stands but for its bytes
-    /// still to come, the update it may wait on, its phase and its GPUs out of service. Where that changed, `load_moved` moves: each
-    /// open project's guesses are made again, so the machine made ready is still the one a render would go to.
+    /// What of `machine`'s Status could change where a render goes (cl-1104, cl-1123): the runs in its line (each where it stands),
+    /// the update it may wait on, its phase and its GPUs out of service; and how long the weights its line waits for take at its
+    /// link. `load_moved` moves when one of the first changed, or that time by the move threshold (`plan::STAY_MS`), and each open
+    /// project's guesses are placed again. An install's or a model's download comes and goes in the line with each download, and
+    /// its bytes tick down: neither moves it (44068453992: 26 of 30 rounds came of them, every 1–2 s).
     fn weigh(&self, machine: &str, frame: &v1::StatusFrame) {
         use std::hash::{Hash as _, Hasher as _};
         let mut loads = lock(&self.loads);
         let was = loads.get(machine).copied();
+        let theirs = |root: &&v1::Queued| !root.run.starts_with(PREPARE) && !root.run.starts_with(UPCOMING);
         // A stream sends its queue only when it changed: absent, as its last frame said.
-        let queue = match &frame.queue {
+        let (line, waits_ms) = match &frame.queue {
             Some(queue) => {
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                for root in queue.iter().filter(|root| !root.run.starts_with(PREPARE) && !root.run.starts_with(UPCOMING)) {
+                // A run of a function, or one on GPUs; not an install or a model's download, which names no function and holds none.
+                let runs = queue.iter().filter(theirs).filter(|root| !root.function.is_empty() || !root.widths.is_empty() || root.width > 0);
+                for root in runs {
                     (&root.run, &root.function, root.running, root.width, root.gpu_waits, root.started_at_unix_ms).hash(&mut hasher);
                 }
-                hasher.finish()
+                let bytes: u64 = queue.iter().filter(theirs).map(|root| root.bytes_left).sum();
+                let waits_ms = match frame.link_bytes_per_s > 0.0 {
+                    true => (bytes as f64 / frame.link_bytes_per_s * 1000.0) as i64,
+                    false => 0,
+                };
+                (hasher.finish(), waits_ms)
             }
-            None => was.map_or(0, |(queue, _)| queue),
+            None => was.map_or((0, 0), |load| (load.line, load.waits_ms)),
         };
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         let update = frame.update.as_ref().map(|update| update.state.as_str());
         let lost: Vec<_> = frame.gpus.iter().map(|gpu| &gpu.out_of_service).collect();
-        (queue, &frame.phase, update, lost).hash(&mut hasher);
-        let load = (queue, hasher.finish());
-        if was != Some(load) {
-            loads.insert(machine.to_owned(), load);
-            if was.is_some() {
-                self.load_moved.fetch_add(1, Ordering::AcqRel);
+        (&frame.phase, update, lost).hash(&mut hasher);
+        let state = hasher.finish();
+        let moved = match was {
+            None => None,
+            Some(was) if was.line != line => Some("the runs in its line changed".to_owned()),
+            Some(was) if was.state != state => Some("its phase, update or GPUs changed".to_owned()),
+            Some(was) if (waits_ms - was.waits_ms).abs() >= crate::plan::STAY_MS => {
+                Some(format!("the weights its line waits for take {} s, not {} s", waits_ms / 1000, was.waits_ms / 1000))
             }
+            Some(_) => return,
+        };
+        // The time its line waits stands as last weighed until it moves by the threshold, so a slow drift moves it once.
+        loads.insert(machine.to_owned(), Load { line, state, waits_ms });
+        if let Some(why) = moved {
+            self.load_moved.fetch_add(1, Ordering::AcqRel);
+            tracing::info!(target: TARGET, "{machine}'s load moved: {why}");
         }
     }
+}
+
+/// What of a machine's Status could change where a render goes (`Lists::weigh`).
+#[derive(Clone, Copy)]
+struct Load {
+    line: u64,
+    state: u64,
+    waits_ms: i64,
 }
 
 /// What `machine` prepares for demand elsewhere: nothing while it has upcoming jobs or a queue; else the published functions planned

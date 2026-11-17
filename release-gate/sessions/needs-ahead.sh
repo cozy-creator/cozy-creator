@@ -344,5 +344,9 @@ if [ -n "${EDIT_MS:-}" ]; then
   say "the I2I edit: made at $EDIT_MS; planned on $NAME $((planned - EDIT_MS)) ms later; first fetched $((fetched - EDIT_MS)) ms after the edit"
   [ "$fetched" -gt 0 ] && [ $((fetched - EDIT_MS)) -le 5000 ] || MISMATCH+=("the I2I edit's first byte came $((fetched - EDIT_MS)) ms after it")
 fi
+# Calcifer's guess rounds over the session, by what started each, and what moved each machine's load (cl-1123).
+tally() { sort | uniq -c | sort -rn | awk '{n = $1; $1 = ""; printf "%s%s ×%d", sep, substr($0, 2), n; sep = "; "}'; }
+say "Calcifer's guess rounds: $(grep -c ' guesses in [0-9]* ms (' "$OUT/calcifer.log") ($(grep -o ' guesses in [0-9]* ms ([^)]*)' "$OUT/calcifer.log" | sed 's/.* ms (//; s/)$//' | tally))"
+say "machines' loads moved: $(grep -o "[^ ]*'s load moved: .*" "$OUT/calcifer.log" | sed "s/'s load moved: / /" | awk '{print ($1 == "'"$NAME"'" ? "'"$NAME"'" : "another machine") ": " substr($0, index($0, " ") + 1)}' | tally)"
 [ ${#MISMATCH[@]} = 0 ] || fail "what didn't match: ${MISMATCH[*]}"
 say "PASS: each machine fetched what each request's rules said, Calcifer's word ahead of the render, and the cold quote was what landed"

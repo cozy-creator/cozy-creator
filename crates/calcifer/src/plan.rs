@@ -18,7 +18,7 @@ const PASSES: usize = 2;
 const TIE: f64 = 0.02;
 /// A job leaves the machine fetching ahead for it only for one that finishes it this much sooner, both.
 const STAY: f64 = 0.10;
-const STAY_MS: i64 = 30_000;
+pub(crate) const STAY_MS: i64 = 30_000;
 
 /// One job to place.
 #[derive(Clone, Debug)]
