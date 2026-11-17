@@ -322,6 +322,26 @@ impl Projects {
         }
     }
 
+    /// The machine `old` named has its Hub's name now, a rental ordered under its handle (cl-1106): each open project that chose it
+    /// chooses it by that name, its renders asked of it go there, and every page showing one reads it again. A closed project takes the
+    /// name at its next read (`chosen`) and its next walk (`renders_follow`).
+    pub(crate) fn machine_renamed(&self, api: &Api, old: &str) {
+        for project in self.now_open() {
+            let folder = &project.folder;
+            let chose = folder.machines().iter().any(|name| name.eq_ignore_ascii_case(old));
+            if chose {
+                chosen(api, folder);
+            }
+            let asked = renders_follow(api, folder).unwrap_or_else(|e| {
+                warn!("{}: its renders asked of {old} keep that name: {}", folder.dir.display(), e.message);
+                false
+            });
+            if chose || asked {
+                crate::events::project_settled(&folder.dir);
+            }
+        }
+    }
+
     /// Each project open now, held for as long as the caller holds it.
     fn now_open(&self) -> Vec<Arc<Project>> {
         self.open.lock().expect("projects lock").values().filter_map(Weak::upgrade).collect()
@@ -3013,10 +3033,13 @@ async fn render(api: &Arc<Api>, id: &str, mut asked: Runs) -> Result<Asked, Refu
     api.calcifer.project_store(&project.id)?.admit_new_work()?;
     asked.on=crate::private_io::check_project_placement(&project.id,&project.root,&asked.on).map_err(Refusal)?;
     let id = project.id.clone();
-    // None named: where `cozy run` naming none goes (cl-894).
+    // None named: where `cozy run` naming none goes (cl-894). A rental named by its order's handle, by its Hub's name for it (cl-1106).
     let on = match asked.on.is_empty() {
         true => crate::runs::unnamed_set(&api, Some(&id)).await.map_err(Refusal)?,
-        false => asked.on,
+        false => asked.on.into_iter().map(|on| match on {
+            On::Machine(name) => On::Machine(api.calcifer.machine_name_now(&name)),
+            other => other,
+        }).collect(),
     };
     project.unsent.lock().expect("unsent lock").clear();
     // What this render uses: the project as it is now, its snapshot kept by digest until the render ends.
@@ -4444,6 +4467,10 @@ impl Walk {
     /// Gives each ready job its turn as it comes up, each sending, making or following on its own so none holds up another, and goes on
     /// as each ends or something is asked, until nothing is owed and its terminal board is kept.
     async fn go(&self, following: &tokio::task::JoinHandle<()>) -> Result<(), Error> {
+        // What it was asked of by a rental's handle, renamed while no walk went, goes to the Hub's name for it (cl-1106).
+        if let Err(e) = renders_follow(&self.host.api(), self.folder()) {
+            warn!("{}: its renders keep the names they were asked of: {}", self.folder().dir.display(), e.message);
+        }
         let (mut first, mut followed) = (None, HashSet::new());
         let mut work: FuturesUnordered<BoxFuture<'_, Done>> = FuturesUnordered::new();
         // No quote is going yet: one an earlier walk left ended with it.
@@ -6977,17 +7004,56 @@ pub(crate) fn machines_of(api: &Arc<Api>, named: &str) -> Result<Vec<On>, Error>
     }
 }
 
-/// A project's machines (cl-873) without those that ended or are no machines here (cl-920): a machine that ends leaves every project's
-/// list, kept so at its next read.
+/// A project's machines (cl-873), each by its name now, without those that ended or are no machines here (cl-920): a rental chosen
+/// under its order's handle is chosen under its Hub's name for the host (cl-1106), as its runs follow it (cl-1089), and a machine that
+/// ends leaves every project's list, kept so at its next read.
 pub(crate) fn chosen(api: &Api, folder: &Folder) -> Vec<String> {
     let kept = folder.machines();
-    let live: Vec<String> = kept.iter().filter(|name| !api.machines.ended_here(name)).cloned().collect();
-    if live.len() != kept.len()
+    let mut live: Vec<String> = vec![];
+    for name in kept.iter().map(|name| api.calcifer.machine_name_now(name)) {
+        if !api.machines.ended_here(&name) && !live.contains(&name) {
+            live.push(name);
+        }
+    }
+    if live != kept
         && let Err(e) = folder.set_machines(&live)
     {
-        warn!("{}: leaving its ended machines out: {}", folder.dir.display(), e.message);
+        warn!("{}: keeping its machines as they're named now: {}", folder.dir.display(), e.message);
     }
     live
+}
+
+/// Its renders' machines, each by its name now (cl-1106): what was asked of a rental by its order's handle goes to its Hub's name for the
+/// host, as its runs do (cl-1089). True: some were renamed.
+fn renders_follow(api: &Api, folder: &Folder) -> Result<bool, Error> {
+    let now = |on: &On| match on {
+        On::Machine(name) => On::Machine(api.calcifer.machine_name_now(name)),
+        other => other.clone(),
+    };
+    let stale = |on: &[On]| on.iter().any(|one| now(one) != *one);
+    let walk = folder.walk_now()?;
+    if !walk.walk.asks.iter().any(|ask| stale(&ask.target.on) || ask.takes.iter().any(|take| stale(&take.target.on)))
+        && !walk.pending.values().any(|pending| stale(&pending.target.on))
+    {
+        return Ok(false);
+    }
+    let follow = |on: &mut Vec<On>| {
+        let mut kept: Vec<On> = vec![];
+        for one in on.iter().map(now) {
+            if !kept.contains(&one) {
+                kept.push(one);
+            }
+        }
+        *on = kept;
+    };
+    folder.update_walk(|walk| {
+        for ask in &mut walk.walk.asks {
+            follow(&mut ask.target.on);
+            ask.takes.iter_mut().for_each(|take| follow(&mut take.target.on));
+        }
+        walk.pending.values_mut().for_each(|pending| follow(&mut pending.target.on));
+    })?;
+    Ok(true)
 }
 
 /// Where a file stands in its list: its place in the innermost list holding it, as Runtime orders it (`references.1.file` is 1).

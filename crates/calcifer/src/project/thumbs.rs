@@ -4,7 +4,8 @@
 //! never changes. What the canvas draws of a file (a picture, a video's poster and its preview) is made as the file lands (cl-982; Paul,
 //! 11-13: "all thumbnails should be generated ahead of time, and stored in the project"). A request only reads: one not made yet is drawn
 //! next, in the background, and answered `202 thumb_pending` at once, and the `thumb` event tells the project's pages when it's made. So no
-//! request, and none of a browser's six connections to Calcifer, waits on ffmpeg.
+//! request, and none of a browser's six connections to Calcifer, waits on ffmpeg. A take's file still on its way here is answered the same
+//! (cl-1108): it's drawn as it lands.
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     ffi::OsString,
@@ -22,7 +23,7 @@ use serde::Deserialize;
 use tokio::sync::{Notify, Semaphore};
 use tracing::warn;
 
-use super::{folder, host::Host, media_type, tools};
+use super::{RunOwner, folder, host::Host, media_type, tools};
 use crate::{
     api::{Api, Refusal},
     tools::Media,
@@ -122,13 +123,19 @@ pub(super) async fn thumb(
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
     let hex = folder::hex_of(&named).to_ascii_lowercase();
-    let (field, seconds, source) = {
+    let here = {
         let lock = folder.lock().map_err(Refusal)?;
         let file = lock.files.get(&format!("sha256:{hex}")).filter(|file| folder.path(&file.path).is_file());
-        let Some(file) = file else {
-            return Err(Refusal(Error::new(Kind::NotFound, "file_missing", format!("This project has no file {named}."))));
-        };
-        (file.field(), file.lasts_ms() as f64 / 1000.0, folder.path(&file.path))
+        file.map(|file| (file.field(), file.lasts_ms() as f64 / 1000.0, folder.path(&file.path)))
+    };
+    let Some((field, seconds, source)) = here else {
+        // A take's file still on its way here, its run ended on its machine (cl-1108): not drawn yet, as one being drawn isn't. It's
+        // drawn as it lands, and the `thumb` event says so.
+        let digest = format!("sha256:{hex}");
+        if RunOwner::of(&project, &api.calcifer).store().and_then(|store| store.owes_file(&digest)).unwrap_or(false) {
+            return Ok(pending());
+        }
+        return Err(Refusal(Error::new(Kind::NotFound, "file_missing", format!("This project has no file {named}."))));
     };
     let preview = asked.preview && field == "video";
     let wave = asked.wave && field == "video" && !preview;
@@ -140,16 +147,12 @@ pub(super) async fn thumb(
     let name = drawing.name();
     let Some(at) = kept(&folder.dir.join(STORE), &name) else {
         // Drawn next: `202 thumb_pending` now, which is no picture and no error, and the page hears `thumb` when it's there.
-        let mut response = match ask(drawing, true) {
-            true => {
-                let mut pending = Refusal(Error::new(Kind::NotFound, "thumb_pending", "Cozy is still making this thumbnail. The thumb event says when it's ready.")).into_response();
-                *pending.status_mut() = StatusCode::ACCEPTED;
-                pending
-            }
-            false => Refusal(Error::new(Kind::Validation, "thumb_failed", "ffmpeg can't make a thumbnail of this file.")).into_response(),
-        };
-        response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-        return Ok(response);
+        if ask(drawing, true) {
+            return Ok(pending());
+        }
+        let mut failed = Refusal(Error::new(Kind::Validation, "thumb_failed", "ffmpeg can't make a thumbnail of this file.")).into_response();
+        failed.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        return Ok(failed);
     };
     let unreadable = |e: std::io::Error| Refusal(Error::new(Kind::Unavailable, "project_io", format!("Cozy couldn't read {}: {e}.", at.display())));
     let opened = std::fs::File::open(&at).map_err(unreadable)?;
@@ -157,6 +160,14 @@ pub(super) async fn thumb(
     let mut response = crate::files::send(opened, len, media_type(&at), &format!("\"{name}\""), &headers).map_err(unreadable)?;
     response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static(if private { "private, no-store" } else { crate::files::IMMUTABLE }));
     Ok(response)
+}
+
+/// `202 Accepted`, `thumb_pending`: a thumbnail not there yet, which the page waits for, its `thumb` event or a while, as no error.
+fn pending() -> Response {
+    let mut pending = Refusal(Error::new(Kind::NotFound, "thumb_pending", "Cozy is still making this thumbnail. The thumb event says when it's ready.")).into_response();
+    *pending.status_mut() = StatusCode::ACCEPTED;
+    pending.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    pending
 }
 
 /// A file that just landed at `source` (`<project>/files/<hex>.<ext>`), measured as a `field`: what the canvas draws of it is made soon,
