@@ -27,6 +27,13 @@ for tree in $(jq -r '[.arms[].tree, (.chain_arms // [])[].tree] | unique[]' <<<"
   kernels "$PACKAGES/$tree/qwen-image-2"
 done
 mkdir -p "$WORK/raw" "$OUT/records" "$OUT/runs" "$OUT/chains"
+# Each function as a machine will read it, before anything is rented (a package surface the static reader refuses
+# failed every run of session 44188228407's proof tree).
+while read -r tree fn; do
+  (cd "$RUN_PROJECT" && cozy run "$PACKAGES/$tree/qwen-image-2/$fn" --describe) > "$OUT/describe-$tree-$fn.txt" 2>&1 ||
+    fail "$tree/qwen-image-2/$fn: $(head -c 300 "$OUT/describe-$tree-$fn.txt")"
+done < <(jq -r '[.arms[], (.chain_arms // [])[] | "\(.tree) \(.fn)"] | unique[]' <<<"$PARAMS")
+say "described: $(jq -r '[.arms[], (.chain_arms // [])[] | "\(.tree)/\(.fn)"] | unique | join(" ")' <<<"$PARAMS")"
 
 # The scorer's Python (CPU torch, pyiqa, OpenCV) and the bench, proven on the inputs before anything is rented.
 uv venv -q --python 3.12 "$WORK/iqa" > "$OUT/iqa.log" 2>&1 &&
