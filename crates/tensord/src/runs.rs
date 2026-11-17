@@ -670,9 +670,14 @@ impl Runs {
         // The accepted record is authoritative, including inherited internal child scope.
         // A closed/unavailable private view is an error, never ordinary preparation.
         spec.local_private = self.service.engine.private_storage(run)?;
+        // A root holds its place in the download line from here, its acceptance, while it resolves (cl-905).
+        let order = self.order(run, &spec, 0);
+        if spec.parent.is_empty() {
+            crate::origin::hold(order);
+        }
         let (this, actor, run) = (self.clone(), actor.to_string(), run.to_string());
         let thread = std::thread::Builder::new().name(format!("prepare-{run}"));
-        thread.spawn(move || crate::private_io::within(spec.local_private.clone(), || {
+        let spawned = thread.spawn(move || crate::private_io::within(spec.local_private.clone(), || {
             let stoppable = this.service.engine.stoppable(&run);
             // A panic (a thread the container's task cap refused) ends the run FAILED: no
             // preparation outlives the thread that would end it.
@@ -692,13 +697,17 @@ impl Runs {
                 }
             };
             this.local.prepared(&run);
+            crate::origin::lined(order);
             // A list's item that ended wants nothing more: what its list dropped for it ends too (`ahead::put`).
             crate::ahead::lined(&this, &this.service.engine.caller_id(&run));
             if let Err(error) = ended {
                 crate::private_io::warning(&this.service.engine, &run, format_args!("preparation: {error}"));
             }
-        }))?;
-        Ok(())
+        }));
+        if spawned.is_err() {
+            crate::origin::lined(order);
+        }
+        spawned.map(drop)
     }
 
     /// A warm run's model choices made present when it names no entrypoint (`cozy package

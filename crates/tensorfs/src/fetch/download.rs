@@ -12,8 +12,12 @@
 //!   places in line as their object starts, so an object's ranges run together. A place that comes
 //!   free while an earlier job's object is still in flight takes the back half of its range instead
 //!   of starting a later job's: one job's download at a time at full speed, its tail never shared
-//!   with the next (cl-905); a job's own parts follow one another with the link full. A task nothing
-//!   wants stops (cl-686).
+//!   with the next (cl-905); a job's own parts follow one another with the link full. While an earlier job's
+//!   object is in flight a later job's weight gets no place, starts nothing and gives its place up at its next bytes,
+//!   however little of the earlier one is left: a place it would have had takes the back half of the earlier job's
+//!   range at once, or waits for its tail (`Slots`). A job holds its place from its acceptance ([`hold`]): while it
+//!   resolves what it needs, no later job's weight starts, though that one resolved first. A task nothing wants
+//!   stops (cl-686).
 //! - **Giving way.** Places go to the most urgent waiting range first. Every place taken, a range in flight gives
 //!   its place up at its next bytes to one waiting at an earlier job's order, and asks again from the byte it reached.
 //!   While an object at order 0 is under way (an emergency: what a running call reads now), every other request gives
@@ -233,9 +237,16 @@ struct Link {
     urgent: AtomicUsize,
     needing: AtomicUsize,
     sharers: Mutex<Vec<std::sync::Weak<Shared>>>,
+    /// The jobs holding their place while they resolve (`hold`), each with how many holds it has.
+    lines: Mutex<BTreeMap<u64, usize>>,
 }
 
-static LINK: Link = Link { urgent: AtomicUsize::new(0), needing: AtomicUsize::new(0), sharers: Mutex::new(Vec::new()) };
+static LINK: Link = Link {
+    urgent: AtomicUsize::new(0),
+    needing: AtomicUsize::new(0),
+    sharers: Mutex::new(Vec::new()),
+    lines: Mutex::new(BTreeMap::new()),
+};
 
 impl Link {
     /// A downloader's emergencies ended; the last on the link, what waits in every downloader asks again.
@@ -256,6 +267,11 @@ impl Link {
     /// one for a need.
     fn holds(&self, order: u64) -> bool {
         self.urgent.load(Ordering::Acquire) > 0 || order >= BACKGROUND && self.needing.load(Ordering::Acquire) > 0
+    }
+
+    /// Whether a weight at `order` is a later job's than one still resolving its needs (`hold`): it doesn't start.
+    fn lined_before(&self, order: u64) -> bool {
+        weights(order) && lock(&self.lines).first_key_value().is_some_and(|(held, _)| *held < job(order))
     }
 
     fn calmed(&self) {
@@ -308,6 +324,35 @@ impl Drop for Installing {
         if SHARE.installs.fetch_sub(1, Ordering::AcqRel) == 1 {
             SHARE.whole("the install ended");
         }
+    }
+}
+
+/// A job's place in the download line, from its acceptance until it drops (cl-905): while it resolves what it needs, no
+/// later job's weight starts in any downloader of the process, so its needs come first though a later job resolved sooner
+/// (release run 44011938933: a model install accepted 52 ms after a call took the link while the call still resolved). It
+/// drops once its needs are in line, or it has none, or it installs code (an install's downloads are software; the link
+/// doesn't idle for them). Only a need's order holds one: every background weight waits for every need already.
+pub struct Held(u64);
+
+/// Holds `order`'s job's place (`Held`); None for an order that isn't a need's.
+pub fn hold(order: u64) -> Option<Held> {
+    need(order).then(|| {
+        *lock(&LINK.lines).entry(job(order)).or_default() += 1;
+        Held(job(order))
+    })
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let mut lines = lock(&LINK.lines);
+        if let Some(count) = lines.get_mut(&self.0) {
+            *count -= 1;
+            if *count == 0 {
+                lines.remove(&self.0);
+            }
+        }
+        drop(lines);
+        LINK.calmed();
     }
 }
 
@@ -744,6 +789,8 @@ pub(crate) struct Shared {
     pace: Mutex<Pace>,
     /// Ranges in flight, for free places to take from.
     flights: Mutex<Vec<Arc<Flight>>>,
+    /// Tasks started and not ended: the earliest weight among them is the front no later job's passes (`Slots`).
+    begun: Mutex<Vec<Arc<Task>>>,
     /// What a range's request moves, bytes/s: the mean of ranges of 4 MiB or more, the latest weighing a fifth.
     typical: Mutex<Option<f64>>,
     /// Tasks and write-backs not yet ended.
@@ -1016,10 +1063,15 @@ struct Pace {
 }
 
 /// The places for requests in flight: as many as the ramp allows, each given back as it drops, in the
-/// order asked.
-struct Slots(Mutex<Places>);
+/// order asked. A weight of a later job than the earliest weight in flight (`front`) gets none (cl-905): a place it would
+/// have had stays free, for the earlier job's ranges to split (`spared`).
+struct Slots {
+    places: Mutex<Places>,
+    /// A place came free that no waiter may take, as every one waits behind the front: it takes the back half of the
+    /// front's range at once (`Shared::steal`), not a window later.
+    spared: Notify,
+}
 
-#[derive(Default)]
 struct Places {
     free: usize,
     /// Places the ramp gave up that are still out: each is kept as it comes back.
@@ -1027,6 +1079,13 @@ struct Places {
     /// Who waits for a place, by order and then arrival: the most urgent first.
     waiting: BTreeMap<(u64, u64), oneshot::Sender<Slot>>,
     arrivals: u64,
+    /// The order of the earliest weight in flight (`Shared::refront`); `u64::MAX`: none.
+    front: u64,
+}
+
+/// Whether a weight at `order` is a later job's than the earliest weight in flight, `front` (cl-905).
+fn behind(order: u64, front: u64) -> bool {
+    weights(order) && front != u64::MAX && job(order) > job(front)
 }
 
 /// A place among the requests in flight.
@@ -1037,14 +1096,15 @@ type Asking<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = Slot> + Sen
 
 impl Slots {
     fn new(free: usize) -> Arc<Slots> {
-        Arc::new(Slots(Mutex::new(Places { free, ..Places::default() })))
+        let places = Places { free, owed: 0, waiting: BTreeMap::new(), arrivals: 0, front: u64::MAX };
+        Arc::new(Slots { places: Mutex::new(places), spared: Notify::new() })
     }
 
-    /// A place for a range at `order`.
+    /// A place for a range at `order`, once none is behind the front.
     async fn take(self: &Arc<Self>, order: u64) -> Slot {
         let waiting = {
-            let mut places = lock(&self.0);
-            if places.free > 0 {
+            let mut places = lock(&self.places);
+            if places.free > 0 && !behind(order, places.front) {
                 places.free -= 1;
                 return Slot(Arc::clone(self));
             }
@@ -1057,10 +1117,13 @@ impl Slots {
         waiting.await.expect("a place's sender lives as long as its queue")
     }
 
-    /// Whether a range in flight at `order` gives its place up: every place is taken, and a range waits for one at an
-    /// earlier job's order, or at an emergency's or software's.
+    /// Whether a range in flight at `order` gives its place up: it is a later job's weight than the earliest in flight, or
+    /// every place is taken and a range waits for one at an earlier job's order, or at an emergency's or software's.
     fn outranked(&self, order: u64) -> bool {
-        let mut places = lock(&self.0);
+        let mut places = lock(&self.places);
+        if behind(order, places.front) {
+            return true;
+        }
         if places.free > 0 {
             return false;
         }
@@ -1075,39 +1138,84 @@ impl Slots {
         false
     }
 
-    /// A free place, when nothing waits for one.
+    /// A free place, when nothing that may take one waits for it.
     fn idle(self: &Arc<Self>) -> Option<Slot> {
-        let mut places = lock(&self.0);
+        let mut places = lock(&self.places);
         places.waiting.retain(|_, waiter| !waiter.is_closed());
-        (places.free > 0 && places.waiting.is_empty()).then(|| {
+        let first = places.waiting.keys().next().map(|(order, _)| *order);
+        (places.free > 0 && first.is_none_or(|order| behind(order, places.front))).then(|| {
             places.free -= 1;
             Slot(Arc::clone(self))
         })
     }
 
-    /// A place back: owed to the ramp, else to the most urgent waiter still waiting, else free.
+    /// A place back: owed to the ramp, else to the most urgent waiter still waiting unless it waits behind the front (then
+    /// every later one does too: orders rise, and so do their jobs), else free.
     fn give(self: &Arc<Self>, places: &mut Places) {
+        if self.hand(places) && !places.waiting.is_empty() {
+            self.spared.notify_one();
+        }
+    }
+
+    /// A place a free one took nothing with (`Shared::steal`) back, free: no spare is said again, which would ask it again.
+    fn back(self: &Arc<Self>, slot: Slot) {
+        std::mem::forget(slot);
+        self.hand(&mut lock(&self.places));
+    }
+
+    /// `give`, saying nothing: true when the place is free now.
+    fn hand(self: &Arc<Self>, places: &mut Places) -> bool {
         if places.owed > 0 {
             places.owed -= 1;
-            return;
+            return false;
         }
-        while let Some((_, waiter)) = places.waiting.pop_first() {
-            match waiter.send(Slot(Arc::clone(self))) {
-                Ok(()) => return,
+        while let Some(first) = places.waiting.first_entry() {
+            if first.get().is_closed() {
+                first.remove();
+                continue;
+            }
+            if behind(first.key().0, places.front) {
+                break;
+            }
+            match first.remove().send(Slot(Arc::clone(self))) {
+                Ok(()) => return false,
                 // Its waiter left: the same place goes on to the next.
                 Err(slot) => std::mem::forget(slot),
             }
         }
         places.free += 1;
+        true
     }
 
     fn add(self: &Arc<Self>, more: usize) {
-        let mut places = lock(&self.0);
+        let mut places = lock(&self.places);
         (0..more).for_each(|_| self.give(&mut places));
     }
 
+    /// The earliest weight in flight is at `front` now: what waited behind the old one takes what is free.
+    fn refront(self: &Arc<Self>, front: u64) {
+        let mut places = lock(&self.places);
+        if places.front == front {
+            return;
+        }
+        places.front = front;
+        let free = std::mem::take(&mut places.free);
+        (0..free).for_each(|_| self.give(&mut places));
+    }
+
+    /// The order of the earliest weight in flight, if any.
+    fn front(&self) -> Option<u64> {
+        let front = lock(&self.places).front;
+        (front != u64::MAX).then_some(front)
+    }
+
+    /// Whether a weight at `order` is a later job's than the earliest in flight.
+    fn behind(&self, order: u64) -> bool {
+        behind(order, lock(&self.places).front)
+    }
+
     fn forget(&self, gone: usize) {
-        let mut places = lock(&self.0);
+        let mut places = lock(&self.places);
         let now = gone.min(places.free);
         places.free -= now;
         places.owed += gone - now;
@@ -1115,20 +1223,20 @@ impl Slots {
 
     /// Every place taken.
     fn busy(&self) -> bool {
-        lock(&self.0).free == 0
+        lock(&self.places).free == 0
     }
 
-    /// Every place taken, with requests waiting for one.
+    /// Every place taken, with requests waiting for one that may have it: one behind the front is no demand for more.
     fn full(&self) -> bool {
-        let places = lock(&self.0);
-        places.free == 0 && !places.waiting.is_empty()
+        let places = lock(&self.places);
+        places.free == 0 && places.waiting.keys().next().is_some_and(|(order, _)| !behind(*order, places.front))
     }
 }
 
 impl Drop for Slot {
     fn drop(&mut self) {
         let slots = Arc::clone(&self.0);
-        slots.give(&mut lock(&slots.0));
+        slots.give(&mut lock(&slots.places));
     }
 }
 
@@ -1151,6 +1259,7 @@ impl Shared {
             closing: Notify::new(),
             slots: Slots::new(START.min(requests.max(1))),
             flights: Mutex::default(),
+            begun: Mutex::default(),
             typical: Mutex::default(),
             pace: Mutex::new(Pace { level: START.min(requests.max(1)), max: crate::descriptors::requests(requests.max(1)), ..Pace::default() }),
             busy: AtomicUsize::new(0),
@@ -1229,13 +1338,18 @@ impl Shared {
     /// The ramp, once a window while anything downloads: more requests while the bytes received grow, back to `START`
     /// when idle. Idle, it waits for the next download.
     pub(crate) async fn pace(self: Arc<Self>) {
+        let mut window = tokio::time::Instant::now() + WINDOW;
         loop {
             tokio::select! {
-                () = tokio::time::sleep(WINDOW) => {}
+                () = tokio::time::sleep_until(window) => {
+                    if self.window() {
+                        self.active().await;
+                    }
+                    window = tokio::time::Instant::now() + WINDOW;
+                }
+                // A place no waiter may take (they are all a later job's): the front's range splits now.
+                () = self.slots.spared.notified() => self.steal(),
                 () = self.closed() => return,
-            }
-            if self.window() {
-                self.active().await;
             }
         }
     }
@@ -1295,14 +1409,24 @@ impl Shared {
         false
     }
 
-    /// Each free place with nothing waiting takes the back half of the in-flight range with the most
-    /// left, while that half is at least `STEAL`; the range's own request stops where the half begins.
+    /// Each free place with nothing waiting that may take it takes the back half of the in-flight range with the most
+    /// left, of the front's job or an earlier one's, while that half is at least `STEAL`; the range's own request stops
+    /// where the half begins.
     fn steal(&self) {
+        let before = self.slots.front().map(|front| (job(front) + 1) << 32);
         while let Some(slot) = self.slots.idle() {
-            if self.take_half(slot, None).is_some() {
+            if let Some(slot) = self.take_half(slot, before) {
+                self.slots.back(slot);
                 return;
             }
         }
+    }
+
+    /// The earliest weight started and not ended is the front (`Slots::refront`): a later job's weight waits behind it.
+    fn refront(&self) {
+        let begun = lock(&self.begun);
+        let front = begun.iter().map(|task| task.priority.load(Ordering::Acquire)).filter(|order| weights(*order)).min();
+        self.slots.refront(front.unwrap_or(u64::MAX));
     }
 
     /// `slot` takes the back half of the in-flight range with the most left of those neither held nor paced whose object is
@@ -1358,7 +1482,9 @@ impl Shared {
             (judged.seen, judged.since) = (front, Instant::now());
             let order = task.priority.load(Ordering::Acquire);
             // A paced weight is slow by design: asked again on another connection it would take more of the link.
-            if flight.stopped() || self.held(order) || paced(order) || reached >= end || end - reached >= 2 * STEAL || rate >= floor || judged.hedges >= HEDGES {
+            if flight.stopped() || self.held(order) || self.slots.behind(order) || paced(order) || reached >= end || end - reached >= 2 * STEAL
+                || rate >= floor || judged.hedges >= HEDGES
+            {
                 continue;
             }
             if sent >= HEDGES_AT_ONCE {
@@ -1426,6 +1552,9 @@ impl Shared {
                     // What waits for a place at its old order asks again: the dispatcher, and its ranges.
                     self.queued.notify_one();
                     self.moved.notify_waiters();
+                    if task.started.load(Ordering::Acquire) {
+                        self.refront();
+                    }
                 }
                 task
             }
@@ -1538,9 +1667,10 @@ impl Shared {
         weights(order) && (order > self.floor.load(Ordering::Acquire) || LINK.holds(order))
     }
 
-    /// Whether nothing at `order` starts: it is held, or it is a weight and the weights' share has every request it may.
+    /// Whether nothing at `order` starts: it is held, or it is a weight and the weights' share has every request it may, or a
+    /// weight of a later job than one holding its place (`hold`).
     fn waits(&self, order: u64) -> bool {
-        self.held(order) || weights(order) && SHARE.full()
+        self.held(order) || weights(order) && SHARE.full() || LINK.lined_before(order)
     }
 
     /// It shares the process's link (`LINK`): another downloader's last emergency or need ending wakes what waits here.
@@ -1567,12 +1697,14 @@ impl Shared {
                 queue.heap.pop();
                 continue;
             }
-            if weights(priority) && (priority > queue.floor() || LINK.holds(priority) || SHARE.full()) {
+            if weights(priority) && (priority > queue.floor() || LINK.holds(priority) || SHARE.full() || LINK.lined_before(priority)) {
                 break;
             }
             queue.heap.pop();
             task.started.store(true, Ordering::Release);
             task.enter(Phase::Starting);
+            lock(&self.begun).push(Arc::clone(&task));
+            self.refront();
             // Under the lock the floor moves under: its line comes in the order they happened.
             tracing::info!(object = %task.object.sha256, bytes = task.object.length, priority, "fetching");
             popped = Some(task);
@@ -1602,6 +1734,8 @@ impl Shared {
             queue.remove(task);
             self.calmed(&queue);
         }
+        lock(&self.begun).retain(|begun| !Arc::ptr_eq(begun, task));
+        self.refront();
         task.done.send_replace(Some(outcome));
         self.unbusy();
     }

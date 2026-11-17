@@ -72,6 +72,23 @@ pub(crate) mod priority {
     }
 }
 
+/// Each accepted root's place in the download line while it resolves what it needs (`tensorfs::fetch::hold`, cl-905), by job.
+static LINED: Mutex<std::collections::BTreeMap<u64, tensorfs::fetch::Held>> = Mutex::new(std::collections::BTreeMap::new());
+
+/// Run `order` (a need's) holds its job's place in the download line from its acceptance: no later job's weight starts while
+/// it resolves, though that one resolved sooner. It lasts until [`lined`].
+pub(crate) fn hold(order: u64) {
+    if let Some(held) = tensorfs::fetch::hold(order) {
+        LINED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(order >> 32, held);
+    }
+}
+
+/// `order`'s job holds its place no more: its needs are in line, it has none, it installs code (whose downloads are
+/// software, which no weight waits for), or its preparation ended.
+pub(crate) fn lined(order: u64) {
+    LINED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&(order >> 32));
+}
+
 /// A checkpoint's origin, with the CAs its hosts may present beyond the public roots (a PEM
 /// bundle).
 #[derive(Clone)]

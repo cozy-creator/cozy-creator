@@ -166,7 +166,8 @@ hub_check() {
   HUB_CHECK_UPSTREAM=$hub
   [ "${RUNNER_OS:-}" != Windows ] || exe=.exe
   go build -C "$E2E/hubcheck" -o "${RUNNER_TEMP:-$OUT}/hubcheck$exe" . || fail "e2e/hubcheck does not build"
-  "${RUNNER_TEMP:-$OUT}/hubcheck$exe" --hub "$hub" --out "$OUT" --keep 'POST /v1/run-reports,POST /v1/rental-quotes' > "$OUT/hubcheck.addr" 2> "$OUT/hubcheck.log" &
+  "${RUNNER_TEMP:-$OUT}/hubcheck$exe" --hub "$hub" --out "$OUT" --keep 'POST /v1/run-reports,POST /v1/rental-quotes' --delays "$OUT/hub-delays" \
+    > "$OUT/hubcheck.addr" 2> "$OUT/hubcheck.log" &
   HUB_CHECK=$!
   for _ in $(seq 60); do
     addr=$(head -1 "$OUT/hubcheck.addr" 2> /dev/null) && [ -n "$addr" ] && break

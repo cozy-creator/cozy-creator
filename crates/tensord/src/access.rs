@@ -417,6 +417,8 @@ impl Fetch {
             self.arriving.lock().unwrap().push(part.arriving());
         }
         drop(kept);
+        // Its needs are in line: its job holds its place there no more (cl-905).
+        crate::origin::lined(priority::next(order, 0));
         if extras.is_some() {
             self.guess(std::mem::take(&mut lined.guessed), std::mem::take(&mut lined.guesses))?;
         }
@@ -633,8 +635,14 @@ impl Fetch {
     pub(crate) fn download(self: &Arc<Self>, mut lined: Lined, stop: &Stop, progress: &(dyn Fn(u64, u64) + Sync), wanted: &dyn Fn()) -> io::Result<tensorfs::fetch::Landed> {
         self.guess(std::mem::take(&mut lined.guessed), std::mem::take(&mut lined.guesses))?;
         let counted = Arc::new(tensorfs::fetch::Progress::default());
-        let wants = lined.wants.into_iter().map(|(order, part)| (part.remote, part.objects, order)).collect();
-        let landed = origin::watched(&counted, progress, || self.machine.all(wants, counted.clone(), wanted, stop).map_err(failed))?;
+        let wants: Vec<_> = lined.wants.into_iter().map(|(order, part)| (part.remote, part.objects, order)).collect();
+        let orders: Vec<u64> = wants.iter().map(|(_, _, order)| *order).collect();
+        // In line, its job holds its place there no more (cl-905).
+        let wanted = || {
+            orders.iter().for_each(|order| crate::origin::lined(*order));
+            wanted();
+        };
+        let landed = origin::watched(&counted, progress, || self.machine.all(wants, counted.clone(), &wanted, stop).map_err(failed))?;
         let tasks = std::mem::take(&mut self.guessed.lock().unwrap().tasks);
         // A dropped guess ends its task: that ends no wait here.
         self.machine.block(stop, async move {
@@ -659,6 +667,7 @@ impl Fetch {
         }
         for (order, part) in lined.wants.into_iter().filter(|(_, part)| !part.absent.is_empty()) {
             kept.push(self.machine.want(&part.remote, part.absent.clone(), order).map_err(failed)?);
+            crate::origin::lined(order);
             if caller.is_some() {
                 self.hinted.lock().unwrap().push(part.arriving());
             }

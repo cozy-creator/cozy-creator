@@ -3,6 +3,8 @@
 # 0.8B's weights (`cozy model install`, a download alone); C, the weightless package (an environment of its own, and a run).
 # One environment builds at a time, A's weights come whole before B's take the link, and B downloads while A starts and
 # runs. lines.py prints the timeline (lines.json): each job's spans in each line, end to end against the ideal for them.
+# The race release run 44011938933 hit by chance, forced: A's header comes 4 s late (e2e/hubcheck --delays), so B, sent once A
+# is accepted, resolves first. A still downloads first and whole: its place in line is its acceptance's (cl-905).
 
 machine_lines() {
 [ "$RUNNER_OS" = Linux ] || return 0
@@ -10,6 +12,9 @@ step "three jobs on one machine: each line in job order, all at once (cl-905)"
 local began name n dog a c
 began=$(date -u +%s%3N)
 dog=$(picture dog2.jpg)
+cozy --json model show zhengpeng7/birefnet > "$OUT/lines-a-model.json" || check "lines: model show zhengpeng7/birefnet failed"
+jq -r '.lanes[]?.header // empty | ltrimstr("sha256:") | "GET \(.) 4000"' "$OUT/lines-a-model.json" > "$OUT/hub-delays"
+[ -s "$OUT/hub-delays" ] || check "lines: no header of zhengpeng7/birefnet to hold back: $(head -c 300 "$OUT/lines-a-model.json")"
 # A and C at once: local code installs before its call is sent, so their installs meet in the install line. B once A's call
 # is on the machine, so the machine takes its download after A's.
 run_submit "$OUT" lines-a run "$(birefnet)" --file "image=$dog" --on local > /dev/null & a=$!
@@ -24,6 +29,7 @@ for name in a b c; do
   run_wait "$OUT" "lines-$name" || check "lines: $name (run $(cat "$OUT/lines-$name.number")) did not end: $(tail -c 300 "$OUT/lines-$name.ndjson")"
   [ "$(run_get "$OUT" "lines-$name" .status)" = completed ] || check "lines: $name (run $(cat "$OUT/lines-$name.number")) $(run_get "$OUT" "lines-$name" .status): $(run_get "$OUT" "lines-$name" .reason.message | head -c 300)"
 done
+rm -f "$OUT/hub-delays"
 cozy --json run ls --all --limit 40 > "$OUT/lines-runs.json" || check "lines: run ls failed"
 cozy machine logs local --since 2h > "$OUT/lines.tensord.log" || check "lines: machine logs local failed"
 # What each resolution pulled (`pull … header= tree=`): those objects are no job's download.
