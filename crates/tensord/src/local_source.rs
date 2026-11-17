@@ -386,6 +386,12 @@ impl LocalSources {
         let identity = sha256::hex_digest(serde_json::json!([environment, digest, owner]).to_string().as_bytes())[..32].to_string();
         if service.catalog.resolve(&identity).is_err() {
             job.stage(format!("describing {}", manifest.package));
+            // The wheels it carries, which this machine holds by content: what the describer reads in place of their URLs (cl-1127).
+            let mut held = BTreeMap::new();
+            for wheel in &manifest.wheels {
+                let object = written_member(&self.objects, actor, wheel)?;
+                held.insert(object.sha256.clone(), self.objects.store()?.path(&object).map_err(crate::storage::io_error)?);
+            }
             let dir = crate::private_io::cache_root(service.catalog.root().to_owned(), "generations")?.join(&identity);
             let _ = fs::remove_dir_all(&dir); // an interrupted, never-published one
             fs::create_dir_all(&dir)?;
@@ -399,7 +405,7 @@ impl LocalSources {
                 let stop = job.stop.as_ref();
                 // Its lock's Runtime too old for its code: re-locked in its folder.
                 let unread = |failure: published::Failure| built.unread(failure, &env, &manifest.package, "uv lock --upgrade-package cozy-runtime");
-                let (interface, closures) = environment::describe_project(&python, &project, stop).map_err(unread)?;
+                let (interface, closures) = environment::describe_project(&python, &project, &held, stop).map_err(unread)?;
                 let callees = callees(&environment, &python, &distribution, &manifest.callees, stop).map_err(unread)?;
                 let described = environment::Described { source_digest: manifest.source_digest(), callees, closures };
                 let record = built.record((&identity, &built_from), (&distribution, &manifest.release), &env, &interface,
