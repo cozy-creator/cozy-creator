@@ -13,7 +13,7 @@ use api::{
 use std::collections::HashMap;
 use std::io;
 
-/// The bytes fetched before this machine's own link stands for the default's.
+/// The bytes a fetch ramps its streams up over, and then the bytes more before this machine's own link stands for the default's.
 const MEASURED_LINK: u64 = 1 << 30;
 
 /// The GPUs a started run holds.
@@ -43,12 +43,20 @@ pub(crate) fn chooses(record: &Execution) -> bool {
     invocation.parent.is_empty() && invocation.gpus == 0 && invocation.widths.len() > 1
 }
 
-/// Its weights' arrival, bytes a second, once 1 GiB came; 0 before.
+/// Its weights' arrival, bytes a second, past the first GiB its downloads brought: a fetch ramps its streams up over that (cl-1107,
+/// the user-flow: cibo's first GiB came at 63 MB/s, and it was quoted 933 s for 59 GB; chocola's own came at 68 MB/s, and its 52 GB
+/// at 216 MB/s). 0 until a GiB more came.
 pub(crate) fn link(service: &Service) -> f64 {
-    let received = service.publisher().map(|publisher| publisher.machine().received());
-    match received.filter(|(bytes, time)| *bytes >= MEASURED_LINK && !time.is_zero()) {
-        Some((bytes, time)) => bytes as f64 / time.as_secs_f64(),
-        None => 0.0,
+    static RAMPED: std::sync::Mutex<Option<(u64, std::time::Duration)>> = std::sync::Mutex::new(None);
+    let Some((bytes, time)) = service.publisher().map(|publisher| publisher.machine().received()) else { return 0.0 };
+    if bytes < MEASURED_LINK {
+        return 0.0;
+    }
+    let (ramped_bytes, ramped_time) = *RAMPED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert((bytes, time));
+    let (after, took) = (bytes.saturating_sub(ramped_bytes), time.saturating_sub(ramped_time));
+    match after >= MEASURED_LINK && !took.is_zero() {
+        true => after as f64 / took.as_secs_f64(),
+        false => 0.0,
     }
 }
 
@@ -216,6 +224,7 @@ pub(crate) fn widths(service: &Service, pool: &crate::gpu_service::Pool) -> io::
         now_ms: crate::machine::lifecycle::now_ms(),
         // Its own packing knows no release's benchmarks (cl-1024): what it never ran here is a minute; Calcifer's quotes know them.
         references: None,
+        named: HashMap::new(),
     };
     let queued: Vec<v1::Queued> = roots.iter().map(|root| root.queued.clone()).collect();
     let (jobs, _) = machine.queue(&queued);

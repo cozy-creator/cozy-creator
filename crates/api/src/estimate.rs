@@ -501,6 +501,9 @@ pub struct Machine<'r> {
     pub now_ms: i64,
     /// What a function none of whose runs it knows is timed by (cl-1024); none: a minute.
     pub references: Option<&'r References>,
+    /// Each function as it times it (`Timed::function`) to the name a job gives it where the two differ: local code's
+    /// `sha256:<manifest>/fn`, which its benchmarks are under, by the installs it lists.
+    pub named: HashMap<String, String>,
 }
 
 /// The download line: when it ends, ms from now, and when each repository in it lands.
@@ -542,7 +545,38 @@ impl<'r> Machine<'r> {
             times,
             now_ms,
             references: Some(references),
+            named: (frame.environments.iter())
+                .filter(|installed| installed.manifest.starts_with("sha256:"))
+                .flat_map(|installed| {
+                    (installed.functions.iter())
+                        .filter(|held| !held.timed_as.is_empty())
+                        .map(move |held| (held.timed_as.clone(), format!("{}/{}", installed.manifest, held.entrypoint)))
+                })
+                .collect(),
         }
+    }
+
+    /// The widths `KNOWN` or its benchmarks of this card at more GPUs prove for `function` (`named`, as a job names it), with
+    /// their speed-ups.
+    fn proven(&self, function: &str, named: &str) -> Vec<(u32, f64)> {
+        let mut proven = known(function, &self.card, self.nvlink);
+        let names = [function, named];
+        let benched = self.references.and_then(|references| names.iter().filter(|name| !name.is_empty()).find_map(|name| references.speedup(name, &self.card)));
+        proven.extend(benched);
+        proven
+    }
+
+    /// The widths a function whose install isn't here runs at, no count asked (cl-1107, the user-flow: cibo, 2× RTX 4090 not holding
+    /// H3's code yet, was quoted its generate on one GPU, 335 s, where its install runs it on both, 196 s): one GPU, and each width
+    /// more that `proven` shows on this card, up to its GPUs. None on a machine without GPUs.
+    fn unheld(&self, function: &str, named: &str) -> Vec<u32> {
+        let mut widths = unheld_widths(self.gpus, 0);
+        if !widths.is_empty() {
+            widths.extend(self.proven(function, named).into_iter().map(|(width, _)| width).filter(|width| *width as usize <= self.gpus));
+            widths.sort_unstable();
+            widths.dedup();
+        }
+        widths
     }
 
     /// `function` (as machines time it; `named` as the job names it) timed here, else by the caller's prior, else by the caller's
@@ -551,8 +585,7 @@ impl<'r> Machine<'r> {
     /// card say, else as `KNOWN` says for this card and link, until two widths ran here; and `widths`, every one its function declares
     /// (cl-1073: never narrowed).
     pub fn timed(&self, function: &str, named: &str, size: &JobSize, prior_ms: f64, widths: Vec<u32>, warm: bool) -> (Time, Vec<u32>) {
-        let mut known = known(function, &self.card, self.nvlink);
-        known.extend(self.references.and_then(|references| references.speedup(function, &self.card)));
+        let known = self.proven(function, named);
         let scaling = known.iter().max_by_key(|(width, _)| *width).map(|(width, speedup)| Scaling::of((1, *speedup), (*width, 1.0)));
         let runs = self.times.get(function).map_or(&[][..], Vec::as_slice);
         let mut time = time(runs, size, prior_ms, scaling, warm);
@@ -582,7 +615,10 @@ impl<'r> Machine<'r> {
         let jobs = (queue.iter())
             .map(|root| {
                 let warm = !root.function.is_empty() && !seen.insert(&root.function);
-                let (time, widths) = self.timed(&root.function, "", &root.size, 0.0, root.widths.clone(), warm);
+                // Timed as a job of it is (cl-1107, the user-flow: chocola's quote counted each H3 run ahead a minute, `None`, as its
+                // install names local code, not by the `sha256:` name its benchmarks are under, while the job asked was timed 230 s).
+                let named = self.named.get(&root.function).map_or("", String::as_str);
+                let (time, widths) = self.timed(&root.function, named, &root.size, 0.0, root.widths.clone(), warm);
                 let mut job = Job { widths, one_ms: time.one_ms, scaling: time.scaling, ready_ms: 0.0, running: None };
                 match root.running && !root.gpu_waits {
                     // On its GPUs: what it has left there, counted from when it took them (cl-1107); from its executor's start on a
@@ -779,17 +815,18 @@ pub fn quote(frame: &StatusFrame, now_ms: i64, jobs: &[EstimateJob], references:
             None if code.starts_with("sha256:") => String::new(),
             None => format!("{code}/{entrypoint}"),
         };
-        let widths = match (job.gpus, held_function) {
-            (0, Some(held)) => held.widths.iter().map(|width| (*width).min(machine.gpus as u32)).filter(|width| *width > 0).collect(),
-            _ => unheld_widths(machine.gpus, job.gpus),
-        };
-        // Warm: a job of its function goes before it here, or an idle executor holds its model; else its first call's cold time.
-        let hot = !function.is_empty() && (warm.contains(&function) || warm_there(frame, &job.models));
         // As machines time it: as its install here names it, else as another machine's of its code does (cl-1107).
         let timed_as = match held_function {
             Some(_) => function.clone(),
             None => references.timed_as.get(&job.function).cloned().unwrap_or_else(|| function.clone()),
         };
+        let widths = match (job.gpus, held_function) {
+            (0, Some(held)) => held.widths.iter().map(|width| (*width).min(machine.gpus as u32)).filter(|width| *width > 0).collect(),
+            (0, None) => machine.unheld(&timed_as, &job.function),
+            _ => unheld_widths(machine.gpus, job.gpus),
+        };
+        // Warm: a job of its function goes before it here, or an idle executor holds its model; else its first call's cold time.
+        let hot = !function.is_empty() && (warm.contains(&function) || warm_there(frame, &job.models));
         let (time, widths) = machine.timed(&timed_as, &job.function, &job.size, job.prior_ms as f64, widths, hot);
         // This machine's own runs, which its frame doesn't time (a project's, cl-1047), measure it all the same.
         quote.basis = match (time.basis, job.prior_runs) {
