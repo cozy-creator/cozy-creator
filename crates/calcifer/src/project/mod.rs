@@ -2052,13 +2052,13 @@ async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<J
     let projects = (known.into_iter().take(limit))
         .map(unlocked)
         .map(|entry| Known {
+            key: readable_key(&entry.path, entry.key),
             name: entry.name,
             busy: open.get(&entry.id).is_some_and(|project| *project.walking.lock().expect("walking lock")),
             path: entry.path,
             used_at_ms: entry.used_at_ms,
             id: entry.id,
             code: entry.code,
-            key: entry.key,
         })
         .collect();
     Ok(Json(Listed { projects, older }))
@@ -2071,7 +2071,13 @@ async fn address(State(api): State<Arc<Api>>, Path(reference): Path<String>) -> 
         return Ok(Json(api::calcifer::project::Address { id: project.id.clone(), code: project.code.clone(), key: project.key(), gone: None }));
     }
     let entry = known(&api, &reference).map_err(Refusal)?;
-    Ok(Json(api::calcifer::project::Address { id: entry.id, code: entry.code, key: entry.key, gone: None }))
+    Ok(Json(api::calcifer::project::Address { id: entry.id, code: entry.code, key: readable_key(&entry.path, entry.key), gone: None }))
+}
+
+/// A project's key (its `KEY-N`) from the index, said only while the project can be read: a locking one's is its project.db's, as a
+/// locked one's is (cl-1130).
+fn readable_key(path: &FsPath, key: String) -> String {
+    if !key.is_empty() && vault::encrypted(path) && vault::hidden(path) { String::new() } else { key }
 }
 
 /// Where its rows differ from its document (cl-885): nowhere, always. What e2e checks after each write.

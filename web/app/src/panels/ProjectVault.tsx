@@ -212,7 +212,7 @@ export function VaultBody({ id }: { id: string }) {
   const unlocked = status.state === "unlocked"
   return (
     <div className="stack" data-vault-state={status.state}>
-      <p>{!status.encrypted ? "This project isn't encrypted. Its files are ordinary files on this computer." : unlocked ? "This project is unlocked." : status.state === "locking" ? "Couldn't lock the project yet: another app still has one of its files open. Close that app, then try again." : "This project is locked."}</p>
+      <p>{!status.encrypted ? "This project isn't encrypted. Its files are ordinary files on this computer." : unlocked ? "This project is unlocked." : status.state === "locking" ? (status.holding === "runs" ? "Locking: a run is still finishing. The project locks once it ends." : "Couldn't lock the project yet: another app still has one of its files open. Close that app, then try again.") : "This project is locked."}</p>
       <Failure error={ask.error} plain />
       {sourceRemoved && !error && status.encrypted && unlocked && <p>The unencrypted copy of the project was removed.</p>}
       {ended.length > 0 && <p className="muted">Locking the project canceled {ended.length === 1 ? "run" : "runs"} {ended.join(", ")}.</p>}
@@ -229,7 +229,8 @@ export function VaultBody({ id }: { id: string }) {
           <button className="tb primary" type="submit" disabled={ask.busy || !passphrase || passphrase !== confirmation || pending.count > 0}>Encrypt project</button>
         </form>
       ) : status.state === "locking" ? (
-        <button className="tb" type="button" disabled={ask.busy} onClick={() => void change("lock")}>Try locking again</button>
+        // Its runs, which the lock ended, finish on their own: there's nothing to do but wait (cl-1130).
+        status.holding === "runs" ? null : <button className="tb" type="button" disabled={ask.busy} onClick={() => void change("lock")}>Try locking again</button>
       ) : !unlocked ? (
         <form className="stack" onSubmit={(event) => submit(event, "unlock")}>
           <label>Unlock with<select className="field" value={credential} onChange={(event) => { setCredential(event.target.value as "passphrase" | "recovery"); setPassphrase(""); setRecovery("") }}><option value="passphrase">Passphrase</option><option value="recovery">Recovery secret</option></select></label>

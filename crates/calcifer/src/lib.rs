@@ -236,6 +236,10 @@ fn same_warm(left:&v1::WarmItem,right:&v1::WarmItem)->bool {
 
 /// How long a run goes without moving before its record says so, with what that costs.
 const STALLED_MS: i64 = 10 * 60 * 1000;
+/// How a run of a locked or locking project is said outside it (cl-1130): never by its key or number, which are its project's.
+pub(crate) const LOCKED_RUN: &str = "a locked project's run";
+/// How a run of one project says a run of another (cl-1130): projects keep apart, so never by its key or number.
+const ANOTHER_RUN: &str = "another project's run";
 /// How often a run waiting behind other runs' downloads says its progress moved with theirs: well inside the
 /// minute a follower waits before it says "no progress".
 const LINE_MOVED_MS: i64 = 30_000;
@@ -737,7 +741,19 @@ impl Calcifer {
     }
     /// How a message names `row`: `run KEY-N`, or what one of Calcifer's jobs does (cl-1028: no one's run, it has no name).
     pub(crate) fn named(&self,row:&RunRow)->String {
-        match row.project_root { Some(_)=>format!("run {}",self.run_name(row)), None=>row.target.clone() }
+        match row.project_root { Some(_) if project::vault::hidden(&row.out_dir)=>LOCKED_RUN.into(), Some(_)=>format!("run {}",self.run_name(row)), None=>row.target.clone() }
+    }
+    /// How what's said of run `about` names `row` (cl-1130): as `named` within one project, a project's run outside it as only another
+    /// project's.
+    fn named_for(&self, row: &RunRow, about: &str) -> String {
+        match row.project_root.is_some() && !self.same_project(row, about) {
+            true => ANOTHER_RUN.into(),
+            false => self.named(row),
+        }
+    }
+    /// Whether run `about` is of `row`'s project.
+    fn same_project(&self, row: &RunRow, about: &str) -> bool {
+        lock(&self.run_owners).get(store::calcifer_id(about)).cloned().flatten().is_some_and(|owner| owner.project_id() == row.owner)
     }
     pub(crate) fn row_store(&self,row:&RunRow)->store::Result<store::RunStore<'_>> {
         match self.row_owner(row)? { Some(owner)=>owner.store().map(store::RunStore::Project),None=>Ok(store::RunStore::Maintenance(self.maintenance_store())) }
@@ -1454,7 +1470,7 @@ impl Calcifer {
                 continue;
             }
             let mut names: Vec<String> = (ahead.iter().flat_map(|op| &op.runs))
-                .map(|id| self.with_run_store(id, |store| store.run(id)).ok().flatten().map_or_else(|| "another run".to_owned(), |row| self.named(&row)))
+                .map(|id| self.with_run_store(id, |store| store.run(id)).ok().flatten().map_or_else(|| "another run".to_owned(), |row| self.named_for(&row, run)))
                 .collect();
             names.sort();
             names.dedup();
@@ -2521,7 +2537,7 @@ impl Calcifer {
                         n => format!("{n} GPUs"),
                     };
                     let holder = match self.with_run_store(&gpu.behind, |store| store.run(&gpu.behind)) {
-                        Ok(Some(holder)) => self.named(&holder),
+                        Ok(Some(holder)) => self.named_for(&holder, id.as_str()),
                         _ => "another run".to_owned(),
                     };
                     let reason = format!("waiting for {gpus}, held by {holder}");
@@ -2578,7 +2594,7 @@ impl Calcifer {
                 }
                 Frame::Outcome(mut outcome) => {
                     if let Some(reason) = outcome.reason.as_mut() {
-                        reason.message = self.runs_named(&reason.message);
+                        reason.message = self.runs_named_for(&reason.message, Some(id.as_str()));
                     }
                     // Canceled there to go where it finishes sooner (`move_to`): sent again, there.
                     let moving = lock(&self.moving).remove(id);
@@ -2666,7 +2682,7 @@ impl Calcifer {
                 None
             }
             waiting => {
-                let reason = self.runs_named(waiting);
+                let reason = self.runs_named_for(waiting, Some(id.as_str()));
                 self.waiting(id, reason.clone());
                 Some(reason)
             }
@@ -2676,6 +2692,11 @@ impl Calcifer {
     /// `text` from a machine with each run id this computer sent (`run-<hex>`, `~<attempt>` a resend's) as people name that run
     /// (`LAB2-12`); one it doesn't know (another computer's) is "another render" (cl-1084).
     pub(crate) fn runs_named(&self, text: &str) -> String {
+        self.runs_named_for(text, None)
+    }
+
+    /// `runs_named`, said of run `about` (cl-1130): a run of another project than its own is only another project's run.
+    pub(crate) fn runs_named_for(&self, text: &str, about: Option<&str>) -> String {
         let (mut named, mut rest) = (String::with_capacity(text.len()), text);
         while let Some(at) = rest.find("run-") {
             named.push_str(&rest[..at]);
@@ -2686,10 +2707,19 @@ impl Calcifer {
             if word || hex.len() < 8 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
                 named.push_str(id);
             } else {
-                match self.active_run(store::calcifer_id(id)) {
-                    Some(row) => named.push_str(&self.run_name(&row)),
-                    None if named.trim_end().is_empty() || named.trim_end().ends_with('.') => named.push_str("Another render"),
-                    None => named.push_str("another render"),
+                let said = match self.active_run(store::calcifer_id(id)) {
+                    // Another project's run, or a locked project's, is only that (cl-1130).
+                    Some(row) if about.is_some_and(|about| row.project_root.is_some() && !self.same_project(&row, about)) => Err(ANOTHER_RUN),
+                    Some(row) if project::vault::hidden(&row.out_dir) => Err(LOCKED_RUN),
+                    Some(row) => Ok(self.run_name(&row)),
+                    None => Err("another render"),
+                };
+                match said {
+                    Ok(name) => named.push_str(&name),
+                    Err(said) if named.trim_end().is_empty() || named.trim_end().ends_with('.') => {
+                        named.extend(said.chars().next().map(|first| first.to_ascii_uppercase()).into_iter().chain(said.chars().skip(1)));
+                    }
+                    Err(said) => named.push_str(said),
                 }
             }
             rest = &token[id.len()..];

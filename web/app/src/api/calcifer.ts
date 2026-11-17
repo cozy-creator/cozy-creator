@@ -1255,7 +1255,11 @@ accrued_floor: boolean, };
 /**
  * A run a machine holds for this controller, beside this controller's record of it.
  */
-export type LiveRun = { id: string,
+export type LiveRun = {
+/**
+ * Its id there; none for a locked project's.
+ */
+id?: string,
 /**
  * The machine's word for it: queued, preparing or running.
  */
@@ -1267,7 +1271,11 @@ waiting?: string,
 /**
  * None when this controller keeps no record of it; a settled one was left behind.
  */
-run?: Run | null, };
+run?: Run | null,
+/**
+ * A run of a project locked or locking (cl-1130): its state alone, nothing of its project's.
+ */
+locked?: boolean, };
 
 /**
  * Local code by content: its tree document's digest, each file and then the document sent first (`PUT /v1/files`), and
@@ -3743,9 +3751,14 @@ export type VaultEvent = { "type": "accepted", action: string, } | { "type": "pr
  */
 export type VaultStatus = { encrypted: boolean,
 /**
- * plain, locked, unlocked, or locking (a native application still holds the mount).
+ * plain, locked, unlocked, or locking (`holding` says what it waits for).
  */
-state: string, path: string, view?: string | null, expires_at_ms?: number | null, idle_timeout_s: number, next?: Array<string>, };
+state: string, path: string, view?: string | null, expires_at_ms?: number | null, idle_timeout_s: number, next?: Array<string>,
+/**
+ * While locking, what it waits for: `runs` (its runs, which the lock ended, still finishing) or `files` (an app with its files
+ * open); empty: not said.
+ */
+holding?: string, };
 
 /**
  * One version (a take, if it holds a video).

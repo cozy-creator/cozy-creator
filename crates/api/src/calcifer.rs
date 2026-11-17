@@ -1576,6 +1576,8 @@ pub struct Operation {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct LiveRun {
+    /// Its id there; none for a locked project's.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub id: String,
     /// The machine's word for it: queued, preparing or running.
     pub state: String,
@@ -1585,6 +1587,16 @@ pub struct LiveRun {
     /// None when this controller keeps no record of it; a settled one was left behind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<Run>,
+    /// A run of a project locked or locking (cl-1130): its state alone, nothing of its project's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub locked: bool,
+}
+
+impl LiveRun {
+    /// A locked project's run, in `state` there.
+    pub fn locked(state: String) -> Self {
+        Self { state, locked: true, ..Self::default() }
+    }
 }
 
 /// One of a machine's GPUs: its name, memory, driver and family.
