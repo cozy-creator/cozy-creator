@@ -67,7 +67,8 @@ fi
 # a timed call. A lone frame meets only each causal conv's last temporal tap.
 # - A Runtime whose plan reports `"lone_frame": "last_tap"` runs that tap alone: its `vae_encode` is held to
 #   h3-vae-picture.tsv's on this SKU (that path's own time), scaled by the call's SM clock against that pod's, within x1.5.
-#   All three taps take about 2.5x. A pod whose `read_image` takes 3x the reference's is a slow host: noted, not judged.
+#   All three taps take about 2.3x (pod-session 44172763099). A pod whose `read_image` takes 3x the reference's is a slow
+#   host: noted, not judged.
 # - A Runtime without it (before cr-323), or a minimax-h3 without the fused encoder, is logged, not judged.
 # A minimax-h3 with no `vae_encode_picture` (before cr-323) is not run.
 # h3_vae_picture_judge <run record>: the verdict of one timed call (CPU-only: no cell, no rental).
