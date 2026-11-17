@@ -1,0 +1,1 @@
+The page asks for its tool list with no machine and keys it on none, so switching a project's machines reads no tools (cl-1174). Calcifer refreshes the Hub's catalog page by page with `If-None-Match` and keeps its copy of each page the Hub answers 304 (th-401); a Hub that sends no ETag answers each page whole, as before.

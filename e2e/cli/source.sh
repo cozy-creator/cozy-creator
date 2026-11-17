@@ -337,3 +337,50 @@ J --arg id "$tool" '[.tools[] | select(.id == $id)] != [] and .note == null' "$O
   || check "tools offline: with its Hub away, the list took $took ms: $(head -c 400 "$OUT/offline-down.json")"
 hub_check_again "$addr"
 }
+
+# catalog_unchanged (cl-1174, cl-1126's leftover). Paul, 11-17: "we just fetch them from tensorhub once, and maybe re-fetch every couple
+# minutes (if there is an update / new packages / tools released)". Each refresh asks the Hub's catalog with the ETag it last answered
+# (`If-None-Match`), and keeps its copy on a 304 (th-401). Two pages connect, each refreshing it, 11 s apart: the second is answered 304
+# (hubcheck counts it), and the list is what it was. A Hub that sends no ETag (before th-401) answers each page whole.
+catalog_unchanged() {
+step "catalog unchanged (cl-1174): a refresh asks the Hub's catalog only if it changed, and keeps its copy on a 304"
+[ -n "$LOCAL" ] || return 0
+local lock=$HOME/.cozy/calcifer/calcifer.lock.holder addr etag before after whole unchanged
+addr=$(jq -r .address "$lock")
+# hubcheck's count of the catalog's reads: all of them, and those the Hub answered 304. Read again while hubcheck rewrites the file.
+catalog_calls() {
+  local n
+  for _ in $(seq 20); do
+    n=$(jq -r --arg op "GET /v1/packages${1:-}" '.[$op] // 0' "$OUT/hub-calls.json" 2> /dev/null) && [ -n "$n" ] && { echo "$n"; return; }
+    sleep 0.1
+  done
+  echo 0
+}
+catalog_tools() { curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$lock")" "http://$addr/v1/tools" > "$OUT/catalog-tools-$1.json" 2>&1; }
+etag=$(curl -sS -D - -o /dev/null "$COZY_HUB_URL/v1/packages?limit=200&offset=0" 2> /dev/null | tr -d '\r' | sed -n 's/^[Ee][Tt][Aa][Gg]: *//p' | head -1)
+for i in 1 2; do
+  before=$(catalog_calls) unchanged=$(catalog_calls ' 304')
+  # A page connecting: its events stream, as the page's own fetch opens it, held 10 s (its answer waits on the machines' list). One
+  # within 10 s of the last read is that read: again until one reads it.
+  for _ in $(seq 6); do
+    timeout 10 curl -sSN -H "Host: $addr" -H 'Sec-Fetch-Site: same-origin' -H 'Sec-Fetch-Mode: cors' -H 'Sec-Fetch-Dest: empty' \
+      -H 'Accept: text/event-stream' "http://$addr/v1/events" > /dev/null 2>&1 || true
+    [ "$(catalog_calls)" -gt "$before" ] && break
+  done
+  [ "$(catalog_calls)" -gt "$before" ] || { check "catalog unchanged: page $i connecting read no catalog in 60 s: $(jq -c . "$OUT/hub-calls.json" 2> /dev/null | head -c 300)"; return; }
+  # A refresh within 10 s is the one already made.
+  [ "$i" = 2 ] || { sleep 11; catalog_tools first; }
+done
+sleep 2
+after=$(catalog_calls) whole=$(($(catalog_calls) - before)) unchanged=$(($(catalog_calls ' 304') - unchanged))
+catalog_tools second
+echo "catalog unchanged: the Hub's ETag ${etag:-none}; the second refresh asked $whole pages, $unchanged answered 304 ($after catalog reads in all)"
+if [ -n "$etag" ]; then
+  [ "$whole" -ge 1 ] && [ "$unchanged" = "$whole" ] \
+    || check "catalog unchanged: the Hub tags its catalog ($etag), yet the second refresh's $whole pages had $unchanged answered 304"
+else
+  [ "$whole" -ge 1 ] && [ "$unchanged" = 0 ] || check "catalog unchanged: a Hub with no ETag: $whole pages read, $unchanged answered 304"
+fi
+J --slurpfile was "$OUT/catalog-tools-first.json" '([.tools[].id] | sort) == ($was[0].tools | map(.id) | sort) and (.tools | length) > 0' "$OUT/catalog-tools-second.json" \
+  || check "catalog unchanged: the list after the second refresh isn't the one before it: $(jq -c '[.tools[]? | .id]' "$OUT/catalog-tools-first.json" 2> /dev/null | head -c 300) then $(jq -c '[.tools[]? | .id]' "$OUT/catalog-tools-second.json" 2> /dev/null | head -c 300)"
+}

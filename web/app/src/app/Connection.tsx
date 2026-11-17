@@ -386,9 +386,9 @@ export async function connect(): Promise<Boot> {
     revokeProjectMedia(id)
     // Its protection status and its address stay: they are what the locked page shows. Dropped, they are asked again, and the lock
     // they answer retires the project again, and again (a locked project opened from the list reloaded for ever, Paul 11-16).
-    // Its tools too (`["tools", q, on, project]`), as they can list its own code; another project's, or none's, are no business of its lock
+    // Its tools too (`["tools", q, project]`), as they can list its own code; another project's, or none's, are no business of its lock
     // (cl-1110: a lock elsewhere cancelled a tab's tool read mid-retry).
-    const privateData = ({ queryKey: [kind, project, , tools] }: { queryKey: readonly unknown[] }) =>
+    const privateData = ({ queryKey: [kind, project, tools] }: { queryKey: readonly unknown[] }) =>
       (project === id && kind !== "project-vault" && kind !== "project-reference" && (["canvas", "history"].includes(String(kind)) || String(kind).startsWith("project")))
       || (kind === "tools" && tools === id)
     void queries.cancelQueries({ predicate: privateData })

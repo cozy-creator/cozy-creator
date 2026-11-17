@@ -921,6 +921,8 @@ case $SHARD in
   # An export whose bytes the machine no longer has settles and starts the machine no more (cl-1035). Named projectvault-* for its driver.
   projectvault-export-gone) parts="export_gone logs" ;;
   projectdb-closes) parts="db_closes logs" ;;
+  # The Hub's catalog asked only if it changed, kept on a 304 (cl-1174), alone.
+  catalog) parts="catalog_unchanged logs" ;;
   # cl-1000: a runner with no FUSE (e2e.yaml installs no vault driver for it).
   projectvault-nofuse) parts="vault_no_fuse logs" ;;
   # cl-1049: an encrypted project made, written, locked, unlocked and read back on this runner's OS (Windows: WinFsp by doctor --fix).
@@ -1013,6 +1015,7 @@ case $SHARD in
     path_manifest
     from_source
     tools_offline
+    catalog_unchanged
     rental_end
     rental_end_again
     rental_rename
