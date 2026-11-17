@@ -523,13 +523,12 @@ SQL
     sleep 0.1
   done
   # The Hub's sessions by label, sampled while the load goes.
-  (while :; do sql -c "SELECT coalesce(nullif(application_name, ''), 'unlabelled') || ' ' || count(*) FROM pg_stat_activity
-     WHERE backend_type = 'client backend' AND coalesce(application_name, '') NOT LIKE 'th382%' AND coalesce(application_name, '') <> 'psql'
-     GROUP BY 1 UNION ALL SELECT 'total ' || count(*) FROM pg_stat_activity WHERE backend_type = 'client backend'
-     AND coalesce(application_name, '') NOT LIKE 'th382%' AND coalesce(application_name, '') <> 'psql'" 2> /dev/null; sleep 0.2; done) > "$S/sessions.txt" &
+  (while :; do sql -c "SELECT coalesce(label, 'total') || ' ' || count(*) FROM (SELECT coalesce(nullif(application_name, ''), 'unlabelled')
+     AS label FROM pg_stat_activity WHERE backend_type = 'client backend' AND coalesce(application_name, '') NOT LIKE 'th382%') s
+     GROUP BY ROLLUP (label)" 2> /dev/null; sleep 0.2; done) > "$S/sessions.txt" &
   local sampler=$!
   for _ in $(seq 10); do printf '%s\n' $shas; done | sed -E 's#^(..)(..)(.*)$#/blobs/\1/\2/\1\2\3#' > "$S/load.txt"
-  for _ in $(seq 400); do echo /v1/account; done >> "$S/load.txt"
+  for _ in $(seq 400); do echo /v1/accounts/current; done >> "$S/load.txt"
   shuf "$S/load.txt" | xargs -P 80 -I{} curl -s -o /dev/null -w '%{http_code}\n' -m 60 -H "Authorization: Bearer $token" \
     "$COZY_HUB_URL{}" > "$S/codes.txt" 2>&1 || true
   kill "$sampler" 2> /dev/null || true
