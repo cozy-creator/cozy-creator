@@ -81,6 +81,15 @@ impl LocalStream {
         Self::new(pipe, Side::Client).map_err(Error::io("connect", path))
     }
 
+    /// The end a parent handed this process (`crate::generation`): the dialing side of the parent's private pair.
+    pub fn inherited(pipe: OwnedHandle) -> io::Result<Self> {
+        // SAFETY: only asks the handle's type.
+        if unsafe { windows_sys::Win32::Storage::FileSystem::GetFileType(pipe.as_raw_handle() as HANDLE) } != windows_sys::Win32::Storage::FileSystem::FILE_TYPE_PIPE {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "the handle a parent named is not a pipe"));
+        }
+        Self::new(pipe, Side::Client)
+    }
+
     fn new(pipe: OwnedHandle, side: Side) -> io::Result<Self> {
         Self::sharing(pipe, side, std::sync::Arc::default(), std::sync::Arc::default())
     }

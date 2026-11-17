@@ -12,7 +12,7 @@ them (`scripts/web-types.sh`, checked in build).
 ## Clients and discovery
 
 Calcifer listens on `127.0.0.1` only: on `calcifer.port` from `~/.cozy/config.toml` and no other if it's set, else
-on 8818 or the next free port, so a page's origin outlives a restart. It holds `~/.cozy/calcifer/calcifer.lock` and publishes a lock record beside it at `calcifer.lock.holder` (owner-only): `{address, token,
+on 8818 or the next free port, so a page's origin outlives a restart. `cozy calcifer` is a stable parent (cl-1113) that holds the listeners, the bearer and `~/.cozy/calcifer/calcifer.lock` for good and runs Calcifer as its generations; it holds `~/.cozy/calcifer/calcifer.lock` and publishes a lock record beside it at `calcifer.lock.holder` (owner-only): `{address, token,
 pid, version, started_at_ms}`. A client reads the record for the address and the bearer. The CLI starts Calcifer when none
 answers, and restarts it when it runs another cozy than the installed one.
 
@@ -149,6 +149,8 @@ private, max-age=31536000, immutable`; everything else, `outputs/{name}` include
 - `ahead.updated {project, ahead}`: what a machine is fetching ahead of a project's queued jobs, as it stands now: `{function, machine, run, stage?, done, total, ready?, held_back?}`. The board's `ahead` has them all.
 - `history {id, undo?, redo?}`: a project's history moved, an edit, an undo or a redo, and the entries undo and redo would take now, as `GET /v1/projects/{id}/history` lists them.
 - `project.vault {id, state}`: a project's protection changed, to every stream: `unlocked`, `locking`, `locked`, `plain`.
+- `restarting`: this Calcifer hands over to the next (`POST /v1/restart`); the stream ends after it. Reconnect at once: the next one
+  answers at the same address, and nothing is offline.
 - `project.saving {id}`: before a lock, encrypt, decrypt, rotate or a stop closes it, to each page showing it: send what's typed of it
   now, then answer `saved` (below). Not past a deadline: a lapsed view takes no write.
 - `resync`: this stream fell behind and goes on: read again what you hold.
@@ -781,6 +783,11 @@ ffmpeg (cuts, frames, clips) and uv (local code). No route asks for them.
   /v1/projects/{id}/appearance`) is over it. `null` until it's set. Every stream hears `appearance`. `400 appearance_invalid`.
 - `POST /v1/down`: `{stopping: true, owed}`. Admission closes, mutations in flight finish, every stream ends,
   then the server. Machines keep what they accepted; the next Calcifer resumes `owed`. Never refused.
+- `POST /v1/restart`: `{restarting: true, to}` (cl-1113). Once nothing else is going (runs, other requests), the installed cozy starts
+  as the next generation beside this one; once it's prepared this one stops accepting (a connect waits for the next one: nothing is
+  refused), says `restarting` to every stream, finishes what it answers, and hands over; the holder record names the next one once
+  it answers, at the same address with the same bearer. Answered as the hand-over begins. `503 calcifer_restart_failed`: the next
+  one didn't start (its binary is replaced by `.cozy-previous` when that is this one's); this one serves on.
 
 ### Vault operation progress and reconnection
 
@@ -830,7 +837,8 @@ The CLI resolves the current directory to an existing project and sends its abso
 | `cozy new [directory]` | `POST /v1/projects` with the selected absolute path |
 | `cozy open [--port PORT]` | current directory, `GET /v1/projects/{id}?assets=false` for its id; starts a private window of the user's browser (`$BROWSER`'s, else the default's, else an installed one's: `--incognito`, `--inprivate`, `--private-window`) at the page's URL (`/p/<code>`) and prints it; with none, prints it and opens nothing; `--json` prints it and starts none |
 | `cozy status` | project health, warnings and suggested actions from `GET /v1/projects/{id}` |
-| any verb, Calcifer of another version | `POST /v1/down`, then the installed cozy's Calcifer started |
+| any verb, Calcifer of another version | `POST /v1/restart` (one from before cl-1113: `POST /v1/down`, then the installed cozy's Calcifer started) |
+| `cozy restart`, `cozy update` | `POST /v1/restart`, then the holder record's next generation |
 | `cozy run <target> [inputs] [flags]` | `HEAD`/`PUT /v1/files/sha256:<hex>` for each file and folder it names, and local code's tree, `POST /v1/run-quotes` (`--on new`), `POST /v1/runs` (again after a `preparing` install), then `GET /v1/runs/{id}/events`; `-o DIR`, each output `GET /v1/runs/{id}/outputs/{name}`; `--previews DIR`, `GET /v1/runs/{id}/preview` each second while it runs |
 | `cozy run <target> --describe`, `cozy run <package>` | local code's tree `PUT`, `GET /v1/targets` (`tree`, `at`) |
 | `cozy run ls` | `GET /v1/projects/{id}/runs` (`--all`: each project's, `GET /v1/projects`); live: `GET /v1/events`, then the same |

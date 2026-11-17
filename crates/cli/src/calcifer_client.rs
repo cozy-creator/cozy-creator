@@ -842,11 +842,26 @@ impl Client {
         Ok(holder)
     }
 
-    /// Stops `holder`'s Calcifer and starts the installed cozy's in its place.
+    /// Puts `holder`'s Calcifer on the installed cozy.
     async fn replace(&self, holder: Holder) -> Result<Holder, Error> {
-        // One that didn't stop cleanly is replaced all the same.
-        let _ = self.down(&holder).await;
-        self.start().await
+        self.swap(&holder).await
+    }
+
+    /// Puts `holder`'s Calcifer on the installed cozy without a moment off (cl-1113): `POST /v1/restart`, which waits until nothing
+    /// else is going, then the next generation's record once it answers. One from before (no such route) is stopped and started.
+    pub(crate) async fn swap(&self, holder: &Holder) -> Result<Holder, Error> {
+        let base = format!("http://{}", holder.address);
+        let request = self.0.http.post(format!("{base}/v1/restart")).bearer_auth(&holder.token).json(&serde_json::json!({}));
+        let answer = self.heard(holder.pid, Instant::now(), REPORT, request.send()).await.map_err(unreachable)?;
+        if answer.status() == reqwest::StatusCode::NOT_FOUND {
+            // One that didn't stop cleanly is replaced all the same.
+            let _ = self.down(holder).await;
+            return self.start().await;
+        }
+        let _: serde_json::Value = decode(answer).await?;
+        self.wait("Calcifer to restart", || async { self.record().is_some_and(|now| now.pid != holder.pid) }).await;
+        self.remember(None);
+        self.endpoint().await
     }
 
     fn remember(&self, holder: Option<Holder>) {

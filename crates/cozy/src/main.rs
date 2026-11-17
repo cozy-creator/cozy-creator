@@ -16,6 +16,10 @@ fn main() -> std::process::ExitCode {
     let words: Vec<&std::ffi::OsString> = args.iter().filter(|arg| *arg != "--json").collect();
     match words.as_slice() {
         [role] if *role == "calcifer" => calcifer::serve::main(),
+        // One of its parent's generations, handed what it serves on (cl-1113); not for people.
+        [role, generation, handed @ ..] if *role == "calcifer" && *generation == "generation" => {
+            calcifer::serve::generation(&handed.iter().map(|word| (*word).clone()).collect::<Vec<_>>())
+        }
         // It takes nothing, so `--help` or a typo starts no daemon.
         [role, rest @ ..] if *role == "calcifer" => {
             println!("Run the local controller. Cozy starts it automatically; use `cozy doctor` for repairs.");

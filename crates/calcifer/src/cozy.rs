@@ -3,7 +3,7 @@
 //! fine. We probably won't do major updates." A run or install whose package release needs a Runtime only a newer cozy's line
 //! runs (`api::release::Chosen::Cozy`) first moves this computer's cozy to the Latest release, by `cozy update`'s own path
 //! (`api::update`; Homebrew's by `brew upgrade`): Calcifer's own run (`cozy/update`), which the asking client follows, then asks
-//! again. Once nothing else is going, Calcifer restarts on the new binary (`Api::restart_updated`): the page reconnects, `local`
+//! again. Once nothing else is going, Calcifer hands over to the new binary (`Api::swap`, cl-1113): the page carries on, `local`
 //! (the same binary) moves to it, and rentals follow the new Calcifer's minor as ever.
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
@@ -119,7 +119,7 @@ pub(crate) async fn run(api: &Arc<Api>, ask: CozyUpdate, here: &Here) -> Result<
     };
     loop {
         let mut tail = api.calcifer.subscribe();
-        if api.busy_but(here.id.as_str())?.is_none() {
+        if api.busy_but(here.id.as_str(), 0)?.is_none() {
             break;
         }
         tokio::select! {
@@ -138,7 +138,10 @@ pub(crate) async fn run(api: &Arc<Api>, ask: CozyUpdate, here: &Here) -> Result<
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        restarting.restart_updated().await;
+        // The installed cozy takes over without a moment off (cl-1113); one that doesn't start leaves this one serving.
+        if let Err(e) = restarting.swap("", 0).await {
+            tracing::warn!(code = %e.code, "restarting on the updated cozy: {}", e.message);
+        }
     });
     Ok(serde_json::to_value(CozyUpdated { from: own.into(), to: installed }).unwrap_or_default())
 }

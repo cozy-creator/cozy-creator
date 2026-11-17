@@ -201,6 +201,11 @@ pub(crate) fn ahead_updated(id: &str, ahead: &api::calcifer::project::Ahead) {
     let _ = PROJECTS.said.send(StreamEvent::AheadUpdated { project: id.to_owned(), ahead: Box::new(ahead.clone()) });
 }
 
+/// Tells every stream this Calcifer hands over to the next (cl-1113): each ends after saying it, and its page comes straight back.
+pub(crate) fn restarting() {
+    let _ = PROJECTS.said.send(StreamEvent::Restarting);
+}
+
 /// Protection changes must reach inactive/global views too; they contain no private
 /// project content and remain visible after the project's read authority is closed.
 pub(crate) fn project_vault(id: &str, state: &str) {
@@ -308,6 +313,7 @@ async fn subscribe(api: Arc<Api>, scope: Scope, page: bool) -> Watch {
         shown,
         said,
         stop: api.stop_signal(),
+        leaving: false,
         api,
     }
 }
@@ -521,18 +527,21 @@ struct Watch {
     shown: HashMap<String, Machine>,
     said: Option<broadcast::Receiver<StreamEvent>>,
     stop: watch::Receiver<bool>,
+    /// It said `restarting`: it ends (cl-1113).
+    leaving: bool,
     api: Arc<Api>,
 }
 
 impl Watch {
     async fn next(mut self) -> Option<(Result<sse::Event, Infallible>, Self)> {
         loop {
-            if *self.stop.borrow() {
+            if *self.stop.borrow() || self.leaving {
                 return None;
             }
             self.arrived()?;
             if let Some(event) = self.pending.pop_front() {
                 if !self.visible(&event) { continue; }
+                self.leaving = matches!(event, StreamEvent::Restarting);
                 return Some((Ok(frame(&event)), self));
             }
             if let Some(id) = self.owed.pop_front() {
@@ -573,7 +582,7 @@ impl Watch {
 
     fn visible(&self, event: &StreamEvent) -> bool {
         let project_id = match event {
-            StreamEvent::ProjectVault { .. } | StreamEvent::ProjectsChanged | StreamEvent::Appearance { .. } => return true,
+            StreamEvent::ProjectVault { .. } | StreamEvent::ProjectsChanged | StreamEvent::Appearance { .. } | StreamEvent::Restarting => return true,
             // A page's alone: this computer's cozy has nothing typed to send.
             StreamEvent::ProjectSaving { id } => return self.showing.as_ref().is_some_and(|showing| showing.page() && showing.includes(id)),
             // Out of the index by now, and let go by every stream: told to all (cl-1097).

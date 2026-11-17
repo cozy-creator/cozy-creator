@@ -213,8 +213,12 @@ else:
 PYTHON
 }
 
-# Calcifer restarts only once it serves nothing: an upload, a publish or a page's write in flight is never cut (cl-1029).
-restart() { python3 "$root/scripts/restart-calcifer-when-idle.py" --wait "${COZY_DEV_RESTART_WAIT_S:-inf}"; }
+# Calcifer moves to the installed cozy only once it serves nothing (cl-1029), and without a moment off: the next one takes over from it
+# (`cozy restart`, cl-1113). One that doesn't start leaves the running one serving, and the binary it ran back in place.
+restart() { "$installed" restart; }
+
+# The holder record's pid: the Calcifer that answers (its parent's generation, cl-1113).
+serving() { python3 -c 'import json, pathlib; print(json.loads((pathlib.Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())["pid"])'; }
 
 # What runs now, in one line: the checkout's commit, the CLI, Calcifer, and local's TensorD. Calcifer moves local's TensorD to the
 # installed cozy once this computer has been at rest (crates/calcifer/src/rc.rs); this waits for its machine.updated at most
@@ -288,21 +292,28 @@ if cmp --silent "$staged" "$installed"; then
 fi
 # A build that doesn't stay up goes back to the one before it (Paul, 11-16: "swap it from v1 -> v2 so I never have downtime";
 # a Calcifer that crashed at every start kept his page down for four minutes): it must answer and keep one process for
-# COZY_DEV_STEADY_S, or the previous binary is put back and Calcifer restarted on it.
+# COZY_DEV_STEADY_S, or the previous binary is put back and Calcifer restarted on it. One that never starts never takes over: the
+# running one serves on, and its binary is put back (cl-1113).
 steady() {
-    local pid restarts
+    local pid restarts generation
     pid=$(systemctl --user show cozy-calcifer.service -p MainPID --value)
     restarts=$(systemctl --user show cozy-calcifer.service -p NRestarts --value)
+    generation=$(serving)
     for _ in $(seq 1 "${COZY_DEV_STEADY_S:-30}"); do
         sleep 1
         [[ $(systemctl --user show cozy-calcifer.service -p ActiveState --value) == active ]] || return 1
         [[ $(systemctl --user show cozy-calcifer.service -p MainPID --value) == "$pid" ]] || return 1
         [[ $(systemctl --user show cozy-calcifer.service -p NRestarts --value) == "$restarts" ]] || return 1
+        # A generation that died is started again under the same parent: the record names another.
+        [[ $(serving) == "$generation" ]] || return 1
     done
 }
 cp --reflink=auto -p "$installed" "$HOME/.cozy/bin/.cozy-previous"
 mv -f "$staged" "$installed"
-restart
+if ! restart; then
+    versions "kept: the new build didn't start"
+    exit 1
+fi
 if ! { ready && steady; }; then
     say "the new build didn't stay up (journalctl --user -u cozy-calcifer): back to the one before it"
     # Renamed into place, as the new one was: anything running the installed binary keeps its inode (a copy over it is refused).

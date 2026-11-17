@@ -437,6 +437,8 @@ pub fn glibc_version() -> String {
 pub(crate) use sys::command_line;
 #[cfg(windows)]
 pub(crate) use sys::job;
+#[cfg(windows)]
+pub(crate) use sys::start_in_job;
 #[cfg(unix)]
 pub use unix::{SupervisorSignals, Woken, cloexec_from, leaving, unblock_signals};
 

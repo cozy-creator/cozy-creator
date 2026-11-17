@@ -22,6 +22,8 @@ pub mod exe;
 #[cfg(feature = "seams")]
 pub mod gpu;
 #[cfg(feature = "seams")]
+pub mod generation;
+#[cfg(feature = "seams")]
 pub mod handles;
 #[cfg(feature = "seams")]
 pub mod heap;

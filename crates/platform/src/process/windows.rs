@@ -336,6 +336,71 @@ pub(super) fn detach(program: &Path, args: &[OsString], log: Option<File>, dir: 
     }
 }
 
+/// A Calcifer generation's start (`crate::generation`): as [`detach`] starts a process, with `extra` inherited too, and inside `job`
+/// before it runs one instruction. Its process handle and id.
+pub(crate) fn start_in_job(
+    program: &Path,
+    args: &[OsString],
+    log: Option<&File>,
+    dir: &Path,
+    extra: &[HANDLE],
+    job: &OwnedHandle,
+) -> io::Result<(OwnedHandle, u32)> {
+    let null = File::options().read(true).write(true).open("NUL")?;
+    let out = log.unwrap_or(&null);
+    let mut handles = vec![null.as_raw_handle(), out.as_raw_handle()];
+    handles.extend_from_slice(extra);
+    handles.dedup();
+    for &handle in &handles {
+        // SAFETY: handles the caller and this function hold until the child has its own.
+        if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    let attributes = Attributes::handles(&handles)?;
+    let mut info = STARTUPINFOEXW::default();
+    info.StartupInfo.cb = mem::size_of::<STARTUPINFOEXW>() as u32;
+    info.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    info.StartupInfo.hStdInput = null.as_raw_handle();
+    info.StartupInfo.hStdOutput = out.as_raw_handle();
+    info.StartupInfo.hStdError = out.as_raw_handle();
+    info.lpAttributeList = attributes.0.as_ptr().cast_mut().cast();
+    let mut line: Vec<u16> = command_line(program, args).encode_utf16().chain(iter::once(0)).collect();
+    let dir: Vec<u16> = std::os::windows::ffi::OsStrExt::encode_wide(dir.as_os_str()).chain(iter::once(0)).collect();
+    let flags = CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
+    let mut process = PROCESS_INFORMATION::default();
+    // SAFETY: a writable, nul-terminated command line and a nul-terminated directory; the startup information and its attribute
+    // list outlive the call.
+    let created = unsafe {
+        CreateProcessW(ptr::null(), line.as_mut_ptr(), ptr::null(), ptr::null(), 1, flags, ptr::null(), dir.as_ptr(), &info.StartupInfo, &mut process)
+    };
+    for &handle in &handles {
+        // SAFETY: the same handles; the child, if any, has its own copies now.
+        unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) };
+    }
+    if created == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: CreateProcessW succeeded: live handles only this function holds.
+    let (child, thread) = unsafe { (OwnedHandle::from_raw_handle(process.hProcess), OwnedHandle::from_raw_handle(process.hThread)) };
+    // Fails closed: a child the job cannot take is ended before it ran.
+    // SAFETY: a live job and a live, suspended process.
+    if unsafe { AssignProcessToJobObject(raw(job), raw(&child)) } == 0 {
+        let error = io::Error::last_os_error();
+        // SAFETY: the suspended child, ended.
+        unsafe { TerminateProcess(raw(&child), 1) };
+        return Err(error);
+    }
+    // SAFETY: the child's suspended main thread.
+    if unsafe { ResumeThread(raw(&thread)) } == u32::MAX {
+        let error = io::Error::last_os_error();
+        // SAFETY: as above.
+        unsafe { TerminateProcess(raw(&child), 1) };
+        return Err(error);
+    }
+    Ok((child, process.dwProcessId))
+}
+
 /// A PROC_THREAD_ATTRIBUTE_LIST holding one handle list, which must outlive it.
 struct Attributes(Vec<usize>);
 

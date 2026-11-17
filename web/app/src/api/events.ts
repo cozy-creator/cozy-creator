@@ -25,6 +25,8 @@ type Shared =
 
 /** Three missed comments: the connection is dead, whatever the socket says. */
 const SILENT_MS = 45_000
+/** How long a stream that was live may be away before the page says Cozy is offline: a restart is back well within it (cl-1113). */
+const QUIET_MS = 2_000
 // Vault-aware coordination ABI: older pages cannot invalidate cached Reader grants on lock.
 // Keep tab liveness, media/log locks and ordinary storage shared across page generations.
 const COORDINATION = "cozy-events-presence-v2"
@@ -79,6 +81,10 @@ export class EventStream {
   private shown = new Map<string, Presence>()
   private stream: string | null = null
   private following: AbortController | null = null
+  /** Calcifer said it hands over to the next (`restarting`): the next connection is made at once (cl-1113). */
+  private restarting = false
+  /** While a stream that was live may still come straight back: "offline" waits for it (cl-1113). */
+  private quiet: ReturnType<typeof setTimeout> | undefined
   private told: Confirmed | null = null
   private telling = false
   /** Lock drops server Readers even when the displayed project set later returns to the same IDs. */
@@ -328,14 +334,25 @@ export class EventStream {
     this.shown.set(this.tab, this.presence())
     this.channel.postMessage({ who: true } satisfies Shared)
     for (let attempt = 1; ; attempt++) {
+      let live = false
       try {
-        if (await this.follow()) attempt = 1
+        live = await this.follow()
+        if (live) attempt = 1
       } catch {
         this.say({ state: "signed_out" })
         return
       }
-      this.say({ state: "reconnecting", attempt })
-      await new Promise((done) => setTimeout(done, Math.min(5000, 250 * 2 ** (attempt - 1))))
+      // A stream that was live comes straight back, as a restart says it will (cl-1113): "offline" only once it hasn't for a while.
+      if (live) {
+        clearTimeout(this.quiet)
+        this.quiet = setTimeout(() => {
+          this.quiet = undefined
+          this.say({ state: "reconnecting", attempt: 1 })
+        }, QUIET_MS)
+      } else if (this.quiet === undefined) this.say({ state: "reconnecting", attempt })
+      const wait = this.restarting ? 0 : Math.min(5000, 250 * 2 ** (attempt - 1))
+      this.restarting = false
+      await new Promise((done) => setTimeout(done, wait))
     }
   }
 
@@ -359,7 +376,10 @@ export class EventStream {
         (data) => {
           const event = parse(data)
           if (!event) return
+          if (event.type === "restarting") this.restarting = true
           if (event.type === "hello") {
+            clearTimeout(this.quiet)
+            this.quiet = undefined
             live = true
             // A new stream holds nothing open yet.
             this.stream = event.stream ?? null

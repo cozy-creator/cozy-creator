@@ -752,6 +752,33 @@ fn drain_saves(api: &Arc<Api>, root: &FsPath, mut saving: impl FnMut()) -> Resul
     }
 }
 
+
+/// An open encrypted view on its way from one Calcifer generation to the next (cl-1113).
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Carried {}
+
+/// The views the last generation handed this one (cl-1113).
+pub(crate) fn adopt(_api: &Arc<Api>, views: Vec<Carried>) {
+    if !views.is_empty() {
+        tracing::warn!(views = views.len(), "views handed over that this Calcifer can't take");
+    }
+}
+
+/// Before this generation hands over (cl-1113): its open views, for the next. Closed here, as at a stop, until views are carried.
+pub(crate) fn carry(api: &Arc<Api>) -> Vec<Carried> {
+    for _ in 0..60 {
+        match close_all(api) {
+            Ok(()) => return vec![],
+            Err(e) if matches!(e.code.as_str(), "project_busy" | "project_locked") => std::thread::sleep(Duration::from_millis(500)),
+            Err(e) => {
+                tracing::warn!(code = %e.code, "closing encrypted views before handing over: {}", e.message);
+                return vec![];
+            }
+        }
+    }
+    vec![]
+}
+
 /// Every unlocked vault's pages send what they typed, before a stop closes them all.
 pub(crate) async fn save_open() {
     // `project_id` takes SESSIONS itself: the roots are read first.

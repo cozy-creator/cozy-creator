@@ -88,8 +88,8 @@ pub(crate) struct Api {
     /// never land between a submission's check and its commit.
     stopping: Arc<RwLock<bool>>,
     stop: watch::Sender<bool>,
-    /// Set once cozy updated itself (cl-978): this Calcifer stops to start the installed binary in its place.
-    updated: std::sync::atomic::AtomicBool,
+    /// This generation's parent (cl-1113): what a restart asks to start the next one.
+    pub(crate) parent: std::sync::OnceLock<Arc<crate::generation::Link>>,
     /// When this Calcifer started: its own updates are keyed by it.
     pub(crate) started_ms: i64,
 }
@@ -120,7 +120,7 @@ impl Api {
             bearer: Sha256::digest(token).into(),
             stopping: Arc::new(RwLock::new(false)),
             stop: watch::channel(false).0,
-            updated: std::sync::atomic::AtomicBool::new(false),
+            parent: std::sync::OnceLock::new(),
             started_ms: crate::store::now_ms(),
         });
         api.calcifer.serve_api(&api);
@@ -135,7 +135,6 @@ impl Api {
     }
 
     /// A service-manager stop keeps mutation admission closed while existing work/views drain.
-    #[cfg(unix)]
     pub(crate) async fn shutdown(self: &Arc<Self>) -> Result<Vec<String>, Error> {
         self.down_inner(true).await
     }
@@ -160,11 +159,11 @@ impl Api {
 
     /// What keeps this Calcifer from restarting now but `own`, its update's run (cl-978): runs going (its machines', its own),
     /// and requests being served. None: it's idle; a page with a stream open reconnects.
-    pub(crate) fn busy_but(&self, own: &str) -> Result<Option<String>, Error> {
+    pub(crate) fn busy_but(&self, own: &str, asking: u32) -> Result<Option<String>, Error> {
         let internal = |e: StoreError| Error::internal("store_unreadable", e.to_string());
         let runs: usize = self.calcifer.each_store(|store| store.unsettled().map(|ids| ids.len())).map_err(internal)?.into_iter().sum();
         let here: usize = self.calcifer.each_store(|store| Ok(store.unsettled_here()?.into_iter().filter(|id| id.as_str() != own).count())).map_err(internal)?.into_iter().sum();
-        let requests = self.activity.requests.load(Ordering::Relaxed);
+        let requests = self.activity.requests.load(Ordering::Relaxed).saturating_sub(asking);
         let mut busy = vec![];
         match runs + here {
             0 => {}
@@ -177,28 +176,23 @@ impl Api {
         Ok((!busy.is_empty()).then(|| busy.join(", ")))
     }
 
-    /// Stops this Calcifer for the cozy it updated to, which starts in its place (`serve::main`): as `down` does, admission closed
-    /// once mutations in flight are done, again while an encrypted view is still closing.
-    pub(crate) async fn restart_updated(self: &Arc<Self>) {
-        self.updated.store(true, Ordering::Relaxed);
+    /// Hands this Calcifer over to the installed cozy (cl-1113), once nothing but `own` is going (cl-978's rule): runs (its machines',
+    /// its own) and requests other than the `asking` ones. The version it hands over to, or why the next one didn't start.
+    pub(crate) async fn swap(self: &Arc<Self>, own: &str, asking: u32) -> Result<String, Error> {
+        let Some(parent) = self.parent.get() else {
+            return Err(Error::new(Kind::Unavailable, "calcifer_restart_unavailable", "This Calcifer has no parent to restart it"));
+        };
         loop {
-            let mut closed = std::pin::pin!(crate::project::vault::CLOSED.notified());
-            closed.as_mut().enable();
-            match self.down().await {
-                Ok(_) => return,
-                Err(e) => warn!(code = %e.code, "restarting on the updated cozy: {}; again once a view closes", e.message),
+            let mut tail = self.calcifer.subscribe();
+            if self.busy_but(own, asking)?.is_none() {
+                break;
             }
             tokio::select! {
-                () = self.stopped() => return,
-                () = closed => {}
-                () = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+                _ = tail.recv() => {}
+                () = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
             }
         }
-    }
-
-    /// Whether this Calcifer stopped for the cozy it updated to.
-    pub(crate) fn updated(&self) -> bool {
-        self.updated.load(Ordering::Relaxed)
+        parent.swap().await.map_err(|why| Error::new(Kind::Unavailable, "calcifer_restart_failed", format!("Calcifer stays as it is: {why}")))
     }
 
     /// Ends every stream and the server.
@@ -243,6 +237,7 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .route("/v1/runs/{id}/preview", get(crate::previews::serve))
         .route("/v1/runs/{id}/play", get(crate::play::play))
         .route("/v1/down", post(down))
+        .route("/v1/restart", post(restart))
         .route("/v1/status", get(status))
         .route("/v1/cut", get(cut))
         .route("/v1/settings", get(crate::reports::show).put(crate::reports::change))
@@ -730,6 +725,14 @@ async fn down(State(api): State<Arc<Api>>) -> Result<Json<Down>, Refusal> {
         stopping: true,
         owed,
     }))
+}
+
+/// `POST /v1/restart` (cl-1113): Calcifer on the installed cozy, without a moment off. Once nothing else is going, the installed cozy
+/// starts beside this one as its next generation; once prepared, this one lets go and it takes over. Answered as the hand-over
+/// begins, with the version it hands over to; the holder record names the new one once it answers.
+async fn restart(State(api): State<Arc<Api>>) -> Result<Json<serde_json::Value>, Refusal> {
+    let to = api.swap("", 1).await.map_err(Refusal)?;
+    Ok(Json(serde_json::json!({ "restarting": true, "to": to })))
 }
 
 async fn status(State(api): State<Arc<Api>>) -> Result<Json<CalciferStatus>, Refusal> {

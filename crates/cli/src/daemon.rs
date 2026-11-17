@@ -12,22 +12,24 @@ use platform::tail::{Log, Start};
 
 use crate::{Context, calcifer_client::Client, output};
 
-/// Stops a running Calcifer and starts the installed `cozy`'s in its place, after something
-/// replaced that binary. `false`: none was running, and none is started.
+/// Puts a running Calcifer on the installed `cozy` without a moment off (cl-1113), after something replaced that binary. `false`: none
+/// was running, and none is started.
 pub(crate) async fn restart(ctx: &Context) -> Result<bool, Error> {
     let Some(client) = Client::running(ctx).await? else {
         return Ok(false);
     };
-    client.stop().await?;
-    client.ready().await?;
+    let Some(holder) = client.holder() else {
+        return Ok(false);
+    };
+    client.swap(&holder).await?;
     Ok(true)
 }
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct Restart {}
 
-/// `cozy restart`: Calcifer stopped and started on the installed cozy, whoever uses it (cl-962). Runs on machines go on,
-/// pages reconnect, and the new Calcifer resumes what the old one owed.
+/// `cozy restart`: Calcifer on the installed cozy, whoever uses it (cl-962), once nothing else is going, and without a moment off
+/// (cl-1113): the next one takes over from the running one. Runs on machines go on, pages carry on, and nothing is refused.
 pub(crate) async fn restart_calcifer(ctx: &Context, _args: Restart) -> Result<ExitCode, Error> {
     let restarted = restart(ctx).await?;
     let holder = Client::connect(ctx).await?.ready().await?;

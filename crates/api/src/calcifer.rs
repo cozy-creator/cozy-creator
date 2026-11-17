@@ -1122,6 +1122,10 @@ pub enum StreamEvent {
     /// `POST /v1/events/{stream}/saved` (cl-1067). A page that doesn't know it skips it, as any type it doesn't know.
     #[serde(rename = "project.saving")]
     ProjectSaving { id: String },
+    /// This Calcifer is handing over to the next (cl-1113): its stream ends now, and the next answers at the same address at once.
+    /// Reconnect straight away; nothing is offline.
+    #[serde(rename = "restarting")]
+    Restarting,
     /// Its folder is gone (deleted, moved away, on a drive that isn't there): where it was. Nothing of it reads, so a stream showing it
     /// is told this in place of `project.changed`, and asks it nothing more (cl-980). Deleted here, every stream hears it (cl-1097).
     #[serde(rename = "project.gone")]
