@@ -287,6 +287,10 @@ def main() -> None:
         print(f"swap: {e}", file=sys.stderr)
     finally:
         (out / "results.json").write_text(json.dumps(results, indent=2))
+        # Each generation's start and each hand-over's steps, with their times.
+        health = HOME / "calcifer" / "health.log"
+        if health.is_file():
+            shutil.copyfile(health, out / "health.log")
     if not results.get("ok"):
         sys.exit(1)
 

@@ -14,6 +14,13 @@ test.use({ projectOptions: { encrypted } });
 const holder = () => JSON.parse(readFileSync(join(homedir(), '.cozy', 'calcifer', 'calcifer.lock.holder'), 'utf8'));
 
 test('swap', { tag: '@solo' }, async ({ page, project, api, cli, signIn }) => {
+  // Every refused /v1 answer the page met, with its body: what a guard's console line can't say.
+  const refused = [];
+  page.on('response', async (response) => {
+    if (response.status() < 400 || !new URL(response.url()).pathname.startsWith('/v1/')) return;
+    const body = await response.text().catch(() => '');
+    refused.push(`${response.status()} ${response.request().method()} ${new URL(response.url()).pathname} ${body.slice(0, 400)}`);
+  });
   await signIn(page, project.url());
   await expect(page.locator('header.top'), 'the project page shows').toBeVisible({ timeout: 30_000 });
   // What the page says from here on, and whether it is still this document after: a reload loses `__swap`.
@@ -34,6 +41,7 @@ test('swap', { tag: '@solo' }, async ({ page, project, api, cli, signIn }) => {
   await page.waitForTimeout(3_000);
   expect(await page.evaluate(() => window.__swap?.offline), 'the same page, never offline').toBe(0);
   await expect(page.locator('header.top .pill').filter({ hasText: /offline|Trying again/ }), 'nothing left waiting').toHaveCount(0);
+  console.log(`swap: refused answers the page met: ${refused.length ? refused.join(' | ') : 'none'}`);
   if (!encrypted) return;
   expect(await api.get(project.at('/vault')), 'the project stayed unlocked').toMatchObject({ encrypted: true, state: 'unlocked' });
   // The view the next generation took locks as any does: its mount ends, and the project's folder can go.

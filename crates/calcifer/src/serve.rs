@@ -497,19 +497,26 @@ async fn close(api: &Arc<Api>, server: Option<Server>, server6: Option<Server>) 
 /// close. The open views go to the next generation.
 async fn hand_over(api: &Arc<Api>, server: Server, server6: Option<Server>) -> Vec<(crate::project::vault::Carried, std::fs::File)> {
     info!("handing over to the next Calcifer");
+    // Each step's time in the health log, as a start's are: a slow hand-over names its slow step.
+    let mut steps = Steps(Instant::now());
     // Accepting has stopped. A connection taken just before has this long to begin its request, which is answered, while the streams
     // go on; then each is told to come straight back, and the stop closes only connections between requests (as a client reusing one
     // expects) and every stream not already ended on `restarting`.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    steps.done("hand_over_settle");
     crate::events::restarting();
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     api.stop();
     ended(Some(server), server6).await;
+    steps.done("hand_over_servers");
     // Its projects close first, their WAL emptied: the next generation opens them, encrypted ones through the same views.
     tokio::task::block_in_place(|| api.projects.close_lingering());
+    steps.done("hand_over_projects");
     let views = tokio::task::block_in_place(crate::project::vault::carry);
+    steps.done("hand_over_views");
     api.machines.close();
     api.calcifer.close();
+    steps.done("hand_over_stores");
     views
 }
 
