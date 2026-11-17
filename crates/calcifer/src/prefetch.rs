@@ -431,6 +431,7 @@ fn demand(planned: &HashMap<String, HashMap<String, Vec<Listed>>>, machine: &str
 async fn put(machines: &Arc<Machines>, machine: &str, hubs: Vec<String>, upcoming: Vec<(String, v1::Predicted)>, prepare: Vec<(String, v1::Predicted)>) -> Result<(), String> {
     let (_, link) = machines.linked(machine).map_err(|e| e.message)?;
     let mut access: HashMap<String, Option<v1::HubAccess>> = HashMap::new();
+    let mut owners: HashMap<String, Option<String>> = HashMap::new();
     for hub in hubs {
         if access.contains_key(&hub) {
             continue;
@@ -440,8 +441,16 @@ async fn put(machines: &Arc<Machines>, machine: &str, hubs: Vec<String>, upcomin
             .map(|(_, item)| item.spec.clone())
             .collect();
         access.insert(hub.clone(), machines.list_access(&hub, machine, &specs).await?);
+        owners.insert(hub.clone(), machines.list_owner(&hub).await);
     }
-    let with = |(hub, item): (String, v1::Predicted)| v1::Predicted { spec: v1::RunSpec { hub: access.get(&hub).cloned().flatten(), ..item.spec }, ..item };
+    // Each its Hub's access, and local code the account its render names (`Calcifer::finish_spec`): one request with its render.
+    let with = |(hub, item): (String, v1::Predicted)| {
+        let owner = match (&item.spec.source, owners.get(&hub).cloned().flatten()) {
+            (Some(v1::Source::Local(_)), Some(owner)) if item.spec.owner.is_empty() => owner,
+            _ => item.spec.owner.clone(),
+        };
+        v1::Predicted { spec: v1::RunSpec { hub: access.get(&hub).cloned().flatten(), owner, ..item.spec }, ..item }
+    };
     let answer = link.upcoming(&v1::Upcoming { jobs: upcoming.into_iter().map(with).collect() }).await.map_err(|e| e.to_string())?;
     for refused in answer.items.iter().filter_map(|item| item.refusal.as_ref()) {
         warn!(machine, "an upcoming job won't be ready ahead: {}", refused.message);

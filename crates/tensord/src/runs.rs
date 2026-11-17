@@ -32,7 +32,7 @@ mod model_folder;
 mod read;
 mod sent;
 pub(crate) use read::{actor_id, retention_owner, wordless_terminal, Log, OutputSnapshot};
-pub(crate) use sent::{choices, identity, resume, resume_private};
+pub(crate) use sent::{choices, identity, identity_value, resume, resume_private};
 
 pub(crate) enum Source {
     /// A published release by name (th-245); empty: the Hub's newest. `digest`: the release digest its caller pinned (a project's
@@ -571,7 +571,8 @@ impl Runs {
             inputs: spec.inputs.clone(),
             parent: spec.parent.clone(),
             prepares: spec.warm || spec.remove,
-            background: crate::ahead::guess(id),
+            // A guess, or one run as if it were sent (cl-1123 D): no job until a call adopts it.
+            background: crate::ahead::guess(id) || crate::ahead::speculative(id),
             ..Default::default() // root and family: stamped at acceptance
         };
         Ok(Drafted::New(Box::new(draft), references))
@@ -1152,7 +1153,7 @@ impl Runs {
         }
         let wants = wants_of(&interface, &spec);
         // A list item's plan, said: which of its request's fields its rules read, and what they made of them (cl-1123).
-        if crate::ahead::hidden(&caller) {
+        if crate::ahead::item(&caller) {
             let fields: Vec<&String> = spec.input.as_object().map(|input| input.keys().collect()).unwrap_or_default();
             tracing::info!(
                 "{caller}: its request ({} fields: {fields:?}); its rules hold for {:?}, not for {:?}, give no answer for {:?}; it needs {:?}, extras {:?}",
@@ -1325,7 +1326,7 @@ impl Runs {
             }
             // A predicted request's weights are here: its machine loads it as its call would, once a GPU is idle (cl-1123), the
             // on-demand models its rules say its request reads built ahead too.
-            if let (true, Some(plan), Some(pool)) = (crate::ahead::hidden(&caller), plan, self.service.pool()) {
+            if let (true, Some(plan), Some(pool)) = (crate::ahead::item(&caller), plan, self.service.pool()) {
                 let build = (plan.slots.iter())
                     .filter(|slot| slot.on_demand && wants.needed.contains(&slot.binding.model_binding_path))
                     .map(|slot| slot.binding.model_parameter_name.clone())

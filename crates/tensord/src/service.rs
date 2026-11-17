@@ -710,6 +710,10 @@ impl Service {
             }),
             false => Default::default(),
         };
+        // A real GPU call goes before every speculative run and its calls (cl-1123 D): one ready leaves them queued, and ends the one
+        // going.
+        let speculative = |record: &Execution| record.invocation.background && !record.invocation.prepares;
+        let real_gpu = source_ready.iter().any(|record| record.invocation.degree > 0 && !speculative(record));
         let ready = self.queue.lock().unwrap().order(source_ready, model);
         let (mut place, held) = (0, self.held.get().is_some_and(|held| held()));
         let mut next_gpu = None;
@@ -718,6 +722,9 @@ impl Service {
         let mut left_waiting = vec![];
         for record in ready {
             let invocation = &record.invocation;
+            if real_gpu && speculative(&record) {
+                continue;
+            }
             // Re-read for every offer, then once more inside Pool after it holds the GPU slot.
             let admit = || cpu_active().map(|used| if invocation.degree == 0 {
                 used < self.parallelism
@@ -731,7 +738,7 @@ impl Service {
                 }
                 self.went(&record);
             } else {
-                if invocation.degree > 0 {
+                if invocation.degree > 0 && !speculative(&record) {
                     left_waiting.push((record.clone(), width));
                 }
                 // An earlier incompatible GPU job remains a barrier. Lookahead never scans
@@ -771,7 +778,7 @@ impl Service {
                 }
             }
         }
-        if !left_waiting.is_empty() && pool.loading_ahead() {
+        if !left_waiting.is_empty() && (pool.loading_ahead() || pool.speculating()) {
             let constructions: Vec<String> = (left_waiting.iter())
                 .map(|(record, width)| self.plan(&pool, record).and_then(|plan| match width {
                     Some(width) => plan.at(*width),
