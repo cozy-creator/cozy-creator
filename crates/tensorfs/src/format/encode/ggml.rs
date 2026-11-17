@@ -49,14 +49,14 @@ pub(super) fn reference(input: &Input) -> Result<Quantized> {
         .find(|s| s.name == ty.name)
         .expect("every written type decodes")
         .decode;
-    let mut stats = QuantizationStats::default();
-    let mut decoded = vec![0.0f32; n];
-    for r in 0..rows {
+    // Rows are independent: each one's blocks and stats on the machine's cores, merged in row order.
+    let encode = |(r, y): (usize, &mut [u8])| -> Result<QuantizationStats> {
         let x = row(r);
         if x.iter().any(|v| !v.is_finite()) {
             return Err(fail("a value is not finite"));
         }
-        let y = &mut out[r * blocks * size..(r + 1) * blocks * size];
+        let mut stats = QuantizationStats::default();
+        let mut decoded = vec![0.0f32; n];
         for (xb, yb) in x.chunks_exact(n).zip(y.chunks_exact_mut(size)) {
             match ty.name {
                 "q8_0" => q8_0(xb, yb),
@@ -71,6 +71,25 @@ pub(super) fn reference(input: &Input) -> Result<Quantized> {
                 stats.add(*source, f64::from(*value));
             }
         }
+        Ok(stats)
+    };
+    #[cfg(feature = "quantize")]
+    let each: Vec<Result<QuantizationStats>> = {
+        use rayon::prelude::*;
+        out.par_chunks_mut(blocks * size)
+            .enumerate()
+            .map(encode)
+            .collect()
+    };
+    #[cfg(not(feature = "quantize"))]
+    let each: Vec<Result<QuantizationStats>> = out
+        .chunks_mut(blocks * size)
+        .enumerate()
+        .map(encode)
+        .collect();
+    let mut stats = QuantizationStats::default();
+    for one in each {
+        stats.merge(&one?);
     }
     let shape = [rows, blocks, size];
     Ok(Quantized {
