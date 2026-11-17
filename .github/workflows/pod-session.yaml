@@ -103,7 +103,7 @@ jobs:
           fetch-depth: 0
           path: packages.git
       - uses: actions/checkout@v5
-        if: inputs.script == 'bench'
+        if: inputs.script == 'bench' || inputs.script == 'upscale'
         with:
           repository: cozy-creator/benchmarks
           ref: ${{ fromJSON(inputs.params).bench_ref || 'master' }}
