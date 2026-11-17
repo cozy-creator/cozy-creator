@@ -7119,34 +7119,34 @@ pub(crate) async fn queued_on(api: &Arc<Api>, set: &[On], row: &crate::store::Ru
     let hub = row.hub.as_ref().map_or_else(|| api.machines.hubs.default_origin(), ToString::to_string);
     let function = row.spec.entrypoint.as_str();
     let payload: Value = row.spec.payload.as_ref().and_then(|payload| serde_json::from_str(payload.get()).ok()).unwrap_or_default();
-    let (read, named, fetched, gpu) = match &row.spec.source {
+    let (read, named, models, gpu) = match &row.spec.source {
         Some(v1::Source::Release(release)) => {
             let read = Host::new(api).published(&hub, &format!("{}@{}", release.package, release.release), set.first()).await.ok();
-            let fetched = match &read {
-                Some(read) => fit::checkpoints(api, &hub, read, function, &Map::new()).await,
-                None => fit::Fetched::default(),
+            // What its request waits for, by its function's needs rules on its payload (cl-1103).
+            let models = match &read {
+                Some(read) => fit::checkpoints(api, &hub, read, function, &Map::new(), Some(&payload)).await,
+                None => vec![],
             };
             let gpu = read.as_ref().and_then(|read| api::interface::Interface::parse(read.document()).ok()).is_some_and(|interface| {
                 interface.callables.iter().find(|callable| callable.name == function).is_some_and(|callable| interface.needs_gpu(callable))
             });
-            (read, format!("{}/{function}@{}", release.package, release.release), fetched, gpu)
+            (read, format!("{}/{function}@{}", release.package, release.release), models, gpu)
         }
         // Local code: as its machine's estimate names it; one that builds models wants a GPU.
-        Some(v1::Source::Local(local)) => (None, format!("{}/{function}", local.manifest), fit::Fetched::default(), !row.spec.models.is_empty()),
-        _ => (None, row.target.clone(), fit::Fetched::default(), false),
+        Some(v1::Source::Local(local)) => (None, format!("{}/{function}", local.manifest), vec![], !row.spec.models.is_empty()),
+        _ => (None, row.target.clone(), vec![], false),
     };
     let job = placement::Job {
         key: row.id.to_string(),
         target: row.target.clone(),
         function: named,
-        models: fetched.models,
+        models,
         size: v1::JobSize::of(&payload),
         gpus: row.spec.gpus,
         gpu,
         on: set.to_vec(),
         scope: None,
         source: None,
-        on_demand_bytes: fetched.on_demand_bytes,
     };
     let (offers, said) = Box::pin(placement::offers(api, std::slice::from_ref(&job), true)).await;
     let offers = offers.into_iter().next().unwrap_or_default();
