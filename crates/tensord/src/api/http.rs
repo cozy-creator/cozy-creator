@@ -1008,6 +1008,11 @@ fn span(headers: &HeaderMap) -> Result<(u64, u64, u64), Error> {
             let (first, last) = span.split_once('-').ok_or_else(invalid)?;
             let number = |n: &str| n.trim().parse::<u64>().map_err(|_| invalid());
             let (start, end, length) = (number(first)?, number(last)? + 1, number(length)?);
+            // An empty part writes nothing and answers what is held: a client before cl-1195 sent one, `bytes n-n/n`, as the rest of
+            // a part whose every byte had gone before its answer was lost.
+            if text(header::CONTENT_LENGTH).is_some_and(|l| l.trim() == "0") && start <= length {
+                return Ok((start, start, length));
+            }
             match start < end && end <= length {
                 true => Ok((start, end, length)),
                 false => Err(invalid()),
