@@ -8,8 +8,9 @@ cd /root/parity || exit 1
 log() { echo "$(date -u +%T) $*" >> setup.log; }
 log "host: $(nproc) cpus; $(free -g | awk '/^Mem:/{print $2 " GiB RAM, " $7 " available"}'); $(df -BG --output=avail /root | tail -1 | tr -d ' ') free on /root"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader >> setup.log 2>&1
-command -v uv > /dev/null || { python3 -m pip install -q uv >> setup.log 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh >> setup.log 2>&1; }
-export PATH=$HOME/.local/bin:$HOME/.cargo/bin:$PATH
+# uv comes from the session's runner (/root/bin): the pod has no curl.
+export PATH=/root/bin:$HOME/.local/bin:$PATH
+command -v uv > /dev/null || { log "no uv"; touch env.fail dl-video.fail dl-image.fail; exit 1; }
 DEPS=(diffusers==0.43.0 transformers==5.19.0 accelerate==1.15.0 'huggingface_hub[hf_xet]>=1.32' safetensors av pillow numpy)
 uv venv -q --python 3.12 /root/up >> setup.log 2>&1 && uv pip install -q --python /root/up/bin/python "${DEPS[@]}" >> setup.log 2>&1 ||
   { log "the environment's packages failed"; touch env.fail dl-video.fail dl-image.fail; exit 1; }

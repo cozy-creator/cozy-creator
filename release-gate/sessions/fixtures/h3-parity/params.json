@@ -224,6 +224,16 @@
    "H3 i2v from a 1024 px first frame: each side resizes it to 768 its own way (ours bicubic, upstream Lanczos)"
   ],
   [
+   "o-i2v-src-fix",
+   "u-i2v-src",
+   "H3 i2v from a 1024 px first frame, the LANCZOS fix (minimax-h3 0.16.0rc5)"
+  ],
+  [
+   "o-i2v-src-fix",
+   "o-i2v-src",
+   "the fix against before it"
+  ],
+  [
    "o-ref",
    "u-ref-1024",
    "H3 Ref2VA Turbo, parity, both reading the picture at 1024"
@@ -278,5 +288,9 @@
    "o-h-t2i",
    "MiniMax-H3-Image ours: shipped defaults vs bf16 SDPA"
   ]
+ ],
+ "fix": "fix",
+ "fix_cases": [
+  "o-i2v-src"
  ]
 }

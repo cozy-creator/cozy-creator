@@ -12,11 +12,13 @@
 #   ours     [{name, phase, tool, input (a fixture JSON), args?: [cozy run terms]}]
 #   upstream [{name, phase, trunk|model, of (an `ours` name: its prompt, seed and size), short_edge?, frames?}]
 #   pairs    [[upstream-or-ours name, against-name, what], ...] for compare.py
+#   fix      a second packages_refs checkout, a fix's (optional); `fix_cases`: ours names rerun from it as <name>-fix
+#            once the video phase's own ran, and the image phase then runs from it too (its packages unchanged)
 #   seconds  what the cap must buy (default 10800)
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/h3-parity WORK=${RUNNER_TEMP:-$OUT/..}/h3-parity
-TREE=$(param tree '') OURS=$(param ours '[]') UPS=$(param upstream '[]') PAIRS=$(param pairs '[]') NEED=$(param seconds 10800)
+TREE=$(param tree '') FIXT=$(param fix '') FIXC=$(param fix_cases '[]') OURS=$(param ours '[]') UPS=$(param upstream '[]') PAIRS=$(param pairs '[]') NEED=$(param seconds 10800)
 for tool in jq uv ffmpeg ffprobe python3; do command -v "$tool" > /dev/null || fail "no $tool"; done
 [ -n "$TREE" ] && [ -f "$PACKAGES/$TREE/minimax-h3/pyproject.toml" ] || fail "tree: a packages_refs checkout with minimax-h3"
 SOURCE=$(cd "$PACKAGES/$TREE" && pwd)
@@ -26,6 +28,13 @@ V=$(cozy --version | awk '{print $2}')
 [[ $V == *-dev* ]] || fail "cozy $V is no RC build: dispatch with cozy=<a dev-build or rc-dev run of rc/<x>>"
 say "packages from $(git -C "$SOURCE" rev-parse --short HEAD) ($TREE); cozy $V"
 for p in $(jq -r '.[].tool | split("/")[0]' <<<"$OURS" | sort -u); do kernels "$SOURCE/$p"; done
+FIXSRC=''
+if [ -n "$FIXT" ]; then
+  [ -f "$PACKAGES/$FIXT/minimax-h3/pyproject.toml" ] || fail "fix: no packages_refs checkout $FIXT"
+  FIXSRC=$(cd "$PACKAGES/$FIXT" && pwd)
+  say "fix from $(git -C "$FIXSRC" rev-parse --short HEAD) ($FIXT): $(jq -c . <<<"$FIXC")"
+  for p in $(jq -r '.[].tool | split("/")[0]' <<<"$OURS" | sort -u); do kernels "$FIXSRC/$p"; done
+fi
 mkdir -p "$WORK/in" "$OUT/ours" "$OUT/upstream" "$OUT/records" "$OUT/prompts"
 
 # The measurer's Python, proven before anything is rented; the upstream scripts compile.
@@ -51,11 +60,15 @@ done
 cfg=$HOME/.cozy/config.toml
 mkdir -p "${cfg%/*}" && touch "$cfg" || fail "no $cfg"
 { echo 'dev = true'; grep -v '^dev *=' "$cfg" || true; } > "$cfg.new" && mv "$cfg.new" "$cfg" || fail "dev = true not written"
-awk -v source="$SOURCE" '
-  function ours() { print "packages = \"" source "\""; put = 1 }
-  /^packages *=/ { next } { print } /^\[calcifer\]/ { ours() } END { if (!put) { printf "\n[calcifer]\n"; ours() } }' \
-  "$cfg" > "$cfg.next" && mv "$cfg.next" "$cfg" || fail "calcifer.packages not written"
-cozy restart > "$OUT/restart.txt" 2>&1 || fail "cozy restart: $(tail -c 300 "$OUT/restart.txt")"
+# home <checkout>: this runner's Calcifer takes its first-party packages from the checkout.
+home() {
+  awk -v source="$1" '
+    function ours() { print "packages = \"" source "\""; put = 1 }
+    /^packages *=/ { next } { print } /^\[calcifer\]/ { ours() } END { if (!put) { printf "\n[calcifer]\n"; ours() } }' \
+    "$cfg" > "$cfg.next" && mv "$cfg.next" "$cfg" || fail "calcifer.packages not written"
+  cozy restart > "$OUT/restart.txt" 2>&1 || fail "cozy restart: $(tail -c 300 "$OUT/restart.txt")"
+}
+home "$SOURCE"
 [ -z "$(own)" ] || fail "this runner's Calcifer already holds a rental: $(own | paste -sd' ')"
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh
@@ -89,10 +102,12 @@ for i in $(seq 1 20); do pod true < /dev/null > /dev/null 2>&1 && break; [ "$i" 
 ( while sleep 240; do cozy machine keepalive "$NAME" > /dev/null 2>&1; done ) & BG=$!
 tar -C "$FIX" -cz . | T=300 pod "mkdir -p /root/parity && tar -xz -C /root/parity" || fail "copy the fixtures"
 tar -C "$WORK/in" -cz . | T=300 pod "mkdir -p /root/parity/in && tar -xz -C /root/parity/in" || fail "copy the inputs"
-pod "free -g; df -h /root; nvidia-smi --query-gpu=name,memory.total --format=csv,noheader; curl -sfI https://huggingface.co > /dev/null && echo hf ok; curl -sfI https://pypi.org/simple/ > /dev/null && echo pypi ok" \
+# The pod has no curl: uv goes from this runner, and Python asks whether Hugging Face and PyPI answer.
+tar -C "$(dirname "$(command -v uv)")" -c uv | T=300 pod "mkdir -p /root/bin && tar -x -C /root/bin" || fail "copy uv"
+pod "free -g; df -h /root; nvidia-smi --query-gpu=name,memory.total --format=csv,noheader; command -v python3; for u in https://huggingface.co https://pypi.org/simple/; do python3 -c 'import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=30)' \$u && echo \"reach \$u ok\"; done" \
   < /dev/null > "$OUT/pod.txt" 2>&1
 say "pod: $(tr '\n' ' ' < "$OUT/pod.txt" | cut -c1-400)"
-grep -q 'hf ok' "$OUT/pod.txt" || fail "$NAME cannot reach Hugging Face"
+grep -q 'reach https://huggingface.co ok' "$OUT/pod.txt" || fail "$NAME cannot reach Hugging Face"
 ram=$(awk '/^Mem:/{print $2; exit}' "$OUT/pod.txt")
 [ "${ram:-0}" -ge 96 ] || fail "$NAME has ${ram:-?} GiB of RAM; the upstream side needs about 96 or more"
 # The upstream environment and both phases' weights, downloading beside our runs.
@@ -196,6 +211,11 @@ upstream() {
 }
 
 ours video
+if [ -n "$FIXSRC" ] && [ "$(jq length <<<"$FIXC")" -gt 0 ]; then
+  home "$FIXSRC"
+  OURS=$(jq -c --argjson f "$FIXC" '[.[] | select(.name as $n | $f | index($n)) | .name += "-fix" | .phase = "fix"] + .' <<<"$OURS")
+  ours fix
+fi
 upstream video
 # MiniMax-H3's DiTs and VAEs make room; its text encoder stays for MiniMax-H3-Image.
 pod 'cd /root/.cache/huggingface/hub/models--MiniMaxAI--MiniMax-H3/snapshots/* && for f in transformer*/*.safetensors vae/* audio_vae/*; do rm -f "$(readlink -f "$f")" "$f"; done; df -BG --output=avail /root | tail -1' \
