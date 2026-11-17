@@ -92,5 +92,24 @@ test('update', async ({ context, project, api, signIn }) => {
     expect((await project.asset('words'))?.fields?.text, 'with the words saved').toBe('After the update.');
     await boxesUp(page);
     await expect.soft(page.getByText(/Cozy updated|Reload the page/), 'and no notice').toHaveCount(0);
+    await page.close();
+  });
+
+  await test.step('a passphrase typed for a new project: it waits until the form is put away, then reloads itself', async () => {
+    const page = await context.newPage();
+    const stream = await older(page);
+    await signIn(page, project.url());
+    await boxesUp(page);
+    await page.getByRole('button', { name: 'New project', exact: true }).click();
+    const panel = page.getByRole('region', { name: 'New project', exact: true });
+    await panel.getByLabel('Passphrase', { exact: true }).fill('a passphrase not used yet');
+    // Typed and left, as a person looks away: no field has focus, the form still holds it.
+    await page.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined));
+    await mark(page);
+    stream();
+    await page.waitForTimeout(WATCHED_MS);
+    expect.soft(await reloaded(page), 'not while the form holds a passphrase').toBe(false);
+    await panel.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect.poll(() => reloaded(page), { message: 'it reloaded itself once the form was put away', timeout: RELOADS_MS }).toBe(true);
   });
 });
