@@ -1,0 +1,2 @@
+sku	encode_s	decode_s	source
+rtx-5090	7.97	4.70	ComfyUI ee34406 + comfy-kitchen 0.2.41, int8 VAE, --fast fp16_accumulation: pod-session 44082684755 (teruki), 129 frames, warm median
