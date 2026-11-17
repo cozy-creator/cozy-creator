@@ -35,8 +35,6 @@ pub(crate) trait Frozen {
     fn order(&self) -> &[usize];
     /// Whether node `i` has a state now.
     fn holds(&mut self, i: usize) -> bool;
-    /// A pin this render looks at when its turn comes, to re-run it if it is out of date (`--outdated`).
-    fn judged(&mut self, i: usize) -> bool;
 }
 
 /// What a job is for.
@@ -48,8 +46,6 @@ pub(crate) enum Kind {
     Owed,
     /// Calcifer makes it. `named`: though it has a state.
     Free { named: bool },
-    /// A pin looked at when its turn comes.
-    Judged,
 }
 
 /// How a job stands.
@@ -108,8 +104,6 @@ pub(crate) struct Named {
 /// What a render owes as it stands: what it asked, less what it has sent.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Asked {
-    /// Every asset with no state.
-    pub all: bool,
     /// What it has tried, by name key: each is tried once.
     pub tried: BTreeSet<String>,
     pub takes: Vec<Named>,
@@ -228,10 +222,9 @@ impl Graph {
             }
         }
         let holds: Vec<bool> = (0..n).map(|i| frozen.holds(i)).collect();
-        let judged: Vec<bool> = (0..n).map(|i| !asked.tried.contains(&keys[i]) && frozen.judged(i)).collect();
         let tried = |i: usize| asked.tried.contains(&keys[i]);
         self.tried.entry(ask.to_owned()).or_default().extend(asked.tried.iter().cloned());
-        let mut covered = vec![asked.all; n];
+        let mut covered = vec![false; n];
         for &i in order.iter().rev() {
             let node = &nodes[i];
             let named = !taken[i].is_empty();
@@ -251,7 +244,7 @@ impl Graph {
             let node = &nodes[i];
             let named = !taken[i].is_empty();
             // A pin needs nothing it reads, unless a take of it does.
-            let up: Vec<usize> = match node.pinned && !named && !judged[i] {
+            let up: Vec<usize> = match node.pinned && !named {
                 true => vec![],
                 false => merged(node.reads.iter().map(|&read| &through[read])),
             };
@@ -287,12 +280,8 @@ impl Graph {
                 .collect();
             let owed = covered[i] && !holds[i] && node.makes && !node.free && !tried(i) && others.is_empty();
             let free = node.free && node.makes && !node.pinned && !tried(i) && (!holds[i] || !up.is_empty());
-            if !named && (owed || free || judged[i]) {
-                let kind = match (free, judged[i]) {
-                    (true, _) => Kind::Free { named: false },
-                    (_, true) => Kind::Judged,
-                    _ => Kind::Owed,
-                };
+            if !named && (owed || free) {
+                let kind = if free { Kind::Free { named: false } } else { Kind::Owed };
                 let key = owed_key(ask, &keys[i]);
                 if !self.by_key.contains_key(&key) {
                     own.push(self.make(job(key, kind, false, &up)));
@@ -304,12 +293,12 @@ impl Graph {
             own.extend(going);
             // A completed selected version is this ask's input snapshot. Making
             // another version must not make its readers wait for that replacement.
-            if node.pinned && holds[i] && !judged[i] {
+            if node.pinned && holds[i] {
                 through[i] = vec![];
                 continue;
             }
             let approving = own.iter().any(|&id| self.jobs[id].approve);
-            let holds_up = approving || judged[i] || (!node.pinned && !own.is_empty());
+            let holds_up = approving || (!node.pinned && !own.is_empty());
             through[i] = match (holds_up, node.pinned, others.is_empty()) {
                 (true, _, true) => own,
                 (true, _, false) => merged([&own, &others].into_iter()),

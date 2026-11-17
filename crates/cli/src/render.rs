@@ -37,7 +37,7 @@ const EXAMPLES: &str = "Examples
   cozy render shot_2 --pickup '<shot_2.1>@243'
                                       Pick up from here: take 1 up to frame 243 kept, the rest rendered again
 
-A node with an approved take stands, unless --outdated. Rendering a node already rendering joins it; stopping this command never
+A node with an approved take stands, unless --new. Rendering a node already rendering joins it; stopping this command never
 cancels the render (cozy run cancel <run> does), and running it again joins it.";
 
 /// Render nodes and what they read, as the page's Render does, and follow them until their takes land.
@@ -56,9 +56,6 @@ pub(crate) struct Args {
     /// Render the named nodes though they are current.
     #[arg(long)]
     new: bool,
-    /// Render approved takes that are out of date too.
-    #[arg(long)]
-    outdated: bool,
     /// Pick up from here: keep a take up to a frame and render the rest again. One node.
     #[arg(long, value_name = "<NAME.N>@FRAME")]
     pickup: Option<String>,
@@ -106,7 +103,6 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             hub: ctx.hub().to_string(),
             approve: false,
             missing: !args.new,
-            outdated: args.outdated,
             pickup,
             takes: vec![],
         };

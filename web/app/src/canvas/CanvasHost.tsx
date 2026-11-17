@@ -188,21 +188,6 @@ function useMachines(store: CanvasStore, pinned: string[]) {
   return isPending ? null : names
 }
 
-/** Render all, and how many that is. Approved assets stay. */
-function RenderAll({ id }: { id: string }) {
-  const { client, stream } = useConnection()
-  const store = useCanvasStore()
-  const { data } = useQuery(projectQuery(client, stream, id))
-  const fresh = (data?.assets ?? []).filter((asset) => asset.tool && (asset.kind === "image" || asset.tool === "cozy/edit" || (!madeHere(asset.tool) && !asset.pinned))).length
-  return (
-    <span className="render-all">
-      {fresh > 0 && <button type="button" className="tb primary" onClick={() => store.runAll()}>
-        Render all {fresh}
-      </button>}
-    </span>
-  )
-}
-
 /** A project this Calcifer can't read: why, and what to do, where its boxes would be. */
 function Unread({ error, gone }: { error?: unknown; gone?: string }) {
   return (
@@ -252,13 +237,11 @@ function Empty({ choose }: { choose: () => void }) {
 function Canvas({
   projectId,
   active,
-  slot,
   history,
   onAdopt,
 }: {
   projectId: string | null
   active: boolean
-  slot: HTMLElement | null
   history: HTMLElement | null
   onAdopt: (id: string, code: string) => void
 }) {
@@ -1044,7 +1027,6 @@ function Canvas({
       {active && <AssetMenu />}
       {active && <Viewer />}
       <input ref={picker} className="picker" type="file" multiple accept={ACCEPT} onChange={picked} aria-label="Add a file" />
-      {slot && projectId && createPortal(<RenderAll id={projectId} />, slot)}
       {history && createPortal(<HistoryControls onAddFiles={choose} />, history)}
       {projectId && <ProjectSync id={projectId} />}
     </CanvasStoreProvider>
@@ -1052,7 +1034,7 @@ function Canvas({
 }
 
 /** Always mounted: everything else is a drawer over it, so opening one loses no viewport, no draft and no import in flight. */
-export function CanvasHost(props: { projectId: string | null; active: boolean; slot: HTMLElement | null; history: HTMLElement | null; onAdopt: (id: string, code: string) => void }) {
+export function CanvasHost(props: { projectId: string | null; active: boolean; history: HTMLElement | null; onAdopt: (id: string, code: string) => void }) {
   const { client, stream } = useConnection()
   // A first drop adopts a newly created project without unmounting its in-flight placer.
   const [openedProject] = useState(props.projectId)

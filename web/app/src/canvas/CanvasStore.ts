@@ -1661,32 +1661,6 @@ export class CanvasStore {
     for (const [name, view] of this.views) if (view.waiting) this.run(name, view.waiting)
   }
 
-  /** Render all. What's approved stays. */
-  runAll() {
-    const candidates = [...this.views].filter(([, view]) => view.asset?.tool && (view.asset.kind === "image" || view.asset.tool === "cozy/edit" || (!madeHere(view.asset.tool) && !view.asset.pinned)))
-    const local = candidates.length > 0 && candidates.every(([, view]) => madeHere(view.asset!.tool))
-    const on = local ? ["local"] : this.machines()
-    const id = this.projectId
-    if (!id) return
-    if (!on.length) return this.askMachine()
-    const saved = [...this.views.keys()].map((name) => this.save(name))
-    const going = candidates.map(([name]) => this.ids.get(name))
-    for (const box of going) this.patchId(box, { asked: NOT_YET })
-    const settle = (asked?: number) => going.forEach((box) => this.patchId(box, { asked }))
-    const once = `all-${crypto.randomUUID()}`
-    this.outbox.add({
-      send: async (signal) => ((await Promise.all(saved)).every(Boolean) ? this.client.render(id, ["all"], local ? on : [], once, {}, signal) : null),
-      done: (answer) => {
-        settle(answer ? nextProjectOrder() : undefined)
-        this.readAfter(going)
-      },
-      refused: (error) => {
-        settle()
-        say("Couldn't render them", error)
-      },
-    })
-  }
-
   /**
    * What holds a box's look until a read begun after the answer has to get that read: the write's own event can reach a read that began first, and then there's no
    * other. One read of these, whatever else is said.

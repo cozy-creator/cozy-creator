@@ -151,9 +151,6 @@ pub struct Asked {
     /// What it added to the walk; 0 with `joined` is no new work.
     #[serde(default)]
     pub added: u32,
-    /// Pinned assets it was asked of by no name of their own: left as they are.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub skipped: Vec<String>,
     /// What it added, each with what is ahead of it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queued: Vec<QueuedNow>,
@@ -1073,8 +1070,8 @@ pub struct Version {
 }
 
 /// `POST /v1/projects/{id}/runs`: `n` new versions of each of `names`, with new seeds, a pinned one's to look at, and of what it reads
-/// only if that has no state. With `all`, of everything not pinned. It joins the project's walk, which sends each once what it reads
-/// is settled; `on` lists the machines they may go to. None: Calcifer's to say, as for a `cozy run` naming none.
+/// only if that has no state. It joins the project's walk, which sends each once what it reads is settled; `on` lists the machines
+/// they may go to. None: Calcifer's to say, as for a `cozy run` naming none.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Runs {
@@ -1093,10 +1090,6 @@ pub struct Runs {
     /// being made (it's joined), and what they read with no state first, a cut's too.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub missing: bool,
-    /// Also make a new version of each pin out of date, when its turn comes in reading order: with `all`, every one; else those named
-    /// and what they read. What reads it in this render reads that; the version it held stays approved.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub outdated: bool,
     /// Pick up from here: one box's new take goes on from this take's frame.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pickup: Option<Pickup>,
@@ -1110,15 +1103,13 @@ fn one() -> u32 {
     1
 }
 
-/// `POST /v1/projects/{id}/fit`: what a render of `names` on this computer (`local`) would do poorly, `all` and `outdated` as
-/// a render reads them; and how long each box named takes where a render of it would go now.
+/// `POST /v1/projects/{id}/fit`: what a render of `names` on this computer (`local`) would do poorly, and how long each box named
+/// takes where a render of it would go now.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct FitAsk {
     #[serde(default)]
     pub names: Vec<String>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub outdated: bool,
 }
 
 /// How this computer would do what a render asks: each tool it would do poorly, and the GPU to rent instead. Empty: well enough, or
@@ -1130,7 +1121,7 @@ pub struct Fit {
     /// What the Hub places them all on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rent: Option<RentFor>,
-    /// Each box named (not `all`), where a render of it would go now and how long it runs there (cl-1004).
+    /// Each box named, where a render of it would go now and how long it runs there (cl-1004).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub estimates: Vec<BoxEstimate>,
 }

@@ -31,7 +31,7 @@ use api::{
 };
 use serde_json::{Map, Value};
 
-use super::{ALL, Doc, Stand, find, host::Host, name_key};
+use super::{Doc, find, host::Host};
 use crate::{
     api::{Api, Refusal, parse},
     placement,
@@ -102,20 +102,15 @@ async fn judged(api: &Arc<Api>, id: &str, asked: &FitAsk) -> Result<Fit, Refusal
 
 async fn judged_in(api: &Arc<Api>, id: &str, asked: &FitAsk) -> Result<Fit, Refusal> {
     let project = api.projects.get(api, id)?;
-    let all = matches!(asked.names.as_slice(), [only] if name_key(only) == name_key(ALL));
     let (targets, boxes, dir) = {
         let doc = Doc::load(&project.folder).map_err(Refusal)?;
-        let lock = project.folder.lock().map_err(Refusal)?;
-        let stand = doc.stand(&lock);
         let mut targets: BTreeMap<String, Vec<(String, String, Map<String, Value>)>> = BTreeMap::new();
         let mut boxes = vec![];
-        for i in rendered(&doc, &stand, asked) {
+        for i in rendered(&doc, asked) {
             let asset = &doc.assets[i];
             let tool = asset.tool.clone().unwrap_or_else(|| asset.target.clone());
             targets.entry(asset.target.clone()).or_default().push((tool, asset.name.clone(), asset.made.clone()));
-            if !all {
-                boxes.push(Boxed { name: asset.name.clone(), with: doc.target(i), made: asset.made.clone(), media: doc.media_read(i) });
-            }
+            boxes.push(Boxed { name: asset.name.clone(), with: doc.target(i), made: asset.made.clone(), media: doc.media_read(i) });
         }
         (targets, boxes, project.folder.dir.clone())
     };
@@ -229,21 +224,9 @@ async fn faster(api: &Arc<Api>, hub: &str, job: &placement::Job, machine: &On, g
     Some(Faster { run_ms: away as u64, line, rent })
 }
 
-/// What a render of `asked` makes, as the render reads it: `all` is everything with an operation not approved, and with `outdated` what's
-/// approved and out of date. Nothing Calcifer makes itself needs a machine.
-fn rendered(doc: &Doc, stand: &[super::Standing], asked: &FitAsk) -> Vec<usize> {
-    let all = matches!(asked.names.as_slice(), [only] if name_key(only) == name_key(ALL));
-    let named: Vec<usize> = match all {
-        true => (doc.order.iter().copied())
-            .filter(|&i| match &stand[i].state {
-                _ if doc.assets[i].pin.is_none() => true,
-                Stand::Pinned { version: Some(_), changed } => asked.outdated && !changed.is_empty(),
-                _ => false,
-            })
-            .collect(),
-        false => asked.names.iter().filter_map(|name| find(doc, name).ok()).collect(),
-    };
-    named.into_iter().filter(|&i| doc.makes(i) && doc.tool(i).is_none()).collect()
+/// What a render of `asked` makes, as the render reads it. Nothing Calcifer makes itself needs a machine.
+fn rendered(doc: &Doc, asked: &FitAsk) -> Vec<usize> {
+    asked.names.iter().filter_map(|name| find(doc, name).ok()).filter(|&i| doc.makes(i) && doc.tool(i).is_none()).collect()
 }
 
 /// This computer's GPUs as its machine last said: each one's name, the memory it may use, and whether it draws a screen. None: it hasn't

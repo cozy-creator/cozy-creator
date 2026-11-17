@@ -37,7 +37,7 @@ fn rename_updates_saved_and_pending_authoring_references() {
     lock.asset_mut("video", "video").discarded.push(folder::Version { number: 8, ..version.clone() });
     lock.pending.insert("pending".into(), folder::Pending {
         kind: "video".into(), job: "pending".into(), ask: "ask".into(), asset: "video".into(),
-        version, run: 0, approve: false, unpin: None, words: None, target: folder::Target::default(),
+        version, run: 0, approve: false, words: None, target: folder::Target::default(),
     });
     super::super::renamed(&mut lock, "image", "renamed_image");
     let held = lock.asset("video").unwrap();
@@ -309,20 +309,19 @@ async fn typed_nodes_fixture() {
         let mut reading = AskedText::new(Doc::load(&series.folder).unwrap());
         let mut graph = Graph::default();
         let background = folder::Ask { id: "background-image".into(), ..Default::default() };
-        let jobs = graph.add(&background.id, &mut Now { reading: &mut reading, lock: &lock, ask: &background }, &walker::Asked {
+        let jobs = graph.add(&background.id, &mut Now { reading: &mut reading, lock: &lock }, &walker::Asked {
             takes: vec![Named { key: "image-next".into(), asset: original.name.clone(), approve: true, covers: false }], ..Default::default()
         });
         graph.go(jobs[0]);
         let video = folder::Ask { id: "named-video".into(), ..Default::default() };
-        let jobs = graph.add(&video.id, &mut Now { reading: &mut reading, lock: &lock, ask: &video }, &walker::Asked {
+        let jobs = graph.add(&video.id, &mut Now { reading: &mut reading, lock: &lock }, &walker::Asked {
             takes: vec![Named { key: "video-next".into(), asset: reader.clone(), approve: true, covers: false }], ..Default::default()
         });
         assert!(graph.jobs[jobs[0]].needs.is_empty(), "a selected image does not wait for a background generation");
-        assert_eq!(graph.turn(jobs[0], &mut Now { reading: &mut reading, lock: &lock, ask: &video }), Turn::Go);
+        assert_eq!(graph.turn(jobs[0], &mut Now { reading: &mut reading, lock: &lock }), Turn::Go);
     }
 
-    // Landing a same-byte replacement must not even change the frozen version
-    // number. Explicit --outdated is the opt-in that refreshes that snapshot.
+    // Landing a same-byte replacement must not even change the frozen version number.
     let (digest, json) = series.folder.written().unwrap().snapshot();
     series.folder.keep_snapshot(&digest, &json).unwrap();
     let snapshot = folder::Ask { id: "selected-snapshot".into(), digest, ..Default::default() };
@@ -336,16 +335,13 @@ async fn typed_nodes_fixture() {
     let walk = super::super::Walk::new(&api, &series);
     walk.select_asked(&snapshot.id, &original.name, 2, &hash).unwrap();
     assert_eq!(frozen_version(), Some(1));
-    series.folder.update_walk(|walk| walk.walk.asks.iter_mut().find(|ask| ask.id == snapshot.id).unwrap().outdated = true).unwrap();
-    walk.select_asked(&snapshot.id, &original.name, 2, &hash).unwrap();
-    assert_eq!(frozen_version(), Some(2));
     series.folder.update_walk(|walk| walk.walk.asks.retain(|ask| ask.id != snapshot.id)).unwrap();
 
     let empty = make(&api, &series.id, json!({"name":"unfinished","tool":"fixture/image","kind":"image","fields":{"instructions":"its first image"}})).await;
     let waiting = make(&api, &series.id, json!({"name":"waiting","tool":"fixture/video","kind":"video","fields":{"summary":format!("<{}>", empty)}})).await;
-    let (_, Json(asked)) = super::super::runs(State(api.clone()), Path(series.id.clone()), Ok(Bytes::from(json!({"names":["all"],"on":["local"]}).to_string()))).await.unwrap();
-    assert_eq!(asked.added, 4);
-    assert!(!asked.skipped.contains(&original.name));
+    let names = [&original.name, &reader, &waiting];
+    let (_, Json(asked)) = super::super::runs(State(api.clone()), Path(series.id.clone()), Ok(Bytes::from(json!({"names":names,"on":["local"]}).to_string()))).await.unwrap();
+    assert_eq!(asked.added, 3);
     let reader_job = asked.board.jobs.iter().find(|job| job.asset == reader).unwrap();
     assert!(reader_job.needs.is_empty(), "{reader_job:?}");
     let waiting_job = asked.board.jobs.iter().find(|job| job.asset == waiting).unwrap();

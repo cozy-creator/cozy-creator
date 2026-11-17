@@ -1,16 +1,17 @@
 // render (cl-973 core cell 11), on local: "A still" from the palette, typed in and rendered by Render, lists its take the frame after the
 // press and keeps that one id until it lands in place, unreloaded, its pending tile and its Cancel naming its run KEY-N; another box rendered by Ctrl+Enter says Queued, then Rendering, with a
-// faded preview of its latents until its take replaces it, and its finish note's View opens it. Render all: a box waiting on another says
-// so and shows none of the other's progress; the other's whole job's meter rises as it renders; Cancel stops one waiting and one
+// faded preview of its latents until its take replaces it, and its finish note's View opens it. The top bar has no Render all (cl-1192),
+// shown at 1440×900, 1920×1080 and 600×900. Two boxes rendered one at a time, one reading the other: it waits for it, says so and shows
+// none of the other's progress; the other's whole job's meter rises as it renders; Cancel stops one waiting and one
 // rendering, and their takes go.
 // A failed render is said once, as a toast, and its take is gone: nothing in the column to pick or delete, the frame back on the take it
 // showed, through a reload (cl-1070). The take watched in Focus is the one drawn
 // when it lands, through a reload; its run's warnings are the box's, never a note. Two boxes rendered at once: the one whose tool is warm
 // is ready before the other's install ends, waiting only for the CPU another run holds, which its log names (cl-1086). A picture's
 // take on its way is, in its takes column, the shape it will be: the one set, else Auto's from the picture it edits (cl-1072).
-const { writeFileSync } = require('fs');
+const { mkdirSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, canvasIdle, focus, middle, openPoint, newCanvas, partPoint, fixtureTool, png, canvasCard, hoverBox, screenshotPixels } = require('./fixtures');
+const { test, expect, themed, canvasIdle, focus, middle, openPoint, newCanvas, partPoint, fixtureTool, png, canvasCard, hoverBox, screenshotPixels } = require('./fixtures');
 const { toolRow } = require('./hands');
 
 const TOOL = fixtureTool('tool.py');
@@ -350,12 +351,44 @@ test('render', async ({ page, project, api, cli }) => {
     expect.soft(notes.concat(await page.evaluate(() => window.__notes)).filter((text) => text.includes(`of ${first} is ready`)), 'a take landing where it is looked at says nothing').toEqual([]);
   });
 
-  await test.step('Render all, on a slow box that mentions the first', async () => {
+  await test.step('No Render all in the top bar: the page at real sizes, with its rendered boxes', async () => {
+    // Paul, 11-17 (cl-1192): "remove the 'render all 12' behavior and logic from the top right of the webui".
+    await expect(page.locator('.top .main-menu')).toBeVisible();
+    await expect(page.getByRole('button', { name: /^Render all/ })).toHaveCount(0);
+    const shots = join(process.env.OUT, 'web', 'render');
+    mkdirSync(shots, { recursive: true });
+    const size = page.viewportSize();
+    for (const theme of ['paper', 'dark']) {
+      await pull();
+      await project.look(theme);
+      await page.reload();
+      await expect(page.locator('.stage')).toBeVisible();
+      await themed(page, theme);
+      for (const [width, height] of [[1440, 900], [1920, 1080], [600, 900]]) {
+        await page.setViewportSize({ width, height });
+        await fit(page);
+        await expect(page.getByRole('button', { name: /^Render all/ })).toHaveCount(0);
+        await page.screenshot({ path: join(shots, `rendered-${width}x${height}-${theme}.png`) });
+      }
+    }
+    await pull();
+    await project.look(null);
+    await page.setViewportSize(size);
+    await page.reload();
+    await expect(page.locator('.stage')).toBeVisible();
+    await fit(page);
+  });
+
+  await test.step('Render a slow box that mentions the first, then a box that reads it', async () => {
     await api.patch(project.at('/assets/slow'), { fields: { instructions: `After <${first}>, slowly.` } });
     await expect.poll(async () => (await project.asset('slow'))?.fields?.instructions).toBe(`After <${first}>, slowly.`);
     await recordBox(page, 'after');
     await recordBox(page, 'slow');
-    await page.getByRole('button', { name: /^Render all \d+$/ }).click();
+    for (const name of ['slow', 'after']) {
+      const region = await focus(page, name);
+      await region.getByRole('button', { name: 'Render', exact: true }).click();
+      await back(page);
+    }
     await expect.poll(() => renderState(page, 'after'), { message: 'after waits for slow', timeout: 60_000 }).toMatch(/^Waiting for <slow>/);
   });
 

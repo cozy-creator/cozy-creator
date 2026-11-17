@@ -358,9 +358,6 @@ pub(crate) struct Pending {
     /// Approved when it lands (`--approve`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub approve: bool,
-    /// Its pin, by the field holding it, goes when it lands (`--outdated`): if it never does, the pin stands.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub unpin: Option<String>,
     /// A box of words: the field of its result they're in, which it lands as its version's file (xs-204).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub words: Option<String>,
@@ -669,18 +666,6 @@ pub(crate) struct Ask {
     pub digest: String,
     /// Where what it brings up goes.
     pub target: Target,
-    /// `render all --missing`: every asset with no state.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub all: bool,
-    /// `render all --outdated`: each pin out of date when its turn comes, as that is judged then.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub outdated: bool,
-    /// Asked of `all`, with or without `--missing`.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub whole: bool,
-    /// Not of `all`, with `outdated`: the pins it judges, by name key, those its names read and themselves.
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub judges: BTreeSet<String>,
     /// What it sent or tried, made or failed, by name key: each is tried once.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub sent: BTreeSet<String>,
