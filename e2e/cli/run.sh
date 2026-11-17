@@ -28,6 +28,7 @@ parse "$@"
 . "$(dirname "$0")/projectvault.sh"
 . "$(dirname "$0")/machineset.sh"
 . "$(dirname "$0")/rental.sh"
+. "$(dirname "$0")/hubcache.sh"
 . "$(dirname "$0")/fallback.sh"
 . "$(dirname "$0")/retry.sh"
 . "$(dirname "$0")/previews.sh"
@@ -803,6 +804,8 @@ case $SHARD in
   " ;;
   # A project's run and its chosen machine, a rental chosen by its handle, follow its Hub's name for the host (cl-1089, cl-1106).
   rental-rename) parts="rental_rename logs" ;;
+  # Repeated model reads come from the Hub's cache, and a second replica agrees at once after a write (th-385).
+  hub-cache) parts="hub_read_cache logs" ;;
   # Work queued for a rental order follows it through a Calcifer restart and its Hub's second name for the host; its end says why (cl-1125).
   rental-replan) parts="rental_replan logs" ;;
   # A take's thumbnail asked for while its file is on its way here answers no error (cl-1108).

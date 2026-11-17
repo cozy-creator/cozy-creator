@@ -272,6 +272,8 @@ case $shard in
 esac
 case $key in
   cli:entrypoints | cli:executors | cli:projectdb-cancel | cli:local-wake | cli:containment | cli:containment-web | cli:projectvault-static | cli:projectvault-static-distros) needs='' ;;
+  # hub_read_cache uploads its own model (th-385).
+  cli:hub-cache) needs='' ;;
   # forward's run that moves local's Runtime for its project (cl-1055).
   cli:selfupdate) needs='next scratch' ;;
   # llm_write's Qwen3.5 0.8B (xs-204).
