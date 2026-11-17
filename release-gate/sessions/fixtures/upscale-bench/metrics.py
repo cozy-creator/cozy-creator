@@ -18,13 +18,16 @@ or painting in sources.tsv), photo, and all.
 import argparse
 import csv
 import math
+from importlib import import_module
 from pathlib import Path
 
-import cv2
 import numpy as np
-import pyiqa
 import torch
 from PIL import Image
+
+# OpenCV and pyiqa ship no types (mypy has none of them), so they are imported by name.
+cv2 = import_module("cv2")
+pyiqa = import_module("pyiqa")
 
 HERE = Path(__file__).resolve().parent
 NR_SIDE = 1024
@@ -89,7 +92,7 @@ def outputs(folder: Path) -> dict[str, Path]:
     return {p.stem: p for p in sorted(folder.iterdir()) if p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp")}
 
 
-rows: list[dict[str, object]] = []
+rows: list[dict[str, str | float]] = []
 candidates: dict[str, dict[str, Path]] = {"lanczos": {}}
 for name in kinds:
     candidates["lanczos"][name] = HERE / "degraded" / f"{name}.jpg"
@@ -102,11 +105,11 @@ for candidate, files in candidates.items():
     for name, path in files.items():
         if only and name not in only:
             continue
-        image = Image.open(path)
+        image: Image.Image = Image.open(path)
         if candidate == "lanczos":
             clean = HERE / "clean" / f"{name}.png"
             image = image.resize(Image.open(clean).size if clean.exists() else (2048, 2048), Image.Resampling.LANCZOS)
-        row = {"candidate": candidate, "image": name, "kind": kinds.get(name, "paul"), "size": f"{image.width}x{image.height}"}
+        row: dict[str, str | float] = {"candidate": candidate, "image": name, "kind": kinds.get(name, "paul"), "size": f"{image.width}x{image.height}"}
         row |= {k: round(v, 4) for k, v in score(image, name).items()}
         rows.append(row)
         print("\t".join(str(v) for v in row.values()), flush=True)

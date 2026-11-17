@@ -58,7 +58,8 @@ for row in csv.DictReader(open(HERE / "sources.tsv"), delimiter="\t"):
     white.alpha_composite(image)
     x, y = int(row["x"]), int(row["y"])
     w, h = (int(v) for v in (row["side"].split("x") * 2)[:2])
-    gt = tuple(int(v) for v in (row["gt"].split("x") * 2)[:2])
+    gw, gh = (int(v) for v in (row["gt"].split("x") * 2)[:2])
+    gt = (gw, gh)
     clean = white.convert("RGB").crop((x, y, x + w, y + h)).resize(gt, Image.Resampling.LANCZOS)
     clean.save(HERE / "clean" / f"{row['name']}.png")
     if not args.clean_only:
