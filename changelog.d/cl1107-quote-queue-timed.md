@@ -1,0 +1,1 @@
+- A busy machine's runs ahead count their real time in its quote: a run of local code waiting there is timed by its benchmarks, as the job asked is, not a minute each. A machine that hasn't installed a function yet is quoted at the widest its benchmarks prove on its card, not one GPU (cl-1107).
