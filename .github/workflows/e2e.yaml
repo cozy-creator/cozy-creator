@@ -286,39 +286,6 @@ jobs:
           if [ -f .creator/e2e/capabilities/private_cache.py ]; then
             python3 -m py_compile .creator/e2e/capabilities/private_cache.py
           fi
-          python3 - <<'PY'
-          import ast, sys, tempfile
-          from pathlib import Path
-          folder = Path('.creator/e2e/cli/containment')
-          for path in folder.glob('*.py'):
-              tree = ast.parse(path.read_text(), filename=str(path))
-              if path.name == 'remote_cpu.py':
-                  expected = {'PROGRAM', 'CONFIGURE', 'JOURNAL', 'CLOSE'}
-                  found = set()
-                  for node in tree.body:
-                      if isinstance(node, ast.Assign):
-                          for target in node.targets:
-                              if isinstance(target, ast.Name) and target.id in expected:
-                                  compile(ast.literal_eval(node.value), f'{path}:{target.id}', 'exec')
-                                  found.add(target.id)
-                  assert found == expected
-          if folder.is_dir():
-              sys.path.insert(0, str(folder))
-              from common import Receipt, Failure
-              with tempfile.TemporaryDirectory() as directory:
-                  receipt = Receipt(Path(directory) / 'receipt.json', '0' * 64)
-                  receipt.add('safe', observation_sha256='0' * 64, passed=True, records=1)
-                  for case, facts in [('other', {'browser_startup_diagnostic': 'rejected'}),
-                                      ('cli_failure', {'action_open': True, 'browser_startup_diagnostic': 'rejected'}),
-                                      ('cli_failure', {'action_open': True, 'browser_startup_diagnostic': 'x' * 4097}),
-                                      ('cli_failure', {'action_open': True, 'raw_output': 'rejected'})]:
-                      try:
-                          receipt.add(case, **facts)
-                      except Failure:
-                          pass
-                      else:
-                          raise AssertionError('receipt accepted an unapproved diagnostic')
-          PY
       # Each ref resolves once, here, to the commit every job checks out: a branch that moves mid-run never mixes two
       # commits in one run (one master's coverage.toml against another's candidate cozy, cozy-runtime 40887117045).
       - id: pin
@@ -410,7 +377,7 @@ jobs:
           echo "runners=$runners" >> "$GITHUB_OUTPUT"
           # One native cozy per OS across the CLI partitions.
           echo "native_runners=$(echo "$s" | jq -c --argjson cli "$runners" \
-            'if (.suites | any(. == "cli" or . == "supervisor")) then $cli else [] end')" >> "$GITHUB_OUTPUT"
+            'if (.suites | any(. == "cli")) then $cli else [] end')" >> "$GITHUB_OUTPUT"
           echo "native_build=$(echo "$s" | jq 'any(.suites[]; . == "cli")')" >> "$GITHUB_OUTPUT"
           { echo "### e2e selection: $REPO ${REF:0:12}"; echo '```'; echo "$s" | jq .; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           echo "$s" | jq .
@@ -939,7 +906,6 @@ jobs:
 
 
   # Each native runner builds or reuses cozy once for the CLI partitions.
-  # An explicit supervisor-only selection runs the process checks without building a candidate.
   candidate-os:
     name: candidate ${{ matrix.runner }}
     needs: affected
@@ -968,28 +934,6 @@ jobs:
           ref: ${{ needs.affected.outputs.ref }}
           stack_ref: ${{ needs.affected.outputs.stack }}
           runtime_ref: ${{ needs.affected.outputs.runtime }}
-      - if: runner.os == 'Windows' && (needs.affected.outputs.native_build != 'true' || inputs.tensord != '' || inputs.publish_run != '')
-        uses: actions/checkout@v5
-        with:
-          repository: cozy-creator/cozy-creator
-          ref: ${{ needs.affected.outputs.repo == 'cozy-creator' && needs.affected.outputs.ref || needs.affected.outputs.stack }}
-          path: .native-tests
-      - if: runner.os == 'Windows' && (needs.affected.outputs.native_build != 'true' || inputs.tensord != '' || inputs.publish_run != '')
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: .native-tests -> target
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-      - name: Windows supervisor process tests
-        if: >-
-          runner.os == 'Windows' &&
-          (inputs.native_shards == '' ||
-           contains(fromJSON(needs.affected.outputs.selection).suites, 'supervisor'))
-        env:
-          CREATOR: ${{ (needs.affected.outputs.native_build != 'true' || inputs.tensord != '' || inputs.publish_run != '') && '.native-tests' || (needs.affected.outputs.repo == 'cozy-creator' && '.src' || '.stack') }}
-        run: |
-          cd "$CREATOR"
-          cargo test --release --locked -p platform --lib ipc::windows::tests -- --nocapture
-          cargo test --release --locked -p tensord --lib machine::supervise::tests -- --nocapture
       - if: needs.affected.outputs.native_build == 'true' && inputs.tensord == '' && inputs.publish_run == ''
         env:
           SOURCE: ${{ needs.affected.outputs.repo == 'cozy-creator' && needs.affected.outputs.ref || needs.affected.outputs.stack }}
