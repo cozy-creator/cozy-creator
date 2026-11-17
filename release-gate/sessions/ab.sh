@@ -20,6 +20,8 @@
 #              {"region", "step_s", "max"}: while the cell's record shows the idle queue hadn't reached the region before it,
 #              wait step_s more and run it again with the next seed, as <cell>-w<i>, up to max);
 #              "expect" (optional: the status the cell must end in, `completed` by default; `failed` for a refusal it proves);
+#              "uninstall" (optional: [org/name, …] removed from the pod first with `cozy model uninstall`, or `"*"` for every
+#              model and LoRA it holds, so the cell's run starts cold: a before/after pair each fetches its own);
 #              "download" (optional: [[model ref, `cozy model install` flags…], …] made present on the pod first, so
 #              the cell's run starts with its weights on disk, as a machine whose package was installed earlier does);
 #              in args, `{ref}` is release-gate/ref, `{clip}` a 4 s 640x360 24 fps clip of its seed.jpg panned (made on
@@ -28,12 +30,14 @@
 #              "floor_mb_s", "floor_after_s" (optional: this cell's slow-host floor, lib.sh `step`; the session's by default);
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR
 #   need_s     seconds the cap must buy (3600)
+#   max_failures  optional: cells that may fail before the session ends (2)
 #   gpus       optional: the pod's GPU count (1); a cell's `--gpus=<n>` arg runs it on that many
 #   free_gib   optional: before the first cell another program (suites/bench/vram.py, raw driver allocations by a
 #              root shell over ssh) takes all of GPU 0 but this many GiB and holds it to the end, a card as full as
 #              the 0.25.0 gate's RTX 5090 kazune was (about 3 GiB outside cozy; cr-293)
 . "$(dirname "$0")/lib.sh"
-CELLS=$(param cells '[]') COMPARE=$(param compare '[]') FREE_GIB=$(param free_gib '') GPUS=$(param gpus 1)
+CELLS=$(param cells '[]') COMPARE=$(param compare '[]') FREE_GIB=$(param free_gib '') GPUS=$(param gpus 1) MOST=$(param max_failures 2)
+[[ $MOST =~ ^[1-9][0-9]*$ ]] || fail "max_failures $MOST"
 [[ -z $FREE_GIB || $FREE_GIB =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "free_gib $FREE_GIB"
 [[ $GPUS =~ ^[1-8]$ ]] || fail "gpus $GPUS"
 FLOOR0=$FLOOR_MBS AFTER0=$FLOOR_AFTER
@@ -81,8 +85,23 @@ done
 printf 'run 5 · sync local/x (source changed)\nrun 6 · local/x/f\nrun      6\n' > "$OUT/probe-cell.txt"
 current() { awk '$1=="run" && $3=="·" && $4!="sync"{n=$2} END{print n}' "$OUT/$1.txt" 2>/dev/null; }
 [ "$(runno probe-cell)" = 6 ] && [ "$(current probe-cell)" = 6 ] || fail "parsers"
+# Each tree's package carries its Triton sets before renting: a build at its first cell bills the pod while the runner compiles.
+for k in "${names[@]}"; do
+  c=$(jq -c --arg k "$k" 'map(select(.name==$k)) | first' <<<"$CELLS"); tree=$(jq -r '.tree // empty' <<<"$c")
+  [ -z "$tree" ] || kernels "$PACKAGES/$tree/$(jq -r '.target | split("/") | first' <<<"$c")"
+done
 quote "$(param need_s 3600)"
 rent
+# A dev home on an RC build moves its rental to the RC's builds once it's ready: no cell starts before that ends.
+cozy machine show "$NAME" --json > "$OUT/show-rc.json" 2> /dev/null
+if [ -n "$(jq -r '.rc.state // empty' "$OUT/show-rc.json")" ]; then
+  for _ in $(seq 180); do
+    [ "$(jq -r '.rc.state // empty' "$OUT/show-rc.json")" = current ] && [ "$(jq -r '.state // empty' "$OUT/show-rc.json")" = ready ] && break
+    sleep 5; cozy machine show "$NAME" --json > "$OUT/show-rc.json" 2> /dev/null
+  done
+  [ "$(jq -r '.rc.state // empty' "$OUT/show-rc.json")" = current ] || fail "$NAME isn't on the RC's builds in 15 min: $(jq -c .rc "$OUT/show-rc.json")"
+fi
+say "pod: $(jq -r '"cozy \(.status.version) · Runtime \(.status.runtime) · TensorFS \(.status.tensorfs)"' "$OUT/show-rc.json" 2> /dev/null)"
 
 
 # gpu: the processes holding GPU 0 and the card's reading, from the pod's root shell.
@@ -195,6 +214,16 @@ for k in "${names[@]}"; do
     say "$k: pod Runtime $(cozy machine show "$NAME" --json | jq -r .status.runtime), TensorFS $(cozy machine show "$NAME" --json | jq -r .status.tensorfs)"
   fi
   [ -z "$FREE_GIB" ] || { [ -z "${UPDATE[$k]:-}" ] && [ "$k" != "${names[0]}" ]; } || hold "$k" on
+  mapfile -t gone < <(jq -r '.uninstall // [] | .[]' <<<"$c")
+  if [ "${gone[0]:-}" = '*' ]; then
+    mapfile -t gone < <(cozy model ls --on "$NAME" --json 2> /dev/null | jq -r '[.models[]? | "\(.role // "model") \(.model)"] | unique | .[]')
+  else
+    gone=("${gone[@]/#/model }")
+  fi
+  for i in "${!gone[@]}"; do
+    read -r role ref <<<"${gone[$i]}"; [ "$role" = lora ] || role=model
+    step "uninstall-$k-$i" "$role" uninstall "$ref" --on "$NAME" -y < /dev/null || say "$k: $ref stays on the pod: $(tail -c 200 "$OUT/uninstall-$k-$i.txt")"
+  done
   mapfile -t downloads < <(jq -c '.download // [] | .[]' <<<"$c")
   for i in "${!downloads[@]}"; do
     mapfile -t dl < <(jq -r '.[]' <<<"${downloads[$i]}")
@@ -246,7 +275,7 @@ for k in "${names[@]}"; do
   fi
   # A refusal before any run (st none) is the failure an `expect: failed` cell proves.
   [ "$st" = "$want" ] || { [ "$want" = failed ] && [ "$st" = none ] && [ "$code" != 0 ]; } ||
-    { fails=$((fails + 1)); [ "$fails" -lt 2 ] || fail "two cells failed"; }
+    { fails=$((fails + 1)); [ "$fails" -lt "$MOST" ] || fail "$fails cells failed"; }
 done
 rm -f "$OUT/current"
 
