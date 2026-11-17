@@ -1079,11 +1079,18 @@ fn held_on_local(api: &Arc<Api>, root: &FsPath, id: &str) -> Result<bool, Error>
     if !store.exports_owed_on("local").map_err(journal)?.is_empty() {
         return Ok(true);
     }
+    let mut seen = vec![];
     for run in store.unsettled().map_err(journal)? {
-        if store.run(run.as_str()).map_err(journal)?.is_some_and(|row| row.machine.as_deref() == Some("local")) {
+        let Some(row) = store.run(run.as_str()).map_err(journal)? else { continue };
+        if row.machine.as_deref() == Some("local") {
             return Ok(true);
         }
+        seen.push(format!("{:?} on {}", row.state, row.machine.as_deref().unwrap_or("none")));
     }
+    // What held it instead, by state and machine only (no run is named outside its project, cl-984).
+    let here = store.unsettled_here().map_err(journal)?.len();
+    let owed = store.exports_owed().map_err(journal)?.len();
+    say(root, "ask held", || format!("its ask found nothing on local: unsettled [{}], {here} of Calcifer's own, {owed} save(s) owed", seen.join(", ")));
     Ok(false)
 }
 
