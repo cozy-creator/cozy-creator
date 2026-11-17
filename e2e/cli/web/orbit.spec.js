@@ -13,6 +13,18 @@ const TURN = fixtureTool('orbit.py/turn');
 const ORBIT = { degrees: 360, direction: 'cw', loops: true };
 const need = (name) => process.env[name] || (() => { throw new Error(`$${name} is not set: web.sh's web_suite sets it`); })();
 
+/** `locator`'s box once full screen has laid it out: grown past `was` and the same three reads running. */
+async function grown(locator, was) {
+  let box = null, same = 0;
+  await expect.poll(async () => {
+    const now = await locator.boundingBox();
+    same = now && box && now.width > was.width + 1 && Math.abs(now.width - box.width) < 1 && Math.abs(now.x - box.x) < 1 ? same + 1 : 0;
+    box = now;
+    return same >= 2;
+  }, { message: 'laid out full screen', intervals: [150] }).toBe(true);
+  return box;
+}
+
 /** What the board drew for `name` at rest: its orbit mark, or null. */
 const markOf = (page, name) => page.evaluate((name) => document.querySelector('.canvas-root')?.canvasInspection?.card(name)?.rendered?.orbit ?? null, name);
 
@@ -63,9 +75,10 @@ test('orbit', async ({ page, project, api, cli }) => {
     const orbit = region.getByRole('slider', { name: 'Turn', exact: true });
     await region.locator('.orbit-bar').getByRole('button', { name: 'Front', exact: true }).click();
     await expect.poll(async () => Number(await orbit.getAttribute('data-angle'))).toBe(0);
+    const was = await orbit.boundingBox();
     await region.locator('.orbit-bar').getByRole('button', { name: 'Full screen', exact: true }).click();
     await expect.poll(() => page.evaluate(() => Boolean(document.fullscreenElement?.matches('.focus-viewer[data-full]'))), { message: "the orbit's Full screen" }).toBe(true);
-    const turn = await orbit.boundingBox();
+    const turn = await grown(orbit, was);
     const y = turn.y + turn.height / 2;
     await page.mouse.move(turn.x + turn.width * 0.25, y);
     await page.mouse.down();
