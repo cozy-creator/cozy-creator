@@ -25,6 +25,59 @@ struct Verified {
 }
 
 static VERIFIED: LazyLock<Mutex<HashMap<String, Arc<Verified>>>> = LazyLock::new(Mutex::default);
+
+/// Where this machine keeps the births of the executors it starts for each vault view (cl-1064): a lock that couldn't reach this
+/// machine ends them by these, so a hung machine's executors hold no project's decrypted bytes past its lock. One file a view, named
+/// by a digest of the view's path (new at each unlock): no project's id, name or folder. It goes at the view's close and at the
+/// clean-up a lock owed; a machine starting again drops those whose processes have all ended.
+static BIRTHS: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+static BIRTHS_WRITE: Mutex<()> = Mutex::new(());
+
+/// Keeps executors' births in `dir` (`BIRTHS`), dropping what an earlier machine kept of views whose processes have all ended.
+pub(crate) fn keep_births_in(dir: PathBuf) -> io::Result<()> {
+    fs::create_dir_all(&dir)?;
+    platform::durable::set_mode(&dir, 0o700)?;
+    for entry in fs::read_dir(&dir)? {
+        let path = entry?.path();
+        if births(&path).iter().all(|birth| !platform::process::Exact::open(birth).is_ok_and(|open| open.is_some())) {
+            let _ = fs::remove_file(&path);
+        }
+    }
+    let _ = BIRTHS.set(dir);
+    Ok(())
+}
+
+fn births_file(view: &std::path::Path) -> Option<PathBuf> {
+    let digest = Sha256::digest(view.to_string_lossy().as_bytes());
+    Some(BIRTHS.get()?.join(digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>()))
+}
+
+fn births(path: &std::path::Path) -> Vec<platform::process::Birth> {
+    fs::read(path).ok().and_then(|raw| serde_json::from_slice(&raw).ok()).unwrap_or_default()
+}
+
+/// An executor of the code whose path is `python` started as `birth`: kept under its view, if a project's view holds it.
+pub(crate) fn record_birth(python: &std::path::Path, birth: &platform::process::Birth) -> io::Result<()> {
+    // Held across the look-up: a view closing meanwhile forgets its births only after this write.
+    let _writing = BIRTHS_WRITE.lock().unwrap();
+    let view = VERIFIED.lock().unwrap().values().find(|scope| python.starts_with(&scope.descriptor.view_root)).map(|scope| scope.descriptor.view_root.clone());
+    let Some(path) = view.as_deref().and_then(births_file) else { return Ok(()) };
+    let mut kept = births(&path);
+    kept.retain(|held| platform::process::Exact::open(held).is_ok_and(|open| open.is_some()));
+    kept.push(birth.clone());
+    let staged = path.with_extension("next");
+    fs::write(&staged, serde_json::to_vec(&kept).map_err(io::Error::other)?)?;
+    platform::durable::set_mode(&staged, 0o600)?;
+    fs::rename(&staged, &path)
+}
+
+/// The view's executors' births go: it closed, or a lock's owed clean-up of it was done.
+pub(crate) fn forget_births(view: &std::path::Path) {
+    if let Some(path) = births_file(view) {
+        let _writing = BIRTHS_WRITE.lock().unwrap();
+        let _ = fs::remove_file(path);
+    }
+}
 tokio::task_local! { static REQUEST: LocalPrivateStorage; }
 thread_local! {
     static CURRENT: RefCell<Option<LocalPrivateStorage>> = const { RefCell::new(None) };
@@ -222,7 +275,10 @@ pub(crate) fn retain(
 /// cache can be dropped so no retained upload/store handle silently keeps FUSE busy.
 /// A project whose folder is gone: its verified scope and store handle go (cl-1031).
 pub(crate) fn forget(project_id: &str) {
-    VERIFIED.lock().unwrap().remove(project_id);
+    let gone = VERIFIED.lock().unwrap().remove(project_id);
+    if let Some(scope) = gone {
+        forget_births(&scope.descriptor.view_root);
+    }
 }
 
 pub(crate) fn close(descriptor: &LocalPrivateStorage, actor: &str) -> io::Result<()> {
@@ -247,6 +303,8 @@ pub(crate) fn close(descriptor: &LocalPrivateStorage, actor: &str) -> io::Result
     *store = None;
     drop(store);
     all.remove(&descriptor.project_id);
+    drop(all);
+    forget_births(&descriptor.view_root);
     Ok(())
 }
 

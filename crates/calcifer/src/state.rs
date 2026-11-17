@@ -40,6 +40,7 @@ pub(crate) const TABLES: &str = "
         machine TEXT NOT NULL,
         view TEXT NOT NULL,
         folder TEXT NOT NULL,
+        ended INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (machine, view)
     ) STRICT;
     DROP TABLE IF EXISTS sessions;
@@ -478,9 +479,9 @@ impl Store {
 
     /// A machine's clean-up a lock owes (cl-1064): the lock couldn't reach `machine`, so what it held of the project at `folder`,
     /// mounted at `view` (a path new at each unlock), is cancelled and retired when it next answers. Nothing else of the project.
-    pub(crate) fn owe(&self, machine: &str, view: &Path, folder: &Path) -> Result<()> {
+    pub(crate) fn owe(&self, machine: &str, view: &Path, folder: &Path, ended: u32) -> Result<()> {
         self.write(|tx| {
-            tx.execute("INSERT OR REPLACE INTO machine_owed (machine, view, folder) VALUES (?1, ?2, ?3)", params![machine, view.to_string_lossy(), folder.to_string_lossy()])?;
+            tx.execute("INSERT OR REPLACE INTO machine_owed (machine, view, folder, ended) VALUES (?1, ?2, ?3, ?4)", params![machine, view.to_string_lossy(), folder.to_string_lossy(), ended])?;
             Ok(())
         })
     }

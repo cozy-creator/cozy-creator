@@ -99,9 +99,51 @@ impl Machines {
         matches!(tokio::time::timeout(ASK_WITHIN, link.status()).await, Ok(Ok(_)))
     }
 
-    /// A lock that couldn't reach `local` owes it the clean-up of the project at `folder`, mounted at `view`.
-    pub(crate) fn owe(&self, view: &Path, folder: &Path) -> crate::store::Result<()> {
-        self.store().owe("local", view, folder)?;
+    /// What a lock that couldn't reach `local` ends of the project's processes there (cl-1064): its executors, which hold its
+    /// decrypted bytes in memory while local hangs, by the births TensorD kept for `view`, each opened exactly (a reused pid is never
+    /// touched) and ended with its tree. A TensorD that keeps no births has its service ended instead, which its parent starts again,
+    /// every project's work there with it. How many it ended, and the lock's words for it (none when it ended nothing).
+    pub(crate) fn end_executors(&self, view: &Path) -> (u32, String) {
+        use sha2::Digest as _;
+        let dir = self.local.births();
+        if !dir.is_dir() {
+            let ended = self.end_local_service();
+            return (ended, format!("local keeps no record of the project's processes, so its service was ended ({ended} processes)"));
+        }
+        let key = hex::encode(sha2::Sha256::digest(view.to_string_lossy().as_bytes()));
+        let births: Vec<platform::process::Birth> = std::fs::read(dir.join(key)).ok().and_then(|raw| serde_json::from_slice(&raw).ok()).unwrap_or_default();
+        let mut ended = 0;
+        for birth in births {
+            if !matches!(platform::process::Exact::open(&birth), Ok(Some(_))) {
+                continue;
+            }
+            for process in platform::process::tree(birth.pid) {
+                let _ = process.kill();
+            }
+            ended += 1;
+        }
+        let said = match ended {
+            0 => String::new(),
+            1 => "it ended the project's process there".into(),
+            n => format!("it ended the project's {n} processes there"),
+        };
+        (ended, said)
+    }
+
+    /// Local's service and all it runs, its stable parent aside: how many processes.
+    fn end_local_service(&self) -> u32 {
+        let Some(parent) = self.local.holder() else { return 0 };
+        let tree: Vec<_> = platform::process::tree(parent).into_iter().filter(|process| process.birth().pid != parent).collect();
+        for process in &tree {
+            let _ = process.kill();
+        }
+        tree.len() as u32
+    }
+
+    /// A lock that couldn't reach `local` owes it the clean-up of the project at `folder`, mounted at `view`; it ended `ended` of
+    /// the project's processes there.
+    pub(crate) fn owe(&self, view: &Path, folder: &Path, ended: u32) -> crate::store::Result<()> {
+        self.store().owe("local", view, folder, ended)?;
         MAYBE_OWED.store(true, Ordering::Relaxed);
         Ok(())
     }

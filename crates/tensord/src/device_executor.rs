@@ -916,6 +916,8 @@ impl DeviceExecutor {
             serving: Arc::default(),
         };
         on_birth(&birth, &cancellation)?;
+        // A project's own code: its view keeps this birth, so a lock that can't reach this machine ends it (cl-1064).
+        if config.within { crate::private_io::record_birth(&config.python, &birth)?; }
         // Wait for connection OR observed process death. No elapsed-time startup kill.
         let Some(stream) = listener.accept_unless(&exact)? else {
             let status = unready.ended()?;
