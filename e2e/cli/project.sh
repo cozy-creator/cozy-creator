@@ -359,10 +359,10 @@ for _ in $(seq 30); do answer=$(project_api "$N" '' 2>&1) && break; sleep 1; don
 J --arg i "$id" '.id == $i' <<< "$answer" || { check "moved: it doesn't open where it is now: $(head -c 300 <<< "$answer")"; return; }
 # This computer's machine works inside the folder: what it was running goes again here, said in one line (coordinator, 11-17).
 J '(.warnings // []) | any(.message | test("^long restarted in the moved folder"))' <<< "$answer" \
-  || check "moved: its local run wasn't said restarted: $(jq -c '.warnings' <<< "$answer"); Calcifer: $(cat "$HOME"/.cozy/calcifer/calcifer.log* 2> /dev/null | grep -a -i 'moved\|moving' | tail -5)"
+  || check "moved: its local run wasn't said restarted: $(jq -c '.warnings' <<< "$answer"); Calcifer: $(grep -a -i 'moved\|moving\|ambiguous\|journal' "$HOME/.cozy/calcifer/diagnostics.log" 2> /dev/null | tail -6)"
 for _ in $(seq 240); do J '.busy | not' <<< "$(status "$N")" && break; sleep 0.5; done
 { [ "$(made "$N" long)" = 1 ] && [ "$(made "$N" after)" = 1 ]; } \
-  || check "moved: its renders didn't land where it is now: $(status "$N" | jq -c '{busy, jobs: [.board.jobs[] | {asset, state, error: .error.message}]}'); Calcifer: $(cat "$HOME"/.cozy/calcifer/calcifer.log* 2> /dev/null | grep -a -i 'moved\|moving\|cancel' | tail -8)"
+  || check "moved: its renders didn't land where it is now: $(status "$N" | jq -c '{busy, jobs: [.board.jobs[] | {asset, state, error: .error.message}]}'); Calcifer: $(grep -a -i 'moved\|moving\|cancel\|gone' "$HOME/.cozy/calcifer/diagnostics.log" 2> /dev/null | tail -8)"
 [ ! -e "$M" ] || check "moved: something was made again where it was: $(find "$M" -maxdepth 3 | head -5)"
 drop_folder "$N"
 }
