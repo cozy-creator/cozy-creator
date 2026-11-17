@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import secrets
 import subprocess
 
@@ -133,6 +134,9 @@ def _observation(completed: subprocess.CompletedProcess[bytes], documents: list[
     said = completed.stdout.decode("utf-8", errors="replace") + "\n".join(details)
     return {
         "transport_refusals": {kind: text in said for kind, text in _TRANSPORT.items()},
+        # Each lowercase word of the typed errors' messages, hashed (cl-1066): a word list hashed the same names them, and no path or
+        # value can. How `lock_failed` was found: "uv lock didn't start: project tool custody unavailable: … storage is changing".
+        "error_word_sha256": sorted({sha(word.encode()) for detail in details[:-1] for word in re.findall(r"[a-z]{2,24}", detail.lower())})[:96],
         "development_runtime_passed_over": _PASSED_OVER in said,
         "exit_code": completed.returncode, "file_created": file_created,
         "stdout_json_documents": len(documents), "stderr_json_documents": len(stderr_documents),

@@ -68,22 +68,36 @@ impl RunOwner {
 pub(crate) struct SealingStore<'a> {
     project: Arc<Project>,
     controller: Weak<crate::Calcifer>,
-    transition: &'a vault::ProjectTransition,
+    authority: Authority<'a>,
+}
+/// What a [`SealingStore`] reads and writes under: a storage transition, or an inspection beside the project's readers, which only reads.
+enum Authority<'a> {
+    Transition(&'a vault::ProjectTransition),
+    Inspection(&'a vault::ProjectInspection),
+}
+impl Authority<'_> {
+    fn validate(&self, project: &Project) -> Result<(), Error> {
+        match self { Self::Transition(transition) => transition.validate(project), Self::Inspection(inspection) => inspection.validate(project) }
+    }
 }
 impl SealingStore<'_> {
     pub(crate) fn owner_id(&self)->Option<&str> {Some(&self.project.id)}
     pub(crate) fn read<T>(&self, read: impl FnOnce(&Connection) -> store::Result<T>) -> store::Result<T> {
-        self.transition.validate(&self.project).map_err(project_error)?;
+        self.authority.validate(&self.project).map_err(project_error)?;
         self.project.folder.journal_read(read)
     }
     pub(crate) fn write<T>(&self, write: impl FnOnce(&Transaction<'_>) -> store::Result<T>) -> store::Result<T> {
-        self.transition.validate(&self.project).map_err(project_error)?;
+        self.writable()?;
         self.project.folder.journal_write(write)
     }
     /// `write` of what the project's held rows keep too (`Folder::journal_write_held`).
     pub(crate) fn write_held<T>(&self, write: impl FnOnce(&Transaction<'_>) -> store::Result<T>) -> store::Result<T> {
-        self.transition.validate(&self.project).map_err(project_error)?;
+        self.writable()?;
         self.project.folder.journal_write_held(write)
+    }
+    fn writable(&self) -> store::Result<()> {
+        if matches!(self.authority, Authority::Inspection(_)) { return Err(StoreError::Locked("project_inspection".into())); }
+        self.authority.validate(&self.project).map_err(project_error)
     }
     pub(crate) fn admit_submission(&self, _new: &store::NewRun) -> store::Result<()> {
         Err(StoreError::Locked("project_transition".into()))
@@ -137,7 +151,16 @@ impl Projects {
             .filter(|project| transition.validate(project).is_ok());
         let project = match open { Some(project) => project, None => self.get(api, named).map_err(|error| error.0)? };
         transition.validate(&project)?;
-        Ok(SealingStore { project, controller: Arc::downgrade(&api.calcifer), transition })
+        Ok(SealingStore { project, controller: Arc::downgrade(&api.calcifer), authority: Authority::Transition(transition) })
+    }
+
+    /// [`Projects::transition_store`] for reading alone, beside the project's other readers (`vault::ProjectInspection`).
+    pub(super) fn inspection_store<'a>(&self, api: &Arc<Api>, named: &str, inspection: &'a vault::ProjectInspection) -> Result<SealingStore<'a>, Error> {
+        let open = self.open.lock().expect("projects lock").get(named).and_then(Weak::upgrade)
+            .filter(|project| inspection.validate(project).is_ok());
+        let project = match open { Some(project) => project, None => self.get(api, named).map_err(|error| error.0)? };
+        inspection.validate(&project)?;
+        Ok(SealingStore { project, controller: Arc::downgrade(&api.calcifer), authority: Authority::Inspection(inspection) })
     }
 
     pub(crate) async fn store(&self, api: &Arc<Api>, named: &str) -> Result<ProjectStore, Error> {
