@@ -361,11 +361,15 @@ if renting:
     # installs nothing (cl-1104: `weights.needs`, cl-1102's, is what it waited for; no Installing on its stream).
     ready_on, request1 = obj(flow.get('ready_on')), next((r for r in rows if r.request == 1), None)
     ready_said, machine_a = text(ready_on.get('said')), machines.get('A')
+    # A flow before the wait was bounded kept no `ready`: its words said it.
+    was_ready = ready_on.get('ready') is True or (ready_on.get('ready') is None and ready_said.startswith('Ready on '))
     needs1 = num(obj(obj(obj(json.loads(json.dumps(request1.record.record))).get('measurements')).get('weights')).get('needs')) if request1 and request1.record else None
     installed1 = bool(request1 and 'installing' in request1.first)
+    said_how = (f"its box said {ready_said!r} after {ready_on.get('waited_s')} s" if was_ready
+                else f"its box didn't say Ready on A in {ready_on.get('waited_s', '?')} s (beside Render: {ready_said or 'nothing'!r}), and it was sent all the same")
     check("request 1, sent once its box said Ready on A, downloads and installs nothing (cl-1104)",
-          bool(ready_said) and bool(machine_a and machine_a.name and machine_a.name in ready_said) and needs1 == 0 and not (request1 and request1.dl_bytes) and not installed1,
-          f"its box said {ready_said or 'nothing'!r}" + (f" after {ready_on.get('waited_s')} s" if ready_said else '') + f"; its run waited for {fmt(needs1 / MIB if needs1 is not None else None, ' MiB')} of weights"
+          was_ready and bool(machine_a and machine_a.name and machine_a.name in ready_said) and needs1 == 0 and not (request1 and request1.dl_bytes) and not installed1,
+          said_how + f"; its run waited for {fmt(needs1 / MIB if needs1 is not None else None, ' MiB')} of weights"
           + (f", its stream said {request1.dl_bytes / GB:.1f} GB downloading" if request1 and request1.dl_bytes else '') + ('; it installed' if installed1 else '; no install'))
 
 # ---- Lean, per machine: what landed (TensorD's `landed` lines), what it holds, what its runs loaded.

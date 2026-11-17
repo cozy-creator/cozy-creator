@@ -33,6 +33,8 @@ const PLATE_S = Number(process.env.PLATE_S || 5);
 // session's budget for one step.
 const QUIET_MS = Number(process.env.QUIET_MIN || 20) * 60_000;
 const STEP_MS = 2 * 3600_000;
+// How long request 1 waits for its box to say "Ready on A" (cl-1104): well under a rental's 15 idle minutes.
+const READY_MS = 8 * 60_000;
 const GENERATE = 'minimax-h3/generate';
 const EDIT = 'minimax-h3/edit';
 // The 0.25.0 gate's clip (bench.json): its words, at Shot's default 15 s.
@@ -514,21 +516,25 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
 
     // cl-1104 (Paul, 11-16): "when a user attaches a tool … we could figure out what machine, if we got a request, that request would
     // land on. On that machine, we can pre-emptively install packages + models". With A up, the Shot's box says so beside its Render
-    // once A has H3 and its weights; request 1 goes then, and downloads and installs nothing (the judge's line).
+    // once A has H3 and its weights; request 1 goes then, and downloads and installs nothing (the judge's line). The wait is bounded
+    // well under a rental's 15 idle minutes (frozen-RC 44000183889 waited 120 min, A released itself and nothing rendered): not
+    // Ready by then, the box's words are kept, the judge's line fails, and Render goes all the same so every other line runs.
     await test.step("the Shot's box says it's ready on A before its Render", async () => {
       const r = await look(SHOT);
       const note = r.locator('.ready-on');
       const began = Date.now();
-      let moved = began, events = heard, said = '';
-      for (;;) {
+      let said = '';
+      while (Date.now() - began < READY_MS) {
         said = ((await note.first().textContent({ timeout: 1000 }).catch(() => '')) ?? '').trim();
         if (said.startsWith('Ready on ')) break;
-        if (heard !== events) [events, moved] = [heard, Date.now()];
-        if (Date.now() - moved > QUIET_MS) throw new Error(`no "Ready on": nothing moved for ${QUIET_MS / 60_000} min`);
-        if (Date.now() - began > STEP_MS) throw new Error(`no "Ready on" in ${STEP_MS / 60_000} min`);
         await page.waitForTimeout(2000);
       }
-      flow.ready_on = { box: SHOT, said, machine: A.name, at: Date.now(), waited_s: Math.round((Date.now() - began) / 1000) };
+      const ready = said.startsWith('Ready on ');
+      // Beside its Render, what the box says instead: its render time, Slow here, or nothing.
+      const beside = ready ? said : (await r.locator('.ready-on, .render-time, .slow-here').allTextContents().catch(() => [])).map((t) => t.trim()).filter(Boolean).join(' · ');
+      flow.ready_on = { box: SHOT, ready, said: beside, machine: A.name, at: Date.now(), waited_s: Math.round((Date.now() - began) / 1000) };
+      keep();
+      if (!ready) throw new Error(`no "Ready on" in ${READY_MS / 60_000} min; beside Render: ${JSON.stringify(beside)}`);
       mark('the Shot says ready', { said });
       await shot('ready-on-A');
     }).catch((error) => failed("the Shot's box says it's ready on A before its Render", error));
