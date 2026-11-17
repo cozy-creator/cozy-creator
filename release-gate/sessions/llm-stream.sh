@@ -9,7 +9,7 @@
 # params:
 #   tree     the packages_refs checkout qwen3 runs from (required)
 #   runtime  the cozy-runtime dev-build run id of the Runtime the rental runs (required)
-#   model    the checkpoint its `model` slot reads (default: the package's), e.g. heretic-org/qwen3.8-27b-heretic-ara@sha256:<int8>
+#   model    the checkpoint its `model` slot reads (default: the package's), e.g. llmfan46/qwen3.8-27b-uncensored-heretic-native-mtp-preserved@sha256:b875cebf452060e3162fb9df6ca3c0e46f79c3d4184f27c5be6c074871ed6976 (int8)
 #   seconds  what the cap must buy (default 2700)
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
