@@ -345,6 +345,21 @@ def alive(pid: int, start: str) -> bool:
     return fields[19] == start and fields[0] != "Z"
 
 
+def described(pid: int, view: Path) -> dict[str, object]:
+    """What process `pid` is: its parent, state, command and which of its environment's names hold `view`."""
+    proc = Path(f"/proc/{pid}")
+    try:
+        fields = (proc / "stat").read_text().rsplit(")", 1)[1].split()
+        names = [entry.split(b"=", 1)[0].decode(errors="replace") for entry in (proc / "environ").read_bytes().split(b"\0")
+                 if str(view).encode() in entry]
+        command = (proc / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")[:300]
+        parent = int(fields[1])
+        parent_command = Path(f"/proc/{parent}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")[:200]
+    except OSError as error:
+        return {"pid": pid, "unreadable": str(error)}
+    return {"pid": pid, "state": fields[0], "ppid": parent, "parent": parent_command, "command": command, "names": names}
+
+
 def executors_gone(view: Path) -> list[int] | None:
     """`executors_of(view)` once they had 10 s to go."""
     began, left = time.monotonic(), executors_of(view)
@@ -521,6 +536,7 @@ def hung(cell: Cell, label: str, scanner: Scanner, view: Path, projects: list[Pa
     """While the machine is stopped: the view gone, and nothing outside the folders but the machine's journal, named."""
     facts: dict[str, object] = {"mounted": mounted(view), "journal_rows": journaled(view), "journal": str(journal()[0]),
                                 "executors_left": executors_gone(view), "births_kept_dir": BIRTHS.is_dir()}
+    facts["executors_left_are"] = [described(pid, view) for pid in cast(list[int], facts["executors_left"] or [])]
     facts["scan"] = traces(scanner, cell.out, f"{label}-stopped", [*(project.resolve() for project in projects), *journal()])
     print(f"lock hung: {label}: while local is stopped, the one exception is its own journal {facts['journal']}: "
           f"{facts['journal_rows']} runs of the ended view", flush=True)
@@ -613,7 +629,7 @@ def main() -> None:
                 failures.append(f"local keeps a view's executor births past its clean-up ({facts['births_after_paid']}) or its lock ({facts['births_after_lock']})")
             lock_facts = cast(dict[str, object], facts["lock"])
             if lock_facts["executors_left"]:
-                failures.append(f"lock: the project's executors still run on local after its lock: {lock_facts['executors_left']}")
+                failures.append(f"lock: the project's processes still run on local after its lock: {lock_facts['executors_left_are']}")
             if not lock_facts["births_kept_dir"]:
                 failures.append("local keeps no executor births (the lock fell back to ending its whole service)")
             for label in ("lock", "after_lock"):
@@ -727,7 +743,7 @@ def deadline(cell: Cell, label: str, scanner: Scanner, view: Path, projects: lis
     else:
         found = facts[label] = hung(cell, label, scanner, view, projects)
         if found["executors_left"]:
-            failures.append(f"{label}: the project's executors still run on local after its lock: {found['executors_left']}")
+            failures.append(f"{label}: the project's processes still run on local after its lock: {found['executors_left_are']}")
         if found["mounted"]:
             failures.append(f"{label}: the view is still mounted while local is stopped")
         if cast(dict[str, object], found["scan"])["matches"]:
