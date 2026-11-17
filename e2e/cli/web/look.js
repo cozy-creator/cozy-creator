@@ -70,7 +70,6 @@ async function died(why) {
   const pages = {};
   for (const theme of ['paper', 'dark']) {
     const context = await browser.newContext({ viewport: { width: SIZES[0][0], height: SIZES[0][1] } });
-    await context.addInitScript((dark) => { try { localStorage.setItem('cozy.theme', dark ? 'dark' : 'paper'); } catch {} }, theme === 'dark');
     const page = await context.newPage();
     page.setDefaultTimeout(STEP_MS);
     page.on('pageerror', (error) => (seen.page_errors ??= []).push(`${theme}: ${error.message}`));
@@ -79,7 +78,12 @@ async function died(why) {
     pages[theme] = page;
   }
   lookAt(pages.paper);
-  const both = async (what) => { for (const [theme, page] of Object.entries(pages)) await what(page, theme); };
+  /** This Calcifer's appearance is `theme`, which `page` shows (cl-1097): look runs alone, so it's set for each page's turn. */
+  const looks = async (page, theme) => {
+    await page.evaluate((theme) => fetch('/v1/appearance', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ theme }) }), theme);
+    await page.waitForFunction((dark) => (document.documentElement.dataset.theme === 'dark') === dark, theme === 'dark');
+  };
+  const both = async (what) => { for (const [theme, page] of Object.entries(pages)) { await looks(page, theme); await what(page, theme); } };
   const out = (name) => `${process.env.SHOT}-${name}.png`;
 
   /** `name` on both pages at both sizes: `open` once a page, `prepare` after each resize. What can't be reached is said under `missed`. */
@@ -88,6 +92,7 @@ async function died(why) {
     for (const [theme, page] of Object.entries(pages)) {
       try {
         if (open) await open(page, theme);
+        await looks(page, theme);
       } catch (why) {
         seen.missed[`${name} ${theme}`] = String(why.message ?? why).slice(0, 400);
         continue;
@@ -116,6 +121,7 @@ async function died(why) {
       try {
         await page.setViewportSize({ width: SIZES[0][0], height: SIZES[0][1] });
         if (open) await open(page, theme);
+        await looks(page, theme);
         await settled(page);
         const target = await locate(page);
         if (target === null) throw new Error('not on the canvas');
@@ -429,7 +435,8 @@ async function died(why) {
   if (failedRun) await shoot('drawer-run-failed', { open: (page) => goto(page, `${projectPath}/runs/${failedRun}`) });
   await shoot('drawer-assets', { open: (page) => goto(page, `${projectPath}/assets`) });
   await shoot('drawer-account', { open: (page) => goto(page, `${projectPath}/account`) });
-  await shoot('drawer-vault', { open: (page) => goto(page, `${projectPath}/vault`) });
+  await shoot('drawer-project-settings', { open: (page) => goto(page, `${projectPath}/project-settings`) });
+  await shoot('drawer-settings', { open: (page) => goto(page, `${projectPath}/settings`) });
   await shoot('drawer-projects-open', { open: (page) => goto(page, `${projectPath}/projects`) });
   // The open project's own tab: Projects, most recently used first.
   await shoot('drawer-projects-from-tab', {

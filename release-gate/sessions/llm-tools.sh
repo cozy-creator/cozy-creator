@@ -77,6 +77,10 @@ RENTING=$RENT
 RENT=true quote "$(param seconds 3600)"
 if [ "$RENTING" != true ]; then
   say "pre-flight: nothing rented; the page cells on this runner's machine, the LLM the local fixture"
+  # This machine on the RC's Runtime first: the release's can't keep a project's files (`runtime_outdated`, 43980861306).
+  cozy machine update local -y > "$OUT/local-update.txt" 2>&1 || say "cozy machine update local: $(tail -c 300 "$OUT/local-update.txt")"
+  for _ in $(seq 120); do [ "$(cozy machine show local --json 2> /dev/null | jq -r '.rc.state // empty')" = current ] && break; sleep 5; done
+  say "local: $(cozy machine show local --json 2> /dev/null | jq -c '{rc, runtime: .status.runtime}')"
   pw dry-gpus machine-details 'machine-details: GPU use' GPU_MACHINE=local
   pw dry-llm llm 'llm: real models on a GPU' LLM_MACHINE=local LLM_TOOL="$ROOT/e2e/cli/project/llm.py/ask" LLM_PICTURE="$PICTURE" \
     LLM_VIDEO="$VIDEO" LLM_SEES_PICTURE='shown: an image [0-9]+px wide' LLM_SEES_VIDEO='shown: a video'
@@ -97,11 +101,8 @@ say "on the RC: $(jq -r '"cozy \(.status.version) · Runtime \(.status.runtime) 
 # cli: each package asked about the photo and the video, by mention.
 run_page import "$PICTURE" --name photo > "$OUT/import-photo.json" 2>&1 || fail "import the photo: $(tail -c 300 "$OUT/import-photo.json")"
 run_page import "$VIDEO" --name clip > "$OUT/import-clip.json" 2>&1 || fail "import the video: $(tail -c 300 "$OUT/import-clip.json")"
-for _ in $(seq 100); do
-  photo=$(run_page asset photo | jq -r '.sha256 // empty') clip=$(run_page asset clip | jq -r '.sha256 // empty')
-  [ -n "$photo" ] && [ -n "$clip" ] && break; sleep 0.2
-done
-[ -n "$photo" ] && [ -n "$clip" ] || fail "the imports hold no files: $photo $clip"
+photo=$(jq -r '.sha256 // empty' "$OUT/import-photo.json") clip=$(jq -r '.sha256 // empty' "$OUT/import-clip.json")
+[ -n "$photo" ] && [ -n "$clip" ] || fail "the imports hold no files: $(head -c 300 "$OUT/import-photo.json") $(head -c 300 "$OUT/import-clip.json")"
 ask() { jq -cn --arg k "$1" --arg t "$2" --arg f "sha256:${3#sha256:}" --arg q "$4" '{text: $q, references: [{key: $k, type: $t, file: $f}]}'; }
 ON_PHOTO=$(ask photo image "$photo" 'What is in <photo>? Answer in two sentences.')
 ON_CLIP=$(ask clip video "$clip" 'What does <clip> show? Answer in two sentences.')

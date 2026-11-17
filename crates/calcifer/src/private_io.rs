@@ -197,6 +197,17 @@ pub(crate) fn descriptor_for_mounted(
     Ok(scope)
 }
 
+/// A plain project's folder renamed (cl-1097): its marker names where it is now, its token and namespace kept. Its machine side was
+/// closed before the move, so nothing holds the old place.
+pub(crate) fn moved(from: &Path, to: &Path) -> Result<(), Error> {
+    SCOPES.lock().unwrap().remove(from);
+    if !to.join(LOCAL_PRIVATE_MARKER).exists() { return Ok(()); }
+    let mut marker = read_marker(to)?;
+    marker.storage.view_root = platform::durable::canonical(to).map_err(|_| error("the renamed project is unavailable"))?;
+    let encoded = serde_json::to_vec(&marker).map_err(|_| error("cannot encode the private execution marker"))?;
+    platform::durable::replace(&to.join(LOCAL_PRIVATE_MARKER), &encoded, 0o600).map_err(|_| error("cannot retain the private execution marker"))
+}
+
 fn read_marker(view: &Path) -> Result<LocalPrivateMarker, Error> {
     let path = view.join(LOCAL_PRIVATE_MARKER);
     if fs::symlink_metadata(&path)

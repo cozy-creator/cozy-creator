@@ -7,7 +7,7 @@
 // back on the canvas.
 const { mkdirSync } = require('fs');
 const { join } = require('path');
-const { test, expect, canvasCard, canvasIdle, canvasNames, canvasPoint, canvasVisible, zoomOf } = require('./fixtures');
+const { test, expect, themed, canvasCard, canvasIdle, canvasNames, canvasPoint, canvasVisible, zoomOf } = require('./fixtures');
 const { leave } = require('./hands');
 const { onCanvas, rowsOf } = require('./geometry');
 
@@ -40,9 +40,10 @@ test('dblclick-text', async ({ page, project }) => {
     const tag = `${width}x${height}-${theme}`;
     await test.step(`${tag}: a double click on open canvas, then words typed`, async () => {
       await page.setViewportSize({ width, height });
-      await page.evaluate((one) => localStorage.setItem('cozy.theme', one), theme);
+      await project.look(theme);
       await page.reload();
       await expect(page.locator('.stage')).toBeVisible();
+      await themed(page, theme);
       await canvasIdle(page);
       expect(await open(page, point), `${JSON.stringify(point)} is open canvas`).toBe(true);
       await page.screenshot({ path: join(shots, `empty-${tag}.png`) });

@@ -7,7 +7,8 @@ import { MachineDrawer } from "../panels/machines/MachineDrawer"
 import { Machines, NewMachine } from "../panels/machines/Machines"
 import { NewRun } from "../panels/newrun/NewRun"
 import { Projects } from "../panels/Projects"
-import { ProjectVault } from "../panels/ProjectVault"
+import { ProjectSettings } from "../panels/ProjectSettings"
+import { Settings } from "../panels/Settings"
 import { RunDrawer } from "../panels/runs/RunDrawer"
 import { Runs } from "../panels/runs/Runs"
 import { guardRedirects } from "./redirect"
@@ -44,6 +45,7 @@ const drawers: RouteObject[] = [
   drawer("models/:name", <ModelDrawer />, "wide"),
   drawer("account", <Account />),
   drawer("projects", <Projects />),
+  drawer("settings", <Settings />),
 ]
 
 /** Made once boot has taken a link's code out of the URL: a router reads where it is as it's made, and `to` is where the link goes. */
@@ -68,7 +70,7 @@ export const theRouter = () =>
             ...drawers,
             drawer("new", <NewRun />),
             drawer("assets", <Files />),
-            drawer("vault", <ProjectVault />),
+            drawer("project-settings", <ProjectSettings />),
           ],
         })),
         { path: "*", element: <Navigate replace to="/" /> },

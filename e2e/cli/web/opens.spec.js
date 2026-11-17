@@ -390,13 +390,11 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
     seen.stored = { ...stored, ms: Date.now() - storing };
   });
 
-  /** A browser of its own, its cache cold, and its first tab open. */
+  /** A browser of its own, its cache cold, and its first tab open, on this Calcifer's `theme` (a solo cell: no other cell sees it). */
   const fresh = async (theme = 'paper') => {
+    await api.call('PUT', '/v1/appearance', { theme });
     const context = await newContext({ viewport: VIEWPORT });
     await context.addInitScript(SAMPLER);
-    await context.addInitScript((theme) => {
-      try { localStorage.setItem('cozy.theme', theme); } catch {}
-    }, theme);
     const wire = new Wire(api.origin);
     // Each tab opens the page itself.
     const tab = async (label) => {

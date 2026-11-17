@@ -15,7 +15,7 @@ const { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } = 
 const http = require('http');
 const { dirname, join } = require('path');
 const { promisify } = require('util');
-const { test, expect, canvasCard, canvasIdle, focus, canvasVisible, openPoint } = require('./fixtures');
+const { test, expect, themed, canvasCard, canvasIdle, focus, canvasVisible, openPoint } = require('./fixtures');
 
 const need = (name) => process.env[name] || (() => { throw new Error(`$${name} is not set: web.sh's web_suite runs where e2e/isolated.sh sets it`); })();
 const run = promisify(execFile);
@@ -262,8 +262,9 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
        *  at (look-at-your-own-ui); `again` puts back what's looked at after each reload. */
       const look = async (what, again) => {
         for (const theme of ['dark', 'paper']) {
-          await page.evaluate((chosen) => { localStorage.setItem('cozy.theme', chosen); }, theme);
+          await project.look(theme);
           await page.reload();
+          await themed(page, theme);
           await again();
           for (const [width, height] of [[1440, 900], [1920, 1080]]) {
             await page.setViewportSize({ width, height });

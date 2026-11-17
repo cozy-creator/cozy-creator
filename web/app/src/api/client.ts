@@ -1,5 +1,6 @@
 import type {
   Account,
+  Appearance,
   Agreed,
   Approved,
   Asked,
@@ -49,6 +50,7 @@ import type {
   Play,
   ProjectAddress,
   ProjectMachines,
+  ProjectMoved,
   ProjectState,
   ProjectView,
   ProjectViewPatch,
@@ -268,6 +270,15 @@ export class Client {
 
   changeSettings(settings: Settings): Promise<Settings> {
     return this.write("PUT", "/v1/settings", settings)
+  }
+
+  /** How the page looks everywhere (cl-1097); none: never set here. */
+  appearance(signal?: AbortSignal): Promise<Appearance | null> {
+    return this.json("/v1/appearance", { signal })
+  }
+
+  setAppearance(appearance: Appearance): Promise<Appearance> {
+    return this.write("PUT", "/v1/appearance", appearance)
   }
 
   /** The one stream, opened once: `EventStream` does its own reconnecting. */
@@ -507,6 +518,21 @@ export class Client {
   /** The machines the project's runs and renders go to, each to whichever finishes first; none: any. */
   setMachines(id: string, machines: string[]): Promise<ProjectMachines> {
     return this.write("PUT", `${project(id)}/machines`, { machines })
+  }
+
+  /** How the page looks with this project open; null: as everywhere (cl-1097). */
+  setProjectAppearance(id: string, appearance: Appearance | null): Promise<{ appearance: Appearance | null }> {
+    return this.write("PUT", `${project(id)}/appearance`, { appearance })
+  }
+
+  /** The project called `name`: its folder renamed where it is (cl-1097). */
+  renameProject(id: string, name: string): Promise<ProjectMoved> {
+    return this.write("PUT", `${project(id)}/name`, { name })
+  }
+
+  /** Its folder moved to the trash (cl-1097). */
+  deleteProject(id: string): Promise<ProjectMoved> {
+    return this.write("DELETE", project(id), undefined)
   }
 
   /** What a render of `names` on this computer alone would do poorly, a line a tool. */

@@ -9,7 +9,7 @@
 const { randomUUID } = require('crypto');
 const { mkdirSync } = require('fs');
 const { join } = require('path');
-const { test, expect, canvasCard, canvasIdle, focus, fixtureTool, openPoint, png, screenshotPixels } = require('./fixtures');
+const { test, expect, themed, canvasCard, canvasIdle, focus, fixtureTool, openPoint, png, screenshotPixels } = require('./fixtures');
 
 const SHADE = `${fixtureTool('shades.py')}/shade`;
 const SIZES = [[1440, 900], [1920, 1080]];
@@ -24,10 +24,12 @@ async function fit(page) {
   await canvasIdle(page);
 }
 
-async function theme(page, which) {
-  await page.evaluate((dark) => localStorage.setItem('cozy.theme', dark ? 'dark' : 'paper'), which === 'dark');
+/** `which` as `project`'s own appearance (cl-1097), after a reload. */
+async function theme(page, which, project) {
+  await project.look(which);
   await page.reload();
   await expect(page.locator('.stage')).toBeVisible();
+  await themed(page, which);
   await canvasIdle(page);
 }
 
@@ -110,7 +112,7 @@ test('unseen', async ({ page, project, api }) => {
 
     await fit(page);
     await shoot(page, 'canvas', 'paper', () => fit(page));
-    await theme(page, 'dark');
+    await theme(page, 'dark', project);
     await fit(page);
     await expect.poll(async () => (await dots(page, 'grey'))?.unseen ?? 0, { message: 'after a reload' }).toBe(3);
     expect.soft((await dots(page, 'grey')).dot, 'its dot after a reload').not.toBeNull();
@@ -130,7 +132,7 @@ test('unseen', async ({ page, project, api }) => {
       expect.soft(ring && thumb && ring.x - thumb.x < 12 && ring.y - thumb.y < 12, `at version ${number}'s top left: ${JSON.stringify({ ring, thumb })}`).toBe(true);
     }
     await shoot(page, 'focus', 'dark');
-    await theme(page, 'paper');
+    await theme(page, 'paper', project);
     await expect(focused(page)).toHaveAttribute('data-focused-asset', 'grey');
     await expect.soft(mark(1), 'still there after a reload').toBeVisible();
     await shoot(page, 'focus', 'paper');
@@ -161,7 +163,7 @@ test('unseen', async ({ page, project, api }) => {
     await softly.poll(() => page.locator('.canvas-root').getAttribute('title'), { message: 'hovered, they say both' }).toBe('Rendering. 1 new version, not looked at');
     await page.mouse.move((await openPoint(page)).x, (await openPoint(page)).y);
     await shoot(page, 'running', 'paper', () => fit(page));
-    await theme(page, 'dark');
+    await theme(page, 'dark', project);
     await fit(page);
     await shoot(page, 'running', 'dark', () => fit(page));
     await expect.poll(() => versions('grey'), { message: 'version 5', timeout: 120_000 }).toBe(5);

@@ -328,6 +328,9 @@ pub struct State {
     /// The machines its runs go to, each to the one of them that finishes it soonest; none: any machine (`ProjectMachines`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub machines: Vec<String>,
+    /// How the page looks with it open, over `GET /v1/appearance`; none: as everywhere (`ProjectAppearance`, cl-1097).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appearance: Option<super::Appearance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub covered: Option<super::ProjectEventCursor>,
 }
@@ -1265,6 +1268,35 @@ pub struct Unpinned {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ProjectMachines"))]
 pub struct Machines {
     pub machines: Vec<String>,
+}
+
+/// `PUT /v1/projects/{id}/appearance` (cl-1097): how the page looks with this project open; none: as everywhere. Kept in its
+/// `project.db`, no history step and no export, as its machines are.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ProjectAppearance"))]
+pub struct AppearanceKept {
+    #[serde(default)]
+    pub appearance: Option<super::Appearance>,
+}
+
+/// `PUT /v1/projects/{id}/name` (cl-1097): the project called `name`. Its folder is its name, so the folder is renamed beside where it is.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ProjectName"))]
+pub struct Name {
+    pub name: String,
+}
+
+/// A project renamed, or moved to the trash: where it is now.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ProjectMoved"))]
+pub struct Moved {
+    pub id: String,
+    pub name: String,
+    /// Its folder: renamed, or where it was before the trash.
+    pub path: PathBuf,
+    /// Where the trash keeps it, when the OS says (not the Windows Recycle Bin).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trashed: Option<PathBuf>,
 }
 
 /// `POST /v1/projects/{id}/rename`: box `from` called `to`, with its versions, its canvas row and every `<from>` in the

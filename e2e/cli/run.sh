@@ -565,6 +565,7 @@ WEB_SOLO=(
   offline
   restart
   secret-account
+  project-settings
 )
 # The timing and memory cells, `@solo`, in 2D: a runner's software GL drawing the WebGL path with MSAA is no computer's path, and the 2D
 # path is a computer with no GPU's (aa315b64, 11-16: large in 2D found a 1.1 MB-a-cycle heap leak).
@@ -782,8 +783,10 @@ case $SHARD in
   " ;;
   # Calcifer restarted on a large store, its disk slow (cl-1010).
   restart) parts="state_restart logs" ;;
-  # A project's run sent to a rental by its handle follows its Hub's name for the host (cl-1089).
+  # A project's run and its chosen machine, a rental chosen by its handle, follow its Hub's name for the host (cl-1089, cl-1106).
   rental-rename) parts="rental_rename logs" ;;
+  # A take's thumbnail asked for while its file is on its way here answers no error (cl-1108).
+  thumb-arriving) parts="thumb_arriving logs" ;;
   # A dev build's Calcifer at the stack size it ships resumes a render walk and answers /fit (cl-1069: E2E_DEV_COZY, e2e.yaml).
   dev-start) parts="dev_start logs" ;;
   # What cozy needs is on the computer once its installer is done (cl-1030): Linux, macOS and Windows.
@@ -826,7 +829,8 @@ case $SHARD in
   " ;;
   # project.db (cl-803) and state.db (cl-818) alone, and project.db's latency against the cozy before it. A project's machines (cl-873), an idle
   # computer placed on (cl-894), deleted boxes' files gone after the undo window and Undo after the purge (cl-919), a project closed once
-  # nothing reads it (cl-823), a 0.24.0 project's takes kept (cl-945), and a 0.24.0 project opened with nothing lost (cl-904).
+  # nothing reads it (cl-823), a 0.24.0 project's takes kept (cl-945), a 0.24.0 project opened with nothing lost (cl-904), and a take's
+  # thumbnail asked for while its file is on its way here (cl-1108).
   projectdb) parts="
     projectdb
     statedb
@@ -849,6 +853,7 @@ case $SHARD in
     db_waits
     db_keyed
     agent_render
+    thumb_arriving
     logs
   " ;;
   # A run a machine's end cut short, retried elsewhere from the CLI and the page's toast (cl-1085), alone.

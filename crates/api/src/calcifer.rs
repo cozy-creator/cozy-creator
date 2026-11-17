@@ -1123,9 +1123,15 @@ pub enum StreamEvent {
     #[serde(rename = "project.saving")]
     ProjectSaving { id: String },
     /// Its folder is gone (deleted, moved away, on a drive that isn't there): where it was. Nothing of it reads, so a stream showing it
-    /// is told this in place of `project.changed`, and asks it nothing more (cl-980).
+    /// is told this in place of `project.changed`, and asks it nothing more (cl-980). Deleted here, every stream hears it (cl-1097).
     #[serde(rename = "project.gone")]
     ProjectGone { id: String, path: String },
+    /// The index changed (a project renamed or deleted): `GET /v1/projects` again.
+    #[serde(rename = "projects.changed")]
+    ProjectsChanged,
+    /// How the page looks everywhere (`GET /v1/appearance`) changed.
+    #[serde(rename = "appearance")]
+    Appearance { appearance: Appearance },
     /// The rows of a project's canvas that changed, at revision `seq`; none is a row gone.
     #[serde(rename = "canvas")]
     Canvas { id: String, seq: u64, cards: BTreeMap<String, Option<crate::calcifer::project::Card>> },
@@ -2292,6 +2298,29 @@ pub struct Down {
     pub stopping: bool,
     /// What Calcifer still owes, which the next Calcifer resumes.
     pub owed: Vec<String>,
+}
+
+/// How the page looks (cl-1097): a theme, and that theme's own options by name (Paper's `landscape`: `shown` or `hidden`). `GET` and
+/// `PUT /v1/appearance` keep it for every page of this Calcifer; a project's own (`ProjectAppearance`) is over it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Appearance {
+    pub theme: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub options: BTreeMap<String, String>,
+}
+
+impl Appearance {
+    /// Fit to keep: a theme and options named in lower-case letters, digits and `-`, their values short. Refused, it's a client's bug.
+    pub fn check(&self) -> Result<(), String> {
+        let word = |text: &str| (1..=32).contains(&text.len()) && text.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+        if !word(&self.theme) { return Err(format!("{:?} isn't a theme's name", self.theme)); }
+        if self.options.len() > 16 { return Err("a theme has at most 16 options".into()); }
+        match self.options.iter().find(|(name, value)| !word(name) || value.len() > 64) {
+            Some((name, _)) => Err(format!("the option {name:?} isn't one a theme can keep")),
+            None => Ok(()),
+        }
+    }
 }
 
 /// `GET` and `PUT /v1/settings`: this computer's settings Calcifer holds, in config.toml's `[calcifer]`.

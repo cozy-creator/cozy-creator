@@ -1795,6 +1795,20 @@ macro_rules! journal_methods {
         Ok(self.run(&run)?.zip(self.output(&run, &name, index as u32)?))
     }
 
+    /// Whether a run here owes Calcifer a file of these bytes: their output's file neither landed nor given up (cl-1108).
+    pub(crate) fn owes_file(&self, digest: &str) -> Result<bool> {
+        self.read(|conn| {
+            Ok(conn.query_row(
+                &format!(
+                    "SELECT EXISTS (SELECT 1 FROM outputs WHERE outputs.digest = ?1 AND {OWED}
+                     AND outputs.run IN (SELECT id FROM runs WHERE ?2 IS NULL OR owner = ?2))"
+                ),
+                params![digest, self.owner_id()],
+                |r| r.get(0),
+            )?)
+        })
+    }
+
     pub(crate) fn output(&self, run: &str, name: &str, index: u32) -> Result<Option<OutputRow>> {
         self.read(|conn| {
             Ok(conn

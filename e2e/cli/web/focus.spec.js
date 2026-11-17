@@ -164,7 +164,7 @@ test('focus', async ({ page, project, api }) => {
     await page.locator('details.main-menu nav').getByRole('link', { name: 'Assets', exact: true }).click();
     const drawer = page.locator('aside.drawer');
     await expect(drawer).toBeVisible();
-    await expect(page).toHaveURL(project.url('files'));
+    await expect(page).toHaveURL(project.url('assets'));
     // Slid in to where it stays.
     await expect.poll(() => drawer.evaluate((aside) => aside.getAnimations({ subtree: true }).filter((one) => one.playState === 'running' && one.timeline === document.timeline && one.effect?.getComputedTiming().iterations !== Infinity).length), { message: 'the drawer slid in' }).toBe(0);
     let away = await openPoint(page);

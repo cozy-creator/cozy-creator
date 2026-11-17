@@ -33,6 +33,8 @@ use super::{
 const BOARD: &str = "board";
 /// The machines the project's runs go to (cl-873), as a JSON list of names.
 const MACHINES: &str = "machines";
+/// How the page looks with it open (cl-1097), as JSON: none, as everywhere.
+const APPEARANCE: &str = "appearance";
 
 /// Where every file the project uses is kept, by content: `files/<sha256>.<ext>`.
 pub(crate) const FILES: &str = "files";
@@ -1337,6 +1339,20 @@ impl Folder {
         let kept = (!machines.is_empty()).then(|| serde_json::to_string(machines).expect("names serialize"));
         self.act(|| {
             acting(self.id()).expect("in its act").extra.borrow_mut().meta.push((MACHINES, kept));
+            Ok(())
+        })
+    }
+
+    /// How the page looks with it open (cl-1097); none: as everywhere. A local setting, as its machines are.
+    pub(crate) fn appearance(&self) -> Option<api::calcifer::Appearance> {
+        let kept = self.reading_db(|conn| db::meta(conn, APPEARANCE)).ok().flatten();
+        kept.and_then(|kept| serde_json::from_str(&kept).ok())
+    }
+
+    pub(crate) fn set_appearance(&self, appearance: Option<&api::calcifer::Appearance>) -> Result<(), Error> {
+        let kept = appearance.map(|appearance| serde_json::to_string(appearance).expect("an appearance serializes"));
+        self.act(|| {
+            acting(self.id()).expect("in its act").extra.borrow_mut().meta.push((APPEARANCE, kept));
             Ok(())
         })
     }

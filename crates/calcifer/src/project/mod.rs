@@ -73,7 +73,7 @@ use api::{
     ids::{Digest, RunId},
     machine as v1,
     calcifer::project::{
-        Approve, Approved, Asked, Asset as Row, Cancel, Cancelled, Cut, File as Listing, Import, Imported, Job, JobState, Known, Machines as ProjectMachines, MainFile, Open, Opened,
+        Approve, Approved, Asked, Asset as Row, Cancel, Cancelled, Cut, File as Listing, Import, Imported, Job, JobState, Known, Machines as ProjectMachines, AppearanceKept as ProjectAppearance, Moved as ProjectMoved, Name as ProjectName, MainFile, Open, Opened,
         Orphan, Projects as Listed, Queued, QueuedNow, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, Said, Stale, Standing as RowStanding, State as ProjectState, Unpin, Unpinned,
         TakeNow, Unused, VersionPrefix, Warning as ProjectWarning,
     },
@@ -255,6 +255,7 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/unpin", post(unpin))
         .route("/v1/projects/{id}/rename", post(rename))
         .route("/v1/projects/{id}/machines", put(machines))
+        .route("/v1/projects/{id}/appearance", put(appearance))
         .route("/v1/projects/{id}/reclaim", post(reclaim))
         .route("/v1/projects/{id}/assets", post(assets::create))
         .route("/v1/projects/{id}/copies", post(assets::copy))
@@ -278,6 +279,9 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/vault", get(vault::read).post(vault::write))
         .route("/v1/projects/{id}/vault/operations/{operation}", axum::routing::put(vault_operation::write).delete(vault_operation::acknowledge))
         .route("/v1/projects/{id}/address", get(address))
+        // A project's folder renamed or trashed (cl-1097): outside the layers, as nothing of it may stay open, and a locked one moves too.
+        .route("/v1/projects/{id}/name", put(name))
+        .route("/v1/projects/{id}", delete(delete_project))
         .route("/v1/projects/{id}/key", get(key::read).put(key::change))
 }
 
@@ -314,6 +318,26 @@ impl Projects {
             let still = self.open.lock().expect("projects lock");
             if still.get(id).is_some_and(|open| open.strong_count() > 0) {
                 crate::events::project_looked(dir, rev);
+            }
+        }
+    }
+
+    /// The machine `old` named has its Hub's name now, a rental ordered under its handle (cl-1106): each open project that chose it
+    /// chooses it by that name, its renders asked of it go there, and every page showing one reads it again. A closed project takes the
+    /// name at its next read (`chosen`) and its next walk (`renders_follow`).
+    pub(crate) fn machine_renamed(&self, api: &Api, old: &str) {
+        for project in self.now_open() {
+            let folder = &project.folder;
+            let chose = folder.machines().iter().any(|name| name.eq_ignore_ascii_case(old));
+            if chose {
+                chosen(api, folder);
+            }
+            let asked = renders_follow(api, folder).unwrap_or_else(|e| {
+                warn!("{}: its renders asked of {old} keep that name: {}", folder.dir.display(), e.message);
+                false
+            });
+            if chose || asked {
+                crate::events::project_settled(&folder.dir);
             }
         }
     }
@@ -1240,14 +1264,15 @@ fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_c
             return Err(Error::new(Kind::Conflict, "vault_copy", "Another folder already holds this locked project. Open that one, or move its folder here instead."));
         }
     }
-    let (id, name, copy_of) = match &kept {
-        Some((id, name)) => match original(id) {
-            None => (id.clone(), name.clone(), None),
-            Some(original) => (fresh_id(), name.clone(), Some(original)),
+    let (id, copy_of) = match &kept {
+        Some((id, _)) => match original(id) {
+            None => (id.clone(), None),
+            Some(original) => (fresh_id(), Some(original)),
         },
         None => return Err(Error::new(Kind::Validation, "project_identity", format!("{} has no project id, so Cozy can't open it as a project.", dir.join(db::DB).display()))),
     };
-    let name = unique_name(api, &id, dir, if name.is_empty() { folder_name(dir) } else { name })?;
+    // Its name is its folder's (cl-1097): the index lists it so, and a folder renamed, here or by hand, renames it.
+    let name = unique_name(api, &id, dir, folder_name(&logical))?;
     if let Some(original) = copy_of {
         let said = format!("{} is a copy of {} ({}), so Cozy opened it as a separate project called {name}.", logical.display(), original.name, original.path.display());
         tracing::info!("{said}");
@@ -2061,13 +2086,14 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
             let queue = queue(&project, &folder.walk_now().map_err(Refusal)?);
             let busy = *project.walking.lock().expect("walking lock");
             let warning = format!("{}. The render that's going keeps the text it started with, and Cozy can't start a new one until the project reads again.", inner(&error.message));
-            return Ok(Json(ProjectState { covered: None, id, code: project.code.clone(), key: project.key(), path: folder.dir.clone(), assets: vec![], heads: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], notes: vec![], next: vec![], board: board_of(&project), unsent: vec![], machines: chosen(&api, &project.folder) }));
+            return Ok(Json(ProjectState { covered: None, id, code: project.code.clone(), key: project.key(), path: folder.dir.clone(), assets: vec![], heads: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], notes: vec![], next: vec![], board: board_of(&project), unsent: vec![], machines: chosen(&api, &project.folder), appearance: project.folder.appearance() }));
         }
     };
     // What a reader now holds is what any change from here is told against.
     project.told.lock().expect("told lock").get_or_insert_with(|| model::Told::now(&project, model.clone()));
     let mut state = model.state(&project, asked.assets);
     state.machines = chosen(&api, &project.folder);
+    state.appearance = project.folder.appearance();
     state.covered = covered;
     state.unsent = project.unsent.lock().expect("unsent lock").clone();
     state.warnings.extend(project.said.lock().expect("said lock").drain(..).map(ProjectWarning::of_project));
@@ -2718,6 +2744,83 @@ async fn machines(
     Ok(Json(ProjectMachines { machines: kept }))
 }
 
+/// `PUT /v1/projects/{id}/appearance` (cl-1097): how the page looks with it open; none, as everywhere. No history step: every reader
+/// hears it, as for its machines.
+async fn appearance(
+    State(api): State<Arc<Api>>,
+    Path(id): Path<String>,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Json<ProjectAppearance>, Refusal> {
+    let asked: ProjectAppearance = parse(&body?)?;
+    if let Some(Err(why)) = asked.appearance.as_ref().map(api::calcifer::Appearance::check) {
+        return Err(Refusal(Error::new(Kind::Usage, "appearance_invalid", why)));
+    }
+    let project = api.projects.get(&api, &id)?;
+    project.folder.act(|| {
+        project.folder.set_appearance(asked.appearance.as_ref())?;
+        keyed::answering(StatusCode::OK, &asked);
+        Ok(())
+    }).map_err(Refusal)?;
+    crate::events::project_settled(&project.folder.dir);
+    Ok(Json(asked))
+}
+
+/// What a project's folder may be called (cl-1097): a name the folder beside it takes, never a path, nor one of Cozy's own.
+fn folder_named(name: &str) -> Result<&str, Error> {
+    let name = name.trim();
+    let bad = |why: &str| Err(Error::new(Kind::Usage, "project_name", format!("{why}. Pick another name.")));
+    if name.is_empty() { return bad("A project needs a name"); }
+    if name.contains(['/', '\\', '\0']) { return bad("A project's name can't have / or \\ in it"); }
+    if matches!(name, "." | "..") || name.starts_with(".cozy-") { return bad(&format!("{name} is a name Cozy keeps for itself")); }
+    if name.len() > 255 { return bad("That name is too long"); }
+    Ok(name)
+}
+
+/// `PUT /v1/projects/{id}/name` (cl-1097): the project called `name`. A project's name is its folder's (the index lists each by its
+/// folder, and a locked one has no other), so its folder is renamed where it is; its project.db takes the name as it opens next. Locked,
+/// it's renamed with no secret; unlocked and encrypted, it locks first. Every page hears the index change.
+async fn name(State(api): State<Arc<Api>>, Path(named): Path<String>, body: Result<Bytes, BytesRejection>) -> Result<Json<ProjectMoved>, Refusal> {
+    let asked: ProjectName = parse(&body?)?;
+    let wanted = folder_named(&asked.name).map_err(Refusal)?.to_owned();
+    let root = vault::location(&api, &named).map_err(Refusal)?;
+    let id = vault::project_id(&root).or_else(|| vault::plain_project_id(&root)).unwrap_or_else(|| project_id(&root));
+    let next = root.with_file_name(&wanted);
+    if next == root {
+        return Ok(Json(ProjectMoved { id, name: wanted, path: root, trashed: None }));
+    }
+    // Another folder there is never taken: case alone differing is the same name on most disks, and that's this folder.
+    if std::fs::symlink_metadata(&next).is_ok() && !next.to_string_lossy().eq_ignore_ascii_case(&root.to_string_lossy()) {
+        let said = format!("There's already a folder called {wanted} beside this project's. Pick another name.");
+        return Err(Refusal(Error::new(Kind::Conflict, "project_name_taken", said)));
+    }
+    let streams = crate::events::showing(&id);
+    tokio::task::block_in_place(|| vault::relocate(&api, &root, &vault::Relocation::Rename(next.clone()))).map_err(Refusal)?;
+    // A plain one opens again at once, which keeps its new name in its project.db, and what showed it shows it again.
+    if !vault::encrypted(&next) {
+        crate::events::show_again(&api, &streams, &id);
+        match api.projects.get(&api, &id) {
+            Ok(project) => crate::events::project_settled(&project.folder.dir),
+            Err(e) => warn!("{}: {}", next.display(), e.0.message),
+        }
+    }
+    crate::events::projects_changed();
+    Ok(Json(ProjectMoved { id, name: wanted, path: next, trashed: None }))
+}
+
+/// `DELETE /v1/projects/{id}` (cl-1097): its folder moved to the OS trash, whole, never deleted: what's in it, encrypted or not, isn't
+/// read, so a locked project needs no secret. Its runs are canceled, it leaves the index as a folder found gone does, and every page
+/// hears it gone.
+async fn delete_project(State(api): State<Arc<Api>>, Path(named): Path<String>) -> Result<Json<ProjectMoved>, Refusal> {
+    let root = vault::location(&api, &named).map_err(Refusal)?;
+    let id = vault::project_id(&root).or_else(|| vault::plain_project_id(&root)).unwrap_or_else(|| project_id(&root));
+    let trashed = tokio::task::block_in_place(|| vault::relocate(&api, &root, &vault::Relocation::Trash)).map_err(Refusal)?;
+    // The index lets it go as for any folder gone: its row, its routes, and the local machine's records of it.
+    indexed(&api).map_err(Refusal)?;
+    crate::events::project_deleted(&id, &root);
+    crate::events::projects_changed();
+    Ok(Json(ProjectMoved { id, name: folder_name(&root), path: root, trashed }))
+}
+
 /// Asset `from` called `to`, as `POST rename` has it, in one transaction.
 fn rename_now(project: &Arc<Project>, id: &str, asked: Rename) -> Result<Renamed, Refusal> {
     // Under `walking`, as a walk's end is: it is over, or it follows this. Taken before the transaction, as every writer takes it.
@@ -2930,10 +3033,13 @@ async fn render(api: &Arc<Api>, id: &str, mut asked: Runs) -> Result<Asked, Refu
     api.calcifer.project_store(&project.id)?.admit_new_work()?;
     asked.on=crate::private_io::check_project_placement(&project.id,&project.root,&asked.on).map_err(Refusal)?;
     let id = project.id.clone();
-    // None named: where `cozy run` naming none goes (cl-894).
+    // None named: where `cozy run` naming none goes (cl-894). A rental named by its order's handle, by its Hub's name for it (cl-1106).
     let on = match asked.on.is_empty() {
         true => crate::runs::unnamed_set(&api, Some(&id)).await.map_err(Refusal)?,
-        false => asked.on,
+        false => asked.on.into_iter().map(|on| match on {
+            On::Machine(name) => On::Machine(api.calcifer.machine_name_now(&name)),
+            other => other,
+        }).collect(),
     };
     project.unsent.lock().expect("unsent lock").clear();
     // What this render uses: the project as it is now, its snapshot kept by digest until the render ends.
@@ -4361,6 +4467,10 @@ impl Walk {
     /// Gives each ready job its turn as it comes up, each sending, making or following on its own so none holds up another, and goes on
     /// as each ends or something is asked, until nothing is owed and its terminal board is kept.
     async fn go(&self, following: &tokio::task::JoinHandle<()>) -> Result<(), Error> {
+        // What it was asked of by a rental's handle, renamed while no walk went, goes to the Hub's name for it (cl-1106).
+        if let Err(e) = renders_follow(&self.host.api(), self.folder()) {
+            warn!("{}: its renders keep the names they were asked of: {}", self.folder().dir.display(), e.message);
+        }
         let (mut first, mut followed) = (None, HashSet::new());
         let mut work: FuturesUnordered<BoxFuture<'_, Done>> = FuturesUnordered::new();
         // No quote is going yet: one an earlier walk left ended with it.
@@ -6894,17 +7004,56 @@ pub(crate) fn machines_of(api: &Arc<Api>, named: &str) -> Result<Vec<On>, Error>
     }
 }
 
-/// A project's machines (cl-873) without those that ended or are no machines here (cl-920): a machine that ends leaves every project's
-/// list, kept so at its next read.
+/// A project's machines (cl-873), each by its name now, without those that ended or are no machines here (cl-920): a rental chosen
+/// under its order's handle is chosen under its Hub's name for the host (cl-1106), as its runs follow it (cl-1089), and a machine that
+/// ends leaves every project's list, kept so at its next read.
 pub(crate) fn chosen(api: &Api, folder: &Folder) -> Vec<String> {
     let kept = folder.machines();
-    let live: Vec<String> = kept.iter().filter(|name| !api.machines.ended_here(name)).cloned().collect();
-    if live.len() != kept.len()
+    let mut live: Vec<String> = vec![];
+    for name in kept.iter().map(|name| api.calcifer.machine_name_now(name)) {
+        if !api.machines.ended_here(&name) && !live.contains(&name) {
+            live.push(name);
+        }
+    }
+    if live != kept
         && let Err(e) = folder.set_machines(&live)
     {
-        warn!("{}: leaving its ended machines out: {}", folder.dir.display(), e.message);
+        warn!("{}: keeping its machines as they're named now: {}", folder.dir.display(), e.message);
     }
     live
+}
+
+/// Its renders' machines, each by its name now (cl-1106): what was asked of a rental by its order's handle goes to its Hub's name for the
+/// host, as its runs do (cl-1089). True: some were renamed.
+fn renders_follow(api: &Api, folder: &Folder) -> Result<bool, Error> {
+    let now = |on: &On| match on {
+        On::Machine(name) => On::Machine(api.calcifer.machine_name_now(name)),
+        other => other.clone(),
+    };
+    let stale = |on: &[On]| on.iter().any(|one| now(one) != *one);
+    let walk = folder.walk_now()?;
+    if !walk.walk.asks.iter().any(|ask| stale(&ask.target.on) || ask.takes.iter().any(|take| stale(&take.target.on)))
+        && !walk.pending.values().any(|pending| stale(&pending.target.on))
+    {
+        return Ok(false);
+    }
+    let follow = |on: &mut Vec<On>| {
+        let mut kept: Vec<On> = vec![];
+        for one in on.iter().map(now) {
+            if !kept.contains(&one) {
+                kept.push(one);
+            }
+        }
+        *on = kept;
+    };
+    folder.update_walk(|walk| {
+        for ask in &mut walk.walk.asks {
+            follow(&mut ask.target.on);
+            ask.takes.iter_mut().for_each(|take| follow(&mut take.target.on));
+        }
+        walk.pending.values_mut().for_each(|pending| follow(&mut pending.target.on));
+    })?;
+    Ok(true)
 }
 
 /// Where a file stands in its list: its place in the innermost list holding it, as Runtime orders it (`references.1.file` is 1).

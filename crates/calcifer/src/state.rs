@@ -59,6 +59,10 @@ pub(crate) const TABLES: &str = "
         family TEXT,
         PRIMARY KEY (hub, sha256)
     ) STRICT, WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS appearance (
+        one INTEGER PRIMARY KEY CHECK (one = 1),
+        value TEXT NOT NULL
+    ) STRICT;
     CREATE TABLE IF NOT EXISTS after_steps (
         key_sha256 TEXT PRIMARY KEY,
         step TEXT NOT NULL
@@ -322,6 +326,27 @@ impl Store {
             tx.execute("DELETE FROM project_handles WHERE path NOT IN (SELECT path FROM projects)", [])?;
             Ok(code)
         })
+    }
+
+    /// Project `from`'s folder is `to` now (cl-1097): renamed, it's the same project, its row and its time where they were.
+    pub(crate) fn project_moved(&self, from: &Path, to: &Path) -> Result<()> {
+        let (from, to) = (folder(from), folder(to));
+        self.write(|tx| {
+            tx.execute("UPDATE projects SET path = ?2 WHERE path = ?1", params![from, to])?;
+            tx.execute("UPDATE project_handles SET path = ?2 WHERE path = ?1", params![from, to])?;
+            Ok(())
+        })
+    }
+
+    /// How the page looks everywhere (cl-1097); none until it's set here.
+    pub(crate) fn appearance(&self) -> Result<Option<api::calcifer::Appearance>> {
+        let kept: Option<String> = self.read(|conn| Ok(conn.query_row("SELECT value FROM appearance WHERE one = 1", [], |row| row.get(0)).optional()?))?;
+        Ok(kept.and_then(|kept| serde_json::from_str(&kept).ok()))
+    }
+
+    pub(crate) fn set_appearance(&self, appearance: &api::calcifer::Appearance) -> Result<()> {
+        let value = serde_json::to_string(appearance).expect("an appearance serializes");
+        self.write(|tx| Ok(tx.execute("INSERT INTO appearance (one, value) VALUES (1, ?1) ON CONFLICT (one) DO UPDATE SET value = excluded.value", [value]).map(drop)?))
     }
 
     /// Project `id` used now: a page shows it.
