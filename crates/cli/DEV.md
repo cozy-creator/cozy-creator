@@ -16,6 +16,12 @@ and list it here.
 | `cozy model show <org/name>[@release] --gpu CC[,CC…] [--components A,B]` | Only the lane a machine with those GPUs (compute capabilities: `8.9`, `12.0`) resolves, through the Hub's resolve TensorD asks for a slot that takes encoded weights and reads those components, by capability alone (memory unasked). `--json`: `resolved {gpus, components, lane, checkpoint, reasons}`. The cpu suite's lanes cell (`e2e/cpu/lanes.py`) asks it for every first-party slot's default on each GPU family. |
 | `cozy run <fn> --attention-capture SPEC` | The Runtime writes what its attention kernels receive, on the machine (xs-171's corpus): SPEC is JSON or `@FILE`, `{"dir": "/abs/path", "sites": ["<component>/<module path>" fnmatch, ...], "calls": [ordinal, ...], "heads": 4, "seed": 0}`. Under `dir/<request id>/`: `census.jsonl` (every call's shape, band and kernel) and one safetensors of the kept heads' Q/K/V per matching call. The run, and every child it calls, is never answered from the call memo. Needs TensorD and TensorFS of the same build. |
 
+## A dev machine audits its CUDA graphs
+
+`dev = true` in a machine's own config.toml (a pod's over `cozy machine ssh`) reaches each executor it starts: the Runtime
+then runs every 16th replay of a region's CUDA graph against its call as written too, and a difference is a
+`replay_mismatch` naming its cause. The release gate's `graphs` suite runs so.
+
 ## Rentals follow the open RC (cl-922)
 
 With `dev = true`, each rental this computer orders runs the open RC's newest CI builds: the Runtime (with its
