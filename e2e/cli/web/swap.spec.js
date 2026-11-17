@@ -11,7 +11,7 @@ const { test, expect } = require('./fixtures');
 const encrypted = process.platform !== 'win32';
 test.use({ projectOptions: { encrypted } });
 
-const SWAPS = 3;
+const SWAPS = 5;
 const holder = () => JSON.parse(readFileSync(join(homedir(), '.cozy', 'calcifer', 'calcifer.lock.holder'), 'utf8'));
 
 test('swap', { tag: '@solo' }, async ({ page, project, api, cli, signIn, guards }) => {

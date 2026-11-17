@@ -200,7 +200,13 @@ pub(super) fn view(root: &FsPath) -> Result<PathBuf, Error> {
     let Some(session) = held(root) else { return Err(locked(root)); };
     let mut session = session.lock().expect("vault session");
     if session.mount.reconcile().is_err() { mark_closing(&mut session); }
-    if session.closing || expired(&session) || !session.mount.is_mounted().map_err(provider)? { return Err(locked(root)); }
+    if session.closing { return Err(locked(root)); }
+    // A live session's view refused: the health record says why (no project detail), as it is no lock anyone asked for.
+    let why = if expired(&session) { Some("expired") } else if !session.mount.is_mounted().map_err(provider)? { Some("unmounted") } else { None };
+    if let Some(why) = why {
+        tracing::info!(target: "cozy.service_health", event = "vault_view_refused", why, "a live session's view read as locked");
+        return Err(locked(root));
+    }
     platform::durable::canonical(session.mount.view()).map_err(provider)
 }
 
