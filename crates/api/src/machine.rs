@@ -476,6 +476,10 @@ pub struct RunSpec {
     /// the lane its commit is labelled. The package's own children inherit it; another
     /// package's take none.
     pub lane: String,
+    /// A real call that is the request a list item predicted (cl-1123): its key. One the machine finds identical to that item's
+    /// (its run identity, `sha256` of the spec as sent, access aside) adopts what the item made ready.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub predicted: Option<String>,
 }
 
 /// The caller's provider tokens, for models a run makes from a provider source.
@@ -924,15 +928,14 @@ pub struct Call {
     pub memo_basis: String,
 }
 
-// ---- Ahead ----------------------------------------------------------------------------------
+// ---- Predicted requests ---------------------------------------------------------------------
 
-/// `PUT /v1/upcoming` (cl-967, Paul 11-12): the jobs the caller expects to send here, nearest first, its whole list, replacing its
-/// last. Each prepares behind every run, in its order, as a function's warm run does: its code installed, what its call reads up
-/// front, then its guesses, while they fit; one the list drops stops. A run later sent for it finds what it fetched.
+/// `PUT /v1/upcoming` (cl-967, Paul 11-12): the jobs the caller will send here, nearest first, its whole list, replacing its last.
+/// Each is made ready behind every run, in its order; one the list drops stops. A run later sent for it finds what it made ready.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Upcoming {
-    pub jobs: Vec<Ahead>,
+    pub jobs: Vec<Predicted>,
 }
 
 /// `PUT /v1/prepare` (cl-967): what the caller expects demand for here with no job yet, its whole set, replacing its last: its
@@ -943,24 +946,22 @@ pub struct Upcoming {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prepare {
-    pub items: Vec<Ahead>,
+    pub items: Vec<Predicted>,
 }
 
-/// One function to have ready: its code, its models in their lanes. Its downloads show in `StatusFrame::activity` with its id among
-/// their `runs`: `cozy:upcoming:<key>`, or `cozy:prepare:<key>`.
+/// A request the caller predicts it may send here (cl-1123; Paul, 11-17: "calcifer only has to worry about what it knows, i.e., it
+/// predicts what the user MAY want in the future, and the remote machine only needs to worry about what it's told, what a request MAY
+/// look like, to ensure it's ready for it"): the exact spec a run of it would carry, its payload bound and its seed fixed. The machine
+/// plans it as it plans that run (its function's needs rules on its payload, its lane for this machine's GPUs, its store) and makes
+/// it ready: its code installed, what it needs downloaded. Nothing of components, lanes or downloads is said. Its readiness shows in
+/// Status (`ahead`), its downloads in `StatusFrame::activity` with its id among their `runs`: `cozy:upcoming:<key>`, or
+/// `cozy:prepare:<key>`. A run later sent naming the key (`RunSpec::predicted`) with the same spec adopts it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Ahead {
+pub struct Predicted {
     /// The caller's name for it: an upcoming job's key, the one its run is sent under.
     pub key: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source: Option<Source>,
-    /// Empty: its code installed only.
-    pub entrypoint: String,
-    pub models: Vec<ModelChoice>,
-    pub lane: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hub: Option<HubAccess>,
+    pub spec: RunSpec,
 }
 
 /// What a list came to: each item as a run would be admitted, in its order.
@@ -995,10 +996,6 @@ pub struct EstimateJob {
     /// is then Measured. 0: runs elsewhere.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub prior_runs: u32,
-    /// Of its weights fetched only when the function first reads them (on demand), the most it may download, beside those it waits for
-    /// before it starts: in no time, as a quote can't know which it reads (cl-1071).
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub on_demand_bytes: u64,
     /// The soonest it can start, ms from now: when what it reads is made.
     #[serde(skip_serializing_if = "is_zero")]
     pub after_ms: u64,

@@ -2239,11 +2239,7 @@ prepare_ms: number,
 /**
  * Its weights' bytes it downloads there first.
  */
-fetch_bytes: number,
-/**
- * Of its weights fetched only when the function first reads them, the most it may download there besides: in no time (cl-1071).
- */
-on_demand_bytes?: number, };
+fetch_bytes: number, };
 
 /**
  * `GET /v1/runs/{id}/play?output=<name[/i]>&expires_s=N`: how a browser plays one run output

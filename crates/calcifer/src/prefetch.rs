@@ -9,6 +9,11 @@
 //!   functions, the most first (cl-967's prepare: "if calcifer expects a large number of minimax h3 jobs, and a new machine just
 //!   started, telling it to download minimax h3 … so that it's ready").
 //!
+//! Each item is a request Calcifer predicts (cl-1123; Paul, 11-17: "calcifer only has to worry about what it knows, i.e., it predicts
+//! what the user MAY want in the future, and the remote machine only needs to worry about what it's told, what a request MAY look
+//! like, to ensure it's ready for it"): the spec a render of the box, or the walk's job, would send. The machine plans it as it would
+//! plan that run and owns everything about being ready for it: its code, its downloads, its lane.
+//!
 //! Each list goes when it changes, and again once its machine starts again; the machine fetches, evicts and reports. A prepare item
 //! is no job there (`tensord::ahead`): behind every run's needs and guesses in its lines, never a rental's use, the first to go on a
 //! short disk. A guess that changes goes as the new list: its machine cancels what the list drops but what the next item reads too
@@ -44,7 +49,7 @@ pub(crate) struct Listed {
     pub asset: String,
     pub start_at_ms: i64,
     pub hub: String,
-    pub item: v1::Ahead,
+    pub item: v1::Predicted,
     /// `org/package/function`, as its row says it.
     pub function: String,
     /// The machines its plan found can run it: where it is prepared with no job.
@@ -60,7 +65,7 @@ pub(crate) struct Guess {
     pub machine: String,
     pub hub: String,
     /// Its key is its machine's list's to give (`Lists::key`).
-    pub item: v1::Ahead,
+    pub item: v1::Predicted,
     pub function: String,
 }
 
@@ -68,8 +73,8 @@ pub(crate) struct Guess {
 struct Sent {
     /// The machine's run it went to (`started`).
     boot: String,
-    upcoming: Vec<v1::Ahead>,
-    prepare: Vec<v1::Ahead>,
+    upcoming: Vec<v1::Predicted>,
+    prepare: Vec<v1::Predicted>,
 }
 
 /// A machine's run: its boot, and its service's start in it. A service that started again (an update, a restart) holds no list.
@@ -101,9 +106,11 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// A prepare item's identity: what it makes ready, the same however many boxes or jobs ask it.
-fn identity(item: &v1::Ahead) -> String {
-    let shape = serde_json::json!([item.source, item.entrypoint, item.models, item.lane]);
+/// A prepare item's identity: the request it predicts, the same however many boxes or jobs ask it, its access aside. A draft edited is
+/// another item (cl-1123), so its machine ends what only the old one wanted.
+fn identity(item: &v1::Predicted) -> String {
+    let spec = v1::RunSpec { hub: None, tensorfs: None, providers: None, ..item.spec.clone() };
+    let shape = serde_json::to_value(&spec).unwrap_or_default();
     let digest = Sha256::digest(shape.to_string().as_bytes());
     digest.iter().take(12).map(|byte| format!("{byte:02x}")).collect()
 }
@@ -164,8 +171,19 @@ impl Lists {
         lock(&self.guessed).get(project)?.iter().find(|guess| guess.asset == asset).map(|guess| guess.machine.clone())
     }
 
+    /// The key of the item `machine`'s lists predict job `job` (box `asset`) of `project` by (cl-1123): its upcoming job's, else its box's
+    /// guess's. What its render names (`RunSpec::predicted`), so the machine knows the request it made ready is this one.
+    pub(crate) fn predicted(&self, machine: &str, project: &str, asset: &str, job: &str) -> Option<String> {
+        let planned = lock(&self.planned).get(machine).and_then(|lists| lists.get(project)).and_then(|listed| listed.iter().find(|listed| listed.item.key == job).map(|listed| listed.item.key.clone()));
+        if planned.is_some() {
+            return planned;
+        }
+        let guess = lock(&self.guessed).get(project)?.iter().find(|guess| guess.asset == asset && guess.machine == machine)?.item.clone();
+        lock(&self.keys).get(&(machine.to_owned(), identity(&guess))).cloned()
+    }
+
     /// The key `machine`'s prepare list has for what `item` makes ready, given now if it isn't on that list.
-    fn key(&self, machine: &str, item: &v1::Ahead) -> String {
+    fn key(&self, machine: &str, item: &v1::Predicted) -> String {
         let at = (machine.to_owned(), identity(item));
         let mut keys = lock(&self.keys);
         if let Some(key) = keys.get(&at) {
@@ -227,7 +245,7 @@ impl Lists {
             let mut upcoming: Vec<&Listed> = planned.get(&name).into_iter().flat_map(|lists| lists.values().flatten()).collect();
             upcoming.sort_by_key(|listed| listed.start_at_ms);
             // Its guesses, each once, then what demand elsewhere asks of it that no guess does.
-            let mut prepare: Vec<(String, String, v1::Ahead)> = vec![];
+            let mut prepare: Vec<(String, String, v1::Predicted)> = vec![];
             let asked = (guessed.iter().filter(|guess| guess.machine == name).map(|guess| (guess.hub.clone(), guess.item.clone())))
                 .chain(demand(&planned, &name, &frame, upcoming.is_empty()));
             for (hub, item) in asked {
@@ -238,7 +256,7 @@ impl Lists {
             }
             let listed: HashSet<&str> = prepare.iter().map(|(made, ..)| made.as_str()).collect();
             lock(&self.keys).retain(|(machine, made), _| *machine != name || listed.contains(made.as_str()));
-            let prepare: Vec<(String, v1::Ahead)> = prepare.into_iter().map(|(_, hub, item)| (hub, v1::Ahead { key: self.key(&name, &item), ..item })).collect();
+            let prepare: Vec<(String, v1::Predicted)> = prepare.into_iter().map(|(_, hub, item)| (hub, v1::Predicted { key: self.key(&name, &item), ..item })).collect();
             let now = Sent {
                 boot: started(&frame),
                 upcoming: upcoming.iter().map(|listed| listed.item.clone()).collect(),
@@ -254,7 +272,7 @@ impl Lists {
             }
             lock(&self.sent).insert(name.clone(), now);
             let hubs: Vec<String> = upcoming.iter().map(|listed| listed.hub.clone()).chain(prepare.iter().map(|(hub, _)| hub.clone())).collect();
-            let upcoming: Vec<(String, v1::Ahead)> = upcoming.iter().map(|listed| (listed.hub.clone(), listed.item.clone())).collect();
+            let upcoming: Vec<(String, v1::Predicted)> = upcoming.iter().map(|listed| (listed.hub.clone(), listed.item.clone())).collect();
             let machines = machines.clone();
             machines.clone().spawn(async move {
                 if let Err(why) = put(&machines, &name, hubs, upcoming, prepare).await {
@@ -305,8 +323,9 @@ impl Lists {
                     Some(op) => format!("downloading {}", op.subject),
                     None => "preparing it".to_owned(),
                 }),
-                done: downloads.iter().map(|op| op.bytes_done).sum(),
-                total: downloads.iter().map(|op| op.bytes_total).sum(),
+                // How far its machine says it is (cl-1123), else what its downloads there come to.
+                done: run.readiness.as_ref().filter(|ready| ready.stage == "downloading").map_or_else(|| downloads.iter().map(|op| op.bytes_done).sum(), |ready| ready.done),
+                total: run.readiness.as_ref().filter(|ready| ready.stage == "downloading").map_or_else(|| downloads.iter().map(|op| op.bytes_total).sum(), |ready| ready.total),
                 guess: false,
             })
         };
@@ -387,16 +406,16 @@ impl Lists {
 /// What `machine` prepares for demand elsewhere: nothing while it has upcoming jobs or a queue; else the published functions planned
 /// on other machines that it can run, the most-asked first, each once. Local code isn't: it is sent to a machine with the job that
 /// runs it there.
-fn demand(planned: &HashMap<String, HashMap<String, Vec<Listed>>>, machine: &str, frame: &v1::StatusFrame, idle: bool) -> Vec<(String, v1::Ahead)> {
+fn demand(planned: &HashMap<String, HashMap<String, Vec<Listed>>>, machine: &str, frame: &v1::StatusFrame, idle: bool) -> Vec<(String, v1::Predicted)> {
     let queued = frame.queue.as_ref().is_some_and(|queue| !queue.is_empty());
     if !idle || queued {
         return vec![];
     }
-    let mut asked: Vec<(String, usize, String, v1::Ahead)> = vec![];
+    let mut asked: Vec<(String, usize, String, v1::Predicted)> = vec![];
     for listed in (planned.iter().filter(|(name, _)| name.as_str() != machine))
         .flat_map(|(_, lists)| lists.values().flatten())
         .filter(|listed| listed.fits.iter().any(|fits| fits == machine))
-        .filter(|listed| matches!(listed.item.source, Some(v1::Source::Release(_))))
+        .filter(|listed| matches!(listed.item.spec.source, Some(v1::Source::Release(_))))
     {
         let key = identity(&listed.item);
         match asked.iter_mut().find(|(held, ..)| *held == key) {
@@ -409,7 +428,7 @@ fn demand(planned: &HashMap<String, HashMap<String, Vec<Listed>>>, machine: &str
 }
 
 /// Sends `machine` its lists, each item under the access its Hub gives that machine.
-async fn put(machines: &Arc<Machines>, machine: &str, hubs: Vec<String>, upcoming: Vec<(String, v1::Ahead)>, prepare: Vec<(String, v1::Ahead)>) -> Result<(), String> {
+async fn put(machines: &Arc<Machines>, machine: &str, hubs: Vec<String>, upcoming: Vec<(String, v1::Predicted)>, prepare: Vec<(String, v1::Predicted)>) -> Result<(), String> {
     let (_, link) = machines.linked(machine).map_err(|e| e.message)?;
     let mut access: HashMap<String, Option<v1::HubAccess>> = HashMap::new();
     for hub in hubs {
@@ -418,11 +437,11 @@ async fn put(machines: &Arc<Machines>, machine: &str, hubs: Vec<String>, upcomin
         }
         let specs: Vec<v1::RunSpec> = (upcoming.iter().chain(&prepare))
             .filter(|(held, _)| *held == hub)
-            .map(|(_, item)| v1::RunSpec { kind: v1::RunKind::Warm, source: item.source.clone(), entrypoint: item.entrypoint.clone(), models: item.models.clone(), ..Default::default() })
+            .map(|(_, item)| item.spec.clone())
             .collect();
         access.insert(hub.clone(), machines.list_access(&hub, machine, &specs).await?);
     }
-    let with = |(hub, item): (String, v1::Ahead)| v1::Ahead { hub: access.get(&hub).cloned().flatten(), ..item };
+    let with = |(hub, item): (String, v1::Predicted)| v1::Predicted { spec: v1::RunSpec { hub: access.get(&hub).cloned().flatten(), ..item.spec }, ..item };
     let answer = link.upcoming(&v1::Upcoming { jobs: upcoming.into_iter().map(with).collect() }).await.map_err(|e| e.to_string())?;
     for refused in answer.items.iter().filter_map(|item| item.refusal.as_ref()) {
         warn!(machine, "an upcoming job won't be ready ahead: {}", refused.message);

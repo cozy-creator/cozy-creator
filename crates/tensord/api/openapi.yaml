@@ -1169,6 +1169,11 @@ components:
         tensorfs:
           description: Ordinary TensorFS connection settings supplied by the caller, forwarded to Runtime.
           oneOf: [{$ref: '#/components/schemas/TensorFSOptions'}, {type: 'null'}]
+        predicted:
+          type: string
+          description: >-
+            A real call that is the request a list item predicted (cl-1123): its key. One whose identity is the item's adopts
+            what the item made ready.
         weights_destination:
           type: string
           description: >-
@@ -1219,20 +1224,20 @@ components:
       description: What a run runs.
     Upcoming:
       type: object
-      properties: {jobs: {type: array, items: {$ref: '#/components/schemas/Ahead'}, description: Nearest first.}}
+      properties: {jobs: {type: array, items: {$ref: '#/components/schemas/Predicted'}, description: Nearest first.}}
     Prepare:
       type: object
-      properties: {items: {type: array, items: {$ref: '#/components/schemas/Ahead'}}}
-    Ahead:
+      properties: {items: {type: array, items: {$ref: '#/components/schemas/Predicted'}}}
+    Predicted:
       type: object
-      description: One function to have ready, its code and its models in their lanes.
+      description: >-
+        A request the caller predicts it may send here (cl-1123): the exact spec a run of it would carry, its payload bound and its
+        seed fixed. The machine plans it as that run (its function's needs rules on its payload, its lane for these GPUs, its
+        store) and makes it ready; nothing of components, lanes or downloads is said. A run later sent naming its key
+        (`RunSpec.predicted`) with the same identity adopts it.
       properties:
         key: {type: string, description: "The caller's name for it: an upcoming job's key, the one its run is sent under."}
-        source: {$ref: '#/components/schemas/Source'}
-        entrypoint: {type: string, description: 'Empty: its code installed only.'}
-        models: {type: array, items: {$ref: '#/components/schemas/ModelChoice'}}
-        lane: {type: string}
-        hub: {$ref: '#/components/schemas/HubAccess'}
+        spec: {$ref: '#/components/schemas/RunSpec'}
     AheadAnswer:
       type: object
       properties: {items: {type: array, items: {$ref: '#/components/schemas/Admitted'}}}

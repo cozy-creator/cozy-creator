@@ -1511,19 +1511,19 @@ impl Publisher {
         Ok((plan, warnings))
     }
 
-    /// What a call of `request`'s function needs (`Plan::needs`), from its installation's interface alone: each slot resolved
-    /// and its structure landed, nothing journaled, so its environment need not be built yet (cl-966).
-    pub(crate) fn predicted(&self, service: &Service, request: &Request, ruled: &needs::Answers, observe: Option<Observer>, stop: Option<&Stop>) -> Result<crate::access::Needs, Failure> {
+    /// The plan of a call of `request`'s function, from its installation's interface alone: each slot resolved and its structure
+    /// landed, nothing journaled, so its environment need not be built yet (cl-966). None: it loads no model.
+    pub(crate) fn predicted(&self, service: &Service, request: &Request, observe: Option<Observer>, stop: Option<&Stop>) -> Result<Option<Plan>, Failure> {
         let installation = request.installed.as_ref().ok_or(("release_root_installation_absent", "no installation to read".to_string()))?;
         if !declares_models(installation, &request.entrypoint) {
-            return Ok(Default::default());
+            return Ok(None);
         }
         let gpu = service.pool().ok_or(("capability_unavailable", "this machine runs no functions".to_string()))?;
         let job = Job { observer: observe, stop: stop.cloned(), order: request.order, caller: service.engine.caller_id(&request.run), ..Default::default() };
         let Granted { grants, unbound, .. } = self.grants(service, &gpu, installation, request, &job)?;
         let plan = gpu.prepare_root(installation, &request.entrypoint, &request.choices, &grants, unbound, request.gpus)
             .map_err(|e| ("model_preparation_failed", e.to_string()))?;
-        Ok(plan.needs(ruled))
+        Ok(Some(plan))
     }
 
     /// Each model slot of the request's function resolved, all at once (cl-966): its choice, else its declared default (also

@@ -586,7 +586,8 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
         submit.warnings.push(Warning { code: api::calcifer::FROM_SOURCE.into(), message: from.line() });
     }
     // Placed by its machines' quotes, the payload bound: a published release among several, and every machine when asked for them.
-    let size = submit.spec.payload.as_ref().and_then(|payload| serde_json::from_str(payload.get()).ok()).map(|input| v1::JobSize::of(&input)).unwrap_or_default();
+    let input: Option<serde_json::Value> = submit.spec.payload.as_ref().and_then(|payload| serde_json::from_str(payload.get()).ok());
+    let size = input.as_ref().map(v1::JobSize::of).unwrap_or_default();
     let gpus = ask.gpus.unwrap_or(0);
     let (estimates, count) = match purpose {
         For::Estimate(count) => (true, count),
@@ -597,7 +598,7 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     let mut placed = set.len() > 1;
     match &resolved {
         Resolved::Release { package, card, .. } if set.len() > 1 || estimates => {
-            let (chosen, offered, said) = crate::project::run_on(api, &set, &hub, package, &card.release, &callable.name, size, gpus, needs_gpu, count, !estimates).await;
+            let (chosen, offered, said) = crate::project::run_on(api, &set, &hub, package, &card.release, &callable.name, input.as_ref(), size, gpus, needs_gpu, count, !estimates).await;
             // Why a machine quoted nothing is an estimate's answer; a run goes to the one that finishes soonest, and says nothing of the others.
             if estimates {
                 notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Info, message }));
@@ -694,7 +695,8 @@ async fn instead_of_renting(api: &Arc<Api>, run: Weighed<'_>) -> Option<(On, Str
     if set.is_empty() {
         return None;
     }
-    let (chosen, offers, _) = crate::project::run_on(api, &set, run.hub, run.package, run.release, run.function, run.size, run.gpus, run.gpu, 1, false).await;
+    let input: Option<serde_json::Value> = run.spec.payload.as_ref().and_then(|payload| serde_json::from_str(payload.get()).ok());
+    let (chosen, offers, _) = crate::project::run_on(api, &set, run.hub, run.package, run.release, run.function, input.as_ref(), run.size, run.gpus, run.gpu, 1, false).await;
     let (chosen, _) = chosen.ok()?;
     let offer = offers.first()?.iter().find(|offer| offer.machine == chosen && offer.fits)?.clone();
     let rental = api.machines.new_rental(run.hub, run.spec).await.ok()?;

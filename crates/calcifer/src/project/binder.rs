@@ -104,11 +104,13 @@ struct Binder<'a> {
     nothing: Vec<String>,
     /// Mentions of a video by angle, where the video isn't an orbit.
     unturned: Vec<String>,
+    /// Bound before it's sent (`foreseen`): a mention of a box with no file yet goes as its kind, with no file.
+    foreseen: bool,
 }
 
 /// What `call`'s text mentions that its tool can't use, where, and why: what a box shows struck through. It binds as a run would, sending nothing.
 pub(crate) fn unused(call: &Call) -> Vec<Unused> {
-    let mut binder = Binder { call, bound: Bound::default(), nothing: vec![], unturned: vec![] };
+    let mut binder = Binder { call, bound: Bound::default(), nothing: vec![], unturned: vec![], foreseen: false };
     // Only a pickup refuses here, and a box at rest has none.
     let _ = binder.fields();
     binder.bound.unused
@@ -116,7 +118,7 @@ pub(crate) fn unused(call: &Call) -> Vec<Unused> {
 
 /// `call` bound. Err: nothing sensible can be sent, said free before any machine is involved.
 pub(crate) fn bind(call: &Call) -> Result<Bound, Error> {
-    let mut binder = Binder { call, bound: Bound::default(), nothing: vec![], unturned: vec![] };
+    let mut binder = Binder { call, bound: Bound::default(), nothing: vec![], unturned: vec![], foreseen: false };
     binder.fields()?;
     let declared = &call.callable.request;
     if call.pickup.is_some() && !declared.fields.iter().any(|field| matches!(field.ty.plain(), Type::Pickup(_))) {
@@ -163,6 +165,17 @@ pub(crate) fn bind(call: &Call) -> Result<Bound, Error> {
     }
     binder.bound.warnings.dedup();
     Ok(binder.bound)
+}
+
+/// What a render of `call` would send, foreseen before anything is (cl-1103): bound as `bind` binds it, nothing refused, and a mention
+/// of a box with no file yet (one a render makes first) sent as its kind with none. What its function's needs rules read, so its
+/// machine is told what to fetch ahead of it (a guess, an upcoming job) and its quote counts what it will wait for.
+pub(crate) fn foreseen(call: &Call) -> Map<String, Value> {
+    let mut binder = Binder { call, bound: Bound::default(), nothing: vec![], unturned: vec![], foreseen: true };
+    let _ = binder.fields();
+    let mut payload = std::mem::take(&mut binder.bound.payload);
+    binder.rows(&call.callable.request, &mut payload, call.name);
+    payload
 }
 
 impl Binder<'_> {
@@ -325,6 +338,9 @@ impl Binder<'_> {
                 return Some(mention.name.to_owned());
             }
             let Some(named) = self.named(&mention).flatten() else {
+                if self.foreseen && keys.insert(inner.to_owned()) {
+                    references.push(json!({"key": inner, "type": kind, "file": "", "description": OFF}));
+                }
                 said.push(self.no_file(at, inner));
                 return Some(mention.name.to_owned());
             };
@@ -600,6 +616,7 @@ impl Binder<'_> {
                     continue;
                 }
                 match self.named(&mention).flatten() {
+                    None if self.foreseen => found.push(Named { key: inner.to_owned(), kind: held, file: String::new(), files: Files::new(), metadata: Map::new(), made_by: String::new(), own: false }),
                     None => self.warn(format!("{}'s {at}: <{inner}> has no file on this computer, so Cozy left it empty.", self.call.name)),
                     Some(named) if kind != "file" && named.kind != kind => {
                         let why = self.unusable(&[kind], &named.kind).unwrap_or_default();

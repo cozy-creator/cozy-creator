@@ -1,9 +1,12 @@
 //! What a caller expects to send this machine (cl-967, Paul 11-12): its upcoming jobs, nearest first (`PUT /v1/upcoming`), and what
 //! to have ready with no job yet (`PUT /v1/prepare`): its guesses, as a browser fetches the page a person is still typing the
-//! address of (cl-1104, Paul 11-16). Each item is a function's warm run of the machine's own, as a project's fetch ahead was: its code
-//! installed, then what its call reads up front and its guesses while they fit, behind every run in the machine's lines, a prepare
-//! behind every upcoming job and every run's guesses (`origin::priority`). A list is the caller's whole one: what it drops is
-//! canceled. Their ids are kept out of every listing; their downloads show in Status as any, under these ids.
+//! address of (cl-1104, Paul 11-16). Each item is a request the caller predicts (cl-1123; Paul, 11-17: "the remote machine only needs
+//! to worry about what it's told, what a request MAY look like, to ensure it's ready for it"), made ready by the machine's own warm
+//! run of it: planned as that request's call would be (its function's needs rules on its payload, its lane for these GPUs, this
+//! store), its code installed, what it needs downloaded, behind every run in the machine's lines, a prepare behind every upcoming job
+//! and every run's guesses (`origin::priority`). A list is the caller's whole one: what it drops is canceled. Their ids are kept out
+//! of every listing; their readiness shows in Status (`readiness`), their downloads as any, under these ids. A call later sent as
+//! the same request (`RunSpec::predicted`, its identity the item's) is that request (`adopts`).
 //!
 //! A prepare item is no job (cl-1104): it never holds a rental or starts its idle clock again (`journal::Invocation::background`),
 //! its build gives the install line to a run's (`line`), its download ends for a run's need that has to make room (`make_way`), and
@@ -55,6 +58,12 @@ const LET_GO: Duration = Duration::from_secs(5);
 /// What each prepare item's run needs here, by its caller's id (`needs`): what its Status weighs it by once it ended (`standing`).
 static NEEDS: LazyLock<Mutex<HashMap<String, Vec<crate::journal::FunctionRead>>>> = LazyLock::new(Mutex::default);
 
+/// Each listed item's request, by its run's id: its identity as a call of it would have it (`runs::identity`).
+static PREDICTED: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(Mutex::default);
+
+/// Each listed item's extras still coming once its needs landed (`extras`), by its run's id: a list that drops it ends them.
+static EXTRAS: LazyLock<Mutex<HashMap<String, Stop>>> = LazyLock::new(Mutex::default);
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -72,6 +81,41 @@ pub(crate) fn rank(actor: &str, id: &str) -> Option<(usize, usize)> {
         .find_map(|(class, prefix)| Some((class, listed.get(&(actor.to_owned(), prefix))?.iter().position(|listed| listed == id)?)))
 }
 
+/// Run `id`, sent naming list item `key` (`RunSpec::predicted`, cl-1123), is the request that item predicted: its identity
+/// (`digest`) is the item's. Whether it is; said in the log either way.
+pub(crate) fn adopts(key: &str, id: &str, digest: &str) -> bool {
+    let predicted = lock(&PREDICTED);
+    let item = [UPCOMING, PREPARE].iter().map(|prefix| format!("{prefix}{key}")).find(|item| predicted.contains_key(item));
+    let Some(item) = item else {
+        tracing::info!("run {id} names the predicted request {key}, which no list holds now");
+        return false;
+    };
+    let same = predicted.get(&item).is_some_and(|held| !held.is_empty() && held == digest);
+    match same {
+        true => tracing::info!("run {id} is the request {item} predicted, and takes what it made ready"),
+        false => tracing::info!("run {id} names {item}, but isn't the request it predicted"),
+    }
+    same
+}
+
+/// Run `caller`'s needs (Y) landed (`Runs::download`): a list item is `ready` from here, its extras (Z) still coming behind
+/// (cl-1123). Its run returns now, and its load is registered as it does (`gpu_service::Pool::predict`, from `Runs::prepare`).
+pub(crate) fn landed(caller: &str) {
+    if hidden(caller) {
+        tracing::info!("{caller}: what it needs is here");
+    }
+}
+
+/// What ends run `caller`'s extras once its needs landed: for a list item, its list dropping it; for any other run, nothing but their
+/// landing or a need that has to make room.
+pub(crate) fn extras(caller: &str) -> Stop {
+    let stop = Stop::default();
+    if hidden(caller) {
+        lock(&EXTRAS).insert(caller.to_owned(), stop.clone());
+    }
+    stop
+}
+
 /// A run of a list's: never listed.
 pub(crate) fn hidden(id: &str) -> bool {
     id.starts_with(UPCOMING) || id.starts_with(PREPARE)
@@ -84,23 +128,21 @@ pub(crate) fn guess(id: &str) -> bool {
 
 /// Replaces `actor`'s list under `prefix` with `items`, in their order: each new one admitted as a warm run, each it drops canceled,
 /// once what replaced it is in the download line when anything did.
-pub(crate) fn put(runs: &Arc<Runs>, actor: VerifiedActor, prefix: &'static str, items: Vec<v1::Ahead>) -> Result<v1::AheadAnswer, Error> {
+pub(crate) fn put(runs: &Arc<Runs>, actor: VerifiedActor, prefix: &'static str, items: Vec<v1::Predicted>) -> Result<v1::AheadAnswer, Error> {
+    let mut identities = vec![];
     let requests: Vec<v1::RunRequest> = (items.into_iter())
-        .map(|item| {
+        .map(|v1::Predicted { key, spec }| {
+            let id = format!("{prefix}{key}");
+            identities.push((id.clone(), crate::runs::identity(spec.clone()).unwrap_or_default()));
             // Its Hub's transport for TensorFS too, as a run's spec carries it.
-            let tensorfs = (item.hub.as_ref().filter(|hub| !hub.origin.is_empty()))
-                .map(|hub| v1::TensorFSOptions { endpoint: hub.origin.clone(), ca_der: hub.ca_der.clone(), ..Default::default() });
-            let spec = v1::RunSpec {
-                kind: v1::RunKind::Warm,
-                source: item.source,
-                entrypoint: item.entrypoint,
-                models: item.models,
-                lane: item.lane,
-                hub: item.hub,
-                tensorfs,
-                ..Default::default()
-            };
-            v1::RunRequest { id: format!("{prefix}{}", item.key), spec }
+            let tensorfs = spec.tensorfs.clone().or_else(|| {
+                (spec.hub.as_ref().filter(|hub| !hub.origin.is_empty()))
+                    .map(|hub| v1::TensorFSOptions { endpoint: hub.origin.clone(), ca_der: hub.ca_der.clone(), ..Default::default() })
+            });
+            // The request, made ready and never run: its payload kept, which its function's rules read as its call's; its files are
+            // its call's to bring, as nothing here reads them.
+            let spec = v1::RunSpec { kind: v1::RunKind::Warm, inputs: vec![], predicted: None, tensorfs, ..spec };
+            v1::RunRequest { id, spec }
         })
         .collect();
     let ids: Vec<String> = requests.iter().map(|request| request.id.clone()).collect();
@@ -113,6 +155,19 @@ pub(crate) fn put(runs: &Arc<Runs>, actor: VerifiedActor, prefix: &'static str, 
     // What no list names any more is weighed no more.
     let named: Vec<String> = lock(&LISTED).values().flatten().cloned().collect();
     lock(&NEEDS).retain(|id, _| named.contains(id));
+    {
+        let mut predicted = lock(&PREDICTED);
+        predicted.extend(identities);
+        predicted.retain(|id, _| named.contains(id));
+    }
+    lock(&EXTRAS).retain(|id, stop| {
+        let named = named.contains(id);
+        if !named {
+            stop.cancel();
+            tracing::info!("list item {id} dropped: its extras stop downloading");
+        }
+        named
+    });
     let dropped: Vec<String> = runs.live_ids(actor)?.into_iter().filter(|id| id.starts_with(prefix) && !ids.contains(id)).collect();
     // Noted before any is admitted: one in line at once is heard.
     static PUTS: AtomicU64 = AtomicU64::new(0);
@@ -169,9 +224,14 @@ fn settle(runs: &Runs, change: impl FnOnce(&mut Vec<Handed>)) {
     for Handed { actor, dropped, .. } in done.into_iter().filter(|handed| !handed.dropped.is_empty()) {
         // One that ended meanwhile is left as it ended.
         let live = runs.live_ids(actor).unwrap_or_default();
-        for id in dropped.iter().filter(|id| live.contains(id)) {
-            if let Err(error) = runs.cancel(actor, id) {
-                tracing::warn!("a list's dropped item {id} wasn't canceled: {}", error.message);
+        for id in &dropped {
+            if !live.contains(id) {
+                tracing::info!("list item {id} dropped: its run had ended");
+                continue;
+            }
+            match runs.cancel(actor, id) {
+                Ok(_) => tracing::info!("list item {id} dropped: its run ends, and what only it wanted stops downloading"),
+                Err(error) => tracing::warn!("a list's dropped item {id} wasn't canceled: {}", error.message),
             }
         }
     }
@@ -248,6 +308,23 @@ pub(crate) fn readiness(pool: Option<&crate::gpu_service::Pool>, actor: &str, mu
         state.readiness = pool.and_then(|pool| pool.readiness(actor, &state.id));
     }
     states
+}
+
+/// Each list item's readiness up to `ready` (cl-1123), from its run's state (`standing`) and what `activity` lists under its id:
+/// `installing` until it has its code and its plan, `downloading` while what it needs comes (bytes), `ready` once its run made it
+/// ready, `evicted` once that went. One the load step says more of keeps that; one that failed or was canceled says so in its state.
+pub(crate) fn progress(states: &mut [v1::RunState], activity: &[v1::Operation]) {
+    for state in states.iter_mut().filter(|state| state.readiness.is_none()) {
+        let downloads: Vec<&v1::Operation> = activity.iter().filter(|op| op.kind == "download" && op.runs.iter().any(|run| *run == state.id)).collect();
+        let (stage, done, total) = match state.state.as_str() {
+            "succeeded" => ("ready", 0, 0),
+            "evicted" => ("evicted", 0, 0),
+            "failed" | "canceled" => continue,
+            _ if !downloads.is_empty() => ("downloading", downloads.iter().map(|op| op.bytes_done).sum(), downloads.iter().map(|op| op.bytes_total).sum()),
+            _ => ("installing", 0, 0),
+        };
+        state.readiness = Some(v1::Readiness { stage: stage.to_owned(), done, total, ..Default::default() });
+    }
 }
 
 /// `selected`'s checkpoints (header, components) came for a guess when nothing of them was here (`guessed`), or a call reads them

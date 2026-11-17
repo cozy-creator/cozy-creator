@@ -321,45 +321,25 @@ impl Plan {
         let raw = self.sources.iter().map(|s| row(&s.parameter, (&s.model, &s.release), (&s.lane, &s.precision), &s.manifest));
         constructed.chain(raw).collect()
     }
-    /// What a call reads before its function runs: every slot's components but an on-demand one's, and those of one its rule
-    /// says the request needs (`ruled`).
-    fn upfront(&self, ruled: &needs::Answers) -> Vec<(String, Vec<String>)> {
-        let waited = |slot: &&PlanSlot| !slot.on_demand || ruled.needed.contains(&slot.binding.model_parameter_name);
-        merged(self.slots.iter().filter(waited)).into_iter().map(|s| (s.manifest, s.components)).collect()
-    }
-    /// What its on-demand slots read once a stage asks: guessed ahead, never waited on (Paul, 11-12). Not one its rule answers
-    /// for the request (`ruled`): a needed one is waited on, and an unneeded one isn't fetched.
-    fn possible(&self, ruled: &needs::Answers) -> Vec<(String, Vec<String>)> {
-        let guessed = |slot: &&PlanSlot| {
-            let parameter = &slot.binding.model_parameter_name;
-            slot.on_demand && !ruled.needed.contains(parameter) && !ruled.unneeded.contains(parameter)
-        };
-        merged(self.slots.iter().filter(guessed)).into_iter().map(|s| (s.manifest, s.components)).collect()
-    }
-    /// What a call of it loads (`access::Needs`, cl-1102). `ruled` is what its interface's rules say of the request (cl-1103;
-    /// none for a call with no request): a slot a rule answers is needed or not fetched, as it says. Every other slot is as its
-    /// function declares it. Needed: every slot's components but an on-demand one's, and its raw weights' (its function read those
-    /// through its own executor's fetch, inside its run, outside the download line). Extras: its on-demand slots', which a stage
-    /// may read.
-    pub(crate) fn needs(&self, ruled: &needs::Answers) -> crate::access::Needs {
-        let mut needed = self.upfront(ruled);
-        for source in &self.sources {
-            match needed.iter_mut().find(|(manifest, _)| *manifest == source.manifest) {
-                // No components named is the checkpoint whole.
-                Some((_, components)) if source.components.is_empty() => components.clear(),
-                Some((_, components)) if components.is_empty() => {}
-                Some((_, components)) => {
-                    let more: Vec<String> = source.components.iter().filter(|c| !components.contains(c)).cloned().collect();
-                    components.extend(more);
-                }
-                None => needed.push((source.manifest.clone(), source.components.clone())),
-            }
+    /// The checkpoint slot `path` (`<function>.models.<parameter>`) of this plan's function reads, and the components read of it: a
+    /// constructed slot's or raw weights'. None: another function's slot, or one it binds nothing (xs-186).
+    pub(crate) fn selected(&self, path: &str) -> Option<(String, Vec<String>)> {
+        let constructed = self.slots.iter().find(|slot| slot.binding.model_binding_path == path);
+        let raw = || self.sources.iter().find(|source| format!("{}.models.{}", self.entrypoint, source.parameter) == path);
+        match constructed {
+            Some(slot) => Some((slot.binding.snapshot.clone(), slot.binding.components.clone())),
+            None => raw().map(|source| (source.manifest.clone(), source.components.clone())),
         }
-        let extras = match self.possible(ruled) {
-            possible if possible.is_empty() => vec![],
-            possible => vec![("its on-demand models".to_owned(), possible)],
-        };
-        crate::access::Needs { needed, extras }
+    }
+    /// What a call of it loads (`access::Needs`, cl-1102): what it wants of its slots by its rules (`needs::wants`, cl-1103: every
+    /// slot but an on-demand one and those the request's rules say it reads are needed, its raw weights too; its other on-demand
+    /// slots are extras, which a stage may read), as its checkpoints.
+    pub(crate) fn needs(&self, wants: &needs::Wants) -> crate::access::Needs {
+        let unresolved: Vec<&String> = wants.needed.iter().filter(|slot| self.selected(slot).is_none()).collect();
+        if !unresolved.is_empty() {
+            tracing::warn!("plan {}: no checkpoint here for {unresolved:?}, which its request needs", self.id);
+        }
+        crate::access::Needs::of(needs::resolved(wants, |slot| self.selected(slot)))
     }
     /// All its calls may read, on-demand slots too: what a `downloaded` warm set member holds,
     /// asked for by name, so its first call waits on no download (cl-790).
