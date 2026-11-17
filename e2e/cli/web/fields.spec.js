@@ -50,6 +50,8 @@ const undeclared = (region, tool) => region.locator('.focus-card').evaluate((car
 }, { names: tool.fields.map((field) => field.field), labels: tool.fields.map((field) => field.label) });
 
 test('fields', async ({ page, project, api, cli, guards }) => {
+  // Its local tools' reading alone took up to 25 s in web-2 (e2e 44134428394), beside its own ~2.5 min.
+  test.setTimeout(360_000);
   // The tiny Qwen fixture's slots default to models the fixture Hub doesn't publish (e2e/cpu/tiny/qwen_image_2.py): a slot's picker asks for
   // its default's card and is told there is none, and the browser logs each 404 itself.
   guards.allow(/status of 404\b.*\/v1\/models\//);

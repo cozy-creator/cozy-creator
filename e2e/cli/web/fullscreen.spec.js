@@ -91,6 +91,8 @@ async function letterboxedFull(page, aspect, what) {
 }
 
 test('fullscreen', { tag: '@engines' }, async ({ page, project, api, cli }) => {
+  // Its local tool's reading alone took up to 25 s in web-2 (e2e 44134428394), beside its own ~2.8 min.
+  test.setTimeout(360_000);
   await cli.json('machine', 'use', 'local');
   const shots = join(need('OUT'), 'web', 'fullscreen', test.info().project.name);
   mkdirSync(shots, { recursive: true });

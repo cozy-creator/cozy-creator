@@ -323,6 +323,8 @@ test('canvas-nav', async ({ context, project, api, signIn }) => {
 // Its own test, with its own budget (each cell has 180 s): with the pan and zoom steps above, the cell took 2.5–3.2 min and timed out
 // whenever its lane's load pushed it past 3.0 (e2e 44011938933, 44003780375).
 test('canvas-names', async ({ context, project, api, signIn }) => {
+  // It takes 3.0 min in web-2 (e2e 44122550502), the whole default budget: beside cells reading local code, more (44134428394).
+  test.setTimeout(360_000);
   const page = await context.newPage();
   await signIn(page, project.url());
   await canvasIdle(page);
