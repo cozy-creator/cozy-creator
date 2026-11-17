@@ -528,3 +528,29 @@ done
 for queued_pid in "${pids[@]}"; do kill "$queued_pid" 2> /dev/null || true; wait "$queued_pid" 2> /dev/null || true; done
 cozy --json logout > /dev/null 2>&1 || true
 }
+
+# th-400: a 429 says when to retry (Retry-After and its body's retry_after_seconds), and its body is as the Hub's document
+# says: hubcheck holds every answer to it. AuthKit's rate_limited metadata names a member it has no value for null, as
+# cooldown_seconds on a window limit; the document said non-null, and hubcheck flagged a 429 from enroll/finish (e2e
+# 44074455632). Here enroll/finish is limited to 2 per 10 minutes, and the third finish of one enrollment is refused.
+hub_rate_limited() (
+  step "a 429 says when to retry, and its body is as the Hub's document says (th-400)"
+  [ -n "${COZY_HUB_URL:-}" ] || fail "rate limited: e2e/isolated.sh named no Hub"
+  local S=$OUT/hub-rate-limited id signature n code retry said
+  mkdir -p "$S"
+  trap 'bash "$here/../skew/rehub.sh" > /dev/null 2>&1 || true' EXIT
+  bash "$here/../skew/rehub.sh" --set auth.rate_limits=device_key_enroll_finish=2/10m > "$S/rehub.log" 2>&1 \
+    || fail "rate limited: restarting the Hub with enroll/finish at 2 per 10 minutes: $(tail -c 300 "$S/rehub.log")"
+  id=$(python3 -c 'import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode())')
+  signature=$(python3 -c 'import base64, os; print(base64.urlsafe_b64encode(os.urandom(64)).rstrip(b"=").decode())')
+  for n in 1 2 3; do
+    code=$(curl -sS -o "$S/finish-$n.json" -D "$S/finish-$n.head" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+      -d "{\"enrollment_id\":\"$id\",\"code\":\"123456\",\"signature\":\"$signature\"}" "$COZY_HUB_URL/v1/auth/v1/device-keys/enroll/finish" || true)
+    echo "rate limited: finish $n answered $code: $(head -c 400 "$S/finish-$n.json")"
+  done
+  [ "$code" = 429 ] || fail "rate limited: the third finish of one enrollment answered $code, not 429"
+  retry=$(grep -i '^retry-after:' "$S/finish-3.head" | tr -dc '0-9' || true)
+  said=$(jq -r '.error.metadata.retry_after_seconds // empty' "$S/finish-3.json" 2> /dev/null || true)
+  [ "${retry:-0}" -ge 1 ] && [ "${said:-0}" -ge 1 ] \
+    || check "rate limited: the 429 doesn't say when to retry: Retry-After '${retry:-none}', retry_after_seconds '${said:-none}'"
+)

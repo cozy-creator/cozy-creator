@@ -198,6 +198,9 @@ hub=("$WORK/tensorhub$EXE" --config "$(native "$CONFIG")"
   --set env.name=development --set server.host=127.0.0.1 --set server.http_port=$HUB_PORT --set server.public_origin=$ORIGIN
   --set auth.issuer=$ORIGIN/v1/auth "${provider[@]}"
   --set auth.keys_path="$(native "$WORK/authkit")" --set auth.trusted_proxies=
+  # th-400: one job's cells sign in many times with one email and key, which AuthKit's per-person limits (15 an hour) made
+  # wait 185 s. The isolated Hub is one tenant's; production keeps its limits.
+  --set auth.rate_limits=device_key_enroll_begin=1000/1h,device_key_enroll_finish=1000/1h
   --set database.url="postgres://postgres@127.0.0.1:$PG_PORT/postgres?sslmode=disable"
   --set storage.backend.kind=s3 --set storage.backend.endpoint_url=$S3 --set storage.backend.region=us-east-1
   --set storage.backend.access_key_id=$S3KEY --set storage.backend.secret_access_key=$S3SECRET

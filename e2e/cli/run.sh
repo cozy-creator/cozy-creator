@@ -806,6 +806,8 @@ case $SHARD in
   " ;;
   # A project's run and its chosen machine, a rental chosen by its handle, follow its Hub's name for the host (cl-1089, cl-1106).
   rental-rename) parts="rental_rename logs" ;;
+  # A 429's body as the Hub's document says, and when to retry (th-400).
+  hub-limits) parts="hub_rate_limited logs" ;;
   # A job queued for a rental order follows it through a Calcifer restart and its Hub's second name for the host; its end sends the job
   # elsewhere (cl-1125, cl-1132).
   rental-replan) parts="rental_replan logs" ;;
