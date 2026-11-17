@@ -82,7 +82,7 @@ pub struct Tool {
     pub name: String,
     /// What it does within its package: `Image`, `Edit`, `Upscale`.
     pub label: String,
-    /// Its package in words, as its description writes its name (`MiniMax H3`, `Qwen-Image-2.1`), else as `title` spells it (`SDXL`).
+    /// Its package in words, as its description writes its name (`MiniMax H3`, `Qwen Image 2.1`), else as `title` spells it (`SDXL`).
     #[serde(default)]
     pub package_title: String,
     /// What a box of it is: `image`, `video`, `audio` or `text`, by its result's first such field.
@@ -109,6 +109,17 @@ pub struct Tool {
     /// Every declared model slot, including the full paths of slots in child calls.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub models: Vec<ToolModel>,
+}
+
+impl Tool {
+    /// What a person reads it as, as the page names it (`toolName`): `Qwen Image 1 · Image`, and its label alone where that names its
+    /// package already, `MiniMax H3 Edit`.
+    pub fn named(&self) -> String {
+        if self.package_title.is_empty() || self.label.to_lowercase().contains(&self.package_title.to_lowercase()) {
+            return self.label.clone();
+        }
+        format!("{} · {}", self.package_title, self.label)
+    }
 }
 
 /// The model a tool runs.
@@ -369,7 +380,7 @@ pub fn first_of(word: &str) -> String {
 }
 
 /// A package in words: its name as its own description (`summary`) writes it, `minimax-h3`'s "MiniMax H3 video with sound…" MiniMax H3 and
-/// `qwen-image-2`'s "…using Qwen-Image-2.1" Qwen-Image-2.1. One whose description doesn't name it: its last part's words, `krea-2` Krea 2,
+/// `qwen-image-2`'s "…with Qwen Image 2.1" Qwen Image 2.1. One whose description doesn't name it: its last part's words, `krea-2` Krea 2,
 /// and a word with no vowel upper case, `sdxl` SDXL.
 pub fn title(package: &str, summary: &str) -> String {
     let name = package_word(package);
@@ -385,7 +396,8 @@ pub fn title(package: &str, summary: &str) -> String {
 }
 
 /// `name` where `text` first writes it: its letters and digits in any case, from the start of a word to the end of one, each `-`, `_`, `.`
-/// or space of it written as any one of those or none, and a version after a last number (`qwen-image-2` as Qwen-Image-2.1).
+/// or space of it written as any one of those or none, and its version: after a last number its `.1` (`qwen-image-2` as Qwen Image 2.1), after
+/// a letter a number of its own (`qwen-image` as Qwen Image 1).
 fn written_in<'a>(name: &str, text: &'a str) -> Option<&'a str> {
     const GAPS: [char; 4] = ['-', '_', '.', ' '];
     let wanted: Vec<char> = name.chars().collect();
@@ -421,11 +433,34 @@ fn written_in<'a>(name: &str, text: &'a str) -> Option<&'a str> {
                 }
             }
         }
-        if rest.peek().is_none_or(|next| !next.is_alphanumeric()) {
-            return Some(&text[start..end]);
+        if rest.peek().is_some_and(|next| next.is_alphanumeric()) {
+            continue;
         }
+        if !wanted.last().is_some_and(char::is_ascii_digit) {
+            end += version_word(&text[end..]);
+        }
+        return Some(&text[start..end]);
     }
     None
+}
+
+/// The bytes of a version that starts `text` as a word of its own after a space, ` 1` or ` 2.1`; 0: none.
+fn version_word(text: &str) -> usize {
+    let Some(number) = text.strip_prefix(' ') else { return 0 };
+    let bytes = number.as_bytes();
+    let mut end = 0;
+    loop {
+        let digits = bytes[end..].iter().take_while(|byte| byte.is_ascii_digit()).count();
+        if digits == 0 {
+            break;
+        }
+        end += digits;
+        if bytes.get(end) != Some(&b'.') || !bytes.get(end + 1).is_some_and(u8::is_ascii_digit) {
+            break;
+        }
+        end += 1;
+    }
+    if end > 0 && number[end..].chars().next().is_none_or(|next| !next.is_alphanumeric()) { 1 + end } else { 0 }
 }
 
 fn capitalized(text: &str) -> String {

@@ -3478,7 +3478,7 @@ name: string,
  */
 label: string,
 /**
- * Its package in words, as its description writes its name (`MiniMax H3`, `Qwen-Image-2.1`), else as `title` spells it (`SDXL`).
+ * Its package in words, as its description writes its name (`MiniMax H3`, `Qwen Image 2.1`), else as `title` spells it (`SDXL`).
  */
 package_title: string,
 /**
