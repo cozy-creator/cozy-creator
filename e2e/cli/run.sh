@@ -972,6 +972,7 @@ case $SHARD in
     rental_end
     rental_end_again
     rental_rename
+    run_on_new
     logs
   " ;;
   # Stops, restarts, updates and starts past a TensorD that can't exit, and a start that hangs, then a rental's own end against a

@@ -577,6 +577,9 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     let named = format!("{package}/{}", callable.name);
     let (interface, release, summary) = (code.interface, code.release, code.summary);
     let (mut submit, mut notes) = Box::pin(call(api, code, callable, ask, key, &hub)).await?;
+    // The price its renter agreed to (`POST /v1/run-quotes`), which a `new` run is admitted on: dropped here since cl-716 B, so every
+    // `--on new` that would rent was refused `quote_unagreed` (cl-1066).
+    submit.agreed = ask.agreed.clone();
     if let Resolved::Local { local, .. } = &resolved
         && let Some(from) = &local.from
     {

@@ -389,9 +389,6 @@ impl Machines {
         shape: Shape,
         run: Option<RunId>,
     ) -> Result<(Ask, bool), Error> {
-        if run.as_ref().is_some_and(|id| matches!(self.calcifer.run_store(id.as_str()),Ok(crate::store::RunStore::Project(_)))) {
-            return Err(Error::new(Kind::Conflict,"project_remote_execution_unavailable","A project's render can't rent a machine by itself. Rent one first, then pick it for the render."));
-        }
         let origin = config::Origin::parse(hub)?;
         let mut intent = serde_json::json!({"hub": origin, "sku": sku, "gpus": shape.gpus,
             "disk_gb": shape.disk_gb});
@@ -443,7 +440,9 @@ impl Machines {
             state: AskState::Pending,
             reason: None,
         };
-        let (ask, fresh) = self.store().begin_ask(&ask).map_err(|e| match e {
+        // A project's run is named in its own journal alone (cl-1066, no traces): Calcifer's row of the order keeps no run.
+        let recorded = Ask { run: ask.run.clone().filter(|run| !self.project_run(run)), ..ask };
+        let (ask, fresh) = self.store().begin_ask(&recorded).map_err(|e| match e {
             crate::store::StoreError::Conflict(_) => Error::new(
                 Kind::Conflict,
                 "idempotency_conflict",
@@ -582,6 +581,11 @@ impl Machines {
         }
     }
 
+    /// Whether `run` is a project's: its journal is its project's, not Calcifer's own.
+    fn project_run(&self, run: &RunId) -> bool {
+        matches!(self.calcifer.run_store(run.as_str()), Ok(crate::store::RunStore::Project(_)))
+    }
+
     /// Whether `ask` was made longer than [`ORDER_OPEN_FOR`] ago.
     fn past_open(&self, ask: &Ask) -> Result<bool, Error> {
         let asked_at = self.store().ask_made_at(&ask.key).map_err(internal)?;
@@ -592,8 +596,13 @@ impl Machines {
     fn withdrawn(&self, ask: &Ask) -> Result<bool, Error> {
         let stopped = (self.store().ask(&ask.key).map_err(internal)?)
             .is_none_or(|now| RentBody::of(&now).is_ok_and(|body| body.stopped));
+        // A project's run is read from its project's journal (cl-1066): from Calcifer's own it was never there, so its rent was withdrawn.
+        // One whose project isn't open now is not over: the rental it agreed to comes, and idles out unused.
         let run_over = match &ask.run {
-            Some(run) => (self.store().run(run.as_str()).map_err(internal)?).is_none_or(|row| row.state == State::Settled),
+            Some(run) => match self.calcifer.run_store(run.as_str()) {
+                Ok(store) => store.run(run.as_str()).map_err(internal)?.is_none_or(|row| row.state == State::Settled),
+                Err(_) => false,
+            },
             None => false,
         };
         Ok(stopped || run_over)
@@ -719,7 +728,13 @@ impl Machines {
         }
         let (me, run, sku) = (self.clone(), run.clone(), sku.map(str::to_owned));
         self.spawn(async move {
-            let key = format!("run-{}", run.id);
+            // A project's run is named by a digest of its id (cl-1066): the same order across restarts, and nothing in Calcifer's own
+            // store that names the run or its project (no traces once it locks). Calcifer's own run, by its id.
+            let project = me.project_run(&run.id);
+            let key = match project {
+                true => format!("run-{}", &hex::encode(Sha256::digest(format!("cozy rent\0{}", run.id)))[..40]),
+                false => format!("run-{}", run.id),
+            };
             let asked = async {
                 if let Some(ask) = me.store().ask(&key).map_err(internal)? {
                     return Ok(ask);
@@ -752,7 +767,8 @@ impl Machines {
                 let asked = me.ask_rent(&key, hub, &sku, shape, Some(run.id.clone()));
                 Ok(asked.await?.0)
             };
-            let rented = match asked.await {
+            // The order's run, here and in this Calcifer alone for a project's.
+            let rented = match asked.await.map(|ask| Ask { run: Some(run.id.clone()), ..ask }) {
                 Ok(ask) => match ask.state {
                     AskState::Pending => me.ask_hub(&ask, None).await.map(drop),
                     AskState::Done => {
@@ -774,7 +790,10 @@ impl Machines {
             if let Err(error) = rented
                 && let Err(e) = me.calcifer.fail(&run.id, reason(error))
             {
-                warn!(run = %run.id, "failing it: {e}");
+                match project {
+                    true => warn!("failing a project's run that rented: {e}"),
+                    false => warn!(run = %run.id, "failing it: {e}"),
+                }
             }
             lock(&me.renting).remove(&run.id);
         });
