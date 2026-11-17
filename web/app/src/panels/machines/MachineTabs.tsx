@@ -10,7 +10,7 @@ import { Bar } from "../common"
 import { ordinal } from "../format"
 import { runName as runLabel, workWords } from "../runs/words"
 import { Checks, Spec } from "./RenderHere"
-import { clientFraction, clientFrom, clientFunction, clientWords, type Doing, doingOf, fetchedWords, fractionOf, operationName, runName, waits, working } from "./activity"
+import { byRelation, clientFraction, clientFrom, clientFunction, clientWords, type Doing, doingOf, fetchedWords, fractionOf, operationName, runName, waits, working } from "./activity"
 import type { MachinesAsk } from "./Machines"
 import { called, gpusWords, slowWords, stableName, stateWords } from "./words"
 import "./MachineTabs.css"
@@ -230,10 +230,11 @@ export function MachineTabs({ to, projectId, readable, locked }: { to: (rest?: s
   const sizes = useRef<HTMLDivElement>(null)
   const renting = !client.transport.channel
   const chosen = project?.machines ?? []
-  // Every machine, every rental of the account whoever rented it (cl-1193), one still booting too.
+  // Every machine, every rental of the account whoever rented it, one still booting too (cl-1193): `local`, then those working for this
+  // project, then the rest.
   const machines = (data?.machines ?? [])
     .filter((machine) => machine.kind !== "rental" || machine.state !== "ended")
-    .sort((a, b) => Number(b.kind === "local") - Number(a.kind === "local"))
+    .sort(byRelation(projectId, chosen))
   const tabs = machines.slice(0, Math.max(count, 1))
   const hidden = machines.slice(tabs.length)
   const named = machines.map((machine) => machine.name).join(" ")

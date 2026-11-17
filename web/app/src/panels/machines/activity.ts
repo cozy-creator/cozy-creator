@@ -73,6 +73,22 @@ export function doingOf(machine: Machine, project: string | null, locked = false
   return [...booting, ...operations, ...runs.sort((a, b) => going(a) - going(b)), ...clients, ...holds]
 }
 
+/** Whether a machine works for `project` now, or the project prefers it (`chosen`): a run, an install or a download of it is that
+ *  project's (Paul, 11-17: "machines that are working on our current project (the project I have opened) should be to the left and
+ *  more visible (next to local)"). */
+export function forProject(machine: Machine, project: string | null, chosen: string[]): boolean {
+  if (chosen.includes(machine.name)) return true
+  if (!project) return false
+  return (machine.status?.runs ?? []).some((held) => held.run?.project_id === project) || (machine.status?.activity ?? []).some((operation) => operation.project === project)
+}
+
+/** The machines in Paul's order (11-17): `local`, then those working for the open project, then every other one of the account (other
+ *  projects' runs, other computers', idle), each group as listed. */
+export function byRelation(project: string | null, chosen: string[]) {
+  const rank = (machine: Machine) => (machine.kind === "local" ? 0 : forProject(machine, project, chosen) ? 1 : 2)
+  return (a: Machine, b: Machine) => rank(a) - rank(b)
+}
+
 /** Another computer's run by what it runs (cl-1193): its function, or that it's an encrypted project's, which says nothing more. */
 export const clientFunction = (other: ClientRun) => (other.function ? shown(other.function) : "An encrypted project's run")
 

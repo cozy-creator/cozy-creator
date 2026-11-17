@@ -24,6 +24,7 @@ const seen = {};
       await page.waitForSelector('nav.mtabs');
       seen[`${size} tabs`] = await page.locator('nav.mtabs').innerText();
       await shot('top');
+      // Its tab, or past what fits, "N more": Machines with those that have no tab first.
       const tab = page.locator(`nav.mtabs .mtab[data-machine="${name}"]`);
       if (await tab.isVisible()) {
         await tab.click();
@@ -32,6 +33,11 @@ const seen = {};
         seen[`${size} activity`] = await activity.innerText();
         await shot('activity');
         await page.keyboard.press('Escape');
+      } else {
+        await page.locator('nav.mtabs a.mtab.more').click();
+        await page.locator(`aside.drawer li.machine[data-machine="${name}"]`).waitFor();
+        seen[`${size} more`] = await page.locator('aside.drawer').innerText();
+        await shot('more');
       }
       const base = link.replace(/\/$/, '');
       await page.goto(`${base}/machines`);

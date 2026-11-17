@@ -14,7 +14,7 @@ import { End } from "./End"
 import { GpuStrip } from "./GpuGauges"
 import { Rent } from "./Rent"
 import { Checks, RenderCheck, Spec, useRenderMachines } from "./RenderHere"
-import { clientFrom, clientFunction, clientWords } from "./activity"
+import { byRelation, clientFrom, clientFunction, clientWords } from "./activity"
 import { endsWords, holdWords, stableName } from "./words"
 
 /** Its GPUs' gauges while it's up (cl-1191). */
@@ -149,9 +149,10 @@ export function Machines() {
 
   const machines = data?.machines.filter((machine) => machine.state !== "ended") ?? []
   const now = useNow(machines.some((machine) => machine.state !== "stopped"))
-  // One list: every machine, and every rental of the account, whichever computer rented it (cl-1193). Those with no tab first.
+  // One list: every machine, and every rental of the account, whichever computer rented it (cl-1193): `local`, then those working for
+  // the open project, then the rest. Opened from "N more", those with no tab first.
   const byTab = (a: Machine, b: Machine) => Number(first.has(b.name)) - Number(first.has(a.name))
-  const listed = [...machines].sort(byTab)
+  const listed = [...machines].sort(byRelation(project ?? null, chosen)).sort(byTab)
   const rentals = listed.filter((machine) => machine.rental)
   const hourly = rentals.reduce((sum, machine) => sum + (machine.rental?.usd_micros_per_hour ?? 0), 0)
   const signedIn = useCanRent(data)
