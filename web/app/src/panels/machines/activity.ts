@@ -15,7 +15,8 @@ export type Doing =
   | { kind: "run"; key: string; run: Run; on?: Operation }
   | { kind: "other"; key: string; state: string; own?: boolean; locked?: boolean }
   | { kind: "client"; key: string; other: ClientRun }
-  | { kind: "hold" | "boot"; key: string; words: string }
+  | { kind: "hold"; key: string; words: string }
+  | { kind: "boot"; key: string; words: string }
 
 /** `qwen/qwen-image-2.1-turbo`, or a Hugging Face source of it, as people say it: `Qwen Image 2.1 Turbo`. Anything else is said as it is. */
 export function modelWords(subject: string): string {
