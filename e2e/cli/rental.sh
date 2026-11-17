@@ -286,8 +286,7 @@ else
     ! J '(.waiting // "") | test("no machine named")' "$w" || check "rental_rename: the run waits on $(jq -r .waiting "$w")"
   fi
   # cl-1106: the project's machines, as the page and `cozy status` read them, and where a render naming none goes: its tool's install
-  # (which waits for the rental) or its call there, and its call nowhere else. Reading the project describes its box's tool on `local`,
-  # which installs it there too: an install isn't where the render went.
+  # (which waits for the rental) or its call there, and its call nowhere else. Nothing of it installs elsewhere either (rental_quote).
   if [ -n "$chose" ]; then
     status "$P" > "$OUT/rename-status.json" || true
     echo "rental_rename: the project chose $handle; once its host was named $name its machines are $(jq -c '.machines' "$OUT/rename-status.json" 2> /dev/null)"
