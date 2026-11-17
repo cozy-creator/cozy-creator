@@ -1167,15 +1167,39 @@ impl Tier {
                 return Ok(());
             }
         }
+        let mut ask = true;
         while !is_waiting()? {
-            let (next, making, gone) = {
+            let (next, making, gone, short) = {
                 let mut state = self.state();
                 let Some((key, source, set)) = Self::next_wanted(&mut state) else { return Ok(()) };
-                let (making, gone) = self.admit(&mut state, &key, &set, source.bytes() as u64);
-                ((key, source, set), making, gone)
+                let bytes = source.bytes() as i64;
+                let (making, gone) = self.admit(&mut state, &key, &set, bytes as u64);
+                // What room it is short of, where room is what keeps it out (not the cap, a stall or worth).
+                let roomless = !state.pressed && state.bytes as i64 + bytes <= self.cap as i64 && state.room - bytes < state.headroom;
+                let short = if roomless { (state.headroom + bytes - state.room) as u64 } else { 0 };
+                ((key, source, set), making, gone, short)
             };
             drop(gone);
             let (key, source, set) = next;
+            // Short of room, idle peers give way, the longest unused first (the ledger's order): this
+            // process's last request refilled these pages. Else Ideogram's encoder stayed on disk beside an
+            // idle Flux-2 that kept its pages (tfs-299). Once nobody gives, this idle asks no more.
+            let making = match making {
+                None if ask && short > 0 => {
+                    if py.detach(|| super::host::ask_idle(short)) {
+                        let (making, gone) = {
+                            let mut state = self.state();
+                            self.admit(&mut state, &key, &set, source.bytes() as u64)
+                        };
+                        drop(gone);
+                        making
+                    } else {
+                        ask = false;
+                        None
+                    }
+                }
+                making => making,
+            };
             let Some(_making) = making else {
                 continue; // Kept pages are worth at least as much; a smaller wanted one may fit.
             };
