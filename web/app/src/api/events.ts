@@ -81,6 +81,7 @@ export class EventStream {
   private following: AbortController | null = null
   private told: Confirmed | null = null
   private telling = false
+  private soon: ReturnType<typeof setTimeout> | undefined
   /** Lock drops server Readers even when the displayed project set later returns to the same IDs. */
   private readers = 0
   /** The holding tab's: each project Calcifer asked to save before it closes (`project.saving`), and the tabs showing it that
@@ -229,8 +230,19 @@ export class EventStream {
     }
   }
 
+  /** Calcifer told what the tabs show now, a task after it's asked: what the stream has brought by then, its end included, is read first.
+   *  Told at once on a stream that had just ended (Calcifer restarting), the next Calcifer, up by then, knew no such stream and answered 404,
+   *  which the browser logs (restart, e2e 44073749095). */
+  private tell() {
+    if (this.soon !== undefined) return
+    this.soon = setTimeout(() => {
+      this.soon = undefined
+      void this.sendShown()
+    })
+  }
+
   /** Calcifer told what the tabs show now, one call at a time. */
-  private async tell() {
+  private async sendShown() {
     if (this.telling || !this.stream || !this.following || this.following.signal.aborted) return
     const snapshot = [...this.shown.values()]
     const projects = [...new Set(snapshot.flatMap(({ project }) => project === null ? [] : [project]))].sort()
