@@ -207,12 +207,20 @@ fn addressed(parameter: &str, package: &str, interface: &Value) -> Option<String
         .then(|| path.to_string())
 }
 
-/// `installation`'s internal functions that construct a model and that `entrypoint`, loading none itself, calls (`needs::callees`):
-/// none that its rules say the request doesn't call (`uncalled`, cl-1103).
-fn internal_models(installation: &Installation, entrypoint: &str, uncalled: &BTreeSet<String>) -> Result<Vec<String>, Refused> {
+/// The functions that construct a model and that `entrypoint` of `installation`, loading none itself, calls (`needs::callees`): its
+/// own, and those of the other packages of its environment it calls (`callees`, cl-1123); none that its rules say the request doesn't
+/// call (`uncalled`, cl-1103).
+fn internal_models(installation: &Installation, callees: &[crate::catalog::Callee], entrypoint: &str, uncalled: &BTreeSet<String>)
+    -> Result<Vec<String>, Refused> {
     let interface: Value = serde_json::from_slice(&installation.interface)
         .map_err(|_| refused("package_interface_invalid", "held interface is corrupt"))?;
-    Ok(needs::callees(&interface, entrypoint, uncalled))
+    Ok(needs::callees(&interface, &others(callees), entrypoint, uncalled))
+}
+
+/// The other packages a walk of a call goes into (`needs::Other`, cl-1123): each App its environment holds besides its own, by its
+/// distribution. A static reading, before its environment is built, holds none.
+fn others(callees: &[crate::catalog::Callee]) -> Vec<needs::Other<'_>> {
+    callees.iter().map(|callee| (callee.distribution.as_str(), &callee.interface)).collect()
 }
 
 /// What the rules of `entrypoint` in `interface` say of the request `input` (`needs::answers`, cl-1103): each model slot or
@@ -235,9 +243,10 @@ fn asked(spec: &Spec) -> &Value {
 }
 
 /// What run `spec` wants of `interface`'s models, by slot (`needs::wants`, cl-1103): what its function's rules say of its request
-/// (`ruled`), a predicted request's as a sent one's (cl-1123), walked over the functions it calls.
-fn wants_of(interface: &Value, spec: &Spec) -> needs::Wants {
-    needs::wants(interface, &spec.entrypoint, &ruled(interface, &spec.entrypoint, asked(spec)))
+/// (`ruled`), a predicted request's as a sent one's (cl-1123), walked over the functions it calls, its own package's and those of
+/// the others its environment holds (`callees`).
+fn wants_of(interface: &Value, callees: &[crate::catalog::Callee], spec: &Spec) -> needs::Wants {
+    needs::wants(interface, &others(callees), &spec.entrypoint, &ruled(interface, &spec.entrypoint, asked(spec)))
 }
 
 /// Whether `installation` declares a public entrypoint `name` for a warm set.
@@ -394,16 +403,31 @@ impl Runs {
 
     /// What run `id` needs of `installation` (`access::Needs`, cl-1102), whose environment need not be built yet (cl-966): `wants`,
     /// what it wants of its models by slot (cl-1103), resolved to the checkpoints of each function it names, its own or one it calls
-    /// (`published::predicted`), each at once, in its package's order. A called function that doesn't resolve is left out, said; its
-    /// own is the run's refusal.
+    /// (`published::predicted`), each at once, in its package's order. Another package's function (`<distribution>/<function>`,
+    /// cl-1123) resolves as its child run will: in the App of `callees`, its environment's, that holds it, with the choices addressed
+    /// to its slots and its own default lane (`child_spec`). A called function that doesn't resolve is left out, said; its own is the
+    /// run's refusal.
     #[allow(clippy::too_many_arguments)]
     fn needs(
-        &self, id: &str, installation: &Installation, hub: Option<hub::Source>, asker: &Asker, entrypoint: &str, wants: &needs::Wants,
-        (models, lane): (&[stored::ModelChoice], &str), observe: Option<&Report>, stop: Option<&Stop>,
+        &self, id: &str, installation: &Installation, callees: &[crate::catalog::Callee], hub: Option<hub::Source>, asker: &Asker,
+        entrypoint: &str, wants: &needs::Wants, (models, lane): (&[stored::ModelChoice], &str), observe: Option<&Report>, stop: Option<&Stop>,
     ) -> Result<crate::access::Needs, Refused> {
-        let predicted = |function: &str| {
-            let own: Vec<_> = models.iter().filter(|c| own_choice(c, function)).cloned().collect();
-            let request = self.request(id, Some(installation.clone()), None, hub.clone(), asker, function, &own, lane);
+        let predicted = |named: &str| -> Result<Option<Plan>, Refused> {
+            let (held, function, own, lane) = match named.split_once('/') {
+                None => (installation.clone(), named, models.iter().filter(|c| own_choice(c, named)).cloned().collect::<Vec<_>>(), lane),
+                Some((distribution, function)) => {
+                    let callee = callees.iter().find(|callee| callee.distribution == distribution)
+                        .ok_or_else(|| refused("child_undeclared", format!("this environment holds no package {distribution}")))?;
+                    let held = self.callee_view(installation.clone(), &callee.application)?;
+                    let prefix = format!("{function}.");
+                    let own = models.iter().filter_map(|choice| {
+                        let parameter = addressed(&choice.parameter, &held.package, &callee.interface).filter(|path| path.starts_with(&prefix))?;
+                        Some(stored::ModelChoice { parameter, ..choice.clone() })
+                    });
+                    (held, function, own.collect(), "")
+                }
+            };
+            let request = self.request(id, Some(held), None, hub.clone(), asker, function, &own, lane);
             let report = observe.cloned().map(|report| Box::new(move |stage: &str, done: u64, total: u64| report(stage, done, total)) as crate::published::Observer);
             self.publisher.predicted(&self.service, &request, report, stop).map_err(|(code, message)| refused(code, message))
         };
@@ -413,10 +437,11 @@ impl Runs {
             let each: Vec<_> = functions.iter().map(|function| scope.spawn(|| crate::private_io::within(private.clone(), || predicted(function)))).collect();
             each.into_iter().map(|read| read.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))).collect()
         });
+        // Each plan by the package it is of (none: its own), as a slot names it.
         let mut plans = vec![];
         for (function, read) in functions.into_iter().zip(each) {
             match read {
-                Ok(plan) => plans.extend(plan),
+                Ok(plan) => plans.extend(plan.map(|plan| (function.split_once('/').map(|(distribution, _)| distribution), plan))),
                 Err(error) if function == entrypoint => return Err(error),
                 Err(error) => match crate::private_io::current().is_none() {
                     true => tracing::warn!("run {id}: {function}'s weights aren't fetched ahead: {}", error.message),
@@ -424,7 +449,11 @@ impl Runs {
                 },
             }
         }
-        Ok(crate::access::Needs::of(needs::resolved(wants, |slot| plans.iter().find_map(|plan| plan.selected(slot)))))
+        let selected = |slot: &str| {
+            let (package, path) = slot.split_once('/').map_or((None, slot), |(distribution, path)| (Some(distribution), path));
+            plans.iter().filter(|(of, _)| *of == package).find_map(|(_, plan)| plan.selected(path))
+        };
+        Ok(crate::access::Needs::of(needs::resolved(wants, selected)))
     }
 
     /// The run this id already names, if its spec is `digest`; another spec is a conflict.
@@ -1160,13 +1189,13 @@ impl Runs {
         for (name, why) in &ruled.unanswered {
             self.warn(id, "needs_rule_unanswered", &format!("{name}: its needs rule gives no answer for this request ({why}), so it is fetched as if it had none."));
         }
-        let wants = wants_of(&interface, &spec);
+        let wants = wants_of(&interface, &generation.record.callees, &spec);
         // A list item's plan, said: which of its request's fields its rules read, and what they made of them (cl-1123).
         if crate::ahead::hidden(&caller) {
             let fields: Vec<&String> = spec.input.as_object().map(|input| input.keys().collect()).unwrap_or_default();
             tracing::info!(
-                "{caller}: its request ({} fields: {fields:?}); its rules hold for {:?}, not for {:?}, give no answer for {:?}; it needs {:?}, extras {:?}",
-                fields.len(), ruled.needed, ruled.unneeded, ruled.unanswered, wants.needed, wants.extras
+                "{caller}: its request ({} fields: {fields:?}); its rules hold for {:?}, not for {:?}, give no answer for {:?}; it needs {:?}, what all of {:?} read, extras {:?}",
+                fields.len(), ruled.needed, ruled.unneeded, ruled.unanswered, wants.needed, wants.either, wants.extras
             );
         }
         // What a root call reads, for its function's next quote on any machine (cl-967).
@@ -1216,9 +1245,26 @@ impl Runs {
                 }
                 fetch
             });
-            // An orchestrator's internal functions' weights come while it starts and imports (cl-905), if not already.
-            if plan.is_none() && spec.parent.is_empty() && internal_models(&installation, &spec.entrypoint, &ruled.unneeded).is_ok_and(|internal| !internal.is_empty()) {
-                ahead = Some(early.take().unwrap_or_else(|| self.fetch_internal(id, &installation, hub.clone(), &spec)));
+            // An orchestrator's functions' weights come while it starts and imports (cl-905), if not already. Another package's it
+            // calls (cl-1123) only its environment holds: what came before its install, its static reading's, is walked again with them.
+            let callees = &generation.record.callees;
+            let internal = match (plan.is_none(), spec.parent.is_empty()) {
+                (true, true) => internal_models(&installation, callees, &spec.entrypoint, &ruled.unneeded).unwrap_or_default(),
+                _ => vec![],
+            };
+            if !internal.is_empty() {
+                ahead = Some(match early.take() {
+                    Some(before) if !internal.iter().any(|function| function.contains('/')) => before,
+                    before => {
+                        let fetch = self.fetch_internal(id, &installation, callees, hub.clone(), &spec);
+                        // It goes on until the call ends, unlisted: this fetch lists what the run waits on.
+                        if let Some(before) = &before {
+                            before.unlist();
+                        }
+                        fetch.replaces(before);
+                        fetch
+                    }
+                });
             }
             // A call wants what it reads now: its caller's guesses at it end, and their room is free.
             let caller = self.contexts.lock().unwrap().get(&spec.parent).and_then(|context| context.guessing.as_ref()?.upgrade());
@@ -1302,7 +1348,7 @@ impl Runs {
                 None => {
                     let observer: Report = observe.clone();
                     let chosen = (spec.models.as_slice(), spec.lane.as_str());
-                    self.needs(id, &installation, hub.clone(), &self.asker(id, &spec), &spec.entrypoint, &wants, chosen, Some(&observer), Some(&stoppable.stop))?
+                    self.needs(id, &installation, &generation.record.callees, hub.clone(), &self.asker(id, &spec), &spec.entrypoint, &wants, chosen, Some(&observer), Some(&stoppable.stop))?
                 }
             };
             let mut moved = tensorfs::fetch::Landed::default();
@@ -1531,7 +1577,8 @@ impl Runs {
             let installation = self.publisher.reading(&self.service, actor, &request).map_err(|(code, message)| refused(code, message))?;
             let interface: Value = serde_json::from_slice(&installation.interface)
                 .map_err(|_| refused("package_interface_invalid", "held interface is corrupt"))?;
-            let reads = self.needs(id, &installation, hub, &asker, &spec.entrypoint, &wants_of(&interface, spec), (&spec.models, &spec.lane), None, Some(stop))?;
+            // Its static reading: other packages' functions come once its environment, which holds them, is built (`fetch_internal`).
+            let reads = self.needs(id, &installation, &[], hub, &asker, &spec.entrypoint, &wants_of(&interface, &[], spec), (&spec.models, &spec.lane), None, Some(stop))?;
             self.want_reads(id, fetches_ahead(spec), &fetch, &reads, true)
         })();
         match wanted {
@@ -1578,17 +1625,19 @@ impl Runs {
         fetch.hint(lined, listed.then_some(caller.as_str())).map_err(Refused::from)
     }
 
-    /// A root that loads no model itself (an orchestrator) gets its internal functions' weights on the way while it starts
-    /// and imports (cl-905): what they all read at its place in the download line, then each one's own as a guess, while it
-    /// fits beside what comes first. Nothing waits on them; they end with its call, or its cancel.
-    fn fetch_internal(self: &Arc<Self>, id: &str, installation: &Installation, hub: Option<hub::Source>, spec: &Spec) -> Arc<crate::access::Fetch> {
+    /// A root that loads no model itself (an orchestrator) gets the weights of the functions it calls on the way while it starts
+    /// and imports (cl-905), its own package's and those of the others its environment holds (`callees`, cl-1123: Orbit's H3): what
+    /// they all read at its place in the download line, then each one's own as a guess, while it fits beside what comes first.
+    /// Nothing waits on them; they end with its call, or its cancel.
+    fn fetch_internal(self: &Arc<Self>, id: &str, installation: &Installation, callees: &[crate::catalog::Callee], hub: Option<hub::Source>,
+        spec: &Spec) -> Arc<crate::access::Fetch> {
         let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub.clone(), u64::MAX);
         let (runs, held, id, asker) = (self.clone(), fetch.clone(), id.to_string(), self.asker(id, spec));
         let (installation, models, lane, entrypoint) = (installation.clone(), spec.models.clone(), spec.lane.clone(), spec.entrypoint.clone());
         let interface: Value = serde_json::from_slice(&installation.interface).unwrap_or_default();
-        let (private, wants) = (spec.local_private.clone(), wants_of(&interface, spec));
+        let (private, wants, callees) = (spec.local_private.clone(), wants_of(&interface, callees, spec), callees.to_vec());
         let started = std::thread::Builder::new().name("internal-prefetch".into()).spawn(move || crate::private_io::within(private, || {
-            let wanted = runs.needs(&id, &installation, hub, &asker, &entrypoint, &wants, (&models, &lane), None, None)
+            let wanted = runs.needs(&id, &installation, &callees, hub, &asker, &entrypoint, &wants, (&models, &lane), None, None)
                 .and_then(|reads| runs.want_reads(&id, false, &held, &reads, true));
             if let Err(refusal) = wanted {
                 crate::private_io::warning(&runs.service.engine, &id, format_args!("its functions' weights aren't fetched ahead: {}", refusal.message));
@@ -1715,7 +1764,7 @@ impl Runs {
             // internal functions it calls, each a member of its own.
             let mut plans = vec![plan];
             if item.level > Level::Installed && plans[0].is_none() {
-                for callee in internal_models(&installation, &item.entrypoint, &BTreeSet::new())? {
+                for callee in internal_models(&installation, &[], &item.entrypoint, &BTreeSet::new())? {
                     let own: Vec<_> = item.models.iter().filter(|c| own_choice(c, &callee)).cloned().collect();
                     let report = observe.clone();
                     let (_, plan, _) = self.resolve(
@@ -2103,7 +2152,7 @@ impl Runs {
                 Ok((installation, Some(plan), _)) if plan.degree > 0 && !plan.slots.is_empty() => {
                     // A called function's own rules read its own request, which only its call brings: none answers here.
                     let interface: Value = serde_json::from_slice(&installation.interface).unwrap_or_default();
-                    let wants = needs::wants(&interface, &entrypoint, &needs::Answers::default());
+                    let wants = needs::wants(&interface, &[], &entrypoint, &needs::Answers::default());
                     match runs.service.catalog.resolve(&installation.generation)
                         .and_then(|held| held.application(&application)) {
                         Ok(held) => {

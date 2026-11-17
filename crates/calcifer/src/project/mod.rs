@@ -4112,7 +4112,8 @@ pub(super) fn wants(package: &Package, function: &str, request: Option<&Value>) 
         (Some(request), Some(entry)) => ::needs::answers(entry, request),
         _ => ::needs::Answers::default(),
     };
-    ::needs::wants(document, function, &answers)
+    // Another package's functions it calls are its machine's to walk, from the environment that holds them (cl-1123).
+    ::needs::wants(document, &[], function, &answers)
 }
 
 /// Why the plan placed no machine for ready job `key`, said when that changes: it goes to the first of its machines that takes it.
