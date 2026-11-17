@@ -318,7 +318,14 @@ test('canvas-nav', async ({ context, project, api, signIn }) => {
     await photosPainted(page);
     expect.soft((await camera(page)).zoom, 'a pan changes no zoom').toBeCloseTo(0.11, 4);
   });
+});
 
+// Its own test, with its own budget (each cell has 180 s): with the pan and zoom steps above, the cell took 2.5–3.2 min and timed out
+// whenever its lane's load pushed it past 3.0 (e2e 44011938933, 44003780375).
+test('canvas-names', async ({ context, project, api, signIn }) => {
+  const page = await context.newPage();
+  await signIn(page, project.url());
+  await canvasIdle(page);
   await test.step("names as it zooms: one line, cut where its box ends and whole under the pointer, on nothing; and a zoom moves no box", async () => {
     // Each box apart first: a picture an import (no tool), a word box with none.
     let shade = 30;

@@ -7,7 +7,7 @@
 const { createHash } = require('crypto');
 const { readdirSync, readFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, box, canvasIdle, focus, middle, openPoint, png, screenshotPixels, TEXT_END, canvasCard, canvasNames, canvasPoint, canvasVisible, selectedNames } = require('./fixtures');
+const { test, expect, canvasIdle, focus, middle, openPoint, png, screenshotPixels, TEXT_END, canvasCard, canvasNames, canvasPoint, canvasVisible, selectedNames } = require('./fixtures');
 const { carry, drag, drawn, rows, rowsOf } = require('./geometry');
 
 const WORDS = 'a lighthouse in <hei.2> beside <other>';
@@ -160,7 +160,9 @@ test('box-actions', async ({ page, project, api }) => {
     await input.fill('harbour');
     await input.press('Enter');
     await expect.poll(async () => (await names()).includes('harbour') && !(await names()).includes('other'), { message: 'renamed in the API' }).toBe(true);
-    await expect.configure({ soft: true }).poll(async () => (await canvasCard(page, 'harbour'))?.rendered?.labels.title?.fullText ?? await box(page, 'harbour').locator('.head .nm').textContent(), { message: 'and on the box' }).toBe('harbour');
+    // The board's own title label. Right after Enter the name field can still be over the box for a frame, and its title isn't drawn:
+    // read again, never the old canvas's DOM node, which the board has none of (its locator waited out the whole poll: 44009361497).
+    await expect.configure({ soft: true }).poll(async () => (await canvasCard(page, 'harbour'))?.rendered?.labels.title?.fullText ?? null, { message: 'and on the box' }).toBe('harbour');
     const text = (await project.asset('words')).fields.text;
     expect.soft(text.includes('<harbour>') && !text.includes('<other>'), `and in its mentions: ${text}`).toBe(true);
   });
