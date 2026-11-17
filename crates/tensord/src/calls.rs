@@ -760,26 +760,31 @@ fn invocables(
     (rows, callables)
 }
 
-/// The files a call passed by `assets=` (a list beside its request), placed at the callee's Files parameter: the callee,
-/// its inputs' custody and its memo identity read one ordinary request. Absent, the parameter is an empty list.
+/// A call's files, placed at the callee's Files parameter: the callee, its inputs' custody and its memo identity read one
+/// ordinary request. Runtime 0.47 passes them by `assets=` (a list beside the request); 0.46 sends them inside the request,
+/// as that parameter. Either is taken; both at once is refused. Absent, the parameter is an empty list.
 fn with_files(call: &mut Value, parameter: Option<&str>, module: &str, export: &str) -> Result<(), (&'static str, String)> {
     let refuse = |why: String| ("child_call_refused", why);
-    let assets = match call.as_object_mut().and_then(|call| call.remove("assets")) {
-        None => vec![],
-        Some(Value::Array(items)) => items,
-        Some(_) => return Err(refuse(format!("{module}:{export}: a call's assets are a list"))),
-    };
+    let not_a_list = || refuse(format!("{module}:{export}: a call's assets are a list"));
+    let beside = call.as_object_mut().and_then(|call| call.remove("assets"));
     let Some(parameter) = parameter else {
-        return match assets.is_empty() {
-            true => Ok(()),
-            false => Err(refuse(format!("{module}:{export} takes no files"))),
+        return match beside {
+            None => Ok(()),
+            Some(Value::Array(items)) if items.is_empty() => Ok(()),
+            Some(Value::Array(_)) => Err(refuse(format!("{module}:{export} takes no files"))),
+            Some(_) => Err(not_a_list()),
         };
     };
     let request = call.get_mut("payload").and_then(Value::as_object_mut)
         .ok_or_else(|| refuse("serving call has no request object".into()))?;
-    if request.contains_key(parameter) {
-        return Err(refuse(format!("{module}:{export}: its files come by assets=, not as its request's {parameter}")));
-    }
+    let assets = match (beside, request.remove(parameter)) {
+        (Some(_), Some(_)) => {
+            return Err(refuse(format!("{module}:{export}: its files come by assets= or as its request's {parameter}, not both")));
+        }
+        (None, None) => vec![],
+        (Some(Value::Array(items)), None) | (None, Some(Value::Array(items))) => items,
+        _ => return Err(not_a_list()),
+    };
     request.insert(parameter.into(), Value::Array(assets));
     Ok(())
 }
