@@ -17,14 +17,16 @@ const WATCHED_MS = 3_000;
  *  the stream, as Calcifer stopping for an update does, so the page connects again and hears it. */
 function newBuildOnCue() {
   const real = window.fetch.bind(window);
-  window.fetch = async (input, init) => {
-    const response = await real(input, init);
+  window.fetch = async (input, init = {}) => {
     const url = new URL(typeof input === 'string' ? input : input.url, location.href);
-    if (url.pathname !== '/v1/events' || !response.body) return response;
+    if (url.pathname !== '/v1/events') return real(input, init);
+    const dropped = new AbortController();
+    window.__dropStream = () => { dropped.abort(new DOMException('Calcifer stopped', 'AbortError')); return true; };
+    const response = await real(input, { ...init, signal: init.signal ? AbortSignal.any([init.signal, dropped.signal]) : dropped.signal });
+    if (!response.body) return response;
     const reader = response.body.getReader();
     const [decoder, encoder] = [new TextDecoder(), new TextEncoder()];
     const body = new ReadableStream({
-      start(stream) { window.__dropStream = () => { try { stream.error(new Error('Calcifer stopped')); } catch { /* ended */ } reader.cancel().catch(() => {}); }; },
       async pull(stream) {
         const { done, value } = await reader.read();
         if (done) return stream.close();
@@ -38,7 +40,7 @@ function newBuildOnCue() {
 }
 
 /** Calcifer back as another build: the page hears it on its stream. */
-const updated = (page) => page.evaluate((version) => { window.__calciferVersion = version; window.__dropStream?.(); }, NEWER);
+const updated = async (page) => expect(await page.evaluate((version) => { window.__calciferVersion = version; return window.__dropStream?.() ?? false; }, NEWER), 'its stream ended').toBe(true);
 
 /** Marked now: gone once the tab has loaded again. */
 const mark = (page) => page.evaluate(() => { window.__notReloaded = true; });
@@ -70,7 +72,8 @@ test('update', async ({ context, project, api, signIn }) => {
     await page.mouse.move(1, 1);
     await mark(page);
     await updated(page);
-    await expect.poll(() => reloaded(page), { message: 'it reloaded itself', timeout: RELOADS_MS }).toBe(true);
+    await expect.poll(() => reloaded(page), { message: 'it reloaded itself', timeout: RELOADS_MS }).toBe(true)
+      .catch(async (error) => { throw new Error(`${error.message}; focused: ${await page.evaluate(() => document.activeElement?.outerHTML.slice(0, 160)).catch(() => '?')}`); });
     await boxesUp(page);
     expect.soft(sameCamera(await camera(page), before), 'the canvas where it stood').toBe(true);
     await expect.soft(page.getByText(/Cozy updated|Reload the page/), 'and no notice').toHaveCount(0);
