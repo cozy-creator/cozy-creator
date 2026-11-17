@@ -3,9 +3,21 @@
 # While cells run, `machine show` and the current run's `run watch --once` are timed every 15 s (probe.tsv): a busy
 # machine keeps answering and is never "unreachable" (cl-671). Each minute the pod's TCP listeners are kept with the cell
 # running (listeners.log), and the summary names those beyond loopback per cell: a GPU group opens none (xs-196).
-# A pod's first call of each tree serves what has not compiled yet (its LoRA per step until the bake kernel is ready,
-# a fused block eager until it is built), so give each tree a warm-up cell before the cells it compares; each cell's
-# summary shows its `kernel.ready` and plan reports.
+# Arms. Each cell with an `update` starts an arm.
+# - The pod's derived state goes first (lib.sh `derived_state`: LoRA bakes, memos, learned peaks, kernels, page cache),
+#   then the update restarts the machine. No arm reads another's: in 44006261838 the candidate read the 0.25.0 arm's
+#   bakes and looked 9x faster cold. A census after the restart must find no derived page, memo or peak, or the session
+#   fails.
+# - In an arm a cell is `cold`, its function's first request since the arm began, or `warm`, a later one. A cell marked
+#   `"warmup": true` is the arm's own warm-up and is never compared. Its first call still serves what has not compiled
+#   yet (the LoRA per step until the bake kernel is ready, a fused block eager until it is built).
+# - states.tsv gives each cell's arm, temperature, LoRA bake blocks, derived bytes filled, persisted pages, whether the
+#   call memo answered it, and its seconds. pairs.tsv lists each compared pair, cold and warm apart.
+# - A compared pair must be the same temperature, neither memoized, a warm-up nor fetching its weights, and a cold cell
+#   must have made the derived pages it read. Else the session fails. Weights stay between arms, so give the session a
+#   first arm that runs each function once: the arm after it starts cold with every weight on disk.
+# - Two builds compared run in both orders (A B B A), checked before renting, unless params say `"order": "one-way"`
+#   (an output-only proof).
 # params:
 #   cells      [{"name", "tree" (a packages_refs name; absent, `target` is a published `<package>/<function>[@release]`,
 #              run from the packages directory: an unchanged release on a candidate Runtime), "target"
@@ -15,7 +27,10 @@
 #              run id, "tensord": true (this session's cozy as the pod's TensorD: a dev build's, `cozy` a run id,
 #              which the open RC's Runtime needs, `rc_runtime_needs_rc_cozy`), and "gpu_memory_limit" (`10GiB`,
 #              `off`: the development VRAM cap); the pod's `machine update` before this cell, so cells before and
-#              after compare two pairs)}];
+#              after compare two pairs; it starts an arm: see Arms)}];
+#              "warmup" (optional: true, the arm's own warm-up: run, never compared);
+#              "keep_state" (optional, on an update cell: true, its arm keeps the derived state before it; such an arm is
+#              compared only with another that keeps it);
 #              "wait_s" (optional: seconds the machine is left idle before the cell); "until_idle" (optional:
 #              {"region", "step_s", "max"}: while the cell's record shows the idle queue hadn't reached the region before it,
 #              wait step_s more and run it again with the next seed, as <cell>-w<i>, up to max);
@@ -28,7 +43,9 @@
 #              the runner, for a video tool's input) and `{out:<cell>}` an earlier cell's image or video;
 #              two failed cells stop the session
 #              "floor_mb_s", "floor_after_s" (optional: this cell's slow-host floor, lib.sh `step`; the session's by default);
-#   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR
+#   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR; and
+#              their seconds, cold or warm (pairs.tsv)
+#   order      optional: `abba` (default: each two builds compared run in both orders) or `one-way`
 #   need_s     seconds the cap must buy (3600)
 #   max_failures  optional: cells that may fail before the session ends (2)
 #   gpus       optional: the pod's GPU count (1); a cell's `--gpus=<n>` arg runs it on that many
@@ -64,6 +81,20 @@ for k in "${names[@]}"; do
 done
 jq -e --argjson n "$(jq -c 'map(.name)' <<<"$CELLS")" 'all(.[]; length == 2 and all(.[]; . as $x | $n | index($x)))' <<<"$COMPARE" >/dev/null ||
   fail "compare names cells that are not there"
+# Arms (see Arms): each update starts one; its build is the Runtime, TensorFS and TensorD its update names over the arm's
+# before it, its cap aside. ARMS maps each cell to its arm, build, warm-up mark and whether its arm keeps derived state.
+ARMS=$(jq -c 'reduce .[] as $c ({n: 0, build: {}, keep: false, out: {}};
+  (if $c.update then .n += 1 | .build += ($c.update | del(.gpu_memory_limit)) | .keep = ($c.keep_state // false) else . end)
+  | .out[$c.name] = {arm: .n, build: (.build | tojson), warmup: ($c.warmup // false), keep: .keep}) | .out' <<<"$CELLS")
+ORDER=$(param order abba); [[ $ORDER =~ ^(abba|one-way)$ ]] || fail "order $ORDER: abba or one-way"
+bad=$(jq -r --argjson a "$ARMS" '.[] | select($a[.[0]].warmup or $a[.[1]].warmup) | join(" vs ")' <<<"$COMPARE" | paste -sd';')
+[ -z "$bad" ] || fail "compare names a warm-up cell: $bad"
+# Each two builds compared, in the order their arms ran; with abba, both orders must be there.
+oneway=$(jq -r --argjson a "$ARMS" '[.[] | [$a[.[0]], $a[.[1]]] | select(.[0].build != .[1].build)
+  | if .[0].arm < .[1].arm then [.[0].build, .[1].build] else [.[1].build, .[0].build] end] | unique
+  | . as $seen | map(select([.[1], .[0]] as $r | any($seen[]; . == $r) | not) | "\(.[0]) before \(.[1])") | join("; ")' <<<"$COMPARE")
+[ -z "$oneway" ] || [ "$ORDER" = one-way ] ||
+  fail "builds compared in one order only (run them A B B A, or say order one-way): $oneway"
 # Each update's wheels, fetched before renting so a missing one costs nothing.
 wheel() { wheel_from "$OUT/wheels/$1-$2" "$3"; }
 declare -A UPDATE=()
@@ -194,8 +225,15 @@ EOS
   [[ ${held:-x} =~ ^[0-9]+$ ]] || fail "$1: no holder: $(head -c 300 "$OUT/hold-$1-$2.txt")"
   say "$1: holder $((held >> 20)) MiB held, $((free >> 20)) MiB left free"
 }
+# cellstate <name>: the record's LoRA bake blocks, derived bytes filled and persisted pages (the run's own measurements and
+# its calls', every GPU), and whether the call memo answered it, tab-separated.
+cellstate() { jq -r '. as $r | [.measurements, (.calls[]?.measurements)] | map(select(. != null) | .memory.stats.varena[]?.stats // empty) as $v
+  | [($v | map(.moved.bake.blocks // 0) | add // 0), ($v | map(.moved.derived.bytes // 0) | add // 0),
+     ($v | map(.baked_pages.persisted // 0) | max // 0), (($r.memo.memoized // false) or ([$r.calls[]?.memoized] | any) | tostring)] | @tsv' \
+  "$OUT/$1.json" 2>/dev/null; }
+printf 'cell\tarm\ttemperature\tbake_blocks\tderived_bytes\tpersisted\tmemoized\texec_s\tdownloaded\n' > "$OUT/states.tsv"
 fails=0
-declare -A MADE=()
+declare -A MADE=() SEEN=()
 for k in "${names[@]}"; do
   c=$(jq -c --arg k "$k" 'map(select(.name==$k)) | first' <<<"$CELLS"); mapfile -t args < <(jq -r '.args[]' <<<"$c")
   FLOOR_MBS=$(jq -r --arg d "$FLOOR0" '.floor_mb_s // $d' <<<"$c") FLOOR_AFTER=$(jq -r --arg d "$AFTER0" '.floor_after_s // $d' <<<"$c")
@@ -209,9 +247,15 @@ for k in "${names[@]}"; do
   done
   if [ -n "${UPDATE[$k]:-}" ]; then
     [ -z "$FREE_GIB" ] || [ "$k" = "${names[0]}" ] || hold "$k" off
+    # An arm begins: the derived state before it goes, and the update's restart ends every executor (see Arms).
+    keep=$(jq -r --arg k "$k" '.[$k].keep' <<<"$ARMS")
+    [ "$keep" = true ] || derived_state "$k" reset
     # shellcheck disable=SC2086 # the update's flags and wheel paths (no spaces)
     step "update-$k" machine update "$NAME" ${UPDATE[$k]} -y || fail "$k: the update"
     say "$k: pod Runtime $(cozy machine show "$NAME" --json | jq -r .status.runtime), TensorFS $(cozy machine show "$NAME" --json | jq -r .status.tensorfs)"
+    derived_state "$k" census
+    [ "$keep" = true ] || derived_zero || fail "$k: its arm starts with derived state it did not make: $DERIVED"
+    SEEN=()
   fi
   [ -z "$FREE_GIB" ] || { [ -z "${UPDATE[$k]:-}" ] && [ "$k" != "${names[0]}" ]; } || hold "$k" on
   mapfile -t gone < <(jq -r '.uninstall // [] | .[]' <<<"$c")
@@ -266,6 +310,15 @@ for k in "${names[@]}"; do
     say "$k: $reg's idle queue before the last request: $q (after ${waited}s idle; the last request is $kk)"
   fi
   say "$k weights: $(weights "$k")"
+  # Its temperature in its arm: the warm-up's, else cold for its function's first request since the arm began, else warm.
+  if [ "$(jq -r --arg k "$k" '.[$k].warmup' <<<"$ARMS")" = true ]; then temp=warmup; elif [ -n "${SEEN[$target]:-}" ]; then temp=warm; else temp=cold; fi
+  SEEN[$target]=1
+  read -r bake derived persisted memo < <(cellstate "$k")
+  # Weights fetched inside the request: its seconds are the link's (44006261838: 0.25.0's first H3 spent 454 s of 822 here).
+  fetched=false; ! grep -qE 'downloading .* weights [0-9.]+ [KMG]i?B/' "$OUT/$k.txt" 2>/dev/null || fetched=true
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$k" "$(jq -r --arg k "$k" '.[$k].arm' <<<"$ARMS")" "$temp" "${bake:-0}" "${derived:-0}" \
+    "${persisted:-0}" "${memo:-false}" "$(jq -r '(.execution_ms // 0) / 1000' "$OUT/$k.json" 2>/dev/null)" "$fetched" >> "$OUT/states.tsv"
+  say "$k state: $temp, bake ${bake:-0}, derived $(( ${derived:-0} / 1000000000 )) GB, persisted ${persisted:-0}, memoized ${memo:-false}, fetched weights $fetched"
   want=$(jq -r '.expect // "completed"' <<<"$c")
   if [ "$st" != completed ]; then
     why=$(jq -r '.reason.message // .reason // empty' "$OUT/$k.json" 2>/dev/null)
@@ -310,4 +363,27 @@ say "unreachable lines in the cells' follow output: $u"
 say "bench same-seed judge: $judged of $(jq length <<<"$COMPARE") pairs differ"
 awk -F'\t' 'NR>1{n++; if($2>m)m=$2; if($3!=0)e++; if($6!=""){r++; if($6>q)q=$6; if($7!=0)f++}; u+=$9}
   END{printf "probe: %d machine show (max %d ms, %d failed), %d run watch (max %d ms, %d non-zero), %d unreachable\n", n, m, e, r, q, f, u}' "$OUT/probe.tsv" | tee -a "$R"
-[ "$fails" = 0 ] && [ "$differ" = 0 ] || fail "$fails cells did not complete, $differ pairs differ"
+# Each compared pair's seconds, cold and warm apart (pairs.tsv), and whether it may be compared at all (see Arms).
+printf 'temperature\ta\tb\ta_s\tb_s\tb_vs_a\tfair\n' > "$OUT/pairs.tsv"
+unfair=0
+while read -r a b; do
+  IFS=$'\t' read -r _ _ ta bake_a der_a _ memo_a sa dl_a < <(awk -F'\t' -v k="$a" '$1 == k' "$OUT/states.tsv")
+  IFS=$'\t' read -r _ _ tb bake_b der_b _ memo_b sb dl_b < <(awk -F'\t' -v k="$b" '$1 == k' "$OUT/states.tsv")
+  why=''
+  [ -n "${ta:-}" ] && [ -n "${tb:-}" ] || why="a cell did not run"
+  [ -n "$why" ] || [ "$ta" = "$tb" ] || why="$a is $ta, $b is $tb"
+  [ -n "$why" ] || { [ "$memo_a" != true ] && [ "$memo_b" != true ]; } || why="the call memo answered one"
+  [ -n "$why" ] || { [ "$dl_a" != true ] && [ "$dl_b" != true ]; } || why="one fetched its weights: run each function once before the first arm"
+  [ -n "$why" ] || [ "$(jq -r --arg a "$a" --arg b "$b" '.[$a].keep == .[$b].keep' <<<"$ARMS")" = true ] || why="one arm kept another's derived state"
+  for x in "$a:$ta:$bake_a:$der_a" "$b:$tb:$bake_b:$der_b"; do
+    IFS=: read -r c t bk dr <<<"$x"
+    [ -n "$why" ] || [ "$t" != cold ] || [ "${dr:-0}" = 0 ] || [ "${bk:-0}" != 0 ] || why="cold $c read derived pages it did not make"
+  done
+  d=$(awk -v x="${sa:-0}" -v y="${sb:-0}" 'BEGIN { if (x > 0) printf "%+.1f%%", (y / x - 1) * 100; else print "-" }')
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${ta:-none}" "$a" "$b" "${sa:-}" "${sb:-}" "$d" "${why:-yes}" >> "$OUT/pairs.tsv"
+  [ -z "$why" ] || { unfair=$((unfair + 1)); say "$a vs $b: NOT COMPARABLE: $why"; }
+done < <(jq -r '.[] | "\(.[0]) \(.[1])"' <<<"$COMPARE")
+for t in cold warm; do
+  say "$t pairs (a s, b s, b vs a): $(awk -F'\t' -v t="$t" '$1 == t && $7 == "yes" {printf "%s %s %s %s %s; ", $2, $3, $4, $5, $6}' "$OUT/pairs.tsv")"
+done
+[ "$fails" = 0 ] && [ "$differ" = 0 ] && [ "$unfair" = 0 ] || fail "$fails cells did not complete, $differ pairs differ, $unfair pairs not comparable"

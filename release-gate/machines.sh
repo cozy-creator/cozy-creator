@@ -54,3 +54,16 @@ run_clock() {
     ([.runs[] | .progress.at_ms, .settled_at_ms, .started_at_ms, .accepted_at_ms, .created_at_ms | numbers] | max // 0) as $at
     | [$at, (.runs[] | select(.status == "queued" or .status == "in_progress") | if (.name // "") != "" then .name else .id end)] | map(tostring) | join(" ")'
 }
+
+# pod_derived <cli> <machine> <reset|census>: release-gate/derived-state.sh on the machine's root shell (an `--ssh` rental):
+# `reset` clears what earlier runs left besides weights and installs (LoRA bakes, memos, learned peaks, kernels, page cache);
+# both print its census line, `derived N memo N peaks N kernels N jit N cached_gib X`. Nothing printed: no answer.
+pod_derived() {
+  local script
+  script=$(base64 -w0 < "$(dirname "${BASH_SOURCE[0]}")/derived-state.sh") || return 1
+  timeout 300 "$1" machine ssh "$2" -- "echo $script | base64 -d > /var/tmp/derived-state.sh && sh /var/tmp/derived-state.sh $3" < /dev/null |
+    grep -E '^derived [0-9]+ memo [0-9]+ peaks [0-9]+ kernels [0-9]+ jit [0-9]+' | tail -1
+}
+# pod_derived_zero <census line>: no derived page, memo entry or learned peak (an arm's own executors may compile kernels as
+# they boot).
+pod_derived_zero() { awk '{exit !($2 == 0 && $4 == 0 && $6 == 0)}' <<<"$1"; }

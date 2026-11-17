@@ -77,6 +77,23 @@ if [ -n "${SESSION_UNTIL:-}" ]; then
   ( left=$((SESSION_UNTIL - $(date +%s) - 300)); [ "$left" -le 0 ] || sleep "$left" || exit 0  # killed by `finish`
     say "DEADLINE: the step ends in 5 min; this session ends now"; kill -TERM $$ ) 9>&- & DL=$!
 fi
+# derived_state <label> <reset|census>: the pod's derived state (release-gate/derived-state.sh, machines.sh `pod_derived`):
+# `reset` before an update's restart begins an arm, `census` counts what is left. DERIVED holds the census line; a cold arm
+# starts with no derived page, memo entry or learned peak (`derived_zero`). The call memo can't be cleared there: a record
+# it answered says `memoized`, and ab.sh never compares one. No `cozy` verb clears any of this (tfs-299): the root shell
+# is the only way in.
+DERIVED=''
+derived_state() {
+  local try line=''
+  for try in 1 2 3 4 5 6; do
+    line=$(pod_derived cozy "$NAME" "$2" 2> "$OUT/derived-$1-$2.err")
+    [ -z "$line" ] || break
+    say "$1: derived state $2, try $try: $(grep -v '^Warning: Permanently added' "$OUT/derived-$1-$2.err" | head -c 200)"; sleep 10
+  done
+  [ -n "$line" ] || fail "$1: no derived-state $2 from $NAME"
+  DERIVED=$line; say "$1: derived state after $2: $line"
+}
+derived_zero() { pod_derived_zero "$DERIVED"; }
 # claim: what this runner's Calcifer ordered (machines.sh `own`) joins RIDS and $OUT/rental, for a session whose own work
 # orders too (a page's Rent). Only on a runner, whose Calcifer started with none.
 claim() {
