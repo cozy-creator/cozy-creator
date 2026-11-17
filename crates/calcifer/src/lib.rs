@@ -777,6 +777,11 @@ impl Calcifer {
         rows
     }
 
+    /// Run `id`'s row as its journal holds it now: none when it can't be read.
+    pub(crate) fn run_row(&self, id: &RunId) -> Option<RunRow> {
+        self.with_run_store(id.as_str(), |store| store.run(id.as_str())).ok().flatten()
+    }
+
     fn with_run_store<T>(&self, id: &str, f: impl FnOnce(&store::RunStore<'_>) -> store::Result<T>) -> store::Result<T> {
         let store = self.run_store(id)?;
         f(&store)

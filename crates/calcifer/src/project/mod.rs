@@ -470,9 +470,11 @@ impl Projects {
         let (folder, Identified { id, name, code, key }) = match (opened, rendering) {
             (Err(error), Some(old)) if error.code == "project_moving" => {
                 // Moved while it rendered (cl-1066): its walker lets go at a step's end, and it opens here, its walk and runs taken over.
-                tokio::task::block_in_place(|| hand_over(api, &old, &root, dir))?;
+                tokio::task::block_in_place(|| hand_over(&old, &root, dir))?;
                 self.open.lock().expect("projects lock").remove(&old.id);
-                return self.open(api, dir);
+                let project = self.open(api, dir)?;
+                tokio::task::block_in_place(|| take_over(api, &project, &old.root));
+                return Ok(project);
             }
             (opened, _) => opened?,
         };
@@ -591,9 +593,8 @@ fn db_file(dir: &FsPath) -> Option<(u64, u64)> {
 const HANDOVER: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// `old`, a plaintext project that rendered as its folder moved to `root` (`dir`, as it reads now), let go of (cl-1066): its walker ends
-/// at its next step, this computer's machine reads its runs' files where it is now, and its runs are routed to the open there as it
-/// attaches. Busy, briefly, if the walker doesn't end in time.
-fn hand_over(api: &Arc<Api>, old: &Arc<Project>, root: &FsPath, dir: &FsPath) -> Result<(), Error> {
+/// at its next step, keeping nothing. Busy, briefly, if it doesn't end in time.
+fn hand_over(old: &Arc<Project>, root: &FsPath, dir: &FsPath) -> Result<(), Error> {
     old.moved.store(true, std::sync::atomic::Ordering::Release);
     old.asked.notify_one();
     let due = Instant::now() + HANDOVER;
@@ -603,9 +604,109 @@ fn hand_over(api: &Arc<Api>, old: &Arc<Project>, root: &FsPath, dir: &FsPath) ->
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    crate::private_io::moved(&old.root, dir)?;
-    tokio::runtime::Handle::current().block_on(crate::private_io::reprove(api.clone(), old.id.clone(), dir.to_owned()));
-    Ok(())
+    crate::private_io::moved(&old.root, dir)
+}
+
+/// `project`, opened where it moved to as it rendered (cl-1066), takes its runs and its walk over. What this computer's machine was
+/// running of it is sent again here: that machine works inside the folder (its scratch, its executors, its environments), so nothing it
+/// was doing follows a move. Its executors there end, what they made again where it was goes ([`clean_left`]), and it says so in one
+/// line. Runs on other machines go on, and land here.
+fn take_over(api: &Arc<Api>, project: &Arc<Project>, was: &FsPath) {
+    let store = match RunOwner::of(project, &api.calcifer).store() {
+        Ok(store) => store,
+        Err(error) => return warn!("{}: its runs stay where it was: {error}", project.root.display()),
+    };
+    match api.calcifer.attach_project(&store) {
+        Ok(true) => {}
+        // A request took it over first, and its walk goes on.
+        Ok(false) => return,
+        Err(error) => return warn!("{}: its runs stay where it was: {error}", project.root.display()),
+    }
+    let restarted = match restart_local(project, &store) {
+        Ok(restarted) => restarted,
+        Err(error) => {
+            warn!("{}: what this computer's machine ran of it isn't sent again: {}", project.root.display(), error.message);
+            vec![]
+        }
+    };
+    drop(store);
+    if !restarted.is_empty() {
+        let ids: Vec<RunId> = restarted.iter().map(|(id, _)| id.clone()).collect();
+        for id in &ids {
+            if let Err(error) = api.calcifer.cancel(id) { warn!(run = %id, "a run of a moved project goes on where it was: {error}"); }
+        }
+        let handle = tokio::runtime::Handle::current();
+        handle.block_on(ended(api, &ids));
+        if let Err(error) = handle.block_on(crate::private_io::close_private_project(api, &project.root)) {
+            warn!("{}: this computer's machine keeps its executors from where it was: {}", project.root.display(), error.message);
+        }
+        clean_left(was);
+        let names: Vec<&str> = restarted.iter().map(|(_, name)| name.as_str()).collect();
+        project.said.lock().expect("said lock").push(format!("{} restarted in the moved folder.", names.join(", ")));
+    }
+    tokio::spawn(crate::hub::jobs::resume_project(api.clone(), project.id.clone()));
+    let resumes = RunOwner::of(project, &api.calcifer).store().is_ok_and(|store| store.resume_allowed().unwrap_or(false));
+    if resumes && project.folder.lock().is_ok_and(|lock| lock.owes()) {
+        walk(api, project);
+    }
+}
+
+/// What this computer's machine is running of `project`, each run's id and asset. Each made by one of its renders goes again: its walk
+/// owes it as before it was sent.
+fn restart_local(project: &Project, store: &ProjectStore) -> Result<Vec<(RunId, String)>, Error> {
+    let walk = project.folder.walk_now()?;
+    let (mut restarted, mut again) = (vec![], vec![]);
+    for (key, pending) in &walk.pending {
+        let Ok(Some(row)) = store.run_by_number(pending.run) else { continue };
+        if pending.run == 0 || row.state == crate::store::State::Settled || row.machine.as_deref() != Some("local") {
+            continue;
+        }
+        restarted.push((row.id.clone(), pending.asset.clone()));
+        if *key == walker::owed_key(&pending.ask, &name_key(&pending.asset)) {
+            again.push((key.clone(), pending.ask.clone(), name_key(&pending.asset), pending.run));
+        }
+    }
+    project.folder.update_walk(|walk| {
+        for (key, ask, name, run) in &again {
+            walk.pending.remove(key);
+            walk.walk.runs.remove(run);
+            walk.walk.landing.retain(|row| row.run != *run);
+            for mine in walk.walk.asks.iter_mut().filter(|mine| &mine.id == ask) {
+                mine.sent.remove(name);
+            }
+        }
+    })?;
+    Ok(restarted)
+}
+
+/// Back once each of `ids` ended, or after `HANDOVER`.
+async fn ended(api: &Arc<Api>, ids: &[RunId]) {
+    let mut tail = api.calcifer.subscribe();
+    let over = |id: &RunId| api.calcifer.run_row(id).is_none_or(|row| row.state == crate::store::State::Settled);
+    let _ = tokio::time::timeout(HANDOVER, async {
+        for id in ids {
+            while !over(id) {
+                crate::Calcifer::moved(&mut tail, id).await;
+            }
+        }
+    }).await;
+}
+
+/// Cozy's own folders in a project: what this computer's machine and Calcifer keep there.
+const OWN: [&str; 4] = [".vault-machine", ".vault-calcifer", ".vault-inputs", api::machine::LOCAL_PRIVATE_MARKER];
+
+/// `was`, where a moved project was, removed when its machine made Cozy's own folders there again as its runs stopped, and it holds
+/// nothing else: never a project.db or anything of anyone's. What went is logged.
+fn clean_left(was: &FsPath) {
+    let Ok(entries) = std::fs::read_dir(was) else { return };
+    let names: Vec<String> = entries.filter_map(|entry| entry.ok()).map(|entry| entry.file_name().to_string_lossy().into_owned()).collect();
+    if names.is_empty() || !names.iter().all(|name| OWN.contains(&name.as_str())) {
+        return;
+    }
+    match std::fs::remove_dir_all(was) {
+        Ok(()) => tracing::info!("{}: removed {}, made again there as the moved project's runs stopped", was.display(), names.join(", ")),
+        Err(error) => warn!("{}: Cozy's own folders made again there stay: {error}", was.display()),
+    }
 }
 
 /// Where a run of the project in `dir` lands its outputs.

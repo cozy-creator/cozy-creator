@@ -340,7 +340,8 @@ J '.board.ended != null and .board.elapsed_ms != null' <<< "$(status "$W")" || c
 
 
 # cl-1066: a project folder moved while it renders opens where it is now; its walk goes on there, and what lands lands there. It was
-# refused `project_busy` ("Move it back, or wait until its renders finish before moving it").
+# refused `private_storage_unavailable` ("This project moved while its runs were open on this computer's machine"), then `project_busy`
+# ("Move it back, or wait until its renders finish before moving it").
 moved_rendering() {
 step "a project: moved while it renders, it opens where it is now and its renders land there (cl-1066)"
 local M=$OUT/moving N=$OUT/moved id run answer
@@ -356,6 +357,9 @@ mv "$M" "$N"
 # A handover that's still letting go answers busy for a moment, as a page retries.
 for _ in $(seq 30); do answer=$(project_api "$N" '' 2>&1) && break; sleep 1; done
 J --arg i "$id" '.id == $i' <<< "$answer" || { check "moved: it doesn't open where it is now: $(head -c 300 <<< "$answer")"; return; }
+# This computer's machine works inside the folder: what it was running goes again here, said in one line (coordinator, 11-17).
+J '(.warnings // []) | any(.message | test("^long restarted in the moved folder"))' <<< "$answer" \
+  || check "moved: its local run wasn't said restarted: $(jq -c '.warnings' <<< "$answer")"
 for _ in $(seq 240); do J '.busy | not' <<< "$(status "$N")" && break; sleep 0.5; done
 { [ "$(made "$N" long)" = 1 ] && [ "$(made "$N" after)" = 1 ]; } \
   || check "moved: its renders didn't land where it is now: $(status "$N" | jq -c '{busy, jobs: [.board.jobs[] | {asset, state, error: .error.message}]}')"
