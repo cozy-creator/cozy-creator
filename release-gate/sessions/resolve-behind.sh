@@ -11,7 +11,6 @@
 #   big_before, big_after      models `cozy model install` downloads (default minimaxai/minimax-h3, qwen/qwen-image-2.1)
 #   small_before, small_after  models the cold resolve reads (default qwen/qwen3.5-0.8b@0.1.0, huihui-ai/huihui-qwen3.5-0.8b-abliterated@0.1.0)
 #   seconds       what the cap must buy (default 1800)
-#   then, then_params  a session run on the pod after (`on_this`), and its params (default none)
 . "$(dirname "$0")/lib.sh"
 check() { say "FAIL $*"; [ "${LABEL:-}" = before ] || RC=1; }
 for tool in jq python3; do command -v "$tool" > /dev/null || fail "no $tool"; done
@@ -35,7 +34,7 @@ cfg=$HOME/.cozy/config.toml
 mkdir -p "${cfg%/*}" && touch "$cfg" || fail "no $cfg"
 { echo 'dev = true'; grep -v '^dev *=' "$cfg" || true; } > "$cfg.new" && mv "$cfg.new" "$cfg" || fail "dev = true not written"
 cozy restart > "$OUT/restart.txt" 2>&1 || fail "cozy restart: $(tail -c 300 "$OUT/restart.txt")"
-[ -z "$(own)" ] || fail "this runner's Calcifer already holds a rental: $(own | paste -sd' ')"
+[ -n "$ON" ] || [ -z "$(own)" ] || fail "this runner's Calcifer already holds a rental: $(own | paste -sd' ')"
 trap 'code=$?; claim; (exit "$code"); finish' EXIT
 quote "$(param seconds 1800)"
 GUARD_ALSO=own guard
@@ -114,5 +113,4 @@ PY
 measure after "$OUT/after-cozy" "$(param big_after qwen/qwen-image-2.1)" "$(param small_after huihui-ai/huihui-qwen3.5-0.8b-abliterated@0.1.0)"
 cozy machine logs "$NAME" tensord --since 2h -n 0 > "$OUT/tensord.log" 2>&1
 { echo "## resolve-behind on $NAME ($SKU)"; cat "$OUT"/*-resolve.txt 2> /dev/null | sed 's/^/- /'; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
-[ -z "$(param then '')" ] || on_this "$(param then)" "$(param then_params '{}')"
 exit "$RC"
