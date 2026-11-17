@@ -1,16 +1,47 @@
 # render-on-new (cl-1066; Paul: "`--on new`: `run` first, then `render`"): `cozy render box --on new:$SKU -y` on a runner with no
 # GPU, as a person types it: the render's one rental quoted (POST /v1/projects/{id}/render-quote) and agreed, ordered by Calcifer, and the
-# box's take made there and landed in the project. A weightless still (e2e's draw.py), so the cheapest product answers it. The rental
-# is this runner's Calcifer's order: the guard reads what the Hub bills for it, and the trap ends it and checks the Hub lists it ended.
+# box's take made there and landed in the project. A weightless still, so the cheapest product answers it, written for the SDK of the
+# Runtime production's pods run (e2e's draw.py is the RC's: 44066012481's pod had no `ImageFile.from_image`). The rental is this
+# runner's Calcifer's order: the guard reads what the Hub bills for it, and the trap ends it and checks the Hub lists it ended.
 # One rental of $SKU, ordered by the render. It takes no params.
 . "$(dirname "$0")/lib.sh"
-E2E=$(cd "$(dirname "$0")/../../e2e/cli" && pwd)
-[ -f "$E2E/project/draw.py" ] || fail "no e2e/cli/project/draw.py"
 J() { jq -e "$@" > /dev/null; }
+TOOL=$OUT/tool/still.py
+mkdir -p "${TOOL%/*}"
+cat > "$TOOL" <<'TOOL'
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["cozy-runtime[media]>=0.43.1,<0.47", "msgspec>=0.19"]
+# ///
+"""A weightless still of one random colour."""
+
+import os
+
+import msgspec
+from cozy_runtime.author import Adjustments, App, ImageFrame, Outputs, Seed
+from cozy_runtime.fields import Image, Prompt
+from cozy_runtime.image import ImageRequest, ImageResult, Sizes
+
+app = App()
+SIZES = Sizes((0.25, 4.0), (64, 8192), 16, "the still's 0.25-4 MP")
+
+
+class Drawing(msgspec.Struct, kw_only=True):
+    instructions: Prompt[Image] = Prompt()
+    seed: Seed | None = None
+
+
+@app.tool(label="Draw", named="drawing")
+def draw(payload: Drawing, adj: Adjustments, out: Outputs) -> ImageResult:
+    asked = ImageRequest(payload.instructions.text, None, None, payload.seed)
+    width, height = asked.size(adj, None, SIZES, megapixels=0.25)
+    image = out.save_image(ImageFrame(width, height, os.urandom(3) * (width * height)), format="png")
+    return ImageResult(image, width, height, payload.seed or 0, payload.instructions.text)
+TOOL
 # What this runner's Calcifer ordered is this session's: it started with none.
 trap 'code=$?; claim; (exit "$code"); finish' EXIT
 [ -z "$(own)" ] || fail "this runner's Calcifer already holds a rental: $(own | paste -sd' ')"
-jq -n --arg e "$E2E" '[{name: "box", tool: "\($e)/project/draw.py/draw", kind: "image", fields: {instructions: "a lighthouse at dusk"}}]' \
+jq -n --arg t "$TOOL" '[{name: "box", tool: "\($t)/draw", kind: "image", fields: {instructions: "a lighthouse at dusk"}}]' \
   | run_page boxes > "$OUT/boxes.txt" 2>&1 || fail "the box: $(tail -3 "$OUT/boxes.txt")"
 # A pod's boot, the still's install there and its call: 20 minutes is plenty.
 quote 1200
