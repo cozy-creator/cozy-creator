@@ -103,8 +103,12 @@ def main() -> None:
     record = json.loads(db.execute("SELECT record FROM versions WHERE key = 'still' ORDER BY number DESC LIMIT 1").fetchone()[0])
     db.close()
     run, number = str(record["run_id"]), int(record["run"])
-    rev, exported, _, _ = output_row(project, run, "latents")
-    assert exported == rev, f"the latents never landed: rev {rev}, exported {exported}"
+    # The render answers once its take is; its latents land after (cl-1093, as kept_latents.py waits for them).
+    landing = time.monotonic() + 60
+    while (row := output_row(project, run, "latents"))[1] != row[0] and time.monotonic() < landing:
+        time.sleep(0.2)
+    rev, exported, _, _ = row
+    assert exported == rev, f"the latents never landed within 60 s: rev {rev}, exported {exported}"
 
     # Calcifer and the machine stopped; the latents' bytes gone from the machine; their export owed again.
     pid = int(json.loads(LOCK.read_text())["pid"])
