@@ -331,7 +331,7 @@ impl Plan {
     /// What a call of it loads (`access::Needs`, cl-1102): what it wants of its slots by its rules (`needs::wants`, cl-1103: every
     /// slot but an on-demand one and those the request's rules say it reads are needed, its raw weights too; its other on-demand
     /// slots are extras, which a stage may read), as its checkpoints.
-    pub(crate) fn needs(&self, wants: &api::machine::Wants) -> crate::access::Needs {
+    pub(crate) fn needs(&self, wants: &needs::Wants) -> crate::access::Needs {
         crate::access::Needs::of(needs::resolved(wants, |slot| self.selected(slot)))
     }
     /// All its calls may read, on-demand slots too: what a `downloaded` warm set member holds,

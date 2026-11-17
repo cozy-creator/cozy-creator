@@ -16,7 +16,6 @@ use std::{
     sync::Arc,
 };
 
-use api::machine::Wants;
 
 use api::interface::{Field, Struct, Type};
 use cel::common::ast::{operators, CallExpr, ComprehensionExpr, EntryExpr, Expr, IdedExpr, LiteralValue};
@@ -83,6 +82,32 @@ pub fn answers(entry: &Value, sent: &Value) -> Answers {
         };
     }
     answers
+}
+
+/// What a call wants of its models, by slot (`<function>.models.<parameter>`), as its function's needs rules say of its request
+/// (`wants`): the slots it waits for before it starts; for each function it may call that no rule answers for, the slots that one
+/// waits for, of which what they all read is waited for; and what it may read besides, by group, fetched only in the background. A
+/// slot named in none is never fetched for it. Each side resolves a slot to a checkpoint itself (`resolved`): Calcifer by its Hub
+/// card, to quote a call; a machine for its lane and store, to fetch one.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Wants {
+    pub needed: Vec<String>,
+    pub either: Vec<Vec<String>>,
+    pub extras: Vec<(String, Vec<String>)>,
+}
+
+impl Wants {
+    /// Each function a slot of it belongs to, once, in the order first named.
+    pub fn functions(&self) -> Vec<&str> {
+        let slots = self.needed.iter().chain(self.either.iter().flatten()).chain(self.extras.iter().flat_map(|(_, slots)| slots));
+        let mut functions: Vec<&str> = vec![];
+        for function in slots.filter_map(|slot| slot.split_once(".models.").map(|(function, _)| function)) {
+            if !functions.contains(&function) {
+                functions.push(function);
+            }
+        }
+        functions
+    }
 }
 
 /// The extras of a function's own on-demand slots, as a group.

@@ -62,12 +62,15 @@ fi
 say "cozy $V, a dev home; qwen-image-2 $(sed -n 's/^version = "\(.*\)"/\1/p' "$SOURCE/qwen-image-2/pyproject.toml" | head -1) from $TREE $(git -C "$SOURCE" rev-parse --short=8 HEAD 2> /dev/null)${CPU_SKU:+; steps 2–3 on $CPU_SKU}"
 quote "$(param need_s 3600)" "$SKU" ${CPU_SKU:+"$CPU_SKU"}
 
-# shown <file>: what the machine says it holds now. held <file> <repository>: its bytes there; whole: a checkpoint of it is complete.
+# shown <file>: what the machine says it holds now. held <file> <repository>: its bytes there (`total_bytes`; a checkpoint whose
+# header alone landed, as a plan's resolution brings every slot's, holds a few hundred KiB); whole: a checkpoint of it is complete.
+# total: what it holds of every model, each object once (each one's own bytes, and what they share once).
 shown() { cozy --json machine show "$NAME" > "$1" 2> /dev/null || true; }
-held() { jq -r --arg m "$2" '[.status.models[]? | select(.repository == $m) | .checkpoints[]?.held_bytes // 0] | add // 0' "$1" 2> /dev/null || echo 0; }
+held() { jq -r --arg m "$2" '[.status.models[]? | select(.repository == $m) | .total_bytes // 0] | add // 0' "$1" 2> /dev/null || echo 0; }
 whole() { jq -e --arg m "$2" '[.status.models[]? | select(.repository == $m) | .checkpoints[]?.complete] | any' "$1" > /dev/null 2>&1; }
-models() { jq -c '[.status.models[]? | {repository, held: ([.checkpoints[]?.held_bytes // 0] | add), complete: [.checkpoints[]?.complete]}]' "$1" 2> /dev/null; }
-total() { jq -r '[.status.models[]?.checkpoints[]?.held_bytes // 0] | add // 0' "$1" 2> /dev/null || echo 0; }
+models() { jq -c '[.status.models[]? | {repository, total_bytes, unique_bytes, complete: [.checkpoints[]?.complete]}]' "$1" 2> /dev/null; }
+total() { jq -r '([.status.models[]?.unique_bytes // 0] | add // 0) as $own | ([.status.models[]? | (.total_bytes // 0) - (.unique_bytes // 0)] | max // 0) as $shared | $own + $shared' "$1" 2> /dev/null || echo 0; }
+HEADER=$((16 << 20))
 # record <box> <file>: its newest run's whole record (`cozy run watch --once --full`).
 record() {
   local n
@@ -89,7 +92,8 @@ page() {
     stream=$(sed -n 's/^data: //p' "$OUT/page-$NAME.sse" | jq -r 'select(.type == "hello") | .stream' 2> /dev/null | head -1); [ -n "$stream" ] && break; sleep 0.1
   done
   [ -n "$stream" ] || fail "the page's stream said no hello: $(head -c 300 "$OUT/page-$NAME.sse")"
-  id=$(cd "$RUN_PROJECT" && cozy --json status | jq -r '.id // empty')
+  id=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import page; print(page.read(sys.argv[2])["id"])' "$(dirname "$RUN_PAGE")" "$RUN_PROJECT" 2> "$OUT/id.err")
+  [ -n "$id" ] || fail "the project's id: $(tail -c 300 "$OUT/id.err")"
   curl -fsS -X PUT "${headers[@]}" -H "Origin: http://$addr" -H 'Content-Type: application/json' -d "$(jq -nc --arg id "$id" '{projects: [$id]}')" \
     "http://$addr/v1/events/$stream" > "$OUT/show-$NAME.json" 2>&1 || fail "the page couldn't show the project: $(tail -c 300 "$OUT/show-$NAME.json")"
 }
@@ -114,13 +118,13 @@ switch() {
   local began=$SECONDS guessed='' had
   while [ $((SECONDS - began)) -lt 1800 ]; do
     shown "$OUT/guess.json"; guessed=$(row)
-    [ "$(held "$OUT/guess.json" "$I2I")" = 0 ] || fail "expander_i2i came for a text-to-image draft: $(models "$OUT/guess.json")"
+    [ "$(held "$OUT/guess.json" "$I2I")" -le "$HEADER" ] || fail "expander_i2i came for a text-to-image draft: $(models "$OUT/guess.json")"
     ! whole "$OUT/guess.json" "$T2I" || fail "expander_t2i was whole before the edit could cut it (no unfinished bytes to stop): $(models "$OUT/guess.json")"
-    [ "$(held "$OUT/guess.json" "$T2I")" -gt $((64 << 20)) ] && break
+    { [ "$(held "$OUT/guess.json" "$T2I")" -gt $((64 << 20)) ] || [ "$(jq -r '.done // 0' <<< "${guessed:-null}")" -gt $((64 << 20)) ]; } && break
     sleep 1
   done
   had=$(held "$OUT/guess.json" "$T2I")
-  [ "$had" -gt 0 ] || fail "draw's guess brought no expander_t2i to $NAME in 30 min: $(models "$OUT/guess.json"); its row: ${guessed:-none}"
+  [ "$had" -gt "$HEADER" ] || [ "$(jq -r '.done // 0' <<< "${guessed:-null}")" -gt 0 ] || fail "draw's guess brought no expander_t2i to $NAME in 30 min: $(models "$OUT/guess.json"); its row: ${guessed:-none}"
   say "draw's guess on $NAME: ${guessed}; it holds $had bytes of expander_t2i, none of expander_i2i: $(models "$OUT/guess.json")"
   say "step 3: draw's draft mentions <pic>"
   run_page set draw --fields "$(jq -nc --arg w "$PICTURED" '{instructions: $w}')" > "$OUT/set.json" 2>&1 || fail "draw's edit: $(tail -c 300 "$OUT/set.json")"
@@ -160,7 +164,7 @@ shown "$OUT/after-first.json"
 quoted=$(jq -r '.placed.fetch_bytes // empty' "$OUT/first.json") waited=$(jq -r '.measurements.weights.needs // empty' "$OUT/first.json")
 say "first: quoted $quoted bytes to download ($(jq -c .placed "$OUT/first.json")); waited for $waited ($(jq -c .measurements.weights "$OUT/first.json")); $NAME holds $(total "$OUT/after-first.json"): $(models "$OUT/after-first.json")"
 [ -n "$quoted" ] && [ -n "$waited" ] || fail "first's record says no quote or no needs"
-[ "$(held "$OUT/after-first.json" "$T2I")" = 0 ] && [ "$(held "$OUT/after-first.json" "$I2I")" = 0 ] ||
+[ "$(held "$OUT/after-first.json" "$T2I")" -le "$HEADER" ] && [ "$(held "$OUT/after-first.json" "$I2I")" -le "$HEADER" ] ||
   fail "an enhancer came for a request with prompt_upsampling off: $(models "$OUT/after-first.json")"
 # The quote counts each component's chunks; the machine its objects: a header's bytes apart at most.
 [ "$waited" -gt 0 ] && [ $(( (quoted > waited ? quoted - waited : waited - quoted) * 200 )) -le "$waited" ] ||
@@ -171,7 +175,7 @@ if [ -n "$CPU_SKU" ]; then
   page
   guess_ready "$OUT/switch.json" "$I2I" 30
   T2I_LEFT=$(held "$OUT/switch.json" "$T2I")
-  [ "$T2I_LEFT" = 0 ] || fail "expander_t2i came for a draft with a picture: $(models "$OUT/switch.json")"
+  [ "$T2I_LEFT" -le "$HEADER" ] || fail "expander_t2i came for a draft with a picture: $(models "$OUT/switch.json")"
   say "draw ready on $NAME, expander_i2i whole, none of expander_t2i: $(models "$OUT/switch.json")"
 else
   switch

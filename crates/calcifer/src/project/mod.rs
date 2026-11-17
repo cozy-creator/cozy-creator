@@ -201,6 +201,8 @@ pub(crate) struct Project {
     _watch: Option<platform::watch::Watcher>,
     /// What its boxes would run is guessed while it's open (`guess::keep`), since a page first showed it.
     guessing: std::sync::atomic::AtomicBool,
+    /// Each box's seed drawn for its draft (cl-1123), by name key: the one its predicted request carries, which its next render takes.
+    drafts: Mutex<HashMap<String, u64>>,
 }
 
 impl Drop for Project {
@@ -498,6 +500,7 @@ impl Projects {
                     unseen: Mutex::new(unseen),
                     _watch: watch,
                     guessing: Default::default(),
+                    drafts: Mutex::default(),
                 });
                 // What closed since the last open goes from the list.
                 open.retain(|_, held| held.strong_count() > 0);
@@ -1572,7 +1575,7 @@ struct Walker {
     /// Each job's planned start and the machines that can run it, by its key, as the last plan said.
     starts: HashMap<String, (i64, Vec<String>)>,
     /// What each machine is told to have ready for each job, by machine and job key: its Hub, item and function; none: nothing.
-    items: HashMap<(String, String), Option<(String, v1::Ahead, String)>>,
+    items: HashMap<(String, String), Option<(String, v1::Predicted, String)>>,
     /// Items being made.
     making: HashSet<(String, String)>,
     /// The last turn held a job for a busy machine.
@@ -4056,30 +4059,55 @@ impl Asking {
     }
 }
 
-/// What a call of `function` of `package` wants of its models, by slot (cl-1103): its needs rules evaluated on `request` (none: no rule
-/// answers), walked over the functions it calls (`needs::wants`), the walk its machine makes of a request that comes with none.
-pub(super) fn wants(package: &Package, function: &str, request: Option<&Value>) -> v1::Wants {
-    let document = package.document();
-    let answers = match (request, api::interface::entrypoint(document, function)) {
-        (Some(request), Some(entry)) => ::needs::answers(entry, request),
-        _ => ::needs::Answers::default(),
-    };
-    ::needs::wants(document, function, &answers)
+impl Project {
+    /// The seed box `name`'s draft is predicted with (cl-1123), drawn once: a render of it takes it (`take_draft_seed`), so the
+    /// request a machine made ready is the one it is sent.
+    pub(super) fn draft_seed(&self, name: &str) -> u64 {
+        *self.drafts.lock().expect("drafts lock").entry(name_key(name)).or_insert_with(new_seed)
+    }
+
+    /// Box `name`'s draft seed, for its render, which takes it: its next draft is predicted with another.
+    fn take_draft_seed(&self, name: &str) -> Option<u64> {
+        self.drafts.lock().expect("drafts lock").remove(&name_key(name))
+    }
 }
 
-/// The model choices a box's fields `made` give `renderer`'s function (`models`, `lora`), as a machine's list carries them: an
-/// upcoming job's (`Walk::item`) and a guess's (`guess`) alike.
-fn listed_models(renderer: &Renderer, made: &Map<String, Value>) -> Result<Vec<v1::ModelChoice>, Error> {
-    let mut payload = Map::new();
+/// The request a render of a box would send `renderer`'s function (cl-1123; Paul, 11-17: "calcifer only has to worry about what it
+/// knows, i.e., it predicts what the user MAY want"): `request`, its fields bound as a render binds them (`Asking::request`), with
+/// `seed` as a render puts it in, its model choices taken from its fields (`made`) as a render takes them, from `source`. The spec a
+/// prepare or upcoming item carries: the machine plans it as it would plan that run, and nothing about its components, lanes or
+/// downloads is said.
+fn predicted(renderer: &Renderer, made: &Map<String, Value>, request: Option<Value>, seed: u64, source: v1::Source) -> Result<v1::RunSpec, Error> {
+    let mut payload = match request {
+        Some(Value::Object(payload)) => payload,
+        _ => Map::new(),
+    };
+    if renderer.accepts.contains("seed") && !payload.contains_key("seed") {
+        payload.insert("seed".into(), json!(seed));
+    }
     for field in ["models", "lora"] {
-        if let Some(value) = made.get(field).filter(|value| !value.is_null()) {
+        if let Some(value) = made.get(field) {
             payload.insert(field.into(), value.clone());
         }
     }
     let called = renderer.target();
     let mut choices = Choices::new(&called, &renderer.function, &renderer.slots, renderer.call_slots());
     choices.take(&mut payload)?;
-    choices::wire(&choices.into_choices())
+    let models = choices::wire(&choices.into_choices())?;
+    let payload = v1::Json::parse(Value::Object(payload).to_string()).map_err(|e| Error::new(Kind::Internal, "payload", e.to_string()))?;
+    Ok(v1::RunSpec { kind: v1::RunKind::Call, source: Some(source), entrypoint: renderer.function.clone(), payload: Some(payload), models, ..Default::default() })
+}
+
+/// What a call of `function` of `package` wants of its models, by slot (cl-1103): its needs rules evaluated on `request` (none: no rule
+/// answers), walked over the functions it calls (`needs::wants`), the walk its machine makes of a request it is sent. A quote's alone
+/// (cl-1123): what a machine fetches is its own to plan.
+pub(super) fn wants(package: &Package, function: &str, request: Option<&Value>) -> ::needs::Wants {
+    let document = package.document();
+    let answers = match (request, api::interface::entrypoint(document, function)) {
+        (Some(request), Some(entry)) => ::needs::answers(entry, request),
+        _ => ::needs::Answers::default(),
+    };
+    ::needs::wants(document, function, &answers)
 }
 
 /// Why the plan placed no machine for ready job `key`, said when that changes: it goes to the first of its machines that takes it.
@@ -4730,11 +4758,10 @@ impl Walk {
     /// the function, as its row says it. None: its package makes nothing of the kind.
     /// Local code is installed there first, as a call's is. A project's published code and its models are the machine's, as every
     /// project's are (Paul, 11-13); an encrypted project's local code goes with the run that calls it.
-    async fn item(&self, key: &str, wanted: &Wanted) -> Result<Option<(v1::Ahead, String)>, Error> {
+    async fn item(&self, key: &str, wanted: &Wanted) -> Result<Option<(v1::Predicted, String)>, Error> {
         let Wanted { machine, hub, with, kind, made, asset } = wanted;
         let package = self.host.package(hub, with, &self.folder().dir, std::slice::from_ref(machine), host::Wait::Job(key, None)).await?;
         let Some(renderer) = package.first_making(kind) else { return Ok(None) };
-        let models = listed_models(&renderer, made)?;
         let source = match &renderer.local {
             None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: self.pinned(hub, &renderer)?, ..Default::default() }),
             Some(path) => {
@@ -4747,9 +4774,8 @@ impl Walk {
             }
         };
         let request = Asking::of(self.folder()).and_then(|asking| asking.request(asset, &package, &renderer.function));
-        let wants = Some(wants(&package, &renderer.function, request.as_ref()));
-        let item = v1::Ahead { key: key.to_owned(), source: Some(source), entrypoint: renderer.function.clone(), models, wants, ..Default::default() };
-        Ok(Some((item, package.name.clone() + "/" + &renderer.function)))
+        let spec = predicted(&renderer, made, request, self.project.draft_seed(asset), source)?;
+        Ok(Some((v1::Predicted { key: key.to_owned(), spec }, package.name.clone() + "/" + &renderer.function)))
     }
 
     /// Job `key` as its machines quote it: the function its tool names, with `made`'s choices, its package read as `read` says; else why
@@ -5896,7 +5922,8 @@ impl Walk {
                 // A failed run's seed is kept for the next try on these inputs, so finished segments aren't paid twice.
                 // Try again is a render of what failed on these inputs: the same seed, so its finished calls come from the memo.
                 let tried = now.asset(&name).and_then(|held| held.tried.as_ref()).filter(|tried| tried.inputs == inputs).map(|tried| tried.seed);
-                version.seed = Some(tried.unwrap_or_else(new_seed));
+                // Else the seed its draft was predicted with (cl-1123): the request its machine made ready is the one it is sent.
+                version.seed = Some(tried.or_else(|| self.project.take_draft_seed(&name)).unwrap_or_else(new_seed));
             }
             version.pickup = pickup;
             // Its number now, whichever of several lands first.
@@ -6147,6 +6174,11 @@ impl Walk {
                 v1::Source::Local(prepared.source)
             }
         };
+        // The request its machine was told it may get, if it was (cl-1123): it names that item, which made it ready.
+        let predicted = match &placed {
+            On::Machine(machine) => self.host.api().machines.lists.predicted(machine, &self.folder().dir.to_string_lossy(), &name, key),
+            _ => None,
+        };
         let spec = v1::RunSpec {
             kind: v1::RunKind::Call,
             source: Some(source),
@@ -6154,6 +6186,7 @@ impl Walk {
             payload: Some(v1::Json::parse(payload.to_string()).expect("a payload is JSON")),
             inputs,
             models,
+            predicted,
             ..Default::default()
         };
         let submit = SubmitRun { project: Some(self.project.id.clone()),

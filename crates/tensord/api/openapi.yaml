@@ -1169,11 +1169,11 @@ components:
         tensorfs:
           description: Ordinary TensorFS connection settings supplied by the caller, forwarded to Runtime.
           oneOf: [{$ref: '#/components/schemas/TensorFSOptions'}, {type: 'null'}]
-        wants:
+        predicted:
+          type: string
           description: >-
-            A warm run's: what its caller planned it to fetch, by slot (`Ahead.wants`). Absent, and for a call: what its
-            function's needs rules say of its payload.
-          oneOf: [{$ref: '#/components/schemas/Wants'}, {type: 'null'}]
+            A real call that is the request a list item predicted (cl-1123): its key. One whose identity is the item's adopts
+            what the item made ready.
         weights_destination:
           type: string
           description: >-
@@ -1198,6 +1198,14 @@ components:
           type: array
           items: {type: string}
           description: The runs it waits for, by id (an update waits for those in flight).
+        readiness:
+          type: object
+          description: "A list item's (Status `ahead`): how ready the machine is for it (cl-1123)."
+          properties:
+            stage: {type: string, description: 'installing, downloading, ready, loading, loaded, evicted, running, done'}
+            done: {type: integer, format: int64, minimum: 0}
+            total: {type: integer, format: int64, minimum: 0, description: Bytes the stage counts.}
+            reason: {type: string, description: Why it stops where it is.}
     Source:
       oneOf:
         - type: object
@@ -1216,32 +1224,20 @@ components:
       description: What a run runs.
     Upcoming:
       type: object
-      properties: {jobs: {type: array, items: {$ref: '#/components/schemas/Ahead'}, description: Nearest first.}}
+      properties: {jobs: {type: array, items: {$ref: '#/components/schemas/Predicted'}, description: Nearest first.}}
     Prepare:
       type: object
-      properties: {items: {type: array, items: {$ref: '#/components/schemas/Ahead'}}}
-    Ahead:
-      type: object
-      description: One function to have ready, its code and its models in their lanes.
-      properties:
-        key: {type: string, description: "The caller's name for it: an upcoming job's key, the one its run is sent under."}
-        source: {$ref: '#/components/schemas/Source'}
-        entrypoint: {type: string, description: 'Empty: its code installed only.'}
-        models: {type: array, items: {$ref: '#/components/schemas/ModelChoice'}}
-        lane: {type: string}
-        hub: {$ref: '#/components/schemas/HubAccess'}
-        wants: {$ref: '#/components/schemas/Wants'}
-    Wants:
+      properties: {items: {type: array, items: {$ref: '#/components/schemas/Predicted'}}}
+    Predicted:
       type: object
       description: >-
-        What it fetches, as its caller evaluated its function's needs rules on the request it expects (cl-1103), by slot
-        (`<function>.models.<parameter>`): needed, at its list's order; either (for each function it may call that no rule answers,
-        that one's needed; what they all read is needed); extras, by group, behind them. A slot named in none is never fetched.
-        Absent: its function's rules with no request.
+        A request the caller predicts it may send here (cl-1123): the exact spec a run of it would carry, its payload bound and its
+        seed fixed. The machine plans it as that run (its function's needs rules on its payload, its lane for these GPUs, its
+        store) and makes it ready; nothing of components, lanes or downloads is said. A run later sent naming its key
+        (`RunSpec.predicted`) with the same identity adopts it.
       properties:
-        needed: {type: array, items: {type: string}}
-        either: {type: array, items: {type: array, items: {type: string}}}
-        extras: {type: array, items: {type: array, prefixItems: [{type: string}, {type: array, items: {type: string}}]}}
+        key: {type: string, description: "The caller's name for it: an upcoming job's key, the one its run is sent under."}
+        spec: {$ref: '#/components/schemas/RunSpec'}
     AheadAnswer:
       type: object
       properties: {items: {type: array, items: {$ref: '#/components/schemas/Admitted'}}}

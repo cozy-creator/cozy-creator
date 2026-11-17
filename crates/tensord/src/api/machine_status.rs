@@ -303,10 +303,11 @@ fn host() -> &'static (String, u64) {
 }
 
 fn picture(identity: &MachineIdentity, held: Held, resident: Vec<v1::Resident>) -> v1::StatusFrame {
-    let Held { runs, environments, warm, models, mut memory, lost, mut out, queue, times, link, serving, nvlink, ahead } = held;
+    let Held { runs, environments, warm, models, mut memory, lost, mut out, queue, times, link, serving, nvlink, mut ahead } = held;
     let (updates, lifecycle) = (&identity.updates, &identity.lifecycle);
     let software = updates.software();
     let activity = crate::activity::listed(|id| runs.iter().any(|run| run.id == id) || ahead.iter().any(|own| own.id == id));
+    crate::ahead::progress(&mut ahead, &activity);
     v1::StatusFrame {
         idle_deadline_unix_ms: lifecycle.deadline_ms(),
         runs,
