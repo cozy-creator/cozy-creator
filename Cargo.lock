@@ -4160,7 +4160,7 @@ dependencies = [
 
 [[package]]
 name = "tensorfs"
-version = "0.25.1"
+version = "0.26.0"
 dependencies = [
  "aws-lc-rs",
  "base64",
@@ -4194,7 +4194,7 @@ dependencies = [
 
 [[package]]
 name = "tensorfs-py"
-version = "0.25.1"
+version = "0.26.0"
 dependencies = [
  "executor-api",
  "libc",
@@ -4679,7 +4679,7 @@ dependencies = [
 
 [[package]]
 name = "varena"
-version = "0.25.1"
+version = "0.26.0"
 dependencies = [
  "libc",
  "libloading 0.9.0",
