@@ -33,32 +33,22 @@ for tool in jq uv git; do command -v "$tool" > /dev/null || fail "no $tool"; don
 V=$(cozy --version | awk '{print $2}')
 [[ $V == *-dev* ]] || fail "cozy $V is no RC build: dispatch with cozy=<an rc-dev run of rc/<x>>"
 
-# Upstream's environment, built here where the network is good and shipped to the pod at the same path (as h3-vae does).
+# Upstream's environments, one script (fixtures/upstream-parity/setup.sh) building them here, where the imports are checked before
+# anything is rented, and again on the pod from its own network: 12 GB from this runner took 583 s to a pod in Sweden (44194808517).
 W=/var/tmp/upstream-parity
-rm -rf "$W" && mkdir -p "$W" || fail "$W"
-( set -e; cd "$W"; export UV_PYTHON_INSTALL_DIR=$W/python UV_PYTHON_PREFERENCE=only-managed UV_HTTP_TIMEOUT=300 UV_NO_CACHE=1
-  P=(--python "$W/venv/bin/python" --python-platform x86_64-manylinux_2_28)
+rm -rf "$W" && mkdir -p "$W/bin" || fail "$W"
+( set -e; cd "$W"
   git init -q hidream && git -C hidream fetch -q --depth 1 https://github.com/HiDream-ai/HiDream-O1-Image.git "$HIDREAM_CODE" && git -C hidream checkout -q FETCH_HEAD
   git clone -q https://github.com/ideogram-oss/ideogram4.git ideogram4 && git -C ideogram4 checkout -q "$IDEOGRAM_CODE"
-  # HiDream pins Transformers 4.57.1 (requirements.txt). Ideogram's code calls Transformers 5's API (`create_causal_mask(inputs_embeds=)`)
-  # and its tokenizer files are Transformers 5's, so it gets its own environment, on the ideogram-4 package's Transformers.
-  tf5=$(awk '/^name = "transformers"$/{getline; print $3}' "$SRC/ideogram-4/uv.lock" | tr -d '"')
-  for v in venv venv5; do
-    uv venv -q --python 3.12 $v
-    uv pip install -q --python "$W/$v/bin/python" --python-platform x86_64-manylinux_2_28 torch==2.14.1 torchvision==0.29.1 \
-      --index-url https://download.pytorch.org/whl/cu130
-  done
-  # Diffusers for HiDream's schedulers: Tencent's 0.35.2, the newest on Transformers 4.57's huggingface_hub < 1.
-  uv pip install -q "${P[@]}" transformers==4.57.1 diffusers==0.35.2 accelerate einops safetensors 'huggingface_hub[hf_xet]<1' \
-    pillow numpy scipy tqdm
-  uv pip install -q --python "$W/venv5/bin/python" --python-platform x86_64-manylinux_2_28 "transformers==$tf5" accelerate einops \
-    safetensors 'huggingface_hub[hf_xet]' pillow numpy sentencepiece requests bitsandbytes
-  cp "$FX"/hidream_ref.py "$FX"/ideogram_ref.py . && cp hidream/assets/edit/test.jpg edit.jpg
+  cp "$FX"/hidream_ref.py "$FX"/ideogram_ref.py "$FX"/setup.sh . && cp hidream/assets/edit/test.jpg edit.jpg && cp "$(command -v uv)" bin/uv
+  # Ideogram's environment takes the ideogram-4 package's Transformers.
+  awk '/^name = "transformers"$/{getline; print $3}' "$SRC/ideogram-4/uv.lock" | tr -d '"' > tf5
+  bash setup.sh "$W"
 ) > "$OUT/env.log" 2>&1
 # Its own status, not `|| fail`: a subshell tested by `||` ignores its `set -e`.
 [ $? = 0 ] || fail "upstream's environment: $(tail -5 "$OUT/env.log")"
 say "upstream: HiDream $(git -C "$W/hidream" rev-parse --short HEAD) on $("$W/venv/bin/python" -I -c 'import torch, transformers; print("torch", torch.__version__, "transformers", transformers.__version__)'), \
-Ideogram $(git -C "$W/ideogram4" rev-parse --short HEAD) on transformers $("$W/venv5/bin/python" -I -c 'import transformers; print(transformers.__version__)'): $(du -sh "$W" | cut -f1) to ship"
+Ideogram $(git -C "$W/ideogram4" rev-parse --short HEAD) on transformers $("$W/venv5/bin/python" -I -c 'import transformers; print(transformers.__version__)')"
 cp "$W/edit.jpg" "$OUT/edit.jpg"
 # Both references import here, and Ideogram's tokenizer loads on its Transformers, before anything is rented.
 ( cd "$W" && venv/bin/python -I -c "import sys; sys.path.insert(0, 'hidream'); import inference, models.pipeline; print('hidream imports')" &&
@@ -87,19 +77,27 @@ lfs "$IDEOGRAM_OFFICIAL" > "$OUT/ideogram-official.lfs" && lfs "$IDEOGRAM_COPY" 
 say "Ideogram's fp8: the copy's $(wc -l < "$OUT/ideogram-copy.lfs") weight files are the official ones, sha256 for sha256"
 for p in hidream-o1 ideogram-4; do kernels "$SRC/$p"; done
 
+# A dev home: the rental moves to the RC's builds, which the RC's packages need (44194808517's pod ran Runtime 0.47.0 and refused
+# them, `runtime_floor_unmet`), and is held there.
+cfg=$HOME/.cozy/config.toml
+mkdir -p "${cfg%/*}" && touch "$cfg" || fail "no $cfg"
+{ echo 'dev = true'; grep -v '^dev *=' "$cfg" || true; } > "$cfg.new" && mv "$cfg.new" "$cfg" || fail "dev = true not written"
+cozy restart > "$OUT/restart.txt" 2>&1 || fail "cozy restart: $(tail -c 300 "$OUT/restart.txt")"
+run_project "$RUN_PROJECT" || fail "project at $RUN_PROJECT"
+[ -z "$(own)" ] || fail "this runner's Calcifer already holds a rental: $(own | paste -sd' ')"
+trap 'code=$?; claim; (exit "$code"); finish' EXIT
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh
 quote "$(param need_s 4200)"
-rent
+order
+ready
 pod() { timeout "${T:-120}" cozy machine ssh "$NAME" "$@"; }
 for i in $(seq 1 20); do pod true < /dev/null > /dev/null 2>&1 && break; [ "$i" = 20 ] && fail "no SSH into $NAME"; sleep 15; done
+# Upstream's environments and weights build on the pod in the background while it moves to the RC and our cells run.
+tar -C "$W" --exclude=./venv --exclude=./venv5 --exclude=./python -czf - . | T=600 pod "mkdir -p $W && tar -xzf - --no-same-owner -C $W" 2> "$OUT/ship.err" ||
+  fail "shipping upstream's code: $(tail -c 300 "$OUT/ship.err")"
 pod "nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader; df -h /var/tmp | tail -1; free -g | head -2" < /dev/null | tee -a "$R"
 
-# Upstream's environment onto the pod, then its weights from Hugging Face in the background while our cells run.
-t0=$SECONDS
-tar -C "$W" -I "gzip -1" -cf - . | T=3600 pod "mkdir -p $W && tar -xzf - --no-same-owner -C $W" 2> "$OUT/ship.err" ||
-  fail "shipping upstream's environment: $(tail -c 300 "$OUT/ship.err")"
-say "upstream's environment on the pod in $((SECONDS - t0)) s"
 PULL=$(cat <<EOF
 import os, sys
 from huggingface_hub import snapshot_download
@@ -116,8 +114,26 @@ for spec, where, skip in (("$HIDREAM_FULL", "full", None), ("$HIDREAM_DEV", "dev
 print("PULLED", flush=True)
 EOF
 )
-printf '%s' "$PULL" | pod "cat > $W/pull.py && cd $W && { nohup venv/bin/python -I pull.py > pull.log 2>&1 < /dev/null & echo \$! > pull.pid; }" ||
-  fail "starting the downloads"
+printf '%s' "$PULL" | pod "cat > $W/pull.py && cd $W && { nohup sh -c 'bash setup.sh $W && venv/bin/python -I pull.py' > pull.log 2>&1 < /dev/null & echo \$! > pull.pid; }" ||
+  fail "starting upstream's setup"
+for _ in $(seq 180); do
+  cozy machine show "$NAME" --json > "$OUT/show-rc.json" 2> /dev/null
+  [ "$(jq -r '.rc.state // empty' "$OUT/show-rc.json")" = current ] && [ "$(jq -r '.state // empty' "$OUT/show-rc.json")" = ready ] && break
+  sleep 5
+done
+[ "$(jq -r '.rc.state // empty' "$OUT/show-rc.json")" = current ] || fail "$NAME isn't on the RC's builds in 15 min: $(jq -c .rc "$OUT/show-rc.json")"
+say "on the RC: $(jq -r '"cozy \(.status.version) · Runtime \(.status.runtime) · TensorFS \(.status.tensorfs)"' "$OUT/show-rc.json")"
+for try in 1 2 3; do
+  step "hold-$try" machine update "$NAME" --runtime "$(jq -r '.status.runtime' "$OUT/show-rc.json")" -y
+  for _ in $(seq 180); do
+    cozy machine show "$NAME" --json > "$OUT/show-rc.json" 2> /dev/null
+    [ "$(jq -r '.state // empty' "$OUT/show-rc.json")" = ready ] && { [ -n "$(jq -r '.held // empty' "$OUT/show-rc.json")" ] || [ "$(jq -r '.rc.state // empty' "$OUT/show-rc.json")" = current ]; } && break
+    sleep 5
+  done
+  [ -z "$(jq -r '.held // empty' "$OUT/show-rc.json")" ] || break
+done
+[ -n "$(jq -r '.held // empty' "$OUT/show-rc.json")" ] || fail "$NAME isn't held on the RC's builds: $(tail -c 300 "$OUT/hold-$try.txt")"
+say "held: $(jq -r '.held' "$OUT/show-rc.json")"
 
 # Ours: each cell one run followed to its end, its record and outputs kept.
 cell() {
