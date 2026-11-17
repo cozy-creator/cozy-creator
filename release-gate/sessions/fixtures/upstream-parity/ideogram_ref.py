@@ -35,7 +35,7 @@ os.makedirs(out, exist_ok=True)
 def stock_qwen(repo_id, device, dtype, *, tokenizer_subfolder=None, text_encoder_subfolder=None):
     tokenizer = AutoTokenizer.from_pretrained(repo_id, subfolder=tokenizer_subfolder)
     # Qwen's checkpoint is the whole Qwen3-VL (`model.*`, `lm_head`): its Qwen3VLModel is what Ideogram's encoder reads.
-    whole, info = Qwen3VLForConditionalGeneration.from_pretrained(qwen, torch_dtype=dtype, output_loading_info=True)
+    whole, info = Qwen3VLForConditionalGeneration.from_pretrained(qwen, dtype=dtype, output_loading_info=True)
     assert not info["missing_keys"] and not info["unexpected_keys"], info
     return tokenizer, whole.model.to(device).eval()
 

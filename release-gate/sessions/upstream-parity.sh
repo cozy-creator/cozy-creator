@@ -40,16 +40,32 @@ rm -rf "$W" && mkdir -p "$W" || fail "$W"
   P=(--python "$W/venv/bin/python" --python-platform x86_64-manylinux_2_28)
   git init -q hidream && git -C hidream fetch -q --depth 1 https://github.com/HiDream-ai/HiDream-O1-Image.git "$HIDREAM_CODE" && git -C hidream checkout -q FETCH_HEAD
   git clone -q https://github.com/ideogram-oss/ideogram4.git ideogram4 && git -C ideogram4 checkout -q "$IDEOGRAM_CODE"
-  uv venv -q --python 3.12 venv
-  uv pip install -q "${P[@]}" torch==2.14.1 torchvision==0.29.1 --index-url https://download.pytorch.org/whl/cu130
-  # HiDream pins Transformers 4.57.1 (requirements.txt); Ideogram's code takes it too (>=4.49).
+  # HiDream pins Transformers 4.57.1 (requirements.txt). Ideogram's code calls Transformers 5's API (`create_causal_mask(inputs_embeds=)`)
+  # and its tokenizer files are Transformers 5's, so it gets its own environment, on the ideogram-4 package's Transformers.
+  tf5=$(awk '/^name = "transformers"$/{getline; print $3}' "$SRC/ideogram-4/uv.lock" | tr -d '"')
+  for v in venv venv5; do
+    uv venv -q --python 3.12 $v
+    uv pip install -q --python "$W/$v/bin/python" --python-platform x86_64-manylinux_2_28 torch==2.14.1 torchvision==0.29.1 \
+      --index-url https://download.pytorch.org/whl/cu130
+  done
   uv pip install -q "${P[@]}" transformers==4.57.1 diffusers==0.41.0 accelerate einops safetensors 'huggingface_hub[hf_xet]<1' \
-    pillow numpy scipy tqdm sentencepiece requests bitsandbytes
+    pillow numpy scipy tqdm
+  uv pip install -q --python "$W/venv5/bin/python" --python-platform x86_64-manylinux_2_28 "transformers==$tf5" accelerate einops \
+    safetensors 'huggingface_hub[hf_xet]' pillow numpy sentencepiece requests bitsandbytes
   cp "$FX"/hidream_ref.py "$FX"/ideogram_ref.py . && cp hidream/assets/edit/test.jpg edit.jpg
 ) > "$OUT/env.log" 2>&1 || fail "upstream's environment: $(tail -5 "$OUT/env.log")"
-say "upstream: HiDream $(git -C "$W/hidream" rev-parse --short HEAD), Ideogram $(git -C "$W/ideogram4" rev-parse --short HEAD), torch \
-$("$W/venv/bin/python" -I -c 'import torch, transformers; print(torch.__version__, "transformers", transformers.__version__)'): $(du -sh "$W" | cut -f1) to ship"
+say "upstream: HiDream $(git -C "$W/hidream" rev-parse --short HEAD) on $("$W/venv/bin/python" -I -c 'import torch, transformers; print("torch", torch.__version__, "transformers", transformers.__version__)'), \
+Ideogram $(git -C "$W/ideogram4" rev-parse --short HEAD) on transformers $("$W/venv5/bin/python" -I -c 'import transformers; print(transformers.__version__)'): $(du -sh "$W" | cut -f1) to ship"
 cp "$W/edit.jpg" "$OUT/edit.jpg"
+# Both references import here, and Ideogram's tokenizer loads on its Transformers, before anything is rented.
+( cd "$W" && venv/bin/python -I -c "import sys; sys.path.insert(0, 'hidream'); import inference, models.pipeline; print('hidream imports')" &&
+  venv5/bin/python -I -c "
+import sys; sys.path.insert(0, 'ideogram4/src')
+import ideogram4.pipeline_ideogram4, transformers
+from transformers import AutoTokenizer
+t = AutoTokenizer.from_pretrained('${IDEOGRAM_COPY%@*}', subfolder='tokenizer', revision='${IDEOGRAM_COPY#*@}')
+print('ideogram imports; tokenizer', type(t).__name__, len(t))" ) > "$OUT/imports.log" 2>&1 || fail "upstream's code does not import: $(tail -5 "$OUT/imports.log")"
+say "$(grep -E 'imports' "$OUT/imports.log" | paste -sd' ')"
 PROMPT_H=$(cat "$FX/hidream-t2i-prompt.txt") EDIT_H='remove the earphones from photo' CAPTION=$(cat "$FX/ideogram-caption.json")
 jq -e . <<<"$CAPTION" > /dev/null || fail "the caption is no JSON"
 
@@ -145,8 +161,10 @@ h_cells() {
     if $which == "full" then [{name: "h-t2i", prompt: $p, seed: $s}, {name: "h-edit", prompt: $e, ref: $ref, keep_original_aspect: true, seed: $s}]
     else [{name: "h-dev-edit", prompt: $e, ref: $ref, keep_original_aspect: true, seed: $s}] end'
 }
-upstream() {  # upstream <label> <command run in $W on the pod>
-  T=3600 pod "cd $W && $2" < /dev/null > "$OUT/up-$1.log" 2>&1 || fail "upstream $1: $(grep -v '^\s*$' "$OUT/up-$1.log" | tail -8 | cut -c1-300)"
+upstream() {  # upstream <label> <command run in $W on the pod>: a failure is said and the session goes on without its pictures
+  if ! T=3600 pod "cd $W && $2" < /dev/null > "$OUT/up-$1.log" 2>&1; then
+    say "upstream $1 FAILED: $(grep -v '^\s*$' "$OUT/up-$1.log" | tail -8 | cut -c1-300)"; RC=1
+  fi
   grep '^{' "$OUT/up-$1.log" | while read -r l; do say "upstream $1: $l"; done
 }
 if want h-t2i || want h-edit || want h-default; then
@@ -159,10 +177,10 @@ if want h-dev-edit; then
 fi
 if want i-fp8 || want i-default; then
   jq -cn --arg c "$CAPTION" --argjson s "$SEED_I" '[{name: "i-t2i", caption: $c, seed: $s}]' | pod "cat > $W/i.json" || fail "cells"
-  upstream ideogram "HF_HOME=$W/hf HF_HUB_CACHE=$W/hf HF_HUB_OFFLINE=1 venv/bin/python -I ideogram_ref.py ideogram4 ${IDEOGRAM_COPY%@*} qwen i.json up"
+  upstream ideogram "HF_HOME=$W/hf HF_HUB_CACHE=$W/hf HF_HUB_OFFLINE=1 venv5/bin/python -I ideogram_ref.py ideogram4 ${IDEOGRAM_COPY%@*} qwen i.json up"
 fi
 pod "cd $W/up && tar -cf - *.png *.json *.pt 2>/dev/null" < /dev/null | (mkdir -p "$OUT/upstream" && tar -xf - -C "$OUT/upstream") ||
-  fail "fetching upstream's pictures"
+  say "fetching upstream's pictures: some are missing ($(ls "$OUT/upstream" 2> /dev/null | tr '\n' ' '))"
 kill "$BG" 2> /dev/null; BG=''
 # The scoring needs only the runner: the rental ends now (lib.sh's trap checks it is gone).
 cozy machine end "$RID" -y >> "$OUT/end.txt" 2>&1; say "END requested $RID: every picture is in"
@@ -184,4 +202,5 @@ U=$OUT/upstream
 say "scores (reference first; PSNR dB, mean |d| of 255, DISTS):"
 column -t -s $'\t' "$OUT/scores/metrics.tsv" | tee -a "$R"
 { echo "### upstream-parity"; echo '```'; column -t -s $'\t' "$OUT/scores/metrics.tsv"; echo '```'; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+[ "$RC" = 0 ] || fail "an upstream run failed (above); what both sides made is scored"
 say "PASS: every cell ran on both sides and is scored (scores/metrics.tsv, crop sheets in scores/)"

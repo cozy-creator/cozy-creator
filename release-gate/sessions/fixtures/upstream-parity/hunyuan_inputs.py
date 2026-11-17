@@ -91,15 +91,15 @@ def dump(tree: Path, files: Path, side: str, out: Path) -> None:
         cond = [processor.build_cond_images(image_list=c["images"], infer_align_image_size=True)] if c["images"] else None
         info = ([processor.build_gen_image_info(c["size"], add_guidance_token=bool(config.cfg_distilled),
                                                 add_timestep_r_token=bool(config.use_meanflow))] if c["mode"] == "gen_image" else [None])
-        out = tokenizer.apply_chat_template(
+        built = tokenizer.apply_chat_template(
             batch_prompt=["A red fox in fresh snow, 图1 and 图2 behind it"], batch_message_list=None, mode=c["mode"],
             batch_gen_image_info=info, batch_cond_images=cond, batch_system_prompt=[system],
             batch_cot_text=[c["cot"]] if c["cot"] else None, max_length=generation["max_length"], bot_task=c["bot_task"],
             image_base_size=processor.vae_reso_group.base_size, sequence_template=generation["sequence_template"],
             cfg_factor=c["cfg"], drop_think=generation["drop_think"],
         )
-        result[name] = {"out": plain(dict(out)), "cond": plain(cond), "info": plain(info),
-                        "text": tokenizer.decode(out["output"].tokens[0]) if "output" in out else None}
+        result[name] = {"out": plain(dict(built)), "cond": plain(cond), "info": plain(info),
+                        "text": tokenizer.decode(built["output"].tokens[0]) if "output" in built else None}
     sizes = {f"{w}:{h}": processor.vae_reso_group.get_target_size(w, h) for w, h in ((1, 1), (16, 9), (9, 16), (4, 3), (21, 9), (1, 4))}
     result["sizes"] = plain(sizes)
     torch.save(result, out)
