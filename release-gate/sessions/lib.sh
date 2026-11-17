@@ -26,6 +26,11 @@ FLOOR_MBS=$(param floor_mb_s 50) FLOOR_AFTER=$(param floor_after_s 120)
 [[ $FLOOR_MBS =~ ^[0-9]+$ && $FLOOR_AFTER =~ ^[0-9]+$ ]] || fail "floor_mb_s $FLOOR_MBS, floor_after_s $FLOOR_AFTER"
 state() { cozy machine show "$1" --json 2>/dev/null | jq -r '.state // empty'; }
 . "$(dirname "${BASH_SOURCE[0]}")/../machines.sh"
+# A Runtime or TensorFS a session is asked for by version is the build of its own tag (tag_built), checked at $0.
+for c in runtime:cozy_runtime tensorfs:tensorfs; do
+  v=$(param "${c%%:*}"); [[ $v =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || continue
+  why=$(tag_built "${c#*:}" "$v") || fail "$why"
+done
 gone() { local s; s=$(state "$1"); { [ "$s" = ended ] || [ -z "$s" ]; } && ! listed "$1"; }
 # wheel_from <dir> <source>: a manylinux x86_64 wheel fetched into dir, its path printed. source: an https URL,
 # `artifact:<run id>/<name>` of a cozy-creator run (a dev-build's tensorfs-wheel-<sha>) or a cozy-runtime dev-build run id

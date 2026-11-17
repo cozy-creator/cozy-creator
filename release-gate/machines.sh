@@ -72,3 +72,31 @@ pod_derived() {
 # pod_derived_zero <census line>: no derived page, memo entry or learned peak (an arm's own executors may compile kernels as
 # they boot).
 pod_derived_zero() { awk '{exit !($2 == 0 && $4 == 0 && $6 == 0)}' <<<"$1"; }
+
+# tag_built <cozy_runtime|tensorfs> <version>: a candidate asked by version is the build of its own tag (coordinator 11-17,
+# xs-208). A machine accepts a GitHub prerelease only when its SHA256SUMS is signed by its publish workflow at master or the
+# version's tag (cozy-creator platform::release); one built on release/* is refused `unattested` on the pod (session
+# 43770496433), after a rental. Read here at $0: nothing printed when the release's signer is master or the tag, or it has no
+# GitHub release (cozy says what's wrong with it); else why, and a status of 1.
+tag_built() {
+  local repo tag workflow dir signer
+  case $1 in
+    cozy_runtime) repo=cozy-creator/cozy-runtime tag=v$2 workflow=runtime-publish.yaml ;;
+    tensorfs) repo=cozy-creator/cozy-creator tag=tensorfs-v$2 workflow=tensorfs-publish.yaml ;;
+    *) echo "tag_built: no publish workflow for $1"; return 1 ;;
+  esac
+  dir=$(mktemp -d) || return 1
+  gh release download "$tag" -R "$repo" -p SHA256SUMS.sigstore.jsonl -D "$dir" > /dev/null 2>&1 || { rm -rf "$dir"; return 0; }
+  signer=$(python3 -I -c '
+import base64, json, sys
+material = json.loads(open(sys.argv[1]).readline()).get("verificationMaterial", {})
+raw = (material.get("certificate") or {}).get("rawBytes") or (material.get("x509CertificateChain") or {}).get("certificates", [{}])[0].get("rawBytes")
+sys.stdout.buffer.write(base64.b64decode(raw))' "$dir/SHA256SUMS.sigstore.jsonl" 2> /dev/null \
+    | openssl x509 -inform der -noout -text 2> /dev/null | grep -aoE "$workflow@refs/[A-Za-z0-9._/-]+" | head -1)
+  rm -rf "$dir"
+  case ${signer#*@} in
+    refs/heads/master | "refs/tags/$tag") return 0 ;;
+  esac
+  echo "$1 $2's prerelease is signed by ${signer:-no $workflow certificate}, not master or refs/tags/$tag: build it from the tag (gh workflow run $workflow -R $repo --ref $tag), or pass the wheel as a URL#sha256"
+  return 1
+}

@@ -117,6 +117,11 @@ fetch() {
   echo "$f"
 }
 RWF=$(fetch "$RW") && TWF=$(fetch "$TW") && TDF=$(fetch "$TD") || exit 1
+# A Runtime or TensorFS asked by version is the build of its own tag (tag_built, machines.sh): refused here, before a rental.
+for c in "cozy_runtime:$RWF" "tensorfs:$TWF"; do
+  v=${c#*:}; [ -n "$v" ] && [ ! -f "$v" ] || continue
+  why=$(tag_built "${c%%:*}" "$v") || { log "$why"; exit 1; }
+done
 if [ -f "$TDF" ]; then
   chmod +x "$TDF"; BIN=$("$TDF" --version | awk '{print $2}')
   [ -n "$BIN" ] || { log "$TD is not a cozy binary"; exit 1; }
