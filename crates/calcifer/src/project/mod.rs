@@ -4689,7 +4689,7 @@ impl Walk {
         let Some(renderer) = package.first_making(kind) else { return Ok(None) };
         let models = listed_models(&renderer, made)?;
         let source = match &renderer.local {
-            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: self.pinned(hub, &renderer)? }),
+            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: self.pinned(hub, &renderer)?, ..Default::default() }),
             Some(path) => {
                 // Staged in its project's storage scope, as its call's are; an encrypted project's code goes with the run that calls it.
                 let scope = crate::private_io::of_path(&self.folder().dir)?;
@@ -6076,7 +6076,7 @@ impl Walk {
         // Local code is made ready on the machine the call goes to, its files and manifest sent
         // with every call: a machine that dropped them installs them in the call.
         let source = match &renderer.local {
-            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: self.pinned(&hub, &renderer).map_err(named)? }),
+            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: self.pinned(&hub, &renderer).map_err(named)?, ..Default::default() }),
             Some(path) => {
                 let began = std::time::Instant::now();
                 let prepared = self.again(|| async {

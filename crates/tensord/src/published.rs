@@ -122,6 +122,8 @@ pub(crate) struct Request {
     pub lane: String,
     /// Its place in this machine's install and download lines (`origin::priority`): its run's.
     pub order: u64,
+    /// The release's install card as its controller sent it (cl-1127): installed from in place of the Hub's plan.
+    pub card: Option<Vec<u8>>,
 }
 
 impl Request {
@@ -1254,6 +1256,18 @@ impl Publisher {
         let kept = earlier.as_deref().and_then(kept_card);
         // One checked against other files than the run pinned is read again at its Hub, which must have the pinned ones (xs-196).
         let pinned = |card: &Card| request.digest.is_empty() || card.digest == request.digest;
+        // Its controller's, which holds it (cl-1127): no Hub read, the Hub up or down. Its wheels are objects it wrote here.
+        if let Some(sent) = &request.card {
+            let invalid = |why: String| ("release_card_invalid", format!("the install card of {} {release} its controller sent: {why}", request.package));
+            let mut card: Card = serde_json::from_slice(sent).map_err(|e| invalid(e.to_string()))?;
+            if !pinned(&card) {
+                return Err(invalid(format!("its digest is {}, not the {} this run was pinned to", card.digest, request.digest)));
+            }
+            if card.python.is_empty() {
+                card.python = self.sdk.python.clone();
+            }
+            return Ok(card);
+        }
         match kept.filter(|card| card.wheels.iter().all(|wheel| self.held_file(wheel)) && pinned(card)) {
             Some(card) => Ok(card),
             None => hub_card(&catalog()?, &request.package, release, &self.sdk.python, &request.digest),
@@ -2072,6 +2086,23 @@ struct Card {
     digest: String,
 }
 const CARD: &str = "release.json";
+
+/// The objects of the install card `digest` its controller wrote here (cl-1127), it and each wheel it names, which a run takes
+/// custody of: one not written is refused, as a local source's is.
+pub(crate) fn card_objects(objects: &crate::objects::Objects, actor: &str, digest: &str) -> Result<Vec<ObjectRef>, Refused> {
+    let unwritten = |what: &str| Refused { code: "release_card_incomplete", message: format!("{what} of the release's install card was not written to this machine") };
+    let (path, length) = objects.path(actor, digest)?.ok_or_else(|| unwritten("the card"))?;
+    let card: Card = serde_json::from_slice(&fs::read(path)?)
+        .map_err(|e| Refused { code: "release_card_invalid", message: format!("the release's install card: {e}") })?;
+    let mut held = vec![ObjectRef { sha256: digest.trim_start_matches("sha256:").to_owned(), length }];
+    for wheel in &card.wheels {
+        match objects.path(actor, &format!("sha256:{}", wheel.sha256))? {
+            Some((_, length)) => held.push(ObjectRef { sha256: wheel.sha256.clone(), length }),
+            None => return Err(unwritten(&wheel.name)),
+        }
+    }
+    Ok(held)
+}
 
 /// The card kept beside the environment at `generation`.
 fn kept_card(generation: &Path) -> Option<Card> {

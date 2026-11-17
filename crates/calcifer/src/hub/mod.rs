@@ -6,6 +6,7 @@ pub(crate) mod after;
 pub(crate) mod author;
 pub(crate) mod checkpoints;
 pub(crate) mod headers;
+pub(crate) mod held;
 pub(crate) mod jobs;
 pub(crate) mod models;
 mod orgs;

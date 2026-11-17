@@ -131,7 +131,7 @@ pub struct Environment {
 }
 
 /// The Runtime, TensorFS, cozy and PyTorch versions machines run (`GET /v1/software`).
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Software {
     pub runtime: String,

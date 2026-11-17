@@ -2337,6 +2337,7 @@ fn environment(env: &v1::Environment, hubs: &Hubs) -> wire::Environment {
         runtime: env.runtime.clone(),
         level: env.level.clone(),
         warning: env.warning.clone(),
+        origin: crate::git_code::installed_from(&env.manifest).unwrap_or_default(),
     }
 }
 

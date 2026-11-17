@@ -3,6 +3,9 @@
 # remote machines without tensorhub being online (if we have the code locally, or the code is available somewhere else, like github)."
 # A remote machine here is a stand-in (another user's cozy on this runner, machineset.sh's `stand_in`), added to this computer.
 #   hub_down_table   what works with the Hub unreachable, on a machine that exists: measured, one row a line in hubdown.md (dispatch)
+#   git_url          Paul: "ideally users should be able to install code from arbitrary public github links": a package installed
+#                    from a public repository's URL at a tag, listed with its URL and commit, run, and installed again at another ref
+#   hub_down_install with the Hub down, a release this computer holds installed on a stand-in machine from here, and run there
 here_hubdown=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # hub_stop: the isolated Hub's process and hubcheck stopped, so nothing answers at the Hub's address, and its ingress, which machines
@@ -121,4 +124,65 @@ hub_down_table() {
   echo "hub down, measured:"
   cat "$OUT/hubdown.md"
   [ -z "${GITHUB_STEP_SUMMARY:-}" ] || { printf '\n### Hub down (cl-1127)\n\n'; cat "$OUT/hubdown.md"; } >> "$GITHUB_STEP_SUMMARY"
+}
+
+# git_url (cl-1127; Paul, 11-17: "ideally users should be able to install code from arbitrary public github links, for example"): the
+# hub suite's echo package from cozy-creator's own public repository, by its URL at a tag, installed on local; `cozy package ls` names
+# it by URL and commit; it runs by the same URL; installed again at the repository's commit of this run, the listing moves to it. The
+# CLI before it refused any URL as a package reference.
+git_url() {
+  step "a package installed and run from a public repository's URL (cl-1127)"
+  [ -n "$LOCAL" ] || return 0
+  local repo=https://github.com/cozy-creator/cozy-creator folder=release-gate/suites/hub/pkg tagged now said
+  tagged=$(git ls-remote "$repo" 'v0.25.0^{}' | cut -f1)
+  [ -n "$tagged" ] || { check "git url: $repo has no tag v0.25.0 to install from"; return; }
+  cozy --json package install "$repo@v0.25.0/$folder" --on local > "$OUT/git-install.ndjson" 2> "$OUT/git-install.err" \
+    || { check "git url: cozy package install $repo@v0.25.0/$folder failed: $(hd_said "$OUT/git-install.ndjson" "$OUT/git-install.err")"; return; }
+  cozy --json package ls --on local > "$OUT/git-installed.json" 2>&1
+  said=$(jq -r '[.packages[] | select(.package == "local/ci-hub-pkg") | .source | select(startswith("git+"))] | unique | join(" ")' "$OUT/git-installed.json")
+  echo "git url: local/ci-hub-pkg on local from ${said:-nothing}"
+  [ "$said" = "git+$repo@$tagged#subdirectory=$folder" ] || check "git url: local/ci-hub-pkg is listed from '${said:-nothing}', not git+$repo@$tagged#subdirectory=$folder"
+  if cell git-run "$repo@v0.25.0/$folder/echo" "text=from github"; then
+    grep -q '"text": *"from github"' "$OUT/git-run.ndjson" && grep -q '"release": *"0.1.0"' "$OUT/git-run.ndjson" \
+      || check "git url: the reply isn't the repository's echo: $(tail -c 300 "$OUT/git-run.ndjson")"
+  fi
+  # Installed again at another ref, it is that commit's.
+  now=$(git -C "$here_hubdown" rev-parse HEAD 2> /dev/null)
+  [ -n "$now" ] && [ "$now" != "$tagged" ] || { echo "git url: no other commit to move to"; return 0; }
+  cozy --json package install "$repo/tree/$now/$folder" --on local > "$OUT/git-again.ndjson" 2> "$OUT/git-again.err" \
+    || { check "git url: installing it again at $now failed: $(hd_said "$OUT/git-again.ndjson" "$OUT/git-again.err")"; return; }
+  cozy --json package ls --on local > "$OUT/git-moved.json" 2>&1
+  said=$(jq -r '[.packages[] | select(.package == "local/ci-hub-pkg") | .source | select(startswith("git+"))] | unique | join(" ")' "$OUT/git-moved.json")
+  [ "$said" = "git+$repo@$now#subdirectory=$folder" ] || check "git url: installed again at $now, it's listed from '${said:-nothing}'"
+}
+
+# hub_down_install (cl-1127; Paul, 11-17: "if tensorhub is down, or unable to be reached, ideally the host machine (here) should be able
+# to, on a remote machine, give it a package from our local machine"): e2e-relay, an account's release whose lock takes minimax-h3-tools
+# from the root's index, installed on local with the Hub up, so this computer holds it; then with the Hub down, installed on a stand-in
+# machine that never had it, and run there: its card and wheels go from this computer by content. Before, the stand-in's install read
+# the release's install plan at the Hub and failed (run 44049460019).
+hub_down_install() {
+  step "with the Hub down, a release this computer holds installed on another machine and run there (cl-1127)"
+  [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "hub down install: its stand-in is another user of a fresh GitHub runner"; return 0; }
+  [ -n "${E2E_RELAY:-}" ] || { check "hub down install: isolated.sh published no e2e-relay: ${E2E_RELAY_REFUSED:-not seeded}"; return; }
+  local m=stand-k held
+  cozy --json package install "$E2E_RELAY" --on local > "$OUT/hdi-local.ndjson" 2> "$OUT/hdi-local.err" \
+    || { check "hub down install: installing $E2E_RELAY on local failed: $(hd_said "$OUT/hdi-local.ndjson" "$OUT/hdi-local.err")"; return; }
+  # It is held here behind that install.
+  for _ in $(seq 120); do
+    held=$(find "$HOME/.cozy/calcifer/held" -path "*/${E2E_RELAY}/0.1.0.json" 2> /dev/null | head -1)
+    [ -n "$held" ] && break
+    sleep 1
+  done
+  [ -n "$held" ] || { check "hub down install: this computer didn't hold $E2E_RELAY 0.1.0 two minutes after its install: $(grep -a 'held here' "$HOME/.cozy/calcifer/"*.log 2> /dev/null | tail -2)"; return; }
+  cozy --json machine show local > "$OUT/set-local.json" || { check "hub down install: machine show local"; return; }
+  stand_in "$m" || return
+  hub_stop
+  cozy --json package install "$E2E_RELAY" --on "$m" > "$OUT/hdi-install.ndjson" 2> "$OUT/hdi-install.err" \
+    || check "hub down install: with the Hub down, installing $E2E_RELAY on $m failed: $(hd_said "$OUT/hdi-install.ndjson" "$OUT/hdi-install.err")"
+  (cd "$RUN_PROJECT" && timeout 900 "$COZY" --json run "$E2E_RELAY/relay" "text=hub down" --on "$m") > "$OUT/hdi-run.ndjson" 2> "$OUT/hdi-run.err" \
+    && grep -q '"text": *"hub down"' "$OUT/hdi-run.ndjson" && grep -q '"release": *"0.1.0"' "$OUT/hdi-run.ndjson" \
+    || check "hub down install: with the Hub down, $E2E_RELAY/relay on $m didn't answer minimax-h3-tools 0.1.0's echo: $(hd_said "$OUT/hdi-run.ndjson" "$OUT/hdi-run.err")"
+  hub_back hdi
+  timeout 120 "$COZY" --json machine end "$m" --force -y > "$OUT/$m-end.json" 2>&1 || true
 }

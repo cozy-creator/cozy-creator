@@ -161,7 +161,7 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, with: &
     let Some(renderer) = package.first_making(kind) else { return Ok(None) };
     let models = super::listed_models(&renderer, made)?;
     let source = match &renderer.local {
-        None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: recorded(api, project, hub, &renderer)? }),
+        None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: recorded(api, project, hub, &renderer)?, ..Default::default() }),
         // By its manifest, which a machine that ran it holds: one that holds none refuses the item, and its first render there sends it.
         Some(_) => {
             if crate::private_io::of_path(dir)?.is_some_and(|scope| !scope.storage.ordinary) {

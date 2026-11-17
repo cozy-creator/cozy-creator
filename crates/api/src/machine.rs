@@ -506,6 +506,12 @@ pub struct Release {
     /// keeps (xs-196). Empty: none.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub digest: String,
+    /// The release's install card from its controller, which holds it (cl-1127): `sha256:<hex>` of a JSON object written with `PUT
+    /// /v1/objects`, `{interface, python, pyproject, lock, wheels: [{url, sha256, name, length}], digest}`, each wheel (and each its
+    /// lock takes from a Hub index) written too. The machine installs from it and reads nothing of the release at its Hub. Empty:
+    /// it reads the Hub's install plan.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub card: String,
 }
 
 /// Local code: `manifest` names a JSON object written with `PUT /v1/objects`:

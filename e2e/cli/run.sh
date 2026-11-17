@@ -978,6 +978,8 @@ case $SHARD in
     local_edits
     hub_dependency
     hub_published
+    git_url
+    hub_down_install
     rc_floor
     held_prerelease
     final_model
