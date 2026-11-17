@@ -245,6 +245,9 @@ pub(super) struct LeaseParts {
     view: PathBuf,
     volume: Option<String>,
     attached: bool,
+    /// How long ago `hdiutil` last vouched for it: the successor's first read doesn't ask again.
+    #[serde(default)]
+    verified_ms_ago: Option<u64>,
 }
 
 pub(super) struct Lease {
@@ -265,14 +268,16 @@ const VERIFIED_FOR: Duration = Duration::from_secs(30);
 impl Lease {
     /// To a successor process (cl-1113): the image stays attached; this value no longer detaches it.
     pub(super) fn hand_off(mut self) -> LeaseParts {
-        let parts = LeaseParts { image: self.image.clone(), device: self.device.clone(), view: self.view.clone(), volume: self.volume.clone(), attached: self.attached };
+        let verified_ms_ago = self.verified.get().map(|at| at.elapsed().as_millis() as u64);
+        let parts = LeaseParts { image: self.image.clone(), device: self.device.clone(), view: self.view.clone(), volume: self.volume.clone(), attached: self.attached, verified_ms_ago };
         self.attached = false;
         parts
     }
 
     /// The lease a predecessor handed over.
     pub(super) fn adopt(provider: &Provider, parts: LeaseParts) -> Self {
-        Self { provider: provider.clone(), image: parts.image, device: parts.device, view: parts.view, volume: parts.volume, attached: parts.attached, verified: std::cell::Cell::new(None) }
+        let verified = parts.verified_ms_ago.and_then(|ms| Instant::now().checked_sub(Duration::from_millis(ms)));
+        Self { provider: provider.clone(), image: parts.image, device: parts.device, view: parts.view, volume: parts.volume, attached: parts.attached, verified: std::cell::Cell::new(verified) }
     }
 
     pub(super) fn is_current(&self) -> Result<bool> {

@@ -36,6 +36,9 @@ type Pipe = ();
 const PREPARE: Duration = Duration::from_secs(10);
 /// How long the first generation has (a cold disk).
 const FIRST: Duration = Duration::from_secs(60);
+/// How long a generation has to take the home and answer: its stores and views take milliseconds. One that doesn't is ended and
+/// Calcifer started again, so a stuck take-over is never an outage.
+const TAKE_OVER: Duration = Duration::from_secs(30);
 
 enum Event {
     /// A message, and the pipes that came with it (Unix; Windows' ride in the message).
@@ -269,6 +272,7 @@ impl Parent {
                 self.early_deaths = 0;
                 if let Some(generation) = self.find(id) {
                     generation.state = State::Serving;
+                    generation.due = None;
                 }
                 self.tell(id, &ToGeneration::Accept);
                 info!(pid, %version, "Calcifer serves");
@@ -346,6 +350,7 @@ impl Parent {
         }
         if let Some(generation) = self.find(id) {
             generation.state = State::TakingOver;
+            generation.due = Some(Instant::now() + TAKE_OVER);
         }
         self.tell(id, &ToGeneration::TakeOver { views, streams });
         #[cfg(unix)]
@@ -477,7 +482,16 @@ impl Parent {
         let now = Instant::now();
         let late: Vec<u64> = self.generations.iter().filter(|g| g.due.is_some_and(|due| due <= now)).map(|g| g.id).collect();
         for id in late {
-            if self.with(State::Serving).is_some() {
+            if self.find(id).is_some_and(|generation| generation.state == State::TakingOver) {
+                // Stuck taking the home: ended, the one that let go told to exit, and Calcifer started again.
+                warn!("the next Calcifer didn't take over in time");
+                self.end(id);
+                self.early_deaths += 1;
+                if let Some(released) = self.with(State::Released) {
+                    self.tell(released, &ToGeneration::Exit);
+                }
+                self.again();
+            } else if self.with(State::Serving).is_some() {
                 self.failed(id, "it wasn't prepared in time");
             } else {
                 warn!("Calcifer wasn't prepared in time");

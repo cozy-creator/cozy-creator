@@ -323,13 +323,13 @@ pub(crate) async fn serve(loaded: &Loaded, taken: platform::generation::Taken) -
     };
     // A view's supervisor watches the parent, which outlives this generation; this generation's end still closes its stdin.
     project_mount::watch_owner(stable);
-    link.send(&ToParent::Prepared { protocol: PROTOCOL, version: ::api::VERSION.into() }).map_err(parent)?;
-    // The encrypted filesystem's provider, found while this one waits to take over: asked of its binary (a process start, ~0.4 s on
-    // Windows), it would otherwise lengthen the hand-over of any open view.
-    let finding = {
+    // The encrypted filesystem's provider, found before this one says it's prepared: asked of its binary (a process start, up to
+    // ~0.7 s on a cold macOS or Windows), it would otherwise lengthen the hand-over of any open view.
+    let found = {
         let tools = home.tools();
-        tokio::task::spawn_blocking(move || project_mount::Provider::discover(&tools).ok())
+        tokio::task::spawn_blocking(move || project_mount::Provider::discover(&tools).ok()).await.ok().flatten()
     };
+    link.send(&ToParent::Prepared { protocol: PROTOCOL, version: ::api::VERSION.into() }).map_err(parent)?;
     let views = loop {
         match heard.recv().await {
             Some((ToGeneration::TakeOver { views, streams }, pipes)) => {
@@ -374,6 +374,7 @@ pub(crate) async fn serve(loaded: &Loaded, taken: platform::generation::Taken) -
     steps.done("machines");
     tokio::spawn(drop_old_measurements(calcifer.clone()));
     let api = Api::new(calcifer.clone(), machines.clone(), &token);
+    steps.done("api");
     api.browser_address.set(address).expect("listener address set once");
     if let Some(development) = loaded.config.calcifer.development_web.filter(|_| loaded.config.dev) {
         api.development_web.set(development).expect("development web address set once");
@@ -393,11 +394,8 @@ pub(crate) async fn serve(loaded: &Loaded, taken: platform::generation::Taken) -
             shutdown_after_signal(stopping).await;
         });
     }
-    let engine = match views.is_empty() {
-        true => None,
-        false => finding.await.ok().flatten(),
-    };
-    crate::project::vault::adopt(&api, views, engine);
+    crate::project::vault::adopt(&api, views, found);
+    steps.done("views");
     // The record before the first answer (cl-885): the parent publishes it, naming this generation, then says `Accept`.
     link.send(&ToParent::Ready { pid: std::process::id(), version: ::api::VERSION.into(), started_at_ms: api.started_ms }).map_err(parent)?;
     loop {

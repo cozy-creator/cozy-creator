@@ -820,7 +820,10 @@ pub(crate) fn carry() -> Vec<(Carried, fs::File)> {
                 continue;
             }
         };
-        if session.closing {
+        // Closing, or its folder gone (removed from outside): it ends with this generation, its supervisor's stdin closing with it.
+        if session.closing || !root.join(KEYBAG_FILE).is_file() {
+            tracing::info!("{}: an encrypted view closing or without its folder isn't carried over", root.display());
+            SESSIONS.lock().expect("vault sessions").insert(root, Arc::new(Mutex::new(session)));
             continue;
         }
         let Session { mount, secret, idle, maximum, timer, active_ms, began_ms, runtime, .. } = session;
@@ -858,15 +861,18 @@ pub(crate) fn adopt(api: &Arc<Api>, views: Vec<(Carried, fs::File)>, found: Opti
 
 fn taken(engine: &Provider, carried: Carried, pipe: fs::File) -> Result<(), Error> {
     let Carried { root, mount, secret, idle, maximum, opened, activity, active_ms, began_ms, runtime, .. } = carried;
-    let mounted = Mounted::adopt(engine, mount, pipe).map_err(provider)?;
-    // Its supervisor, cheaply: whether the view is still mounted is asked as it's next read, off the hand-over (macOS asks `hdiutil`).
-    if !mounted.serving().map_err(provider)? {
-        return Err(error("vault_provider", "the view's supervisor has ended"));
-    }
+    // Its key first: one that can't be taken drops only its pipe, which ends its view without waiting on anything.
     let keybag = Keybag::load(&root.join(KEYBAG_FILE)).map_err(|e| error("vault_keybag", e))?;
     let secret = ProjectSecret::handed(secret);
     if secret.project_id() != keybag.info().project_id || secret.generation() != keybag.info().generation {
         return Err(error("vault_keybag", "the key handed over is not this project's current one"));
+    }
+    let mounted = Mounted::adopt(engine, mount, pipe).map_err(provider)?;
+    // Its supervisor, cheaply: whether the view is still mounted is asked as it's next read, off the hand-over (macOS asks `hdiutil`).
+    if !mounted.serving().map_err(provider)? {
+        // Letting it go waits for its supervisor to end: never on the hand-over's path.
+        let _ = std::thread::Builder::new().name("vault-let-go".into()).spawn(move || drop(mounted));
+        return Err(error("vault_provider", "the view's supervisor has ended"));
     }
     let policy = SessionPolicy { idle_seconds: (idle > 0).then_some(idle), maximum_seconds: (maximum > 0).then_some(maximum) };
     let timer = SessionTimer::resumed(policy, opened, activity);
