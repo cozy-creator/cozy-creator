@@ -54,8 +54,9 @@ for k in "${!NAMES[@]}"; do
   kernels "${PKG[$a]}"
 done
 TENSORD=(); [[ $(cozy --version) != *-* ]] || TENSORD=(--tensord "$(command -v cozy)")
-quote "$(param need_s 3600)"
+[ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh
+quote "$(param need_s 3600)"
 rent
 pod() { timeout "${T:-120}" cozy machine ssh "$NAME" "$@"; }
 for i in $(seq 1 20); do pod true < /dev/null > /dev/null 2>&1 && break; [ "$i" = 20 ] && fail "no SSH into $NAME"; sleep 15; done
@@ -73,7 +74,7 @@ fetch() {
 }
 # stages <run json>: "<encode s> <decode s>" from its record.
 stages() {
-  jq -r '[.calls[]?.measurements.attribution.stages // {}] as $s
+  jq -r '[.measurements, .calls[]?.measurements | .attribution.stages? // {}] as $s
     | "\(([$s[].vae_encode.total_ms // empty] | add // 0) / 1000) \(([$s[].vae_decode.total_ms // empty] | add // 0) / 1000)"' "$1"
 }
 TSV=$OUT/times.tsv; printf 'engine\tarm\tclip\tpass\tencode_s\tdecode_s\trun\n' > "$TSV"
