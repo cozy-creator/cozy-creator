@@ -187,9 +187,15 @@ for g in qwen-image pan2 qwen3 birefnet rewriter; do
           ref=birefnet-$picture-card.png; [ "$t" = "$TREE" ] || ref=birefnet-$picture-handler.png
           ours "birefnet-$picture-$t" "$t" birefnet/remove_background image "$ref" '' -- --file "image=$WORK/fx/$picture.jpg" "${EXACT[@]}"
         done
-        [ -f "$WORK/up/birefnet-green.png" ] &&
-          ours "birefnet-green-$t" "$t" birefnet/remove_background green birefnet-green-truth.png '' -- --file "image=$WORK/up/birefnet-green.png" "${EXACT[@]}"
-      done ;;
+        for ground in green dark; do
+          [ ! -f "$WORK/up/birefnet-$ground.png" ] ||
+            ours "birefnet-$ground-$t" "$t" birefnet/remove_background fringe "$ground" '' -- --file "image=$WORK/up/birefnet-$ground.png" "${EXACT[@]}"
+        done
+      done
+      # Upstream's own on the same known cutouts: the card's raw composite and the handler's refined one.
+      for ground in green dark; do for way in card handler; do
+        [ ! -f "$WORK/up/birefnet-$ground-$way.png" ] || printf '%s\t%s\t%s\t%s\t\n' "upstream-$way-$ground" fringe "$WORK/up/birefnet-$ground-$way.png" "$ground" >> "$WORK/cells.tsv"
+      done; done ;;
     rewriter)
       # PAN2's rewriter, as pan2 asks it: Qwen3.5-9B (its reasoner), the policy as its system turn, greedy, thinking off;
       # the user message as the package writes it (`prose`) and as the policy's input contract states it (`record`).

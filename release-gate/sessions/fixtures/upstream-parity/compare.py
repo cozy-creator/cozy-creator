@@ -5,8 +5,8 @@
 
 Kinds: `image` (PSNR over RGB, DISTS, and a 2x crop sheet: ours | upstream | |difference| x4), `video` (our MP4's
 frames against the reference's uint8 frames, and the ceiling: the reference through our encoder, x264 crf 14
-veryfast yuv420p), `text` (identical, or the first character where they part), `green` (a cutout of the green picture
-against its truth on white: PSNR overall and on the soft edge, and the green left in that edge), `rewrite` (the last
+veryfast yuv420p), `text` (identical, or the first character where they part), `fringe` (a cutout of a known subject put
+on green or near-black, against its truth on white: the ground's colour left in the soft edge, its colour error, PSNR), `rewrite` (the last
 event's end against the duration asked).
 """
 
@@ -22,6 +22,8 @@ import numpy as np
 from PIL import Image
 
 _DISTS = None
+#: upstream.py `FRINGE_GROUNDS`.
+GROUNDS = {"green": (0, 177, 64), "dark": (24, 24, 24)}
 
 
 def rgb(path: Path) -> np.ndarray:
@@ -115,15 +117,20 @@ def compare(rows: list[list[str]], up: Path, out: Path) -> list[str]:
                     at = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
                     lines.append(f"{name}\ttext\tparts at char {at} of {len(a)}/{len(b)}: ours {a[at:at + 60]!r} "
                                  f"upstream {b[at:at + 60]!r}")
-            elif kind == "green":
-                a, truth = rgb(Path(ours)), rgb(up / ref)
-                alpha = np.asarray(Image.open(up / "birefnet-green-truth-mask.png").convert("L"))
+            elif kind == "fringe":
+                # A cutout of a known subject on `ground` against its truth on white, in the soft edge (truth alpha
+                # 3-252): PSNR, the mean colour error, and the fringe: how much of the old ground's colour the edge
+                # keeps, the error projected on (ground - white), as a share of it (0: none; truth's own is 0).
+                a, truth = rgb(Path(ours)), rgb(up / "birefnet-truth.png")
+                alpha = np.asarray(Image.open(up / "birefnet-truth-mask.png").convert("L"))
                 edge = (alpha > 3) & (alpha < 252)
-                spill = lambda x: float((x[..., 1].astype(float) - (x[..., 0].astype(float) + x[..., 2]) / 2)[edge].mean())  # noqa: E731
+                towards = np.array(GROUNDS[ref], dtype=float) - 255
+                error = a.astype(float) - truth.astype(float)
+                fringe = float((error[edge] @ towards).mean() / (towards @ towards))
                 sheet(a, truth, out / f"{name}.png")
-                lines.append(f"{name}\tgreen\tPSNR {psnr(a, truth):.2f} dB, edge {psnr(a, truth, edge):.2f} dB "
-                             f"({int(edge.sum())} px)\tgreen in edge {spill(a):+.2f} (truth {spill(truth):+.2f})\t"
-                             f"DISTS {dists(a, truth):.4f}")
+                lines.append(f"{name}\tfringe\ton {ref}: fringe {fringe:+.3f} of the ground's colour in the edge, "
+                             f"edge colour error {np.abs(error[edge]).mean():.2f}/255, edge PSNR {psnr(a, truth, edge):.2f} dB "
+                             f"({int(edge.sum())} px), all {psnr(a, truth):.2f} dB, DISTS {dists(a, truth):.4f}")
             elif kind == "rewrite":
                 text = json.loads(Path(ours).read_text())["texts"][0].strip()
                 if text.startswith("```"):

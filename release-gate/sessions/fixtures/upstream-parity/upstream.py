@@ -33,6 +33,8 @@ LIGHTNING_EDIT = ("lightx2v/Qwen-Image-Edit-2511-Lightning", "107d238d68b8387e32
 PAN2 = ("IFM/PAN2", "82f54c6cea3e20a9c451b61d7360016e5970503d")
 QWEN3 = ("huihui-ai/Huihui-Qwen3.5-9B-abliterated", "05b9e7c9b978ba29bdb8f50a49c30e4b91183339")
 BIREFNET = ("ZhengPeng7/BiRefNet", "e2bf8e4460fc8fa32bba5ea4d94b3233d367b0e4")
+#: The grounds a known cutout is put on (compare.py `fringe` reads the same).
+FRINGE_GROUNDS = {"green": (0, 177, 64), "dark": (24, 24, 24)}
 
 #: The cells' prompts, shared with upstream-parity.sh (cells.json).
 CELLS = json.loads((Path(__file__).with_name("cells.json")).read_text())
@@ -302,15 +304,16 @@ def birefnet(out: Path, fixtures: Path) -> None:
         image = Image.open(fixtures / f"{name}.jpg").convert("RGB")
         foreground, mask = cutout(image, name)
         if name == CELLS["birefnet"]["synthetic_from"]:
-            # A known cutout on green: this subject's refined colours and mask over a saturated green, and the same
-            # over white (the truth a cutout of the green picture should give).
+            # Known cutouts: this subject's refined colours and mask over a saturated green and over near-black, and the
+            # same over white, the truth a cutout of either should give (a fringe is the old background left in the edge).
             f = np.asarray(foreground, dtype=np.float64)
             a = np.asarray(mask, dtype=np.float64)[..., None] / 255
-            green = np.array([0.0, 177.0, 64.0])
-            Image.fromarray(np.rint(a * f + (1 - a) * green).astype(np.uint8)).save(out / "birefnet-green.png")
-            Image.fromarray(np.rint(a * f + (1 - a) * 255).astype(np.uint8)).save(out / "birefnet-green-truth.png")
-            mask.save(out / "birefnet-green-truth-mask.png")
-    cutout(Image.open(out / "birefnet-green.png").convert("RGB"), "green")
+            for ground, colour in FRINGE_GROUNDS.items():
+                Image.fromarray(np.rint(a * f + (1 - a) * np.array(colour)).astype(np.uint8)).save(out / f"birefnet-{ground}.png")
+            Image.fromarray(np.rint(a * f + (1 - a) * 255).astype(np.uint8)).save(out / "birefnet-truth.png")
+            mask.save(out / "birefnet-truth-mask.png")
+    for ground in FRINGE_GROUNDS:
+        cutout(Image.open(out / f"birefnet-{ground}.png").convert("RGB"), ground)
 
 
 GROUPS = {"qwen-image": qwen_image, "pan2": pan2, "qwen3": qwen3, "birefnet": birefnet}
