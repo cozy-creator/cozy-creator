@@ -417,11 +417,11 @@ fn last_picture(api: &Arc<Api>, on: &On, name: &str) -> Result<Picture, String> 
     Ok(Picture { on: on.clone(), name: name.to_owned(), frame: linked(api, name, frame), ready_at_ms: None, ahead: vec![], references: Arc::default() })
 }
 
-/// Whether `frame` is its machine's whole picture: TensorD answers a caller it can't verify yet (it has just started, its rental's keys not read)
-/// with its identity alone, no phase, GPUs, queue or installs (cl-1107, the user-flow: cibo, restarting at 01:38:15 and 01:46:46, was
+/// Whether `frame` is its machine's whole picture: TensorD answers its status while it starts with its identity and boot step alone
+/// (`booting`), no GPUs, queue or installs (cl-1107, the user-flow: cibo, starting at 01:38:15 and again at 01:46:46 for an update, was
 /// quoted from that as a machine with no GPU and nothing held, a minute of work, and took request 3, then request 4's move).
 fn whole(frame: &v1::StatusFrame) -> bool {
-    !frame.phase.is_empty()
+    frame.booting.is_none() && !frame.phase.is_empty()
 }
 
 /// `frame` with the link its machine would download at where it hasn't measured one: what this account's rentals beside it measured
@@ -534,7 +534,7 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
         None => machines.status_read(&row.name, &link).await?,
     };
     if !whole(&frame) {
-        return Err("it hasn't reported what it has yet".into());
+        return Err("it's starting".into());
     }
     if let Some(broken) = &frame.broken {
         return Err(format!("it isn't working ({})", broken.message));
