@@ -83,7 +83,9 @@ pod "mkdir -p /root/up/fx /root/up/out" < /dev/null || fail "the pod's work fold
 for f in upstream.py setup.sh cells.json; do pod "cat > /root/up/$f" < "$FIX/$f" || fail "copy $f"; done
 # Binary files go as base64: the SSH channel is only promised text.
 for f in "$WORK"/fx/*; do base64 -w0 "$f" | pod "base64 -d > /root/up/fx/${f##*/}" || fail "copy ${f##*/}"; done
-pod "cd /root/up && setsid nohup bash setup.sh > setup.log 2>&1 < /dev/null &" < /dev/null || fail "setup.sh"
+# A simple command goes to the background, its own descriptors redirected: a backgrounded `a && b` list keeps the SSH
+# channel open in its subshell until it ends.
+pod "cd /root/up; setsid nohup bash setup.sh > setup.log 2>&1 < /dev/null &" < /dev/null || fail "setup.sh"
 say "the references' environments and weights: fetching on the pod"
 
 # Our weights meanwhile, each lane the cells pin (bf16), on the pod's TensorFS.
@@ -117,7 +119,8 @@ for g in qwen-image birefnet qwen3 pan2; do
   on "$g" || continue
   if ! waitfor "$g.fetched" 5400; then say "reference $g: its weights never arrived: $(pod "tail -5 /root/up/fetch-$g.log /root/up/setup.log /root/up/$(envs_for "$g").log" < /dev/null 2>&1 | tail -c 600)"; continue; fi
   e=$(envs_for "$g")
-  pod "cd /root/up && setsid nohup bash -c 'HF_HOME=/root/hf $e/bin/python upstream.py $g out fx > ref-$g.log 2>&1 || touch out/$g.failed' > /dev/null 2>&1 < /dev/null &" < /dev/null
+  pod "cd /root/up; setsid nohup bash -c 'HF_HOME=/root/hf $e/bin/python upstream.py $g out fx > ref-$g.log 2>&1 || touch out/$g.failed' > /dev/null 2>&1 < /dev/null &" < /dev/null ||
+    say "reference $g: its start did not return (it may run anyway)"
   if waitfor "out/$g.done" 3600; then say "reference $g: $(pod "cat /root/up/out/$g.done" < /dev/null)"
   else say "reference $g FAILED: $(pod "tail -15 /root/up/ref-$g.log" < /dev/null 2>&1 | tail -c 1500)"; fi
   pod "tail -40 /root/up/ref-$g.log" < /dev/null > "$OUT/ref-$g.log" 2>&1
