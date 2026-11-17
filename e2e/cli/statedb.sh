@@ -400,10 +400,13 @@ for path, rgb in zip(sys.argv[1:], [(200, 30, 30), (30, 30, 200)]):
 hub_listing_restart() (
   step "a machine list answers the Hubs' last listing at once, across a restart, while the Hub doesn't answer (cl-1010)"
   [ -n "${COZY_TEST_HUB_PID_FILE:-}" ] && [ -f "$COZY_TEST_HUB_PID_FILE" ] || { echo "hub listing: needs an isolated Hub this cell can stop"; exit 0; }
+  [ -n "${E2E_HUB_LOG:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] || fail "hub listing: e2e/isolated.sh named no Hub log or email to sign in with"
   local hub_pid lock=$HOME/.cozy/calcifer/calcifer.lock.holder pid listed halted answer status secs S=$OUT/hub-listing
   mkdir -p "$S"
   hub_pid=$(cat "$COZY_TEST_HUB_PID_FILE")
   trap 'kill -CONT "$hub_pid" 2> /dev/null || true' EXIT
+  # Signed in, a Hub is listed: signed out, it's only said so.
+  signin "$E2E_HUB_EMAIL" > "$S/login.json" || fail "hub listing: cozy login: $(tail -c 300 "$S/login.json")"
   cozy --json machine ls > "$S/before.json" 2>&1 || fail "hub listing: machine ls: $(tail -c 300 "$S/before.json")"
   # When this Calcifer last listed the Hub.
   for _ in $(seq 100); do
