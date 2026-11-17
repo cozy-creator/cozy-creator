@@ -1620,7 +1620,13 @@ impl Publisher {
             let plain = slot["encoded_leaves"] != "accept" || slot["weights"] == true;
             let free_vram = (slot["min_bits"] == 4).then(|| gpu.free_vram(degree)).flatten();
             let hardware = tensorfs::fetch::Hardware { plain, components: slot_components(slot), free_vram, ..hardware.clone() };
-            let named = self.resolve(service, request.hub(&format!("the model for {path}"))?, named, &hardware, job.order)?;
+            let source = request.hub(&format!("the model for {path}"))?;
+            // What it waits on shows: the Hub's grant of the run's reads, each attempt it doesn't answer (cl-1189), then the Hub's answer.
+            if let Some(capability) = &source.capability {
+                capability.granted(job.stop.as_ref(), &|said| job.stage(said));
+            }
+            job.stage(format!("resolving {}", named.shown()));
+            let named = self.resolve(service, source, named, &hardware, job.order)?;
             let warnings = named.reasons.iter().map(|why| format!("{}: {why}", named.model)).collect();
             let grant = ModelGrant {
                 package: installation.package.clone(),
