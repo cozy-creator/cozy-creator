@@ -332,6 +332,10 @@ impl Plan {
     /// slot but an on-demand one and those the request's rules say it reads are needed, its raw weights too; its other on-demand
     /// slots are extras, which a stage may read), as its checkpoints.
     pub(crate) fn needs(&self, wants: &needs::Wants) -> crate::access::Needs {
+        let unresolved: Vec<&String> = wants.needed.iter().filter(|slot| self.selected(slot).is_none()).collect();
+        if !unresolved.is_empty() {
+            tracing::warn!("plan {}: no checkpoint here for {unresolved:?}, which its request needs", self.id);
+        }
         crate::access::Needs::of(needs::resolved(wants, |slot| self.selected(slot)))
     }
     /// All its calls may read, on-demand slots too: what a `downloaded` warm set member holds,
