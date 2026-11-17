@@ -113,7 +113,7 @@ pub(crate) enum Turn {
 }
 
 /// A project's jobs, all its renders' at once.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Graph {
     pub jobs: Vec<Job>,
     by_key: HashMap<String, usize>,

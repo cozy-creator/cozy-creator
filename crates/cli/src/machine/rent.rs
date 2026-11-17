@@ -5,7 +5,7 @@ use std::{
 };
 
 use api::{
-    calcifer::{Ended, Machine, MachineKind, MachineState, NewMachine, Quote, RentalSkus, Rented, RunQuote},
+    calcifer::{Agreed, Ended, Machine, MachineKind, MachineState, NewMachine, Quote, RentalSkus, Rented, RunQuote},
     config::Origin,
     error::{Error, Kind},
 };
@@ -266,6 +266,16 @@ pub(crate) fn agree(ctx: &Context, quoted: &RunQuote) -> Result<bool, Error> {
         return Ok(false);
     }
     Ok(matches!(line.trim().to_ascii_lowercase().as_str(), "" | "y" | "yes"))
+}
+
+/// The price a `new` run's or render's quote was agreed at (`agree`): none for one that rents nothing. Declined, it is refused
+/// `quote_declined`, saying what wasn't sent.
+pub(crate) fn agreed(ctx: &Context, quoted: Option<&RunQuote>, unsent: &str) -> Result<Option<Agreed>, Error> {
+    let Some(quoted) = quoted else { return Ok(None) };
+    if !agree(ctx, quoted)? {
+        return Err(Error::new(Kind::Usage, "quote_declined", format!("nothing was rented and {unsent}")));
+    }
+    Ok(Some(quoted.quote.agreed))
 }
 
 /// What following an order came to: its machine ready, or the follower stopped (and said so)

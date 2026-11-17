@@ -267,7 +267,12 @@ runid=$(jq -r '.id // empty' "$w" 2> /dev/null || true)
 [ -n "$rental" ] && ! J '.status == "failed"' "$w" || check "run_on_new: the encrypted project's run --on new:cpu rented nothing for it: $(jq -c '{status, machine, reason}' "$w" 2> /dev/null)"
 [ -z "$rental" ] || cozy --json machine end "$rental" --force -y > "$OUT/on-new-enc-end.json" 2>&1 || check "run_on_new: the encrypted project's rental didn't end"
 in_project "$E" --json vault lock > "$OUT/on-new-enc-lock.json" 2>&1 || check "run_on_new: the encrypted project didn't lock: $(tail -c 300 "$OUT/on-new-enc-lock.json")"
-python3 - "$HOME/.cozy/calcifer/state.db" "$id" "$code" "$runid" > "$OUT/on-new-traces.txt" 2>&1 <<'PY' || check "run_on_new: once locked, Calcifer's asks tie the rental to the encrypted project: $(cat "$OUT/on-new-traces.txt")"
+asks_untraced "$id" "$code" "$runid" > "$OUT/on-new-traces.txt" 2>&1 \
+  || check "run_on_new: once locked, Calcifer's asks tie the rental to the encrypted project: $(cat "$OUT/on-new-traces.txt")"
+}
+# asks_untraced <project id> <code> <run id>: Calcifer's rent asks (its state.db) name none of them, an encrypted project's once it locks.
+asks_untraced() {
+python3 - "$HOME/.cozy/calcifer/state.db" "$@" <<'PY'
 import sqlite3, sys
 path, *marks = sys.argv[1:]
 marks = [mark for mark in marks if mark]
@@ -279,6 +284,74 @@ found = [(mark[:8], row[0]) for row in rows for mark in marks
 assert not found, f"{found} in {len(rows)} asks"
 print(f"{len(rows)} asks, none naming the run, the project's id or its code")
 PY
+}
+
+# render_on_new (cl-1066; Paul: "`--on new`: `run` first, then `render`"): a project's `cozy render <box> --on new:cpu -y` quotes one
+# rental for all the render sends (POST /v1/projects/{id}/render-quote), agrees, orders it and renders there. Before, it was refused
+# `project_on_new` ("A project renders on machines you already have"). This Hub's docker rental never gets ready, so nothing lands on
+# it: that each render rents one machine and its box's work waits there, not failed, is the cell, for a plaintext project and an
+# encrypted one, whose order leaves Calcifer's asks naming none of it once it locks.
+render_on_new() {
+step "a project's render --on new rents one machine for it and goes there (cl-1066)"
+[ -n "${E2E_HUB_LOG:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] || { check "render_on_new: e2e/isolated.sh named no Hub log or email"; return; }
+local P=$OUT/render-new-plain E=$OUT/render-new-sealed pass=$OUT/render-new-pass id='' code=''
+signin "$E2E_HUB_EMAIL" > "$OUT/render-new-login.json" || { check "render_on_new: cozy login failed: $(tail -c 300 "$OUT/render-new-login.json")"; return; }
+cozy --json new --unencrypted "$P" > "$OUT/render-new-plain.json" 2>&1 || check "render_on_new: new: $(tail -c 300 "$OUT/render-new-plain.json")"
+render_new plain "$P"
+printf 'render-new-%s%s\n' "$RANDOM" "$RANDOM" > "$pass"
+if cozy --json new "$E" --passphrase-file "$pass" --recovery-out "$OUT/render-new-recovery" > "$OUT/render-new-sealed.json" 2>&1; then
+  id=$(jq -r '.id // empty' "$OUT/render-new-sealed.json") code=$(jq -r '.code // empty' "$OUT/render-new-sealed.json")
+  render_new sealed "$E"
+  in_project "$E" --json vault lock > "$OUT/render-new-lock.json" 2>&1 || check "render_on_new: the encrypted project didn't lock: $(tail -c 300 "$OUT/render-new-lock.json")"
+  if [ -n "$runid" ]; then
+    asks_untraced "$id" "$code" "$runid" > "$OUT/render-new-traces.txt" 2>&1 \
+      || check "render_on_new: once locked, Calcifer's asks tie the render's rental to the encrypted project: $(cat "$OUT/render-new-traces.txt")"
+  else
+    check "render_on_new: sealed: no run of its render to look for in Calcifer's asks"
+  fi
+else
+  check "render_on_new: new encrypted: $(tail -c 300 "$OUT/render-new-sealed.json")"
+fi
+cozy --json logout > /dev/null 2>&1 || true
+}
+# render_new <name> <project>: a box of <project> drawn by a weightless tool, rendered --on new:cpu -y. Its Hub has one rental more, the
+# box's work (its tool's install there, then its call) is on it and not failed, and every rental it made ends. That work's run id in $runid.
+render_new() {
+local name=$1 P=$2 pid before rentals='' rental='' machine='' number='' on='' r w=$OUT/render-new-$1-runs.json at=$OUT/render-new-$1-watch.json \
+  ls=$OUT/render-new-$1-machines.json
+runid=''
+jq -n --arg draw "$rename_here/project/draw.py/draw" '[{name: "box", tool: $draw, kind: "image", fields: {instructions: "Rendered on a rental of its own."}}]' \
+  | boxes_in "$P" || return 0
+before=$(cozy --json machine ls --history 2> /dev/null | jq -c '[.rentals[]?.rental_id]' 2> /dev/null || echo '[]')
+(cd "$P" && cozy --json -y render box --on new:cpu) > "$OUT/render-new-$name.ndjson" 2> "$OUT/render-new-$name.err" & pid=$!
+# Its tool's work on a rental: reading the project may install it on `local` too, which isn't where the render went.
+for _ in $(seq 300); do
+  in_project "$P" --json run ls --limit 20 > "$w" 2> /dev/null || true
+  cozy --json machine ls > "$ls" 2> /dev/null || true
+  on=$(jq -c --slurpfile ls "$ls" '[.runs[]? | select(.target | test("draw")) | . as $run | $ls[0].machines[]?
+    | select(.name == $run.machine and .rental_id != null) | {number: $run.number, machine: .name, rental: .rental_id}] | first // empty' "$w" 2> /dev/null || true)
+  [ -z "$on" ] || break
+  kill -0 "$pid" 2> /dev/null || break
+  sleep 2
+done
+kill -KILL "$pid" 2> /dev/null || true
+wait "$pid" 2> /dev/null || true
+rental=$(jq -r '.rental // empty' <<< "$on" 2> /dev/null || true)
+machine=$(jq -r '.machine // empty' <<< "$on" 2> /dev/null || true)
+number=$(jq -r '.number // empty' <<< "$on" 2> /dev/null || true)
+rentals=$(cozy --json machine ls --history 2> /dev/null | jq -c --argjson was "${before:-[]}" '[.rentals[]?.rental_id | select(IN($was[]) | not)]' 2> /dev/null || true)
+[ -z "$number" ] || in_project "$P" --json run watch "$number" --once > "$at" 2>&1 || true
+runid=$(jq -r '.id // empty' "$at" 2> /dev/null || true)
+in_project "$P" --json run ls --limit 20 > "$w" 2> /dev/null || true
+echo "render_on_new: $name: rented ${rentals:-nothing}; its work $(jq -c '[.runs[]? | select(.target | test("draw")) | {number, target, machine, status}]' "$w" 2> /dev/null); the box $(status "$P" | jq -c '.board.jobs[]? | select(.asset == "box") | {state, why}' 2> /dev/null)"
+[ -n "$rental" ] && ! J '.status == "failed"' "$at" \
+  || check "render_on_new: $name: render --on new:cpu rendered on no rental: $(tail -c 300 "$OUT/render-new-$name.err") $(tail -c 300 "$OUT/render-new-$name.ndjson")"
+[ -z "$rental" ] || [ "$rentals" = "[\"$rental\"]" ] || check "render_on_new: $name: it rented ${rentals:-nothing}, not the one machine it went to ($rental)"
+[ -z "$machine" ] || ! J --arg n "$machine" '[.runs[]? | select((.target | test("draw")) and (.target | test("^(install|sync) ") | not) and .machine != $n)] != []' "$w" \
+  || check "render_on_new: $name: its box's call went elsewhere than its rental $machine: $(jq -c '[.runs[]? | select(.target | test("draw")) | {target, machine}]' "$w")"
+for r in $(jq -r --arg r "$rental" '. + [$r] | map(select(. != "")) | unique | .[]' <<< "${rentals:-[]}" 2> /dev/null || true); do
+  cozy --json machine end "$r" --force -y > "$OUT/render-new-$name-end.json" 2>&1 || check "render_on_new: $name: rental $r didn't end: $(tail -c 300 "$OUT/render-new-$name-end.json")"
+done
 }
 
 # rental_rename (cl-1089): a render sent to a rental by its `rent-…` handle, before its Hub names the host, follows the name: cl-1069's

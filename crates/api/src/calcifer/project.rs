@@ -1122,6 +1122,9 @@ pub struct Runs {
     /// from here to its version. Only for one box named; asked again with an id it already has, it's the same take. None: Calcifer's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub takes: Vec<String>,
+    /// With `on` `new[:sku]`, the price its asker agreed to (`POST /v1/projects/{id}/render-quote`): one rental for all it sends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agreed: Option<crate::calcifer::Agreed>,
 }
 
 fn one() -> u32 {

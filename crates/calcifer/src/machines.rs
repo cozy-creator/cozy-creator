@@ -1832,7 +1832,7 @@ impl Machines {
         let Some(api) = self.calcifer.api.get().and_then(std::sync::Weak::upgrade) else { return };
         for run in unplaced {
             if run.wants != "any" {
-                self.rent_for(&run, run.wants.strip_prefix("new:"), run.spec.gpus);
+                self.rent_for(&run, run.wants.strip_prefix("new:"));
                 continue;
             }
             let set = Box::pin(crate::project::queue_set(&api, &run)).await;

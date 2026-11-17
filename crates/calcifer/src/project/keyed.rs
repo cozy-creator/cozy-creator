@@ -64,6 +64,15 @@ pub(super) fn claimed() -> Option<(String, String)> {
     }).ok().flatten()
 }
 
+/// The key of the write going, taken by an act or not: what an effect outside the project is ordered under, so its retry asks it again
+/// under the same (a render's rental, cl-1066).
+pub(super) fn key_now() -> Option<String> {
+    CLAIM.try_with(|claim| {
+        let claim = claim.borrow();
+        claim.key.as_ref().map(|(key, _)| key.clone()).or_else(|| claim.taken.clone())
+    }).ok().flatten()
+}
+
 /// What this act's write answers, said in it, under its key: it commits with the act's effect, so a write that's done is never answered
 /// again with less than it said, Calcifer stopped between them or not. Taken whether the act commits or not: a failed act's words go with it.
 pub(super) fn answer_now() -> Option<(String, super::db::Said)> {

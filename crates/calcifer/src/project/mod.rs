@@ -67,7 +67,7 @@ use axum::{
 };
 use futures_util::{FutureExt as _, StreamExt as _, future::BoxFuture, stream::FuturesUnordered};
 use api::{
-    calcifer::{Kind as RunKind, NoteLevel, On, Run, StagedInput, Status as RunStatus, SubmitRun, Warning},
+    calcifer::{Kind as RunKind, NoteLevel, On, Run, RunQuote, StagedInput, Status as RunStatus, SubmitRun, Warning},
     choices::{self, Choices},
     config::Origin,
     error::{Error, Kind},
@@ -89,6 +89,7 @@ use crate::{
     api::{Api, Refusal, parse},
     placement::{self, Offer},
     plan,
+    rentals::Placing,
 };
 use folder::{Ask, Coming, Failed, Files, Folder, Lock, Pending, Take, Target, Tried, Version};
 use format::{ALL, Doc, Standing, State as Stand, Tool};
@@ -243,6 +244,7 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/view", get(view::read).patch(view::patch))
         .route("/v1/projects/{id}/thumbs/{sha256}", get(thumbs::thumb))
         .route("/v1/projects/{id}/runs", post(runs).get(crate::api::project_list))
+        .route("/v1/projects/{id}/render-quote", post(render_quote))
         .route("/v1/projects/{id}/runs/submit", post(crate::runs::submit_project))
         .route("/v1/projects/{id}/runs/{run}", get(crate::api::show))
         .route("/v1/projects/{id}/runs/{run}/cancel", post(crate::api::cancel))
@@ -1621,14 +1623,15 @@ struct AskedText {
 }
 
 impl AskedText {
-    fn new(doc: Doc) -> Self {
+    fn new(doc: impl Into<Arc<Doc>>) -> Self {
+        let doc: Arc<Doc> = doc.into();
         let n = doc.assets.len();
         let mut readers = vec![vec![]; n];
         for (i, reads) in doc.upstream.iter().enumerate() {
             reads.iter().for_each(|&read| readers[read].push(i));
         }
         let nodes = (0..n).map(|i| node_of(&doc, i)).collect();
-        Self { nodes, done: vec![Standing::default(); n], known: vec![false; n], readers, doc: Arc::new(doc) }
+        Self { nodes, done: vec![Standing::default(); n], known: vec![false; n], readers, doc }
     }
 
     fn ensure(&mut self, i: usize, lock: &Lock) {
@@ -1796,12 +1799,14 @@ impl Project {
                     graph.adopt(&ask.id, job, &pending.asset, &node, pending.approve);
                 }
             }
-            let asked = walker::Asked {
-                takes: ask.takes.iter().map(|take| Named { key: take.key.clone(), asset: take.asset.clone(), approve: take.approve }).collect(),
-            };
-            graph.add(&ask.id, &mut Now { reading, lock }, &asked);
+            graph.add(&ask.id, &mut Now { reading, lock }, &asked_of(ask));
         }
     }
+}
+
+/// What render `ask` owes, as the walker's graph takes it.
+fn asked_of(ask: &Ask) -> walker::Asked {
+    walker::Asked { takes: ask.takes.iter().map(|take| Named { key: take.key.clone(), asset: take.asset.clone(), approve: take.approve }).collect() }
 }
 
 /// What a project and its render say while what landed can't go in.
@@ -3077,14 +3082,96 @@ async fn runs(
     Ok((StatusCode::ACCEPTED, Json(render(&api, &id, asked).await?)))
 }
 
-/// `asked` of project `id`: what `POST /v1/projects/{id}/runs` and a retry of a box's run (`retry`, cl-1085) add to its walk.
-async fn render(api: &Arc<Api>, id: &str, mut asked: Runs) -> Result<Asked, Refusal> {
+/// `POST /v1/projects/{id}/render-quote` (cl-1066): what a render of `Runs` on `new[:sku]` would rent, one rental for every job it would
+/// send, and its price, as `cozy run --on new`'s is quoted; `null` for one that sends nothing to a machine. Nothing is rented, kept or sent.
+async fn render_quote(
+    State(api): State<Arc<Api>>,
+    Path(id): Path<String>,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Json<Option<RunQuote>>, Refusal> {
+    let asked: Runs = parse(&body?)?;
+    let plan = planned(&api, &id, asked).await?;
+    let [On::New(sku)] = plan.ask.target.on.as_slice() else { return Ok(Json(None)) };
+    let jobs = plan.jobs(&api).await.map_err(Refusal)?;
+    if jobs.is_empty() {
+        return Ok(Json(None));
+    }
+    let hub = &plan.ask.target.hub;
+    api.machines.hubs.client(hub).map_err(Refusal)?;
+    Ok(Json(Some(api.machines.rental_quote(hub, sku.as_deref(), &jobs).await.map_err(Refusal)?)))
+}
+
+/// `asked` of project `id`: what `POST /v1/projects/{id}/runs` and a retry of a box's run (`retry`, cl-1085) add to its walk. On
+/// `new[:sku]` at the price its asker agreed (`render_quote`), one rental for all it sends is ordered first, and it goes there (cl-1066).
+async fn render(api: &Arc<Api>, id: &str, asked: Runs) -> Result<Asked, Refusal> {
+    let (agreed, names) = (asked.agreed, asked.names.join(" "));
+    let mut plan = planned(api, id, asked).await?;
+    if let [On::New(sku)] = plan.ask.target.on.clone().as_slice() {
+        let jobs = plan.jobs(api).await.map_err(Refusal)?;
+        // What sends nothing to a machine rents nothing.
+        if !jobs.is_empty() {
+            let Some(agreed) = agreed else {
+                let said = "A render that rents a machine needs the price you agreed to.";
+                return Err(Refusal(Error::new(Kind::Usage, "quote_unagreed", said).next(format!("cozy render {names} --on {}", On::New(sku.clone())))));
+            };
+            // Under its write's key, so its retry orders nothing more; digested with its project, so the order names neither.
+            let key = keyed::key_now().unwrap_or_else(new_key);
+            let key = format!("render-{}", &hex::encode(Sha256::digest(format!("cozy rent\0{}\0{key}", plan.project.id)))[..40]);
+            let hub = plan.ask.target.hub.clone();
+            let rented = api.machines.rent_for_jobs(&key, &hub, sku.as_deref(), &jobs, agreed).await.map_err(Refusal)?;
+            let name = rented.machine.name;
+            let message = format!("Rented {name} for this render: it renders there once it's up.");
+            plan.lines.push(Said { level: NoteLevel::Info, message, names: vec![] });
+            plan.goes(vec![On::Machine(name)]);
+        }
+    }
+    begin(api, plan)
+}
+
+/// What a render asks, planned as its walk would take it (`planned`): nothing kept or sent yet.
+struct Plan {
+    project: Arc<Project>,
+    doc: Arc<Doc>,
+    lock: Lock,
+    snapshot: String,
+    ask: Ask,
+    /// How many takes it adds.
+    added: u32,
+    /// Each take it asks was asked already by its id.
+    resent: bool,
+    lines: Vec<Said>,
+}
+
+impl Plan {
+    /// What it sends to a machine, as its walk would plan it now (`Graph::add`, beside what the project's renders have going): each job
+    /// as a rental is placed for it, once each (cl-1066). What Calcifer makes itself (a cut) needs none.
+    async fn jobs(&self, api: &Arc<Api>) -> Result<Vec<Placing>, Error> {
+        let mut graph = self.project.walker.lock().expect("walker lock").graph.clone();
+        let mut reading = AskedText::new(self.doc.clone());
+        let made = graph.add(&self.ask.id, &mut Now { reading: &mut reading, lock: &self.lock }, &asked_of(&self.ask));
+        let host = Host::new(api);
+        let mut jobs = vec![];
+        for job in made.into_iter().map(|id| &graph.jobs[id]).filter(|job| !matches!(job.kind, JobKind::Free)) {
+            if let Some(placing) = host.placing(&self.ask.target.hub, &self.doc.target(job.node), &self.project.folder.dir).await?
+                && !jobs.contains(&placing)
+            {
+                jobs.push(placing);
+            }
+        }
+        Ok(jobs)
+    }
+
+    /// It goes `on` these machines.
+    fn goes(&mut self, on: Vec<On>) {
+        self.ask.takes.iter_mut().for_each(|take| take.target.on.clone_from(&on));
+        self.ask.target.on = on;
+    }
+}
+
+/// `asked` of project `id`, planned as `render` takes it: refused, or its ask of the walk.
+async fn planned(api: &Arc<Api>, id: &str, mut asked: Runs) -> Result<Plan, Refusal> {
     let (api, id) = (api.clone(), id.to_owned());
     api::calcifer::machine_set(&asked.on).map_err(Refusal)?;
-    if asked.on.iter().any(|on| matches!(on, On::New(_))) {
-        let said = "A project renders on machines you already have. Rent one first, then name it with --on.";
-        return Err(Refusal(Error::new(Kind::Usage, "project_on_new", said).next("cozy machine rent")));
-    }
     if asked.approve && asked.n > 1 {
         let said = format!("--approve approves one new version, but -n {} makes {}.", asked.n, asked.n);
         return Err(Refusal(Error::new(Kind::Usage, "approve_one", said).remedy("Leave out --approve or -n.")));
@@ -3107,7 +3194,6 @@ async fn render(api: &Arc<Api>, id: &str, mut asked: Runs) -> Result<Asked, Refu
             other => other,
         }).collect(),
     };
-    project.unsent.lock().expect("unsent lock").clear();
     // What this render uses: the project as it is now, its snapshot kept by digest until the render ends.
     let written = project.folder.written().map_err(Refusal)?;
     let doc = Doc::asked(&project.folder, &written).map_err(Refusal)?;
@@ -3197,14 +3283,22 @@ async fn render(api: &Arc<Api>, id: &str, mut asked: Runs) -> Result<Asked, Refu
         takes.retain(|take| !held.contains(take.key.as_str()));
         takes.is_empty()
     };
+    let added = if resent { 0 } else { takes.len() as u32 };
+    let ask = Ask { id: new_key(), digest, target, sent: BTreeSet::new(), takes };
+    Ok(Plan { project, doc: Arc::new(doc), lock, snapshot, ask, added, resent, lines: lines.into_inner() })
+}
+
+/// `plan` added to its project's walk, which takes it from here.
+fn begin(api: &Arc<Api>, plan: Plan) -> Result<Asked, Refusal> {
+    let Plan { project, doc, lock, snapshot, ask, added, resent, lines } = plan;
+    let (id, digest) = (project.id.clone(), ask.digest.clone());
+    project.unsent.lock().expect("unsent lock").clear();
     // Hold admission through the commit and its board. The previous walk
     // publishes its end under this same lock before a new one can begin.
     // The gate, then `walking`, then the writer: its read first, so the writes under `walking` are granted beside it and never queue.
     let _read = vault::read_gate_blocking(&project.root).map_err(Refusal)?;
     let mut walking = project.walking.lock().expect("walking lock");
     let joined = *walking;
-    let added = if resent { 0 } else { takes.len() as u32 };
-    let ask = Ask { id: new_key(), digest: digest.clone(), target: target.clone(), sent: BTreeSet::new(), takes };
     // One transaction: its snapshot, the ask, and its key, so a retry however late runs nothing twice. What the project has lost is set aside,
     // and what's asked again fails no more.
     let lost = std::cell::Cell::new(false);
@@ -3236,7 +3330,7 @@ async fn render(api: &Arc<Api>, id: &str, mut asked: Runs) -> Result<Asked, Refu
         board.jobs.extend(next);
         let path = project.folder.dir.clone();
         let next = vec!["cozy status".into()];
-        let said = lines.borrow().clone();
+        let said = lines.clone();
         keyed::answering(StatusCode::ACCEPTED, &Asked { id: id.clone(), ask: begun.clone(), path, joined, added, queued: vec![], said, next, board });
         Ok(())
     }))
@@ -3246,12 +3340,11 @@ async fn render(api: &Arc<Api>, id: &str, mut asked: Runs) -> Result<Asked, Refu
     }
     project.join(&project.folder.lock().map_err(Refusal)?);
     let queued = queued_now(&project, &ask.id);
-    walk_under(&api, &project, &mut walking);
-    sync_jobs(&project, numbered(&api, &project.id)).map_err(Refusal)?;
+    walk_under(api, &project, &mut walking);
+    sync_jobs(&project, numbered(api, &project.id)).map_err(Refusal)?;
     let board = project.jobs.board();
     drop(walking);
-    let said = lines.into_inner();
-    Ok(Asked { id, ask: begun, path: project.folder.dir.clone(), joined, added, queued, said, next: vec!["cozy status".into()], board })
+    Ok(Asked { id, ask: begun, path: project.folder.dir.clone(), joined, added, queued, said: lines, next: vec!["cozy status".into()], board })
 }
 
 /// `POST /v1/projects/{id}/runs/{run}/retry` (cl-1085): a run that ended without its result asked again, placed as a run naming no machine
@@ -3273,7 +3366,7 @@ async fn retry(
     let project = api.projects.get(&api, &id)?;
     let made = project.folder.lock().map_err(Refusal)?.assets.values().find(|held| held.failed.as_ref().and_then(|failed| failed.run) == Some(row.number)).map(|held| held.name.clone());
     if let Some(made) = made {
-        let asked = Runs { names: vec![made], n: 1, on: vec![], hub: String::new(), approve: false, pickup: None, takes: vec![] };
+        let asked = Runs { names: vec![made], n: 1, on: vec![], hub: String::new(), approve: false, pickup: None, takes: vec![], agreed: None };
         return Ok((StatusCode::ACCEPTED, Json(render(&api, &id, asked).await?)).into_response());
     }
     if row.kind != RunKind::Call {
