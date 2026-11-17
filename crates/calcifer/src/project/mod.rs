@@ -648,10 +648,11 @@ fn take_over(api: &Arc<Api>, project: &Arc<Project>, was: &FsPath) {
     }
 }
 
-/// The runs this computer's machine is running of `project`'s walk, to stop, and the assets of those its renders owe again as before
-/// they were sent (a take, sent once, isn't: it ends canceled). One its folder's going already ended canceled (cl-1031: a folder gone
+/// The runs this computer's machine is running of `project`'s walk, to stop, and the assets they make, which its renders owe again as
+/// before they were sent, on the seed they ran with. One its folder's going already ended canceled (cl-1031: a folder found gone
 /// before it's opened where it moved to) goes again too.
 fn restart_local(project: &Project, store: &ProjectStore) -> Result<(Vec<RunId>, Vec<String>), Error> {
+    struct Again { key: String, ask: String, run: u64, name: String, asset: String, kind: String, take: Option<Take>, tried: Option<Tried> }
     let walk = project.folder.walk_now()?;
     let (mut stopped, mut restarted, mut again) = (vec![], vec![], vec![]);
     for (key, pending) in &walk.pending {
@@ -663,20 +664,36 @@ fn restart_local(project: &Project, store: &ProjectStore) -> Result<(Vec<RunId>,
         if !settled {
             stopped.push(row.id.clone());
         }
-        if pending.job_of(key) == walker::owed_key(&pending.ask, &name_key(&pending.asset)) {
-            // Sent again under its job's key: the stopped run, kept, answers it no more.
-            store.release_key(row.id.as_str()).map_err(|e| Error::new(Kind::Unavailable, "project_journal", e.to_string()))?;
-            restarted.push(pending.asset.clone());
-            again.push((key.clone(), pending.ask.clone(), name_key(&pending.asset), pending.run));
-        }
+        // Sent again under its job's key: the stopped run, kept, answers it no more.
+        store.release_key(row.id.as_str()).map_err(|e| Error::new(Kind::Unavailable, "project_journal", e.to_string()))?;
+        let job = pending.job_of(key).to_owned();
+        // A take is owed as its render asked it; anything else as the render owes what it hasn't tried.
+        let take = (job != walker::owed_key(&pending.ask, &name_key(&pending.asset))).then(|| Take {
+            key: job, asset: pending.asset.clone(), target: pending.target.clone(), approve: pending.approve, new: true,
+            pickup: pending.version.pickup.clone(), covers: false,
+        });
+        let tried = pending.version.seed.map(|seed| Tried { inputs: pending.version.inputs.clone(), seed });
+        restarted.push(pending.asset.clone());
+        again.push(Again { key: key.clone(), ask: pending.ask.clone(), run: pending.run, name: name_key(&pending.asset), asset: pending.asset.clone(), kind: pending.kind.clone(), take, tried });
     }
+    if again.is_empty() {
+        return Ok((stopped, restarted));
+    }
+    project.folder.update_lock(|lock| {
+        for again in again.iter().filter(|again| again.tried.is_some()) {
+            lock.asset_mut(&again.asset, &again.kind).tried.clone_from(&again.tried);
+        }
+    })?;
     project.folder.update_walk(|walk| {
-        for (key, ask, name, run) in &again {
-            walk.pending.remove(key);
-            walk.walk.runs.remove(run);
-            walk.walk.landing.retain(|row| row.run != *run);
-            for mine in walk.walk.asks.iter_mut().filter(|mine| &mine.id == ask) {
-                mine.sent.remove(name);
+        for again in &again {
+            walk.pending.remove(&again.key);
+            walk.walk.runs.remove(&again.run);
+            walk.walk.landing.retain(|row| row.run != again.run);
+            for mine in walk.walk.asks.iter_mut().filter(|mine| mine.id == again.ask) {
+                match &again.take {
+                    Some(take) => mine.takes.push(take.clone()),
+                    None => drop(mine.sent.remove(&again.name)),
+                }
             }
         }
     })?;
