@@ -7,7 +7,7 @@
 // How long each encrypted project took to make is in the cell's report (`vault_create`).
 // `@vault`: on the job with the filesystem driver, sharing its Calcifer, so it touches only its own projects.
 const { randomBytes, createHash } = require('crypto');
-const { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } = require('fs');
+const { existsSync, readFileSync, readdirSync, realpathSync } = require('fs');
 const { dirname, join, relative } = require('path');
 const { test: base, expect, canvasIdle, openPoint, png, canvasCard, canvasPoint, canvasVisible, screenshotPixels } = require('./fixtures');
 
@@ -198,22 +198,7 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
       await page.getByLabel('Passphrase', { exact: true }).fill(passphrase);
       await page.getByLabel('Confirm passphrase', { exact: true }).fill(passphrase);
     };
-    // A folder with anything in it: said in one line beside the field, by its real path, and nothing else (cl-980).
-    const full = join(dirname(project.path), `web-vault-full-${randomBytes(3).toString('hex')}`);
-    mkdirSync(full);
-    writeFileSync(join(full, 'notes.txt'), 'already here\n');
-    removeAfter(full);
-    // Refused on purpose, as the browser says in its console.
-    guards.allow(/status of 409\b.*\/v1\/projects$/);
-    await asked(full);
-    await page.getByRole('button', { name: 'Create project', exact: true }).click();
-    const beside = page.locator('.said-beside .beside');
-    await expect(beside, 'a folder with anything in it is said beside the field').toBeVisible({ timeout: 60_000 });
-    const said = await beside.innerText();
-    expect.soft(/isn't empty/.test(said) && said.includes(realpathSync(full)), `said beside: ${said}`).toBe(true);
-    await expect.soft(page.locator('dialog[open], [role=alertdialog]'), 'and in no dialog').toHaveCount(0);
-    await expect.soft(field, 'the form stays').toBeVisible();
-    expect.soft(readFileSync(join(full, 'notes.txt'), 'utf8') === 'already here\n' && !existsSync(join(full, 'project.db')), 'nothing in it changed').toBe(true);
+    // A folder with anything in it is encrypted in place, as `cozy vault encrypt` does (cl-1066): projectvault's `new_in_place` proves it.
     await asked(join(dirname(project.path), name));
     const answered = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === '/v1/projects', { timeout: 60_000 });
     const pressed = Date.now();

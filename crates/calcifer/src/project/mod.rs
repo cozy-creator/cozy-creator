@@ -1938,13 +1938,21 @@ fn new_database(dir: &FsPath, id: &str, name: &str, written: written::Written) -
     platform::durable::sync_dir(dir).map_err(|e| Error::new(Kind::Unavailable, "project_io", e.to_string()))
 }
 
-/// Fresh encrypted projects write their first database through the mount, never through a plaintext source folder.
-fn create_new(api: &Api, dir: &FsPath, name: &str, starter: bool, passphrase: Option<String>, engine: Option<&project_mount::Provider>) -> Result<(PathBuf, Option<String>), Error> {
+/// Fresh encrypted projects write their first database through the mount, never through a plaintext source folder. One in a folder
+/// that holds anything is made where it is and encrypted in place, what it holds with it, as `cozy vault encrypt` does (cl-1066: fix,
+/// don't refuse).
+fn create_new(api: &Arc<Api>, dir: &FsPath, name: &str, starter: bool, passphrase: Option<String>, engine: Option<&project_mount::Provider>) -> Result<(PathBuf, Option<String>), Error> {
     let Some(passphrase) = passphrase else { return made_new(api, dir, name, starter).map(|dir| (dir, None)); };
     refuse_encrypted_parent(dir)?;
     if std::fs::read_dir(dir).map_err(|e| Error::new(Kind::Unavailable, "project_io", e.to_string()))?.next().is_some() {
-        return Err(Error::new(Kind::Conflict, "project_not_empty", format!("{} isn't empty. A locked project has to start in an empty folder. Nothing in it was changed.", dir.display()))
-            .next("cozy new <new-directory>").next("cozy new --unencrypted"));
+        let canonical = made_new(api, dir, name, starter)?;
+        // Known by its id, as `vault encrypt` finds it: opened, so the index holds it.
+        let opened = api.projects.open(api, &canonical)?;
+        let mut ask = ::api::calcifer::project::VaultAsk { action: "encrypt".into(), passphrase: Some(passphrase), recovery_secret: None, idle_timeout_s: None, max_duration_s: None };
+        let changed = vault::operate(api, &canonical, &mut ask, &mut vault_operation::Progress::quiet())?;
+        drop(opened);
+        crate::events::project_changed(&canonical);
+        return Ok((canonical, changed.recovery_secret));
     }
     let canonical = platform::durable::canonical(dir).map_err(|e| Error::new(Kind::Unavailable, "project_io", e.to_string()))?;
     let (id, name) = (fresh_id(), unique_name(api, "", &canonical, name.to_owned())?);

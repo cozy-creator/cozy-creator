@@ -9,7 +9,7 @@ import { Failure } from "./common"
 import { Recovery, vaultKey } from "./ProjectVault"
 
 /** What a folder refusal is: said beside the Folder field, in Calcifer's words, never in a dialog. */
-const OF_FOLDER = new Set(["project_exists", "project_not_empty", "project_permission", "project_io", "project_path", "project_own_folder", "vault_nested_project"])
+const OF_FOLDER = new Set(["project_exists", "project_permission", "project_io", "project_path", "project_own_folder", "vault_nested_project"])
 
 /** `<the most recently opened project's parent>/untitled-N`, the first N no project has; this person's home folder when there's none yet. */
 export function defaultFolder(paths: string[], home: string): string {

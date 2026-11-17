@@ -56,6 +56,17 @@ projectvault() (
   jq -e '.encrypted == true and .state == "unlocked"' "$work/born-status.json" > /dev/null || fail "new --passphrase-file made no unlocked encrypted project: $(cat "$work/born-status.json")"
   [ -s "$secrets/born-recovery" ] || fail "new --recovery-out saved no recovery secret"
   in_project "$work/born" --json vault lock > "$work/born-lock.json" || fail "the new encrypted project doesn't lock: $(jq -c '.error | {code, message}' "$work/born-lock.json" 2> /dev/null)"
+  step "a new encrypted project in a folder that holds files: encrypted in place, its files with it (cl-1066)"
+  # As `cozy vault encrypt` does. Before, `project_not_empty` refused it: "A locked project has to start in an empty folder".
+  mkdir -p "$work/full/notes" && printf 'already here\n' > "$work/full/notes/kept.txt"
+  cozy --json new "$work/full" --passphrase-file "$secrets/initial" --recovery-out "$secrets/full-recovery" > "$work/full.json" 2> "$work/full.err" \
+    || fail "new --passphrase-file in a folder that holds files: $(tail -c 300 "$work/full.json") $(tail -c 300 "$work/full.err")"
+  in_project "$work/full" --json vault status > "$work/full-status.json"
+  jq -e '.encrypted == true and .state == "unlocked"' "$work/full-status.json" > /dev/null || fail "new in a full folder made no unlocked encrypted project: $(cat "$work/full-status.json")"
+  [ "$(cat "$(jq -r .view "$work/full-status.json")/notes/kept.txt")" = "already here" ] || fail "new in a full folder: its file isn't in the encrypted project"
+  [ ! -e "$work/full/notes/kept.txt" ] || fail "new in a full folder left its file in plaintext beside the encrypted project"
+  [ -s "$secrets/full-recovery" ] || fail "new in a full folder saved no recovery secret"
+  in_project "$work/full" --json vault lock > "$work/full-lock.json" || fail "the project encrypted in place doesn't lock: $(jq -c '.error | {code, message}' "$work/full-lock.json" 2> /dev/null)"
   cozy --json new --unencrypted "$P" > "$work/created.json"
   boxes_of "$P" > "$work/before.json"
   mkdir -p "$P/files"

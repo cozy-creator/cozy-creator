@@ -1,0 +1,1 @@
+`cozy new` (and the page's New project) with a passphrase in a folder that already holds files makes the project there and encrypts it in place, the files with it, as `cozy vault encrypt` does; before, it refused `project_not_empty` ("A locked project has to start in an empty folder").

@@ -1218,11 +1218,16 @@ foreach ($rule in $allowed) {
         occupied.mkdir()
         unrelated = occupied / 'keep.txt'
         unrelated.write_bytes(b'Existing unrelated data must be preserved.\n')
-        refused = self.command('new', occupied, '--passphrase-file', initial, refusal=True)
-        assert json.loads(refused.stdout)['error']['code'] == 'project_not_empty'
-        assert unrelated.read_bytes() == b'Existing unrelated data must be preserved.\n'
-        assert sorted(path.name for path in occupied.iterdir()) == ['keep.txt']
-        self.cell('new_encryption_refuses_caching_and_unrelated_plaintext')
+        # A folder that holds anything is encrypted in place, what it holds with it, as `vault encrypt` does (cl-1066).
+        in_place = self.command('new', occupied, '--passphrase-file', initial, '--recovery-out', self.recovery('in-place'))
+        assert in_place['created'] and 'recovery_secret' not in in_place
+        self.check_recovery('in-place')
+        status = self.command('vault', '--directory', occupied, 'status')
+        assert status['encrypted'] and status['state'] == 'unlocked'
+        assert (Path(status['view']) / 'keep.txt').read_bytes() == b'Existing unrelated data must be preserved.\n'
+        assert not (occupied / 'keep.txt').exists(), 'the plaintext stays beside its encrypted copy'
+        self.command('vault', '--directory', occupied, 'lock')
+        self.cell('new_encryption_refuses_caching_and_encrypts_a_full_folder_in_place')
 
         fresh = self.out / 'default-encrypted'
         preserved_before = set(self.out.glob('.cozy-project-source-*'))
