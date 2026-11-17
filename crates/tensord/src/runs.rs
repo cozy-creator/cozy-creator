@@ -1441,7 +1441,7 @@ impl Runs {
             wait.moved("", done, total);
             observe("downloading its weights", done, total)
         };
-        fetch.download(lined, &stoppable.stop, &report, wanted).map_err(|e| match stoppable.stop.is_cancelled() {
+        let (landed, extras) = fetch.download(lined, &stoppable.stop, &report, wanted).map_err(|e| match stoppable.stop.is_cancelled() {
             true => refused(crate::published::CANCELED, "The run was canceled while its models downloaded."),
             false => {
                 let text = e.to_string();
@@ -1450,7 +1450,12 @@ impl Runs {
                     (code, why) => refused(code, why),
                 }
             }
-        })
+        })?;
+        // Its needs (Y) are here: what it is ready for (cl-1123). Its extras (Z) come on behind and gate nothing (Paul, 11-16: "they
+        // aren't in the critical path … so they shouldn't be waited on"); a list item's end when its list drops it.
+        crate::ahead::landed(&caller);
+        extras.follow(crate::ahead::extras(&caller));
+        Ok(landed)
     }
 
     /// What run `id`'s machine had of what it loads and what it fetches for it, on its record (`Journal::needs`).
