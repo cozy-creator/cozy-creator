@@ -635,9 +635,9 @@ impl Drop for Live {
     }
 }
 
-/// A busy executor's models as the disk sees them (`Pool::busy_models`): the headers its calls run on, and each idle
+/// An executor's models as the disk sees them (`Pool::executor_models`): the headers its calls run on, and each idle
 /// construction's.
-pub(crate) struct BusyModels {
+pub(crate) struct LoadedModels {
     pub live: std::collections::BTreeSet<String>,
     pub idle: BTreeMap<String, std::collections::BTreeSet<String>>,
 }
@@ -1972,7 +1972,7 @@ impl Pool {
     /// Each executor that lets an idle construction go (`release`), with the models its calls run on and each idle
     /// construction's, by their headers' digests (a view's, its base's): what its holds in the store are for (tfs-303). An
     /// idle one is listed too: one taken for a call as it is ended lets go instead (e2e 44063971753).
-    pub(crate) fn busy_models(&self) -> BTreeMap<u32, BusyModels> {
+    pub(crate) fn executor_models(&self) -> BTreeMap<u32, LoadedModels> {
         let header = |manifest: &String| match crate::storage::view(manifest) {
             Some(view) => view.recipe.base.trim_start_matches("sha256:").to_owned(),
             None => manifest.trim_start_matches("sha256:").to_owned(),
@@ -1984,7 +1984,7 @@ impl Pool {
                 let (live, idle): (Vec<_>, Vec<_>) = entry.constructions.iter().partition(|(c, _)| entry.live.contains_key(*c));
                 let live = live.into_iter().flat_map(|(_, manifests)| manifests.iter().map(header)).collect();
                 let idle = idle.into_iter().map(|(c, manifests)| (c.clone(), manifests.iter().map(header).collect())).collect();
-                (*pid, BusyModels { live, idle })
+                (*pid, LoadedModels { live, idle })
             })
             .filter(|(_, busy)| !busy.idle.is_empty())
             .collect()
