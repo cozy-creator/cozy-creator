@@ -56,6 +56,11 @@ if [ -n "$ONLY" ]; then packages=${ONLY//,/ }
 else packages=$(cd "$PACKAGES" && for d in */pyproject.toml; do dirname "$d"; done); fi
 # The slowest first, so the jobs end together: H3's cells are a third of the whole.
 SLOWEST="minimax-h3 qwen-image-2 hunyuan-image-3"
+# A package --only names that the packages under test don't carry (a release frozen before it, se-146) is not
+# applicable there: one SKIP line naming their commit, never a FAIL.
+commit=$(git -C "$PACKAGES" rev-parse --short=9 HEAD 2> /dev/null || echo "an unknown commit")
+absent=$(for q in $packages; do [ -f "$PACKAGES/$q/pyproject.toml" ] || echo "$q"; done)
+packages=$(for q in $packages; do if [ -f "$PACKAGES/$q/pyproject.toml" ]; then echo "$q"; fi; done)
 packages=$(echo $packages)
 packages="$(for q in $SLOWEST; do [[ " $packages " != *" $q "* ]] || echo "$q"; done) $(for q in $packages; do [[ " $SLOWEST " == *" $q "* ]] || echo "$q"; done)"
 
@@ -127,9 +132,10 @@ export -f one
 
 started=$SECONDS
 : > "$OUT/cells.txt"
+for q in $absent; do echo "SKIP $q - package 0s: not applicable: the packages under test ($commit) carry no $q" | tee -a "$OUT/cells.txt"; done
 # The lane each slot's default resolves to on each GPU family, through cozy against tensorhub.com's releases (lanes.py,
 # cl-1076); `--cells lanes` runs it alone.
-if [ -n "$COZY" ] && { [ -z "$CELLS" ] || [[ ",$CELLS," == *,lanes,* ]]; }; then
+if [ -n "$COZY" ] && [ -n "$packages" ] && { [ -z "$CELLS" ] || [[ ",$CELLS," == *,lanes,* ]]; }; then
   python3 -I "$HERE/lanes.py" --cozy "$COZY" --project "$PROJECT" --packages "$PACKAGES" --out "$OUT/lanes" $packages \
     | tee -a "$OUT/cells.txt" || true
 fi
@@ -151,4 +157,4 @@ case ${cpu,,} in *amd*) refs="AMD's references" ;; *intel*) refs="Intel's refere
 said="cpu: $pass passed, $fail failed in $((SECONDS - started)) s on ${cpu:-an unnamed CPU} ($refs)"
 echo "$said"
 [ -z "${GITHUB_STEP_SUMMARY:-}" ] || echo "### $said" >> "$GITHUB_STEP_SUMMARY"
-[ "$fail" = 0 ] && [ "$pass" != 0 ]
+[ "$fail" = 0 ] && { [ "$pass" != 0 ] || [ -n "$absent" ]; }
