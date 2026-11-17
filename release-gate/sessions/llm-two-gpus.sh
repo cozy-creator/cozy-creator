@@ -8,13 +8,18 @@
 #           GPU uuid against the pod's nvidia-smi).
 #   writes  both write a long story at once (max_tokens 6000): both complete, each on its executor from `placed` (no second
 #           executor), with each GPU's peak memory from nvidia-smi once a second.
+#   paged   with `cap`: every GPU limited to it, so Qwen3.6 pages, its write (300 tokens) cold then three times warm, on the
+#           Runtime under test and on `baseline`'s, each arm a restart: its regions, and its times against the baseline's.
 # params:
-#   tree     the packages_refs checkout the packages run from (required)
-#   runtime  the rental's Runtime: a cozy-runtime dev-build or rc-dev run id, or a wheel's https URL (required)
-#   seconds  what the cap must buy (default 3600)
+#   tree      the packages_refs checkout the packages run from (required)
+#   runtime   the rental's Runtime: a cozy-runtime dev-build or rc-dev run id, or a wheel's https URL (required)
+#   cap       a per-GPU limit for `paged`, e.g. 24GiB (default: none, no `paged`)
+#   baseline  the Runtime `paged` compares against, as `runtime` names one (required with `cap`)
+#   seconds   what the cap must buy (default 3600)
 . "$(dirname "$0")/lib.sh"
 for tool in jq python3; do command -v "$tool" > /dev/null || fail "no $tool"; done
-TREE=$(param tree '') FROM=$(param runtime '')
+TREE=$(param tree '') FROM=$(param runtime '') LIMIT=$(param cap '') BASE_FROM=$(param baseline '')
+[ -z "$LIMIT" ] || [ -n "$BASE_FROM" ] || fail "params.cap pages Qwen3.6 against params.baseline's Runtime: name it"
 V=$(cozy --version | awk '{print $2}')
 [[ $V == *-dev* ]] || fail "cozy $V is no RC build: dispatch with cozy=<a dev-build run of the build under test>"
 [ -n "$TREE" ] && [ -f "$PACKAGES/$TREE/qwen3.5/pyproject.toml" ] && [ -f "$PACKAGES/$TREE/qwen3.6/pyproject.toml" ] ||
@@ -25,6 +30,10 @@ kernels "$SOURCE/qwen3.5"
 kernels "$SOURCE/qwen3.6"
 WHEEL=$(wheel_from "${RUNNER_TEMP:-$OUT}/runtime" "$FROM") && [ -f "$WHEEL" ] || fail "no Runtime wheel from $FROM"
 say "Runtime under test: ${WHEEL##*/}"
+if [ -n "$LIMIT" ]; then
+  BASE=$(wheel_from "${RUNNER_TEMP:-$OUT}/baseline" "$BASE_FROM") && [ -f "$BASE" ] || fail "no baseline Runtime wheel from $BASE_FROM"
+  say "baseline Runtime: ${BASE##*/}"
+fi
 cfg=$HOME/.cozy/config.toml
 mkdir -p "${cfg%/*}" && touch "$cfg" || fail "no $cfg"
 { echo 'dev = true'; grep -v '^dev *=' "$cfg" || true; } > "$cfg.new" && mv "$cfg.new" "$cfg" || fail "dev = true not written"
@@ -104,5 +113,32 @@ for m in q35 q36; do
     { say "FAIL $m-story ran on GPU $(gpu "$m-story") pid $(pid "$m-story"), not its executor from $m-short (GPU $(gpu "$m-short") pid $(pid "$m-short"))"; RC=1; }
 done
 [ "$RC" != 0 ] || say "PASS writes: both stories completed at once, each on its own GPU's executor"
+
+# paged: Qwen3.6 under the cap on each Runtime. Distinct seeds: the call memo answers a repeated request.
+regions() { jq -r '[.measurements.memory.stats.varena[]?.stats.weight_residency.regions // empty] | max // empty' "$OUT/$1.json" 2> /dev/null; }
+ms() { jq -r '.execution_ms // empty' "$OUT/$1.json" 2> /dev/null; }
+arm() {
+  local a=$1 wheel=$2 k
+  step "limit-$a" machine update "$NAME" --runtime "$wheel" --gpu-memory-limit "$LIMIT" -y || fail "limit-$a: $(tail -c 300 "$OUT/limit-$a.txt")"
+  for _ in $(seq 120); do [ "$(state "$NAME")" = ready ] && break; sleep 5; done
+  for k in cold warm1 warm2 warm3; do
+    write "$a-$k" qwen3.6 "instructions=List the twelve months, each with a paragraph on a lighthouse keeper's work then." max_tokens:=300 seed:=$RANDOM
+    [ "$(status "$a-$k")" = completed ] || { say "FAIL paged $a-$k: $(status "$a-$k")"; RC=1; }
+  done
+  say "paged $a ($(cozy machine show "$NAME" --json | jq -r '.status.runtime') under $LIMIT): $(regions "$a-cold") regions; cold $(ms "$a-cold") ms, warm $(ms "$a-warm1") $(ms "$a-warm2") $(ms "$a-warm3") ms"
+}
+if [ -n "$LIMIT" ]; then
+  arm test "$WHEEL"
+  arm base "$BASE"
+  python3 -I - "$OUT" <<'PY' | tee -a "$R"
+import json, statistics, sys
+def ms(cell):
+    return json.load(open(f"{sys.argv[1]}/{cell}.json")).get("execution_ms")
+test = statistics.median(ms(f"test-warm{i}") for i in (1, 2, 3))
+base = statistics.median(ms(f"base-warm{i}") for i in (1, 2, 3))
+cold = ms("test-cold") / ms("base-cold")
+print(f"paged: warm median {test:.0f} ms against the baseline's {base:.0f} ms ({test / base - 1:+.1%}); cold {cold - 1:+.1%}")
+PY
+fi
 { echo "## llm-two-gpus on $NAME ($SKU x2): cozy $on, Runtime $runtime"; grep -E '(PASS|FAIL|peak memory|story: run|short: run)' "$R"; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 exit "$RC"
