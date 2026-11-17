@@ -3,7 +3,8 @@
 # more of the same. The image was small and had JPEG artifacts; those JPG artifacts just became more embellished, rather than fixed (the
 # image was not upscaled at all properly)."
 # The bench (fixtures/upscale-bench, its README): degraded/<name>.jpg, 225 px JPEGs (q50-75) of clean originals that make_set.py rebuilds
-# here from sources.tsv (Wikimedia Commons, each checked by sha256). Each candidate upscales each input on the rental; metrics.py scores
+# here from sources.tsv: the originals from the private benchmarks checkout's upscale/originals (`bench_ref` its branch), else
+# Wikimedia Commons, each checked by sha256. Each candidate upscales each input on the rental; metrics.py scores
 # every output against its clean picture (PSNR, LPIPS, DISTS) and with none (MUSIQ, CLIP-IQA), and sheets.py lays them side by side
 # ($OUT/sheets: each at 640 px, and a 640 px window at full size). Scores in $OUT/scores.tsv, means in summary.md and the job summary.
 # A dev home on this runner's RC cozy (pod-session `cozy`: a dev-build or rc-dev run of rc/<x>), as llm-tools: the rental moves to the
@@ -38,7 +39,9 @@ uv venv -q --python 3.12 "$WORK/iqa" > "$OUT/iqa.log" 2>&1 &&
   uv pip install -q --python "$WORK/iqa/bin/python" --torch-backend cpu pyiqa==0.1.16 'setuptools<81' >> "$OUT/iqa.log" 2>&1 ||
   fail "the scorer's Python: $(tail -c 400 "$OUT/iqa.log")"
 PY=$WORK/iqa/bin/python
-"$PY" -I "$FIX/make_set.py" --fetch --clean-only > "$OUT/make-set.log" 2>&1 || fail "the bench: $(tail -c 400 "$OUT/make-set.log")"
+[ -d "$BENCH/upscale/originals" ] || say "no upscale/originals in the benchmarks checkout (params.bench_ref): from Wikimedia"
+"$PY" -I "$FIX/make_set.py" --from "$BENCH/upscale/originals" --fetch --clean-only > "$OUT/make-set.log" 2>&1 ||
+  fail "the bench: $(tail -c 400 "$OUT/make-set.log")"
 say "bench: $(ls "$FIX/clean" | wc -l) clean pictures, $(ls "$FIX/degraded" | wc -l) inputs"
 mkdir -p "$FIX/paul"
 if [ -n "$PRIVATE" ]; then
