@@ -522,26 +522,32 @@ code=0; in_project "$RUN_PROJECT" --json run "$here/project/mentions.py/mentions
 
 # cl-1183 (pod-session 44176217146, H3 upscale's `video`: PRO-2 refused, PRO-4 ran): a file a run attaches to a box-shaped input
 # (Image, Video: the call reads its `file`) went under the input's own name while its project didn't hold it yet, so the Runtime,
-# reading `picture.file`, refused it `asset_ungranted`; once the project kept it, a later run sent it as `picture.file`. Local
-# code installed here takes a picture no run has sent, twice: both runs complete and read its bytes.
+# reading `picture.file`, refused it `asset_ungranted`; once the project kept it, a later run sent it as `picture.file`. And
+# `--file video.file=<plate>`, the path the Runtime names, was left out and refused `tool_input_missing` (pod-session 44185299980).
+# Local code installed here takes a picture no run has sent, twice, then another as `--file picture.file=`: each run completes and
+# reads its bytes.
 given_file() {
-step "a run's own file at a box-shaped input, its first use and again (cl-1183)"
+step "a run's own file at a box-shaped input, its first use, again, and by its file's path (cl-1183)"
 [ -n "$LOCAL" ] || return 0
 local dir=$OUT/given-file want got n
 rm -rf "$dir"; mkdir -p "$dir"
-python3 -I - "$dir/picture.png" <<'PY'
+python3 -I - "$dir/picture.png" "$dir/member.png" <<'PY'
 import random, struct, sys, zlib
-w, h, rgb = 40, 24, random.randbytes(3)
 def chunk(kind, data): return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
-rows = b"".join(b"\0" + rgb * w for _ in range(h))
-open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+for path in sys.argv[1:]:
+    w, h, rgb = 40, 24, random.randbytes(3)
+    rows = b"".join(b"\0" + rgb * w for _ in range(h))
+    open(path, "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
 PY
-want=$(sha256sum "$dir/picture.png" | cut -d' ' -f1)
-for n in first again; do
-  cell "given-$n" "$here/project/given.py/read" "picture=$dir/picture.png" \
-    || { check "given file: the $n run of a new picture $(run_get "$OUT" "given-$n" .status): $(run_get "$OUT" "given-$n" .reason.message | head -c 300)"; continue; }
+for n in first again member; do
+  case $n in
+    member) want=$(sha256sum "$dir/member.png" | cut -d' ' -f1); set -- --file "picture.file=$dir/member.png" ;;
+    *) want=$(sha256sum "$dir/picture.png" | cut -d' ' -f1); set -- "picture=$dir/picture.png" ;;
+  esac
+  cell "given-$n" "$here/project/given.py/read" "$@" \
+    || { check "given file: the $n run ($*) $(run_get "$OUT" "given-$n" .status): $(run_get "$OUT" "given-$n" .reason.message | head -c 300) $(tail -c 300 "$OUT/given-$n.err" 2> /dev/null)"; continue; }
   got=$(run_get "$OUT" "given-$n" '"\(.result.sha256) \(.result.width)"')
-  [ "$got" = "$want 40" ] || check "given file: the $n run read '$got', not '$want 40'"
+  [ "$got" = "$want 40" ] || check "given file: the $n run ($*) read '$got', not '$want 40'"
 done
 }
 
