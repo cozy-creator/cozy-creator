@@ -3,7 +3,10 @@ the local machine's real TensorD, against the suite's isolated Hub (isolated.sh)
 and each one a cell picks, are the fixture's tiny builds (`tiny/<package>.py`), uploaded and published there under those refs
 as an admin mirrors an author's model (isolated.sh `mirror`). Outputs are judged as the stand-in's are (drive.py `judged`).
 
-    real.py <cozy> <project> <package dir> <interface.json> <fixture.py> <out dir> [--refs DIR] [--only cell,...] [--record]
+    real.py <cozy> <project> <package dir> <code dir> <interface.json> <fixture.py> <out dir> [--refs DIR] [--only cell,...]
+            [--record]
+
+<code dir> is the package as cozy runs it: its checkout, or a copy the cozy under test locked afresh (run.sh --lock fresh).
 
 One line per cell, as drive.py's. A quantize cell is `cozy model quantize`; a two-rank cell is the GPU release gate's.
 """
@@ -218,8 +221,8 @@ def quantized(binary: str, project: Path, package_dir: Path, cell: Cell, folder:
 
 def main() -> int:
     binary = sys.argv[1]
-    project, package_dir, interface_path, fixture_path, out = (Path(a).resolve() for a in sys.argv[2:7])
-    flags = sys.argv[7:]
+    project, package_dir, code, interface_path, fixture_path, out = (Path(a).resolve() for a in sys.argv[2:8])
+    flags = sys.argv[8:]
     only = set(flags[flags.index("--only") + 1].split(",")) if "--only" in flags else None
     record = "--record" in flags
     package = package_dir.name
@@ -284,14 +287,14 @@ def main() -> int:
             same_as = cell.get("same_as")
             against = ran.get(same_as) or references.get(same_as) if same_as else None if record else references.get(key)
             if "sources" in cell:
-                seen: Seen = quantized(binary, project, package_dir, cell, folder, against)
+                seen: Seen = quantized(binary, project, code, cell, folder, against)
                 named: Files = {}
             else:
                 payload, files = request(cell, out / "made")
                 (folder / "request.json").write_text(json.dumps(payload, indent=1))
                 models = [arg for path, ref in sorted(cell.get("models", {}).items())
                           for arg in ("--model", f"{path.rsplit('.', 1)[-1]}={ref}")]
-                run = cozy(binary, project, ["--full", "run", f"{package_dir}/{entry}", "--input", str(folder / "request.json"),
+                run = cozy(binary, project, ["--full", "run", f"{code}/{entry}", "--input", str(folder / "request.json"),
                                              *files, *models, "--on", "local", "-o", str(folder / "out")], folder / "run.ndjson")
                 (folder / "run.json").write_text(json.dumps(run, indent=1))
                 # Its CUDA graphs fell back to the call as written, as its machine measured it (cr-297).

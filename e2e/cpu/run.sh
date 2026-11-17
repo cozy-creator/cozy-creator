@@ -157,7 +157,7 @@ one() {
   # its tiny models published on the suite's Hub). A fixture that patches release geometry (PATCH, WAIVE: se-149) runs in
   # the stand-in TensorD (drive.py) until its package takes a tiny geometry itself.
   local driver=(drive.py "$PACKAGES/$p")
-  [ -z "$COZY" ] || grep -qE '^(PATCH|WAIVE)\b' "$(fixture "$p")" || driver=(real.py "$COZY" "$PROJECT" "$PACKAGES/$p")
+  [ -z "$COZY" ] || grep -qE '^(PATCH|WAIVE)\b' "$(fixture "$p")" || driver=(real.py "$COZY" "$PROJECT" "$PACKAGES/$p" "$pkg")
   CUDA_VISIBLE_DEVICES= nice -n 19 "$env/bin/python" "$HERE/${driver[0]}" "${driver[@]:1}" "$out/interface.json" \
     "$(fixture "$p")" "$out" --refs "$REFS" ${CELLS:+--only "$CELLS"} $RECORD 2> "$out/drive.err" || true
   # The driver catches each cell's failure; a traceback of its own is one it did not, and every cell after it is lost.
