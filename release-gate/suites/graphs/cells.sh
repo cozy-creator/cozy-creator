@@ -108,9 +108,9 @@ elif gcopy anima; then
 else
   expect graphs-anima FAIL "no copy of anima"
 fi
-[ -n "$ONLY" ] || cell graphs-klein-283 "$(pkg flux.3-klein generate_turbo)" prompt_upsampling:=true seed:=241107249 \
+cell graphs-klein-283 "$(pkg flux.3-klein generate_turbo)" prompt_upsampling:=true seed:=241107249 \
   prompt="a vintage tin robot playing a saxophone on a small stage in a smoky jazz club"
-log "graphs-klein-283: decode $(jq -c '[.measurements.residency.graphs // {} | to_entries[] | select(.value.decode) | {lm: .key, captures: .value.decode.captures, refused: .value.decode.refused}]' graphs-klein-283.json 2>/dev/null)"
+log "graphs-klein-283: decode $(jq -c '[.measurements.residency.graphs // {} | to_entries[] | select(.value.decode) | {lm: .key, captures: .value.decode.captures, replays: .value.decode.replays, refused: .value.decode.refused, partial: .value.decode.partial_restore}]' graphs-klein-283.json 2>/dev/null)"
 if gwant graphs-h3; then
   gplate=$(box graphs_plate "$(plate 5)" "A test pattern with a tone")
   for i in 1 2 3; do
