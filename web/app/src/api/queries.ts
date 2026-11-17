@@ -150,11 +150,13 @@ export const machinesQuery = (client: Client) =>
     queryFn: () => client.machines(),
   })
 
-/** One machine that isn't in the list: an ended one's record. Reading a live one's would start `local`. */
+/** One machine that isn't in the list: an ended one's record. Reading a live one's would start `local`. Read again each time it's
+ *  wanted: one read while it was live (just ordered, before the list held it) is stale once it ends and leaves the list. */
 export const machineQuery = (client: Client, name: string) =>
   queryOptions({
     queryKey: ["machine", name],
     queryFn: ({ signal }) => client.machine(name, signal),
+    staleTime: 0,
   })
 
 export const rentalSkusQuery = (client: Client) =>
