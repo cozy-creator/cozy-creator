@@ -805,6 +805,7 @@ case $SHARD in
   # A weight download's range reads with Postgres nearly out of connections (th-382).
   hub-blobs) parts="
     hub_blob_reads
+    hub_abandoned_reads
     hub_connection_budget
     logs
   " ;;

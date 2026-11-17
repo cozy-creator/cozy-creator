@@ -10,6 +10,7 @@
 #   hub_blob_reads  th-382: a weight download's range reads take at most 4 of the Hub's connections however slow Postgres is:
 #                verified_objects locked 4 s while 400 range GETs of 20 public objects go 80 at once; /readyz still answers, and
 #                each GET its redirect.
+#   hub_abandoned_reads  th-382: a blob read its client gives up on (AuthKit slowed, curl -m 0.3) logs no 5xx.
 #   hub_connection_budget  th-382: a replica's connections stay within database.connections_per_replica (30 here), each label
 #                (tensorhub, tensorhub-authkit) within its share, under blob reads and signed-in requests with Postgres slowed.
 #   rental_end_again  cl-977: an end that failed (signed out) is asked again by Calcifer itself, paced: signed in again, the
@@ -544,4 +545,55 @@ SQL
     || check "hub budget: tensorhub-authkit's sessions reached $(peak tensorhub-authkit), over its share ${authkit_share:-(none said)}"
   [ "$(peak unlabelled)" = 0 ] || check "hub budget: $(peak unlabelled) of the Hub's sessions say no label"
   ! grep -q '^5' "$S/codes.txt" || check "hub budget: $(grep -c '^5' "$S/codes.txt") of 800 requests answered a 5xx"
+)
+
+# th-382: a read its client gave up on is the client's, not a failure: e2e's isolated Hub logged GET /blobs 500 "store.query_failed:
+# context canceled" when TensorFS abandoned a read, and its 5xx check failed the run. With AuthKit's tables slowed for 3 s, 60
+# signed-in range GETs give up after 0.3 s; once they're through, the Hub has logged no 5xx for them.
+hub_abandoned_reads() (
+  step "a blob read its client gives up on logs no 5xx (th-382)"
+  [ -n "${COZY_TEST_HUB_COMMAND_FILE:-}" ] && [ -n "${COZY_HUB_URL:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] && [ -n "${COZY_TEST_HUB_SERVE_LOG:-}" ] \
+    || fail "abandoned reads: e2e/isolated.sh named no Hub command, URL, email or log"
+  local S=$OUT/hub-abandoned db port container authkit token before after shas
+  mkdir -p "$S"
+  db=$(tr '\0' '\n' < "$COZY_TEST_HUB_COMMAND_FILE" | grep -o 'postgres://[^" ]*' | head -1 || true)
+  port=$(sed -E 's#.*@[^:/]+:([0-9]+)/.*#\1#' <<< "$db")
+  container=$(docker ps --filter "publish=$port" --format '{{.Names}}' 2> /dev/null | head -1 || true)
+  [ -n "$container" ] || fail "abandoned reads: no Postgres container publishes ${port:-?}"
+  sql() { docker exec -i -e PGAPPNAME=th382 "$container" psql -v ON_ERROR_STOP=1 -qtA -U postgres "$@"; }
+  release() { sql -c "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE application_name LIKE 'th382-slow%'" > /dev/null 2>&1 || true; }
+  trap release EXIT
+  cozy --json whoami > "$S/whoami.json" 2>&1 || true
+  jq -e '.logged_in == true' "$S/whoami.json" > /dev/null 2>&1 \
+    || signin "$E2E_HUB_EMAIL" > "$S/login.json" || fail "abandoned reads: cozy login: $(tail -c 300 "$S/login.json")"
+  cozy --json whoami > /dev/null 2>&1 || true
+  token=$(jq -r .token "$(ls "$HOME"/.cozy/keys/*.bearer.json | head -1)" 2> /dev/null || true)
+  [ -n "$token" ] || fail "abandoned reads: no Bearer kept in $HOME/.cozy/keys"
+  authkit=$(sql -c "SELECT table_schema FROM information_schema.tables WHERE table_name = 'refresh_sessions' LIMIT 1")
+  [ -n "$authkit" ] || fail "abandoned reads: no AuthKit schema (refresh_sessions)"
+  shas=$(for i in $(seq 60); do printf 'th382-abandoned-%s' "$i" | sha256sum | cut -c1-64; done)
+  before=$(grep -c '"status":5[0-9][0-9]' "$COZY_TEST_HUB_SERVE_LOG" || true)
+  docker exec -i -e PGAPPNAME=th382-slow-auth "$container" psql -qtA -U postgres -v schema="$authkit" > "$S/slow.out" 2>&1 <<'SQL' &
+BEGIN;
+SELECT set_config('th382.schema', :'schema', true);
+DO $$ DECLARE t text; BEGIN
+  FOR t IN SELECT format('%I.%I', schemaname, tablename) FROM pg_tables WHERE schemaname = current_setting('th382.schema') LOOP
+    EXECUTE 'LOCK TABLE ' || t || ' IN ACCESS EXCLUSIVE MODE';
+  END LOOP;
+END $$;
+SELECT pg_sleep(3);
+COMMIT;
+SQL
+  for _ in $(seq 50); do
+    [ "$(sql -c "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid) WHERE a.application_name = 'th382-slow-auth' AND l.mode = 'AccessExclusiveLock' AND l.granted" 2> /dev/null || echo 0)" -ge 1 ] && break
+    sleep 0.1
+  done
+  sed -E 's#^(..)(..)(.*)$#/blobs/\1/\2/\1\2\3#' <<< "$shas" | xargs -P 60 -I{} curl -s -o /dev/null -w '%{http_code}\n' -m 0.3 \
+    -H "Authorization: Bearer $token" -H 'Range: bytes=0-1023' "$COZY_HUB_URL{}" > "$S/codes.txt" 2>&1 || true
+  sleep 4
+  release
+  after=$(grep -c '"status":5[0-9][0-9]' "$COZY_TEST_HUB_SERVE_LOG" || true)
+  grep '"status":5[0-9][0-9]' "$COZY_TEST_HUB_SERVE_LOG" | tail -n $((after - before)) > "$S/fivexx.txt" || true
+  echo "hub abandoned reads: 60 signed-in range GETs given up after 0.3 s, AuthKit slowed 3 s; the Hub logged $((after - before)) 5xx: $(head -c 300 "$S/fivexx.txt")"
+  [ "$after" = "$before" ] || check "hub abandoned reads: the Hub logged $((after - before)) 5xx for reads their client gave up on: $(head -c 300 "$S/fivexx.txt")"
 )
