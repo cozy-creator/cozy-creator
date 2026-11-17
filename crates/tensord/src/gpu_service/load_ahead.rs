@@ -15,6 +15,9 @@
 use super::*;
 use std::collections::BTreeSet;
 
+/// Who ends a speculative run (cl-1123 D): the machine, for an edit or a call.
+const SPECULATION: &str = "machine:speculation";
+
 /// Whom an executor served last: an actor, and its local private project.
 pub(super) type Scope = (String, Option<String>);
 
@@ -222,10 +225,16 @@ impl Pool {
             (speculating.id.clone(), speculating.line.take(), other.then(|| speculating.permit.lock().unwrap().take()).flatten())
         };
         let began = Instant::now();
+        let engine = self.engine.get().and_then(Weak::upgrade);
+        // The machine's cancel, durable before its executor hears it, so the run ends canceled (44185654441's stayed running: "an
+        // attempt cannot cancel without durable authority").
+        if let Some(Err(error)) = engine.as_ref().map(|engine| engine.with_journal(|journal| journal.cancel_observed(&run, SPECULATION, None))) {
+            tracing::warn!(run = %run, "speculative run's cancel not recorded: {error}");
+        }
         let told = line.is_some_and(|line| line.send(&Command::Cancel(executor_api::Cancel { request_id: run.clone() })));
         let gave = permit.is_some();
         drop(permit);
-        if let Some(engine) = self.engine.get().and_then(Weak::upgrade) {
+        if let Some(engine) = engine {
             crate::speculate::stopped(&run, &engine);
             engine.notify_activity();
         }
