@@ -25,9 +25,8 @@ args=(--tensord "$(param tensord "$(command -v cozy)")")
 [ -z "$(param runtime)" ] || args+=(--runtime "$(param runtime)")
 [ -z "$(param tensorfs)" ] || args+=(--tensorfs "$(param tensorfs)")
 step update machine update "$NAME" "${args[@]}" -y || fail "update"
-step restart0 machine update "$NAME" --gpu-memory-limit off -y || fail "restart"  # writes TensorD's config.toml
-step mode run "$FIX/game.py" --on "$NAME" op=mode cfg='{"mode": "shared"}' || fail "mode"
-step restart machine update "$NAME" --gpu-memory-limit "$(param cap $((20 << 30)))" -y || fail "restart"
+# Shared mode as a person sets it (xs-208), with the cap in the same restart.
+step mode machine update "$NAME" --mode shared --gpu-memory-limit "$(param cap $((20 << 30)))" -y || fail "mode"
 [ "$(cozy machine show "$NAME" --json | jq -r .status.mode)" = shared ] || fail "the machine is not in shared mode"
 show() { cozy run watch "$(runno "$1")" --once --json --full > "$OUT/$1.json" 2>&1; }
 

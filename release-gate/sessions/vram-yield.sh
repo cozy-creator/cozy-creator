@@ -50,9 +50,8 @@ game() {
     sleep 1
   done
 }
-step restart0 machine update "$NAME" --gpu-memory-limit off -y || fail "restart"  # writes TensorD's config.toml
-step mode run ./game.py --on "$NAME" op=mode cfg='{"mode": "shared"}' || fail "mode"
-step restart machine update "$NAME" --gpu-memory-limit off -y || fail "restart"
+# Shared mode as a person sets it (xs-208: the CLI's flag, which e2e/coverage.toml's gate tier counts).
+step mode machine update "$NAME" --mode shared --gpu-memory-limit off -y || fail "mode"
 [ "$(cozy machine show "$NAME" --json | jq -r .status.mode)" = shared ] || fail "the machine is not in shared mode"
 judge() {  # judge <cell> <game record file>: all of it within 2 s
   local s r; s=$(jq -r '.alloc_s // 999' "$2"); r=$(jq -r '.reached // false' "$2")
