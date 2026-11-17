@@ -133,6 +133,14 @@ ours() {
     mkdir -p "$OUT/ours/$name"
     step "$name" run "$tool" --input "$WORK/in/$input" "${args[@]}" --on "$NAME" -y -o "$OUT/ours/$name"
     local code=$? n; n=$(runno "$name")
+    if [ "$code" != 0 ] && grep -q 'attention_kernel' "$OUT/$name.txt" && [[ " ${args[*]} " == *" --attention-kernel "* ]]; then
+      # A pin a site refuses: `--lane bf16` alone still serves every site at 16 bits (Runtime `_attention_pin`).
+      say "$name: the SDPA pin was refused ($(grep -m1 -o 'attention_kernel[^ ]*.\{0,160\}' "$OUT/$name.txt")); again at the lane's 16 bits"
+      local kept=() skip=0 a
+      for a in "${args[@]}"; do [ "$skip" = 1 ] && { skip=0; continue; }; [ "$a" = --attention-kernel ] && { skip=1; continue; }; kept+=("$a"); done
+      step "$name" run "$tool" --input "$WORK/in/$input" "${kept[@]}" --on "$NAME" -y -o "$OUT/ours/$name"
+      code=$? n=$(runno "$name")
+    fi
     if [ -n "$n" ]; then
       (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$OUT/records/$name.json" 2> /dev/null
       (cd "$RUN_PROJECT" && cozy --full run watch "$n" --once) > "$OUT/records/$name.log" 2> /dev/null
