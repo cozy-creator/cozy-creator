@@ -7,7 +7,7 @@
 # params:
 #   tree     the packages_refs checkout whose minimax-h3 runs (pk)
 #   arms     [{"name", "runtime": "rc" (the open RC's newest native wheel), https://…#sha256=<hex> or a cozy-runtime
-#            dev-build run id}], in order (default one arm, "rc")
+#            dev-build run id, "tree" (optional: its own packages_refs checkout)}], in order (default one arm, "rc")
 #   lane     the H3 lane (int8)
 #   runs     timed passes per clip, engine and arm (2)
 #   clips    frame counts ([129, 362])
@@ -18,9 +18,6 @@
 FX=$(cd "$(dirname "$0")" && pwd)/fixtures/h3-vae
 TREE=$(param tree pk) LANE=$(param lane int8) RUNS=$(param runs 2) CLIPS=$(param clips '[129, 362]')
 ARMS=$(param arms '[{"name": "rc", "runtime": "rc"}]') COMFY=$(param comfy '{}')
-PKG=$PACKAGES/$TREE/minimax-h3
-[ -f "$PKG/h3.py" ] || fail "no packages_refs checkout $TREE"
-grep -q 'def vae_round_trip' "$PKG/h3.py" || fail "$TREE's minimax-h3 has no vae_round_trip"
 [[ $RUNS =~ ^[1-9]$ && $LANE =~ ^[a-z0-9-]+$ ]] || fail "runs or lane"
 command -v ffmpeg > /dev/null || fail "no ffmpeg"
 mapfile -t COUNTS < <(jq -r '.[]' <<<"$CLIPS")
@@ -35,10 +32,12 @@ done
 # Each arm's Runtime wheel, fetched before renting. An open RC's Runtime runs under a dev cozy only (rc_runtime_needs_rc_cozy):
 # this session's, given with `cozy` a dev build's run id.
 mapfile -t NAMES < <(jq -r '.[].name' <<<"$ARMS")
-declare -A WHEEL=()
+declare -A WHEEL=() PKG=()
 for k in "${!NAMES[@]}"; do
-  a=${NAMES[$k]} src=$(jq -r ".[$k].runtime" <<<"$ARMS")
-  [[ $a =~ ^[a-z0-9-]+$ ]] || fail "arm name $a"
+  a=${NAMES[$k]} src=$(jq -r ".[$k].runtime" <<<"$ARMS") t=$(jq -r --arg t "$TREE" ".[$k].tree // \$t" <<<"$ARMS")
+  [[ $a =~ ^[a-z0-9-]+$ && $t =~ ^[A-Za-z0-9_-]+$ ]] || fail "arm name $a or tree $t"
+  PKG[$a]=$PACKAGES/$t/minimax-h3
+  grep -q 'def vae_round_trip' "${PKG[$a]}/h3.py" 2> /dev/null || fail "arm $a: $t's minimax-h3 has no vae_round_trip"
   if [ "$src" = rc ]; then
     base=https://github.com/cozy-creator/cozy-runtime/releases/download/rc-$(cozy --version | awk '{print $2}' | cut -d- -f1)
     line=$(curl -fsSL "$base/SHA256SUMS" | awk '$2 ~ /manylinux_2_28_x86_64[.]whl$/ {print; exit}')
@@ -51,10 +50,10 @@ for k in "${!NAMES[@]}"; do
   else
     f=$(wheel_from "$OUT/wheels/$a" "$src") && [ -n "$f" ] || fail "arm $a: no native wheel in dev-build $src"
   fi
-  WHEEL[$a]=$f; say "arm $a: $(basename "$f")"
+  WHEEL[$a]=$f; say "arm $a: $(basename "$f"), minimax-h3 at $(git -C "${PKG[$a]}" rev-parse --short HEAD)"
+  kernels "${PKG[$a]}"
 done
 TENSORD=(); [[ $(cozy --version) != *-* ]] || TENSORD=(--tensord "$(command -v cozy)")
-kernels "$PKG"
 quote "$(param need_s 3600)"
 RENT_ARGS=--ssh
 rent
@@ -87,7 +86,7 @@ for a in "${NAMES[@]}"; do
     given=(); [ "$a" = "$first" ] || given=(--file "latents=$OUT/$first-$n.out/latents")
     for i in $(seq 0 "$RUNS"); do
       c=$a-$n-$i
-      step "$c" run "$PKG/vae_round_trip" --file "video=$OUT/clip$n.mp4" "${given[@]}" --lane "$LANE" --on "$NAME" || fail "$c"
+      step "$c" run "${PKG[$a]}/vae_round_trip" --file "video=$OUT/clip$n.mp4" "${given[@]}" --lane "$LANE" --on "$NAME" || fail "$c"
       N=$(runno "$c"); [ -n "$N" ] || fail "$c named no run"
       cozy run watch "$N" --once --json --full > "$OUT/$c.json" 2>&1
       [ "$(jq -r .status "$OUT/$c.json")" = completed ] || fail "$c: run $N $(jq -r '.reason.message // .status' "$OUT/$c.json" | cut -c1-300)"
@@ -98,7 +97,7 @@ for a in "${NAMES[@]}"; do
     fetch "$N" "$OUT/$a-$n.out"
     [ "$a" = "$first" ] && continue
     c=$a-$n-own
-    step "$c" run "$PKG/vae_round_trip" --file "video=$OUT/clip$n.mp4" --lane "$LANE" --on "$NAME" || fail "$c"
+    step "$c" run "${PKG[$a]}/vae_round_trip" --file "video=$OUT/clip$n.mp4" --lane "$LANE" --on "$NAME" || fail "$c"
     fetch "$(runno "$c")" "$OUT/$c.out"
     PY=(uv run -q --no-project --with numpy --with safetensors python -I "$FX/psnr.py")
     for o in latents frames; do
