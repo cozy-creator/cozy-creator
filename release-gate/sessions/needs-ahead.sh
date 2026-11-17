@@ -97,6 +97,12 @@ record() {
 version() { cozy --json machine show "$NAME" 2> /dev/null | jq -r '.status.version // empty'; }
 ours() {
   local tries=0 runs
+  # Once: the open RC's builds first, its Runtime among them (the checkout's qwen-image-2 needs cozy-runtime>=0.47.0.dev0), by an
+  # update that names nothing; then the session's TensorD by hand, which holds it there.
+  if [[ " ${RC_DONE:-} " != *" $NAME "* ]]; then
+    RC_DONE="${RC_DONE:-} $NAME"
+    step rc machine update "$NAME" -y || fail "$NAME didn't move to the open RC's builds"
+  fi
   while runs=$(version); [ "$runs" != "$V" ]; do
     [ "$tries" -lt 3 ] || fail "$NAME doesn't keep the session's TensorD $V: it runs ${runs:-nothing it says}"
     [ "$tries" = 0 ] || say "$NAME runs ${runs:-nothing it says}, not the session's $V: its TensorD again"
