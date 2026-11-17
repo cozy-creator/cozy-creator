@@ -61,6 +61,8 @@ wait "$reader" || check "disk: the reader holding the store failed"
 cell disk-1-again "$script" --model "weights=e2e/disk-1@0.1.0" text=again || true
 # The disk at its reserve, three runs at once each reading a model not here, five rounds: each round's models evicted the round
 # before, so every round's admits race each other's evictions (43982726077: one refused 0.2 MiB short with an idle model left).
+# tfs-302 (44054015865): a run's model, resolved, was evicted for another run's room before its fetch held it. tfs-303
+# (44054038558): an executor that ran disk-1 and runs disk-5 kept both, and a run was refused disk-1's room; it lets go now.
 local round set i
 for round in 1 2 3 4 5; do
   if [ $((round % 2)) = 1 ]; then set="4 5 6"; else set="1 2 3"; fi
@@ -81,7 +83,7 @@ echo "disk-big: $(run_get "$OUT" disk-big .status): ${said:0:400}"
 [ "$(df -B1 --output=used "$mnt" | tail -1 | tr -d ' ')" -le $((before + (64 << 20))) ] || check "disk: the refused e2e/disk-big left bytes on the disk"
 df -B1 --output=used,avail "$mnt" | tail -1 | sed "s/^/after: used, free: /"
 cozy machine logs local --lines 0 --since 1h > "$OUT/disk.tensord.log" 2>&1 || check "disk: machine logs local failed"
-grep -E "evicted|freed|fetch refused .*CAPACITY|disk is full|making room|short for this render|ended the idle|doesn't fit|held it" "$OUT/disk.tensord.log" | cut -c1-300 | head -60 || true
+grep -E "evicted|freed|fetch refused .*CAPACITY|disk is full|making room|short for this render|ended the idle|let go of|doesn't fit|held it|released construction|no executor let go" "$OUT/disk.tensord.log" | cut -c1-300 | head -60 || true
 for name in disk-4 disk-5 disk-6 disk-1-again; do
   jq -r --arg n "$name" '.warnings[]? | "\($n) warning: \(.message)"' "$OUT/$name.json" 2> /dev/null | cut -c1-300 || true
   ! jq -e '[.warnings[]?.message] | any(test("model data is in use"))' "$OUT/$name.json" > /dev/null 2>&1 \

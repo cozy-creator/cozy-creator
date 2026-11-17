@@ -421,9 +421,15 @@ impl Store {
             if incoming > 0 && !ended {
                 ended = reclaim()?;
             }
+            // What let go since that collection (an executor's model another's reclaim let go, tfs-303) is taken once more
+            // before bytes coming in are judged (e2e 44076270523: refused 0.3 MiB short beside 1.2 GB nothing held).
+            let mut again = incoming > 0;
             let began = Instant::now();
-            while ended && short()? > 0 && began.elapsed() < HOLDS_WAIT {
-                thread::sleep(Duration::from_millis(200));
+            while short()? > 0 && (again || (ended && began.elapsed() < HOLDS_WAIT)) {
+                if !again {
+                    thread::sleep(Duration::from_millis(200));
+                }
+                again = false;
                 let fence = collect_fence(self)?;
                 held_off = fence.is_none();
                 if fence.is_some() {
@@ -597,6 +603,13 @@ pub struct RoomLane {
     pub used: SystemTime,
     pub holders: BTreeSet<u32>,
     digests: BTreeSet<String>,
+}
+
+impl RoomLane {
+    /// Whether it keeps object `sha256`: a checkpoint's lane keeps its header.
+    pub fn keeps(&self, sha256: &str) -> bool {
+        self.digests.contains(sha256)
+    }
 }
 
 impl Room {

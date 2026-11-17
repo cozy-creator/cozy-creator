@@ -9,7 +9,7 @@ use crate::{
 };
 use serde_json::Value;
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs::File,
     io,
     path::Path,
@@ -440,19 +440,20 @@ impl Service {
     }
     /// The machine's garbage for a store admit of `incoming` bytes that finds the disk short,
     /// before the store evicts a model (`Store::on_short`): never kernels, memoized stages or
-    /// run objects. Then the idle executors whose open models alone keep the room it needs end
-    /// (`end_idle_for_disk`), so the store's eviction can take those models. True when any ended.
+    /// run objects. Then the executors whose open models alone keep the room it needs let them go
+    /// (`free_executor_holds`), so the store's eviction can take those models. True when any did.
     pub(crate) fn reclaim_for(&self, incoming: u64) -> bool {
         self.sweep(incoming, false);
         let Some(store) = self.store() else {
             return false;
         };
-        !self.end_idle_for_disk(&store, incoming).is_empty()
+        !self.free_executor_holds(&store, incoming).is_empty()
     }
 
     /// Room on the disk for the `missing` bytes of run `run`'s weights, before any is wanted: the
     /// machine's garbage, then the least recently used models no queued or running job holds,
-    /// those idle executors hold open too (ended first), never one in use. What it evicted is the
+    /// those executors hold open too (an idle one ended, a busy one's idle construction let go
+    /// first), never one in use. What it evicted is the
     /// run's warning. Refused, with the sizes and what would hold it, only when even all of that
     /// would not fit; a disk it cannot measure is said and not judged.
     pub(crate) fn room_for(&self, run: &str, missing: u64) -> Result<(), String> {
@@ -486,7 +487,10 @@ impl Service {
             }
         };
         let idle: BTreeSet<u32> = self.pool().map(|pool| pool.idle_executors().into_iter().flat_map(|(pids, _)| pids).collect()).unwrap_or_default();
-        let evictable = room.freed(|lane| lane.holders.iter().all(|pid| idle.contains(pid)));
+        let busy = self.pool().map(|pool| pool.busy_models()).unwrap_or_default();
+        let all = busy.iter().flat_map(|(pid, models)| models.idle.keys().map(|c| (*pid, c.clone()))).collect();
+        let goes = |lane: &tensorfs::store::retention::RoomLane| lets_go(lane, &idle, &busy, &all);
+        let evictable = room.freed(goes);
         // A disk below its reserve lacks that too, as the store judges each admit.
         let (now, below) = crate::reclaim::measure(store.root()).map_or((0, 0), |disk| (disk.free(), disk.reserve().saturating_sub(disk.available)));
         let short = missing + below - now.min(missing);
@@ -502,7 +506,7 @@ impl Service {
                 pid if pid == me => "this machine's queued or running renders".to_owned(),
                 pid => format!("process {pid}"),
             };
-            let mut held: Vec<(u64, String)> = (room.lanes.iter().filter(|lane| !lane.holders.iter().all(|pid| idle.contains(pid))))
+            let mut held: Vec<(u64, String)> = (room.lanes.iter().filter(|lane| !goes(lane)))
                 .map(|lane| (room.freed(|l| std::ptr::eq(l, lane)).saturating_sub(room.spare), lane))
                 .filter(|(bytes, _)| *bytes > 0)
                 .map(|(bytes, lane)| (bytes, format!("{} ({}, held by {})", lane.name, size(bytes), lane.holders.iter().map(|&pid| who(pid)).collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>().join(", "))))
@@ -516,13 +520,13 @@ impl Service {
                 size(missing), size((now + evictable).saturating_sub(below)), size(evictable), crate::reclaim::advice(store.root(), missing)
             ));
         }
-        let ended = self.end_idle_for_disk(&store, missing);
+        let ended = self.free_executor_holds(&store, missing);
         match store.make_room(missing) {
             Ok(made) if !made.evicted.is_empty() => {
                 let each: Vec<String> = made.evicted.iter()
                     .map(|e| format!("{} ({}, unused for {})", e.name, size(e.bytes), api::calcifer::clock(e.idle.as_millis() as i64)))
                     .collect();
-                let idle = if ended.is_empty() { "" } else { ", after closing the idle processes that had them open" };
+                let idle = if ended.is_empty() { "" } else { ", after the processes that had them open let them go" };
                 warn(format!("The disk was {} short for this render's models, so Cozy removed {}{idle}.", size(short), each.join(", ")));
             }
             Ok(_) => {}
@@ -531,46 +535,103 @@ impl Service {
         Ok(())
     }
 
-    /// Ends idle executors, least recently used first, while the models only they hold open
-    /// would give the disk what it lacks for `incoming` more bytes and its reserve, as the store
-    /// judges an admit (0: one of unknown length, or none): an executor ends only when its holds
-    /// alone keep some of that room, never one a queued or running job also holds. The models
-    /// they held, by name.
-    fn end_idle_for_disk(&self, store: &crate::storage::Store, incoming: u64) -> Vec<String> {
+    /// Executors let go of models, while those only they hold open would give the disk what it lacks for `incoming` more bytes
+    /// and its reserve, as the store judges an admit (0: one of unknown length, or none): idle executors end, least recently
+    /// used first; then a busy executor lets go of constructions none of its calls runs on (tfs-303: one that ran disk-1 and
+    /// runs disk-5 kept both, and a run was refused disk-1's room), never one a queued or running job also holds. Waits, as
+    /// long as `RELEASE_WAIT`, for what those let go to leave the store's holds. The models they held, by name.
+    fn free_executor_holds(&self, store: &crate::storage::Store, incoming: u64) -> Vec<String> {
         let Some(pool) = self.pool() else {
             return vec![];
         };
         let idle = pool.idle_executors();
+        let busy = pool.busy_models();
         // Below its reserve the disk lacks room for any write (kamitsure, 11-16: its idle LTX stayed while outputs went).
         let need = crate::reclaim::measure(store.root()).map_or(0, |disk| (disk.reserve() + incoming.max(1)).saturating_sub(disk.available));
-        if idle.is_empty() || need == 0 {
+        if (idle.is_empty() && busy.is_empty()) || need == 0 {
             return vec![];
         }
         let room = match store.room() {
             Ok(room) => room,
             Err(error) => {
-                tracing::warn!("judging the room idle executors hold: {error}");
+                tracing::warn!("judging the room executors hold: {error}");
                 return vec![];
             }
         };
-        let freed = |ended: &BTreeSet<u32>| room.freed(|lane| lane.holders.iter().all(|pid| ended.contains(pid)));
-        let (mut ended, mut names) = (BTreeSet::new(), vec![]);
-        let mut can = freed(&ended);
+        type Released = BTreeSet<(u32, String)>;
+        let freed = |ended: &BTreeSet<u32>, released: &Released| room.freed(|lane| lets_go(lane, ended, &busy, released));
+        let (mut ended, mut released, mut names) = (BTreeSet::new(), Released::new(), vec![]);
+        let mut can = freed(&ended, &released);
         for (pids, _) in idle {
             if can >= need {
                 break;
             }
             let mut with = ended.clone();
             with.extend(pids.iter().copied());
-            let more = freed(&with);
+            let more = freed(&with, &released);
             // The leader's end ends its whole group.
             if more > can && pool.end_idle_executor(pids[0]) {
                 names.extend(room.lanes.iter().filter(|lane| pids.iter().any(|pid| lane.holders.contains(pid))).map(|lane| lane.name.clone()));
                 (ended, can) = (with, more);
             }
         }
+        for (pid, models) in busy.iter().filter(|(pid, _)| !ended.contains(*pid)) {
+            for construction in models.idle.keys() {
+                if can >= need {
+                    break;
+                }
+                let mut with = released.clone();
+                with.insert((*pid, construction.clone()));
+                let more = freed(&ended, &with);
+                if more > can {
+                    (released, can) = (with, more);
+                }
+            }
+            // A model two idle constructions read goes only with both; then each that frees nothing more stays.
+            if can < need {
+                let mut with = released.clone();
+                with.extend(models.idle.keys().map(|c| (*pid, c.clone())));
+                let more = freed(&ended, &with);
+                if more > can {
+                    for construction in models.idle.keys() {
+                        let pair = (*pid, construction.clone());
+                        with.remove(&pair);
+                        if freed(&ended, &with) < more {
+                            with.insert(pair);
+                        }
+                    }
+                    (released, can) = (with, more);
+                }
+            }
+        }
+        let mut waits: Vec<(u32, BTreeSet<String>)> = vec![];
+        for (pid, models) in &busy {
+            let which: Vec<String> = released.iter().filter(|(of, _)| of == pid).map(|(_, c)| c.clone()).collect();
+            if which.is_empty() || !pool.release_constructions(*pid, &which) {
+                continue;
+            }
+            let headers: BTreeSet<String> = which.iter().flat_map(|c| models.idle[c].iter().cloned()).collect();
+            names.extend(room.lanes.iter().filter(|lane| lane.holders.contains(pid) && headers.iter().any(|h| lane.keeps(h))).map(|lane| lane.name.clone()));
+            waits.push((*pid, headers));
+        }
         if !names.is_empty() {
-            tracing::warn!("the disk is short of {}: ended the idle executors holding {} open", crate::reclaim::size(need), names.join(", "));
+            tracing::warn!("the disk is short of {}: executors let go of {}", crate::reclaim::size(need), names.join(", "));
+        } else {
+            let busy: Vec<String> = busy.iter().map(|(pid, models)| format!("{pid}: {} idle", models.idle.len())).collect();
+            tracing::info!("the disk is short of {}: no executor let go of a model ({} free without one; executors {})",
+                crate::reclaim::size(need), crate::reclaim::size(can), busy.join(", "));
+        }
+        // What a busy executor let go leaves the store's holds once it closes them.
+        let deadline = std::time::Instant::now() + RELEASE_WAIT;
+        while !waits.is_empty() && std::time::Instant::now() < deadline {
+            let Ok(room) = store.room() else { break };
+            waits.retain(|(pid, headers)| room.lanes.iter().any(|lane| lane.holders.contains(pid) && headers.iter().any(|h| lane.keeps(h))));
+            if !waits.is_empty() {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+        for (pid, _) in &waits {
+            tracing::warn!("process {pid} still held the models it was told to let go {} s later: they stay", RELEASE_WAIT.as_secs());
         }
         names
     }
@@ -610,7 +671,7 @@ impl Service {
                 if disk()?.short().is_some() {
                     // An idle executor's models go before any held output (kamitsure kept its idle LTX's 71.5 GB and let outputs go).
                     if let Some(store) = self.store() {
-                        self.end_idle_for_disk(&store, 0);
+                        self.free_executor_holds(&store, 0);
                     }
                     let (count, bytes) = calls.make_room()?;
                     swept.add(crate::reclaim::Kind::Object, count, bytes);
@@ -834,4 +895,17 @@ impl Service {
         let plan = self.plan(pool, record)?;
         pool.dispatch(&self.engine, record, held.application(&record.invocation.module)?, plan, width, claims, calls, admit)
     }
+}
+
+/// The most `free_executor_holds` waits for what busy executors let go to leave the store's holds.
+const RELEASE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Whether `lane` goes once executors let it go: each process holding it is an idle executor `ended` for it, or a busy one
+/// (`busy`) holding it only for constructions none of its calls runs on, each of them `released` (tfs-303).
+fn lets_go(lane: &tensorfs::store::retention::RoomLane, ended: &BTreeSet<u32>, busy: &BTreeMap<u32, crate::gpu_service::BusyModels>,
+    released: &BTreeSet<(u32, String)>) -> bool {
+    lane.holders.iter().all(|pid| ended.contains(pid) || busy.get(pid).is_some_and(|models| {
+        let mut held = models.idle.iter().filter(|(_, headers)| headers.iter().any(|h| lane.keeps(h))).peekable();
+        !models.live.iter().any(|h| lane.keeps(h)) && held.peek().is_some() && held.all(|(c, _)| released.contains(&(*pid, c.clone())))
+    }))
 }
