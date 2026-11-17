@@ -1031,7 +1031,10 @@ export class CanvasStore {
       }
     }
     for (const [name, view] of this.views) {
-      if (!present.has(name) && !view.placing && !view.landed && !(this.began <= (view.pending ?? -1)) && !becoming.has(name)) this.removeNode(name)
+      if (!present.has(name) && !view.placing && !view.landed && !(this.began <= (view.pending ?? -1)) && !becoming.has(name)) {
+        console.warn("probe remove", name, this.ids.get(name), "began", this.began, "renames", JSON.stringify([...this.renames]), "renamedAt", JSON.stringify([...this.renamedAt]), "present", [...present].join(","))
+        this.removeNode(name)
+      }
     }
     // What comes after the first read arrived while this was open, from a dropped tool, a command or a hand.
     for (const element of this.seen ? fresh : []) this.landings.add(element.name)
@@ -1144,6 +1147,7 @@ export class CanvasStore {
   }
 
   private node(name: string, row: Card, selected = false, id = `e${++this.nextId}`): ElementNode {
+    if (this.ids.has(name) && this.ids.get(name) !== id) console.warn("probe node anew", name, this.ids.get(name), id)
     this.ids.set(name, id)
     this.namesById.set(id, name)
     // Drawn again, a box keeps what Calcifer calls it: a rename on its way hasn't reached it.
@@ -2148,6 +2152,7 @@ export class CanvasStore {
   private moveName(from: string, to: string, ours = false) {
     const view = this.views.get(from)
     const id = this.ids.get(from)
+    console.warn("probe moveName", from, to, ours, id)
     if (!view || !id) return
     if (!ours) this.served.set(id, to)
     this.views.delete(from)
@@ -3232,7 +3237,10 @@ export class CanvasStore {
         let refusedAs: string | undefined
         for (;;) {
           const served = id && this.namesById.has(id) ? this.served.get(id) : undefined
-          if (!id || !served) return NOT_THERE
+          if (!id || !served) {
+            console.warn("probe act gone", name, id, JSON.stringify([...this.ids]))
+            return NOT_THERE
+          }
           try {
             return await action.send(served, { once, edit: action.edit, action: outboxed })
           } catch (error) {

@@ -176,6 +176,7 @@ class Bridge {
       return
     }
     const began = nextProjectOrder()
+    console.warn("probe read", id, "names", names.join(","), "gone", gone.join(","), "head", head, "began", began)
     try {
       // What changed, in one read that says a box gone as an answer: one deleted as it's asked for is no 404 a browser logs (cl-973).
       const [read, said] = await Promise.all([
