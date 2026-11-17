@@ -2820,6 +2820,13 @@ impl Calcifer {
         Ok(())
     }
 
+    /// Whether `machine` holds object `digest`, `length` bytes, whole: what a guess would carry, there already (a run of it carried it).
+    pub(crate) async fn holds(&self, machine: &str, digest: &Digest, length: u64) -> bool {
+        let Some(machines) = self.machines() else { return false };
+        let Ok((_, link)) = machines.linked(machine) else { return false };
+        length > 0 && link.held(digest, length).await.is_ok_and(|held| held >= length)
+    }
+
     /// `inputs` written to `machine`, each it doesn't hold whole, one write of an object at a time as a run's are (`writing`): local
     /// code carried to the machine a box's guess goes to, as a run of it carries it (cl-1104), and the files a predicted request reads
     /// (cl-1123), so its machine has them before a render of it is sent. The bytes moving hold its idle clock as any upload's do.

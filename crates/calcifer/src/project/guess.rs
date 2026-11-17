@@ -252,7 +252,13 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
             }
             let On::Machine(on) = machine else { return Ok(None) };
             let carried = (on.clone(), package.manifest.clone());
-            let held = lock(&CARRIED).get(&carried).cloned();
+            let mut held = lock(&CARRIED).get(&carried).cloned();
+            // There already, a run of it having carried it: carried by its manifest alone.
+            if held.is_none() && is_there(api, on, &package.manifest).await {
+                let source = v1::LocalSource { manifest: package.manifest.clone() };
+                lock(&CARRIED).insert(carried.clone(), source.clone());
+                held = Some(source);
+            }
             let source = match held {
                 Some(source) => source,
                 None => {
@@ -303,6 +309,14 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
     }
     // Its key is its machine's list's to give (`Lists::key`).
     Ok(Some((v1::Predicted { key: String::new(), spec }, package.name.clone() + "/" + &renderer.function)))
+}
+
+/// `machine` holds local source `manifest` whole, as Calcifer kept it.
+async fn is_there(api: &Api, machine: &str, manifest: &str) -> bool {
+    match crate::local_code::kept_manifest(api.machines.hubs.home(), manifest) {
+        Some((digest, length)) => api.calcifer.holds(machine, &digest, length).await,
+        None => false,
+    }
 }
 
 /// The digest `renderer`'s release must install (xs-196): the one this project's lock recorded at its first run of it, else its card's.
