@@ -1,6 +1,6 @@
 import { Container, Graphics, Rectangle, Sprite, Texture, TilingSprite } from "pixi.js"
 import type { Box } from "../graph"
-import { HEAD, SUB_ROW, hexOf } from "../shown"
+import { BODY, FAR, HEAD, nameTopOf, SMALL, SUB_ROW, TITLE, TRASH_TOP, UNDER, UNTOOL, hexOf } from "../shown"
 import { chipWords, withMentions } from "../text"
 import { pictureBox, type Presentation, type SceneNode, type ScenePicture } from "./presentation"
 import type { LatentHandle, Media, MediaHandle, MediaSource, VideoHandle } from "./Media"
@@ -8,8 +8,6 @@ import { ellipsis, Label, type LabelStyle, width, wrap } from "./text"
 
 export type Part = "body" | "title" | "delete" | "cancel" | "corner" | "untool" | "dot"
 export interface Hit { name: string; part: Part }
-/** The X beside a box's tool, in screen pixels: its glyph, its hit area, and the gap after the tool's name. */
-const UNTOOL_GLYPH = 8, UNTOOL_HIT = 18, UNTOOL_GAP = 3
 
 /** Every colour comes from the page's tokens (tokens.css), read once per theme. */
 export interface Palette {
@@ -28,9 +26,6 @@ export interface CardEnv {
   onRevealed(name: string, aspect: number | undefined, local: boolean): void
 }
 
-export const BODY = 12.5 * 1.35
-export const TITLE = 15.5 * 1.35
-const SMALL = BODY * 0.9
 const hits = new WeakMap<Container, Hit>()
 /** One-line labels in small type share a glyph atlas (BitmapText) instead of a canvas and texture each: a card's open costs its title and words. */
 const SMALL_LABELS = new Set(["version", "tool", "shape", "machine", "time", "count", "duration", "kind", "ratio"])
@@ -81,7 +76,7 @@ export class CardView {
       this.root.addChild(area)
     }
     const untool = this.parts.get("untool")!
-    untool.hitArea = new Rectangle(-UNTOOL_HIT / 2, -UNTOOL_HIT / 2, UNTOOL_HIT, UNTOOL_HIT)
+    untool.hitArea = new Rectangle(-UNTOOL.hit / 2, -UNTOOL.hit / 2, UNTOOL.hit, UNTOOL.hit)
     this.untool.glyph.eventMode = "none"
     untool.addChild(this.untool.glyph)
   }
@@ -179,7 +174,7 @@ export class CardView {
         if (!far) label("progress", show.progress.state, body.x + 12, body.y + body.h / 2 - BODY / 2, body.w - 24, { size: BODY, color: colors.ink, bold: true })
       }
       this.header(show, node, state, w, far, colors, label, env)
-      if (!far) this.under(show, body, w, colors, label, 6, env.zoom)
+      if (!far) this.under(show, body, w, colors, label, env.zoom)
     }
     if (show.progress?.fraction !== undefined && !node.view.canceling) {
       const meter = { x: body.x, y: body.y, w: body.w * Math.min(0.99, show.progress.fraction), h: Math.min(body.h, 3 / env.zoom) }
@@ -211,7 +206,7 @@ export class CardView {
 
   private header(show: Presentation, node: SceneNode, state: CardState, w: number, far: boolean, colors: Palette, label: LabelFn, env: CardEnv) {
     const size = env.titleSize
-    const y = HEAD - 10 - size * 1.2
+    const y = nameTopOf(size)
     let left = 2
     const naming = node.view.draft !== undefined
     // Green first, at its top left, while a version is unseen (cl-1105); a run's queued, running or failed dot beside it.
@@ -242,7 +237,7 @@ export class CardView {
     this.area("title", title ? { x: left, y, w: Math.max(16, width(this.texts.get("title")!.value, size, true, true)), h: size * 1.25 } : null)
     if (version) label("version", show.version!, w - (control ? 32 : 0) - version, HEAD - 10 - SMALL * 1.25, version, { size: SMALL, color: colors.mute })
     if (!control) return
-    const x = w - 26, top = HEAD - 38, hot = state.hover === "delete" || state.hover === "cancel"
+    const x = w - 26, top = TRASH_TOP, hot = state.hover === "delete" || state.hover === "cancel"
     const color = hot ? colors.ink : colors.mute
     if (hot) this.ink.roundRect(x - 2, top, 28, 28, 6).fill({ color: colors.ink, alpha: 0.08 })
     if (node.view.placing) {
@@ -270,19 +265,19 @@ export class CardView {
   }
 
   /** Under a box at rest (cl-932, cl-898): its tool and shape; while it renders, where and how long, then what it's doing with Cancel. */
-  private under(show: Presentation, body: Box, w: number, colors: Palette, label: LabelFn, gap: number, zoom: number) {
-    let y = body.y + body.h + gap
+  private under(show: Presentation, body: Box, w: number, colors: Palette, label: LabelFn, zoom: number) {
+    let y = body.y + body.h + UNDER.gap
     if (show.tool || show.shape || show.from) {
       const shape = show.shape ? Math.min(w * 0.5, width(show.shape, SMALL)) : 0
       // Room for the X after the tool's name at the farthest zoom this line is drawn at.
       // The tool's name leaves its X the room it takes on screen at this zoom (the line isn't drawn under 45%).
-      const room = w - shape - 10 - (show.tool ? (UNTOOL_GAP + UNTOOL_HIT) / Math.max(zoom, 0.45) : 0)
+      const room = w - shape - 10 - (show.tool ? (UNTOOL.gap + UNTOOL.hit) / Math.max(zoom, FAR) : 0)
       this.untool.limit = w - shape - 10
       const said = ellipsis([show.tool, show.from].filter(Boolean).join(" · "), room, SMALL)
       label("tool", said, 0, y, room, { size: SMALL, color: colors.mute })
-      if (show.tool) this.untool.at = { x: width(said, SMALL), y: y + SMALL * 0.68 }
+      if (show.tool) this.untool.at = { x: width(said, SMALL), y: y + UNTOOL.middle }
       if (shape) label("shape", ellipsis(show.shape, shape, SMALL), w - shape, y, shape, { size: SMALL, color: colors.mute })
-      y += SMALL * 1.35 + 2
+      y += UNDER.line
     }
     const progress = show.progress
     if (!progress || progress.phase === "local") return
@@ -290,7 +285,7 @@ export class CardView {
     const timeWidth = time ? width(time, SMALL) : 0
     label("machine", ellipsis(progress.machine, w - timeWidth - 8, SMALL), 0, y, w - timeWidth - 8, { size: SMALL, color: colors.mute })
     if (time) label("time", time, w - timeWidth, y, timeWidth, { size: SMALL, color: colors.mute })
-    y += SMALL * 1.35 + 4
+    y += UNDER.machine
     const cancel = progress.cancel ? 70 : 0
     const count = progress.count ? width(progress.count, BODY, false, true) : 0
     const words = ellipsis(progress.state, Math.max(0, w - cancel - count - (count ? 6 : 0) - 8), BODY, false, true)
@@ -298,9 +293,9 @@ export class CardView {
     if (count) label("count", progress.count!, width(words, BODY, false, true) + (words ? 6 : 0), y + 4, count, { size: BODY, color: colors.ink, bold: true })
     if (cancel) {
       const x = w - cancel
-      this.ink.roundRect(x, y, cancel, 28, 6).fill(colors.card).stroke({ width: 1, color: colors.line })
+      this.ink.roundRect(x, y, cancel, UNDER.cancel, 6).fill(colors.card).stroke({ width: 1, color: colors.line })
       label("cancel", "Cancel", x + (cancel - width("Cancel", BODY)) / 2, y + 4, cancel, { size: BODY, color: colors.ink })
-      this.area("cancel", { x, y, w: cancel, h: 28 })
+      this.area("cancel", { x, y, w: cancel, h: UNDER.cancel })
     }
   }
 
@@ -544,14 +539,14 @@ export class CardView {
     const unit = 1 / Math.max(zoom * this.root.scale.x, 0.0001)
     if (this.untool.inked !== this.untool.color) {
       this.untool.inked = this.untool.color
-      const half = UNTOOL_GLYPH / 2, glyph = this.untool.glyph
+      const half = UNTOOL.glyph / 2, glyph = this.untool.glyph
       glyph.clear().moveTo(-half, -half).lineTo(half, half).moveTo(half, -half).lineTo(-half, half).stroke({ width: 1.5, color: this.untool.color, cap: "round" })
     }
     area.visible = true
     area.scale.set(unit)
     // After the tool's name, never into the shape beside it.
-    area.position.set(Math.min(at.x + (UNTOOL_GAP + UNTOOL_HIT / 2) * unit, this.untool.limit - (UNTOOL_HIT / 2) * unit), at.y)
-    const box = { x: area.x - (UNTOOL_HIT / 2) * unit, y: at.y - (UNTOOL_HIT / 2) * unit, w: UNTOOL_HIT * unit, h: UNTOOL_HIT * unit }
+    area.position.set(Math.min(at.x + (UNTOOL.gap + UNTOOL.hit / 2) * unit, this.untool.limit - (UNTOOL.hit / 2) * unit), at.y)
+    const box = { x: area.x - (UNTOOL.hit / 2) * unit, y: at.y - (UNTOOL.hit / 2) * unit, w: UNTOOL.hit * unit, h: UNTOOL.hit * unit }
     this.drawn.parts.set("untool", box)
     const control = this.drawn.controls.find((one) => one.part === "untool")
     if (control) control.box = box

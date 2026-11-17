@@ -28,10 +28,10 @@ const COLUMNS = [
 ];
 const LONG = ['a_box_whose_name_goes_on_and_on_past_any_width', 'scene_one_where_the_hero_meets_the_sea', 'background_plate_with_a_long_name'];
 const NAMED = COLUMNS.flatMap((column) => column.names);
-// As close as the layout keeps a box under another, under what's drawn of it (shown.ts heightFor and underOf): a picture's row under it,
-// its tool and shape line and the rise of the name below; a word box's rise alone; then clear's gap. Side by side, the gap. One more, so
-// nothing lies on anything and the page leaves the rows as written.
-const UNDER = { image: 40 + 55 + 16 + 1, text: 22 + 16 + 1 };
+// As close as the layout keeps a box under another, under what's drawn of it (shown.ts heightFor and underOf): a picture's shape line, the
+// rise of the name below and 8 clear, less clear's gap; a word box's rise and the 8 alone; then clear's gap. Side by side, the gap. One more,
+// so nothing lies on anything and the page leaves the rows as written.
+const UNDER = { image: 41 + 16 + 1, text: 15 + 16 + 1 };
 const BESIDE = 240 + 16 + 1;
 // Where they're made apart, and where they're laid out close: well clear of the 300, which start at 0,0.
 const APART = -6000;

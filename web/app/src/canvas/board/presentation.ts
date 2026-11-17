@@ -21,7 +21,7 @@ export interface RunContext {
 export interface SceneNode {
   id: string
   name: string
-  /** The displayed body's world box, including its HEAD and existing image-row space. */
+  /** The displayed body's world box, its HEAD included. */
   box: Box
   view: ElementView
   selected: boolean
@@ -82,7 +82,7 @@ export interface Presentation {
   entity?: { kind: string; description: string; slots: EntitySlot[]; rows: EntityRow[] }
 }
 
-/** Media bounds, excluding the title and an image's existing lower row. No DOM measurement or duplicate layout owner. */
+/** Media bounds, under its HEAD. No DOM measurement or duplicate layout owner. */
 export function pictureBox(node: SceneNode): Box {
   const { box, view } = node
   if (view.entity) return { ...box }
