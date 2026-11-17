@@ -234,16 +234,10 @@ impl Machine {
         json(send(self.request(Method::POST, path::RUNS, &[]).json(run)).await?).await
     }
 
-    /// Sends `runs` as one admission (`run-batch/1`): each one's state, or its refusal, in their order.
-    pub(crate) async fn submit_batch(&self, runs: &RunBatch) -> Result<Vec<Result<RunState, Error>>, Error> {
-        let answer: RunBatchAnswer = json(send(self.request(Method::POST, path::RUNS_BATCH, &[]).json(runs)).await?).await?;
-        Self::admitted(runs, answer)
-    }
-
-    /// `submit_batch`, asked to go on with the events of its run `runs.follow` (cl-1172): the answer, and that run's events from
-    /// its start as `events` reads them, in one round trip. None for the events: a machine that answers the batch alone (before
-    /// cl-1172), whose events its caller asks for.
-    pub(crate) async fn submit_batch_following(
+    /// Sends `runs` as one admission (`run-batch/1`): each one's state, or its refusal, in their order; then the events of its
+    /// run `runs.follow` from its start, as `events` reads them, on the same answer (cl-1172). None for the events: a machine
+    /// that answers the batch alone (before cl-1172), whose events its caller asks for.
+    pub(crate) async fn submit_batch(
         &self,
         runs: &RunBatch,
     ) -> Result<(Vec<Result<RunState, Error>>, Option<EventStream>), Error> {

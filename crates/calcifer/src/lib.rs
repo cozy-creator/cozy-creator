@@ -2461,7 +2461,7 @@ impl Calcifer {
         }
         // Its events come on the admission's answer (cl-1172): one round trip sends it and follows it.
         let own = runs[at].0.clone();
-        let answers = self.answered(&run.id, machine, link.admit_following(runs, &own, carried)).await;
+        let answers = self.answered(&run.id, machine, link.admit(runs, &own, carried)).await;
         unpin(self.machines());
         match answers {
             Ok((answers, events)) => self.sent(machine, answers.into_iter().nth(at).expect("an answer a run")).map(|state| Some((state, events))),
