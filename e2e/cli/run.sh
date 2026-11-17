@@ -518,6 +518,7 @@ WEB_2=(
 )
 WEB_3=(
   focus
+  focus-original
   create
   project-name
   takes
@@ -535,6 +536,7 @@ WEB_3=(
   rendering
   glloss
   llm
+  hints
 )
 # The path of a computer with no GPU: the canvas in 2D (cl-1048), for the core cells (web.sh's lane `2d`; coordinator, 11-16).
 WEB_2D=(

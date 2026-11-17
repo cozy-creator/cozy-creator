@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # e2e/candidates/build.sh <cozy|cozy-before|tensorfs|runtime> <src> <out>: one candidate for this runner's OS, into <out>; prints
-# its file. cozy-before (e2e/cli/selfupdate.sh, cl-978): the source built as a release of the line before the Latest, 0.24.99 with TensorFS
-# 0.24.99, which runs no Runtime from 0.46: the cozy that updates itself to the Latest for a package that needs it. cozy (TensorD, the dev cozy: the RC's <x.y.z>-dev+g<sha8>, a release's <version>+dev.g<sha8>) and the TensorFS wheel come from the cozy-creator
+# its file. cozy-before (e2e/cli/selfupdate.sh, cl-978): the source built as a release of the line before GitHub's Latest
+# (e2e/releases.py: 0.25.99 with TensorFS 0.25.99 while 0.26.0 is Latest), which runs none of the Latest's Runtime minor: the cozy
+# that updates itself to the Latest for a package that needs it. cozy (TensorD, the dev cozy: the RC's <x.y.z>-dev+g<sha8>, a release's <version>+dev.g<sha8>) and the TensorFS wheel come from the cozy-creator
 # checkout <src>, the Runtime wheel (<version>+dev.g<sha8>) from the cozy-runtime checkout <src>.
 #   REUSE=1      cozy or tensorfs as a cozy-creator merge-group or dispatched e2e run uploaded it for the same build
 #                inputs: a PR's dispatch builds what its merge-queue entry reuses when the PR is up to date
@@ -90,8 +91,10 @@ elif [ "$what" = cozy ]; then
   cp "$stage_src/target/release/examples/needs-answers$exe" "$out/needs-answers$exe"
 elif [ "$what" = cozy-before ]; then
   # A release's version, no +dev: it updates itself. Its TensorFS crate is the line's, whose protocol is what it runs. No page.
+  eval "$(python3 -I "$(dirname "${BASH_SOURCE[0]}")/../releases.py")"
   (cd "$src"
-    sed -i '0,/^version = "[^"]*"$/s//version = "0.24.99"/' Cargo.toml crates/tensorfs/Cargo.toml
+    sed -i "0,/^version = \"[^\"]*\"\$/s//version = \"${PREVIOUS%.*}.99\"/" Cargo.toml
+    sed -i "0,/^version = \"[^\"]*\"\$/s//version = \"${PREVIOUS_TENSORFS%.*}.99\"/" crates/tensorfs/Cargo.toml
     cargo update -w
     COZY_COMMIT=$sha cargo build --release -p cozy --bin cozy
     git checkout -- Cargo.toml Cargo.lock crates/tensorfs/Cargo.toml)

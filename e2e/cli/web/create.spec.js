@@ -16,6 +16,9 @@
 // Edit"), in the Video group and on a box's tool line, kept on paper and dark; a group lists what makes something new before what edits.
 // cl-1094 (Paul, 11-16: "We also don't need the text 'tools' in the top left box. I don't think it is useful for much unfortunately, since
 // everything is a tool on this panel"): the sidebar has no heading and no "Tools" text; its name for a screen reader stays.
+// cl-1182 (Paul, 11-17, after taking qwen-image's tool for qwen-image-2's: "oh my bad, I used qwen image 1 instead of 2.1. We should
+// probably call it 'qwen image 1' to avoid confusion like I just did"): Tools lists Qwen Image 1 and Qwen Image 2.1, and so does a box's tool
+// line and `cozy explain`; Qwen Image 1's box offers 1, 1.7 or 2 MP, 1.7 by default. Kept on paper and dark.
 const { mkdirSync, readFileSync } = require('fs');
 const { join } = require('path');
 const { test, expect, themed, observeStill, canvasCard, canvasIdle, canvasNames, canvasPoint, canvasVisible, focus, png, MP4, wav } = require('./fixtures');
@@ -31,12 +34,12 @@ const placedAt = (flow) => ({ x: Math.round(flow.x - 120), y: Math.round(flow.y 
 /** A tool as the page names it (shown.ts toolName): its label alone where that says its package's name already. */
 const named = (tool) => (!tool.package_title || tool.label.toLowerCase().includes(tool.package_title.toLowerCase()) ? tool.label : `${tool.package_title} · ${tool.label}`);
 /** Each seeded package's name as it writes it, in its description (cl-1084: "their brands as they write them"). */
-const WRITTEN = { 'qwen-image-2': 'Qwen-Image-2.1', 'minimax-h3': 'MiniMax H3', sdxl: 'SDXL', birefnet: 'BiRefNet', 'moss-image': 'MOSS-Image' };
+const WRITTEN = { 'qwen-image-2': 'Qwen Image 2.1', 'minimax-h3': 'MiniMax H3', sdxl: 'SDXL', birefnet: 'BiRefNet', 'moss-image': 'MOSS-Image', 'qwen-image': 'Qwen Image 1' };
 /** Whether a tool reads a picture: a slot of one, or a prompt that takes one. */
 const reads = (fields) => fields.some((field) => (field.type === 'slot' && field.accept === 'image') ||
   (field.type === 'prompt' && (!field.takes || field.takes.includes('image'))) || (field.type === 'group' && reads(field.members ?? [])));
 
-test('create', { tag: '@engines' }, async ({ page, project, api }) => {
+test('create', { tag: '@engines' }, async ({ page, project, api, cli }) => {
   const { tools } = await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`);
   const palette = page.getByRole('complementary', { name: 'Tools' });
   await expect(palette.getByRole('button', { name: 'Hide the tools' }), 'the tools open').toBeVisible();
@@ -223,9 +226,10 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
     await openOperation('image');
     const image = await implementations('image').evaluateAll((all) => all.map((one) => ({ id: one.dataset.tool, label: one.textContent })));
     const at = (name) => image.findIndex((one) => one.id.startsWith(`${name}/`));
-    for (const name of ['moss-image', 'qwen-image-2', 'sdxl', 'birefnet']) expect.soft(image[at(name)]?.label, `${name}'s row in Image`).toBe(WRITTEN[name]);
-    const order = ['moss-image', 'qwen-image-2', 'sdxl', 'birefnet'].map(at);
-    expect.soft(order.every((i, n) => i >= 0 && (n === 0 || i > order[n - 1])), `MOSS-Image, Qwen-Image-2.1, SDXL, then BiRefNet: ${image.map((one) => one.label).join(', ')}`).toBe(true);
+    const pictures = ['moss-image', 'qwen-image', 'qwen-image-2', 'sdxl', 'birefnet'];
+    for (const name of pictures) expect.soft(image[at(name)]?.label, `${name}'s row in Image`).toBe(WRITTEN[name]);
+    const order = pictures.map(at);
+    expect.soft(order.every((i, n) => i >= 0 && (n === 0 || i > order[n - 1])), `MOSS-Image, Qwen Image 1, Qwen Image 2.1, SDXL, then BiRefNet: ${image.map((one) => one.label).join(', ')}`).toBe(true);
   });
 
   await test.step('a video tool on the dropped picture makes a video box from it, which Undo takes away; an image tool on the video changes nothing and says why; on the picture it goes on', async () => {
@@ -451,5 +455,42 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
     expect.soft(await page.locator('body').innerText(), 'no tool named twice, or cased other than as its package writes it').not.toMatch(/Minimax H3|MiniMax H3 · MiniMax H3/);
     await look('tool-line', focused, line);
     await leave(page);
+  });
+
+  await test.step("Qwen Image 1 and Qwen Image 2.1, each called by its model, in Tools, on a box's tool line and in cozy explain; Qwen Image 1's megapixels (cl-1182)", async () => {
+    await fit(page);
+    const row = (operation, id) => implementations(operation).and(palette.locator(`[data-tool="${id}"]`));
+    await openOperation('upscale_image');
+    await expect.soft(row('upscale_image', 'qwen-image-2/upscale'), "Qwen Image 2.1's Upscale").toHaveText('Qwen Image 2.1');
+    await openOperation('image');
+    await expect.soft(row('image', 'qwen-image/image'), 'Qwen-Image-2512 and Qwen-Image-Edit-2511: Qwen Image 1').toHaveText('Qwen Image 1');
+    await expect.soft(row('image', 'qwen-image-2/image'), 'Qwen-Image-2.1: Qwen Image 2.1').toHaveText('Qwen Image 2.1');
+    // The Hub tool box, Qwen Image 2.1's: its tool line, then Qwen Image 1 in its place.
+    const line = async () => (await canvasCard(page, names.tool))?.rendered?.labels.tool?.fullText;
+    await expect.configure({ soft: true }).poll(line, { message: "Qwen Image 2.1's tool line" }).toBe('Qwen Image 2.1 · Image');
+    const one = row('image', 'qwen-image/image');
+    await one.scrollIntoViewIfNeeded();
+    await carry(page, one, await canvasPoint(page, names.tool));
+    await expect.poll(async () => (await project.asset(names.tool)).tool, { message: 'Qwen Image 1 goes on the box' }).toBe('qwen-image/image');
+    await expect.configure({ soft: true }).poll(line, { message: "Qwen Image 1's tool line" }).toBe('Qwen Image 1 · Image');
+    const region = page.getByRole('region', { name: 'Focused asset' });
+    const focused = async () => {
+      await focus(page, names.tool);
+      await expect(region.locator('.tool-line').first()).toBeVisible();
+    };
+    await focused();
+    await expect.soft(region.locator('.tool-line .image-tool-name').first(), 'and in Focus').toHaveText('Qwen Image 1 · Image');
+    const megapixels = region.getByRole('radiogroup', { name: 'Megapixels', exact: true });
+    await expect.soft(megapixels.getByRole('radio'), "Qwen Image 1's sizes").toHaveText(['1 MP', '1.7 MP', '2 MP']);
+    await expect.soft(megapixels.getByRole('radio', { name: '1.7 MP', exact: true }), 'its native 1328², by default').toHaveAttribute('aria-checked', 'true');
+    await look('qwen-image-1', focused, () => region);
+    await leave(page);
+    await look('tools-qwen', async () => { await expect(palette.locator('.tool-groups.stale')).toHaveCount(0); await openOperation('image'); }, () => palette, [[1440, 900], [1920, 1080]]);
+    // `cozy explain` names each tool as the page does.
+    const said = await cli('explain', 'image');
+    expect.soft(said.code, `cozy explain image: ${said.stderr.slice(-500)}`).toBe(0);
+    for (const [id, name] of [['qwen-image/image', 'Qwen Image 1 · Image'], ['qwen-image-2/image', 'Qwen Image 2.1 · Image'], ['qwen-image-2/upscale', 'Qwen Image 2.1 · Upscale']]) {
+      expect.soft(said.stdout, `cozy explain image: ${id} as ${name}`).toMatch(new RegExp(`^${id}\\s+${name}, makes image$`, 'm'));
+    }
   });
 });

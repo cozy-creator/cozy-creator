@@ -3696,7 +3696,15 @@ a.tab:hover {
 }
 .mention-text:empty::before {
   content: attr(data-placeholder);
-  color: var(--faint);
+}
+/* Suggested text, in every text box alike (cl-1188; Paul, 11-17: "clearly ghosted in the UI, so it's obvious that's not something there"):
+   lighter than what's typed, in italics and never bold, and gone once there's a value. */
+::placeholder,
+.mention-text:empty::before {
+  color: var(--hint);
+  font-style: italic;
+  font-weight: 400;
+  opacity: 1;
 }
 .chip {
   display: inline-flex;

@@ -254,7 +254,8 @@ jobs:
           fi
           # A dispatch from a task branch runs against the RC it works toward, never master by default (two runs on 11-15 met
           # master's Runtime and packages and looked like product bugs): its open PR's base, else the line its own Cargo.toml says
-          # (`X.Y.Z-dev` works toward rc/X.Y.Z, a release `X.Y.Z` toward the next minor's, as Calcifer's rc::open reads it).
+          # (`X.Y.Z-dev` works toward rc/X.Y.Z, a release `X.Y.Z` toward the patch line it's cut from, else the next minor's, as
+          # Calcifer's rc::open reads it).
           # Only a dispatch on master runs against master.
           if [ -z "$rc" ] && [ -n "$DISPATCHED" ] && [ "$DISPATCHED" != master ]; then
             b=$(gh api "repos/$GITHUB_REPOSITORY/pulls?head=${GITHUB_REPOSITORY%%/*}:$DISPATCHED&state=open" -q '.[0].base.ref // empty' 2>/dev/null) || b=
@@ -263,8 +264,17 @@ jobs:
             elif [ "$GITHUB_REPOSITORY" = cozy-creator/cozy-creator ]; then
               v=$(gh api "repos/cozy-creator/cozy-creator/contents/Cargo.toml?ref=$DISPATCHED" -H 'Accept: application/vnd.github.raw' 2>/dev/null | sed -n 's/^version = "\([0-9]*\)\.\([0-9]*\)\.[0-9]*\(-[^"]*\)\{0,1\}"$/\1 \2 \3/p' | head -1) || v=
               read -r major minor dev <<< "$v"
+              # A release Cargo.toml on a branch cut from a patch line (it holds `release/X.Y.Z`'s head) works toward that release,
+              # never the next minor's RC (cl-1186: a 0.26.1 fix met rc/0.27.0's Runtime and packages).
+              if [ -n "$minor" ] && [ -z "$dev" ]; then
+                for b in $(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/heads/release/$major.$minor." -q '.[].ref' 2>/dev/null | sed 's|^refs/heads/||' | grep -xE 'release/[0-9]+\.[0-9]+\.[0-9]+' | sort -rV); do
+                  case $(gh api "repos/$GITHUB_REPOSITORY/compare/$b...$DISPATCHED" -q .status 2>/dev/null) in
+                    ahead | identical) rc=$b from_rc="the release line it's cut from"; break ;;
+                  esac
+                done
+              fi
               bump=1; [ -z "$dev" ] || bump=0
-              [ -z "$minor" ] || { rc=rc/$major.$((minor + bump)).0 from_rc="its Cargo.toml's line"; }
+              [ -n "$rc" ] || [ -z "$minor" ] || { rc=rc/$major.$((minor + bump)).0 from_rc="its Cargo.toml's line"; }
             fi
           fi
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
@@ -887,6 +897,7 @@ jobs:
       - if: (matrix.shard == 'selfupdate' || startsWith(matrix.shard, 'selfupdate@'))
         env:
           CARGO_INCREMENTAL: "0"
+          GH_TOKEN: ${{ github.token }}
         run: echo "E2E_COZY_BEFORE=$(bash .creator/e2e/candidates/build.sh cozy-before .before "$RUNNER_TEMP/before")" >> "$GITHUB_ENV"
       # dev-start (cl-1069): the change's cozy built as scripts/dev-local.sh builds a dev home's, the dev profile (E2E_DEV_COZY).
       - if: (matrix.shard == 'dev-start' || startsWith(matrix.shard, 'dev-start@'))
@@ -922,9 +933,14 @@ jobs:
           privacy_artifacts=()
           [[ '${{ matrix.shard }}' != containment* ]] || privacy_artifacts=(--private-artifacts)
           # local-code's isolated Hub pins Runtime 0.45.0 / TensorFS 0.24.1: runtime_floor's machine moves there, held by nothing (cl-952).
-          # selfupdate's pins 0.24's software, then restarts it on 0.25's (e2e/cli/selfupdate.sh, cl-978).
+          # selfupdate's pins the software of the line before GitHub's Latest, then restarts it on the Latest's (e2e/releases.py,
+          # e2e/cli/selfupdate.sh, cl-978).
+          software=()
+          shard='${{ matrix.shard }}'
+          [[ ${shard%%@*} != local-code ]] || software=(--software 0.45.0,0.24.1)
+          if [[ ${shard%%@*} == selfupdate ]]; then eval "$(python3 -I .creator/e2e/releases.py)"; software=(--software "$PREVIOUS_RUNTIME,$PREVIOUS_TENSORFS"); fi
           bash .creator/e2e/skew/run.sh --hub-bin "$RUNNER_TEMP/fixture-hub" --candidates "$CANDIDATES" --admin "${privacy_artifacts[@]}" --out "$RUNNER_TEMP/e2e/hub" \
-            ${{ (matrix.shard == 'local-code' || startsWith(matrix.shard, 'local-code@')) && '--software 0.45.0,0.24.1' || ((matrix.shard == 'selfupdate' || startsWith(matrix.shard, 'selfupdate@')) && '--software 0.45.2,0.24.2' || '') }} \
+            "${software[@]}" \
             --command .creator/e2e/isolated.sh -- cli \
             --out "$RUNNER_TEMP/e2e" --shard ${{ matrix.shard }} $MODEL $CANDIDATES $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
       # cozy's logs (Calcifer's too) however the suite ended: one the job's timeout ends never reaches its `logs` part (cl-837).

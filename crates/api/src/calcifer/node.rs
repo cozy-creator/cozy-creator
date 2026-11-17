@@ -390,7 +390,7 @@ fn tool_rows<'a>(tools: impl Iterator<Item = &'a Tool>) -> Vec<String> {
         return vec!["no tools listed: cozy package ls".to_owned()];
     }
     let width = tools.iter().map(|tool| tool.id.len()).max().unwrap_or(0);
-    tools.iter().map(|tool| format!("{:width$}  {}, makes {}", tool.id, tool.label, kind_of(&tool.makes, Some(&tool.id)))).collect()
+    tools.iter().map(|tool| format!("{:width$}  {}, makes {}", tool.id, tool.named(), kind_of(&tool.makes, Some(&tool.id)))).collect()
 }
 
 /// `cozy explain <tool>[.field…]`: the tool's block, or one field of it, in words.
@@ -399,7 +399,10 @@ pub fn explain_tool(tool: &Tool, path: &[&str]) -> Result<Vec<String>, String> {
     let models = || slots.iter().map(|(slot, _)| slot.as_str());
     let Some((first, rest)) = path.split_first() else {
         let release = if tool.release.is_empty() { String::new() } else { format!(" {}", tool.release) };
-        let first = tool.description.split(['.', ':', '(']).next().unwrap_or_default().trim();
+        // Its first sentence: to a `:`, a `(`, or a `.` that ends one, so FLUX.2 and Qwen Image 2.1 stay whole.
+        let first = tool.description.split([':', '(']).next().unwrap_or_default();
+        let end = first.match_indices('.').map(|(at, _)| at).find(|&at| first[at + 1..].chars().next().is_none_or(char::is_whitespace));
+        let first = first[..end.unwrap_or(first.len())].trim();
         let said = if first.is_empty() { tool.label.clone() } else { first.to_owned() };
         let mut lines = vec![format!("{}{release}: {said}. Makes {}", tool.id, kind_of(&tool.makes, Some(&tool.id)))];
         let mut rows = vec![];

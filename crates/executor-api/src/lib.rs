@@ -124,6 +124,10 @@ pub struct Start {
     /// for the desktop to draw.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_pace: Option<DisplayPace>,
+    /// A dev machine (`dev = true` in its config.toml): the Runtime audits its CUDA graphs'
+    /// replays against their calls as written.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub dev: bool,
 }
 
 /// How a call shares a GPU with the display it drives (`machine.display_pace`): it pauses

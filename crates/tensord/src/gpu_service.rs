@@ -123,6 +123,10 @@ pub(crate) struct GpuConfig {
     /// its kernels with them at start, before any package is installed (`image_kernel_boot`).
     #[serde(default)]
     pub image_kernels: Option<ImageKernels>,
+    /// A dev machine (`dev = true` in its config.toml): sent in Start, its executors audit their CUDA
+    /// graphs' replays.
+    #[serde(default)]
+    pub dev: bool,
     /// Tests only: recorded GPU readings every call reads in place of its GPUs' own (`machine.gpu_samples`, cl-913).
     #[serde(default)]
     pub gpu_samples: Option<PathBuf>,
@@ -2926,18 +2930,32 @@ impl Pool {
         // Count CPU output owners after this GPU slot is held. A prior call can return while
         // preparation resolves; it cannot turn a stale pre-placement count into a new grant.
         if !admit()? { return Ok(false); }
-        engine.dispatch_managed(&record.id, plan.degree, move |engine, id| {
-            let pool = permit.pool.clone();
+        // A speculative run's call slots are given back the moment a real call wants them, not when it ends (cl-1123 D).
+        let speculative = record.submission.as_ref().is_some_and(|submission| crate::ahead::speculative(&submission.request_id));
+        let pool = permit.pool.clone();
+        let permit = Arc::new(Mutex::new(Some(permit)));
+        if speculative {
+            pool.speculation_dispatched(&record.id, &plan.construction, permit.clone());
+        }
+        let ours = pool.clone();
+        let dispatched = engine.dispatch_managed(&record.id, plan.degree, move |engine, id| {
             let result = pool.run(&engine, &id, held, plan, start, calls.as_ref());
             // Session return and process detachment are already proven. CPU encoding uses
             // the existing managed worker after the next GPU call is allowed to start.
-            drop(permit);
+            drop(permit.lock().unwrap().take());
+            if speculative {
+                pool.speculation_ended(&id);
+            }
             let result = result.and_then(|post| post.map_or(Ok(()), |post| post.finish(&engine, &id)));
             if let Err(error) = &result { settle(&engine, &id, error)?; }
             if let Some(calls) = &calls { calls.ended(&id); }
             pool.keep_all(&engine);
             result
-        })
+        });
+        if speculative && !matches!(dispatched, Ok(true)) {
+            ours.speculation_ended(&record.id);
+        }
+        dispatched
     }
     /// The host watcher looks now (a nudge; the host's own events wake it too).
     fn nudge_host(&self) {
@@ -3454,6 +3472,7 @@ impl Pool {
                     shared: false,
                     display_limit: vec![],
                     display_pace: None,
+                    dev: self.config.dev,
                 }),
                 &mut device_executor::Baseline,
             )?;
@@ -3738,7 +3757,12 @@ impl Pool {
         }
         // A shared executor's memoized stages are this run's project's, or the machine's for a run of none (cl-984).
         let mut session = session;
-        let actor = engine.get(id).ok().and_then(|record| record.submission).map(|s| s.actor).unwrap_or_default();
+        let submission = engine.get(id).ok().and_then(|record| record.submission);
+        // A speculative run's executor, which a real call's arrival tells to stop (cl-1123 D).
+        if submission.as_ref().is_some_and(|submission| crate::ahead::speculative(&submission.request_id)) {
+            self.speculation_executor(id, session.executor.line());
+        }
+        let actor = submission.map(|s| s.actor).unwrap_or_default();
         session.user = Some((actor, private.as_ref().map(|scope| scope.project_id.clone())));
         session.executor.keep_memo(match &private { Some(scope) => self.memo_for_private(scope)?, None => self.memo.clone() });
         // A development Runtime build is named by its build, not only its version.
@@ -4007,6 +4031,7 @@ impl Pool {
                     shared: self.config.host.mode == HostMode::Shared,
                     display_limit: self.display_limit(&lane),
                     display_pace: self.display_pace(gpus),
+                    dev: self.config.dev,
                 }),
                 &mut callbacks,
             )?)?;
@@ -4129,7 +4154,7 @@ impl Pool {
             )
         {
             // Canceled while it waited for its attention kernel's compile (Runtime 0.23.4).
-            if prepared.terminal == "canceled" && engine.get(id)?.cancel_actor.is_some() {
+            if prepared.terminal == "canceled" && (engine.get(id)?.cancel_actor.is_some() || crate::ahead::speculative(&engine.caller_id(id))) {
                 defer_completion(engine, id, &session.executor.birth, &session.followers, Outcome::Canceled)?;
                 return Ok(None);
             }
@@ -4314,7 +4339,8 @@ impl Pool {
                         Outcome::Failed(Failure::custody(&error.to_string())))?,
                 }
             }
-            "canceled" if engine.get(id)?.cancel_actor.is_some() => {
+            // A speculative run told to stop (cl-1123 D) ends canceled, its executor kept.
+            "canceled" if engine.get(id)?.cancel_actor.is_some() || crate::ahead::speculative(&engine.caller_id(id)) => {
                 defer_completion(engine, id, &session.executor.birth, &session.followers, Outcome::Canceled)?;
             }
             _ => {
