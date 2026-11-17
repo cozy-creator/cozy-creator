@@ -4,7 +4,8 @@
 # and promotion). Testing is manual: the evidence is the passing release-gate.yml run the release agent dispatched, or the
 # hand gate's dirs with the URL where their result is recorded. verify.sh first; then, each waiting for the last to succeed:
 #   PyPI      TensorFS tensorfs-publish.yaml and the Runtime runtime-publish.yaml prebuilt, with gate_run: the prereleases' files;
-#   smoke     e2e cpu: the release cozy locks a gated source package against PyPI's Runtime and runs it (hard stop);
+#   smoke     e2e cpu: the release cozy locks a gated source package fresh against PyPI's Runtime and runs it from that lock
+#             (hard stop); its committed lock, the RC's, isn't the question;
 #   cozy      cozy-promote.yaml: the v<V> prerelease becomes Latest (`cozy update`, the installer) and Homebrew's;
 #   packages  `task publish -- --gated <packages_ref>` in the packages checkout (--packages, on master with the RC merged):
 #             the gated source's finals, only the version changed (Paul 11-13: software before the packages that need it), each
@@ -75,15 +76,16 @@ if [ -n "$(field runtime_sha256)" ]; then
   go cozy-creator/cozy-runtime runtime-publish.yaml --ref master -f release_tag="v$v" -f mode=prebuilt -f gated_sha256sums="$sums" -f gate_run="$gate"
 fi
 # The release cozy, before anything a user follows (0.26.0): until its Runtime is on PyPI it can't lock a source package
-# floored on it, so no gate ran that. Now it locks one from the gated commit against PyPI's Runtime and runs it on CPU
-# (e2e cpu, the cozy-publish prerelease, Runtime and TensorFS from PyPI). Images and Latest wait for it; a failure stops here.
+# floored on it, so no gate ran that. Now it locks one from the gated commit against PyPI's Runtime and runs it on CPU from that
+# lock (e2e cpu --lock fresh, the cozy-publish prerelease, Runtime and TensorFS from PyPI). Images and Latest wait for it; a failure
+# stops here.
 if [ -n "$(field runtime_sha256)" ] && [ -n "$ref" ] && [ -n "$(field cozy)" ]; then
   tag="v$(field cozy)"
   pub=$(gh run list -R cozy-creator/cozy-creator -w cozy-publish.yaml -b "$tag" -L 5 --json databaseId,conclusion -q '[.[] | select(.conclusion == "success")][0].databaseId // empty')
   [ -n "$pub" ] || { echo "no successful cozy-publish run for $tag: nothing after PyPI promoted" >&2; exit 1; }
   sha=$(gh api "repos/cozy-creator/cozy-creator/commits/$tag" -q .sha)
   go cozy-creator/cozy-creator e2e.yaml --ref "$tag" -f repo=cozy-creator -f ref="$sha" -f creator_ref="$sha" -f stack_ref="$sha" \
-    -f select=cpu -f cpu_only=birefnet -f publish_run="$pub" -f runtime="$(field runtime)" -f tensorfs="$(field tensorfs)" -f packages_ref="$ref"
+    -f select=cpu -f cpu_only=birefnet -f publish_run="$pub" -f runtime="$(field runtime)" -f tensorfs="$(field tensorfs)" -f packages_ref="$ref" -f cpu_lock_fresh=true
 fi
 c=$(field cozy)
 if [ -n "$(field cozy_sha256)" ] && [ "$(gh release view "v$c" -R cozy-creator/cozy-creator --json isPrerelease -q .isPrerelease 2>/dev/null)" = true ]; then
