@@ -28,6 +28,7 @@ parse "$@"
 . "$(dirname "$0")/projectvault.sh"
 . "$(dirname "$0")/machineset.sh"
 . "$(dirname "$0")/rental.sh"
+. "$(dirname "$0")/pooler.sh"
 . "$(dirname "$0")/fallback.sh"
 . "$(dirname "$0")/retry.sh"
 . "$(dirname "$0")/previews.sh"
@@ -805,6 +806,8 @@ case $SHARD in
   rental-rename) parts="rental_rename logs" ;;
   # Work queued for a rental order follows it through a Calcifer restart and its Hub's second name for the host; its end says why (cl-1125).
   rental-replan) parts="rental_replan logs" ;;
+  # The Hub's own queries through PgBouncer in transaction mode, its sessions straight to Postgres (th-384).
+  hub-pooler) parts="hub_pooled_connections logs" ;;
   # A take's thumbnail asked for while its file is on its way here answers no error (cl-1108).
   thumb-arriving) parts="thumb_arriving logs" ;;
   # A dev build's Calcifer at the stack size it ships resumes a render walk and answers /fit (cl-1069: E2E_DEV_COZY, e2e.yaml).
