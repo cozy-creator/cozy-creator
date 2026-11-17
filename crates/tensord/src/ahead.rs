@@ -61,6 +61,9 @@ static NEEDS: LazyLock<Mutex<HashMap<String, Vec<crate::journal::FunctionRead>>>
 /// Each listed item's request, by its run's id: its identity as a call of it would have it (`runs::identity`).
 static PREDICTED: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(Mutex::default);
 
+/// Each listed item's extras still coming once its needs landed (`extras`), by its run's id: a list that drops it ends them.
+static EXTRAS: LazyLock<Mutex<HashMap<String, Stop>>> = LazyLock::new(Mutex::default);
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -86,6 +89,24 @@ pub(crate) fn adopts(key: &str, id: &str, digest: &str) -> bool {
         false => tracing::info!("run {id} names {item}, but isn't the request it predicted"),
     }
     same
+}
+
+/// Run `caller`'s needs (Y) landed (`Runs::download`): a list item is `ready` from here, its extras (Z) still coming behind
+/// (cl-1123). The load step begins here (`gpu_service::Pool::predict`, from `Runs::prepare` as the item's run returns).
+pub(crate) fn landed(caller: &str) {
+    if hidden(caller) {
+        tracing::info!("{caller}: what it needs is here");
+    }
+}
+
+/// What ends run `caller`'s extras once its needs landed: for a list item, its list dropping it; for any other run, nothing but their
+/// landing or a need that has to make room.
+pub(crate) fn extras(caller: &str) -> Stop {
+    let stop = Stop::default();
+    if hidden(caller) {
+        lock(&EXTRAS).insert(caller.to_owned(), stop.clone());
+    }
+    stop
 }
 
 /// A run of a list's: never listed.
@@ -127,6 +148,13 @@ pub(crate) fn put(runs: &Arc<Runs>, actor: VerifiedActor, prefix: &'static str, 
         predicted.extend(identities);
         predicted.retain(|id, _| named.contains(id));
     }
+    lock(&EXTRAS).retain(|id, stop| {
+        let named = named.contains(id);
+        if !named {
+            stop.cancel();
+        }
+        named
+    });
     let dropped: Vec<String> = runs.live_ids(actor)?.into_iter().filter(|id| id.starts_with(prefix) && !ids.contains(id)).collect();
     // Noted before any is admitted: one in line at once is heard.
     static PUTS: AtomicU64 = AtomicU64::new(0);

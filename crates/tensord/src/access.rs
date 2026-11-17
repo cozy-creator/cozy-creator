@@ -637,20 +637,12 @@ impl Fetch {
     /// a function): those that came from the Hub and from the datacenter volume, and those held. Its
     /// extras are wanted beside them and waited for until they land or are dropped (`guess`): a warm run
     /// is itself a fetch ahead, no one's request. `wanted` hears once every one of them is in the download line.
-    pub(crate) fn download(self: &Arc<Self>, mut lined: Lined, stop: &Stop, progress: &(dyn Fn(u64, u64) + Sync), wanted: &dyn Fn()) -> io::Result<tensorfs::fetch::Landed> {
+    pub(crate) fn download(self: &Arc<Self>, mut lined: Lined, stop: &Stop, progress: &(dyn Fn(u64, u64) + Sync), wanted: &dyn Fn()) -> io::Result<(tensorfs::fetch::Landed, Extras)> {
         self.guess(std::mem::take(&mut lined.guessed), std::mem::take(&mut lined.guesses))?;
         let counted = Arc::new(tensorfs::fetch::Progress::default());
         let wants = lined.wants.into_iter().map(|(order, part)| (part.remote, part.objects, order)).collect();
         let landed = origin::watched(&counted, progress, || self.machine.all(wants, counted.clone(), wanted, stop).map_err(failed))?;
-        let tasks = std::mem::take(&mut self.guessed.lock().unwrap().tasks);
-        // A dropped guess ends its task: that ends no wait here.
-        self.machine.block(stop, async move {
-            for task in tasks {
-                let _ = task.await;
-            }
-            Ok(())
-        }).map_err(failed)?;
-        Ok(landed)
+        Ok((landed, Extras(self.clone())))
     }
 
     /// Wants what `lined` holds absent here, each at its order, none of which gates its run yet: an
@@ -903,5 +895,34 @@ fn phases(waiting: &str) -> String {
 impl Drop for Fetch {
     fn drop(&mut self) {
         self.end();
+    }
+}
+
+/// A download's extras (Z), still coming once its needs (Y) landed: never waited on (cl-1102; cl-1123: a predicted request is
+/// `ready`, and may load, the moment its needs are here).
+pub(crate) struct Extras(Arc<Fetch>);
+
+impl Extras {
+    /// They come on, behind every need, on a thread of their own, until they land, are dropped (`drop_guesses`), or `stop` ends them.
+    pub(crate) fn follow(self, stop: Stop) {
+        let tasks = std::mem::take(&mut self.0.guessed.lock().unwrap().tasks);
+        if tasks.is_empty() {
+            return;
+        }
+        let fetch = self.0;
+        let started = std::thread::Builder::new().name("extras".into()).spawn(move || {
+            let machine = fetch.machine.clone();
+            // A dropped guess ends its task: that ends no wait here.
+            let _ = machine.block(&stop, async move {
+                for task in tasks {
+                    let _ = task.await;
+                }
+                Ok(())
+            });
+            drop(fetch);
+        });
+        if let Err(error) = started {
+            tracing::warn!("its extras aren't followed: {error}");
+        }
     }
 }
