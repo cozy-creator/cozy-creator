@@ -394,10 +394,20 @@ impl Projects {
 
     /// Every project held after its last request let go, its connections closed and its WAL emptied first: Calcifer stops.
     pub(crate) fn close_lingering(&self) {
-        let lingering: Vec<Lingering> = self.lingering.lock().expect("lingering lock").drain().map(|(_, held)| held).collect();
-        for held in lingering {
-            if let Err(error) = held.project.folder.close_connections(true) {
-                warn!(code = %error.code, "a project held after its request didn't close as Calcifer stopped");
+        let mut lingering: Vec<Lingering> = self.lingering.lock().expect("lingering lock").drain().map(|(_, held)| held).collect();
+        // A read under way leaves its project busy for that moment: tried again until `CLOSE_TRIES`, then left with its WAL.
+        let until = Instant::now() + CLOSE_TRIES;
+        while !lingering.is_empty() {
+            lingering.retain(|held| match held.project.folder.close_connections(true) {
+                Err(error) if error.code == "project_busy" && Instant::now() < until => true,
+                Err(error) => {
+                    warn!(code = %error.code, "a project held after its request didn't close as Calcifer stopped");
+                    false
+                }
+                Ok(()) => false,
+            });
+            if !lingering.is_empty() {
+                std::thread::sleep(std::time::Duration::from_millis(50));
             }
         }
     }
@@ -547,6 +557,8 @@ const HEARD_FOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 /// call), it isn't loaded again (cl-1010: each run list of a 3,000-box project loaded its whole document, 50–60 ms, 200 four at once).
 /// An encrypted one closes with its request, as every project did.
 const LINGER: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long a stop tries again to close a project a read keeps busy (`close_lingering`).
+const CLOSE_TRIES: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// A project held open after a request (`Projects::linger`).
 struct Lingering {

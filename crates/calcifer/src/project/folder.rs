@@ -1205,7 +1205,11 @@ impl Folder {
     pub(crate) fn close_connections(&self, checkpoint: bool) -> Result<(), Error> {
         let busy = || Error::new(api::error::Kind::Conflict, "project_busy", "Cozy is still working on this project's database. Try again in a moment.");
         if self.shared.checkpointing.load(std::sync::atomic::Ordering::Acquire) { return Err(busy()); }
+        // In the one order every path takes them, writing, held, reading, journal (`held()` takes held then reading, a write writing
+        // then held), and none waited on: a read between its `held` and its `reading` met a blocking `held` here, taken while this
+        // held `reading`, and each waited on the other for good (e2e 44106684078: a stop hung closing a project it had used).
         let mut writer = self.shared.writing.try_lock().map_err(|_| busy())?;
+        let mut held = self.shared.held.try_lock().map_err(|_| busy())?;
         let mut reader = self.shared.reading.try_lock().map_err(|_| busy())?;
         let mut journal = self.shared.journal.try_lock().map_err(|_| busy())?;
         if journal.reading > 0 { return Err(busy()); }
@@ -1228,8 +1232,9 @@ impl Folder {
             if occupied != 0 { return Err(busy()); }
         }
         let writing = writer.take();
-        *self.shared.held.lock().expect("held lock") = None;
+        *held = None;
         drop(reader);
+        drop(held);
         drop(writer);
         drop(writing);
         *self.shared.book.lock().expect("history cache") = None;
