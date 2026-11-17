@@ -1046,6 +1046,15 @@ struct Device {
 }
 
 impl Device {
+    /// What its executors hold.
+    #[cfg(target_os = "linux")]
+    fn executors_hold(&self) -> u64 {
+        self.ledger.as_ref().map_or(0, |table| table.held())
+    }
+    #[cfg(not(target_os = "linux"))]
+    fn executors_hold(&self) -> u64 {
+        0
+    }
     /// What its executors hold and could give back.
     #[cfg(target_os = "linux")]
     fn idle_bytes(&self) -> u64 {
@@ -1348,6 +1357,15 @@ impl Pool {
         let given = 0;
         self.notes.note(serde_json::json!({"event": "room_outside_ledger", "gpus": lane, "loading": loading,
             "ended": ended, "given": given, "free": self.free(&lane)}));
+    }
+    /// The lane's least room now: each GPU's size less what its executors hold (their ledger), 0
+    /// where the inventory doesn't name it. How `place` ranks lanes for a new executor; a reading
+    /// only, varena decides every byte.
+    fn lane_room(&self, lane: std::ops::Range<usize>) -> u64 {
+        lane.map(|index| self.devices.get(index).map_or(0, |device| {
+            let size = self.inventory(&device.entry).map_or(0, |gpu| gpu.memory_bytes);
+            size.saturating_sub(device.executors_hold())
+        })).min().unwrap_or(0)
     }
     /// Current minimum driver free bytes, used only for exit diagnostics.
     fn free(&self, lane: &std::ops::Range<usize>) -> Option<u64> {
@@ -2797,9 +2815,11 @@ impl Pool {
     }
     /// Where `plan` runs now, with its lane's call slots: inside its root's `lane` when it has
     /// one, else (a standalone call, or warming with no root) on GPUs no root holds or older
-    /// request claims. Prefer a lane hosting its executor, then any lane whose call permits
-    /// are available. None: it waits, and a standalone call claims those GPUs from later requests.
-    /// Actual allocations decide capacity; measured peaks never block a permitted family call.
+    /// request claims. Prefer a lane hosting its executor, then of the lanes whose call permits
+    /// are available the one with the most room (`lane_room`): a new model takes an empty GPU
+    /// before one where another's weights stay warm (cl-1119). None: it waits, and a standalone call
+    /// claims those GPUs from later requests. Actual allocations decide capacity; measured peaks
+    /// never block a permitted family call.
     fn place(
         self: &Arc<Self>,
         plan: &Plan,
@@ -2814,10 +2834,16 @@ impl Pool {
             self.permit(root, family, start..start + degree, claims).map(|permit| (start, permit))
         };
         let hosts: Vec<usize> = self.hosting(plan).into_iter().map(|(start, _)| start).filter(|s| starts.contains(s)).collect();
+        let mut others: Vec<usize> = starts.clone().filter(|start| !hosts.contains(start)).collect();
+        let room: BTreeMap<usize, u64> = match others.len() > 1 {
+            true => others.iter().map(|&start| (start, self.lane_room(start..start + degree))).collect(),
+            false => BTreeMap::new(),
+        };
+        others.sort_by_key(|start| (std::cmp::Reverse(room.get(start).copied().unwrap_or(0)), *start));
         let placed = hosts
             .iter()
             .find_map(|start| take(*start, claims))
-            .or_else(|| starts.clone().filter(|start| !hosts.contains(start)).find_map(|start| take(start, claims)));
+            .or_else(|| others.iter().find_map(|start| take(*start, claims)));
         match (&placed, root) {
             (None, Some(root)) if lane.is_none() && hosts.is_empty() => {
                 self.allocations.claim(root, degree, claims);
@@ -2828,7 +2854,8 @@ impl Pool {
             (Some((start, _)), _) if !hosts.contains(start) => {
                 self.notes.note(serde_json::json!({"event": "place", "plan": plan.construction,
                     "gpus": self.lane_devices(*start, plan.degree).unwrap_or_default(), "running_on": hosts.iter()
-                        .map(|d| &self.devices[*d].entry).collect::<Vec<_>>()}));
+                        .map(|d| &self.devices[*d].entry).collect::<Vec<_>>(), "room": room.iter()
+                        .map(|(s, free)| (self.devices[*s].entry.clone(), *free)).collect::<BTreeMap<_, _>>()}));
             }
             _ => {}
         }
