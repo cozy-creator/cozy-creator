@@ -34,6 +34,9 @@ use std::{
 };
 use crate::storage::Store;
 
+mod load_ahead;
+pub(crate) use load_ahead::Predicted;
+
 /// `binding`'s snapshot when it is a view this process keeps (`storage::view`), as the executor
 /// opens it: its bytes, which no store holds.
 fn view(binding: &Binding) -> Option<executor_api::View> {
@@ -579,6 +582,8 @@ struct Session {
     ledger: bool,
     /// Why its Runtime serves its GPUs none of its native kernels, as its Start said (cl-913); empty: it does.
     kernels_absent: String,
+    /// Whose call or predicted request it served last (`load_ahead`): another's model is never evicted for a guess.
+    user: Option<load_ahead::Scope>,
 }
 impl Session {
     fn lane(&self) -> std::ops::Range<usize> {
@@ -934,6 +939,8 @@ pub(crate) struct Pool {
     /// The host's ledger, supervised: an executor's exit is told to it, as to each GPU's.
     #[cfg(target_os = "linux")]
     host_ledger: std::sync::OnceLock<Arc<varena_ledger::Table>>,
+    /// Predicted requests whose weights it puts on a GPU while none is wanted (cl-1123).
+    ahead: load_ahead::Ahead,
     // Drop session/resource custody before ending the actual spawning thread.
     launcher: crate::child_launcher::ChildLauncher,
 }
@@ -1186,6 +1193,7 @@ impl Pool {
                 foreign: Mutex::default(),
                 #[cfg(target_os = "linux")]
                 host_ledger: Default::default(),
+                ahead: Default::default(),
             }
         });
         // Started once the pool is built: inside `new_cyclic` its first upgrade found no pool and it
@@ -3712,6 +3720,8 @@ impl Pool {
         }
         // A shared executor's memoized stages are this run's project's, or the machine's for a run of none (cl-984).
         let mut session = session;
+        let actor = engine.get(id).ok().and_then(|record| record.submission).map(|s| s.actor).unwrap_or_default();
+        session.user = Some((actor, private.as_ref().map(|scope| scope.project_id.clone())));
         session.executor.keep_memo(match &private { Some(scope) => self.memo_for_private(scope)?, None => self.memo.clone() });
         // A development Runtime build is named by its build, not only its version.
         let hello = &session.executor.hello;
@@ -3882,6 +3892,7 @@ impl Pool {
             launch,
             serving: id,
             kernels_absent: String::new(),
+            user: None,
         })
     }
 

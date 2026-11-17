@@ -267,6 +267,15 @@ pub(crate) fn record(ctx: &Context, m: &Machine) -> output::Record {
                 };
                 record = record.field(&format!("warm {}/{}", item.source, item.entrypoint), held);
             }
+            // Each predicted request, as far as the machine is ready for it (cl-1123).
+            for item in &status.ahead {
+                let ready = match &item.readiness {
+                    Some(readiness) if readiness.reason.is_empty() => readiness.stage.clone(),
+                    Some(readiness) => format!("{}: {}", readiness.stage, readiness.reason),
+                    None => item.state.clone(),
+                };
+                record = record.field(&format!("ahead {}", item.id), ready);
+            }
             record = record.field("ends", ends_cell(m));
         }
         None if m.state == MachineState::Ready => {

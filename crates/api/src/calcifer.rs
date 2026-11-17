@@ -1487,6 +1487,21 @@ pub struct MachineStatus {
     /// (`api::estimate::busy_ms`, cl-1107); none: none holds or waits for one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub busy_until_ms: Option<i64>,
+    /// This controller's predicted requests there (`PUT /v1/upcoming`, `/v1/prepare`), and how ready it is for each.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ahead: Vec<Readied>,
+}
+
+/// A predicted request on a machine (cl-1123): its item's id there (`cozy:upcoming:<key>`, `cozy:prepare:<key>`), its run's state
+/// (`succeeded` once its weights are there), and how ready the machine is for it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(default)]
+pub struct Readied {
+    pub id: String,
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readiness: Option<crate::machine::Readiness>,
 }
 
 impl MachineStatus {

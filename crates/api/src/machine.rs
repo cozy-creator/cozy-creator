@@ -712,6 +712,24 @@ pub struct RunState {
     /// When the machine accepted it and when it ended, Unix ms; 0 until then.
     pub accepted_at_ms: u64,
     pub finished_at_ms: u64,
+    /// A list item's (`StatusFrame::ahead`): how ready its machine is for it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub readiness: Option<Readiness>,
+}
+
+/// How ready a machine is for a predicted request (cl-1123): `installing`, `downloading`, `ready` (its weights here), `loading`
+/// (its executor starting and its weights going onto a GPU), `loaded` (they are there: its first step loads nothing), `evicted`
+/// (a run took that GPU memory since), `running`, `done`. `done`/`total` count what the stage counts, in bytes; `reason` says why
+/// it stops where it is.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(default)]
+pub struct Readiness {
+    pub stage: String,
+    pub done: u64,
+    pub total: u64,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub reason: String,
 }
 
 /// `GET /v1/runs`: the runs the caller reads, newest first; on a rental its owner reads every

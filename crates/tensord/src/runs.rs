@@ -1354,7 +1354,7 @@ impl Runs {
             // then each internal function's own, behind every sure need, while it fits beside what comes first. Which one an
             // orchestrator calls only it knows (H3's shot takes one transformer with references and another without): a wrong guess
             // costs bytes, never room, as nothing is evicted for it. An on-demand model comes when a stage reads it (cl-804).
-            let reads = match plan {
+            let reads = match &plan {
                 _ if install_only => crate::access::Needs::default(),
                 Some(plan) => plan.needs(&ruled),
                 None => {
@@ -1390,6 +1390,19 @@ impl Runs {
                 }
                 drop(guessed);
                 moved = downloaded?;
+            }
+            // A predicted request's weights are here: its machine loads it as its call would, once a GPU is idle (cl-1123).
+            if let (true, Some(plan), Some(pool)) = (crate::ahead::hidden(&caller), plan, self.service.pool()) {
+                match generation.application(&spec.application) {
+                    Ok(held) => pool.predict(&self.service.engine, crate::gpu_service::Predicted {
+                        caller: caller.clone(),
+                        actor: actor.to_owned(),
+                        project: spec.local_private.as_ref().map(|scope| scope.project_id.clone()),
+                        held,
+                        plan,
+                    }),
+                    Err(error) => tracing::warn!(run = %caller, "it won't load ahead: {error}"),
+                }
             }
             // The installed release, its interface and the installation a call may name, in the
             // warm run's result.

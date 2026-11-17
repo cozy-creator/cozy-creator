@@ -1193,6 +1193,14 @@ components:
           type: array
           items: {type: string}
           description: The runs it waits for, by id (an update waits for those in flight).
+        readiness:
+          type: object
+          description: "A list item's (Status `ahead`): how ready the machine is for it (cl-1123)."
+          properties:
+            stage: {type: string, description: 'installing, downloading, ready, loading, loaded, evicted, running, done'}
+            done: {type: integer, format: int64, minimum: 0}
+            total: {type: integer, format: int64, minimum: 0, description: Bytes the stage counts.}
+            reason: {type: string, description: Why it stops where it is.}
     Source:
       oneOf:
         - type: object
@@ -1357,7 +1365,7 @@ components:
         ahead:
           type: array
           items: {$ref: '#/components/schemas/RunState'}
-          description: "The caller's lists' items (PUT /v1/upcoming, /v1/prepare), each as its run stands: ready once it succeeded."
+          description: "The caller's lists' items (PUT /v1/upcoming, /v1/prepare), each as its run stands: ready once it succeeded, then its `readiness`: `loading`, `loaded` (its call's first step loads nothing) or `evicted` (cl-1123)."
         started_at_unix_ms: {type: integer, format: int64}
         stuck:
           type: array

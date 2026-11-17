@@ -714,6 +714,8 @@ impl Service {
         let (mut place, held) = (0, self.held.get().is_some_and(|held| held()));
         let mut next_gpu = None;
         let mut next_gpu_seen = false;
+        // The GPU calls this pass leaves waiting, at the width each takes: a predicted request's load of another model yields to them.
+        let mut left_waiting = vec![];
         for record in ready {
             let invocation = &record.invocation;
             // Re-read for every offer, then once more inside Pool after it holds the GPU slot.
@@ -729,6 +731,9 @@ impl Service {
                 }
                 self.went(&record);
             } else {
+                if invocation.degree > 0 {
+                    left_waiting.push((record.clone(), width));
+                }
                 // An earlier incompatible GPU job remains a barrier. Lookahead never scans
                 // past it to improve model affinity at the expense of the existing queue.
                 if invocation.degree > 0 && !next_gpu_seen {
@@ -765,6 +770,15 @@ impl Service {
                     shown.unwrap_or_else(|error| tracing::warn!("run {}: its place was not shown: {error}", record.id));
                 }
             }
+        }
+        if !left_waiting.is_empty() && pool.loading_ahead() {
+            let constructions: Vec<String> = (left_waiting.iter())
+                .map(|(record, width)| self.plan(&pool, record).and_then(|plan| match width {
+                    Some(width) => plan.at(*width),
+                    None => Ok(plan),
+                }).map_or_else(|_| record.id.clone(), |plan| plan.construction))
+                .collect();
+            pool.yield_to(&constructions);
         }
         // A run that left the queue some other way (canceled, failed) waits no more.
         self.waits.lock().unwrap().retain(|id, _| waiting.contains(id));

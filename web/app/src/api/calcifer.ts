@@ -1529,7 +1529,11 @@ runtime_kernels?: string,
  * When its GPUs are free of the runs it holds, on this computer's clock to 10 s, as placement's quotes count them
  * (`api::estimate::busy_ms`, cl-1107); none: none holds or waits for one.
  */
-busy_until_ms?: number | null, };
+busy_until_ms?: number | null,
+/**
+ * This controller's predicted requests there (`PUT /v1/upcoming`, `/v1/prepare`), and how ready it is for each.
+ */
+ahead?: Array<Readied>, };
 
 /**
  * `POST /v1/machines/{name}/update` (with an `Idempotency-Key`): the machine's Runtime, TensorFS
@@ -2605,6 +2609,20 @@ key?: string | null, };
  * `POST /v1/projects/{id}/read`: these boxes, as they stand, at once: what a page reads of what the stream said changed.
  */
 export type ReadAssets = { names: Array<string>, };
+
+/**
+ * A predicted request on a machine (cl-1123): its item's id there (`cozy:upcoming:<key>`, `cozy:prepare:<key>`), its run's state
+ * (`succeeded` once its weights are there), and how ready the machine is for it.
+ */
+export type Readied = { id: string, state: string, readiness?: Readiness | null, };
+
+/**
+ * How ready a machine is for a predicted request (cl-1123): `installing`, `downloading`, `ready` (its weights here), `loading`
+ * (its executor starting and its weights going onto a GPU), `loaded` (they are there: its first step loads nothing), `evicted`
+ * (a run took that GPU memory since), `running`, `done`. `done`/`total` count what the stage counts, in bytes; `reason` says why
+ * it stops where it is.
+ */
+export type Readiness = { stage: string, done: number, total: number, reason: string, };
 
 /**
  * Why a run or call did not succeed: a stable code, message and origin, with detail and next commands.

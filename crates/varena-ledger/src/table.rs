@@ -303,6 +303,12 @@ impl Table {
             .map(|(_, words)| words.held.load(Acquire)).sum()
     }
 
+    /// What process `pid` holds on this GPU, and of it what is idle; None when it has no live row.
+    pub fn holdings(&self, pid: u32) -> Option<(u64, u64)> {
+        let row = self.page.rows.iter().find(|row| row.pid.load(Acquire) == u64::from(pid) && pid != 0)?;
+        Some((row.held.load(Acquire), row.idle.load(Acquire)))
+    }
+
     /// The pids in live rows: on this GPU, but not foreign.
     pub fn pids(&self) -> Vec<u32> {
         self.page.rows.iter().map(|row| row.pid.load(Acquire) as u32).filter(|pid| *pid != 0).collect()

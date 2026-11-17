@@ -65,6 +65,13 @@ pub(crate) fn listed(actor: &str) -> Vec<String> {
     listed.iter().filter(|((owner, _), _)| owner == actor).flat_map(|(_, ids)| ids.clone()).collect()
 }
 
+/// Where `actor`'s item `id` stands among its lists: upcoming jobs before guesses, each list in its order. None: no list names it.
+pub(crate) fn rank(actor: &str, id: &str) -> Option<(usize, usize)> {
+    let listed = lock(&LISTED);
+    [UPCOMING, PREPARE].into_iter().enumerate()
+        .find_map(|(class, prefix)| Some((class, listed.get(&(actor.to_owned(), prefix))?.iter().position(|listed| listed == id)?)))
+}
+
 /// A run of a list's: never listed.
 pub(crate) fn hidden(id: &str) -> bool {
     id.starts_with(UPCOMING) || id.starts_with(PREPARE)
@@ -98,6 +105,10 @@ pub(crate) fn put(runs: &Arc<Runs>, actor: VerifiedActor, prefix: &'static str, 
         .collect();
     let ids: Vec<String> = requests.iter().map(|request| request.id.clone()).collect();
     lock(&LISTED).insert((crate::runs::actor_id(actor), prefix), ids.clone());
+    // What no list names now loads no more (cl-1123).
+    if let Some(pool) = runs.service.pool() {
+        pool.unlist(&crate::runs::actor_id(actor));
+    }
     // What no list names any more is weighed no more.
     let named: Vec<String> = lock(&LISTED).values().flatten().cloned().collect();
     lock(&NEEDS).retain(|id, _| named.contains(id));
@@ -213,6 +224,15 @@ pub(crate) fn standing(store: &crate::storage::Store, busy: bool, mut states: Ve
             _ => String::new(),
         };
         state.state = "evicted".to_owned();
+    }
+    states
+}
+
+/// The items `states` as their caller `actor` reads them: one whose run made it ready (its weights here) says how far the load
+/// step took it (`gpu_service::Pool::readiness`, cl-1123).
+pub(crate) fn readiness(pool: Option<&crate::gpu_service::Pool>, actor: &str, mut states: Vec<v1::RunState>) -> Vec<v1::RunState> {
+    for state in states.iter_mut().filter(|state| state.state == "succeeded") {
+        state.readiness = pool.and_then(|pool| pool.readiness(actor, &state.id));
     }
     states
 }
