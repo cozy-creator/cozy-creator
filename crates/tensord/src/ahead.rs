@@ -249,7 +249,8 @@ fn admit(runs: &Arc<Runs>, actor: VerifiedActor, list: List, put: u64, requests:
 /// To `states` (the runs of `listed`), each listed item not yet admitted, `planning`; one its admission refused, failed and why.
 pub(crate) fn planning(listed: &[String], states: &mut Vec<v1::RunState>) {
     let planning = lock(&PLANNING);
-    for id in listed.iter().filter(|id| !states.iter().any(|state| &state.id == *id)) {
+    let unrun: Vec<&String> = listed.iter().filter(|id| !states.iter().any(|state| &state.id == *id)).collect();
+    for id in unrun {
         let Some(refused) = planning.get(id) else { continue };
         let (state, stage) = match refused {
             Some(_) => ("failed", "refused"),
