@@ -13,9 +13,9 @@
 #          paged per step, the varena-heavy twin (cr-318)
 #   paged  with `paged`, Qwen3.6 under that VRAM cap on a new executor: experts paged every token, its decode's
 #          refills the engine's demand and ahead reads side by side (cr-318 step 2)
-#   fault  with `fault` too, on that executor: Qwen3.6 again, and once it decodes the checkpoint's middle chunk is emptied
-#          in place (a refill reading it fails while the decode's other reads are in flight), then restored, and Qwen3.6
-#          once more: it must answer as `paged` did (no read's staging crossed into another's)
+#   fault  with `fault` too, on that executor: Qwen3.6 again, and once it decodes every fourth chunk of the checkpoint is
+#          emptied in place (a refill reading one fails while the decode's other reads are in flight), then restored, and
+#          Qwen3.6 once more: it must answer as `paged` did (no read's staging crossed into another's)
 # Every row's parts against the ceilings TensorFS measures on the pod (disk, pinned H2D) are in table.txt and the job summary.
 # A judged arm must construct warm in `prepare_s` and run cold in `x` times its weights' read at the disk's ceiling plus
 # `fixed_s` (legs.py): the default bar, 40 s and 2 x + 60 s, is 71 s on 44058999272's A6000 (6.78 GB/s), where the fixed
@@ -114,7 +114,7 @@ fault() {
   broke=$(T=300 pod "python3 /tmp/lm.py break $ck" < /dev/null 2>&1)
   say "$a-fault: run ${n:-none} at '${stage:-?}': $broke"
   wait "$p"
-  [ "$(jq -r '.size // empty' <<<"$broke" 2> /dev/null)" = 0 ] || { say "FAIL $a-fault: the chunk was not emptied"; RC=1; }
+  [ "$(jq -r '.emptied // 0' <<<"$broke" 2> /dev/null)" -gt 0 ] || { say "FAIL $a-fault: no chunk was emptied"; RC=1; }
   record "$a-fault"
   say "$a-fault: restored $(T=300 pod "python3 /tmp/lm.py restore $ck" < /dev/null 2>&1)"
   write "$a-after"

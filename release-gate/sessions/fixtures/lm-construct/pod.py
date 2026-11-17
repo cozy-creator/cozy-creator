@@ -2,9 +2,10 @@
   evict    the store's weights out of the page cache (cold-start.sh's)
   ceiling  TensorFS's own ceilings, from the newest executor environment: disk GB/s and pinned H2D GB/s to GPU 0
   end      every executor process ends (SIGTERM): the next run starts a new one
-  break <checkpoint>    the middle chunk of that checkpoint (`sha256:…`) emptied in place, its bytes kept aside: a
-                        read of it fails even through a file already open (TensorFS keeps chunk files open)
-  restore <checkpoint>  its bytes written back into the same file
+  break <checkpoint>    every fourth chunk of that checkpoint (`sha256:…`) emptied in place, its bytes kept aside: a
+                        read of one fails even through a file already open (TensorFS keeps chunk files open), and a
+                        paged decode reads one within seconds while its other reads are in flight
+  restore <checkpoint>  their bytes written back into the same files
 """
 
 import glob
@@ -74,28 +75,32 @@ elif mode in ("break", "restore"):
         sys.exit(1)
     code = (
         "import json, sys, tensorfs; ck = tensorfs.open(sys.argv[1], local_files_only=True, cache_dir=sys.argv[2]); "
-        "chunks = ck.chunks() if callable(ck.chunks) else ck.chunks; print(json.dumps(list(chunks[len(chunks) // 2])))"
+        "chunks = ck.chunks() if callable(ck.chunks) else ck.chunks; print(json.dumps([list(c) for c in chunks[1::4]]))"
     )
     done = subprocess.run([envs[-1], "-c", code, sys.argv[2], store], capture_output=True, text=True, timeout=300)
     try:
-        sha, length = json.loads(done.stdout.strip())
+        chunks = json.loads(done.stdout.strip())
     except ValueError:
         print(json.dumps({"error": done.stderr[-400:]}))
         sys.exit(1)
-    found = glob.glob(os.path.join(store, "**", sha), recursive=True)
-    if not found:
-        print(json.dumps({"error": f"chunk {sha} not on disk", "store": store}))
-        sys.exit(1)
-    path, kept = found[0], "/tmp/lm-chunk-" + sha
-    if mode == "break" and not os.path.exists(kept):
-        shutil.copyfile(path, kept)
-        os.truncate(path, 0)
-    elif mode == "restore" and os.path.exists(kept):
-        with open(kept, "rb") as src, open(path, "r+b") as dst:  # the same inode: open readers see it
-            shutil.copyfileobj(src, dst, 16 << 20)
-            dst.truncate()
-        os.remove(kept)
-    print(json.dumps({"mode": mode, "chunk": sha, "bytes": length, "path": path, "size": os.path.getsize(path)}))
+    sizes, total = [], 0
+    for sha, length in chunks:
+        path = os.path.join(store, "blobs", sha[:2], sha[2:4], sha)
+        if not os.path.exists(path):
+            continue
+        kept = "/tmp/lm-chunk-" + sha
+        if mode == "break" and not os.path.exists(kept):
+            shutil.copyfile(path, kept)
+            os.truncate(path, 0)
+        elif mode == "restore" and os.path.exists(kept):
+            with open(kept, "rb") as src, open(path, "r+b") as dst:  # the same inode: open readers see it
+                shutil.copyfileobj(src, dst, 16 << 20)
+                dst.truncate()
+            os.remove(kept)
+        sizes.append(os.path.getsize(path))
+        total += length
+    print(json.dumps({"mode": mode, "chunks": len(sizes), "bytes": total, "size": sum(sizes),
+                      "emptied": sum(1 for n in sizes if n == 0)}))
 elif mode == "end":
     ended = executors()
     for pid in ended:
