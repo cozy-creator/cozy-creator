@@ -18,9 +18,21 @@ FIELDS='turbo:=false prompt_upsampling:=false megapixels:=1 aspect_ratio=1:1'
 quote "$(param need_s 3600)"
 rent
 step tensord machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "the pod refused the session's TensorD"
-v=$(cozy machine show "$NAME" --json | jq -r .status.version)
-[ "$v" = "$(cozy --version | awk '{print $2}')" ] || fail "the pod runs TensorD $v, not the session's"
-say "pod TensorD $v, Runtime $(cozy machine show "$NAME" --json | jq -r '.status.runtime // empty')"
+WANT=$(cozy --version | awk '{print $2}')
+# ours <step>: the pod runs the session's TensorD before <step> (versions.txt); one moved off it is updated again, three times at
+# most (A/B's rentals were moved back to the open RC's TensorD mid-session).
+ours() {
+  local v t
+  for t in 1 2 3; do
+    v=$(cozy machine show "$NAME" --json 2> /dev/null | jq -r '.status.version // empty')
+    [ "$v" != "$WANT" ] || { echo "$(date -u +%T) $1 $v" >> "$OUT/versions.txt"; return 0; }
+    say "$1: the pod runs TensorD ${v:-?}, not the session's $WANT (try $t): updated again"
+    step "tensord-$1-$t" machine update "$NAME" --tensord "$(command -v cozy)" -y
+  done
+  fail "$1: the pod kept moving off the session's TensorD (${v:-?})"
+}
+ours start
+say "pod TensorD $WANT, Runtime $(cozy machine show "$NAME" --json | jq -r '.status.runtime // empty')"
 
 # The pod's Status as Calcifer relays it, each second: each predicted request's readiness and the idle clock.
 ( while :; do
@@ -48,6 +60,7 @@ until_stage() {
 unload() {
   step "restart-$1" machine update "$NAME" --mode dedicated -y || fail "the restart: $(tail -c 300 "$OUT/restart-$1.txt")"
   [ "$(cozy machine show "$NAME" --json | jq -r .status.phase)" = ready ] || fail "$NAME isn't ready after its restart"
+  ours "restart-$1"
 }
 # report <name> <run>: the run's own record, and its report's stages and first steps.
 report() {
@@ -58,9 +71,11 @@ report() {
 }
 
 # Its weights onto the pod by one call of it, which downloads them: every arm after reads them from its disk.
+ours fetch
 step fetch run "$TOOL" --on "$NAME" instructions="$PROMPT" $FIELDS seed:=1 || fail "the first call"
 unload cold
 # The cold call: its weights on disk, no executor.
+ours cold
 step cold run "$TOOL" --on "$NAME" instructions="$PROMPT" $FIELDS seed:=2 || fail "the cold call"
 report cold "$(runno cold)"
 unload predicted
@@ -71,6 +86,7 @@ python3 "$RUN_PAGE" show "$RUN_PROJECT" > "$OUT/shown.txt" 2>&1 & BG="$BG $!"
 for _ in $(seq 1 30); do grep -q '"held"' "$OUT/shown.txt" && break; sleep 1; done
 grep -q '"held": \["' "$OUT/shown.txt" || fail "the project wasn't shown: $(tail -c 300 "$OUT/shown.txt")"
 say "the project is shown, as an open page shows it: $(head -c 200 "$OUT/shown.txt")"
+ours predict
 ASK=$(date +%s%3N)
 run_page add q --tool "$TOOL" --fields "$(jq -nc --arg p "$PROMPT" '{instructions: $p, turbo: false, prompt_upsampling: false,
   megapixels: 1, aspect_ratio: "1:1", seed: 3}')" > "$OUT/box.json" 2>&1 || fail "the box: $(tail -c 300 "$OUT/box.json")"
@@ -78,6 +94,7 @@ say "box q added: Calcifer predicts its render onto $NAME"
 until_stage loaded "$WAIT"
 say "q loaded $(( ($(date +%s%3N) - ASK) / 1000 )) s after the box was added"
 # Its render takes the executor the load left.
+ours render
 python3 "$RUN_PAGE" render "$RUN_PROJECT" --on "$NAME" q > "$OUT/render.txt" 2>&1 || fail "the render: $(tail -c 400 "$OUT/render.txt")"
 (cd "$RUN_PROJECT" && cozy --json run ls --all --limit 10) > "$OUT/runs.json" 2>&1
 WARM=$(jq -r --argjson a "$ASK" '[.runs[]? | select(.created_at_ms >= $a)] | max_by(.created_at_ms) | .number // empty' "$OUT/runs.json")
@@ -86,17 +103,21 @@ report predicted "$WARM"
 
 # The yield: SDXL's weights onto the pod, then TensorD restarted. Calcifer sends the box's request to the service that started,
 # which plans it again and loads it (the GPU is idle); while it does, SDXL is sent.
+ours other-fetch
 step other-fetch run "$OTHER" --on "$NAME" prompt="a brass compass on a walnut desk" seed:=4 || fail "the other call's fetch"
 unload yield
 until_stage loading 300
+ours other
 SENT=$(date +%s%3N)
 step other run "$OTHER" --on "$NAME" prompt="a brass compass on a walnut desk" seed:=5 || fail "the other call"
 report other "$(runno other)"
 # Then the GPU is idle again: it loads again, and the idle clock that began when SDXL ended stays where it was.
 until_stage loaded 600
+ours end
 kill $BG 2> /dev/null; BG=''
 
 collect
+sed 's/^/version before /' "$OUT/versions.txt" >> "$R"
 grep -aE "load ahead|queue: goes after" "$OUT/tensord.log" | cut -c1-300 | tee -a "$R" > "$OUT/load-ahead.log"
 python3 - "$OUT" "$SENT" <<'PY' | tee -a "$R" > "$OUT/summary.json"
 import json, sys
