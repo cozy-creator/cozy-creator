@@ -9,7 +9,11 @@ Dir::Etc::SourceList "$apt_root/noble.list";
 Dir::Etc::SourceParts "$apt_root/sources";
 Dir::State::Lists "$apt_root/lists";
 Dir::Cache "$apt_root/cache";
+Acquire::ForceIPv4 "true";
+Acquire::Retries "5";
 CONFIG
+# IPv4 alone: a hosted runner has no IPv6 route, and apt fetched from mirrors.kernel.org's mirror by its AAAA address and gave
+# up on "Network is unreachable" (44041520735, 43997435909); every fetch, the lists' and install-deps' alike, retried.
 as_apt() { sudo env APT_CONFIG="$apt_root/apt.conf" "$@"; }
 
 # The package lists, from the first mirror that answers: each tried 5 times with backoff, said as it goes. apt-get update
