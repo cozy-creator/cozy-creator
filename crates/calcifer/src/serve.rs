@@ -370,6 +370,20 @@ pub(crate) async fn serve(loaded: &Loaded, taken: platform::generation::Taken) -
         api.development_web.set(development).expect("development web address set once");
     }
     let _ = api.parent.set(link.clone());
+    // A SIGTERM to this generation (the holder record names it) stops Calcifer, as it always has: its parent is told, so none is
+    // started again. Its parent's own stop arrives as `Stop`.
+    #[cfg(unix)]
+    if let Ok(mut term) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+        let (stopping, telling) = (api.clone(), link.clone());
+        tokio::spawn(async move {
+            if term.recv().await.is_none() {
+                return;
+            }
+            info!("SIGTERM: stopping as down does");
+            let _ = telling.send(&ToParent::Down);
+            shutdown_after_signal(stopping).await;
+        });
+    }
     crate::project::vault::adopt(&api, views);
     // The record before the first answer (cl-885): the parent publishes it, naming this generation, then says `Accept`.
     link.send(&ToParent::Ready { pid: std::process::id(), version: ::api::VERSION.into(), started_at_ms: api.started_ms }).map_err(parent)?;

@@ -19,6 +19,7 @@ import re
 import secrets
 import subprocess
 import sys
+from collections.abc import Mapping
 from typing import NotRequired, TypedDict, cast
 from urllib.parse import quote
 
@@ -155,6 +156,16 @@ def scan_case(scanner: Scanner, receipt: Receipt, case: str, roots: list[Path], 
     require(not any(result.get(key, 0) for key in ("unreadable", "sqlite_unreadable", "archive_unreadable", "archive_oversize", "leveldb_unreadable", "images_unreadable")), "scan_decoder_unavailable")
 
 
+
+def served_by(holder: Mapping[str, object], parent: int) -> bool:
+    """Whether the record names a generation of the Calcifer this fixture started: `cozy calcifer` is a stable parent that runs
+    Calcifer as its child (cl-1113)."""
+    try:
+        stat = Path(f"/proc/{holder.get('pid')}/stat").read_text()
+    except OSError:
+        return False
+    return int(stat.rsplit(")", 1)[1].split()[1]) == parent
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ready-file", type=Path, required=True)
@@ -200,7 +211,7 @@ def main() -> int:
             phase = "development_needs_dev"
             calcifer = Calcifer(cli)
             first_pid = calcifer.process.pid
-            until(lambda: native.holder(), lambda holder: holder.get("pid") == first_pid, "holder_ready")
+            until(lambda: native.holder(), lambda holder: served_by(holder, first_pid), "holder_ready")
             development_ignored(native, receipt)
             native.call("POST", "/v1/down", {})
             calcifer.process.wait(timeout=90); calcifer = None
@@ -208,7 +219,7 @@ def main() -> int:
             phase = "development_start"
         calcifer = Calcifer(cli)
         caf_pid = calcifer.process.pid
-        until(lambda: native.holder(), lambda holder: holder.get("pid") == caf_pid, "holder_ready")
+        until(lambda: native.holder(), lambda holder: served_by(holder, caf_pid), "holder_ready")
         receipt.add("native_capability", accepted=bool(native.call("GET", "/v1/status")))
         for slot in ("a", "b"):
             phase = "create_" + slot
@@ -285,7 +296,7 @@ def main() -> int:
         calcifer.process.wait(timeout=90); calcifer = None
         calcifer = Calcifer(cli)
         caf_pid = calcifer.process.pid
-        until(lambda: native.holder(), lambda value: value.get("pid") == caf_pid, "restart_holder_ready")
+        until(lambda: native.holder(), lambda value: served_by(value, caf_pid), "restart_holder_ready")
         rejected = native.raw("GET", "/v1/status", extra={"Authorization": "Bearer " + previous["token"]})
         require(rejected.refused(401, "unauthenticated"), "old_holder_authority_survived")
         receipt.add("caf_crash_recovery", old_authority_refused=True)
@@ -296,7 +307,7 @@ def main() -> int:
         calcifer.process.wait(timeout=90)
         calcifer = Calcifer(cli)
         caf_pid = calcifer.process.pid
-        until(lambda: native.holder(), lambda value: value.get("pid") == caf_pid, "restart_holder_ready")
+        until(lambda: native.holder(), lambda value: served_by(value, caf_pid), "restart_holder_ready")
         rejected = native.raw("GET", "/v1/status", extra={"Authorization": "Bearer " + previous["token"]})
         require(rejected.refused(401, "unauthenticated"), "old_holder_authority_survived")
         native.document("vault", "unlock", "--passphrase-file", "-", "--idle", "0", cwd=b["folder"], stdin=(b["credential"] + "\n").encode())
