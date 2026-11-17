@@ -621,7 +621,7 @@ fn take_over(api: &Arc<Api>, project: &Arc<Project>, was: &FsPath) {
     match api.calcifer.attach_project(&store) {
         Ok(true) => {}
         // A request took it over first, and its walk goes on.
-        Ok(false) => return tracing::info!("{}: moved; a request took its walk over first", project.root.display()),
+        Ok(false) => return tracing::warn!("DEBUG {}: moved; a request took its walk over first", project.root.display()),
         Err(error) => return warn!("{}: its runs stay where it was: {error}", project.root.display()),
     }
     let (stopped, restarted) = match restart_local(project, &store) {
@@ -632,7 +632,7 @@ fn take_over(api: &Arc<Api>, project: &Arc<Project>, was: &FsPath) {
         }
     };
     drop(store);
-    tracing::info!("{}: moved from {}; {} of its runs here stopped, {} restarted", project.root.display(), was.display(), stopped.len(), restarted.join(", "));
+    tracing::warn!("DEBUG {}: moved from {}; {} of its runs here stopped, {} restarted", project.root.display(), was.display(), stopped.len(), restarted.join(", "));
     for id in &stopped {
         if let Err(error) = api.calcifer.cancel(id) { warn!(run = %id, "a run of a moved project goes on where it was: {error}"); }
     }
@@ -657,8 +657,11 @@ fn restart_local(project: &Project, store: &ProjectStore) -> Result<(Vec<RunId>,
     struct Again { key: String, ask: String, run: u64, name: String, asset: String, kind: String, take: Option<Take>, tried: Option<Tried> }
     let walk = project.folder.walk_now()?;
     let (mut stopped, mut restarted, mut again) = (vec![], vec![], vec![]);
+    tracing::warn!("DEBUG restart_local: {} pending", walk.pending.len());
     for (key, pending) in &walk.pending {
-        let Ok(Some(row)) = store.run_by_number(pending.run) else { continue };
+        let found = store.run_by_number(pending.run);
+        tracing::warn!("DEBUG pending {key} run {} job {}: {:?}", pending.run, pending.job_of(key), found.as_ref().map(|row| row.as_ref().map(|row| (row.machine.clone(), row.state, row.status))));
+        let Ok(Some(row)) = found else { continue };
         let settled = row.state == crate::store::State::Settled;
         if pending.run == 0 || row.machine.as_deref() != Some("local") || (settled && row.status != Some(RunStatus::Canceled)) {
             continue;
