@@ -312,6 +312,7 @@ fn run_machine(
         let devices: Vec<String> = gpus.iter().map(|g| g.device_index.to_string()).collect();
         let home = engine.join("executor-home");
         std::fs::create_dir_all(&home)?;
+        crate::private_io::keep_births_in(engine.join("private-executors"))?;
         let config = serde_json::json!({
             "devices": devices.join(","),
             "inventory": gpus,

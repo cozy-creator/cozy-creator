@@ -619,6 +619,12 @@ fn ask_runtime(python: &Path, request: &Value, stop: Option<&crate::stop::Stop>)
     }
     platform::process::own_group(&mut command);
     let mut child = command.spawn().map_err(io_failure)?;
+    // A project's own code described: its view keeps this birth, so a lock that can't reach this machine ends it (cl-1064).
+    if let Err(error) = platform::process::Birth::of(child.id()).map_err(std::io::Error::from).and_then(|birth| crate::private_io::record_birth(python, &birth)) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(io_failure(error));
+    }
     // Its own exit says why, should it stop before reading the request.
     let _ = child.stdin.take().expect("piped").write_all(request.to_string().as_bytes());
     let (mut stdout, stderr) = (child.stdout.take().expect("piped"), child.stderr.take());

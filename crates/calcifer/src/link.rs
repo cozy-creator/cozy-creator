@@ -133,6 +133,10 @@ impl Link {
         self.machine.project_gone(id).await.map_err(LinkError::from)
     }
 
+    pub(crate) async fn project_gone_at(&self, view: &std::path::Path) -> Result<(), LinkError> {
+        self.machine.project_gone_at(view).await.map_err(LinkError::from)
+    }
+
     pub(crate) async fn close_private(&self) -> Result<(), LinkError> {
         self.machine.close_private().await.map_err(LinkError::from)
     }

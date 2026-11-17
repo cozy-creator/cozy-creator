@@ -106,7 +106,11 @@ pub(crate) fn check_project_placement(
 pub(crate) fn scope_for_project(project_id: &str, project_root: &Path) -> Result<Scope, Error> {
     let logical = crate::project::vault::logical(project_root);
     let scope = if crate::project::vault::encrypted(&logical) {
-        of_output(&crate::project::landing(&logical))?.ok_or_else(|| error("This encrypted project's files aren't available. Unlock it, then try again."))?
+        // "Unlock it" only to a locked project: one closing or converting its storage has a moment to wait (cl-1064).
+        of_output(&crate::project::landing(&logical))?.ok_or_else(|| match crate::project::vault::is_locked(&logical) {
+            true => error("This encrypted project's files aren't available. Unlock it, then try again."),
+            false => error("This encrypted project's storage is changing (it's locking or converting). Try again when that finishes."),
+        })?
     } else {
         let view = platform::durable::canonical(project_root).map_err(|_| error("This project's files aren't available right now. Try again in a moment."))?;
         if crate::project::vault::plain_project_id(&view).as_deref() != Some(project_id) {
@@ -338,9 +342,9 @@ pub(crate) fn input_root(out_dir: &Path, ordinary: &Path) -> Result<PathBuf, Err
 pub(crate) async fn close_private_project(
     api: &Arc<crate::api::Api>,
     root: &Path,
-) -> Result<(), Error> {
+) -> Result<Sealed, Error> {
     let view = crate::project::vault::resolve_path(root)?;
-    if !view.join(".vault-machine").exists() { let mut scopes = SCOPES.lock().unwrap(); scopes.remove(root); scopes.remove(&view); return Ok(()); }
+    if !view.join(".vault-machine").exists() { let mut scopes = SCOPES.lock().unwrap(); scopes.remove(root); scopes.remove(&view); return Ok(Sealed::Closed); }
     if !api.machines.local.running() {
         api.machines.local_up().await.map_err(|why| Error::new(Kind::Unavailable, "project_seal_pending",
             format!("This computer's machine couldn't start, so Cozy couldn't secure the project's work: {}", why.message)).next("cozy doctor"))?;
@@ -360,25 +364,62 @@ pub(crate) async fn close_private_project(
             Scope { storage: marker.storage, token: marker.token }
         }
     };
-    let Some(link) = api
-        .calcifer
-        .link("local")
-        .map_err(|_| error("This computer's machine isn't running, so Cozy can't lock the project yet. Try again in a moment."))?
-    else {
-        return Err(error(
-            "This computer's machine isn't ready to lock the project yet. Try again in a moment.",
-        ));
+    // No link to it, and it doesn't answer (cl-1064): a machine stopped long enough loses its link, and still never holds the lock.
+    let link = match api.calcifer.link("local") {
+        Ok(Some(link)) => link,
+        _ if !api.machines.answers("local").await => {
+            let mut scopes = SCOPES.lock().unwrap();
+            scopes.remove(root);
+            scopes.remove(&scope.storage.view_root);
+            return Ok(Sealed::Owed(scope.storage.view_root.clone()));
+        }
+        Ok(None) => return Err(error("This computer's machine isn't ready to lock the project yet. Try again in a moment.")),
+        Err(_) => return Err(error("This computer's machine isn't running, so Cozy can't lock the project yet. Try again in a moment.")),
     };
-    link.with_private(scope.clone())
-        .close_private()
-        .await
-        .map_err(|failure| match failure {
-            crate::link::LinkError::Refused { code, message, remedy, next } => Error { remedy, next, ..Error::new(Kind::Conflict, code, message) },
-            _ => error("This computer's machine couldn't confirm the project's work has stopped, so the project isn't locked yet. Try again in a moment."),
-        })?;
-    descriptor_for_mounted(&scope.storage.view_root, &scope.storage.project_id, scope.storage.generation)?;
+    // Asked while it answers (cl-1064): a machine that stops answering never holds the lock; its clean-up is owed instead.
+    let sealed = match api.machines.while_answering("local", link.with_private(scope.clone()).close_private()).await {
+        Some(closed) => {
+            closed.map_err(|failure| match failure {
+                crate::link::LinkError::Refused { code, message, remedy, next } => Error { remedy, next, ..Error::new(Kind::Conflict, code, message) },
+                _ => error("This computer's machine couldn't confirm the project's work has stopped, so the project isn't locked yet. Try again in a moment."),
+            })?;
+            descriptor_for_mounted(&scope.storage.view_root, &scope.storage.project_id, scope.storage.generation)?;
+            Sealed::Closed
+        }
+        None => Sealed::Owed(scope.storage.view_root.clone()),
+    };
     let mut scopes = SCOPES.lock().unwrap();
     scopes.remove(root);
     scopes.remove(&scope.storage.view_root);
-    Ok(())
+    Ok(sealed)
+}
+
+/// How a project's private storage closed on `local`.
+pub(crate) enum Sealed {
+    /// The machine sealed it: nothing of the project's is open there.
+    Closed,
+    /// It didn't answer (cl-1064): what it ran in the view at this path is owed its clean-up, once it answers.
+    Owed(PathBuf),
+}
+
+/// The lock goes on without `local` (cl-1064): the project's private scope is let go here, and what the machine ran in its view is
+/// owed.
+pub(crate) fn let_go(root: &Path) -> Sealed {
+    let view = view_root(root);
+    let mut scopes = SCOPES.lock().unwrap();
+    scopes.remove(root);
+    if let Ok(resolved) = crate::project::vault::resolve_path(root) { scopes.remove(&resolved); }
+    match view {
+        Some(view) => { scopes.remove(&view); Sealed::Owed(view) }
+        None => Sealed::Closed,
+    }
+}
+
+/// The vault view `root`'s private execution storage is mounted at, as the machine journals it, while it's open.
+pub(crate) fn view_root(root: &Path) -> Option<PathBuf> {
+    if let Some(scope) = SCOPES.lock().unwrap().get(root) {
+        return Some(scope.storage.view_root.clone());
+    }
+    let view = crate::project::vault::resolve_path(root).ok()?;
+    view.join(".vault-machine").exists().then(|| read_marker(&view).ok().map(|marker| marker.storage.view_root)).flatten()
 }

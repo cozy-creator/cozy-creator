@@ -93,7 +93,7 @@ step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is no
 # web_serves reads what the gate costs from Calcifer's Server-Timing, which it sends only with its diagnostics on (cl-985); coming keeps
 # its project's walk log (.vault-calcifer/diagnostics/walk.log) with them on, and so does a failed web cell (fixtures.js `leftovers`):
 # without them a web lane's artifact held nothing of what Calcifer planned or installed (account-rent, e2e 44011938933).
-case $SHARD in projectvault | projectvault-static | projectvault-unstarted | plan | plan-resent | stuck | coming | thumbs) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* && " $(echo $parts) " != *" web_lane "* && " $(echo $parts) " != *" web_alone "* ]] || calcifer_diagnostics ;; esac
+case $SHARD in projectvault | projectvault-static | projectvault-unstarted | projectvault-lock-hung | plan | plan-resent | stuck | coming | thumbs) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* && " $(echo $parts) " != *" web_lane "* && " $(echo $parts) " != *" web_alone "* ]] || calcifer_diagnostics ;; esac
 }
 
 # A vault failure names its reason, and web_serves reads the gate's Server-Timing: Calcifer started again with config.toml's
@@ -955,6 +955,7 @@ case $SHARD in
     ended_logs
     vault_reattach
     vault_unstarted
+    lock_hung
     logs
   " ;;
   # A run on local after a lock that ended one, a run and a lock, attaches (cl-1082), alone. Named projectvault-* for its driver.
@@ -965,6 +966,8 @@ case $SHARD in
   projectvault-folder-gone) parts="folder_gone logs" ;;
   # cozy's process trees never take a process that started before its supposed parent (Windows' stale parent ids), alone; every OS.
   stale-parent) parts="stale_parent logs" ;;
+  # An encrypted project locks while its local machine is stopped (cl-1064), alone. Named projectvault-* for its driver.
+  projectvault-lock-hung) parts="lock_hung logs" ;;
   # An ended machine's own lines still read; a locked project's run nowhere outside it (cl-1012). Named projectvault-* for its driver.
   projectvault-ended-logs) parts="ended_logs logs" ;;
   # A deleted box's next purge kept for a plaintext project only, never an encrypted one's (cl-1010). Named projectvault-* for its driver.

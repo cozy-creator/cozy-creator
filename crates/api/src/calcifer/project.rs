@@ -1703,6 +1703,9 @@ pub struct VaultChanged {
     /// The runs whose save a lock stopped while their remote machine didn't answer (cl-1060): still owed, saved when it answers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deferred: Vec<String>,
+    /// What a lock says when this computer's machine didn't answer it (cl-1064): its clean-up runs when it next answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owed: Option<String>,
 }
 
 /// A private vault-operation stream. Progress counts copied bytes and completed files, not an estimated percentage.

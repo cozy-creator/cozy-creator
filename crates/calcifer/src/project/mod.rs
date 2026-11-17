@@ -1719,6 +1719,8 @@ impl Project {
     pub(crate) fn id(&self) -> &str {
         &self.id
     }
+    /// Its folder, as the index and a lock's debts name it (cl-1064).
+    pub(crate) fn folder_root(&self) -> &std::path::Path { &self.root }
 
     /// Old references are bound to their original physical view, never a recycled drive.
     fn require_view(&self) -> Result<(), Error> {
