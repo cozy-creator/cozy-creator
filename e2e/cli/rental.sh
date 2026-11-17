@@ -655,3 +655,65 @@ hub_phantom_datacenter() (
     fi
   done
 )
+
+# th-383 (another session, 11-17): quote and order disagreed right after a host was found slow: `rental.price_rose`, $2.08
+# quoted, $2.34 asked, nothing rented. The quote's host was still on sale at $2.08, only ranked after a dearer healthy one.
+# Here `docker` (its CPU at the runner's engine) is quoted, then its host is measured slow (a download record under the floor)
+# and `docker-b` (3× dearer) ranks first. An order sent back with the quote's agreed price, through Calcifer as the page
+# sends a quote it showed earlier, is the machine it would buy within that price: rented, and bought on `docker`, never
+# refused price_rose while one is on sale at the price agreed.
+hub_phantom_quote_drift() (
+  step "an order buys within the price agreed when its quote's offer ranks lower by the time it is placed (th-383)"
+  [ -n "${COZY_TEST_HUB_COMMAND_FILE:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] || fail "quote drift: e2e/isolated.sh named no Hub command or email"
+  local S=$OUT/hub-drift db port container holder quote agreed host rental said attempts
+  mkdir -p "$S"
+  db=$(tr '\0' '\n' < "$COZY_TEST_HUB_COMMAND_FILE" | grep -o 'postgres://[^" ]*' | head -1 || true)
+  port=$(sed -E 's#.*@[^:/]+:([0-9]+)/.*#\1#' <<< "$db")
+  container=$(docker ps --filter "publish=$port" --format '{{.Names}}' 2> /dev/null | head -1 || true)
+  [ -n "$container" ] || fail "quote drift: no Postgres container publishes ${port:-?}"
+  sql() { docker exec -i "$container" psql -v ON_ERROR_STOP=1 -qtA -U postgres "$@"; }
+  trap 'sql -c "DELETE FROM hub_v2.provider_host_speeds WHERE resource_id = '"'"'th383-drift'"'"' OR host_key LIKE '"'"'docker/%'"'"'" > /dev/null 2>&1 || true
+        [ -z "${rental:-}" ] || cozy --json machine end "$rental" -y > /dev/null 2>&1 || true
+        bash "$here/../skew/rehub.sh" > /dev/null 2>&1 || true' EXIT
+  signin "$E2E_HUB_EMAIL" > "$S/login.json" || fail "quote drift: cozy login: $(tail -c 300 "$S/login.json")"
+  bash "$here/../skew/rehub.sh" \
+    --set 'provider.docker.engines_json=[{"name":"docker-b","socket":"/var/run/docker.sock","list_price_usd_micros_per_hour":3000}]' \
+    > "$S/rehub.log" 2>&1 || fail "quote drift: restarting the Hub on two providers: $(tail -c 300 "$S/rehub.log")"
+  sql -c "DELETE FROM hub_v2.provider_card_cooldowns" > /dev/null 2>&1 || true
+  sql -c "DELETE FROM hub_v2.provider_sku_cooldowns" > /dev/null 2>&1 || true
+  for _ in $(seq 60); do
+    [ "$(sql -c "SELECT count(*) FROM hub_v2.provider_inventory_heads WHERE provider IN ('docker','docker-b')" 2> /dev/null || echo 0)" = 2 ] && break
+    sleep 1
+  done
+  cozy --json machine ls > /dev/null 2>&1 || true
+  holder=$HOME/.cozy/calcifer/calcifer.lock.holder
+  calcifer() { curl -sS -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'Content-Type: application/json' "$@"; }
+  calcifer -X POST "http://$(jq -r .address "$holder")/v1/rental-quotes" -d '{"kind":"rent","sku":"cpu"}' > "$S/quote.json" 2>&1
+  agreed=$(jq -r '.agreed.usd_micros_per_hour // empty' "$S/quote.json" 2> /dev/null || true)
+  [ -n "$agreed" ] && [ "$(jq -r '.provider // empty' "$S/quote.json")" = docker ] \
+    || fail "quote drift: the quote didn't name docker's machine: $(head -c 300 "$S/quote.json")"
+  # Its host measured slow since: a download record far under the floor. The record cites a resource it was measured on.
+  host=$(sql -c "SELECT o.offer_key FROM hub_v2.provider_inventory_offers o JOIN hub_v2.provider_inventory_heads h
+    ON h.provider = o.provider AND h.generation = o.generation WHERE o.provider = 'docker' LIMIT 1" 2> /dev/null || true)
+  sql > "$S/slow.out" 2>&1 <<SQL || fail "quote drift: recording docker's host slow: $(tail -c 300 "$S/slow.out")"
+INSERT INTO hub_v2.provider_host_speeds (provider, host_key, signal, mean, weight, measured_at, resource_id)
+SELECT 'docker', '$host', 'download_mbps', 1, 10, now(), id FROM hub_v2.provider_resources ORDER BY id LIMIT 1
+ON CONFLICT (provider, host_key, signal) DO UPDATE SET mean = 1, weight = 10, measured_at = now();
+SQL
+  calcifer -X POST "http://$(jq -r .address "$holder")/v1/rental-quotes" -d '{"kind":"rent","sku":"cpu"}' > "$S/requote.json" 2>&1
+  echo "quote drift: quoted $(jq -c '{usd_micros_per_hour, provider}' "$S/quote.json"); with docker's host slow, quoted $(jq -c '{usd_micros_per_hour, provider}' "$S/requote.json" 2> /dev/null)"
+  jq -e --argjson a "$agreed" '.usd_micros_per_hour > $a' "$S/requote.json" > /dev/null 2>&1 \
+    || fail "quote drift: with docker's host slow the quote didn't rise, so this checks nothing: $(head -c 300 "$S/requote.json")"
+  calcifer -X POST -H "Idempotency-Key: drift-$RANDOM$RANDOM" "http://$(jq -r .address "$holder")/v1/machines" \
+    -d "{\"kind\":\"rent\",\"sku\":\"cpu\",\"agreed\":{\"usd_micros_per_hour\":$agreed}}" > "$S/order.json" 2>&1
+  rental=$(jq -r '.machine.rental_id // empty' "$S/order.json" 2> /dev/null || true)
+  echo "quote drift: ordered at the agreed $agreed: $(jq -c '{rental: .machine.rental_id, quote: .quote.usd_micros_per_hour, error: .error.code}' "$S/order.json" 2> /dev/null || head -c 300 "$S/order.json")"
+  [ -n "$rental" ] || fail "quote drift: the order at the price agreed was refused, though docker's machine is on sale at it: $(head -c 400 "$S/order.json")"
+  for _ in $(seq 90); do
+    attempts=$(sql -c "SELECT provider || '/' || datacenter || ' ' || state FROM hub_v2.rental_acquisition_attempts WHERE rental_id = '$rental' ORDER BY ordinal" 2> /dev/null | tr '\n' ';')
+    [ -n "$attempts" ] && break
+    sleep 1
+  done
+  echo "quote drift: $rental's attempts: ${attempts:-none}"
+  [[ $attempts == docker/* ]] || check "quote drift: $rental didn't buy docker's machine within the price agreed: ${attempts:-none}"
+)
