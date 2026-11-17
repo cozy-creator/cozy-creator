@@ -19,6 +19,7 @@ mod cozy;
 mod eta;
 mod events;
 mod files;
+mod git_code;
 mod floor;
 mod hub;
 mod health;
@@ -49,6 +50,7 @@ mod reports;
 mod runs;
 pub mod serve;
 mod slow;
+mod source_tools;
 mod stages;
 mod state;
 mod store;
@@ -803,8 +805,9 @@ impl Calcifer {
     }
 
     /// The machine a run recorded under `name` is now (cl-1089): the one so named, else the one whose former name (the handle a
-    /// rental has until its Hub names its host) or rental id it is. A project's run keeps the name it was sent to, which a rename
-    /// doesn't reach. None: nothing here was ever so named. `local` is always itself.
+    /// rental has until its Hub names its host, or a host its Hub named before replanning the order, cl-1125) or rental id it is. A
+    /// project's run keeps the name it was sent to, which a rename doesn't reach. None: nothing here was ever so named. `local` is
+    /// always itself.
     pub(crate) fn machine_now(&self, name: &str) -> store::Result<Option<MachineRow>> {
         if name == "local" {
             return self.store.machine(name);
@@ -1328,19 +1331,14 @@ impl Calcifer {
         self.machines()?.broken(name)
     }
 
-    /// Records the machine as gone for good: its unconfirmed runs return to the outbox or fail,
-    /// its accepted ones fail.
+    /// Records the machine as gone for good: what it held returns to Calcifer's queue (`Store::requeue_machine`, cl-1132). A project's
+    /// run held under a name it had before returns as its driver finds that name is this machine.
     pub(crate) fn machine_ended(&self, name: &str, reason: &str) -> Result<(), Error> {
         let mut events = self.store.machine_ended(name, reason)?;
-        let served = self.store.machine(name)?.is_some_and(|machine| machine.served);
-        // A project's runs sent to it by its former name keep that name (cl-1089).
-        let alias = self.store.alias(name)?;
-        let names: Vec<&str> = std::iter::once(name).chain(alias.as_deref()).collect();
+        let why = store::ended_why(name, reason);
         for owner in self.owners() {
             if let Ok(store) = owner.store() {
-                for name in &names {
-                    events.extend(store.runs_on_ended_machine(name, served, reason)?);
-                }
+                events.extend(store.requeue_machine(name, &why)?);
             }
         }
         let mut woken = HashSet::new();
@@ -1492,6 +1490,27 @@ impl Calcifer {
             progress.clone()
         };
         let _ = self.events.send((id.clone(), Event::Progress { progress }));
+    }
+
+    /// Returns the run to Calcifer's queue, its machine lost (`Store::requeue`, cl-1132); `unsent`: only one never sent.
+    fn requeue(&self, id: &RunId, why: &str, unsent: bool) {
+        match self.with_run_store(id.as_str(), |store| store.requeue(id.as_str(), why, unsent)) {
+            Ok(events) => self.publish(id, events),
+            Err(e) => warn!(run = %id, "{e}"),
+        }
+    }
+
+    /// An unsent run whose machine can't take it now (`why`): a call returns to Calcifer's queue (cl-1132); a machine's own job fails
+    /// `code`, as it was for that machine.
+    fn left_unsent(&self, run: &RunRow, why: &str, code: &str) {
+        if run.kind == ::api::calcifer::Kind::Call {
+            return self.requeue(&run.id, why, true);
+        }
+        let reason = Reason { code: code.into(), message: format!("{why}, so {} can't run there", self.named(run)), ..Default::default() };
+        match self.with_run_store(run.id.as_str(), |store| store.fail(run.id.as_str(), reason)) {
+            Ok(events) => self.publish(&run.id, events),
+            Err(e) => warn!(run = %run.id, "{e}"),
+        }
     }
 
     /// Places an unplaced run on `machine`.
@@ -1883,7 +1902,8 @@ impl Calcifer {
                 continue;
             };
             // Sent to a rental by its handle before its Hub named its host, a project's run keeps the handle (cl-1089): it follows the
-            // machine to its name now; with nothing so named, it settles as on an ended machine, never waits for one.
+            // machine to its name now; with nothing so named, the machine vanished, and what it held returns to Calcifer's queue
+            // (cl-1132), never waits for one.
             match self.machine_now(&name) {
                 Ok(Some(machine)) if machine.name != name => {
                     match self.with_run_store(id.as_str(), |store| store.repoint(id.as_str(), &name, &machine.name)) {
@@ -1894,12 +1914,13 @@ impl Calcifer {
                 }
                 Ok(None) => {
                     let gone = format!("{name} is no machine here");
-                    match self.with_run_store(id.as_str(), |store| store.runs_on_ended_machine(&name, true, &gone)) {
+                    match self.with_run_store(id.as_str(), |store| store.requeue_machine(&name, &gone)) {
                         Ok(events) => {
-                            for (settled, event) in events {
-                                self.publish(&settled, vec![event]);
-                                self.wake(&settled);
+                            for (left, event) in events {
+                                self.publish(&left, vec![event]);
+                                self.wake(&left);
                             }
+                            continue;
                         }
                         Err(e) => warn!(run = %id, "{e}"),
                     }
@@ -1936,15 +1957,13 @@ impl Calcifer {
                 if run.state != State::Queued {
                     self.waiting(id, format!("this computer's machine can't start: {}", e.message));
                     pause.wait(wake, None).await;
+                } else if !run.pinned && run.wants == "any" && run.kind == ::api::calcifer::Kind::Call {
+                    // It can't start (cl-977): a call the queue placed here goes back to it, to go where it finishes soonest of the
+                    // machines that can (cl-1132). One named to this computer is refused at once, saying why (cl-977).
+                    self.requeue(id, &format!("this computer's machine can't start ({})", e.message), true);
                 } else {
-                    // Not answering (cl-977): an `any` run goes to another machine, as from one offline.
-                    let any = !run.pinned && run.wants == "any" && e.code == "machine_not_answering";
                     let reason = Reason { code: e.code, message: e.message, next: e.next, ..Default::default() };
-                    let left = match any {
-                        true => self.with_run_store(id.as_str(), |store| store.unplace(id.as_str())),
-                        false => self.with_run_store(id.as_str(), |store| store.fail(id.as_str(), reason)),
-                    };
-                    match left {
+                    match self.with_run_store(id.as_str(), |store| store.fail(id.as_str(), reason)) {
                         Ok(events) => self.publish(id, events),
                         Err(e) => warn!(run = %id, "{e}"),
                     }
@@ -1967,27 +1986,14 @@ impl Calcifer {
                 }
                 continue;
             }
-            // Offline by its Hub's word: an unsent run leaves it now (an `any` run to be placed
-            // again, any other fails), and a sent one waits for it to come back or end. Nothing
-            // dials it meanwhile.
+            // Offline by its Hub's word: an unsent run leaves it now, back to Calcifer's queue (cl-1132), and a sent one waits for it
+            // to come back or end: it may be running there. Nothing dials it meanwhile.
             if let Some(reason) = self.offline(&name) {
-                let message = format!("{name} is offline ({reason}).");
                 if run.state == State::Queued {
-                    let left = match (run.pinned, run.wants.as_str()) {
-                        (false, "any") => self.with_run_store(id.as_str(), |store| store.unplace(id.as_str())),
-                        _ => self.with_run_store(id.as_str(), |store| store.fail(id.as_str(), Reason {
-                            code: "machine_offline".into(),
-                            message,
-                            ..Default::default()
-                        })),
-                    };
-                    match left {
-                        Ok(events) => self.publish(id, events),
-                        Err(e) => warn!(run = %id, "{e}"),
-                    }
+                    self.left_unsent(&run, &format!("{name} is offline ({reason})"), "machine_offline");
                     continue;
                 }
-                self.waiting(id, message);
+                self.waiting(id, format!("{name} is offline ({reason})."));
                 tokio::select! {
                     _ = changed.changed() => {}
                     _ = wake.notified() => {}
@@ -1999,19 +2005,7 @@ impl Calcifer {
             if run.state == State::Queued
                 && let Some(broken) = self.broken(&name)
             {
-                let left = match (run.pinned, run.wants.as_str()) {
-                    (false, "any") => self.with_run_store(id.as_str(), |store| store.unplace(id.as_str())),
-                    _ => self.with_run_store(id.as_str(), |store| store.fail(id.as_str(), Reason {
-                        code: "machine_broken".into(),
-                        message: format!("{name} isn't working ({}). Run it on another machine, or rent a new one.", broken.message),
-                        next: vec![format!("cozy run {} … --on new", run.target)],
-                        ..Default::default()
-                    })),
-                };
-                match left {
-                    Ok(events) => self.publish(id, events),
-                    Err(e) => warn!(run = %id, "{e}"),
-                }
+                self.left_unsent(&run, &format!("{name} isn't working ({})", broken.message), "machine_broken");
                 continue;
             }
             let Some(link) = link else {
@@ -2052,6 +2046,14 @@ impl Calcifer {
             {
                 Ok(()) => broken = None,
                 Err(Stop::Unreachable(message)) => {
+                    // Unsent, it leaves a machine that fails its liveness check too (cl-1132): one that answers is sent it again, paced.
+                    if run.state == State::Queued
+                        && let Some(machines) = self.machines()
+                        && let Err(e) = Box::pin(machines.reach(&name)).await
+                    {
+                        self.left_unsent(&run, &format!("{name} didn't answer ({})", e.message.trim_end_matches('.')), "machine_unreachable");
+                        continue;
+                    }
                     let reason = match self.machines() {
                         Some(machines) => machines.unanswered(&name, &message),
                         None => format!("can't reach {name}: {message}"),
@@ -2154,18 +2156,7 @@ impl Calcifer {
                         warn!(run = %id, machine = %name, "confirming its release with its Hub: {}", e.message);
                     }
                     if run.state == State::Queued {
-                        let left = match (run.pinned, run.wants.as_str()) {
-                            (false, "any") => self.with_run_store(id.as_str(), |store| store.unplace(id.as_str())),
-                            _ => self.with_run_store(id.as_str(), |store| store.fail(id.as_str(), Reason {
-                                code: ::api::calcifer::MACHINE_LOST.into(),
-                                message: format!("{name} shut itself down before it started {}: {message}", self.run_name(&run)),
-                                ..Default::default()
-                            })),
-                        };
-                        match left {
-                            Ok(events) => self.publish(id, events),
-                            Err(e) => warn!(run = %id, "{e}"),
-                        }
+                        self.left_unsent(&run, &format!("{name} shut itself down ({message})"), ::api::calcifer::MACHINE_LOST);
                     } else {
                         self.waiting(id, format!("{name} shut itself down; waiting for the Hub to confirm the rental ended: {message}"));
                         pause.wait(wake, Some(&mut changed)).await;
@@ -2176,15 +2167,9 @@ impl Calcifer {
                         warn!(run = %id, "{e}");
                     }
                 }
-                // Its machine's own word that it holds no such run: it cannot resume, so it ends
-                // now, and is never sent again.
-                Err(Stop::Lost) => match self.with_run_store(id.as_str(), |store| store.lost(id.as_str(), &name)) {
-                    Ok(events) => self.publish(id, events),
-                    Err(e) => {
-                        warn!(run = %id, "{e}");
-                        pause.wait(wake, None).await;
-                    }
-                },
+                // Its machine's own word that it holds no such run (it started again): it can't resume there, so it returns to
+                // Calcifer's queue as its next attempt (cl-1132).
+                Err(Stop::Lost) => self.requeue(id, &format!("{name} has no record of it"), false),
             }
         }
     }
@@ -2333,7 +2318,7 @@ impl Calcifer {
         let ((), (), followed) = tokio::join!(
             self.fill_clock(run, machine),
             self.set_bar(run, machine),
-            self.follow(&run.id, stream, link, wake, canceled, state_now)
+            self.follow(&run.id, (machine, &sent), stream, link, wake, canceled, state_now)
         );
         followed
     }
@@ -2416,6 +2401,7 @@ impl Calcifer {
     async fn follow(
         &self,
         id: &RunId,
+        (machine, sent): (&str, &store::Sent),
         mut stream: impl Stream<Item = Result<v1::RunEvent, LinkError>> + Unpin,
         link: &Link,
         wake: &Notify,
@@ -2442,8 +2428,9 @@ impl Calcifer {
                     }
                     _ = wake.notified() => {
                         let Some(run) = self.with_run_store(id.as_str(), |store| store.run(id.as_str()))? else { return Ok(()) };
-                        if run.state == State::Settled {
-                            return Ok(()); // ended here: its machine was lost
+                        // Ended here, or back in Calcifer's queue as its machine was lost (cl-1132): this attempt there is over.
+                        if run.state == State::Settled || run.machine.as_deref() != Some(machine) || run.sent_id() != *sent {
+                            return Ok(());
                         }
                         if (run.cancel_requested || lock(&self.canceling).contains(id.as_str())) && !canceled {
                             link.cancel(&run.sent_id()).await?;

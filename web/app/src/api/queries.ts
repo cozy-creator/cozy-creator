@@ -35,7 +35,7 @@ export function withAssets(state: Project, rows: Asset[], gone: Iterable<string>
   })
   assets.push(...fresh.values())
   // A head/asset delta cannot claim that every cached asset covers its newer position.
-  return { ...(head ?? state), assets, covered: state.covered, heads: state.heads, headsOf: { ...state.headsOf, ...heads } }
+  return { ...(head ?? state), assets, covered: state.covered, heads: state.heads, headsOf: { ...state.headsOf, ...heads }, wholeBegan: state.wholeBegan }
 }
 
 const openingWarningsKey = (id: string) => ["project-opening-warnings", id]
@@ -63,9 +63,9 @@ export const projectQuery = (client: Client, stream: EventStream, id: string) =>
       signal.throwIfAborted()
       const key = openingWarningsKey(id)
       const opening = queries.getQueryData<ProjectWarning[]>(key)
-      if (!opening) return { ...state, began }
+      if (!opening) return { ...state, began, wholeBegan: began }
       queries.removeQueries({ queryKey: key, exact: true })
-      return { ...state, began, warnings: mergeWarnings(state.warnings ?? [], opening) }
+      return { ...state, began, wholeBegan: began, warnings: mergeWarnings(state.warnings ?? [], opening) }
     },
     structuralSharing: keepAssets,
   })
@@ -83,24 +83,12 @@ export const projectViewQuery = (client: Client, stream: EventStream, id: string
     },
   })
 
-/** Each list's answers in a row that a late Hub left short, and when the last came. */
-const short = new WeakMap<object, { at: number; n: number }>()
-
-/** A list a late Hub left short is asked for again, twice as late each time (10 s to 5 min): what it read of the Hub so far is kept there,
- *  so it gets further each time. */
+/** Read once, and again only when Calcifer says it changed (`tools.changed`, cl-1126). */
 export const toolsQuery = (client: Client, q: string, on: string | null, project: string | null) =>
   queryOptions({
     queryKey: ["tools", q, on, project],
     queryFn: ({ signal }) => client.tools(q, on, project, signal),
-    staleTime: 60_000,
     placeholderData: keepPreviousData,
-    refetchInterval: (query) => {
-      if (!query.state.data?.note) return (short.delete(query), false)
-      const was = short.get(query)
-      const n = was?.at === query.state.dataUpdatedAt ? was.n : was ? was.n + 1 : 0
-      short.set(query, { at: query.state.dataUpdatedAt, n })
-      return Math.min(300_000, 10_000 * 2 ** n)
-    },
   })
 
 export const canvasQuery = (client: Client, stream: EventStream, id: string) =>
@@ -162,11 +150,13 @@ export const machinesQuery = (client: Client) =>
     queryFn: () => client.machines(),
   })
 
-/** One machine that isn't in the list: an ended one's record. Reading a live one's would start `local`. */
+/** One machine that isn't in the list: an ended one's record. Reading a live one's would start `local`. Read again each time it's
+ *  wanted: one read while it was live (just ordered, before the list held it) is stale once it ends and leaves the list. */
 export const machineQuery = (client: Client, name: string) =>
   queryOptions({
     queryKey: ["machine", name],
     queryFn: ({ signal }) => client.machine(name, signal),
+    staleTime: 0,
   })
 
 export const rentalSkusQuery = (client: Client) =>

@@ -412,7 +412,16 @@ pub(super) fn location(api: &Api, named: &str) -> Result<PathBuf, Error> {
             _ => path.to_owned(),
         };
         recover_conversion(&candidate)?;
-        let path = logical(&platform::durable::canonical(&candidate).map_err(provider)?);
+        let path = match platform::durable::canonical(&candidate) {
+            Ok(path) => logical(&path),
+            // Its folder gone (cl-1124): a session still held for it ends through its operation, which says so.
+            Err(_) if !candidate.exists() => {
+                let path = logical(&candidate);
+                if held(&path).is_some() { return Ok(path); }
+                return Err(Error::new(Kind::NotFound, "project_gone", format!("There's no project at {}: its folder is gone.", path.display())));
+            }
+            Err(e) => return Err(provider(e)),
+        };
         if let Some(root) = path.ancestors().find(|root| encrypted(root)) { return Ok(root.to_owned()); }
         return super::named(api, named);
     }
@@ -827,11 +836,42 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Resul
     Ok(())
 }
 
+/// A session whose folder is gone, removed from outside (cl-1124: on Windows its view dies with its backing): it ends at once, said
+/// once, nothing of it left open here, and its view let go on a thread of its own (a provider under a removed backing never ends on
+/// its own; `Mounted`'s drop is bounded). Whether it ended one. Under the project's vault operation.
+fn end_if_gone(api: &Arc<Api>, root: &FsPath) -> bool {
+    // Gone only when both its keys and its encrypted data are reported missing: a keybag alone missing leaves its open session
+    // holding the only copy of the keys, and an unreadable folder is not a gone one.
+    let missing = |name: &str| fs::symlink_metadata(root.join(name)).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound);
+    if !(missing(KEYBAG_FILE) && missing(BACKING)) {
+        return false;
+    }
+    let Some(session) = SESSIONS.lock().expect("vault sessions").remove(root) else { return false };
+    tracing::warn!("{}: its folder is gone, so its encrypted view ended", root.display());
+    let id = session.lock().expect("vault session").secret.project_id().to_owned();
+    for project in api.projects.now_open().iter().filter(|project| project.root == root) {
+        api.projects.open.lock().expect("projects lock").remove(&project.id);
+        crate::events::project_closed(&project.id);
+    }
+    // Its index row and local's records of it go at once, as for any project whose folder is gone (cl-1031).
+    if let Err(e) = super::let_go(api, std::slice::from_ref(&id)) {
+        tracing::warn!("{}: a project whose folder is gone stays in the index until the next start: {e}", root.display());
+    }
+    LOCK_RETRIES.lock().expect("lock retries").remove(root);
+    DUE.lock().expect("vault deadlines").remove(root);
+    ROOTS.lock().expect("vault roots").retain(|_, logical| logical != root);
+    crate::events::project_vault(&id, "locked");
+    CLOSED.notify_waiters();
+    let _ = std::thread::Builder::new().name("vault-let-go".into()).spawn(move || drop(session));
+    true
+}
+
 pub(crate) fn close_all(api: &Arc<Api>) -> Result<(), Error> {
     let roots: Vec<_> = SESSIONS.lock().expect("vault sessions").keys().cloned().collect();
     for root in roots {
         let op = operation(&root);
         let _operation = op.lock().expect("vault operation");
+        if end_if_gone(api, &root) { continue; }
         if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
         drain_saves(api, &root, || {})?;
         let transition = exclusive(&root)?;
@@ -899,6 +939,8 @@ fn look(api: &Arc<Api>, runtime: &tokio::runtime::Handle, root: PathBuf) -> Opti
     if LOCKING.lock().expect("vault locks").contains(&root) { return again(); }
     let op = operation(&root);
     let Ok(operation) = op.try_lock() else { say(&root, "operation", || "its clocks wait for a vault operation".into()); return again(); };
+    // Its folder gone: it ends now, not at its deadline (cl-1124).
+    if end_if_gone(api, &root) { return None; }
     let work = working(api, &root);
     let (needs, deadline) = held(&root).map_or((false, None), |session| {
         let mut session = session.lock().expect("vault session");
@@ -998,6 +1040,10 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
     // What its pages typed goes in first, while edits are still admitted.
     if matches!(ask.action.as_str(), "lock" | "encrypt" | "decrypt" | "rotate") { save_first(root, LOCK_DRAIN); }
     let op = operation(&root); let _guard = op.lock().expect("vault operation");
+    // Its folder gone (removed from outside, cl-1124): nothing is left to lock or change; its view ends now.
+    if end_if_gone(api, root) || (ask.action == "lock" && held(root).is_none() && !root.exists()) {
+        return Err(Error::new(Kind::NotFound, "project_gone", "Its folder is gone, so its encrypted view ended: nothing of it stays unlocked."));
+    }
     let (mut ended, mut cut, mut deferred) = (vec![], vec![], vec![]);
     if ask.action == "lock" {
         // A lock that found the project busy already revoked its view: this one finishes it, and admits no receipt into

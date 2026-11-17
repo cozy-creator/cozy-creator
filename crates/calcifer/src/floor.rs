@@ -231,7 +231,8 @@ impl Machines {
         own.filter(|runtime| api::release::of_runtime_minor(runtime))
     }
 
-    /// This home's Hub's software (`/v1/software`), read at most once a [`FRESH`]; as last read when it doesn't answer.
+    /// This home's Hub's software (`/v1/software`), read at most once a [`FRESH`]; as last read, kept across restarts (`hub::held`), when
+    /// it doesn't answer.
     pub(crate) async fn software(&self) -> Option<Arc<Software>> {
         let hub = self.hubs.default_origin();
         let kept = SOFTWARE.lock().expect("software lock").get(&hub).cloned();
@@ -246,11 +247,14 @@ impl Machines {
         };
         match (read, kept) {
             (Ok(read), _) => {
+                crate::hub::held::keep_software(self.hubs.home(), &hub, &read);
                 let read = Arc::new(read);
                 SOFTWARE.lock().expect("software lock").insert(hub, (Instant::now(), read.clone()));
                 Some(read)
             }
             (Err(_), Some((_, read))) => Some(read),
+            // As this computer last read it, before this Calcifer (cl-1127).
+            (Err(_), None) if let Some(kept) = crate::hub::held::software(self.hubs.home(), &hub) => Some(Arc::new(kept)),
             (Err(e), None) => {
                 tracing::warn!("{hub}'s software: {e}");
                 None

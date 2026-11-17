@@ -713,6 +713,33 @@ vault_swapped() (
 # cl-1049: an encrypted project on this runner's OS through cozy and its Calcifer (vault_native.py): made, written, locked, unlocked
 # by passphrase and by recovery secret, read back each time. On Windows, `cozy doctor --fix` installs WinFsp first, as an
 # administrator's would; its exit isn't the cell's.
+# cl-1124: an unlocked encrypted project's folder removed from outside (Windows: its view dies with it), then a lock asked of it, its
+# idle lock, and a restart: each ends within its bound, and Calcifer answers all along (e2e/cli/folder_gone.py). On Windows, WinFsp
+# first, as vault_native installs it. Linux and macOS record what removing it does there (the folder can't go while mounted).
+folder_gone() (
+  step "an unlocked encrypted project's folder removed from outside: its lock, its idle lock and a restart each end (cl-1124)"
+  local py
+  py=$(command -v python3 || command -v python) || fail "folder gone: no python"
+  if [ "${RUNNER_OS:-}" = Windows ]; then
+    cozy --json doctor --fix > "$OUT/folder-gone-doctor.json" 2> "$OUT/folder-gone-doctor.err" || true
+  fi
+  ARGV_LOG="$OUT/argv.log" "$py" "$E2E/cli/folder_gone.py" --cozy "$COZY" --out "$OUT/folder-gone" 2> "$OUT/folder-gone.err" \
+    || { cat "$OUT/folder-gone.err"; check "folder gone: $(tail -n 1 "$OUT/folder-gone.err" | cut -c1-900)"; }
+  cat "$OUT/folder-gone/folder-gone.json" 2> /dev/null || true
+)
+
+# stale_parent: ending a process's tree (as a let-go view's provider and a project's processes are ended) leaves a process that started
+# before it but records its pid as its parent, as Windows keeps a dead parent's id (e2e/cli/stale_parent.py, its probe e2e/process-tree).
+stale_parent() (
+  step "a process tree never takes a process that started before its supposed parent"
+  local py
+  py=$(command -v python3 || command -v python) || fail "stale parent: no python"
+  [ -n "${PROCESS_TREE:-}" ] || fail "stale parent: PROCESS_TREE names no built e2e/process-tree probe"
+  "$py" "$E2E/cli/stale_parent.py" --probe "$PROCESS_TREE" --out "$OUT/stale-parent" 2> "$OUT/stale-parent.err" \
+    || { cat "$OUT/stale-parent.err"; check "stale parent: $(tail -n 1 "$OUT/stale-parent.err" | cut -c1-900)"; }
+  cat "$OUT/stale-parent/stale-parent.json" 2> /dev/null || true
+)
+
 vault_native() (
   step "an encrypted project on this OS: made, written, locked, unlocked by passphrase and recovery, read back"
   local py root=$OUT/vault-native

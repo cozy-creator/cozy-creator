@@ -75,12 +75,12 @@ module.exports = async () => {
   const cold = Object.entries(warmed).filter(([, run]) => run.code !== 0);
   if (cold.length) throw new Error(`fixture tools didn't run on local: ${cold.map(([tool, run]) => `${tool}: exit ${run.code}: ${run.said}`).join('; ')}`);
 
-  // The Hub's packages, as the palette lists them: a Hub that's late says so in `note`.
+  // The Hub's packages, as the palette lists them: a catalog read behind the first list joins a later one.
   const listed = await until(() => ask('GET', '/v1/tools'), (said) => !said.error && SEED.every((name) => said.tools.some((tool) => tool.id.startsWith(`${name}/`))), 120_000);
   if (listed.error) throw new Error(`GET /v1/tools: ${listed.error}`);
   const hub = Object.fromEntries(SEED.map((name) => [name, listed.tools.filter((tool) => tool.id.startsWith(`${name}/`)).map((tool) => tool.id)]));
   const missing = SEED.filter((name) => !hub[name].length);
-  if (missing.length) throw new Error(`the Hub lists none of ${missing.join(', ')}${listed.note ? ` (${listed.note})` : ''}: ${listed.tools.map((tool) => tool.id).join(' ')}`);
+  if (missing.length) throw new Error(`the Hub lists none of ${missing.join(', ')}: ${listed.tools.map((tool) => tool.id).join(' ')}`);
 
   writeFileSync(join(out, 'fixtures.json'), JSON.stringify({ setup_ms: Date.now() - began, warmed, hub }, null, 2));
   console.log(`web setup: ${((Date.now() - began) / 1000).toFixed(1)} s; warmed ${Object.entries(warmed).map(([tool, run]) => `${tool} ${(run.ms / 1000).toFixed(1)} s`).join(', ')}`);

@@ -66,7 +66,7 @@ export class CardView {
   private began = performance.now()
   private pulsing = false
   /** For inspection: each label's full text, the chips and controls as drawn, in card-local units. */
-  readonly drawn = { full: new Map<string, string>(), chips: [] as { text: string; struck: boolean; box: Box }[], controls: [] as { part: Part; box: Box }[], parts: new Map<Part, Box>(), meter: null as Box | null, dot: null as Box | null, unseen: null as Box | null }
+  readonly drawn = { full: new Map<string, string>(), chips: [] as { text: string; struck: boolean; box: Box }[], controls: [] as { part: Part; box: Box }[], parts: new Map<Part, Box>(), meter: null as Box | null, dot: null as Box | null, unseen: null as Box | null, orbit: null as Box | null }
 
   constructor() {
     this.pulse.eventMode = this.ground.eventMode = this.ink.eventMode = "none"
@@ -137,7 +137,7 @@ export class CardView {
     body.x -= node.box.x; body.y -= node.box.y
     const used = new Set<string>(), pictures = new Set<string>()
     this.ground.clear(); this.ink.clear()
-    this.drawn.chips = []; this.drawn.controls = []; this.drawn.parts.clear(); this.drawn.meter = null; this.drawn.dot = null; this.drawn.unseen = null
+    this.drawn.chips = []; this.drawn.controls = []; this.drawn.parts.clear(); this.drawn.meter = null; this.drawn.dot = null; this.drawn.unseen = null; this.drawn.orbit = null
     for (const area of this.parts.values()) area.visible = false
     const label = (key: string, text: string, x: number, y: number, room: number, style: LabelStyle, lines = 1) => { used.add(key); return this.label(key, text, x, y, room, style, env, lines) }
     this.untool.at = null
@@ -173,6 +173,7 @@ export class CardView {
         this.ink.roundRect(body.x + body.w - room - 6, body.y + body.h - SMALL * 1.5 - 6, room, SMALL * 1.5, 4).fill({ color: 0x000000, alpha: 0.55 })
         label("duration", show.duration, body.x + body.w - room, body.y + body.h - SMALL * 1.5 - 5, room, { size: SMALL, color: 0xffffff, mono: true, bold: true })
       }
+      if (show.orbit && !far) this.orbitMark(body)
       if (show.progress?.phase === "local") {
         this.ink.rect(body.x, body.y, body.w * (show.progress.fraction ?? 0), body.h).fill({ color: colors.running, alpha: 0.2 })
         if (!far) label("progress", show.progress.state, body.x + 12, body.y + body.h / 2 - BODY / 2, body.w - 24, { size: BODY, color: colors.ink, bold: true })
@@ -252,6 +253,20 @@ export class CardView {
         .moveTo(x + 8, top + 11).lineTo(x + 9, top + 22).lineTo(x + 17, top + 22).lineTo(x + 18, top + 11).stroke({ width: 1.7, color })
       this.area("delete", { x: x - 2, y: top, w: 28, h: 28 })
     }
+  }
+
+  /** An orbit's mark at its picture's foot, left (Media.tsx's badge before the board): ui/Icon.tsx's `orbit`, a turn and its arrow, white on a
+   *  dark disc as tall as the duration's pill. */
+  private orbitMark(body: Box) {
+    const d = SMALL * 1.5, x = body.x + 6, y = body.y + body.h - d - 6, s = (d - 8) / 20
+    const at = (px: number, py: number): [number, number] => [x + 4 + px * s, y + 4 + py * s]
+    // The icon's arc, `A6.5 6.5 0 1 0` from (16.2, 8.6) to (4, 12.6), about its centre.
+    const [cx, cy] = at(9.78, 9.63)
+    this.ink.circle(x + d / 2, y + d / 2, d / 2).fill({ color: 0x000000, alpha: 0.67 })
+    this.ink.moveTo(...at(16.2, 8.6)).arc(cx, cy, 6.5 * s, -0.159, 2.667, true)
+      .moveTo(...at(16.5, 3.8)).lineTo(...at(16.5, 8.6)).lineTo(...at(11.7, 8.6))
+      .stroke({ width: 1.6 * s, color: 0xffffff, cap: "round", join: "round" })
+    this.drawn.orbit = { x, y, w: d, h: d }
   }
 
   /** Under a box at rest (cl-932, cl-898): its tool and shape; while it renders, where and how long, then what it's doing with Cancel. */

@@ -2128,7 +2128,7 @@ fn board_of(project: &Project) -> Option<api::calcifer::project::Board> {
 }
 
 /// The local code `id`'s assets name, each once: its path as they write it, and where that is. Not a checkout's first-party
-/// package, which is listed by its name (`toolbox::from_source`).
+/// package, which is listed by its name (`source_tools::listed`).
 pub(crate) fn local_code_named(api: &Arc<Api>, id: &str) -> Result<Vec<(String, PathBuf)>, Refusal> {
     let project = api.projects.get(api, id)?;
     let folder = &project.folder;
@@ -4283,6 +4283,14 @@ impl Walk {
     /// tell me to rent a new one"): with every one gone (ended, ending, offline), where a render naming none goes, said once a render.
     fn live(&self, ask: &str, on: &[On]) -> Vec<On> {
         let api = self.host.api();
+        // Each by its name now: a rental asked by a name it had before goes where its order went (cl-1089, cl-1125).
+        let on: Vec<On> = (on.iter())
+            .map(|on| match on {
+                On::Machine(name) => On::Machine(api.calcifer.machine_name_now(name)),
+                other => other.clone(),
+            })
+            .collect();
+        let on = on.as_slice();
         let gone: Vec<String> = (on.iter())
             .filter_map(|on| match on {
                 On::Machine(name) => api.machines.gone(name),
@@ -4681,7 +4689,7 @@ impl Walk {
         let Some(renderer) = package.first_making(kind) else { return Ok(None) };
         let models = listed_models(&renderer, made)?;
         let source = match &renderer.local {
-            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: self.pinned(hub, &renderer)? }),
+            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: self.pinned(hub, &renderer)?, ..Default::default() }),
             Some(path) => {
                 // Staged in its project's storage scope, as its call's are; an encrypted project's code goes with the run that calls it.
                 let scope = crate::private_io::of_path(&self.folder().dir)?;
@@ -6068,7 +6076,7 @@ impl Walk {
         // Local code is made ready on the machine the call goes to, its files and manifest sent
         // with every call: a machine that dropped them installs them in the call.
         let source = match &renderer.local {
-            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: self.pinned(&hub, &renderer).map_err(named)? }),
+            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: self.pinned(&hub, &renderer).map_err(named)?, ..Default::default() }),
             Some(path) => {
                 let began = std::time::Instant::now();
                 let prepared = self.again(|| async {
@@ -6970,14 +6978,83 @@ async fn pick(api: &Arc<Api>, on: &[On], offers: &[Offer], planned: Option<&Offe
         let (taken, said) = placement::takes(api, on, offers).await?;
         return Ok((taken, None, said));
     };
+    let chosen = well_placed(api, offers, soonest, hub, package, function, made, now);
+    Ok((chosen.machine.clone(), Some(chosen), None))
+}
+
+/// `soonest` of `offers`, unless it's this computer and would run `function` poorly or draw the screen meanwhile (`pick`): then the
+/// soonest elsewhere, if any.
+#[allow(clippy::too_many_arguments)]
+fn well_placed(api: &Arc<Api>, offers: &[Offer], soonest: &Offer, hub: &str, package: Option<&Package>, function: &str, made: &Map<String, Value>, now: i64) -> Offer {
     let poorly = soonest.machine.is_local()
         && (fit::draws_screen(api) || (soonest.basis != v1::Basis::Measured && package.is_some_and(|package| fit::poorly_now(api, hub, package, function, made))));
     let others: Vec<Offer> = offers.iter().filter(|offer| !offer.machine.is_local()).cloned().collect();
-    let chosen = match poorly {
-        true => placement::soonest(&others, now).unwrap_or(soonest),
-        false => soonest,
+    match poorly {
+        true => placement::soonest(&others, now).unwrap_or(soonest).clone(),
+        false => soonest.clone(),
+    }
+}
+
+/// Where a job of Calcifer's queue may go (cl-1132): its project's machines (`machines_of`), else where a run naming none goes.
+pub(crate) async fn queue_set(api: &Arc<Api>, row: &crate::store::RunRow) -> Vec<On> {
+    if row.project_root.is_some()
+        && let Ok(set) = machines_of(api, &row.owner)
+        && !set.is_empty()
+    {
+        return set;
+    }
+    crate::runs::unnamed_set(api, None).await.unwrap_or_else(|_| vec![On::Machine("local".into())])
+}
+
+/// Where a job of Calcifer's queue goes now (cl-1132, Paul 11-17: "it gives that queue of jobs to a machine. If that machine dies or
+/// disappears, it re-assigns that queued job to another machine"): of `set`, the soonest finish, as a render's job goes (`pick`). Never
+/// one that quoted no finish: a machine that doesn't answer is no candidate until it does. Else why none can take it now.
+pub(crate) async fn queued_on(api: &Arc<Api>, set: &[On], row: &crate::store::RunRow) -> Result<Offer, String> {
+    let hub = row.hub.as_ref().map_or_else(|| api.machines.hubs.default_origin(), ToString::to_string);
+    let function = row.spec.entrypoint.as_str();
+    let payload: Value = row.spec.payload.as_ref().and_then(|payload| serde_json::from_str(payload.get()).ok()).unwrap_or_default();
+    let (read, named, fetched, gpu) = match &row.spec.source {
+        Some(v1::Source::Release(release)) => {
+            let read = Host::new(api).published(&hub, &format!("{}@{}", release.package, release.release), set.first()).await.ok();
+            let fetched = match &read {
+                Some(read) => fit::checkpoints(api, &hub, read, function, &Map::new()).await,
+                None => fit::Fetched::default(),
+            };
+            let gpu = read.as_ref().and_then(|read| api::interface::Interface::parse(read.document()).ok()).is_some_and(|interface| {
+                interface.callables.iter().find(|callable| callable.name == function).is_some_and(|callable| interface.needs_gpu(callable))
+            });
+            (read, format!("{}/{function}@{}", release.package, release.release), fetched, gpu)
+        }
+        // Local code: as its machine's estimate names it; one that builds models wants a GPU.
+        Some(v1::Source::Local(local)) => (None, format!("{}/{function}", local.manifest), fit::Fetched::default(), !row.spec.models.is_empty()),
+        _ => (None, row.target.clone(), fit::Fetched::default(), false),
     };
-    Ok((chosen.machine.clone(), Some(chosen.clone()), None))
+    let job = placement::Job {
+        key: row.id.to_string(),
+        target: row.target.clone(),
+        function: named,
+        models: fetched.models,
+        size: v1::JobSize::of(&payload),
+        gpus: row.spec.gpus,
+        gpu,
+        on: set.to_vec(),
+        scope: None,
+        source: None,
+        on_demand_bytes: fetched.on_demand_bytes,
+    };
+    let (offers, said) = Box::pin(placement::offers(api, std::slice::from_ref(&job), true)).await;
+    let offers = offers.into_iter().next().unwrap_or_default();
+    let now = now_ms();
+    match placement::soonest(&offers, now) {
+        Some(soonest) => Ok(well_placed(api, &offers, soonest, &hub, read.as_ref(), function, &Map::new(), now)),
+        None => {
+            let why: Vec<String> = offers.iter().map(|offer| placement::said(offer, now)).chain(said).collect();
+            Err(match why.is_empty() {
+                true => "waiting for a machine that can take it".into(),
+                false => format!("waiting for a machine that can take it: {}", why.join("; ")),
+            })
+        }
+    }
 }
 
 /// Where `cozy run` of `function` goes among `set` (Paul, 11-06): as a render's job does (`pick`), each machine asked once, for `count`

@@ -94,6 +94,10 @@ impl Calcifer {
                 if let Some(runtime) = row.and_then(|row| machines.frame(&row.name)).map(|frame| frame.runtime).filter(|runtime| !runtime.is_empty()) {
                     crate::local_code::keep(machines.hubs.home(), &filed, &runtime, &result["interface"]);
                 }
+                // A public repository's code is listed as installed once its interface is kept (cl-1127).
+                if crate::git_code::origin_of_manifest(&filed.manifest).is_some() {
+                    crate::events::tools_changed();
+                }
                 return;
             }
         }

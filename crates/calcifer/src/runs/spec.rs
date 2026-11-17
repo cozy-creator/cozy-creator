@@ -179,6 +179,7 @@ impl Call<'_> {
             package: self.package.to_owned(),
             release: release.to_owned(),
             digest: digest.to_owned(),
+            ..Default::default()
         }
     }
 }

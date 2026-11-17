@@ -126,9 +126,23 @@ pub async fn get_link(url: &str, sink: &mut (dyn FnMut(u64, &[u8]) -> Result<()>
     get_body(policy, url, &[], 0, sink).await
 }
 
+/// [`get_pinned`] from byte 0, also trusting the CA certificates in `roots` (PEM): a Hub's own files under its private CA.
+pub async fn get_pinned_trusting(url: &str, roots: Option<&[u8]>, sink: &mut (dyn FnMut(u64, &[u8]) -> Result<()> + Send + '_)) -> Result<()> {
+    let policy = SourcePolicy { any_host: true, max_redirects: 5, ..Default::default() };
+    let client = match roots {
+        Some(pem) => Client::with_roots(policy, pem)?,
+        None => Client::new(policy),
+    };
+    get_with(&client, url, &[], 0, sink).await
+}
+
 async fn get_body(policy: SourcePolicy, url: &str, headers: &[(String, String)], from: u64, sink: &mut (dyn FnMut(u64, &[u8]) -> Result<()> + Send + '_)) -> Result<()> {
+    get_with(&Client::new(policy), url, headers, from, sink).await
+}
+
+async fn get_with(client: &Client, url: &str, headers: &[(String, String)], from: u64, sink: &mut (dyn FnMut(u64, &[u8]) -> Result<()> + Send + '_)) -> Result<()> {
     let range = (from > 0).then_some((from, None));
-    let got = ask::get(&Client::new(policy), url, headers, None, range, sink).await;
+    let got = ask::get(client, url, headers, None, range, sink).await;
     match got.map_err(GetError::refusal)? {
         Ok(_) => Ok(()),
         Err(416) if from > 0 => Ok(()),

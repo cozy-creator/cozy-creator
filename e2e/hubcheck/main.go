@@ -4,7 +4,8 @@
 // drift, a response that breaks it the document's. A route the document lacks is a mismatch; an operation marked
 // `x-raw-body` (pages, redirects, bytes) has its status checked, not its body. Object fields follow the document's
 // additionalProperties policy. <out>/hub-calls.json counts the calls of each operation. Each call of an operation --keep names
-// is one JSON line in <out>/hub-kept.jsonl: its body, its answer, and whether it carried a credential.
+// is one JSON line in <out>/hub-kept.jsonl: its body, its answer, and whether it carried a credential. Started again on the
+// same <out> (a cell stopped it with the Hub), it adds to these files.
 //
 //	hubcheck --hub http://127.0.0.1:8819 --out DIR [--listen 127.0.0.1:0] [--spec FILE] [--keep "POST /v1/run-reports,..."]
 //
@@ -87,18 +88,21 @@ func main() {
 	if err := os.MkdirAll(*out, 0o755); err != nil {
 		fail(err)
 	}
-	file, err := os.Create(filepath.Join(*out, "hub-mismatches.jsonl"))
+	file, err := appendTo(filepath.Join(*out, "hub-mismatches.jsonl"))
 	if err != nil {
 		fail(err)
 	}
 	c := &checker{doc: doc, out: file, calls: map[string]int{}, counts: filepath.Join(*out, "hub-calls.json"), keep: map[string]bool{}}
+	if counted, err := os.ReadFile(c.counts); err == nil {
+		_ = json.Unmarshal(counted, &c.calls)
+	}
 	for _, operation := range strings.Split(*keep, ",") {
 		if operation = strings.TrimSpace(operation); operation != "" {
 			c.keep[operation] = true
 		}
 	}
 	if len(c.keep) > 0 {
-		if c.kept, err = os.Create(filepath.Join(*out, "hub-kept.jsonl")); err != nil {
+		if c.kept, err = appendTo(filepath.Join(*out, "hub-kept.jsonl")); err != nil {
 			fail(err)
 		}
 	}
@@ -114,6 +118,10 @@ func main() {
 	}
 	fmt.Println(listener.Addr().String())
 	fail(http.Serve(listener, c.mux()))
+}
+
+func appendTo(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
 }
 
 func fail(err error) {

@@ -33,7 +33,7 @@ interface Owed {
 
 /** Stream events into the query cache. The stream invalidates, so nothing goes stale by itself. */
 class Bridge {
-  /** Calcifer came back as another version: the page offers Reload. */
+  /** Calcifer came back as another version: the page reloads itself when it's safe to (`reloadWhenSafe`). */
   readonly newVersion = signal<string | null>(null)
   private queries: QueryClient
   private client: Client
@@ -316,6 +316,10 @@ class Bridge {
       // The index changed (a project renamed or deleted, cl-1097): the tabs and the list read it again.
       case "projects.changed":
         void this.queries.invalidateQueries({ queryKey: ["projects"] })
+        break
+      // A dev home's first-party package was read from its source (cl-1126): the tools are read again.
+      case "tools.changed":
+        void this.queries.invalidateQueries({ queryKey: ["tools"] })
         break
       case "appearance":
         this.queries.setQueryData(["appearance"], event.appearance)

@@ -71,6 +71,8 @@ struct Stage {
     src: PathBuf,
     /// The uv it is locked and built with.
     uv: PathBuf,
+    /// Locked from what this computer holds, its Hub unreachable (cl-1127): uv's cache, read with `--offline`.
+    offline: bool,
 }
 
 impl Stage {
@@ -133,7 +135,7 @@ impl Stage {
             doc["tool"]["uv"]["required-environments"] = toml_edit::value(toml_edit::Array::from_iter([RENTAL_ENVIRONMENT]));
         }
         fs::write(&path, doc.to_string()).map_err(|e| refuse("stage_unavailable", e))?;
-        Ok(Self { _dir: dir, root, src, uv })
+        Ok(Self { _dir: dir, root, src, uv, offline: false })
     }
 
     /// A floor only the open RC meets (`cozy-runtime>=0.47.0.dev0`) takes the RC's newest build, its wheel by URL in this copy
@@ -224,7 +226,11 @@ impl Stage {
         let lock = |refresh: bool| {
             let mut command = uv(&self.uv, &self.src);
             command.args(["lock", "--no-progress", "--python", python]).args(platform::tools::uv_upgrade(upgrade.iter().map(String::as_str)));
-            if refresh {
+            if self.offline {
+                command.arg("--offline");
+            }
+            // Offline, what uv holds is all there is: nothing to refresh.
+            if refresh && !self.offline {
                 command.arg("--refresh");
             }
             run_said(&mut command, "lock_failed", "uv lock").map(drop)
@@ -373,12 +379,33 @@ pub(super) async fn lock(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask: &P
 pub(crate) async fn locked(hubs: &Hubs, hub: &Origin, project: &Project, within: &Path, root: bool, upgrade: &[String], say: Say<'_>)
     -> Result<Locked, Error> {
     let uv_path = tools(hubs.home(), project, say).await?;
-    let stage = blocking(|| Stage::new(project, within, uv_path, say))?;
+    let mut stage = blocking(|| Stage::new(project, within, uv_path, say))?;
     stage.rc_runtime(say).await?;
     let own = blocking(|| fs::read_to_string(project.root.join("uv.lock")).ok());
     let bound = match project.hub_sources.is_empty() {
         true => Bound::new(),
-        false => bindings(hubs, hub, project, root, own.as_deref()).await?,
+        false => match bindings(hubs, hub, project, root, own.as_deref()).await {
+            Ok(bound) => {
+                super::held::keep_indexes(hubs.home(), hub.as_str(), &bound);
+                bound
+            }
+            // The Hub unreachable: each source at the index it was last bound to here, else the root's, and locked from what uv
+            // holds of them (cl-1127; Paul, 11-17: "not too reliant on tensorhub").
+            Err(e) if e.code == "hub_unreachable" || e.code == "hub_slow" => {
+                let locked = own.as_deref().map(lock_namespaces).unwrap_or_default();
+                stage.offline = true;
+                say(&format!("{hub} can't be reached: locked from what this computer holds"));
+                (project.hub_sources.iter())
+                    .map(|name| {
+                        let namespace = locked.get(name).cloned().unwrap_or_else(|| api::names::ROOT.to_owned());
+                        let url = super::held::offline_index(hubs.home(), hub.as_str(), &namespace)
+                            .unwrap_or_else(|| super::held::index(hubs.home(), hub.as_str(), &namespace));
+                        (name.clone(), (namespace, url))
+                    })
+                    .collect()
+            }
+            Err(e) => return Err(e),
+        },
     };
     stage.bind(&bound)?;
     let account_index = (bound.values().find(|(namespace, _)| namespace != api::names::ROOT))
@@ -387,6 +414,9 @@ pub(crate) async fn locked(hubs: &Hubs, hub: &Origin, project: &Project, within:
     blocking(|| {
         let python = python(project, &stage.uv)?;
         stage.lock(python.request.as_str(), upgrade)?;
+        if stage.offline {
+            super::held::online_lock(hubs.home(), hub.as_str(), &stage.src.join("uv.lock"))?;
+        }
         let locked = fs::read_to_string(stage.src.join("uv.lock")).map_err(|e| refuse("lock_failed", e))?;
         let changed = own.as_deref() != Some(locked.as_str());
         Ok(Locked { lock: locked, account_index, changed })

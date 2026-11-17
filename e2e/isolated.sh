@@ -159,6 +159,22 @@ rc_floor() {
   else log "publishing e2e-rcfloor was refused: $(tail -c 300 "$E2E_RCFLOOR_PUBLISHED" | tr '\n' ' ')"; fi
 }
 
+# oldcall (old_call_files, cl-1160): e2e/cli/oldcall as the admin's account's `e2e-oldcall` 0.1.0, locked on Runtime 0.46.0 as cozy
+# 0.25.0's packages are. A refusal is the cell's to report.
+oldcall() {
+  local copy=$seed/packages/e2e-oldcall account
+  account=$(cozy --json whoami | jq -r '.account // empty')
+  rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$here/cli/oldcall" "$copy"
+  if (cd "$copy" && cozy --json package publish -y) > "$seed/publish-e2e-oldcall.json" 2>&1; then
+    export E2E_OLDCALL=$account/e2e-oldcall
+    log "published $E2E_OLDCALL 0.1.0 ($(grep -A1 -x 'name = "cozy-runtime"' "$copy/uv.lock" 2> /dev/null | tail -1))"
+  else
+    E2E_OLDCALL_REFUSED=$(tail -c 400 "$seed/publish-e2e-oldcall.json" | tr '\n' ' ')
+    export E2E_OLDCALL_REFUSED
+    log "publishing e2e-oldcall was refused: $E2E_OLDCALL_REFUSED"
+  fi
+}
+
 # next (self_update, cl-978): the hub suite's weightless echo as the admin's account's `e2e-next` 0.1.0, needing cozy-runtime>=0.46.0,
 # which only a cozy of the Latest's line runs.
 next() {
@@ -430,20 +446,9 @@ if [ -n "$needs" ]; then
       grep -q '^\[project.entry-points."cozy.application"\]' "$dir/pyproject.toml" 2> /dev/null || continue
       publish "$dir" cohort || { echo "${dir##*/} could not be seeded from the selected cohort" >&2; exit 1; }
     done
-    # A release locked to the Runtime before this one, as flux-3-klein 0.7.0 is on production (run 46790): the palette leaves it out.
-    old=$seed/e2e-runtime-044
-    rm -rf "$old" && cp -r "$here/cli/project/boxed" "$old"
-    sed -e 's/^name = "e2e-boxed"/name = "e2e-runtime-044"/' -e 's/"cozy-runtime\[media\]>=[^"]*"/"cozy-runtime[media]>=0.44.0,<0.45"/' "$old/pyproject.toml" > "$old/pyproject.next" && mv "$old/pyproject.next" "$old/pyproject.toml"
-    publish "$old" || log "e2e-runtime-044 not published: $(tail -c 300 "$seed/publish-e2e-runtime-044.json" | tr '\n' ' ')"
-    # And one needing the Runtime after this shard's Hub pin (0.45.0, e2e.yaml), as every 0.25 release did on a laptop still on 0.45.0
-    # (cl-975): a machine on the pin moves up for it, so the palette offers it.
-    next=$seed/e2e-runtime-046
-    rm -rf "$next" && cp -r "$here/cli/project/boxed" "$next"
-    sed -e 's/^name = "e2e-boxed"/name = "e2e-runtime-046"/' -e 's/"cozy-runtime\[media\]>=[^"]*"/"cozy-runtime[media]>=0.46.0,<0.47"/' "$next/pyproject.toml" > "$next/pyproject.next" && mv "$next/pyproject.next" "$next/pyproject.toml"
-    publish "$next" || log "e2e-runtime-046 not published: $(tail -c 300 "$seed/publish-e2e-runtime-046.json" | tr '\n' ' ')"
   fi
   case $shard in
-    local-code | '')
+    local-code | hubdown | '')
       # Its lock reads the Hub's index, under the Hub's own CA: Calcifer's uv takes the system's bundle once restarted.
       sudo cp "${COZY_TEST_HUB_CA:?}" /usr/local/share/ca-certificates/cozy-test-hub.crt && sudo update-ca-certificates > "$seed/ca.log" 2>&1
       systemctl --user set-environment SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
@@ -451,7 +456,8 @@ if [ -n "$needs" ]; then
       relay
       held
       final
-      rc_floor ;;
+      rc_floor
+      oldcall ;;
   esac
   if [[ " $needs " == *" birefnet "* || " $needs " == *" qwen "* || " $needs " == *" downloads "* || " $needs " == *" loras "* || " $needs " == *" parts "* \
     || " $needs " == *" disk "* || " $needs " == *" lorabase "* || " $needs " == *" ltxlora "* || " $needs " == *" enhancer "* ]]; then

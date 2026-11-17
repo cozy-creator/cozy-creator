@@ -228,6 +228,11 @@ pub(crate) fn projects_changed() {
     let _ = PROJECTS.said.send(StreamEvent::ProjectsChanged);
 }
 
+/// Tells every stream what `GET /v1/tools` lists changed (cl-1126).
+pub(crate) fn tools_changed() {
+    let _ = PROJECTS.said.send(StreamEvent::ToolsChanged);
+}
+
 /// Tells every stream project `id` is gone, deleted here (cl-1097): what showed it no longer holds it.
 pub(crate) fn project_deleted(id: &str, path: &std::path::Path) {
     let _ = PROJECTS.said.send(StreamEvent::ProjectGone { id: id.to_owned(), path: path.to_string_lossy().into_owned() });
@@ -296,6 +301,11 @@ async fn subscribe(api: Arc<Api>, scope: Scope, page: bool) -> Watch {
         })
     } else { HashMap::new() };
     let showing = all.then(|| Showing::new(page));
+    // A page connected: the Hub's catalog is read again for it (cl-1126).
+    if page && all {
+        api.listing.page_connected(&api);
+        PAGE_OPENED.notify_waiters();
+    }
     let id = showing.as_ref().map(|showing| showing.0.clone()).unwrap_or_else(stream_id);
     let hello = StreamEvent::Hello { version: ::api::VERSION.into(), stream: id };
     Watch {
@@ -400,6 +410,26 @@ pub(crate) async fn saved(
     SAVING.lock().expect("saving lock").remove(&(stream, project));
     SAVED.notify_waiters();
     Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+/// Told as a page's stream begins.
+static PAGE_OPENED: LazyLock<Notify> = LazyLock::new(Notify::new);
+
+/// Whether a page's stream is open.
+pub(crate) fn pages() -> bool {
+    SHOWN.lock().expect("shown lock").values().any(|shows| shows.page)
+}
+
+/// Once a page's stream is open: at once when one is.
+pub(crate) async fn page_open() {
+    loop {
+        let mut opened = std::pin::pin!(PAGE_OPENED.notified());
+        opened.as_mut().enable();
+        if pages() {
+            return;
+        }
+        opened.await;
+    }
 }
 
 /// A stream's place in `SHOWN`, by its id: what it holds is let go when it ends.
@@ -573,7 +603,7 @@ impl Watch {
 
     fn visible(&self, event: &StreamEvent) -> bool {
         let project_id = match event {
-            StreamEvent::ProjectVault { .. } | StreamEvent::ProjectsChanged | StreamEvent::Appearance { .. } => return true,
+            StreamEvent::ProjectVault { .. } | StreamEvent::ProjectsChanged | StreamEvent::ToolsChanged | StreamEvent::Appearance { .. } => return true,
             // A page's alone: this computer's cozy has nothing typed to send.
             StreamEvent::ProjectSaving { id } => return self.showing.as_ref().is_some_and(|showing| showing.page() && showing.includes(id)),
             // Out of the index by now, and let go by every stream: told to all (cl-1097).

@@ -5,13 +5,15 @@
 # hand gate's dirs with the URL where their result is recorded. verify.sh first; then, each waiting for the last to succeed:
 #   PyPI      TensorFS tensorfs-publish.yaml and the Runtime runtime-publish.yaml prebuilt, with gate_run: the prereleases' files;
 #   smoke     e2e cpu: the release cozy locks a gated source package against PyPI's Runtime and runs it (hard stop);
-#   images    tensorhub worker-images-publish.yaml promote: the digests staged from those wheels (--images) become the tags;
 #   cozy      cozy-promote.yaml: the v<V> prerelease becomes Latest (`cozy update`, the installer) and Homebrew's;
 #   packages  `task publish -- --gated <packages_ref>` in the packages checkout (--packages, on master with the RC merged):
 #             the gated source's finals, only the version changed (Paul 11-13: software before the packages that need it), each
 #             with its benchmarks (cl-1024): `bench.py references` of the newest stored baseline (`bench.py baseline` after the
 #             gate), else benchmarks-seed.json, into each package's benchmarks.json, which its publish attaches;
-#   models    each held private release the set uses (candidate.json `models`) published again with its checkpoints: public.
+#   models    each held private release the set uses (candidate.json `models`) published again with its checkpoints: public;
+#   images    tensorhub worker-images-publish.yaml promote: the digests staged from those wheels (--images) become the tags.
+#             Last (cl-1164): a new package runs on an old image (its machine moves its Runtime up), an old package never on a
+#             new one (a release refuses a Runtime its cap leaves out), so new pods boot the new Runtime once its packages exist.
 # The Hub pin (/v1/software) stays the release owner's, after this.
 set -euo pipefail
 DRY= IMAGES= PKGS=
@@ -83,13 +85,12 @@ if [ -n "$(field runtime_sha256)" ] && [ -n "$ref" ] && [ -n "$(field cozy)" ]; 
   go cozy-creator/cozy-creator e2e.yaml --ref "$tag" -f repo=cozy-creator -f ref="$sha" -f creator_ref="$sha" -f stack_ref="$sha" \
     -f select=cpu -f cpu_only=birefnet -f publish_run="$pub" -f runtime="$(field runtime)" -f tensorfs="$(field tensorfs)" -f packages_ref="$ref"
 fi
-[ -z "$IMAGES" ] || go cozy-creator/tensorhub worker-images-publish.yaml --ref master -f mode=promote -f digests="$IMAGES"
 c=$(field cozy)
 if [ -n "$(field cozy_sha256)" ] && [ "$(gh release view "v$c" -R cozy-creator/cozy-creator --json isPrerelease -q .isPrerelease 2>/dev/null)" = true ]; then
   go cozy-creator/cozy-creator cozy-promote.yaml -f tag="v$c" -f gate="$gate"
 fi
 if [ -n "$ref" ]; then
-  base=$(ls "$HERE"/baselines/*.json 2> /dev/null | sort -V | tail -1)
+  base=$(ls "$HERE"/baselines/*.json 2> /dev/null | sort -V | tail -1 || true)
   run uv run -q --no-project --with numpy python -I "$HERE/bench.py" references "${base:-$HERE/benchmarks-seed.json}" --packages "$PKGS"
   if [ -n "$DRY" ]; then (cd "$PKGS" && run task publish -- --dry-run --gated "$ref")
   else (cd "$PKGS" && run task publish -- --gated "$ref"); fi
@@ -100,4 +101,5 @@ for m in "${models[@]}"; do
   mapfile -t checkpoints < <(jq -r '[.. | objects | select(has("lane") and has("checkpoint")) | .checkpoint] | unique[]' <<< "$shown")
   run cozy model publish "${m%@*}" "${m#*@}" "${checkpoints[@]}" -y
 done
+[ -z "$IMAGES" ] || go cozy-creator/tensorhub worker-images-publish.yaml --ref master -f mode=promote -f digests="$IMAGES"
 echo "promoted: $(jq -c . <<< "$set_"). Then the Hub pin, to this set."

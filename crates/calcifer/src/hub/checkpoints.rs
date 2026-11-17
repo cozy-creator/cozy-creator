@@ -151,7 +151,7 @@ pub(super) async fn said(api: &Api, hub: &Origin, cards: &[types::ModelCard], mo
 const NAMED_FOR: Duration = Duration::from_secs(600);
 
 /// The family and kind of each declared default, by Hub and reference, when read.
-#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 struct DefaultModel {
     family: Option<String>,
     kind: Option<ModelKind>,
@@ -330,7 +330,7 @@ pub(crate) async fn check_choices(api: &Api, hub: &str, slots: &[(&str, &Slot)],
 }
 
 /// Each declared slot says the family and kind of its default checkpoint, as read so far: a list never waits on the Hub for them.
-/// Those not read, or read more than [`NAMED_FOR`] ago, are read behind it, one read at a time, for the next list (cl-1010).
+/// Those not read, or read more than [`NAMED_FOR`] ago, are read behind it, one read at a time, and told as `tools.changed` (cl-1010, cl-1126).
 pub(crate) fn families(api: &std::sync::Arc<Api>, hub: &str, tools: &mut [Tool]) {
     static READING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     let defaults: BTreeSet<String> = tools.iter().flat_map(|tool| tool.models.iter().chain(tool.model.iter())).filter_map(|model| model.default.clone()).collect();
@@ -354,13 +354,19 @@ pub(crate) fn families(api: &std::sync::Arc<Api>, hub: &str, tools: &mut [Tool])
                 });
                 let reads: Vec<(String, DefaultModel)> = stream::iter(reads).buffered(READS).collect().await;
                 save(api);
-                {
+                let changed = {
                     let mut held = named_so_far(api).lock().expect("named lock");
+                    let mut changed = false;
                     for (default, model) in reads {
-                        held.insert(format!("{origin} {default}"), (Instant::now(), model));
+                        let was = held.insert(format!("{origin} {default}"), (Instant::now(), model.clone()));
+                        changed |= was.is_none_or(|(_, was)| was != model);
                     }
-                }
+                    changed
+                };
                 keep_families(api);
+                if changed {
+                    crate::events::tools_changed();
+                }
             };
             let _ = tokio::time::timeout(Duration::from_secs(60), read).await;
             READING.store(false, std::sync::atomic::Ordering::Release);

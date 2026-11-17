@@ -4,8 +4,8 @@
 # "source" instead of its release's 0.1.0. On local and on a stand-in (another user's cozy on this runner: this Hub's docker
 # rentals never get ready), each run's record says the checkout's branch and commit. A package of the checkout that takes
 # minimax-h3-tools from the Hub's index (as orbit takes minimax-h3) calls the checkout's, as cargo's [patch] does. A release
-# named (`@0.1.0`) and an account's package come from the Hub, and the page's tools list the checkout's from source. `local`
-# follows the RC (held here by hand, so the shard keeps its candidates). With `dev = false` the same name is the Hub's again.
+# named (`@0.1.0`) and an account's package come from the Hub, and the page's tools list the checkout's from source (`source_reads`).
+# `local` follows the RC (held here by hand, so the shard keeps its candidates). With `dev = false` the same name is the Hub's again.
 # said_by <name>: what run <name>'s record says of it, for the log: its number, machine, target, reply's release and its from-source line.
 said_by() {
   echo "from source: $1: run $(cat "$OUT/$1.number" 2> /dev/null) on $(run_get "$OUT" "$1" .machine): $(run_get "$OUT" "$1" .target)," \
@@ -133,27 +133,28 @@ if [ -n "${E2E_RELAY:-}" ] && cell source-account "$E2E_RELAY/relay" "text=an ac
 fi
 
 # The page's tools: the checkout's, saying its branch and commit. A package's first reading (its lock, its description) can outlast a
-# list, which says so and lists it once read.
+# list: it's listed once read.
 for _ in 1 2 3 4 5 6; do
-  curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$(jq -r .address "$holder")/v1/tools?on=local" > "$OUT/source-tools.json" 2>&1 \
+  curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$(jq -r .address "$holder")/v1/tools" > "$OUT/source-tools.json" 2>&1 \
     && J '[.tools[] | select(.id == "e2e-boxed/one_field")] != []' "$OUT/source-tools.json" && break
   sleep 5
 done
 echo "from source: the page's tools: $(jq -c '[.tools[]? | select(.id | startswith("e2e-boxed/")) | {id, release, source}] | .[:2]' "$OUT/source-tools.json" 2> /dev/null)"
 J --arg said "$said" '[.tools[] | select(.id == "e2e-boxed/one_field") | .source] == [$said]' "$OUT/source-tools.json" \
-  || check "from source: the page's tools don't list e2e-boxed/one_field from $said: $(jq -c '[.tools[]? | {id, release, source}] | .[:8]' "$OUT/source-tools.json" 2> /dev/null || head -c 300 "$OUT/source-tools.json"), $(jq -c .note "$OUT/source-tools.json" 2> /dev/null)"
+  || check "from source: the page's tools don't list e2e-boxed/one_field from $said: $(jq -c '[.tools[]? | {id, release, source}] | .[:8]' "$OUT/source-tools.json" 2> /dev/null || head -c 300 "$OUT/source-tools.json")"
 
 # Its reading is kept across Calcifer's restart: the first list after one has it, nothing left to read.
 systemctl --user restart cozy-calcifer || check "from source: Calcifer didn't restart"
 machine_ready
-curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$(jq -r .address "$holder")/v1/tools?on=local" > "$OUT/source-tools-again.json" 2>&1
+curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$(jq -r .address "$holder")/v1/tools" > "$OUT/source-tools-again.json" 2>&1
 echo "from source: after a restart, the page's tools: $(jq -c '{boxed: [.tools[]? | select(.id | startswith("e2e-boxed/")) | .id] | length, note}' "$OUT/source-tools-again.json" 2> /dev/null)"
-J --arg said "$said" '[.tools[] | select(.id == "e2e-boxed/one_field") | .source] == [$said] and ((.note // "") | contains("still reading") | not)' "$OUT/source-tools-again.json" \
-  || check "from source: after a restart, the first list read the checkout again: $(jq -c '.note' "$OUT/source-tools-again.json" 2> /dev/null || head -c 300 "$OUT/source-tools-again.json")"
+J --arg said "$said" '[.tools[] | select(.id == "e2e-boxed/one_field") | .source] == [$said] and .note == null' "$OUT/source-tools-again.json" \
+  || check "from source: after a restart, the first list read the checkout again: $(head -c 300 "$OUT/source-tools-again.json")"
 
-# Another machine is sent the source by content.
-cozy --json machine show local > "$OUT/set-local.json"
-if stand_in stand-s; then
+source_reads "$co" "$said"
+
+# Another machine (stand-s, added by source_reads) is sent the source by content.
+if [ "${SOURCE_STAND:-}" = 1 ]; then
   if run_cell "$OUT" source-stand minimax-h3-tools/echo "text=on a stand-in" --on stand-s; then
     said_by source-stand
     grep -q '"release": *"source"' "$OUT/source-stand.ndjson" || check "from source: stand-s's echo isn't the checkout's: $(tail -c 300 "$OUT/source-stand.ndjson")"
@@ -174,19 +175,19 @@ git -C "$co" -c user.name=e2e -c user.email=e2e@localhost commit -qam "e2e-boxed
 local said2 t0 took shown
 said2="rc/e2e @ $(git -C "$co" rev-parse HEAD | cut -c1-8)"
 t0=$(date +%s%3N)
-curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$(jq -r .address "$holder")/v1/tools?on=local" > "$OUT/source-tools-slow.json" 2>&1
+curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$(jq -r .address "$holder")/v1/tools" > "$OUT/source-tools-slow.json" 2>&1
 took=$(( $(date +%s%3N) - t0 ))
 shown=$(jq -r '[.tools[]? | select(.id == "e2e-boxed/one_field") | .source] | first // empty' "$OUT/source-tools-slow.json" 2> /dev/null)
 echo "from source: listed at once after a new commit, in ${took} ms: e2e-boxed/one_field from ${shown:-nothing} (before: $said, now: $said2)"
 { [ "$shown" = "$said" ] || [ "$shown" = "$said2" ]; } && [ "$took" -lt 10000 ] \
-  || check "from source: while e2e-boxed is read again, the list took ${took} ms and shows it from '${shown:-nothing}': $(jq -c .note "$OUT/source-tools-slow.json" 2> /dev/null)"
+  || check "from source: while e2e-boxed is read again, the list took ${took} ms and shows it from '${shown:-nothing}'"
 for _ in $(seq 30); do
-  curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$(jq -r .address "$holder")/v1/tools?on=local" > "$OUT/source-tools-new.json" 2>&1
+  curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$(jq -r .address "$holder")/v1/tools" > "$OUT/source-tools-new.json" 2>&1
   J --arg said "$said2" '[.tools[] | select(.id == "e2e-boxed/one_field") | .source] == [$said]' "$OUT/source-tools-new.json" && break
   sleep 3
 done
 J --arg said "$said2" '[.tools[] | select(.id == "e2e-boxed/one_field") | .source] == [$said]' "$OUT/source-tools-new.json" \
-  || check "from source: e2e-boxed's new commit never listed: $(jq -c '[.tools[]? | select(.id | startswith("e2e-boxed/")) | .source] | unique' "$OUT/source-tools-new.json" 2> /dev/null), $(jq -c .note "$OUT/source-tools-new.json" 2> /dev/null)"
+  || check "from source: e2e-boxed's new commit never listed: $(jq -c '[.tools[]? | select(.id | startswith("e2e-boxed/")) | .source] | unique' "$OUT/source-tools-new.json" 2> /dev/null)"
 
 # Off a dev home, the name is the Hub's again.
 cp "$OUT/source-config.toml" "$cfg"
@@ -196,4 +197,143 @@ if cell source-off minimax-h3-tools/echo "text=off"; then
   said_by source-off
   grep -q '"release": *"0.1.0"' "$OUT/source-off.ndjson" || check "from source: with dev off, the echo isn't the Hub's 0.1.0: $(tail -c 300 "$OUT/source-off.ndjson")"
 fi
+}
+
+# source_reads <checkout> <what it says of its commit> (cl-1126). Paul, 11-17, of the page's tool panel saying "still reading from source, listed once read: anima,
+# birefnet, …": "What is this? why is this text here? I don't like it. First of all, this doesn't need to be displayed to users. Second
+# of all, what is it doing? is it trying to read all available packages from tensorhub over and over again or something?" And of the
+# list he wants: "That list is not a list of what is installed on the machine, but what is available to install … Don't do polling,
+# but ideally update this information as needed if the local packages are being updated / installed … perhaps calcifer can let our UI
+# know when something changes?" The list is the same for every machine, and a dev home reads a checkout package's source once per
+# state of it. Counted by Calcifer's uv, which logs each call here: a machine added (stand-s), a rental ordered (`rent-…`) and named by
+# its Hub, and lists for each, again and again, run no uv lock or describe, and no list carries a note. One file of e2e-boxed changed
+# is one describe, of it alone, and `tools.changed` reaches a page's stream, after which the list has the new tool.
+source_reads() {
+step "source reads (cl-1126): a machine added or renamed and lists again and again read no source; one file changed is one read, told to the page"
+local co=$1 said=$2 lock=$HOME/.cozy/calcifer/calcifer.lock.holder uv real log=$OUT/source-uv.log page sse=$OUT/source-page.sse rental='' handle='' name='' on
+local described locks told lists
+SOURCE_STAND=''
+: > "$OUT/source-reads.ndjson"
+: > "$log"
+# Calcifer's uv, logging each call it makes: swapped in by a rename, so a call never finds it missing.
+uv=$(ls -d "$HOME"/.cozy/tools/uv/*/uv 2> /dev/null | head -1)
+[ -x "$uv" ] || { check "source reads: Calcifer's uv isn't in $HOME/.cozy/tools/uv"; return; }
+real=$uv.real
+ln -f "$uv" "$real" && printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexec "%s" "$@"\n' "$log" "$real" > "$uv.counting" && chmod 755 "$uv.counting" \
+  && mv -f "$uv.counting" "$uv" || { check "source reads: Calcifer's uv isn't counted"; rm -f "$real" "$uv.counting"; return; }
+# A page's events stream, as the page's own fetch opens it (prefetch.sh's pre_page).
+curl -sSN -H "Host: $(jq -r .address "$lock")" -H 'Sec-Fetch-Site: same-origin' -H 'Sec-Fetch-Mode: cors' -H 'Sec-Fetch-Dest: empty' \
+  -H 'Accept: text/event-stream' "http://$(jq -r .address "$lock")/v1/events" > "$sse" 2>&1 & page=$!
+# source_listed <name> [machine]: a list as the page asks it, naming the machine it shows (by default <name>), in source-reads-<name>.json;
+# a line of what it said in source-reads.ndjson.
+source_listed() {
+  local file=$OUT/source-reads-$1.json on=${2:-$1} t0
+  t0=$(date +%s%3N)
+  curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$lock")" "http://$(jq -r .address "$lock")/v1/tools?on=$on" > "$file" 2>&1 \
+    || { check "source reads: GET /v1/tools?on=$on: $(head -c 300 "$file")"; return 1; }
+  jq -c --arg on "$on" --argjson ms $(($(date +%s%3N) - t0)) '{on: $on, ms: $ms, note, boxed: [.tools[] | select(.id | startswith("e2e-boxed/")) | .id]}' "$file" >> "$OUT/source-reads.ndjson"
+}
+source_listed local
+cozy --json machine show local > "$OUT/set-local.json"
+stand_in stand-s && SOURCE_STAND=1
+[ -z "$SOURCE_STAND" ] || source_listed stand-s
+# A rental under its handle until its Hub names the host, as rent-24713671 became kigurumi, then cecilia, on Paul's laptop.
+if signin "$E2E_HUB_EMAIL" > "$OUT/source-reads-login.json"; then
+  rename_order source
+  [ -n "$rental" ] || check "source reads: no rental accepted: $(tail -c 300 "$OUT/rename-rent-source.ndjson")"
+  for _ in $(seq 120); do
+    [ -n "$rental" ] || break
+    name=$(cozy --json machine ls 2> /dev/null | jq -r --arg r "$rental" '.machines[] | select(.rental_id == $r and .placeholder == null) | .name' 2> /dev/null || true)
+    [ -n "$name" ] && [[ $name != rent-* ]] && break
+    source_listed "${handle:-$rental}"
+    sleep 1
+  done
+  [ -z "$rental" ] || [[ $name != rent-* && -n $name ]] || check "source reads: its Hub never named $rental's host in 2 min"
+  for on in "$name" local stand-s "$name"; do [ -z "$on" ] || source_listed "$on"; done
+  [ -z "$rental" ] || cozy --json machine end "$rental" -y > "$OUT/source-reads-end.json" 2>&1 || check "source reads: machine end $rental: $(tail -c 300 "$OUT/source-reads-end.json")"
+  cozy --json logout > /dev/null 2>&1 || true
+else
+  check "source reads: cozy login failed: $(tail -c 300 "$OUT/source-reads-login.json")"
+fi
+described=$(grep -c ' describe$' "$log" || true) locks=$(grep -c '^lock ' "$log" || true) lists=$(wc -l < "$OUT/source-reads.ndjson")
+echo "source reads: $lists lists, for local, stand-s, ${handle:-no handle} and ${name:-no name}: uv ran $described describes and $locks locks;" \
+  "slowest list $(jq -s 'map(.ms) | max' "$OUT/source-reads.ndjson") ms"
+[ "$described" = 0 ] && [ "$locks" = 0 ] \
+  || check "source reads: a machine added or renamed, and $lists lists, ran uv $described describes and $locks locks: $(grep -E ' describe$|^lock ' "$log" | cut -c1-200 | head -3 | tr '\n' ';')"
+jq -se 'all(.[]; .note == null)' "$OUT/source-reads.ndjson" > /dev/null \
+  || check "source reads: a list carried a note: $(jq -sc '[.[] | select(.note != null) | {on, note}] | .[:3]' "$OUT/source-reads.ndjson")"
+jq -se 'all(.[]; .boxed | index("e2e-boxed/one_field"))' "$OUT/source-reads.ndjson" > /dev/null \
+  || check "source reads: a list left out the checkout's tools: $(jq -sc '[.[] | select(.boxed | index("e2e-boxed/one_field") | not) | .on] | unique' "$OUT/source-reads.ndjson")"
+
+# One file of e2e-boxed changed, uncommitted: read once, of it alone, and the page told.
+: > "$log"
+told=$(sse "$sse" | jq -c 'select(.type == "tools.changed")' | wc -l)
+cat >> "$co/e2e-boxed/e2e_boxed/__init__.py" << 'PY'
+
+
+@app.tool()
+def edited(payload: Shaded) -> Picture:
+    """A still added while the checkout is watched (cl-1126)."""
+    return _picture()
+PY
+for _ in $(seq 240); do
+  if [ "$(sse "$sse" | jq -c 'select(.type == "tools.changed")' | wc -l)" -gt "$told" ]; then
+    told=$(sse "$sse" | jq -c 'select(.type == "tools.changed")' | wc -l)
+    source_listed edited local && J '[.tools[] | select(.id == "e2e-boxed/edited")] != []' "$OUT/source-reads-edited.json" && break
+  fi
+  sleep 0.5
+done
+# What each describe read: the package its folder's pyproject.toml names.
+described=$(sed -n 's/.* --dir \([^ ]*\) describe$/\1/p' "$log" | while read -r dir; do sed -n 's/^name = "\(.*\)"$/\1/p' "$dir/pyproject.toml" | head -1; done | paste -sd, -)
+echo "source reads: e2e-boxed changed: the page's stream was told tools.changed $told times; uv described ${described:-nothing}; listed:" \
+  "$(jq -c '[.tools[]? | select(.id | startswith("e2e-boxed/")) | {id, source}]' "$OUT/source-reads-edited.json" 2> /dev/null)"
+J '[.tools[] | select(.id == "e2e-boxed/edited")] != []' "$OUT/source-reads-edited.json" 2> /dev/null \
+  || check "source reads: e2e-boxed's new tool wasn't listed after the page was told tools.changed $told times in 2 min"
+[ "$described" = e2e-boxed ] || check "source reads: one changed file of e2e-boxed described ${described:-nothing}, not e2e-boxed once"
+kill "$page" 2> /dev/null || true
+mv -f "$real" "$uv" || check "source reads: Calcifer's uv wasn't put back"
+# The checkout as it was, for what follows: listed at its commit again.
+git -C "$co" checkout -q -- e2e-boxed
+for _ in $(seq 120); do
+  source_listed back local && J --arg said "$said" '[.tools[] | select(.id | startswith("e2e-boxed/")) | .source] | unique == [$said]' "$OUT/source-reads-back.json" && break
+  sleep 1
+done
+J --arg said "$said" '[.tools[] | select(.id | startswith("e2e-boxed/")) | .source] | unique == [$said]' "$OUT/source-reads-back.json" \
+  || check "source reads: e2e-boxed put back isn't listed at $said: $(jq -c '[.tools[]? | select(.id | startswith("e2e-boxed/")) | {id, source}]' "$OUT/source-reads-back.json" 2> /dev/null)"
+}
+
+# tools_offline (cl-1126). Paul, 11-17: "If the user is offline, or tensorhub is down, presumably we'll have to only display whatever
+# packages are already installed (we should also include those installed from remote sources, like just some github link, or some
+# alternative tensorhub, or ones being built locally). That will be a good fallback, and also these tools should be listed anyway."
+# e2e-final, installed on local, is listed at once and with no note with its Hub away, after a restart that kept no catalog.
+tools_offline() {
+step "tools offline (cl-1126): its Hub away and no catalog kept, the list holds what's installed, at once, with no note"
+[ -n "$LOCAL" ] || return 0
+[ -n "${E2E_FINAL:-}" ] || { check "tools offline: isolated.sh published no e2e-final: ${E2E_FINAL_REFUSED:-not seeded}"; return; }
+[ -n "$HUB_CHECK" ] || { check "tools offline: no hubcheck to stop"; return; }
+local lock=$HOME/.cozy/calcifer/calcifer.lock.holder tool=$E2E_FINAL/echo addr t0 took
+offline_list() {
+  t0=$(date +%s%3N)
+  curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$lock")" "http://$(jq -r .address "$lock")/v1/tools" > "$OUT/$1.json" 2>&1
+  took=$(($(date +%s%3N) - t0))
+}
+cozy --json package install "$E2E_FINAL" --on local > "$OUT/offline-install.ndjson" 2> "$OUT/offline-install.err" \
+  || { check "tools offline: package install $E2E_FINAL --on local: $(tail -c 300 "$OUT/offline-install.err")"; return; }
+for _ in $(seq 12); do
+  offline_list offline-up && J --arg id "$tool" '[.tools[] | select(.id == $id)] != []' "$OUT/offline-up.json" && break
+  sleep 5
+done
+J --arg id "$tool" '[.tools[] | select(.id == $id)] != []' "$OUT/offline-up.json" \
+  || { check "tools offline: with its Hub up, $tool isn't listed once installed: $(head -c 300 "$OUT/offline-up.json")"; return; }
+addr=$(head -1 "$OUT/hubcheck.addr")
+kill "$HUB_CHECK" && wait "$HUB_CHECK" 2> /dev/null || true
+curl -sS -m 5 -o /dev/null "http://$addr/" 2> /dev/null && check "tools offline: something still answers at $addr"
+rm -f "$HOME"/.cozy/packages/*/listed.json
+systemctl --user restart cozy-calcifer || check "tools offline: Calcifer didn't restart"
+machine_ready
+offline_list offline-down
+echo "tools offline: with its Hub away and no catalog kept, the list answered in $took ms: $(jq -c '{tools: [.tools[]? | .id], note}' "$OUT/offline-down.json" 2> /dev/null | head -c 400)"
+J --arg id "$tool" '[.tools[] | select(.id == $id)] != [] and .note == null' "$OUT/offline-down.json" && [ "$took" -lt 3000 ] \
+  || check "tools offline: with its Hub away, the list took $took ms: $(head -c 400 "$OUT/offline-down.json")"
+hub_check_again "$addr"
 }

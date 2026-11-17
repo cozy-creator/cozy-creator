@@ -10,7 +10,9 @@ if [ -f child-lora-stacks.json ]; then
     [.measurements.models[]?.adapters[]? | "\(.model | split("/") | last | sub("-lora-sdxl$"; "")) \(.strength * 1000 | round / 1000)"] | join("+") end] | join(" | ")')
   digests=$(run_get "$OUT" child-lora-stacks '[.result.calls[]?.digest] | "\(.[0:4] | unique | length) \(.[0] == .[5])"')
   landed=$(run_get "$OUT" child-lora-stacks '[.output[]? | select(.url)] | length')
-  want="balloon 1 |  | balloon 1+ikea 0.8 | balloon 0.5 | balloon 1 | memo"
+  # The request's own strength for --lora without one: the LoRA's recommended strength since xs-183 (balloon's is 0.9).
+  r=$(run_get "$OUT" child-lora-stacks '[.request.input.models[]?.lora[]?.strength][0] // 1 | . * 1000 | round / 1000')
+  want="balloon $r |  | balloon $r+ikea 0.8 | balloon 0.5 | balloon $r | memo"
   [ "$stacks" = "$want" ] && [ "$digests" = "4 true" ] && [ "$landed" = 5 ] \
     && expect child-lora-stacks PASS "stacks [$stacks]; calls 0-3 four images, the repeat memoized; 5 landed" \
     || expect child-lora-stacks FAIL "stacks [$stacks], want [$want]; distinct/repeat [$digests], want [4 true]; landed ${landed:-0} of 5"

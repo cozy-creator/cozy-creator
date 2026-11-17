@@ -23,6 +23,7 @@ import { pressBeganOutside } from "../ui/press"
 import { useSignal } from "../ui/signal"
 import { shown as lookShown, showAppearance } from "../ui/theme"
 import { useConnection } from "./Connection"
+import { reloadWhenSafe } from "./reload"
 import { projectPath, rememberProject, useProjectId, useTo } from "./project"
 import { opened, useByUse } from "../panels/Projects"
 export { useProjectId, useTo } from "./project"
@@ -32,8 +33,8 @@ const SAYS_HOW = 5
 /** How long before an unlock's deadline its status is asked again. */
 const EXPIRY_ASK_MS = 2000
 
-/** Whether Calcifer answers, and what's waiting for it: said, and nothing waits on it. Gone once all of it is saved. A new version is a
- *  note, once (Paul, 11-16: "temporary toast notifications in the bottom-left, like everything else"), never in the bar. */
+/** Whether Calcifer answers, and what's waiting for it: said, and nothing waits on it. Gone once all of it is saved. A new build of Cozy
+ *  says nothing: the page reloads itself when nothing would be lost (`reloadWhenSafe`). */
 function Connectivity() {
   const { stream, attempt, bridge, outbox } = useConnection()
   const health = useSignal(stream.health)
@@ -41,8 +42,8 @@ function Connectivity() {
   const owed = useSignal(outbox.owed)
   const version = useSignal(bridge.newVersion)
   useEffect(() => {
-    if (version) say(`Cozy updated to ${version}. Reload the page to use it.`, undefined, { action: { label: "Reload", run: () => location.reload() } })
-  }, [version])
+    if (version) reloadWhenSafe(outbox)
+  }, [version, outbox])
   const changes = `${owed.count} ${owed.count === 1 ? "change" : "changes"}`
   return (
     <>

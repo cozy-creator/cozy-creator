@@ -23,6 +23,10 @@ sigstore-verify = { workspace = true, optional = true }
 tar = { workspace = true, optional = true }
 zip = { workspace = true, optional = true }
 
+[[example]]
+name = "process-tree"
+path = "../../e2e/process-tree/main.rs"
+
 [features]
 default = ["seams"]
 # Every seam but `signal`, which varena's shared core links alone. Without it: thiserror, and rustix or windows-sys.
