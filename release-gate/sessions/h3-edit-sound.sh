@@ -47,11 +47,16 @@ for p in kelly crew; do
 done
 
 if [ "$(param plan true)" = true ]; then
+  # minimax-h3's locked env, Torch beside it as scripts/triton.sh puts the worker image's (a lock carries none, cl-715), on CPU.
   say "the planner over every plate length, in minimax-h3's locked env (CPU)"
-  (cd "$PK/minimax-h3" && uv sync -q --frozen > "$OUT/plan-sync.log" 2>&1 && uv run -q --frozen python -I "$FIX/plan.py" "$OUT/plan.json") \
-    > "$OUT/plan.txt" 2>&1; code=$?
+  E=$OUT/plan-env
+  { (cd "$PK/minimax-h3" && UV_PROJECT_ENVIRONMENT=$E uv sync -q --frozen --no-dev --python 3.12) &&
+    VIRTUAL_ENV=$E uv pip install -q --index-url https://download.pytorch.org/whl/cpu torch==2.15.0 torchvision==0.29.2; } \
+    > "$OUT/plan-sync.log" 2>&1 || fail "the planner's env: $(tail -c 500 "$OUT/plan-sync.log")"
+  "$E/bin/python" -I "$FIX/plan.py" "$OUT/plan.json" > "$OUT/plan.txt" 2>&1; code=$?
   tail -25 "$OUT/plan.txt" | tee -a "$R"
-  [ "$code" = 0 ] || fail "the planner check: $(tail -c 400 "$OUT/plan.txt") $(tail -c 300 "$OUT/plan-sync.log")"
+  [ "$code" = 0 ] || fail "the planner check: $(tail -c 600 "$OUT/plan.txt")"
+  rm -rf "$E"
 fi
 AN=(uv run -q --no-project --python 3.12 --with av==19.0.1 --with "numpy<2" --with mediapipe==0.10.18 --with pillow
     --with faster-whisper==1.1.1 --with librosa==0.10.2.post1 python -I "$FIX/analyze.py")
