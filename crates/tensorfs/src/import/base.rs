@@ -52,7 +52,7 @@ pub fn wanting(wanted: &Wanted) -> String {
         .map(|(c, rows)| {
             let keys: Vec<&str> = rows.iter().take(3).map(|(k, _)| k.as_str()).collect();
             let more = if rows.len() > keys.len() { ", …" } else { "" };
-            format!("{c}'s {} ({}{more})", rows.len(), keys.join(", "))
+            format!("{} of {c} ({}{more})", rows.len(), keys.join(", "))
         })
         .collect();
     let names: Vec<&str> = wanted.keys().map(String::as_str).collect();
