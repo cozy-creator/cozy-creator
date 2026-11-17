@@ -15,6 +15,7 @@ import os
 import sys
 import threading
 import time
+from typing import TypedDict
 
 import tensorfs
 import torch
@@ -37,11 +38,25 @@ tensors = tensorfs.open(path, local_files_only=True).components["model"].tensors
 out = {key: torch.empty(SIZE, dtype=torch.uint8, device=cuda) for key in data}
 
 
-def got(key):
+Log = list[tuple[str, float, float, str]]
+
+
+class Round(TypedDict):
+    failed: list[str]
+    errors: list[str]
+    overlapped: list[str]
+    wrong: list[str]
+    reread_ok: bool
+    reads: int
+    seconds: float
+    gb_s: float
+
+
+def got(key: str) -> str:
     return hashlib.sha256(out[key].cpu().numpy().tobytes()).hexdigest()
 
 
-def side(name, log):
+def side(name: str, log: Log) -> None:
     for i in range(N):
         key, began = f"{name}{i}", time.monotonic()
         try:
@@ -51,13 +66,14 @@ def side(name, log):
             log.append((key, began, time.monotonic(), f"{type(error).__name__}: {error}"[:200]))
 
 
-report = {"tensorfs": getattr(tensorfs, "__version__", "?"), "from": os.path.dirname(tensorfs.__file__), "rounds": []}
+results: list[Round] = []
+report: dict[str, object] = {"tensorfs": getattr(tensorfs, "__version__", "?"), "from": os.path.dirname(tensorfs.__file__), "rounds": results}
 for r in range(rounds):
     for value in out.values():
         value.zero_()
     torch.cuda.synchronize(device)
-    _ext._io_fail_pieces(16 + 9 * r, 1)
-    logs = {"a": [], "b": []}
+    getattr(_ext, "_io_fail_pieces")(16 + 9 * r, 1)  # a dev build's hook (feature fault-hooks): no stub names it
+    logs: dict[str, Log] = {"a": [], "b": []}
     threads = [threading.Thread(target=side, args=(name, logs[name])) for name in "ab"]
     began = time.monotonic()
     for thread in threads:
@@ -65,7 +81,7 @@ for r in range(rounds):
     for thread in threads:
         thread.join()
     seconds = time.monotonic() - began
-    _ext._io_fail_pieces(0, 0)
+    getattr(_ext, "_io_fail_pieces")(0, 0)
     torch.cuda.synchronize(device)
     rows = logs["a"] + logs["b"]
     failed = [row for row in rows if row[3]]
@@ -80,12 +96,12 @@ for r in range(rounds):
         tensors.read_into(row[0], out[row[0]])
         torch.cuda.synchronize(device)
         again.append(got(row[0]) == want[row[0]])
-    report["rounds"].append({
+    results.append({
         "failed": [row[0] for row in failed], "errors": sorted({row[3] for row in failed}),
         "overlapped": overlapped, "wrong": wrong, "reread_ok": all(again), "reads": len(rows),
         "seconds": round(seconds, 3), "gb_s": round(len(rows) * SIZE / seconds / 1e9, 2),
     })
-ok = all(r["failed"] and not r["wrong"] and r["reread_ok"] for r in report["rounds"])
-report["pass"] = ok and any(r["overlapped"] for r in report["rounds"])
-report["overlapped_rounds"] = sum(1 for r in report["rounds"] if r["overlapped"])
+ok = all(r["failed"] and not r["wrong"] and r["reread_ok"] for r in results)
+report["pass"] = ok and any(r["overlapped"] for r in results)
+report["overlapped_rounds"] = sum(1 for r in results if r["overlapped"])
 print(json.dumps(report))

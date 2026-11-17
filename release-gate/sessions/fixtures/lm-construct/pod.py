@@ -18,8 +18,8 @@ import sys
 import time
 
 
-def roots(name):
-    found = set()
+def roots(name: str) -> list[str]:
+    found: set[str] = set()
     for env in glob.glob("/proc/[0-9]*/environ"):
         try:
             for kv in open(env, "rb").read().split(b"\0"):
@@ -30,8 +30,8 @@ def roots(name):
     return sorted(r for r in found if os.path.isdir(r))
 
 
-def executors():
-    out = []
+def executors() -> list[int]:
+    out: list[int] = []
     for d in glob.glob("/proc/[0-9]*"):
         try:
             cmd = open(d + "/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="replace")
@@ -57,7 +57,7 @@ if mode == "evict":
     print(json.dumps({"files": len(files), "gb": round(sum(os.path.getsize(f) for f in files) / 1e9, 2)}))
 elif mode == "ceiling":
     envs = sorted(glob.glob("/var/lib/cozy/tensord/generations/*/env/bin/python"), key=os.path.getmtime)
-    store = (roots("TENSORFS_HOME") or roots("COZY_TENSORFS_ROOT") or [None])[0]
+    store = next(iter(roots("TENSORFS_HOME") or roots("COZY_TENSORFS_ROOT")), None)
     if not envs:
         print(json.dumps({"error": "no executor environment"}))
         sys.exit()
@@ -69,7 +69,7 @@ elif mode == "ceiling":
     print(done.stdout.strip() or json.dumps({"error": done.stderr[-400:]}))
 elif mode in ("break", "restore"):
     envs = sorted(glob.glob("/var/lib/cozy/tensord/generations/*/env/bin/python"), key=os.path.getmtime)
-    store = (roots("TENSORFS_HOME") or roots("COZY_TENSORFS_ROOT") or [None])[0]
+    store = next(iter(roots("TENSORFS_HOME") or roots("COZY_TENSORFS_ROOT")), None)
     if not envs or not store:
         print(json.dumps({"error": "no executor environment or store"}))
         sys.exit(1)
