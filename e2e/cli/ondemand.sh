@@ -443,6 +443,87 @@ cat "$OUT/ondemand-need.timeline.json"
 while read -r why; do check "ondemand-need: $why"; done < "$OUT/ondemand-need.failed"
 }
 
+# cl-1117 (the release coordinator, 11-17, on Paul's rule that extras are never in a request's way): "hold background extras (and
+# prefetch at `prepare` priority) while any call on the machine is starting cold, until its models are loaded and resident … Resume
+# the extras the moment the call's load completes." xs-203's run 43996197790: a cold H3 call's executor took 167 s to start, against
+# 1 s, while 22 GB of extras downloaded beside it. calls.py's `cold` loads e2e/calls-cold (32 MiB), whose load takes 15 s, and has
+# e2e/calls-waits (256 MiB, 9 s over this 30 MB/s link) on demand, never read: none of the extra lands from the moment the call's
+# needs are here until its models are loaded, and all of it lands while the call then holds 20 s.
+ondemand_cold() {
+[ "$RUNNER_OS" = Linux ] || return 0
+step "the background downloads wait while a call starts cold, until its models are loaded (cl-1117)"
+[ -z "${E2E_CALLS_SEED:-}" ] || { check "ondemand-cold: its models weren't seeded: $E2E_CALLS_SEED"; return 0; }
+local began
+slow_store ondemand-cold || return 0
+began=$(date -u +%s%3N)
+cell ondemand-cold "$here/script/calls.py/cold" seconds:=20 || :
+sudo tc qdisc del dev lo root || check "ondemand-cold: the store's link wasn't restored"
+cozy machine logs local --lines 0 --since 1h > "$OUT/ondemand-cold.tensord.log" 2>&1 || check "ondemand-cold: machine logs local failed"
+python3 - "$OUT" "$began" <<'JUDGE' > "$OUT/ondemand-cold.timeline.json" 2> "$OUT/ondemand-cold.failed" || true
+import json, re, sys
+from datetime import datetime
+from pathlib import Path
+out, began = Path(sys.argv[1]), int(sys.argv[2])
+MIB = 1 << 20
+fail = lambda why: print(why, file=sys.stderr)
+def at(line):
+    try:
+        return int(datetime.fromisoformat(line.split(" ", 1)[0].replace("Z", "+00:00")).timestamp() * 1000)
+    except ValueError:
+        return 0
+# The line's orders (`origin::priority`): 2 + (class << 62 | run << 32 | rank); class 0 a run's needs, 2 its extras.
+needs, extras, held, freed = [], [], [], []
+for line in (out / "ondemand-cold.tensord.log").read_text(errors="replace").splitlines():
+    t = at(line)
+    if t < began:
+        continue
+    if "background downloads wait: a call starts cold" in line:
+        held.append(t)
+    if "background downloads go on" in line:
+        freed.append(t)
+    found = re.search(r": landed .*bytes=(\d+).*priority=(\d+)", line)
+    if found and int(found[2]) >= 2:
+        kind = (int(found[2]) - 2) >> 62
+        if kind in (0, 2):
+            (needs if kind == 0 else extras).append((t, int(found[1])))
+# Its models loaded: its function's first stage, which its log says once the load is done.
+loaded = None
+for line in (out / "ondemand-cold.ndjson").read_text(errors="replace").splitlines():
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    progress = event.get("progress") if isinstance(event, dict) and isinstance(event.get("progress"), dict) else {}
+    if progress.get("stage") == "holding" and progress.get("at_ms"):
+        loaded = progress["at_ms"]
+        break
+here = max((t for t, b in needs if b >= MIB), default=None)
+# Its models loaded: TensorD says the background downloads go on; without that, its function's first stage.
+end = min((t for t in freed if here is not None and t >= here), default=loaded)
+before = sum(b for t, b in extras if here is not None and end is not None and here + 1000 < t < end)
+after = sum(b for t, b in extras if end is not None and t >= end)
+print(json.dumps({"needs_here_ms": here and here - began, "loaded_ms": loaded and loaded - began, "go_on_ms": end and end - began,
+                  "extra_landed_starting": before, "extra_landed_after": after, "held_ms": [t - began for t in held],
+                  "freed_ms": [t - began for t in freed], "needs_bytes": sum(b for _, b in needs), "extra_bytes": sum(b for _, b in extras)},
+                 indent=1))
+if here is None or end is None:
+    fail(f"its needs landed at {here} and its models loaded at {end}: one of them isn't in its record or TensorD's log")
+elif end - here < 10_000:
+    fail(f"the background downloads went on {end - here} ms after its needs landed: before its 15 s load was done")
+else:
+    if before:
+        fail(f"{before // MIB} MiB of e2e/calls-waits landed while the call started cold ({(end - here) / 1e3:.0f} s from its needs to its models)")
+    elif after < 256 * MIB:
+        fail(f"{after // MIB} MiB of e2e/calls-waits landed once its models were loaded, of 256 MiB: the background downloads didn't go on")
+    if not any(t <= end for t in held):
+        fail("TensorD never said the background downloads wait for a call starting cold")
+    if loaded is not None and end > loaded:
+        fail(f"the background downloads went on {end - loaded} ms after its function began: later than its load")
+JUDGE
+cat "$OUT/ondemand-cold.timeline.json"
+while read -r why; do check "ondemand-cold: $why"; done < "$OUT/ondemand-cold.failed"
+}
+
 # cl-1101 (Paul, 11-16): "We can download extras (Z) in the background, in anticipation of maybe needing them, but they aren't in
 # the critical path of inference (user request) so they shouldn't be waited on." A call's on-demand models are its guesses, wanted
 # with its needs, and the downloader started them beside its needs: each range took its share of the link. project/enhance's `behind`
