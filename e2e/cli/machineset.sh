@@ -171,3 +171,19 @@ in_project "$P" --json run minimax-h3-tools/echo text=idle > "$OUT/idle-run.ndjs
 idle_runs "$P" echo "$OUT/idle-echo.txt"
 grep -qx 'local completed' "$OUT/idle-echo.txt" || check "local idle: cozy run didn't run on local: $(tr '\n' ';' < "$OUT/idle-echo.txt")"
 }
+
+# local_first (0.26.0's CPU suite 44041520735, plan's resent): a fresh machine whose first package is local code that names no PyTorch
+# of its own runs it. Its environment took the machine's PyTorch pins, and local code never asked the machine's Hub which it names: a
+# machine holding no PyTorch layer built that code no Torch, and its executor, which imports Torch as it starts, exited before
+# connecting.
+local_first() {
+step "a fresh machine whose first package is local code with no PyTorch of its own runs it (44041520735)"
+[ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "local first: its stand-in is another user of a fresh GitHub runner"; return; }
+local P=$OUT/local-first
+cozy --json machine show local > "$OUT/set-local.json" || { check "local first: machine show local"; return; }
+stand_in stand-f || return
+J '(.status.torch // "") == ""' "$OUT/stand-f-local.json" || echo "local first: stand-f holds a PyTorch layer already ($(jq -r .status.torch "$OUT/stand-f-local.json")): the cell judges less"
+cozy --json new --unencrypted "$P" > "$OUT/local-first-new.json" 2>&1 || { check "local first: new: $(tail -c 300 "$OUT/local-first-new.json")"; return; }
+(RUN_PROJECT=$P; run_cell "$OUT" local-first "$here/project/waits.py/wait" seconds:=1 megapixels:=0.25 "instructions=first $RANDOM" --on stand-f) \
+  || check "local first: stand-f's first package, torch-less local code, didn't run: $(run_get "$OUT" local-first '[.reason.code, .reason.message] | join(": ")' | head -c 300)"
+}

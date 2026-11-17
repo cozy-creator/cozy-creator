@@ -686,6 +686,7 @@ case $SHARD in
     logs
   " ;;
   executors) parts="
+    local_first
     second_executor
     lifetime
     kept_preparing
