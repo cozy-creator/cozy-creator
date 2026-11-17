@@ -4,7 +4,8 @@
 # runs at once, each reading a model not here, as a session queues them, while a reader holds the store's fence for 15 s (as
 # the pod's checkpoint opens and holds each did for a moment): the machine's room for their weights waits for it, never
 # refused `model data is in use` (#2858 made it refuse; 0.25.0 waited). Then one more of the first model. Each completes,
-# the idle models' weights evicted, least recently used first, to make its room. Last, a 2 GiB model, more than the disk can
+# the idle models' weights evicted, least recently used first, to make its room, their executor told to let go of them and
+# kept up (tfs-303). Last, a 2 GiB model, more than the disk can
 # make free, is refused `machine_disk_full` naming the sizes, nothing of it kept.
 
 # disk_store <config.toml> <dir>: config.toml with `machine.store` at <dir>.
@@ -25,7 +26,7 @@ PY
 
 disk_full() {
 [ "$RUNNER_OS" = Linux ] || return 0
-local script=$here/script/disk.py img=$RUNNER_TEMP/tfs-disk.img mnt=/mnt/tfs-disk name i used
+local script=$here/script/disk.py img=$RUNNER_TEMP/tfs-disk.img mnt=/mnt/tfs-disk name i used pid
 step "tfs-150: the machine's store on a 2.5 GiB disk, filled with three idle models"
 truncate -s 2560M "$img" && mkfs.ext4 -q -F -m 0 "$img" && sudo mkdir -p "$mnt" && sudo mount -o loop "$img" "$mnt" \
   && sudo chown "$(id -u):$(id -g)" "$mnt" || { check "disk: the 2.5 GiB disk was not made"; return 0; }
@@ -58,6 +59,13 @@ for i in 4 5 6; do
     || check "disk: disk-$i (e2e/disk-$i) $(run_get "$OUT" "disk-$i" .status): $(run_get "$OUT" "disk-$i" .reason.message | head -c 300)"
 done
 wait "$reader" || check "disk: the reader holding the store failed"
+# tfs-303 (coordinator 11-17: "make idle executors let go of what's needed instead of being ended"): the idle executor that ran
+# disk-1..3 let go of them for these runs' room and is still up, its process warm.
+for name in disk-1 disk-2 disk-3; do
+  pid=$(run_get "$OUT" "$name" '.measurements.execution.gpus[0].pid')
+  [ -n "$pid" ] && [ "$pid" != null ] || { check "disk: $name's record names no executor pid"; continue; }
+  [ -d "/proc/$pid" ] || check "disk: the idle executor $pid that ran $name was ended for the disk's room, not told to let go"
+done
 cell disk-1-again "$script" --model "weights=e2e/disk-1@0.1.0" text=again || true
 # The disk at its reserve, three runs at once each reading a model not here, five rounds: each round's models evicted the round
 # before, so every round's admits race each other's evictions (43982726077: one refused 0.2 MiB short with an idle model left).
@@ -99,7 +107,7 @@ disk_run_object
 # outputs went instead. Below its reserve the machine ended idle executors only for the bytes coming in, never for the
 # reserve too: it ended one, whose model alone couldn't make the room, and so evicted nothing. Here four idle executors
 # (one script each) hold a 384 MiB model apiece on a fresh 4 GiB store disk (1 GiB reserve), the disk 576 MiB below its
-# reserve. A run of a fifth model completes: the idle executors it needs end, their models evicted.
+# reserve. A run of a fifth model completes: the idle executors it needs let go of their models (tfs-303), evicted.
 disk_below_reserve() {
 local script=$here/script/disk.py img=$RUNNER_TEMP/tfs-reserve.img mnt=/mnt/tfs-reserve dir=$OUT/cl1076 i avail size reserve
 step "cl-1076: a disk below its reserve evicts as many idle executors' models as it lacks"
@@ -131,7 +139,7 @@ rm -f "$mnt/cl-1076-filler"
 # this runner: this computer's own runs keep their files in their project, not in the machine's store) has its store on a
 # 2.5 GiB disk, 1 GiB of it the reserve. e2e-tokenizer runs there from source: it carries the vocab.json its model
 # e2e/disk-tokenizer holds as an asset (isolated.sh's `disk`), and its executor goes idle. A file then leaves 32 MiB free
-# past the reserve, and a run of another 384 MiB model completes: the idle executor ended, e2e/disk-tokenizer evicted.
+# past the reserve, and a run of another 384 MiB model completes: the idle executor let go of it or ended, e2e/disk-tokenizer evicted.
 disk_run_object() {
 step "cl-1076: a model holding a file its package carries too is evicted for a render's room"
 [ "${GITHUB_ACTIONS:-}" = true ] || { echo "disk: a run's file: its stand-in is another user of a fresh GitHub runner"; return 0; }
