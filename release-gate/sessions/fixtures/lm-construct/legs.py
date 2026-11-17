@@ -5,8 +5,8 @@
 A label is <arm>-<case> (case: first, cold, warm, hot, sdxl-new, sdxl-warm). Each row: its wait before the executor (download,
 install, queue), executor start, construction (prepare) and its fill legs, the time from construction to the answer's
 first weight read, the load of the weights it read (bytes and GB/s against the store's ceiling), and the rest. The
-bar (`bar.json`) is checked on every arm's Qwen3.6 rows, and fails the session for an arm whose `judged` is true: a warm construction under
-`prepare_s`, and a cold run's execution under `x` times the weights it read at the disk's ceiling plus `fixed_s`.
+bar (`bar.json`) is checked on every arm's Qwen3.6 rows and fails the session for a judged arm: a warm construction
+under `prepare_s`, and a cold run's execution under `x` times the weights it read at the disk's ceiling plus `fixed_s`.
 """
 
 import json
