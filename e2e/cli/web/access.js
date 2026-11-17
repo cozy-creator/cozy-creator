@@ -56,15 +56,18 @@ function attacker() {
 /** From a page at `origin`, what Calcifer answered its fetch, <img>, WebSocket and frame (the browser's own record of each). */
 async function from(context, origin, base, id, file, code) {
   const page = await context.newPage();
-  // The status Calcifer answered, from the network itself: CORS and ORB keep a refused answer from the page, and from Playwright.
-  const statuses = {}, asked = {};
+  // What Calcifer answered each request, from the network itself (CORS and ORB keep a refused answer from the page, and from Playwright),
+  // joined by request id: one request's events come in any order, an ExtraInfo before its own (44043494397: an image's 403 went unrecorded).
+  // A request answered from the browser's cache is its own outcome, `cache`; one that failed says why.
+  const requests = {};
+  const of = (requestId) => (requests[requestId] ??= {});
   const network = await context.newCDPSession(page);
   await network.send('Network.enable');
-  network.on('Network.requestWillBeSent', ({ requestId, request }) => { asked[requestId] = request.url; });
-  network.on('Network.responseReceivedExtraInfo', ({ requestId, statusCode }) => {
-    const url = asked[requestId] && new URL(asked[requestId]);
-    if (url && url.origin === base) statuses[url.pathname] = statusCode;
-  });
+  network.on('Network.requestWillBeSent', ({ requestId, request }) => { of(requestId).url = request.url; });
+  network.on('Network.responseReceivedExtraInfo', ({ requestId, statusCode }) => { of(requestId).status = statusCode; });
+  network.on('Network.responseReceived', ({ requestId, response }) => { const request = of(requestId); request.url ??= response.url; request.status ??= response.status; });
+  network.on('Network.requestServedFromCache', ({ requestId }) => { of(requestId).cached = true; });
+  network.on('Network.loadingFailed', ({ requestId, blockedReason, errorText }) => { of(requestId).failed = blockedReason ?? errorText; });
   const refusedFrame = [];
   page.on('console', (message) => { if (/frame-ancestors/.test(message.text())) refusedFrame.push(message.text()); });
   await page.goto(`${origin}/`);
@@ -95,6 +98,14 @@ async function from(context, origin, base, id, file, code) {
   const framed = page.frames().find((frame) => frame.url().startsWith(base));
   const rendered = framed ? await framed.evaluate(() => document.getElementById('root')?.childNodes.length ?? 0).catch(() => 0) : 0;
   await page.close();
+  // By path: a 200 for any request of it stands, whatever else it got.
+  const statuses = {};
+  for (const request of Object.values(requests)) {
+    const url = request.url && new URL(request.url);
+    if (!url || url.origin !== base) continue;
+    const outcome = request.cached ? 'cache' : request.status ?? (request.failed ? `failed: ${request.failed}` : 'unanswered');
+    if (statuses[url.pathname] !== 200) statuses[url.pathname] = outcome;
+  }
   return { ...said, statuses, rendered, frames, refused_frame: refusedFrame.length > 0 || frames.some((url) => url.startsWith('chrome-error:')) };
 }
 
@@ -150,6 +161,11 @@ function devConfig(text) {
   // page; opened from the page as a document, it's sandboxed with `script-src 'none'`, and its <script> and onload ask for nothing.
   await svgRuns(context, tabs[0], base, project, folder);
 
+  // The project's own tab reads the file first, as it draws it: told it's Calcifer's own (same-origin), so no other page draws it, even one
+  // on another port of this computer, the same site, whose tab could otherwise use a copy kept from this read (coordinator, 11-17).
+  const own = await tabs[0].evaluate(async (path) => { const answer = await fetch(path); return { status: answer.status, policy: answer.headers.get('cross-origin-resource-policy') }; }, `/v1/projects/${project.id}/files/${file}`);
+  check('own_file_same_origin_only', own.status === 200 && own.policy === 'same-origin', own);
+
   // Another site, and another port of this computer: refused, however it asks.
   const elsewhere = await attacker();
   const port = elsewhere.address().port;
@@ -158,7 +174,9 @@ function devConfig(text) {
     seen[`${name}_saw`] = got;
     check(`${name}_fetch_refused`, got.statuses['/v1/status'] === 403 && got.read === 'refused' && got.statuses[`/v1/projects/${project.id}`] === 403, got.statuses);
     check(`${name}_write_refused`, got.statuses['/v1/run-estimates'] === 403, got.statuses);
-    check(`${name}_img_refused`, got.image === 'error' && got.statuses[`/v1/projects/${project.id}/files/${file}`] === 403, got.statuses);
+    // Asked of Calcifer and refused, or found in a cache and not drawn: never drawn, and never a 200.
+    const image = got.statuses[`/v1/projects/${project.id}/files/${file}`];
+    check(`${name}_img_refused`, got.image === 'error' && image !== undefined && image !== 200, got.statuses);
     check(`${name}_websocket_refused`, got.socket !== 'open', got.socket);
     check(`${name}_frame_refused`, got.rendered === 0 && got.refused_frame, { rendered: got.rendered, said: got.refused_frame });
   }
