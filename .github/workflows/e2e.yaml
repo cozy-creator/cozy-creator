@@ -167,6 +167,10 @@ on:
         description: Keep CPU fixture inputs, weights and outputs in the run's artifacts
         type: boolean
         default: false
+      cpu_lock_fresh:
+        description: "The cozy under test locks each CPU package first and it runs from that lock, which pins the runtime and tensorfs releases from PyPI (promote.sh's smoke)"
+        type: boolean
+        default: false
       # The tensorhub ref every Hub here is built from: the isolated Hub of cli, imports and cpu, and skew's (`select=skew`:
       # released cozy versions × that Hub, e2e/skew/run.sh). Empty: as Runtime and packages, tensorhub's RC on a run toward one.
       hub_ref:
@@ -1240,6 +1244,7 @@ jobs:
       CPU_CELLS: ${{ inputs.cpu_cells }}
       CPU_RECORD: ${{ inputs.cpu_record && 'true' || 'false' }}
       CPU_KEEP: ${{ inputs.cpu_keep && 'true' || 'false' }}
+      CPU_LOCK_FRESH: ${{ inputs.cpu_lock_fresh && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -1278,6 +1283,7 @@ jobs:
           [ -z "$CPU_CELLS" ] || cpu_args+=(--cells "$CPU_CELLS")
           if [ "$CPU_RECORD" = true ]; then cpu_args+=(--record --refs "$RUNNER_TEMP/e2e/refs"); fi
           if [ "$CPU_KEEP" = true ]; then cpu_args+=(--keep); fi
+          if [ "$CPU_LOCK_FRESH" = true ]; then cpu_args+=(--lock fresh); fi
           chmod +x "$RUNNER_TEMP/fixture-hub/tensorhub" "$RUNNER_TEMP/fixture-hub/minio"
           sudo loginctl enable-linger "$(id -un)"
           export XDG_RUNTIME_DIR=/run/user/$(id -u)
