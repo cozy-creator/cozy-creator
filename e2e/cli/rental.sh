@@ -361,8 +361,8 @@ hub_history() (
     sleep 2
   done
   [ "$state" = released ] || fail "hub history: $rental is ${state:-not listed}, not released, 3 min after its end"
-  db=$(grep -o 'postgres://[^" ]*' "$COZY_TEST_HUB_COMMAND_FILE" | head -1)
-  [ -n "$db" ] || fail "hub history: the Hub's command names no database: $(head -c 300 "$COZY_TEST_HUB_COMMAND_FILE")"
+  db=$(tr '\0' '\n' < "$COZY_TEST_HUB_COMMAND_FILE" | grep -o 'postgres://[^" ]*' | head -1 || true)
+  [ -n "$db" ] || fail "hub history: the Hub's command names no database: $(tr '\0' ' ' < "$COZY_TEST_HUB_COMMAND_FILE" | head -c 600)"
   port=$(sed -E 's#.*@[^:/]+:([0-9]+)/.*#\1#' <<< "$db")
   container=$(docker ps --filter "publish=$port" --format '{{.Names}}' 2> /dev/null | head -1 || true)
   sql() {
