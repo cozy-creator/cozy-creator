@@ -4,10 +4,11 @@
 # beerus first; the RC's, staging the RC's cozy, came after, and beerus ran it next.
 # A dev home's rental (`dev = true`), stood in by `cozy machine serve --rental` on this runner against a stood-in Hub
 # (rentalself/standin.py) whose lease grants this computer's key, as a Hub grants the devices of the account that rented it; its
-# image's pair is the candidates'. Recorded as a rental this computer ordered, it boots, and Calcifer queues its move to the open RC
-# (rc-<x>'s prerelease). Then held by hand on the newest releases (PyPI's Runtime and TensorFS, GitHub's Latest cozy): it ends on
-# them, the RC update canceled and never run, and `machine show` says it is held on what it runs. Then its hold names another
-# Runtime, as beerus's store kept it: `machine show` and `machine ls` say what it runs. Linux, a GitHub runner; its own shard.
+# image is the newest release's, as a worker image is: GitHub's Latest cozy, PyPI's newest Runtime and TensorFS. Recorded as a
+# rental this computer ordered, it boots, and Calcifer queues its move to the open RC (rc-<x>'s prerelease). Then held by hand on
+# that release, as beerus was: it stays on it, the RC update canceled and never run, and `machine show` says it is held on what it
+# runs. Then its hold names another Runtime, as beerus's store kept it: `machine show` and `machine ls` say what it runs. Linux, a
+# GitHub runner; its own shard.
 here_holdwins=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 HW_DIR='' HW_CFG='' HW_SAVED='' HW_PID='' HW_STANDIN='' HW_PORT='' HW_HUB='' HW_PROVIDER='' HW_CA=''
 
@@ -26,7 +27,6 @@ hw_cell() {
 local d=$HW_DIR v runtime tensorfs released key fp code rc held
 v=$(cozy --version | awk '{print $2}')
 [[ $v == *-dev+g* ]] || { check "hold wins: cozy $v is no RC build, with no RC to follow"; return; }
-[ -f "${CAND_RT:-}" ] && [ -f "${CAND_TFS:-}" ] || { check "hold wins: the rental's image pair is the candidate wheels: none (${CAND_RT:-} ${CAND_TFS:-})"; return; }
 runtime=$(curl -fsSL --retry 3 https://pypi.org/pypi/cozy-runtime/json | jq -r '.info.version // empty')
 tensorfs=$(curl -fsSL --retry 3 https://pypi.org/pypi/tensorfs/json | jq -r '.info.version // empty')
 released=$(curl -fsSL --retry 3 https://github.com/cozy-creator/cozy-creator/releases/latest/download/dist-manifest.json \
@@ -37,11 +37,11 @@ held="runtime $runtime, tensorfs $tensorfs, tensord $released"
 key=$(cozy --json machine show local | jq -r '.controller_key // empty')
 [ -n "$key" ] || { check "hold wins: machine show local names no controller key"; return; }
 
-# The stood-in Hub, granting this computer's key; the rental's own cozy (an update replaces the file it runs from) and image pair.
-rm -rf "$d" && mkdir -p "$d/home/.cozy" "$d/root/opt/cozy/wheels" "$d/bin" || { check "hold wins: $d not made"; return; }
+# The stood-in Hub, granting this computer's key; the rental's image: its own cozy (an update replaces the file it runs from) and pair.
+rm -rf "$d" && mkdir -p "$d/home/.cozy" "$d/root/opt/cozy/wheels" "$d/bin" "$d/x" || { check "hold wins: $d not made"; return; }
 printf '[machine]\nidle_seconds = 3600\n' > "$d/home/.cozy/config.toml"
 printf '%s\n' "$key" > "$d/keys"
-install -m 755 "$COZY" "$d/bin/cozy" && cp "$CAND_RT" "$CAND_TFS" "$d/root/opt/cozy/wheels/" || { check "hold wins: the rental's cozy and pair"; return; }
+hw_image "$released" cozy-runtime "$runtime" tensorfs "$tensorfs" || return
 python3 "$here_holdwins/rentalself/standin.py" serve "$d" held > "$d/standin.log" 2>&1 & HW_STANDIN=$!
 for _ in $(seq 60); do [ -s "$d/ready" ] && break; kill -0 "$HW_STANDIN" 2> /dev/null || break; sleep 0.5; done
 read -r HW_HUB HW_PROVIDER HW_CA < "$d/ready" 2> /dev/null || { check "hold wins: the stand-in Hub didn't start: $(tail -c 400 "$d/standin.log")"; return; }
@@ -115,6 +115,23 @@ J --arg rt "$runtime" '.unheld == "Runtime \($rt)" and (.rc.detail | contains("b
   || check "hold wins: machine show doesn't say stand-h runs Runtime $runtime, not the 0.1.0 its hold names: $(jq -c '{held, unheld, rc}' "$d/show-off.json")"
 grep -qF "stand-h: runs Runtime $runtime, though held by hand on runtime 0.1.0" "$d/ls.txt" && grep -qE '^ *stand-h .*held, runs other software' "$d/ls.txt" \
   || check "hold wins: machine ls doesn't say what stand-h runs: $(grep 'stand-h' "$d/ls.txt" | head -c 600)"
+}
+
+# hw_image <cozy> <distribution> <version>...: the release's cozy, checked against its release's sha256.sum, and each wheel from PyPI
+# (its abi3 manylinux x86_64 wheel, else its pure one), where a worker image keeps them.
+hw_image() {
+  local d=$HW_DIR a=cozy-x86_64-unknown-linux-gnu.tar.gz base="https://github.com/cozy-creator/cozy-creator/releases/download/v$1" bin url
+  curl -fsSL --retry 3 -o "$d/$a" "$base/$a" && curl -fsSL --retry 3 -o "$d/sha256.sum" "$base/sha256.sum" \
+    && (cd "$d" && awk -v f="$a" '{ n = $2; sub(/^\*/, "", n) } n == f' sha256.sum | sha256sum -c --strict -) > /dev/null \
+    && tar -xzf "$d/$a" -C "$d/x" --no-same-owner && bin=$(find "$d/x" -type f -name cozy -print -quit) && [ -n "$bin" ] \
+    && install -m 755 "$bin" "$d/bin/cozy" || { check "hold wins: cozy $1's $a didn't check against its sha256.sum"; return 1; }
+  shift
+  while [ $# -ge 2 ]; do
+    url=$(curl -fsSL --retry 3 "https://pypi.org/pypi/$1/$2/json" | jq -r '[.urls[] | select(.packagetype == "bdist_wheel")]
+      | (map(select(.filename | test("abi3-manylinux.*x86_64"))) + map(select(.filename | test("-none-any")))) | first | .url // empty')
+    [ -n "$url" ] && curl -fsSL --retry 3 -o "$d/root/opt/cozy/wheels/${url##*/}" "$url" || { check "hold wins: $1 $2's wheel from PyPI: ${url:-none}"; return 1; }
+    shift 2
+  done
 }
 
 # hw_serve: the stood-in rental, booting, its own process group.
