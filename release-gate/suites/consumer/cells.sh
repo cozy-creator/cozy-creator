@@ -29,11 +29,12 @@ if [ "${GIB:-0}" -gt 8 ] && { [ -z "$ONLY" ] || [[ $ONLY == *",sdxl-12gb,"* || $
       prompt="$OBJECT in $SCENE, $t, photo" seed:=$((R + 600 + i))
     [ -f "sdxl-12gb-$t.json" ] || { bad+=("$t: no record"); continue; }
     s=$(run_get "$OUT" "sdxl-12gb-$t" .status)
-    loop=$(run_get "$OUT" "sdxl-12gb-$t" '.measurements.execution.loops[0] | .mode + (if .reused then "+reused" else "" end) + (if .whole_call then "+recorded" else "" end)')
-    ran+=("$t run $(cat "sdxl-12gb-$t.number") $s ${loop:-no-loop}")
+    unet=$(run_get "$OUT" "sdxl-12gb-$t" '.measurements.residency.graphs.unet | "captures \(.captures) replays \(.replays) eager \(.eager.calls)"')
+    ran+=("$t run $(cat "sdxl-12gb-$t.number") $s ${unet:-no unet graphs}")
     [ "$s" = completed ] || { bad+=("$t $s $(run_get "$OUT" "sdxl-12gb-$t" '.reason.message // .reason.code // ""' | head -c 200)"); continue; }
-    # A warm call replays the program the cold one recorded (cozy-runtime #1959: the cold call records its whole call).
-    [ "$t" = cold ] || [ "$loop" = resident+reused ] || bad+=("$t loop ${loop:-none}: not a native replay")
+    # A warm call captures nothing and replays every step of the unet graph the cold one captured.
+    [ "$t" = cold ] || jq -e '.measurements.residency.graphs.unet | .captures == 0 and .capture_attempts == 0
+      and .eager.calls == 0 and .replays > 0' "sdxl-12gb-$t.json" > /dev/null 2>&1 || bad+=("$t unet ${unet:-none}: not a replay")
   done
   expect sdxl-12gb-warm "$([ ${#bad[@]} -eq 0 ] && echo PASS || echo FAIL)" "${bad[*]:-cold and four warm calls completed, each warm call a native replay}; ${ran[*]}"
 fi

@@ -1718,6 +1718,11 @@ J '.error.code == "project_key_taken"' "$root-reserved.json" || check "keys: $kb
 J '.error.code == "project_key_invalid"' "$root-invalid.json" || check "keys: 9z wasn't refused project_key_invalid: $(tail -c 300 "$root-invalid.json")"
 (cd "$outside" && cozy --json run watch QQ987-1 --once) > "$root-none.json" 2>&1 || true
 J '.error.code == "run_not_found" and (.error.message | test("QQ987"))' "$root-none.json" || check "keys: QQ987-1, a key nobody has: $(tail -c 300 "$root-none.json")"
+# A bare number outside every project's folder names no run (cl-1028): the refusal says whose numbers they are and how to name
+# the run (cl-1122; it said "There's no such run.", and the 0.26.0 gate's loop-cancel canceled nothing).
+(cd "$outside" && cozy --json run cancel "$n") > "$root-bare.json" 2>&1 || true
+J --arg n "$n" '.error.code == "run_not_found" and (.error.message | test("project.*KEY-" + $n))' "$root-bare.json" \
+  || check "keys: run cancel $n outside a project: $(tail -c 300 "$root-bare.json")"
 }
 
 run_playback() {

@@ -514,11 +514,22 @@ jobs:
             echo "::error::$r is still listed, or no machine listing answered: end it by hand (cozy machine end $r)"; left=1
           done
           exit $left
+      # The upload zips a hard-linked copy, with project.db's WAL folded in and SQLite's -shm/-wal left out: after a cap,
+      # this runner's Calcifer and the cancelled cell still write $OUT, and one file they deleted mid-zip lost every record
+      # (44006524441: ENOENT on project/project.db-shm).
+      - if: always()
+        run: |
+          [ -d "$OUT" ] || exit 0
+          find "$OUT" -name '*.db' -path '*/project/*' -exec python3 -I -c 'import sqlite3, sys; sqlite3.connect(sys.argv[1], timeout=30).execute("PRAGMA wal_checkpoint(TRUNCATE)")' {} \; || true
+          rm -rf "$RUNNER_TEMP/gate-upload"; cp -al "$OUT" "$RUNNER_TEMP/gate-upload" || true
       - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gate-${{ matrix.sku }}-${{ matrix.key }}
-          path: ${{ env.OUT }}
+          path: |
+            ${{ runner.temp }}/gate-upload
+            !${{ runner.temp }}/gate-upload/**/*.db-shm
+            !${{ runner.temp }}/gate-upload/**/*.db-wal
           if-no-files-found: ignore
           retention-days: 30
 

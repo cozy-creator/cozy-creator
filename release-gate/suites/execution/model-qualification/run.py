@@ -209,6 +209,7 @@ class Source(TypedDict, total=False):
     kind: Required[str]
     commit: str
     package_tree: str
+    lock_sha256: str
 
 
 class Report(TypedDict, total=False):
@@ -457,11 +458,17 @@ def source_identity(target: str) -> Source:
     tree = subprocess.check_output(
         ["git", "-C", str(directory), "rev-parse", f"HEAD:{prefix}"], text=True
     ).strip()
+    # uv.lock aside: `cozy run` writes the lock it made into the package's folder (cl-871), as an RC build re-locks one that
+    # doesn't name its newest Runtime (xs-194). The lock that ran is recorded by its digest instead.
     dirty = subprocess.check_output(
-        ["git", "-C", str(directory), "status", "--porcelain", "--", "."], text=True
+        ["git", "-C", str(directory), "status", "--porcelain", "--", ".", ":(exclude)uv.lock"], text=True
     )
-    assert not dirty, "qualify committed package contents only"
-    return {"target": target, "kind": "source", "commit": head, "package_tree": tree}
+    assert not dirty, f"qualify committed package contents only: {dirty.strip()}"
+    lock = directory / "uv.lock"
+    source: Source = {"target": target, "kind": "source", "commit": head, "package_tree": tree}
+    if lock.is_file():
+        source["lock_sha256"] = hashlib.sha256(lock.read_bytes()).hexdigest()
+    return source
 
 
 def main() -> None:
