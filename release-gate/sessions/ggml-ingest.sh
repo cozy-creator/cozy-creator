@@ -42,6 +42,10 @@ cozy machine show "$NAME" --json > "$OUT/show.json" 2>&1
 say "on: $(jq -r '"cozy \(.status.version) · Runtime \(.status.runtime) · TensorFS \(.status.tensorfs) · \(.status.cpus // "?") CPUs"' "$OUT/show.json")"
 there() { timeout "${2:-600}" cozy machine ssh "$NAME" -- "$1"; }
 (while sleep 480; do cozy machine keepalive "$NAME" > /dev/null 2>&1; done) & BG="$BG $!"
+# The pod's side, every 5 minutes into the report: its last step and what it has on disk.
+(while sleep 300; do
+  say "pod: $(there "tail -n 1 /w/out/pod.log; du -sh /w/hf /w/build /w/*.gguf 2>/dev/null | tr '\n' ' '; uptime" < /dev/null 2>&1 | tr '\n' ' ' | cut -c1-300)"
+done) & BG="$BG $!"
 
 # 2, started first: llama.cpp's side runs on the pod's CPUs while ours is written.
 there "mkdir -p /w/out" < /dev/null || fail "ssh"
