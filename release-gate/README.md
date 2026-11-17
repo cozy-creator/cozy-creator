@@ -211,6 +211,9 @@ before it joins, the run fails at once; stopped once joined, it fails `group_unf
 and no GPU stays held; stopped and continued inside the unwind, the group forms on attempt 2 and the run completes. Then
 H3 untouched renders 362 frames. `-f params='{"machine": "<name>"}'` uses a rental already up.
 `h3-8gb` is the 8 GB tier: H3 Turbo 15 s on one RTX 3070 must complete, 362 frames, under its time bar.
+`h3-vae` (cr-306) times H3's video VAE alone, ours against ComfyUI's, one engine at a time on one pod: minimax-h3's `vae_round_trip` from
+a `packages_refs` checkout on each arm's Runtime, then ComfyUI's VAEEncode and VAEDecode at a pinned commit and comfy-kitchen, on a 129-
+and a 362-frame 1344x768 clip, with each arm's PSNR against the first (latents, decoded frames, the round trip) and `times.tsv`.
 `upload-proofs` uploads twice in a row on one pod, then once while a download of a private commit runs there and a second
 download waits on it; each must complete under the pod's own DPoP proofs, signed in the Hub's time, and its record has the
 pod's clock against the Hub's (cli-release 42224725083: a host 665 s fast had every redemption refused).
