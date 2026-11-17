@@ -40,3 +40,29 @@ said=$(run_get "$OUT" "$1" .result.text)
 echo "$1: $said"
 [ -n "${said//[[:space:]]/}" ] || check "$1: the answer is no words: $(jq -c .result "$OUT/$1.json" 2> /dev/null | cut -c1-300)"
 }
+
+# xs-209 (Paul, 11-17): "we can type text into boxes and get a reply from it (ideally streaming the results), and also we can get captions
+# for images (ideally streaming)": the page cell web/llm-stream.spec.js, on this shard's Qwen3.5 0.8B.
+llm_stream() {
+[ -n "$LOCAL" ] || return 0
+web_suite llm-stream llm-stream
+}
+
+# xs-209 (Paul, 11-17): "Make sure our machines are speaking the standard Responses-API (ChatGPT / openai standardized). That should make it
+# easy to consume the results as a delta, including by other tools." OpenAI's own Python SDK, `client.responses.create(stream=True)`,
+# against this computer's Calcifer with the CLI's bearer as its API key: Qwen3.5 0.8B on the CPU answers through the qwen3 package's Write
+# tool, its words as deltas well before it completes, adding up to its text; not streamed, a picture sent as a data: URL is answered whole.
+responses_sdk() {
+[ -n "$LOCAL" ] || return 0
+step "OpenAI's SDK streams an answer from Calcifer's Responses API (xs-209)"
+local holder=$HOME/.cozy/calcifer/calcifer.lock.holder package=qwen3.5 id said
+[ -z "$PACKAGES" ] || [ ! -d "$PACKAGES/qwen3" ] || package=qwen3
+id=$(status "$RUN_PROJECT" | jq -r '.id // empty')
+[ -n "$id" ] || { check "responses: the project has no id"; return; }
+if ! uv run -q --no-project --with 'openai>=1.80' python3 "$here/responses_sdk.py" --base "http://$(jq -r .address < "$holder")/v1" \
+  --key "$(jq -r .token < "$holder")" --project "$id" --model "$package/write:qwen/qwen3.5-0.8b@0.1.0" > "$OUT/responses.txt" 2>&1; then
+  said=$(grep '^FAIL ' "$OUT/responses.txt" | sed 's/^FAIL //' | paste -sd ';' -)
+  check "responses: ${said:-$(tail -c 600 "$OUT/responses.txt")}"
+fi
+tail -n 1 "$OUT/responses.txt" | cut -c1-2000
+}

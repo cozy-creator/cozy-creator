@@ -608,6 +608,8 @@ case $SHARD in
     describe
     first_run
     llm_write
+    llm_stream
+    responses_sdk
     previews
     second_executor
     lifetime
@@ -680,6 +682,8 @@ case $SHARD in
     describe
     first_run
     llm_write
+    llm_stream
+    responses_sdk
     previews
     run_flags
     run_playback
