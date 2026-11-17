@@ -1,0 +1,1 @@
+TensorFS reads PAN2 in ComfyUI's one-file layouts: Comfy-Org's bf16 (`pan2.comfy`) and its quantized curve-form DiT (`pan2.curve`, `adaln_t_table` in place of the time embedder), verified as the new `pan2` family's `curve` form. ComfyUI's per-block `comfy_attention.config` is read, checked and dropped at import: a package declares its attention precision.

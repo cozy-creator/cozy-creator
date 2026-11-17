@@ -371,6 +371,25 @@ FAMILIES: list[Spec] = [
         "sources": ["ltx2.lora"],
     },
     {
+        "name": "pan2",
+        "reference": "hf://IFM/PAN2@82f54c6cea3e20a9c451b61d7360016e5970503d",
+        "classes": ["PAN2ModularPipeline", "PAN2Transformer3DModel"],
+        "folders": ["transformer", "text_encoder", "vae"],
+        "sources": ["pan2.comfy", "pan2.curve"],
+        # ComfyUI's curve DiT (comfy/ldm/pan2/model.py: `vec` lerped from `adaln_t_table` over t in [0, 1], each
+        # modulation linear over its 192 coordinates; Comfy-Org's quantized files, pan2.curve), and the packages pan2
+        # `curve` lane that writes it from the canonical DiT.
+        "forms": {
+            "curve": {
+                "components": ["transformer"],
+                "drop": ["time_embedder.*"],
+                "set": [("transformer_blocks.*.norm1.linear.weight", [24576, 192]), ("norm_out.linear.weight", [8192, 192])],
+                "add": [("adaln_t_table", [4097, 192])],
+            },
+        },
+        "form_sizes": {"canonical": 1418, "curve": 1415},
+    },
+    {
         "name": "hunyuan-image-3",
         # Instruct-Distil: Instruct (tencent/HunyuanImage-3.0-Instruct@2ec2c78) lacks its guidance and timestep-r embedders.
         # One Transformers model at the repository's root; its PEFT LoRAs name its modules.

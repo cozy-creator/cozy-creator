@@ -24,7 +24,7 @@ macro_rules! family {
 }
 
 /// The built-in families.
-pub(crate) const FAMILIES: [&str; 15] = [
+pub(crate) const FAMILIES: [&str; 16] = [
     family!("minimax-h3"),
     family!("sdxl"),
     family!("anima"),
@@ -40,6 +40,7 @@ pub(crate) const FAMILIES: [&str; 15] = [
     family!("hunyuan-image-3"),
     family!("hidream-o1"),
     family!("ltx-2-5"),
+    family!("pan2"),
 ];
 
 /// The form a family's reference is in.

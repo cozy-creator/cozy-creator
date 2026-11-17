@@ -30,6 +30,7 @@ target's construction order (its `state_dict()`), never sorted (#624).
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import importlib
 import importlib.machinery
@@ -1041,6 +1042,40 @@ def comfy_single_file(name: str) -> Table[TableRow]:
     return {"name": name, "reference": spec["reference"], "components": [component]}
 
 
+
+# ------------------------------------------------------------------ PAN2
+
+PAN2_COMFY = VECTORS / "pan2-comfy-headers"
+PAN2_REFERENCE = "hf://IFM/PAN2@82f54c6cea3e20a9c451b61d7360016e5970503d"
+# A block's ComfyUI attention kernel, which the import drops (`carriers.json` `execution_tensors`).
+EXECUTION = (".comfy_attention.config",)
+# Each PAN2 layout in ComfyUI's one file, the family's form it holds, and Comfy-Org's published files in it.
+PAN2: dict[str, tuple[str, list[str]]] = {
+    "pan2.comfy": ("canonical", ["pan2_bf16"]),
+    "pan2.curve": ("curve", ["pan2_int8_convrot"]),
+}
+
+
+def pan2_comfy(name: str) -> Table[TableRow]:
+    """PAN2's DiT in ComfyUI's one file: the family's own names, bare, in one form (Comfy-Org's bf16 is canonical, its
+    int8_convrot the curve form, comfy/ldm/pan2/model.py), so every row is a rename, in the reference's order."""
+    form, vectors = PAN2[name]
+    family = json.loads((FAMILIES / "pan2.json").read_text())
+    keys = {k: list(shape) for k, shape in family["components"]["transformer"]["keys"]}
+    if form != "canonical":
+        edit = family["forms"][form]
+        keys = {k: s for k, s in keys.items() if not any(fnmatch.fnmatchcase(k, p) for p in edit["drop"])}
+        for pattern, shape in edit["set"]:
+            keys.update({k: shape for k in keys if fnmatch.fnmatchcase(k, pattern)})
+        keys.update(dict(edit["add"]))
+    for vector in vectors:
+        held = {k: list(s) for k, (_, s) in header(PAN2_COMFY / f"{vector}.safetensors.header").items()
+                if not k.endswith(COMPANIONS + EXECUTION)}
+        assert held == keys, (name, vector, sorted(set(held) ^ set(keys))[:4])
+    component: Component[TableRow] = {"name": "transformer", "rows": [row(k, k) for k in keys]}
+    return {"name": name, "reference": PAN2_REFERENCE, "components": [component]}
+
+
 # ------------------------------------------------------------------ FLUX.2, FLUX.3 Klein and FIBO 2 LoRAs
 
 #: PEFT's and Diffusers' factors (also under DiffSynth's and PEFT's adapter name), and kohya's.
@@ -1641,6 +1676,7 @@ def generate() -> dict[str, Generated]:
         "qwen3vl.comfy": qwen3vl_comfy(),
         "qwenimage21.lora": qwenimage21_lora(),
         **{name: comfy_single_file(name) for name in COMFY},
+        **{name: pan2_comfy(name) for name in PAN2},
         "flux2.lora": flux2_lora(),
         "flux3klein.lora": flux3klein_lora(),
         "fibo2.lora": fibo2_lora(),
