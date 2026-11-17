@@ -82,10 +82,12 @@ elif [ "$what" = cozy ]; then
     COZY_COMMIT=$sha cargo build --release --locked --offline -p cozy --bin cozy
     git checkout -- Cargo.toml Cargo.lock)
   (cd "$stage_src"
-    COZY_COMMIT=$(git rev-parse HEAD) cargo build --release --locked -p api --example stage-code)
+    COZY_COMMIT=$(git rev-parse HEAD) cargo build --release --locked -p api --example stage-code -p needs --example needs-answers)
   # cozy is one file (00e565d72): varena is the TensorFS wheel's.
   cp "$src/target/release/cozy$exe" "$out/cozy$exe"
   cp "$stage_src/target/release/examples/stage-code$exe" "$out/stage-code$exe"
+  # The cpu suite's judge of each call against its function's needs rules (cl-1103).
+  cp "$stage_src/target/release/examples/needs-answers$exe" "$out/needs-answers$exe"
 elif [ "$what" = cozy-before ]; then
   # A release's version, no +dev: it updates itself. Its TensorFS crate is the line's, whose protocol is what it runs. No page.
   (cd "$src"

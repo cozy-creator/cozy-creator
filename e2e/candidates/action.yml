@@ -197,6 +197,11 @@ runs:
           chmod +x "$stage"
           echo "RUN_CODE_STAGE=$stage" >> "$GITHUB_ENV"
         fi
+        # The cpu suite's needs-rules judge (cl-1103), beside stage-code in a built cozy's set; else the suite builds it.
+        if [ -f "$out/needs-answers$exe" ]; then
+          chmod +x "$out/needs-answers$exe"
+          echo "NEEDS_ANSWERS=$out/needs-answers$exe" >> "$GITHUB_ENV"
+        fi
         if [ -z "$FROM" ]; then
           creator=.stack runtime=.rt
           [ "$REPO" != cozy-creator ] || creator=.src
