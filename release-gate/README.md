@@ -189,6 +189,9 @@ once while the machine drawer's GPU use is held to the pod's nvidia-smi (10 poin
 box rendered twice and a caption of the photo and of the video. Without `rent` its page cells run on the runner with the local LLM fixture:
 `gh workflow run pod-session.yaml -R cozy-creator/cozy-creator --ref rc/<x> -f hub=prod -f script=llm-tools -f packages_refs=rc=<the
 packages RC> -f sku=rtx-a6000 -f disk=200 -f cap=6 -f cozy=<dev-build run> -f params='{"tree": "rc", "gpus": 2}' -f rent=true`.
+`upscale` (se-147) runs picture Upscale tools (`candidates`: {name, tree, tool, fields, from}) from `packages_refs` checkouts on one
+rental, over `fixtures/upscale-bench` (225 px JPEGs of clean pictures), and scores each output against its clean picture (LPIPS, DISTS,
+PSNR) and with none (MUSIQ, CLIP-IQA) on the runner after the rental ends; `$OUT/sheets` lays them side by side.
 `render-placement` (cl-774) is a render with the page's Run on at Automatically (`e2e/page.py render --on auto`) on a runner with no GPU and one rental: a tie and a model this computer has no GPU for go to the rental, nothing warns, and with the rental busy a weightless still goes here.
 `render-estimate` (cl-1004) is the bench's H3 Turbo 15 s shot as a box on one pod this runner never ran H3 on: the time `fit` gives
 the page before any run (its release's benchmark of that card) against the warm render's, within 35%, then `fit` again, measured there.
