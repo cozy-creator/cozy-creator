@@ -415,10 +415,18 @@ hub_blob_reads() (
   [ -n "$container" ] || fail "hub blob reads: no Postgres container publishes $port"
   sql() { docker exec -i -e PGAPPNAME=th382 "$container" psql -v ON_ERROR_STOP=1 -qtA -U postgres "$@"; }
   release() { sql -c "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE application_name IN ('th382-hold')" > /dev/null 2>&1 || true; }
-  trap release EXIT
-  shas=$(sql -c "SELECT substr(object_id, 8) FROM hub_v2.verified_objects WHERE storage_domain = 'repo_cas' AND custody_scope = 'shared'
-    AND public ORDER BY object_id LIMIT 20" 2> "$S/shas.err") || fail "hub blob reads: listing public objects: $(tail -c 300 "$S/shas.err")"
-  [ "$(grep -c . <<< "$shas")" -ge 4 ] || fail "hub blob reads: the fixture Hub holds $(grep -c . <<< "$shas") public objects, not 4 or more"
+  forget() { sql -c "DELETE FROM hub_v2.verified_objects WHERE bucket = 'th382'" > /dev/null 2>&1 || true; }
+  trap 'release; forget' EXIT
+  # 20 public objects as the Hub records them (the fixture publishes none here). A read is the Hub's answer, a redirect to where the
+  # bytes are presigned; nothing follows it, so no bytes are needed.
+  sql > "$S/objects.out" 2>&1 <<'SQL' || fail "hub blob reads: recording public objects: $(tail -c 300 "$S/objects.out")"
+INSERT INTO hub_v2.verified_objects (object_id, length, bucket, key, backend_version, etag, checksum_sha256, storage_domain, custody_scope, public)
+SELECT 'sha256:' || h, 16 << 20, 'th382', 'th382/' || h, '', '', '', 'repo_cas', 'shared', true
+  FROM (SELECT encode(sha256(('th382-' || i || '-' || random())::bytea), 'hex') AS h FROM generate_series(1, 20) i) o;
+SQL
+  shas=$(sql -c "SELECT substr(object_id, 8) FROM hub_v2.verified_objects WHERE bucket = 'th382' ORDER BY object_id" 2> "$S/shas.err") \
+    || fail "hub blob reads: listing them: $(tail -c 300 "$S/shas.err")"
+  [ "$(grep -c . <<< "$shas")" = 20 ] || fail "hub blob reads: $(grep -c . <<< "$shas") public objects recorded, not 20"
   # Its pools empty, as a replica's are at a start, so each connection a read takes is a new one Postgres must admit.
   bash "$here/../skew/rehub.sh" > "$S/rehub.log" 2>&1 || fail "hub blob reads: restarting the Hub: $(tail -c 300 "$S/rehub.log")"
   sleep 3
@@ -433,12 +441,13 @@ SQL
     [ "$(sql -c "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'th382-hold'" 2> /dev/null || echo 0)" -ge "$hold" ] && break
     sleep 0.5
   done
-  echo "hub blob reads: Postgres max_connections $max, $used used after the Hub's restart, $hold more held: $free free; $(grep -c . <<< "$shas") public objects"
+  echo "hub blob reads: Postgres max_connections $max, $used used after the Hub's restart, $hold more held: $free free"
   # 400 range GETs, 20 per object, 80 at once, as TensorFS reads a closure.
   for _ in $(seq 20); do printf '%s\n' $shas; done > "$S/reads.txt"
   xargs -P 80 -I{} curl -s -o /dev/null -w '%{http_code}\n' -m 60 -H 'Range: bytes=0-1023' \
     "$COZY_HUB_URL/blobs/{}" < <(sed -E 's#^(..)(..)(.*)$#\1/\2/\1\2\3#' "$S/reads.txt") > "$S/codes.txt" 2>&1 || true
   release
+  forget
   codes=$(sort "$S/codes.txt" | uniq -c | awk '{printf "%s×%s ", $2, $1}')
   echo "hub blob reads: 400 range GETs answered $codes"
   ! grep -qv '^30[27]$' "$S/codes.txt" || check "hub blob reads: with $free connections free, 400 range GETs answered $codes(not all redirects); the Hub logged $(grep -c '53300' "$COZY_TEST_HUB_SERVE_LOG" 2> /dev/null || echo 0) 53300s"
