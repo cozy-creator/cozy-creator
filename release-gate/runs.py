@@ -508,7 +508,7 @@ class Run:
             return None
         busy = sum(r.get('busy_ms') or 0 for r in rows)
         limited = [r for r in rows if r.get('power_limit_w') and r.get('power_default_w')]
-        low = min(limited, key=lambda r: (r.get('power_limit_w') or 0) / (r.get('power_default_w') or 1), default={})
+        low = min(limited, key=lambda r: (r.get('power_limit_w') or 0) / (r.get('power_default_w') or 1), default=DriverRow())
         return {'sm_mhz': round(sum((r.get('sm_mhz_mean') or 0) * (r.get('busy_ms') or 0) for r in rows) / busy),
                 'power_w': round(max(r.get('power_max_w') or 0 for r in rows)),
                 'throttles': sorted({t for r in rows for t in r.get('throttles') or []}),

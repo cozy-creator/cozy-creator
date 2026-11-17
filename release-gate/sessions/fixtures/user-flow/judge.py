@@ -485,8 +485,8 @@ for r in rows:
     # A FAIL says its GPU's clock and power beside the stored run's (cl-1161: hiroyuki's 4090, held by its host to ~160 of 450 W,
     # ran 876 MHz against 2440 and took 2.8× as long): a slow host shows as one, not as the release.
     clocks = r.record.clocks
-    held = f", held to {clocks['power_limit_w']} of {clocks['power_default_w']} W" if clocks and clocks['power_limit_w'] else ''
-    beside = ((f"; SM {clocks['sm_mhz']} MHz at up to {clocks['power_w']} W{held} ({', '.join(clocks['throttles']) or 'no limit'})" if clocks else '; no clocks recorded')
+    capped = f", held to {clocks['power_limit_w']} of {clocks['power_default_w']} W" if clocks and clocks['power_limit_w'] else ''
+    beside = ((f"; SM {clocks['sm_mhz']} MHz at up to {clocks['power_w']} W{capped} ({', '.join(clocks['throttles']) or 'no limit'})" if clocks else '; no clocks recorded')
               + (f" vs stored {r.stored['sm_mhz']} MHz at up to {r.stored['power_w']} W" if 'sm_mhz' in r.stored else '; stored clocks not recorded'))
     fast = r.work_s is not None and r.work_s <= want * TIE
     check(f"request {r.request}'s own work within 5% of stored ({fn}, {key}, {'cold' if cold else 'warm'})", fast,
