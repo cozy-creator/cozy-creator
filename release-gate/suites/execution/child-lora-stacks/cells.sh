@@ -1,6 +1,9 @@
 # A child call's own LoRA stack per slot (cl-687): six SDXL calls of one parent, each with its ModelChoice over the
 # request's --lora, must record their stacks, differ, and hit the memo only on the same stack. Sourced by the runtime suite.
-cell child-lora-stacks "$HERE/suites/execution/child-lora-stacks/compare" prompt="PEBalloonStyle, $OBJECT on a pier at dusk" \
+# With a --packages checkout it calls that checkout's sdxl (a path dependency, local-sources.sh), not the Hub's last release.
+CLS=$HERE/suites/execution/child-lora-stacks
+[ -z "$PKGS" ] || { pkg sdxl generate > /dev/null; CLS=$("$HERE/local-sources.sh" "$CLS" "$OUT/child-lora-stacks-src" "$PKGS"); }
+cell child-lora-stacks "$CLS/compare" prompt="PEBalloonStyle, $OBJECT on a pier at dusk" \
   seed:=$((R + 341)) --lora proomptengineer/balloon-lora-sdxl
 if [ -f child-lora-stacks.json ]; then
   stacks=$(run_get "$OUT" child-lora-stacks '[.calls[]? | if .memoized then "memo" else

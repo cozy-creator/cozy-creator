@@ -16,6 +16,7 @@ default = "ci_child_lora_stacks:app"
 module-name = "ci_child_lora_stacks"
 module-root = ""
 
-# sdxl from the Hub: the root's index, as the signed-in account publishes no sdxl. cozy locks it at the run (cl-871).
+# sdxl from the Hub: the root's index, as the signed-in account publishes no sdxl. cozy locks it at the run (cl-871). A gate
+# with --packages points it at the checkout's sdxl (release-gate/local-sources.sh).
 [tool.uv.sources]
 sdxl = { index = "tensorhub" }

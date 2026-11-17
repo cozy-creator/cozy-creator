@@ -1,0 +1,1 @@
+`cozy run cancel 5` (or any run verb given a bare number) outside a project's folder says run numbers are a project's and to run it in that folder or name the run (`KEY-5`), instead of "There's no such run."

@@ -607,6 +607,9 @@ pub(crate) async fn find_scoped(api: &Arc<Api>, project: Option<&str>, key: &str
         row => row,
     }.ok_or_else(|| match ::api::calcifer::project::run_name(key) {
         Some((named, _)) => Refusal(Error::new(Kind::NotFound, "run_not_found", format!("No project on this computer has the key {named}.")).next("cozy run ls --all")),
+        // A bare number outside any project's folder: run numbers are a project's (cl-1028).
+        None if project.is_none() && key.parse::<u64>().is_ok() => Refusal(Error::new(Kind::NotFound, "run_not_found",
+            format!("Run {key} is a project's number: run this in its project's folder, or name it KEY-{key}.")).next("cozy run ls --all")),
         None => refuse(Kind::NotFound, "run_not_found", "There's no such run."),
     })?;
     if project.is_none() || row.target == ::api::calcifer::hub::job::COZY_UPDATE { api.calcifer.remember_maintenance_run(row.id.as_str()); }

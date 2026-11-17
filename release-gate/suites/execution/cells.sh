@@ -1,5 +1,5 @@
 # Suite `execution`: every proof that reports `passed` and belongs to no other suite, so none goes unrun; analyze.py fails a
-# completed run that says passed: false. The native loop and kernel readiness (core-cells.sh), capture, prompt LMs decoding
+# completed run that says passed: false. Loop graphs and kernel readiness (core-cells.sh), capture, prompt LMs decoding
 # after other models (prompt-lm), LoRA overlays and child calls (also in `runtime`: a cell one suite ran does not run again),
 # TensorFS's producers and decoders, and SDXL's cold and warm qualification. varena's mechanisms are suite `varena`'s (core,
 # faults, ledger, public API).
