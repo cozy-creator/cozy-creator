@@ -803,8 +803,9 @@ impl Calcifer {
     }
 
     /// The machine a run recorded under `name` is now (cl-1089): the one so named, else the one whose former name (the handle a
-    /// rental has until its Hub names its host) or rental id it is. A project's run keeps the name it was sent to, which a rename
-    /// doesn't reach. None: nothing here was ever so named. `local` is always itself.
+    /// rental has until its Hub names its host, or a host its Hub named before replanning the order, cl-1125) or rental id it is. A
+    /// project's run keeps the name it was sent to, which a rename doesn't reach. None: nothing here was ever so named. `local` is
+    /// always itself.
     pub(crate) fn machine_now(&self, name: &str) -> store::Result<Option<MachineRow>> {
         if name == "local" {
             return self.store.machine(name);
@@ -1333,9 +1334,9 @@ impl Calcifer {
     pub(crate) fn machine_ended(&self, name: &str, reason: &str) -> Result<(), Error> {
         let mut events = self.store.machine_ended(name, reason)?;
         let served = self.store.machine(name)?.is_some_and(|machine| machine.served);
-        // A project's runs sent to it by its former name keep that name (cl-1089).
-        let alias = self.store.alias(name)?;
-        let names: Vec<&str> = std::iter::once(name).chain(alias.as_deref()).collect();
+        // A project's runs sent to it by a former name keep that name (cl-1089): its order's handle, or a host named before (cl-1125).
+        let former = self.store.former_names(name)?;
+        let names: Vec<&str> = std::iter::once(name).chain(former.iter().map(String::as_str)).collect();
         for owner in self.owners() {
             if let Ok(store) = owner.store() {
                 for name in &names {
