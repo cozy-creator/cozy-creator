@@ -269,8 +269,10 @@ scheduler = {}
 tokenizer = { files = ["tokenizer_config.json", "vocab.json", "merges.txt"] }
 
 [[checkpoint]]
-reads = "qwen3.5 and qwen3.6 model (Runtime VisionLM: ask, caption)"
-models = ["qwen/qwen3.5-9b", "qwen/qwen3.5-0.8b", "qwen/qwen3.6-35b-a3b", "qwen/qwen3.6-27b"]
+reads = "qwen3 model (Runtime VisionLM: ask, caption, write)"
+models = ["qwen/qwen3.5-9b", "qwen/qwen3.5-0.8b", "qwen/qwen3.6-35b-a3b", "qwen/qwen3.6-27b", "heretic-org/qwen3.8-27b-heretic-ara",
+  "llmfan46/qwen3.6-35b-a3b-uncensored-heretic-native-mtp-preserved", "llmfan46/qwen3.6-27b-uncensored-heretic-v2-native-mtp-preserved",
+  "darrellbest/qwen3.5-9b-heretic", "huihui-ai/huihui-qwen3.5-0.8b-abliterated"]
 [checkpoint.components]
 model = { files = [
   "tokenizer_config.json",

@@ -32,7 +32,7 @@ both klein "$(pkg flux-3-klein image)" instructions:="$(said "$CHAR")" seed:=$((
 both qwen "$(pkg qwen-image-2 image)" instructions:="$(said "$OBJECT on a marble plinth")" megapixels:=1 seed:=$((R + 5))
 both anima "$(pkg anima image)" instructions="masterpiece, best quality, anime illustration of $CHAR" megapixels=1 seed:=$((R + 6))
 both birefnet "$(pkg birefnet remove_background)" --file image="$REF"
-both describer "$(pkg qwen3.5 ask)" prompt="Describe this picture." --file images="$HERE/ref/seed.jpg"
+both describer "$(pkg qwen3 ask)" --model model=qwen/qwen3.5-9b@0.2.0 prompt="Describe this picture." --file images="$HERE/ref/seed.jpg"
 both hidream "$(pkg hidream-o1 image)" instructions:="$(said "$CHAR, cinematic portrait")" seed:=$((R + 9))
 both moss "$(pkg moss-image image)" instructions="$OBJECT, studio shot" seed:=$((R + 10))
 both qwen-image "$(pkg qwen-image image)" instructions:="$(said "$SCENE at dusk, wide shot")" seed:=$((R + 11))

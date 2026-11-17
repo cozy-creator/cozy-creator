@@ -1,6 +1,7 @@
-"""Tiny Qwen3.5: its hybrid stack (three gated-delta-net layers, one attention layer) and vision tower a few channels
-wide, as Qwen ships it, with Qwen's tokenizer and Qwen3-VL processor (Qwen3.5's own 248k vocabulary is not on this
-computer: the token ids differ, the code paths do not)."""
+"""Tiny Qwen3.x for the `qwen3` package: the dense hybrid stack (three gated-delta-net layers, one attention layer; Qwen3.5,
+Qwen3.6-27B, Qwen3.8-27B) as its default, and the mixture of experts (Qwen3.6-35B-A3B) as a request picks it (`model`), a few
+channels wide, each with its multi-token-prediction head, Qwen's tokenizer and the Qwen3-VL processor (Qwen's own 248k
+vocabulary is not on this computer: the token ids differ, the code paths do not)."""
 
 from __future__ import annotations
 
@@ -15,12 +16,14 @@ import torch
 from cozy_runtime import lm
 from PIL import Image
 from safetensors.torch import load_file, save_file
-from transformers import Qwen3_5Config, Qwen3_5ForConditionalGeneration
+from transformers import Qwen3_5Config, Qwen3_5ForConditionalGeneration, Qwen3_5MoeConfig, Qwen3_5MoeForConditionalGeneration
 from transformers.models.qwen3_5 import modeling_qwen3_5
+from transformers.models.qwen3_5_moe import modeling_qwen3_5_moe
 
 from cell import NARROW, Cell, answers, module, packages, qwen_tokenizer, save, wrote
 
-REF = "qwen/qwen3.5-9b@0.2.0"
+#: The package's default (dense) and the mixture of experts a cell picks.
+MODEL, MOE = "heretic-org/qwen3.8-27b-heretic-ara@0.1.0", "llmfan46/qwen3.6-35b-a3b-uncensored-heretic-native-mtp-preserved@0.1.0"
 
 
 def config() -> Qwen3_5Config:
@@ -53,9 +56,43 @@ def write(folder: Path, model: torch.nn.Module, space: ModuleType = modeling_qwe
     return folder
 
 
-def models(root: Path, store: Path) -> dict[str, Path | str]:
+def dense(folder: Path) -> Path:
+    """The dense model, from seed 0: what a package that reads a Qwen3.5 checkpoint (pan2's reasoner) binds too."""
     torch.manual_seed(0)
-    return {REF: write(root / "qwen3.5", module(Qwen3_5ForConditionalGeneration(config())))}
+    return write(folder, module(Qwen3_5ForConditionalGeneration(config())))
+
+
+def moe(folder: Path) -> Path:
+    """35B-A3B's layout: routed and shared experts, each fused bank stored one expert at a time, from seed 0."""
+    torch.manual_seed(0)
+    plain = config().to_dict()
+    text = {**plain["text_config"], "num_experts": 4, "num_experts_per_tok": 2, "moe_intermediate_size": 32,
+            "shared_expert_intermediate_size": 32}
+    made = Qwen3_5MoeConfig(text_config=text, vision_config=plain["vision_config"],
+                            **{k: plain[k] for k in ("image_token_id", "video_token_id", "vision_start_token_id",
+                                                     "vision_end_token_id", "tie_word_embeddings")})
+    folder = write(folder, module(Qwen3_5MoeForConditionalGeneration(made)), modeling_qwen3_5_moe)
+    split(folder / "model.safetensors")
+    return folder
+
+
+def split(path: Path) -> None:
+    """Each fused expert bank one expert at a time, as TensorFS's `qwen3.6-35b-a3b.experts` table lays out the release
+    (that table is pinned to the release's shapes): `experts.{e}.gate_and_up_proj.weight`, `experts.{e}.down_proj.weight`."""
+    tensors = load_file(path)
+    out: dict[str, torch.Tensor] = {}
+    for key, value in tensors.items():
+        bank, _, name = key.rpartition(".experts.")
+        if name in ("gate_up_proj", "down_proj"):
+            row = "gate_and_up_proj" if name == "gate_up_proj" else "down_proj"
+            out |= {f"{bank}.experts.{e}.{row}.weight": value[e].contiguous() for e in range(value.shape[0])}
+        else:
+            out[key] = value
+    save_file(out, path, metadata={"format": "pt"})
+
+
+def models(root: Path, store: Path) -> dict[str, Path | str]:
+    return {MODEL: dense(root / "dense"), MOE: moe(root / "moe")}
 
 
 def picture(folder: Path) -> Path:
@@ -82,7 +119,8 @@ def clip(folder: Path) -> Path:
 
 
 def cells(picture: Callable[[Path], Path], clip: Callable[[Path], Path]) -> list[Cell]:
-    return [
+    """Each request on the default, then on the mixture of experts (`moe-*`)."""
+    plain: list[Cell] = [
         {"entry": "ask", "name": "text", "payload": {"prompt": "What is two plus two?", "max_tokens": 12},
          "check": answers(1)},
         {"entry": "ask", "name": "image", "payload": {"prompt": "What is in this picture?", "max_tokens": 12},
@@ -104,6 +142,8 @@ def cells(picture: Callable[[Path], Path], clip: Callable[[Path], Path]) -> list
          "files": {"instructions.references.0.file": picture, "instructions.references.1.file": clip}, "check": wrote},
         {"entry": "quantize", "name": "int8", "payload": {}, "skip": NARROW},
     ]
+    picked: list[Cell] = [{**cell, "name": f"moe-{cell['name']}", "models": {"model": MOE}} for cell in plain if cell["entry"] != "quantize"]
+    return plain + picked
 
 
 CELLS = cells(picture, clip)

@@ -12,7 +12,7 @@ fi
 # A Gemma 4 checkpoint loads and answers through VisionLM. Escaped (cr-301, cozy-runtime #2212): canonical JSON's 30 for
 # its float-only `final_logit_softcapping` failed Transformers' strict config, then its audio feature extractor and its
 # unset video defaults (runs IVL-22, 53, 58). Gemma 4 E2B is LTX-2.5's prompt enhancer.
-cell vlm-gemma4 "$(pkg qwen3.5 ask)" --model model=google/gemma-4-e2b-it@0.2.0 \
+cell vlm-gemma4 "$(pkg qwen3 ask)" --model model=google/gemma-4-e2b-it@0.2.0 \
   prompt="Describe $OBJECT on a wooden table in one sentence." max_tokens:=64 seed:=$((R + 41))
 if [ -f vlm-gemma4.json ]; then
   t=$(run_get "$OUT" vlm-gemma4 '.result.texts[0] // ""')

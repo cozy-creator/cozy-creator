@@ -2,15 +2,17 @@
 # attach an LLM and it can generate more text. Or I can attach an LLM (ideally VLLM) to an image node, or a video node, and ask it
 # to produce a caption, and it'll produce text".
 
-# Qwen3.5's `write` tool, the real 0.8B on this computer's CPU through `cozy run`: words from words, then one answer about a
-# picture and a clip its instructions mention. Each answer is words.
+# se-145, Paul 11-16: "but the user can override the checkpoint used? ideally use only abliterated checkpoints of it, not the original."
+
+# qwen3's `write` tool on the real Qwen3.5 0.8B, abliterated, picked by `--model`, on this computer's CPU through `cozy run`: words
+# from words, then one answer about a picture and a clip its instructions mention. Each answer is words.
 llm_write() {
 [ -n "$LOCAL" ] || return 0
-[ -n "$MODEL" ] || { echo "Qwen3.5's write: not selected (ci/affected's model)"; return 0; }
+[ -n "$MODEL" ] || { echo "qwen3's write: not selected (ci/affected's model)"; return 0; }
 step "an LLM tool writes words, and of a picture and a clip it's shown (xs-204)"
-local tool=qwen3.5/write dir=$OUT/llm pic clip prompt
-[ -z "$PACKAGES" ] || tool=$(cd "$PACKAGES" && printf '%s/qwen3.5/write\n' "$PWD")
-local qwen=(--model model=qwen/qwen3.5-0.8b@0.1.0 max_tokens:=32 seed:=7)
+local tool=qwen3/write dir=$OUT/llm pic clip prompt
+[ -z "$PACKAGES" ] || tool=$(cd "$PACKAGES" && printf '%s/qwen3/write\n' "$PWD")
+local qwen=(--model model=huihui-ai/huihui-qwen3.5-0.8b-abliterated@0.1.0 max_tokens:=32 seed:=7)
 if cell llm-words "$tool" 'instructions=Continue this in one sentence: The sea at night' "${qwen[@]}"; then
   wrote llm-words
 fi

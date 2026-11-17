@@ -106,7 +106,7 @@ fi
 # Klein: Klein's two slots of one component collide on TFS 0.15.0, var-010.)
 s=$(submit "$(pkg anima generate)" prompt="masterpiece, anime illustration of $CHAR, stacked" seed:=$((R + 37))); until_status "$s" terminal
 k=$(submit "$(pkg birefnet remove_background)" --file image="$REF"); until_status "$k" terminal
-d=$(submit "$(pkg qwen3.5 ask)" prompt="Describe this image in one sentence." --file images="$REF"); until_status "$d" terminal
+d=$(submit "$(pkg qwen3 ask)" --model model=qwen/qwen3.5-9b@0.2.0 prompt="Describe this image in one sentence." --file images="$REF"); until_status "$d" terminal
 ended=$("$CLI" machine logs "$M" tensord -n 0 2>/dev/null | grep -c 'ending idle')
 [ "$(get "$s" status)$(get "$k" status)$(get "$d" status)" = completedcompletedcompleted ] \
   && expect tensord-leases PASS "SDXL, Anima and BiRefNet stacked, then the describer fit (run $d); $ended idle executors ended" \

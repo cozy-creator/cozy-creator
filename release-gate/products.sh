@@ -2,7 +2,7 @@
 # with a scenario prompt and its own seed. A cell that takes another's output (SeedVR2 H3's clip, BiRefNet Klein's image,
 # Qwen-Image's edits its render) falls back to the gate's reference when that one did not run. The describer reads the
 # checked-in ref/seed.jpg, so both arms of a comparison caption the same picture.
-PRODUCTS=(minimax-h3 seedvr2 sdxl flux.3-klein qwen-image-2 anima birefnet qwen3.5 fibo-2 hidream-o1 moss-image qwen-image
+PRODUCTS=(minimax-h3 seedvr2 sdxl flux.3-klein qwen-image-2 anima birefnet qwen3 fibo-2 hidream-o1 moss-image qwen-image
   flux-2 ideogram-4 krea-2 hunyuan-image-3)
 # --first runs these packages before the rest, in its order: a clean standalone number before models stack.
 [ -z "$FIRST" ] || mapfile -t PRODUCTS < <(tr , '\n' <<< "$FIRST"; printf '%s\n' "${PRODUCTS[@]}" | grep -vxF -f <(tr , '\n' <<< "$FIRST"))
@@ -138,8 +138,8 @@ qwen_lora() {
 }
 product_anima() { cell anima "$(pkg anima generate)" prompt="masterpiece, best quality, anime illustration of $CHAR" seed:=$((R + 6)); }
 product_birefnet() { cell birefnet "$(pkg birefnet remove_background)" --file image="${K:-$REF}"; }
-product_qwen3_5() {
-  cell describer "$(pkg qwen3.5 ask)" prompt="Describe this character: appearance, clothing and pose." --file images="$HERE/ref/seed.jpg"
+product_qwen3() {
+  cell describer "$(pkg qwen3 ask)" --model model=qwen/qwen3.5-9b@0.2.0 prompt="Describe this character: appearance, clothing and pose." --file images="$HERE/ref/seed.jpg"
 }
 # Fibo's prompt upsampler (a greedy VLM) runs, as by default.
 product_fibo_2() {
