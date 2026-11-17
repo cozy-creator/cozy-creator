@@ -94,10 +94,15 @@ pub(crate) struct Api {
     pub(crate) started_ms: i64,
 }
 
+/// Nothing Calcifer answers is kept by a browser, nor used by any page but its own: a page on another port of this computer is the same
+/// site, and with no resource policy a picture its tab once read could be drawn there without asking Calcifer (web-access, coordinator
+/// 11-17). Nothing of ours loads Calcifer's answers from another origin: the hosted player streams from the machine, and in dev mode Vite's
+/// code comes through Calcifer's own origin.
 async fn no_store(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
     response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
     response.headers_mut().insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    response.headers_mut().insert(header::HeaderName::from_static("cross-origin-resource-policy"), HeaderValue::from_static("same-origin"));
     response
 }
 
