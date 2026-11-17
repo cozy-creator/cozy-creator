@@ -248,7 +248,8 @@ jobs:
           fi
           # A dispatch from a task branch runs against the RC it works toward, never master by default (two runs on 11-15 met
           # master's Runtime and packages and looked like product bugs): its open PR's base, else the line its own Cargo.toml says
-          # (`X.Y.Z-dev` works toward rc/X.Y.Z, a release `X.Y.Z` toward the next minor's, as Calcifer's rc::open reads it).
+          # (`X.Y.Z-dev` works toward rc/X.Y.Z, a release `X.Y.Z` toward the patch line it's cut from, else the next minor's, as
+          # Calcifer's rc::open reads it).
           # Only a dispatch on master runs against master.
           if [ -z "$rc" ] && [ -n "$DISPATCHED" ] && [ "$DISPATCHED" != master ]; then
             b=$(gh api "repos/$GITHUB_REPOSITORY/pulls?head=${GITHUB_REPOSITORY%%/*}:$DISPATCHED&state=open" -q '.[0].base.ref // empty' 2>/dev/null) || b=
@@ -257,8 +258,17 @@ jobs:
             elif [ "$GITHUB_REPOSITORY" = cozy-creator/cozy-creator ]; then
               v=$(gh api "repos/cozy-creator/cozy-creator/contents/Cargo.toml?ref=$DISPATCHED" -H 'Accept: application/vnd.github.raw' 2>/dev/null | sed -n 's/^version = "\([0-9]*\)\.\([0-9]*\)\.[0-9]*\(-[^"]*\)\{0,1\}"$/\1 \2 \3/p' | head -1) || v=
               read -r major minor dev <<< "$v"
+              # A release Cargo.toml on a branch cut from a patch line (it holds `release/X.Y.Z`'s head) works toward that release,
+              # never the next minor's RC (cl-1186: a 0.26.1 fix met rc/0.27.0's Runtime and packages).
+              if [ -n "$minor" ] && [ -z "$dev" ]; then
+                for b in $(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/heads/release/$major.$minor." -q '.[].ref' 2>/dev/null | sed 's|^refs/heads/||' | grep -xE 'release/[0-9]+\.[0-9]+\.[0-9]+' | sort -rV); do
+                  case $(gh api "repos/$GITHUB_REPOSITORY/compare/$b...$DISPATCHED" -q .status 2>/dev/null) in
+                    ahead | identical) rc=$b from_rc="the release line it's cut from"; break ;;
+                  esac
+                done
+              fi
               bump=1; [ -z "$dev" ] || bump=0
-              [ -z "$minor" ] || { rc=rc/$major.$((minor + bump)).0 from_rc="its Cargo.toml's line"; }
+              [ -n "$rc" ] || [ -z "$minor" ] || { rc=rc/$major.$((minor + bump)).0 from_rc="its Cargo.toml's line"; }
             fi
           fi
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
