@@ -221,7 +221,7 @@ def main() -> None:
             shutil.rmtree(folder, ignore_errors=True)
             made = cozy("--json", "new", str(folder), "--passphrase-file", str(out / "passphrase"), "--recovery-out", str(out / f"{name}.recovery"))
             assert made.returncode == 0, f"cozy new {name}: {made.stdout}{made.stderr}"
-            status = json.loads(cozy("--json", "vault", "status", cwd=folder).stdout)["vault"]
+            status = json.loads(cozy("--json", "vault", "status", cwd=folder).stdout)
             assert status.get("state") == "unlocked" and status.get("view"), f"{name} isn't unlocked with a view: {status}"
             view = str(status["view"])
             if swap_first:
@@ -237,7 +237,7 @@ def main() -> None:
             seen: dict[str, object] = {"removed": gone, "s": round(time.monotonic() - began, 1), "mounted": mounted(view)}
             if not gone:
                 said = cozy("--json", "vault", "status", cwd=folder)
-                seen["state"] = json.loads(said.stdout)["vault"].get("state") if said.returncode == 0 else "unreadable"
+                seen["state"] = json.loads(said.stdout).get("state") if said.returncode == 0 else "unreadable"
                 # Put away, as the person would next: locked, then removed.
                 cozy("--json", "vault", "lock", cwd=folder)
                 shutil.rmtree(folder, ignore_errors=True)
