@@ -595,12 +595,14 @@ def judge(defs: list[CellDef], cand: Gate, base: Group | None, version: str | No
             v.notes.append('no baseline: this run starts it')
         x, was = v.comfy, comfy.get(d['name'])
         if x and x['total_s'] is None:
-            v.notes.append(f"ComfyUI: no warm number ({x['status']})")
+            # Its kind only: the status's detail (a log tail) carries ComfyUI's numbers, and verdicts print to the public log.
+            v.notes.append(f"ComfyUI: no warm number ({x['status'].split(':', 1)[0]})")
         elif x and x['total_s'] and b and b['n'] and c['n'] and 'total_ms' in w:
             ours = w['total_ms'] / 1000 if x is not was else (w['total_ms'] - w.get('denoise_ms', 0.0) * (1 - clock)) / 1000
             won = was is not None and was['total_s'] is not None and b['warm']['total_ms'] / 1000 < was['total_s']
             if won and x['total_s'] <= ours:
-                v.why.append(f"loses to ComfyUI ({ours:.1f} s against {x['total_s']:.1f} s) where {version} won")
+                # A FAIL line prints to the public log and verdict.txt: ComfyUI's time stays in the sealed tables.
+                v.why.append(f"loses to ComfyUI (Cozy {ours:.1f} s; ComfyUI's time in the sealed comfyui.md) where {version} won")
         if len(c.get('builds', [])) > 1:
             v.notes.append(f"ran on more than one machine build: {', '.join(c['builds'])}")
         if len(c.get('senders', [])) > 1 or any('>' in b for b in c.get('senders', [])):
