@@ -10,6 +10,8 @@
 #                move is made or fetched for it first.
 #   rc_yields    a render submitted while the follower's move is being sent: it is accepted at once (no 5–15 s hold, measured),
 #                the move yields, and the rental moves to the RC once it is idle.
+#   rc_held      (cl-1236) a run held behind a move its package needs keeps a third rental, this cozy's image, through the
+#                move's restart past its idle deadline.
 here_rcmoves=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 RM_DIR='' RM_CFG='' RM_SAVED='' RM_GH='' RM_KEY='' RM_DROPIN=$HOME/.config/systemd/user/cozy-calcifer.service.d/cl1201-slow-github.conf
 # Each connection's bytes a second, through either slow link: 4 upload lanes to a rental make about 2 MB/s.
@@ -20,7 +22,7 @@ step "a dev home's moves to the open RC never hold up work: none from a request,
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "rc moves: a fresh GitHub Linux runner only"; return 0; }
 RM_DIR=$OUT/rcmoves RM_CFG=$HOME/.cozy/config.toml RM_SAVED=$OUT/rcmoves-config.toml
 cp "$RM_CFG" "$RM_SAVED" || { check "rc moves: no config.toml to keep"; return; }
-rm_setup && { rc_request; rc_yields; }
+rm_setup && { rc_request; rc_yields; rc_held; }
 rm_quit
 }
 
@@ -130,6 +132,66 @@ J --arg a "$again" --argjson ended "$ended" '[.runs[]? | select(.id == $a and .c
 rm_down stand-b
 }
 
+# rc_held (cl-1236, from #3824's review): a rental released itself under the run waiting for its move. Calcifer holds that run in
+# its own journal while it moves the machine first, so TensorD sees no job, and since cl-1203 an update restarts no idle clock: a
+# move that outlasted the deadline released the rental on the restarted service's first pass, before the run was sent, and it
+# requeued (a new rental bought). stand-c, a dev home's rental whose image is this cozy on PyPI's newest Runtime and TensorFS, is
+# asked a run of a package whose `cozy-runtime` floor is this cozy's Runtime minor: it waits behind the move to the RC's Runtime
+# (cl-1201's floor_first). Its idle window is an hour until that move restarts its service, then 45 s, so the restarted service
+# starts with the clock's last start (its boot, or Calcifer's keepalive as the run was held) past it: a move that outlasted it.
+# The run completes on stand-c, which never asked its Hub to release it; before, it released itself and the run never ran there.
+rc_held() {
+local d=$RM_DIR/stand-c image=$RM_DIR/image-c pkg=$RM_DIR/floor floor t0 code=0 runner held='' release settled
+step "a run held for its rental's move keeps that rental through the move's restart, past its idle deadline (cl-1236)"
+floor=$(sed -nE 's/^pub const RUNTIME_MINOR: &str = "(.*)";$/\1/p' "$here_rcmoves/../../crates/api/src/release.rs")
+[ -n "$floor" ] || { check "rc held: no RUNTIME_MINOR in crates/api/src/release.rs"; return; }
+mkdir -p "$image/bin" "$image/wheels" && cp "$RM_DIR/image/wheels/"* "$image/wheels/" && install -m 755 "$(readlink -f "$COZY")" "$image/bin/cozy" \
+  || { check "rc held: stand-c's image wasn't made"; return; }
+rm -rf "$pkg" && cp -r "$here_rcmoves/weightless" "$pkg" \
+  && sed -i -e 's/^name = "e2e-weightless"/name = "e2e-floor"/' -e "s/\"cozy-runtime>=[^\"]*\"/\"cozy-runtime$floor\"/" "$pkg/pyproject.toml" \
+  && grep -qF "\"cozy-runtime$floor\"" "$pkg/pyproject.toml" || { check "rc held: the package on cozy-runtime$floor wasn't made"; return; }
+rm_rental stand-c "$image" || return
+systemctl --user stop cozy-calcifer || { check "rc held: Calcifer didn't stop"; return; }
+rm_store "UPDATE machines SET kind = 'rental', rental_id = 'rental-stand-c', hub = 'http://127.0.0.1:1' WHERE name = 'stand-c'" \
+  || { check "rc held: stand-c wasn't recorded as a rental"; rm_start; return; }
+rm_start || return
+rm_serve stand-c
+for _ in $(seq 360); do rm_show stand-c > "$d/show-ready.json" && J '.status.phase == "ready"' "$d/show-ready.json" && break; sleep 0.5; done
+J '.status.phase == "ready"' "$d/show-ready.json" || { check "rc held: stand-c wasn't ready in 3 min: $(tail -c 600 "$d/machine.log")"; rm_down stand-c; return; }
+echo "rc held: stand-c runs $(jq -c '.status // {} | {version, runtime, tensorfs}' "$d/show-ready.json"); its package needs cozy-runtime$floor"
+t0=$(date +%s%3N)
+(cd "$RUN_PROJECT" && timeout 300 "$COZY" --json run "$pkg/reverse" "text=held$RANDOM" --on stand-c) > "$d/held.ndjson" 2> "$d/held.err" &
+runner=$!
+for _ in $(seq 240); do
+  rm_runs stand-c "$d/runs-held.json"
+  held=$(jq -r '[.runs[]? | select(.kind != "update") | .waiting // "" | select(test("^updating stand-c first"))] | first // empty' "$d/runs-held.json" 2> /dev/null)
+  [ -n "$held" ] && break
+  kill -0 "$runner" 2> /dev/null || break
+  sleep 0.5
+done
+if [ -z "$held" ]; then
+  check "rc held: the run wasn't held behind a move of stand-c: $(jq -c '[.runs[]? | {number, kind, status, waiting, target: .target[0:60]}]' "$d/runs-held.json" 2> /dev/null | head -c 600) $(tail -c 300 "$d/held.err")"
+  kill "$runner" 2> /dev/null || true; wait "$runner" 2> /dev/null || true
+  rm_down stand-c
+  return
+fi
+printf '[machine]\nidle_seconds = 45\n' > "$d/home/.cozy/config.toml"
+echo "rc held: $(( $(date +%s%3N) - t0 )) ms after it was asked: $held"
+wait "$runner" || code=$?
+rm_runs stand-c "$d/runs.json"
+echo "rc held: stand-c's runs: $(jq -c '[.runs | sort_by(.number)[] | {number, kind, status, target: .target[0:60], created: (.created_at_ms - '"$t0"'), accepted: ((.accepted_at_ms // 0) - '"$t0"'), settled: ((.settled_at_ms // 0) - '"$t0"'), reason: .reason.code}]' "$d/runs.json")"
+echo "rc held: stand-c's Hub heard: $(jq -sc --argjson t "$t0" '[.[] | select(.kind != "check_in") | {kind, ms: ((.at * 1000 | floor) - $t)}]' "$d/events.jsonl" 2> /dev/null)"
+grep -E 'idle|releas|update .*restarting|keepalive' "$d/machine.log" | tail -8 | cut -c1-300 || true
+release=$(jq -s '[.[] | select(.kind == "release") | .at * 1000 | floor] | min // 0' "$d/events.jsonl" 2> /dev/null || echo 0)
+settled=$(jq -r '[.runs[] | select(.kind != "update") | .settled_at_ms // 0] | max // 0' "$d/runs.json")
+[ "$code" = 0 ] && J '[.runs[] | select(.kind != "update")] | length > 0 and all(.status == "completed")' "$d/runs.json" \
+  || check "rc held: the run held behind stand-c's move didn't complete there (exit $code): $(tail -c 400 "$d/held.err")"
+if [ "${release:-0}" != 0 ] && { [ "${settled:-0}" = 0 ] || [ "$release" -lt "$settled" ]; }; then
+  check "rc held: stand-c asked its Hub to release it $((release - t0)) ms after the run was asked, under the run held for its move"
+fi
+rm_down stand-c
+}
+
 # rm_image <cozy> <distribution> <version>...: the release's cozy, checked against its release's sha256.sum, and each wheel from PyPI
 # (its abi3 manylinux x86_64 wheel, else its pure one), as a worker image keeps them.
 rm_image() {
@@ -147,11 +209,12 @@ rm_image() {
   done
 }
 
-# rm_rental <name>: its image, its stood-in Hub and its slow relay; served once to be added by its relay's address, then down.
+# rm_rental <name> [image]: its image ($RM_DIR/image unless named), its stood-in Hub and its slow relay; served once to be added by its
+# relay's address, then down.
 rm_rental() {
-  local name=$1 d=$RM_DIR/$1 port fp code hub provider ca
-  mkdir -p "$d/home/.cozy" "$d/root/opt/cozy/wheels" "$d/bin" && cp "$RM_DIR/image/wheels/"* "$d/root/opt/cozy/wheels/" \
-    && cp "$RM_DIR/image/bin/cozy" "$d/bin/cozy" || { check "rc moves: $name's image wasn't made"; return 1; }
+  local name=$1 d=$RM_DIR/$1 image=${2:-$RM_DIR/image} port fp code hub provider ca
+  mkdir -p "$d/home/.cozy" "$d/root/opt/cozy/wheels" "$d/bin" && cp "$image/wheels/"* "$d/root/opt/cozy/wheels/" \
+    && cp "$image/bin/cozy" "$d/bin/cozy" || { check "rc moves: $name's image wasn't made"; return 1; }
   printf '[machine]\nidle_seconds = 3600\n' > "$d/home/.cozy/config.toml"
   printf '%s\n' "$RM_KEY" > "$d/keys"
   python3 "$here_rcmoves/rentalself/standin.py" serve "$d" held > "$d/standin.log" 2>&1 & echo $! > "$d/standin.pid"
@@ -209,7 +272,7 @@ rm_port() { python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1",
 
 rm_quit() {
   local name pid
-  for name in stand-a stand-b; do
+  for name in stand-a stand-b stand-c; do
     rm_down "$name"
     for pid in "$RM_DIR/$name/standin.pid" "$RM_DIR/$name/relay.pid"; do
       [ -s "$pid" ] && { kill "$(cat "$pid")" 2> /dev/null || true; }
