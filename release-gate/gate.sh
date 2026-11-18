@@ -365,7 +365,7 @@ cell() {
   ahead "$name" "$target" "$@"
   # Its machine's downloads while it runs, each once (cl-1205): a run waiting on one names it (`progress.waiting_on`) and says no bytes
   # of its own, so the progress suite reads the download's bytes here.
-  ( while :; do "$CLI" --json machine show "$M" 2>/dev/null | jq -c --argjson at "$(date +%s%3N)" 'select((.status.activity // []) | length > 0)
+  ( cd "${RUN_PROJECT:-$PWD}" && while :; do "$CLI" --json machine show "$M" 2>/dev/null | jq -c --argjson at "$(date +%s%3N)" 'select((.status.activity // []) | length > 0)
       | {at: $at, activity: .status.activity}'; sleep 1; done ) > "$name.machine.ndjson" 2>/dev/null &
   local downloads=$!
   if [ -n "${STOP:-}" ]; then stop_cell "$name" "$target" --on "$M" "$@" || code=$?; else run_cell "$OUT" "$name" "$target" --on "$M" "$@" || code=$?; fi

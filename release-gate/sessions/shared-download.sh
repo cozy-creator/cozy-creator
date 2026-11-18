@@ -64,9 +64,10 @@ looks() {
   local p=''
   while :; do
     [ -n "$p" ] || p=$(ls -d "$OUT"/web/projects/*shared-download* 2> /dev/null | head -1)
+    # In the project, as a person there reads them: `machine show` lists what the machine does for its runs too.
     { date -u +%T; [ -z "$p" ] || (cd "$p" && cozy run ls 2>&1); } >> "$OUT/run-ls.txt"
-    { date -u +%T; cozy machine show "$NAME" 2>&1; } >> "$OUT/machine-show.txt"
-    cozy --json machine show "$NAME" 2> /dev/null | jq -c --argjson at "$(date +%s%3N)" 'select((.status.activity // []) | length > 0)
+    { date -u +%T; (cd "${p:-$OUT}" && cozy machine show "$NAME" 2>&1); } >> "$OUT/machine-show.txt"
+    (cd "${p:-$OUT}" && cozy --json machine show "$NAME" 2> /dev/null) | jq -c --argjson at "$(date +%s%3N)" 'select((.status.activity // []) | length > 0)
       | {at: $at, activity: .status.activity}' >> "$G/machine.ndjson"
     sleep 1
   done

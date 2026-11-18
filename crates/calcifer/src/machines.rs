@@ -395,6 +395,12 @@ impl Machines {
     /// One machine by its name, former name or rental id (`named`), with its Status read now:
     /// `local` starts for it.
     pub(crate) async fn show(self: &Arc<Self>, text: &str) -> Result<Machine, Error> {
+        self.show_for(text, &[]).await
+    }
+
+    /// `show`, as a client in `projects` sees it: what the machine does for their runs too (cl-1205: `cozy machine show` in a
+    /// project lists the download its runs wait on).
+    pub(crate) async fn show_for(self: &Arc<Self>, text: &str, projects: &[String]) -> Result<Machine, Error> {
         if let Some(order) = self.order_named(text)? {
             return Ok(self.order(&order));
         }
@@ -428,7 +434,7 @@ impl Machines {
                 Err(e) => self.not_answered(&row.name, &e.to_string()),
             }
         }
-        self.picture(&row)
+        self.picture_for(&row, projects)
     }
 
     /// The name of the machine a run `on` goes to and the environments it holds now, its Status
@@ -1965,7 +1971,7 @@ async fn asked(api: &Arc<Api>, name: &str, query: Result<Query<Fresh>, QueryReje
     let Query(query) = query.map_err(|e| Refusal(usage(e.body_text())))?;
     let machine = match query.fresh {
         true => fresh(&api.machines, name).await,
-        false => api.machines.show(name).await,
+        false => api.machines.show_for(name, &query.project.iter().cloned().collect::<Vec<_>>()).await,
     };
     Ok((machine.map_err(Refusal)?, query.hub))
 }

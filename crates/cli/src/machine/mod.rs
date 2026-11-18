@@ -227,6 +227,21 @@ pub(crate) async fn machine(ctx: &Context, text: &str) -> Result<Machine, Error>
     ctx.calcifer().await?.get(&route(text)?).await
 }
 
+/// `machine`, as the project this command runs in sees it: what the machine does for that project's runs too, the downloads they
+/// wait on among it (cl-1205). Outside a project, or one that can't be read now, the machine alone.
+pub(crate) async fn machine_here(ctx: &Context, text: &str) -> Result<Machine, Error> {
+    ctx.calcifer().await?.get(&here(ctx, text).await?).await
+}
+
+/// The route `machine_here` reads.
+pub(crate) async fn here(ctx: &Context, text: &str) -> Result<String, Error> {
+    let route = route(text)?;
+    Ok(match crate::project::address(ctx).await {
+        Ok(project) => format!("{route}?project={}", project.id),
+        Err(_) => route,
+    })
+}
+
 async fn add(
     ctx: &Context,
     name: String,

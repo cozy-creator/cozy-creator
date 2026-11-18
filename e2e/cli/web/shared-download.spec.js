@@ -67,7 +67,8 @@ test('shared-download', async ({ page, project, api, cli }) => {
     await page.evaluate(() => { delete document.documentElement.dataset.theme; });
   };
   const runs = async () => (await api.get(project.at('/runs?limit=100'))).runs.filter((run) => run.kind === 'call');
-  const machine = async () => (await api.get('/v1/machines')).machines.find((one) => one.name === MACHINE);
+  // As this project sees it: what the machine does for its runs too (`?project=`, cl-1205).
+  const machine = async () => api.get(`/v1/machines/${encodeURIComponent(MACHINE)}?project=${encodeURIComponent(project.id)}`);
   const downloads = async () => ((await machine())?.status?.activity ?? []).filter((op) => op.kind === 'download' && op.subject === MODEL);
   const tab = () => page.locator(`nav.mtabs .mtab[data-machine="${MACHINE}"]`);
   const list = () => page.getByRole('dialog', { name: /is doing$/ });
@@ -91,10 +92,11 @@ test('shared-download', async ({ page, project, api, cli }) => {
     const rendering = cli('--json', 'render', ...BOXES, '--on', MACHINE);
 
     await test.step('as the weights come: the canvas, the machine tab and the drawer, paper and dark', async () => {
+      // As its runs say it, whichever way they say it: their own bytes (before cl-1205) or the download they wait on.
       await expect.poll(async () => {
-        const going = (await downloads()).some((op) => op.bytes_total > 0 && op.bytes_done < op.bytes_total);
-        return going && (await runs()).length === BOXES.length;
-      }, { message: `${MODEL} downloading on ${MACHINE} for three runs`, timeout: 600_000, intervals: [250] }).toBe(true);
+        const now = await runs();
+        return now.length === BOXES.length && now.some((run) => run.progress?.waiting_on?.length || /download/i.test(run.progress?.stage ?? ''));
+      }, { message: `three runs on ${MACHINE}, waiting for ${MODEL}`, timeout: 600_000, intervals: [250] }).toBe(true);
       await canvasIdle(page);
       await shoot('canvas');
       await tab().click();

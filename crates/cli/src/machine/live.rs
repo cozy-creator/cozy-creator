@@ -181,6 +181,8 @@ impl Machines {
 pub(crate) struct Shown {
     calcifer: Client,
     following: Following,
+    /// With the project this runs in, what it reads the machine by: what it does for that project's runs too (cl-1205).
+    here: Option<String>,
     machine: Machine,
     /// Its GPUs' readings while this is open: the machine reads them only then. None from a Calcifer from before cl-1100.
     gpus: Option<Watch<GpuUse>>,
@@ -192,9 +194,15 @@ impl Shown {
         let calcifer = ctx.calcifer().await?;
         let (following, machine) = Following::open(&calcifer, name).await?;
         let gpus = calcifer.watch::<GpuUse>(&format!("{}/gpus", route(&machine.name)?)).await.ok().map(Watch::quiet);
+        let here = Some(super::here(ctx, &machine.name).await?).filter(|here| *here != route(&machine.name).unwrap_or_default());
+        let machine = match &here {
+            Some(here) => calcifer.get(here).await?,
+            None => machine,
+        };
         Ok(Self {
             calcifer,
             following: following.quiet(),
+            here,
             machine,
             gpus,
             gpu_use: None,
@@ -221,6 +229,11 @@ impl Shown {
             }
         };
         match heard {
+            // The stream says it as no project sees it: read again as this one does.
+            Heard::Machine(Some(machine)) if self.here.is_some() => {
+                let here = self.here.clone().unwrap_or_default();
+                self.machine = self.calcifer.get(&here).await.unwrap_or(*machine);
+            }
             Heard::Machine(Some(machine)) => self.machine = *machine,
             // It left the list: nothing more will change.
             Heard::Machine(None) => std::future::pending().await,

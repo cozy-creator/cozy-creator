@@ -139,7 +139,7 @@ pub(crate) fn rows(ctx: &Context, list: &MachineList) -> Vec<Vec<String>> {
 
 /// One machine: a live view on a terminal while it lives, else its record once (or JSON), with its GPUs' use now (cl-1191).
 pub(crate) async fn show(ctx: &Context, name: &str) -> Result<ExitCode, Error> {
-    let m = machine(ctx, name).await?;
+    let m = super::machine_here(ctx, name).await?;
     if !ctx.json && ctx.term.stdout && m.state != MachineState::Ended {
         let view = super::live::Shown::open(ctx, name).await?;
         tui::show(ctx, tui::Screen::Machine(Box::new(view))).await?;
