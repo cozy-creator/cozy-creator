@@ -1015,7 +1015,7 @@ async fn put_objects(State(m): State<Machine>, headers: HeaderMap, body: Body) -
         frame.map_err(|e| Error::validation("request_body_failed", e.to_string()))
     })));
     let truncated = || Error::validation("objects_truncated", "the body ended inside an object");
-    let (mut buffer, mut held) = (Vec::<u8>::new(), vec![]);
+    let (mut buffer, mut held, mut landed, began) = (Vec::<u8>::new(), vec![], 0_u64, std::time::Instant::now());
     loop {
         // Its header line, then its bytes.
         let line = loop {
@@ -1051,6 +1051,7 @@ async fn put_objects(State(m): State<Machine>, headers: HeaderMap, body: Body) -
             buffer.extend_from_slice(&data);
         }
         let data: Vec<u8> = buffer.drain(..header.length as usize).collect();
+        landed += header.length;
         let (actor, digest) = (actor.clone(), header.digest.clone());
         let ranges = blocking(&runs, move |runs| {
             runs.objects.carried(&actor, &digest, &data)?;
@@ -1059,6 +1060,7 @@ async fn put_objects(State(m): State<Machine>, headers: HeaderMap, body: Body) -
         .await?;
         held.push(v1::HeldObject { digest: header.digest, ranges });
     }
+    tracing::info!("objects: {} landed in one request, {landed} bytes in {} ms", held.len(), began.elapsed().as_millis());
     Ok(json(StatusCode::OK, &v1::HeldAnswer { held }))
 }
 

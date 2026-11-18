@@ -2,7 +2,9 @@
 # machine (`local`, its CPU): no rental. Two fresh projects, the second on a Calcifer that has read the package for the first; in each,
 # an edit is typed while the first guess still reads (44199938129: a typed edit waited behind a 2.75 s first guess). Evidence is
 # Calcifer's prediction lines and TensorD's plans (`cozy machine logs local …`). It judges nothing; its numbers go in results.txt.
-# With `kind` orbit, an Orbit box of the picture is added instead, cold, as 44195761797's (its first guess took 83 s there).
+# With `kind` orbit, an Orbit box of the picture is added instead, cold, as 44195761797's (its first guess took 83 s there). On a pod,
+# a third project then renders a weightless box (e2e/cli/project/boxed) reading a new picture, shown by no page so no guess carried
+# anything: the render lands its inputs itself, in one request (`PUT /v1/objects`, TensorD's "landed in one request").
 # params:
 #   tree  the packages_refs checkout whose packages run (`-f packages_refs=pk=<packages ref>`, tree pk)
 #   kind  qwen (default) or orbit
@@ -137,10 +139,37 @@ if [ -n "$POD" ]; then
   done
   say "$ON runs TensorD $(cozy --json machine show "$ON" 2> /dev/null | jq -r '.status.version // empty')"
 fi
+# uploaded <label>: a fresh project on $ON that no page shows renders `edit`, a weightless box reading `pic`, a new picture of noise
+# (no guess carried it, and too large to go with its admission): what its machine landed, and in how many requests.
+uploaded() {
+  RUN_PROJECT=$OUT/project-$1
+  run_project "$RUN_PROJECT" > "$OUT/project-$1.json" 2>&1 || fail "project $1: $(tail -c 300 "$OUT/project-$1.json")"
+  (cd "$RUN_PROJECT" && cozy --json machine use "$ON") > "$OUT/use-$1.json" 2>&1 || fail "machine use $ON: $(tail -c 300 "$OUT/use-$1.json")"
+  nice -n 19 ffmpeg -v error -y -f lavfi -i 'nullsrc=s=1024x1024,geq=random(1)*255:random(2)*255:random(3)*255' -frames:v 1 "$OUT/pic.png" || fail "no noise"
+  run_page import "$OUT/pic.png" --name pic > "$OUT/pic-$1.json" 2>&1 || fail "import pic: $(tail -c 300 "$OUT/pic-$1.json")"
+  local boxed asked
+  boxed=$(cd "$(dirname "$0")/../../e2e/cli/project/boxed" && pwd)
+  run_page add edit --tool "$boxed/plain" --fields '{"instructions": "<pic> a shade lighter"}' > "$OUT/edit-$1.json" 2>&1 || fail "edit: $(tail -c 300 "$OUT/edit-$1.json")"
+  asked=$(date +%s%3N)
+  timeout 900 python3 "$RUN_PAGE" render "$RUN_PROJECT" --on "$ON" edit > "$OUT/render-$1.txt" 2>&1 || fail "edit's render: $(tail -c 400 "$OUT/render-$1.txt")"
+  say "project $1: edit rendered on $ON in $(( $(date +%s%3N) - asked )) ms; pic is $(stat -c %s "$OUT/pic.png") bytes"
+  cozy machine logs "$ON" tensord --since 2h -n 0 > "$OUT/tensord-$ON.log" 2>&1 || true
+  cozy machine logs local calcifer --lines 20000 > "$OUT/calcifer.log" 2>&1 || true
+  python3 -I - "$OUT/tensord-$ON.log" "$asked" <<'PY' | tee -a "$R"
+import datetime, sys
+since = int(sys.argv[2])
+for line in open(sys.argv[1], errors="replace"):
+    stamp = line.split(" ", 1)[0]
+    if stamp[:4].isdigit() and datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp() * 1000 >= since and ("landed in one request" in line or "PUT /v1/objects/" in line):
+        print("  " + stamp[11:23] + " " + line.split("  INFO ", 1)[-1].strip()[:200])
+PY
+  grep -o "[0-9]* objects ([^)]*) landed in one request in [0-9]* ms" "$OUT/calcifer.log" | sed 's/^/  calcifer: /' | tee -a "$R"
+}
 if [ "$KIND" = orbit ]; then
   turned a
   RUN_PROJECT=$OUT/project-b
   turned b
+  [ -z "$POD" ] || uploaded c
 else
   began=$SECONDS
   (cd "$RUN_PROJECT" && cozy --json package install "$SOURCE/qwen-image-2" --on local) > "$OUT/install.json" 2>&1 ||
