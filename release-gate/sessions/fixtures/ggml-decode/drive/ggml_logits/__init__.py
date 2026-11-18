@@ -139,6 +139,46 @@ def decode(ctx: Context, model: VisionLM) -> Agreement:
 
 
 @app.entrypoint(accelerator=True)
+def engine(ctx: Context, model: VisionLM) -> Agreement:
+    """The engine's decoder (xs-213 phase 2, `cozy_runtime.engine.decoder`) on `PROMPT`: 512 greedy tokens, never
+    stopping, drafted with the checkpoint's MTP head and plain. Each is timed warm (after the same call once, which records
+    its step): `s` is the call's wall time, prefill included; `decode_s` and `steps` the decode's. Its tokens against
+    today's path on the same pod (`lm.generate`, drafted, warm): the first position they differ at, or their length."""
+    from cozy_runtime.engine.decoder import Decoder, Request
+
+    net = model.pipe.components["model"]
+    ids = model.processor.tokenizer(PROMPT, add_special_tokens=False)["input_ids"]
+    rows: dict[str, object] = {"prompt_tokens": len(ids), "gpu": torch.cuda.get_device_name()}
+    _timed(net, torch.tensor([ids]), 512)
+    seconds, today = _timed(net, torch.tensor([ids]), 512)
+    rows["today"] = {"tokens": len(today), "s": round(seconds, 3), "tok_s": round(len(today) / seconds, 1)}
+    head = getattr(net, "mtp", None)
+    for mode in ("drafted", "plain") if head is not None else ("plain",):
+        if mode == "plain" and head is not None:
+            del net.mtp
+        try:
+            decoder = Decoder(net, max_rows=1, max_tokens=len(ids) + 600)
+            request = Request(prompts=[ids], max_new=512, stops=[])
+            decoder(request)
+            torch.cuda.synchronize()
+            began = time.perf_counter()
+            made = decoder(request)
+            torch.cuda.synchronize()
+            seconds = time.perf_counter() - began
+        finally:
+            if head is not None:
+                net.mtp = head
+        tokens = made.tokens[0]
+        rows[mode] = {
+            "tokens": len(tokens), "s": round(seconds, 3), "tok_s": round(len(tokens) / seconds, 1),
+            "prefill_s": round(made.prefill_s, 4), "decode_s": round(made.decode_s, 3), "steps": made.steps,
+            "ms_step": round(1e3 * made.decode_s / max(made.steps, 1), 3), "captured": made.captured, "notes": made.notes,
+            "same_as_today": next((i for i, (x, y) in enumerate(zip(tokens, today)) if x != y), min(len(tokens), len(today))),
+        }
+    return Agreement(json.dumps(rows))
+
+
+@app.entrypoint(accelerator=True)
 def head_reads(ctx: Context, model: VisionLM) -> Agreement:
     """How often a decode step reads a plain output head's weight, with the MTP head drafting and without: `PROMPT`
     decoded for 12 tokens, sampled, so its steps are new to an engine that has recorded the greedy ones and Python runs
