@@ -15,8 +15,8 @@
 # 2. photo gets Qwen and an edit: Calcifer says photo's guess carried its picture ahead to the rental, an encrypted project's, and the
 #    machine says it landed whole, before any render. Its request is `loaded` and stays so, its draft unchanged: nothing runs ahead.
 # 3. The runner's uplink shaped to `mbit`: wide gets Qwen and an edit, and while its picture goes ahead, photo is rendered. The carry
-#    waits for the render's ("a run's inputs go first") and goes on after; the machine lands wide's picture whole once, and the runner
-#    sends about its size, not more.
+#    waits for the render's ("a run's inputs go first") and goes on after, from what had landed ("going on from … there"); the
+#    machine lands wide's picture whole once, and the runner sends about its size, not more.
 # 4. Each render (photo in 3, then wide) reused its picture there ("reused … already on"), the machine landed none of its picture while it
 #    was sent, and it adopted its item. No predicted request ran: the machine's log names no speculative run, and its Status never
 #    said `running` or `done` for one.
@@ -453,6 +453,8 @@ sudo tc qdisc del dev "$DEV" root || fail "the uplink shaping wasn't removed"
 waits=$(grep -c "what goes ahead to $NAME waits: a run's inputs go first" "$OUT/calcifer.log")
 say "wide: the carry waited for a run's $waits times; it landed $(landed "$WIDE" | wc -l) times; the runner sent $TX bytes for its $WIDE_B"
 [ "$waits" -ge 1 ] || MISMATCH+=("wide's carry never waited for photo's render")
+# Cut, it went on from what had landed: Calcifer's line says what the machine held of it then.
+grep -q "wide's guess carried 1 files .* ahead to $NAME .*, going on from .* there" "$OUT/calcifer.log" || MISMATCH+=("wide's carry didn't go on from what had landed before the render's carry cut it")
 [ "$(landed "$WIDE" | wc -l)" = 1 ] || MISMATCH+=("wide's picture landed $(landed "$WIDE" | wc -l) times")
 [ "$TX" -le $((WIDE_B * 13 / 10)) ] || MISMATCH+=("the runner sent $TX bytes while wide's $WIDE_B went ahead")
 say "step 4: wide rendered"
