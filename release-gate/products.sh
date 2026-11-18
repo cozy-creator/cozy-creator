@@ -209,13 +209,18 @@ product_p_h3_image() { cell ph3 "$(pkg p-h3-image generate)" instructions="$SCEN
 # (22.5), the slots were refused first and it ran.
 # cr-332: where the expander decodes streamed (Transformers' loop), its embedding table gathers its rows on the host
 # once it leaves the device. The rc/0.27.0 head refilled the 2.37 GiB table whole 685 times in 1,573 tokens on a 4090
-# (2.90 tokens/s against 4.77, pod-session 44223589609). A cell whose expander filled one block over 4 times fails.
+# (2.90 tokens/s against 4.77, pod-session 44223589609). A cell whose expander filled one block over 8 times fails.
+# The bar comes from the 4090 runs of the default edit, seed 42. With the fix no block is filled over 4 times, all
+# before the decode (44241298913: one 2.37 GiB block 4 times, the table twice); in 44223589609's arms every block but
+# the table was filled at most 3 times. The half-broken efadd597 filled the table 11 times and the regression 685, so
+# 8 fails both. The bar was 4, chosen before any green run existed; the first green stood at exactly 4, and a cell
+# with no margin is a flaky one (the coordinator's call, 11-18).
 h3i_table() {
   local c=$1${TWIN:-} n
   judged "$c" || return 0
   n=$(run_get "$OUT" "$c" '[.measurements.memory.stats.varena[]?.stats.trace[]? | select(.set | endswith("/model")) | .block]
     | group_by(.) | map(length) | max // 0')
-  expect "$c-table" "$([ "${n:-x}" -le 4 ] 2>/dev/null && echo PASS || echo FAIL)" "the expander's most-filled block: ${n:-no record} fills"
+  expect "$c-table" "$([ "${n:-x}" -le 8 ] 2>/dev/null && echo PASS || echo FAIL)" "the expander's most-filled block: ${n:-no record} fills"
 }
 product_minimax_h3_image() {
   cell h3i "$(pkg minimax-h3-image generate)" instructions="$SCENE, photo" seed:=$((R + 35))
