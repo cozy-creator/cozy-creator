@@ -2375,6 +2375,15 @@ impl Calcifer {
                         }
                         continue;
                     }
+                    // Nothing published it may move to (cl-1254): refused once, in that line, with nothing to type.
+                    Err(e) if crate::machines::Machines::unpublished(&e) => {
+                        let reason = Reason { code: e.code, message: e.message, ..Default::default() };
+                        match self.with_run_store(id.as_str(), |store| store.fail(id.as_str(), reason)) {
+                            Ok(events) => self.publish(id, events),
+                            Err(e) => warn!(run = %id, "{e}"),
+                        }
+                        continue;
+                    }
                     // Not known yet (booting, its status unread, a link down): asked again once it says more.
                     Err(e) => {
                         self.waiting(id, e.message);

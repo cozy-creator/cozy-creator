@@ -497,8 +497,11 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     // anything is resolved there, local code's install too. Of several, placement does this for each.
     if let (On::Machine(machine), For::Run, 1) = (&on, purpose, set.len()) {
         // Not known yet: its driver asks again before it sends.
-        if let Ok(Some(update)) = api.machines.current(&machine).await {
-            return Ok(Prepared::Install(update));
+        match api.machines.current(&machine).await {
+            Ok(Some(update)) => return Ok(Prepared::Install(update)),
+            // Nothing published it may move to (cl-1254): refused here, in that line.
+            Err(e) if crate::machines::Machines::unpublished(&e) => return Err(e),
+            _ => {}
         }
     }
     // Local code installs as it resolves. A package answers for itself first: one named without a

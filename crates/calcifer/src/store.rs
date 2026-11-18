@@ -2355,6 +2355,14 @@ impl Store {
         })
     }
 
+    /// Whether an update of `machine` after run `number` has ended: what that run moved may be undone.
+    pub(crate) fn updated_since(&self, machine: &str, number: u64) -> Result<bool> {
+        self.read(|db| {
+            let sql = "SELECT EXISTS(SELECT 1 FROM runs WHERE machine = ?1 AND kind = 'update' AND state = 'settled' AND number > ?2)";
+            Ok(db.query_row(sql, params![machine, number], |r| r.get::<_, bool>(0))?)
+        })
+    }
+
     /// `machine`'s move to the open RC yet to end, if one is.
     pub(crate) fn moving(&self, machine: &str) -> Result<Option<RunRow>> {
         self.read(|db| {
