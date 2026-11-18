@@ -11,6 +11,11 @@ const { fit, leave } = require('./hands');
 
 const MODEL = 'huihui-ai/huihui-qwen3.5-0.8b-abliterated@0.1.0';
 const PROMPT = 'Write a long story in twelve chapters, each about two hundred words, of a lighthouse keeper through one winter of storms. Use plain sentences.';
+// Its length is sized to the slowest runner measured, not a lucky one: about 1.3 tokens/s beside the page (44285972438), where 2400 tokens
+// ran past the 900 s budget; at least 4 tokens/s on 11-17's (44079545177). 600 tokens take about 460 s there and at least 140 s here,
+// where the looks mid-stream need its run going for its first 45 to 60 s: a margin of about 2× at each end. The story is cut at 600, as
+// any max_tokens cuts it; the checks are the same.
+const TOKENS = 600;
 const NAME = 'story';
 
 /** The words a box shows at rest, as the canvas drew them. */
@@ -35,7 +40,7 @@ test('llm-stream', async ({ page, project, api }) => {
     if (found.ok) { tool = name; break; }
   }
   expect(tool, 'a Qwen Write tool is published here').toBeTruthy();
-  await project.add({ name: NAME, tool, kind: 'text', fields: { instructions: PROMPT, max_tokens: 2400, seed: 7, models: { model: { ref: MODEL } } }, at: { x: 0, y: 0 } });
+  await project.add({ name: NAME, tool, kind: 'text', fields: { instructions: PROMPT, max_tokens: TOKENS, seed: 7, models: { model: { ref: MODEL } } }, at: { x: 0, y: 0 } });
   await page.reload();
   await expect(page.locator('.stage')).toBeVisible();
   await expect.poll(() => canvasVisible(page, NAME)).toBe(true);
