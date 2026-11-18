@@ -93,9 +93,11 @@ elif [ "$what" = cozy-before ]; then
   (cd "$src"
     sed -i "0,/^version = \"[^\"]*\"\$/s//version = \"${PREVIOUS%.*}.99\"/" Cargo.toml
     sed -i "0,/^version = \"[^\"]*\"\$/s//version = \"${PREVIOUS_TENSORFS%.*}.99\"/" crates/tensorfs/Cargo.toml
+    # Its Runtime minor too (cl-1055): a patch line's source names the Latest's, which would move local there itself, never updating.
+    sed -i "s/^pub const RUNTIME_MINOR: &str = \"[^\"]*\";/pub const RUNTIME_MINOR: \\&str = \">=${PREVIOUS_RUNTIME%.*}.0.dev0\";/" crates/api/src/release.rs
     cargo update -w
     COZY_COMMIT=$sha cargo build --release -p cozy --bin cozy
-    git checkout -- Cargo.toml Cargo.lock crates/tensorfs/Cargo.toml)
+    git checkout -- Cargo.toml Cargo.lock crates/tensorfs/Cargo.toml crates/api/src/release.rs)
   cp "$src/target/release/cozy$exe" "$out/cozy$exe"
 elif [ "$what" = tensorfs ]; then
   # Staged as the release wheel is (backend/stage_cli.py, as dev-build): `tfs` with the extension's features, so TensorFS
