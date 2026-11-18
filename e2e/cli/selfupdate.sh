@@ -99,9 +99,10 @@ fi
 # The upgrade a person meets (cl-1055): local still on the Latest's TensorD and Runtime, below the candidate's minor, nothing moved by
 # hand. The next run in the Latest's own project (nothing of it pending) moves local to the candidate's
 # own Runtime first, saying so, completes, and its call's temporary file is in its project's scratch.
-local moved_from temporary
+local moved_from moved_tfs temporary job=''
 (machine_ready) || return 0
 moved_from=$(jq -r '.status.runtime' "$OUT/machine.json")
+moved_tfs=$(jq -r '.status.tensorfs' "$OUT/machine.json")
 in_project "$P" run e2e-scratch/probe "marker=FW_MOVED_$RANDOM" --on local > "$OUT/fw-moved.out" 2> "$OUT/fw-moved.err" \
   || check "forward update: the next run in cozy $latest's project on local (Runtime $moved_from) failed on $candidate: $(tail -c 400 "$OUT/fw-moved.err")"
 grep -q "Updating local.s Runtime from $moved_from to [^ ]* for this project" "$OUT/fw-moved.err" \
@@ -121,6 +122,42 @@ echo "forward update: the next run in cozy $latest's project moved local from Ru
   || { check "forward update: local onto the candidates: $(tail -c 300 "$OUT/fw-machine.json")"; return 0; }
 (machine_ready) || return 0
 jq -e --arg v "${candidate%%+*}" '.status.version | startswith($v)' "$OUT/machine.json" > /dev/null || check "forward update: local runs cozy $(jq -r .status.version "$OUT/machine.json"), not $candidate"
+# cl-1254 (the 0.27.0 launch walkthrough): after `cozy update`, `local` starts again on the new TensorD with the pair it had, below this
+# cozy's Runtime minor, and the first render from the page was refused `runtime_outdated` naming a command. local on the candidates,
+# held on the Latest's pair and let go (its Hub's target that pair and no cozy, so nothing moves), runs this cozy's TensorD below its
+# minor: a project's box of draw.py rendered there waits while local moves to this cozy's Runtime, and lands. Then the Latest's Hub
+# and the candidates again.
+cozy --json machine update local --runtime "$moved_from" --tensorfs "$moved_tfs" -y > "$OUT/fw-old-pair.json" 2>&1 \
+  && bash "$here/../skew/rehub.sh" --set "software.runtime=$moved_from" --set "software.tensorfs=$moved_tfs" --set software.cozy= >> "$OUT/fw-old-pair.json" 2>&1 \
+  && cozy --json machine update local -y >> "$OUT/fw-old-pair.json" 2>&1 \
+  || { check "forward update: local back on cozy $latest's pair, let go: $(tail -c 300 "$OUT/fw-old-pair.json")"; return 0; }
+(machine_ready) || return 0
+echo "forward update: local on $(jq -c '.status | {version, runtime, tensorfs}' "$OUT/machine.json"), held by nothing"
+jq -e --arg v "${candidate%%+*}" --arg r "$moved_from" '(.status.version | startswith($v)) and .status.runtime == $r' "$OUT/machine.json" > /dev/null \
+  || check "forward update: local isn't on this cozy's TensorD with cozy $latest's Runtime $moved_from: the page render below can't tell"
+jq -n --arg draw "$here/project/draw.py/draw" '[{name: "upgraded", tool: $draw, kind: "image", fields: {instructions: "A still, once local runs this cozy'"'"'s Runtime."}}]' \
+  | boxes_in "$P" || return 0
+project_api "$P" /runs -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: fw-upgraded-$RANDOM$RANDOM" -d '{"names":["upgraded"],"on":["local"]}' \
+  > "$OUT/fw-upgraded-go.json" 2>&1 || check "forward update: render upgraded: $(tail -c 300 "$OUT/fw-upgraded-go.json")"
+for _ in $(seq 1200); do
+  job=$(status "$P" | jq -c '.board.jobs[]? | select(.asset == "upgraded")' 2> /dev/null || true)
+  J '.state == "done" or .state == "failed"' <<< "${job:-null}" 2> /dev/null && break
+  sleep 0.5
+done
+echo "forward update: a page render on local below this cozy's Runtime minor: ${job:0:600}"
+if ! J '.state == "done"' <<< "${job:-null}"; then
+  check "forward update: a page render on local, its Runtime $moved_from below this cozy's minor, didn't land: ${job:0:600}"
+  in_project "$P" --json --full run watch "$(jq -r '.run // empty' <<< "${job:-null}")" --once 2> /dev/null | jq -c '{status, waiting, warnings, reason}' | head -c 800 || true
+  cozy machine logs local calcifer --lines 0 --since 15m 2> /dev/null | grep -E 'as it is|below this cozy|moves to|upgrad|keepalive|takes .* first' | cut -c1-300 | tail -12 || true
+  cozy --json machine show local 2> /dev/null | jq -c '{running, queued, jobs: [.jobs[]? | {number, kind, status, target: .target[0:60]}]}' | head -c 800 || true
+  in_project "$P" --json run ls --limit 8 2> /dev/null | jq -c '[.runs[]? | {number, kind, status, machine, target: .target[0:50]}]' | head -c 800 || true
+fi
+(machine_ready) || return 0
+echo "forward update: after the page render local runs Runtime $(jq -r .status.runtime "$OUT/machine.json")"
+bash "$here/../skew/rehub.sh" "${SU_NEW[@]}" > "$OUT/fw-rehub-again.log" 2>&1 || check "forward update: the Hub with ${SU_NEW[*]} again: $(tail -c 300 "$OUT/fw-rehub-again.log")"
+[ ${#up[@]} = 0 ] || cozy --json machine update local "${up[@]}" -y > "$OUT/fw-machine-again.json" 2>&1 \
+  || { check "forward update: local onto the candidates again: $(tail -c 300 "$OUT/fw-machine-again.json")"; return 0; }
+(machine_ready) || return 0
 RUN_PROJECT=$P cell fw-after "$E2E_NEXT/echo" text=after || true
 }
 
