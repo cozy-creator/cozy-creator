@@ -20,7 +20,7 @@
 //! the disk moves (`usage`).
 use crate::{catalog::Catalog, execution::Engine};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     ffi::OsString,
     fs::{self, File},
     io,
@@ -821,8 +821,20 @@ pub(crate) struct Usage {
     pub environments: u64,
     pub runtime: u64,
     pub runs: u64,
-    /// What the store could free for a download: models no process holds (cl-1175: never one an executor has open).
+    /// What the store could free for a download (`room_freed`).
     pub reclaimable: u64,
+}
+
+/// Whether a download may take `lane`: every process holding it is one of the machine's `idle` executors, which end for the room
+/// (`Service::room_for`); never one a queued or running job holds. The one rule (cl-1235) for Status's `reclaimable`, which the quote
+/// weighs a call's weights against, and `room_for`: a call the quote sends is one the machine makes room for.
+pub(crate) fn frees(lane: &tensorfs::store::retention::RoomLane, idle: &BTreeSet<u32>) -> bool {
+    lane.holders.iter().all(|pid| idle.contains(pid))
+}
+
+/// What the store could free for a download (`frees`).
+pub(crate) fn room_freed(room: &tensorfs::store::retention::Room, idle: &BTreeSet<u32>) -> u64 {
+    room.freed(|lane| frees(lane, idle))
 }
 
 static USAGE: Mutex<Option<Usage>> = Mutex::new(None);
@@ -877,10 +889,10 @@ pub(crate) fn wait_asked(most: Option<Duration>) -> bool {
 /// Measures what fills the disk: the TensorFS store at `store`; the package environments under
 /// `engine` (generations, editable ones: their own files, `own`) and the entries this machine
 /// added to `uv_cache` that no environment hard-links; its runs' files (inputs and outputs); the rest of
-/// `engine` (the Runtime pair, kernels, the toolchain, Pythons). And what the store could free, which placement weighs a call's
-/// weights against (cl-1175).
-pub(crate) fn measure_usage(store: &crate::storage::Store, engine: &Path, uv_cache: Option<&Path>) {
-    let (reclaimable, store) = (store.room().map_or(0, |room| room.freed(|lane| lane.holders.is_empty())), store.root());
+/// `engine` (the Runtime pair, kernels, the toolchain, Pythons). And what the store could free with the machine's `idle` executors
+/// ended, which placement weighs a call's weights against (cl-1175): Status is told when that moved.
+pub(crate) fn measure_usage(store: &crate::storage::Store, engine: &Path, uv_cache: Option<&Path>, idle: &BTreeSet<u32>) {
+    let (reclaimable, store) = (store.room().map_or(0, |room| room_freed(&room, idle)), store.root());
     let generations = engine.join("generations");
     let editable = engine.join("editable");
     let skip: Vec<PathBuf> = [generations.clone(), editable.clone(), engine.join("execution")].into_iter().chain(uv_cache.map(Path::to_path_buf)).collect();
@@ -901,8 +913,11 @@ pub(crate) fn measure_usage(store: &crate::storage::Store, engine: &Path, uv_cac
     });
     let free = measure(store).ok().map(|disk| disk.available);
     let usage = Usage { models: du(store, &[]), environments, runtime, runs: du(&engine.join("execution"), &[]), reclaimable };
-    *USAGE.lock().unwrap() = Some(usage);
+    let before = USAGE.lock().unwrap().replace(usage);
     *MEASURED_FREE.lock().unwrap() = free;
+    if before.is_none_or(|before| before.reclaimable != reclaimable) {
+        crate::activity::status_changed();
+    }
 }
 
 /// The bytes only environment `dir` holds (`releasable`: neither its links into a uv cache nor

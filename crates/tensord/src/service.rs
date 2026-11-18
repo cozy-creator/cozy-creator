@@ -398,8 +398,13 @@ impl Service {
         let publisher = self.publisher.lock().unwrap().clone();
         let generations = self.catalog.root();
         if let Some(publisher) = publisher {
-            crate::reclaim::measure_usage(publisher.store(), generations.parent().unwrap_or(generations), Some(&publisher.uv_cache()));
+            let engine = generations.parent().unwrap_or(generations);
+            crate::reclaim::measure_usage(publisher.store(), engine, Some(&publisher.uv_cache()), &self.idle_pids());
         }
+    }
+    /// The processes of the machine's idle executors, whose models a download may take (`reclaim::frees`).
+    fn idle_pids(&self) -> BTreeSet<u32> {
+        self.pool().map(|pool| pool.idle_executors().into_iter().flat_map(|(pids, _)| pids).collect()).unwrap_or_default()
     }
     /// `actor`'s installations `named` leave the journal, their warm set members and the GPU
     /// pool. Each environment no installation or unfinished run names any more is deleted,
@@ -488,8 +493,8 @@ impl Service {
                 return Ok(());
             }
         };
-        let idle: BTreeSet<u32> = self.pool().map(|pool| pool.idle_executors().into_iter().flat_map(|(pids, _)| pids).collect()).unwrap_or_default();
-        let evictable = room.freed(|lane| lane.holders.iter().all(|pid| idle.contains(pid)));
+        let idle = self.idle_pids();
+        let evictable = crate::reclaim::room_freed(&room, &idle);
         // A disk below its reserve lacks that too, as the store judges each admit.
         let (now, below) = crate::reclaim::measure(store.root()).map_or((0, 0), |disk| (disk.free(), disk.reserve().saturating_sub(disk.available)));
         let short = missing + below - now.min(missing);
@@ -505,7 +510,7 @@ impl Service {
                 pid if pid == me => "this machine's queued or running renders".to_owned(),
                 pid => format!("process {pid}"),
             };
-            let mut held: Vec<(u64, String)> = (room.lanes.iter().filter(|lane| !lane.holders.iter().all(|pid| idle.contains(pid))))
+            let mut held: Vec<(u64, String)> = (room.lanes.iter().filter(|lane| !crate::reclaim::frees(lane, &idle)))
                 .map(|lane| (room.freed(|l| std::ptr::eq(l, lane)).saturating_sub(room.spare), lane))
                 .filter(|(bytes, _)| *bytes > 0)
                 .map(|(bytes, lane)| (bytes, format!("{} ({}, held by {})", lane.name, size(bytes), lane.holders.iter().map(|&pid| who(pid)).collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>().join(", "))))
@@ -556,7 +561,7 @@ impl Service {
                 return vec![];
             }
         };
-        let freed = |ended: &BTreeSet<u32>| room.freed(|lane| lane.holders.iter().all(|pid| ended.contains(pid)));
+        let freed = |ended: &BTreeSet<u32>| crate::reclaim::room_freed(&room, ended);
         let (mut ended, mut names) = (BTreeSet::new(), vec![]);
         let mut can = freed(&ended);
         for (pids, _) in idle {

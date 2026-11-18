@@ -1936,6 +1936,12 @@ impl Pool {
         idle.sort_by_key(|(_, used)| *used);
         idle
     }
+    /// An executor came back idle or was taken for work: the idle set is watched anew for exits, and what a download may take is
+    /// measured again (`reclaim::frees`, cl-1235), so Status's figure moves with it rather than at the next sweep.
+    fn idle_changed(&self) {
+        self.exits.get().into_iter().for_each(Exits::changed);
+        crate::reclaim::ask();
+    }
     /// Ends the idle executor of process `pid` and waits, as long as `EXIT_WAIT`, for every process of it to exit: what
     /// they hold open goes only then (pod-session 43861913736: H3's group ended, its model still held a moment later, and
     /// the install was refused). Whether one was.
@@ -2086,6 +2092,7 @@ impl Pool {
         let Some(mut session) = self.sessions.lock().unwrap().remove(&session_key(&plan.executor, start)) else {
             return Ok("its executor ended");
         };
+        self.idle_changed();
         if !session.loaded.contains_key(&plan.construction) {
             self.keep_idle(engine, session)?;
             return Ok("its executor no longer holds it");
@@ -2219,7 +2226,7 @@ impl Pool {
             if !killed && !self.stopped.load(Ordering::Acquire) {
                 idle.push(session);
                 drop(idle);
-                self.exits.get().into_iter().for_each(Exits::changed);
+                self.idle_changed();
                 return Ok(Disposition::Cached);
             }
             drop(idle);
@@ -2260,7 +2267,7 @@ impl Pool {
             drop(levels);
             sessions.insert(key, session);
             drop(sessions);
-            self.exits.get().into_iter().for_each(Exits::changed);
+            self.idle_changed();
             return Ok(Disposition::Cached);
         }
     }
@@ -3105,6 +3112,9 @@ impl Pool {
         preparation: Option<&Stoppable>,
     ) -> io::Result<&'static str> {
         let retained = self.sessions.lock().unwrap().remove(&session_key(&plan.executor, start));
+        if retained.is_some() {
+            self.idle_changed();
+        }
         let cancellation = Mutex::new(None::<Cancellation>);
         let halt = Mutex::new(None);
         let serve = |cancel: &Cancellation| {
@@ -3736,6 +3746,9 @@ impl Pool {
                 self.sessions.lock().unwrap().remove(&key)
             }
         };
+        if retained.is_some() {
+            self.idle_changed();
+        }
         // A request that loads models and starts cold (a new executor, or its models not loaded in the one it takes): from here
         // until they are loaded, no background download takes the disk, the link or the page cache from it (cl-1118).
         let request = engine.get(id).is_ok_and(|record| !record.invocation.background);
