@@ -1,0 +1,267 @@
+{
+ "cells": [
+  {
+   "name": "t2i-dragon-t",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"A cute cartoon dragon sticker on a transparent background.\"",
+    "turbo:=true",
+    "megapixels:=2",
+    "seed:=1662846526"
+   ],
+   "update": {
+    "runtime": "44408061031",
+    "tensorfs": "artifact:44404174235/tensorfs-wheel-42fb656b8629d53bbd59d39e761b0240e627f680",
+    "tensord": true
+   }
+  },
+  {
+   "name": "t2i-dragon-f",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"A cute cartoon dragon sticker on a transparent background.\"",
+    "turbo:=false",
+    "megapixels:=2",
+    "seed:=1662846526"
+   ]
+  },
+  {
+   "name": "t2i-perfume-t",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"A clear glass perfume bottle with a gold cap, transparent background.\"",
+    "turbo:=true",
+    "megapixels:=2",
+    "seed:=1662846526"
+   ]
+  },
+  {
+   "name": "t2i-perfume-f",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"A clear glass perfume bottle with a gold cap, transparent background.\"",
+    "turbo:=false",
+    "megapixels:=2",
+    "seed:=1662846526"
+   ]
+  },
+  {
+   "name": "t2i-cat-t",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"A fluffy long-haired orange cat sitting upright, isolated on a transparent background.\"",
+    "turbo:=true",
+    "megapixels:=2",
+    "seed:=1662846526"
+   ]
+  },
+  {
+   "name": "t2i-cat-f",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"A fluffy long-haired orange cat sitting upright, isolated on a transparent background.\"",
+    "turbo:=false",
+    "megapixels:=2",
+    "seed:=1662846526"
+   ]
+  },
+  {
+   "name": "woman-t-a",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"<p1> remove the background. Make this a full body shot. Keep her same pose. Keep her same face and pose and hair and facial expression.\"",
+    "turbo:=true",
+    "megapixels:=2",
+    "seed:=1662846526",
+    "aspect_ratio:=\"5:8\"",
+    "references:=[{\"name\":\"p1\",\"image\":\"{ref}/../sessions/fixtures/qwen-cutout/woman.webp\"}]"
+   ]
+  },
+  {
+   "name": "woman-t-b",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"<p1> remove the background. Make this a full body shot. Keep her same pose. Keep her same face and pose and hair and facial expression.\"",
+    "turbo:=true",
+    "megapixels:=2",
+    "seed:=7",
+    "aspect_ratio:=\"5:8\"",
+    "references:=[{\"name\":\"p1\",\"image\":\"{ref}/../sessions/fixtures/qwen-cutout/woman.webp\"}]"
+   ]
+  },
+  {
+   "name": "woman-t-c",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"<p1> remove the background. Make this a full body shot. Keep her same pose. Keep her same face and pose and hair and facial expression.\"",
+    "turbo:=true",
+    "megapixels:=2",
+    "seed:=8",
+    "aspect_ratio:=\"5:8\"",
+    "references:=[{\"name\":\"p1\",\"image\":\"{ref}/../sessions/fixtures/qwen-cutout/woman.webp\"}]"
+   ]
+  },
+  {
+   "name": "woman-f-a",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"<p1> remove the background. Make this a full body shot. Keep her same pose. Keep her same face and pose and hair and facial expression.\"",
+    "turbo:=false",
+    "megapixels:=2",
+    "seed:=1662846526",
+    "aspect_ratio:=\"5:8\"",
+    "references:=[{\"name\":\"p1\",\"image\":\"{ref}/../sessions/fixtures/qwen-cutout/woman.webp\"}]"
+   ]
+  },
+  {
+   "name": "man-t-a",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"<p1> remove the background.\"",
+    "turbo:=true",
+    "megapixels:=2",
+    "seed:=1662846526",
+    "references:=[{\"name\":\"p1\",\"image\":\"{ref}/../sessions/fixtures/qwen-cutout/man.webp\"}]"
+   ]
+  },
+  {
+   "name": "man-t-b",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"<p1> remove the background.\"",
+    "turbo:=true",
+    "megapixels:=2",
+    "seed:=7",
+    "references:=[{\"name\":\"p1\",\"image\":\"{ref}/../sessions/fixtures/qwen-cutout/man.webp\"}]"
+   ]
+  },
+  {
+   "name": "man-f-a",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"<p1> remove the background.\"",
+    "turbo:=false",
+    "megapixels:=2",
+    "seed:=1662846526",
+    "references:=[{\"name\":\"p1\",\"image\":\"{ref}/../sessions/fixtures/qwen-cutout/man.webp\"}]"
+   ]
+  },
+  {
+   "name": "pearl-t-a",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"<p1> remove the background.\"",
+    "turbo:=true",
+    "megapixels:=2",
+    "seed:=1662846526",
+    "references:=[{\"name\":\"p1\",\"image\":\"{ref}/../sessions/fixtures/ltx-images/pearl.jpg\"}]"
+   ]
+  },
+  {
+   "name": "pearl-t-b",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"<p1> remove the background.\"",
+    "turbo:=true",
+    "megapixels:=2",
+    "seed:=7",
+    "references:=[{\"name\":\"p1\",\"image\":\"{ref}/../sessions/fixtures/ltx-images/pearl.jpg\"}]"
+   ]
+  },
+  {
+   "name": "pearl-f-a",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"<p1> remove the background.\"",
+    "turbo:=false",
+    "megapixels:=2",
+    "seed:=1662846526",
+    "references:=[{\"name\":\"p1\",\"image\":\"{ref}/../sessions/fixtures/ltx-images/pearl.jpg\"}]"
+   ]
+  },
+  {
+   "name": "teapot-t-a",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"<p1> remove the background.\"",
+    "turbo:=true",
+    "megapixels:=2",
+    "seed:=1662846526",
+    "references:=[{\"name\":\"p1\",\"image\":\"{ref}/../sessions/fixtures/ltx-images/teapot.jpg\"}]"
+   ]
+  },
+  {
+   "name": "teapot-f-a",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"<p1> remove the background.\"",
+    "turbo:=false",
+    "megapixels:=2",
+    "seed:=1662846526",
+    "references:=[{\"name\":\"p1\",\"image\":\"{ref}/../sessions/fixtures/ltx-images/teapot.jpg\"}]"
+   ]
+  },
+  {
+   "name": "teapot-transparent-t-a",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"<p1> put the teapot on a transparent background.\"",
+    "turbo:=true",
+    "megapixels:=2",
+    "seed:=1662846526",
+    "references:=[{\"name\":\"p1\",\"image\":\"{ref}/../sessions/fixtures/ltx-images/teapot.jpg\"}]"
+   ]
+  }
+ ],
+ "alpha": [
+  "t2i-dragon-t",
+  "t2i-dragon-f",
+  "t2i-perfume-t",
+  "t2i-perfume-f",
+  "t2i-cat-t",
+  "t2i-cat-f",
+  "woman-t-a",
+  "woman-t-b",
+  "woman-t-c",
+  "woman-f-a",
+  "man-t-a",
+  "man-t-b",
+  "man-f-a",
+  "pearl-t-a",
+  "pearl-t-b",
+  "pearl-f-a",
+  "teapot-t-a",
+  "teapot-f-a",
+  "teapot-transparent-t-a"
+ ],
+ "order": "one-way",
+ "need_s": 4500,
+ "max_failures": 3,
+ "install": [
+  "a"
+ ],
+ "show": [
+  "madebyollin/texture-fix-vae@0.3.0",
+  "darrellbest/qwen-image-2.1-pe-i2i-abliterated@0.1.0",
+  "pottokao/qwen-image-2.1-pe-t2i-abliterated@0.1.0"
+ ]
+}

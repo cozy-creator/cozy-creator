@@ -64,6 +64,29 @@ CELLS=$(param cells '[]') COMPARE=$(param compare '[]') FREE_GIB=$(param free_gi
 [[ $GPUS =~ ^[1-8]$ ]] || fail "gpus $GPUS"
 FLOOR0=$FLOOR_MBS AFTER0=$FLOOR_AFTER
 VRAM=$(cd "$(dirname "$0")/../suites/bench" && pwd)/vram.py
+JUDGE=$(cd "$(dirname "$0")" && pwd)/fixtures/qwen-cutout/judge.py
+# se-154 (this proof branch only): the alpha judge's Python, proven on a fixture before anything is rented.
+ALPHA=$(param alpha '[]')
+if [ "$(jq length <<<"$ALPHA")" -gt 0 ]; then
+  uv venv -q --python 3.12 "$OUT/judge-py" > "$OUT/judge-py.log" 2>&1 &&
+    uv pip install -q --python "$OUT/judge-py/bin/python" numpy pillow >> "$OUT/judge-py.log" 2>&1 || fail "the judge's Python: $(tail -c 300 "$OUT/judge-py.log")"
+  "$OUT/judge-py/bin/python" -I "$JUDGE" --self-check "$(dirname "$JUDGE")/../ltx-images/teapot.jpg" > "$OUT/judge-check.txt" 2>&1 ||
+    fail "judge.py: $(tail -c 400 "$OUT/judge-check.txt")"
+  say "judge: $(paste -sd';' "$OUT/judge-check.txt")"
+fi
+# se-154 (this proof branch only), at $0 before the quote: each `install` tree's qwen-image-2 locked and installed on this
+# runner (`--on local`, the real lock), and each `show` model's Hub record kept (show-<i>.json/txt).
+for tree in $(param install '[]' | jq -r '.[]'); do
+  step "install-$tree" package install "$PACKAGES/$tree/qwen-image-2" --on local -y ||
+    fail "tree $tree's qwen-image-2 did not install here: $(grep -v '^ *$' "$OUT/install-$tree.txt" | tail -5 | tr '\n' ' ' | cut -c1-600)"
+  say "tree $tree's qwen-image-2 installed here: $(tail -3 "$OUT/install-$tree.txt" | tr '\n' ' ' | cut -c1-400)"
+done
+i=0
+for ref in $(param show '[]' | jq -r '.[]'); do
+  i=$((i + 1))
+  cozy --json model show "$ref" > "$OUT/show-$i.json" 2>&1; cozy model show "$ref" > "$OUT/show-$i.txt" 2>&1
+  say "show $ref: $(head -c 300 "$OUT/show-$i.txt" | tr '\n' ' ')"
+done
 [ -z "$FREE_GIB" ] || [ -f "$VRAM" ] || fail "no suites/bench/vram.py"
 # ssh for the holder and for what holds the GPU when a cell fails (`gpu`)
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
@@ -407,4 +430,23 @@ done < <(jq -r '.[] | "\(.[0]) \(.[1])"' <<<"$COMPARE")
 for t in cold warm; do
   say "$t pairs (a s, b s, b vs a): $(awk -F'\t' -v t="$t" '$1 == t && $7 == "yes" {printf "%s %s %s %s %s; ", $2, $3, $4, $5, $6}' "$OUT/pairs.tsv")"
 done
+# se-154 (this proof branch only): each cell in params `alpha` judged (fixtures/qwen-cutout/judge.py): RGBA, the share
+# cleared, a painted checkerboard, edges, the rewrite and whether it took the model card's template, the enhancer's
+# seconds. It measures; it never fails the session.
+if [ "$(jq length <<<"$ALPHA")" -gt 0 ]; then
+  if [ -x "$OUT/judge-py/bin/python" ]; then
+    : > "$OUT/alpha-cells.tsv"
+    for k in $(jq -r '.[]' <<<"$ALPHA"); do
+      src=$(jq -r --arg k "$k" '[map(select(.name==$k)) | first | .args[] | (capture("\"image\": *\"(?<p>[^\"]+)\"")? | .p)] | first // empty' <<<"$CELLS")
+      src=${src//\{ref\}/$REF}
+      while [[ $src =~ \{out:([A-Za-z0-9_-]+)\} ]]; do src=${src//"${BASH_REMATCH[0]}"/"${MADE[${BASH_REMATCH[1]}]:-}"}; done
+      printf '%s\t%s\t%s\t%s\n' "$k" "$src" "${MADE[$k]:-}" "$OUT/$k.json" >> "$OUT/alpha-cells.tsv"
+    done
+    "$OUT/judge-py/bin/python" -I "$JUDGE" "$OUT/alpha-cells.tsv" --sheets "$OUT/sheets" \
+      --out "$OUT/alpha.tsv" > "$OUT/alpha.txt" 2>&1 || say "judge: exit $?"
+    sed 's/^/  /' "$OUT/alpha.txt" | tee -a "$R"
+  else
+    say "judge: no Python"
+  fi
+fi
 [ "$fails" = 0 ] && [ "$differ" = 0 ] && [ "$unfair" = 0 ] || fail "$fails cells did not complete, $differ pairs differ, $unfair pairs not comparable"
