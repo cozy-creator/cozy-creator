@@ -282,6 +282,18 @@ ALLOW=lora_slot_ambiguous cell lora-slot-pair "$script/pair" --lora "$lora" || t
 ALLOW=lora_slot_absent cell lora-slot-none "$script/plain" --lora "$lora" || true
 [ -f "$OUT/lora-slot-none.refused" ] || check "lora slot: plain's LoRA was not refused as lora_slot_absent"
 echo "lora slot: encoded on $(lora_on lora-slot), chosen on $(lora_on lora-slot-model) with turbo and $(lora_on lora-slot-full) without, edited on $(lora_on lora-slot-edited); pair $(cat "$OUT/lora-slot-pair.refused" 2> /dev/null || echo ran), plain $(cat "$OUT/lora-slot-none.refused" 2> /dev/null || echo ran)"
+# cl-1281 (Paul, 11-18: "fix the orbit lora so it's used correctly (follow platform rules) and all other packages should follow
+# our platform-rules so that loras can be overwritten"): a function that loads no model takes its LoRA as a Weights slot, with a
+# default and a needs rule, and hands it to its call by its ref (Orbit, MOSS, H3 edit). Its call's model takes it; without the
+# rule's request it isn't applied. Before (rc/0.27.0): the describer refused a rule on a Weights slot, and a call couldn't take one.
+lora_called() { jq -c '[.calls[]? | .measurements.models[]? | select((.adapters // []) | length > 0) | {slot, adapters: [.adapters[] | {model, layers}]}]' "$OUT/$1.json" 2> /dev/null || echo none; }
+if cell lora-handed "$script/handed" && cell lora-handed-plain "$script/handed" styled:=false; then
+  J '[.calls[]? | .measurements.models[]? | select(.slot == "model") | .adapters[]? | select(.layers > 0)] | length == 1' "$OUT/lora-handed.json" \
+    || check "lora handed: its call's model took no LoRA from its slot: $(lora_called lora-handed)"
+  J --slurpfile plain "$OUT/lora-handed-plain.json" '.result.sum != $plain[0].result.sum' "$OUT/lora-handed.json" \
+    || check "lora handed: the slot's LoRA changed nothing: $(jq -c .result "$OUT/lora-handed.json") as without it"
+fi
+echo "lora handed: its call's LoRAs $(lora_called lora-handed), sums $(jq -c .result.sum "$OUT/lora-handed.json" 2> /dev/null) with, $(jq -c .result.sum "$OUT/lora-handed-plain.json" 2> /dev/null) without"
 }
 
 # ltx2.lora (the ltx-2.5 package's LoRAs, for the release coordinator: "`cozy model upload` / `cozy lora` / `cozy run --lora` can
