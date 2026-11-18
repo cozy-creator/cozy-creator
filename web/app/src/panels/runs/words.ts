@@ -63,16 +63,34 @@ interface Entry {
   scope?: boolean
 }
 
-/** A `match` as a pattern: literal text, `{name}` any text, `{#name}` digits; the whole part, any case. */
-const compiled = (stages.stages as unknown as Entry[]).map((entry) => {
+/** A `match` as a pattern: literal text, `{name}` any text, `{#name}` digits; any case, the whole text, or with `start` its start. */
+function matcher(match: string, start = false) {
   const names: string[] = []
-  const source = entry.match.replace(/\{(#?)(\w+)\}|[.*+?^$()|[\]\\]/g, (piece, digits: string | undefined, name: string | undefined) => {
+  const source = match.replace(/\{(#?)(\w+)\}|[.*+?^$()|[\]\\]/g, (piece, digits: string | undefined, name: string | undefined) => {
     if (name === undefined) return `\\${piece}`
     names.push(name)
     return digits ? "(\\d+)" : "(.+?)"
   })
-  return { entry, names, pattern: new RegExp(`^${source}$`, "i") }
-})
+  return { names, pattern: new RegExp(`^${source}${start ? "" : "$"}`, "i") }
+}
+
+/** `says` with what a `matcher` found filled in. */
+const filled = (says: string, names: string[], found: RegExpExecArray) =>
+  says.replace(/\{(\w+)\}/g, (said, name: string) => {
+    const at = names.indexOf(name)
+    return at < 0 ? said : found[at + 1]
+  })
+
+const compiled = (stages.stages as unknown as Entry[]).map((entry) => ({ entry, ...matcher(entry.match) }))
+
+/** One of `stages.json`'s `waits`: a reason TensorD or Calcifer gives for a wait, by its start, and what a box's line says of it, which
+ *  holds about 25 characters beside Cancel (cl-1197: `Waiting for another project's run to finish with this machine's CPU` was
+ *  `Waiting for another…`). */
+interface Wait {
+  match: string
+  box: string
+}
+const boxed = (stages.waits as Wait[]).map((entry) => ({ entry, ...matcher(entry.match, true) }))
 
 /** A part of a stage's path, as the map says it: its words with what it named filled in, its phase and what it counts; none: the map
  *  doesn't know it. The release gate reads the same file (`release-gate/suites/progress`). */
@@ -81,11 +99,7 @@ export function stageOf(part: string): { says: string; phase?: string; counts?: 
   for (const { entry, names, pattern } of compiled) {
     const found = pattern.exec(text)
     if (!found) continue
-    const filled = entry.says.replace(/\{(\w+)\}/g, (said, name: string) => {
-      const at = names.indexOf(name)
-      return at < 0 ? said : found[at + 1]
-    })
-    return { says: filled, phase: entry.phase, counts: entry.counts, scope: entry.scope }
+    return { says: filled(entry.says, names, found), phase: entry.phase, counts: entry.counts, scope: entry.scope }
   }
   return undefined
 }
@@ -185,10 +199,17 @@ export function waitReason(waiting: string | null | undefined, boxOf?: (run: num
 /** `waitReason` as a line. */
 export const waitWords = (waiting: string | null | undefined, boxOf?: (run: number) => string | undefined) => sentence(waitReason(waiting, boxOf))
 
-/** What it waits for alone, `Waiting for 2 GPUs`: its reason up to its first comma, a box's line, which has room for no more (as
- *  cl-1205's `Waiting for download`: a cut-off line lost its key word). Who holds it and about how long, its machine's tab, its queue,
- *  its drawer and the run list say whole (`waitWords`). */
-export const waitFor = (waiting: string | null | undefined) => sentence(waitReason(waiting).split(", ")[0])
+/** What it waits for alone, a box's line, which has room for no more: `Waiting for 2 GPUs`, `Waiting for the CPU`, as `stages.json`'s
+ *  `waits` say its reason, else its reason up to its first comma (as cl-1205's `Waiting for download`: a cut-off line lost its key word).
+ *  Who holds it and about how long, its machine's tab, its queue, its drawer and the run list say whole (`waitWords`). */
+export function waitFor(waiting: string | null | undefined): string {
+  const reason = waitReason(waiting).trim()
+  for (const { entry, names, pattern } of boxed) {
+    const found = pattern.exec(reason)
+    if (found) return filled(entry.box, names, found)
+  }
+  return sentence(reason.split(", ")[0])
+}
 
 /** It waits on downloads its progress names (cl-1205's typed `waiting_on`): its box and tile say `Waiting for download`; its rows, its
  *  drawer and the run list its stage, `Waiting for Sdxl to download`, and never its machine's reason over it, whose bytes are the
