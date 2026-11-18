@@ -237,7 +237,9 @@ export class Scene {
 
   private request(picture: ScenePicture, width: number, dpr: number) {
     const project = this.o.store.projectId
-    const size = Math.max(256, Math.min(4096, 2 ** Math.ceil(Math.log2(Math.max(1, width * this.settledZoom * dpr)))))
+    // At the canvas's own zoom: in Focus and on the way back, the one it rests at outside it (cl-1207).
+    const zoom = this.o.store.restZoom ?? this.settledZoom
+    const size = Math.max(256, Math.min(4096, 2 ** Math.ceil(Math.log2(Math.max(1, width * zoom * dpr)))))
     if (picture.url) return { source: { kind: "local" as const, url: picture.url }, width: size, local: true }
     if (!project) return null
     if (picture.glimpse) return { source: { kind: "output" as const, run: picture.glimpse.run, output: picture.glimpse.output, index: picture.glimpse.index, rev: picture.glimpse.rev }, width: size, local: false }

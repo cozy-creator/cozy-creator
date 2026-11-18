@@ -394,6 +394,7 @@ function Canvas({
       const frame = pose && bodyBox(view, pose)
       // Once a visit, at its first box: one opened from another, or again on the way back, keeps it.
       visit.current ??= flow.getViewport()
+      store.restZoom = visit.current.zoom
       transition.current += 1
       setHoming(false)
       if (store.inPlace) {
@@ -443,7 +444,10 @@ function Canvas({
     // The other boxes come back as the canvas moves back, each from where it is.
     const ms = back ? focusMs() : 0
     flow.fade.show(ms)
-    if (!back) return
+    if (!back) {
+      store.restZoom = null
+      return
+    }
     setHoming(true)
     if (store.projectId) saveViewport(store.projectId, back)
     // Exactly where it was, however the way back went: stopped by a key's zoom, or the canvas a moment late.
@@ -456,6 +460,7 @@ function Canvas({
         return
       }
       visit.current = null
+      store.restZoom = null
       setHoming(false)
     }
     glide(flow.setViewport(back, { duration: ms }), home)
