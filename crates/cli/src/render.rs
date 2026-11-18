@@ -30,6 +30,13 @@ const FPS: f64 = 24.0;
 /// What a job that made nothing says it came to.
 const MADE_NOTHING: [&str; 3] = ["it stands", "nothing to do", "stays pinned"];
 
+/// Why a job ended on one of its box's takes with no run of its own, when it did: its inputs (seed included, or none taken) are a take's
+/// already, so that take stands (Calcifer's `Project::stands`, cl-1271). A cut, which no run makes either, is timed by its seconds.
+fn stood(job: &Job) -> Option<&str> {
+    let why = job.why.as_deref()?;
+    (job.state == JobState::Done && job.run.is_none() && job.number.is_some() && job.seconds.is_none() && !MADE_NOTHING.contains(&why)).then_some(why)
+}
+
 const EXAMPLES: &str = "Examples
   cozy render film                    a new take of film, from what it reads now
   cozy render shot_1 shot_2 film      each in turn: film reads the takes shot_1 and shot_2 make here
@@ -421,6 +428,12 @@ impl<'a> Follow<'a> {
         if job.why.as_deref().is_some_and(|why| MADE_NOTHING.contains(&why)) {
             let why = job.why.clone().unwrap_or_default();
             self.line(&label, &why, json!({"name": job.asset, "number": number, "state": "stands", "why": why}));
+            return Ok(());
+        }
+        // No run made it: a tool that takes no seed, or a box at a fixed seed, on inputs one of its takes already holds (Calcifer's
+        // `Project::stands`). That take stands, and why is said in place of a time (cl-1271).
+        if let Some(why) = stood(job) {
+            self.line(&label, &format!("nothing new to render: {why}"), json!({"name": job.asset, "number": number, "state": "stands", "why": why}));
             return Ok(());
         }
         let held = project.versions(&job.asset).await.ok();
