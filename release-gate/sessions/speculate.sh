@@ -5,17 +5,25 @@
 #   1. done:      the box's render adopts the finished run: its take lands about as fast as its file does.
 #   2. edit:      the box edited while its draft runs: that run ends ("its draft changed") and the new draft runs.
 #   3. in flight: the box rendered while its draft runs: the render adopts the run going.
-#   4. preempt:   another model's call (SDXL) sent while a draft runs: it gets the GPU at once (under 50 ms), the run told to stop.
+#   4. preempt:   each other model's call (`others`: SDXL by default) sent while a draft runs: it gets the GPU at once (under 50 ms),
+#                 the run told to stop.
 #   5. no trace:  the project lists only the session's own five runs, and no speculative run moved the idle deadline.
 # Speculation is off by default (Paul 11-18): the session turns it on in the pod's config.toml (`dev = true`, `[machine] speculate =
 # true`) before its restart. The pod runs the session's TensorD, Runtime and TensorFS, checked before every step (load-ahead.sh). params:
 #   tree     a packages_refs checkout whose qwen-image-2 runs, its rules with it (`-f packages_refs=pk=<ref>`, tree pk): a dev home
 #   update   `cozy machine update` flags beside its TensorD: a dev build's Runtime and TensorFS, `artifact:<run id>:<artifact>[:<repo>]`
 #   other    the call that takes the GPU during a draft's run (default sdxl/generate)
+#   others   the calls that do, each in turn, as `cozy run` arguments (default [[other, "prompt=a brass compass on a walnut desk"]]),
+#            e.g. [["sdxl/generate", "prompt=…"], ["minimax-h3/generate", "--lane", "int8", "prompt=…", "duration_s:=5.0"]]
 # Weights come from the Hub: `floor_mb_s: 0` keeps a slow link from ending it. Each render takes its box's draft seed, so the box's
 # next draft (another seed) runs ahead at once: each edit waits for the new draft `loaded`, then `running`.
 . "$(dirname "$0")/lib.sh"
 TOOL=qwen-image-2/image OTHER=$(param other sdxl/generate) TREE=$(param tree '') BEGAN=$(date +%s)
+OTHERS=$(param others "$(jq -nc --arg o "$OTHER" '[[$o, "prompt=a brass compass on a walnut desk"]]')")
+N_OTHERS=$(jq 'length' <<<"$OTHERS")
+[ "$N_OTHERS" -gt 0 ] 2> /dev/null || fail "others: a list of \`cozy run\` argument lists"
+# others_args <i>: the i-th other call's `cozy run` arguments, into ARGS.
+others_args() { mapfile -t ARGS < <(jq -r ".[$1][]" <<<"$OTHERS"); }
 PROMPT="a red lighthouse on a cliff at dusk, waves below, photo"
 fetched() {
   IFS=: read -r _ rid name repo <<<"$1"; mkdir -p "$2"
@@ -99,8 +107,10 @@ edit() { WAS=$ITEM; mark edit; run_page set q --fields "$(jq -nc --arg p "$1" '{
 # The weights onto the pod (the default request reads the model, its text encoder, expander_t2i and Turbo's LoRA), then SDXL's.
 ours fetch
 step fetch run "$TOOL" --on "$NAME" instructions="$PROMPT" megapixels:=1 aspect_ratio=1:1 seed:=1 || fail "the first call"
-ours other-fetch
-step other-fetch run "$OTHER" --on "$NAME" prompt="a brass compass on a walnut desk" seed:=4 || fail "the other call's fetch"
+for i in $(seq 0 $((N_OTHERS - 1))); do
+  others_args "$i"; ours "other-fetch-$i"
+  step "other-fetch-$i" run "${ARGS[@]}" --on "$NAME" seed:=4 || fail "the other call $i's fetch"
+done
 pod_speculates
 step restart machine update "$NAME" --mode dedicated -y || fail "the restart"
 [ "$(cozy machine show "$NAME" --json | jq -r .status.phase)" = ready ] || fail "$NAME isn't ready after its restart"
@@ -132,14 +142,16 @@ until_stage running 60
 ours in-flight
 render in-flight
 
-# 4. preempt: another draft runs; SDXL sent meanwhile.
-edit "a white lighthouse at noon, calm sea, gulls, photo"
-until_stage 'loaded|running' 120
-until_stage running 60
-ours preempt
-mark preempt
-step preempt run "$OTHER" --on "$NAME" prompt="a brass compass on a walnut desk" seed:=5 || fail "the other call"
-mark "preempt done"
+# 4. preempt: another draft runs; each other call sent meanwhile, in turn.
+for i in $(seq 0 $((N_OTHERS - 1))); do
+  edit "a white lighthouse at noon, calm sea, gulls, photo ($i)"
+  until_stage 'loaded|running' 300
+  until_stage running 60
+  others_args "$i"; ours "preempt-$i"
+  mark "preempt $i"
+  step "preempt-$i" run "${ARGS[@]}" --on "$NAME" seed:=$((5 + i)) || fail "the other call $i"
+  mark "preempt $i done"
+done
 ours end
 kill $BG 2> /dev/null; BG=''
 
@@ -150,26 +162,27 @@ grep -aE "runs as if it were sent|speculative run|adopts|differs from item|queue
 grep -q "adopts the speculative run .*Completed\|adopts the speculative run .*completed" "$OUT/speculate.log" || { say "FAIL: no render adopted a finished run"; RC=1; }
 grep -q "adopts the speculative run .*\(running\|starting\|Running\|Starting\)" "$OUT/speculate.log" || { say "FAIL: no render adopted a run going"; RC=1; }
 grep -q "speculative run ended for its draft changed" "$OUT/speculate.log" || { say "FAIL: no edit ended a run"; RC=1; }
-grep -q "speculative run ended for a run" "$OUT/speculate.log" || { say "FAIL: SDXL didn't end a run"; RC=1; }
+[ "$(grep -c "speculative run ended for a run" "$OUT/speculate.log")" -ge "$N_OTHERS" ] || { say "FAIL: not every other call ended a run"; RC=1; }
 python3 - "$OUT/speculate.log" <<'PY' | tee -a "$R"
 import re, sys
 from datetime import datetime
 lines = open(sys.argv[1]).read().splitlines()
 def at(line): return datetime.fromisoformat(line.split()[0].rstrip("Z")).timestamp()
-ended = [l for l in lines if "speculative run ended for a run" in l]
 waits = [l for l in lines if "queue: waiting for a free GPU" in l]
 goes = [l for l in lines if "queue: goes after" in l and "free GPU" in l]
-if ended and waits:
-    w = [l for l in waits if at(l) <= at(ended[-1]) + 1][-1:] or waits[-1:]
+for e in (l for l in lines if "speculative run ended for a run" in l):
+    w = [l for l in waits if at(l) <= at(e) + 1][-1:]
+    if not w:
+        continue
     g = [l for l in goes if at(l) >= at(w[0])][:1]
-    print(f"preempt: the call waited for a free GPU from {w[0].split()[0]}; the run ended {1000 * (at(ended[-1]) - at(w[0])):.1f} ms later"
+    print(f"preempt: a call waited for a free GPU from {w[0].split()[0]}; the run ended {1000 * (at(e) - at(w[0])):.1f} ms later"
           + (f"; the call went {1000 * (at(g[0]) - at(w[0])):.1f} ms after it waited" if g else ""))
 PY
-# 5. No trace: fetch, other-fetch, two renders and the preempting call are the project's runs; while a draft ran ahead or stood
+# 5. No trace: fetch, each other call's fetch, two renders and the preempting calls are the project's runs; while a draft ran ahead or stood
 # done, the idle deadline stayed where the last action left it.
 (cd "$RUN_PROJECT" && cozy --json run ls --all --limit 40) > "$OUT/runs.json" 2>&1
 say "the project's runs: $(jq -c '[.runs[]? | {number, target}]' "$OUT/runs.json" | cut -c1-400)"
-[ "$(jq '[.runs[]?] | length' "$OUT/runs.json")" = 5 ] || { say "FAIL: the project lists other than its 5 runs"; RC=1; }
+[ "$(jq '[.runs[]?] | length' "$OUT/runs.json")" = $((3 + 2 * N_OTHERS)) ] || { say "FAIL: the project lists other than its $((3 + 2 * N_OTHERS)) runs"; RC=1; }
 ! grep -q speculative "$OUT/runs.json" || { say "FAIL: a speculative run is in the project"; RC=1; }
 python3 - "$OUT" <<'PY' | tee -a "$R" | grep -q '^idle: held' || { say "FAIL: speculation moved the idle deadline"; RC=1; }
 import json, sys
