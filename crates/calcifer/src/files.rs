@@ -11,6 +11,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::Response,
 };
+use futures_util::StreamExt as _;
 use tokio::io::AsyncReadExt as _;
 
 /// `Cache-Control` for what's named by its own hash: a browser never needs to ask again. Everything
@@ -39,6 +40,7 @@ pub(crate) fn send(
     if matched {
         return Ok(response.status(StatusCode::NOT_MODIFIED).body(Body::empty()).expect("a response"));
     }
+    let mut held = 0u64;
     // A range of another revision would splice two files: the whole of this one instead.
     let same_revision = headers.get(header::IF_RANGE).is_none_or(|tag| tag.as_bytes() == etag.as_bytes());
     let range = headers.get(header::RANGE).filter(|_| same_revision);
@@ -46,6 +48,24 @@ pub(crate) fn send(
         Ok(None) => (response, StatusCode::OK, 0, len),
         Ok(Some((first, last))) => {
             let last = probe(headers, "probe_cap").map_or(last, |cap| last.min(first.saturating_add(cap.max(1) - 1)));
+            // PROBE: a file still landing. Its first `probe_edge` bytes and its last `probe_tail` are in place; a range that starts
+            // between them is answered as `probe_past` says: 416, 503, or held that many milliseconds and then sent.
+            let tail = len.saturating_sub(probe(headers, "probe_tail").unwrap_or(1 << 20));
+            let (last, past) = match probe(headers, "probe_edge") {
+                Some(edge) if first < edge => (last.min(edge - 1), None),
+                Some(_) if first < tail => (last, Some(probe(headers, "probe_past").unwrap_or(0))),
+                _ => (last, None),
+            };
+            match past {
+                Some(416) => {
+                    return Ok(response.status(StatusCode::RANGE_NOT_SATISFIABLE).header(header::CONTENT_RANGE, format!("bytes */{len}")).body(Body::empty()).expect("a response"));
+                }
+                Some(503) => {
+                    return Ok(response.status(StatusCode::SERVICE_UNAVAILABLE).header(header::RETRY_AFTER, "1").body(Body::empty()).expect("a response"));
+                }
+                Some(ms) => held = ms,
+                None => {}
+            }
             let response = response.header(header::CONTENT_RANGE, format!("bytes {first}-{last}/{len}"));
             (response, StatusCode::PARTIAL_CONTENT, first, last - first + 1)
         }
@@ -62,7 +82,13 @@ pub(crate) fn send(
     Ok(response
         .status(status)
         .header(header::CONTENT_LENGTH, count)
-        .body(Body::from_stream(tokio_util::io::ReaderStream::with_capacity(bytes, probe(headers, "probe_piece").map_or(4096, |n| n.clamp(1024, 8 << 20) as usize))))
+        .body(Body::from_stream(
+            futures_util::stream::once(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(held)).await;
+                Ok::<_, std::io::Error>(bytes::Bytes::new())
+            })
+            .chain(tokio_util::io::ReaderStream::with_capacity(bytes, probe(headers, "probe_piece").map_or(4096, |n| n.clamp(1024, 8 << 20) as usize))),
+        ))
         .expect("a response"))
 }
 
