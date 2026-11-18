@@ -6,7 +6,8 @@
 #            box. The Qwen render's ask answers within 5 s and its first run is accepted within 5 s (the Orbit one's is said: its
 #            first ships Orbit's local code); no run waits in the install line behind a guess's install (a guess a run waits on goes
 #            at its place); the Orbit call's install uses the environment the Orbit guess builds and gets past it (#3777: two builds
-#            of one broke it), then is canceled.
+#            of one broke it), then is canceled. TensorD answers throughout (cl-1202: 11.4 s of no answer while Qwen's import pages
+#            were recorded, 44199443528): no gap over 3 s between the status reads each second, and every list put within 2 s.
 #   rc       the pod back on the RC's builds, held by nothing, as hougetsu was; once the RC moves past them, the Qwen box rendered
 #            at once: its run is accepted within 5 s, with no update of the pod before it. The follower moves the idle pod 30 s or
 #            more after Calcifer reads the move; a render it beats to the pod is said, and the next move is waited for.
@@ -14,9 +15,19 @@
 #   tree         the packages_refs checkout the packages run from (required: -f packages_refs=pk=rc/<x>, tree pk)
 #   rc_wait_min  how long the rc arm waits for the RC to move (default 25)
 #   seconds      what the cap must buy (default 3600)
+#   arms         which arms run (default "install rc")
+#   probe        threads: the pod's TensorD threads sampled through the install arm (tensord-threads.py, over SSH); gdb: also
+#                their backtraces as its first import pages are recorded (a build that allows a ptracer). Default none.
 . "$(dirname "$0")/lib.sh"
 PICTURE=$REF/seed.jpg TREE=$(param tree '') RC_WAIT=$(param rc_wait_min 25) BEGAN=$(date +%s)
+ARMS=$(param arms 'install rc') PROBE=$(param probe '')
 [[ $RC_WAIT =~ ^[0-9]+$ ]] || fail "rc_wait_min $RC_WAIT"
+[[ $PROBE =~ ^(|threads|gdb)$ ]] || fail "probe $PROBE"
+[[ " $ARMS " == *" install "* ]] || fail "arms $ARMS: the install arm runs first"
+if [ -n "$PROBE" ]; then
+  [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
+  RENT_ARGS=--ssh
+fi
 [ -f "$PICTURE" ] || fail "no $PICTURE"
 V=$(cozy --version | awk '{print $2}')
 [[ $V == *-dev* ]] || fail "cozy $V is no RC build: dispatch with cozy=<a dev-build run of the head>"
@@ -107,10 +118,21 @@ mine() {
   [ "$(cozy machine show "$NAME" --json | jq -r .status.version)" = "$V" ] || fail "the pod doesn't run TensorD $V"
 }
 
+pod() { cozy machine ssh "$NAME" -- "$*" < /dev/null 2>> "$OUT/ssh.err"; }
+
 # install: Calcifer started again with the project shown; the renders asked the moment the pod lists a guess.
 mine install
+if [ -n "$PROBE" ]; then
+  [ "$PROBE" != gdb ] || pod 'export DEBIAN_FRONTEND=noninteractive; apt-get -qq update && apt-get -qq install -y gdb > /dev/null; gdb --version | head -1' \
+    >> "$OUT/probe.txt" || say "probe: no gdb on $NAME"
+  pod "mkdir -p /root/cl1202 && echo $(base64 -w0 "$(dirname "$0")/tensord-threads.py") | base64 -d > /root/cl1202/threads.py &&
+    (setsid nohup python3 /root/cl1202/threads.py 400 /root/cl1202/out $([ "$PROBE" = gdb ] && echo gdb) < /dev/null > /root/cl1202/sampler.log 2>&1 &)" ||
+    fail "probe: the sampler didn't start on $NAME"
+  say "probe: $NAME's TensorD threads sampled ($PROBE)"
+fi
 cozy restart > "$OUT/restart-install.txt" 2>&1 || fail "cozy restart: $(tail -c 300 "$OUT/restart-install.txt")"
 shown install
+A0=$(date +%s%3N)
 say "install: Calcifer started again and the project shown; waiting for the pod to list a guess"
 for t in $(seq 1 600); do
   cozy machine show "$NAME" --json 2> /dev/null | jq -e '[.status.ahead[]? | select(.id | startswith("cozy:prepare:"))] | length > 0' > /dev/null && break
@@ -141,9 +163,33 @@ else
 fi
 (cd "$RUN_PROJECT" && timeout 1200 cozy run watch "${QWEN%% *}" > "$OUT/watch-qwen.txt" 2>&1)
 (cd "$RUN_PROJECT" && cozy --json run watch "${QWEN%% *}" --once --full) > "$OUT/run-qwen.json" 2>&1
+A1=$(date +%s%3N)
 [ "$(jq -r .status "$OUT/run-qwen.json" 2> /dev/null)" = completed ] || { say "FAIL: qwen: run ${QWEN%% *} $(jq -r '.status, .reason.message' "$OUT/run-qwen.json" 2> /dev/null | paste -sd' ')"; RC=1; }
 collect
 cp "$OUT/tensord.log" "$OUT/tensord-install.log"
+if [ -n "$PROBE" ]; then
+  pod 'pkill -f /root/cl1202/threads.py; tar czf - -C /root/cl1202 . | base64 -w0' | base64 -d > "$OUT/probe.tgz" &&
+    mkdir -p "$OUT/probe" && tar xzf "$OUT/probe.tgz" -C "$OUT/probe" || say "probe: the samples weren't fetched"
+fi
+# TensorD answered throughout the arm (cl-1202): the longest gap between the status reads each second (each `machine show` waits on
+# the pod's Status), and the slowest list put, as Calcifer timed it.
+python3 - "$OUT/status.ndjson" "$OUT/calcifer.log" "$NAME" "$A0" "$A1" <<'PY' > "$OUT/answered.json"
+import json, re, sys
+from datetime import datetime, timezone
+status, calcifer, name, a0, a1 = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), int(sys.argv[5])
+ms = lambda line: datetime.fromisoformat(line[:26].rstrip("Z")).replace(tzinfo=timezone.utc).timestamp() * 1000
+at = [t for t in (json.loads(line)["at_ms"] for line in open(status) if line.startswith("{")) if a0 <= t <= a1]
+gap, since = max(((b - a, a) for a, b in zip(at, at[1:])), default=(0, a0))
+puts = [(int(m[1]), line[11:23]) for line in open(calcifer, errors="replace")
+        if (m := re.search(rf"lists put on {re.escape(name)} in (\d+) ms", line)) and line[:4].isdigit() and a0 <= ms(line) <= a1]
+put, put_at = max(puts, default=(0, ""))
+print(json.dumps({"reads": len(at), "gap_ms": gap, "gap_from": datetime.fromtimestamp(since / 1000, timezone.utc).strftime("%H:%M:%S.%f")[:-3],
+                  "puts": len(puts), "put_ms": put, "put_at": put_at}))
+PY
+read -r GAP GAP_FROM PUT PUT_AT < <(jq -r '"\(.gap_ms) \(.gap_from) \(.put_ms) \(.put_at)"' "$OUT/answered.json")
+say "install: TensorD's answers: $(jq -r .reads "$OUT/answered.json") status reads, longest gap ${GAP} ms (from $GAP_FROM); $(jq -r .puts "$OUT/answered.json") list puts, slowest ${PUT} ms (${PUT_AT:-none})"
+[ "${GAP:-99999}" -le 3000 ] || { say "FAIL: install: no status read answered for ${GAP} ms from $GAP_FROM"; RC=1; }
+[ "${PUT:-99999}" -le 2000 ] || { say "FAIL: install: a list put took ${PUT} ms (at $PUT_AT)"; RC=1; }
 # Each run's place in the install line behind a guess's install, to its turn; a guess a run waits on is raised to the run's place.
 python3 - "$OUT/tensord-install.log" <<'PY' | tee -a "$R" > "$OUT/line.json"
 import json, re, sys
@@ -174,6 +220,11 @@ jq -r '.waits[] | select(.s == null or .s > 1) | "\(.run) waited \(.s // "unende
 jq -e '[.waits[] | select(.s == null or .s > 1)] | length == 0' "$OUT/line.json" > /dev/null || RC=1
 grep -aE "No such file or directory|environment bytecode" "$OUT/tensord-install.log" | head -5 | while read -r l; do say "FAIL: install: $l"; done
 ! grep -aqE "No such file or directory|environment bytecode" "$OUT/tensord-install.log" || RC=1
+if [[ " $ARMS " != *" rc "* ]]; then
+  kill $BG 2> /dev/null; BG=''
+  [ "$RC" = 0 ] && say "PASS: the install arm: each render's ask answered and its run accepted within 5 s; TensorD answered throughout"
+  exit "$RC"
+fi
 
 # rc: the pod back on the RC's builds, held by nothing; once the RC moves past them, the Qwen box rendered at once.
 python3 "$RUN_PAGE" set "$RUN_PROJECT" pier --fields "$(qwen 11)" > "$OUT/set-pier.json" 2>&1 || fail "rc: the Qwen box's seed: $(tail -c 300 "$OUT/set-pier.json")"
@@ -214,4 +265,4 @@ done
 [ -n "$judged" ] || say "rc: the RC didn't move past the pod in $RC_WAIT min, or the follower beat each render: the rc arm isn't judged"
 kill $BG 2> /dev/null; BG=''
 collect
-[ "$RC" = 0 ] && say "PASS: each render's ask answered and its run was accepted within 5 s; no run's install waited behind a guess's"
+[ "$RC" = 0 ] && say "PASS: each render's ask answered and its run was accepted within 5 s; no run's install waited behind a guess's; TensorD answered throughout"
