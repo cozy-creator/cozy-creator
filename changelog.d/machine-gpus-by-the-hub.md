@@ -1,0 +1,1 @@
+A rental's GPU count is its Hub's count of the machine's GPUs, so the CPU machine reads as it is: `CPU at $0.05/h`, not `1× CPU`, in `cozy machine rent`, a run's quote on a new rental, `cozy machine history` and the page, and `rental.accepted` says `"gpus": 0`. `cozy machine rent <sku>` no longer assumes one GPU when `--gpus` isn't given.

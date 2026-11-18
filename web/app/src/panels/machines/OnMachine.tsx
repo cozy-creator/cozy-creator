@@ -8,7 +8,7 @@ import type { Agreed, RunQuote } from "../../api/calcifer"
 import { Failure, useAsk, useSignedIn } from "../common"
 import { usd } from "../format"
 import { lost } from "./order"
-import { called, gpusWords } from "./words"
+import { called, counted, gpusWords } from "./words"
 
 export interface Placed {
   /** Absent: Calcifer says where. */
@@ -81,7 +81,7 @@ export function OnMachine<Body extends object, Answer>({
 
   const needsPrice = isNew(on) && !current
   const stated = current?.answer
-  const priced = stated && `${stated.gpus ?? 1}× ${stated.sku.toUpperCase()} at ${usd(stated.quote.usd_micros_per_hour)}/h`
+  const priced = stated && `${counted(stated.quote.gpus, stated.sku)} at ${usd(stated.quote.usd_micros_per_hour)}/h`
   const busy = pricing.busy || sending.busy
   const blocked = disabled || busy || (isNew(on) && Boolean(stated) && !stated?.quote.agreed)
 
@@ -157,7 +157,7 @@ export function OnMachine<Body extends object, Answer>({
                 setGpus(other.gpus > 1 ? other.gpus : undefined)
               }}
             >
-              or {other.gpus}× {other.sku.toUpperCase()}
+              or {counted(other.gpus, other.sku)}
               {other.label ? ` (${other.label})` : ""}: {other.time.toFixed(2)}× the time at {usd(other.usd_micros_per_hour)}/h
             </button>
           ))}

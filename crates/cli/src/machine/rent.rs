@@ -38,7 +38,6 @@ pub(crate) async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
     let Some(sku) = rent.sku else {
         return catalog(ctx, hub).await;
     };
-    let gpus = rent.gpus.unwrap_or(1);
     let ssh_key = rent.ssh.as_ref().map(|file| ssh_key(ctx, file.as_deref())).transpose()?;
     // One key names this order: Calcifer keeps the ask under it, and a retry never orders twice.
     let key = mint_key();
@@ -57,7 +56,7 @@ pub(crate) async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
     let quote = calcifer.post("/v1/rental-quotes", &ask(None), None).await?;
     let quoted = RunQuote {
         sku: sku.clone(),
-        gpus: Some(gpus),
+        gpus: rent.gpus,
         quote,
         why: None,
         alternatives: vec![],
@@ -89,7 +88,8 @@ pub(crate) async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
             "name": rented.machine.name,
             "placeholder": rented.machine.placeholder,
             "sku": sku,
-            "gpus": gpus,
+            // The GPUs the machine ordered has, by its Hub's quote: none for the CPU machine (th-402).
+            "gpus": quoted.quote.gpus,
             "replay": rented.replay,
         }));
     }
@@ -112,6 +112,8 @@ pub(crate) async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
         return Ok(ExitCode::SUCCESS);
     }
     let name = machine.handle();
+    // What it has, by its Hub's record of it, else its quote: none for the CPU machine.
+    let gpus = machine.rental.as_ref().map(|rental| rental.gpus).or(quoted.quote.gpus).unwrap_or_default();
     let mut record = output::Record::new()
         .field("machine", machine.called())
         .field("gpus", gpus)
@@ -190,17 +192,26 @@ impl Notices {
     }
 }
 
-/// What a renter is charged: the GPUs and the Hub's one price an hour (`1× L40S at $1.64/h`).
-fn price(sku: &str, gpus: u32, q: &Quote) -> String {
+/// What a renter is charged: the machine and the Hub's one price an hour (`1× L40S at $1.64/h`, `CPU at $0.05/h`).
+fn price(sku: &str, q: &Quote) -> String {
     let at = q.provider.iter().chain(&q.datacenter).map(|w| format!(" {w}")).collect::<String>();
     let at = if at.is_empty() { at } else { format!(" on{at}") };
-    format!("{gpus}× {} at {}/h{at}", sku.to_ascii_uppercase(), usd(q.usd_micros_per_hour))
+    format!("{} at {}/h{at}", counted(q.gpus, sku), usd(q.usd_micros_per_hour))
+}
+
+/// A product by its machine's GPUs, as its Hub counts them (`2× RTX-4090`): alone when it has none (the CPU machine), or when
+/// nothing said how many.
+pub(crate) fn counted(gpus: Option<u32>, sku: &str) -> String {
+    match gpus {
+        Some(gpus @ 1..) => format!("{gpus}× {}", sku.to_ascii_uppercase()),
+        _ => sku.to_ascii_uppercase(),
+    }
 }
 
 /// A quote as `price` says it, then why the Hub placed it there and the machines it would rent
 /// instead, each against the pick: its time and its price an hour.
 fn placed(q: &RunQuote) -> String {
-    let mut said = price(&q.sku, q.gpus.unwrap_or(1), &q.quote);
+    let mut said = price(&q.sku, &q.quote);
     if let Some(why) = &q.why {
         said += &format!("\n  {why}");
     }
@@ -210,9 +221,8 @@ fn placed(q: &RunQuote) -> String {
             false => format!(" ({})", a.label),
         };
         said += &format!(
-            "\n  or {}× {}{label}: {:.2}× the time, {}/h",
-            a.gpus,
-            a.sku.to_ascii_uppercase(),
+            "\n  or {}{label}: {:.2}× the time, {}/h",
+            counted(Some(a.gpus), &a.sku),
             a.time,
             usd(a.usd_micros_per_hour),
         );
@@ -234,7 +244,7 @@ pub(crate) fn agree(ctx: &Context, quoted: &RunQuote) -> Result<bool, Error> {
     if ctx.json {
         output::ndjson(&serde_json::json!({"quote": {
             "sku": quoted.sku,
-            "gpus": quoted.gpus.unwrap_or(1),
+            "gpus": quoted.quote.gpus,
             "usd_micros_per_hour": quoted.quote.usd_micros_per_hour,
             "container_disk_gb": quoted.quote.disk_gb,
             "provider": quoted.quote.provider,
@@ -468,11 +478,8 @@ async fn catalog(ctx: &Context, hub: &Origin) -> Result<ExitCode, Error> {
     );
     for sku in &skus {
         let width = &sku.widths[0];
-        let counts: Vec<String> = sku
-            .widths
-            .iter()
-            .map(|w| w.accelerator_count.to_string())
-            .collect();
+        // The GPUs each width's machine has: none for the CPU machine, whose one width names no `--gpus`.
+        let counts: Vec<String> = sku.widths.iter().map(|w| w.machine_gpus()).filter(|gpus| *gpus > 0).map(|gpus| gpus.to_string()).collect();
         let compute = match sku.compute_capability.as_str() {
             "" => "—".into(),
             cc => format!("sm_{}", cc.replace('.', "")),
@@ -480,7 +487,7 @@ async fn catalog(ctx: &Context, hub: &Origin) -> Result<ExitCode, Error> {
         table = table.row([
             sku.name.clone(),
             sku.accelerator_model.clone(),
-            counts.join(", "),
+            if counts.is_empty() { "—".into() } else { counts.join(", ") },
             compute,
             if sku.vram_gb > 0 {
                 format!("{} GB", sku.vram_gb)

@@ -10,7 +10,7 @@ import { useSignal } from "../../ui/signal"
 import { Failure, Section } from "../common"
 import { usd } from "../format"
 import { dismiss, order, place, quote } from "./order"
-import { stableName } from "./words"
+import { counted, stableName } from "./words"
 
 const fieldKey = "cozy.ssh-key"
 
@@ -87,10 +87,10 @@ function Order() {
   }
 
   if (now.state === "idle") return null
-  const line = (held: { sku: string; gpus?: number | null }, price: number) => `${held.gpus ?? 1}× ${held.sku.toUpperCase()} at ${usd(price)}/h`
+  const line = (sku: string, held: { gpus?: number | null; usd_micros_per_hour: number }) => `${counted(held.gpus, sku)} at ${usd(held.usd_micros_per_hour)}/h`
   return (
     <div className="order" aria-live="polite" ref={here}>
-      {now.state === "quoting" && <p className="muted">Getting the price for {now.order.gpus ?? 1}× {now.order.sku}…</p>}
+      {now.state === "quoting" && <p className="muted">Getting the price for {counted(now.order.gpus, now.order.sku)}…</p>}
       {now.state === "quoted" && (
         <>
           {now.quote.warnings?.map((warning) => (
@@ -102,7 +102,7 @@ function Order() {
           {!now.quote.agreed && <p className="warn">Cozy didn't confirm this price, so you can't rent it from here.</p>}
           <div className="row">
             <button type="button" className="tb primary" disabled={!now.quote.agreed} onClick={() => void go()}>
-              Rent {line(now.order, now.quote.usd_micros_per_hour)}
+              Rent {line(now.order.sku, now.quote)}
             </button>
             <button type="button" className="tb" onClick={dismiss}>
               Not now
@@ -110,7 +110,7 @@ function Order() {
           </div>
         </>
       )}
-      {now.state === "placing" && <p>Renting {line(now.order, now.quote.usd_micros_per_hour)}…</p>}
+      {now.state === "placing" && <p>Renting {line(now.order.sku, now.quote)}…</p>}
       {now.state === "uncertain" && (
         <>
           <Failure error={now.error} lead="No answer came back, so the order may have gone through" />

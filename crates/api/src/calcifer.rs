@@ -92,6 +92,7 @@ pub struct SubmitRun {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct RunQuote {
     pub sku: String,
+    /// The width its rental orders (`--gpus`); none: the product's fewest. How many GPUs the machine has is `quote.gpus`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpus: Option<u32>,
     pub quote: Quote,
@@ -110,6 +111,7 @@ pub struct RunQuote {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Alternative {
     pub sku: String,
+    /// How many GPUs its machine has, by its Hub: none for the CPU machine.
     pub gpus: u32,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
@@ -2183,6 +2185,9 @@ pub struct Quote {
     pub expected_total_usd_micros: i64,
     /// The order's cap, which a renter sends back as it came: the Hub rents nothing dearer.
     pub agreed: Agreed,
+    /// How many GPUs the quoted machine has, by its Hub: none for the CPU machine (th-402).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpus: Option<u32>,
     /// What the Hub changed of the ask to quote it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
@@ -2409,12 +2414,29 @@ pub struct RentalPythonInterpreter {
     pub abi: String,
 }
 
+/// How many GPUs a product's machine has (th-402): as its Hub says (`gpus`: none for the CPU machine), else, from a Hub before it
+/// said, the product's width (`accelerator_count`: what an order names, 1 for the CPU machine). The one place a count falls back.
+pub fn machine_gpus(said: Option<i64>, width: i64) -> u32 {
+    u32::try_from(said.unwrap_or(width)).unwrap_or_default()
+}
+
+impl RentalSkuWidth {
+    /// How many GPUs its machine has (`machine_gpus`).
+    pub fn machine_gpus(&self) -> u32 {
+        machine_gpus(self.gpus, self.accelerator_count)
+    }
+}
+
 /// One GPU count of a product and its one price an hour, the machine with its disk and traffic.
 #[derive(Debug, Deserialize, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct RentalSkuWidth {
+    /// The width, which an order names (`--gpus`): 1 for the CPU machine.
     #[serde(default)]
     pub accelerator_count: i64,
+    /// How many GPUs its machine has: none for the CPU machine (th-402). Calcifer always says it (`machine_gpus`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpus: Option<i64>,
     #[serde(default)]
     pub price_usd_micros_per_hour: i64,
     #[serde(default)]
