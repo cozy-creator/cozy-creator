@@ -407,13 +407,6 @@ impl Machines {
         (self.dev && (rental || local)).then_some(row)
     }
 
-    /// Whether this computer ordered rental `row` (its key was minted here; another client's is reached with the device key). Only the
-    /// follower asks: a move to the RC's builds by one computer's choice, unasked by any run, is never made on a rental another
-    /// computer of the account holds on a build by hand, which this one can't see (cl-1224).
-    fn ordered_here(&self, row: &crate::store::MachineRow) -> bool {
-        api::config::Origin::parse(&row.hub).map_or(true, |hub| row.key != hub.device_key(&self.home))
-    }
-
     /// Whether `name` is a rental that follows the RC and hasn't said it's ready (cl-1069): until it is, it can't be told behind or
     /// not, and work for it waits for it to start. Ready, work goes to it as it is, and it moves to the RC once idle (cl-1201); a run
     /// whose package needs the RC's Runtime moves it first (`floor`; LAB2-47826, refused on the 0.25.0 image's 0.46.0).

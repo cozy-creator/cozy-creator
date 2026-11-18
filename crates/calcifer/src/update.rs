@@ -78,7 +78,7 @@ fn older_minor(machine: &str, own: &str) -> bool {
 
 impl Machines {
     /// What work for `name` waits for first (cl-1069; Paul 11-16: "It should be a standing rule that we allow version skew"): work
-    /// goes to a machine of any version. One on an older minor that this computer may move (`local`, or a rental of the account, not held
+    /// goes to a machine of any version. One on an older minor that this computer may move (`local`, or a rental it ordered, not held
     /// by hand, with no work going) moves up to this release first, once per boot: its update run, to wait for. One newer than this
     /// cozy is never moved back, and one it can't move, or whose update fails, gets work as it is.
     pub(crate) async fn current(self: &Arc<Self>, name: &str) -> Result<Option<Run>, Error> {
@@ -104,8 +104,9 @@ impl Machines {
             return Ok(None);
         }
         let row = self.named(name)?;
-        // Not this computer's to move: another computer's, added here.
-        let others = row.as_ref().is_some_and(|row| row.kind == MachineKind::Added);
+        // Not this computer's to move: another computer's, added here, or a rental another computer ordered, which may be held by
+        // hand there (cl-1224): work goes to it as it is.
+        let others = row.as_ref().is_some_and(|row| row.kind == MachineKind::Added || !self.ordered_here(row));
         if others || self.held_by_hand(name).is_some() {
             return Ok(None);
         }

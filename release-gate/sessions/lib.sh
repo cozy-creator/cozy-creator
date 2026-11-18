@@ -132,6 +132,18 @@ claim() {
     [[ " ${RIDS[*]:-} " == *" $r "* ]] || { RIDS+=("$r"); echo "$r" >> "$OUT/rental"; say "this runner's Calcifer also holds $r"; }
   done
 }
+# others_busy <machine> [seconds]: waits (900 s by default) until every other live rental of the account that's up runs or waits on
+# work, every client's, as its Status says. The account's rentals are one pool (cl-1224): a run naming no machine may go to any of them,
+# so a session that sends one waits until no other session's pod would take it idle. Fails naming them when they never are.
+others_busy() {
+  local until=$(($(date +%s) + ${2:-900}))
+  until cozy machine ls --json > "$OUT/others.json" 2> /dev/null && jq -e --arg m "$1" \
+      '[.machines[] | select(.kind == "rental" and .state == "ready" and .name != $m and (.running + .queued) == 0)] | length == 0' "$OUT/others.json" > /dev/null; do
+    [ "$(date +%s)" -lt "$until" ] || fail "another rental of the account stayed idle, which a run naming no machine could take: $(jq -c --arg m "$1" \
+      '[.machines[] | select(.kind == "rental" and .state == "ready" and .name != $m and (.running + .queued) == 0) | .name]' "$OUT/others.json" 2> /dev/null)"
+    sleep 15
+  done
+}
 # step <name> <cozy args…>: one call followed to its end (looked at each second, its output every 30 s); output that
 # stops growing for 15 min cancels it.
 # A run belongs to this session's working-directory project.
