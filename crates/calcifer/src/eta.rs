@@ -383,6 +383,8 @@ pub(crate) struct Clock {
     steps: Option<Stepping>,
     /// The download it waits on before it starts: ms left at its rate.
     fetching_ms: Option<f64>,
+    /// It waits for GPUs another run or its machine's own work holds, and its machine can't say for how long (cl-1247).
+    gpus_untimed: bool,
     /// What was last shown, and when.
     shown: Option<(f64, f64)>,
     /// How far this computer's clock is ahead of its machine's, as the least lag of a report seen.
@@ -444,6 +446,22 @@ impl Clock {
         if self.started.is_none() {
             self.fetching_ms = Some(ms);
         }
+    }
+
+    /// It waits for GPUs, `timed` when its machine can say for how long (cl-1247). Nothing of it moves, so while it can't, its time
+    /// left isn't known: never the 0 s of a first phase it has outrun by waiting. A timed wait is counted as before.
+    pub(crate) fn waits_for_gpus(&mut self, timed: bool) {
+        self.gpus_untimed = !timed;
+    }
+
+    /// Its GPUs are its own, or it waits for them no more.
+    pub(crate) fn has_gpus(&mut self) {
+        self.gpus_untimed = false;
+    }
+
+    /// Whether its time left isn't known only because it waits for GPUs its machine can't time.
+    pub(crate) fn gpus_unknown(&self) -> bool {
+        self.gpus_untimed
     }
 
     /// Its results take `ms` to come here once it ends.
@@ -635,8 +653,13 @@ impl Clock {
         Some((current + (steps.total - steps.completed - 1) as f64 * pace, fit))
     }
 
-    /// What to show at `now`, in seconds: the estimate, eased from what was shown when it moved a lot.
+    /// What to show at `now`, in seconds: the estimate, eased from what was shown when it moved a lot; nothing while it waits for
+    /// GPUs its machine can't time (cl-1247: "17s of 17s" through such a wait). A quote of its machine (`left_there`) is unchanged.
     pub(crate) fn shown(&mut self, now: f64) -> Option<(i64, f64, EtaBasis)> {
+        if self.gpus_untimed {
+            self.shown = None;
+            return None;
+        }
         let estimate = self.estimate(now)?;
         let next = match self.shown {
             None => estimate.left_ms,

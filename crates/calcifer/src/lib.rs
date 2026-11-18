@@ -2883,10 +2883,21 @@ impl Calcifer {
                         batch.logs.push((frame.at_ms, "stage".into(), format!("{reason}, {left}")));
                     }
                     self.waiting(id, format!("{reason}, {left}"));
+                    // A wait its machine can't time leaves its time left not known: never the 0 s of a first phase held (cl-1247).
+                    if let Some(clock) = lock(&self.live).get_mut(id).and_then(|live| live.clock.as_mut()) {
+                        clock.waits_for_gpus(gpu.left_ms > 0);
+                    }
                 }
                 Frame::Gpu(gpu) => {
-                    if gpu.state == "grant" {
-                        lock(&self.live).entry(id.clone()).or_default().width = gpu.width;
+                    {
+                        let mut live = lock(&self.live);
+                        let live = live.entry(id.clone()).or_default();
+                        if gpu.state == "grant" {
+                            live.width = gpu.width;
+                        }
+                        if let Some(clock) = live.clock.as_mut() {
+                            clock.has_gpus();
+                        }
                     }
                     self.not_waiting(id)
                 }
@@ -3564,7 +3575,12 @@ fn time_left(clock: &mut eta::Clock, progress: &mut Progress) {
     let shown = clock.shown(store::now_ms() as f64);
     progress.eta_s = shown.map(|(left, ..)| left);
     progress.eta_confidence = shown.map(|(_, confidence, _)| confidence);
-    progress.eta_basis = Some(shown.map_or(::api::calcifer::EtaBasis::FirstRun, |(.., basis)| basis));
+    // Not known while it waits for GPUs its machine can't time (cl-1247), which is no first run.
+    progress.eta_basis = match shown {
+        Some((.., basis)) => Some(basis),
+        None if clock.gpus_unknown() => None,
+        None => Some(::api::calcifer::EtaBasis::FirstRun),
+    };
 }
 
 /// A picture's size as a run's input asks it: its `megapixels`, else its `width` by its `height`.
