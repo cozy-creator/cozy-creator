@@ -929,11 +929,18 @@ fn unanswered_seal() -> Error {
 
 /// A lock's runs of the project on a `local` that doesn't answer (cl-1064): settled here as canceled. Whether it didn't answer.
 /// Its journal is read only for a project with runs going whose local doesn't answer: a lock whose local answers reads nothing more
-/// than it did, so it never meets a journal busy a moment (43969581564).
-fn settle_unanswered(api: &Arc<Api>, root: &FsPath) -> Result<bool, Error> {
+/// than it did, so it never meets a journal busy a moment (43969581564). Under the lock's own transition (`close`) the journal is
+/// read and written through it: any other read waits behind that transition's exclusive hold, and the lock waited on itself for
+/// `JOURNAL_BUSY` and failed `run_cancel` (cl-1259).
+fn settle_unanswered(api: &Arc<Api>, root: &FsPath, transition: Option<&ProjectTransition>) -> Result<bool, Error> {
     let Some(id) = project_id(root).filter(|_| encrypted(root)) else { return Ok(false) };
     if !api.calcifer.has_runs(&id) || tokio::runtime::Handle::current().block_on(api.machines.answers("local")) {
         return Ok(false);
+    }
+    if let Some(transition) = transition {
+        let store = api.projects.transition_store(api, &id, transition)?;
+        let settled = api.calcifer.cancel_unanswered_sealing(&store, "local").map_err(refused(root, "run_cancel", "the project's work could not be cancelled"))?;
+        return Ok(!settled.is_empty());
     }
     if !journal(|| api.calcifer.unsettled_on(&id, "local")).map_err(refused(root, "run_cancel", "the project's work could not be read"))? {
         return Ok(false);
@@ -974,7 +981,7 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Resul
     vault_operation::revoke(root);
     // A lock never waits on a machine that doesn't answer (cl-1064): the project's runs on local settle here as the lock ends them,
     // and what local ran in its view is owed a clean-up for when it answers.
-    let unanswered = settle_unanswered(api, root)?;
+    let unanswered = settle_unanswered(api, root, Some(transition))?;
     // Existing accepted work may drain while the key is retained, but no new viewing stream can read it.
     forget(api, root, transition)?;
     let sealed = match unanswered {
@@ -1267,7 +1274,7 @@ fn lock_lapsed(api: &Arc<Api>, root: &FsPath, unanswered: bool) {
     }
     // Its runs on a local that doesn't answer settle here, before its gate, as an explicit lock's do (cl-1064): a client following one
     // holds the gate until it settles, and it settles only when the lock gives up on local.
-    if clocked && let Err(failure) = settle_unanswered(api, root) {
+    if clocked && let Err(failure) = settle_unanswered(api, root, None) {
         idle_lock_failed(root, &failure);
         return;
     }
@@ -1344,7 +1351,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
         // An explicit lock ends the project's work first, so nothing goes on billing behind a locked vault.
         ended = end_work(&api, &root)?;
         // Its runs on a local that doesn't answer settle here now (cl-1064), so the lock goes on rather than wait for them.
-        unanswered = settle_unanswered(api, root)?;
+        unanswered = settle_unanswered(api, root, None)?;
         // What the project's runs still owe lands before the machine's side closes, judged by progress (cl-1060).
         (cut, deferred) = drain_saves(api, root, false, || progress.phase("saving its outputs first"))?;
         // A request still holds the project: its view is revoked, and the sweeper locks once it ends.

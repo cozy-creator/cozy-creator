@@ -1961,7 +1961,12 @@ impl Drop for Spool {
         // remove_dir_all never follows a symlink the package planted inside.
         if let Err(error) = fs::remove_dir_all(&self.0) {
             if error.kind() != io::ErrorKind::NotFound {
-                tracing::warn!("spool {}: {error}", self.0.display());
+                // A private project's spool is in its view's machine area, whose path names the project: never in the log (cl-1259).
+                if self.0.components().any(|part| part.as_os_str() == crate::private_io::AREA) {
+                    tracing::warn!("a private run's spool: {error}");
+                } else {
+                    tracing::warn!("spool {}: {error}", self.0.display());
+                }
             }
         }
     }
