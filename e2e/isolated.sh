@@ -3,9 +3,9 @@
 # A suite against its own isolated Hub. Signed in as that Hub's admin, it first publishes there what the suite reads
 # from a Hub, as production holds it. The cli suite's shards read, at the root, from run.sh's --packages checkout,
 # qwen-image-2, minimax-h3, sdxl and birefnet, and a stand-in minimax-h3-tools (hub_away locks it from the
-# root index, hub_dependency calls its echo); then the models their cells download: BiRefNet's weights from the Hugging Face
-# revision production mirrors, and random weights for queued_download's two. macOS and Windows run no models and need no
-# weights: their shards take the packages alone. Imports stages Hub-dependent locks against its own published dependencies.
+# root index, hub_dependency calls its echo), after the models their cells download: BiRefNet's weights from the Hugging Face
+# revision production mirrors, and random weights for queued_download's two; and a 1 MiB stand-in for each other default of the
+# packages (th-412). macOS and Windows run no models and need no weights: their shards take the packages alone. Imports stages Hub-dependent locks against its own published dependencies.
 # Then this computer's cozy is removed, and the suite starts as on a fresh runner, signed out, in
 # this process's place: nothing of this script is left for the suite's own removal of cozy to find.
 set -euo pipefail
@@ -54,6 +54,8 @@ publish() {
     [ -n "${COZY_TEST_SEED_SDK:-}" ] || { echo "no selected SDK reached isolated package seeding" >&2; return 1; }
     uv run -q --no-project "$here/seed_sdk.py" pin --project "$copy" "${cohort_args[@]}" || return 1
   fi
+  # cpu/real.py publishes its packages' tiny builds at their defaults' releases, which a stand-in would take.
+  [ "$suite" = cpu ] || standin_defaults "$1" || return 1
   (cd "$copy" && cozy --json package publish --root -y) > "$seed/publish-${1##*/}.json" 2>&1 \
     || { echo "publishing ${1##*/} at the isolated Hub's root failed: $(tail -c 600 "$seed/publish-${1##*/}.json")" >&2; return 1; }
   if [ "${2:-}" = cohort ]; then
@@ -237,6 +239,24 @@ standin_lora() {
   [ -n "$family" ] || return 0
   cozy --json lora edit "$lora" --family "$family" "$@" > "$seed/edit-${lora##*/}.json" 2>&1 \
     || { echo "naming $lora's family failed: $(tail -c 600 "$seed/edit-${lora##*/}.json")" >&2; return 1; }
+}
+
+# standin_defaults <package dir>: each slot default of its functions, internal and needs-ruled ones too (its interface as cozy
+# describes it, as release-gate/defaults.sh reads it), of which this Hub holds no release, published as 1 MiB of random weights:
+# production holds each public, and this Hub refuses a package whose default isn't (th-412). Every slot is a model's.
+standin_defaults() {
+  local described=$seed/describe-${1##*/}.json defaults r
+  cozy --json --full run "$1" --describe > "$described" 2> "$described.err" \
+    && defaults=$(jq -r '[.interface.entrypoints[].models[]?.default // empty] | unique | join(" ")' "$described") \
+    || { echo "describing ${1##*/} for its defaults failed: $(tail -c 600 "$described") $(tail -c 300 "$described.err")" >&2; return 1; }
+  for r in $defaults; do
+    [ "$(cozy --json model show "$r" 2> /dev/null | jq -r '.error.kind // empty' 2> /dev/null)" = not_found ] || continue
+    [ -f "$seed/standin.safetensors" ] || random_weights "$seed/standin.safetensors" 1 standin
+    mirror "$seed/standin.safetensors" "${r%@*}" bf16 "${r#*@}" https://github.com/cozy-creator/cozy-creator/tree/master/e2e \
+      --source-format as-is > /dev/null || return 1
+    log "published $r, a stand-in for ${1##*/}'s default"
+  done
+  rm -f "$seed/standin.safetensors"
 }
 
 # random_weights <file> <MiB> [part]: one F16 tensor per 64 MiB of random finite values, written as it is made: no chunk repeats.
@@ -452,50 +472,6 @@ if [ -n "$needs" ]; then
   [ -n "$packages" ] || { echo "the isolated Hub's first-party packages come from run.sh's --packages checkout" >&2; exit 2; }
   mkdir -p "$seed/project"
   cd "$seed/project" && cozy --json new --unencrypted . > /dev/null
-  # A stand-in for the root index's minimax-h3-tools, which the packages no longer hold (combined into minimax-h3).
-  tools=$seed/minimax-h3-tools
-  rm -rf "$tools" && cp -r "$here/../release-gate/suites/hub/pkg" "$tools"
-  # Its module by its name, as a package's is: local code imports it (hub_dependency, cl-871). sed without -i: BSD's
-  # (macOS) takes a suffix there.
-  mv "$tools/ci_hub_pkg" "$tools/minimax_h3_tools"
-  for f in pyproject.toml package.toml; do
-    sed -e 's/^name = "ci-hub-pkg"/name = "minimax-h3-tools"/' -e 's/ci_hub_pkg/minimax_h3_tools/g' "$tools/$f" > "$tools/$f.next" && mv "$tools/$f.next" "$tools/$f"
-  done
-  # Weightless (App only) and on a stable floor, as on the RC: published for every platform, so a consumer's universal lock
-  # resolves it on each (hub_away's Windows-only dependency). A cohort pin would lock it to this runner alone.
-  publish "$tools"
-  # run_overhead (cl-1172) runs only echo and the LLM Write tool.
-  [ "$key" = cli:overhead ] || seed_packages qwen-image-2 minimax-h3 sdxl birefnet || exit 1
-  # The LLM Write tool the page's stream and the Responses API run by name (xs-209): qwen3's, or qwen3.5's before it.
-  case $key in
-    cli:runs | cli:overhead | cli:) for p in qwen3 qwen3.5; do [ ! -d "$packages/$p" ] || { publish "$packages/$p" cohort; break; }; done ;;
-  esac
-  [[ " $needs " != *" scratch "* ]] || publish "$here/cli/scratch"
-  # MOSS Image, which takes words only: a mention it can't use is crossed out (cl-944). Qwen Image 1, named apart from Qwen Image 2.1 (cl-1182).
-  # LTX-2.5, whose words are its `prompt`: a tool swap carries them (cl-1200).
-  case $key in cli: | cli:web-suite) publish "$packages/moss-image" cohort && publish "$packages/qwen-image" cohort && publish "$packages/ltx-2.5" cohort ;; esac
-  # Every other first-party package, as production's catalog holds them: what the palette lists (cl-896). Orbit's lock takes minimax-h3
-  # from the root index, under the Hub's own CA, as relay's does. One refused is the cell's to find missing.
-  if [[ " $needs " == *" catalog "* ]]; then
-    trust_hub
-    for dir in "$packages"/*/; do
-      dir=${dir%/}
-      grep -q '^\[project.entry-points."cozy.application"\]' "$dir/pyproject.toml" 2> /dev/null || continue
-      seed_packages "${dir##*/}" || { echo "${dir##*/} could not be seeded from the selected cohort" >&2; exit 1; }
-    done
-  fi
-  case $shard in
-    local-code | hubdown | '')
-      # Its lock reads the Hub's index, under the Hub's own CA: Calcifer's uv takes the system's bundle once restarted.
-      sudo cp "${COZY_TEST_HUB_CA:?}" /usr/local/share/ca-certificates/cozy-test-hub.crt && sudo update-ca-certificates > "$seed/ca.log" 2>&1
-      systemctl --user set-environment SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
-      systemctl --user restart cozy-calcifer > "$seed/calcifer-restart.log" 2>&1 || true
-      relay
-      held
-      final
-      rc_floor
-      oldcall ;;
-  esac
   if [[ " $needs " == *" birefnet "* || " $needs " == *" qwen "* || " $needs " == *" downloads "* || " $needs " == *" loras "* || " $needs " == *" parts "* \
     || " $needs " == *" disk "* || " $needs " == *" room "* || " $needs " == *" lorabase "* || " $needs " == *" ltxlora "* || " $needs " == *" enhancer "* ]]; then
     update=()
@@ -819,6 +795,51 @@ PY
       && log "published liconstudio/licon-msr-v2@0.1.0 (an LTX-2.5 reference LoRA with slot embeddings)" \
       || log "liconstudio/licon-msr-v2: $(tail -c 400 "$seed/upload-licon-msr-v2.json" 2> /dev/null)"
   fi
+  # The packages, once every model release they default to is public: the Hub refuses a package whose default isn't (th-412).
+  # A stand-in for the root index's minimax-h3-tools, which the packages no longer hold (combined into minimax-h3).
+  tools=$seed/minimax-h3-tools
+  rm -rf "$tools" && cp -r "$here/../release-gate/suites/hub/pkg" "$tools"
+  # Its module by its name, as a package's is: local code imports it (hub_dependency, cl-871). sed without -i: BSD's
+  # (macOS) takes a suffix there.
+  mv "$tools/ci_hub_pkg" "$tools/minimax_h3_tools"
+  for f in pyproject.toml package.toml; do
+    sed -e 's/^name = "ci-hub-pkg"/name = "minimax-h3-tools"/' -e 's/ci_hub_pkg/minimax_h3_tools/g' "$tools/$f" > "$tools/$f.next" && mv "$tools/$f.next" "$tools/$f"
+  done
+  # Weightless (App only) and on a stable floor, as on the RC: published for every platform, so a consumer's universal lock
+  # resolves it on each (hub_away's Windows-only dependency). A cohort pin would lock it to this runner alone.
+  publish "$tools"
+  # run_overhead (cl-1172) runs only echo and the LLM Write tool.
+  [ "$key" = cli:overhead ] || seed_packages qwen-image-2 minimax-h3 sdxl birefnet || exit 1
+  # The LLM Write tool the page's stream and the Responses API run by name (xs-209): qwen3's, or qwen3.5's before it.
+  case $key in
+    cli:runs | cli:overhead | cli:) for p in qwen3 qwen3.5; do [ ! -d "$packages/$p" ] || { publish "$packages/$p" cohort; break; }; done ;;
+  esac
+  [[ " $needs " != *" scratch "* ]] || publish "$here/cli/scratch"
+  # MOSS Image, which takes words only: a mention it can't use is crossed out (cl-944). Qwen Image 1, named apart from Qwen Image 2.1 (cl-1182).
+  # LTX-2.5, whose words are its `prompt`: a tool swap carries them (cl-1200).
+  case $key in cli: | cli:web-suite) publish "$packages/moss-image" cohort && publish "$packages/qwen-image" cohort && publish "$packages/ltx-2.5" cohort ;; esac
+  # Every other first-party package, as production's catalog holds them: what the palette lists (cl-896). Orbit's lock takes minimax-h3
+  # from the root index, under the Hub's own CA, as relay's does. One refused is the cell's to find missing.
+  if [[ " $needs " == *" catalog "* ]]; then
+    trust_hub
+    for dir in "$packages"/*/; do
+      dir=${dir%/}
+      grep -q '^\[project.entry-points."cozy.application"\]' "$dir/pyproject.toml" 2> /dev/null || continue
+      seed_packages "${dir##*/}" || { echo "${dir##*/} could not be seeded from the selected cohort" >&2; exit 1; }
+    done
+  fi
+  case $shard in
+    local-code | hubdown | '')
+      # Its lock reads the Hub's index, under the Hub's own CA: Calcifer's uv takes the system's bundle once restarted.
+      sudo cp "${COZY_TEST_HUB_CA:?}" /usr/local/share/ca-certificates/cozy-test-hub.crt && sudo update-ca-certificates > "$seed/ca.log" 2>&1
+      systemctl --user set-environment SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+      systemctl --user restart cozy-calcifer > "$seed/calcifer-restart.log" 2>&1 || true
+      relay
+      held
+      final
+      rc_floor
+      oldcall ;;
+  esac
   cd "$start"
 fi
 
