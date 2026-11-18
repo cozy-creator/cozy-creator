@@ -33,21 +33,27 @@ say "tensorfs ${TENSORFS##*/} · runtime ${RUNTIME##*/} · cozy $(cozy --version
 kernels "$SOURCE/qwen3"
 # The runs' environments, checked on the runner before anything is rented (the pre-flight runs this too): the candidates
 # stand in for each lock by TensorD's rule (fixtures/ggml-decode/stands.py), and the drives' environment, built from their
-# lock with the candidates over it (CPU Torch), imports what their runs import.
-(cd "$FIX/drive" && uv lock -q) || fail "the drives' lock"
-for pair in "drives=$FIX/drive/uv.lock" "qwen3=$SOURCE/qwen3/uv.lock"; do
+# lock with the candidates over it (CPU Torch), imports what their runs import. The lock is a copy's: `cozy run` writes the
+# drives' own from the RC's builds, which uv alone can't find, so this one takes the candidates' folders as find-links. Its
+# TensorFS still comes from PyPI, as cozy's lock's does, so the rule judges the same pair.
+rm -rf "$OUT/drive-check" && cp -r "$FIX/drive" "$OUT/drive-check" && rm -f "$OUT/drive-check/uv.lock"
+(cd "$OUT/drive-check" && uv lock -q --find-links "$(dirname "$RUNTIME")" --find-links "$(dirname "$TENSORFS")") ||
+  fail "the drives' lock"
+for pair in "drives=$OUT/drive-check/uv.lock" "qwen3=$SOURCE/qwen3/uv.lock"; do
   said=$(uv run -q --no-project --with packaging python "$FIX/stands.py" "${pair#*=}" "${pair%%=*}" "$RUNTIME" "$TENSORFS") ||
     fail "$said"
   say "$said"
 done
-uv export -q --frozen --no-hashes --no-emit-project --project "$FIX/drive" -o "$OUT/drive-req.txt" || fail "export the drives' lock"
+uv export -q --frozen --no-hashes --no-emit-project --no-emit-package cozy-runtime --no-emit-package tensorfs \
+  --project "$OUT/drive-check" -o "$OUT/drive-req.txt" || fail "export the drives' lock"
 uv venv -q -p 3.12 "$OUT/drive-env" && uv pip install -q -p "$OUT/drive-env" --torch-backend cpu -r "$OUT/drive-req.txt" &&
-  uv pip install -q -p "$OUT/drive-env" --no-deps "$RUNTIME" "$TENSORFS" "$FIX/drive" || fail "the drives' environment doesn't install"
+  uv pip install -q -p "$OUT/drive-env" --no-deps "$RUNTIME" "$TENSORFS" "$OUT/drive-check" ||
+  fail "the drives' environment doesn't install"
 imported=$("$OUT/drive-env/bin/python" -c 'import ggml_logits, cozy_runtime, tensorfs, transformers; from cozy_runtime import lm
 print("cozy-runtime", cozy_runtime.__version__, "· tensorfs", tensorfs.__version__, "· transformers", transformers.__version__)' 2>&1) ||
   fail "the drives don't import: $(tail -c 400 <<<"$imported")"
 say "drives import on the runner: $imported"
-rm -rf "$OUT/drive-env"
+rm -rf "$OUT/drive-env" "$OUT/drive-check"
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh
 quote "$(param seconds 3600)"
