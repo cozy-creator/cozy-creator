@@ -132,11 +132,11 @@ def main() -> int:
 
     # Nothing renders on another's behalf: a node reading one with no take says to render it first, once, in one line, and renders
     # nothing. A shot (a machine's) and the film (cut here) alike.
-    for name, first, noun in (("shot_1", "mara", "picture"), ("film", "shot_1", "video")):
+    for name, reads, noun in (("shot_1", "mara", "picture"), ("film", "shot_1", "video")):
         alone = cozy("render", name, "--on", "local")
         seen[f"{name}_alone"] = repr(alone)
-        line = f"Render {first} first: it has no {noun} yet"
-        check(f"{name}_says_render_{first}_first", alone.code != 0 and alone.out.count(line) == 1 and line in alone.err
+        line = f"Render {reads} first: it has no {noun} yet"
+        check(f"{name}_says_render_{reads}_first", alone.code != 0 and alone.out.count(line) == 1 and line in alone.err
               and not any(versions(other) for other in ("mara", "shot_1", "shot_2", "film")), alone)
     idle()
 
