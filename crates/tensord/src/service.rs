@@ -293,6 +293,7 @@ impl Service {
         if !crate::private_io::is_private_path(&held.record.python) {
             crate::published::environment::compile_bytecode(&held.record.python);
         }
+        crate::reclaim::environments_changed();
         if let Some(gpu) = self.gpu() {
             gpu.installed(held.clone());
         }
@@ -382,6 +383,8 @@ impl Service {
                     if due {
                         service.reclaim();
                         swept = Some(std::time::Instant::now());
+                        // What no event says (a kernel compiled, an update's Runtime) is walked again each sweep.
+                        crate::reclaim::environments_changed();
                     }
                     if due || asked {
                         service.measure_usage();
@@ -622,6 +625,7 @@ impl Service {
             Ok(swept) => {
                 if !swept.is_empty() {
                     tracing::info!("reclaimed {swept}");
+                    crate::reclaim::environments_changed();
                 }
                 swept
             }

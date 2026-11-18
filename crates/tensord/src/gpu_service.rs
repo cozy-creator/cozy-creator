@@ -2321,6 +2321,20 @@ impl Pool {
     pub(crate) fn downloaded(&self, plan: &Plan) -> bool {
         plan.read().iter().all(|(manifest, components)| crate::access::whole(&self.store, manifest, components))
     }
+    /// `downloaded` for `preparation`, as Status reads it (cl-1202): from the store's files, composing no adapter view. One this
+    /// process doesn't keep is judged by what composes it, its base and its LoRAs.
+    pub(crate) fn downloaded_now(&self, preparation: &Preparation) -> bool {
+        let Ok(plan) = Plan::of(preparation) else { return false };
+        let whole = |id: &str, components: &[String]| crate::access::whole(&self.store, id, components);
+        plan.slots.iter().all(|slot| match (&slot.view, crate::storage::view(&slot.binding.snapshot)) {
+            (Some(recipe), None) => whole(recipe.base.as_str(), slot.binding.components.as_slice())
+                && recipe.selections.iter().all(|chosen| match chosen.source_component.is_empty() {
+                    true => whole(chosen.checkpoint.as_str(), &[]),
+                    false => whole(chosen.checkpoint.as_str(), std::slice::from_ref(&chosen.source_component)),
+                }),
+            _ => whole(slot.binding.snapshot.as_str(), slot.binding.components.as_slice()),
+        })
+    }
     /// The highest level each App of each generation holds now (keyed `(generation,
     /// application)`): an import-only parent, or an executor. A callee's executors in a
     /// caller's environment are its own, never the caller's.

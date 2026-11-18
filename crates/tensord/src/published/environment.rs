@@ -1030,6 +1030,8 @@ pub(crate) fn compile_bytecode(python: &Path) {
                 Err(error) => tracing::warn!("environment bytecode: {error}"),
                 Ok(_) => {}
             }
+            // Its bytecode is the environment's bytes too (`reclaim::measure_usage`).
+            crate::reclaim::environments_changed();
         })
     });
     if let Err(error) = reaped {

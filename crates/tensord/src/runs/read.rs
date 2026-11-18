@@ -654,15 +654,13 @@ impl Runs {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(problem(error)),
             };
-            // `downloaded`: the store still holds every model of a preparation bound to it.
+            // `downloaded`: the store still holds every model of a preparation bound to it, read off its files (cl-1202).
             let bound = self
                 .service
                 .engine
                 .with_journal(|journal| journal.preparations_of(&actor, &installed.alias))
                 .map_err(problem)?;
-            let downloaded = gpu.as_ref().is_some_and(|gpu| {
-                bound.iter().any(|bound| gpu.plan(bound).is_ok_and(|plan| gpu.downloaded(&plan)))
-            });
+            let downloaded = gpu.as_ref().is_some_and(|gpu| bound.iter().any(|bound| gpu.downloaded_now(bound)));
             let base = match downloaded {
                 true => Level::Downloaded,
                 false => Level::Installed,

@@ -451,7 +451,8 @@ pub(crate) fn make_way() {
 /// Run `caller` lines what it needs (`needed`): for a prepare item, what its Status weighs it by (`standing`).
 pub(crate) fn needs(store: &crate::storage::Store, caller: &str, needed: &crate::access::Selected) {
     if guess(caller) {
-        lock(&NEEDS).insert(caller.to_owned(), crate::access::reads(store, needed));
+        let reads = crate::access::reads(store, needed);
+        lock(&NEEDS).insert(caller.to_owned(), reads);
     }
 }
 
@@ -461,7 +462,8 @@ pub(crate) fn needs(store: &crate::storage::Store, caller: &str, needed: &crate:
 /// what it lacks doesn't fit on the disk past its reserve, as a guess never makes room. Empty: it may come again now. One that failed
 /// keeps its `reason`, and its caller counts each try.
 pub(crate) fn standing(store: &crate::storage::Store, busy: bool, mut states: Vec<v1::RunState>) -> Vec<v1::RunState> {
-    let needs = lock(&NEEDS);
+    // Read off the lock: what a list put or a guess's planning takes waits on no disk (cl-1202).
+    let needs = lock(&NEEDS).clone();
     let free = || crate::reclaim::Disk::measure(store.root()).map_or(u64::MAX, |disk| disk.free());
     let lost = |state: &v1::RunState| match state.state.as_str() {
         "succeeded" | "canceled" => true,

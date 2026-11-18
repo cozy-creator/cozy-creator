@@ -62,9 +62,9 @@ pub(crate) fn checkpoint(store: &Store, id: &str) -> io::Result<Checkpoint> {
 pub(crate) fn reads(store: &Store, selected: &[(String, Vec<String>)]) -> Vec<crate::journal::FunctionRead> {
     (selected.iter().filter(|(_, components)| !components.is_empty()))
         .filter_map(|(header, components)| {
-            let checkpoint = checkpoint(store, header).ok()?;
-            let model = Pulled::of(store, checkpoint.id()).ok().flatten()?.model;
-            let bytes = chunks_in(header, components, &checkpoint).iter().map(|o| o.length).sum();
+            let (object, parsed) = storage::structure(store, header).ok()?;
+            let model = Pulled::of(store, &object).ok().flatten()?.model;
+            let bytes = chunks_in(header, &object, components, &parsed).iter().map(|o| o.length).sum();
             Some(crate::journal::FunctionRead { checkpoint: header.clone(), model, components: components.clone(), bytes })
         })
         .collect()
@@ -75,20 +75,25 @@ pub(crate) fn reads(store: &Store, selected: &[(String, Vec<String>)]) -> Vec<cr
 /// other models still hold some of them (two fine-tunes share a base's VAE; 44185604891: pre-a's VAE stayed under pre-b).
 static CHUNKS: Mutex<BTreeMap<(String, Vec<String>), Arc<[ObjectRef]>>> = Mutex::new(BTreeMap::new());
 
-/// The chunks `components` of `header` read, from `checkpoint`, its structure here, and known from now on (`CHUNKS`).
-fn chunks_in(header: &str, components: &[String], checkpoint: &Checkpoint) -> Arc<[ObjectRef]> {
-    let mut known = CHUNKS.lock().unwrap();
+/// The chunks `components` of `header` read, from its structure here (`object` and `parsed`, `storage::structure`), and known from
+/// now on (`CHUNKS`).
+fn chunks_in(header: &str, object: &ObjectRef, components: &[String], parsed: &tensorfs::format::Header) -> Arc<[ObjectRef]> {
     let key = (header.to_owned(), components.to_vec());
-    known.entry(key).or_insert_with(|| storage::chunks(checkpoint, components).into()).clone()
+    if let Some(known) = CHUNKS.lock().unwrap().get(&key) {
+        return known.clone();
+    }
+    let chunks: Arc<[ObjectRef]> = storage::chunks_of(&object.sha256, parsed, components).into();
+    CHUNKS.lock().unwrap().entry(key).or_insert(chunks).clone()
 }
 
 /// The chunks `components` of checkpoint `header` read (all, when none): as its structure here says, else as it said when it was
-/// last here. None: its header isn't here and never was read here.
+/// last here. None: its header isn't here and never was read here. Read off disk alone: a reader opens no checkpoint (cl-1202).
 fn chunks_of(store: &Store, header: &str, components: &[String]) -> Option<Arc<[ObjectRef]>> {
     if let Some(known) = CHUNKS.lock().unwrap().get(&(header.to_owned(), components.to_vec())) {
         return Some(known.clone());
     }
-    Some(chunks_in(header, components, &checkpoint(store, header).ok()?))
+    let (object, parsed) = storage::structure(store, header).ok()?;
+    Some(chunks_in(header, &object, components, &parsed))
 }
 
 /// Of what `read` names, the bytes not here now: of its chunks, those the store doesn't hold, though its header went with its model
@@ -122,7 +127,8 @@ pub(crate) fn parts(store: &Store, read: &crate::journal::FunctionRead) -> Vec<(
 }
 
 /// Whether every chunk of `components` of `header` is here (`downloaded`). Once true it is
-/// remembered (Status asks every second) until the store next evicts, in any process.
+/// remembered (Status asks every second) until the store next evicts, in any process. Judged from the store's files: Status and
+/// the dispatcher ask it, and a reader opens no checkpoint (cl-1202).
 pub(crate) fn whole(store: &Store, header: &str, components: &[String]) -> bool {
     static WHOLE: Mutex<BTreeMap<String, Option<std::time::SystemTime>>> = Mutex::new(BTreeMap::new());
     let key = format!("{}\0{header}\0{components:?}", store.root().display());
@@ -130,8 +136,7 @@ pub(crate) fn whole(store: &Store, header: &str, components: &[String]) -> bool 
     if WHOLE.lock().unwrap().get(&key).is_some_and(|known| *known == evicted) {
         return true;
     }
-    let whole = checkpoint(store, header)
-        .is_ok_and(|ck| chunks_in(header, components, &ck).iter().all(|o| store.holds(o)));
+    let whole = storage::present(store, header) && chunks_of(store, header, components).is_some_and(|chunks| chunks.iter().all(|o| store.holds(o)));
     match whole {
         true => WHOLE.lock().unwrap().insert(key, evicted),
         false => WHOLE.lock().unwrap().remove(&key),
