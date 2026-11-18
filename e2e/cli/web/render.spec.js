@@ -449,7 +449,11 @@ test('render', async ({ page, project, api, cli }) => {
     await page.mouse.move(2, 500);
     await expect.poll(() => settled(project, 'after'), { message: 'after canceled, its take gone' }).toEqual({ takes: 0, making: 0, versions: 0 });
     await softly.poll(() => renderState(page, 'after')).toBeNull();
-    await expect.poll(() => renderState(page, 'slow'), { message: 'slow renders', timeout: 90_000 }).toMatch(/^Drawing/);
+    // What slow says before it draws, kept on the test (a red's report says what its start waited on: 7 s green, 44-49 s red, xs-217).
+    const before = new Set();
+    await expect.poll(async () => { const state = await renderState(page, 'slow'); before.add(state); return state; }, { message: 'slow renders', timeout: 90_000 })
+      .toMatch(/^Drawing/);
+    test.info().annotations.push({ type: 'slow before drawing', description: [...before].join(' | ') });
     // The whole job's meter, at rest, rises as it goes and never goes back. Nothing like slow ran here, so its estimate is its own steps',
     // and those say no time left until its second (43405964751: 99 from then on, "6s / 6s" then "7s / 21s"): the meter isn't pinned by it.
     const rising = async () => {
