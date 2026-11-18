@@ -2129,12 +2129,26 @@ impl Calcifer {
         });
     }
 
+    /// A run held for its machine's update (`update`: its id, and whether the machine runs it) is its user's command (Paul: idle is no
+    /// user command for 15 minutes). The machine's keepalive restarts its idle clock as the run is held, and again once the machine
+    /// runs the update, which then restarts it at its end (TensorD's `update_ended`): the run goes there once it is updated, never
+    /// to a new rental (cl-1236). Once for each, as `kept` remembers.
+    async fn keep_for(&self, machines: &machines::Machines, name: &str, id: &RunId, update: (RunId, bool), kept: &mut Option<(RunId, bool)>) {
+        if kept.as_ref() == Some(&update) {
+            return;
+        }
+        if let Err(e) = Box::pin(machines.keepalive(name)).await {
+            warn!(run = %id, machine = %name, "the keepalive for the run held behind its update: {}", e.message);
+        }
+        *kept = Some(update);
+    }
+
     async fn follow_to_end(self: &Arc<Self>, id: &RunId, wake: &Notify) {
         let mut pause = Pause::default();
         // When its machine began failing it, and how often it has been asked since; an attach that answers doesn't reset it.
         let mut broken: Option<(Instant, u32)> = None;
-        // The update it is held for, and that update's state, when its machine was last told someone waits on it (cl-1236).
-        let mut kept_for: Option<(RunId, RunStatus)> = None;
+        // The update it is held for, and whether its machine runs it, when the machine was last told someone waits on it (cl-1236).
+        let mut kept_for: Option<(RunId, bool)> = None;
         loop {
             let run = match self.with_run_store(id.as_str(), |store| store.run(id.as_str())) {
                 Ok(Some(run)) => run,
@@ -2207,6 +2221,10 @@ impl Calcifer {
                 if self.store.updating(&name).unwrap_or_default() {
                     if self.yield_moves(&name) {
                         continue;
+                    }
+                    if let (Some(machines), Ok(Some(update))) = (self.machines(), self.store.update_going(&name)) {
+                        let taken = update.state == State::Accepted;
+                        self.keep_for(&machines, &name, id, (update.id, taken), &mut kept_for).await;
                     }
                     self.waiting(id, format!("waiting for {name} to finish updating"));
                     tokio::select! {
@@ -2322,17 +2340,8 @@ impl Calcifer {
                 match current {
                     Ok(None) => {}
                     Ok(Some(update)) => {
-                        // A run held for its machine is its user's command (Paul: idle is no user command for 15 minutes). Its
-                        // machine's keepalive restarts the idle clock as it is held, and again once the machine runs the update, which
-                        // then restarts it at its end (TensorD's `update_ended`): the run goes there once it is updated, never to a
-                        // new rental (cl-1236).
-                        let state = (update.id.clone(), update.status);
-                        if kept_for.as_ref() != Some(&state) {
-                            if let Err(e) = Box::pin(machines.keepalive(&name)).await {
-                                warn!(run = %id, machine = %name, "the keepalive for the run held behind its update: {}", e.message);
-                            }
-                            kept_for = Some(state);
-                        }
+                        let taken = update.status == RunStatus::InProgress;
+                        self.keep_for(&machines, &name, id, (update.id.clone(), taken), &mut kept_for).await;
                         self.waiting(id, format!("updating {name} first (run {}, {})", update.name, update.target));
                         tokio::select! {
                             _ = settled.changed() => {}
