@@ -604,17 +604,7 @@ WEB_2D_SOLO=(
 # macOS and Windows (the nightly): the `@engines` cells, WebKit's too on a Mac, layout, and what the old native cells durable, see and undo
 # checked (instant, canvas-nav, delete-undo), and opens on a Mac's real GL (Windows skips it).
 WEB_NATIVE=(
-  opens
-  layout
-  # offline: its step 5 renders on local, which macOS and Windows don't run (lib.sh's LOCAL)
-  canvas-nav
-  instant
-  upload
-  type
-  create
-  delete-undo
-  move
-  open
+  pieces
 )
 web_cells=()
 web_lane() { web_suite "${SHARD#web-}" ${web_cells[@]+"${web_cells[@]}"}; }

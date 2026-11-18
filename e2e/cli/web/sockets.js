@@ -25,6 +25,7 @@ function browserProcesses() {
 /** This browser's sockets to Calcifer's `port`: how many, how many hold bytes the browser hasn't read, and how many of Calcifer's ends of
  *  them hold bytes it hasn't sent; `holding`, the browser's ports of those that hold either. */
 function sockets(port) {
+  if (process.platform === 'darwin') return macSockets(port);
   const mine = browserProcesses();
   const rows = execFileSync('ss', ['-H', '-t', '-n', '-p', 'state', 'established'], { encoding: 'utf8' }).split('\n').flatMap((line) => {
     const parts = line.trim().split(/\s+/);
@@ -34,6 +35,28 @@ function sockets(port) {
     return [{ recv: Number(parts[at - 2]), send: Number(parts[at - 1]), local: parts[at].split(':').pop(), peer: parts[at + 1].split(':').pop(), pids }];
   });
   const ours = rows.filter((row) => row.peer === String(port) && row.pids.some((pid) => mine.has(pid)));
+  const ends = new Set(ours.map((row) => row.local));
+  const unsent = rows.filter((row) => row.local === String(port) && ends.has(row.peer) && row.send > 0);
+  const holding = [...new Set([...ours.filter((row) => row.recv > 0).map((row) => row.local), ...unsent.map((row) => row.peer)])];
+  return { open: ours.length, unread: ours.filter((row) => row.recv > 0).length, unread_kb: Math.round(ours.reduce((kb, row) => kb + row.recv, 0) / 1024),
+    unsent: unsent.length, unsent_kb: Math.round(unsent.reduce((kb, row) => kb + row.send, 0) / 1024), holding };
+}
+
+/** PROBE, never merged (cl-1220's one WebKit run): on a Mac WebKit's networking is an XPC service of launchd's, not under the browser, so
+ *  every socket to Calcifer but this process's own (lsof says whose; netstat, what each holds). */
+function macSockets(port) {
+  const own = new Set();
+  let pid = 0;
+  for (const line of execFileSync('lsof', ['-nP', '-a', '-iTCP', '-sTCP:ESTABLISHED', '-F', 'pn'], { encoding: 'utf8' }).split('\n')) {
+    if (line.startsWith('p')) pid = Number(line.slice(1));
+    else if (line.startsWith('n') && pid === process.pid) own.add(line.slice(1).split('->')[0].split(':').pop());
+  }
+  const rows = execFileSync('netstat', ['-an', '-p', 'tcp'], { encoding: 'utf8' }).split('\n').flatMap((line) => {
+    const parts = line.trim().split(/\s+/);
+    if (!/^tcp/.test(parts[0] ?? '') || parts[5] !== 'ESTABLISHED') return [];
+    return [{ recv: Number(parts[1]), send: Number(parts[2]), local: parts[3].split('.').pop(), peer: parts[4].split('.').pop() }];
+  });
+  const ours = rows.filter((row) => row.peer === String(port) && !own.has(row.local));
   const ends = new Set(ours.map((row) => row.local));
   const unsent = rows.filter((row) => row.local === String(port) && ends.has(row.peer) && row.send > 0);
   const holding = [...new Set([...ours.filter((row) => row.recv > 0).map((row) => row.local), ...unsent.map((row) => row.peer)])];
