@@ -284,8 +284,8 @@ pub(crate) fn present(store: &Store, id: &str) -> bool {
     let Ok(object) = held(store, id) else { return false };
     let Ok(path) = store.path(&object) else { return false };
     let mut first = [0u8];
-    let commit = std::fs::File::open(&path).and_then(|mut file| std::io::Read::read_exact(&mut file, &mut first)).is_ok_and(|()| first[0] == b'{');
-    if !commit {
+    let read = std::fs::File::open(&path).and_then(|mut file| std::io::Read::read_exact(&mut file, &mut first));
+    if read.is_err() || first[0] != b'{' {
         return store.holds(&object);
     }
     let tree = std::fs::read(&path).ok().and_then(|bytes| Tree::from_json(&bytes).ok());

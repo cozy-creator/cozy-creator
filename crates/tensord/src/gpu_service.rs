@@ -353,22 +353,22 @@ impl Plan {
 }
 
 /// The precision lane the header of checkpoint `manifest` holds (`int8`, `bf16`, …); empty when
-/// it holds none of the table's or is not here.
+/// it holds none of the table's or is not here. Read off disk: planning opens no checkpoint (cl-1202).
 fn precision(store: &Store, manifest: &str) -> String {
-    crate::storage::checkpoint(store, manifest).map(|c| crate::precision::Profile::of(c.header()).family).unwrap_or_default()
+    crate::storage::structure(store, manifest).map(|(_, header)| crate::precision::Profile::of(&header).family).unwrap_or_default()
 }
 
-/// `components` of the checkpoint `manifest`: their encoded bytes, and its header's length.
+/// `components` of the checkpoint `manifest`: their encoded bytes, and its header's length. Read off disk (cl-1202).
 fn selected_bytes(store: &Store, manifest: &str, components: &[String]) -> io::Result<(u64, u64)> {
-    let checkpoint = crate::storage::checkpoint(store, manifest)?;
+    let (object, header) = crate::storage::structure(store, manifest)?;
     let mut encoded = 0;
     for name in components {
-        let component = checkpoint.header().component(name).ok_or_else(|| {
+        let component = header.component(name).ok_or_else(|| {
             io::Error::new(io::ErrorKind::PermissionDenied, format!("selected component {name} is absent"))
         })?;
         encoded += (component.tensors.iter()).flat_map(|t| t.locations().into_iter().map(|(_, at)| at.length)).sum::<u64>();
     }
-    Ok((encoded, checkpoint.id().length))
+    Ok((encoded, object.length))
 }
 
 /// A checkpoint a plan reads, and the components of it its slots read.
