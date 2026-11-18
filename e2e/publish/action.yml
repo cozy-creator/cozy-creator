@@ -13,13 +13,28 @@ inputs:
   if-no-files-found:
     description: As upload-artifact takes it
     default: warn
+  text-only:
+    description: "true: only text the scrub cleaned goes up; any other file only when `keep` names it and no scrub rule matches its bytes (scrub.js --text-only). What is left out is listed in scrub-left-out.tsv"
+    default: 'false'
+  keep:
+    description: With text-only, space-separated globs (relative to path) of binaries a cell needs as evidence
+    default: ''
 runs:
   using: composite
   steps:
     - shell: bash
       env:
         OUTPUT: ${{ inputs.path }}
-      run: node "$GITHUB_ACTION_PATH/scrub.js" "$OUTPUT"
+        TEXT_ONLY: ${{ inputs.text-only }}
+        KEEP: ${{ inputs.keep }}
+      run: |
+        args=()
+        if [ "$TEXT_ONLY" = true ]; then
+          args+=(--text-only)
+          read -ra keep <<< "$KEEP"  # globs for scrub.js, never expanded here
+          for k in "${keep[@]}"; do args+=(--keep "$k"); done
+        fi
+        node "$GITHUB_ACTION_PATH/scrub.js" "${args[@]}" "$OUTPUT"
     # A SQLite database a process still holds keeps `-wal` and `-shm` files that vanish when it closes, which failed the zip
     # mid-upload (`ENOENT …/project.db-shm`, 43987026486). Each WAL is folded into its database where it can be; neither goes up.
     - shell: bash

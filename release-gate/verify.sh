@@ -6,25 +6,41 @@
 # Promotions (promote.sh, cozy-promote.yaml, tensorfs-publish.yaml, cozy-runtime runtime-publish.yaml) check what they
 # publish against this output. --release (a Runtime, TensorFS or cozy release; a hand gate's record names its output): every
 # row of escaped.tsv, a bug that once reached users, passed on a SKU it names in one of these gates, or escaped-accepted.tsv
-# accepts it by name for this release: such a row is printed in full, never passed over.
+# accepts it by name for this release: such a row is printed in full, never passed over. --unchanged FILE (with --release):
+# a required row these gates did not run, named in FILE (`<row> <gate run id>`, gate-select's record), stands on that earlier
+# gate's pass when nothing its escaped-paths.tsv line names changed between that gate's set and this one: printed UNCHANGED.
+# --checkouts DIR: where the cozy-runtime and packages checkouts are (default: beside this one), each holding both sets' commits.
 set -euo pipefail
-RELEASE=; [ "${1:-}" != --release ] || { RELEASE=1; shift; }
-[ $# -gt 0 ] || { sed -n '2,9s/^# \{0,1\}//p' "$0" >&2; exit 2; }
-dirs=() tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-for e in "$@"; do
-  if [[ $e =~ ^[0-9]+$ ]]; then
-    # PR artifacts run the PR's code. Their own PASS/hash claims cannot establish that a gate ran.
-    # Branch dispatches remain supported for release candidates; dispatch authority is repository-scoped.
-    gh api "repos/cozy-creator/cozy-creator/actions/runs/$e" | jq -e '
-      .repository.full_name == "cozy-creator/cozy-creator" and
+RELEASE= UNCHANGED= CHECKOUTS=
+while [ $# -gt 0 ]; do
+  case $1 in
+    --release) RELEASE=1; shift ;;
+    --unchanged) UNCHANGED=${2:?--unchanged FILE}; shift 2 ;;
+    --checkouts) CHECKOUTS=${2:?--checkouts DIR}; shift 2 ;;
+    *) break ;;
+  esac
+done
+[ $# -gt 0 ] || { sed -n '2,13s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+[ -z "$UNCHANGED" ] || [ -n "$RELEASE" ] || { echo "--unchanged goes with --release" >&2; exit 2; }
+dirs=() heads=() tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+# trusted <run id>: its commit, when it is a completed, repository-owned dispatch of release-gate.yml; else nothing.
+trusted() {
+  # PR artifacts run the PR's code. Their own PASS/hash claims cannot establish that a gate ran.
+  # Branch dispatches remain supported for release candidates; dispatch authority is repository-scoped.
+  gh api "repos/cozy-creator/cozy-creator/actions/runs/$1" | jq -er '
+    select(.repository.full_name == "cozy-creator/cozy-creator" and
       .head_repository.full_name == "cozy-creator/cozy-creator" and
       .event == "workflow_dispatch" and .path == ".github/workflows/release-gate.yml" and
-      .status == "completed" and (.conclusion == "success" or .conclusion == "failure")
-    ' > /dev/null || { echo "$e: not a completed trusted release-gate dispatch" >&2; exit 1; }
+      .status == "completed" and (.conclusion == "success" or .conclusion == "failure")) | .head_sha'
+}
+for e in "$@"; do
+  if [[ $e =~ ^[0-9]+$ ]]; then
+    h=$(trusted "$e") || { echo "$e: not a completed trusted release-gate dispatch" >&2; exit 1; }
+    heads+=("$h")
     gh run download "$e" -R cozy-creator/cozy-creator -p 'gate-*' -D "$tmp/$e" >&2
     for d in "$tmp/$e"/gate-*; do [ -d "$d" ] && dirs+=("$d"); done
   else
-    dirs+=("$e")
+    dirs+=("$e") heads+=("")
   fi
 done
 [ ${#dirs[@]} -gt 0 ] || { echo "no gate in $*" >&2; exit 1; }
@@ -73,6 +89,78 @@ if [ -n "$RELEASE" ]; then
     done
     WHY="${1#packages=} released and the Runtime the release's"; return 1
   }
+  # unchanged <row> <SKU pattern>: with --unchanged, its line's earlier gate must be trusted and have passed the row on such a
+  # SKU, and `git diff --name-only` from that gate's set to this one must touch none of escaped-paths.tsv's paths for the row,
+  # each repo at its own commit in a checkout here (cozy-creator: this one; cozy-runtime and packages in --checkouts). Prints where
+  # it stands; anything it cannot read or verify says why and fails.
+  # Read only with --unchanged: --release alone needs no checkout.
+  top= && [ -z "$UNCHANGED" ] || top=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
+  CHECKOUTS=${CHECKOUTS:-$top/..}
+  declare -A repo=([cr]=$top [tf]=$top [rg]=$top [rt]=$CHECKOUTS/cozy-runtime [pk]=$CHECKOUTS/packages)
+  paths=$(dirname "$0")/escaped-paths.tsv
+  # at <repo key> <set json> [harness commit]: the set's commit in that repo (a version's +g<sha>, else its release tag).
+  at() {
+    local v
+    case $1 in
+      rg) echo "${3:-}"; return ;;
+      pk) jq -r '.packages_ref // empty' <<< "$2"; return ;;
+      cr) v=$(jq -r '.cozy // empty' <<< "$2") ;;
+      rt) v=$(jq -r '.runtime // empty' <<< "$2") ;;
+      tf) v=$(jq -r '.tensorfs // empty' <<< "$2") ;;
+    esac
+    if [[ $v =~ \+(dev\.)?g([0-9a-f]{7,40}) ]]; then echo "${BASH_REMATCH[2]}"
+    elif [[ $v =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then [ "$1" = tf ] && echo "tensorfs-v$v" || echo "v$v"; fi
+  }
+  unchanged() {
+    local row=$1 skus=$2 run line h d old= sku k p a b c files pats=() spec bs
+    run=$(awk -F'\t' -v r="$row" '$1 == r {print $2; exit}' "$UNCHANGED")
+    [[ $run =~ ^[0-9]+$ ]] || { echo "not in $UNCHANGED"; return 1; }
+    line=$(awk -F'\t' -v r="$row" '$1 == r {print $2; exit}' "$paths" 2>/dev/null)
+    [ -n "$line" ] || { echo "no escaped-paths.tsv line: it can only pass"; return 1; }
+    # Asked of GitHub once a run, however many rows stand on it.
+    h=$(cat "$tmp/u$run.sha" 2>/dev/null) || h=
+    [ -n "$h" ] || { h=$(trusted "$run") && echo "$h" > "$tmp/u$run.sha"; } || { echo "$run: not a completed trusted release-gate dispatch"; return 1; }
+    [ -d "$tmp/u$run" ] || gh run download "$run" -R cozy-creator/cozy-creator -p 'gate-*' -D "$tmp/u$run" >&2 || { echo "$run: no gate artifact"; return 1; }
+    for d in "$tmp/u$run"/gate-*; do
+      sku=$(cat "$d/baseline-key" 2>/dev/null); sku=${sku%-$(paste -sd- "$d/suites" 2>/dev/null)}
+      [[ $sku == @($skus) ]] && grep -qE '^VERDICT (PASS|FAIL .*accepted by the lead)' "$d/verdict.txt" 2>/dev/null &&
+        awk -F'\t' -v r="$row" '$1 == r && $2 == "PASS" {f = 1} END {exit !f}' "$d/expect.tsv" 2>/dev/null &&
+        old=$(jq -S 'del(.label)' "$d/candidate.json") && break
+    done
+    [ -n "$old" ] || { echo "$run passed it on no SKU of $skus"; return 1; }
+    # The line's patterns, macros expanded (never globbed here), then one pathspec list per repo key. A pattern of no known repo
+    # or an unknown macro refuses: a path the check would skip is a path it never compared.
+    expand() {
+      local x m xs
+      read -ra xs <<< "$1"
+      for x in "${xs[@]}"; do
+        if [[ $x == @* ]]; then m=$(awk -F'\t' -v m="$x" '$1 == m {print $2; exit}' "$paths"); expand "${m:-?:unknown-macro-${x#@}}"
+        else echo "$x"; fi
+      done
+    }
+    mapfile -t pats < <(expand "$line")
+    for p in "${pats[@]}"; do
+      a=${p#!}; case ${a%%:*} in cr | tf | rt | pk | rg) ;; *) echo "escaped-paths.tsv: '$p' names no repo"; return 1 ;; esac
+    done
+    for k in cr tf rt pk rg; do
+      spec=()
+      for p in "${pats[@]}"; do
+        a=${p#!}; [ "${a%%:*}" = "$k" ] || continue
+        if [ "$a" != "$p" ]; then spec+=(":(glob,exclude)${a#*:}"); else spec+=(":(glob)${a#*:}"); fi
+      done
+      [ ${#spec[@]} -gt 0 ] || continue
+      a=$(at "$k" "$old" "$h")
+      # Each gate's harness commit, or this set's commit: an empty one (a hand gate's) is an element, and refuses below.
+      if [ "$k" = rg ]; then bs=("${heads[@]}"); else bs=("$(at "$k" "$first")"); fi
+      for b in "${bs[@]}"; do
+        [ -n "$a" ] && [ -n "$b" ] || { echo "$k: no commit for $([ -n "$a" ] && echo this set || echo "$run's set") (a hand gate names no harness commit)"; return 1; }
+        for c in "$a" "$b"; do git -C "${repo[$k]}" rev-parse -q --verify "$c^{commit}" > /dev/null || { echo "$k: $c is not in ${repo[$k]}: fetch it"; return 1; }; done
+        files=$(git -C "${repo[$k]}" diff --name-only "$a" "$b" -- "${spec[@]}") || { echo "$k: git diff ${a:0:10}..${b:0:10} failed"; return 1; }
+        [ -z "$files" ] || { echo "changed since $run ($k ${a:0:10}..${b:0:10}): $(head -3 <<< "$files" | paste -sd' ')"; return 1; }
+      done
+    done
+    echo "since $run on $(jq -r '[.cozy, .runtime, .tensorfs, .packages_ref[0:10]] | join(" · ")' <<< "$old"): none of its paths changed to this set"
+  }
   while IFS=$'\t' read -r row skus issue when; do
     [ -n "$row" ] && [ "${row:0:1}" != "#" ] || continue
     WHY=
@@ -86,7 +174,12 @@ if [ -n "$RELEASE" ]; then
     done
     took=$(awk -F'\t' -v r="$row" -v v="$release" '($1 "") == r && ($5 "") == v && v != "" {print "not run: " $2 "; accepted by " $3 ", " $4 ", for " $5; exit}' \
       "$accepted" 2>/dev/null || true)
+    same=
+    if [ -z "$hit" ] && [ -z "$failed" ] && [ -n "$UNCHANGED" ] && awk -F'\t' -v r="$row" '$1 == r {f = 1} END {exit !f}' "$UNCHANGED"; then
+      same=$(unchanged "$row" "$skus") || { missing="$missing $row($skus, $issue; not unchanged: $same)"; continue; }
+    fi
     if [ -n "$hit" ]; then echo "escaped $row ($issue) PASS on $hit${WHY:+ (required: $WHY)}" >&2
+    elif [ -n "$same" ]; then echo "escaped $row ($issue) UNCHANGED $same" >&2
     elif [ -n "$took" ] && [ -z "$failed" ]; then echo "escaped $row ($issue) ACCEPTED on no SKU ($skus): $took" >&2
     else missing="$missing $row($skus, $issue${WHY:+; $WHY}${took:+${failed:+; accepted as not run, but it failed in $failed}})"; fi
   done < "$(dirname "$0")/escaped.tsv"

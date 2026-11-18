@@ -2,8 +2,12 @@
 // errors list a request's headers, a session's answer holds its token, a sign-in link its code. GitHub masks only its own secrets.
 //   <command> 2>&1 | node scrub.js   line by line, ::error:: lines too. It outlasts a cancel, so a session's trap can still say it ended its pod.
 //   node scrub.js <dir>...           every text file under them, in place: e2e/publish does this before any upload.
+//   node scrub.js --text-only [--keep <glob>]... <dir>...   fail closed: also removes every file that is not UTF-8 text (a NUL in
+//                                    its head, or invalid UTF-8) and every SQLite file (.db, .sqlite, -wal, -shm, -journal),
+//                                    unless it matches a --keep glob (relative to its <dir>) and no rule matches its bytes. Each
+//                                    file left out is a line of <dir>/scrub-left-out.tsv.
 const { closeSync, lstatSync, openSync, readFileSync, readSync, readdirSync, rmSync, writeFileSync } = require('fs');
-const { join } = require('path');
+const { join, relative } = require('path');
 const { createInterface } = require('readline');
 
 const GONE = '[scrubbed]';
@@ -21,6 +25,7 @@ const RULES = [
   // Not a credential, but a person's: whoami's answers and its printed record.
   [/\b(email["']?\s*(?:[:=]\s*)?["']?)[\w.+-]+@[\w.-]+/gi, `$1${GONE}`],
 ];
+const BINARY_RULES = RULES.map(([rule]) => rule).map((rule) => (String(rule).includes('|cap|a)') ? /([#?&](?:code|media|token|cap)=)[^\s"'&<>]{8}/ : rule));
 const scrubbed = (text) => RULES.reduce((said, [rule, instead]) => said.replace(rule, instead), text);
 
 const MOST = 64 << 20;
@@ -28,10 +33,30 @@ const MOST = 64 << 20;
 const gone = (error) => error.code === 'ENOENT';
 // Text only: a binary's own strings aren't anyone's, and rewriting a binary breaks it.
 const binary = (head) => head.includes(0);
+const SQLITE = /(\.db|\.sqlite3?|-wal|-shm|-journal)$/;
+const utf8 = (bytes) => {
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    return true;
+  } catch {
+    return false;
+  }
+};
+const glob = (g) => new RegExp(`^${g.split('**').map((p) => p.split('*').map((q) => q.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*')).join('.*')}$`);
+let textOnly = false;
+const keeps = [];
+const left = [];
+// out: a file the upload must not carry, removed and listed.
+function out(path, rel, size, why) {
+  rmSync(path, { force: true });
+  left.push(`${rel}\t${size}\t${why}`);
+}
 
-function file(path) {
+function file(path, rel) {
   const stat = lstatSync(path, { throwIfNoEntry: false });
   if (!stat) return;
+  const kept = keeps.some((k) => k.test(rel));
+  if (textOnly && SQLITE.test(rel) && !kept) return out(path, rel, stat.size, 'a SQLite file');
   let bytes;
   try {
     if (stat.size > MOST) {
@@ -44,7 +69,8 @@ function file(path) {
       } finally {
         closeSync(fd);
       }
-      if (binary(head.subarray(0, read))) return;
+      if (binary(head.subarray(0, read))) return textOnly ? out(path, rel, stat.size, `not text, over ${MOST} bytes`) : undefined;
+      if (textOnly) return out(path, rel, stat.size, `text over ${MOST} bytes, not scrubbed`);
       rmSync(path, { force: true });
       console.log(`scrub: ${path} (${stat.size} bytes) is text over ${MOST} bytes: left out of the upload`);
       return;
@@ -54,13 +80,22 @@ function file(path) {
     if (gone(error)) return;
     throw error;
   }
-  if (binary(bytes.subarray(0, 8192))) return;
   const text = bytes.toString('latin1');
+  if (binary(bytes.subarray(0, 8192)) || (textOnly && !utf8(bytes))) {
+    if (!textOnly) return;
+    if (!kept) return out(path, rel, stat.size, 'not text');
+    // Named as evidence: it goes up as it is, only when nothing in it looks like what the rules take out. A link's one-letter
+    // `a=` key is left to text: three fixed bytes turn up by chance about once in 10 MB of compressed pixels (a P-H3-Image
+    // PNG did), where every other rule needs five or more.
+    const hit = BINARY_RULES.find((rule) => text.search(rule) !== -1);
+    if (hit) out(path, rel, stat.size, `kept as evidence, but its bytes match ${hit}`);
+    return;
+  }
   const clean = scrubbed(text);
   if (clean !== text) writeFileSync(path, Buffer.from(clean, 'latin1'));
 }
 
-function walk(dir) {
+function walk(dir, root) {
   let entries;
   try {
     entries = readdirSync(dir, { withFileTypes: true });
@@ -70,15 +105,31 @@ function walk(dir) {
   }
   for (const entry of entries) {
     const path = join(dir, entry.name);
-    if (entry.isDirectory()) walk(path);
-    else if (entry.isFile()) file(path);
+    if (entry.isDirectory()) walk(path, root);
+    else if (entry.isFile()) file(path, relative(root, path));
+    // A link (or any other non-file) is never read here, and the upload would follow it: text only leaves it out.
+    else if (textOnly) out(path, relative(root, path), 0, entry.isSymbolicLink() ? 'a link' : 'not a file');
   }
 }
 
-const dirs = process.argv.slice(2);
+const args = process.argv.slice(2);
+const dirs = [];
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === '--text-only') textOnly = true;
+  else if (args[i] === '--keep') keeps.push(glob(args[++i]));
+  else dirs.push(args[i]);
+}
 if (dirs.length) {
   // A suite that never started has nothing here.
-  for (const dir of dirs) if (lstatSync(dir, { throwIfNoEntry: false })?.isDirectory()) walk(dir);
+  for (const dir of dirs) {
+    if (!lstatSync(dir, { throwIfNoEntry: false })?.isDirectory()) continue;
+    left.length = 0;
+    walk(dir, dir);
+    if (textOnly) {
+      writeFileSync(join(dir, 'scrub-left-out.tsv'), `# left out of the upload: not scrubbable text (scrub.js --text-only)\n# path\tbytes\twhy\n${left.map((l) => `${l}\n`).join('')}`);
+      console.log(`scrub: ${left.length} files left out of ${dir} (scrub-left-out.tsv)`);
+    }
+  }
 } else {
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => {});
   createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', (line) => process.stdout.write(`${scrubbed(line)}\n`));

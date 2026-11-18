@@ -575,12 +575,16 @@ jobs:
           [ -d "$OUT" ] || exit 0
           find "$OUT" -name '*.db' -path '*/project/*' -exec python3 -I -c 'import sqlite3, sys; sqlite3.connect(sys.argv[1], timeout=30).execute("PRAGMA wal_checkpoint(TRUNCATE)")' {} \; || true
           rm -rf "$RUNNER_TEMP/gate-upload"; cp -al "$OUT" "$RUNNER_TEMP/gate-upload" || true
-      # Scrubbed first, and nothing goes up if the scrub fails (e2e/publish); SQLite's -shm and -wal stay out there too.
+      # Scrubbed first, and nothing goes up if the scrub fails (e2e/publish). Text only: a binary (project.db, wheels, renders)
+      # carries what the scrub cannot read, so only the references the baseline job publishes and the sealed ComfyUI column
+      # go up, each when no scrub rule matches its bytes; scrub-left-out.tsv lists the rest.
       - if: always()
         uses: ./creator/e2e/publish
         with:
           name: gate-${{ matrix.sku }}-${{ matrix.key }}
           path: ${{ runner.temp }}/gate-upload
+          text-only: 'true'
+          keep: baseline/ref-* comfyui.sealed comfyui.sealed.key
           if-no-files-found: ignore
           retention-days: 30
 

@@ -85,7 +85,12 @@ rental_stop_closes() {
   local p=${1:-vast} m r t0 st seen=() offline= closed=
   [ -s "$RT/pod-ssh" ] || ssh-keygen -q -t ed25519 -N '' -C rentals-stop -f "$RT/pod-ssh"
   # vast without `cpu` now (as suite hub found on 11-10): its cheapest GPUs in turn.
-  local sku
+  local sku cfg=$HOME/.cozy/config.toml had=
+  # The provider is the point (vast stopped hougetsu), and `--provider` is dev-only (cl-844): this home says `dev = true` for
+  # these orders alone, as suite hub's does (hub_dev), and is put back as it was before anything else runs.
+  [ -f "$cfg" ] && had=$(cat "$cfg")
+  # Its own `dev` line out first: a second `dev` key is a TOML error, and cozy would read no config at all.
+  mkdir -p "${cfg%/*}" && { echo 'dev = true'; [ -z "$had" ] || grep -v '^ *dev *=' <<< "$had" || true; } >"$cfg.new" && mv "$cfg.new" "$cfg"
   # An order that is not up in 7 minutes (waiting for capacity at the price it agreed, th-403) is ended, and the next asked.
   for sku in cpu ${RENTALS_GPU_FALLBACK:-rtx-5060-ti rtx-3070 rtx-3060 rtx-4060-ti rtx-3080}; do
     timeout 420 "$CLI" --json machine rent "$sku" --provider "$p" --disk-gb 50 --ssh "$RT/pod-ssh.pub" -y >"$RT/rent.out" 2>&1
@@ -94,6 +99,7 @@ rental_stop_closes() {
     [ -z "$r" ] || "$CLI" machine end "$r" -y >>"$RT/end.out" 2>&1
     log "rental-stop-closes: no $sku up on $p now; the next"
   done
+  if [ -n "$had" ]; then printf '%s\n' "$had" >"$cfg"; else rm -f "$cfg"; fi
   r=$(grep -m1 '"type":"rental.accepted"' "$RT/rent.out" | jq -r '.rental_id // empty' 2>/dev/null)
   m=$(grep -o '"machine":{"name":"[^"]*"' "$RT/rent.out" | head -1 | sed 's/.*"name":"//; s/"$//')
   if [ -z "$m" ] || [ -z "$r" ]; then

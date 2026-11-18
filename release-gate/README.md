@@ -71,10 +71,14 @@ replaces them, and a SKU with none needs `--establish` once.
   -f skus=<sku> -f disk=<GB> -f packages_ref=<packages commit>`, from `master`, `rc/*` or `release/*`. One suite a
   dispatch. `hub=prod` signs in with the CI device key (environment `release-gate`). A PASS becomes the baseline only
   with `publish=true` (off by default), and only a whole suite's: with `only` or `cells` the dispatch is refused before
-  anything rents.
+  anything rents. The gate's log and artifact are scrubbed (`e2e/publish/scrub.js`), and the artifact holds text only: a
+  binary goes up only as a reference the baseline needs (`baseline/ref-*`) or the sealed ComfyUI column, and only when
+  nothing in it matches a scrub rule; what is left out is listed in `scrub-left-out.tsv`.
 - **Promotion:** `verify.sh <run>...` prints the candidate set only when every gate passed on the same set;
   `verify.sh --release` also needs each `escaped.tsv` row passed, or accepted by name for that release in
-  `escaped-accepted.tsv` (printed `ACCEPTED`; never one that ran and failed). `promote.sh <run id>` then hands it to
+  `escaped-accepted.tsv` (printed `ACCEPTED`; never one that ran and failed), or, with `--unchanged FILE`, stands on an earlier
+  gate's pass when `git diff` between the two sets touches none of its `escaped-paths.tsv` paths (printed `UNCHANGED`, never as
+  passed; both sets' commits must be in the checkouts here). `promote.sh <run id>` then hands it to
   users: PyPI, cozy Latest and Homebrew, the packages, the held models, the worker images last.
 
 ## Sessions
