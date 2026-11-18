@@ -1,9 +1,11 @@
-# sound-joins.sh, a --cells hook, proof only (cl-1210; `-f cells=release-gate/sound-joins.sh -f packages_ref=<proof/cl-1210-sound-probe>`):
-# the measurement before a join of a shot's sound is designed. On the packages probe branch (never merged) each segment after the
-# first logs, for its seam, how alike segment k's tail and its own rendering of that carried second are, and what a switch or an
-# equal-power fade of them at the overlap's middle does (`h3 probe seam`); every segment logs how far back from a cut its sound
-# decode changes (`h3 probe reach`). Three shots: incremental-video's lighthouse at its two seeds (44275320398, ambient;
-# 44284366904, a hard cut at 8.0 s) and a man speaking across a seam. sound-joins.json holds every line, by shot.
+# sound-joins.sh, a --cells hook, proof only (cl-1210; `-f cells=release-gate/sound-joins.sh -f packages_ref=<proof/cl-1210-sound-join>`):
+# the deciding measurement of the sound join (design/incremental-video.md "Sound joins"). On the packages probe branch (never merged)
+# each segment after the first decodes its sound on from its predecessor's real tail, its ticks at the nearest tick against the
+# shot's clock, and the shot switches to it inside the window both renderings are interior in. Per seam it logs the displacement
+# (`h3 join shift`), the two renderings over that window (`h3 join window`), the steps at the switch, across the latent seam and at
+# today's butt (`h3 join steps`); per take its sound against its pictures, to the sample (`h3 join take`). The same three shots as
+# 44302120600: incremental-video's lighthouse at its two seeds (ambient; a hard cut at 8.0 s) and a man speaking across a seam.
+# sound-joins.json holds every line by shot and seam; each take is exported for the review project.
 ONLY=  # the suites' --only chose their cells, not these
 SJ_LIGHT=(summary="A lighthouse on a rocky coast at dusk, the sea rising." soundscape="Waves breaking, wind, gulls." turbo:=true
   "beats:=$(jq -cn '[{duration: 8, description: "[Shot 1] The beam sweeps over the dark sea as waves roll in and break on the rocks."},
@@ -19,10 +21,11 @@ if [ -z "$PKGS" ]; then
 fi
 cell sj-ambient "$(pkg minimax-h3 generate)" "${SJ_LIGHT[@]}" seed:=2046869431
 cell sj-cut "$(pkg minimax-h3 generate)" "${SJ_LIGHT[@]}" seed:=1337077874
-cell sj-speech "$(pkg minimax-h3 generate)" "${SJ_SPEECH[@]}" seed:=$((R + 1211))
+cell sj-speech "$(pkg minimax-h3 generate)" "${SJ_SPEECH[@]}" seed:=345258536  # 44302120600's
 # Everything is in the runs' logs: the pod ends here.
 end_it
+for sj in sj-ambient sj-cut sj-speech; do run_outputs "$OUT" "$sj" > "$sj.outputs" 2>> sound-joins.err || true; done
 python3 -I "$HERE/sound-joins.py" "$OUT" sj-ambient sj-cut sj-speech > sound-joins.json 2> sound-joins.err
 log "sound-joins: $(jq -c . sound-joins.json 2> /dev/null || tail -c 300 sound-joins.err)"
-expect sound-joins "$(jq -r 'if ([.[] | .seams | length] | add) >= 5 and ([.[] | .reach | length] | add) >= 8 then "PASS" else "FAIL" end' sound-joins.json 2> /dev/null || echo FAIL)" \
-  "$(jq -c 'map_values({status, seams: (.seams | length), reach: (.reach | length)})' sound-joins.json 2> /dev/null)"
+expect sound-joins "$(jq -r 'if ([.[] | .seams | length] | add) >= 5 and all(.[]; .take.diff != null) then "PASS" else "FAIL" end' sound-joins.json 2> /dev/null || echo FAIL)" \
+  "$(jq -c 'map_values({status, seams: (.seams | length), take})' sound-joins.json 2> /dev/null)"
