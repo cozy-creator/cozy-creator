@@ -101,6 +101,8 @@ async function closed(page) {
 /** Every frame from `act` until `done`, sampled in the page (SAMPLE); with `turn`, `done` waits for the turn first. */
 async function watch(page, act, done, turn = null) {
   await page.evaluate(SAMPLE, { names: WATCHED, turn });
+  // A frame from before the action, so a move is judged on the frames either side of it (cl-1272).
+  await page.waitForFunction(() => window.__fade.frames.length > 0);
   await act();
   if (turn) await expect.poll(() => page.evaluate(() => window.__fade.turned), { message: 'the move under way' }).not.toBeNull();
   await done();
@@ -210,6 +212,7 @@ test('focus-fade', { tag: '@solo' }, async ({ page, project, api }, testInfo) =>
       if (seen.kind === 'void') voids[way].push(seen.gap);
       if (seen.kind !== 'void' || attempt === TRIES) {
         record.voids = voids;
+        save();
         testInfo.annotations.push({ type: `void ${way}`, description: `${voids[way].length} of ${attempt}${voids[way].length ? ` (no frame for ${voids[way].join(', ')} ms)` : ''}` });
         return { frames, seen };
       }
