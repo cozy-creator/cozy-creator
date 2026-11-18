@@ -170,7 +170,17 @@ if [ "$RENTING" != true ]; then
     exit 2
   fi
   say "dry: run $WAITING_RUN stands in line: \"$said\""
-  for page in "${PAGE_NAMES[@]}"; do rows "$page" WAIT_BOX=waiting WAIT_RUN="$WAITING_RUN" WAIT_MACHINE=local; done
+  for page in "${PAGE_NAMES[@]}"; do
+    rows "$page" WAIT_BOX=waiting WAIT_RUN="$WAITING_RUN" WAIT_MACHINE=local
+    # Its reason cleared while it still stands in line (cl-1270: TensorD drops it as the run's preparation binds): a page read since
+    # could tell one story for want of it, so no verdict stands. Neither pass nor fail.
+    if grep '^{' "$OUT/dry-waiting-watch.ndjson" 2> /dev/null | jq -se '[.[] | select(.type == "run.waiting")] | last | (.reason // "") == ""' > /dev/null 2>&1 \
+      && [ -n "$(watched "$WAITING_RUN" | jq -r 'select(.queue_position != null) | .number // empty')" ]; then
+      say "RESULT INCONCLUSIVE: run $WAITING_RUN's reason was cleared while it still stood in line (cl-1270), by page $page's read: neither a pass nor a fail"
+      ended dry
+      exit 2
+    fi
+  done
   ended dry
   exit "$RC"
 fi
