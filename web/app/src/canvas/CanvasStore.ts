@@ -15,6 +15,7 @@ import type {
   BoxEstimate,
   ErrorBody,
   HistoryStepped,
+  Job,
   MainFile,
   Pickup,
   RentFor,
@@ -247,6 +248,11 @@ const samePlace = (a: { x: number; y: number }, b: { x: number; y: number }) => 
 /** What an Undo or Redo brought back without its files, as Calcifer says it (cl-919). */
 const lostSaid = (lost: string[]) => lost.map((said) => `${said}.`).join(" ")
 
+/** What a job that ended with no run of its own on one of its box's takes says came of it (a cut, which no run makes either, is timed by
+ *  its seconds; these say what they are by themselves): as `cozy render` reads it. */
+const SAYS_ITSELF = ["it stands", "nothing to do", "stays pinned"]
+const stood = (job: Job) => job.state === "done" && job.run == null && job.number != null && job.seconds == null && Boolean(job.why) && !SAYS_ITSELF.includes(job.why!)
+
 /** What the state says of one element: an asset, or an entity. */
 type Placed = Pick<ElementView, "name" | "asset" | "entity" | "linked" | "queued" | "noRoom" | "warnings">
 
@@ -300,6 +306,8 @@ export class CanvasStore {
   /** The failure said of each box since it was last asked to render: said once, though a read before its render's answer and one after both
    *  find it (a render that fails before it is sent, as one whose input has no take does, cl-1192). */
   private told = new Map<string, string>()
+  /** Each job that ended on a take its box already had, said once; those on the board when this page first read it never (cl-1271). */
+  private stoodSaid = new Set<string>()
   private stepped = 0
   /** The tools known so far, by id. */
   readonly tools = signal<Map<string, Tool>>(new Map())
@@ -953,6 +961,13 @@ export class CanvasStore {
       if (this.unsentSaid.has(failure.message)) continue
       this.unsentSaid.add(failure.message)
       say(failure.message, new ApiError(0, failure))
+    }
+    // A render that made nothing new: its tool takes no seed, or its box names one, and a take already holds its inputs, so that take
+    // stands and no run went (Calcifer's `Project::stands`). Said once in a note as it ends, as a failed try is: never silence (cl-1271).
+    for (const job of state.board?.jobs ?? []) {
+      if (!stood(job) || this.stoodSaid.has(job.id)) continue
+      this.stoodSaid.add(job.id)
+      if (this.seen) say(`${job.asset}: nothing new to render: ${job.why}`)
     }
     // Queued: its turn not come, as the walk's queue says, or a take of it not sent yet, as its row lists it (cl-945).
     const queued = new Set([...(state.queue ?? []).filter((item) => !item.running).map((item) => item.name), ...state.assets.filter((asset) => asset.takes?.some((take) => take.queued)).map((asset) => asset.name)])

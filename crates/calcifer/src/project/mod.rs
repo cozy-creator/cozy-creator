@@ -5766,10 +5766,11 @@ impl Walk {
             let seeded = !fixed && maker.accepts.contains("seed");
             if !seeded && pickup.is_none() && (holds.is_some() || going) {
                 let stands = holds.map_or_else(|| "one is already being made".to_owned(), |number| format!("{noun} {number} stays"));
-                let why = if fixed { "uses a fixed seed" } else { "takes no seed" };
+                // A fixed seed is the box's (or its tool's), never the package's.
+                let why = if fixed { "its seed is fixed".to_owned() } else { format!("{} takes no seed", package.name) };
                 match holds {
-                    Some(number) => self.stands(&name, noun, number, format!("{} {why}, so the same inputs always give the same result", package.name)),
-                    None => self.say(Told::Said { message: format!("{name}: {} {why}, so the same inputs always give the same result, and {stands}.", package.name), name: Some(name.clone()) }),
+                    Some(number) => self.stands(&name, noun, number, format!("{why}, so the same inputs always give the same result")),
+                    None => self.say(Told::Said { message: format!("{name}: {why}, so the same inputs always give the same result, and {stands}."), name: Some(name.clone()) }),
                 }
                 return self.folder().update_walk(|walk| settle(&mut walk.walk));
             }
