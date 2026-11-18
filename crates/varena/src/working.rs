@@ -18,6 +18,7 @@ mod cache;
 pub mod checks;
 mod observer;
 mod escape;
+mod var030;
 pub use escape::{EscapeRecord, Verdict, escapes_take, pass_mark, set_site, site_id};
 pub use observer::{WorkingBlock, WorkingObserver, WorkingSegment, WorkingSnapshot, observe_working, working_snapshot};
 pub use cache::{Cache, CacheStats};
@@ -1634,6 +1635,12 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
         state.refusal = Some(Refusal::read(owner, &state, bytes, true));
         state.escapes.refused(owner.owned().saturating_add(bytes), escape::room_held(owner));
         split::refused(&mut state, bytes, stream);
+        // PROOF ONLY (var-030; never merge)
+        let lines = var030::dump(owner, &state, bytes, class, exact, stream, looping);
+        drop(state);
+        for line in lines {
+            eprintln!("{line}");
+        }
     }
     result
 }

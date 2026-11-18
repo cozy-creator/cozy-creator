@@ -123,6 +123,31 @@ const ORDER: [Step; STEPS] = [
 
 static HOST_LOCK: OnceLock<fn() -> bool> = OnceLock::new();
 
+// PROOF ONLY (var-030; never merge): the steps this thread's reclaim ran since its last `acquire`
+// began, as (step, want, released, evicted, ns, progress); 250 is the stop of fills ahead, 251 a
+// refused try (want, need, physical). `working::var030` prints them beside a refusal.
+pub(crate) type Var030 = (u8, usize, usize, usize, u64, bool);
+thread_local! {
+    static VAR030: std::cell::RefCell<Vec<Var030>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn var030_note(row: Var030) {
+    VAR030.with(|log| {
+        let mut log = log.borrow_mut();
+        if log.len() < 4000 {
+            log.push(row);
+        }
+    });
+}
+
+fn var030_clear() {
+    VAR030.with(|log| log.borrow_mut().clear());
+}
+
+pub(crate) fn var030_take() -> Vec<Var030> {
+    VAR030.with(|log| std::mem::take(&mut *log.borrow_mut()))
+}
+
 /// A host runtime's "does this thread hold your global lock" (the GIL). Owner callbacks need
 /// that lock, so an allocation holding it fails fast rather than waiting for them.
 pub fn set_host_lock_probe(probe: fn() -> bool) {
@@ -172,12 +197,22 @@ impl<'a> Sequence<'a> {
         if self.wait != Wait::No && !std::mem::replace(&mut self.ahead_stopped, true)
             && crate::source::stop_and_wait(self.gpu)
         {
+            var030_note((250, want, 0, 0, 0, true));
             return Ok(true);
         }
         while let Some(step) = ORDER.get(self.step).copied() {
             let (index, started) = (self.step, Instant::now());
+            let (released, evicted) = (self.released, self.evicted);
             let done = self.run(step, want, physical);
             self.gpu.driver().note_reclaim(index, started.elapsed());
+            var030_note((
+                index as u8,
+                want,
+                self.released.saturating_sub(released),
+                self.evicted.saturating_sub(evicted),
+                started.elapsed().as_nanos() as u64,
+                matches!(done, Ok(true)),
+            ));
             if done? {
                 return Ok(true);
             }
@@ -367,6 +402,7 @@ pub(crate) fn acquire<T>(
     let mut sequence = Sequence::new(device, usize::MAX, wait, protect, ReclaimReason::Allocator)?;
     let mut floor = 2usize << 20;
     let mut waiting: Option<Instant> = None;
+    var030_clear();
     loop {
         let failure = match try_map() {
             Ok(value) => return Ok(value),
@@ -395,6 +431,7 @@ pub(crate) fn acquire<T>(
         sequence.released = 0;
         let physical = !sequence.gpu.capped() || failure.physical_bytes().is_some()
             || sequence.gpu.peers_can_lift(want);
+        var030_note((251, want, need, 0, 0, physical));
         if !sequence.advance(want, physical)? {
             // Nothing of ours is left to give. What came onto the card outside this process since
             // its quietest sample (a game's, a peer's) may go again: wait for it, and once the card
