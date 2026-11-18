@@ -416,8 +416,12 @@ test('walkthrough', async ({ context, page, project, api, cli, signIn, newContex
         await canvas();
         await fit(page).catch(() => {});
       });
-      const times = [];
-      for (const name of boxes) {
+      // Only with this project's renders going to that machine alone: unplaced, a Render may land on another session's rental.
+      const chosen = (await api.get(`/v1/projects/${id}`).catch(() => ({}))).machines ?? [];
+      const preferred = chosen.length === 1 && chosen[0] === machine;
+      const times = [`the project's machines before Render: ${JSON.stringify(chosen)}`];
+      writeFileSync(join(DIR, 'lora-render-times.txt'), `${times.join('\n')}\n`);
+      for (const name of preferred ? boxes : []) {
         await step(page, `${name}: Render, to its take`, async () => {
           const r = await focus(page, name);
           await page.waitForTimeout(800);
