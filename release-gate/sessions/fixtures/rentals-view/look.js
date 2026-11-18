@@ -1,4 +1,4 @@
-// rentals-view.sh's browser (cl-1193): the page as Paul reads a rental another computer ordered, on this runner's Calcifer: the tabs top
+// one-pool.sh's browser (cl-1193, cl-1224): the page as Paul reads a rental another computer ordered, on this runner's Calcifer: the tabs top
 // right and that machine's activity under its tab, Machines, and the machine, each at 1440x900 and 1920x1080.
 //   node look.js <the project's page, from `cozy --json open`> <the machine> <phase>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: Google Chrome; $SHOT: where its screenshots go; $SIZES: the viewports. Prints what it read as JSON; exits 1

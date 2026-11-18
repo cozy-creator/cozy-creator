@@ -81,7 +81,6 @@ jobs:
             release-gate/suites/bench/vram.py
             release-gate/suites/bench/fixtures
             release-gate/suites/tensord
-            release-gate/suites/disk
             release-gate/suites/progress
             release-gate/runs.py
             e2e/cli/stages.py

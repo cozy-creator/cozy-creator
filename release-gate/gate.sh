@@ -11,7 +11,7 @@
 # --skip-unchanged: a cell whose last PASS on <SKU> in the benchmark ledger asked the same (ledger.py ask: its arguments, files
 # by content) of the same cozy, Runtime, TensorFS, attention table, held models and package code is not run; the log and the
 # verdict name the row it stands on (ledger.py skip; tracker design/benchmark-ledger.md §4). It pins the scenario, seeds and
-# reference picture a gate otherwise draws. The kernels, gemm and execution suites always run.
+# reference picture a gate otherwise draws. The kernels and execution suites always run.
 # --hub: in CI, the Hub this gate rents on (e2e/test-hub.sh require_ci_rental_hub): prod, tensorhub.com, or a verified isolated one.
 # --on runs on that machine as it is (a dev proof on `local`): no rental, no --before, nothing ended.
 # --group: suite bench's group (suites/bench/skus) when it is not <SKU>x<GPUS>: two pods of one SKU split its cells.
@@ -380,7 +380,7 @@ cell() {
   [ -z "$issue" ] || { log "$name: pending fix $issue, not run on $SKU"; return 0; }
   for s in "$@"; do case $s in caption=*) caption=${s#caption=} captioned=1 ;; *) inputs+=("$s") ;; esac; done
   asked=$(python3 -I "$HERE/ledger.py" ask ${STOP:+--stop "$STOP"} --harness "${HARNESS:-}" "$target" "${inputs[@]}")
-  if [ -n "$SKIP_UNCHANGED" ] && [ -z "${REPLAY:-}" ] && [[ " kernels gemm execution " != *" ${SUITE:-} "* ]]; then
+  if [ -n "$SKIP_UNCHANGED" ] && [ -z "${REPLAY:-}" ] && [[ " kernels execution " != *" ${SUITE:-} "* ]]; then
     said=$(python3 -I "$HERE/ledger.py" skip "$OUT" ledger-recorded.jsonl "$name" "$target" "$asked" ${PKGS:+--packages "$PKGS"}) && s=1 || s=
     log "$said"
     if [ -n "$s" ]; then
@@ -439,7 +439,6 @@ output() { run_output "$OUT" "$1" "$2"; }
 # box <name> <file> <description>: the file as a described box of the gate's project (run_box), its mention; nothing without a file.
 box() { local b; [ -f "$2" ] && b=$(run_box "$@" 2>> box.err) && printf '%s\tsha256:%s\n' "$b" "$(sha256sum < "$2" | cut -d' ' -f1)" >> boxes.tsv && echo "<$b>"; }
 . "$HERE/products.sh"
-. "$HERE/programs.sh"
 log "gate on $SKU (suites ${SUITES//,/ }): scenario $NAME, seeds from $R, candidate: ${CAND[*]:-released}${PKGS:+ packages $PKGS}${MODELS:+ models $MODELS}, cli: $CLI"
 [ "$HOST" = 1 ] || log "host $HOST of $HOSTS: $(cat slow-*/host-slow | paste -sd';')"
 [ -z "$ON" ] || { M=$ON; BEFORE=(); }
@@ -511,19 +510,15 @@ PY
 # `rental`, which end_it and the workflow's cleanup end. An order waiting for capacity has it long before its machine has a name (cl-979).
 accepted() { RID=$(grep -m1 '"type":"rental.accepted"' rent.out 2>/dev/null | jq -r '.rental_id // empty' 2>/dev/null); [ -z "$RID" ] || echo "$RID" > rental; }
 if [ -z "$ON" ]; then
-  # Suite tensorfs's `kill` case kills the rental's TensorD over SSH, suite tensord measures the pod's link over it, suite
-  # varena's faults run there (faults.sh), suite bench holds the host's RAM there (pod.sh), and suite attention-corpus fetches
-  # its captures over it, suite attention pushes a --corpus to the pod over it, and suite execution's library programs run
-  # there (programs.sh), and suite slow moves the Runtime's kernels aside and gives the machine a hot host's GPU readings there
-  # (cl-913), suites graphs and varena's differential make the pod a dev machine there (`dev = true`: replays audited,
-  # the differential arms on), and an A/B hook
-  # (*-ab.sh) and suite multi-gpu's 1-against-2 pair clear derived state there (machines.sh `pod_derived`), with this computer's
-  # key, or a new one on a runner. An --only without them rents no SSH.
+  # Suite bench holds the host's RAM over SSH (pod.sh), suite attention-corpus fetches its captures over it, suite attention
+  # pushes a --corpus to the pod over it, suites graphs and varena's differential make the pod a dev machine there
+  # (`dev = true`: replays audited, the differential arms on), and an A/B hook (*-ab.sh) and suite multi-gpu's 1-against-2
+  # pair clear derived state there (machines.sh `pod_derived`), with this computer's key, or a new one on a runner. An
+  # --only without them rents no SSH.
   SSH=
-  if [[ -n $CORPUS && ,$SUITES, == *,attention,* ]] || [[ ,$SUITES, == *,tensord,* || ,$SUITES, == *,bench,* || ,$SUITES, == *,attention-corpus,* || ,$SUITES, == *,multi-gpu,* ]] || { [[ ,$SUITES, == *,tensorfs,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,kill,* ]]; }; } ||
-     { [[ ,$SUITES, == *,varena,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,faults,* || $ONLY == *,public,* || $ONLY == *,core,* || $ONLY == *,offload,* || $ONLY == *,differential,* || $ONLY == *,diff-* ]]; }; } ||
-     { [[ ,$SUITES, == *,execution,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,tensorfs,* ]]; }; } || [[ ,$SUITES, == *,slow,* || ,$SUITES, == *,graphs,* ]] ||
-     [[ " ${EXTRA[*]:-} " == *-ab.sh* ]]; then
+  if [[ -n $CORPUS && ,$SUITES, == *,attention,* ]] || [[ ,$SUITES, == *,bench,* || ,$SUITES, == *,attention-corpus,* || ,$SUITES, == *,multi-gpu,* ]] ||
+     { [[ ,$SUITES, == *,varena,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,differential,* || $ONLY == *,diff-* ]]; }; } ||
+     [[ ,$SUITES, == *,graphs,* ]] || [[ " ${EXTRA[*]:-} " == *-ab.sh* ]]; then
     SSH=1; [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
   fi
   # Followed in the background: its rental id is recorded once its Hub accepts the order, so a gate cancelled before its

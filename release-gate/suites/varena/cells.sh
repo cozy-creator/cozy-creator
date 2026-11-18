@@ -1,32 +1,15 @@
-# Suite `varena` (gate.sh --suite varena): the memory manager through its paces on three representative models, SDXL
-# (small), Klein (mid) and H3 (large, 5 s), on the architectures in ./skus. Not every package: the runtime and
-# packages suites hold those. Sourced in gate.sh's shell: `cell`, `pkg`, `log`, $CLI, $M, $R, $REF, $SKU, $HERE and
-# the scenario's $CHAR $MOTION $OBJECT $SCENE. Every request has its own prompt and seed.
+# Suite `varena` (gate.sh --suite varena): the memory manager's hardest cases on the cards in ./skus. Sourced in gate.sh's
+# shell: `cell`, `pkg`, `log`, $CLI, $M, $R, $REF, $SKU, $HERE and the scenario's $CHAR $MOTION $OBJECT $SCENE. Every request
+# has its own prompt and seed.
 #
-#   ceiling          this machine's pinned host-to-device and cold disk-read bandwidth (ceiling.py)
-#   cold-*           each model loaded from disk into a fresh process
-#   warm-sdxl        the next call: a graph must serve it (check.py)
-#   co-*             all three again on one card: what does not fit is evicted and refilled
-#   reload-*         after an unload (a restart ends every executor), each model back from page cache or disk
-#   anima-graphs-*   (> 8 GB card) Anima four times: the fourth replays the text encoder an earlier call recorded (check.py)
-#   sizes-sdxl-*     (> 8 GB card) SDXL at sizes A, B, C, C, D, D in a fresh executor: the second D replays (check.py)
-#   s8-* s6-* s3-*   under 8, 6 and 3 GiB software caps; at 6 GiB SDXL and Klein alternate three times, then Anima's
-#                    four calls again. SDXL and Klein under 6 and 3 GiB stop after 3 steps (gate.sh STOP, xs-208): a cap's
-#                    fit, splits and alternation show by then. Graph cells (anima-graphs, sizes-sdxl) run whole: their
-#                    capture share follows the request's length
-#   (≤ 8 GB card)    cold, co and reload only: the driver's own out-of-memory paths (a capped card never fills)
+#   cold-h3          H3 (5 s, with a character reference) loaded from disk into a fresh process
+#   co-*             SDXL and Klein beside it on one card, then H3 again: what does not fit is evicted and refilled
 #   h3-8gb           (≤ 8 GB card) H3 Turbo 15 s, the 8 GB tier's product shape
-#   host-*           on a CPU rental, under its cgroup's memory.max (host-cap.py): pages must spill to disk
-#   core-*           (every GPU card, last) the memory authority's rules, one fresh process per mode (programs/); the
-#                    rules only the Runtime's own varena adapter reaches, one fresh process per case (drive/, built-ins)
-#   offload-*        vt.offload's promises, and SDXL through it beside stock Torch (programs/, --env diffusers); inside
-#                    an executor (drive/, a built-in)
-#   public-*         C, Rust and Python clients on one core; sizing and Region priority (public-api/, a program)
-#   fault-*          deliberate faults: correct bytes or a typed error, the GPU recovered, no hang, no Xid (faults.sh)
-#   diff-*           real models repeat byte for byte, under a cap and with memory taken and perturbed (differential/cell.sh)
+#   diff-sdxl-*      SDXL repeats byte for byte: warm, with memory unmapped and perturbed, under a 6 GiB cap, with a kept
+#                    graph's weights gone (refill) and with no room for them (noroom), and with graphs off (differential/cell.sh)
 #
-# check.py judges caps, host RAM, alternation and load/refill bandwidth as a share of `ceiling`; analyze.py, time
-# and peak VRAM against the last pass. A cell named in known-failing.json's `cells` for this SKU or "*" is skipped.
+# check.py judges each H3 video and backing left without a page; analyze.py, time and peak VRAM against the last pass. A
+# cell named in known-failing.json's `cells` for this SKU or "*" is skipped.
 V=$HERE/suites/varena
 parked() {
   python3 -c 'import json, sys
@@ -51,87 +34,15 @@ SDXL=$(pkg sdxl generate) KLEIN=$(pkg flux.3-klein generate_turbo) H3=$(pkg mini
 # One character picture, as a project sends it: no model but H3's.
 H3REF="[{\"name\": \"Lead\", \"kind\": \"character\", \"image\": \"$REF\"}]"
 h3() { vcell "$1" "$H3" references:="$H3REF" prompt="<Lead> $MOTION $4" seed:=$((R + $2)) duration_s:="$3"; }
-ln -sfn "$V/ceiling.py" ceiling.py; ln -sfn "$V/host-cap.py" host-cap.py
-# After every model cell, as a fault may leave the card unusable. A restart first: no executor stays on the card.
-authority() {
-  local mode i=0 rule
-  cap off
-  # The memory authority's rules: a program on the rental over its public API, not a package (programs.sh, xs-174).
-  programs core "$V/programs" varena_core.py
-  # The rules only the Runtime's own varena adapter reaches (weights Regions with staging pages and a derive, phased
-  # Plans, cache owners, capture guards) and vt.offload inside an executor: Runtime built-ins (`bench.varena_core`,
-  # `bench.offload_in_executor`) that drive/ calls (xs-174).
-  for rule in abandoned-fill pending-working-before-weights split-waits-and-caps fill-keeps-phase-pages eviction-order \
-      prefetch-rule fill-paths-agree owner-wait-physical owner-wait-capped short-holders-wait capture-refuses-a-fill; do
-    vcell "core-$rule" "$V/drive/core" case="$rule" --gpus=1
-  done
-  vcell offload-in-executor "$V/drive/offload_in_executor" --gpus=1
-  # vt.offload's promises and SDXL through it beside stock Torch: programs over the public API, in the Diffusers
-  # environment (programs.sh --env diffusers, xs-174). Rows offload-adapter, offload-stock/eager/graphs.
-  programs offload "$V/programs" --env diffusers varena_offload.py
-  # The public API across bindings: a program on the rental (programs.sh), not a package (xs-174). Rows public-*.
-  "$V/public-api/pack.sh" "$OUT/varena-public" && programs public "$OUT/varena-public" public_api.py
-  . "$V/faults.sh"
-  . "$V/differential/cell.sh"
-}
-
-if ! grep -q '^GPU 0' machine.txt; then
-  vcell host-cap ./host-cap.py
-  # A CPU step is about 2 min on a busy host: four show its memory, twenty cost $0.60.
-  vcell host-sdxl "$SDXL" prompt="$SCENE, photo" seed:=$((R + 51)) steps:=4
-  vcell host-klein "$KLEIN" prompt="$CHAR, studio portrait" seed:=$((R + 52))
-  return 0
-fi
-vcell ceiling ./ceiling.py
-vcell cold-sdxl "$SDXL" prompt="$SCENE, photo" seed:=$((R + 1))
-vcell warm-sdxl "$SDXL" prompt="$SCENE, photo, late light" seed:=$((R + 16))
-vcell cold-klein "$KLEIN" prompt="$CHAR" seed:=$((R + 2))
 h3 cold-h3 3 5 ""
 vcell co-sdxl "$SDXL" prompt="$OBJECT on a wooden table, product photo" seed:=$((R + 4))
 vcell co-klein "$KLEIN" prompt="$CHAR, close-up portrait, soft window light" seed:=$((R + 5))
 h3 co-h3 6 5 "The camera slowly pushes in."
-cap off  # unload
-vcell reload-sdxl "$SDXL" prompt="$SCENE at dusk, wide shot, photo" seed:=$((R + 7))
-vcell reload-klein "$KLEIN" prompt="$OBJECT, macro photo, shallow depth of field" seed:=$((R + 8))
 if [ "$(grep -oE '· [0-9]+ GiB ·' machine.txt | head -1 | grep -oE '[0-9]+')" -le 8 ]; then
+  cap off  # unload
   # The 8 GB tier's product shape, H3 Turbo 15 s (1344x768 with audio): 0.35.0 ran out of memory in its step 2.
   vcell h3-8gb "$H3" prompt="$MOTION Wide, steady." seed:=$((R + 15)) duration_s:=15
-  authority
-  return 0
 fi
-# cr-300 (Paul 11-16: "get CUDA graphs working right again"): Anima four times on one prompt, as its text encoder's
-# path is keyed by its token count. A call records the encoder, checked bit for bit against the call as written
-# (analyze.py fails a replay_mismatch: 25263 of 31744 values differed while Transformers built a causal mask under
-# capture that its call skips), and the fourth replays it (check.py). The second call records it when the first was
-# warm (43859590140); after a cold first call its capture passes the second request's share and the third records
-# (43863317920, 43944030338: "a ~1603 ms capture after 0 ms passes its 1281 ms share"). Again at 6 GiB.
-ANIMA=$(pkg anima generate) ANIMA_SAYS="masterpiece, best quality, anime illustration of $CHAR"
-for i in 1 2 3 4; do vcell anima-graphs-$i "$ANIMA" prompt="$ANIMA_SAYS" seed:=$((R + 60 + i)); done
-h3 reload-h3 9 5 "A slow pan follows the action."
-# cr-297 (Paul 11-13: "Shouldn't we always record the CUDA graph on the first run, and then replay it, if relevant?"):
-# SDXL at sizes A, B, C, C, D, D in a fresh executor. A region whose key moves two requests in a row stops recording
-# at C; the stop must end once a path repeats, so the second D replays (check.py). On cozy-runtime 6accccadc the stop
-# held for the process and D ran as written (pod-session 43981267206: the sixth refused 30 of 30 at 0.142 s/step;
-# e4b6ff4d8, #2206, replayed 30 of 30 at 0.081). D's capture passes request 5's share and records at idle, so the
-# machine idles before the sixth.
-cap off  # a fresh executor
-SIZES=('' aspect_ratio=16:9 aspect_ratio=9:16 aspect_ratio=9:16 aspect_ratio=4:3 aspect_ratio=4:3)
-for i in 1 2 3 4 5 6; do
-  [ "$i" != 6 ] || sleep 15
-  vcell sizes-sdxl-$i "$SDXL" prompt="$OBJECT, product photo $i" seed:=$((R + 80 + i)) ${SIZES[i - 1]}
-done
-cap 8GiB
-vcell s8-sdxl "$SDXL" prompt="$OBJECT in a museum display case, photo" seed:=$((R + 11))
-vcell s8-klein "$KLEIN" prompt="$SCENE, watercolor" seed:=$((R + 12))
-h3 s8-h3 13 5 "Handheld, close."
-h3 s8-h3-15 14 15 "Wide, steady."
-cap 6GiB
-for i in 1 2 3; do
-  STOP=3 vcell s6-sdxl-$i "$SDXL" prompt="$CHAR in $SCENE, film still $i" seed:=$((R + 20 + i))
-  STOP=3 vcell s6-klein-$i "$KLEIN" prompt="$OBJECT, studio photo, angle $i" seed:=$((R + 30 + i))
-done
-for i in 1 2 3 4; do vcell s6-anima-$i "$ANIMA" prompt="$ANIMA_SAYS" seed:=$((R + 70 + i)); done
-cap 3GiB
-STOP=3 vcell s3-sdxl "$SDXL" prompt="$CHAR, oil painting" seed:=$((R + 41))
-STOP=3 vcell s3-klein "$KLEIN" prompt="an aerial photo of $SCENE" seed:=$((R + 42))
-authority
+# Last, after a restart: no executor stays on the card.
+cap off
+. "$V/differential/cell.sh"

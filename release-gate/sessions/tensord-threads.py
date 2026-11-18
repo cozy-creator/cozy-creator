@@ -32,7 +32,7 @@ def read(path: str) -> str:
 
 
 def tensord() -> int | None:
-    """The service: a `tensord` whose parent is the `tensord` supervising it (restart.sh's `service`)."""
+    """The service: a `tensord` whose parent is the `tensord` supervising it (the unit's main process)."""
     for pid in filter(str.isdigit, os.listdir("/proc")):
         if read(f"/proc/{pid}/comm").strip() != "tensord":
             continue

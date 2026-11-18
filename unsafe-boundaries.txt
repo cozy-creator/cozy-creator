@@ -77,4 +77,3 @@ crates/varena/src/fork_guard.rs
 crates/varena/src/lib.rs
 crates/varena/src/tensor_consumers.rs
 crates/varena/src/working.rs
-release-gate/suites/varena/ledger/src/cells.rs

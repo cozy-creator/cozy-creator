@@ -1,5 +1,5 @@
-# release-gate/suites/hub/lib.sh: what the Hub's suites share (`hub`: production after a Hub deploy; `skew`: a
-# candidate Hub before one). Sourced by their cells.sh under gate.sh or hubgate.sh, which give `expect`, `log`, $CLI,
+# release-gate/suites/hub/lib.sh: what the Hub's suites share (`hub`: production after a Hub deploy; e2e/skew/run.sh: a
+# candidate Hub before one). Sourced by suite hub's cells.sh under gate.sh and by e2e/skew/run.sh, which give `expect`, `log`, $CLI,
 # $M (where package and model cells run), $R, $OUT, $HERE and e2e/run.sh's run_*. The cells.sh sets $HB (its folder)
 # and $HUB_URL first. Every cozy call goes to $HUB_URL: exported as COZY_HUB_URL, the CLI names it to Calcifer and the
 # machine on each call.

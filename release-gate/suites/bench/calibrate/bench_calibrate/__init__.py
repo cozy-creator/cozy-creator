@@ -128,7 +128,7 @@ def cpu() -> str:
 
 
 def disk_gbps(total: int = GIB, chunk: int = 16 << 20) -> float:
-    """Written, synced, dropped from the page cache, then read back: the probe method of suites/tensorfs/probe."""
+    """Written, synced, dropped from the page cache, then read back."""
     block = os.urandom(chunk)
     fd, path = tempfile.mkstemp(dir=sys.prefix)
     try:
