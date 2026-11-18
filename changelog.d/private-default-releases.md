@@ -1,0 +1,1 @@
+A run reads a private model release that its function names by default (`org/model@version` in the package), when the account that sends it can read that release: before, only a release named in the request was read, and a default failed with "has no release" and "this run carried no sign-in". A release a run can't read now says so in one line that names its slot.

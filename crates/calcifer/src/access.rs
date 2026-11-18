@@ -1,8 +1,8 @@
 //! What a run's send carries for its Hub: where its machine reads the Hub (the Hub's own word,
 //! kept per Hub: in a dev or CI Hub it is not the origin this computer dials) and, signed in, a run
 //! capability (cl-675) this computer's device key signs offline for the machine's workload key:
-//! the checkpoints its unsettled runs name, their private releases, unversioned models it may read,
-//! the models they publish into,
+//! the checkpoints its unsettled runs name, their private releases (those their functions load by default too, th-412),
+//! unversioned models it may read, the models they publish into,
 //! and the rental the machine is, for at most a day. The machine redeems it at the
 //! Hub itself (AuthKit's jwt-bearer grant), again while its runs need it, and the Hub decides each
 //! time, so nothing more comes from this computer and its sign-in never leaves it. A run that reads
@@ -19,6 +19,7 @@ use api::{
     calcifer::Reason,
     config::Origin,
     error::{Error, Kind},
+    interface::{Interface, Slot},
     machine as v1,
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -40,6 +41,10 @@ const PUBLIC_FOR: Duration = Duration::from_secs(10 * 60);
 
 /// Each (Hub origin, model, version) the Hub said is a public release, and when.
 static PUBLIC: LazyLock<Mutex<HashMap<(String, String, String), Instant>>> = LazyLock::new(Mutex::default);
+
+/// What the Hub's token endpoint takes of a capability's `authorization_details` (AuthKit): past either it refuses all of it.
+const DETAILS: usize = 64;
+const DETAILS_BYTES: usize = 8 << 10;
 
 /// What a send carries besides the spec the run was submitted with.
 #[derive(Default)]
@@ -103,7 +108,12 @@ pub(crate) struct Needs {
     models: BTreeSet<String>,
     writes: BTreeSet<String>,
     named_releases: BTreeSet<(String, String)>,
+    /// The releases their functions load by default (th-412), which the account may hold privately. One it can't read is left
+    /// out and never fails the signing: its run says so when it reads it.
+    default_releases: BTreeSet<(String, String)>,
     release_reads: BTreeSet<ReleaseRead>,
+    /// Those only a default names: the first left out of a capability the Hub would refuse for its size.
+    default_reads: BTreeSet<ReleaseRead>,
 }
 
 /// The immutable release roots a machine may resolve, never an org-wide credential.
@@ -157,8 +167,43 @@ impl Needs {
         }
     }
 
+    /// The releases `spec`'s function loads by default: each of `slots` (its own and its calls') the request chose no model
+    /// for, named as TensorD binds it (`default_choice`: a model with no org is the root's), where `reads` says the account
+    /// may hold the model's private releases.
+    fn add_defaults(&mut self, slots: &[Slot], spec: &v1::RunSpec, reads: impl Fn(&str) -> bool) {
+        for slot in slots {
+            let chosen = spec.models.iter().any(|choice| {
+                (choice.parameter == slot.path || choice.parameter == slot.param)
+                    && (!choice.model.is_empty() || !choice.manifest.is_empty() || !choice.source.is_empty())
+            });
+            let Some((model, release)) = slot.default.as_deref().filter(|_| !chosen).and_then(|default| default.split_once('@')) else { continue };
+            let model = match model.contains('/') {
+                true => model.to_owned(),
+                false => format!("{}/{model}", api::names::ROOT),
+            };
+            if let Ok(model) = api::model_ref::ModelId::parse(&model).map(|model| model.to_string())
+                && !model.starts_with("local/")
+                && !release.is_empty()
+                && reads(&model)
+            {
+                self.default_releases.insert((model, release.to_owned()));
+            }
+        }
+    }
+
     fn is_empty(&self) -> bool {
-        self.reads.is_empty() && self.models.is_empty() && self.writes.is_empty() && self.release_reads.is_empty()
+        self.reads.is_empty() && self.models.is_empty() && self.writes.is_empty() && self.release_reads.is_empty() && self.default_reads.is_empty()
+    }
+
+    /// Leaves default releases out, the last first, until the capability is one the Hub's token endpoint takes; answers them.
+    fn fit(&mut self) -> Vec<String> {
+        let mut left = vec![];
+        loop {
+            let details = self.details();
+            let over = details.as_array().is_some_and(|entries| entries.len() > DETAILS) || details.to_string().len() > DETAILS_BYTES;
+            let Some(release) = over.then(|| self.default_reads.pop_last()).flatten() else { return left };
+            left.push(format!("{}@{}", release.model, release.release));
+        }
     }
 
     fn named_release(&mut self, model: &str, release: &str, checkpoint: &str, source: &str) {
@@ -185,9 +230,10 @@ impl Needs {
         origin: &Origin,
     ) -> Result<(), Denied> {
         let mut requested: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-        for (model, release) in &self.named_releases {
+        for (model, release) in self.named_releases.iter().chain(self.default_releases.difference(&self.named_releases)) {
             requested.entry(model).or_default().push(release);
         }
+        let named = |model: &str, version: &str| self.named_releases.contains(&(model.to_owned(), version.to_owned()));
         let failure = |error| {
             let error = hub_refusal(origin, error);
             if error.kind == Kind::Unavailable {
@@ -221,7 +267,12 @@ impl Needs {
             if missing.is_empty() {
                 continue;
             }
-            let owner = client.get_model(&id.org, &id.name).await.map_err(failure)?;
+            let owner = match client.get_model(&id.org, &id.name).await {
+                Ok(card) => card,
+                // A default's model the account can't read: nothing of it is named.
+                Err(::api::hub::Error::Hub { status: 403 | 404, .. }) if !missing.iter().any(|version| named(model, version)) => continue,
+                Err(error) => return Err(failure(error)),
+            };
             for version in missing {
                 if let Some(release) = owner.releases.iter().find(|release| {
                     release.visibility == api::model_ref::ReleaseVisibility::Private
@@ -232,8 +283,12 @@ impl Needs {
                         owner.model.org, owner.model.name
                     ))
                     .map_err(refused)?;
-                    self.release_reads
-                        .insert(ReleaseRead::of(&canonical.to_string(), release).map_err(refused)?);
+                    match (ReleaseRead::of(&canonical.to_string(), release), named(model, version)) {
+                        (Ok(read), true) => drop(self.release_reads.insert(read)),
+                        (Ok(read), false) => drop(self.default_reads.insert(read)),
+                        (Err(error), true) => return Err(refused(error)),
+                        (Err(_), false) => {}
+                    }
                 }
             }
         }
@@ -250,7 +305,7 @@ impl Needs {
             .writes
             .iter()
             .map(|model| json!({"type": "tensorhub_write", "model": model}));
-        let releases = self.release_reads.iter().map(|release| {
+        let releases = self.release_reads.iter().chain(self.default_reads.difference(&self.release_reads)).map(|release| {
             json!({
                 "type": "tensorhub_release_read", "model": release.model,
                 "release": release.release, "checkpoints": release.checkpoints,
@@ -321,11 +376,15 @@ impl Machines {
             Denied::Unreachable(message) => message,
         };
         let facts = self.hubs.facts(&origin).await.map_err(denied)?;
-        let mut needs = self.needs(&origin, machine, None);
-        specs.iter().for_each(|spec| needs.add(spec));
+        let mut needs = self.needs(&origin, &facts, machine, None);
+        for spec in specs {
+            needs.add(spec);
+            needs.add_defaults(&self.slots(hub, None, spec), spec, |model| facts.reads_privately(model));
+        }
         needs.models.retain(|model| facts.reads_privately(model));
         let client = self.hubs.client(&origin).map_err(|e| e.message)?;
         needs.private_releases(&client, &origin).await.map_err(denied)?;
+        needs.fit();
         let capability = match needs.is_empty() {
             true => String::new(),
             false => {
@@ -356,11 +415,16 @@ impl Machines {
         run: &RunRow,
         spec: &v1::RunSpec,
     ) -> Result<String, Denied> {
-        let mut needs = self.needs(origin, machine, Some(run));
+        let mut needs = self.needs(origin, facts, machine, Some(run));
         needs.add(spec);
+        needs.add_defaults(&self.row_slots(run, spec), spec, |model| facts.reads_privately(model));
         needs.models.retain(|model| facts.reads_privately(model));
         let client = self.hubs.client(origin).map_err(refused)?;
         needs.private_releases(&client, origin).await?;
+        let left = needs.fit();
+        if !left.is_empty() {
+            tracing::warn!(run = %run.id, "the run's capability is at the Hub's size limit: it leaves out the default releases {}", left.join(", "));
+        }
         if needs.is_empty() {
             return Ok(String::new());
         }
@@ -408,8 +472,34 @@ impl Machines {
             .flatten()
     }
 
+    /// The model slots of `spec`'s function, its own and its calls', as its package's static interface declares them (th-412):
+    /// a release's kept card at `hub`, or local code's kept interface, `local` naming its package and where its run's outputs
+    /// land. Read from this computer's disk: nothing is installed and no package code runs. None kept: none.
+    fn slots(&self, hub: &str, local: Option<(&str, &std::path::Path)>, spec: &v1::RunSpec) -> Vec<Slot> {
+        let interface = match (&spec.source, local) {
+            (Some(v1::Source::Release(release)), _) if !release.release.is_empty() => {
+                ::api::hub::cards::kept(self.home.root(), hub, &release.package, &release.release).map(|card| card.interface)
+            }
+            (Some(v1::Source::Local(source)), Some((package, out_dir))) => crate::private_io::of_output(out_dir)
+                .ok()
+                .and_then(|scope| crate::local_code::kept_for(&self.home, scope.as_ref(), package, &source.manifest))
+                .and_then(|document| Interface::parse(&document).ok()),
+            _ => None,
+        };
+        let Some(interface) = interface else { return vec![] };
+        let Some(callable) = interface.callables.iter().find(|callable| callable.name == spec.entrypoint) else { return vec![] };
+        callable.models.iter().chain(interface.call_slots(callable)).cloned().collect()
+    }
+
+    /// `slots` of a recorded run: local code's package is its target's (`local/<dist>/<function>`).
+    fn row_slots(&self, run: &RunRow, spec: &v1::RunSpec) -> Vec<Slot> {
+        let Some(hub) = &run.hub else { return vec![] };
+        let package = run.target.rsplit_once('/').map_or(run.target.as_str(), |(package, _)| package);
+        self.slots(&hub.to_string(), Some((package, &run.out_dir)), spec)
+    }
+
     /// What this computer's unsettled runs on `machine` at `origin` need, but `except`'s.
-    fn needs(&self, origin: &Origin, machine: &str, except: Option<&RunRow>) -> Needs {
+    fn needs(&self, origin: &Origin, facts: &Facts, machine: &str, except: Option<&RunRow>) -> Needs {
         let mut needs = Needs::default();
         let runs = self.calcifer.each_store(|store|store.unsettled()).unwrap_or_default().into_iter().flatten().collect::<Vec<_>>();
         for row in runs
@@ -423,6 +513,7 @@ impl Machines {
                     .is_some_and(|hub| self.hubs.known(hub).as_ref().unwrap_or(hub) == origin);
             if here && except.is_none_or(|except| except.id != row.id) {
                 needs.add(&row.spec);
+                needs.add_defaults(&self.row_slots(&row, &row.spec), &row.spec, |model| facts.reads_privately(model));
             }
         }
         needs

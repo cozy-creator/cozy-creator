@@ -971,9 +971,9 @@ pub(crate) fn kept(home: &Home, filed: &Filed, runtime: &str) -> Option<Value> {
 }
 
 /// The interface kept for `package`'s source of manifest `manifest`, as any Runtime described it, the newest: what this computer's
-/// installs of it list (`toolbox`). Not a project's.
-pub(crate) fn kept_for(home: &Home, package: &str, manifest: &str) -> Option<Value> {
-    let mut dir = home.root().join("packages");
+/// installs of it list (`toolbox`), or with `scope` a project's own.
+pub(crate) fn kept_for(home: &Home, scope: Option<&crate::private_io::Scope>, package: &str, manifest: &str) -> Option<Value> {
+    let mut dir = crate::private_io::cache(scope, home.root().join("packages"), "packages").ok()?;
     dir.extend(package.split('/'));
     let named = format!("-{}-", manifest.trim_start_matches("sha256:"));
     let mut kept: Vec<(SystemTime, PathBuf)> = (fs::read_dir(dir).into_iter().flatten().flatten())

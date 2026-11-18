@@ -319,7 +319,7 @@ fn held_tree(store: &crate::storage::Store, choice: &stored::ModelChoice) -> Res
         Err(error) => return Err(refused("checkpoint_absent", format!("held checkpoint sha256:{id}: {error}"))),
     };
     let named = |lane, tree, header| crate::published::Named {
-        model: choice.model.clone(), release: choice.release.clone(), lane, tree, header: Some(header), reasons: vec![],
+        model: choice.model.clone(), release: choice.release.clone(), lane, tree, header: Some(header), reasons: vec![], by: String::new(),
     };
     let Some(parsed) = crate::storage::tree_or_header(store, &object).map_err(|error| refused("checkpoint_invalid", error.to_string()))? else {
         return Ok(Some(named(choice.lane.clone(), None, object)));

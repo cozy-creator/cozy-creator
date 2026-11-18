@@ -157,6 +157,8 @@ pub(crate) struct Named {
     /// The checkpoint's cozytensors header, once resolved.
     pub header: Option<ObjectRef>,
     pub reasons: Vec<String>,
+    /// What asked for it, as a refusal says it (``this function's default `text_encoder` ``); empty: nothing but its name.
+    pub by: String,
 }
 
 impl Named {
@@ -416,7 +418,7 @@ struct Answer {
 impl Answer {
     fn ask(machine: &Machine, source: &hub::Source, named: &Named, hardware: &Hardware) -> Result<Self, Failure> {
         let r = origin::resolve(machine, source, &named.model, &named.release, &named.lane, hardware)
-            .map_err(|e| unsigned(source, refused("model_resolution_failed", e.clone()), &e))?;
+            .map_err(|e| unread(source, named, refused("model_resolution_failed", e.clone()), &e))?;
         Ok(Self { release: r.release, lane: r.lane, checkpoint: r.checkpoint, header: r.header, reasons: r.reasons, hardware: hardware.clone() })
     }
 }
@@ -1690,6 +1692,11 @@ impl Publisher {
                 }, None, vec![]));
             }
             let mut named = choose(choice, &path)?;
+            let parameter = path.rsplit('.').next().unwrap_or_default();
+            named.by = match chosen(slot, &request.choices) {
+                Some(_) => format!("`{parameter}`"),
+                None => format!("this function's default `{parameter}`"),
+            };
             // The run's lane is its main model's; another slot's is its choice's or its own.
             if Some(slot) == main && !request.lane.is_empty() {
                 named.lane = request.lane.clone();
@@ -1973,15 +1980,31 @@ fn make_source(
 /// The reader a request with no sign-in reads as: public content only.
 const PUBLIC: &str = "*";
 
-/// `failure`, reading `source` under no signer's capability: a private model reads as absent
-/// there, so the reason names the sign-in that reads it (a pod's shell, a laptop not logged in).
+/// `failure`, reading `source` under no signer's capability: a private model reads as absent there. Its sender was signed out
+/// (a pod's shell, a laptop not logged in), or signed in as an account that reads nothing private the run names (th-412), and
+/// the run can't tell which.
 fn unsigned(source: &hub::Source, failure: Failure, refusal: &tensorfs::err::Refusal) -> Failure {
     use tensorfs::err::Code;
     let absent = matches!(refusal.code, Code::REF_NOT_FOUND | Code::REPOSITORY_ABSENT | Code::CREDENTIAL_REQUIRED);
     match source.capability.is_none() && absent {
-        true => (failure.0, format!("{}; this run carried no sign-in, and a private model reads only under one: `cozy login <email>` on the computer that sent it", failure.1)),
+        true => (failure.0, format!("{}; the computer that sent this run is signed out, or its account can't read it: `cozy whoami` there", failure.1)),
         false => failure,
     }
+}
+
+/// `failure` resolving `named`: a release its Hub finds none of that this run may read isn't published, or the run's sender
+/// can't read it. The Hub never says which, to a run signed in or out (th-412), so one line says both and what asked for it.
+/// Any other refusal is `unsigned`'s.
+fn unread(source: &hub::Source, named: &Named, failure: Failure, refusal: &tensorfs::err::Refusal) -> Failure {
+    if named.release.is_empty() || !refusal.detail.contains(" release.not_found:") {
+        return unsigned(source, failure, refusal);
+    }
+    tracing::info!(model = %named.model, release = %named.release, "a release this run can't read: {refusal}");
+    let by = match named.by.is_empty() {
+        true => String::new(),
+        false => format!(" ({})", named.by),
+    };
+    (failure.0, format!("`{}@{}`{by} isn't published, or this run's sender can't read it: `cozy whoami` on the computer that sent it.", named.model, named.release))
 }
 
 /// `failure` of `named`, a checkpoint by hash, read with no sign-in: it is private (or absent).
@@ -2368,11 +2391,15 @@ pub(crate) fn default_choice(slot: &Value, path: &str) -> Option<stored::ModelCh
 
 /// The model a run's `slot` takes: the run's choice for it, else its declared default.
 fn slot_choice(slot: &Value, choices: &[stored::ModelChoice]) -> Option<stored::ModelChoice> {
+    chosen(slot, choices).cloned().or_else(|| default_choice(slot, slot["path"].as_str().unwrap_or_default()))
+}
+
+/// The run's choice of a model for `slot`; none: it takes its default (a choice of adapters alone too).
+fn chosen<'c>(slot: &Value, choices: &'c [stored::ModelChoice]) -> Option<&'c stored::ModelChoice> {
     let path = slot["path"].as_str().unwrap_or_default();
     let parameter = path.rsplit('.').next().unwrap_or_default();
-    let asked = choices.iter().find(|c| c.parameter == path || c.parameter == parameter)
-        .filter(|c| !c.model.is_empty() || c.manifest.is_some() || !c.source.is_empty());
-    asked.cloned().or_else(|| default_choice(slot, path))
+    choices.iter().find(|c| c.parameter == path || c.parameter == parameter)
+        .filter(|c| !c.model.is_empty() || c.manifest.is_some() || !c.source.is_empty())
 }
 
 /// An on-demand slot that did not bind, by its parameter, and what a call reading it fails with
@@ -2391,6 +2418,8 @@ fn unbound_slot(slot: &Value, choices: &[stored::ModelChoice], (code, why): Fail
         }
     });
     let said = match model.filter(|model| !model.is_empty()) {
+        // `unread`'s line names the model and the slot already.
+        Some(model) if why.starts_with(&format!("`{model}`")) => why,
         Some(model) => format!("{parameter}: {model}: {why}"),
         None => format!("{parameter}: {why}"),
     };

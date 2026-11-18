@@ -354,7 +354,7 @@ async fn fetched(api: &Arc<Api>) -> Vec<Tool> {
     let mut tools = vec![];
     for env in &environments {
         let Some(origin) = crate::git_code::origin_of_manifest(&env.manifest) else { continue };
-        let Some(document) = local_code::kept_for(home, &env.package, &env.manifest) else { continue };
+        let Some(document) = local_code::kept_for(home, None, &env.package, &env.manifest) else { continue };
         let Ok(interface) = Interface::parse(&document) else { continue };
         let summary = origin.folder_here().map(|dir| checkout::description(&dir)).unwrap_or_default();
         let (package, source) = (origin.target(), origin.spelled());
