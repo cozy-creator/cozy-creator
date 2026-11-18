@@ -32,6 +32,9 @@ fi
 # The slow-host floor (`floor_mb_s`, 0 for none; `floor_after_s`): a step whose upload to the pod or weights download still
 # reports under it that long in ends the session, `host too slow`, before the host's link eats the cap (th-377).
 FLOOR_MBS=$(param floor_mb_s 50) FLOOR_AFTER=$(param floor_after_s 120)
+# `order_tries` (6): how often an out-of-stock quote or order is asked again. The walkthrough's is 1 (the coordinator, 11-18: an order
+# that reads "out of stock" is not retried, it is reported).
+ORDER_TRIES=$(param order_tries 6)
 [[ $FLOOR_MBS =~ ^[0-9]+$ && $FLOOR_AFTER =~ ^[0-9]+$ ]] || fail "floor_mb_s $FLOOR_MBS, floor_after_s $FLOOR_AFTER"
 state() { cozy machine show "$1" --json 2>/dev/null | jq -r '.state // empty'; }
 . "$(dirname "${BASH_SOURCE[0]}")/../machines.sh"
@@ -312,7 +315,7 @@ quote() {
     # JSON, and in the same file it broke the parse (user-flow 44124965286: "no quote for a40:1").
     f=$OUT/quote-${s/:/x}.json gpus=(); [[ $s != *:* ]] || gpus=(--gpus "${s#*:}")
     while cozy machine rent "${s%%:*}" "${gpus[@]}" --disk-gb "$DISK" $RENT_ARGS --json < /dev/null > "$f" 2> "${f%.json}.err" || true
-      grep -qs sku_out_of_stock "$f" "${f%.json}.err" && [ "$try" -lt 6 ]; do
+      grep -qs sku_out_of_stock "$f" "${f%.json}.err" && [ "$try" -lt "$ORDER_TRIES" ]; do
       say "no provider has $s now (attempt $try/6): asking again in ${pause}s"
       sleep "$pause"; try=$((try + 1)); pause=$((pause * 2 > 120 ? 120 : pause * 2))
     done
@@ -348,7 +351,7 @@ order() {
     [ -n "$r" ] || r=$(accepted "$OUT/rent$i.out")
     [ -z "$r" ] || break
     wait "$RP"
-    [ "$try" -lt 6 ] && grep -qs sku_out_of_stock "$OUT/rent$i.out" "$OUT/rent$i.err" ||
+    [ "$try" -lt "$ORDER_TRIES" ] && grep -qs sku_out_of_stock "$OUT/rent$i.out" "$OUT/rent$i.err" ||
       fail "the order was not accepted: $(tail -c 300 "$OUT/rent$i.out") $(tail -3 "$OUT/rent$i.err")"
     say "no provider has $sku now (attempt $try/6): ordering again in ${pause}s"
     sleep "$pause"; try=$((try + 1)); pause=$((pause * 2 > 120 ? 120 : pause * 2))

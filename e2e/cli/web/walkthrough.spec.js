@@ -348,6 +348,120 @@ test('walkthrough', async ({ context, page, project, api, cli, signIn, newContex
     });
   }
 
+  if (STAGE === 'lora-look' || STAGE === 'lora-render') {
+    // cl-1241: Klein boxes holding a LoRA as a drop on the box writes it (the box's own `lora`, no slot). lora-look ($0): where on the
+    // page a LoRA could be picked up to drop, what each box shows of its LoRA, what Models & LoRAs lists. lora-render: the rental
+    // preferred in its drawer, each box rendered by Focus's Render, followed to its take or its failure.
+    const folder = process.env.WALK_PROJECT;
+    const boxes = (process.env.WALK_BOXES || 'kdrop,kplain').split(',');
+    const id = encodeURIComponent(folder);
+    let code = null;
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await step(page, 'the project opened', async () => {
+      const listed = await api.get('/v1/projects');
+      code = (listed.projects ?? listed).find((p) => p.path === folder)?.code ?? (await api.post('/v1/projects', { path: folder })).code;
+      await page.goto(`${origin}/p/${code}`);
+      await canvas();
+      await fit(page).catch(() => {});
+      await snap(page, 'canvas');
+    });
+    const boxOf = (name) => api.get(`/v1/projects/${id}/assets/${encodeURIComponent(name)}`);
+    if (STAGE === 'lora-look') {
+      await step(page, 'where a LoRA could be picked up: the Tools palette and every word of the page', async () => {
+        const tools = page.getByRole('complementary', { name: 'Tools' });
+        const closed = tools.locator('button[aria-expanded="false"]');
+        for (let i = 0; i < 20 && await closed.count(); i++) await closed.first().click();
+        await page.waitForTimeout(500);
+        await snap(page, 'tools-open');
+        const words = await page.locator('body').innerText();
+        writeFileSync(join(DIR, 'lora-words-on-canvas.txt'), `${words.split('\n').filter((line) => /lora|checkpoint|model/i.test(line)).join('\n')}\n---\nlists a LoRA could be dragged from (elements naming a LoRA outside a box): ${await page.locator('[data-model], [data-lora], .model-browse, .box-shelf').count()}\n`);
+      });
+      for (const name of boxes) {
+        await step(page, `${name} in Focus: its LoRA beneath it, Models & LoRAs`, async () => {
+          const r = await focus(page, name);
+          await page.waitForTimeout(1500);
+          await snap(page, `${name}-focus`);
+          writeFileSync(join(DIR, `${slug(name)}-focus.txt`), await r.innerText());
+          writeFileSync(join(DIR, `${slug(name)}-active-models.txt`), (await r.locator('.active-models').allInnerTexts()).join('\n') || '(no Active models and LoRAs list)');
+          const open = r.getByRole('button', { name: 'Models and LoRAs', exact: true });
+          if (await open.count()) {
+            await open.click();
+            await page.waitForTimeout(1200);
+            await snap(page, `${name}-models-and-loras`);
+            const picker = page.getByRole('dialog', { name: 'Models and LoRAs', exact: true });
+            writeFileSync(join(DIR, `${slug(name)}-picker.txt`), (await picker.count()) ? await picker.innerText() : '(no picker dialog)');
+            const legacy = picker.getByRole('button', { name: 'Existing LoRAs' });
+            if (await legacy.count()) { await legacy.click(); await page.waitForTimeout(800); await snap(page, `${name}-existing-loras`); writeFileSync(join(DIR, `${slug(name)}-existing-loras.txt`), await picker.innerText()); }
+            await page.keyboard.press('Escape');
+            if (await picker.count()) await open.click().catch(() => {});
+          } else writeFileSync(join(DIR, `${slug(name)}-picker.txt`), '(no Models and LoRAs button)');
+          writeFileSync(join(DIR, `${slug(name)}-box.json`), JSON.stringify(await boxOf(name), null, 2));
+          await leave(page).catch(() => {});
+        });
+      }
+    }
+    if (STAGE === 'lora-render') {
+      const machine = process.env.WALK_MACHINE;
+      await step(page, `${machine} preferred in its drawer: this project renders there`, async () => {
+        await page.goto(`${origin}/p/${code}/machines/${encodeURIComponent(machine)}`);
+        const prefer = page.locator('.machine-head input.render-check');
+        await expect(prefer).toBeEnabled({ timeout: 60_000 });
+        if (!(await prefer.isChecked())) await prefer.check();
+        await expect(prefer).toBeChecked();
+        await page.waitForTimeout(1500);
+        await snap(page, 'machine-preferred');
+        writeFileSync(join(DIR, 'machine-drawer.txt'), await page.locator('main, body').first().innerText());
+        writeFileSync(join(DIR, 'project-machines.json'), JSON.stringify((await api.get(`/v1/projects/${id}`)).machines ?? null));
+        await page.goto(`${origin}/p/${code}`);
+        await canvas();
+        await fit(page).catch(() => {});
+      });
+      const times = [];
+      for (const name of boxes) {
+        await step(page, `${name}: Render, to its take`, async () => {
+          const r = await focus(page, name);
+          await page.waitForTimeout(800);
+          await snap(page, `${name}-before-render`);
+          writeFileSync(join(DIR, `${slug(name)}-before-render.txt`), await r.innerText());
+          const before = (await boxOf(name)).asset?.versions ?? 0;
+          const posted = page.waitForResponse((a) => a.request().method() === 'POST' && /\/v1\/projects\/[^/]+\/runs$/.test(new URL(a.url()).pathname), { timeout: 30_000 }).catch(() => null);
+          const t0 = Date.now();
+          await r.getByRole('button', { name: 'Render', exact: true }).click();
+          const answer = await posted;
+          writeFileSync(join(DIR, `${slug(name)}-render-post.json`), answer ? JSON.stringify({ status: answer.status(), ms: Date.now() - t0, body: await answer.json().catch(() => null) }, null, 2) : 'no POST /runs seen');
+          await page.waitForTimeout(4000);
+          await snap(page, `${name}-rendering-4s`);
+          let now = null, last = '';
+          const deadline = Date.now() + 25 * 60_000;
+          while (Date.now() < deadline) {
+            now = (await boxOf(name).catch(() => null))?.asset ?? null;
+            if (now && (now.versions > before || (now.failure && !now.making))) break;
+            const said = (await r.innerText().catch(() => '')).replace(/\s+/g, ' ').slice(0, 300);
+            if (said !== last) { last = said; times.push(`${name} +${Math.round((Date.now() - t0) / 1000)}s: ${said}`); }
+            await page.waitForTimeout(2000);
+          }
+          times.push(`${name}: ${now?.versions > before ? 'a take' : now?.failure ? `failed: ${JSON.stringify(now.failure).slice(0, 600)}` : 'neither a take nor a failure in 25 min'} ${Math.round((Date.now() - t0) / 1000)} s after Render`);
+          writeFileSync(join(DIR, 'lora-render-times.txt'), `${times.join('\n')}\n`);
+          await page.waitForTimeout(2500);
+          await snap(page, `${name}-after-render`);
+          writeFileSync(join(DIR, `${slug(name)}-after-render.txt`), await r.innerText());
+          if (!(now?.versions > before)) throw new Error(times.at(-1));
+          await leave(page).catch(() => {});
+        });
+      }
+      await step(page, 'the canvas with both takes, and the runs', async () => {
+        await page.goto(`${origin}/p/${code}`);
+        await canvas();
+        await fit(page).catch(() => {});
+        await page.waitForTimeout(2000);
+        await snap(page, 'canvas-after');
+        await page.goto(`${origin}/p/${code}/runs`);
+        await page.waitForTimeout(2500);
+        await snap(page, 'runs');
+      });
+    }
+  }
+
   if (STAGE === 'results') {
     const garden = process.env.WALK_PROJECT || join(W, 'garden');
     let code = null;

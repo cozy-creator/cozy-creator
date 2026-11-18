@@ -9,6 +9,8 @@
 #   tools    a JSON file in this checkout, the tool steps (default release-gate/sessions/fixtures/walkthrough/tools.json)
 #   seconds  what the cap must buy (default 3600)
 #   engines  the page's browsers (default chrome,webkit)
+#   lora, lora_words   the `lora` phase's LoRA (lilylilith/fontbox) and the words every one of its pictures is asked with
+#   order_tries        lib.sh's: 1 here, an out-of-stock order is reported, never asked again
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
@@ -90,7 +92,7 @@ fi
 
 # 3. The page.
 PW=$OUT/playwright-test
-if has page || has tools || has zero || has cancel || has seeds; then
+if has page || has tools || has zero || has cancel || has seeds || has lora || has flow; then
   npm install -s --prefix "$PW" @playwright/test@1.55.0 > "$OUT/npm.log" 2>&1 || fail "npm install @playwright/test: $(tail -c 300 "$OUT/npm.log")"
   [[ ,$(param engines chrome,webkit), != *,webkit,* ]] ||
     (cd "$PW" && sudo -E env "PATH=$PATH" node node_modules/playwright-core/cli.js install-deps webkit && node node_modules/playwright-core/cli.js install webkit) > "$OUT/webkit.log" 2>&1 ||
@@ -181,10 +183,57 @@ if has zero; then
   DIR=$Z c z-runs-final run ls
   say "zero: slowbox again: $(awk 'NR > 1 && $2 ~ /slow/ {print; exit}' "$W/cli/z-runs-final.txt" | tr -s ' ' | cut -c1-200)"
 fi
+ms() { date +%s%3N; }
+# The LoRA picture pair (cl-1241; the coordinator, 11-18): a LoRA naming no slot (`cozy run --lora <lora>`, one dropped on a box) on FLUX.3
+# Klein's, Fibo's and Krea 2's `image` went on the text encoder and was refused; it now goes on the box's models, Base and distilled, and
+# the one the request loads takes it. At $0, before anything is rented: what the catalog says of the LoRA and of each family's, what each
+# tool declares, and two Klein boxes written as a drop writes one (the box's own `lora`, no slot; its trigger words after its words) and
+# as the page shows them.
+LORA=$(param lora lilylilith/fontbox)
+lora_look() {
+  DIR=$P c lora-show lora show "$LORA"
+  (cd "$P" && cozy --json lora show "$LORA") > "$W/lora-show.json" 2>&1 < /dev/null
+  (cd "$P" && cozy --json lora ls "${LORA##*/}" --limit 5) > "$W/lora-card.json" 2>&1 < /dev/null
+  TRIGGERS=$(jq -r --arg l "$LORA" '[.. | objects | select((.model // "") == $l) | .triggers // empty | .[]] | unique | join(", ")' "$W/lora-card.json" "$W/lora-show.json" 2> /dev/null | grep -v '^$' | head -1)
+  WORDS=$(param lora_words 'a hand-painted wooden shop sign that reads "COZY BAKERY" in large ornate letters, hanging over a cobblestone street, morning light')
+  [ -z "$TRIGGERS" ] || WORDS="$WORDS, $TRIGGERS"
+  say "lora: $LORA, its card's triggers: ${TRIGGERS:-none}; the words: $WORDS"
+  local t
+  for t in flux.3-klein fibo-2 krea-2; do
+    DIR=$P c "describe-$t" run "$t/image" --describe
+    (cd "$P" && cozy --json run "$t/image" --describe) > "$W/describe-$t.json" 2>&1 < /dev/null
+    say "lora: $t/image's models: $(awk '/^  models:/{f=1;next} f && /^  [a-z]/{f=0} f' "$W/cli/describe-$t.txt" | tr -s ' ' | tr '\n' ';' | cut -c1-600)"
+    say "lora: $t/image's slots that take LoRAs, as its interface says: $(jq -c '[.. | objects | select(has("loras") and (has("param") or has("slot") or has("path"))) | {slot: (.param // .slot // .path), loras}]' "$W/describe-$t.json" 2> /dev/null | cut -c1-400)"
+  done
+  # Every LoRA the Hub lists, by family: what a family's users can pick from.
+  : > "$W/lora-all.ndjson"
+  local off
+  for off in 0 100 200 300 400; do
+    (cd "$P" && cozy --json lora ls --limit 100 --offset "$off") > "$W/lora-page.json" 2>> "$W/lora-all.err" < /dev/null
+    jq -c '.models[]?' "$W/lora-page.json" >> "$W/lora-all.ndjson" 2> /dev/null
+    [ "$(jq '.models | length' "$W/lora-page.json" 2> /dev/null || echo 0)" = 100 ] || break
+  done
+  say "lora: the Hub's LoRAs by family: $(jq -rs 'group_by(.family) | map("\(.[0].family // "none") \(length)") | join(", ")' "$W/lora-all.ndjson" 2> /dev/null)"
+  for t in fibo krea; do
+    say "lora: $t LoRAs listed: $(jq -rs --arg f "$t" '[.[] | select((.family // "") | test($f)) | .model] | join(" ")' "$W/lora-all.ndjson" 2> /dev/null | cut -c1-400)"
+  done
+  jq -cn --arg w "$WORDS" --arg l "$LORA" '{instructions: $w, seed: 7, lora: [{ref: $l}]}' > "$W/out/kdrop.fields.json"
+  jq -cn --arg w "$WORDS" '{instructions: $w, seed: 7}' > "$W/out/kplain.fields.json"
+  PAGE add "$P" kdrop --tool "$(tid flux.3-klein/image)" --fields "$(cat "$W/out/kdrop.fields.json")" > "$W/out/kdrop.add.json" 2>&1 || say "kdrop: add failed: $(tail -c 300 "$W/out/kdrop.add.json")"
+  PAGE add "$P" kplain --tool "$(tid flux.3-klein/image)" --fields "$(cat "$W/out/kplain.fields.json")" > "$W/out/kplain.add.json" 2>&1 || say "kplain: add failed: $(tail -c 300 "$W/out/kplain.add.json")"
+  PAGE asset "$P" kdrop kplain > "$W/out/lora-boxes.json" 2>&1
+  say "lora: the boxes as written: $(jq -c '{name: .asset.name, tool: .asset.tool, fields: .asset.fields}' "$W/out/lora-boxes.json" 2> /dev/null | tr '\n' ' ' | cut -c1-700)"
+  WALK_BOXES=kdrop,kplain pageflow lora-look
+}
+if has lora; then
+  [ -d "$PJ/$(param project garden)" ] || fail "no project $(param project garden)"
+  lora_look
+fi
 # 4. Rented: one machine by the CLI, the tools chained on it.
-if has tools || has idle || has cancel || has seeds || has lost || has updates || has relock || has predict; then
+if has tools || has idle || has cancel || has seeds || has lost || has updates || has relock || has predict || has lora; then
   STEPS=$ROOT/$(param tools release-gate/sessions/fixtures/walkthrough/tools.json)
   for p in $(jq -r '[.[] | .tool // empty | split("/")[0]] | unique | .[]' "$STEPS"); do kernels "$SOURCE/$p"; done
+  ! has lora || for p in flux.3-klein fibo-2 krea-2; do kernels "$SOURCE/$p"; done
   DIR=$W c rent-quote-text machine rent "$SKU" --disk-gb "$DISK"
   RENTING=$RENT
   quote "$(param seconds 3600)"
@@ -448,8 +497,97 @@ phase_lost() {
   DIR=$P c run-ls-lost run ls
   say "lost: run ls: $(sed -n 2p "$W/cli/run-ls-lost.txt" | cut -c1-300)"
 }
+# left: the seconds this session still has before its step's deadline (5 min kept for the end).
+left() { echo $(( ${SESSION_UNTIL:-$(($(date +%s) + 7200))} - $(date +%s) - 300 )); }
+# lrun <name> <tool> <args…>: one `cozy run` on the rental as a person types it, its pictures kept in out/<name>/, what it printed in
+# out/<name>.txt, its record in records/<name>.json; said in one line: where its LoRA went, what loaded, its times.
+lrun() {
+  local n=$1 tool=$2 t0 rc run; shift 2
+  mkdir -p "$W/out/$n" "$W/records"
+  t0=$(ms)
+  (cd "$P" && timeout "${TO:-2400}" cozy run "$tool" "$@" --on "$NAME" -o "$W/out/$n") > "$W/out/$n.txt" 2>&1 < /dev/null; rc=$?
+  printf '%s\t%s\t%s\tcozy run %s %s --on %s\n' "$n" "$rc" "$(( $(ms) - t0 ))" "$tool" "$*" "$NAME" >> "$W/cli/times.tsv"
+  run=$(awk '$1=="run" && NF==2{print $2}' "$W/out/$n.txt" | tail -1)
+  [ -n "$run" ] || run=$(cd "$P" && cozy --json run ls --limit 1 2> /dev/null < /dev/null | jq -r '(.runs // .)[0] | (.name // .id) // empty' 2> /dev/null)
+  [ -z "$run" ] || (cd "$P" && cozy --json run watch "$run" --once --full) > "$W/records/$n.raw" 2>&1 < /dev/null
+  grep -a '^{' "$W/records/$n.raw" 2> /dev/null | tail -1 > "$W/records/$n.json"
+  say "$n: cozy run $tool $* --on $NAME: exit $rc in $(( $(ms) - t0 )) ms, run ${run:-none}: $(lrec "$n")"
+  [ "$rc" = 0 ] || { say "$n NOT COMPLETED, its last lines:"; grep -v '^\s*$' "$W/out/$n.txt" | tail -8 | cut -c1-400 | sed 's/^/    /' >> "$R"; }
+  return "$rc"
+}
+# lrec <name>: what a run's own record says: its status, the slot its LoRA went on, how the request named it, what loaded, its times.
+lrec() {
+  jq -c '{status, machine, reason: (.reason // null), memoized: (.memo.memoized // null), target,
+    lora_on: [.measurements.models[]? | select((.adapters // []) | length > 0) | {slot, lora: [.adapters[] | "\(.model) x\(.strength) \(.layers // "?") layers"]}],
+    asked: {lora: (.request.input.lora // null), models: (.request.input.models // null), turbo: (.request.input.turbo // null), upsampling: (.request.input.prompt_upsampling // null)},
+    loaded: ((.measurements.execution.on_demand // {}) | keys),
+    steps: [(.measurements.attribution.steps // {}) | to_entries[] | "\(.key) \(.value.count)"],
+    weights: (.measurements.weights // null), peak_gib: (((.measurements.memory.peak_allocated_bytes // 0) / 1073741824 * 10 | round) / 10),
+    ms: {wait: ((.accepted_at_ms // .created_at_ms) - .created_at_ms), start: ((.started_at_ms // .accepted_at_ms // .created_at_ms) - (.accepted_at_ms // .created_at_ms)), run: ((.settled_at_ms // 0) - (.started_at_ms // .accepted_at_ms // .created_at_ms)), execution: (.execution_ms // null)},
+    size: [(.result.width // null), (.result.height // null)], seed: (.result.seed // null), runtime: (.measurements.software.runtime // null),
+    prompt: ((.result.prompt // "") | .[0:120])}' "$W/records/$1.json" 2> /dev/null | cut -c1-1500
+}
+# lpic <name>: the picture a run or a box's take left in out/<name>/.
+lpic() { find "$W/out/$1" -type f \( -name '*.png' -o -name '*.webp' -o -name '*.jpg' -o -name '*.jpeg' \) 2> /dev/null | sort | head -1; }
+# ldiff <label> <with> <without>: the two pictures' difference a channel, and whether both were asked with the same words in the end.
+ldiff() {
+  local a b; a=$(lpic "$2") b=$(lpic "$3")
+  if [ -z "$a" ] || [ -z "$b" ]; then say "DIFF $1: no picture of ${a:+$3}${a:-$2}"; return 1; fi
+  python3 -I "$HERE/fixtures/walkthrough/diff.py" "$a" "$b" > "$W/out/diff-$1.json" 2> "$W/out/diff-$1.err"
+  local same; same=$(jq -n --slurpfile x "$W/records/$2.json" --slurpfile y "$W/records/$3.json" '($x[0].result.prompt // "x") == ($y[0].result.prompt // "y")' 2> /dev/null)
+  say "DIFF $1 ($2 against $3): $(jq -c '{comparable, same_bytes, mean, mean_rgb, max, moved_share, size: .a.size, a: .a.sha256, b: .b.sha256}' "$W/out/diff-$1.json" 2> /dev/null || tail -c 200 "$W/out/diff-$1.err"); the same final prompt: ${same:-?}"
+}
+# ltake <box>: a box's newest take copied to out/<box>/, and the record of the run that made it.
+ltake() {
+  PAGE asset "$P" "$1" > "$W/out/$1.asset.json" 2>&1
+  local f r; f=$(jq -r '.versions[-1].files // {} | to_entries[] | select(.key == "image") | .value.path // empty' "$W/out/$1.asset.json" 2> /dev/null | tail -1)
+  mkdir -p "$W/out/$1" "$W/records"
+  [ -z "$f" ] || [[ $f == /* ]] || f=$P/$f
+  [ -n "$f" ] && [ -f "$f" ] && cp "$f" "$W/out/$1/" || say "$1: no take's file (${f:-none}); the box says $(jq -c '{failure: .asset.failure, making: .asset.making, versions: .asset.versions}' "$W/out/$1.asset.json" 2> /dev/null | cut -c1-500)"
+  r=$(jq -r '.versions[-1].runs[-1] // empty' "$W/out/$1.asset.json" 2> /dev/null)
+  [ -n "$r" ] || r=$(cd "$P" && cozy --json run ls --limit 0 2> /dev/null < /dev/null | jq -r '[(.runs // .)[] | select((.target // "") | test("klein/image"))][0] | (.name // .id) // empty' 2> /dev/null)
+  [ -z "$r" ] || (cd "$P" && cozy --json run watch "$r" --once --full) > "$W/records/$1.raw" 2>&1 < /dev/null
+  grep -a '^{' "$W/records/$1.raw" 2> /dev/null | tail -1 > "$W/records/$1.json"
+  say "$1 (the page's Render): run ${r:-none}: $(lrec "$1")"
+}
+phase_lora() {
+  local w=$WORDS
+  DIR=$P c lora-machine-before machine show "$NAME"
+  # 1. The pair, the prompt as written (no upsampler rewriting it): the LoRA'd picture first, so nothing of its twin's is there to reuse.
+  lrun lora-turbo flux.3-klein/image "instructions=$w" seed=7 prompt_upsampling=false --lora "$LORA"
+  lrun plain-turbo flux.3-klein/image "instructions=$w" seed=7 prompt_upsampling=false
+  ldiff turbo lora-turbo plain-turbo
+  lrun lora-base flux.3-klein/image "instructions=$w" seed=7 turbo=false prompt_upsampling=false --lora "$LORA"
+  lrun plain-base flux.3-klein/image "instructions=$w" seed=7 turbo=false prompt_upsampling=false
+  ldiff base lora-base plain-base
+  # 2. The command as a person types it, every default (the upsampler rewrites the words): refused or not, and its twin.
+  lrun lora-turbo-default flux.3-klein/image "instructions=$w" seed=7 --lora "$LORA"
+  lrun plain-turbo-default flux.3-klein/image "instructions=$w" seed=7
+  ldiff turbo-default lora-turbo-default plain-turbo-default
+  lrun lora-base-default flux.3-klein/image "instructions=$w" seed=7 turbo=false --lora "$LORA"
+  lrun plain-base-default flux.3-klein/image "instructions=$w" seed=7 turbo=false
+  ldiff base-default lora-base-default plain-base-default
+  DIR=$P c lora-runs-cli run ls
+  # 3. The page: the rental preferred in its drawer, each box rendered by Focus's Render.
+  WALK_BOXES=kdrop,kplain pageflow lora-render
+  ltake kdrop; ltake kplain
+  ldiff page kdrop kplain
+  DIR=$P c lora-runs-page run ls
+  sed -n 1,16p "$W/cli/lora-runs-page.txt" | cut -c1-220 | sed 's/^/    runs: /' >> "$R"
+  # 4. Fibo's and Krea 2's boxes, a LoRA of their family from the catalog, bare: one run each while the session has the time.
+  local fam tool l
+  for fam in fibo krea; do
+    tool=fibo-2/image; [ "$fam" = fibo ] || tool=krea-2/image
+    l=$(jq -rs --arg f "$fam" '[.[] | select((.family // "") | test($f)) | .model] | first // empty' "$W/lora-all.ndjson" 2> /dev/null)
+    if [ -z "$l" ]; then say "lora $fam: the catalog lists no LoRA of that family: nothing to run"; continue; fi
+    if [ "$(left)" -lt 900 ]; then say "lora $fam: $(left) s left of this session: not run ($l was the LoRA)"; continue; fi
+    DIR=$P c "lora-show-$fam" lora show "$l"
+    lrun "lora-$fam" "$tool" "instructions=$w" seed=7 --lora "$l"
+  done
+  DIR=$P c lora-machine-after machine show "$NAME"; DIR=$P c lora-models-after model ls --on "$NAME"
+}
 # The phases in the order asked (`order`): a short session pays for what matters most first. `results` is the page's look at the boxes.
-for ph in $(param order 'predict relock updates tools cancel seeds results lost'); do
+for ph in $(param order 'predict relock updates tools cancel seeds results lora lost'); do
   case $ph in
     results) { has tools || has cancel || has seeds; } && [ -n "${NAME:-}" ] && pageflow results ;;
     *) ! has "$ph" || "phase_$ph" ;;
