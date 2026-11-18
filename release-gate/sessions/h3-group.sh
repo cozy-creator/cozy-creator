@@ -5,7 +5,8 @@
 # registering weights inside a construction, and every group follower failed its prepare, `Invalid device id` (Paul's Orbit,
 # PRO6-36/38/45/46 on 2x H100 NVL), with nothing between releases running a group. Each degree here forms its group, registers
 # H3's weights with native memory on every GPU and renders H3's shortest clip (Turbo, 1 s); it passes when the run completes
-# at that degree on that many GPUs. A release-gate cell of the Runtime and varena suites, run by hand: the release lead at a cut
+# at that degree on that many GPUs. On 2 or more GPUs, `second` then checks the Runtime reads the card it drives (cr-326). A
+# release-gate cell of the Runtime and varena suites, run by hand: the release lead at a cut
 # (4, 2 and 1 on one 4x rtx-3090; 8 and 7 on an 8x by hand), and a change to groups, varena or minimax-h3 at 2 as its PR proof.
 # A dev home on this runner's cozy (an RC build: pod-session `cozy`), packages from the packages_refs checkout `tree`: the
 # rental moves to the RC's builds, as Paul's laptop moves his. params:
@@ -41,7 +42,7 @@ awk -v source="$SOURCE" '
 cozy restart > "$OUT/restart.txt" 2>&1 || fail "cozy restart: $(tail -c 300 "$OUT/restart.txt")"
 [ -z "$(own)" ] || fail "this runner's Calcifer already holds a rental: $(own | paste -sd' ')"
 trap 'code=$?; claim; (exit "$code"); finish' EXIT
-RENT_ARGS="--gpus $G"
+RENT_ARGS="--ssh --gpus $G"
 quote "$(param seconds 2400)"
 GUARD_ALSO=own guard
 order
@@ -59,14 +60,23 @@ for _ in $(seq 120); do [ "$(state "$NAME")" = ready ] && break; sleep 5; done
 cozy machine show "$NAME" --json > "$OUT/show-held.json" 2> /dev/null
 say "under test: cozy $(jq -r '.status.version' "$OUT/show-held.json") · Runtime $(jq -r '.status.runtime' "$OUT/show-held.json") · TensorFS $(jq -r '.status.tensorfs' "$OUT/show-held.json") · $G GPUs"
 
-# group <degree>: from a restarted machine (no executor of the last group kept), H3 Turbo 1 s over <degree> GPUs, a new seed
-# (the call memo answers a repeated request); its record in g<degree>.json. The DiT call's execution is the widest call's.
+# restart <name>: the machine restarted (no executor of the last run kept) and ready.
+restart() {
+  cozy machine update "$NAME" --gpu-memory-limit off -y > "$OUT/restart-$1.txt" 2>&1 || fail "restart before $1"
+  for _ in $(seq 120); do [ "$(state "$NAME")" = ready ] && break; sleep 5; done
+}
+# ask <name>: H3 Turbo 1 s's request in <name>.req.json, a new seed (the call memo answers a repeated request).
+ask() {
+  jq -n --argjson s "$RANDOM$RANDOM" '{summary: {references: [], text: "A lighthouse on a rocky point at dusk, waves breaking below."},
+    beats: [{duration: 1, description: {references: [], text: "The beam sweeps once across the water."}}], seed: $s}' > "$OUT/$1.req.json"
+}
+
+# group <degree>: from a restarted machine, H3 over <degree> GPUs; its record in g<degree>.json. The DiT call's execution is the
+# widest call's.
 group() {
   local d=$1 c=g$1 n got
-  cozy machine update "$NAME" --gpu-memory-limit off -y > "$OUT/restart-$c.txt" 2>&1 || fail "restart before $c"
-  for _ in $(seq 120); do [ "$(state "$NAME")" = ready ] && break; sleep 5; done
-  jq -n --argjson s "$RANDOM$RANDOM" '{summary: {references: [], text: "A lighthouse on a rocky point at dusk, waves breaking below."},
-    beats: [{duration: 1, description: {references: [], text: "The beam sweeps once across the water."}}], seed: $s}' > "$OUT/$c.req.json"
+  restart "$c"
+  ask "$c"
   step "$c" run "$SOURCE/minimax-h3/generate" --input "$OUT/$c.req.json" --gpus "$d" --on "$NAME" --output "$OUT/$c"
   n=$(runno "$c"); [ -n "$n" ] || n=$(grep -oE '^Run [A-Z0-9]+-[0-9]+ failed' "$OUT/$c.txt" | awk '{print $2}' | tail -1)
   [ -z "$n" ] || (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$OUT/$c.json" 2> "$OUT/$c.err"
@@ -79,7 +89,49 @@ group() {
     RC=1
   fi
 }
+
+# second (cr-326): while s0 holds GPU 0, s1 runs on the second GPU alone (sealed CUDA_VISIBLE_DEVICES=1), where torch's device 0
+# is NVML's 1. Its record must name that GPU, and every GPU row of this session's runs the name, power limit and MIG mode
+# (`settings`) that `nvidia-smi -i <its uuid>` reads. A Runtime that asked NVML by torch's ordinal recorded GPU 0's for s1.
+read -r -d '' CARDS << 'JQ'
+def na: if . == "[Not Supported]" then "[N/A]" else . end;
+($smi | split("\n") | map(select(length > 0) | split(", ") | map(sub("\\s+$"; ""))
+  | {key: .[1], value: {gpu: (.[0] | tonumber), name: .[2], settings: "\(.[3] | na)W/\(.[4] | na)"}}) | from_entries) as $card
+| ($card | to_entries | map(select(.value.gpu == 1)) | .[0].key // "") as $second
+| [.[] | [.calls[]?.measurements.execution // {} | .gpus[]? | select(.uuid != "")]] as $runs
+| ($runs[-2:] | map(select(length > 0 and all(.[]; .uuid == $second))) | length) as $alone
+| [$runs[][] | select($card[.uuid] == null or $card[.uuid] != {gpu, name, settings})
+  | "GPU \(.gpu) \(.uuid) recorded \(.name) \(.settings), nvidia-smi says \($card[.uuid] // {} | "GPU \(.gpu) \(.name) \(.settings)")"] as $bad
+| if $second == "" then "FAIL second: nvidia-smi names no GPU 1"
+  elif $alone == 0 then "FAIL second: inconclusive: neither 1-GPU run ran on GPU 1 alone (\($second))"
+  elif ($bad | length) > 0 then "FAIL second: \($bad | join("; "))"
+  else "PASS second: a run on GPU 1 alone (\($second)) recorded \($card[$second].name) \($card[$second].settings), as nvidia-smi -i says; \([$runs[][]] | length) GPU rows of \($runs | length) runs match"
+  end
+JQ
+second() {
+  local c n got records=()
+  restart second
+  for c in s0 s1; do
+    ask "$c"
+    n=$(run_submit "$OUT" "$c" run "$SOURCE/minimax-h3/generate" --input "$OUT/$c.req.json" --gpus 1 --on "$NAME")
+    [ -n "$n" ] || fail "second: $c made no run: $(tail -c 300 "$OUT/$c.err")"
+    [ "$c" = s1 ] || run_wait "$OUT" s0 in_progress || fail "second: s0 never started: $(tail -c 300 "$OUT/s0.err")"
+  done
+  for c in s0 s1; do
+    run_wait "$OUT" "$c"
+    [ "$(run_get "$OUT" "$c" .status)" = completed ] ||
+      fail "second: $c $(run_get "$OUT" "$c" .status): $(run_get "$OUT" "$c" .reason.message | cut -c1-300)"
+  done
+  cozy machine ssh "$NAME" "nvidia-smi --query-gpu=index,uuid,name,power.limit,mig.mode.current --format=csv,noheader,nounits" \
+    < /dev/null 2> /dev/null | grep -E '^[0-9]+, ' > "$OUT/nvidia-smi.txt"
+  [ -s "$OUT/nvidia-smi.txt" ] || fail "second: no nvidia-smi answer from $NAME"
+  for c in "$OUT"/g[0-9].json "$OUT/s0.json" "$OUT/s1.json"; do [ -f "$c" ] && records+=("$c"); done
+  got=$(jq -rs --rawfile smi "$OUT/nvidia-smi.txt" "$CARDS" "${records[@]}")
+  say "${got:-FAIL second: no record was read}"
+  [[ $got == PASS* ]] || RC=1
+}
 for d in $DEGREES; do group "$d"; done
+if [ "$G" -ge 2 ]; then second; fi
 cozy machine logs "$NAME" --since 3h -n 0 > "$OUT/machine.log" 2>&1
 { echo "## h3-group on $NAME ($SKU x$G), degrees $DEGREES"; grep -E '^[0-9:]+ (PASS|FAIL)' "$R"; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 exit "$RC"
