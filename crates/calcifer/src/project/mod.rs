@@ -6900,10 +6900,17 @@ pub(crate) async fn queue_set(api: &Arc<Api>, row: &crate::store::RunRow) -> Vec
     crate::runs::unnamed_set(api, None).await.unwrap_or_else(|_| vec![On::Machine("local".into())])
 }
 
+/// Why a job of Calcifer's queue went nowhere (`queued_on`): it waits for what can change, or no machine will ever take it.
+pub(crate) enum Unplaced {
+    Waits(String),
+    Never(v1::Reason),
+}
+
 /// Where a job of Calcifer's queue goes now (cl-1132, Paul 11-17: "it gives that queue of jobs to a machine. If that machine dies or
 /// disappears, it re-assigns that queued job to another machine"): of `set`, the soonest finish, as a render's job goes (`pick`). Never
-/// one that quoted no finish: a machine that doesn't answer is no candidate until it does. Else why none can take it now.
-pub(crate) async fn queued_on(api: &Arc<Api>, set: &[On], row: &crate::store::RunRow) -> Result<Offer, String> {
+/// one that quoted no finish: a machine that doesn't answer is no candidate until it does. Else why none can take it now, or the
+/// refusal no machine's answer will change (cl-1244).
+pub(crate) async fn queued_on(api: &Arc<Api>, set: &[On], row: &crate::store::RunRow) -> Result<Offer, Unplaced> {
     let hub = row.hub.as_ref().map_or_else(|| api.machines.hubs.default_origin(), ToString::to_string);
     let function = row.spec.entrypoint.as_str();
     let payload: Value = row.spec.payload.as_ref().and_then(|payload| serde_json::from_str(payload.get()).ok()).unwrap_or_default();
@@ -6944,11 +6951,16 @@ pub(crate) async fn queued_on(api: &Arc<Api>, set: &[On], row: &crate::store::Ru
     match placement::soonest(&offers, now) {
         Some(soonest) => Ok(well_placed(api, &offers, soonest, &hub, read.as_ref(), function, &Map::new(), now)),
         None => {
+            // Every machine that answered refuses the request itself (`origin: request`): the same answer for good, so it fails with it.
+            let request: Vec<&v1::Reason> = offers.iter().filter_map(|offer| offer.refusal.as_ref().filter(|reason| reason.origin == "request")).collect();
+            if !request.is_empty() && request.len() == offers.len() {
+                return Err(Unplaced::Never(request[0].clone()));
+            }
             let why: Vec<String> = offers.iter().map(|offer| placement::said(offer, now)).chain(said).collect();
-            Err(match why.is_empty() {
+            Err(Unplaced::Waits(match why.is_empty() {
                 true => "waiting for a machine that can take it".into(),
                 false => format!("waiting for a machine that can take it: {}", why.join("; ")),
-            })
+            }))
         }
     }
 }
