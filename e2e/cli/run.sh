@@ -543,6 +543,7 @@ WEB_3=(
   glloss
   llm
   hints
+  focus-return
 )
 # The path of a computer with no GPU: the canvas in 2D (cl-1048), for the core cells (web.sh's lane `2d`; coordinator, 11-16).
 WEB_2D=(
