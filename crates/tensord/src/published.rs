@@ -2060,6 +2060,8 @@ fn apply_adapters(
     let (mut selections, mut names) = (vec![], vec![]);
     for adapter in &choice.adapters {
         let mut name = if adapter.source.is_empty() { adapter.model.clone() } else { adapter.source.clone() };
+        // The Hub model whose card says its recommended strength: a named one's, or a held one's as it was pulled.
+        let mut carded = (adapter.source.is_empty() && !adapter.model.starts_with("local/")).then(|| adapter.model.clone());
         let header = if adapter.source.is_empty() && adapter.model.starts_with("local/") {
             // One this machine holds by name (`cozy model install … local/<name>`).
             held_local(store, &adapter.model)?.header.id()
@@ -2067,7 +2069,9 @@ fn apply_adapters(
             // A caller's own LoRA slot handed to its call (`Weights.ref`, cl-1281): the checkpoint this machine holds, by its header,
             // named as it was pulled.
             let held = object(&adapter.manifest)?;
-            name = Pulled::of(store, &held).ok().flatten().map_or_else(|| adapter.manifest.clone(), |pulled| format!("{}@{}", pulled.model, pulled.release));
+            let pulled = Pulled::of(store, &held).ok().flatten();
+            name = pulled.as_ref().map_or_else(|| adapter.manifest.clone(), |pulled| format!("{}@{}", pulled.model, pulled.release));
+            carded = pulled.map(|pulled| pulled.model);
             held.id()
         } else if adapter.source.is_empty() {
             // By name, resolved at the Hub, or the owner's by hash (th-245).
@@ -2100,8 +2104,9 @@ fn apply_adapters(
             job.stage(format!("{} for an adapter of {}", made.format, grant.slot));
             made.header.id()
         };
+        // Given none (a call's `Lora(ref)`), its release's recommended strength, else 1 (cl-1281; Calcifer fills a request's).
         let strength = if adapter.scale.is_empty() {
-            1.0
+            carded.zip(source).and_then(|(model, source)| release_strength(source, &model)).unwrap_or(1.0)
         } else {
             adapter.scale.parse::<f64>().map_err(|_| {
                 (
@@ -2142,6 +2147,20 @@ fn apply_adapters(
     grant.adapted = Some(crate::gpu_service::Adapted { model: base, adapters });
     grant.manifest = composed.checkpoint.id().id();
     Ok(warnings)
+}
+
+/// A LoRA's recommended strength, as its Hub card says (none: unread, or none set), kept 10 minutes: its owner can change it.
+fn release_strength(source: &hub::Source, model: &str) -> Option<f64> {
+    static READ: std::sync::LazyLock<Mutex<HashMap<String, (Instant, Option<f64>)>>> = std::sync::LazyLock::new(Default::default);
+    let key = format!("{} {model}", source.origin);
+    if let Some((_, strength)) = READ.lock().unwrap().get(&key).filter(|(at, _)| at.elapsed() < Duration::from_secs(600)) {
+        return *strength;
+    }
+    let (org, name) = model.split_once('/')?;
+    let card = hub::Catalog::new(source).ok().and_then(|catalog| catalog.model(org, name).ok())?;
+    let strength = card.model.strength.filter(|strength| strength.is_finite());
+    READ.lock().unwrap().insert(key, (Instant::now(), strength));
+    strength
 }
 
 /// A catalog read the Hub answered 404 to is the thing named absent there; any other failure
