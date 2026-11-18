@@ -641,27 +641,37 @@ async fn held(api: &Api, hub: &str, package: &super::Package, function: &str, ma
         .flat_map(|callable| callable.models.iter().chain(interface.call_slots(callable)))
         .map(|slot| (slot.path.as_str(), slot))
         .collect();
-    // Each slot it may wait for, by its card's checkpoint, with the slot's choice and components.
-    let mut held: HashMap<&str, (Lane, String, Vec<String>)> = HashMap::new();
+    // Each slot it may wait for, by its card's checkpoint, with the slot's choice and components: the cards read together, as are the
+    // headers below (cl-1123: read one after another, a package's first guess in a fresh project took up to 2.75 s, 44199938129).
+    let mut asked: Vec<(&str, &Slot, &String, Option<String>)> = vec![];
     for path in wanted.needed.iter().chain(wanted.either.iter().flatten()) {
-        let Some(slot) = slots.get(path.as_str()).filter(|_| !held.contains_key(path.as_str())) else { continue };
+        let Some(slot) = slots.get(path.as_str()).filter(|_| !asked.iter().any(|(held, ..)| *held == path.as_str())) else { continue };
         let param = Weights::param(slot);
         let Some(written) = on_box.get(param).or(slot.default.as_ref()) else { continue };
         let lane = (placed.as_ref().and_then(|placed| placed.slots.iter().find(|(held, ..)| held == param)))
             .map(|(_, lane, _)| lane.clone())
             .or_else(|| slot.lane.clone());
-        let Some(checkpoint) = checkpoint(api, hub, written, lane.as_deref()).await else { continue };
-        held.insert(path.as_str(), (checkpoint, written.clone(), slot.fetched_components()));
+        asked.push((path.as_str(), *slot, written, lane));
     }
+    let cards = crate::stages::stage("cards", futures_util::future::join_all(asked.iter().map(|(_, _, written, lane)| checkpoint(api, hub, written, lane.as_deref())))).await;
+    let held: HashMap<&str, (Lane, String, Vec<String>)> = (asked.into_iter().zip(cards))
+        .filter_map(|((path, slot, written, _), card)| Some((path, (card?, written.clone(), slot.fetched_components()))))
+        .collect();
     let resolved = ::needs::resolved(&wanted, |path| held.get(path).map(|(lane, _, components)| (lane.checkpoint.clone(), components.clone())));
+    let lanes: Vec<(&Lane, &String, Vec<String>)> = (resolved.needed.into_iter())
+        .filter_map(|(checkpoint, components)| held.values().find(|(lane, ..)| lane.checkpoint == checkpoint).map(|(lane, written, _)| (lane, written, components)))
+        .collect();
+    let headers = crate::stages::stage("headers", futures_util::future::join_all(lanes.iter().map(|(lane, _, components)| async move {
+        match &lane.header {
+            Some(header) => crate::hub::headers::wanted(api, hub, header, components).await,
+            None => None,
+        }
+    })))
+    .await;
     let mut counted: HashSet<String> = HashSet::new();
     let mut models = vec![];
-    for (checkpoint, components) in resolved.needed {
-        let Some((lane, written, _)) = held.values().find(|(lane, ..)| lane.checkpoint == checkpoint) else { continue };
-        let chunks = match &lane.header {
-            Some(header) => crate::hub::headers::wanted(api, hub, header, &components).await,
-            None => None,
-        };
+    for ((lane, written, components), chunks) in lanes.into_iter().zip(headers) {
+        let checkpoint = lane.checkpoint.clone();
         let bytes = match chunks {
             Some(chunks) => chunks.iter().filter(|chunk| counted.insert(chunk.sha256.clone())).map(|chunk| chunk.length).sum(),
             None => lane.bytes,

@@ -3920,6 +3920,13 @@ const PLACED_AGAIN: u32 = 3;
 /// box's guess alike (cl-1004, cl-1104). `asked`: its box in its project, whose render's request its function's needs rules read (cl-1103).
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn job_of(host: &Host, dir: &FsPath, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, asked: Option<(&Asking, &str)>) -> Result<placement::Job, String> {
+    job_and_package(host, dir, key, on, hub, with, made, asked).await.map(|(job, _)| job)
+}
+
+/// `job_of`, and the package it read for the first of `on`: a guess reads it once (cl-1123: twice, a local package's guess staged its
+/// checkout twice, 80 ms each, 44204359393).
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn job_and_package(host: &Host, dir: &FsPath, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, asked: Option<(&Asking, &str)>) -> Result<(placement::Job, Package), String> {
     job_read(host, dir, key, on, hub, with, made, asked).await.map_err(|unread| match unread {
         Unquotable::Again(why) | Unquotable::Not(why) => why,
     })
@@ -3935,7 +3942,7 @@ enum Unquotable {
 /// `job_of`, its reads timed as stages of the quote (`crate::stages`), and why not said as whether asking again may help. `asked`: its
 /// box in its project, whose render's request its function's needs rules read (cl-1103); none, no request is known and no rule answers.
 #[allow(clippy::too_many_arguments)]
-async fn job_read(host: &Host, dir: &FsPath, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, asked: Option<(&Asking, &str)>) -> Result<placement::Job, Unquotable> {
+async fn job_read(host: &Host, dir: &FsPath, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, asked: Option<(&Asking, &str)>) -> Result<(placement::Job, Package), Unquotable> {
     let api = host.api();
     let package = match crate::stages::stage("package", host.foreseen(hub, with, dir, &on)).await {
         Err(e) if e.kind == Kind::Unavailable => return Err(Unquotable::Again(format!("{with}: {}", e.message))),
@@ -3955,7 +3962,8 @@ async fn job_read(host: &Host, dir: &FsPath, key: String, on: Vec<On>, hub: &str
     });
     let scope = crate::private_io::of_path(dir).ok().flatten();
     let source = package.local.clone().filter(|dir| dir.is_dir());
-    Ok(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on, scope, source })
+    let job = placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on, scope, source };
+    Ok((job, package))
 }
 
 /// A project's boxes as their renders would ask their functions, read once (cl-1103): what each one's needs rules read, so a machine is
@@ -4766,7 +4774,7 @@ impl Walk {
                     }
                     Err(Unquotable::Again(why)) => break Err(Unquoted { why: format!("Cozy couldn't get an estimate from its machines after {QUOTE_ATTEMPTS} tries: {}", inner(&why)), gave_up: true, silent: vec![] }),
                     Err(Unquotable::Not(why)) => break Err(Unquoted { why, gave_up: false, silent: vec![] }),
-                    Ok(job) => break Ok(job),
+                    Ok((job, _)) => break Ok(job),
                 }
             }
         };

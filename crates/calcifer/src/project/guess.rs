@@ -27,7 +27,7 @@ use api::{calcifer::On, config::Origin, error::Error, machine as v1};
 use serde_json::{Map, Value};
 use tokio::sync::watch;
 
-use super::{Asking, Project, host::{Host, Renderer}, job_of};
+use super::{Asking, Project, host::{Host, Package, Renderer}, job_and_package};
 use crate::{api::Api, placement, plan, prefetch::Guess, store::now_ms};
 
 /// What's typed settles this long before it's guessed again (cl-1123: a prediction is only as good as how early it starts). A project
@@ -39,6 +39,10 @@ const LOADS: Duration = Duration::from_millis(800);
 const BOXES: usize = 64;
 /// A box's guess waits this long for its package and its models' cards, as its estimate does (`fit`).
 const READ: Duration = Duration::from_secs(20);
+/// The most guess rounds of a project that go at once: an edit made while one reads starts its own, and the newest stands.
+const ROUNDS: usize = 2;
+/// A box's guess that takes this long says what it waited on.
+const SLOW: Duration = Duration::from_millis(250);
 
 /// Moves whenever a project closes: each one's guesses end with it.
 static CLOSED: LazyLock<watch::Sender<u64>> = LazyLock::new(|| watch::channel(0).0);
@@ -150,8 +154,14 @@ pub(super) fn keep(api: &Arc<Api>, project: &Arc<Project>) {
         // `why`: what made it stale, said with the guess it makes.
         let (mut read, mut load, mut stale, mut why) = (String::new(), 0, true, Cow::Borrowed("shown"));
         let loads = || api.machines.lists.load_moved.load(Ordering::Acquire);
+        // Rounds run beside this loop, so an edit made while one reads (a package's first guess in a fresh project: 2.75 s, which a
+        // typed edit waited behind in 44199938129) starts its own as it settles. The newest round to finish stands (`applied`); an
+        // older one finishing after it changes nothing, and none does once the project closes.
+        let applied = Arc::new(Mutex::new(0_u64));
+        let (ended, mut ending) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let (mut started, mut going) = (0_u64, 0_usize);
         loop {
-            if stale {
+            if stale && going < ROUNDS {
                 // An edit that came while it guessed settles as an edit, whatever else moved (44068453992: one waited 800 ms).
                 if edits.has_changed().unwrap_or(false) && open.upgrade().is_some_and(|project| super::revision(&project.folder.dir) != read) {
                     why = Cow::Borrowed("edited");
@@ -168,13 +178,28 @@ pub(super) fn keep(api: &Arc<Api>, project: &Arc<Project>) {
                 machines.borrow_and_update();
                 read = super::revision(&project.folder.dir);
                 load = loads();
-                let began = std::time::Instant::now();
-                let guesses = guesses(&api, &project).await;
-                tracing::info!(target: crate::prefetch::TARGET, "{folder}: {} guesses in {} ms ({why})", guesses.len(), began.elapsed().as_millis());
-                api.machines.lists.guess(&api.machines, &folder, guesses);
+                (started, going) = (started + 1, going + 1);
+                let (api, folder, why, applied, ended, round) = (api.clone(), folder.clone(), why.clone(), applied.clone(), ended.clone(), started);
+                tokio::spawn(async move {
+                    let began = std::time::Instant::now();
+                    let guesses = guesses(&api, &project).await;
+                    drop(project);
+                    let mut newest = lock(&*applied);
+                    match round > *newest {
+                        true => {
+                            *newest = round;
+                            tracing::info!(target: crate::prefetch::TARGET, "{folder}: {} guesses in {} ms ({why})", guesses.len(), began.elapsed().as_millis());
+                            api.machines.lists.guess(&api.machines, &folder, guesses);
+                        }
+                        false => tracing::info!(target: crate::prefetch::TARGET, "{folder}: a newer round's guesses stand over these, {} ms ({why})", began.elapsed().as_millis()),
+                    }
+                    drop(newest);
+                    let _ = ended.send(());
+                });
                 stale = false;
             }
             tokio::select! {
+                Some(()) = ending.recv() => going -= 1,
                 changed = closed.changed() => {
                     if changed.is_err() || open.strong_count() == 0 {
                         break;
@@ -207,6 +232,8 @@ pub(super) fn keep(api: &Arc<Api>, project: &Arc<Project>) {
                 },
             }
         }
+        // A round still going changes nothing now.
+        *lock(&*applied) = u64::MAX;
         api.machines.lists.guess_closed(&api.machines, &folder);
         lock(&MADE).retain(|(at, _), _| *at != folder);
         lock(&UNGUESSED).retain(|(at, _), _| *at != folder);
@@ -287,9 +314,10 @@ async fn guesses_in(api: &Arc<Api>, project: &Arc<Project>) -> Vec<Guess> {
     // its item keeps its key and its machine goes on making it ready: what dropped and listed again 13 s later in 44057515041.
     let made: Vec<Guess> = (names.into_iter().zip(made))
         .filter_map(|(name, made)| match made {
-            Guessed::Made(guess) => {
+            Guessed::Made(guess, key) => {
                 guessed(&folder, &name);
-                if let Some(memo) = lock(&MADE).get_mut(&(folder.clone(), name)) {
+                // Only for the request it was made of: a round that finished after a newer one leaves that one's memo as it is.
+                if let Some(memo) = lock(&MADE).get_mut(&(folder.clone(), name)).filter(|memo| memo.key == key) {
                     memo.guess = Some((*guess).clone());
                 }
                 Some(*guess)
@@ -313,24 +341,33 @@ async fn guesses_in(api: &Arc<Api>, project: &Arc<Project>) -> Vec<Guess> {
 /// What a box's guess came to: made; nothing, and why (its package makes nothing of its kind, it is an encrypted project's local
 /// code); or not known this time, and why.
 enum Guessed {
-    Made(Box<Guess>),
+    /// With the key of the request it was made of (`request_key`).
+    Made(Box<Guess>, u64),
     Nothing(Cow<'static, str>),
     Unknown(Cow<'static, str>),
 }
 
-/// The guess for one box: none when no machine that serves now could run it, or its package says nothing to run.
+/// The guess for one box: none when no machine that serves now could run it, or its package says nothing to run. One that takes `SLOW`
+/// says what it waited on, stage by stage (`crate::stages`).
 #[allow(clippy::too_many_arguments)]
 async fn guess(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, folder: &str, on: Vec<On>, boxed: Boxed, asking: &Asking) -> Guessed {
+    let stages = Arc::new(Mutex::new(crate::stages::Stages::default()));
+    crate::stages::recorded(stages.clone(), staged(api, project, host, hub, folder, on, boxed, asking, &stages)).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn staged(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, folder: &str, on: Vec<On>, boxed: Boxed, asking: &Asking, stages: &Mutex<crate::stages::Stages>) -> Guessed {
     let began = std::time::Instant::now();
     let (name, with, kind, made, media) = boxed;
-    let read = job_of(host, &project.folder.dir, name.clone(), on, hub, &with, made.clone(), Some((asking, name.as_str())));
-    let mut job = match tokio::time::timeout(READ, read).await {
-        Ok(Ok(job)) => job,
+    let first = on.first().cloned();
+    let read = job_and_package(host, &project.folder.dir, name.clone(), on, hub, &with, made.clone(), Some((asking, name.as_str())));
+    let (mut job, package) = match tokio::time::timeout(READ, read).await {
+        Ok(Ok(read)) => read,
         Ok(Err(why)) => return Guessed::Unknown(Cow::Owned(format!("its quote couldn't be read: {why}"))),
         Err(_) => return Guessed::Unknown(Cow::Borrowed("its quote didn't answer in time")),
     };
     job.size.refs = Some(media);
-    let (offers, _) = placement::offers_now(api, std::slice::from_ref(&job)).await;
+    let (offers, _) = crate::stages::stage("offers", placement::offers_now(api, std::slice::from_ref(&job))).await;
     let now = now_ms();
     let serves = |offer: &placement::Offer| offer.ready_at_ms.is_none() && matches!(&offer.machine, On::Machine(name) if api.machines.live_frame(name).is_some());
     let Some(offers) = offers.into_iter().next() else { return Guessed::Unknown(Cow::Borrowed("no machine quoted it")) };
@@ -351,13 +388,19 @@ async fn guess(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, f
         })
         .collect();
     let placed = crate::prefetch::Placed { finish_ms: chosen.finish_at_ms, others };
-    let (item, function) = match item(api, host, project, hub, (name.as_str(), with.as_str(), kind.as_str(), &made), &chosen.machine, asking).await {
+    // The package its quote read, where that was read for this machine; else read for it.
+    let read = (first.as_ref() == Some(&chosen.machine)).then_some(package);
+    let (item, function, key) = match item(api, host, project, hub, (name.as_str(), with.as_str(), kind.as_str(), &made), &chosen.machine, asking, read).await {
         Ok(Ok(item)) => item,
         Ok(Err(why)) => return Guessed::Nothing(why),
         Err(why) => return Guessed::Unknown(Cow::Owned(format!("its request couldn't be read: {}", why.message))),
     };
-    tracing::info!(target: crate::prefetch::TARGET, "{folder}: {name} guessed on {machine} in {} ms", began.elapsed().as_millis());
-    Guessed::Made(Box::new(Guess { project: Arc::downgrade(project), asset: name, machine: machine.clone(), hub: hub.to_owned(), item, function, placed, draft: draft(&with, &made) }))
+    let took = began.elapsed();
+    match took < SLOW {
+        true => tracing::info!(target: crate::prefetch::TARGET, "{folder}: {name} guessed on {machine} in {} ms", took.as_millis()),
+        false => tracing::info!(target: crate::prefetch::TARGET, "{folder}: {name} guessed on {machine} in {} ms: {}", took.as_millis(), lock(stages).said()),
+    }
+    Guessed::Made(Box::new(Guess { project: Arc::downgrade(project), asset: name, machine: machine.clone(), hub: hub.to_owned(), item, function, placed, draft: draft(&with, &made) }), key)
 }
 
 /// A box's draft request, hashed: its tool and its fields. One edited is a new guess, which a failed one's doesn't stand in for.
@@ -373,9 +416,13 @@ fn draft(with: &str, made: &Map<String, Value>) -> u64 {
 /// draft bound, its draft's seed); and the function, as its row says it. Its package is read statically, nothing installed to read
 /// it (`Host::foreseen`). Err(why) inside: none, as its package makes nothing of the kind, or it is an encrypted project's local
 /// code, which goes with the run that calls it.
-async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, with, kind, made): (&str, &str, &str, &Map<String, Value>), machine: &On, asking: &Asking) -> Result<Result<(v1::Predicted, String), Cow<'static, str>>, Error> {
+#[allow(clippy::too_many_arguments)]
+async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, with, kind, made): (&str, &str, &str, &Map<String, Value>), machine: &On, asking: &Asking, read: Option<Package>) -> Result<Result<(v1::Predicted, String, u64), Cow<'static, str>>, Error> {
     let dir = &project.folder.dir;
-    let package = host.foreseen(hub, with, dir, std::slice::from_ref(machine)).await?;
+    let package = match read {
+        Some(package) => package,
+        None => crate::stages::stage("package", host.foreseen(hub, with, dir, std::slice::from_ref(machine))).await?,
+    };
     let Some(renderer) = package.first_making(kind) else { return Ok(Err(Cow::Owned(format!("{} makes no {kind}", package.name)))) };
     let source = match &renderer.local {
         None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: recorded(api, project, hub, &renderer)?, ..Default::default() }),
@@ -392,7 +439,7 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
             let carried = (on.clone(), package.manifest.clone());
             let mut held = lock(&CARRIED).get(&carried).cloned();
             // There already, a run of it having carried it: carried by its manifest alone.
-            if held.is_none() && is_there(api, on, &package.manifest).await {
+            if held.is_none() && crate::stages::stage("held there", is_there(api, on, &package.manifest)).await {
                 let source = v1::LocalSource { manifest: package.manifest.clone() };
                 lock(&CARRIED).insert(carried.clone(), source.clone());
                 held = Some(source);
@@ -402,8 +449,8 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
                 None => {
                     let hubs = &api.machines.hubs;
                     let origin = Origin::parse(&if hub.is_empty() { hubs.default_origin() } else { hub.to_owned() })?;
-                    let staged = crate::local_code::source(hubs.home(), &crate::local_code::own(api, path)?, hubs, &origin).await?;
-                    if let Err(why) = api.calcifer.ship(on, &staged.inputs).await {
+                    let staged = crate::stages::stage("source", crate::local_code::source(hubs.home(), &crate::local_code::own(api, path)?, hubs, &origin)).await?;
+                    if let Err(why) = crate::stages::stage("carried", api.calcifer.ship(on, &staged.inputs)).await {
                         return Ok(Err(Cow::Owned(format!("its local code wasn't carried to {on}: {why}"))));
                     }
                     lock(&CARRIED).insert(carried, staged.source.clone());
@@ -413,7 +460,7 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
             v1::Source::Local(source)
         }
     };
-    let request = asking.request(name, &package, &renderer.function);
+    let request = crate::stages::stage("bind", async { asking.request(name, &package, &renderer.function) }).await;
     // What its request is, as its machine will plan it: the fields it sends, and what its rules make of them.
     let answers = (request.as_ref().zip(api::interface::entrypoint(package.document(), &renderer.function))).map(|(request, entry)| ::needs::answers(entry, request));
     let fields: Option<Vec<&String>> = request.as_ref().and_then(Value::as_object).map(|fields| fields.keys().collect());
@@ -434,8 +481,9 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
     }
     let seed = project.draft_seed(name);
     // What it was made of, kept with it: a round in which that holds keeps it (`kept`).
+    let key = request_key(with, kind, made, seed, request.as_ref());
     let made_of = Made {
-        key: request_key(with, kind, made, seed, request.as_ref()),
+        key,
         load: api.machines.lists.load_moved.load(Ordering::Acquire),
         arrived: *api.machines.arrivals.borrow(),
         package: package.clone(),
@@ -460,7 +508,7 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
         spec.inputs = inputs;
     }
     // Its key is its machine's list's to give (`Lists::key`).
-    Ok(Ok((v1::Predicted { key: String::new(), spec }, package.name.clone() + "/" + &renderer.function)))
+    Ok(Ok((v1::Predicted { key: String::new(), spec }, package.name.clone() + "/" + &renderer.function, key)))
 }
 
 /// `machine` holds local source `manifest` whole, as Calcifer kept it.
