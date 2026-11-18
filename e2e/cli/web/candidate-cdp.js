@@ -72,13 +72,23 @@ async function candidateCDP(page, origin, directory) {
     if (!entry) { entry = {}; entry.seen = new Promise(done => { entry.done = done; }); cancels.set(networkId, entry); }
     return Promise.race([entry.seen, new Promise(done => setTimeout(done, 2000, false))]);
   };
-  const failed = ({ requestId, canceled }) => {
+  const net = new Map(), pw = [];
+  const note = (id, what) => { const e = net.get(id) ?? []; e.push(what); net.set(id, e); };
+  page.on('requestfailed', r => pw.push({ url: r.url(), error: r.failure()?.errorText }));
+  const failed = ({ requestId, canceled, errorText, blockedReason }) => {
+    note(requestId, `failed:${errorText}:${canceled}:${blockedReason ?? ''}`);
     if (!canceled) return;
     const entry = cancels.get(requestId);
     if (entry) entry.done(true); else cancels.set(requestId, { seen: Promise.resolve(true), done() {} });
   };
   const paused = event => {
     const task = handle(event).catch(async failure => {
+      if (/Invalid InterceptionId/.test(String(failure?.message))) {
+        await new Promise(done => setTimeout(done, 2500));
+        receipt.diag = receipt.diag ?? [];
+        receipt.diag.push({ networkId: event.networkId ?? null, stage: event.responseStatusCode !== undefined ? 'response' : 'request', resource: event.resourceType,
+          path: new URL(event.request.url).pathname, net: net.get(event.networkId) ?? null, pw: pw.filter(x => x.url === event.request.url) });
+      }
       if (/Invalid InterceptionId/.test(String(failure?.message)) && await cancelled(event.networkId)) {
         receipt.aborted.push({ path: new URL(event.request.url).pathname, resource: event.resourceType });
         return;
@@ -141,6 +151,9 @@ async function candidateCDP(page, origin, directory) {
   };
   const closed = () => { void dispose(); };
   Object.defineProperty(receipt, 'dispose', { value: dispose });
+  session.on('Network.requestWillBeSent', ({ requestId }) => note(requestId, 'sent'));
+  session.on('Network.loadingFinished', ({ requestId }) => note(requestId, 'finished'));
+  session.on('Network.responseReceived', ({ requestId, response }) => note(requestId, `response:${response.status}`));
   session.on('Fetch.requestPaused', paused); session.on('Page.frameNavigated', navigated); session.on('Network.loadingFailed', failed);
   page.once('close', closed);
   try {
