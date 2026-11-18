@@ -634,7 +634,7 @@ impl Runs {
         let held = self
             .service
             .engine
-            .with_journal(|j| j.object(&crate::private_io::resource_key(&actor_id(actor)), sha256))
+            .read_journal(|j| j.object(&crate::private_io::resource_key(&actor_id(actor)), sha256))
             .map_err(problem)?;
         let Some(length) = held else {
             return Err(Error::not_found("object_not_found", "this signer wrote no such object"));
@@ -658,7 +658,7 @@ impl Runs {
             let bound = self
                 .service
                 .engine
-                .with_journal(|journal| journal.preparations_of(&actor, &installed.alias))
+                .read_journal(|journal| journal.preparations_of(&actor, &installed.alias))
                 .map_err(problem)?;
             let downloaded = gpu.as_ref().is_some_and(|gpu| bound.iter().any(|bound| gpu.downloaded_now(bound)));
             let base = match downloaded {
@@ -715,7 +715,7 @@ impl Runs {
         let kept = self
             .service
             .engine
-            .with_journal(|journal| journal.warm_sets())
+            .read_journal(|journal| journal.warm_sets())
             .map_err(problem)?;
         let holds = self.service.gpu().map(|gpu| gpu.members(&actor));
         let mut items: Vec<v1::WarmItem> = vec![];
@@ -1351,7 +1351,7 @@ impl Runs {
             if let v1::Event::Outcome(outcome) = &mut event.event {
                 let record = self.record(actor, id)?;
                 let measured = (self.service.engine)
-                    .with_journal(|journal| journal.measurements(&record.id))
+                    .read_journal(|journal| journal.measurements(&record.id))
                     .map_err(problem)?;
                 outcome.measurements = measured.and_then(raw);
                 // Its own time running its callable, every attempt summed (0: unknown).

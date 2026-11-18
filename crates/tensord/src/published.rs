@@ -820,7 +820,7 @@ impl Publisher {
             let key = json!([RESOLVE, origin, named.model, named.release, named.lane, hardware.gpus, hardware.plain,
                 hardware.components, hardware.free_vram.is_some()]);
             let name = key.to_string();
-            let held = service.engine.with_journal(|j| j.named(&name)).map_err(io_failure)?;
+            let held = service.engine.read_journal(|j| j.named(&name)).map_err(io_failure)?;
             match held.and_then(|(answer, read)| Some((serde_json::from_str::<Answer>(&answer).ok()?, read))) {
                 Some((answer, read)) => {
                     if stale(read) {
@@ -893,7 +893,7 @@ impl Publisher {
         }
         let tree = named.tree()?.clone();
         let key = json!(["commit-v1", hub::origin_key(&source.origin).unwrap_or_default(), named.model, tree.id()]).to_string();
-        let held: Option<Held> = service.engine.with_journal(|j| j.named(&key)).map_err(io_failure)?
+        let held: Option<Held> = service.engine.read_journal(|j| j.named(&key)).map_err(io_failure)?
             .and_then(|(held, _)| serde_json::from_str(&held).ok());
         let reader = match &source.capability {
             Some(capability) => capability.account(),
@@ -1100,9 +1100,9 @@ impl Publisher {
         let Some(gpu) = service.pool() else {
             return Ok(None);
         };
-        let catalog = service.engine.with_journal(|j| j.catalog())?;
+        let catalog = service.engine.read_journal(|j| j.catalog())?;
         let key = Self::resolution_key(&installation, request, &machine_row(&gpu), catalog)?;
-        let Some(id) = service.engine.with_journal(|j| j.resolution(actor, &key))? else {
+        let Some(id) = service.engine.read_journal(|j| j.resolution(actor, &key))? else {
             return Ok(None);
         };
         let Some(preparation) = service.engine.preparation(actor, &id)? else {
@@ -1116,7 +1116,7 @@ impl Publisher {
         }
         // Made longer ago than `FRESH`, it is made again, reading its names again behind it, by a
         // run that reaches their Hub; one that reaches none keeps it.
-        let warnings = service.engine.with_journal(|j| j.named(&warnings_key(&key)))?;
+        let warnings = service.engine.read_journal(|j| j.named(&warnings_key(&key)))?;
         let warnings = match warnings {
             Some((said, made)) if !stale(made) || request.source.is_none() => said,
             None if request.source.is_none() => String::new(),
@@ -1272,7 +1272,7 @@ impl Publisher {
             .map_err(io_failure)?;
         // It replaces this release's installations by another Runtime pair or PyTorch: they go,
         // and with them what only they held.
-        let unsettled = service.engine.with_journal(|j| j.unsettled_generations()).map_err(io_failure)?;
+        let unsettled = service.engine.read_journal(|j| j.unsettled_generations()).map_err(io_failure)?;
         let earlier = |i: &Installation| {
             i.package == installed.package && i.release == installed.release && i.hub == installed.hub && i.alias != installed.alias
                 && !unsettled.contains(&i.generation)
@@ -1525,7 +1525,7 @@ impl Publisher {
         job: &Job,
     ) -> Result<(Plan, Vec<String>), Failure> {
         // Read before its names: one read anew meanwhile moves it, and this plan stays under the old.
-        let catalog = service.engine.with_journal(|j| j.catalog()).map_err(io_failure)?;
+        let catalog = service.engine.read_journal(|j| j.catalog()).map_err(io_failure)?;
         let Granted { grants, warnings: said, unbound } = self.grants(service, gpu, installation, request, job)?;
         let warnings: Vec<String> = gpu.problems().into_iter().chain(said).collect();
         job.stage(match request.package.is_empty() {

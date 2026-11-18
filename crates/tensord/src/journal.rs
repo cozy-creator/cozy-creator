@@ -835,6 +835,18 @@ impl Journal {
         })
     }
 
+    /// A second connection on `root`'s journal for reads alone (cl-1202): in WAL mode it reads the last committed state while a
+    /// commit waits for the disk, so a reader (Status, a run's state) never waits on a writer. Opened after `open`, which made the
+    /// schema.
+    pub(crate) fn open_reader(root: &Path) -> io::Result<Self> {
+        let connection = Connection::open(root.join(FILE)).map_err(db_error)?;
+        connection.execute_batch("PRAGMA query_only=ON; PRAGMA busy_timeout=5000;").map_err(db_error)?;
+        let workspace_id: String = connection
+            .query_row("SELECT value FROM machine_metadata WHERE key='workspace_id'", [], |row| row.get(0))
+            .map_err(db_error)?;
+        Ok(Self { connection, workspace_id, synchronous: "OFF" })
+    }
+
     /// A locking project leaves nothing here (cl-984): every row of its runs and every row its scope keyed goes, their
     /// pages overwritten and the WAL emptied. Its history is its own (Calcifer's project journal); its runs are idle.
     pub(crate) fn retire_project(&mut self, project_id: &str) -> io::Result<()> {

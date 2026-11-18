@@ -673,6 +673,7 @@ case $SHARD in
     rental_end
     machine_show_runs
     writes_once
+    answers_while_committing
     project_stream
     agent_render
     agent_api
@@ -732,6 +733,8 @@ case $SHARD in
   local-wake) parts="local_wake_update logs" ;;
   # A machine's install, download and run lines, three jobs queued on it cold (cl-905): by dispatch, as BiRefNet runs minutes.
   lines) parts="machine_lines logs" ;;
+  # Status answers while the journal's commits wait for the disk (cl-1202): about 3 min.
+  answers) parts="answers_while_committing logs" ;;
   # An idle Calcifer and TensorD, CPU time and wakeups (xs-189): by dispatch, as it measures for minutes.
   idle) parts="idle_cost logs" ;;
   # A second project's first install and run against the first's (cl-984): by dispatch, as it builds seven environments.

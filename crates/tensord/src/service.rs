@@ -305,7 +305,7 @@ impl Service {
     /// (`Pool::import_recent`).
     pub(crate) fn import_installed(&self) -> io::Result<()> {
         let Some(gpu) = self.gpu() else { return Ok(()) };
-        let bound = self.engine.with_journal(|journal| journal.bound_generations())?;
+        let bound = self.engine.read_journal(|journal| journal.bound_generations())?;
         gpu.import_recent(self.catalog.recent(bound));
         Ok(())
     }
@@ -422,7 +422,7 @@ impl Service {
         if let Some(gpu) = self.gpu() {
             gpu.drop_members(actor, &generations.difference(&kept).cloned().collect());
         }
-        let bound = self.engine.with_journal(|j| j.bound_generations())?;
+        let bound = self.engine.read_journal(|j| j.bound_generations())?;
         let (mut reclaimed, mut retained) = (0u64, vec![]);
         for generation in generations.iter().filter(|g| !bound.contains(*g)) {
             if let Some(gpu) = self.gpu() {

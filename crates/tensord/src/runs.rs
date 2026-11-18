@@ -1688,7 +1688,7 @@ impl Runs {
         let Some(gpu) = self.service.gpu() else {
             return Ok(());
         };
-        let kept = self.service.engine.with_journal(|journal| journal.warm_sets())?;
+        let kept = self.service.engine.read_journal(|journal| journal.warm_sets())?;
         let actors: std::collections::BTreeSet<&String> = kept.iter().map(|(actor, _)| actor).collect();
         for actor in actors {
             let all = kept.iter().filter(|(of, _)| of == actor);
@@ -1903,7 +1903,7 @@ impl Runs {
             crate::private_io::resolve(&scope)?;
             return Ok(());
         }
-        let unsettled = self.service.engine.with_journal(|j| j.unsettled_generations())?;
+        let unsettled = self.service.engine.read_journal(|j| j.unsettled_generations())?;
         let preparing = self.local.preparing();
         self.service.uninstall(actor, |prior| {
             prior.package == current.package
