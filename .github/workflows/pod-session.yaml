@@ -140,6 +140,13 @@ jobs:
             install -m 0755 dev/cozy-*/cozy-linux-x86_64 "$bin/cozy"
           fi
           "$bin/cozy" --version
+      # A link that dies (the Hub's 503s, 22:22-22:27Z on 11-18) left two sessions' ssh waiting out its 5400 s timeout on idle
+      # pods (44407508649, 44408751569). This runner's ssh, `cozy machine ssh`'s too, gives up after a minute with no answer:
+      # the step fails and the session's own cleanup ends its pod.
+      - run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          { printf 'Host *\n  ServerAliveInterval 15\n  ServerAliveCountMax 4\n'; cat ~/.ssh/config 2> /dev/null || true; } > ~/.ssh/config.new
+          mv ~/.ssh/config.new ~/.ssh/config && chmod 600 ~/.ssh/config
       - id: runtime
         env:
           ASKED: ${{ inputs.runtime_ref }}
