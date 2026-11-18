@@ -524,13 +524,22 @@ same() {
   fa=$(ls "$OUT/$1.out"/* 2> /dev/null | grep -E '[.](png|webp|jpg|mp4)$' | sort | head -1)
   fb=$(ls "$OUT/$2.out"/* 2> /dev/null | grep -E '[.](png|webp|jpg|mp4)$' | sort | head -1)
   d=''
-  [ -z "$fa" ] || [ -z "$fb" ] || d=$(nice -n 19 ffmpeg -nostdin -i "$fa" -i "$fb" -lavfi '[0:v][1:v]psnr' -f null - 2>&1 | grep -o 'average:[^ ]*' | tail -1)
-  say "DIFFERS $1 $2 | $a against $b | video/picture PSNR ${d:-unread}"
+  if [ -n "$fa" ] && [ -n "$fb" ]; then
+    nice -n 19 ffmpeg -nostdin -v error -i "$fa" -i "$fb" -lavfi "[0:v][1:v]psnr=stats_file=$OUT/psnr-$1-$2.log" -f null - 2> /dev/null
+    d=$(awk '{for (i = 1; i <= NF; i++) if ($i ~ /^psnr_avg:/) {v = substr($i, 10); n++; s += (v == "inf" ? 100 : v); if (min == "" || (v != "inf" && v + 0 < min)) {min = v + 0; at = n}}}
+      END {if (n) printf "mean %.2f dB over %d frames, worst %s dB at frame %d", s / n, n, (min == "" ? "inf" : min), at}' "$OUT/psnr-$1-$2.log" 2> /dev/null)
+  fi
+  say "DIFFERS $1 $2 | $a against $b | video/picture PSNR (inf as 100) ${d:-unread}"
 }
 for k in "${names[@]}"; do
   [ "${DONE[$k]:-}" = completed ] || continue
   [ "${DONE[$k-uncapped]:-}" != completed ] || same "$k" "$k-uncapped"
   [ "${DONE[$k-off]:-}" != completed ] || same "$k" "$k-off"
 done
+# compare: [[a, b], ...] of any two runs by name (a cell, `<cell>-uncapped`, `<cell>-off`), each pair that both completed.
+while read -r a b; do
+  [ -n "$a" ] || continue
+  if [ "${DONE[$a]:-}" = completed ] && [ "${DONE[$b]:-}" = completed ]; then same "$a" "$b"; else say "COMPARE $a $b | not both completed (${DONE[$a]:-none}, ${DONE[$b]:-none})"; fi
+done < <(param compare '[]' | jq -r '.[] | "\(.[0]) \(.[1])"')
 say "SWEEP at $CAPV on $NAME: $ran ran: $completed completed, $failed failed, $unfinished unfinished at their caps; $skipped not run"
 say "measured.jsonl: $(wc -l < "$OUT/measured.jsonl") rows"
