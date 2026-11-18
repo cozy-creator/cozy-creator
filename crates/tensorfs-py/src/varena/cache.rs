@@ -131,7 +131,7 @@ impl PyCache {
     ) -> PyResult<Bound<'py, PyAny>> {
         self.check()?;
         let span = tensor_export::layout_span(code, bits, &shape, None)?;
-        if byte_offset % u64::from(bits / 8) != 0 {
+        if !byte_offset.is_multiple_of(u64::from(bits / 8)) {
             return Err(PyValueError::new_err("tensor byte offset is not aligned to its dtype"));
         }
         let inside = byte_offset
@@ -148,7 +148,8 @@ impl PyCache {
         let base = self.cache.base().map_err(|error| raise(py, error))?;
         let pointer = usize::try_from(base + byte_offset)
             .map_err(|_| PyValueError::new_err("tensor pointer exceeds the host address width"))?;
-        tensor_export::capsule(py, View::new(self), pointer, self.device, code, bits, shape, None)
+        let view = View::new(self);
+        tensor_export::capsule(py, view, pointer, tensor_export::CUDA, self.device, code, bits, shape, None)
     }
     /// Return the address space: every page released and passed, no tensor of it alive, and never
     /// from its own shrink callback. A refusal changes nothing and may be tried again.

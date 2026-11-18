@@ -121,13 +121,18 @@ unsafe extern "C" fn capsule_delete<T>(capsule: *mut ffi::PyObject) {
     }
 }
 
-/// A DLPack capsule of a CUDA tensor of `shape` at `pointer` on `device`. Its consumer's storage
-/// keeps `owner` until it goes; `owner` drops on whichever thread that is, with no Python attached.
+/// DLPack's device kind for a CUDA device's memory.
+pub(super) const CUDA: i32 = 2;
+
+/// A DLPack capsule of a tensor of `shape` at `pointer`, of `kind` on `device`. Its consumer's
+/// storage keeps `owner` until it goes; `owner` drops on whichever thread that is, with no Python
+/// attached.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn capsule<'py, T: 'static>(
     py: Python<'py>,
     owner: T,
     pointer: usize,
+    kind: i32,
     device: i32,
     code: u8,
     bits: u8,
@@ -155,7 +160,7 @@ pub(super) fn capsule<'py, T: 'static>(
         tensor: Tensor {
             data: pointer as *mut c_void,
             device: Device {
-                kind: 2,
+                kind,
                 ordinal: device,
             },
             ndim,
@@ -231,7 +236,7 @@ fn _varena_public_use_dlpack(
     let pointer = usize::try_from(pointer)
         .map_err(|_| invalid("tensor pointer exceeds the host address width"))?;
     let device = storage.device();
-    capsule(py, storage, pointer, device, code, bits, shape, strides)
+    capsule(py, storage, pointer, CUDA, device, code, bits, shape, strides)
 }
 
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
