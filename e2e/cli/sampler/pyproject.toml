@@ -1,0 +1,27 @@
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "e2e-sampler"
+version = "0.1.0"
+description = "cr-346's cell: lm.generate's tokens against vLLM 0.19.1's sampler on the same logits"
+requires-python = ">=3.12"
+dependencies = [
+    "cozy-runtime[media]>=0.48.0.dev0,<0.49",
+    "msgspec>=0.19",
+    "numpy>=1.26",
+    "pillow>=12",
+    "tensorfs>=0.16",
+    "tokenizers>=0.23",
+    "torch>=2.6",
+    "torchvision>=0.21",
+    "transformers>=5.17",
+]
+
+[project.entry-points."cozy.application"]
+default = "e2e_sampler:app"
+
+[tool.uv.build-backend]
+module-name = "e2e_sampler"
+module-root = ""
