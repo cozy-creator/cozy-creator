@@ -184,7 +184,7 @@ def main() -> int:
     one = verbs.add_parser("asset")
     one.add_argument("project")
     one.add_argument("names", nargs="+")
-    for verb in ("board", "tools", "undo", "history", "show"):
+    for verb in ("board", "state", "tools", "undo", "history", "show"):
         verbs.add_parser(verb).add_argument("project")
     for verb in ("cancel", "fit"):
         one = verbs.add_parser(verb)
@@ -220,6 +220,8 @@ def main() -> int:
         print(json.dumps(call("GET", project(args.project) + "/history")))
     elif args.verb == "board":
         print(json.dumps(read(args.project).get("board")))
+    elif args.verb == "state":
+        print(json.dumps(read(args.project)))
     elif args.verb == "show":
         return show(args.project)
     elif args.verb == "tools":
