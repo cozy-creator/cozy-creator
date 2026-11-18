@@ -54,6 +54,8 @@
 #   gpus       optional: the pod's GPU count (1); a cell's `--gpus=<n>` arg runs it on that many
 #   file       optional: a JSON file in this checkout (from its root) holding all of these, for a matrix past the
 #              dispatch input's 65,535 characters
+#   min_cores, min_ram_gib, host_tries  optional (proof only): a host under them is ended before any download and another
+#              rented, host_tries (3) in all
 #   free_gib   optional: before the first cell another program (suites/bench/vram.py, raw driver allocations by a
 #              root shell over ssh) takes all of GPU 0 but this many GiB and holds it to the end, a card as full as
 #              the 0.25.0 gate's RTX 5090 kazune was (about 3 GiB outside cozy; cr-293)
@@ -138,6 +140,28 @@ NEED=$(param need_s 3600)
 [ "$NEED" -le 19800 ] || fail "need_s $NEED: past 5.5 h, a hosted job's 6 h end would lose every result; split the session"
 quote "$NEED"
 rent
+# PROOF ONLY (se-176, as proof/var-030-managed-working's cap-sweep): `min_cores` and `min_ram_gib` (the smaller of MemTotal
+# and the container's memory.max): a host below them is ended by name and another rented, `host_tries` in all, before any
+# download. `cozy machine rent` takes no host size, so the session looks after the boot. Unset, every host passes.
+MINC=$(param min_cores 0) MINR=$(param min_ram_gib 0) TRIES=$(param host_tries 3)
+for try in $(seq "$TRIES"); do
+  hw=''
+  for _ in 1 2 3 4 5 6; do
+    hw=$(timeout 90 cozy machine ssh "$NAME" 'echo "$(nproc) $(awk "/^MemTotal/ {printf \"%d\", \$2 / 1048576}" /proc/meminfo) $(cat /sys/fs/cgroup/memory.max 2> /dev/null || echo max)"' < /dev/null 2> /dev/null |
+      grep -E '^[0-9]+ [0-9]+ ' | tail -1)
+    [ -z "$hw" ] || break; sleep 10
+  done
+  read -r cores ram cg <<< "${hw:-0 0 max}"
+  [[ $cg =~ ^[0-9]+$ ]] && [ $((cg >> 30)) -lt "$ram" ] && ram=$((cg >> 30))
+  say "host $NAME: $cores cores, $ram GiB of RAM for the container (asked at least $MINC cores, $MINR GiB)"
+  if [ "$cores" -ge "$MINC" ] && [ "$ram" -ge "$MINR" ]; then break; fi
+  [ "$try" -lt "$TRIES" ] || fail "no host with $MINC cores and $MINR GiB in $TRIES rentals"
+  timeout 120 cozy machine end "$NAME" -y > "$OUT/end-small-$try.txt" 2>&1
+  for _ in $(seq 36); do gone "$RID" && break; sleep 5; done
+  gone "$RID" || fail "$NAME, too small, did not end"
+  say "ended $NAME (too small) and verified gone; renting again"
+  order; ready
+done
 # A dev home on an RC build moves its rental to the RC's builds once it's ready: no cell starts before that ends.
 cozy machine show "$NAME" --json > "$OUT/show-rc.json" 2> /dev/null
 if [ -n "$(jq -r '.rc.state // empty' "$OUT/show-rc.json")" ]; then
