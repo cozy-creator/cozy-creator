@@ -142,6 +142,12 @@ all = ["e2e/lib.sh", "e2e/run.sh", "e2e/isolated.sh", "e2e/skew/**", "e2e/candid
   "e2e/cli/project/**", "e2e/cli/script/**", "e2e/cli/weightless/**", ".github/workflows/e2e.yaml", "ci/**", "Cargo.lock",
   "Cargo.toml", "rust-toolchain.toml", "crates/api/**", "crates/platform/**", "crates/cozy/**"]
 [cozy-creator.shards.paths]
+# What plays on screen (cl-1208): the players, their slots across tabs, Focus's frame and the files they read; its cell runs once on the
+# built page and once from Vite as `dev = true` serves it, which only its own shard installs.
+web-playback = ["web/app/src/api/events.ts", "web/app/src/api/transport.ts", "web/app/src/canvas/Media.tsx", "web/app/src/canvas/Orbit.tsx",
+  "web/app/src/canvas/FocusFrame.tsx", "web/app/src/canvas/FocusedViewport.css", "web/app/src/canvas/FullScreen.ts", "web/app/src/canvas/Card.tsx",
+  "web/app/src/canvas/CanvasHost.tsx", "web/app/src/canvas/board/**", "web/app/src/canvas/timeline/**", "web/app/src/main.tsx",
+  "web/app/package.json", "web/app/pnpm-lock.yaml", "web/app/vite.config.*", "crates/calcifer/src/files.rs", "e2e/cli/web/playback.spec.js"]
 runs = ["crates/cli/src/run/**", "crates/calcifer/src/runs/**", "crates/calcifer/src/stages.rs", "crates/calcifer/src/previews.rs",
   "crates/calcifer/src/reports.rs", "crates/calcifer/src/play.rs", "crates/tensord/src/gpu_service.rs", "crates/tensord/src/execution.rs",
   "crates/tensord/src/seam.rs", "crates/tensord/src/access.rs", "crates/executor-api/**", "crates/tensorfs/**", "crates/varena*/**",
