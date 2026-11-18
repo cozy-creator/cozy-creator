@@ -177,9 +177,15 @@ impl<'a> Sequence<'a> {
         while let Some(step) = ORDER.get(self.step).copied() {
             let (index, started) = (self.step, Instant::now());
             let before = self.released;
+            let waited = self.gpu.driver().waited_ns();
             let done = self.run(step, want, physical);
             self.gpu.driver().note_reclaim(index, started.elapsed());
-            self.gpu.driver().note_reclaim_step(index, matches!(done, Ok(true)), self.released.saturating_sub(before));
+            self.gpu.driver().note_reclaim_step(
+                index,
+                matches!(done, Ok(true)),
+                self.released.saturating_sub(before),
+                self.gpu.driver().waited_ns().saturating_sub(waited),
+            );
             if done? {
                 return Ok(true);
             }

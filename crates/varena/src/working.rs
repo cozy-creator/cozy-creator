@@ -137,9 +137,7 @@ pub struct WorkingStats {
     pub reclaim_longest_step: u64,
     pub reclaim_step_ns: [u64; crate::reclaim::STEPS],
     // PROOF ONLY (var-030), never merge (`cuda::Counters`).
-    pub reclaim_step_runs: [u64; crate::reclaim::STEPS],
-    pub reclaim_step_gave: [u64; crate::reclaim::STEPS],
-    pub reclaim_step_bytes: [u64; crate::reclaim::STEPS],
+    pub reclaim_step_proof: [[u64; crate::reclaim::STEPS]; 4],
     pub reclaim_proof: [u64; 5],
     pub event_queries: u64,
     pub event_records: u64,
@@ -2442,7 +2440,7 @@ pub fn stats(device: i32) -> Result<WorkingStats> {
         stats.reclaim_longest_step,
     ) = owner.driver().times();
     stats.reclaim_step_ns = owner.driver().reclaim_steps();
-    (stats.reclaim_step_runs, stats.reclaim_step_gave, stats.reclaim_step_bytes, stats.reclaim_proof) = owner.driver().proof();
+    (stats.reclaim_step_proof, stats.reclaim_proof) = owner.driver().proof();
     (stats.observed_mapped, stats.observed_retired, stats.observed_ns) = observer::observed();
     Ok(stats)
 }

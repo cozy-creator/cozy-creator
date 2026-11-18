@@ -24,9 +24,11 @@ done
 EOS
 setsid nohup sh /var/tmp/ab-gpu.sh >> /var/tmp/ab-gpu.log 2>&1 < /dev/null &
 echo $! > /var/tmp/ab-gpu.pid; echo started'
+HOSTWATCH=$(dirname "${BASH_SOURCE[0]}")/var030-host.sh  # var-030 (proof only): the pod's host sampler
 # watch: start the pod's reader unless it runs (after the rental and each update: a restart may end it).
 gpuwatch() {
   local try
+  timeout 60 cozy machine ssh "$NAME" "echo $(base64 -w0 "$HOSTWATCH") | base64 -d > /var/tmp/var030-host.sh; [ -s /var/tmp/var030-host.pid ] && kill -0 \$(cat /var/tmp/var030-host.pid) 2> /dev/null || { setsid nohup sh /var/tmp/var030-host.sh >> /var/tmp/var030-host.log 2>&1 < /dev/null & echo \$! > /var/tmp/var030-host.pid; }" > /dev/null 2>&1
   for try in 1 2 3 4 5 6; do
     timeout 60 cozy machine ssh "$NAME" "echo $(base64 -w0 <<< "$WATCH") | base64 -d | sh" 2>&1 | grep -qE '^(started|running)$' && return 0
     sleep 10
@@ -47,7 +49,7 @@ readings() {
 }
 # var-030 (proof only): the Runtime's per-request files, the dmon log and the card's link and host facts.
 pod_files() {
-  timeout 300 cozy machine ssh "$NAME" 'cd /var/tmp && { nvidia-smi --query-gpu=name,memory.total,pcie.link.gen.current,pcie.link.width.current,pcie.link.gen.max,pcie.link.width.max --format=csv; nproc; grep -m1 "model name" /proc/cpuinfo; grep -E "MemTotal|MemAvailable" /proc/meminfo; } > var030-facts.txt 2>&1; tar -czf - var030 var030-dmon.log var030-facts.txt 2> /dev/null | base64 -w0' 2> /dev/null |
+  timeout 300 cozy machine ssh "$NAME" 'cd /var/tmp && { nvidia-smi --query-gpu=name,memory.total,pcie.link.gen.current,pcie.link.width.current,pcie.link.gen.max,pcie.link.width.max --format=csv; nproc; grep -m1 "model name" /proc/cpuinfo; grep -E "MemTotal|MemAvailable" /proc/meminfo; } > var030-facts.txt 2>&1; tar -czf - var030 var030-dmon.log var030-host.log var030-facts.txt 2> /dev/null | base64 -w0' 2> /dev/null |
     grep -v '^Warning: Permanently added' | base64 -d > "$OUT/var030-pod.tgz" 2> /dev/null
   say "var030 pod files: $(stat -c %s "$OUT/var030-pod.tgz" 2> /dev/null || echo 0) bytes"
 }

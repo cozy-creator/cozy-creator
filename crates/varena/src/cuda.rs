@@ -92,6 +92,7 @@ pub(crate) struct Counters {
     pub(crate) reclaim_step_runs: [AtomicU64; crate::reclaim::STEPS],
     pub(crate) reclaim_step_gave: [AtomicU64; crate::reclaim::STEPS],
     pub(crate) reclaim_step_bytes: [AtomicU64; crate::reclaim::STEPS],
+    pub(crate) reclaim_step_wait_ns: [AtomicU64; crate::reclaim::STEPS],
     pub(crate) reclaim_allocations: AtomicU64,
     pub(crate) reclaim_rounds: AtomicU64,
     pub(crate) reclaim_exhausted: AtomicU64,
@@ -321,7 +322,8 @@ impl Driver {
     }
 
     /// PROOF ONLY (var-030): a reclaim step ran, whether it made progress, the bytes it released.
-    pub(crate) fn note_reclaim_step(&self, step: usize, gave: bool, bytes: usize) {
+    pub(crate) fn note_reclaim_step(&self, step: usize, gave: bool, bytes: usize, waited_ns: u64) {
+        self.counters.reclaim_step_wait_ns[step].fetch_add(waited_ns, Ordering::Relaxed);
         self.counters.reclaim_step_runs[step].fetch_add(1, Ordering::Relaxed);
         if gave {
             self.counters.reclaim_step_gave[step].fetch_add(1, Ordering::Relaxed);
@@ -350,13 +352,21 @@ impl Driver {
         }
     }
 
-    /// PROOF ONLY (var-030): the counters above, by step in ORDER, then the five scalars.
-    #[allow(clippy::type_complexity)]
-    pub(crate) fn proof(&self) -> ([u64; crate::reclaim::STEPS], [u64; crate::reclaim::STEPS], [u64; crate::reclaim::STEPS], [u64; 5]) {
+    /// PROOF ONLY (var-030): time waited outside every lock so far, events and joins.
+    pub(crate) fn waited_ns(&self) -> u64 {
+        self.counters.wait_event_ns.load(Ordering::Relaxed) + self.counters.wait_join_ns.load(Ordering::Relaxed)
+    }
+
+    /// PROOF ONLY (var-030): the counters above, by step in ORDER (runs, progress, bytes, waited
+    /// ns), then the five scalars.
+    pub(crate) fn proof(&self) -> ([[u64; crate::reclaim::STEPS]; 4], [u64; 5]) {
         (
-            std::array::from_fn(|step| self.counters.reclaim_step_runs[step].load(Ordering::Relaxed)),
-            std::array::from_fn(|step| self.counters.reclaim_step_gave[step].load(Ordering::Relaxed)),
-            std::array::from_fn(|step| self.counters.reclaim_step_bytes[step].load(Ordering::Relaxed)),
+            [
+                std::array::from_fn(|step| self.counters.reclaim_step_runs[step].load(Ordering::Relaxed)),
+                std::array::from_fn(|step| self.counters.reclaim_step_gave[step].load(Ordering::Relaxed)),
+                std::array::from_fn(|step| self.counters.reclaim_step_bytes[step].load(Ordering::Relaxed)),
+                std::array::from_fn(|step| self.counters.reclaim_step_wait_ns[step].load(Ordering::Relaxed)),
+            ],
             [
                 self.counters.reclaim_allocations.load(Ordering::Relaxed),
                 self.counters.reclaim_rounds.load(Ordering::Relaxed),
