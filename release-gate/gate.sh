@@ -692,7 +692,7 @@ expect candidate-installed PASS "$M runs cozy $v, Runtime $rt, TensorFS $tfs"
 # contract refuses fails here by name, whatever its cells do (22 of 25 were refused from 0.43.1 to 0.45.0, unseen: xs-174).
 # Judged by its package lines (`ok   <suite>/<package>:`, `FAIL <suite>/<package>:`), each package's own verdict.
 if [ ${#GATE_PKGS[@]} -gt 0 ]; then
-  "$HERE/interfaces.sh" --runtime "${RWF:-$rt}" ${TWF:+--tensorfs "$TWF"} ${PKGS:+--packages "$PKGS"} "${GATE_PKGS[@]}" > gate-packages.txt 2>&1
+  "$HERE/interfaces.sh" --runtime "${RWF:-$rt}" ${TWF:+--tensorfs "$TWF"} ${PKGS:+--packages "$PKGS"} --out interfaces "${GATE_PKGS[@]}" > gate-packages.txt 2>&1
   gate_refused=$(grep -E '^FAIL [^ :]+/[^ :]+:' gate-packages.txt | cut -c1-160 | paste -sd';')
   gate_read=$(grep -cE '^ok   [^ :]+/[^ :]+:' gate-packages.txt)
   if [ -z "$gate_refused" ] && [ "$gate_read" = "${#GATE_PKGS[@]}" ]; then

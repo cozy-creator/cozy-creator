@@ -6,15 +6,17 @@
 # all on that Runtime. No GPU, no pod, none of a package's dependencies, seconds a package. A package with Hub sources and no
 # uv.lock is locked first, as cozy locks it (cl-871): its Hub sources the --packages checkout's packages, else the Hub's.
 # Describing alone passed Runtime 0.40.0, whose interface for minimax-h3 no executor could read.
+# --out DIR: each package's interface kept as <DIR>/<package>.json, as TensorD writes it (ledger.py reads its defaults).
 # Exit 0: every package read back. Exit 1: names each that didn't.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
-RUNTIME='' TENSORFS='' CHECKOUT='' PACKAGES=()
+RUNTIME='' TENSORFS='' CHECKOUT='' KEEP='' PACKAGES=()
 while [ $# -gt 0 ]; do
   case $1 in
     --runtime) RUNTIME=$2; shift 2 ;;
     --tensorfs) TENSORFS=$2; shift 2 ;;
     --packages) CHECKOUT=$(cd "$2" && pwd); shift 2 ;;
+    --out) KEEP=$2; mkdir -p "$KEEP" || exit 2; shift 2 ;;
     *) [ -d "$1" ] || { echo "no directory $1" >&2; exit 2; }; PACKAGES+=("${1%/}"); shift ;;
   esac
 done
@@ -63,7 +65,7 @@ PY
 }
 FAILED=() COUNT=0
 for project in $(for d in "${PACKAGES[@]}"; do if [ -f "$d/pyproject.toml" ]; then echo "$d"; else ls -d "$d"/*/; fi; done); do
-  project=${project%/}; name=${project#"$(dirname "$(dirname "$project")")/"}
+  project=${project%/}; name=${project#"$(dirname "$(dirname "$project")")/"} pkg=$(basename "$project")
   [ -f "$project/pyproject.toml" ] || continue
   COUNT=$((COUNT + 1))
   if [ ! -f "$project/uv.lock" ] && grep -qE '^[A-Za-z0-9._-]+ *= *\{ *index *= *"tensorhub"' "$project/pyproject.toml"; then
@@ -86,6 +88,7 @@ for project in $(for d in "${PACKAGES[@]}"; do if [ -f "$d/pyproject.toml" ]; th
     echo "FAIL $name: read back: $(sed -n 1p "$W/err")"
     FAILED+=("$name"); continue
   fi
+  [ -z "$KEEP" ] || cp "$W/package-interface.json" "$KEEP/$pkg.json"
   echo "ok   $name: $(jq '.interface.entrypoints | length' "$W/reply.json") functions"
 done
 [ "$COUNT" -gt 0 ] || { echo "no package under ${PACKAGES[*]}"; exit 2; }
