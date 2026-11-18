@@ -54,10 +54,15 @@ impl Card {
         Some(self.document.get("requirements")?.as_array()?.iter().filter_map(Value::as_str).collect())
     }
 
-    /// Its publisher's benchmarks (cl-1024). None for a release published before the Hub kept them: a card read from a Hub without
-    /// them is of such a release, so it is never read again for them.
+    /// Its publisher's benchmarks (cl-1024): every row where its Hub serves them all (`benchmark_rows`, th-421), else those a cozy
+    /// before them reads. None for a release published before the Hub kept them: a card read from a Hub without them is of such a
+    /// release, so it is never read again for them.
     pub fn benchmarks(&self) -> Vec<crate::estimate::Benchmark> {
-        serde_json::from_value(self.document["benchmarks"].clone()).unwrap_or_default()
+        let rows = match self.document.get("benchmark_rows") {
+            Some(every) if every.is_array() => every,
+            _ => &self.document["benchmarks"],
+        };
+        serde_json::from_value(rows.clone()).unwrap_or_default()
     }
 
 }
