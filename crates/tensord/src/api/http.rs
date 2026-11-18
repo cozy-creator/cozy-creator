@@ -988,7 +988,7 @@ async fn put_object(
     drop(m.admit()?);
     let (start, end, length) = span(&headers)?;
     let (runs, actor) = (m.runs.clone(), actor_id(caller.actor));
-    let objects = runs.clone();
+    let (objects, named) = (runs.clone(), digest.clone());
     let Some(upload) = blocking(&objects, move |runs| runs.objects.upload(&actor, &digest, length).map_err(Into::into)).await? else {
         return Ok((StatusCode::NO_CONTENT, [(v1::HELD, held(&[(0, length)]))]).into_response());
     };
@@ -1014,7 +1014,11 @@ async fn put_object(
             at += data.len() as u64;
         }
         drop(receiver);
-        let held = runs.objects.settle(&landing)?;
+        let (held, stored) = runs.objects.settled(&landing)?;
+        // What a guess carries ahead lands as a run's inputs do (cl-1123): said where it lands whole.
+        if stored {
+            tracing::info!("objects: {named} landed whole in parts, {length} bytes");
+        }
         wrote.map(|()| held)
     }));
     let mut frames = m.authority(&caller).wrap(Box::pin(body.into_data_stream().map(|frame| {

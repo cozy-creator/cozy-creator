@@ -398,7 +398,7 @@ async fn staged(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, 
     let placed = crate::prefetch::Placed { finish_ms: chosen.finish_at_ms, others };
     // The package its quote read, where that was read for this machine; else read for it.
     let read = (first.as_ref() == Some(&chosen.machine)).then_some(package);
-    let (item, function, key) = match item(api, host, project, hub, (name.as_str(), with.as_str(), kind.as_str(), &made), &chosen.machine, asking, read).await {
+    let (item, function, key, files) = match item(api, host, project, hub, (name.as_str(), with.as_str(), kind.as_str(), &made), &chosen.machine, asking, read).await {
         Ok(Ok(item)) => item,
         Ok(Err(why)) => return Guessed::Nothing(why),
         Err(why) => return Guessed::Unknown(Cow::Owned(format!("its request couldn't be read: {}", why.message))),
@@ -408,7 +408,7 @@ async fn staged(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, 
         true => tracing::info!(target: crate::prefetch::TARGET, "{folder}: {name} guessed on {machine} in {} ms", took.as_millis()),
         false => tracing::info!(target: crate::prefetch::TARGET, "{folder}: {name} guessed on {machine} in {} ms: {}", took.as_millis(), lock(stages).said()),
     }
-    Guessed::Made(Box::new(Guess { project: Arc::downgrade(project), asset: name, machine: machine.clone(), hub: hub.to_owned(), item, function, placed, draft: draft(&with, &made) }), key)
+    Guessed::Made(Box::new(Guess { project: Arc::downgrade(project), asset: name, machine: machine.clone(), hub: hub.to_owned(), item, function, placed, draft: draft(&with, &made), files }), key)
 }
 
 /// A box's draft request, hashed: its tool and its fields. One edited is a new guess, which a failed one's doesn't stand in for.
@@ -422,10 +422,11 @@ fn draft(with: &str, made: &Map<String, Value>) -> u64 {
 /// What `machine` has ready for box `name` of `kind` whose tool is `with` (`PUT /v1/prepare`): the function its text names, else the
 /// first of its package that makes this kind, as the request a render of the box would send it (`super::predicted`, cl-1123: its
 /// draft bound, its draft's seed); and the function, as its row says it. Its package is read statically, nothing installed to read
-/// it (`Host::foreseen`). Err(why) inside: none, as its package makes nothing of the kind, or it is an encrypted project's local
-/// code, which goes with the run that calls it.
+/// it (`Host::foreseen`); and the files its request reads, which go to its machine ahead of its render (`Calcifer::carry_ahead`).
+/// Err(why) inside: none, as its package makes nothing of the kind, or it is an encrypted project's local code, which goes with the
+/// run that calls it.
 #[allow(clippy::too_many_arguments)]
-async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, with, kind, made): (&str, &str, &str, &Map<String, Value>), machine: &On, asking: &Asking, read: Option<Package>) -> Result<Result<(v1::Predicted, String, u64), Cow<'static, str>>, Error> {
+async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, with, kind, made): (&str, &str, &str, &Map<String, Value>), machine: &On, asking: &Asking, read: Option<Package>) -> Result<Result<(v1::Predicted, String, u64, Vec<crate::AheadFile>), Cow<'static, str>>, Error> {
     let dir = &project.folder.dir;
     let package = match read {
         Some(package) => package,
@@ -502,25 +503,28 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
     };
     lock(&MADE).insert((dir.to_string_lossy().into_owned(), name.to_owned()), made_of);
     let mut spec = super::predicted(&renderer, made, request, seed, source)?;
-    // Its files, written to its machine behind the item (cl-1123): the item is its render's request to the byte, and its machine has
-    // them before the render is sent; its plan reads none of them, so the item goes at once (44065133454: a first write held the
-    // edit's guess 1.4 s). An encrypted project's go only with the run that reads them.
-    if crate::private_io::of_path(dir)?.is_none_or(|scope| scope.storage.ordinary) {
-        let (inputs, staged) = super::predicted_inputs(&project.folder, &asking.lock, &spec);
-        if let (On::Machine(on), false) = (machine, staged.is_empty()) {
-            let (calcifer, on) = (api.calcifer.clone(), on.clone());
-            tokio::spawn(async move {
-                if let Err(why) = calcifer.ship(&on, &staged).await {
-                    tracing::warn!(machine = on, "a guess's files weren't written there: {why}");
-                }
-            });
-        }
-        spec.inputs = inputs;
-    }
+    // Its files as its run lists them (cl-1123), for every project, an encrypted one's too: the item is its render's request to the byte.
+    // They go to its machine behind the item, its plan reading none of them (44065133454: a first write held the edit's guess 1.4 s),
+    // and behind every run's carry, only to one of this account's own, by a run's link and through a run's check (`Calcifer::trusted`,
+    // `Calcifer::carried_ahead`; Paul, 11-18: "even for encrypted projects, sending ahead of time is fine. What really matters is that
+    // we can trust the remote machine as safe").
+    let (inputs, staged) = super::predicted_inputs(&project.folder, &asking.lock, &spec);
+    spec.inputs = inputs;
+    let encrypted = crate::private_io::of_path(dir)?.is_some_and(|scope| !scope.storage.ordinary);
+    let files = (staged.into_iter())
+        .map(|input| crate::AheadFile {
+            project: project.id().to_owned(),
+            root: project.folder_root().to_owned(),
+            folder: dir.to_string_lossy().into_owned(),
+            boxes: vec![name.to_owned()],
+            encrypted,
+            input,
+        })
+        .collect();
     // Its key is its machine's list's to give (`Lists::key`).
     // Local code's interface as read here: its machine resolves its slots while it installs the code (cl-1123).
     let interface = renderer.local.as_ref().and_then(|_| v1::Json::parse(package.document().to_string()).ok());
-    Ok(Ok((v1::Predicted { key: String::new(), spec, interface }, package.name.clone() + "/" + &renderer.function, key)))
+    Ok(Ok((v1::Predicted { key: String::new(), spec, interface }, package.name.clone() + "/" + &renderer.function, key, files)))
 }
 
 /// `machine` holds local source `manifest` whole, as Calcifer kept it.

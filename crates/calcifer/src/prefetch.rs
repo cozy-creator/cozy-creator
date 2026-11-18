@@ -81,6 +81,8 @@ pub(crate) struct Guess {
     pub placed: Placed,
     /// Its box's draft request, hashed (`guess::draft`): edited, it is a new guess, and a failed one starts over.
     pub draft: u64,
+    /// The files its item's request reads (`spec.inputs`), carried to its machine ahead of its render (`Calcifer::carry_ahead`).
+    pub files: Vec<crate::AheadFile>,
 }
 
 /// A guess's tries in a row that failed, on one machine (cl-1104): as any request is asked again (retry-standard-api-practice).
@@ -372,6 +374,25 @@ impl Lists {
             }
             guessed.retain(|guess| guess.machine != "local" || guess.project.upgrade().is_none_or(|project| !owed.iter().any(|folder| *folder == project.folder_root())));
         }
+        // What each machine's guesses read, carried there behind every run's carry (`Calcifer::carry_ahead`, cl-1123): each file of a
+        // project once, with the boxes that read it.
+        let mut files: HashMap<String, Vec<crate::AheadFile>> = HashMap::new();
+        for guess in guessed.iter().filter(|guess| guess.project.strong_count() > 0) {
+            let at = files.entry(guess.machine.clone()).or_default();
+            for file in &guess.files {
+                match at.iter_mut().find(|held| held.project == file.project && held.input.digest == file.input.digest) {
+                    Some(held) => {
+                        for name in &file.boxes {
+                            if !held.boxes.contains(name) {
+                                held.boxes.push(name.clone());
+                            }
+                        }
+                    }
+                    None => at.push(file.clone()),
+                }
+            }
+        }
+        machines.calcifer.carry_ahead(files);
         // Each machine planned or guessed on, sent before, or able to run what's planned: an idle one may prepare it.
         let mut names: Vec<String> = planned.keys().cloned().collect();
         names.extend(lock(&self.sent).keys().cloned());
