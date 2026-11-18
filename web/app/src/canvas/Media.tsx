@@ -15,7 +15,7 @@ import { fieldsOf } from "./controls"
 import { Icon, type IconName } from "../ui/Icon"
 import { tabShown, useSignal } from "../ui/signal"
 import { aspectOf, faceOf, hexOf, makes, makingRun, type Shown, shownOf, valueIn, valuesOf, watched } from "./shown"
-import { chipWords, clock, lineOf, mentionsIn, withMentions } from "./text"
+import { chipWords, lineOf, mentionsIn, withMentions } from "./text"
 import { isSelf } from "./versions"
 import { streamedWords } from "./streamed"
 import { OrbitView, orbitOf } from "./Orbit"
@@ -309,19 +309,6 @@ export function Preview({ sha256 }: { sha256: string }) {
 /** A video's frames walked across, one picture from Calcifer, so no `<video>` opens until it's clicked. */
 export function WalkedFrames({ sha256, cardWidth, at }: { sha256: string; cardWidth: number; at: number }) {
   return <Thumb sha256={sha256} cardWidth={cardWidth} strip={STRIP_FRAMES} frame={Math.min(STRIP_FRAMES - 1, Math.floor(at * STRIP_FRAMES))} className="strip" />
-}
-
-/** A video's poster, its preview on a hover, and the frame a scrub is at. */
-function Poster({ shown, cardWidth, name, scrubbed, previewing }: { shown: Shown; cardWidth: number; name: string; scrubbed?: number; previewing: boolean }) {
-  const store = useCanvasStore()
-  const at = scrubbed !== undefined && shown.duration_ms ? (scrubbed * 1000) / shown.duration_ms : null
-  return (
-    <div className="scrub">
-      <Thumb sha256={shown.sha256} cardWidth={cardWidth} pulse onSize={(aspect) => store.setAspect(name, aspect)} onShown={() => store.showThumb(name)} />
-      {at !== null ? <WalkedFrames sha256={shown.sha256} cardWidth={cardWidth} at={at} /> : previewing && <Preview sha256={shown.sha256} />}
-      {at !== null && shown.duration_ms ? <span className="tc">{clock(at * shown.duration_ms)}</span> : null}
-    </div>
-  )
 }
 
 /** What a click plays: a file here over Range, or from the machine that has it or is still making it. */
@@ -913,7 +900,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children, 
   const orbit = field === "video" ? orbitOf(shown) : null
   const turning = open && orbit && here && source && "path" in source && store.projectId ? { path: client.file(store.projectId, source.path), orbit } : null
   // On the canvas: an opened box plays the file itself.
-  const { on: previewing, hover } = usePreview(field === "video" && Boolean(here) && !view.here, previewHover)
+  const { hover } = usePreview(field === "video" && Boolean(here) && !view.here, previewHover)
   const tools = useSignal(store.tools)
   const words = lineOf(valuesOf(view), asset ? fieldsOf(asset, tools) : [])
   const setAspect = (aspect: number) => store.setAspect(name, aspect)
@@ -960,8 +947,8 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children, 
             }}
           />
         )}
-        {/* In Focus its frame is the video's own (Player): no strip's small frames under it. */}
-        {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.here && !focused ? view.scrub : undefined} previewing={previewing} />}
+        {/* A video in Focus is its own frames at their own size (Player, OrbitView), nothing under them: never a thumbnail standing in
+            before its first frame (Paul, 11-18: "Just display the video; delete this little 'fallback thumbnail'"). */}
         {nearImage && field === "image" && !own && <BufferedImage sha256={drawnImage?.sha256 ?? null} originalPath={drawnImage?.path} neighborPaths={neighborPaths} neighbors={nearImage.absent || nearImage === drawnImage ? neighbors : [nearImage.sha256, ...neighbors]} onSize={setAspect} onShown={() => store.showThumb(name)} />}
         {here && field !== "video" && field !== "image" && field !== "text" && <FramePicture key={here.sha256} sha256={here.sha256} open={Boolean(view.here)} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
         {/* What a tool wrote, whole, to read and select (xs-204), and its words as they come (xs-209): one element, so it reads on. */}

@@ -487,11 +487,8 @@ body:has(.focus-viewport) .zoom {
   .focus-card > .focus-actions { right: calc(min(25vw, 150px) + 8px); }
   .focus-viewport:has(.focus-actions) .focus-title { padding-right: 260px; }
 }
-/* A video in Focus shows its own frame at its own size (cl-1080; Paul, 11-16): until it's decoded the poster stands in, no larger than it is,
-   and the player over it shows nothing rather than black. Nothing over the picture blurs it. */
-.focus-image-transform .scrub > img:not(.strip) {
-  object-fit: scale-down;
-}
+/* A video in Focus is its own frames at their own size (cl-1080, cl-1214): until its first is decoded the frame shows nothing, never a
+   thumbnail and never black. Nothing over the picture blurs it. */
 .focus-image-transform .media .live:not([data-drawn]) {
   background: none;
 }

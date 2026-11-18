@@ -1277,22 +1277,6 @@ code {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.tc {
-  position: absolute;
-  right: 5px;
-  bottom: 5px;
-  padding: 0 4px;
-  border-radius: 3px;
-  background: #000a;
-  font: var(--tiny) var(--mono);
-  z-index: 1;
-}
-/* A video's poster, and its frames under the pointer. */
-.scrub {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-}
 .media img.strip {
   width: 800%;
   max-width: none;
@@ -1576,9 +1560,6 @@ video.preview.on {
 .card.here .stop {
   width: 40px;
   height: 40px;
-}
-.card.here .tc {
-  font-size: calc(var(--t-small) * var(--ui));
 }
 /* All of a box, under it: one block with its picture and its takes, from the picture's left edge to the takes' right edge and a gap below
    them. --here-room comes with each fit, --here is how large it's drawn against its box, and --here-gap, in its own pixels, is between the
