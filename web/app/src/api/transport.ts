@@ -43,6 +43,8 @@ export function sameOrigin(): Transport {
     const url = resolve(path)
     return url.pathname + url.search
   }
+  // Which play each element shows now.
+  const playing = new WeakMap<HTMLMediaElement, object>()
   // Each held file once, while anything shows it: by its path, its blob's URL and how many hold it.
   const held = new Map<string, { url: Promise<string>; holders: number }>()
   const media = async (path: string): Promise<{ url: string; release(): void }> => {
@@ -146,14 +148,17 @@ export function sameOrigin(): Transport {
       })().catch(() => {})
     },
     async play(path, el) {
-      // Stopped, the element lets go of what it shows, unless something else has been put in it since.
+      // Stopped, the element lets go of what it shows, unless another play has been put in it since: by this play, not its URL, which
+      // two plays of one file share (React's development build mounts an orbit twice).
       const showing = (url: string, release?: () => void) => {
+        const mine = {}
+        playing.set(el, mine)
         el.src = url
-        const set = el.getAttribute("src")
         return {
           stop() {
             release?.()
-            if (el.getAttribute("src") !== set) return
+            if (playing.get(el) !== mine) return
+            playing.delete(el)
             el.pause()
             el.removeAttribute("src")
             el.load()

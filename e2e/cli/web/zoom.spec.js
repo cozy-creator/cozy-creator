@@ -95,6 +95,9 @@ const recordTransitions = (page) => page.evaluate(() => {
   window.__transitionsStop = () => { observer.disconnect(); cancelAnimationFrame(raf); return [...seen]; };
 }).then(() => ({ stop: () => page.evaluate(() => window.__transitionsStop()) }));
 
+/** The page fetched `file` whole (cl-1215: a video plays from its bytes in the page, a blob, not its URL). */
+const fetched = (page, file) => page.evaluate((file) => performance.getEntriesByType('resource').some((one) => new URL(one.name).pathname === file), file);
+
 test('zoom', async ({ page, project, cli }) => {
   await cli.json('machine', 'use', 'local');
   const shots = join(process.env.OUT, 'web', 'zoom');
@@ -115,7 +118,7 @@ test('zoom', async ({ page, project, cli }) => {
     await focusOn(page, CLIP.name);
     await expect.poll(async () => (await view(page, 'video.live'))?.natural ?? null, { message: 'its own frame drawn' }).toEqual([CLIP.width, CLIP.height]);
     const fitted = await view(page, 'video.live');
-    expect.soft(fitted.src, 'its own file, not a thumbnail or a preview').toBe(file);
+    expect.soft(fitted.src === file || await fetched(page, file), 'its own file, not a thumbnail or a preview').toBe(true);
     expect.soft(fitted.rendering, 'fitted, smoothed').toBe('auto');
     const pointer = { x: fitted.box.x + fitted.box.width * 0.3, y: fitted.box.y + fitted.box.height * 0.4 };
     await page.mouse.move(pointer.x, pointer.y);
@@ -126,7 +129,7 @@ test('zoom', async ({ page, project, cli }) => {
     const held = within(zoomed.box, pointer);
     expect.soft(Math.abs(held.u - 0.3) + Math.abs(held.v - 0.4), `what was under the pointer stays there: ${JSON.stringify(held)}`).toBeLessThan(0.02);
     expect.soft(zoomed.box.width / fitted.box.width, 'drawn at its zoom').toBeCloseTo(zoomed.scale, 1);
-    expect.soft(zoomed.src, 'zoomed, still its own file').toBe(file);
+    expect.soft(zoomed.src === fitted.src, 'zoomed, still its own file').toBe(true);
     await soft.poll(async () => (await view(page, 'video.live'))?.rendering, { message: `at ${(zoomed.box.width / CLIP.width).toFixed(2)} screen pixels to each of its own, its pixels as they are` }).toBe('pixelated');
     expect.soft(zoomed.fitShown, 'Fit offered while zoomed').toBe(true);
   });
