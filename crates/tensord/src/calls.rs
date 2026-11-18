@@ -807,8 +807,8 @@ fn serving_call(
 /// A call's choice for each of the callee's slots `<entrypoint>.models.<name>` (null: its
 /// parent's): `ref`, a model as `cozy run model.<slot>=` names it or an exact checkpoint (a
 /// ModelArtifact; an older Runtime sends the artifact itself), and `lora`, `[{ref, strength}]`
-/// as `--lora` names them. Without a `ref`, the LoRAs stack onto the parent's choice
-/// (`Runs::child`).
+/// as `--lora` names them. Either ref may be a held checkpoint's header, a slot of the caller's own
+/// (`Weights.ref`). Without a `ref`, the LoRAs stack onto the parent's choice (`Runs::child`).
 fn model_choices(
     models: &Value,
     entrypoint: &str,
@@ -829,7 +829,10 @@ fn model_choices(
         let invalid = |error: api::error::Error| refuse(format!("for {name}: {}", error.message));
         let parameter = format!("{entrypoint}.models.{name}");
         let artifact = if chosen["ref"].is_object() { &chosen["ref"] } else { chosen };
+        // A bare `sha256:<header>` is a checkpoint this machine holds: a function's own slot handed on (`Weights.ref`, cl-1281).
+        let held = |raw: &str| model_ref::checkpoint(raw.trim()).ok();
         let mut choice = match (&chosen["ref"], &artifact["checkpoint"]) {
+            (Value::String(raw), Value::Null) if held(raw).is_some() => api::machine::ModelChoice { parameter, manifest: held(raw).unwrap_or_default(), ..Default::default() },
             (Value::String(raw), Value::Null) => ModelRef::parse(raw).map_err(invalid)?.choice(&parameter),
             (Value::Object(_) | Value::Null, Value::String(digest)) => api::machine::ModelChoice {
                 parameter,
@@ -849,7 +852,10 @@ fn model_choices(
                 Value::Number(n) => model_ref::strength(&n.to_string()).map_err(invalid)?,
                 _ => return Err(refuse(format!("for {name}: a LoRA's strength is not a number"))),
             };
-            choice.adapters.push(ModelRef::parse(raw).map_err(invalid)?.adapter(&strength));
+            choice.adapters.push(match held(raw) {
+                Some(header) => api::machine::Adapter { manifest: header, scale: strength, ..Default::default() },
+                None => ModelRef::parse(raw).map_err(invalid)?.adapter(&strength),
+            });
         }
         choices.push(choice);
     }

@@ -2057,11 +2057,18 @@ fn apply_adapters(
     let object = |header: &str| {
         storage::held(store, header).map_err(|e| ("model_download_failed", format!("checkpoint {header} is not held: {e}")))
     };
-    let mut selections = vec![];
+    let (mut selections, mut names) = (vec![], vec![]);
     for adapter in &choice.adapters {
+        let mut name = if adapter.source.is_empty() { adapter.model.clone() } else { adapter.source.clone() };
         let header = if adapter.source.is_empty() && adapter.model.starts_with("local/") {
             // One this machine holds by name (`cozy model install … local/<name>`).
             held_local(store, &adapter.model)?.header.id()
+        } else if adapter.source.is_empty() && adapter.model.is_empty() && !adapter.manifest.is_empty() {
+            // A caller's own LoRA slot handed to its call (`Weights.ref`, cl-1281): the checkpoint this machine holds, by its header,
+            // named as it was pulled.
+            let held = object(&adapter.manifest)?;
+            name = Pulled::of(store, &held).ok().flatten().map_or_else(|| adapter.manifest.clone(), |pulled| format!("{}@{}", pulled.model, pulled.release));
+            held.id()
         } else if adapter.source.is_empty() {
             // By name, resolved at the Hub, or the owner's by hash (th-245).
             if adapter.model.is_empty() {
@@ -2103,6 +2110,7 @@ fn apply_adapters(
                 )
             })?
         };
+        names.push(name);
         selections.push(crate::adapter::Selection {
             checkpoint: object(&header)?,
             component: adapter.component.clone(),
@@ -2119,19 +2127,16 @@ fn apply_adapters(
     let composed = crate::adapter::compose(store, &base, &selections)
         .map_err(|e| ("model_adapter_refused", e.to_string()))?;
     // The run's record names the base model and what each LoRA adapts (`Plan::models`).
-    let adapters = (choice.adapters.iter().zip(&selections).zip(&composed.adapted).zip(&composed.layers))
-        .map(|(((adapter, selection), components), layers)| crate::gpu_service::Applied {
-            model: if adapter.source.is_empty() { adapter.model.clone() } else { adapter.source.clone() },
+    let adapters = (names.iter().zip(&selections).zip(&composed.adapted).zip(&composed.layers))
+        .map(|(((name, selection), components), layers)| crate::gpu_service::Applied {
+            model: name.clone(),
             strength: selection.strength,
             components: components.clone(),
             layers: *layers,
         })
         .collect();
-    let warnings = (choice.adapters.iter().zip(&composed.warnings))
-        .flat_map(|(adapter, said)| {
-            let named = if adapter.source.is_empty() { &adapter.model } else { &adapter.source };
-            said.iter().map(move |w| format!("{named}: {w}"))
-        })
+    let warnings = (names.iter().zip(&composed.warnings))
+        .flat_map(|(named, said)| said.iter().map(move |w| format!("{named}: {w}")))
         .collect();
     let base = std::mem::replace(&mut grant.model, composed.name);
     grant.adapted = Some(crate::gpu_service::Adapted { model: base, adapters });
