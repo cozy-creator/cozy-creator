@@ -42,7 +42,7 @@
     "quality=full",
     "seed:=30003"
    ],
-   "max_s": 4500
+   "max_s": 3600
   },
   {
    "name": "orbit-refs",
