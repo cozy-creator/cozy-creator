@@ -328,15 +328,21 @@ else:
 JUDGE
 while read -r why; do check "prefetch yields: $why"; done < "$OUT/pre-yields.failed"
 
-# A second box, deleted while its transformer comes.
+# A second box, deleted while its transformer comes. The store goes to 10 MB/s for it, so its transformer (384 MiB) is still
+# coming when its drop lands: at 30 MB/s all six of its objects were in flight at once and had landed 10 ms before the drop came,
+# leaving nothing to stop (e2e 44306642437, 44312762038). It goes back to 30 MB/s after.
+local added deleted went=''
+sudo tc qdisc del dev lo root 2> /dev/null; slow_store prefetch 80mbit || { pre_end; return 0; }
+added=$(date -u +%s%3N)
 jq -n --arg t "$tool" '[{name: "gone", tool: $t, kind: "image", fields: {instructions: "A still never rendered.", models: {model: {ref: "e2e/pre-b@0.1.0"}}}}]' \
   | boxes_in "$P" || { pre_end; return 0; }
 # Its row counts the VAE, here already (320 MiB), with what comes: 32 MiB of its transformer in.
 came=$(pre_wait "$P" gone 352)
 [ "$came" -ge $((352 << 20)) ] || { check "prefetch yields: stand-p fetched nothing of e2e/pre-b's transformer for the second box: its row: $(pre_row "$P" gone)"; pre_end; return 0; }
+deleted=$(date -u +%s%3N)
 project_api "$P" /assets/gone -X DELETE > "$OUT/pre-yields-delete.json" 2>&1 || check "prefetch yields: the second box wasn't deleted: $(tail -c 300 "$OUT/pre-yields-delete.json")"
 for _ in $(seq 100); do
-  [ -z "$(pre_row "$P" gone)" ] && { gone=0; break; }
+  [ -z "$(pre_row "$P" gone)" ] && { gone=0; went=$(($(date -u +%s%3N) - deleted)); break; }
   sleep 0.2
 done
 [ "$gone" = 0 ] || check "prefetch yields: 20 s after its box was deleted a row still names it: $(pre_row "$P" gone)"
@@ -347,10 +353,11 @@ first=$(pre_held "$OUT/pre-yields-gone.json" e2e/pre-b)
 sleep 5
 pre_machine stand-p "$OUT/pre-yields-gone.json"
 second=$(pre_held "$OUT/pre-yields-gone.json" e2e/pre-b)
-echo "prefetch yields: its row said $((came >> 20)) MiB were there (320 of them its VAE) when its box was deleted; of e2e/pre-b stand-p holds $first, and 5 s on $second"
+echo "prefetch yields: its row said $((came >> 20)) MiB were there (320 of them its VAE) $((deleted - added)) ms after its box was made, when it was deleted; its row went ${went:-never} ms after; of e2e/pre-b stand-p holds $first, and 5 s on $second"
 [ "$first" = "$second" ] || check "prefetch yields: e2e/pre-b went on coming after its box was deleted: $first, then $second"
 J 'all(.complete | all(. != true))' <<< "$second" || check "prefetch yields: e2e/pre-b is whole on stand-p though its box was deleted as it came: $second"
 [ -n "$(pre_row "$P" first)" ] || check "prefetch yields: the box that stayed lost its row with the one deleted"
+sudo tc qdisc del dev lo root 2> /dev/null; slow_store prefetch || { pre_end; return 0; }
 }
 
 # prefetch_load (cl-1104): a guess goes where a render would go now as the machines' loads change, with no edit. A project of this
