@@ -59,6 +59,28 @@ type SetAccess = unsafe extern "system" fn(Pointer, usize, *const Access, usize)
 type Unmap = unsafe extern "system" fn(Pointer, usize) -> Status;
 type Release = unsafe extern "system" fn(Handle) -> Status;
 type CopyHostAsync = unsafe extern "system" fn(Pointer, *const c_void, usize, Object) -> Status;
+/// `CUDA_MEMCPY2D`.
+#[repr(C)]
+struct Copy2D {
+    src_x_in_bytes: usize,
+    src_y: usize,
+    src_memory_type: c_int,
+    src_host: *const c_void,
+    src_device: Pointer,
+    src_array: *mut c_void,
+    src_pitch: usize,
+    dst_x_in_bytes: usize,
+    dst_y: usize,
+    dst_memory_type: c_int,
+    dst_host: *mut c_void,
+    dst_device: Pointer,
+    dst_array: *mut c_void,
+    dst_pitch: usize,
+    width_in_bytes: usize,
+    height: usize,
+}
+const UNIFIED: c_int = 4; // CU_MEMORYTYPE_UNIFIED: an address in the unified space, host or device
+type CopyPitchedAsync = unsafe extern "system" fn(*const Copy2D, Object) -> Status;
 type Fill = unsafe extern "system" fn(Pointer, c_uchar, usize, Object) -> Status;
 type StreamCreate = unsafe extern "system" fn(*mut Object, c_uint) -> Status;
 type EventCreate = unsafe extern "system" fn(*mut Object, c_uint) -> Status;
@@ -117,6 +139,7 @@ pub(crate) struct Driver {
     unmap: Unmap,
     release: Release,
     copy_host_async: CopyHostAsync,
+    copy_pitched_async: CopyPitchedAsync,
     fill: Fill,
     host_granularity: Granularity,
     stream_create: StreamCreate,
@@ -194,6 +217,7 @@ impl Driver {
             unmap: symbol!("cuMemUnmap", Unmap),
             release: symbol!("cuMemRelease", Release),
             copy_host_async: symbol!("cuMemcpyHtoDAsync_v2", CopyHostAsync),
+            copy_pitched_async: symbol!("cuMemcpy2DAsync_v2", CopyPitchedAsync),
             fill: symbol!("cuMemsetD8Async", Fill),
             host_granularity: granularity,
             stream_create: symbol!("cuStreamCreate", StreamCreate),
@@ -551,6 +575,36 @@ impl Driver {
     pub(crate) unsafe fn copy_pinned_async(&self, dst: u64, host: usize, bytes: usize, stream: usize) -> Result<()> {
         // SAFETY: caller retains the whole pinned source and exclusive destination spans.
         status("cuMemcpyHtoDAsync_v2", unsafe { (self.copy_host_async)(dst, host as *const c_void, bytes, stream as Object) })
+    }
+
+    /// `height` rows of `width` bytes from `src` to `dst`, `src_pitch` and `dst_pitch` apart, both
+    /// unified addresses (device or pinned host memory), as one copy ordered on `stream`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) unsafe fn copy_pitched_async(
+        &self, dst: u64, dst_pitch: usize, src: u64, src_pitch: usize, width: usize, height: usize, stream: usize,
+    ) -> Result<()> {
+        let copy = Copy2D {
+            src_x_in_bytes: 0,
+            src_y: 0,
+            src_memory_type: UNIFIED,
+            src_host: std::ptr::null(),
+            src_device: src,
+            src_array: std::ptr::null_mut(),
+            src_pitch,
+            dst_x_in_bytes: 0,
+            dst_y: 0,
+            dst_memory_type: UNIFIED,
+            dst_host: std::ptr::null_mut(),
+            dst_device: dst,
+            dst_array: std::ptr::null_mut(),
+            dst_pitch,
+            width_in_bytes: width,
+            height,
+        };
+        let _context = self.enter()?;
+        // SAFETY: the caller holds both spans until the stream passes this copy; `copy` is read
+        // before the call returns.
+        status("cuMemcpy2DAsync_v2", unsafe { (self.copy_pitched_async)(&copy, stream as Object) })
     }
 
     pub(crate) fn context_joins(&self) -> u64 {

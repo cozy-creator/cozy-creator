@@ -388,6 +388,26 @@ pub fn refusal(device: i32) -> Result<Option<Refusal>> {
     Ok(owner.lock()?.refusal.take())
 }
 
+/// `height` rows of `width` bytes from `src` to `dst`, `src_pitch` and `dst_pitch` bytes apart, as
+/// one copy ordered on `stream`, on `device`'s driver. Both are unified addresses: device memory or
+/// pinned host memory. A window of a whole whose rows are not contiguous, such as heads of an
+/// attention output kept on host, crosses the link at the copy engine's rate this way, not at the
+/// rate of a kernel writing through mapped host pages (var-030).
+#[allow(clippy::too_many_arguments)]
+pub fn copy_pitched(
+    device: i32, dst: u64, dst_pitch: usize, src: u64, src_pitch: usize, width: usize, height: usize, stream: u64,
+) -> Result<()> {
+    if width > dst_pitch || width > src_pitch {
+        return Err(Error::Invalid("a pitched copy's rows are wider than their pitch"));
+    }
+    if width == 0 || height == 0 {
+        return Ok(());
+    }
+    let owner = owner(device)?;
+    // SAFETY: the caller holds both spans until `stream` passes the copy, as for any async copy.
+    unsafe { owner.driver().copy_pitched_async(dst, dst_pitch, src, src_pitch, width, height, stream as usize) }
+}
+
 impl State {
     /// A free block onto its list, and a run's onto the cut index too. The block is in the table.
     fn list(&mut self, key: (Option<PoolId>, usize, Option<u64>), ptr: u64) {

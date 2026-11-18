@@ -59,6 +59,19 @@ fn _varena_room(py: Python<'_>, device: i32) -> PyResult<std::collections::BTree
     ].into_iter().collect())
 }
 
+/// `height` rows of `width` bytes from `src` to `dst` (unified addresses: device or pinned host
+/// memory), `src_pitch` and `dst_pitch` bytes apart, as one copy ordered on `stream`.
+#[pyfunction]
+#[pyo3(signature = (device, dst, dst_pitch, src, src_pitch, width, height, *, stream))]
+#[allow(clippy::too_many_arguments)]
+fn _varena_copy_pitched(
+    py: Python<'_>, device: i32, dst: u64, dst_pitch: usize, src: u64, src_pitch: usize, width: usize, height: usize,
+    stream: u64,
+) -> PyResult<()> {
+    py.detach(|| { check()?; varena::working::copy_pitched(device, dst, dst_pitch, src, src_pitch, width, height, stream) })
+        .map_err(|e| super::raise(py, e))
+}
+
 /// The room the last allocation varena refused on `device` found, read as it was refused (its
 /// caller's pins still held), taken: None when none was refused since the last read. `offered`:
 /// every lever of the reclaim order was tried first.
@@ -906,6 +919,7 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let _ = GIL_CHECK.set(unsafe { std::mem::transmute::<usize, unsafe extern "C" fn() -> std::ffi::c_int>(address) });
     varena::set_host_lock_probe(|| GIL_CHECK.get().is_some_and(|check| unsafe { check() } != 0));
     module.add_function(wrap_pyfunction!(_varena_room, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_copy_pitched, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_refusal, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_context, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_select, module)?)?;

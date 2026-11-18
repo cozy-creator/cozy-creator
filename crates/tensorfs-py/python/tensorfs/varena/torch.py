@@ -213,6 +213,17 @@ def room(device: DeviceLike = 0) -> Room:
     return _ext._varena_room(_device(device))
 
 
+def copy_pitched(
+    dst: int, dst_pitch: int, src: int, src_pitch: int, width: int, height: int, *, stream: int, device: DeviceLike = 0
+) -> None:
+    """`height` rows of `width` bytes from address `src` to `dst`, `src_pitch` and `dst_pitch` bytes
+    apart, as one copy ordered on `stream` (a CUDA stream handle). Either address may be device
+    memory or pinned host memory: a window of rows at a pitch crosses the link at the copy engine's
+    rate, not at the rate of a kernel writing through mapped host pages."""
+    _installed()
+    _ext._varena_copy_pitched(_device(device), dst, dst_pitch, src, src_pitch, width, height, stream=stream)
+
+
 def refusal(device: DeviceLike = 0) -> Refusal | None:
     """The room the last allocation varena refused on `device` found, read as it was refused, its
     caller's pins still held; taken, so None when none was refused since. `offered`: every lever of

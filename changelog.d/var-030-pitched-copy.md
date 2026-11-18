@@ -1,0 +1,1 @@
+TensorFS offers a pitched copy, `tensorfs.varena.torch.copy_pitched`: rows of a fixed width at a fixed pitch between device and pinned host memory as one `cuMemcpy2DAsync`, ordered on a stream. The Runtime sends a window of a whole kept on host whose rows are not contiguous (H3's attention heads) this way, not by a kernel writing through mapped host pages (var-030).
