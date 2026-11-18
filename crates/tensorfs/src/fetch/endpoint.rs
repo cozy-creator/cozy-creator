@@ -78,7 +78,8 @@ pub struct Uploaded {
 
 /// What a consumer runs on, for a resolve without a lane (distribution.md §2): each GPU's compute
 /// capability (`"8.9"`, `"apple9"`; none: the CPU); the smallest one's capacity (its total or
-/// software cap, never what is free), the K/V tokens and rows the call holds and its measured step
+/// software cap less what the consumer's own process holds there outside its books, never what
+/// others use), the K/V tokens and rows the call holds and its measured step
 /// room, which the lane's fit counts; the free bytes on the smallest, which a Hub before rule 8
 /// reads instead; whether it takes plain weights only (code that runs no encoded tensor), and the
 /// components it reads (none: all), which are all of a lane its fit counts.

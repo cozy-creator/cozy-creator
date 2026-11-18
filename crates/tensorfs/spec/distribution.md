@@ -41,7 +41,8 @@ HEAD B/blobs/<aa>/<bb>/<hex>                                200 + Content-Length
   `plain=true` takes plain lanes only (code that runs no encoded tensor); `components=a,b`, the components the
   consumer reads, which are all of a lane its fit counts. `reasons` say what was passed over.
 - Fit (selection rule 8) only ranks lanes, never refuses one. `capacity` is the bytes of the smallest GPU: its total,
-  or the software cap below it, never what is free. A lane fits when what it holds there is at most `capacity`: each
+  or the software cap below it, less what the consumer's own process holds there outside its memory books (its context
+  and the driver's), never what other processes use, which would be free memory. A lane fits when what it holds there is at most `capacity`: each
   component read, by its header's `decode` numbers (cozytensors.md §4) its decode bytes, `kv` for each of `context`
   tokens (the K/V the call holds at most, every row's; absent: 0) and `state` for each of `rows` (the rows decoding at
   once; absent: 1), else its stored bytes; and the step room: `step`, the call's measured peak working bytes on that
