@@ -15,8 +15,12 @@
 #            "revision": Comfy-Org/MiniMax-H3's, "vae": its file under vae/, "configs": [{"name", "fast": true, "args": [more
 #            of main.py's flags]}]}; {} for none. A config that fails is said, and the next runs.
 #   need_s   seconds the cap must buy (3600)
+# ComfyUI's numbers stay off this public run (Paul 11-10): its logs and times are written outside $OUT, which the workflow
+# publishes, and go up only as comfyui.sealed (seal.sh's scheme, to comfyui-seal.pub); results.txt and times.tsv carry Cozy's.
 . "$(dirname "$0")/lib.sh"
 FX=$(cd "$(dirname "$0")" && pwd)/fixtures/h3-vae
+PUB=$(cd "$(dirname "$0")/../suites/bench" && pwd)/comfyui-seal.pub
+PLAIN=${RUNNER_TEMP:-$OUT/..}/h3vae-comfy-plain
 TREE=$(param tree pk) LANE=$(param lane int8) RUNS=$(param runs 2) CLIPS=$(param clips '[129, 362]')
 ARMS=$(param arms '[{"name": "rc", "runtime": "rc"}]') COMFY=$(param comfy '{}')
 [[ $RUNS =~ ^[1-9]$ && $LANE =~ ^[a-z0-9-]+$ ]] || fail "runs or lane"
@@ -66,6 +70,8 @@ TENSORD=(); [[ $(cozy --version) != *-* ]] || TENSORD=(--tensord "$(command -v c
 # of pod-session 44049887315 fetching them itself.
 W=/var/tmp/h3vae-comfy
 if [ "$(jq length <<<"$COMFY")" != 0 ]; then
+  [ -s "$PUB" ] || fail "no $PUB (pod-session.yaml's sparse checkout): ComfyUI's times could not be sealed"
+  rm -rf "$PLAIN" && mkdir -p "$PLAIN" || fail "$PLAIN"
   C=$(jq -r .commit <<<"$COMFY") KV=$(jq -r .kitchen <<<"$COMFY") TV=$(jq -r '.torch // "2.14.1"' <<<"$COMFY")
   VV=$(jq -r '.torchvision // "0.29.1"' <<<"$COMFY") REV=$(jq -r .revision <<<"$COMFY") VAE=$(jq -r .vae <<<"$COMFY")
   [[ $C =~ ^[0-9a-f]{40}$ && $REV =~ ^[0-9a-f]{40}$ && $KV =~ ^[0-9.]+$ && $VAE =~ ^[a-z0-9_.]+$ ]] || fail "comfy params"
@@ -108,6 +114,21 @@ stages() {
     | "\(([$s[].vae_encode.total_ms // empty] | add // 0) / 1000) \(([$s[].vae_decode.total_ms // empty] | add // 0) / 1000)"' "$1"
 }
 TSV=$OUT/times.tsv; printf 'engine\tarm\tclip\tpass\tencode_s\tdecode_s\trun\n' > "$TSV"
+# seal: PLAIN (ComfyUI's logs and times) as $OUT/comfyui.sealed under a fresh key, the key RSA-OAEP to comfyui-seal.pub; each
+# call replaces the last, so a failure later leaves only what was sealed. Opened as seal.sh's header says.
+seal() {
+  local key; key=$(openssl rand -hex 32)
+  tar -C "$PLAIN" -czf - . | openssl enc -aes-256-cbc -pbkdf2 -pass "pass:$key" -out "$OUT/comfyui.sealed.new" &&
+    printf %s "$key" | openssl pkeyutl -encrypt -pubin -inkey "$PUB" -pkeyopt rsa_padding_mode:oaep -out "$OUT/comfyui.sealed.key.new" &&
+    mv "$OUT/comfyui.sealed.new" "$OUT/comfyui.sealed" && mv "$OUT/comfyui.sealed.key.new" "$OUT/comfyui.sealed.key"
+}
+# medians <tsv>: the median of each engine, arm and clip's timed passes (pass 0 is the warm-up).
+medians() {
+  awk -F'\t' 'NR > 1 && $4 > 0 { k = $1 " " $2 " " $3; e[k] = e[k] " " $5; d[k] = d[k] " " $6 }
+    function med(s,   a, n) { n = split(s, a, " "); asort(a); return n % 2 ? a[(n + 1) / 2] : (a[n / 2] + a[n / 2 + 1]) / 2 }
+    END { for (k in e) printf "\n  %s frames: encode %.2f s, decode %.2f s", k, med(e[k]), med(d[k]) }' "$1" | sort
+}
+[ ! -d "$PLAIN" ] || printf 'engine\tarm\tclip\tpass\tencode_s\tdecode_s\trun\n' > "$PLAIN/times.tsv"
 first=${NAMES[0]}
 for a in "${NAMES[@]}"; do
   step "update-$a" machine update "$NAME" --runtime "${WHEEL[$a]}" "${TENSORD[@]}" -y || fail "$a: the update"
@@ -155,16 +176,16 @@ if [ "$(jq length <<<"$COMFY")" != 0 ]; then
     cn=$(jq -r .name <<<"$cfg") fast=$(jq -r 'if .fast then 1 else 0 end' <<<"$cfg") extra=$(jq -r '(.args // []) | join(" ")' <<<"$cfg")
     [[ $cn =~ ^[a-z0-9-]+$ && $extra =~ ^[a-z0-9\ -]*$ ]] || fail "comfy config $cn"
     if ! T=3600 pod "cd $W && COMFY_ARGS='$extra' venv/bin/python comfy_vae.py $W/ComfyUI $W/vae.safetensors $RUNS $fast$clips" \
-      < /dev/null > "$OUT/comfy-$cn.log" 2>&1; then
-      say "ComfyUI $cn failed: $(grep -v '^{' "$OUT/comfy-$cn.log" | tail -8 | tr '\n' ' ' | cut -c1-600)"; RC=1; continue
+      < /dev/null > "$PLAIN/comfy-$cn.log" 2>&1; then
+      say "ComfyUI $cn failed (its log is in comfyui.sealed)"; RC=1; seal; continue
     fi
-    say "ComfyUI $cn: $(grep -m1 '"facts"' "$OUT/comfy-$cn.log")"
-    grep '^{"clip"' "$OUT/comfy-$cn.log" | jq -r --arg c "$cn" '["comfyui", $c, (.frames | tostring), (.pass | tostring), (.encode_s | tostring), (.decode_s | tostring), "-"] | @tsv' >> "$TSV"
+    grep '^{"clip"' "$PLAIN/comfy-$cn.log" | jq -r --arg c "$cn" '["comfyui", $c, (.frames | tostring), (.pass | tostring), (.encode_s | tostring), (.decode_s | tostring), "-"] | @tsv' >> "$PLAIN/times.tsv"
+    seal || fail "sealing ComfyUI's $cn"
+    say "ComfyUI $cn: done (its facts and times are in comfyui.sealed)"
   done
+  medians "$PLAIN/times.tsv" > "$PLAIN/medians.txt"; seal || fail "sealing ComfyUI's medians"
 fi
 
-# The median of each engine, arm and clip's timed passes (pass 0 is the warm-up).
-say "$(awk -F'\t' 'NR > 1 && $4 > 0 { k = $1 " " $2 " " $3; e[k] = e[k] " " $5; d[k] = d[k] " " $6 }
-  function med(s,   a, n) { n = split(s, a, " "); asort(a); return n % 2 ? a[(n + 1) / 2] : (a[n / 2] + a[n / 2 + 1]) / 2 }
-  END { for (k in e) printf "\n  %s frames: encode %.2f s, decode %.2f s", k, med(e[k]), med(d[k]) }' "$TSV" | sort)"
-say "PASS: times.tsv holds every pass"
+# Cozy's medians here; ComfyUI's are in comfyui.sealed (medians.txt).
+say "$(medians "$TSV")"
+say "PASS: times.tsv holds every Cozy pass$([ ! -d "$PLAIN" ] || echo ", comfyui.sealed ComfyUI's")"

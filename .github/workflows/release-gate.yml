@@ -471,11 +471,12 @@ jobs:
           cozy login --key "$RUNNER_TEMP/key.json"; code=$?
           rm -f "$RUNNER_TEMP/key.json"
           exit $code
-      # Suite bench's ComfyUI column: the private benchmarks runner at the commit comfyui.sh pins, by its deploy key.
+      # Suite bench's ComfyUI column, and suite runtime's ComfyUI times (refs/, private: Paul 11-10): the private benchmarks
+      # repo at the commit comfyui.sh pins, by its deploy key.
       - id: benchmarks
-        if: ${{ contains(inputs.cells, 'comfyui.sh') }}
+        if: ${{ contains(inputs.cells, 'comfyui.sh') || contains(format(',{0},', matrix.suite), ',runtime,') }}
         run: echo "at=$(sed -n 's/.*BENCHMARKS_AT=\([0-9a-f]\{40\}\).*/\1/p' creator/release-gate/suites/bench/comfyui.sh)" >> "$GITHUB_OUTPUT"
-      - if: ${{ contains(inputs.cells, 'comfyui.sh') }}
+      - if: ${{ contains(inputs.cells, 'comfyui.sh') || contains(format(',{0},', matrix.suite), ',runtime,') }}
         uses: actions/checkout@v5
         with:
           repository: cozy-creator/benchmarks

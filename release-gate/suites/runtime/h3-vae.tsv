@@ -1,2 +1,2 @@
-sku	encode_s	decode_s	sm_mhz	read_s	ours_encode_s	source
-rtx-5090	7.97	4.70	2414	0.74	7.50	ComfyUI ee34406 + comfy-kitchen 0.2.41, int8 VAE, --fast fp16_accumulation: pod-session 44082684755 (teruki, 576 W), 129 frames, warm median; sm_mhz, read_s and ours_encode_s (7.48-7.51 s) are its Cozy calls' there
+sku	sm_mhz	read_s	ours_encode_s	source
+rtx-5090	2414	0.74	7.50	Cozy's calls on the pod where ComfyUI's time was measured (pod-session 44082684755, teruki, 576 W; ComfyUI's encode and decode in the private benchmarks repo's refs/h3-vae.tsv), 129 frames, warm median: sm_mhz and read_s its calls', ours_encode_s 7.48-7.51 s
