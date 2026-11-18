@@ -128,7 +128,9 @@ impl Machines {
             tracing::warn!(machine = name, "work goes to it as it is, on cozy {}: {why}", frame.version);
             Ok(None)
         };
-        if let Some(row) = self.store().keyed(&key).map_err(internal)? {
+        // This boot's minor move answers only a machine still below the minor: one it left with a Runtime below this cozy's (it took
+        // none: PyPI unread, an RC build's) moves that Runtime below, never "done" for good (cl-1254).
+        if behind.is_none() && let Some(row) = self.store().keyed(&key).map_err(internal)? {
             let run = self.calcifer.record(&row).map_err(|e| Refusal::from(e).0)?;
             return match run.status {
                 Status::Completed => Ok(None),
