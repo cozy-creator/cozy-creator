@@ -212,6 +212,8 @@ pub(crate) struct Job {
     /// (`Engine::waiting`).
     pub(crate) caller: String,
     pub(crate) waiting: Option<Box<dyn Fn(Option<String>) + Send + Sync>>,
+    /// Whether its run's own readers read run `id` (a caller's id) too: what it waits behind names no other run (cl-1217).
+    pub(crate) reads: Option<Box<dyn Fn(&str) -> bool + Send + Sync>>,
     /// What the machine lists it doing now for its run (`activity`), which its stages move.
     pub(crate) within: Mutex<Option<crate::activity::Waiting>>,
     /// Its run's place in this machine's install and download lines (`origin::priority`).
@@ -257,6 +259,9 @@ impl Job {
         if let Some(waiting) = &self.waiting {
             waiting(reason);
         }
+    }
+    fn reads(&self, id: &str) -> bool {
+        self.reads.as_ref().is_some_and(|reads| reads(id))
     }
     pub(crate) fn stage(&self, stage: String) {
         self.set(stage, 0, 0);
@@ -564,6 +569,8 @@ impl Publisher {
         }
         let engine = service.engine.clone();
         let run = request.run.clone();
+        // Its run's readers read `actor`'s runs in its project, and those in none (`Engine::get_public`).
+        let (journal, sender, project) = (service.engine.clone(), actor.to_owned(), crate::private_io::current());
         let job = Job {
             observer: observe,
             stop: stop.cloned(),
@@ -576,6 +583,10 @@ impl Publisher {
                     }
                 }) as Box<dyn Fn(Option<String>) + Send + Sync>
             }),
+            reads: Some(Box::new(move |id: &str| {
+                let sent = |scope| crate::private_io::within(scope, || journal.get_public(Some(&sender), id).is_ok());
+                sent(None) || project.clone().is_some_and(|project| sent(Some(project)))
+            })),
             ..Default::default()
         };
         // A disk that can't hold it says what fills it and what would.
@@ -793,7 +804,7 @@ impl Publisher {
                 if waited.recv_timeout(SAY_AHEAD) != Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
                     return;
                 }
-                if let Some(ahead) = crate::activity::ahead_of(&job.caller) {
+                if let Some(ahead) = crate::activity::ahead_of(&job.caller, |id| job.reads(id)) {
                     job.waiting(Some(format!("waiting for {ahead}, then {said}")));
                     let _ = waited.recv();
                     job.waiting(None);
