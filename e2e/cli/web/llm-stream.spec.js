@@ -18,6 +18,14 @@ const restWords = (page, name) => page.evaluate((name) => document.querySelector
 /** Words as drawn, less a cut's ellipsis and the space at their ends: what any later look must start with. */
 const plain = (words) => (words ?? '').replace(/…$/, '').trim();
 
+// Its box's run ends with the cell, whatever stopped it, its timeout too, and is waited for: one left writing on this CPU slows the cells
+// after it (44285972438: the story still writing as the cell timed out, cli-words after it took 158 s; with none left, 70 s, 44295419036).
+test.afterEach(async ({ project, api }) => {
+  if (!(await project.asset(NAME))?.making?.length) return;
+  await api.post(project.at('/cancel'), { names: [NAME] });
+  await expect.poll(async () => (await project.asset(NAME))?.making?.length ?? 0, { message: `${NAME}'s run ended`, timeout: 60_000 }).toBe(0);
+});
+
 test('llm-stream', async ({ page, project, api }) => {
   test.setTimeout(900_000);
   // The Write tool of the package the checkout holds, published at this Hub's root.
