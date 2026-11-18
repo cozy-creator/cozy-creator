@@ -1,0 +1,1 @@
+Every video plays at once, in every window and tab: a video, an orbit, a preview or a take being made plays from its bytes in the page, fetched once, so playing, looping and seeking hold no connection to Calcifer, and nothing stops another to make room.

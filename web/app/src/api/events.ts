@@ -415,20 +415,17 @@ function parse(data: string): StreamEvent | null {
   }
 }
 
-/** `lost`: another tab took it (`steal`) after it was granted here. */
-function lock(name: string, options: LockOptions, lost?: () => void): Promise<(() => void) | null> {
+function lock(name: string, options: LockOptions): Promise<(() => void) | null> {
   return new Promise((resolve, reject) => {
-    let granted = false
     navigator.locks
       .request(name, options, (held) => {
         if (!held) {
           resolve(null)
           return
         }
-        granted = true
         return new Promise<void>((release) => resolve(release))
       })
-      .catch((error) => (granted ? lost?.() : reject(error)))
+      .catch(reject)
   })
 }
 
@@ -448,40 +445,6 @@ async function ration(names: string[], signal: AbortSignal): Promise<() => void>
     }, () => {})
   }
   return first
-}
-
-/** What's playing in this tab, oldest first: a third stops the first. */
-export const playingHere: (() => void)[] = []
-
-/** The live `<video>`s and `<audio>`s every tab of a Calcifer shares, of the six connections a browser opens to it (design/web-ui.md). */
-const MEDIA = ["cozy-media-0", "cozy-media-1"]
-const takenAt = (name: string) => { try { return Number(localStorage.getItem(`${name}.taken`)) || 0 } catch { return 0 } }
-
-/**
- * One of the two live players across tabs, at once: a free one, else the one taken longest ago, from whichever tab has it, where `lost`
- * says so and that player goes back to its poster (cl-1208). Each is asked for by a person's open or play, so the newest wins; one that
- * waited for another tab sat on its poster with nothing said, its Play doing nothing (Paul, 11-17). Abort to give it back.
- */
-export async function holdMedia(signal: AbortSignal, lost: () => void): Promise<() => void> {
-  let name = MEDIA[0]
-  let release: (() => void) | null = null
-  for (const free of MEDIA) {
-    if ((release = await lock(free, { ifAvailable: true }, lost))) {
-      name = free
-      break
-    }
-  }
-  if (!release) {
-    signal.throwIfAborted()
-    name = MEDIA.reduce((oldest, next) => (takenAt(next) < takenAt(oldest) ? next : oldest))
-    release = (await lock(name, { steal: true }, lost))!
-  }
-  try { localStorage.setItem(`${name}.taken`, String(Date.now())) } catch { /* the oldest is then the first */ }
-  if (signal.aborted) {
-    release()
-    signal.throwIfAborted()
-  }
-  return release
 }
 
 /** The one run's log stream, across tabs. */

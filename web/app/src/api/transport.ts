@@ -11,11 +11,18 @@ export interface Transport {
   allowProject(project: string): void
   /** For `<img>`: a URL, or a blob URL. */
   src(path: string): Promise<string>
-  /** A URL with Range, or the MSE player. */
-  play(path: string, el: HTMLMediaElement): Playback
+  /** A video's or a sound's bytes, whole, in this page's memory, for an element's `src` (cl-1215): fetched by one request that completes, so
+   *  playing, looping and seeking it hold none of the six connections a browser opens to Calcifer. Shared while held; `release` when no
+   *  element shows it. One past MEDIA_IN_MEMORY plays from its URL with Range instead. */
+  media(path: string): Promise<{ url: string; release(): void }>
+  /** `path` into `el` from memory (`media`): resolved once it's `el`'s source, to seek and play; it holds the bytes until `stop`. */
+  play(path: string, el: HTMLMediaElement): Promise<Playback>
   /** An ordinary browser download of what `path` answers, into the Downloads folder. */
   save(path: string): void
 }
+
+/** The most a video or a sound is held in a page's memory: past it, it plays from Calcifer over Range, holding a connection while it loads. */
+const MEDIA_IN_MEMORY = 1 << 30
 
 /** This tab, as a project's history says who made an edit. */
 export const TAB = crypto.randomUUID().slice(0, 4)
@@ -32,9 +39,45 @@ export function sameOrigin(): Transport {
     return url
   }
   // What can't send a header loads as any of this page's own requests: Calcifer answers its own page (cl-980).
-  const media = (path: string) => {
+  const direct = (path: string) => {
     const url = resolve(path)
     return url.pathname + url.search
+  }
+  // Which play each element shows now.
+  const playing = new WeakMap<HTMLMediaElement, object>()
+  // Each held file once, while anything shows it: by its path, its blob's URL and how many hold it.
+  const held = new Map<string, { url: Promise<string>; holders: number }>()
+  const media = async (path: string): Promise<{ url: string; release(): void }> => {
+    const project = guard(path)
+    let one = held.get(path)
+    if (!one) {
+      const url = (async () => {
+        const response = await fetch(direct(path), { signal: project?.signal })
+        if (!response.ok) { void response.body?.cancel(); return direct(path) }
+        if (Number(response.headers.get("Content-Length")) > MEDIA_IN_MEMORY) { void response.body?.cancel(); return direct(path) }
+        return URL.createObjectURL(await response.blob())
+      })()
+      held.set(path, one = { url, holders: 0 })
+      url.catch(() => { if (held.get(path) === one) held.delete(path) })
+    }
+    const mine = one
+    mine.holders++
+    let released = false
+    const release = () => {
+      if (released) return
+      released = true
+      if (--mine.holders > 0) return
+      if (held.get(path) === mine) held.delete(path)
+      void mine.url.then((url) => { if (url.startsWith("blob:")) URL.revokeObjectURL(url) }, () => {})
+    }
+    try {
+      const url = await mine.url
+      project?.check()
+      return { url, release }
+    } catch (error) {
+      release()
+      throw error
+    }
   }
   const projects = new Map<string, { epoch: number; blocked: boolean; active: AbortController }>()
   const scope = (path: string, method = "GET") => {
@@ -91,32 +134,44 @@ export function sameOrigin(): Transport {
       try { project?.check() } catch (error) { void response.body?.cancel(); throw error }
       return response
     },
-    src: async (path) => { guard(path); return media(path) },
+    src: async (path) => { guard(path); return direct(path) },
+    media,
     save(path) {
       void (async () => {
         guard(path)
         const link = document.createElement("a")
-        link.href = media(path)
+        link.href = direct(path)
         link.download = ""
         document.body.append(link)
         link.click()
         link.remove()
       })().catch(() => {})
     },
-    play(path, el) {
-      let live = true
-      const project = guard(path)
-      const load = () => { project?.check(); if (live) el.src = media(path) }
-      const failed = () => { if (live) el.dispatchEvent(new Event("error")) }
-      // Asked for now: the caller seeks and plays it at once.
-      try { load() } catch { failed() }
-      return {
-        stop() {
-          live = false
-          el.pause()
-          el.removeAttribute("src")
-          el.load()
-        },
+    async play(path, el) {
+      // Stopped, the element lets go of what it shows, unless another play has been put in it since: by this play, not its URL, which
+      // two plays of one file share (React's development build mounts an orbit twice).
+      const showing = (url: string, release?: () => void) => {
+        const mine = {}
+        playing.set(el, mine)
+        el.src = url
+        return {
+          stop() {
+            release?.()
+            if (playing.get(el) !== mine) return
+            playing.delete(el)
+            el.pause()
+            el.removeAttribute("src")
+            el.load()
+          },
+        }
+      }
+      try {
+        const one = await media(path)
+        return showing(one.url, one.release)
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") throw error
+        // What can't be read so plays from its URL, where the element says why (not found, can't decode, Calcifer gone).
+        return showing(direct(path))
       }
     },
   }
