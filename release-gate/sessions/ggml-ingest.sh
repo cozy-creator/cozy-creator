@@ -32,6 +32,13 @@ LLAMA_SUM=$(param llama_sha256 d81544fe1f31f2539f3610486eb10e7fe606d88da9d1f85a5
 TENSORFS=$(wheel_from "$OUT/wheels/tensorfs" "$(param tensorfs '')") && [ -n "$TENSORFS" ] || fail "no TensorFS wheel"
 RUNTIME=$(wheel_from "$OUT/wheels/runtime" "$(param runtime '')") && [ -n "$RUNTIME" ] || fail "no Runtime wheel"
 say "tensorfs ${TENSORFS##*/} · runtime ${RUNTIME##*/} · cozy $(cozy --version)"
+# The package locked as `cozy model quantize --package` will lock it, on the runner, before anything is rented, and the
+# candidates checked to stand in for that lock (fixtures/ggml-decode/preflight.sh).
+. "$HERE/fixtures/ggml-decode/preflight.sh"
+drive_lock "$PACKAGES/$TREE/$PACKAGE"
+said=$(uv run -q --no-project --with packaging python "$STANDS" "$PACKAGES/$TREE/$PACKAGE/uv.lock" "$PACKAGE" "$RUNTIME" "$TENSORFS") ||
+  fail "$said"
+say "$said"
 cd "$PACKAGES/$TREE" || fail "no checkout"
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh
