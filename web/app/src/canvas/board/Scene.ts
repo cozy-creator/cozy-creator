@@ -13,7 +13,7 @@ import { pictureBox, present, type Presentation, type RunContext, type SceneNode
 import { fontEpoch } from "./text"
 
 export interface Frame { moving: boolean; slow: boolean; camera: Viewport; width: number; height: number; dpr: number; settled: boolean; theme: string; now: number; hidden: ReadonlySet<string>; offering: boolean }
-interface Held { view: CardView; node?: SceneNode; show?: Presentation; key?: unknown[]; glide?: { from: { x: number; y: number }; began: number }; landing?: number; waits?: boolean; shown?: boolean }
+interface Held { view: CardView; node?: SceneNode; show?: Presentation; key?: unknown[]; glide?: { from: { x: number; y: number }; began: number }; landing?: number; waits?: boolean; shown?: boolean; faded?: number }
 
 const MARGIN = 160
 /** A box's name sits this far over it (app.css): a ring that would reach it is drawn inside the box's edge. */
@@ -95,10 +95,11 @@ export class Scene {
       } catch (error) {
         held.view.fault(held.node ?? { id: node.id, name: node.data.name, box: node.bounds, view: viewOf, selected: Boolean(node.selected) }, env)
         // The broken tile stands in its own box, never where its view last was (a new view sits at 0,0, over the box there).
-        const root = held.view.root
-        root.scale.set(1); root.alpha = 1; root.zIndex = 0
+        const root = held.view.root, faded = held.faded = this.o.board.fade.of(node.id)
+        root.scale.set(1); root.alpha = faded; root.zIndex = 0
         root.position.set(node.bounds.x, node.bounds.y)
-        root.visible = !frame.hidden.has(node.data.name)
+        root.visible = !frame.hidden.has(node.data.name) && faded > 0
+        root.eventMode = faded < 1 ? "none" : "passive"
         const message = `${node.id}:${error instanceof Error ? error.message : String(error)}`
         if (!this.faults.has(message)) { this.faults.add(message); console.error(`Couldn't draw ${node.data.name}:`, error) }
       }
@@ -116,7 +117,7 @@ export class Scene {
     }
     this.coverage = { inView: live.size, built: this.held.size, wanting, pictured }
     this.drawRings(frame, zoom)
-    return { animating, wake }
+    return { animating: animating || this.o.board.fade.moving, wake }
   }
 
   /** The selection and the hover as Figma draws them (Paul, 11-16): one line in --select on the box's edge, 2 px selected and 1 px under
@@ -129,6 +130,8 @@ export class Scene {
     if (!colors) return
     const { camera, dpr } = frame
     const snap = (value: number) => Math.round(value * dpr) / dpr
+    // A box fading with Focus fades its ring with it, each in a fill of its own; drawn first, so the one fill of the rest holds none of them.
+    const solid: (() => void)[] = []
     for (const held of this.held.values()) {
       const node = held.node, root = held.view.root
       if (!node || !root.visible) continue
@@ -138,11 +141,17 @@ export class Scene {
       const body = pictureBox(node), scale = root.scale.x
       const x = (root.x + (body.x - node.box.x) * scale) * zoom + camera.x, y = (root.y + (body.y - node.box.y) * scale) * zoom + camera.y
       const l = snap(x), t = snap(y), r = snap(x + body.w * scale * zoom), b = snap(y + body.h * scale * zoom)
-      if (inside) rings.rect(l, t, r - l, px).rect(l, b - px, r - l, px).rect(l, t + px, px, b - t - 2 * px).rect(r - px, t + px, px, b - t - 2 * px)
-      else rings.rect(l - px, t - px, r - l + 2 * px, px).rect(l - px, b, r - l + 2 * px, px).rect(l - px, t, px, b - t).rect(r, t, px, b - t)
+      const ring = () => {
+        if (inside) rings.rect(l, t, r - l, px).rect(l, b - px, r - l, px).rect(l, t + px, px, b - t - 2 * px).rect(r - px, t + px, px, b - t - 2 * px)
+        else rings.rect(l - px, t - px, r - l + 2 * px, px).rect(l - px, b, r - l + 2 * px, px).rect(l - px, t, px, b - t).rect(r, t, px, b - t)
+      }
+      const faded = held.faded ?? 1
+      if (faded < 1) { ring(); rings.fill({ color: colors.select, alpha: faded }) }
+      else solid.push(ring)
       this.ringed.set(node.name, { kind: node.selected ? "selected" : "hovered", px, inside })
     }
-    if (this.ringed.size) rings.fill(colors.select)
+    for (const ring of solid) ring()
+    if (solid.length) rings.fill(colors.select)
   }
 
   /** The ring drawn on a box in the last frame, if any. */
@@ -207,9 +216,12 @@ export class Scene {
       if (t >= 1) { held.landing = undefined; if (store.get(name) === view && view.landing) store.patch(name, { landing: undefined }) }
       else { scale *= t < 0.6 ? 0.82 + 0.22 * ease(t / 0.6) : 1.04 - 0.04 * ease((t - 0.6) / 0.4); alpha *= t < 0.6 ? 0.4 + 0.6 * ease(t / 0.6) : 1; animating = true }
     }
+    // Focus's fade: gone, a box isn't drawn; on its way out or back, it takes no pointer.
+    const faded = held.faded = this.o.board.fade.of(node.id)
     card.root.scale.set(scale)
     card.root.position.set(x + node.bounds.w * (1 - scale) / 2, y + node.bounds.h * (1 - scale) / 2)
-    card.root.alpha = alpha
+    card.root.alpha = alpha * faded
+    card.root.eventMode = faded < 1 ? "none" : "passive"
     card.root.zIndex = dragging ? 3 : state.hover ? 2 : node.selected ? 1 : 0
     // A file dropped is first drawn with its picture: held back until it's decoded or can't be (upload: "each is first drawn where and as it
     // stays, its picture decoded"). A quarter second at most let twenty dropped at once on a slow machine show empty first (e2e
@@ -217,7 +229,7 @@ export class Scene {
     // cl-1018); only a file dropped here has a picture of its own bytes, and a box already drawn stays.
     const main = card.picture
     const waits = held.waits = Boolean(!held.shown && main?.local && !main.handle?.texture && !main.handle?.failed && !main.next?.failed)
-    card.root.visible = !frame.hidden.has(name) && !waits
+    card.root.visible = !frame.hidden.has(name) && !waits && faded > 0
     if (card.root.visible) held.shown = true
     card.pin(Math.max(0.0001, frame.camera.zoom))
     return card.animate(now, env) || animating || waits
