@@ -178,6 +178,7 @@ disk-room = ["crates/calcifer/src/placement.rs", "crates/calcifer/src/plan.rs", 
   "crates/calcifer/src/runs/mod.rs", "crates/tensord/src/reclaim.rs", "crates/tensord/src/api/machine_status.rs",
   "crates/cli/src/run/follow.rs", "web/app/src/canvas/RunFace.tsx", "e2e/cli/disk.sh", "e2e/cli/machineset.sh", "e2e/cli/web/room.js"]
 lines = ["crates/tensord/src/line.rs", "crates/tensord/src/queue.rs", "crates/tensord/src/activity.rs", "e2e/cli/lines.sh"]
+log-since = ["crates/platform/src/gzip.rs", "e2e/cli/since.sh"]
 answers = ["crates/tensord/src/execution.rs", "crates/tensord/src/api/machine_status.rs", "crates/tensord/src/runs/read.rs",
   "e2e/cli/control.sh", "e2e/cli/slow-sync.c"]
 slow = ["crates/calcifer/src/slow.rs", "crates/calcifer/src/store*", "crates/calcifer/src/store/**", "crates/calcifer/src/hub/**",
