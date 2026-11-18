@@ -6,8 +6,9 @@
 # Repos, each at the set's own commit: cr cozy-creator at cozy's (TensorD, Calcifer), tf cozy-creator at TensorFS's (varena
 # too), rt cozy-runtime at the Runtime's, pk packages at the set's packages_ref, rg cozy-creator at the gate run's own commit
 # (the harness that ran the cell).
-@run	rt:src/** rt:kernels/** rt:pyproject.toml rt:uv.lock tf:crates/tensorfs/** tf:crates/tensorfs-py/** tf:crates/varena*/** tf:Cargo.lock cr:crates/tensord/** cr:crates/executor-api/** cr:crates/api/** cr:crates/platform/** cr:crates/needs/** cr:Cargo.lock rg:release-gate/gate.sh rg:release-gate/analyze.py rg:release-gate/runs.py
-@machine	cr:crates/tensord/** cr:crates/calcifer/** cr:crates/cli/** cr:crates/api/** cr:crates/platform/** cr:Cargo.lock rg:release-gate/gate.sh rg:release-gate/analyze.py
+@harness	rg:release-gate/* !rg:release-gate/README.md !rg:release-gate/verify.sh !rg:release-gate/promote.sh !rg:release-gate/defaults.sh !rg:release-gate/escaped*.tsv rg:release-gate/suites/contract/** rg:e2e/run.sh rg:e2e/test-hub.sh
+@run	rt:src/** rt:kernels/** rt:pyproject.toml rt:uv.lock tf:crates/tensorfs/** tf:crates/tensorfs-py/** tf:crates/varena*/** tf:Cargo.lock cr:crates/tensord/** cr:crates/calcifer/** cr:crates/cli/** cr:crates/executor-api/** cr:crates/api/** cr:crates/platform/** cr:crates/needs/** cr:Cargo.lock @harness
+@machine	cr:crates/tensord/** cr:crates/calcifer/** cr:crates/cli/** cr:crates/api/** cr:crates/platform/** cr:Cargo.lock @harness
 prompt-lm-capture	@run pk:p-h3-image/** pk:sdxl/** pk:flux.3-klein/** rg:release-gate/suites/execution/**
 h3-u2-short-sparse	@run pk:minimax-h3/** rg:release-gate/suites/multi-gpu/** rg:release-gate/suites/execution/multi-gpu/**
 h3-u2-short-exchange	@run pk:minimax-h3/** rg:release-gate/suites/multi-gpu/** rg:release-gate/suites/execution/multi-gpu/**

@@ -107,6 +107,8 @@ function walk(dir, root) {
     const path = join(dir, entry.name);
     if (entry.isDirectory()) walk(path, root);
     else if (entry.isFile()) file(path, relative(root, path));
+    // A link (or any other non-file) is never read here, and the upload would follow it: text only leaves it out.
+    else if (textOnly) out(path, relative(root, path), 0, entry.isSymbolicLink() ? 'a link' : 'not a file');
   }
 }
 

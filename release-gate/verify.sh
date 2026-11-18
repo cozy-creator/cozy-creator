@@ -93,7 +93,8 @@ if [ -n "$RELEASE" ]; then
   # SKU, and `git diff --name-only` from that gate's set to this one must touch none of escaped-paths.tsv's paths for the row,
   # each repo at its own commit in a checkout here (cozy-creator: this one; cozy-runtime and packages in --checkouts). Prints where
   # it stands; anything it cannot read or verify says why and fails.
-  top=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
+  # Read only with --unchanged: --release alone needs no checkout.
+  top= && [ -z "$UNCHANGED" ] || top=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
   CHECKOUTS=${CHECKOUTS:-$top/..}
   declare -A repo=([cr]=$top [tf]=$top [rg]=$top [rt]=$CHECKOUTS/cozy-runtime [pk]=$CHECKOUTS/packages)
   paths=$(dirname "$0")/escaped-paths.tsv
@@ -111,12 +112,14 @@ if [ -n "$RELEASE" ]; then
     elif [[ $v =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then [ "$1" = tf ] && echo "tensorfs-v$v" || echo "v$v"; fi
   }
   unchanged() {
-    local row=$1 skus=$2 run line h d old= sku k p a b c files pats=() spec
+    local row=$1 skus=$2 run line h d old= sku k p a b c files pats=() spec bs
     run=$(awk -F'\t' -v r="$row" '$1 == r {print $2; exit}' "$UNCHANGED")
     [[ $run =~ ^[0-9]+$ ]] || { echo "not in $UNCHANGED"; return 1; }
     line=$(awk -F'\t' -v r="$row" '$1 == r {print $2; exit}' "$paths" 2>/dev/null)
     [ -n "$line" ] || { echo "no escaped-paths.tsv line: it can only pass"; return 1; }
-    h=$(trusted "$run") || { echo "$run: not a completed trusted release-gate dispatch"; return 1; }
+    # Asked of GitHub once a run, however many rows stand on it.
+    h=$(cat "$tmp/u$run.sha" 2>/dev/null) || h=
+    [ -n "$h" ] || { h=$(trusted "$run") && echo "$h" > "$tmp/u$run.sha"; } || { echo "$run: not a completed trusted release-gate dispatch"; return 1; }
     [ -d "$tmp/u$run" ] || gh run download "$run" -R cozy-creator/cozy-creator -p 'gate-*' -D "$tmp/u$run" >&2 || { echo "$run: no gate artifact"; return 1; }
     for d in "$tmp/u$run"/gate-*; do
       sku=$(cat "$d/baseline-key" 2>/dev/null); sku=${sku%-$(paste -sd- "$d/suites" 2>/dev/null)}
@@ -125,9 +128,20 @@ if [ -n "$RELEASE" ]; then
         old=$(jq -S 'del(.label)' "$d/candidate.json") && break
     done
     [ -n "$old" ] || { echo "$run passed it on no SKU of $skus"; return 1; }
-    # The line's patterns, macros expanded, then one pathspec list per repo key.
-    expand() { local x; for x in $1; do if [[ $x == @* ]]; then expand "$(awk -F'\t' -v m="$x" '$1 == m {print $2; exit}' "$paths")"; else echo "$x"; fi; done; }
+    # The line's patterns, macros expanded (never globbed here), then one pathspec list per repo key. A pattern of no known repo
+    # or an unknown macro refuses: a path the check would skip is a path it never compared.
+    expand() {
+      local x m xs
+      read -ra xs <<< "$1"
+      for x in "${xs[@]}"; do
+        if [[ $x == @* ]]; then m=$(awk -F'\t' -v m="$x" '$1 == m {print $2; exit}' "$paths"); expand "${m:-?:unknown-macro-${x#@}}"
+        else echo "$x"; fi
+      done
+    }
     mapfile -t pats < <(expand "$line")
+    for p in "${pats[@]}"; do
+      a=${p#!}; case ${a%%:*} in cr | tf | rt | pk | rg) ;; *) echo "escaped-paths.tsv: '$p' names no repo"; return 1 ;; esac
+    done
     for k in cr tf rt pk rg; do
       spec=()
       for p in "${pats[@]}"; do
@@ -136,10 +150,12 @@ if [ -n "$RELEASE" ]; then
       done
       [ ${#spec[@]} -gt 0 ] || continue
       a=$(at "$k" "$old" "$h")
-      for b in $(if [ "$k" = rg ]; then printf '%s\n' "${heads[@]}"; else at "$k" "$first"; fi); do
+      # Each gate's harness commit, or this set's commit: an empty one (a hand gate's) is an element, and refuses below.
+      if [ "$k" = rg ]; then bs=("${heads[@]}"); else bs=("$(at "$k" "$first")"); fi
+      for b in "${bs[@]}"; do
         [ -n "$a" ] && [ -n "$b" ] || { echo "$k: no commit for $([ -n "$a" ] && echo this set || echo "$run's set") (a hand gate names no harness commit)"; return 1; }
         for c in "$a" "$b"; do git -C "${repo[$k]}" rev-parse -q --verify "$c^{commit}" > /dev/null || { echo "$k: $c is not in ${repo[$k]}: fetch it"; return 1; }; done
-        files=$(git -C "${repo[$k]}" diff --name-only "$a" "$b" -- "${spec[@]}")
+        files=$(git -C "${repo[$k]}" diff --name-only "$a" "$b" -- "${spec[@]}") || { echo "$k: git diff ${a:0:10}..${b:0:10} failed"; return 1; }
         [ -z "$files" ] || { echo "changed since $run ($k ${a:0:10}..${b:0:10}): $(head -3 <<< "$files" | paste -sd' ')"; return 1; }
       done
     done

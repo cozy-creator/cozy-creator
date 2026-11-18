@@ -89,7 +89,8 @@ rental_stop_closes() {
   # The provider is the point (vast stopped hougetsu), and `--provider` is dev-only (cl-844): this home says `dev = true` for
   # these orders alone, as suite hub's does (hub_dev), and is put back as it was before anything else runs.
   [ -f "$cfg" ] && had=$(cat "$cfg")
-  mkdir -p "${cfg%/*}" && { echo 'dev = true'; [ -z "$had" ] || printf '%s\n' "$had"; } >"$cfg.new" && mv "$cfg.new" "$cfg"
+  # Its own `dev` line out first: a second `dev` key is a TOML error, and cozy would read no config at all.
+  mkdir -p "${cfg%/*}" && { echo 'dev = true'; [ -z "$had" ] || grep -v '^ *dev *=' <<< "$had" || true; } >"$cfg.new" && mv "$cfg.new" "$cfg"
   # An order that is not up in 7 minutes (waiting for capacity at the price it agreed, th-403) is ended, and the next asked.
   for sku in cpu ${RENTALS_GPU_FALLBACK:-rtx-5060-ti rtx-3070 rtx-3060 rtx-4060-ti rtx-3080}; do
     timeout 420 "$CLI" --json machine rent "$sku" --provider "$p" --disk-gb 50 --ssh "$RT/pod-ssh.pub" -y >"$RT/rent.out" 2>&1
