@@ -53,7 +53,7 @@ export function inspection(o: Sources) {
       stateDot: screen(card.drawn.dot, origin, scale), unseenDot: screen(card.drawn.unseen, origin, scale), meter: screen(card.drawn.meter, origin, scale), orbit: screen(card.drawn.orbit, origin, scale),
       parts: Object.fromEntries([...card.drawn.parts].map(([part, box]) => [part, { ...screen(box, origin, scale)!, ...(part === "delete" ? { icon: "trash" } : part === "cancel" && held.node!.view.placing ? { icon: "close" } : {}) }])),
       ring: o.scene()?.ringOf(name) ?? null,
-      preview: card.previewing, latent: card.latentShown,
+      preview: card.previewing, latent: card.latentShown, glimpse: card.glimpseShown,
       references: card.referencesShown.map((reference) => ({ key: reference.key, ready: reference.ready, ...screen(reference.box, origin, scale)!, ...(reference.sha ? { sha: reference.sha } : {}) })),
       glide: held.glide ? { active: true } : null, landing: held.landing !== undefined ? { active: true } : null,
       loadingPulse: main && !texture && main.next && !main.next.failed && !main.local ? { active: true } : null,

@@ -40,7 +40,7 @@
   text-align: center;
 }
 /* Over what it has made so far (cl-907), its words on the card's scrim. */
-.take.making:has(> .take-glimpse) .take-now {
+.take.making:has(.take-glimpse) .take-now {
   padding: 2px 8px;
   border-radius: var(--round);
   background: var(--scrim);

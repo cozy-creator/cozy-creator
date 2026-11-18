@@ -994,10 +994,12 @@ export class CanvasStore {
           Object.assign(change, { asset: asked(asset, over), landed: undefined })
           if (!asset.making?.length) change.run = undefined
           const newest = asset.prefixes?.at(-1)?.number
-          if (newest && newest !== view.asset?.prefixes?.at(-1)?.number && view.asset) Object.assign(change, { slid: newest, glimpse: undefined })
           // A take seen being made landed: it's said, with View (cl-937), unless it's looked at as it lands. A file dropped on it or one undo brings back isn't.
           const made = asset.prefixes?.at(-1)
           const making = (held?: { id?: string; run?: number | null }) => Boolean(held && ((held.id && takingOf(view).some((take) => take.id === held.id)) || (held.run != null && view.asset?.making?.includes(held.run))))
+          // A take its glimpse showed being made goes on from it (cl-1210): what it showed stays till the take is here and took over.
+          const continued = view.glimpse?.media === "video" && Boolean(made) && (view.glimpse.number === made?.run || making(made))
+          if (newest && newest !== view.asset?.prefixes?.at(-1)?.number && view.asset) Object.assign(change, continued ? {} : { slid: newest, glimpse: undefined })
           if (this.hasRead && made && newest !== view.asset?.prefixes?.at(-1)?.number && making(made)) landing = made
           // Its first take, landing while it's open on its words with nothing typed: it shows the take. An image tool's words are its next take's, and stay.
           if (newest && !view.asset?.prefixes?.length && view.here && view.hereWords && !view.drafts && !asset.timeline && !paints(view, this.tools.get())) change.hereWords = undefined

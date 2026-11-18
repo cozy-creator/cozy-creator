@@ -76,6 +76,11 @@ export class VideoPlayback implements Playback {
     return false
   }
 
+  /** Lets go of `video` if it's the one it drives: one that took over from it drives on. */
+  release(video: HTMLVideoElement) {
+    if (this.video === video) this.attach(null)
+  }
+
   toggle() {
     const video = this.video
     if (!video) return this.start()
