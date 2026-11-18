@@ -696,7 +696,7 @@ struct Weighed<'a> {
     gpu: bool,
 }
 
-/// Where a `new` run goes instead of a rental (cl-915, Paul 11-12): the soonest finish of this controller's rentals up or on their way
+/// Where a `new` run goes instead of a rental (cl-915, Paul 11-12): the soonest finish of the account's rentals up or on their way
 /// and the computers added here, when it is sooner than a new rental's boot, preparation and run on the card its Hub would place it on;
 /// what it says of that, and the offers. None: it rents. This computer's machine isn't weighed: a run asked to rent wants a rented GPU.
 async fn instead_of_renting(api: &Arc<Api>, run: Weighed<'_>) -> Option<(On, String, Vec<Vec<crate::placement::Offer>>)> {
@@ -759,7 +759,7 @@ pub(crate) fn default_on(api: &Api) -> On {
         return local;
     }
     let machines = api.calcifer.store().live_machines().unwrap_or_default();
-    match machines.iter().any(|row| row.kind != MachineKind::Local && row.state != MachineState::Ended && api.machines.ordered(row)) {
+    match machines.iter().any(|row| row.kind != MachineKind::Local && row.state != MachineState::Ended) {
         true => On::Any,
         false => local,
     }

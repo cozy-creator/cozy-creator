@@ -4,7 +4,7 @@
 //! Each machine with an endpoint has one `Status` stream. Its phase, idle deadline, GPUs and
 //! live runs are held here and answer `GET /v1/machines`; nothing is polled. A machine that
 //! cannot be reached waits and is shown so: only its Hub's word, its own release, or its owner
-//! ends it. Unpinned runs are placed here: `any` on a rental of this controller that fits,
+//! ends it. Unpinned runs are placed here: `any` on a rental of the account that fits,
 //! `new:<sku>` on one rented for the run (`rentals`).
 use std::{
     collections::{HashMap, HashSet},
@@ -960,7 +960,6 @@ impl Machines {
             machine.reach = self.local.reach();
         }
         machine.alias = store.alias(&row.name).map_err(internal)?;
-        machine.ordered = self.ordered(row);
         let load = self.calcifer.machine_load().map_err(internal)?;
         (machine.running, machine.queued) = load.get(&row.name).copied().unwrap_or_default();
         machine.jobs = (store.jobs_on(&row.name, row.kind == MachineKind::Local).map_err(internal)?.iter())
@@ -1050,6 +1049,20 @@ impl Machines {
         self.hubs.describe(&mut machine, asked.as_ref());
         machine.ssh = self.ssh(&machine);
         Ok(machine)
+    }
+
+    /// Whether this computer ordered `row` (its key was minted here; another client's rental is reached with the device key). Only
+    /// Cozy's own moves ask (the RC follower, a package's floor, this cozy's minor): a hold by hand lives in the store of the computer
+    /// that made it, so another computer's rental may be held on a candidate build this one can't see; it moves only by hand. Until
+    /// the machine carries its hold (cl-1260, 0.28), this is the one place a rental's orderer counts (cl-1224).
+    pub(crate) fn ordered_here(&self, row: &MachineRow) -> bool {
+        row.kind != MachineKind::Rental || config::Origin::parse(&row.hub).map_or(true, |hub| row.key != hub.device_key(&self.home))
+    }
+
+    /// The runs other clients of the account have on the machine, running or queued, as `frame`'s queue says them (cl-1224): one with
+    /// any is never moved (to a minor, a package's floor, the RC) for this computer's sake, which would drain or hold up their work.
+    pub(crate) fn others_on(&self, frame: &v1::StatusFrame) -> usize {
+        frame.queue.iter().flatten().filter(|root| !self.sent_here(root)).count()
     }
 
     /// Whether this computer sent `root`: the machine says so, or (a machine before cl-1193) its id is one of this computer's runs.
@@ -1621,8 +1634,8 @@ impl Machines {
     }
 
     /// A rental silent since an update restarted it, past `UPDATE_RETURN_MS` (cl-977): broken by this computer's word, its runs
-    /// unsent here leave it, and one this computer ordered is ended, billing for nothing. Nothing there can be making progress:
-    /// it has said nothing since its update drained its runs. Asked at each failed attempt to reach it, never on a timer.
+    /// unsent here leave it, and it is ended, billing for nothing. Nothing there can be making progress: it has said nothing since
+    /// its update drained its runs. Asked at each failed attempt to reach it, never on a timer.
     fn silent_after_update(self: &Arc<Self>, name: &str) {
         let Ok(Some(row)) = self.store().machine(name) else { return };
         if row.kind != MachineKind::Rental || row.state == MachineState::Ended {
@@ -1646,7 +1659,7 @@ impl Machines {
         warn!(machine = name, "broken: {said}");
         self.calcifer.touch(name);
         self.calcifer.machine_changed();
-        if !self.ordered(&row) || self.pending_end(name).ok().flatten().is_some() {
+        if self.pending_end(name).ok().flatten().is_some() {
             return;
         }
         match self.end_here(row, true) {
@@ -1858,11 +1871,17 @@ impl Machines {
         }
     }
 
-    /// The least busy rental of this controller that fits a run of `gpus` GPUs (0: any), a
+    /// The least busy rental of the account that fits a run of `gpus` GPUs (0: any), a
     /// ready one before a booting one: runs wait for a rental on its way, never buy around it.
+    /// Busy counts every client's runs there, as its Status queue says them, as `picture` does. Never a test pod, one whose GPU
+    /// memory is capped: as in the render set, it runs only what names it (cl-920).
     fn fitting(&self, gpus: u32) -> Result<Option<String>, Error> {
         let store = self.store();
         let load = self.calcifer.machine_load().map_err(internal)?;
+        let queues: Vec<(String, Vec<v1::Queued>)> =
+            lock(&self.seen).iter().filter_map(|(name, seen)| Some((name.clone(), seen.frame.as_ref()?.queue.clone()?))).collect();
+        let others: HashMap<String, u32> =
+            queues.iter().map(|(name, queue)| (name.clone(), queue.iter().filter(|root| !self.sent_here(root)).count() as u32)).collect();
         let ending: HashSet<String> = store
             .pending_asks()
             .map_err(internal)?
@@ -1879,14 +1898,15 @@ impl Machines {
         };
         Ok(rows
             .into_iter()
-            .filter(|row| row.kind == MachineKind::Rental && row.state != MachineState::Ended && self.ordered(row))
+            .filter(|row| row.kind == MachineKind::Rental && row.state != MachineState::Ended)
             .filter(|row| !ending.contains(&row.name))
             .filter(|row| self.closing_in(row, &seen).is_none())
             .filter(|row| seen.get(&row.name).and_then(|seen| broken_in(&row.name, seen)).is_none())
             .filter(|row| gpus == 0 || count(row).is_none_or(|n| n >= gpus))
+            .filter(|row| !seen.get(&row.name).and_then(|s| s.frame.as_ref()).is_some_and(|f| f.gpus.iter().any(|g| g.memory_limit_bytes > 0)))
             .min_by_key(|row| {
                 let (running, queued) = load.get(&row.name).copied().unwrap_or_default();
-                (row.endpoint.is_none(), running + queued, row.name.clone())
+                (row.endpoint.is_none(), running + queued + others.get(&row.name).copied().unwrap_or_default(), row.name.clone())
             })
             .map(|row| row.name))
     }
@@ -1941,13 +1961,6 @@ impl Machines {
         let listed = |row: &&MachineRow| row.state != MachineState::Ended && (here || row.kind != MachineKind::Local);
         let machines: Vec<Machine> = rows.iter().filter(listed).filter_map(|row| self.picture(row).ok()).collect();
         wire::render_set(&machines)
-    }
-
-    /// Whether this controller placed `row` (no rental) or ordered it: a rental another client of
-    /// the account ordered speaks with this computer's device key at its Hub, and takes no run
-    /// unless one names it.
-    pub(crate) fn ordered(&self, row: &MachineRow) -> bool {
-        row.kind != MachineKind::Rental || config::Origin::parse(&row.hub).map_or(true, |hub| row.key != hub.device_key(&self.home))
     }
 
     /// This controller's signer for its own and added machines, minted on first use.

@@ -21,7 +21,7 @@ use crate::{
 /// How many of the runs already sent to it are counted.
 const QUEUED: u64 = 32;
 
-/// A rental of this controller with no address yet.
+/// A rental of the account with no address yet.
 pub(crate) struct Coming {
     pub name: String,
     pub way: OnItsWay,

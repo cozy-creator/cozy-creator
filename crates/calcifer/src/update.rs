@@ -104,8 +104,9 @@ impl Machines {
             return Ok(None);
         }
         let row = self.named(name)?;
-        // Not this computer's to move: added from another, or a rental another client ordered.
-        let others = row.as_ref().is_some_and(|row| row.kind == MachineKind::Added || (row.kind == MachineKind::Rental && !self.ordered(row)));
+        // Not this computer's to move: another computer's, added here, or a rental another computer ordered, which may be held by
+        // hand there (cl-1224): work goes to it as it is.
+        let others = row.as_ref().is_some_and(|row| row.kind == MachineKind::Added || !self.ordered_here(row));
         if others || self.held_by_hand(name).is_some() {
             return Ok(None);
         }
@@ -126,8 +127,8 @@ impl Machines {
                 _ => Ok(Some(run)),
             };
         }
-        // An update would hold new runs behind the work it has going: they go as it is.
-        if self.calcifer.each_store(|store|store.working(name)).map_err(internal)?.into_iter().sum::<u32>() > 0 {
+        // An update would hold new runs behind the work it has going, this computer's or another's (cl-1224): they go as it is.
+        if self.calcifer.each_store(|store|store.working(name)).map_err(internal)?.into_iter().sum::<u32>() > 0 || self.others_on(&frame) > 0 {
             return Ok(None);
         }
         // What it takes to run this build: `local`, the cozy installed here; else this release, or a dev build's own binary.

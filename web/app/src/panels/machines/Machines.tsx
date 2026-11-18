@@ -46,7 +46,7 @@ function MachineRow({ machine, now, here, tabbed }: { machine: Machine; now: num
       ))}
       {trying && machine.attempt && <small className="under">Starting up, attempt {machine.attempt.number}</small>}
       {machine.state === "ready" && machine.kind === "rental" && (
-        <small className="under">{[endsWords(machine, now), ...holdWords(machine, now), machine.ordered === false ? "Rented by another computer" : ""].filter(Boolean).join(" · ")}</small>
+        <small className="under">{[endsWords(machine, now), ...holdWords(machine, now)].filter(Boolean).join(" · ")}</small>
       )}
       {full && (
         <small className="under warn">
@@ -60,7 +60,7 @@ function MachineRow({ machine, now, here, tabbed }: { machine: Machine; now: num
         <Link className="more" to={to(`machines/${encodeURIComponent(stableName(machine))}`)}>
           Details
         </Link>
-        {trying && machine.ordered !== false && <End machine={machine} />}
+        {trying && <End machine={machine} />}
       </Checks>
     </li>
   )

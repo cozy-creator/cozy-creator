@@ -402,7 +402,7 @@ impl Machines {
     /// its first-party packages from a checkout of the RC's source, which the RC's Runtime runs (xs-195).
     pub(crate) fn follows(&self, name: &str) -> Option<crate::store::MachineRow> {
         let row = self.store().machine(name).ok()??;
-        let rental = row.kind == MachineKind::Rental && row.state == MachineState::Ready && self.ordered(&row);
+        let rental = row.kind == MachineKind::Rental && row.state == MachineState::Ready && self.ordered_here(&row);
         let local = row.kind == MachineKind::Local && crate::checkout::configured();
         (self.dev && (rental || local)).then_some(row)
     }
@@ -430,8 +430,10 @@ impl Machines {
         if local && !self.calcifer.at_rest(AT_REST.as_millis() as i64).unwrap_or(false) {
             return None;
         }
+        // Every client's work counts (cl-1224): another computer of the account may be running on it.
         let idle = || {
             self.calcifer.busy(name).is_ok_and(|busy| busy == 0)
+                && self.frame(name).is_none_or(|frame| self.others_on(&frame) == 0)
                 && self.store().updating(name).is_ok_and(|updating| !updating)
                 && self.held_by_hand(name).is_none()
         };
@@ -545,7 +547,7 @@ impl Machines {
                         let frame = self.frame(&row.name);
                         let ready = frame.as_ref().is_some_and(|frame| frame.phase == "ready");
                         match row.kind {
-                            MachineKind::Rental if !self.ordered(row) => continue,
+                            MachineKind::Rental if !self.ordered_here(row) => continue,
                             MachineKind::Rental if row.state == MachineState::Ready && ready => {
                                 self.follow_rc(&row.name).await;
                             }
