@@ -79,6 +79,7 @@ jobs:
             release-gate/ledger.py
             release-gate/ref
             release-gate/suites/bench/vram.py
+            release-gate/suites/bench/comfyui-seal.pub
             release-gate/suites/bench/fixtures
             release-gate/suites/tensord
             release-gate/suites/progress
