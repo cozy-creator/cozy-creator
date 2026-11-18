@@ -37,8 +37,9 @@ drive_check "$FIX/drive" ggml_logits "qwen3=$SOURCE/qwen3/uv.lock"
 drive_lock "$FIX/drive"
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh
+pick_offer
 quote "$(param seconds 3600)"
-rent
+offer_rent
 step tensord machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "the pod's TensorD"
 step candidate machine update "$NAME" --tensorfs "$TENSORFS" --runtime "$RUNTIME" -y || fail "the pod's TensorFS and Runtime"
 cozy machine show "$NAME" --json > "$OUT/show.json" 2>&1
