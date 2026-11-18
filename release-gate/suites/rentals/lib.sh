@@ -58,11 +58,17 @@ rental_idle_through_updates() {
 rental_stop_closes() {
   local p=${1:-vast} m r t0 st seen=() offline= ending=
   [ -s "$RT/pod-ssh" ] || ssh-keygen -q -t ed25519 -N '' -C rentals-stop -f "$RT/pod-ssh"
-  "$CLI" --json machine rent cpu --provider "$p" --ssh "$RT/pod-ssh.pub" -y >"$RT/rent.out" 2>&1
+  # vast without `cpu` now (as suite hub found on 11-10): its cheapest GPUs in turn.
+  local sku
+  for sku in cpu ${RENTALS_GPU_FALLBACK:-rtx-5060-ti rtx-3070 rtx-3060 rtx-4060-ti rtx-3080}; do
+    "$CLI" --json machine rent "$sku" --provider "$p" --ssh "$RT/pod-ssh.pub" -y >"$RT/rent.out" 2>&1
+    grep -q '"rental.sku_out_of_stock"' "$RT/rent.out" || break
+    log "rental-stop-closes: no $sku on $p now; the next"
+  done
   r=$(grep -m1 '"type":"rental.accepted"' "$RT/rent.out" | jq -r '.rental_id // empty' 2>/dev/null)
   m=$(grep -o '"machine":{"name":"[^"]*"' "$RT/rent.out" | head -1 | sed 's/.*"name":"//; s/"$//')
   if [ -z "$m" ] || [ -z "$r" ]; then
-    expect "rental-stop-closes" FAIL "no $p cpu rental: $(tail -c 300 "$RT/rent.out")"
+    expect "rental-stop-closes" FAIL "no $p rental ($sku): $(tail -c 300 "$RT/rent.out")"
     [ -z "$r" ] || "$CLI" machine end "$r" -y >>"$RT/end.out" 2>&1
     return
   fi
