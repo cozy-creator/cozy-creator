@@ -61,7 +61,7 @@ rental_stop_closes() {
   # vast without `cpu` now (as suite hub found on 11-10): its cheapest GPUs in turn.
   local sku
   for sku in cpu ${RENTALS_GPU_FALLBACK:-rtx-5060-ti rtx-3070 rtx-3060 rtx-4060-ti rtx-3080}; do
-    "$CLI" --json machine rent "$sku" --provider "$p" --ssh "$RT/pod-ssh.pub" -y >"$RT/rent.out" 2>&1
+    "$CLI" --json machine rent "$sku" --provider "$p" --disk-gb 50 --ssh "$RT/pod-ssh.pub" -y >"$RT/rent.out" 2>&1
     grep -q '"rental.sku_out_of_stock"' "$RT/rent.out" || break
     log "rental-stop-closes: no $sku on $p now; the next"
   done

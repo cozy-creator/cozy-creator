@@ -13,7 +13,7 @@ for c in "${CELLS[@]}"; do
   case $c in
     stop) rental_stop_closes vast ;;
     idle)
-      "$CLI" --json machine rent cpu -y >idle-rent.out 2>&1
+      "$CLI" --json machine rent cpu --disk-gb 50 -y >idle-rent.out 2>&1
       r=$(grep -m1 '"type":"rental.accepted"' idle-rent.out | jq -r '.rental_id // empty') m=$(grep -o '"machine":{"name":"[^"]*"' idle-rent.out | head -1 | sed 's/.*"name":"//; s/"$//')
       [ -n "$m" ] || { expect rental-idle-through-updates FAIL "no cpu rental: $(tail -c 300 idle-rent.out)"; [ -z "$r" ] || "$CLI" machine end "$r" -y; continue; }
       [ -z "$TD" ] || "$CLI" machine update "$m" --tensord "$TD" -y >idle-tensord.out 2>&1 || log "tensord update: $(tail -c 300 idle-tensord.out)"
