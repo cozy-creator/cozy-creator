@@ -10,8 +10,8 @@
 #                move is made or fetched for it first.
 #   rc_yields    a render submitted while the follower's move is being sent: it is accepted at once (no 5–15 s hold, measured),
 #                the move yields, and the rental moves to the RC once it is idle.
-#   rc_held      (cl-1236) a render held behind a third rental's update by hand (this cozy's image, to the RC's cozy) keeps
-#                it through the update's restart past its idle deadline.
+#   rc_held      (cl-1236, shard rc-held by dispatch) a render held behind a third rental's update by hand (this cozy's image, to
+#                the RC's cozy) keeps it through the update's restart past its idle deadline.
 here_rcmoves=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 RM_DIR='' RM_CFG='' RM_SAVED='' RM_GH='' RM_KEY='' RM_DROPIN=$HOME/.config/systemd/user/cozy-calcifer.service.d/cl1201-slow-github.conf
 # Each connection's bytes a second, through either slow link: 4 upload lanes to a rental make about 2 MB/s.
@@ -22,7 +22,16 @@ step "a dev home's moves to the open RC never hold up work: none from a request,
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "rc moves: a fresh GitHub Linux runner only"; return 0; }
 RM_DIR=$OUT/rcmoves RM_CFG=$HOME/.cozy/config.toml RM_SAVED=$OUT/rcmoves-config.toml
 cp "$RM_CFG" "$RM_SAVED" || { check "rc moves: no config.toml to keep"; return; }
-rm_setup && { rc_request; rc_yields; rc_held; }
+rm_setup && { rc_request; rc_yields; }
+rm_quit
+}
+
+# rc_held alone, by dispatch (shard rc-held): its timing on a runner isn't settled yet (cl-1236), so it holds no RC run's shard.
+rc_held_alone() {
+[ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "rc held: a fresh GitHub Linux runner only"; return 0; }
+RM_DIR=$OUT/rcmoves RM_CFG=$HOME/.cozy/config.toml RM_SAVED=$OUT/rcmoves-config.toml
+cp "$RM_CFG" "$RM_SAVED" || { check "rc held: no config.toml to keep"; return; }
+rm_setup && rc_held
 rm_quit
 }
 
