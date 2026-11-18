@@ -156,7 +156,7 @@ on:
         type: string
         default: ''
       cpu_cells:
-        description: CPU entry/cell pairs to run, comma-separated; empty runs every cell
+        description: "CPU entry/cell pairs to run, comma-separated; empty runs every cell; `lanes` the lanes cell alone; `public-lanes` it read as anyone, a default that isn't public failing (the release, before any package final)"
         type: string
         default: ''
       cpu_record:
@@ -1258,6 +1258,9 @@ jobs:
       matrix:
         shard: [1, 2, 3]
     runs-on: ubuntu-24.04
+    # The CI account's key (lanes.py reads an RC's held defaults signed in, xs-217) is the release-gate environment's, which
+    # admits rc/*, release/*, master and proof/* runs; any other run has none and reads as anyone.
+    environment: ${{ (startsWith(github.ref, 'refs/heads/rc/') || startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref, 'refs/heads/proof/') || github.ref == 'refs/heads/master') && 'release-gate' || '' }}
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal.
     timeout-minutes: 120
     defaults:
@@ -1303,10 +1306,19 @@ jobs:
       # The CLI cells' cozy (e2e/cpu/cli.sh): installed as a person installs it, the candidate in its place and Calcifer
       # restarted on it, as the cli suite's candidates step does.
       - name: cpu suite
+        env:
+          CI_KEY: ${{ secrets.COZY_CI_DEVICE_KEY }}
         run: |
           cpu_args=()
           [ -z "$CPU_ONLY" ] || cpu_args+=(--only "$CPU_ONLY")
-          [ -z "$CPU_CELLS" ] || cpu_args+=(--cells "$CPU_CELLS")
+          if [ "$CPU_CELLS" = public-lanes ]; then cpu_args+=(--cells lanes --public-lanes)
+          else
+            [ -z "$CPU_CELLS" ] || cpu_args+=(--cells "$CPU_CELLS")
+            if [ -n "$CI_KEY" ]; then
+              trap 'rm -f "$RUNNER_TEMP/ci-key.json"' EXIT
+              (umask 077; printf '%s' "$CI_KEY" > "$RUNNER_TEMP/ci-key.json"); cpu_args+=(--lanes-key "$RUNNER_TEMP/ci-key.json")
+            fi
+          fi
           if [ "$CPU_RECORD" = true ]; then cpu_args+=(--record --refs "$RUNNER_TEMP/e2e/refs"); fi
           if [ "$CPU_KEEP" = true ]; then cpu_args+=(--keep); fi
           if [ "$CPU_LOCK_FRESH" = true ]; then cpu_args+=(--lock fresh); fi

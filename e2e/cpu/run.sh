@@ -5,7 +5,7 @@
 #
 #   e2e/cpu/run.sh --out DIR --packages DIR --runtime R --tensorfs T [--cozy BIN --project DIR --stage-code BIN] [--envs DIR]
 #                  [--only pkg,...] [--cells entry/cell,...] [--jobs N] [--shard K/N] [--refs DIR] [--helpers pkg,...] [--record]
-#                  [--keep] [--lock fresh]
+#                  [--keep] [--lock fresh] [--lanes-key FILE | --public-lanes]
 # R and T: a wheel, a source dir (the Runtime), an exact release version, or `lock` (what each package's lock pins).
 # --cozy: a cozy whose Calcifer is up, signed in to the suite's Hub as its admin, and --project a project folder of it: each
 # package's cells run through it (real.py), its code is also uploaded and locked (cli.sh), and each slot's default lane
@@ -17,17 +17,21 @@
 # --refs reads (and --record writes) references elsewhere than refs/; --helpers installs those packages from the
 # checkout over the releases the locks pin (a helper not yet published). e2e/lib.sh's other candidate flags are ignored.
 # A helper locked to the Hub's index comes from the checkout, before uv can contact production.
+# --lanes-key FILE: lanes.py reads tensorhub.com as the CI account (an RC's run, its held defaults NOTEs); --public-lanes: as
+# anyone, a default that isn't public failing (the release, before any package final).
 #
 # One line per cell: PASS|FAIL|SKIP <package> <entry> <cell> <seconds>s[: first error line]; the summary last.
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 OUT='' PACKAGES='' RUNTIME='' TENSORFS='' ENVS=${XDG_CACHE_HOME:-$HOME/.cache}/cozy-e2e-cpu ONLY='' CELLS='' JOBS=2 SHARD=1/1 RECORD='' REFS='' HELPERS='' KEEP='' COZY='' PROJECT='' LOCK=''
-RUN_CODE_STAGE=${RUN_CODE_STAGE:-}
+RUN_CODE_STAGE=${RUN_CODE_STAGE:-} LANES=()
 while [ $# -gt 0 ]; do
   case $1 in
     --out) OUT=$2 ;; --packages) PACKAGES=$2 ;; --runtime) RUNTIME=$2 ;; --tensorfs) TENSORFS=$2 ;;
     --envs) ENVS=$2 ;; --cozy) COZY=$2 ;; --project) PROJECT=$2 ;; --stage-code) RUN_CODE_STAGE=$2 ;; --only) ONLY=$2 ;; --cells) CELLS=$2 ;; --jobs) JOBS=$2 ;; --shard) SHARD=$2 ;; --refs) REFS=$2 ;; --helpers) HELPERS=$2 ;;
     --lock) LOCK=$2 ;;
+    --lanes-key) LANES=(--key "$2") ;;
+    --public-lanes) LANES=(--public); shift; continue ;;
     --record) RECORD=--record; shift; continue ;;
     --keep) KEEP=1; shift; continue ;;
     --tensord | --pod-tensord | --release) ;;
@@ -174,7 +178,7 @@ for q in $absent; do echo "SKIP $q - package 0s: not applicable: the packages un
 # The lane each slot's default resolves to on each GPU family, through cozy against tensorhub.com's releases (lanes.py,
 # cl-1076); `--cells lanes` runs it alone.
 if [ -n "$COZY" ] && [ -n "$packages" ] && { [ -z "$CELLS" ] || [[ ",$CELLS," == *,lanes,* ]]; }; then
-  python3 -I "$HERE/lanes.py" --cozy "$COZY" --project "$PROJECT" --packages "$PACKAGES" --out "$OUT/lanes" $packages \
+  python3 -I "$HERE/lanes.py" --cozy "$COZY" --project "$PROJECT" --packages "$PACKAGES" --out "$OUT/lanes" "${LANES[@]}" $packages \
     | tee -a "$OUT/cells.txt" || true
 fi
 if [ "$CELLS" != lanes ]; then
