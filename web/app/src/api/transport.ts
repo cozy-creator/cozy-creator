@@ -52,6 +52,8 @@ export function sameOrigin(): Transport {
     let one = held.get(path)
     if (!one) {
       const url = (async () => {
+        // PROBE (cl-1220, never merged): `__probeUrl` plays every file from its URL, as before cl-1215.
+        if ((globalThis as unknown as { __probeUrl?: boolean }).__probeUrl) return direct(path)
         const response = await fetch(direct(path), { signal: project?.signal })
         if (!response.ok) { void response.body?.cancel(); return direct(path) }
         if (Number(response.headers.get("Content-Length")) > MEDIA_IN_MEMORY) { void response.body?.cancel(); return direct(path) }
