@@ -337,8 +337,7 @@ fn admit(runs: &Arc<Runs>, actor: VerifiedActor, list: List, put: u64, requests:
     };
     // One not in line yet ends now; the rest wait for what replaced them (`settle`).
     let (dropped, unlined): (Vec<String>, Vec<String>) = {
-        let mut lined = lock(&LINED);
-        lined.retain(|id| ids.contains(id) || dropped.contains(id));
+        let lined = lock(&LINED);
         dropped.into_iter().partition(|id| lined.contains(id))
     };
     for id in &unlined {
@@ -433,6 +432,7 @@ fn settle(runs: &Runs, change: impl FnOnce(&mut Vec<Handed>)) {
         // One that ended meanwhile is left as it ended.
         let live = runs.live_ids(actor).unwrap_or_default();
         for id in &dropped {
+            lock(&LINED).remove(id);
             if !live.contains(id) {
                 tracing::info!("list item {id} dropped: its run had ended");
                 continue;
