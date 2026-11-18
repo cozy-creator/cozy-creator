@@ -112,7 +112,7 @@ has page && pageflow tour
 # 4. Rented: one machine by the CLI, the tools chained on it.
 if has tools || has idle; then
   STEPS=$ROOT/$(param tools release-gate/sessions/fixtures/walkthrough/tools.json)
-  for p in $(jq -r '[.[].tool | split("/")[0]] | unique | .[]' "$STEPS"); do kernels "$SOURCE/$p"; done
+  for p in $(jq -r '[.[] | .tool // empty | split("/")[0]] | unique | .[]' "$STEPS"); do kernels "$SOURCE/$p"; done
   DIR=$W c rent-quote-text machine rent "$SKU" --disk-gb "$DISK"
   RENTING=$RENT
   quote "$(param seconds 3600)"
@@ -121,31 +121,59 @@ if has tools || has idle; then
 fi
 if has tools; then
   P=$W/garden
+  # A tool by the id the palette lists it under (a dev home's may be namespaced).
+  tid() { jq -r --arg t "$1" '[(.tools // .)[]?.id] | map(select(. == $t or endswith("/" + $t))) | first // $t' "$W/tools.json" 2> /dev/null || echo "$1"; }
+  # media <name>: the box's newest take's file, kept in out/ and measured.
+  media() {
+    local f; f=$(jq -r '.versions[-1].files // {} | to_entries[] | select(.key == "image" or .key == "video") | .value | (.path // .file // .local // empty)' "$W/out/$1.render.json" 2> /dev/null | tail -1)
+    [ -z "$f" ] || [[ $f == /* ]] || f=$P/$f
+    [ -n "$f" ] && [ -f "$f" ] || f=$(find "$P" -newer "$W/out/$1.add.json" -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.webp' -o -name '*.mp4' \) 2> /dev/null | grep -v '/\.' | head -1)
+    [ -n "$f" ] && [ -f "$f" ] || { echo "no file found"; return; }
+    cp "$f" "$W/out/$1.${f##*.}"
+    ffprobe -v error -show_entries stream=codec_type,width,height,duration,nb_frames -of compact "$f" 2> /dev/null | tr '\n' ' '
+  }
   # The coordinator's check: an encrypted project's Qwen-Image 2 text-to-image box, shown as an open page holds it, prefetches only
   # expander_t2i on the machine it will render on.
-  PAGE add "$P" sky --tool qwen-image-2/image --fields '{"prompt": "a red kite over a green hill, morning light"}' > "$W/add-sky.json" 2>&1
-  timeout 240 python3 -I "$ROOT/e2e/page.py" show "$P" > "$W/show-sky.json" 2>&1
-  cozy model ls --on "$NAME" --json > "$W/prefetch-models.json" 2>&1 < /dev/null
-  cozy machine logs "$NAME" --since 10m -n 400 < /dev/null 2>&1 | grep -aiE 'expander|prefetch|prepare|download' | tail -60 > "$W/prefetch-log.txt"
-  say "prefetch for an encrypted t2i box: $(grep -aoiE 'expander_[a-z0-9_]+' "$W/prefetch-log.txt" "$W/prefetch-models.json" 2> /dev/null | sort | uniq -c | tr '\n' ' ')"
-  n=0
+  PAGE add "$P" sky --tool "$(tid qwen-image-2/image)" --fields '{"instructions": "a red kite over a green hill, morning light", "seed": 5}' > "$W/out/sky.add.json" 2>&1
+  t0=$SECONDS; timeout 300 python3 -I "$ROOT/e2e/page.py" show "$P" > "$W/show-sky.json" 2>&1
+  cozy model ls --on "$NAME" > "$W/prefetch-models.txt" 2>&1 < /dev/null
+  cozy machine logs "$NAME" --since 15m -n 600 < /dev/null 2>&1 | grep -aiE 'expander|prefetch|prepar|download|install' | tail -80 > "$W/prefetch-log.txt"
+  cp "$P/.vault-calcifer/diagnostics/walk.log" "$W/walk-garden.log" 2> /dev/null || find "$P" -name walk.log -exec cp {} "$W/walk-garden.log" \; 2> /dev/null
+  say "prefetch, an encrypted project's t2i box shown $((SECONDS - t0)) s: $(grep -ahoiE 'expander_[a-z0-9_]+' "$W/prefetch-log.txt" "$W/prefetch-models.txt" "$W/walk-garden.log" 2> /dev/null | sort | uniq -c | tr '\n' ' ')"
   while read -r s; do
-    n=$((n + 1)); name=$(jq -r .name <<< "$s") tool=$(jq -r .tool <<< "$s") kind=$(jq -r '.kind // "page"' <<< "$s")
-    if [ "$kind" = import ]; then PAGE import "$P" "$ROOT/$(jq -r .file <<< "$s")" --name "$name" > "$W/out/$name.add.json" 2>&1; continue; fi
-    if [ "$kind" = cli ]; then
-      DIR=$P TO=3600 c "cli-$name" run "$tool" --on "$NAME" $(jq -r '.args[]' <<< "$s"); say "cli $name ($tool): exit $? in $(tail -1 "$W/cli/times.tsv" | cut -f3) ms"
-      continue
-    fi
-    PAGE add "$P" "$name" --tool "$tool" --fields "$(jq -c .fields <<< "$s")" > "$W/out/$name.add.json" 2>&1 || { say "$name: add failed: $(tail -c 300 "$W/out/$name.add.json")"; continue; }
+    name=$(jq -r .name <<< "$s") tool=$(jq -r '.tool // ""' <<< "$s") kind=$(jq -r '.kind // "page"' <<< "$s")
+    case $kind in
+      import) PAGE import "$P" "$ROOT/$(jq -r .file <<< "$s")" --name "$name" > "$W/out/$name.add.json" 2>&1 || say "$name: import failed: $(tail -c 300 "$W/out/$name.add.json")"; continue ;;
+      cli)
+        mapfile -t args < <(jq -r '.args[]' <<< "$s" | sed "s#{ref}#$REF/seed.jpg#")
+        DIR=$P TO=3600 c "cli-$name" run "$tool" --on "$NAME" "${args[@]}"; rc=$?
+        say "cli $name (cozy run $tool): exit $rc in $(tail -1 "$W/cli/times.tsv" | cut -f3) ms: $(tail -3 "$W/cli/cli-$name.txt" | tr '\n' ' ' | cut -c1-300)"
+        continue ;;
+      page) PAGE add "$P" "$name" --tool "$(tid "$tool")" --fields "$(jq -c .fields <<< "$s")" > "$W/out/$name.add.json" 2>&1 || { say "$name: add failed: $(tail -c 300 "$W/out/$name.add.json")"; continue; } ;;
+    esac
     t1=$SECONDS
-    timeout 3600 python3 -I "$ROOT/e2e/page.py" render "$P" --on "$NAME" "$name" > "$W/out/$name.render.json" 2> "$W/out/$name.render.err"
-    rc=$?
-    say "$name ($tool) on $NAME: exit $rc in $((SECONDS - t1)) s: $(tail -c 300 "$W/out/$name.render.json" | tr '\n' ' ') $(tail -c 200 "$W/out/$name.render.err" | tr '\n' ' ')"
+    timeout 3600 python3 -I "$ROOT/e2e/page.py" render "$P" --on "$NAME" "$name" > "$W/out/$name.render.json" 2> "$W/out/$name.render.err"; rc=$?
+    say "$name (${tool:-its tool}): exit $rc in $((SECONDS - t1)) s; $(media "$name"); $(tail -c 200 "$W/out/$name.render.err" | tr '\n' ' ')"
   done < <(jq -c '.[]' "$STEPS")
-  PAGE asset "$P" $(jq -r '.[] | select(.kind != "cli") | .name' "$STEPS") > "$W/assets.json" 2>&1
+  # A cancelled run: an SDXL render asked, then cancelled as the page cancels it.
+  PAGE add "$P" stop --tool "$(tid sdxl/image)" --fields '{"instructions": "a tall stack of pancakes", "megapixels": 4, "seed": 9}' > "$W/out/stop.add.json" 2>&1
+  PAGE render "$P" --on "$NAME" --queue stop > "$W/out/stop.render.json" 2>&1; sleep 8
+  PAGE cancel "$P" stop > "$W/out/stop.cancel.json" 2>&1; sleep 20
+  DIR=$P c run-ls-cancel run ls
+  say "cancel: $(tail -c 300 "$W/out/stop.cancel.json" | tr '\n' ' '); run ls: $(sed -n 2,3p "$W/cli/run-ls-cancel.txt" | tr '\n' ' ' | cut -c1-300)"
+  # The client gone mid-run (a laptop's lid closed): a Krea render asked, this computer's Calcifer stopped for 2 min, started again.
+  PAGE add "$P" lid --tool "$(tid krea-2/image)" --fields '{"instructions": "a lighthouse keeper reading by lamplight", "seed": 9}' > "$W/out/lid.add.json" 2>&1
+  PAGE render "$P" --on "$NAME" --queue lid > "$W/out/lid.render.json" 2>&1; sleep 5
+  unit=$(systemctl --user list-units --all --no-legend 2> /dev/null | awk '/cozy|calcifer/ {print $1; exit}')
+  say "client gone: stopping ${unit:-no unit found} for 120 s"
+  [ -z "$unit" ] || { systemctl --user stop "$unit"; sleep 120; systemctl --user start "$unit"; sleep 15; }
+  t1=$SECONDS
+  for _ in $(seq 1 60); do PAGE asset "$P" lid > "$W/out/lid.asset.json" 2>&1; jq -e '[.versions[]?] | length > 0' "$W/out/lid.asset.json" > /dev/null 2>&1 && break; sleep 10; done
+  say "client gone: lid has $(jq '[.versions[]?] | length' "$W/out/lid.asset.json" 2> /dev/null) version(s) $((SECONDS - t1)) s after Calcifer came back"
+  PAGE asset "$P" $(jq -r '.[] | select(.kind != "cli") | .name' "$STEPS") lid stop > "$W/assets.json" 2>&1
   DIR=$P c run-ls-tools run ls
-  pageflow results
   DIR=$W c machine-show-after machine show "$NAME"
+  pageflow results
 fi
 # Its idle release: nothing asked of it for its 15 idle minutes, it ends by itself.
 if has idle; then

@@ -1,4 +1,15 @@
 [
   {"name": "photo", "kind": "import", "file": "release-gate/ref/seed.jpg"},
-  {"name": "qwen", "tool": "qwen-image-2/image", "fields": {"instructions": "a red kite over a green hill, morning light", "seed": 11}}
+  {"name": "sky", "kind": "render"},
+  {"name": "klein", "tool": "flux.3-klein/image", "fields": {"instructions": "a lighthouse on a basalt cliff at dusk, oil painting", "aspect_ratio": "16:9", "seed": 7}},
+  {"name": "krea", "tool": "krea-2/image", "fields": {"instructions": "a fox curled up asleep in fresh snow, soft morning light, photograph", "seed": 7}},
+  {"name": "sdxl", "tool": "sdxl/image", "fields": {"instructions": "a cozy wooden cabin in a snowy forest at night, warm windows", "seed": 7}},
+  {"name": "edit", "tool": "qwen-image-2/image", "fields": {"instructions": "Turn <photo> into a watercolor painting; keep its composition and subject.", "seed": 7}},
+  {"name": "cutout", "tool": "birefnet/remove_background", "fields": {"image": "<photo>"}},
+  {"name": "big", "tool": "seedvr2/upscale_image", "fields": {"image": "<photo>"}},
+  {"name": "ph3", "tool": "p-h3-image/generate", "fields": {"instructions": "a vintage red bicycle leaning on a blue door, film photo", "seed": 7}},
+  {"name": "h3i", "tool": "minimax-h3-image/generate", "fields": {"instructions": "a bowl of ramen on a wooden table, steam rising, close-up food photo", "seed": 7}},
+  {"name": "clip", "tool": "minimax-h3/generate", "fields": {"summary": "<photo> comes to life.", "beats": [{"description": "The camera pushes in slowly on <photo> as a light breeze moves through the scene.", "duration": 5}], "soundscape": "Soft wind."}},
+  {"name": "cli-qwen", "kind": "cli", "tool": "qwen-image-2/generate_turbo", "args": ["prompt=a paper boat on a puddle, macro photo", "seed=3"]},
+  {"name": "cli-cutout", "kind": "cli", "tool": "birefnet/remove_background", "args": ["--file", "image={ref}"]}
 ]
