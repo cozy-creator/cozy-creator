@@ -105,13 +105,15 @@ async function candidateCDP(page, origin, directory) {
       const values = name => headers.filter(header => header.name.toLowerCase() === name).map(header => header.value);
       const csp = values('content-security-policy'), contentType = values('content-type').join(';');
       const replace = !event.responseErrorReason && status >= 200 && status < 300 && contentType.split(';')[0].trim().toLowerCase() === 'text/html' && csp.some(value => value.trim());
-      const document = { status: status ?? null, replaced: Boolean(replace), csp_sha256: csp.length ? sha(csp.join('\n')) : null };
+      // Replaced once delivered: a document the page cancelled (`aborted`) replaced nothing.
+      const document = { status: status ?? null, replaced: false, csp_sha256: csp.length ? sha(csp.join('\n')) : null };
       receipt.documents.push(document);
       if (!replace) return session.send('Fetch.continueRequest', { requestId });
       security = headers.filter(header => securityNames.has(header.name.toLowerCase()));
       const replacement = headers.filter(header => !bodyHeaders.has(header.name.toLowerCase()));
       replacement.push({ name: 'Content-Length', value: String(html.bytes) });
       await session.send('Fetch.fulfillRequest', { requestId, responseCode: status, ...(event.responseStatusText ? { responsePhrase: event.responseStatusText } : {}), responseHeaders: replacement, body: html.body });
+      document.replaced = true;
       document.sha256 = html.sha256;
       return;
     }
