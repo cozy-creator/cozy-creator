@@ -7,11 +7,14 @@
 #   runtime-cache  cr-336 V2's card half: exact pages at a base that never moves, a view before any page, a refused commit
 #                  that changes nothing, a release behind its stream, close only with no page and no tensor, a shrink
 #                  callback that gives its pages to an allocation. A Region's Use export still reads its bytes.
-#   kv-tiers       decode attention at Qwen3.5-9B's K/V layout over 65,536 tokens, every attention layer a step, with none,
-#                  a quarter, half and all of the row's blocks off the card, read in place against copied through a window on
-#                  the card: ms a step and steps/s (attention only: no weights are read, so this is the K/V's share of a
-#                  token, not a token), the host GiB a step, the card's utilisation and power, and the link's copy GB/s. Every
-#                  arm's output is held against a float32 reference before it is timed.
+#   kv-tiers       decode at Qwen3.5-9B's K/V layout over 65,536 tokens, every attention layer a step, with none, a quarter,
+#                  half and all of the row's blocks off the card, read in place, copied through a window on the card, or copied
+#                  ahead on a copy stream while the layer before computes: ms a step, steps/s, the host GiB a step, the card's
+#                  utilisation and power, the link's copy GB/s. Each on attention alone (the K/V's share of a token) and with a
+#                  stand-in for the step's weight reads (the bytes a plain step of the 9B lane the card holds reads, named in
+#                  the output), the work a copy ahead can hide behind. Every arm's output is held against a float32 reference.
+#   batch-shapes   whether a ggml linear's row (q8_0, q4_k; the 9B's MLP shapes) depends on how many rows share its launch:
+#                  the same rows in batches of 1 to 16 and in prefills of three sizes, through the leaf and as one launch.
 # The pod runs this session's cozy as its TensorD and the candidate TensorFS and Runtime (wheel sources as lib.sh `wheel_from`
 # takes). Nothing here is judged against a bar: it reports, and fails only where a case does.
 # params: tensorfs, runtime (required), seconds (1500).
@@ -48,12 +51,19 @@ say "probe: $(jq -c '.rows[0].probe' "$OUT/host-cache.json")$(jq -r '.rows[0].ho
 ran runtime-cache
 say "runtime-cache: $(jq -c '.rows[0] | del(.case)' "$OUT/runtime-cache.json")"
 ran kv-tiers
+ran batch-shapes
 {
-  jq -r '.rows[0] | "K/V \(.layout.kv_gib) GiB (\(.layout.tokens) tokens, \(.layout.attn_layers) layers, \(.layout.parts) parts) · link: H2D \(.h2d_gb_s // "?") GB/s, D2H \(.d2h_gb_s // "?") GB/s\(if .host then " · host tier: " + .host else "" end)\(if .cleanup then " · cleanup: " + .cleanup else "" end)"' "$OUT/kv-tiers.json"
+  jq -r '.rows[0] | "K/V \(.layout.kv_gib) GiB (\(.layout.tokens) tokens, \(.layout.attn_layers) layers, \(.layout.parts) parts) · link: H2D \(.h2d_gb_s // "?") GB/s, D2H \(.d2h_gb_s // "?") GB/s · stand-in: \(.standin.model), \(.standin.bytes_step / 1e9 * 100 | round / 100) GB a step\(if .host then " · host tier: " + .host else "" end)\(if .cleanup then " · cleanup: " + .cleanup else "" end)"' "$OUT/kv-tiers.json"
   echo
-  echo "| off the card | served | ms a step | steps/s | host GiB a step | utilisation % | power W | worst error |"
+  echo "| off the card | served | stand-in | ms a step | steps/s | host GiB a step | utilisation % | power W | worst error |"
+  echo "|---|---|---|---|---|---|---|---|---|"
+  jq -r '.rows[0].arms[] | "| \(.off_card) | \(.mode) | \(if .standin then "yes" else "no" end) | \(.ms_step * 100 | round / 100) | \(.steps_s * 100 | round / 100) | \(.host_gib_step * 100 | round / 100) | \(if .watched then (.utilization_pct | round) else "-" end) | \(if .watched then (.power_w | round) else "-" end) | \(.worst_error) |"' "$OUT/kv-tiers.json"
+  echo
+  jq -r '.rows[0] | if .served then "batch shapes (\(.serving)\(if .leaf_failed != "" then ", leaf failed: " + .leaf_failed else "" end)):" else "batch shapes: not served: \(.why)" end' "$OUT/batch-shapes.json"
+  echo
+  echo "| type | site | path | rows | against | kernels | rows identical | max abs diff |"
   echo "|---|---|---|---|---|---|---|---|"
-  jq -r '.rows[0].arms[] | "| \(.off_card) | \(.mode) | \(.ms_step * 100 | round / 100) | \(.steps_s * 100 | round / 100) | \(.host_gib_step * 100 | round / 100) | \(if .watched then (.utilization_pct | round) else "-" end) | \(if .watched then (.power_w | round) else "-" end) | \(.worst_error) |"' "$OUT/kv-tiers.json"
+  jq -r '.rows[0].shapes[]? | "| \(.type) | \(.site) | \(.path) | \(.rows) | \(.against) | \(.kernel) / \(.kernel_against) | \(.rows_identical) of \(.rows) | \(.max_abs_diff) |"' "$OUT/batch-shapes.json"
 } > "$OUT/summary.md"
 cat "$OUT/summary.md" >> "$R"; cat "$OUT/summary.md" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 say "PASS: the Caches' cells and the K/V serving measurement on $(jq -r '.status.gpus[0].name' "$OUT/show.json")"
