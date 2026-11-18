@@ -1540,8 +1540,8 @@ impl Read {
     }
 }
 
-/// What one completed root took: its width, its size as its input said, its compute, and what it spent putting weights on its
-/// GPUs.
+/// What one completed root took: its width, its size as its input said, its compute, what it spent putting weights on its
+/// GPUs, and the most device memory a call of it worked in beside what it held at its start.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TimedRun {
@@ -1549,6 +1549,9 @@ pub struct TimedRun {
     pub size: JobSize,
     pub ms: f64,
     pub load_ms: f64,
+    /// Its calls' highest working peak (an executor's `working_peak_vram_bytes`); 0: unmeasured.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub peak_bytes: u64,
     /// The function's first call on the machine: its plan compiled as it ran (its cold time).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub cold: bool,

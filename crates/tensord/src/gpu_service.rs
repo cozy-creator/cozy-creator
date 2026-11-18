@@ -1088,9 +1088,29 @@ struct Device {
     asking: Option<Mutex<varena_ledger::Table>>,
     /// Open while it drove a display at the pool's start: its use is read for each request.
     display: Option<platform::gpu::Device>,
+    /// What one process holds on it outside varena's books (`varena_ledger::out_of_books`), read once:
+    /// the first time a process here measured it.
+    #[cfg(target_os = "linux")]
+    unbooked: std::sync::OnceLock<u64>,
 }
 
 impl Device {
+    /// What one process holds on it outside varena's books, as varena measured it this boot; 0 before.
+    #[cfg(target_os = "linux")]
+    fn unbooked(&self) -> u64 {
+        if let Some(bytes) = self.unbooked.get() {
+            return *bytes;
+        }
+        let uuid = self.memory.as_ref().and_then(|memory| varena_ledger::parse_uuid(&memory.uuid));
+        match uuid.and_then(|uuid| varena_ledger::out_of_books(&uuid)) {
+            Some(bytes) => *self.unbooked.get_or_init(|| bytes),
+            None => 0,
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    fn unbooked(&self) -> u64 {
+        0
+    }
     /// What its executors hold.
     #[cfg(target_os = "linux")]
     fn executors_hold(&self) -> u64 {
@@ -1183,6 +1203,8 @@ impl Pool {
                     .and_then(|row| platform::gpu::Device::open(&row.device_uuid).ok())
                     .filter(|device| device.display_active().unwrap_or(false))
                     .inspect(|_| tracing::info!("GPU {entry} drives a display: each run keeps free what it uses plus {} MiB", DISPLAY_MARGIN >> 20)),
+                #[cfg(target_os = "linux")]
+                unbooked: std::sync::OnceLock::new(),
             }
         }).collect();
         let gpus = devices.iter().filter_map(|d| d.memory.clone()).collect();
@@ -1488,8 +1510,21 @@ impl Pool {
             .map(|g| g.compute_cap.clone()).filter(|cc| !cc.is_empty()).collect();
         tensorfs::fetch::Hardware { gpus, ..Default::default() }
     }
+    /// The first `degree` GPUs' least capacity (xs-213: a lane's fit is what it holds against the card it
+    /// holds it on): each one's memory, or the `gpu_memory_limit` below it, less what one process holds
+    /// there outside varena's books (its context and the driver's own), never what others use: that would
+    /// be free memory. That figure is varena's own measure (cozy-creator #3885, var-024), read once;
+    /// before any process on the card has measured it, none is taken off.
+    pub(crate) fn capacity(&self, degree: u32) -> Option<u64> {
+        let limit = self.config.gpu_memory_limit.unwrap_or(u64::MAX);
+        (self.devices.iter().take(degree as usize))
+            .filter_map(|d| Some(self.inventory(&d.entry)?.memory_bytes.min(limit).saturating_sub(d.unbooked())))
+            .filter(|bytes| *bytes > 0)
+            .min()
+    }
     /// The first `degree` GPUs' least free bytes, counting what idle peers hold: they give it back
-    /// when asked, so it is room a new model can plan on. Only a 4-bit floor's lane resolves by it.
+    /// when asked, so it is room a new model can plan on. What a Hub before rule 8 fits a 4-bit
+    /// floor's lane by.
     pub(crate) fn free_vram(&self, degree: u32) -> Option<u64> {
         self.devices.iter().take(degree as usize).filter_map(|d| Some(d.memory.as_ref()?.free()? + d.idle_bytes())).min()
     }
@@ -5220,10 +5255,11 @@ pub(crate) fn record_measurements(engine: &Engine, id: &str, plan: &Plan, reply:
     }
 }
 
-/// The call's memory: torch's high-water marks over the call and varena's record of the request
-/// kept whole as `stats`, as its executor measured them, and `driver`, each GPU's bytes in use as
-/// NVML read them from the call's start to its reply (the release gate's peak VRAM). None when
-/// nothing was measured.
+/// The call's memory: torch's high-water marks over the call, the most of them beside what it held
+/// at its start (`working_peak_bytes`: the lane rule's measured step room, `estimate::peak`), and
+/// varena's record of the request kept whole as `stats`, as its executor measured them, and `driver`,
+/// each GPU's bytes in use as NVML read them from the call's start to its reply (the release gate's
+/// peak VRAM). None when nothing was measured.
 fn call_memory(reply: &Frame, driver: &[platform::gpu::Used]) -> Option<serde_json::Value> {
     if reply.memory.is_none() && reply.metrics.is_none() && driver.is_empty() {
         return None;
@@ -5231,7 +5267,8 @@ fn call_memory(reply: &Frame, driver: &[platform::gpu::Used]) -> Option<serde_js
     let metrics = reply.metrics.clone().unwrap_or_default();
     let known = |v: Option<i64>| v.and_then(|v| u64::try_from(v).ok()).map(serde_json::Value::from);
     let fields = [("peak_allocated_bytes", known(metrics.peak_vram_bytes)),
-        ("peak_reserved_bytes", known(metrics.peak_reserved_bytes)), ("stats", reply.memory.clone().map(serde_json::Value::Object)),
+        ("peak_reserved_bytes", known(metrics.peak_reserved_bytes)), ("working_peak_bytes", known(metrics.working_peak_vram_bytes)),
+        ("stats", reply.memory.clone().map(serde_json::Value::Object)),
         ("driver", (!driver.is_empty()).then(|| serde_json::json!(driver)))];
     Some(fields.into_iter().filter_map(|(key, value)| Some((key.to_string(), value?))).collect())
 }

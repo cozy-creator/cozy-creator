@@ -510,6 +510,26 @@ pub fn time(runs: &[TimedRun], size: &JobSize, prior_ms: f64, known: Option<Scal
     Time { one_ms: ms / scaling.at(width), scaling, load_ms, basis: Basis::Measured }
 }
 
+/// The most device memory a call of a function works in beside what it held at its start (xs-213: the lane rule's step room), at
+/// `size`, by its newest runs on the machine that measured one (`runs`, newest first), as `time` reads a warm call's: its warm runs'
+/// (their model held at their start, so its weights' fill is no part of it), else all; the median of those within `SAME_SIZE` of it,
+/// else of each scaled to it. None: none measured one, and a lane's header estimate stands.
+pub fn peak(runs: &[TimedRun], size: &JobSize) -> Option<f64> {
+    let measured: Vec<&TimedRun> = runs.iter().filter(|run| run.peak_bytes > 0).collect();
+    let warm: Vec<&TimedRun> = measured.iter().copied().filter(|run| !run.cold).collect();
+    let runs = if warm.is_empty() { measured } else { warm };
+    let same: Vec<f64> = (runs.iter())
+        .filter(|run| (size.ratio(&run.size) - 1.0).abs() <= SAME_SIZE)
+        .map(|run| run.peak_bytes as f64)
+        .take(RECENT)
+        .collect();
+    let like: Vec<f64> = match same.is_empty() {
+        false => same,
+        true => runs.iter().map(|run| run.peak_bytes as f64 * size.ratio(&run.size)).take(RECENT).collect(),
+    };
+    (!like.is_empty()).then(|| median(&like))
+}
+
 fn median(values: &[f64]) -> f64 {
     let mut sorted = values.to_vec();
     sorted.sort_by(f64::total_cmp);
