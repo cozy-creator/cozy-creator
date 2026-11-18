@@ -4,11 +4,12 @@
 # Dispatches, each its own runner and Calcifer on the account:
 #   role=worker (rent): the cheapest pod; its TensorD becomes this session's cozy; a cl1224 run steps on it, so the account's other
 #     computers can name it; then keepalives hold it idle for `hold_s`, and it ends.
-#   role=placer: another computer of the account, which rents nothing. It finds the worker's pod by that run, waits until it is idle
-#     and the account's only live rental (so no other session's pod takes a run), then: a run naming no machine goes to it; `--on
-#     any` goes to it; `--on <it>` completes there; a keepalive from here holds it; `cozy machine ls`/`show` and the page (the tabs,
-#     Machines, the machine; 1440x900 and 1920x1080, fixtures/rentals-view/look.js) say it as any rental, never "other client" or
-#     "rented by another computer".
+#   role=placer: another computer of the account, which rents nothing (its dispatch's cap only sets its deadline). It finds the
+#     worker's pod by that run, waits until it is the account's only idle rental that's up (every other one runs or waits on work, as
+#     its Status says, so a run naming none never lands on another session's idle pod), then: a run naming no machine goes to it;
+#     `--on any` goes to it; `--on <it>` completes there; a keepalive from here holds it; `cozy machine ls`/`show` and the page (the
+#     tabs, Machines, the machine; 1440x900 and 1920x1080, fixtures/rentals-view/look.js) say it as any rental, never "other client"
+#     or "rented by another computer".
 # Before cl-1224, placement skipped a rental another client ordered: the run naming none went to local, and the words said whose it was.
 # Params: role (worker|placer); hold_s (worker, 720); wait_s (placer, 1800).
 . "$(dirname "$0")/lib.sh"
@@ -45,6 +46,14 @@ go() {
   jq -r '.machine // empty' "$OUT/$n.json"
 }
 
+# idle_alone: $W is up and runs nothing, and every other live rental of the account that's up runs or waits on work (every
+# client's, as its Status says).
+idle_alone() {
+  cozy machine ls --json > "$OUT/alone.json" 2> /dev/null && jq -e --arg w "$W" '
+    ([.machines[] | select(.kind == "rental" and .state == "ready" and .name != $w and (.running + .queued) == 0)] | length == 0)
+    and any(.machines[]; .name == $w and .state == "ready" and (.running + .queued) == 0)' "$OUT/alone.json" > /dev/null
+}
+
 placer() {
   local wait until m
   wait=$(param wait_s 1800)
@@ -62,19 +71,17 @@ placer() {
   done
   say "the worker's pod: $W"
   until=$(($(date +%s) + 900))
-  until cozy machine ls --json > "$OUT/alone.json" 2> /dev/null && jq -e --arg w "$W" '
-      ([.machines[] | select(.kind == "rental" and .state != "ended" and .name != $w)] | length == 0)
-      and any(.machines[]; .name == $w and .state == "ready" and .running == 0 and ((.status.others // []) | length == 0))' "$OUT/alone.json" > /dev/null; do
-    [ "$(date +%s)" -lt "$until" ] || fail "$W never idle and alone: $(jq -c '[.machines[] | select(.kind == "rental" and .state != "ended")
-      | {name, state, running, others: (.status.others // [] | length)}]' "$OUT/alone.json" 2> /dev/null)"
+  until idle_alone; do
+    [ "$(date +%s)" -lt "$until" ] || fail "$W was never the account's only idle rental that's up: $(jq -c '[.machines[] | select(.kind == "rental"
+      and .state != "ended") | {name, state, running, queued}]' "$OUT/alone.json" 2> /dev/null)"
     sleep 15
   done
-  say "$W is idle and the account's only live rental"
+  say "$W is the account's only idle rental that's up: $(jq -c '[.machines[] | select(.kind == "rental" and .state != "ended") | {name, state, running, queued}]' "$OUT/alone.json")"
 
   m=$(go auto) || check "a run naming no machine didn't run"
-  [ "$m" = "$W" ] || check "a run naming no machine went to ${m:-nothing}, not $W, the account's only rental"
+  [ "$m" = "$W" ] || check "a run naming no machine went to ${m:-nothing}, not $W, the account's only idle rental"
   m=$(go any --on any) || check "--on any didn't run"
-  [ "$m" = "$W" ] || check "--on any went to ${m:-nothing}, not $W, the account's only rental"
+  [ "$m" = "$W" ] || check "--on any went to ${m:-nothing}, not $W, the account's only idle rental"
   m=$(go named --on "$W") || check "--on $W didn't run"
   [ "$m" = "$W" ] && [ "$(jq -r .status "$OUT/named.json")" = completed ] || check "--on $W: $(jq -c '{status, machine, reason}' "$OUT/named.json" 2> /dev/null)"
   cozy machine keepalive "$W" > "$OUT/keepalive.txt" 2>&1 || check "a keepalive from here: $(tail -c 300 "$OUT/keepalive.txt")"
