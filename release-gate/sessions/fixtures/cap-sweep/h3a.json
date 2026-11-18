@@ -19,10 +19,11 @@
    "max_s": 5400
   },
   {
-   "name": "h3-gen-30s",
+   "name": "h3-gen-30s-1344",
    "target": "minimax-h3/generate",
    "args": [
     "beats:=[{\"description\":\"The beam sweeps over the dark sea as waves roll in and break on the rocks, slow push-in, wind and surf.\",\"duration\":15},{\"description\":\"The boat rounds the point and the keeper lights the lamp; the camera rises over the cliff.\",\"duration\":15}]",
+    "aspect_ratio=16:9",
     "carried_frames:=56",
     "--file",
     "first_frame={seed}",
