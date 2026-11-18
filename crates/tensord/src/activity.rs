@@ -133,9 +133,14 @@ pub(crate) struct Waiting {
     wanted: Mutex<Vec<String>>,
 }
 
-/// Run `run` (its caller's id) waits on the `kind` of `subject`: the one already listed, or a new one.
+/// Run `run` (its caller's id) waits on the `kind` of `subject`: the one already listed, or a new one. A download is the machine's,
+/// one however many projects' runs wait on it (cl-1205: a project's and the machine's own scope each listed BiRefNet once); an install
+/// is its scope's.
 pub(crate) fn wait(kind: Kind, subject: &str, run: &str) -> Waiting {
-    let id = crate::private_io::resource_key(&format!("{} {subject}", kind.word()));
+    let id = match kind {
+        Kind::Download => format!("{} {subject}", kind.word()),
+        Kind::Install => crate::private_io::resource_key(&format!("{} {subject}", kind.word())),
+    };
     let mut listed = operations();
     let operation = listed.entry(id.clone()).or_insert_with(|| Operation {
         kind,
@@ -387,10 +392,13 @@ pub(crate) fn listed(mine: impl Fn(&str) -> bool) -> Vec<v1::Operation> {
         .iter_mut()
         .filter_map(|(id, operation)| {
             let runs: Vec<String> = operation.runs.keys().filter(|run| mine(run)).cloned().collect();
-            operation.listed |= !runs.is_empty();
+            // A download is listed to every caller, the runs it can't read counted (cl-1205).
+            let unnamed = (operation.runs.len() - runs.len()) as u32;
+            let shown = !runs.is_empty() || (operation.kind == Kind::Download && unnamed > 0);
+            operation.listed |= shown;
             let bytes_per_s = rate(&operation.seen);
             let left = operation.total.saturating_sub(operation.done);
-            (!runs.is_empty()).then(|| v1::Operation {
+            shown.then(|| v1::Operation {
                 id: crate::private_io::unscoped_key(id),
                 kind: operation.kind.word().into(),
                 subject: operation.subject.clone(),
@@ -404,6 +412,7 @@ pub(crate) fn listed(mine: impl Fn(&str) -> bool) -> Vec<v1::Operation> {
                 eta_s: (bytes_per_s >= 1.0 && left > 0).then(|| (left as f64 / bytes_per_s).ceil() as i64),
                 started_at_unix_ms: operation.started_at_ms,
                 runs,
+                unnamed,
             })
         })
         .collect();

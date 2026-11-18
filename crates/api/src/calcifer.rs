@@ -1662,6 +1662,10 @@ pub struct Operation {
     /// The same runs by name, `KEY-N` (cl-987).
     #[serde(default)]
     pub names: Vec<String>,
+    /// The runs waiting on it this reader can't name (another project's, a locked one's, another client's), counted (cl-1205): what
+    /// the machine does is its own, which runs wait is their project's.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub unnamed: u32,
     /// The project whose runs wait on it, shown to its own views only; none for this computer's own work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
@@ -1750,6 +1754,10 @@ pub struct Gpu {
     /// Why nothing is placed on it now (cl-935); empty: in service.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub out_of_service: String,
+}
+
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
 }
 
 fn unlimited(bytes: &u64) -> bool {

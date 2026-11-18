@@ -75,6 +75,17 @@ export function showRow(from: HTMLElement, id: string) {
   setTimeout(() => row.classList.remove("lit"), 1400)
 }
 
+/** Who waits on it, as this reader may say (cl-1205): its runs by name, then how many it can't name (another project's, another
+ *  client's): `run KEY-1`, `runs KEY-1, KEY-2 and 1 job more`, `3 jobs`. What it fetches is the machine's, shown to every reader. */
+export function waitersWords(operation: Operation): string {
+  const named = operation.names?.length ? operation.names : operation.runs.map(String)
+  const others = operation.unnamed ?? 0
+  const jobs = (n: number) => `${n} job${n === 1 ? "" : "s"}`
+  if (!named.length) return jobs(others)
+  const runs = named.length === 1 ? `run ${named[0]}` : `runs ${named.join(", ")}`
+  return others ? `${runs} and ${jobs(others)} more` : runs
+}
+
 /** What a download fetches, for its row's title: its repository, release and components. */
 export const fetchesWords = (operation: Operation) =>
   [operation.subject, operation.release, operation.components?.join(", ")].filter(Boolean).join(" · ")

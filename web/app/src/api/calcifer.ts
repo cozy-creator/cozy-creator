@@ -2180,6 +2180,11 @@ runs: Array<number>,
  */
 names: Array<string>,
 /**
+ * The runs waiting on it this reader can't name (another project's, a locked one's, another client's), counted (cl-1205): what
+ * the machine does is its own, which runs wait is their project's.
+ */
+unnamed?: number,
+/**
  * The project whose runs wait on it, shown to its own views only; none for this computer's own work.
  */
 project?: string | null, };

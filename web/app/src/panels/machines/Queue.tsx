@@ -9,14 +9,9 @@ import { Icon } from "../../ui/Icon"
 import { Bar, Section } from "../common"
 import { ordinal } from "../format"
 import { runName as runLabel, workWords } from "../runs/words"
-import { anchorOf, clientFraction, clientFrom, clientFunction, clientWords, downloadsOf, fetchedWords, fetchesWords, fractionOf, operationName, ownActivity, runName, showRow, waitingWords, waitsOnOf } from "./activity"
+import { anchorOf, clientFraction, clientFrom, clientFunction, clientWords, downloadsOf, fetchedWords, fetchesWords, fractionOf, operationName, ownActivity, runName, showRow, waitersWords, waitingWords, waitsOnOf } from "./activity"
 
 const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
-
-const runsOf = (operation: Operation) => {
-  const runs = operation.names?.length ? operation.names : operation.runs.map(String)
-  return runs.length === 1 ? `run ${runs[0]}` : `runs ${runs.join(", ")}`
-}
 
 /** Running first, then getting ready, then queued in line order. */
 const STEP: Record<string, number> = { running: 0, preparing: 1, queued: 2 }
@@ -42,7 +37,7 @@ function OperationRow({ operation }: { operation: Operation }) {
       <span className="kind">{download ? "Download" : "Install"}</span>
       {fraction !== undefined && <Bar fraction={fraction} />}
       <span className="said">
-        {download ? fetchedWords(operation) : sentence(operation.stage || "installing")} · for {runsOf(operation)}
+        {download ? fetchedWords(operation) : sentence(operation.stage || "installing")} · for {waitersWords(operation)}
       </span>
     </li>
   )

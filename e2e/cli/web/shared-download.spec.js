@@ -10,8 +10,8 @@
 // the weights here now, has no download stage and lists no download (Paul: "those are just phases it's skipping"). Screenshots of the
 // canvas, the tab's list and the drawer at 1440×900, paper and dark, are taken as soon as the download goes, before anything is judged,
 // so a red run keeps them too.
-// On the CPU e2e: weighted.py's still on this computer, reading BiRefNet's raw weights from the isolated Hub over a link slowed to 10 MB/s
-// (ondemand.sh's slow_store), about 45 s. On a rental (release-gate/sessions/shared-download.sh): $SHARED_TOOL on $SHARED_MACHINE, over
+// On the CPU e2e: weighted.py's still on this computer, reading BiRefNet's raw weights from the isolated Hub over a link slowed to 2 MB/s
+// (ondemand.sh's slow_store), about 220 s. On a rental (release-gate/sessions/shared-download.sh): $SHARED_TOOL on $SHARED_MACHINE, over
 // the pod's own link.
 const { execFileSync } = require('child_process');
 const { test, expect, themed, canvasIdle, fixtureTool } = require('./fixtures');
@@ -20,7 +20,7 @@ const MACHINE = process.env.SHARED_MACHINE || 'local';
 const TOOL = process.env.SHARED_TOOL || fixtureTool('weighted.py/weighted');
 const MODEL = process.env.SHARED_MODEL || 'zhengpeng7/birefnet';
 const FIELDS = JSON.parse(process.env.SHARED_FIELDS || '{"seconds": 1}');
-const SLOW = process.env.SHARED_MACHINE ? '' : '40mbit';
+const SLOW = process.env.SHARED_MACHINE ? '' : '16mbit';
 const BOXES = ['first', 'second', 'third'];
 /** Never rendered: predicted alone. */
 const AHEAD = 'ahead';
@@ -67,8 +67,8 @@ test('shared-download', async ({ page, project, api, cli }) => {
     await page.evaluate(() => { delete document.documentElement.dataset.theme; });
   };
   const runs = async () => (await api.get(project.at('/runs?limit=100'))).runs.filter((run) => run.kind === 'call');
-  // As this project sees it: what the machine does for its runs too (`?project=`, cl-1205).
-  const machine = async () => api.get(`/v1/machines/${encodeURIComponent(MACHINE)}?project=${encodeURIComponent(project.id)}`);
+  // Its downloads are the machine's, shown to any reader (cl-1205); which runs wait, by name, only to their project's.
+  const machine = async () => api.get(`/v1/machines/${encodeURIComponent(MACHINE)}`);
   const downloads = async () => ((await machine())?.status?.activity ?? []).filter((op) => op.kind === 'download' && op.subject === MODEL);
   const tab = () => page.locator(`nav.mtabs .mtab[data-machine="${MACHINE}"]`);
   const list = () => page.getByRole('dialog', { name: /is doing$/ });
@@ -128,11 +128,11 @@ test('shared-download', async ({ page, project, api, cli }) => {
         softly(run.progress.done_fraction ?? null, `${run.name} says no share of its own`).toBeNull();
       }
       softly(item.release, 'the download says its release').toBeTruthy();
-      softly(item.names ?? [], 'the download names the three runs').toEqual(expect.arrayContaining(waiting.map((run) => run.name)));
+      // Read with no project, it names none of this project's runs and counts every one (cl-1205): what it fetches is the machine's.
+      softly((item.names ?? []).length + (item.unnamed ?? 0), 'the download counts every run waiting on it').toBeGreaterThanOrEqual(BOXES.length);
       // The predicted box: its fetch ahead is this download, named by its box, and its readiness counts this download's bytes.
       const ahead = ((await cli.json('status').catch(() => null))?.board?.ahead ?? []).find((row) => (row.names ?? []).includes(AHEAD));
       test.info().annotations.push({ type: 'predicted', description: JSON.stringify(ahead ?? null) });
-      softly(item.names ?? [], 'the download names the predicted box too').toContain(AHEAD);
       if (ahead?.total) softly(ahead.total, "the predicted box's readiness counts the one download's bytes").toBeLessThanOrEqual(item.bytes_total);
     });
 
@@ -145,7 +145,11 @@ test('shared-download', async ({ page, project, api, cli }) => {
       await tab().click();
       await expect(list()).toBeVisible();
       await expect(list().locator('[data-doing="download"]'), 'one download row').toHaveCount(1);
-      await expect(list().locator('[data-doing="download"] .said')).toContainText(/ of .* · for /);
+      // In this project's page it names this project's runs, and the predicted box (cl-1123) its fetch ahead serves.
+      const row = list().locator('[data-doing="download"] .said');
+      await expect(row).toContainText(/ of .* · for /);
+      for (const run of waiting) await softly(row, `the download names ${run.name}`).toContainText(run.name);
+      await softly(row, 'the download names the predicted box').toContainText(AHEAD);
       const waits = list().locator('[data-doing="run"] a.said.waits');
       await expect(waits, 'each run waits on it').toHaveCount(BOXES.length);
       for (const said of await waits.allTextContents()) softly(said).toBe(words);

@@ -395,12 +395,6 @@ impl Machines {
     /// One machine by its name, former name or rental id (`named`), with its Status read now:
     /// `local` starts for it.
     pub(crate) async fn show(self: &Arc<Self>, text: &str) -> Result<Machine, Error> {
-        self.show_for(text, &[]).await
-    }
-
-    /// `show`, as a client in `projects` sees it: what the machine does for their runs too (cl-1205: `cozy machine show` in a
-    /// project lists the download its runs wait on).
-    pub(crate) async fn show_for(self: &Arc<Self>, text: &str, projects: &[String]) -> Result<Machine, Error> {
         if let Some(order) = self.order_named(text)? {
             return Ok(self.order(&order));
         }
@@ -434,7 +428,7 @@ impl Machines {
                 Err(e) => self.not_answered(&row.name, &e.to_string()),
             }
         }
-        self.picture_for(&row, projects)
+        self.picture(&row)
     }
 
     /// The name of the machine a run `on` goes to and the environments it holds now, its Status
@@ -1022,7 +1016,7 @@ impl Machines {
                     locked: false,
                 });
             }
-            status.activity = activity.iter().filter_map(|operation| self.operation(operation, projects)).collect();
+            status.activity = merged(activity).iter().filter_map(|operation| self.operation(operation, projects)).collect();
             // Every other client's runs there, as the machine says them (cl-1193): counted with this computer's.
             status.others = queue.iter().filter(|root| !self.sent_here(root)).map(client_run).collect();
             let going = status.others.iter().filter(|run| run.running).count() as u32;
@@ -1112,19 +1106,23 @@ impl Machines {
         self.calcifer.runs_named(text)
     }
 
-    /// What `operation` is waited on by, by run number: maintenance runs, and runs of `projects` that are open. An operation of a
-    /// project's own is in its private scope (`resource_key`), so its runs are all that project's. A run this controller keeps no
-    /// record of (another client's) is no name of it. What it fetches, its bytes, rate and time left are the machine's, as it says
-    /// them (cl-1205).
+    /// `operation` as a reader showing `projects` sees it (cl-1205; Paul: models are machine-wide, projects isolate files and runs): what
+    /// the machine fetches or installs, its bytes, rate and time left, to any reader on the account. Which runs wait on it is scoped:
+    /// maintenance runs and runs of `projects` by number and name, every other one (another project's, a locked one's, another client's)
+    /// only counted (`unnamed`). An operation of a project's own is in its private scope (`resource_key`): only its views read it.
     fn operation(&self,operation:&v1::Operation,projects:&[String])->Option<wire::Operation> {
         let mut project=None;
-        let (mut runs,mut names)=(vec![],vec![]);
+        let (mut runs,mut names,mut unnamed)=(vec![],vec![],operation.unnamed);
         for id in &operation.runs {
             // A box's guess, or a job fetched ahead (cl-1104): no run, said by its boxes, in its project's views as any install is.
             if crate::prefetch::listed(id) {
-                let Some((of,boxes))=self.lists.owner(id).filter(|(of,_)| projects.contains(of)) else { continue };
-                project=Some(of);
-                names.extend(boxes);
+                match self.lists.owner(id).filter(|(of,_)| projects.contains(of)) {
+                    Some((of,boxes)) => {
+                        project=Some(of);
+                        names.extend(boxes);
+                    }
+                    None => unnamed+=1,
+                }
                 continue;
             }
             let id=crate::store::calcifer_id(id);
@@ -1133,23 +1131,21 @@ impl Machines {
                 names.push(self.calcifer.named(&row));
                 continue;
             }
-            let Ok(store)=self.calcifer.run_store(id) else { continue };
-            match store {
-                crate::store::RunStore::Project(store) if projects.iter().any(|project| project==store.project_id()) => {
-                    let Some(row)=store.run(id).ok().flatten() else { continue };
+            match self.calcifer.run_store(id) {
+                Ok(crate::store::RunStore::Project(store)) if projects.iter().any(|project| project==store.project_id()) => {
+                    let Some(row)=store.run(id).ok().flatten() else { unnamed+=1; continue };
                     project=Some(store.project_id().to_owned());
                     runs.push(row.number);
                     names.push(self.calcifer.run_name(&row));
                 }
-                _ => return None,
+                _ => unnamed+=1,
             }
         }
-        if names.is_empty() {return None;}
         Some(wire::Operation {
             id:operation.id.clone(),kind:operation.kind.clone(),subject:operation.subject.clone(),release:operation.release.clone(),
             components:operation.components.clone(),stage:operation.stage.clone(),bytes_done:operation.bytes_done,bytes_total:operation.bytes_total,
             bytes_here:operation.bytes_here,bytes_per_s:Some(operation.bytes_per_s).filter(|rate|*rate>=1.0),eta_s:operation.eta_s,
-            started_at_ms:operation.started_at_unix_ms,runs,names,project,
+            started_at_ms:operation.started_at_unix_ms,runs,names,unnamed,project,
         })
     }
 
@@ -1971,7 +1967,7 @@ async fn asked(api: &Arc<Api>, name: &str, query: Result<Query<Fresh>, QueryReje
     let Query(query) = query.map_err(|e| Refusal(usage(e.body_text())))?;
     let machine = match query.fresh {
         true => fresh(&api.machines, name).await,
-        false => api.machines.show_for(name, &query.project.iter().cloned().collect::<Vec<_>>()).await,
+        false => api.machines.show(name).await,
     };
     Ok((machine.map_err(Refusal)?, query.hub))
 }
@@ -2830,4 +2826,26 @@ pub(crate) fn internal(e: impl ToString) -> Error {
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A machine's operations as its own Status and each project's scope list them, each once by its id (cl-1205: a download is the
+/// machine's, and this computer's machine listed BiRefNet in its own scope and the project's): the runs each scope reads, and those
+/// none of them reads counted.
+fn merged(activity: Vec<v1::Operation>) -> Vec<v1::Operation> {
+    let mut each: Vec<v1::Operation> = vec![];
+    for operation in activity {
+        match each.iter_mut().find(|held| held.id == operation.id) {
+            Some(held) => {
+                let waiting = (held.runs.len() + held.unnamed as usize).max(operation.runs.len() + operation.unnamed as usize);
+                for run in operation.runs {
+                    if !held.runs.contains(&run) {
+                        held.runs.push(run);
+                    }
+                }
+                held.unnamed = waiting.saturating_sub(held.runs.len()) as u32;
+            }
+            None => each.push(operation),
+        }
+    }
+    each
 }

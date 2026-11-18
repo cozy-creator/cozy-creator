@@ -11,14 +11,14 @@
 # Without `rent`, $0: the checks, the judges on the existing record, the quote, the guard.
 # params:
 #   tool    the boxes' tool (default sdxl/image)
-#   model   the repository it reads (default stabilityai/stable-diffusion-xl-base-1.0)
+#   model   the repository it reads (default stabilityai/sdxl)
 #   fields  the boxes' other fields, a JSON object (default {"seed": 7})
 #   user_flow_run  a pod-session user-flow run whose record user-flow's judges read (default 43961722220)
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 WEB=$ROOT/e2e/cli/web
-TOOL=$(param tool sdxl/image) MODEL=$(param model stabilityai/stable-diffusion-xl-base-1.0) FIELDS=$(param fields '{"seed": 7}')
+TOOL=$(param tool sdxl/image) MODEL=$(param model stabilityai/sdxl) FIELDS=$(param fields '{"seed": 7}')
 for tool in jq node npm google-chrome python3; do command -v "$tool" > /dev/null || fail "no $tool"; done
 [ -f "$WEB/shared-download.spec.js" ] && [ -f "$ROOT/release-gate/suites/progress/check.py" ] || fail "no shared-download.spec.js or progress/check.py"
 jq -e 'type == "object"' <<<"$FIELDS" > /dev/null || fail "fields $FIELDS"
@@ -64,10 +64,10 @@ looks() {
   local p=''
   while :; do
     [ -n "$p" ] || p=$(ls -d "$OUT"/web/projects/*shared-download* 2> /dev/null | head -1)
-    # In the project, as a person there reads them: `machine show` lists what the machine does for its runs too.
+    # `run ls` in the project; `machine show` from outside it: a machine's downloads are the machine's, for any reader on the account.
     { date -u +%T; [ -z "$p" ] || (cd "$p" && cozy run ls 2>&1); } >> "$OUT/run-ls.txt"
-    { date -u +%T; (cd "${p:-$OUT}" && cozy machine show "$NAME" 2>&1); } >> "$OUT/machine-show.txt"
-    (cd "${p:-$OUT}" && cozy --json machine show "$NAME" 2> /dev/null) | jq -c --argjson at "$(date +%s%3N)" 'select((.status.activity // []) | length > 0)
+    { date -u +%T; (cd "$OUT" && cozy machine show "$NAME" 2>&1); } >> "$OUT/machine-show.txt"
+    (cd "$OUT" && cozy --json machine show "$NAME" 2> /dev/null) | jq -c --argjson at "$(date +%s%3N)" 'select((.status.activity // []) | length > 0)
       | {at: $at, activity: .status.activity}' >> "$G/machine.ndjson"
     sleep 1
   done
@@ -102,6 +102,9 @@ python3 -I "$ROOT/release-gate/suites/progress/check.py" "$G" "$SKU" > "$OUT/pro
 python3 -I "$RCT/release-gate/suites/progress/check.py" "$G" "$SKU" > "$OUT/progress-rc.txt" 2>&1
 say "progress check on these runs, this branch's: $(tail -1 "$OUT/progress.txt"); the RC's: $(tail -1 "$OUT/progress-rc.txt")"
 grep -E '^(FAIL|note)' "$OUT/progress.txt" | sed 's/^/  /' | tee -a "$R"
+# `cozy machine show` from outside the project printed the download line: a machine's download is the machine's (cl-1205).
+grep -q "^download $MODEL " "$OUT/machine-show.txt" && say "cozy machine show $NAME, from outside the project: $(grep -m1 "^download $MODEL " "$OUT/machine-show.txt" | tr -s ' ')" ||
+  { RC=1; say "FAIL cozy machine show $NAME, from outside the project, never listed download $MODEL"; }
 # A render whose weights are here says no download (Paul: "those are just phases it's skipping").
 for cell in $(cut -f1 "$G/cells.tsv" | grep -- '-warm$'); do
   said=$(grep '^{' "$G/$cell.ndjson" | jq -r 'select(.type == "run.progress") | .progress.stage // empty' | grep -i download | sort -u | head -3 | paste -sd';' -)

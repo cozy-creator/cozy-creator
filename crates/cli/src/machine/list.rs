@@ -139,7 +139,7 @@ pub(crate) fn rows(ctx: &Context, list: &MachineList) -> Vec<Vec<String>> {
 
 /// One machine: a live view on a terminal while it lives, else its record once (or JSON), with its GPUs' use now (cl-1191).
 pub(crate) async fn show(ctx: &Context, name: &str) -> Result<ExitCode, Error> {
-    let m = super::machine_here(ctx, name).await?;
+    let m = machine(ctx, name).await?;
     if !ctx.json && ctx.term.stdout && m.state != MachineState::Ended {
         let view = super::live::Shown::open(ctx, name).await?;
         tui::show(ctx, tui::Screen::Machine(Box::new(view))).await?;
@@ -390,11 +390,17 @@ fn operation_line(operation: &Operation) -> (String, String) {
     if operation.bytes_here > 0 {
         cells.push(format!("{} already on this machine", output::bytes(operation.bytes_here)));
     }
+    // Which runs wait, as this reader may name them; the others counted (another project's, another client's).
     let runs = match operation.names.is_empty() {
         true => operation.runs.iter().map(u64::to_string).collect::<Vec<_>>(),
         false => operation.names.clone(),
     };
-    cells.push(format!("for {}", runs.join(", ")));
+    let jobs = |n: u32| format!("{n} job{}", if n == 1 { "" } else { "s" });
+    cells.push(match (runs.is_empty(), operation.unnamed) {
+        (true, others) => format!("for {}", jobs(others)),
+        (false, 0) => format!("for {}", runs.join(", ")),
+        (false, others) => format!("for {} and {} more", runs.join(", "), jobs(others)),
+    });
     (format!("{} {}", operation.kind, operation.subject), cells.join(" · "))
 }
 

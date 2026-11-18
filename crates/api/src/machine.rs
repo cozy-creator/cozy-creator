@@ -1600,8 +1600,12 @@ pub struct Operation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub eta_s: Option<i64>,
     pub started_at_unix_ms: i64,
-    /// The runs waiting on it, by the caller's ids: a call's root, the run its caller knows.
+    /// The runs waiting on it, by the caller's ids: a call's root, the run its caller knows. Only the caller's own.
     pub runs: Vec<String>,
+    /// The runs waiting on it the caller can't read (another project's, another client's), counted: a download is the machine's,
+    /// listed to every caller (cl-1205; Paul: models are machine-wide, projects isolate files and runs).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub unnamed: u32,
 }
 
 /// Why nothing can run on a machine (`StatusFrame::broken`, cl-977). `code` is the state: `stuck_in_driver`, the TensorD
