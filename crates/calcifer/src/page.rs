@@ -42,6 +42,7 @@ pub(crate) fn routes() -> Router<Arc<Api>> {
         .route("/models", get(index))
         .route("/models/{name}", get(index))
         .route("/account", get(index))
+        .route("/settings", get(index))
 }
 
 fn not_built() -> Refusal {
