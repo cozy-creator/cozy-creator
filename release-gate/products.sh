@@ -223,7 +223,7 @@ product_relayvsr() {
 }
 product_orbit() { cell orbit "$(pkg orbit orbit)" instructions='<character>' "references:=$(jq -cn --arg f "${K:-$REF}" '[{name: "character", image: $f}]')" seed:=$((R + 33)); }
 product_pan2() {
-  cell pan2 "$(pkg pan2 generate)" prompt="$SCENE. $CHAR walks in from the left, stops at the centre and looks around. One continuous wide shot." \
+  cell pan2 "$(pkg pan2 generate)" instructions="$SCENE. $CHAR walks in from the left, stops at the centre and looks around. One continuous wide shot." \
     seed:=$((R + 34))
 }
 # HunyuanImage 3.0's 80B experts page about 85 GB a step through a 24 GB card and wedged there (se-079): only by --only
