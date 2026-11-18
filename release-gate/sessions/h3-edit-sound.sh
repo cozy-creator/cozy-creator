@@ -19,8 +19,8 @@
 #   need_s     seconds the cap must buy (7200)
 . "$(dirname "$0")/lib.sh"
 FIX=$(cd "$(dirname "$0")/fixtures/h3-edit-sound" && pwd) || fail "no fixtures"
-PK=$PACKAGES/pk RC=$PACKAGES/rc PC=$PACKAGES/pc
-for t in "$PK" "$RC" "$PC"; do [ -f "$t/minimax-h3/pyproject.toml" ] || fail "no packages_refs checkout ${t#"$PACKAGES"/}"; done
+PK=$PACKAGES/pk RCT=$PACKAGES/rc PC=$PACKAGES/pc
+for t in "$PK" "$RCT" "$PC"; do [ -f "$t/minimax-h3/pyproject.toml" ] || fail "no packages_refs checkout ${t#"$PACKAGES"/}"; done
 grep -q 'def plate_sound' "$PK/minimax-h3/minimax_h3/shot.py" || fail "pk has no plate_sound: not se-163's branch"
 CELLS=$(param cells "before new keep regen regen-pc long-keep long-regen long-new")
 for tool in ffmpeg ffprobe curl jq uv; do command -v "$tool" > /dev/null || fail "no $tool"; done
@@ -66,7 +66,7 @@ jq -n --arg k "$M/kelly.mp4" --arg c "$M/crew.mp4" \
   > "$OUT/rehearse.json"
 "${AN[@]}" "$OUT/rehearse.json" "$OUT/rehearse" > "$OUT/rehearse.txt" 2>&1 || fail "the analysis rehearsal: $(tail -c 600 "$OUT/rehearse.txt")"
 tail -4 "$OUT/rehearse.txt" | cut -c1-600 | tee -a "$R"
-for t in "$PK" "$RC" "$PC"; do kernels "$t/minimax-h3"; done
+for t in "$PK" "$RCT" "$PC"; do kernels "$t/minimax-h3"; done
 
 quote "$(param need_s 7200)"
 rent
@@ -112,7 +112,7 @@ $(grep -o 'h3 shot segments[^"]*' "$OUT/$name.log" | head -1 | cut -c1-300); war
 }
 for c in $CELLS; do
   case $c in
-    before) cell before "$RC" kelly - "$SWAP" '<sintel> speaks to the camera in front of the rocket.' ;;
+    before) cell before "$RCT" kelly - "$SWAP" '<sintel> speaks to the camera in front of the rocket.' ;;
     new) cell new "$PK" kelly new "$SWAP" '<sintel> speaks to the camera in front of the rocket.' ;;
     keep) cell keep "$PK" kelly keep "$SWAP" '<sintel> speaks to the camera in front of the rocket.' ;;
     regen) cell regen "$PK" kelly regenerate "$SWAP" '<sintel> speaks to the camera in front of the rocket.' ;;
