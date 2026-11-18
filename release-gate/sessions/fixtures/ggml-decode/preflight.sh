@@ -24,14 +24,34 @@ print('cozy-runtime', cozy_runtime.__version__, '· tensorfs', tensorfs.__versio
   rm -rf "$check" "$env"
 }
 
+# pkg_held <machine> <package dir>: the Runtime in the environment <machine> holds for the package and what its runs are told of
+# the pair it holds (`cozy package ls`: a fallback and why), tab-separated; nothing when the listing names no such package.
+pkg_held() {
+  local name
+  name=$(sed -n 's/^name = "\(.*\)"$/\1/p' "$2/pyproject.toml" | head -1)
+  (cd "$RUN_PROJECT" && cozy --json package ls --on "$1") 2> /dev/null |
+    jq -r --arg p "/$name" '.packages[]? | select(.package | endswith($p)) | [.runtime, .warning] | @tsv' 2> /dev/null | head -1
+}
+
 # drive_lock <drive dir>: the drive locked as the pod's run will lock it. Calcifer locks local code when it stages it
 # (crates/calcifer/src/local_code.rs `locked`: the open RC's Runtime build, the RC's TensorFS beside it) and keeps that lock for
 # the copy, so installing the drive on the runner's own machine makes the lock the session's runs take. One uv can't make
 # fails here, at $0, in uv's words; a runner with no machine of its own says so and goes on.
 drive_lock() {
-  local drive=$1 name=${1##*/}
+  local drive=$1 name=${1##*/} took told said
   if (cd "$RUN_PROJECT" && cozy package install "$drive" --on local -y) > "$OUT/lock-$name.txt" 2>&1; then
     say "$name: locked and installed on the runner as a run stages it: $(grep -m1 -oE 'is installed on [^ ]+' "$OUT/lock-$name.txt")"
+    # The Runtime that lock took (the runner has no pair of its own, so its environment holds the lock's), judged by the
+    # stand-in rule: `cozy package install` writes no lock into the folder, as `cozy run` does.
+    IFS=$'\t' read -r took told <<<"$(pkg_held local "$drive")"
+    if [[ $took =~ ^[0-9]+\.[0-9]+ ]]; then
+      printf 'name = "cozy-runtime"\nversion = "%s"\n' "$took" > "$OUT/lock-$name.pair"
+      said=$(uv run -q --no-project --with packaging python "$STANDS" "$OUT/lock-$name.pair" "$name's lock on the runner" "$RUNTIME" "$TENSORFS") ||
+        fail "$said"
+      say "$said${told:+ · noted there: $told}"
+    else
+      say "$name: the runner's listing gives its environment's Runtime as '${took:-unlisted}': the lock's Runtime unjudged here"
+    fi
   elif grep -qiE 'lock_failed|unsatisfiable|no solution found' "$OUT/lock-$name.txt"; then
     tail -c 2500 "$OUT/lock-$name.txt" | tee -a "$R"
     fail "$name: its lock can't be made (lines above)"
@@ -60,5 +80,15 @@ pod_install() {
   cd "$back" || fail "$n: no $back"
   [ "$code" = 0 ] || { tail -c 2500 "$OUT/$n.txt" | tee -a "$R"; fail "$n: ${dir##*/} doesn't install on $NAME (lines above)"; }
   on_candidates "$n"
-  say "$n: ${dir##*/} is staged on $NAME on the candidates"
+  # Its environment holds the candidate Runtime: the wheel's commit in what the pod lists for it. Another build's commit
+  # there is the lock's pair, and ends the session; a listing that names no commit is told and left to on_candidates.
+  local took told sha
+  IFS=$'\t' read -r took told <<<"$(pkg_held "$NAME" "$dir")"
+  sha=$(grep -oE 'g[0-9a-f]{8}' <<<"${RUNTIME##*/}" | head -1)
+  if grep -qE "it runs on (that series|that|its lock's)" <<<"$told" ||
+    { [ -n "$sha" ] && [[ $took != *"$sha"* ]] && [[ $took =~ g[0-9a-f]{8} ]]; }; then
+    say "$n: ${dir##*/}'s environment on $NAME holds cozy-runtime $took, not the candidate ${RUNTIME##*/}${told:+: $told}"
+    fail "$n did not take the candidate wheels (line above)"
+  fi
+  say "$n: ${dir##*/} is staged on $NAME, its environment's Runtime ${took:-unlisted}${told:+ · $told}"
 }
