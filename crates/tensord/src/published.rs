@@ -1645,11 +1645,16 @@ impl Publisher {
             let hardware = tensorfs::fetch::Hardware { plain, components: slot_components(slot), free_vram, ..hardware.clone() };
             let source = request.hub(&format!("the model for {path}"))?;
             // What it waits on shows: the Hub's grant of the run's reads, each attempt it doesn't answer (cl-1189), then the Hub's answer.
+            let began = std::time::Instant::now();
             if let Some(capability) = &source.capability {
                 capability.granted(job.stop.as_ref(), &|said| job.stage(said));
             }
+            let granted = began.elapsed();
             job.stage(format!("resolving {}", named.shown()));
             let named = self.resolve(service, source, named, &hardware, job.order)?;
+            if crate::ahead::item(&job.caller) {
+                tracing::info!("{}: {path}: the Hub granted its reads in {} ms, resolved {} in {} ms", job.caller, granted.as_millis(), named.model, (began.elapsed() - granted).as_millis());
+            }
             let warnings = named.reasons.iter().map(|why| format!("{}: {why}", named.model)).collect();
             let grant = ModelGrant {
                 package: installation.package.clone(),
@@ -1669,7 +1674,11 @@ impl Publisher {
             let (mut grant, named, mut warnings) = pick(slot)?;
             // Only a Hub names a checkpoint here (`pick` refused it without the run's access).
             if let Some(named) = named {
+                let began = std::time::Instant::now();
                 self.structure(request.hub("a Hub model")?, &named, job)?;
+                if crate::ahead::item(&job.caller) {
+                    tracing::info!("{}: {}: its structure landed in {} ms", job.caller, grant.slot, began.elapsed().as_millis());
+                }
             }
             if grant.components.is_empty() && !grant.model.is_empty() {
                 grant.components = self.components(&grant.manifest)?;

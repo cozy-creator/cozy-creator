@@ -415,6 +415,7 @@ impl LocalSources {
         let identity = sha256::hex_digest(serde_json::json!([environment, digest, owner]).to_string().as_bytes())[..32].to_string();
         if service.catalog.resolve(&identity).is_err() {
             job.stage(format!("describing {}", manifest.package));
+            let describing = std::time::Instant::now();
             // The wheels it carries, which this machine holds by content: what the describer reads in place of their URLs (cl-1127).
             let mut held = BTreeMap::new();
             for wheel in &manifest.wheels {
@@ -445,6 +446,7 @@ impl LocalSources {
                 let _ = fs::remove_dir_all(&dir);
                 return Err(failed(failure));
             }
+            tracing::info!(run = %job.caller, "local install: {} described for a generation of its own in {} ms", manifest.package, describing.elapsed().as_millis());
         }
         let held = service.catalog.resolve(&identity)?;
         let installed = service.engine.bind_installation(Installation {

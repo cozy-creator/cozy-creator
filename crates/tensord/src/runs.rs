@@ -1135,6 +1135,7 @@ impl Runs {
         let install_only = spec.warm && spec.entrypoint.is_empty();
         let hub = spec.hub.clone().or_else(|| self.own_hub.clone());
         // Its weights come at its place in the download line while its code installs (cl-966).
+        let planning = std::time::Instant::now();
         let mut early = self.early(actor, id, &spec, hub.clone(), &stoppable.stop);
         let caller = self.service.engine.caller_id(id);
         if early.is_some() {
@@ -1169,6 +1170,7 @@ impl Runs {
             Some(installed) => Some(self.callee_view(installed, &spec.application)?),
             None => None,
         };
+        let installed_ms = planning.elapsed().as_millis();
         let release = match &spec.source {
             Source::Release { package, release, digest, card } => Some((package.clone(), release.clone(), digest.clone(), card.clone())),
             _ => None,
@@ -1209,8 +1211,8 @@ impl Runs {
         if crate::ahead::item(&caller) {
             let fields: Vec<&String> = spec.input.as_object().map(|input| input.keys().collect()).unwrap_or_default();
             tracing::info!(
-                "{caller}: its request ({} fields: {fields:?}); its rules hold for {:?}, not for {:?}, give no answer for {:?}; it needs {:?}, what all of {:?} read, extras {:?}",
-                fields.len(), ruled.needed, ruled.unneeded, ruled.unanswered, wants.needed, wants.either, wants.extras
+                "{caller}: its request ({} fields: {fields:?}); its rules hold for {:?}, not for {:?}, give no answer for {:?}; it needs {:?}, what all of {:?} read, extras {:?}; planned in {} ms, its code ready in {installed_ms} ms",
+                fields.len(), ruled.needed, ruled.unneeded, ruled.unanswered, wants.needed, wants.either, wants.extras, planning.elapsed().as_millis()
             );
         }
         // What a root call reads, for its function's next quote on any machine (cl-967).
