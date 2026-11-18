@@ -107,7 +107,14 @@ pageflow() {  # pageflow <stage>: walkthrough.spec.js's steps for that stage, in
     say "page $1 in $engine: exit $? ($(grep -cE '^STEP-FAIL' "$W/page/$engine/$1-steps.txt" 2> /dev/null || echo ?) steps failed)"
   done
 }
-has page && pageflow tour
+if has page; then
+  DIR=$W c local-before-tour machine show local
+  pageflow tour
+  sleep 60
+  DIR=$W c local-after-tour machine show local; DIR=$W c models-local-after-tour model ls --on local
+  say "local after the page tour (a Qwen box made, no GPU here): $(grep -aE '^(disk use|running|queued|phase)' "$W/cli/local-after-tour.txt" | tr '\n' ' ' | cut -c1-300); before: $(grep -aE '^disk use' "$W/cli/local-before-tour.txt" | cut -c1-200)"
+  cozy machine logs local -n 80 < /dev/null 2>&1 | grep -aiE 'download|prefetch|prepar|install|qwen' | tail -20 | cut -c1-250 | sed 's/^/    local: /' >> "$R"
+fi
 
 P=$PJ/garden
 # A tool by the id the palette lists it under (a dev home's may be namespaced).
