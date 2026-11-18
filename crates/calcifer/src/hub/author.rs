@@ -195,11 +195,36 @@ impl Stage {
                 }
             }
         }
-        let mut text = doc.to_string();
+        // Each index set in the copy's own `tool.uv.index`, as it is written (tables or an inline list), one of the same name
+        // replaced: appended as text, it was a second `index` key beside an inline list (`duplicate key`).
+        let uv = (doc["tool"]["uv"].or_insert(toml_edit::table()))
+            .as_table_like_mut()
+            .ok_or_else(|| refuse("project_invalid", "tool.uv is not a table"))?;
         for &(namespace, url) in &namespaces {
-            text.push_str(&format!("\n[[tool.uv.index]]\nname = \"{}\"\nurl = \"{url}\"\nexplicit = true\n", name(namespace)));
+            let to = name(namespace);
+            let mut index = toml_edit::Table::new();
+            index.insert("name", toml_edit::value(to.as_str()));
+            index.insert("url", toml_edit::value(url));
+            index.insert("explicit", toml_edit::value(true));
+            let other = |held: Option<&toml_edit::Value>| held.and_then(toml_edit::Value::as_str) != Some(to.as_str());
+            match uv.get_mut("index") {
+                None => {
+                    let mut tables = toml_edit::ArrayOfTables::new();
+                    tables.push(index);
+                    uv.insert("index", toml_edit::Item::ArrayOfTables(tables));
+                }
+                Some(toml_edit::Item::ArrayOfTables(tables)) => {
+                    tables.retain(|table| other(table.get("name").and_then(toml_edit::Item::as_value)));
+                    tables.push(index);
+                }
+                Some(toml_edit::Item::Value(toml_edit::Value::Array(list))) => {
+                    list.retain(|held| other(held.as_inline_table().and_then(|table| table.get("name"))));
+                    list.push(index.into_inline_table());
+                }
+                Some(_) => return Err(refuse("project_invalid", "tool.uv.index is not a list of indexes")),
+            }
         }
-        fs::write(&path, text).map_err(|e| refuse("stage_unavailable", e))
+        fs::write(&path, doc.to_string()).map_err(|e| refuse("stage_unavailable", e))
     }
 
     /// Relocks the copy against its bound index with `pins` as constraints, then without them:
