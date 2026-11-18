@@ -2,7 +2,7 @@
 use std::process::ExitCode;
 
 use api::{
-    calcifer::{LiveRentals, LiveRun, Machine, MachineKind, MachineList, MachineState, MachineStatus, Rental},
+    calcifer::{GpuReading, GpuUse, LiveRentals, LiveRun, Machine, MachineKind, MachineList, MachineState, MachineStatus, Rental},
     error::Error,
 };
 
@@ -136,7 +136,7 @@ pub(crate) fn rows(ctx: &Context, list: &MachineList) -> Vec<Vec<String>> {
     .collect()
 }
 
-/// One machine: a live view on a terminal while it lives, else its record once (or JSON).
+/// One machine: a live view on a terminal while it lives, else its record once (or JSON), with its GPUs' use now (cl-1191).
 pub(crate) async fn show(ctx: &Context, name: &str) -> Result<ExitCode, Error> {
     let m = machine(ctx, name).await?;
     if !ctx.json && ctx.term.stdout && m.state != MachineState::Ended {
@@ -144,16 +144,71 @@ pub(crate) async fn show(ctx: &Context, name: &str) -> Result<ExitCode, Error> {
         tui::show(ctx, tui::Screen::Machine(Box::new(view))).await?;
         return Ok(ExitCode::SUCCESS);
     }
+    let gpus = gpu_use_now(ctx, &m).await;
     if ctx.json {
-        output::json(&m);
+        let mut document = serde_json::to_value(&m).expect("a machine serializes");
+        if let (Some(gpus), Some(fields)) = (&gpus, document.as_object_mut()) {
+            fields.insert("gpu_use".into(), serde_json::to_value(gpus).expect("a reading serializes"));
+        }
+        output::json(&document);
         return Ok(ExitCode::SUCCESS);
     }
-    record(ctx, &m).print(ctx);
+    record(ctx, &m, gpus.as_ref()).print(ctx);
     Ok(ExitCode::SUCCESS)
 }
 
-/// `cozy machine show`'s record of `m`, printed once or drawn live.
-pub(crate) fn record(ctx: &Context, m: &Machine) -> output::Record {
+/// Its GPUs' use now, as the machine reads it; none from a machine not up, one whose Cozy (or this computer's Calcifer) is from
+/// before it reported it, or one that didn't answer.
+async fn gpu_use_now(ctx: &Context, m: &Machine) -> Option<GpuUse> {
+    if m.state != MachineState::Ready {
+        return None;
+    }
+    let path = format!("{}/gpus/now", super::route(&m.name).ok()?);
+    ctx.calcifer().await.ok()?.get(&path).await.ok()
+}
+
+/// One GPU's reading as a line: busy, memory, power, heat, clock and what holds it back, each where the machine said it.
+pub(crate) fn gpu_now(gpu: &GpuReading) -> String {
+    let mut parts = vec![format!("{}% busy", gpu.busy_percent)];
+    parts.push(match gpu.memory_total_bytes {
+        0 => format!("{} in use", output::bytes(gpu.memory_used_bytes)),
+        total => format!("{} of {}", output::bytes(gpu.memory_used_bytes), output::bytes(total)),
+    });
+    match (gpu.power_w, gpu.power_limit_w) {
+        (Some(w), Some(limit)) => parts.push(format!("{w} of {limit} W")),
+        (Some(w), None) => parts.push(format!("{w} W")),
+        _ => {}
+    }
+    if let Some(c) = gpu.temperature_c {
+        parts.push(format!("{c} °C"));
+    }
+    match (gpu.sm_mhz, gpu.sm_mhz_max) {
+        (Some(mhz), Some(max)) => parts.push(format!("{mhz} of {max} MHz")),
+        (Some(mhz), None) => parts.push(format!("{mhz} MHz")),
+        _ => {}
+    }
+    parts.extend(throttle_words(&gpu.throttles).into_iter().map(str::to_owned));
+    parts.join(" · ")
+}
+
+/// What holds a GPU back now, in plain words, each once.
+pub(crate) fn throttle_words(throttles: &[String]) -> Vec<&'static str> {
+    let mut words: Vec<&'static str> = throttles
+        .iter()
+        .filter_map(|name| match name.as_str() {
+            "power_cap" => Some("power-limited"),
+            "sw_thermal" | "hw_thermal" => Some("thermal: slowed to cool"),
+            "hw_slowdown" => Some("hardware slowdown"),
+            "power_brake" => Some("power brake"),
+            _ => None,
+        })
+        .collect();
+    words.dedup();
+    words
+}
+
+/// `cozy machine show`'s record of `m`, printed once or drawn live, with its GPUs' use where it's known.
+pub(crate) fn record(ctx: &Context, m: &Machine, gpus: Option<&GpuUse>) -> output::Record {
     let mut record = output::Record::new()
         .field("machine", m.called())
         .field("kind", kind(m))
@@ -247,13 +302,25 @@ pub(crate) fn record(ctx: &Context, m: &Machine) -> output::Record {
             for line in status.slowed() {
                 record = record.alarm("slow", line);
             }
+            let readings = gpus.map_or(&[][..], |gpus| &gpus.gpus[..]);
+            let now = |gpu: &GpuReading| (format!("GPU {} now", gpu.index), gpu_now(gpu));
             for (key, value) in status_fields(status) {
                 let versions = key == "tensorfs";
+                // Each GPU's use now under its own line (cl-1191).
+                let reading = readings.iter().find(|gpu| key == format!("GPU {}", gpu.index));
                 record = record.field(&key, value);
+                if let Some((key, value)) = reading.map(now) {
+                    record = record.field(&key, value);
+                }
                 // A dev home's rental and the open RC (cl-922), beside its versions.
                 if let Some(rc) = m.rc.as_ref().filter(|_| versions) {
                     record = record.field("rc", format!("{} {}: {}", rc.rc, rc.state, rc.detail));
                 }
+            }
+            // Read but not listed: recorded readings a test replays on a machine with none.
+            for gpu in readings.iter().filter(|gpu| status.gpus.iter().all(|listed| listed.index != gpu.index)) {
+                let (key, value) = now(gpu);
+                record = record.field(&key, value);
             }
             // How long its GPUs stay busy with the runs it holds, as placement counts them (cl-1107).
             if let Some(until) = status.busy_until_ms.filter(|_| m.state != MachineState::Ended) {

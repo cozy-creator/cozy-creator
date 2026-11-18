@@ -1741,7 +1741,9 @@ pub struct GpuUse {
 }
 
 /// One GPU's reading: the share of its last sample period a kernel ran (`nvidia-smi`'s GPU-Util), and its memory in use, every
-/// process's.
+/// process's. Since cl-1191 also its memory's total, its power draw against the limit its driver enforces, its temperature, its SM
+/// clock against its most, and the limits holding that clock back now; a machine from before reads none of them (0, none, empty),
+/// and a driver that doesn't say one leaves it out.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
@@ -1749,6 +1751,20 @@ pub struct GpuReading {
     pub index: u32,
     pub busy_percent: u32,
     pub memory_used_bytes: u64,
+    pub memory_total_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power_w: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power_limit_w: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature_c: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sm_mhz: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sm_mhz_max: Option<u32>,
+    /// `power_cap` (at its power limit), `sw_thermal` and `hw_thermal` (slowed to cool), `hw_slowdown` (the board's own brake, for
+    /// heat or power), `power_brake` (an outside power brake).
+    pub throttles: Vec<String>,
 }
 
 /// A GPU's page accounting, as its memory manager holds it now.

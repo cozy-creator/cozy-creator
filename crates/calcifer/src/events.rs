@@ -301,6 +301,7 @@ async fn subscribe(api: Arc<Api>, scope: Scope, page: bool) -> Watch {
         })
     } else { HashMap::new() };
     let showing = all.then(|| Showing::new(page));
+    let gpus = all.then(crate::gpu_use::readings);
     // A page connected: the Hub's catalog is read again for it (cl-1126).
     if page && all {
         api.listing.page_connected(&api);
@@ -317,6 +318,7 @@ async fn subscribe(api: Arc<Api>, scope: Scope, page: bool) -> Watch {
         machines_stale: false,
         shown,
         said,
+        gpus,
         stop: api.stop_signal(),
         api,
     }
@@ -330,6 +332,8 @@ static SHOWN: LazyLock<Mutex<HashMap<String, Shows>>> = LazyLock::new(Mutex::def
 struct Shows {
     readers: Vec<project::Reader>,
     machines: bool,
+    /// It shows machines' GPU use (cl-1191): while any does, every machine's is read.
+    gpus: bool,
     /// Calcifer's page, not this computer's cozy: what it typed is asked for before a project closes (`save_first`).
     page: bool,
 }
@@ -458,6 +462,11 @@ impl Showing {
         SHOWN.lock().expect("shown lock").get(&self.0).is_some_and(|shows| shows.page)
     }
 
+    /// Whether this stream's page shows machines' GPU use.
+    fn gpus(&self) -> bool {
+        SHOWN.lock().expect("shown lock").get(&self.0).is_some_and(|shows| shows.gpus)
+    }
+
     /// Whether this stream's page shows a machine's view.
     fn machines(&self) -> bool {
         SHOWN.lock().expect("shown lock").get(&self.0).is_some_and(|shows| shows.machines)
@@ -481,7 +490,12 @@ impl Showing {
 impl Drop for Showing {
     fn drop(&mut self) {
         // Let go of outside the lock: the last reader of a project closes it.
-        let held = SHOWN.lock().expect("shown lock").remove(&self.0);
+        let held = {
+            let mut shown = SHOWN.lock().expect("shown lock");
+            let held = shown.remove(&self.0);
+            gpus_watched(&shown);
+            held
+        };
         drop(held);
         SAVED.notify_waiters();
     }
@@ -517,10 +531,15 @@ pub(crate) async fn show(
             }
         }
     }
-    let was = SHOWN.lock().expect("shown lock").get_mut(&stream).map(|held| {
-        let page = held.page;
-        std::mem::replace(held, Shows { readers, machines: shown.machines, page })
-    });
+    let was = {
+        let mut all = SHOWN.lock().expect("shown lock");
+        let was = all.get_mut(&stream).map(|held| {
+            let page = held.page;
+            std::mem::replace(held, Shows { readers, machines: shown.machines, gpus: shown.gpus, page })
+        });
+        gpus_watched(&all);
+        was
+    };
     match was {
         Some(was) => {
             // A project this page shows now and didn't is used now: the index lists by it (Paul, 11-16: most recently used first).
@@ -533,6 +552,11 @@ pub(crate) async fn show(
         }
         None => Err(gone()),
     }
+}
+
+/// How many streams show GPU use now, told to `gpu_use`.
+fn gpus_watched(shown: &HashMap<String, Shows>) {
+    crate::gpu_use::watching(shown.values().filter(|shows| shows.gpus).count());
 }
 
 /// How many projects one stream may hold open: a browser's tabs, each showing one.
@@ -550,6 +574,8 @@ struct Watch {
     machines_stale: bool,
     shown: HashMap<String, Machine>,
     said: Option<broadcast::Receiver<StreamEvent>>,
+    /// Machines' GPU use (`gpu_use`), said only while its page shows it.
+    gpus: Option<broadcast::Receiver<StreamEvent>>,
     stop: watch::Receiver<bool>,
     api: Arc<Api>,
 }
@@ -596,6 +622,15 @@ impl Watch {
                     changed.ok()?;
                     self.machines_stale = true;
                 }
+                // A reading missed is a second old by the next: falling behind on them asks for nothing again.
+                received = async { match self.gpus.as_mut() {
+                    Some(gpus) => gpus.recv().await,
+                    None => std::future::pending().await,
+                }} => match received {
+                    Ok(event) => if self.showing.as_ref().is_some_and(Showing::gpus) { self.pending.push_back(event) },
+                    Err(RecvError::Lagged(_)) => {}
+                    Err(RecvError::Closed) => self.gpus = None,
+                },
                 () = stopping(&mut self.stop) => return None,
             }
         }
@@ -604,6 +639,7 @@ impl Watch {
     fn visible(&self, event: &StreamEvent) -> bool {
         let project_id = match event {
             StreamEvent::ProjectVault { .. } | StreamEvent::ProjectsChanged | StreamEvent::ToolsChanged | StreamEvent::Appearance { .. } => return true,
+            StreamEvent::MachineGpus { .. } => return self.showing.as_ref().is_some_and(Showing::gpus),
             // A page's alone: this computer's cozy has nothing typed to send.
             StreamEvent::ProjectSaving { id } => return self.showing.as_ref().is_some_and(|showing| showing.page() && showing.includes(id)),
             // Out of the index by now, and let go by every stream: told to all (cl-1097).

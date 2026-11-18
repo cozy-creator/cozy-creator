@@ -139,6 +139,8 @@ private, max-age=31536000, immutable`; everything else, `outputs/{name}` include
 - `hello {version, stream}`, first. `stream` names this stream for `PUT /v1/events/{stream}`.
 - `run.updated {run}`: a run's change, as `GET /v1/runs/{id}` answers it.
 - `machine.updated {machine}`: a machine as `GET /v1/machines` lists it, each time it changes. `machine.removed {name}`: it left the list.
+- `machine.gpus {name, reading}` (cl-1191): a machine's `GpuUse` that second, only to a stream whose page says `gpus` (`PUT
+  /v1/events/{stream}`). While any does, every machine not ended is read once a second; otherwise none is. Nothing of it is kept.
 - `project.changed {id, rev, assets?, gone?, head?}`: `assets` names those whose row is another now, all of them read at once by `POST /v1/projects/{id}/read`, and `gone` those no longer there; `head` says something else `GET /v1/projects/{id}?assets=false` holds changed. No `assets`: read the whole project, as a client does at the start and after `resync`. What it costs a client is what changed, whatever the project holds. `rev` is opaque, and changes with each transaction its `project.db` commits, when a file comes to or goes from `files/`. Nothing outside Calcifer writes a project.
 - `project.gone {id, path}`: its folder is gone (deleted, moved, on a drive that's away), told in place of `project.changed` to a stream holding it: `path` is where it was. Nothing of it reads now, so a client asks it nothing more (cl-980). Deleted here (`DELETE /v1/projects/{id}`), every stream hears it.
 - `projects.changed`: the index changed, a project renamed or deleted (cl-1097): `GET /v1/projects` again.
@@ -161,7 +163,7 @@ or before its cached full snapshot's covered sequence in the same generation. Na
 invalidations, newer/unknown/legacy/generation-mismatched causes, hello/resync and count fallbacks still refresh. A summary or partial
 merge cannot promote full-snapshot coverage. Older peers omit or ignore these additive fields and retain ordinary refresh behavior.
 
-`PUT /v1/events/{stream}` `{projects: [id]}`: `200 {held: [id], refused: {id: {status, error}}}`, the projects the page on this stream shows now,
+`PUT /v1/events/{stream}` `{projects: [id], machines?, gpus?}`: `200 {held: [id], refused: {id: {status, error}}}`, the projects the page on this stream shows now,
 each held open while the stream lasts or until a later `PUT` names it no more. At most 64 sorted, distinct IDs are attempted; an ID outside
 that bound is not acknowledged. One that can't open keeps its own refusal without dropping the healthy IDs. The reply comes after Reader
 installation; a page orders its first project-state GET after its own held acknowledgement. Older services answer `204`, confirming completion
@@ -462,8 +464,12 @@ A machine is this computer's (`local`, started when used), a rental, or another 
   `RemovedModel {model, removed, cache_bytes_removed, retained_bytes}`. One a run there reads is refused
   `machine_refused` (cause `model_in_use`), naming the run.
 - `GET /v1/machines/{name}/gpus` (cl-1100): SSE `gpus` events, each a `GpuUse {at_unix_ms, gpus: [{index, busy_percent,
-  memory_used_bytes}]}` the machine read that second, while the caller follows; nothing is read otherwise, and following is no activity.
-  A machine with no NVIDIA GPU sends one empty reading. One whose Cozy predates it is `404 machine_gpu_use_unknown`.
+  memory_used_bytes, memory_total_bytes, power_w?, power_limit_w?, temperature_c?, sm_mhz?, sm_mhz_max?, throttles}]}` the machine read
+  that second, while the caller follows, across its restarts and updates; nothing is read otherwise, and following is no activity. A
+  machine with no NVIDIA GPU sends one empty reading. `throttles`: `power_cap`, `sw_thermal`, `hw_thermal`, `hw_slowdown`,
+  `power_brake`, what holds its clock back now. A machine from before cl-1191 says only busy and memory used.
+- `GET /v1/machines/{name}/gpus/now` (cl-1191, `cozy machine show`): one `GpuUse`, read at once. One whose Cozy predates cl-1100 is
+  `404 machine_gpu_use_unknown`; one not up is `503 machine_booting`.
 - `GET /v1/machines/{name}/logs/{tensord|tensorfs|memory}?lines=N&since_ms=T`, and on `local` `logs/calcifer`, Calcifer's own (`400 log_not_kept` elsewhere; the CLI reads its file, so it works with Calcifer down):
   - The newest `N` whole lines (`0`: all), as `text/plain`. `since_ms` drops the lines before the first one
     stamped at or after `T`.

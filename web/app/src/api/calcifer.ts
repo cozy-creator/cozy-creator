@@ -940,9 +940,16 @@ power_limit_w: number, power_default_w: number, };
 
 /**
  * One GPU's reading: the share of its last sample period a kernel ran (`nvidia-smi`'s GPU-Util), and its memory in use, every
- * process's.
+ * process's. Since cl-1191 also its memory's total, its power draw against the limit its driver enforces, its temperature, its SM
+ * clock against its most, and the limits holding that clock back now; a machine from before reads none of them (0, none, empty),
+ * and a driver that doesn't say one leaves it out.
  */
-export type GpuReading = { index: number, busy_percent: number, memory_used_bytes: number, };
+export type GpuReading = { index: number, busy_percent: number, memory_used_bytes: number, memory_total_bytes: number, power_w?: number | null, power_limit_w?: number | null, temperature_c?: number | null, sm_mhz?: number | null, sm_mhz_max?: number | null,
+/**
+ * `power_cap` (at its power limit), `sw_thermal` and `hw_thermal` (slowed to cool), `hw_slowdown` (the board's own brake, for
+ * heat or power), `power_brake` (an outside power brake).
+ */
+throttles: Array<string>, };
 
 /**
  * What a machine's NVIDIA GPUs are doing now (`path::GPUS`, cl-1100): one reading each; none from a machine without one.
@@ -3352,7 +3359,7 @@ export type Steps = { count: number, each_ms: number, };
  * `GET /v1/events`: what a client keeps on screen, on one stream, each thing whole as its route
  * answers it. No backlog: a client subscribes, then reads what it holds.
  */
-export type StreamEvent = { "type": "hello", version: string, stream: string, } | { "type": "run.updated", run: Run, } | { "type": "machine.updated", machine: Machine, } | { "type": "machine.removed", name: string, } | { "type": "project.changed", id: string, rev: string,
+export type StreamEvent = { "type": "hello", version: string, stream: string, } | { "type": "run.updated", run: Run, } | { "type": "machine.updated", machine: Machine, } | { "type": "machine.removed", name: string, } | { "type": "machine.gpus", name: string, reading: GpuUse, } | { "type": "project.changed", id: string, rev: string,
 /**
  * The assets whose row is another now, each to read by `GET /v1/projects/{id}/assets/{name}`. Absent: read the whole project.
  */

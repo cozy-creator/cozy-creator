@@ -117,8 +117,9 @@ paths:
   /v1/gpus:
     get:
       summary: >-
-        Its NVIDIA GPUs' use (cl-1100), as SSE: a `gpus` event each second while the caller stays, read only then. One with none to
-        read sends one empty reading. It holds no idle clock.
+        Its NVIDIA GPUs' use (cl-1100, cl-1191), as SSE: a `gpus` event each second while the caller stays, read only then: busy
+        share, memory, power against its limit, temperature, clock and the limits on it. One with none to read sends one empty
+        reading. It holds no idle clock.
       operationId: gpus
       responses:
         '200':
@@ -844,6 +845,16 @@ components:
               index: {type: integer, format: int32}
               busy_percent: {type: integer, format: int32, description: "The share of its last sample period a kernel ran, as nvidia-smi's GPU-Util."}
               memory_used_bytes: {type: integer, format: int64, description: Its memory in use, every process's.}
+              memory_total_bytes: {type: integer, format: int64, description: Its memory in all (cl-1191; 0 from an older machine).}
+              power_w: {type: integer, format: int32, description: Its power draw now; absent where the driver doesn't say.}
+              power_limit_w: {type: integer, format: int32, description: The power limit its driver enforces; absent where it doesn't say.}
+              temperature_c: {type: integer, format: int32}
+              sm_mhz: {type: integer, format: int32, description: Its SM clock now.}
+              sm_mhz_max: {type: integer, format: int32, description: Its SM clock's most.}
+              throttles:
+                type: array
+                description: 'What holds its clock back now: `power_cap`, `sw_thermal`, `hw_thermal`, `hw_slowdown`, `power_brake`.'
+                items: {type: string}
     RemoveModel:
       type: object
       required: [model]

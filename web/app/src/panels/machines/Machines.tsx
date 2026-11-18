@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { type FormEvent, useEffect, useState } from "react"
 import { Link, useLocation, useNavigate } from "react-router-dom"
+import { useGpuTrace, useShowGpus } from "../../api/gpus"
 import { machinesQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
 import { useTo } from "../../app/Shell"
@@ -10,9 +11,18 @@ import { DrawerFrame } from "../Drawer"
 import { bytes, usd } from "../format"
 import { nearlyFull } from "./Disk"
 import { End } from "./End"
+import { GpuStrip } from "./GpuGauges"
 import { Rent } from "./Rent"
 import { Checks, RenderCheck, Spec, useRenderMachines } from "./RenderHere"
 import { endsWords, stableName } from "./words"
+
+/** Its GPUs' gauges while it's up (cl-1191). */
+function MachineGpus({ machine }: { machine: Machine }) {
+  const { stream } = useConnection()
+  const trace = useGpuTrace(stream, machine.name)
+  if (machine.state !== "ready") return null
+  return <GpuStrip trace={trace} gpus={machine.status?.gpus ?? []} />
+}
 
 function MachineRow({ machine, now, here, tabbed }: { machine: Machine; now: number; here: boolean; tabbed?: boolean }) {
   const to = useTo()
@@ -22,6 +32,7 @@ function MachineRow({ machine, now, here, tabbed }: { machine: Machine; now: num
   return (
     <li className={`runrow machine ${trying ? "trying" : ""} ${here ? "render-here" : ""} ${tabbed ? "tabbed" : ""}`} data-machine={machine.name}>
       <Spec machine={machine} now={now} />
+      <MachineGpus machine={machine} />
       {Boolean(machine.running || machine.queued) && (
         <small className="under">
           {machine.running ?? 0} running, {machine.queued ?? 0} queued
@@ -105,7 +116,8 @@ function useCanRent(data: MachineList | undefined) {
 
 /** The machines, live, and renting one. */
 export function Machines() {
-  const { client } = useConnection()
+  const { client, stream } = useConnection()
+  useShowGpus(stream)
   const queries = useQueryClient()
   const to = useTo()
   const { data, error } = useQuery(machinesQuery(client))

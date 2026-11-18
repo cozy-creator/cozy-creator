@@ -32,6 +32,7 @@ mod loopback;
 mod local_code;
 mod tools;
 pub use tools::{Say, prefetch};
+mod gpu_use;
 mod machines;
 mod machine_client;
 mod old_outputs;

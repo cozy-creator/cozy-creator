@@ -361,35 +361,81 @@ async fn status(State(m): State<Machine>, headers: HeaderMap) -> Answer {
     Ok(sse(m.authority(&caller), frames))
 }
 
-/// `GET /v1/gpus` as SSE (cl-1100): each NVIDIA GPU's busy share and memory in use, read once a second while the caller watches and
-/// never otherwise. One with none to read sends one empty reading. Watching is no activity: it holds no idle clock.
+/// `GET /v1/gpus` as SSE (cl-1100, cl-1191): each NVIDIA GPU's gauges (busy share, memory, power against its limit, temperature,
+/// clock and the limits on it), read once a second while the caller watches and never otherwise. One with none to read sends one
+/// empty reading. Watching is no activity: it holds no idle clock. Under `machine.gpu_samples` (tests) its recorded readings stand
+/// in for its GPUs', one a second by the clock, so every reader sees the same one at once.
 async fn gpus(State(m): State<Machine>, headers: HeaderMap) -> Answer {
     let caller = m.caller(&headers)?;
     caller.machine()?;
-    let gpus: Vec<(u32, String)> = m.identity.gpus.iter().map(|gpu| (gpu.device_index, gpu.device_uuid.clone())).collect();
-    let opened = m
-        .call(move |_| Ok(gpus.into_iter().filter_map(|(index, uuid)| Some((index, platform::gpu::Device::open(&uuid).ok()?))).collect::<Vec<_>>()))
-        .await?;
-    let devices = Arc::new(opened);
-    let readings = futures_util::stream::unfold((devices, true), |(devices, first)| async move {
+    let gauges = match m.identity.gpu_samples.as_deref().and_then(crate::slowed::samples) {
+        Some(samples) => {
+            let mut by: std::collections::BTreeMap<u32, Vec<platform::gpu::Sample>> = Default::default();
+            for sample in samples {
+                by.entry(sample.gpu).or_default().push(sample);
+            }
+            Gauges::Recorded(Arc::new(by.into_iter().collect()))
+        }
+        None => {
+            let gpus: Vec<(u32, String)> = m.identity.gpus.iter().map(|gpu| (gpu.device_index, gpu.device_uuid.clone())).collect();
+            let opened = m
+                .call(move |_| Ok(gpus.into_iter().filter_map(|(index, uuid)| Some((index, platform::gpu::Device::open(&uuid).ok()?))).collect::<Vec<_>>()))
+                .await?;
+            Gauges::Live(Arc::new(opened))
+        }
+    };
+    let readings = futures_util::stream::unfold((gauges, true), |(gauges, first)| async move {
         if !first {
-            if devices.is_empty() {
+            if gauges.is_empty() {
                 return std::future::pending().await;
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
-        let read = devices.clone();
-        let gpus = tokio::task::spawn_blocking(move || {
-            (read.iter())
-                .filter_map(|(index, device)| device.busy().ok().map(|(busy, used)| v1::GpuReading { index: *index, busy_percent: busy, memory_used_bytes: used }))
-                .collect()
-        })
-        .await
-        .unwrap_or_default();
         let at_unix_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |at| at.as_millis() as i64);
-        Some((event("gpus", &v1::GpuUse { at_unix_ms, gpus }), (devices, false)))
+        let gpus = gauges.read(at_unix_ms as usize / 1000).await;
+        Some((event("gpus", &v1::GpuUse { at_unix_ms, gpus }), (gauges, false)))
     });
     Ok(sse(m.authority(&caller), readings))
+}
+
+/// Where `GET /v1/gpus` reads: the GPUs through NVML, or recorded readings by GPU, each GPU's in turn.
+enum Gauges {
+    Live(Arc<Vec<(u32, platform::gpu::Device)>>),
+    Recorded(Arc<Vec<(u32, Vec<platform::gpu::Sample>)>>),
+}
+
+impl Gauges {
+    fn is_empty(&self) -> bool {
+        match self {
+            Gauges::Live(devices) => devices.is_empty(),
+            Gauges::Recorded(gpus) => gpus.is_empty(),
+        }
+    }
+
+    /// Each GPU's reading now (recorded: its `second`th, round and round); one NVML can't read is left out.
+    async fn read(&self, second: usize) -> Vec<v1::GpuReading> {
+        let reading = |index: u32, gauge: platform::gpu::Gauge| v1::GpuReading {
+            index,
+            busy_percent: gauge.busy_percent,
+            memory_used_bytes: gauge.memory_used_bytes,
+            memory_total_bytes: gauge.memory_total_bytes,
+            power_w: gauge.power_w,
+            power_limit_w: gauge.power_limit_w,
+            temperature_c: gauge.temperature_c,
+            sm_mhz: gauge.sm_mhz,
+            sm_mhz_max: gauge.sm_mhz_max,
+            throttles: gauge.throttles.into_iter().map(str::to_owned).collect(),
+        };
+        match self {
+            Gauges::Live(devices) => {
+                let devices = devices.clone();
+                tokio::task::spawn_blocking(move || devices.iter().filter_map(|(index, device)| Some(reading(*index, device.gauge().ok()?))).collect())
+                    .await
+                    .unwrap_or_default()
+            }
+            Gauges::Recorded(gpus) => gpus.iter().map(|(index, samples)| reading(*index, samples[second % samples.len()].gauge())).collect(),
+        }
+    }
 }
 
 /// One SSE event named `name` whose data is `value`.

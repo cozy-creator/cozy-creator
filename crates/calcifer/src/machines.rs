@@ -847,6 +847,32 @@ impl Machines {
         }))
     }
 
+    /// Its GPUs' use now (cl-1191, `cozy machine show`): the first reading of the machine's stream, which it reads at once. One on a
+    /// Cozy from before cl-1100 is `machine_gpu_use_unknown`.
+    pub(crate) async fn gpu_use_now(&self, text: &str) -> Result<v1::GpuUse, Error> {
+        let (row, link) = self.linked(text)?;
+        let unknown = || Error::new(
+            Kind::NotFound,
+            "machine_gpu_use_unknown",
+            format!("{} runs an older Cozy that doesn't report GPU use. It will once it updates.", row.name),
+        );
+        let mut readings = link.follow_gpus().await.map_err(|e| match e {
+            LinkError::NotFound => unknown(),
+            e => refusal(&row.name, e),
+        })?;
+        match readings.next().await {
+            Some(Ok(reading)) => Ok(reading),
+            Some(Err(e)) => Err(refusal(&row.name, e)),
+            None => Err(refusal(&row.name, LinkError::Unanswered("its GPU stream ended before a reading".into()))),
+        }
+    }
+
+    /// The machines not ended, by name: those whose GPU use a page may show (cl-1191).
+    pub(crate) fn live_names(&self) -> Vec<String> {
+        let rows = self.store().machines().unwrap_or_default();
+        rows.into_iter().filter(|row| row.state != MachineState::Ended).map(|row| row.name).collect()
+    }
+
     /// The machine whose kept lines `text` reads: as `named`, or by its name the one ended machine that had it when no live
     /// one has (a rental id names it too; an added machine has none).
     fn kept_named(&self, text: &str) -> Result<Option<MachineRow>, Error> {
@@ -2281,6 +2307,11 @@ pub(crate) async fn logs(
     Ok(Sse::new(events)
         .keep_alive(KeepAlive::default())
         .into_response())
+}
+
+/// `GET /v1/machines/{name}/gpus/now` (cl-1191): its GPUs' use now, one `GpuUse`, as `cozy machine show` prints it.
+pub(crate) async fn gpus_now(State(api): State<Arc<Api>>, UrlPath(name): UrlPath<String>) -> Result<Json<v1::GpuUse>, Refusal> {
+    Ok(Json(api.machines.gpu_use_now(&name).await.map_err(Refusal)?))
 }
 
 /// `GET /v1/machines/{name}/gpus`, as SSE (cl-1100): `gpus` events, each a `GpuUse` the machine read that second, for as long as the
