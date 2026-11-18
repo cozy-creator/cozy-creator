@@ -42,7 +42,8 @@ while sleep 30; do
   [ "${alive:-}" != gone ] || break
   [ "${bytes:-} ${disk:-}" = "$seen" ] || { seen="${bytes:-} ${disk:-}"; moved=$SECONDS; }
   if (( SECONDS - moved >= 1200 )); then
-    expect comfyui-progress FAIL "ComfyUI stood still 20 min: $(podsh 'tail -c 300 /var/tmp/bm/comfy.log' | tr '\n' ' ')"
+    # Its log's tail carries ComfyUI's numbers: in CI (a public log) it stays in the sealed comfyui/comfy.log.
+    expect comfyui-progress FAIL "ComfyUI stood still 20 min$([ -n "${GITHUB_ACTIONS:-}" ] && echo ' (its log: comfyui/comfy.log, sealed)' || echo ": $(podsh 'tail -c 300 /var/tmp/bm/comfy.log' | tr '\n' ' ')")"
     podsh "kill \$(cat /var/tmp/bm/comfy.pid)" > /dev/null 2>&1
     break
   fi

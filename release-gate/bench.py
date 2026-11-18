@@ -595,7 +595,8 @@ def judge(defs: list[CellDef], cand: Gate, base: Group | None, version: str | No
             v.notes.append('no baseline: this run starts it')
         x, was = v.comfy, comfy.get(d['name'])
         if x and x['total_s'] is None:
-            v.notes.append(f"ComfyUI: no warm number ({x['status']})")
+            # Its kind only: the status's detail (a log tail) carries ComfyUI's numbers, and verdicts print to the public log.
+            v.notes.append(f"ComfyUI: no warm number ({x['status'].split(':', 1)[0]})")
         elif x and x['total_s'] and b and b['n'] and c['n'] and 'total_ms' in w:
             ours = w['total_ms'] / 1000 if x is not was else (w['total_ms'] - w.get('denoise_ms', 0.0) * (1 - clock)) / 1000
             won = was is not None and was['total_s'] is not None and b['warm']['total_ms'] / 1000 < was['total_s']
